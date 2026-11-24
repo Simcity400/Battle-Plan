@@ -1102,6 +1102,193 @@ pub fn resolve_equipment_icon(catalogue: &Catalogue, icon: &Icon, max_edge: u32)
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeIconResolution {
+    Ready {
+        icon: Icon,
+        origin: ArtOrigin,
+        file: String,
+        provenance: ArtProvenance,
+    },
+    ConfirmedMissing {
+        reason: String,
+        origin: Option<ArtOrigin>,
+        file: Option<String>,
+    },
+    Refused {
+        reason: String,
+        construct: String,
+        origin: Option<ArtOrigin>,
+        file: Option<String>,
+    },
+    Failed {
+        reason: String,
+        retryable: bool,
+    },
+}
+
+fn native_from_error(resolution: ArtResolution) -> NativeIconResolution {
+    match resolution {
+        ArtResolution::ConfirmedMissing {
+            reason,
+            origin,
+            file,
+        } => NativeIconResolution::ConfirmedMissing {
+            reason,
+            origin,
+            file,
+        },
+        ArtResolution::Refused {
+            reason,
+            construct,
+            origin,
+            file,
+        } => NativeIconResolution::Refused {
+            reason,
+            construct,
+            origin,
+            file,
+        },
+        ArtResolution::Failed { reason, retryable } => {
+            NativeIconResolution::Failed { reason, retryable }
+        }
+        ArtResolution::NoArtExpected | ArtResolution::Pending | ArtResolution::Ready { .. } => {
+            NativeIconResolution::ConfirmedMissing {
+                reason: "artwork did not resolve to a usable texture".to_owned(),
+                origin: None,
+                file: None,
+            }
+        }
+    }
+}
+
+fn resolve_native_sprite_in_stack(
+    stack: &ResolvedLayers,
+    registry: &resources::Registry,
+    name: &str,
+    decode: Decode,
+    scope_key: &ArtScopeKey,
+) -> NativeIconResolution {
+    let Some(sprite) = registry.sprite(name.as_bytes()) else {
+        return NativeIconResolution::ConfirmedMissing {
+            reason: format!("interface/*.gfx declares no sprite {name}"),
+            origin: None,
+            file: None,
+        };
+    };
+    let (raw_texture, declared_origin) = match &sprite.kind {
+        SpriteKind::Plain(plain) | SpriteKind::FrameAnimated { plain, .. } => {
+            let origin = stack
+                .layer_index(&sprite.file)
+                .map(|index| ArtOrigin::from_layer(&stack.layers[index]));
+            (&plain.texture, origin)
+        }
+        other => {
+            return NativeIconResolution::Refused {
+                reason: format!("sprite {name}: {} cannot be bound as a plain icon", other.keyword()),
+                construct: other.keyword().to_owned(),
+                origin: stack
+                    .layer_index(&sprite.file)
+                    .map(|index| ArtOrigin::from_layer(&stack.layers[index])),
+                file: None,
+            };
+        }
+    };
+    let (winning_layer, winning_path, display_file) =
+        match resolve_texture_candidate(stack, raw_texture, declared_origin) {
+            Ok(found) => found,
+            Err(err) => return native_from_error(err),
+        };
+    let origin = ArtOrigin::from_layer(&stack.layers[winning_layer]);
+    if let Err(err) = decode_texture_checked(
+        stack,
+        raw_texture,
+        decode,
+        origin.clone(),
+        &winning_path,
+        &display_file,
+    ) {
+        return native_from_error(err);
+    }
+    let provenance = ArtProvenance::current_install(&origin, scope_key);
+    NativeIconResolution::Ready {
+        icon: Icon::Sprite(name.to_owned()),
+        origin,
+        file: display_file,
+        provenance,
+    }
+}
+
+fn resolve_native_texture_in_stack(
+    stack: &ResolvedLayers,
+    path: &str,
+    decode: Decode,
+    scope_key: &ArtScopeKey,
+) -> NativeIconResolution {
+    let (winning_layer, winning_path, display_file) =
+        match resolve_texture_candidate(stack, path.as_bytes(), None) {
+            Ok(found) => found,
+            Err(err) => return native_from_error(err),
+        };
+    let origin = ArtOrigin::from_layer(&stack.layers[winning_layer]);
+    if let Err(err) = decode_texture_checked(
+        stack,
+        path.as_bytes(),
+        decode,
+        origin.clone(),
+        &winning_path,
+        &display_file,
+    ) {
+        return native_from_error(err);
+    }
+    let provenance = ArtProvenance::current_install(&origin, scope_key);
+    NativeIconResolution::Ready {
+        icon: Icon::Path(display_file.clone()),
+        origin,
+        file: display_file,
+        provenance,
+    }
+}
+
+pub fn resolve_native_equipment_icon(
+    layers: &ResolvedLayers,
+    registry: &resources::Registry,
+    recorded_registry: Option<&resources::Registry>,
+    language: &str,
+    icon: &Icon,
+    decode: Decode,
+) -> NativeIconResolution {
+    let scope_key = art_scope_key(layers, language);
+    let stack = layers.presentation();
+    let result = match icon {
+        Icon::Sprite(name) => {
+            resolve_native_sprite_in_stack(stack, registry, name, decode, &scope_key)
+        }
+        Icon::Path(path) => resolve_native_texture_in_stack(stack, path, decode, &scope_key),
+    };
+    if !matches!(result, NativeIconResolution::Ready { .. })
+        && stack.shows_visual_mods()
+        && !is_strict()
+    {
+        let recorded = layers.recorded_only();
+        let recorded_scope = art_scope_key(&recorded, language);
+        let fallback = match icon {
+            Icon::Sprite(name) => recorded_registry
+                .map(|reg| resolve_native_sprite_in_stack(&recorded, reg, name, decode, &recorded_scope)),
+            Icon::Path(path) => Some(resolve_native_texture_in_stack(
+                &recorded,
+                path,
+                decode,
+                &recorded_scope,
+            )),
+        };
+        if let Some(ok @ NativeIconResolution::Ready { .. }) = fallback {
+            return ok;
+        }
+    }
+    result
+}
+
 pub fn resolve_portrait_entry(
     catalogue: &Catalogue,
     kind: u32,

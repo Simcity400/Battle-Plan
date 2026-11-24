@@ -1,8 +1,9 @@
 use super::{
-    ComposedPlan, ComposedSubWindow, DEFAULT_VIEWPORT, GameWindowError, GameWindowRender,
-    GameWindowRequest, GameWindowTooltip, RenderParams, Service, WindowCacheKey, container_holder,
-    layout_window, strip_markup,
+    ComposedPlan, ComposedSubWindow, DEFAULT_VIEWPORT, GameWindowError, GameWindowRegion,
+    GameWindowRender, GameWindowRequest, GameWindowTooltip, RenderFrameKey, RenderParams, Service,
+    WindowCacheKey, container_holder, layout_window, strip_markup,
 };
+use content_reader_equipment_graphics::equipment_graphics::countries as graphics_countries;
 use content_reader_gui::gui::native::{self, Element, Fields, Kind};
 use content_reader_image::native::Decode;
 use content_reader_key_names::{
@@ -12,20 +13,27 @@ use content_reader_key_names::{
 use content_reader_layers::{ResolveOptions, ResolvedLayers, content::ResolvedContent};
 use content_reader_localisation::localisation::Localisation;
 use content_reader_parser::parser::c_string;
-use content_reader_script::equipment_stats::category_mask;
+use content_reader_script::equipment_stats::{
+    STAT_COUNT, category_mask, category_names, stat_index,
+};
 use dashboard_base::{
     Source,
-    products::equipment_icon::{Icon, IconHour, variant_icon},
+    products::{
+        artwork::resolver::{ArtProvenance, NativeIconResolution, resolve_native_equipment_icon},
+        equipment_icon::{Icon, IconHour, variant_icon},
+    },
 };
 use dashboard_text::metadata::link_slot;
 use replay::campaign::SeekResult;
 use replay_data::rows::{
-    IndustrialOrganisationRow, LexicalTokenRow, Recorded, TableId, VariantDefinitionRow,
-    VariantDesignState, VariantModuleRow, VariantStatsRow, VariantUpgradeRow, tables,
+    IndustrialOrganisationRow, LexicalTokenRow, Recorded, TableId, TableSchema,
+    VariantDefinitionRow, VariantDesignState, VariantModuleRow, VariantStatsRow, VariantUpgradeRow,
+    tables,
 };
+use replay_frame::frame::{DecodedFrame, TableView};
 use serde::Deserialize;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, atomic::AtomicBool},
 };
 use viewer_native_gui::native_gui::{
@@ -148,51 +156,101 @@ pub enum SlotIcon {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordedStats {
-    Available([Option<i64>; 10]),
-    MissingRow,
-    Unavailable(String),
+    Available {
+        values: [Option<i64>; 10],
+        residuals: BTreeMap<usize, i64>,
+    },
+    MissingRow {
+        residuals: BTreeMap<usize, i64>,
+    },
+    Unavailable {
+        reason: String,
+        residuals: BTreeMap<usize, i64>,
+    },
 }
 
 impl RecordedStats {
     fn lane(&self, index: usize) -> Option<i64> {
         match self {
-            Self::Available(values) => values[index],
-            Self::MissingRow | Self::Unavailable(_) => None,
+            Self::Available { values, .. } => values[index],
+            Self::MissingRow { .. } | Self::Unavailable { .. } => None,
         }
+    }
+
+    fn residual(&self, keyword: &str) -> Option<i64> {
+        let idx = stat_index(keyword.as_bytes())?;
+        let map = match self {
+            Self::Available { residuals, .. }
+            | Self::MissingRow { residuals }
+            | Self::Unavailable { residuals, .. } => residuals,
+        };
+        map.get(&idx).copied()
     }
 
     fn missing_reason(&self) -> String {
         match self {
-            Self::Available(_) => {
+            Self::Available { .. } => {
                 "Not recorded: this stat was withheld or not recorded for this design at this hour."
                     .to_owned()
             }
-            Self::MissingRow => {
+            Self::MissingRow { .. } => {
                 "Not recorded: this design has no variant stats row at this hour.".to_owned()
             }
-            Self::Unavailable(reason) => {
+            Self::Unavailable { reason, .. } => {
                 format!("Not recorded: variant stats are unavailable at this hour ({reason}).")
             }
         }
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FittedSlot {
+    Resolved(FittedModule),
+    Unresolved { token: u32, reason: String },
+}
+
 #[derive(Clone, Debug)]
 enum RecordedModules {
-    Available(BTreeMap<String, FittedModule>),
+    Available {
+        slots: BTreeMap<String, FittedSlot>,
+        unattributed_unresolved: Option<String>,
+    },
     Unavailable(String),
 }
 
 #[derive(Clone, Debug)]
 enum RecordedUpgrades {
-    Available(Vec<(String, u8)>),
-    Unavailable { keys: Vec<String>, reason: String },
+    Available {
+        entries: Vec<(String, Option<u8>)>,
+        unresolved_reason: Option<String>,
+    },
+    Unavailable {
+        keys: Vec<String>,
+        reason: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordedResource {
+    pub key: Option<String>,
+    pub token: u32,
+    pub amount: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecordedMio {
+    None,
+    Resolved(ResolvedMio),
+    Unresolved {
+        id: u64,
+        trait_count: Option<i32>,
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatLine {
     pub label_key: &'static str,
-    pub fallback_label: &'static str,
     pub value: Option<String>,
     pub detail: Option<String>,
 }
@@ -204,18 +262,37 @@ pub struct StatColumns {
     pub misc: Vec<StatLine>,
 }
 
-#[derive(Clone, Debug)]
-struct ResolvedMio {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedMio {
     name: String,
     sprite: Option<String>,
     trait_count: Option<i32>,
 }
 
-#[derive(Clone, Debug)]
-struct FittedModule {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FittedModule {
     module: String,
     category: String,
     gui_category: String,
+}
+
+#[derive(Clone, Debug)]
+enum ResolvedEquipmentIcon {
+    Ready {
+        icon: Icon,
+        provenance: ArtProvenance,
+    },
+    Missing {
+        reason: String,
+    },
+    Refused {
+        reason: String,
+        construct: String,
+    },
+    Failed {
+        reason: String,
+    },
+    NoneExpected,
 }
 
 #[derive(Clone, Debug)]
@@ -233,14 +310,15 @@ struct EquipmentDesignData {
     design_state_reason: Option<String>,
     naming_group: Option<String>,
     niche_frame: Option<i32>,
-    mio: Option<ResolvedMio>,
+    mio: RecordedMio,
     module_slots: Vec<(String, String)>,
     fitted_modules: RecordedModules,
     upgrades: RecordedUpgrades,
     stats: RecordedStats,
     manpower: Option<i32>,
     build_cost: Option<i64>,
-    build_resources: Option<Vec<(String, i64)>>,
+    build_resources: Option<Vec<RecordedResource>>,
+    extra_warnings: Vec<String>,
 }
 
 pub fn classify_designer(
@@ -356,10 +434,23 @@ fn recorded_stat(
     }
 }
 
-fn unrecorded_stat(label_key: &'static str, fallback_label: &'static str) -> StatLine {
+fn residual_stat(
+    stats: &RecordedStats,
+    label_key: &'static str,
+    keyword: Option<&'static str>,
+    format_value: impl FnOnce(i64) -> String,
+) -> StatLine {
+    if let Some(kw) = keyword
+        && let Some(raw) = stats.residual(kw)
+    {
+        return StatLine {
+            label_key,
+            value: Some(format_value(raw)),
+            detail: None,
+        };
+    }
     StatLine {
         label_key,
-        fallback_label,
         value: None,
         detail: Some(NOT_RECORDED_TOOLTIP.to_owned()),
     }
@@ -371,32 +462,33 @@ pub fn build_stat_columns(
     manpower: Option<i32>,
     design_state_reason: Option<&str>,
 ) -> StatColumns {
+    let fixed1 = |raw: i64| format_fixed5(raw, 1);
+    let fixed2 = |raw: i64| format_fixed5(raw, 2);
+    let fixed0 = |raw: i64| format_fixed5(raw, 0);
+    let pct1 = |raw: i64| format_percent_fixed5(raw, 1);
+    let km = |raw: i64| format!("{} km", format_fixed5(raw, 0));
+    let kmh = |raw: i64| format!("{} km/h", format_fixed5(raw, 1));
+    let kn = |raw: i64| format!("{} kn", format_fixed5(raw, 1));
     match kind {
         DesignerKind::Ship => {
             let (reliability, reliability_detail) =
-                recorded_stat(stats, VariantStatsRow::RELIABILITY, |raw| {
-                    format_percent_fixed5(raw, 1)
-                });
+                recorded_stat(stats, VariantStatsRow::RELIABILITY, pct1);
             let (fuel, fuel_detail) =
-                recorded_stat(stats, VariantStatsRow::FUEL_CONSUMPTION, |raw| {
-                    format_fixed5(raw, 2)
-                });
+                recorded_stat(stats, VariantStatsRow::FUEL_CONSUMPTION, fixed2);
             StatColumns {
                 base: vec![
-                    unrecorded_stat("STAT_NAVY_MAXIMUM_SPEED", "Max Speed:"),
-                    unrecorded_stat("STAT_NAVY_RANGE", "Max Range:"),
-                    unrecorded_stat("STAT_COMMON_MAX_ORG", "Organization:"),
-                    unrecorded_stat("STAT_COMMON_MAX_STRENGTH", "HP:"),
+                    residual_stat(stats, "STAT_NAVY_MAXIMUM_SPEED", Some("naval_speed"), kn),
+                    residual_stat(stats, "STAT_NAVY_RANGE", Some("naval_range"), km),
+                    residual_stat(stats, "STAT_COMMON_MAX_ORG", Some("max_organisation"), fixed1),
+                    residual_stat(stats, "STAT_COMMON_MAX_STRENGTH", Some("max_strength"), fixed1),
                     StatLine {
                         label_key: "STAT_COMMON_RELIABILITY",
-                        fallback_label: "Reliability:",
                         value: reliability,
                         detail: reliability_detail,
                     },
-                    unrecorded_stat("STAT_ARMY_SUPPLY_CONSUMPTION", "Supply Use:"),
+                    residual_stat(stats, "STAT_ARMY_SUPPLY_CONSUMPTION", Some("supply_consumption"), fixed2),
                     StatLine {
                         label_key: "STAT_COMMON_MANPOWER",
-                        fallback_label: "Manpower",
                         value: manpower.map(|value| value.to_string()),
                         detail: manpower.is_none().then(|| {
                             design_state_reason
@@ -406,152 +498,121 @@ pub fn build_stat_columns(
                     },
                 ],
                 combat: vec![
-                    unrecorded_stat("STAT_NAVY_LG_ATTACK", "Light Attack:"),
-                    unrecorded_stat("STAT_NAVY_LG_ARMOR_PIERCING", "Light Piercing:"),
-                    unrecorded_stat("STAT_NAVY_HG_ATTACK", "Heavy Attack:"),
-                    unrecorded_stat("STAT_NAVY_HG_ARMOR_PIERCING", "Heavy Piercing:"),
-                    unrecorded_stat("STAT_NAVY_TORPEDO_ATTACK", "Torpedo Attack:"),
-                    unrecorded_stat("STAT_NAVY_SUB_ATTACK", "Depth Charges:"),
-                    unrecorded_stat("STAT_COMMON_ARMOR", "Armor:"),
-                    unrecorded_stat("STAT_NAVY_ANTI_AIR_ATTACK", "Anti-Air:"),
+                    residual_stat(stats, "STAT_NAVY_LG_ATTACK", Some("lg_attack"), fixed1),
+                    residual_stat(stats, "STAT_NAVY_LG_ARMOR_PIERCING", Some("lg_armor_piercing"), fixed1),
+                    residual_stat(stats, "STAT_NAVY_HG_ATTACK", Some("hg_attack"), fixed1),
+                    residual_stat(stats, "STAT_NAVY_HG_ARMOR_PIERCING", Some("hg_armor_piercing"), fixed1),
+                    residual_stat(stats, "STAT_NAVY_TORPEDO_ATTACK", Some("torpedo_attack"), fixed1),
+                    residual_stat(stats, "STAT_NAVY_SUB_ATTACK", Some("sub_attack"), fixed1),
+                    residual_stat(stats, "STAT_COMMON_ARMOR", Some("armor_value"), fixed1),
+                    residual_stat(stats, "STAT_NAVY_ANTI_AIR_ATTACK", Some("anti_air_attack"), fixed1),
                 ],
                 misc: vec![
                     StatLine {
                         label_key: "STAT_COMMON_FUEL_CONSUMPTION",
-                        fallback_label: "Fuel Usage:",
                         value: fuel,
                         detail: fuel_detail,
                     },
-                    unrecorded_stat("STAT_NAVY_SURFACE_VISIBILITY", "Surface Visibility:"),
-                    unrecorded_stat("STAT_NAVY_SURFACE_DETECTION", "Surface Detection:"),
-                    unrecorded_stat("STAT_NAVY_SUB_VISIBILITY", "Sub Visibility:"),
-                    unrecorded_stat("STAT_NAVY_SUB_DETECTION", "Sub Detection:"),
-                    unrecorded_stat("STAT_NAVY_MINES_PLANTING", "Minelaying:"),
-                    unrecorded_stat("STAT_NAVY_MINES_SWEEPING", "Minesweeping:"),
-                    unrecorded_stat("STAT_NAVY_WEATHER_PENALTY", "Weather Penalty:"),
-                    unrecorded_stat("STAT_NAVY_HIT_PROFILE", "Hit Profile"),
+                    residual_stat(stats, "STAT_NAVY_SURFACE_VISIBILITY", Some("surface_visibility"), fixed1),
+                    residual_stat(stats, "STAT_NAVY_SURFACE_DETECTION", Some("surface_detection"), fixed1),
+                    residual_stat(stats, "STAT_NAVY_SUB_VISIBILITY", Some("sub_visibility"), fixed1),
+                    residual_stat(stats, "STAT_NAVY_SUB_DETECTION", Some("sub_detection"), fixed1),
+                    residual_stat(stats, "STAT_NAVY_MINES_PLANTING", Some("mines_planting"), fixed2),
+                    residual_stat(stats, "STAT_NAVY_MINES_SWEEPING", Some("mines_sweeping"), fixed2),
+                    residual_stat(stats, "STAT_NAVY_WEATHER_PENALTY", Some("weather_penalty"), pct1),
+                    residual_stat(stats, "STAT_NAVY_HIT_PROFILE", None, fixed1),
                 ],
             }
         }
         DesignerKind::Tank => {
             let (speed, speed_detail) =
-                recorded_stat(stats, VariantStatsRow::MAXIMUM_SPEED, |raw| {
-                    format!("{} km/h", format_fixed5(raw, 1))
-                });
+                recorded_stat(stats, VariantStatsRow::MAXIMUM_SPEED, kmh);
             let (reliability, reliability_detail) =
-                recorded_stat(stats, VariantStatsRow::RELIABILITY, |raw| {
-                    format_percent_fixed5(raw, 1)
-                });
+                recorded_stat(stats, VariantStatsRow::RELIABILITY, pct1);
             let (air_attack, air_attack_detail) =
-                recorded_stat(stats, VariantStatsRow::AIR_ATTACK, |raw| {
-                    format_fixed5(raw, 1)
-                });
+                recorded_stat(stats, VariantStatsRow::AIR_ATTACK, fixed1);
             let (fuel, fuel_detail) =
-                recorded_stat(stats, VariantStatsRow::FUEL_CONSUMPTION, |raw| {
-                    format_fixed5(raw, 2)
-                });
+                recorded_stat(stats, VariantStatsRow::FUEL_CONSUMPTION, fixed2);
             StatColumns {
                 base: vec![
                     StatLine {
                         label_key: "STAT_COMMON_MAXIMUM_SPEED",
-                        fallback_label: "Max Speed:",
                         value: speed,
                         detail: speed_detail,
                     },
                     StatLine {
                         label_key: "STAT_COMMON_RELIABILITY",
-                        fallback_label: "Reliability:",
                         value: reliability,
                         detail: reliability_detail,
                     },
-                    unrecorded_stat("STAT_COMMON_MAX_STRENGTH", "HP:"),
-                    unrecorded_stat("STAT_ARMY_SUPPLY_CONSUMPTION", "Supply Use:"),
+                    residual_stat(stats, "STAT_COMMON_MAX_STRENGTH", Some("max_strength"), fixed1),
+                    residual_stat(stats, "STAT_ARMY_SUPPLY_CONSUMPTION", Some("supply_consumption"), fixed2),
                 ],
                 combat: vec![
-                    unrecorded_stat("STAT_ARMY_SOFT_ATTACK", "Soft Attack:"),
-                    unrecorded_stat("STAT_ARMY_HARD_ATTACK", "Hard Attack:"),
-                    unrecorded_stat("STAT_COMMON_PIERCING", "Piercing:"),
-                    unrecorded_stat("STAT_ARMY_HARDNESS", "Hardness:"),
-                    unrecorded_stat("STAT_COMMON_ARMOR", "Armor:"),
-                    unrecorded_stat("STAT_ARMY_BREAKTHROUGH", "Breakthrough:"),
-                    unrecorded_stat("STAT_ARMY_DEFENSE", "Defense:"),
+                    residual_stat(stats, "STAT_ARMY_SOFT_ATTACK", Some("soft_attack"), fixed1),
+                    residual_stat(stats, "STAT_ARMY_HARD_ATTACK", Some("hard_attack"), fixed1),
+                    residual_stat(stats, "STAT_COMMON_PIERCING", Some("ap_attack"), fixed1),
+                    residual_stat(stats, "STAT_ARMY_HARDNESS", Some("hardness"), pct1),
+                    residual_stat(stats, "STAT_COMMON_ARMOR", Some("armor_value"), fixed1),
+                    residual_stat(stats, "STAT_ARMY_BREAKTHROUGH", Some("breakthrough"), fixed1),
+                    residual_stat(stats, "STAT_ARMY_DEFENSE", Some("defense"), fixed1),
                     StatLine {
                         label_key: "STAT_AIR_ATTACK",
-                        fallback_label: "Air Attack:",
                         value: air_attack,
                         detail: air_attack_detail,
                     },
                 ],
                 misc: vec![
-                    unrecorded_stat("STAT_ARMY_FUEL_CAPACITY", "Fuel Capacity:"),
+                    residual_stat(stats, "STAT_ARMY_FUEL_CAPACITY", Some("fuel_capacity"), fixed0),
                     StatLine {
                         label_key: "STAT_COMMON_FUEL_CONSUMPTION",
-                        fallback_label: "Fuel Usage:",
                         value: fuel,
                         detail: fuel_detail,
                     },
-                    unrecorded_stat("STAT_ARMY_SUPRESSION", "Suppression:"),
-                    unrecorded_stat("STAT_ARMY_RECON", "Reconnaissance:"),
-                    unrecorded_stat("STAT_ARMY_ENTRENCHMENT", "Entrenchment:"),
+                    residual_stat(stats, "STAT_ARMY_SUPRESSION", Some("suppression"), fixed1),
+                    residual_stat(stats, "STAT_ARMY_RECON", Some("recon"), fixed1),
+                    residual_stat(stats, "STAT_ARMY_ENTRENCHMENT", Some("entrenchment"), fixed1),
                 ],
             }
         }
         DesignerKind::Plane => {
             let (speed, speed_detail) =
-                recorded_stat(stats, VariantStatsRow::MAXIMUM_SPEED, |raw| {
-                    format!("{} km/h", format_fixed5(raw, 1))
-                });
-            let (range, range_detail) = recorded_stat(stats, VariantStatsRow::AIR_RANGE, |raw| {
-                format!("{} km", format_fixed5(raw, 0))
-            });
+                recorded_stat(stats, VariantStatsRow::MAXIMUM_SPEED, kmh);
+            let (range, range_detail) = recorded_stat(stats, VariantStatsRow::AIR_RANGE, km);
             let (weight, weight_detail) =
-                recorded_stat(stats, VariantStatsRow::WEIGHT, |raw| format_fixed5(raw, 1));
+                recorded_stat(stats, VariantStatsRow::WEIGHT, fixed1);
             let (thrust, thrust_detail) =
-                recorded_stat(stats, VariantStatsRow::THRUST, |raw| format_fixed5(raw, 1));
+                recorded_stat(stats, VariantStatsRow::THRUST, fixed1);
             let (air_def, air_def_detail) =
-                recorded_stat(stats, VariantStatsRow::AIR_DEFENCE, |raw| {
-                    format_fixed5(raw, 1)
-                });
+                recorded_stat(stats, VariantStatsRow::AIR_DEFENCE, fixed1);
             let (air_atk, air_atk_detail) =
-                recorded_stat(stats, VariantStatsRow::AIR_ATTACK, |raw| {
-                    format_fixed5(raw, 1)
-                });
+                recorded_stat(stats, VariantStatsRow::AIR_ATTACK, fixed1);
             let (agility, agility_detail) =
-                recorded_stat(stats, VariantStatsRow::AIR_AGILITY, |raw| {
-                    format_fixed5(raw, 1)
-                });
+                recorded_stat(stats, VariantStatsRow::AIR_AGILITY, fixed1);
             let (reliability, reliability_detail) =
-                recorded_stat(stats, VariantStatsRow::RELIABILITY, |raw| {
-                    format_percent_fixed5(raw, 1)
-                });
+                recorded_stat(stats, VariantStatsRow::RELIABILITY, pct1);
             let (fuel, fuel_detail) =
-                recorded_stat(stats, VariantStatsRow::FUEL_CONSUMPTION, |raw| {
-                    format_fixed5(raw, 2)
-                });
+                recorded_stat(stats, VariantStatsRow::FUEL_CONSUMPTION, fixed2);
             StatColumns {
                 base: vec![
                     StatLine {
                         label_key: "STAT_COMMON_MAXIMUM_SPEED",
-                        fallback_label: "Max Speed:",
                         value: speed,
                         detail: speed_detail,
                     },
                     StatLine {
                         label_key: "STAT_AIR_RANGE",
-                        fallback_label: "Range:",
                         value: range,
                         detail: range_detail,
                     },
-                    unrecorded_stat("STAT_ARMY_SUPPLY_CONSUMPTION", "Supply Use:"),
+                    residual_stat(stats, "STAT_ARMY_SUPPLY_CONSUMPTION", Some("supply_consumption"), fixed2),
                     StatLine {
                         label_key: "STAT_COMMON_WEIGHT",
-                        fallback_label: "Weight:",
                         value: weight,
                         detail: weight_detail,
                     },
                     StatLine {
                         label_key: "STAT_COMMON_THRUST",
-                        fallback_label: "Thrust:",
                         value: thrust,
                         detail: thrust_detail,
                     },
@@ -559,46 +620,41 @@ pub fn build_stat_columns(
                 combat: vec![
                     StatLine {
                         label_key: "STAT_AIR_DEFENCE",
-                        fallback_label: "Air Defense:",
                         value: air_def,
                         detail: air_def_detail,
                     },
                     StatLine {
                         label_key: "STAT_AIR_ATTACK",
-                        fallback_label: "Air Attack:",
                         value: air_atk,
                         detail: air_atk_detail,
                     },
                     StatLine {
                         label_key: "STAT_AIR_AGILITY",
-                        fallback_label: "Agility:",
                         value: agility,
                         detail: agility_detail,
                     },
-                    unrecorded_stat("STAT_AIR_SUPERIORITY", "Air Superiority:"),
-                    unrecorded_stat("STAT_AIR_NAVAL_STRIKE_ATTACK", "Naval Attack:"),
-                    unrecorded_stat("STAT_AIR_NAVAL_STRIKE_TARGETTING", "Naval Targeting:"),
-                    unrecorded_stat("STAT_AIR_GROUND_ATTACK", "Ground Attack:"),
-                    unrecorded_stat("STAT_AIR_BOMBING", "Strat. Bombing:"),
+                    residual_stat(stats, "STAT_AIR_SUPERIORITY", Some("air_superiority"), fixed1),
+                    residual_stat(stats, "STAT_AIR_NAVAL_STRIKE_ATTACK", Some("naval_strike_attack"), fixed1),
+                    residual_stat(stats, "STAT_AIR_NAVAL_STRIKE_TARGETTING", Some("naval_strike_targetting"), fixed1),
+                    residual_stat(stats, "STAT_AIR_GROUND_ATTACK", Some("air_ground_attack"), fixed1),
+                    residual_stat(stats, "STAT_AIR_BOMBING", Some("air_bombing"), fixed1),
                 ],
                 misc: vec![
                     StatLine {
                         label_key: "STAT_COMMON_RELIABILITY",
-                        fallback_label: "Reliability:",
                         value: reliability,
                         detail: reliability_detail,
                     },
                     StatLine {
                         label_key: "STAT_COMMON_FUEL_CONSUMPTION",
-                        fallback_label: "Fuel Usage:",
                         value: fuel,
                         detail: fuel_detail,
                     },
-                    unrecorded_stat("STAT_NAVY_SURFACE_DETECTION", "Surface Detection:"),
-                    unrecorded_stat("STAT_NAVY_SUB_DETECTION", "Sub Detection:"),
-                    unrecorded_stat("STAT_COMMON_NIGHT_PENALTY", "Night Penalty:"),
-                    unrecorded_stat("STAT_NAVY_MINES_PLANTING", "Minelaying:"),
-                    unrecorded_stat("STAT_NAVY_MINES_SWEEPING", "Minesweeping:"),
+                    residual_stat(stats, "STAT_NAVY_SURFACE_DETECTION", Some("surface_detection"), fixed1),
+                    residual_stat(stats, "STAT_NAVY_SUB_DETECTION", Some("sub_detection"), fixed1),
+                    residual_stat(stats, "STAT_COMMON_NIGHT_PENALTY", Some("night_penalty"), pct1),
+                    residual_stat(stats, "STAT_NAVY_MINES_PLANTING", Some("mines_planting"), fixed2),
+                    residual_stat(stats, "STAT_NAVY_MINES_SWEEPING", Some("mines_sweeping"), fixed2),
                 ],
             }
         }
@@ -606,38 +662,34 @@ pub fn build_stat_columns(
             let mut rows = Vec::new();
             match domain {
                 UpgradeDomain::Naval => {
-                    rows.push(unrecorded_stat("STAT_NAVY_MAXIMUM_SPEED", "Max Speed:"));
+                    rows.push(residual_stat(
+                        stats,
+                        "STAT_NAVY_MAXIMUM_SPEED",
+                        Some("naval_speed"),
+                        kn,
+                    ));
                 }
                 UpgradeDomain::Land | UpgradeDomain::Air => {
                     let (speed, speed_detail) =
-                        recorded_stat(stats, VariantStatsRow::MAXIMUM_SPEED, |raw| {
-                            format!("{} km/h", format_fixed5(raw, 1))
-                        });
+                        recorded_stat(stats, VariantStatsRow::MAXIMUM_SPEED, kmh);
                     rows.push(StatLine {
                         label_key: "STAT_COMMON_MAXIMUM_SPEED",
-                        fallback_label: "Max Speed:",
                         value: speed,
                         detail: speed_detail,
                     });
                 }
             }
             let (reliability, reliability_detail) =
-                recorded_stat(stats, VariantStatsRow::RELIABILITY, |raw| {
-                    format_percent_fixed5(raw, 1)
-                });
+                recorded_stat(stats, VariantStatsRow::RELIABILITY, pct1);
             rows.push(StatLine {
                 label_key: "STAT_COMMON_RELIABILITY",
-                fallback_label: "Reliability:",
                 value: reliability,
                 detail: reliability_detail,
             });
             let (fuel, fuel_detail) =
-                recorded_stat(stats, VariantStatsRow::FUEL_CONSUMPTION, |raw| {
-                    format_fixed5(raw, 2)
-                });
+                recorded_stat(stats, VariantStatsRow::FUEL_CONSUMPTION, fixed2);
             rows.push(StatLine {
                 label_key: "STAT_COMMON_FUEL_CONSUMPTION",
-                fallback_label: "Fuel Usage:",
                 value: fuel,
                 detail: fuel_detail,
             });
@@ -648,48 +700,34 @@ pub fn build_stat_columns(
                 });
             rows.push(StatLine {
                 label_key: "STAT_COMMON_BUILD_COST_IC",
-                fallback_label: "Production Cost:",
                 value: cost,
                 detail: cost_detail,
             });
             if matches!(domain, UpgradeDomain::Air) {
-                let (range, range_detail) =
-                    recorded_stat(stats, VariantStatsRow::AIR_RANGE, |raw| {
-                        format!("{} km", format_fixed5(raw, 0))
-                    });
+                let (range, range_detail) = recorded_stat(stats, VariantStatsRow::AIR_RANGE, km);
                 let (air_atk, air_atk_detail) =
-                    recorded_stat(stats, VariantStatsRow::AIR_ATTACK, |raw| {
-                        format_fixed5(raw, 1)
-                    });
+                    recorded_stat(stats, VariantStatsRow::AIR_ATTACK, fixed1);
                 let (air_def, air_def_detail) =
-                    recorded_stat(stats, VariantStatsRow::AIR_DEFENCE, |raw| {
-                        format_fixed5(raw, 1)
-                    });
+                    recorded_stat(stats, VariantStatsRow::AIR_DEFENCE, fixed1);
                 let (agility, agility_detail) =
-                    recorded_stat(stats, VariantStatsRow::AIR_AGILITY, |raw| {
-                        format_fixed5(raw, 1)
-                    });
+                    recorded_stat(stats, VariantStatsRow::AIR_AGILITY, fixed1);
                 rows.push(StatLine {
                     label_key: "STAT_AIR_RANGE",
-                    fallback_label: "Range:",
                     value: range,
                     detail: range_detail,
                 });
                 rows.push(StatLine {
                     label_key: "STAT_AIR_ATTACK",
-                    fallback_label: "Air Attack:",
                     value: air_atk,
                     detail: air_atk_detail,
                 });
                 rows.push(StatLine {
                     label_key: "STAT_AIR_DEFENCE",
-                    fallback_label: "Air Defense:",
                     value: air_def,
                     detail: air_def_detail,
                 });
                 rows.push(StatLine {
                     label_key: "STAT_AIR_AGILITY",
-                    fallback_label: "Agility:",
                     value: agility,
                     detail: agility_detail,
                 });
@@ -732,6 +770,191 @@ pub struct RenderContext<'a> {
     pub decode: Decode,
     pub admitted_gen: (u64, u64),
     pub extra_warnings: Vec<String>,
+}
+
+fn cached_resource_db(layers: &ResolvedLayers) -> Result<Arc<ResourceDatabase>, String> {
+    #[derive(Default)]
+    struct Cached(
+        content_reader_layers::content::diagnostics::Once<Result<Arc<ResourceDatabase>, String>>,
+    );
+    layers
+        .derived::<Cached>()
+        .0
+        .get_or_init(|| {
+            content_reader_key_names::resources::read(layers)
+                .map(|(db, _)| Arc::new(db))
+                .map_err(|error| error.to_string())
+        })
+        .clone()
+}
+
+fn cached_ship_naming_groups(layers: &ResolvedLayers) -> Arc<HashMap<String, String>> {
+    #[derive(Default)]
+    struct Cached(
+        content_reader_layers::content::diagnostics::Once<Arc<HashMap<String, String>>>,
+    );
+    Arc::clone(layers.derived::<Cached>().0.get_or_init(|| {
+        let mut map = HashMap::new();
+        if let Ok(files) = layers.directory_files("common/units/names_ships", ".txt") {
+            for path in files {
+                let Ok(bytes) = path.read(layers) else {
+                    continue;
+                };
+                let Ok(doc) = content_reader_parser::parser::parse(&bytes) else {
+                    continue;
+                };
+                for item in &doc.items {
+                    let Some(key) = item.key_str() else {
+                        continue;
+                    };
+                    if let Some(fields) = item.value.items() {
+                        for field in fields {
+                            if field.keyword_is("name")
+                                && let Some(raw) = field.value.read_string()
+                                && let Ok(text) = std::str::from_utf8(raw)
+                                && !text.is_empty()
+                            {
+                                map.entry(key.to_ascii_lowercase())
+                                    .or_insert_with(|| text.to_owned());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Arc::new(map)
+    }))
+}
+
+fn witnessed_single_key<'a, T, K>(
+    frame: &'a DecodedFrame,
+    target_key: K,
+    key_of: impl Fn(&T::Row) -> K,
+) -> Result<Option<&'a T::Row>, String>
+where
+    T: TableSchema,
+    K: Ord,
+{
+    match frame.tables[T::ID.index()].held() {
+        TableView::Complete(rows) => {
+            let slice = rows
+                .rows::<T>()
+                .ok_or_else(|| format!("{:?} rows do not match table schema", T::ID))?;
+            Ok(slice
+                .binary_search_by_key(&target_key, key_of)
+                .ok()
+                .map(|idx| &slice[idx]))
+        }
+        TableView::Truncated { rows, missing } => {
+            let slice = rows
+                .rows::<T>()
+                .ok_or_else(|| format!("{:?} rows do not match table schema", T::ID))?;
+            match slice.binary_search_by_key(&target_key, key_of) {
+                Ok(idx) => Ok(Some(&slice[idx])),
+                Err(_) => Err(format!(
+                    "{:?} is truncated ({missing} rows omitted) and does not witness this key",
+                    T::ID
+                )),
+            }
+        }
+        TableView::Unavailable { reason } => Err(reason.clone()),
+        TableView::NotRecorded { .. } => Err(format!("{:?} is not recorded at this hour", T::ID)),
+    }
+}
+
+fn witnessed_rows<'a, T: TableSchema>(frame: &'a DecodedFrame) -> Result<(&'a [T::Row], bool), String> {
+    match frame.tables[T::ID.index()].held() {
+        TableView::Complete(rows) => {
+            let slice = rows
+                .rows::<T>()
+                .ok_or_else(|| format!("{:?} rows do not match table schema", T::ID))?;
+            Ok((slice, true))
+        }
+        TableView::Truncated { rows, .. } => {
+            let slice = rows
+                .rows::<T>()
+                .ok_or_else(|| format!("{:?} rows do not match table schema", T::ID))?;
+            Ok((slice, false))
+        }
+        TableView::Unavailable { reason } => Err(reason.clone()),
+        TableView::NotRecorded { .. } => Err(format!("{:?} is not recorded at this hour", T::ID)),
+    }
+}
+
+fn extract_unresolved_residuals(
+    design_state: Option<&VariantDesignState>,
+    warnings: &mut Vec<String>,
+) -> BTreeMap<usize, i64> {
+    let mut map = BTreeMap::new();
+    let Some(state) = design_state else {
+        return map;
+    };
+    if state.named_bonuses.is_empty() || state.unresolved_stats.is_empty() {
+        return map;
+    }
+    for entry in &state.unresolved_stats {
+        let index = entry.index as usize;
+        if index < STAT_COUNT {
+            map.insert(index, entry.value);
+        } else {
+            warnings.push(format!(
+                "Design residual stat index {index} exceeds recorded stat metadata ({STAT_COUNT}); ignored."
+            ));
+        }
+    }
+    map
+}
+
+fn fingerprint_design(
+    data: &EquipmentDesignData,
+    definition: &VariantDefinitionRow,
+    read_hour: i32,
+    extra_warnings: &[String],
+) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{:?}", data.kind).as_bytes());
+    hasher.update(data.tag.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(data.equipment_key.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(data.archetype_key.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(data.air_map_icon_frame.to_le_bytes());
+    hasher.update(data.category_mask.to_le_bytes());
+    hasher.update(data.base_name.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(data.version_suffix.as_bytes());
+    hasher.update(b"\0");
+    hasher.update([u8::from(data.append_version)]);
+    hasher.update([match data.auto_upgraded {
+        Some(true) => 2,
+        Some(false) => 1,
+        None => 0,
+    }]);
+    hasher.update(definition.icon_active.to_le_bytes());
+    hasher.update(definition.icon_kind.to_le_bytes());
+    hasher.update(&definition.icon);
+    hasher.update(b"\0");
+    hasher.update(definition.creator_link.to_le_bytes());
+    hasher.update(definition.origin_link.to_le_bytes());
+    hasher.update(read_hour.to_le_bytes());
+    hasher.update(format!("{:?}", data.mio).as_bytes());
+    hasher.update(format!("{:?}", data.fitted_modules).as_bytes());
+    hasher.update(format!("{:?}", data.upgrades).as_bytes());
+    hasher.update(format!("{:?}", data.stats).as_bytes());
+    hasher.update(format!("{:?}", data.manpower).as_bytes());
+    hasher.update(format!("{:?}", data.build_cost).as_bytes());
+    hasher.update(format!("{:?}", data.build_resources).as_bytes());
+    hasher.update(format!("{:?}", data.naming_group).as_bytes());
+    hasher.update(format!("{:?}", data.niche_frame).as_bytes());
+    hasher.update(format!("{:?}", data.design_state_reason).as_bytes());
+    for warning in extra_warnings {
+        hasher.update(warning.as_bytes());
+        hasher.update(b"\0");
+    }
+    hasher.finalize().into()
 }
 
 pub fn render(
@@ -780,30 +1003,23 @@ pub fn render(
         }
     };
 
-    let definitions = frame
-        .complete::<tables::VariantDefinitions>()
+    let definition = witnessed_single_key::<tables::VariantDefinitions, _>(&frame, variant_id, |row| row.id)
         .map_err(|error| {
             GameWindowError::refused(format!(
                 "Equipment definitions are not recorded at this hour: {error}"
             ))
-        })?;
-    let definition = definitions
-        .binary_search_by_key(&variant_id, |row| row.id)
-        .ok()
-        .map(|index| &definitions[index])
+        })?
         .ok_or_else(|| {
             GameWindowError::refused(format!(
                 "Equipment design {} is not recorded at hour {}.",
                 target.variant, request.hour
             ))
         })?;
-    let lexical = frame
-        .complete::<tables::LexicalTokens>()
-        .map_err(|error| {
-            GameWindowError::refused(format!(
-                "Lexical tokens are not recorded at this hour: {error}"
-            ))
-        })?;
+    let (lexical, _) = witnessed_rows::<tables::LexicalTokens>(&frame).map_err(|error| {
+        GameWindowError::refused(format!(
+            "Lexical tokens are not recorded at this hour: {error}"
+        ))
+    })?;
     let (dlc_mask, dlc_unavailable) = match frame.complete::<tables::SimulationFeatures>() {
         Ok(rows) => match rows.first() {
             Some(row) => (Some(u64::from(row.dlc_mask)), None),
@@ -815,12 +1031,12 @@ pub fn render(
         Err(error) => (None, Some(error.to_string())),
     };
 
-    let equipment_db = Arc::new(Database::load(layers).map_err(|error| {
+    let equipment_db = Database::shared(layers).map_err(|error| {
         GameWindowError::failed(format!(
             "Could not load recorded equipment definitions: {error}"
         ))
-    })?);
-    let (resource_db, _) = content_reader_key_names::resources::read(layers).map_err(|error| {
+    })?;
+    let resource_db = cached_resource_db(layers).map_err(|error| {
         GameWindowError::failed(format!(
             "Could not load recorded resource definitions: {error}"
         ))
@@ -851,7 +1067,7 @@ pub fn render(
         dlc_unavailable.as_deref(),
     )
     .map_err(GameWindowError::refused)?;
-    let tag = resolve_variant_tag(&frame, definition, &target.tag);
+    let (tag, tag_tables) = resolve_variant_tag(&frame, definition, &target.tag);
     let (design_state, design_state_reason) = match &definition.design {
         Recorded::Value(state) => (Some(state), None),
         Recorded::NotRecorded => (
@@ -859,16 +1075,19 @@ pub fn render(
             Some("Not recorded: variant design state is not recorded in this recording.".to_owned()),
         ),
     };
-    let (stats_row, recorded_stats) = match frame.complete::<tables::VariantStats>() {
-        Ok(rows) => match rows.binary_search_by_key(&variant_id, |row| row.variant) {
-            Ok(index) => {
-                let row = &rows[index];
-                (Some(row), RecordedStats::Available(row.values))
-            }
-            Err(_) => (None, RecordedStats::MissingRow),
-        },
-        Err(error) => (None, RecordedStats::Unavailable(error.to_string())),
-    };
+    let residuals = extract_unresolved_residuals(design_state, &mut extra_warnings);
+    let (stats_row, recorded_stats) =
+        match witnessed_single_key::<tables::VariantStats, _>(&frame, variant_id, |row| row.variant) {
+            Ok(Some(row)) => (
+                Some(row),
+                RecordedStats::Available {
+                    values: row.values,
+                    residuals,
+                },
+            ),
+            Ok(None) => (None, RecordedStats::MissingRow { residuals }),
+            Err(reason) => (None, RecordedStats::Unavailable { reason, residuals }),
+        };
     let modules_table = frame.complete::<tables::VariantModules>();
     let module_rows = match &modules_table {
         Ok(rows) => Ok(slice_by_variant(rows, variant_id, |row| row.variant)),
@@ -879,7 +1098,14 @@ pub fn render(
         Ok(rows) => Ok(slice_by_variant(rows, variant_id, |row| row.variant)),
         Err(error) => Err(error.to_string()),
     };
-    let organisations_table = frame.complete::<tables::IndustrialOrganisations>();
+
+    let mio_id = design_state
+        .map(|state| state.design_team)
+        .filter(|&id| id != 0)
+        .or_else(|| stats_row.map(|row| row.organisation).filter(|&id| id != 0));
+    let mio_lookup = mio_id.map(|id| {
+        witnessed_single_key::<tables::IndustrialOrganisations, _>(&frame, id, |row| row.organisation)
+    });
 
     let mut data = extract_design_data(ExtractInputs {
         kind,
@@ -896,50 +1122,41 @@ pub fn render(
         module_rows,
         upgrade_rows,
         lexical,
-        organisations: organisations_table.as_ref().ok().copied(),
+        mio_lookup,
     });
-    if let Some(group_key) = data.naming_group.as_deref()
-        && let Some(loc_key) = resolve_ship_naming_group_loc_key(layers, group_key)
-    {
-        data.naming_group = Some(loc_key);
+    if let Some(group_key) = data.naming_group.as_deref() {
+        let groups = cached_ship_naming_groups(layers);
+        if let Some(loc_key) = groups.get(&group_key.to_ascii_lowercase()) {
+            data.naming_group = Some(loc_key.clone());
+        }
     }
 
-    let mut sampled_tables = Vec::new();
-    let mut record_sample = |id: TableId| {
-        if let Some(hour) = frame.tables[id.index()].sampled_at() {
-            sampled_tables.push((id, hour));
-        }
-    };
-    record_sample(TableId::VariantDefinitions);
-    record_sample(TableId::LexicalTokens);
-    if matches!(data.stats, RecordedStats::Available(_) | RecordedStats::MissingRow) {
-        record_sample(TableId::VariantStats);
+    let mut base_sampled_tables = BTreeSet::new();
+    base_sampled_tables.insert(TableId::VariantDefinitions);
+    base_sampled_tables.insert(TableId::LexicalTokens);
+    if matches!(
+        data.stats,
+        RecordedStats::Available { .. } | RecordedStats::MissingRow { .. }
+    ) {
+        base_sampled_tables.insert(TableId::VariantStats);
     }
     if kind.is_modular() && modules_table.is_ok() {
-        record_sample(TableId::VariantModules);
+        base_sampled_tables.insert(TableId::VariantModules);
     }
-    if matches!(kind, DesignerKind::Tank | DesignerKind::Upgrade(_)) && upgrades_table.is_ok() {
-        record_sample(TableId::VariantUpgrades);
+    if matches!(kind, DesignerKind::Upgrade(_)) && upgrades_table.is_ok() {
+        base_sampled_tables.insert(TableId::VariantUpgrades);
     }
-    if data.mio.is_some() && organisations_table.is_ok() {
-        record_sample(TableId::IndustrialOrganisations);
+    if matches!(data.mio, RecordedMio::Resolved(_)) {
+        base_sampled_tables.insert(TableId::IndustrialOrganisations);
     }
     if !equipment.module_slots.is_empty() && dlc_mask.is_some() {
-        record_sample(TableId::SimulationFeatures);
+        base_sampled_tables.insert(TableId::SimulationFeatures);
     }
-    if frame.complete::<tables::Countries>().is_ok() {
-        record_sample(TableId::Countries);
+    for table in tag_tables {
+        base_sampled_tables.insert(table);
     }
-    if frame.complete::<tables::CountryLinks>().is_ok() {
-        record_sample(TableId::CountryLinks);
-    }
-    if frame.complete::<tables::CountryAppearance>().is_ok() {
-        record_sample(TableId::CountryAppearance);
-    }
-    let (read_hour, mixed_hour_warning) = compute_read_hour(request.hour, &sampled_tables);
-    if let Some(warning) = mixed_hour_warning {
-        extra_warnings.push(warning);
-    }
+
+    extra_warnings.extend(data.extra_warnings.iter().cloned());
     if let Some(reason) = &data.design_state_reason {
         extra_warnings.push(reason.clone());
     }
@@ -948,13 +1165,6 @@ pub fn render(
     {
         extra_warnings.push(format!(
             "Module slots are unknown because VariantModules is unavailable at this hour ({reason})."
-        ));
-    }
-    if let RecordedUpgrades::Unavailable { reason, .. } = &data.upgrades
-        && matches!(kind, DesignerKind::Tank | DesignerKind::Upgrade(_))
-    {
-        extra_warnings.push(format!(
-            "Upgrade levels are unknown because VariantUpgrades is unavailable at this hour ({reason})."
         ));
     }
 
@@ -970,22 +1180,50 @@ pub fn render(
         window: window_name.to_owned(),
     };
     struct ResolvedVisuals {
-        equipment_icon: Option<Icon>,
+        equipment_icon: ResolvedEquipmentIcon,
         blueprint_name: Option<String>,
         mio_sprite: Option<String>,
         prep_warnings: Vec<String>,
+        bound_tables: BTreeSet<TableId>,
     }
 
     let empty_tooltips = BTreeMap::new();
     let recorded_language = language.to_owned();
+    let base_tables_for_cache = base_sampled_tables.clone();
+    let base_samples: Vec<(TableId, i32)> = base_tables_for_cache
+        .iter()
+        .filter_map(|&id| frame.tables[id.index()].sampled_at().map(|h| (id, h)))
+        .collect();
+    let (provisional_read_hour, _) = compute_read_hour(request.hour, &base_samples);
+    let normalized_scale = super::normalize_scale(request.scale);
+    let can_cache_frame = definition.icon_active != 0
+        && !(definition.icon_kind == 1 && definition.icon.as_slice() == b".");
+    let frame_cache_key = can_cache_frame.then(|| RenderFrameKey {
+        source_id: request.source_id.clone(),
+        revision: request.revision.clone(),
+        branch_id: request.branch_id.clone(),
+        kind: request.kind.clone(),
+        target_key: target.variant.clone(),
+        sub_view: request.sub_view.clone(),
+        scale_bits: normalized_scale.to_bits(),
+        visual_revision: visual_revision.to_owned(),
+        language: language.to_owned(),
+        force_pow2_textures: decode.force_pow2_textures,
+        data_hash: fingerprint_design(&data, definition, provisional_read_hour, &extra_warnings),
+    });
+    if let Some(ref fkey) = frame_cache_key
+        && let Some(cached_render) = service.lookup_cached_render(fkey, admitted_gen)
+    {
+        return Ok(cached_render);
+    }
 
-    service.render_composed_from_layers(
+    let rendered = service.render_composed_from_layers(
         cache_key,
         layers,
         RenderParams {
             window_name,
             scale: request.scale,
-            read_hour: Some(read_hour),
+            read_hour: Some(provisional_read_hour),
             art_from_current_install: true,
             close_paths: &["close_button"],
             tooltip_overrides: &empty_tooltips,
@@ -998,11 +1236,13 @@ pub fn render(
             let registry = shared.registry.as_ref();
             let localisation = shared.localisation.as_ref();
             let mut extra = Assets::default();
+            let mut bound_tables = base_sampled_tables.clone();
             let mut visuals = ResolvedVisuals {
-                equipment_icon: None,
+                equipment_icon: ResolvedEquipmentIcon::NoneExpected,
                 blueprint_name: None,
                 mio_sprite: None,
                 prep_warnings: Vec::new(),
+                bound_tables: BTreeSet::new(),
             };
             add_sprite(&mut extra, "GFX_resources_strip");
             add_sprite(&mut extra, "GFX_production_cost");
@@ -1010,60 +1250,158 @@ pub fn render(
             add_sprite(&mut extra, "GFX_EMSI_locked");
             add_sprite(&mut extra, "GFX_EMSI_empty");
             add_sprite(&mut extra, "GFX_EMI_unknown");
+            add_sprite(&mut extra, "GFX_idea_unknown");
 
-            let scripted = dashboard_base::catalogue::read_scripted_content(
-                Arc::clone(content),
-                recorded_language.clone(),
-            );
-            match shared.icon_content(layers, &equipment_db, &scripted) {
-                Ok(icon_content) => match IconHour::read(&frame, &icon_content) {
-                    Ok(icon_hour) => {
-                        match variant_icon(&icon_content, &icon_hour, definition, &equipment_key) {
-                            Ok(Some(icon)) => {
-                                match &icon {
-                                    Icon::Sprite(sprite) => add_sprite(&mut extra, sprite),
-                                    Icon::Path(path) => {
-                                        if !path.is_empty() {
-                                            extra.textures.insert(path.as_bytes().to_vec());
+            if kind.is_modular()
+                && let Some(root_tpl) = guis.template(window_name.as_bytes())
+                && !discover_upgrade_slots(root_tpl, kind).is_empty()
+            {
+                if upgrades_table.is_ok() {
+                    bound_tables.insert(TableId::VariantUpgrades);
+                } else if let RecordedUpgrades::Unavailable { reason, .. } = &data.upgrades {
+                    visuals.prep_warnings.push(format!(
+                        "Upgrade levels are unknown because VariantUpgrades is unavailable at this hour ({reason})."
+                    ));
+                }
+            } else if matches!(kind, DesignerKind::Upgrade(_))
+                && let RecordedUpgrades::Unavailable { reason, .. } = &data.upgrades
+            {
+                visuals.prep_warnings.push(format!(
+                    "Upgrade levels are unknown because VariantUpgrades is unavailable at this hour ({reason})."
+                ));
+            }
+
+            let icon_content_res = shared.icon_content(layers, &equipment_db, || {
+                dashboard_base::catalogue::read_scripted_content(
+                    Arc::clone(content),
+                    recorded_language.clone(),
+                )
+            });
+            match icon_content_res {
+                Ok(icon_content) => {
+                    match IconHour::read_for_variant(&frame, &icon_content, definition) {
+                        Ok(icon_hour) => {
+                            for table in [
+                                TableId::Countries,
+                                TableId::CountryLinks,
+                                TableId::CountryAppearance,
+                                TableId::ReservedCountryNaming,
+                                TableId::PoliticalParties,
+                                TableId::Politics,
+                                TableId::Factions,
+                                TableId::FactionMembers,
+                                TableId::States,
+                            ] {
+                                if !matches!(
+                                    frame.tables[table.index()].held(),
+                                    TableView::Unavailable { .. } | TableView::NotRecorded { .. }
+                                ) {
+                                    bound_tables.insert(table);
+                                }
+                            }
+                            match variant_icon(&icon_content, &icon_hour, definition, &equipment_key)
+                            {
+                                Ok(Some(selected)) => {
+                                    match resolve_native_equipment_icon(
+                                        layers,
+                                        registry,
+                                        shared.recorded_registry.as_deref(),
+                                        &recorded_language,
+                                        &selected,
+                                        decode,
+                                    ) {
+                                        NativeIconResolution::Ready {
+                                            icon,
+                                            provenance,
+                                            ..
+                                        } => {
+                                            match &icon {
+                                                Icon::Sprite(sprite) => {
+                                                    add_sprite(&mut extra, sprite);
+                                                }
+                                                Icon::Path(path) => {
+                                                    if !path.is_empty() {
+                                                        extra
+                                                            .textures
+                                                            .insert(path.as_bytes().to_vec());
+                                                    }
+                                                }
+                                            }
+                                            visuals.equipment_icon =
+                                                ResolvedEquipmentIcon::Ready { icon, provenance };
+                                        }
+                                        NativeIconResolution::ConfirmedMissing {
+                                            reason, ..
+                                        } => {
+                                            visuals.prep_warnings.push(format!(
+                                                "Equipment icon for '{equipment_key}' is missing: {reason}"
+                                            ));
+                                            visuals.equipment_icon =
+                                                ResolvedEquipmentIcon::Missing { reason };
+                                        }
+                                        NativeIconResolution::Refused {
+                                            reason,
+                                            construct,
+                                            ..
+                                        } => {
+                                            visuals.prep_warnings.push(format!(
+                                                "Equipment icon for '{equipment_key}' was refused ({construct}): {reason}"
+                                            ));
+                                            visuals.equipment_icon =
+                                                ResolvedEquipmentIcon::Refused {
+                                                    reason,
+                                                    construct,
+                                                };
+                                        }
+                                        NativeIconResolution::Failed { reason, .. } => {
+                                            visuals.prep_warnings.push(format!(
+                                                "Equipment icon for '{equipment_key}' failed to load: {reason}"
+                                            ));
+                                            visuals.equipment_icon =
+                                                ResolvedEquipmentIcon::Failed { reason };
                                         }
                                     }
                                 }
-                                visuals.equipment_icon = Some(icon);
-                            }
-                            Ok(None) => {}
-                            Err(why) => {
-                                visuals.prep_warnings.push(format!(
-                                    "Equipment icon could not be resolved for '{}': {why}",
-                                    equipment_key
-                                ));
+                                Ok(None) => {
+                                    visuals.equipment_icon = ResolvedEquipmentIcon::NoneExpected;
+                                }
+                                Err(why) => {
+                                    visuals.prep_warnings.push(format!(
+                                        "Equipment icon could not be resolved for '{equipment_key}': {why}"
+                                    ));
+                                    visuals.equipment_icon =
+                                        ResolvedEquipmentIcon::Missing { reason: why };
+                                }
                             }
                         }
+                        Err(error) => {
+                            let reason = format!(
+                                "Equipment icon hour context is unavailable: {error}"
+                            );
+                            visuals.prep_warnings.push(reason.clone());
+                            visuals.equipment_icon = ResolvedEquipmentIcon::Missing { reason };
+                        }
                     }
-                    Err(error) => {
-                        visuals.prep_warnings.push(format!(
-                            "Equipment icon hour context is unavailable: {error}"
-                        ));
-                    }
-                },
+                }
                 Err(why) => {
-                    visuals.prep_warnings.push(format!(
-                        "Equipment icon rules are unavailable: {why}"
-                    ));
+                    let reason = format!("Equipment icon rules are unavailable: {why}");
+                    visuals.prep_warnings.push(reason.clone());
+                    visuals.equipment_icon = ResolvedEquipmentIcon::Missing { reason };
                 }
             }
 
-            if let Some(mio) = &data.mio {
-                if let Some(sprite) = &mio.sprite {
-                    if registry.sprite(sprite.as_bytes()).is_some() {
-                        add_sprite(&mut extra, sprite);
-                        visuals.mio_sprite = Some(sprite.clone());
-                    } else {
-                        visuals.prep_warnings.push(format!(
-                            "Manufacturer '{}' emblem sprite '{}' is missing from the loaded interface registry.",
-                            loc_or(localisation, &mio.name),
-                            sprite
-                        ));
-                    }
+            if let RecordedMio::Resolved(mio) = &data.mio
+                && let Some(sprite) = &mio.sprite
+            {
+                if registry.sprite(sprite.as_bytes()).is_some() {
+                    add_sprite(&mut extra, sprite);
+                    visuals.mio_sprite = Some(sprite.clone());
+                } else {
+                    visuals.prep_warnings.push(format!(
+                        "Manufacturer '{}' emblem sprite '{}' is missing from the loaded interface registry.",
+                        loc_or(localisation, &mio.name),
+                        sprite
+                    ));
                 }
             }
 
@@ -1101,23 +1439,30 @@ pub fn render(
                     }
                     visuals.blueprint_name = Some(bp_name);
                 }
-                if let RecordedModules::Available(fitted_map) = &data.fitted_modules {
+                if let RecordedModules::Available { slots, .. } = &data.fitted_modules {
                     for (slot_key, slot_gfx) in &data.module_slots {
-                        if let Some(fitted) = fitted_map.get(slot_key) {
-                            let module_gfx = equipment_db
-                                .module_design(&fitted.module)
-                                .and_then(|design| std::str::from_utf8(&design.gfx).ok())
-                                .unwrap_or("");
-                            let sprite =
-                                resolve_fitted_module_sprite(&fitted.module, module_gfx, |s| {
+                        match slots.get(slot_key) {
+                            Some(FittedSlot::Resolved(fitted)) => {
+                                let module_gfx = equipment_db
+                                    .module_design(&fitted.module)
+                                    .and_then(|design| std::str::from_utf8(&design.gfx).ok())
+                                    .unwrap_or("");
+                                let sprite = resolve_fitted_module_sprite(
+                                    &fitted.module,
+                                    module_gfx,
+                                    |s| registry.sprite(s.as_bytes()).is_some(),
+                                );
+                                add_sprite(&mut extra, &sprite);
+                            }
+                            Some(FittedSlot::Unresolved { .. }) => {
+                                add_sprite(&mut extra, "GFX_EMI_unknown");
+                            }
+                            None => {
+                                let sprite = resolve_empty_slot_sprite(slot_key, slot_gfx, |s| {
                                     registry.sprite(s.as_bytes()).is_some()
                                 });
-                            add_sprite(&mut extra, &sprite);
-                        } else {
-                            let sprite = resolve_empty_slot_sprite(slot_key, slot_gfx, |s| {
-                                registry.sprite(s.as_bytes()).is_some()
-                            });
-                            add_sprite(&mut extra, &sprite);
+                                add_sprite(&mut extra, &sprite);
+                            }
                         }
                     }
                 }
@@ -1145,6 +1490,7 @@ pub fn render(
                 );
             }
 
+            visuals.bound_tables = bound_tables;
             Ok((extra, visuals))
         },
         |root, _guis, resources, localisation, instance, tooltips, visuals| {
@@ -1156,7 +1502,7 @@ pub fn render(
                 MainWindowContext {
                     data: &data,
                     resource_db: &resource_db,
-                    equipment_icon: visuals.equipment_icon.as_ref(),
+                    equipment_icon: &visuals.equipment_icon,
                     mio_sprite: visuals.mio_sprite.as_deref(),
                 },
                 tooltips,
@@ -1174,13 +1520,32 @@ pub fn render(
                     equipment_db: &equipment_db,
                     resource_db: &resource_db,
                     blueprint_name: visuals.blueprint_name.as_deref(),
-                    equipment_icon: visuals.equipment_icon.as_ref(),
+                    equipment_icon: &visuals.equipment_icon,
                 },
             )?;
+            let samples: Vec<(TableId, i32)> = visuals
+                .bound_tables
+                .iter()
+                .filter_map(|&id| frame.tables[id.index()].sampled_at().map(|h| (id, h)))
+                .collect();
+            let (final_read_hour, mixed_warning) = compute_read_hour(request.hour, &samples);
+            plan.read_hour = Some(final_read_hour);
+            if let Some(warning) = mixed_warning {
+                plan.warnings.push(warning);
+            }
+            plan.title = Some(resolve_full_title(&data, localisation));
+            if let ResolvedEquipmentIcon::Ready { provenance, .. } = &visuals.equipment_icon {
+                plan.art_label = Some(provenance.label.clone());
+            }
             plan.warnings.extend(visuals.prep_warnings.iter().cloned());
             Ok(plan)
         },
-    )
+    )?;
+
+    if let Some(fkey) = frame_cache_key {
+        service.store_cached_render(fkey, admitted_gen, rendered.clone());
+    }
+    Ok(rendered)
 }
 
 fn spell(lexical: &[LexicalTokenRow], token: u32) -> Option<String> {
@@ -1202,36 +1567,55 @@ fn slice_by_variant<T>(rows: &[T], variant_id: u64, key: impl Fn(&T) -> u64) -> 
 }
 
 fn resolve_variant_tag(
-    frame: &replay_frame::frame::DecodedFrame,
+    frame: &DecodedFrame,
     definition: &VariantDefinitionRow,
     fallback: &str,
-) -> String {
-    let links = frame.complete::<tables::CountryLinks>().ok();
-    let countries = frame.complete::<tables::Countries>().ok();
-    let appearances = frame.complete::<tables::CountryAppearance>().ok();
+) -> (String, Vec<TableId>) {
+    let mut tables = Vec::new();
     let link_id = if definition.origin_link != 0 {
         definition.origin_link
     } else {
         definition.creator_link
     };
-    if let (Some(links), Some(countries)) = (links, countries)
-        && let Some(slot) = link_slot(links, link_id)
-    {
-        if let Some(apps) = appearances
-            && let Ok(index) = apps.binary_search_by_key(&slot, |row| row.country)
-            && let Ok(tag) = std::str::from_utf8(c_string(&apps[index].name_tag))
-            && !tag.is_empty()
-        {
-            return tag.to_owned();
+    if link_id == 0 {
+        return (fallback.to_owned(), tables);
+    }
+    let Ok(links) = frame.complete::<tables::CountryLinks>() else {
+        return (String::new(), tables);
+    };
+    tables.push(TableId::CountryLinks);
+    let Some(slot) = link_slot(links, link_id) else {
+        return (String::new(), tables);
+    };
+    if let Ok(model_countries) = graphics_countries::read(frame) {
+        tables.push(TableId::Countries);
+        if !matches!(
+            frame.tables[TableId::CountryAppearance.index()].held(),
+            TableView::Unavailable { .. } | TableView::NotRecorded { .. }
+        ) {
+            tables.push(TableId::CountryAppearance);
         }
+        if let Some(country) = model_countries.get(&slot) {
+            if let Some(orig) = country.original_tag.as_deref()
+                && !orig.is_empty()
+            {
+                return (orig.to_owned(), tables);
+            }
+            if !country.tag.is_empty() {
+                return (country.tag.clone(), tables);
+            }
+        }
+    }
+    if let Ok(countries) = frame.complete::<tables::Countries>() {
+        tables.push(TableId::Countries);
         if let Some(country) = countries.iter().find(|row| row.canonical_slot == slot)
             && let Ok(tag) = std::str::from_utf8(c_string(&country.tag))
             && !tag.is_empty()
         {
-            return tag.to_owned();
+            return (tag.to_owned(), tables);
         }
     }
-    fallback.to_owned()
+    (String::new(), tables)
 }
 
 struct ExtractInputs<'a> {
@@ -1249,7 +1633,7 @@ struct ExtractInputs<'a> {
     module_rows: Result<&'a [VariantModuleRow], String>,
     upgrade_rows: Result<&'a [VariantUpgradeRow], String>,
     lexical: &'a [LexicalTokenRow],
-    organisations: Option<&'a [IndustrialOrganisationRow]>,
+    mio_lookup: Option<Result<Option<&'a IndustrialOrganisationRow>, String>>,
 }
 
 fn extract_design_data(inputs: ExtractInputs<'_>) -> EquipmentDesignData {
@@ -1268,8 +1652,9 @@ fn extract_design_data(inputs: ExtractInputs<'_>) -> EquipmentDesignData {
         module_rows,
         upgrade_rows,
         lexical,
-        organisations,
+        mio_lookup,
     } = inputs;
+    let mut extra_warnings = Vec::new();
     let base_name = std::str::from_utf8(c_string(&definition.display_name))
         .ok()
         .filter(|text| !text.is_empty())
@@ -1292,36 +1677,55 @@ fn extract_design_data(inputs: ExtractInputs<'_>) -> EquipmentDesignData {
         .filter(|&id| id != 0)
         .or_else(|| stats_row.map(|row| row.organisation).filter(|&id| id != 0));
     let mio_trait_count = stats_row
+        .filter(|row| row.organisation != 0)
         .map(|row| row.organisation_trait_count)
-        .filter(|&count| count > 0)
+        .filter(|&count| count >= 0)
         .or_else(|| {
             design_state
+                .filter(|state| state.design_team != 0)
                 .map(|state| state.design_team_traits)
-                .filter(|&count| count > 0)
+                .filter(|&count| count >= 0)
         });
-    let mio = mio_id.and_then(|id| {
-        let rows = organisations?;
-        let row = rows
-            .binary_search_by_key(&id, |entry| entry.organisation)
-            .ok()
-            .map(|index| &rows[index])?;
-        let token = spell(lexical, row.token).unwrap_or_default();
-        let raw_name = std::str::from_utf8(c_string(&row.name))
-            .ok()
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(|| token.clone());
-        let icon = std::str::from_utf8(c_string(&row.icon))
-            .ok()
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned)
-            .or_else(|| (!token.is_empty()).then(|| format!("GFX_idea_{token}")));
-        Some(ResolvedMio {
-            name: raw_name,
-            sprite: icon,
+    let mio = match (mio_id, mio_lookup) {
+        (None, _) => RecordedMio::None,
+        (Some(id), Some(Ok(Some(row)))) => {
+            let token = spell(lexical, row.token).unwrap_or_default();
+            let raw_name = std::str::from_utf8(c_string(&row.name))
+                .ok()
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| token.clone());
+            let icon = std::str::from_utf8(c_string(&row.icon))
+                .ok()
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned)
+                .or_else(|| (!token.is_empty()).then(|| format!("GFX_idea_{token}")));
+            RecordedMio::Resolved(ResolvedMio {
+                name: raw_name,
+                sprite: icon,
+                trait_count: mio_trait_count,
+            })
+        }
+        (Some(id), Some(Ok(None))) => RecordedMio::Unresolved {
+            id,
             trait_count: mio_trait_count,
-        })
-    });
+            reason: format!(
+                "Not recorded: manufacturer #{id} is absent from IndustrialOrganisations at this hour."
+            ),
+        },
+        (Some(id), Some(Err(reason))) => RecordedMio::Unresolved {
+            id,
+            trait_count: mio_trait_count,
+            reason: format!(
+                "Not recorded: IndustrialOrganisations is unavailable at this hour ({reason})."
+            ),
+        },
+        (Some(id), None) => RecordedMio::Unresolved {
+            id,
+            trait_count: mio_trait_count,
+            reason: "Not recorded: IndustrialOrganisations was not read for this design.".to_owned(),
+        },
+    };
 
     let module_slots: Vec<(String, String)> = equipment
         .module_slots
@@ -1341,15 +1745,34 @@ fn extract_design_data(inputs: ExtractInputs<'_>) -> EquipmentDesignData {
 
     let fitted_modules = match module_rows {
         Ok(rows) => {
-            let mut map = BTreeMap::new();
+            let mut slots = BTreeMap::new();
+            let mut unattributed_unresolved = None;
             for row in rows {
                 if row.definition_active == 0 {
                     continue;
                 }
                 let Some(slot) = spell(lexical, row.slot) else {
+                    let msg = format!(
+                        "Not recorded: active module row slot token {} is not spelled in LexicalTokens.",
+                        row.slot
+                    );
+                    extra_warnings.push(msg.clone());
+                    unattributed_unresolved.get_or_insert(msg);
                     continue;
                 };
                 let Some(module) = spell(lexical, row.definition_token) else {
+                    let msg = format!(
+                        "Not recorded: fitted module token {} in slot '{slot}' is not spelled in LexicalTokens.",
+                        row.definition_token
+                    );
+                    extra_warnings.push(msg.clone());
+                    slots.insert(
+                        slot,
+                        FittedSlot::Unresolved {
+                            token: row.definition_token,
+                            reason: msg,
+                        },
+                    );
                     continue;
                 };
                 let design = equipment_db.module_design(&module);
@@ -1361,16 +1784,19 @@ fn extract_design_data(inputs: ExtractInputs<'_>) -> EquipmentDesignData {
                     .and_then(|d| std::str::from_utf8(&d.gui_category).ok())
                     .unwrap_or("")
                     .to_ascii_lowercase();
-                map.insert(
+                slots.insert(
                     slot,
-                    FittedModule {
+                    FittedSlot::Resolved(FittedModule {
                         module,
                         category,
                         gui_category,
-                    },
+                    }),
                 );
             }
-            RecordedModules::Available(map)
+            RecordedModules::Available {
+                slots,
+                unattributed_unresolved,
+            }
         }
         Err(reason) => RecordedModules::Unavailable(reason),
     };
@@ -1379,25 +1805,40 @@ fn extract_design_data(inputs: ExtractInputs<'_>) -> EquipmentDesignData {
     let upgrades = match upgrade_rows {
         Ok(rows) => {
             let mut upgrade_levels: HashMap<String, u8> = HashMap::new();
+            let mut unresolved_reason: Option<String> = None;
             for row in rows {
-                if let Ok(token) = u32::try_from(row.definition_token)
-                    && let Some(key) = spell(lexical, token)
+                match u32::try_from(row.definition_token)
+                    .ok()
+                    .and_then(|token| spell(lexical, token))
                 {
-                    upgrade_levels.insert(key.to_ascii_lowercase(), row.level);
+                    Some(key) => {
+                        upgrade_levels.insert(key.to_ascii_lowercase(), row.level);
+                    }
+                    None => {
+                        let msg = format!(
+                            "Not recorded: upgrade token {} is not spelled in LexicalTokens.",
+                            row.definition_token
+                        );
+                        extra_warnings.push(msg.clone());
+                        unresolved_reason.get_or_insert(msg);
+                    }
                 }
             }
-            RecordedUpgrades::Available(
-                inherited_upgrades
-                    .into_iter()
-                    .map(|key| {
-                        let level = upgrade_levels
-                            .get(&key.to_ascii_lowercase())
-                            .copied()
-                            .unwrap_or(0);
-                        (key, level)
-                    })
-                    .collect(),
-            )
+            let entries = inherited_upgrades
+                .into_iter()
+                .map(|key| {
+                    let level = match upgrade_levels.get(&key.to_ascii_lowercase()).copied() {
+                        Some(lvl) => Some(lvl),
+                        None if unresolved_reason.is_some() => None,
+                        None => Some(0),
+                    };
+                    (key, level)
+                })
+                .collect();
+            RecordedUpgrades::Available {
+                entries,
+                unresolved_reason,
+            }
         }
         Err(reason) => RecordedUpgrades::Unavailable {
             keys: inherited_upgrades,
@@ -1411,9 +1852,19 @@ fn extract_design_data(inputs: ExtractInputs<'_>) -> EquipmentDesignData {
             .build_resources
             .iter()
             .filter(|entry| entry.value > 0)
-            .filter_map(|entry| {
-                let token = spell(lexical, entry.index)?;
-                Some((token, entry.value))
+            .map(|entry| {
+                let key = spell(lexical, entry.index);
+                if key.is_none() {
+                    extra_warnings.push(format!(
+                        "Not recorded: resource token {} is not spelled in LexicalTokens.",
+                        entry.index
+                    ));
+                }
+                RecordedResource {
+                    key,
+                    token: entry.index,
+                    amount: entry.value,
+                }
             })
             .collect()
     });
@@ -1426,7 +1877,7 @@ fn extract_design_data(inputs: ExtractInputs<'_>) -> EquipmentDesignData {
         equipment_key: equipment_key.to_owned(),
         archetype_key: archetype_key.to_owned(),
         air_map_icon_frame: collect_air_map_icon_frame(equipment_key, equipment, equipment_db),
-        category_mask: equipment_db.category(equipment),
+        category_mask: definition.classifier_flags,
         base_name,
         version_suffix,
         append_version: definition.append_variant_name != 0,
@@ -1442,6 +1893,7 @@ fn extract_design_data(inputs: ExtractInputs<'_>) -> EquipmentDesignData {
         manpower: design_state.map(|state| state.manpower),
         build_cost,
         build_resources,
+        extra_warnings,
     }
 }
 
@@ -1537,34 +1989,26 @@ fn collect_equipment_upgrades(equipment: &Equipment, database: &Database) -> Vec
     Vec::new()
 }
 
-fn resolve_ship_naming_group_loc_key(layers: &ResolvedLayers, group_key: &str) -> Option<String> {
-    let files = layers
-        .directory_files("common/units/names_ships", ".txt")
-        .ok()?;
-    for path in files {
-        let Ok(bytes) = path.read(layers) else {
-            continue;
-        };
-        let Ok(doc) = content_reader_parser::parser::parse(&bytes) else {
-            continue;
-        };
-        for item in &doc.items {
-            if item.keyword_is(group_key)
-                && let Some(fields) = item.value.items()
-            {
-                for field in fields {
-                    if field.keyword_is("name")
-                        && let Some(raw) = field.value.read_string()
-                        && let Ok(text) = std::str::from_utf8(raw)
-                        && !text.is_empty()
-                    {
-                        return Some(text.to_owned());
-                    }
-                }
-            }
-        }
+fn discover_upgrade_slots(root: &Element, kind: DesignerKind) -> Vec<usize> {
+    let mut upgrade_slots: Vec<usize> = find_direct(root, "equipment_modules")
+        .map(|modules| {
+            modules
+                .children
+                .iter()
+                .filter_map(|child| {
+                    element_name(child)
+                        .strip_prefix("equipment_upgrade_")
+                        .and_then(|suffix| suffix.parse::<usize>().ok())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    upgrade_slots.sort_unstable();
+    upgrade_slots.dedup();
+    if upgrade_slots.is_empty() && matches!(kind, DesignerKind::Tank) {
+        upgrade_slots.extend([0, 1]);
     }
-    None
+    upgrade_slots
 }
 
 fn resolve_blueprint_window(data: &EquipmentDesignData, guis: &native::Guis) -> Option<String> {
@@ -1646,114 +2090,80 @@ fn resolve_display_name(data: &EquipmentDesignData, localisation: &Localisation)
     }
 }
 
-fn has_category(mask: u64, name: &str) -> bool {
-    category_mask(name).is_some_and(|bit| bit != 0 && mask & bit != 0)
+fn resolve_full_title(data: &EquipmentDesignData, localisation: &Localisation) -> String {
+    let display = resolve_display_name(data, localisation);
+    let suffix = if data.version_suffix.is_empty() {
+        String::new()
+    } else {
+        localisation
+            .get(&data.version_suffix)
+            .map(strip_markup)
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| data.version_suffix.clone())
+    };
+    if data.append_version && !suffix.is_empty() {
+        format!("{display} {suffix}")
+    } else {
+        display
+    }
+}
+
+fn loc_opt(localisation: &Localisation, key: &str) -> Option<String> {
+    localisation
+        .get(key)
+        .map(|raw| expand_loc_refs(localisation, &strip_markup(raw), 4))
+        .filter(|text| !text.is_empty())
 }
 
 pub fn resolve_tank_role_and_frame(
-    archetype_key: &str,
+    _archetype_key: &str,
     category: u64,
     localisation: &Localisation,
 ) -> Option<(String, Option<i32>)> {
-    if has_category(category, "flame") {
-        return Some((loc_or(localisation, "tank_designer_flame"), Some(10)));
+    if category == 0 {
+        return None;
     }
-    if has_category(category, "amphibious") {
-        return Some((loc_or(localisation, "amphibious_armor"), Some(6)));
+    let names = category_names(category).ok()?;
+    let mut specific: Option<String> = None;
+    let mut fallback_cat: Option<String> = None;
+    for name in &names {
+        let designer_key = format!("tank_designer_{name}");
+        if let Some(label) = loc_opt(localisation, &designer_key) {
+            return Some((label, None));
+        }
+        if *name != "armor"
+            && let Some(label) = loc_opt(localisation, name)
+        {
+            specific.get_or_insert(label);
+        } else if let Some(label) = loc_opt(localisation, name) {
+            fallback_cat.get_or_insert(label);
+        }
     }
-    let is_aa = has_category(category, "anti_air");
-    let is_art = has_category(category, "artillery");
-    let is_at = has_category(category, "anti_tank");
-    let (loc_key, frame) = match archetype_key {
-        "light_tank_chassis" => {
-            if is_aa {
-                ("light_sp_anti_air_brigade", Some(3))
-            } else if is_art {
-                ("light_sp_artillery_brigade", Some(2))
-            } else if is_at {
-                ("light_tank_destroyer_brigade", Some(1))
-            } else {
-                ("light_armor", Some(7))
-            }
-        }
-        "medium_tank_chassis" => {
-            if is_aa {
-                ("medium_sp_anti_air_brigade", Some(3))
-            } else if is_art {
-                ("medium_sp_artillery_brigade", Some(2))
-            } else if is_at {
-                ("medium_tank_destroyer_brigade", Some(1))
-            } else {
-                ("medium_armor", Some(9))
-            }
-        }
-        "heavy_tank_chassis" => {
-            if is_aa {
-                ("heavy_sp_anti_air_brigade", Some(3))
-            } else if is_art {
-                ("heavy_sp_artillery_brigade", Some(2))
-            } else if is_at {
-                ("heavy_tank_destroyer_brigade", Some(1))
-            } else {
-                ("heavy_armor", Some(8))
-            }
-        }
-        "super_heavy_tank_chassis" => {
-            if is_aa {
-                ("super_heavy_sp_anti_air_brigade", Some(3))
-            } else if is_art {
-                ("super_heavy_sp_artillery_brigade", Some(2))
-            } else if is_at {
-                ("super_heavy_tank_destroyer_brigade", Some(1))
-            } else {
-                ("super_heavy_armor", Some(8))
-            }
-        }
-        "modern_tank_chassis" => {
-            if is_aa {
-                ("modern_sp_anti_air_brigade", Some(3))
-            } else if is_art {
-                ("modern_sp_artillery_brigade", Some(2))
-            } else if is_at {
-                ("modern_tank_destroyer_brigade", Some(1))
-            } else {
-                ("modern_armor", Some(9))
-            }
-        }
-        "amphibious_tank_chassis" => ("amphibious_armor", Some(6)),
-        "land_cruiser_chassis" => ("land_cruiser", None),
-        _ => return None,
-    };
-    Some((loc_or(localisation, loc_key), frame))
+    specific
+        .or(fallback_cat)
+        .map(|label| (label, None))
 }
 
 pub fn resolve_plane_role(category: u64, localisation: &Localisation) -> Option<String> {
-    let loc_key = if has_category(category, "cas") {
-        "plane_designer_cas"
-    } else if has_category(category, "naval_bomber") {
-        "plane_designer_naval_bomber"
-    } else if has_category(category, "maritime_patrol_plane") {
-        "plane_designer_maritime_patrol_plane"
-    } else if has_category(category, "scout_plane") {
-        "plane_designer_scout_plane"
-    } else if has_category(category, "tactical_bomber") {
-        "plane_designer_tactical_bomber"
-    } else if has_category(category, "strategic_bomber") {
-        "plane_designer_strategic_bomber"
-    } else if has_category(category, "heavy_fighter") {
-        "plane_designer_heavy_fighter"
-    } else if has_category(category, "suicide") {
-        "plane_designer_suicide_craft"
-    } else if has_category(category, "interceptor") || has_category(category, "fighter") {
-        "plane_designer_fighter"
-    } else {
+    if category == 0 {
         return None;
-    };
-    Some(loc_or(localisation, loc_key))
+    }
+    let names = category_names(category).ok()?;
+    let mut fallback_cat: Option<String> = None;
+    for name in &names {
+        let designer_key = format!("plane_designer_{name}");
+        if let Some(label) = loc_opt(localisation, &designer_key) {
+            return Some(label);
+        }
+        if let Some(label) = loc_opt(localisation, name) {
+            fallback_cat.get_or_insert(label);
+        }
+    }
+    fallback_cat
 }
 
 pub fn format_resources_text(
-    build_resources: Option<&[(String, i64)]>,
+    build_resources: Option<&[RecordedResource]>,
     resource_db: &ResourceDatabase,
     localisation: &Localisation,
     warnings: &mut Vec<String>,
@@ -1763,17 +2173,25 @@ pub fn format_resources_text(
     };
     let mut out = String::new();
     let numbered = resource_db.numbered();
-    for (token, raw_amount) in resources {
-        let amount = (*raw_amount as f64 / FIXED5_SCALE).round() as i64;
+    for entry in resources {
+        let amount = (entry.amount as f64 / FIXED5_SCALE).round() as i64;
         if amount <= 0 {
             continue;
         }
         if !out.is_empty() {
             out.push(' ');
         }
+        let Some(token) = entry.key.as_deref() else {
+            out.push_str(&format!("{amount} {NOT_RECORDED_VALUE}"));
+            warnings.push(format!(
+                "Resource token {} is not spelled in LexicalTokens; showing amount with {NOT_RECORDED_VALUE}.",
+                entry.token
+            ));
+            continue;
+        };
         if let Some(resource) = numbered
             .iter()
-            .find(|entry| entry.token.eq_ignore_ascii_case(token))
+            .find(|row| row.token.eq_ignore_ascii_case(token))
             && let Some(frame) = resource.icon_frame
         {
             out.push_str(&format!("{amount}{ICON}resources_strip|{frame}"));
@@ -1788,20 +2206,12 @@ pub fn format_resources_text(
     out
 }
 
-fn loc_fallback(localisation: &Localisation, key: &str, fallback: &str) -> String {
-    localisation
-        .get(key)
-        .map(|raw| expand_loc_refs(localisation, &strip_markup(raw), 4))
-        .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| fallback.to_owned())
-}
-
 fn format_production_cost(
     kind: DesignerKind,
     build_cost: Option<i64>,
     localisation: &Localisation,
 ) -> String {
-    let label = loc_fallback(localisation, "STAT_COMMON_BUILD_COST_IC", "Production Cost:");
+    let label = loc_or(localisation, "STAT_COMMON_BUILD_COST_IC");
     let Some(cost) = build_cost else {
         return format!("{label} {NOT_RECORDED_VALUE}");
     };
@@ -1819,26 +2229,68 @@ fn apply_equipment_icon(
     instance: &mut Instance,
     root: &Element,
     control_name: &str,
-    icon: Option<&Icon>,
+    icon: &ResolvedEquipmentIcon,
     resources: &dyn Resources,
+    tooltips: &mut BTreeMap<String, GameWindowTooltip>,
 ) {
-    let Some(icon) = icon else {
-        return;
-    };
     let Some(control) = find_direct(root, control_name) else {
         return;
     };
-    let Ok(bound) = instance.control(root, control) else {
-        return;
-    };
     match icon {
-        Icon::Sprite(name) => {
-            bound.sprite = Some(name.as_bytes().to_vec());
-        }
-        Icon::Path(path) => {
-            if let Some(TextureFile::Loaded(texture)) = resources.texture_file(path.as_bytes()) {
-                bound.texture = Some(texture);
+        ResolvedEquipmentIcon::Ready { icon, .. } => {
+            let Ok(bound) = instance.control(root, control) else {
+                return;
+            };
+            match icon {
+                Icon::Sprite(name) => {
+                    bound.sprite = Some(name.as_bytes().to_vec());
+                }
+                Icon::Path(path) => {
+                    if let Some(TextureFile::Loaded(texture)) =
+                        resources.texture_file(path.as_bytes())
+                    {
+                        bound.texture = Some(texture);
+                    } else {
+                        let _ = instance.hide(root, control);
+                    }
+                }
             }
+        }
+        ResolvedEquipmentIcon::Missing { reason }
+        | ResolvedEquipmentIcon::Failed { reason } => {
+            let _ = instance.hide(root, control);
+            if let Some(parent) = control_name
+                .rsplit_once('/')
+                .and_then(|(prefix, _)| find_direct(root, prefix))
+            {
+                tooltips.insert(
+                    parent.path.clone(),
+                    GameWindowTooltip {
+                        title: "Icon missing".to_owned(),
+                        body: Some(reason.clone()),
+                        detail: None,
+                    },
+                );
+            }
+        }
+        ResolvedEquipmentIcon::Refused { reason, construct } => {
+            let _ = instance.hide(root, control);
+            if let Some(parent) = control_name
+                .rsplit_once('/')
+                .and_then(|(prefix, _)| find_direct(root, prefix))
+            {
+                tooltips.insert(
+                    parent.path.clone(),
+                    GameWindowTooltip {
+                        title: format!("Icon refused ({construct})"),
+                        body: Some(reason.clone()),
+                        detail: None,
+                    },
+                );
+            }
+        }
+        ResolvedEquipmentIcon::NoneExpected => {
+            let _ = instance.hide(root, control);
         }
     }
 }
@@ -1906,7 +2358,7 @@ fn set_text_by_name(instance: &mut Instance, root: &Element, name: &str, text: S
 struct MainWindowContext<'a> {
     data: &'a EquipmentDesignData,
     resource_db: &'a ResourceDatabase,
-    equipment_icon: Option<&'a Icon>,
+    equipment_icon: &'a ResolvedEquipmentIcon,
     mio_sprite: Option<&'a str>,
 }
 
@@ -1934,11 +2386,7 @@ fn configure_main_window(
             .filter(|text| !text.is_empty())
             .unwrap_or_else(|| data.version_suffix.clone())
     };
-    let mio_role_body = loc_fallback(
-        localisation,
-        "MILITARY_INDUSTRIAL_ORGANIZATIONS",
-        "Assigned Military Industrial Organization",
-    );
+    let mio_role_body = loc_or(localisation, "MILITARY_INDUSTRIAL_ORGANIZATIONS");
 
     if data.kind.is_modular() {
         for modal in [
@@ -1975,21 +2423,40 @@ fn configure_main_window(
                 &mut resource_warnings,
             ),
         );
-        if data.build_resources.is_none()
-            && let Some(res_el) = find_direct(root, "production_resources")
-        {
-            tooltips.insert(
-                res_el.path.clone(),
-                GameWindowTooltip {
-                    title: loc_fallback(localisation, "RESOURCES", "Resources"),
-                    body: Some(
-                        data.design_state_reason
-                            .clone()
-                            .unwrap_or_else(|| NOT_RECORDED_TOOLTIP.to_owned()),
-                    ),
-                    detail: None,
-                },
-            );
+        if let Some(res_el) = find_direct(root, "production_resources") {
+            if data.build_resources.is_none() {
+                tooltips.insert(
+                    res_el.path.clone(),
+                    GameWindowTooltip {
+                        title: loc_or(localisation, "RESOURCES"),
+                        body: Some(
+                            data.design_state_reason
+                                .clone()
+                                .unwrap_or_else(|| NOT_RECORDED_TOOLTIP.to_owned()),
+                        ),
+                        detail: None,
+                    },
+                );
+            } else if let Some(list) = data.build_resources.as_deref()
+                && list.iter().any(|entry| entry.key.is_none())
+            {
+                let missing_tokens: Vec<String> = list
+                    .iter()
+                    .filter(|entry| entry.key.is_none())
+                    .map(|entry| entry.token.to_string())
+                    .collect();
+                tooltips.insert(
+                    res_el.path.clone(),
+                    GameWindowTooltip {
+                        title: loc_or(localisation, "RESOURCES"),
+                        body: Some(format!(
+                            "Not recorded: resource token(s) {} have no spelling in LexicalTokens.",
+                            missing_tokens.join(", ")
+                        )),
+                        detail: None,
+                    },
+                );
+            }
         }
         set_text_by_name(
             instance,
@@ -2003,14 +2470,10 @@ fn configure_main_window(
             tooltips.insert(
                 cost_el.path.clone(),
                 GameWindowTooltip {
-                    title: loc_fallback(
-                        localisation,
-                        "STAT_COMMON_BUILD_COST_IC",
-                        "Production Cost",
-                    )
-                    .trim_end_matches(':')
-                    .trim()
-                    .to_owned(),
+                    title: loc_or(localisation, "STAT_COMMON_BUILD_COST_IC")
+                        .trim_end_matches(':')
+                        .trim()
+                        .to_owned(),
                     body: Some(data.stats.missing_reason()),
                     detail: None,
                 },
@@ -2028,34 +2491,16 @@ fn configure_main_window(
             bound.enabled = Some(false);
         }
         if let Some(check) = find_direct(root, "auto_upgraded_checkbox_button") {
-            if let Ok(bound) = instance.control(root, check) {
-                bound.frame = Some(match data.auto_upgraded {
-                    Some(true) => 2,
-                    Some(false) | None => 1,
-                });
-                bound.enabled = Some(false);
-            }
-            if data.auto_upgraded.is_none() {
-                tooltips.insert(
-                    check.path.clone(),
-                    GameWindowTooltip {
-                        title: loc_fallback(
-                            localisation,
-                            "EQUIPMENT_DESIGNER_AUTO_UPGRADED_CHECKBOX_BUTTON_DESC",
-                            "Auto Upgrade",
-                        )
-                        .lines()
-                        .next()
-                        .unwrap_or("Auto Upgrade")
-                        .to_owned(),
-                        body: Some(
-                            data.design_state_reason
-                                .clone()
-                                .unwrap_or_else(|| NOT_RECORDED_TOOLTIP.to_owned()),
-                        ),
-                        detail: None,
-                    },
-                );
+            match data.auto_upgraded {
+                Some(checked) => {
+                    if let Ok(bound) = instance.control(root, check) {
+                        bound.frame = Some(if checked { 2 } else { 1 });
+                        bound.enabled = Some(false);
+                    }
+                }
+                None => {
+                    let _ = instance.hide(root, check);
+                }
             }
         }
 
@@ -2065,6 +2510,7 @@ fn configure_main_window(
             "icon_selection_container/btn_equipment_icon",
             equipment_icon,
             resources,
+            tooltips,
         );
 
         if let Some(niche) = find_direct(root, "niche_button") {
@@ -2080,49 +2526,78 @@ fn configure_main_window(
             }
         }
 
-        let has_mio = if let Some(mio) = &data.mio {
-            let body = if mio_sprite.is_some() {
-                mio_role_body
-            } else {
-                format!("{mio_role_body} (emblem art missing in loaded interface registry)")
-            };
-            let detail = mio
-                .trait_count
-                .map(|count| format!("{count} applied MIO traits"));
-            if let Some(team_button) = find_direct(root, "design_team_button") {
-                if let Some(sprite) = mio_sprite
-                    && let Ok(bound) = instance.control(root, team_button)
-                {
-                    bound.sprite = Some(sprite.as_bytes().to_vec());
+        let has_mio = match &data.mio {
+            RecordedMio::Resolved(mio) => {
+                let body = if mio_sprite.is_some() {
+                    mio_role_body
+                } else {
+                    format!("{mio_role_body} (emblem art missing in loaded interface registry)")
+                };
+                let detail = mio
+                    .trait_count
+                    .map(|count| format!("{count} applied MIO traits"));
+                if let Some(team_button) = find_direct(root, "design_team_button") {
+                    if let Some(sprite) = mio_sprite
+                        && let Ok(bound) = instance.control(root, team_button)
+                    {
+                        bound.sprite = Some(sprite.as_bytes().to_vec());
+                    }
+                    tooltips.insert(
+                        team_button.path.clone(),
+                        GameWindowTooltip {
+                            title: loc_or(localisation, &mio.name),
+                            body: Some(body),
+                            detail,
+                        },
+                    );
+                    hide_by_name(instance, root, "design_company_icon");
+                } else if let Some(company) = find_direct(root, "design_company_icon") {
+                    if let Some(sprite) = mio_sprite
+                        && let Ok(bound) = instance.control(root, company)
+                    {
+                        bound.sprite = Some(sprite.as_bytes().to_vec());
+                    }
+                    tooltips.insert(
+                        company.path.clone(),
+                        GameWindowTooltip {
+                            title: loc_or(localisation, &mio.name),
+                            body: Some(body),
+                            detail,
+                        },
+                    );
                 }
-                tooltips.insert(
-                    team_button.path.clone(),
-                    GameWindowTooltip {
-                        title: loc_or(localisation, &mio.name),
-                        body: Some(body),
-                        detail,
-                    },
-                );
-                hide_by_name(instance, root, "design_company_icon");
-            } else if let Some(company) = find_direct(root, "design_company_icon") {
-                if let Some(sprite) = mio_sprite
-                    && let Ok(bound) = instance.control(root, company)
-                {
-                    bound.sprite = Some(sprite.as_bytes().to_vec());
-                }
-                tooltips.insert(
-                    company.path.clone(),
-                    GameWindowTooltip {
-                        title: loc_or(localisation, &mio.name),
-                        body: Some(body),
-                        detail,
-                    },
-                );
+                true
             }
-            true
-        } else {
-            hide_by_name(instance, root, "design_company_icon");
-            false
+            RecordedMio::Unresolved {
+                id,
+                trait_count,
+                reason,
+            } => {
+                let detail = trait_count.map(|count| format!("{count} applied MIO traits"));
+                let tip = GameWindowTooltip {
+                    title: format!("{NOT_RECORDED_VALUE} (MIO #{id})"),
+                    body: Some(reason.clone()),
+                    detail,
+                };
+                if let Some(team_button) = find_direct(root, "design_team_button") {
+                    if let Ok(bound) = instance.control(root, team_button) {
+                        bound.sprite = Some(b"GFX_idea_unknown".to_vec());
+                        bound.enabled = Some(false);
+                    }
+                    tooltips.insert(team_button.path.clone(), tip);
+                    hide_by_name(instance, root, "design_company_icon");
+                } else if let Some(company) = find_direct(root, "design_company_icon") {
+                    if let Ok(bound) = instance.control(root, company) {
+                        bound.sprite = Some(b"GFX_idea_unknown".to_vec());
+                    }
+                    tooltips.insert(company.path.clone(), tip);
+                }
+                true
+            }
+            RecordedMio::None => {
+                hide_by_name(instance, root, "design_company_icon");
+                false
+            }
         };
 
         match data.kind {
@@ -2145,7 +2620,7 @@ fn configure_main_window(
                     tooltips.insert(
                         dom.path.clone(),
                         GameWindowTooltip {
-                            title: loc_fallback(localisation, "NAVAL_DOMINANCE", "Naval Dominance"),
+                            title: loc_or(localisation, "NAVAL_DOMINANCE"),
                             body: Some(NOT_RECORDED_TOOLTIP.to_owned()),
                             detail: None,
                         },
@@ -2155,7 +2630,7 @@ fn configure_main_window(
                     tooltips.insert(
                         preview_btn.path.clone(),
                         GameWindowTooltip {
-                            title: loc_fallback(localisation, "SELECT_3D_MODEL", "3D Model Preview"),
+                            title: loc_or(localisation, "SELECT_3D_MODEL"),
                             body: Some(PREVIEW_3D_TOOLTIP.to_owned()),
                             detail: None,
                         },
@@ -2205,8 +2680,8 @@ fn configure_main_window(
                                 GameWindowTooltip {
                                     title: "Not recorded".to_owned(),
                                     body: Some(format!(
-                                        "Tank role could not be determined from recorded classification for archetype '{}'.",
-                                        data.archetype_key
+                                        "Tank role could not be determined from witnessed classification for '{}'.",
+                                        data.equipment_key
                                     )),
                                     detail: None,
                                 },
@@ -2220,7 +2695,7 @@ fn configure_main_window(
                     tooltips.insert(
                         preview_box.path.clone(),
                         GameWindowTooltip {
-                            title: loc_fallback(localisation, "SELECT_3D_MODEL", "3D Model Preview"),
+                            title: loc_or(localisation, "SELECT_3D_MODEL"),
                             body: Some(PREVIEW_3D_TOOLTIP.to_owned()),
                             detail: None,
                         },
@@ -2230,7 +2705,7 @@ fn configure_main_window(
                     tooltips.insert(
                         select_btn.path.clone(),
                         GameWindowTooltip {
-                            title: loc_fallback(localisation, "SELECT_3D_MODEL", "3D Model Preview"),
+                            title: loc_or(localisation, "SELECT_3D_MODEL"),
                             body: Some(PREVIEW_3D_TOOLTIP.to_owned()),
                             detail: None,
                         },
@@ -2264,7 +2739,7 @@ fn configure_main_window(
                                 GameWindowTooltip {
                                     title: "Not recorded".to_owned(),
                                     body: Some(format!(
-                                        "Plane role could not be determined from recorded classification for '{}'.",
+                                        "Plane role could not be determined from witnessed classification for '{}'.",
                                         data.equipment_key
                                     )),
                                     detail: None,
@@ -2286,7 +2761,7 @@ fn configure_main_window(
                     tooltips.insert(
                         preview_btn.path.clone(),
                         GameWindowTooltip {
-                            title: loc_fallback(localisation, "SELECT_3D_MODEL", "3D Model Preview"),
+                            title: loc_or(localisation, "SELECT_3D_MODEL"),
                             body: Some(PREVIEW_3D_TOOLTIP.to_owned()),
                             detail: None,
                         },
@@ -2296,41 +2771,56 @@ fn configure_main_window(
             DesignerKind::Upgrade(_) => {}
         }
 
-        let mut upgrade_slots: Vec<usize> = find_direct(root, "equipment_modules")
-            .map(|modules| {
-                modules
-                    .children
-                    .iter()
-                    .filter_map(|child| {
-                        element_name(child)
-                            .strip_prefix("equipment_upgrade_")
-                            .and_then(|suffix| suffix.parse::<usize>().ok())
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        upgrade_slots.sort_unstable();
-        upgrade_slots.dedup();
-        if upgrade_slots.is_empty() && matches!(data.kind, DesignerKind::Tank) {
-            upgrade_slots.extend([0, 1]);
-        }
+        let upgrade_slots = discover_upgrade_slots(root, data.kind);
         for slot_idx in upgrade_slots {
             let container_name = format!("equipment_modules/equipment_upgrade_{slot_idx}");
             match &data.upgrades {
-                RecordedUpgrades::Available(list) => {
-                    if let Some((upgrade_key, level)) = list.get(slot_idx) {
+                RecordedUpgrades::Available {
+                    entries,
+                    unresolved_reason,
+                } => {
+                    if let Some((upgrade_key, maybe_level)) = entries.get(slot_idx) {
+                        let label = loc_or(localisation, upgrade_key);
                         set_text_by_name(
                             instance,
                             root,
                             &format!("{container_name}/name"),
-                            loc_or(localisation, upgrade_key),
+                            label.clone(),
                         );
-                        set_text_by_name(
-                            instance,
-                            root,
-                            &format!("{container_name}/level"),
-                            level.to_string(),
-                        );
+                        match maybe_level {
+                            Some(level) => {
+                                set_text_by_name(
+                                    instance,
+                                    root,
+                                    &format!("{container_name}/level"),
+                                    level.to_string(),
+                                );
+                            }
+                            None => {
+                                set_text_by_name(
+                                    instance,
+                                    root,
+                                    &format!("{container_name}/level"),
+                                    NOT_RECORDED_VALUE.to_owned(),
+                                );
+                                if let Some(level_el) =
+                                    find_direct(root, &format!("{container_name}/level"))
+                                {
+                                    tooltips.insert(
+                                        level_el.path.clone(),
+                                        GameWindowTooltip {
+                                            title: label,
+                                            body: Some(
+                                                unresolved_reason
+                                                    .clone()
+                                                    .unwrap_or_else(|| NOT_RECORDED_TOOLTIP.to_owned()),
+                                            ),
+                                            detail: None,
+                                        },
+                                    );
+                                }
+                            }
+                        }
                         disable_by_name(instance, root, &format!("{container_name}/btn_dec"));
                         disable_by_name(instance, root, &format!("{container_name}/btn_inc"));
                     } else {
@@ -2405,27 +2895,53 @@ fn configure_main_window(
         set_text_by_name(instance, root, "variant_name", full_name);
         set_text_by_name(instance, root, "experience", String::new());
 
-        if let Some(mio) = &data.mio
-            && let Some(roster) = find_direct(root, "change_design_team/open_roster")
-        {
-            if let Some(sprite) = mio_sprite
-                && let Ok(bound) = instance.control(root, roster)
-            {
-                bound.sprite = Some(sprite.as_bytes().to_vec());
+        match &data.mio {
+            RecordedMio::Resolved(mio) => {
+                if let Some(roster) = find_direct(root, "change_design_team/open_roster") {
+                    if let Some(sprite) = mio_sprite
+                        && let Ok(bound) = instance.control(root, roster)
+                    {
+                        bound.sprite = Some(sprite.as_bytes().to_vec());
+                    }
+                    let body = if mio_sprite.is_some() {
+                        mio_role_body
+                    } else {
+                        format!("{mio_role_body} (emblem art missing in loaded interface registry)")
+                    };
+                    let detail = mio
+                        .trait_count
+                        .map(|count| format!("{count} applied MIO traits"));
+                    tooltips.insert(
+                        roster.path.clone(),
+                        GameWindowTooltip {
+                            title: loc_or(localisation, &mio.name),
+                            body: Some(body),
+                            detail,
+                        },
+                    );
+                }
             }
-            let body = if mio_sprite.is_some() {
-                mio_role_body
-            } else {
-                format!("{mio_role_body} (emblem art missing in loaded interface registry)")
-            };
-            tooltips.insert(
-                roster.path.clone(),
-                GameWindowTooltip {
-                    title: loc_or(localisation, &mio.name),
-                    body: Some(body),
-                    detail: None,
-                },
-            );
+            RecordedMio::Unresolved {
+                id,
+                trait_count,
+                reason,
+            } => {
+                if let Some(roster) = find_direct(root, "change_design_team/open_roster") {
+                    if let Ok(bound) = instance.control(root, roster) {
+                        bound.sprite = Some(b"GFX_idea_unknown".to_vec());
+                    }
+                    let detail = trait_count.map(|count| format!("{count} applied MIO traits"));
+                    tooltips.insert(
+                        roster.path.clone(),
+                        GameWindowTooltip {
+                            title: format!("{NOT_RECORDED_VALUE} (MIO #{id})"),
+                            body: Some(reason.clone()),
+                            detail,
+                        },
+                    );
+                }
+            }
+            RecordedMio::None => {}
         }
 
         set_text_by_name(
@@ -2449,16 +2965,13 @@ struct SubWindowContext<'a> {
     equipment_db: &'a Database,
     resource_db: &'a ResourceDatabase,
     blueprint_name: Option<&'a str>,
-    equipment_icon: Option<&'a Icon>,
+    equipment_icon: &'a ResolvedEquipmentIcon,
 }
 
 struct StatGridSpec<'a> {
     stat_window_name: &'a str,
     value_child: &'a str,
     lines: &'a [StatLine],
-    columns: usize,
-    slot_width: i32,
-    slot_height: i32,
 }
 
 fn compose_sub_windows(
@@ -2553,14 +3066,67 @@ fn compose_sub_windows(
                     stat_window_name: "stat_entry",
                     value_child: "value",
                     lines,
-                    columns: 1,
-                    slot_width: 155,
-                    slot_height: 20,
                 },
                 resources,
                 localisation,
                 &mut plan,
             )?;
+        }
+
+        if data.auto_upgraded.is_none()
+            && let Some(check) = find_direct(root, "auto_upgraded_checkbox_button")
+            && let Some(root_holder) = container_holder(main_layout, &root.path)
+            && let Fields::Button(btn) = &check.fields
+        {
+            let pos = [btn.position.x.value, btn.position.y.value];
+            let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
+            let na_layout = layout_window(stat_root, resources, viewport, |instance| {
+                set_text_by_name(instance, stat_root, "label", NOT_RECORDED_VALUE.to_owned());
+                set_text_by_name(instance, stat_root, "value", String::new());
+            })?;
+            let tip = GameWindowTooltip {
+                title: loc_or(
+                    localisation,
+                    "EQUIPMENT_DESIGNER_AUTO_UPGRADED_CHECKBOX_BUTTON_DESC",
+                )
+                .lines()
+                .next()
+                .unwrap_or("EQUIPMENT_DESIGNER_AUTO_UPGRADED_CHECKBOX_BUTTON_DESC")
+                .to_owned(),
+                body: Some(
+                    data.design_state_reason
+                        .clone()
+                        .unwrap_or_else(|| NOT_RECORDED_TOOLTIP.to_owned()),
+                ),
+                detail: None,
+            };
+            plan.sub_windows.push(ComposedSubWindow {
+                before_part: root_holder.before,
+                parts: root_holder.place(pos, &na_layout),
+                regions: Vec::new(),
+                diagnostics: na_layout.diagnostics,
+                root_window: "stat_entry".to_owned(),
+                path_prefix: "auto_upgraded_missing/".to_owned(),
+                close_paths: Vec::new(),
+                tooltip_overrides: BTreeMap::new(),
+            });
+            plan.extra_regions.push(GameWindowRegion {
+                path: check.path.clone(),
+                rect: [
+                    root_holder.origin[0] + pos[0] as f32,
+                    root_holder.origin[1] + pos[1] as f32,
+                    32.0,
+                    24.0,
+                ],
+                clip: root_holder.clip.map(|[l, t, r, b]| {
+                    [l as f32, t as f32, (r - l).max(0) as f32, (b - t).max(0) as f32]
+                }),
+                disabled: true,
+                close: false,
+                passthrough: false,
+                tooltip: Some(tip),
+                alpha_mask: None,
+            });
         }
     } else if let DesignerKind::Upgrade(domain) = data.kind {
         let sub_name = domain.sub_window();
@@ -2630,9 +3196,6 @@ fn compose_sub_windows(
                 stat_window_name: "equipment_designer_stat_entry",
                 value_child: "count",
                 lines: &columns.base,
-                columns: 2,
-                slot_width: 258,
-                slot_height: 21,
             },
             resources,
             localisation,
@@ -2652,7 +3215,7 @@ fn configure_blueprint(
         return;
     };
     let fitted_map = match fitted_modules {
-        RecordedModules::Available(map) => Some(map),
+        RecordedModules::Available { slots, .. } => Some(slots),
         RecordedModules::Unavailable(_) => None,
     };
     for slot_container in &slots_container.children {
@@ -2660,7 +3223,10 @@ fn configure_blueprint(
             continue;
         }
         let slot_name = element_name(slot_container);
-        let fitted = fitted_map.and_then(|map| map.get(slot_name));
+        let fitted = fitted_map.and_then(|map| match map.get(slot_name) {
+            Some(FittedSlot::Resolved(m)) => Some(m),
+            _ => None,
+        });
         let mut matched_specific = false;
         if let Some(fitted) = fitted {
             for child in &slot_container.children {
@@ -2820,16 +3386,8 @@ fn compose_module_slots(
         DesignerKind::Upgrade(_) => Vec::new(),
     };
 
-    let empty_slot_body = loc_fallback(
-        localisation,
-        "EQUIPMENT_DESIGNER_SLOT_EMPTY_TOOLTIP",
-        "Empty module slot",
-    );
-    let locked_slot_title = loc_fallback(
-        localisation,
-        "EQUIPMENT_DESIGNER_MODULE_SLOT_NOT_AVAILABLE",
-        "Locked module slot",
-    );
+    let empty_slot_body = loc_or(localisation, "EQUIPMENT_DESIGNER_SLOT_EMPTY_TOOLTIP");
+    let locked_slot_title = loc_or(localisation, "EQUIPMENT_DESIGNER_MODULE_SLOT_NOT_AVAILABLE");
 
     let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
     for (ordinal, (marker, position, icon)) in assignments.into_iter().enumerate() {
@@ -2869,9 +3427,7 @@ fn compose_module_slots(
                 sprite.as_str(),
                 GameWindowTooltip {
                     title: loc_or(localisation, slot),
-                    body: Some(format!(
-                        "Not recorded: fitted module is unavailable at this hour ({reason})."
-                    )),
+                    body: Some(reason.clone()),
                     detail: None,
                 },
             ),
@@ -2923,10 +3479,15 @@ fn slot_icon_for(
         RecordedModules::Unavailable(reason) => SlotIcon::Unknown {
             slot: slot_key.to_owned(),
             sprite: "GFX_EMI_unknown".to_owned(),
-            reason: reason.clone(),
+            reason: format!(
+                "Not recorded: fitted module is unavailable at this hour ({reason})."
+            ),
         },
-        RecordedModules::Available(fitted_map) => {
-            if let Some(fitted) = fitted_map.get(slot_key) {
+        RecordedModules::Available {
+            slots,
+            unattributed_unresolved,
+        } => match slots.get(slot_key) {
+            Some(FittedSlot::Resolved(fitted)) => {
                 let module_gfx = equipment_db
                     .module_design(&fitted.module)
                     .and_then(|design| std::str::from_utf8(&design.gfx).ok())
@@ -2937,14 +3498,28 @@ fn slot_icon_for(
                     module: fitted.module.clone(),
                     sprite,
                 }
-            } else {
-                let sprite = resolve_empty_slot_sprite(slot_key, slot_gfx, has_sprite);
-                SlotIcon::Empty {
-                    slot: slot_key.to_owned(),
-                    sprite,
+            }
+            Some(FittedSlot::Unresolved { reason, .. }) => SlotIcon::Unknown {
+                slot: slot_key.to_owned(),
+                sprite: "GFX_EMI_unknown".to_owned(),
+                reason: reason.clone(),
+            },
+            None => {
+                if let Some(reason) = unattributed_unresolved {
+                    SlotIcon::Unknown {
+                        slot: slot_key.to_owned(),
+                        sprite: "GFX_EMI_unknown".to_owned(),
+                        reason: reason.clone(),
+                    }
+                } else {
+                    let sprite = resolve_empty_slot_sprite(slot_key, slot_gfx, has_sprite);
+                    SlotIcon::Empty {
+                        slot: slot_key.to_owned(),
+                        sprite,
+                    }
                 }
             }
-        }
+        },
     }
 }
 
@@ -2954,13 +3529,16 @@ fn configure_upgrade_view(
     localisation: &Localisation,
     instance: &mut Instance,
     data: &EquipmentDesignData,
-    equipment_icon: Option<&Icon>,
+    equipment_icon: &ResolvedEquipmentIcon,
     tooltips: &mut BTreeMap<String, GameWindowTooltip>,
 ) {
-    apply_equipment_icon(instance, sub_root, "archetype", equipment_icon, resources);
+    apply_equipment_icon(instance, sub_root, "archetype", equipment_icon, resources, tooltips);
     match &data.upgrades {
-        RecordedUpgrades::Available(list) => {
-            let upgrade_map: HashMap<String, (&str, u8)> = list
+        RecordedUpgrades::Available {
+            entries,
+            unresolved_reason,
+        } => {
+            let upgrade_map: HashMap<String, (&str, Option<u8>)> = entries
                 .iter()
                 .map(|(key, level)| (key.to_ascii_lowercase(), (key.as_str(), *level)))
                 .collect();
@@ -2970,19 +3548,48 @@ fn configure_upgrade_view(
                 }
                 let child_name = element_name(child);
                 let name_lower = child_name.to_ascii_lowercase();
-                if let Some((upgrade_key, level)) = upgrade_map.get(&name_lower) {
+                if let Some((upgrade_key, maybe_level)) = upgrade_map.get(&name_lower) {
+                    let label = loc_or(localisation, upgrade_key);
                     set_text_by_name(
                         instance,
                         sub_root,
                         &format!("{child_name}/label"),
-                        loc_or(localisation, upgrade_key),
+                        label.clone(),
                     );
-                    set_text_by_name(
-                        instance,
-                        sub_root,
-                        &format!("{child_name}/level"),
-                        level.to_string(),
-                    );
+                    match maybe_level {
+                        Some(level) => {
+                            set_text_by_name(
+                                instance,
+                                sub_root,
+                                &format!("{child_name}/level"),
+                                level.to_string(),
+                            );
+                        }
+                        None => {
+                            set_text_by_name(
+                                instance,
+                                sub_root,
+                                &format!("{child_name}/level"),
+                                NOT_RECORDED_VALUE.to_owned(),
+                            );
+                            if let Some(level_el) =
+                                find_direct(sub_root, &format!("{child_name}/level"))
+                            {
+                                tooltips.insert(
+                                    level_el.path.clone(),
+                                    GameWindowTooltip {
+                                        title: label,
+                                        body: Some(
+                                            unresolved_reason
+                                                .clone()
+                                                .unwrap_or_else(|| NOT_RECORDED_TOOLTIP.to_owned()),
+                                        ),
+                                        detail: None,
+                                    },
+                                );
+                            }
+                        }
+                    }
                     disable_by_name(
                         instance,
                         sub_root,
@@ -3053,6 +3660,42 @@ fn configure_upgrade_view(
     }
 }
 
+fn resolve_grid_metrics(
+    grid: &native::Grid,
+    holder: &native_gui::Holder,
+    stat_root: &Element,
+) -> (usize, i32, i32, bool) {
+    let default_w = stat_root
+        .container()
+        .map(|c| c.size.size[0].value)
+        .filter(|&w| w > 0)
+        .unwrap_or(100);
+    let default_h = stat_root
+        .container()
+        .map(|c| c.size.size[1].value)
+        .filter(|&h| h > 0)
+        .unwrap_or(20);
+    let resolve_axis = |coord: native::Coordinate, parent: i32, fallback: i32| -> i32 {
+        let px = if coord.percent && parent > 0 {
+            (parent as f64 * coord.value as f64 / 100.0).round() as i32
+        } else {
+            coord.value
+        };
+        if px > 0 { px } else { fallback }
+    };
+    let slot_width = resolve_axis(grid.slot_size.size[0], holder.content[0], default_w);
+    let slot_height = resolve_axis(grid.slot_size.size[1], holder.content[1], default_h);
+    let max_h = grid.max_slots[0];
+    let columns = if max_h > 0 {
+        max_h as usize
+    } else if holder.content[0] > 0 && slot_width > 0 {
+        (holder.content[0] / slot_width).max(1) as usize
+    } else {
+        1
+    };
+    (columns, slot_width, slot_height, grid.add_horizontal)
+}
+
 fn compose_stat_grid(
     main_layout: &Layout,
     grid_el: &Element,
@@ -3066,10 +3709,19 @@ fn compose_stat_grid(
         stat_window_name,
         value_child,
         lines,
-        columns,
-        slot_width,
-        slot_height,
     } = spec;
+    let label_el = find_direct(stat_root, "label").ok_or_else(|| {
+        GameWindowError::refused(format!(
+            "Stat entry template '{stat_window_name}' is missing required child 'label' for grid '{}'.",
+            grid_el.path
+        ))
+    })?;
+    let val_el = find_direct(stat_root, value_child).ok_or_else(|| {
+        GameWindowError::refused(format!(
+            "Stat entry template '{stat_window_name}' is missing required child '{value_child}' for grid '{}'.",
+            grid_el.path
+        ))
+    })?;
     let Some(holder) = main_layout
         .holders
         .iter()
@@ -3080,24 +3732,48 @@ fn compose_stat_grid(
             grid_el.path
         )));
     };
-    let grid_offset = match &grid_el.fields {
-        Fields::Grid(grid) => [grid.position.x.value, grid.position.y.value],
-        _ => [0, 0],
+    let Fields::Grid(grid) = &grid_el.fields else {
+        return Err(GameWindowError::refused(format!(
+            "Designer stat grid '{}' is not a gridBoxType.",
+            grid_el.path
+        )));
+    };
+    let grid_offset = [grid.position.x.value, grid.position.y.value];
+    let (columns, slot_width, slot_height, add_horizontal) =
+        resolve_grid_metrics(grid, holder, stat_root);
+    let max_v = if grid.max_slots[1] > 0 {
+        grid.max_slots[1] as usize
+    } else {
+        lines.len().div_ceil(columns).max(1)
     };
 
     let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
     for (index, line) in lines.iter().enumerate() {
-        let col = (index % columns.max(1)) as i32;
-        let row = (index / columns.max(1)) as i32;
+        let (col, row) = if add_horizontal {
+            ((index % columns) as i32, (index / columns) as i32)
+        } else {
+            ((index / max_v) as i32, (index % max_v) as i32)
+        };
         let place = [
             grid_offset[0] + col * slot_width,
             grid_offset[1] + row * slot_height,
         ];
-        let full_label = localisation
-            .get(line.label_key)
-            .map(strip_markup)
-            .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| line.fallback_label.to_owned());
+        let (full_label, missing_loc_note) = match loc_opt(localisation, line.label_key) {
+            Some(text) => (text, None),
+            None => {
+                plan.warnings.push(format!(
+                    "Localisation key '{}' is missing from the recorded localisation.",
+                    line.label_key
+                ));
+                (
+                    line.label_key.to_owned(),
+                    Some(format!(
+                        "Missing localisation key '{}'.",
+                        line.label_key
+                    )),
+                )
+            }
+        };
         let shown_value = line
             .value
             .clone()
@@ -3109,14 +3785,17 @@ fn compose_stat_grid(
         })?;
         let mut overrides = BTreeMap::new();
         let desc_key = format!("{}_DESC", line.label_key);
-        let desc_text = localisation
-            .get(&desc_key)
-            .map(strip_markup)
-            .filter(|text| !text.is_empty());
+        let desc_text = loc_opt(localisation, &desc_key);
+        let body = line.detail.clone().or(desc_text.clone()).or(missing_loc_note.clone());
+        let detail = if line.detail.is_some() {
+            desc_text.or(missing_loc_note)
+        } else {
+            missing_loc_note
+        };
         let tooltip = GameWindowTooltip {
             title: full_label.trim_end_matches(':').trim().to_owned(),
-            body: line.detail.clone().or(desc_text.clone()),
-            detail: line.detail.is_some().then_some(desc_text).flatten(),
+            body,
+            detail,
         };
         let mut placed_regions = holder.place_regions(place, &row_layout.regions);
         if placed_regions.is_empty() {
@@ -3138,12 +3817,8 @@ fn compose_stat_grid(
             });
         }
         overrides.insert(stat_root.path.clone(), tooltip.clone());
-        if let Some(label_el) = find_direct(stat_root, "label") {
-            overrides.insert(label_el.path.clone(), tooltip.clone());
-        }
-        if let Some(val_el) = find_direct(stat_root, value_child) {
-            overrides.insert(val_el.path.clone(), tooltip);
-        }
+        overrides.insert(label_el.path.clone(), tooltip.clone());
+        overrides.insert(val_el.path.clone(), tooltip);
         plan.sub_windows.push(ComposedSubWindow {
             before_part: holder.before,
             parts: holder.place(place, &row_layout),

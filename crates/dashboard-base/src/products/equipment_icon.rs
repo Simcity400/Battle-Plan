@@ -356,6 +356,7 @@ impl IconContent {
             .keys()
             .filter_map(|name| std::str::from_utf8(name).ok().map(str::to_owned))
             .collect();
+        let art_layers = layers.presentation().clone();
         Ok(Self {
             catalogue: None,
             units,
@@ -365,7 +366,7 @@ impl IconContent {
             dlc,
             sprites,
             refused_sprites: BTreeMap::new(),
-            files: Box::new(move |path| layers.has_file(path).map_err(|e| e.to_string())),
+            files: Box::new(move |path| art_layers.has_file(path).map_err(|e| e.to_string())),
             stamped: false,
             load_warnings: warnings,
             visual: String::new(),
@@ -738,6 +739,29 @@ impl IconHour {
     }
 
     pub fn read(frame: &DecodedFrame, content: &IconContent) -> io::Result<Self> {
+        Self::read_with_filter(frame, content, None)
+    }
+
+    pub fn read_for_variant(
+        frame: &DecodedFrame,
+        content: &IconContent,
+        variant: &VariantDefinitionRow,
+    ) -> io::Result<Self> {
+        let mut keep = BTreeSet::new();
+        if (variant.creator_link as i32) > 0 {
+            keep.insert(variant.creator_link);
+        }
+        if (variant.origin_link as i32) > 0 {
+            keep.insert(variant.origin_link);
+        }
+        Self::read_with_filter(frame, content, (!keep.is_empty()).then_some(&keep))
+    }
+
+    fn read_with_filter(
+        frame: &DecodedFrame,
+        content: &IconContent,
+        filter_links: Option<&BTreeSet<u32>>,
+    ) -> io::Result<Self> {
         let failed = |error: io::Error| io::Error::new(error.kind(), undated(frame, &error));
         let links: BTreeMap<u32, u32> = frame
             .complete::<tables::CountryLinks>()
@@ -802,13 +826,38 @@ impl IconHour {
                 undated(frame, error)
             )),
         };
+        let keep_slots: Option<BTreeSet<u32>> = filter_links.map(|wanted| {
+            let mut slots: BTreeSet<u32> = wanted
+                .iter()
+                .filter_map(|raw| links.get(raw).copied())
+                .collect();
+            if let Ok(rows) = &appearance {
+                for row in *rows {
+                    if let Some(slot) = links.get(&row.country)
+                        && slots.contains(slot)
+                        && let Recorded::Value(Some(orig)) = row.original_tag_reference
+                        && orig > 0
+                        && let Some(orig_slot) = links.get(&(orig as u32))
+                    {
+                        slots.insert(*orig_slot);
+                    }
+                }
+            }
+            slots
+        });
         let original_refs = appearance
             .as_ref()
             .map(|rows| {
                 rows.iter()
                     .filter_map(|row| {
+                        let slot = *links.get(&row.country)?;
+                        if let Some(allowed) = &keep_slots
+                            && !allowed.contains(&slot)
+                        {
+                            return None;
+                        }
                         Some((
-                            *links.get(&row.country)?,
+                            slot,
                             (row.original_tag_reference, row.original_tag.clone()),
                         ))
                     })
@@ -825,8 +874,14 @@ impl IconHour {
             .map(|rows| {
                 rows.iter()
                     .filter_map(|row| {
+                        let slot = *links.get(&row.country)?;
+                        if let Some(allowed) = &keep_slots
+                            && !allowed.contains(&slot)
+                        {
+                            return None;
+                        }
                         Some((
-                            *links.get(&row.country)?,
+                            slot,
                             String::from_utf8_lossy(&row.graphical_culture_2d).into_owned(),
                         ))
                     })
@@ -838,6 +893,13 @@ impl IconHour {
                     undated(frame, error)
                 )
             });
+        let countries = match &keep_slots {
+            Some(allowed) => countries
+                .into_iter()
+                .filter(|(slot, _)| allowed.contains(slot))
+                .collect(),
+            None => countries,
+        };
         Ok(Self {
             prepared: Prepared::read(frame, &content.geography).map_err(|why| undated(frame, why)),
             links,

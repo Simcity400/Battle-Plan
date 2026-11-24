@@ -47,6 +47,8 @@ pub const STEADY_TICK: Tick = Tick {
 };
 pub const DEFAULT_VIEWPORT: [u32; 2] = [2752, 1152];
 const MAX_CACHED_WINDOWS: usize = 8;
+const MAX_DYNAMIC_WINDOW_IMAGES: usize = 64;
+const MAX_CACHED_RENDERS: usize = 16;
 const MAX_SURFACE_DIM: u32 = 4096;
 const NO_COUNTRIES: &str =
     "a flag's country is unknown: the hour's countries (CountryAppearance) are not recorded";
@@ -123,6 +125,8 @@ pub struct GameWindowRegion {
     pub clip: Option<[f32; 4]>,
     pub disabled: bool,
     pub close: bool,
+    #[serde(default)]
+    pub passthrough: bool,
     pub tooltip: Option<GameWindowTooltip>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alpha_mask: Option<RegionAlphaMask>,
@@ -131,6 +135,8 @@ pub struct GameWindowRegion {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameWindowRender {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub png_base64: String,
     pub logical_size: [f32; 2],
     pub pixel_size: [u32; 2],
@@ -371,16 +377,17 @@ impl SharedInterface {
 
     pub fn icon_content(
         &self,
-        recorded_layers: &ResolvedLayers,
+        layers: &ResolvedLayers,
         units: &Arc<content_reader_key_names::equipment::Database>,
-        scripted: &Result<dashboard_text::scripted_text::ScriptedContent, String>,
+        make_scripted: impl FnOnce() -> Result<dashboard_text::scripted_text::ScriptedContent, String>,
     ) -> Result<Arc<dashboard_base::products::equipment_icon::IconContent>, String> {
         self.icon_content
             .get_or_init(|| {
+                let scripted = make_scripted();
                 dashboard_base::products::equipment_icon::IconContent::native(
-                    Arc::new(recorded_layers.clone()),
+                    Arc::new(layers.clone()),
                     Arc::clone(units),
-                    scripted,
+                    &scripted,
                     self.registry.as_ref(),
                 )
                 .map(Arc::new)
@@ -502,6 +509,32 @@ pub struct CachedWindow {
     pub lazy: Arc<LazyTextures>,
     pub pass: SpritePass,
     pub warnings: Vec<String>,
+    window_name: String,
+    registry: Arc<resources::Registry>,
+    recorded_registry: Option<Arc<resources::Registry>>,
+    font_language: Vec<u8>,
+    map_size: [u32; 2],
+    decode: Decode,
+    base_assets: Assets,
+    base_image_count: usize,
+}
+
+fn resolve_map_size(
+    art_layers: &ResolvedLayers,
+    recorded_layers: &ResolvedLayers,
+    warnings: &mut Vec<String>,
+) -> [u32; 2] {
+    match shader_pipeline::artwork::map_size(art_layers)
+        .or_else(|_| shader_pipeline::artwork::map_size(recorded_layers))
+    {
+        Ok(size) => size,
+        Err(error) => {
+            warnings.push(format!(
+                "Map dimensions are unavailable for shader constants ({error}); falling back to 1x1."
+            ));
+            [1, 1]
+        }
+    }
 }
 
 impl CachedWindow {
@@ -520,30 +553,35 @@ impl CachedWindow {
             return Err(GameWindowError::refused(missing_window_refusal(window_name)));
         };
         let localisation = Arc::clone(&shared.localisation);
-        let font_language = format!("l_{}", shared.language);
+        let font_language = format!("l_{}", shared.language).into_bytes();
+        let map_size = resolve_map_size(art_layers, layers, &mut warnings);
         let mut gui = GuiResources::new(
             Arc::clone(&shared.registry),
-            font_language.as_bytes(),
-            [1, 1],
+            &font_language,
+            map_size,
             decode,
         );
         if let Some(recorded_registry) = &shared.recorded_registry {
             gui = gui.with_recorded_registry(Arc::clone(recorded_registry));
         }
-        let mut assets = native_gui::assets_in(
+        let base_assets = native_gui::assets_in(
             root,
             &|name| guis.template(name),
             localisation.as_ref(),
         );
-        assets.sprites.extend(extra_assets.sprites.iter().cloned());
-        assets.fonts.extend(extra_assets.fonts.iter().cloned());
-        assets
-            .textures
-            .extend(extra_assets.textures.iter().cloned());
         let mut images = Vec::new();
-        gui.load(art_layers, &assets, &mut images).map_err(|error| {
+        gui.load(art_layers, &base_assets, &mut images).map_err(|error| {
             GameWindowError::failed(format!("Could not load assets for '{window_name}': {error}"))
         })?;
+        let base_image_count = images.len();
+        if !extra_assets.sprites.is_empty()
+            || !extra_assets.fonts.is_empty()
+            || !extra_assets.textures.is_empty()
+        {
+            gui.load(art_layers, extra_assets, &mut images).map_err(|error| {
+                GameWindowError::failed(format!("Could not load extra assets for '{window_name}': {error}"))
+            })?;
+        }
         if let Some(note) = gui.uncovered_note(window_name) {
             warnings.push(note);
         }
@@ -572,6 +610,14 @@ impl CachedWindow {
             lazy,
             pass,
             warnings,
+            window_name: window_name.to_owned(),
+            registry: Arc::clone(&shared.registry),
+            recorded_registry: shared.recorded_registry.as_ref().map(Arc::clone),
+            font_language,
+            map_size,
+            decode,
+            base_assets,
+            base_image_count,
         })
     }
 
@@ -588,26 +634,57 @@ impl CachedWindow {
             .map_err(|error| {
                 GameWindowError::failed(format!("Could not load extra window assets: {error}"))
             })?;
-        if self.images.len() > before {
-            self.textures =
-                IconTextures::new(&gpu.device, &gpu.queue, &self.images).map_err(|error| {
-                    GameWindowError::failed(format!("Could not upload extra window textures: {error}"))
-                })?;
-            self.pass = SpritePass::new(
-                &gpu.device,
-                &gpu.queue,
-                &self.textures,
-                &self.lazy,
-                OUTPUT_FORMAT,
-            )
-            .map_err(|error| {
-                GameWindowError::failed(format!(
-                    "Could not rebuild renderer for extra assets: {error}"
-                ))
-            })?;
-            self.pass.set_layer(true);
-            self.pass.warm(&gpu.device, self.gui.effects());
+        if self.images.len() == before {
+            return Ok(());
         }
+        if self.images.len() > self.base_image_count.saturating_add(MAX_DYNAMIC_WINDOW_IMAGES) {
+            let mut fresh = GuiResources::new(
+                Arc::clone(&self.registry),
+                &self.font_language,
+                self.map_size,
+                self.decode,
+            );
+            if let Some(recorded_registry) = &self.recorded_registry {
+                fresh = fresh.with_recorded_registry(Arc::clone(recorded_registry));
+            }
+            let mut rebuilt = Vec::new();
+            fresh
+                .load(art_layers, &self.base_assets, &mut rebuilt)
+                .map_err(|error| {
+                    GameWindowError::failed(format!(
+                        "Could not compact base assets for '{}': {error}",
+                        self.window_name
+                    ))
+                })?;
+            self.base_image_count = rebuilt.len();
+            fresh
+                .load(art_layers, extra, &mut rebuilt)
+                .map_err(|error| {
+                    GameWindowError::failed(format!(
+                        "Could not load extra window assets after compaction: {error}"
+                    ))
+                })?;
+            self.gui = fresh;
+            self.images = rebuilt;
+        }
+        self.textures =
+            IconTextures::new(&gpu.device, &gpu.queue, &self.images).map_err(|error| {
+                GameWindowError::failed(format!("Could not upload extra window textures: {error}"))
+            })?;
+        self.pass = SpritePass::new(
+            &gpu.device,
+            &gpu.queue,
+            &self.textures,
+            &self.lazy,
+            OUTPUT_FORMAT,
+        )
+        .map_err(|error| {
+            GameWindowError::failed(format!(
+                "Could not rebuild renderer for extra assets: {error}"
+            ))
+        })?;
+        self.pass.set_layer(true);
+        self.pass.warm(&gpu.device, self.gui.effects());
         Ok(())
     }
 
@@ -786,6 +863,9 @@ pub struct ComposedPlan {
     pub sub_windows: Vec<ComposedSubWindow>,
     pub extra_regions: Vec<GameWindowRegion>,
     pub warnings: Vec<String>,
+    pub title: Option<String>,
+    pub read_hour: Option<i32>,
+    pub art_label: Option<String>,
 }
 
 pub fn container_holder(layout: &Layout, container_path: &str) -> Option<native_gui::Holder> {
@@ -1226,6 +1306,7 @@ pub fn regions_from_layout(
                 clip,
                 disabled: region.disabled,
                 close,
+                passthrough: through,
                 tooltip,
                 alpha_mask,
             });
@@ -1273,9 +1354,86 @@ fn format_refusals(refusals: &[native_gui::Refusal]) -> String {
         .join("; ")
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RenderFrameKey {
+    pub source_id: String,
+    pub revision: String,
+    pub branch_id: String,
+    pub kind: String,
+    pub target_key: String,
+    pub sub_view: Option<String>,
+    pub scale_bits: u32,
+    pub visual_revision: String,
+    pub language: String,
+    pub force_pow2_textures: bool,
+    pub data_hash: [u8; 32],
+}
+
+struct RenderFrameCache {
+    capacity: usize,
+    entries: HashMap<RenderFrameKey, GameWindowRender>,
+    order: VecDeque<RenderFrameKey>,
+}
+
+impl RenderFrameCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get(&mut self, key: &RenderFrameKey) -> Option<GameWindowRender> {
+        let value = self.entries.get(key)?.clone();
+        if let Some(pos) = self.order.iter().position(|existing| existing == key) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(key.clone());
+        Some(value)
+    }
+
+    fn insert(&mut self, key: RenderFrameKey, value: GameWindowRender) {
+        if self.entries.insert(key.clone(), value).is_some() {
+            if let Some(pos) = self.order.iter().position(|existing| existing == &key) {
+                self.order.remove(pos);
+            }
+            self.order.push_back(key);
+            return;
+        }
+        while self.entries.len() > self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+        self.order.push_back(key);
+    }
+
+    fn evict_source(&mut self, source_id: &str) {
+        let keys: Vec<RenderFrameKey> = self
+            .entries
+            .keys()
+            .filter(|key| key.source_id == source_id)
+            .cloned()
+            .collect();
+        self.order.retain(|key| key.source_id != source_id);
+        for key in keys {
+            self.entries.remove(&key);
+        }
+    }
+
+    fn clear(&mut self) {
+        self.order.clear();
+        self.entries.clear();
+    }
+}
+
 struct CacheState {
     interfaces: HashMap<InterfaceCacheKey, Arc<SharedInterface>>,
     windows: WindowCache<Arc<Mutex<CachedWindow>>>,
+    renders: RenderFrameCache,
     source_generations: HashMap<String, u64>,
     global_generation: u64,
     cancels: HashMap<String, Arc<AtomicBool>>,
@@ -1286,6 +1444,7 @@ impl Default for CacheState {
         Self {
             interfaces: HashMap::new(),
             windows: WindowCache::new(MAX_CACHED_WINDOWS),
+            renders: RenderFrameCache::new(MAX_CACHED_RENDERS),
             source_generations: HashMap::new(),
             global_generation: 0,
             cancels: HashMap::new(),
@@ -1379,6 +1538,7 @@ impl Service {
                 .filter_map(|key| cache.interfaces.remove(&key))
                 .collect();
             let windows = cache.windows.evict_source(source_id);
+            cache.renders.evict_source(source_id);
             (interfaces, windows)
         };
         drop(dropped_windows);
@@ -1392,6 +1552,7 @@ impl Service {
             let interfaces: Vec<Arc<SharedInterface>> =
                 cache.interfaces.drain().map(|(_, value)| value).collect();
             let windows = cache.windows.clear();
+            cache.renders.clear();
             (interfaces, windows)
         };
         drop(dropped_windows);
@@ -1408,6 +1569,50 @@ impl Service {
 
     pub fn capture_generation(&self, source_id: &str) -> (u64, u64) {
         self.generations(source_id)
+    }
+
+    pub fn is_generation_fresh(&self, source_id: &str, expected: (u64, u64)) -> bool {
+        self.is_fresh(source_id, expected)
+    }
+
+    pub fn lookup_cached_render(
+        &self,
+        key: &RenderFrameKey,
+        expected_gen: (u64, u64),
+    ) -> Option<GameWindowRender> {
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let current = (
+            cache
+                .source_generations
+                .get(&key.source_id)
+                .copied()
+                .unwrap_or(0),
+            cache.global_generation,
+        );
+        if current != expected_gen {
+            return None;
+        }
+        cache.renders.get(key)
+    }
+
+    pub fn store_cached_render(
+        &self,
+        key: RenderFrameKey,
+        expected_gen: (u64, u64),
+        render: GameWindowRender,
+    ) {
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let current = (
+            cache
+                .source_generations
+                .get(&key.source_id)
+                .copied()
+                .unwrap_or(0),
+            cache.global_generation,
+        );
+        if current == expected_gen {
+            cache.renders.insert(key, render);
+        }
     }
 
     fn generations(&self, source_id: &str) -> (u64, u64) {
@@ -1628,7 +1833,7 @@ impl Service {
             (DEFAULT_VIEWPORT[1] as f32 * scale).round() as i32,
         ];
 
-        let (output, regions, warnings) = {
+        let (output, regions, warnings, title, effective_read_hour, effective_art_label) = {
             let reloaded_entry: Option<Arc<Mutex<CachedWindow>>>;
             let mut cached = match window_entry.lock() {
                 Ok(guard) => guard,
@@ -1744,7 +1949,7 @@ impl Service {
                 }
             };
             let assets = cached.gui_assets(physical_viewport);
-            let mut regions = regions_from_layout(
+            let main_regions = regions_from_layout(
                 &[root],
                 &layout.regions,
                 output.origin,
@@ -1753,28 +1958,66 @@ impl Service {
                 close_paths,
                 &main_tooltips,
             );
-            for sub in &plan.sub_windows {
-                let sub_roots: Vec<&Element> = cached
-                    .guis
-                    .template(sub.root_window.as_bytes())
-                    .into_iter()
-                    .collect();
-                let sub_close: Vec<&str> = sub.close_paths.iter().map(String::as_str).collect();
-                let mut sub_regions = regions_from_layout(
-                    &sub_roots,
-                    &sub.regions,
-                    output.origin,
-                    &assets,
-                    cached.localisation.as_ref(),
-                    &sub_close,
-                    &sub.tooltip_overrides,
-                );
-                if !sub.path_prefix.is_empty() {
-                    for region in &mut sub_regions {
-                        region.path = format!("{}{}", sub.path_prefix, region.path);
+            let main_len = layout.parts.len();
+            let mut region_slots: Vec<usize> = Vec::with_capacity(main_regions.len());
+            let mut last_slot = 0usize;
+            for region in &main_regions {
+                let slot = layout
+                    .parts
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find(|(_, part)| part.path == region.path)
+                    .map(|(index, _)| index)
+                    .unwrap_or(last_slot);
+                let ordered_slot = slot.max(last_slot);
+                last_slot = ordered_slot;
+                region_slots.push(ordered_slot);
+            }
+            let sub_region_groups: Vec<(usize, Vec<GameWindowRegion>)> = plan
+                .sub_windows
+                .iter()
+                .map(|sub| {
+                    let sub_roots: Vec<&Element> = cached
+                        .guis
+                        .template(sub.root_window.as_bytes())
+                        .into_iter()
+                        .collect();
+                    let sub_close: Vec<&str> =
+                        sub.close_paths.iter().map(String::as_str).collect();
+                    let mut sub_regions = regions_from_layout(
+                        &sub_roots,
+                        &sub.regions,
+                        output.origin,
+                        &assets,
+                        cached.localisation.as_ref(),
+                        &sub_close,
+                        &sub.tooltip_overrides,
+                    );
+                    if !sub.path_prefix.is_empty() {
+                        for region in &mut sub_regions {
+                            region.path = format!("{}{}", sub.path_prefix, region.path);
+                        }
+                    }
+                    (sub.before_part.min(main_len), sub_regions)
+                })
+                .collect();
+            let mut regions = Vec::new();
+            let mut main_cursor = 0usize;
+            for part_index in 0..=main_len {
+                for (before, sub_regions) in &sub_region_groups {
+                    if *before == part_index {
+                        regions.extend(sub_regions.iter().cloned());
                     }
                 }
-                regions.extend(sub_regions);
+                while main_cursor < main_regions.len() && region_slots[main_cursor] == part_index {
+                    regions.push(main_regions[main_cursor].clone());
+                    main_cursor += 1;
+                }
+            }
+            while main_cursor < main_regions.len() {
+                regions.push(main_regions[main_cursor].clone());
+                main_cursor += 1;
             }
             for mut region in plan.extra_regions {
                 region.rect[0] -= output.origin[0];
@@ -1802,7 +2045,14 @@ impl Service {
                     ));
                 }
             }
-            (output, regions, warnings)
+            (
+                output,
+                regions,
+                warnings,
+                plan.title,
+                plan.read_hour.or(read_hour),
+                plan.art_label,
+            )
         };
 
         if cancel.load(Ordering::SeqCst) {
@@ -1813,14 +2063,16 @@ impl Service {
         }
 
         Ok(GameWindowRender {
+            title,
             png_base64: encode_base64(&output.png),
             logical_size: output.logical_size,
             pixel_size: output.pixel_size,
             scale,
-            read_hour,
+            read_hour: effective_read_hour,
             art_from_current_install,
-            art_label: art_from_current_install
-                .then(|| "Artwork from current installation".to_owned()),
+            art_label: effective_art_label.or_else(|| {
+                art_from_current_install.then(|| "Artwork from current installation".to_owned())
+            }),
             regions,
             warnings,
         })
@@ -1834,10 +2086,32 @@ impl Service {
         request: GameWindowRequest,
         cancel: &AtomicBool,
     ) -> Result<GameWindowRender, GameWindowError> {
+        let admitted_gen = self.capture_generation(&request.source_id);
+        self.render_from_source_at_generation(
+            source,
+            config,
+            visual_mods,
+            request,
+            admitted_gen,
+            cancel,
+        )
+    }
+
+    pub fn render_from_source_at_generation(
+        &self,
+        source: &Source,
+        config: &Config,
+        visual_mods: &[content_reader_layers::content::visual::Choice],
+        request: GameWindowRequest,
+        admitted_gen: (u64, u64),
+        cancel: &AtomicBool,
+    ) -> Result<GameWindowRender, GameWindowError> {
         if cancel.load(Ordering::SeqCst) {
             return Err(GameWindowError::Cancelled);
         }
-        let admitted_gen = self.capture_generation(&request.source_id);
+        if !self.is_fresh(&request.source_id, admitted_gen) {
+            return Err(GameWindowError::Cancelled);
+        }
         let resolve = config.resolve_options().map_err(|error| {
             GameWindowError::refused(format!(
                 "Could not open game or user content folders: {error}"

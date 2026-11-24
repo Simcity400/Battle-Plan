@@ -662,9 +662,16 @@ impl Database {
         let spelling = self.module(name)?;
         self.module_conditions.get(&spelling.to_ascii_lowercase())
     }
-    pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
-        layers.key_name_products()?.equipment_database().map(|database| database.as_ref().clone())
+    pub fn shared(layers: &ResolvedLayers) -> io::Result<Arc<Self>> {
+        layers
+            .key_name_products()?
+            .equipment_database()
+            .map(Arc::clone)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "key names have no equipment database"))
+    }
+
+    pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
+        Self::shared(layers).map(|database| database.as_ref().clone())
     }
 
     pub(crate) fn load_with_names(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Self> {
