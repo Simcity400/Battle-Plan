@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import { useArtResolutions } from '../../dashboard/useSpriteArtwork.ts';
@@ -40,6 +40,7 @@ export function useDomArt(
 ): ArtResult<HTMLImageElement> {
   const [, setTick] = useState(0);
   const url = resolution.status === 'ready' ? resolution.url : null;
+  const shown = useRef<string>('');
 
   useEffect(() => {
     cache.setContentRevision(contentRevision);
@@ -47,10 +48,13 @@ export function useDomArt(
 
   useEffect(() => {
     if (!url) return;
-    return cache.subscribe(url, () => setTick(value => value + 1));
+    const stop = cache.subscribe(url, () => setTick(value => value + 1));
+    if (cache.stateOfUrl(url) !== shown.current) setTick(value => value + 1);
+    return stop;
   }, [cache, url]);
 
   const state = cache.resolve(resolution);
+  shown.current = state.status;
   const retry = useCallback(() => {
     if (state.status === 'failed') state.retry?.();
   }, [state]);

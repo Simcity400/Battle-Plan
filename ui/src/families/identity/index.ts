@@ -189,6 +189,7 @@ export class IdentityIndex {
   private entityRuns = new Map<string, EntityRunEntry[]>();
   private entityFailures = new Map<string, Failure>();
   private drawnFlags = new Map<string, DrawnFlagEntry>();
+  private resolveChanges = 0;
 
   constructor(scope: IdentityScope, branchBounds?: HourInterval) {
     this.scope = scope;
@@ -254,7 +255,13 @@ export class IdentityIndex {
   }
 
   setBranchBounds(bounds: HourInterval): void {
+    if (this.branchBounds[0] === bounds[0] && this.branchBounds[1] === bounds[1]) return;
     this.branchBounds = bounds;
+    this.resolveChanges++;
+  }
+
+  resolveRevision(): number {
+    return this.resolveChanges;
   }
 
   bounds(): HourInterval {
@@ -267,14 +274,17 @@ export class IdentityIndex {
     this.factsFailure = undefined;
     this.factsKnown = reply.known.map(span => [span[0], span[1]] as const);
     this.factsByTag = new Map(reply.countries.map(country => [country.tag, country.runs as readonly FactRun[]]));
+    this.resolveChanges++;
   }
 
   setFactsFailure(failure: Failure): void {
     this.factsFailure = failure;
+    this.resolveChanges++;
   }
 
   clearFactsFailure(): void {
     this.factsFailure = undefined;
+    this.resolveChanges++;
   }
 
   hasFactsAt(hour: number): boolean {
@@ -315,10 +325,12 @@ export class IdentityIndex {
       list.sort((a, b) => a.firstHour - b.firstHour || a.countryId - b.countryId || compareTags(a.tag, b.tag));
       this.slotRuns.set(slot, resolveSlotHolderRuns(list));
     }
+    this.resolveChanges++;
   }
 
   setIdentitiesFailure(failure: Failure): void {
     this.identitiesFailure = failure;
+    this.resolveChanges++;
   }
 
   hasIdentities(): boolean {
@@ -331,10 +343,12 @@ export class IdentityIndex {
     this.factionsById = new Map(reply.factions.map(faction => [faction.id, faction]));
     this.factionsUnobserved = sortedHourSpans(reply.unobserved.factions);
     this.factionIncomplete = new Map(reply.factions.map(faction => [faction.id, sortedHourSpans(faction.incomplete)]));
+    this.resolveChanges++;
   }
 
   setGroupsFailure(failure: Failure): void {
     this.groupsFailure = failure;
+    this.resolveChanges++;
   }
 
   hasGroups(): boolean {
@@ -352,20 +366,24 @@ export class IdentityIndex {
     const existing = this.styleRuns.get(style.tag) ?? [];
     this.styleRuns.set(style.tag, mergeStyleEntry(existing, entry));
     this.styleFailures.delete(`${Math.floor(hour)}\u0000${style.tag}`);
+    this.resolveChanges++;
   }
 
   setStyleFailure(tag: string, hour: number, failure: Failure): void {
     this.styleFailures.set(`${Math.floor(hour)}\u0000${tag}`, failure);
+    this.resolveChanges++;
   }
 
   clearStyleFailure(tag: string, hour: number): void {
     this.styleFailures.delete(`${Math.floor(hour)}\u0000${tag}`);
+    this.resolveChanges++;
   }
 
   setEntityRuns(key: EntityIdentityKey, runs: readonly EntityRunEntry[]): void {
     const id = identityKeyString(key);
     this.entityRuns.set(id, [...runs].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour));
     this.entityFailures.delete(id);
+    this.resolveChanges++;
   }
 
   addEntityRun(key: EntityIdentityKey, run: EntityRunEntry): void {
@@ -375,14 +393,17 @@ export class IdentityIndex {
     kept.sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
     this.entityRuns.set(id, kept);
     this.entityFailures.delete(id);
+    this.resolveChanges++;
   }
 
   setEntityFailure(key: EntityIdentityKey, failure: Failure): void {
     this.entityFailures.set(identityKeyString(key), failure);
+    this.resolveChanges++;
   }
 
   clearEntityFailures(): void {
     this.entityFailures.clear();
+    this.resolveChanges++;
   }
 
   setDrawnFlag(size: CountryFlagSize, choice: CountryFlagChoice, entry: DrawnFlagEntry): void {
