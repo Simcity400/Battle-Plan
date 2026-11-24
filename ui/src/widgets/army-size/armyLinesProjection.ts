@@ -1,10 +1,9 @@
-import type { ArmySizeReply } from './armySizeData.ts';
 import { createCountryLinesView } from '../../families/time-chart/countryLines.ts';
-import { armyMeasure, armyMetadataParams, validateArmySizeReply } from './armySizeData.ts';
+import { armyMeasure, armyMetadataParams, validateArmyMetadata, type ArmyMetadataReply } from './armySizeMeta.ts';
 
 const SERIES_MEASURES = { manpower: 'Manpower', divisions: 'Divisions', strength: 'Strength', battalions: 'Battalions' } as const;
 
-export const { projection: armyLinesProjection, declaration: armyLinesDeclaration } = createCountryLinesView<ArmySizeReply>({
+export const { projection: armyLinesProjection, declaration: armyLinesDeclaration } = createCountryLinesView<ArmyMetadataReply>({
   kind: 'army-size',
   view: 'lines',
   title: 'Army size',
@@ -13,7 +12,7 @@ export const { projection: armyLinesProjection, declaration: armyLinesDeclaratio
   aux: {
     product: 'army-size',
     params: track => ({ ...armyMetadataParams(track.branch.id) }),
-    validate: validateArmySizeReply,
+    validate: validateArmyMetadata,
   },
   measure: (options, aux) => {
     if (!aux) return null;

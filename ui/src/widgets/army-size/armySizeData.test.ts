@@ -4,7 +4,7 @@ import { countryValueAt, countryValuesModel } from '../../charts/race/countryVal
 import { countryKey } from '../../dashboard/countryKey.ts';
 import type { ArmySizeReply } from './armySizeData';
 import '../definitions.ts';
-import { armyAbsent, armyMeasure, armySizeRequest, armyTooltips, armyWindows, formatArmyValue, formatArmyRaw, formatArmyRawFast,
+import { armyAbsent, armyMeasure, armySizeRequest, armyWindows, formatArmyValue, formatArmyRaw,
   measureChoices, mergeArmyWindows, offersMeasure, validateArmySizeReply, validateArmyWindow } from './armySizeData.ts';
 
 const REPLY: ArmySizeReply = {
@@ -57,20 +57,6 @@ test('requests preserve opaque country tags, owner/host, recorded measures and m
     'a picked tag is asked as a tag, the dashboard country by its slot');
   assert.deepEqual(armySizeRequest('synthetic', { tags: [], top: 30 }, 'strength', 'owner', false, 7),
     { branchId: 'synthetic', countries: [], top: 30, measure: 'strength', countFor: 'owner', byType: false, window: 7 });
-});
-
-test('land tooltips name content groups and the exact hourly read without inventing a missing mix', () => {
-  const model = countryValuesModel(REPLY);
-  const at = countryValueAt(model, 'opaque tag', 104)!;
-  const [full, compact] = [...armyTooltips(model, 'Name at hour 104', at, 104, 'battalions', new Map([['modded_group', 'palette']]))];
-  assert.equal(full.title, 'Name at hour 104');
-  assert.deepEqual(full.rows.map(row => [row.label, row.value]), [['Modded unit group', '4'], ['Battalions', '4']]);
-  assert.equal(full.note, undefined);
-  assert.deepEqual(compact.rows, [full.rows[1]]);
-  assert.equal(formatArmyValue(1234.00001), '1,234.00001');
-  const absent = { ...REPLY, types: [], series: REPLY.series.map(series => ({ ...series, mix: undefined })) };
-  const [total] = [...armyTooltips(countryValuesModel(absent), 'Country', { ...at, values: [] }, 104, 'strength', new Map())];
-  assert.deepEqual(total.rows.map(row => row.label), ['Combined strength (hit points)']);
 });
 
 const MANIFEST: ArmySizeReply = { ...REPLY, types: [], series: [], window: null, interval: null,
@@ -130,26 +116,8 @@ test('Army windows join in recording order, remap authored groups and retain mis
 
 test('manpower is the available default and HP labels retain exact raw units', () => {
   assert.equal(armyMeasure('', ['divisions', 'manpower']), 'manpower');
+  assert.equal(formatArmyValue(1234.00001), '1,234.00001');
   assert.equal(formatArmyRaw('9007199254740986', 'strength'), '90,071,992,547.40986');
   assert.equal(formatArmyRaw('9007199254740987', 'strength'), '90,071,992,547.40987');
   assert.equal(formatArmyRaw('9223372036854775808', 'strength'), '92,233,720,368,547.75808');
-});
-
-test('large adjacent HP totals remain distinct in exact tooltips and ranking', () => {
-  const raw = ['9007199254740986', '9007199254740987'];
-  const reply: ArmySizeReply = { ...REPLY, types: [], series: raw.map((value, index) => ({
-    tag: `country${index}`, membership: null, segments: [{ firstHour: 100, lastHour: 105 }],
-    runs: [[100, Number(value) / 100000, 105, value]],
-  })) };
-  validateArmySizeReply(reply);
-  const model = countryValuesModel(reply);
-  const labels = raw.map((_, index) => [...armyTooltips(model, 'Country', countryValueAt(model, `country${index}`, 100)!, 100, 'strength', new Map())][0].rows[0].value);
-  assert.deepEqual(labels, ['90,071,992,547.40986', '90,071,992,547.40987']);
-});
-
-test('a race label written fast is the label formatArmyRaw writes', () => {
-  const values = [0n, 1n, 7n, 999n, 1000n, 1001n, 12_345n, 100_000n, 123_456_789n, 9_007_199_254_740_991n, 9_007_199_254_740_992n, -1n, -100_000n, -123_456_789n];
-  for (let at = 0; at < 2000; at++) values.push(BigInt(Math.floor((at * 2_654_435_761) % 10 ** (1 + at % 15))) * (at % 7 === 0 ? -1n : 1n));
-  for (const measure of ['divisions', 'strength', 'battalions', 'manpower'] as const)
-    for (const raw of values) assert.equal(formatArmyRawFast(raw, measure), formatArmyRaw(raw.toString(), measure), `${raw} ${measure}`);
 });

@@ -185,6 +185,76 @@ fn active_range_rule_description() {
     );
 }
 
+#[cfg(test)]
+#[test]
+fn balance_definition_and_side_names_use_empty_event_scope_while_active_range_uses_country_scope() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/country_tags/synthetic.txt",
+            "GER=\"countries/synthetic_ger.txt\" SOV=\"countries/synthetic_sov.txt\"",
+        ),
+        (
+            "common/defines/test.lua",
+            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
+        ),
+        (
+            "common/scripted_localisation/synthetic.txt",
+            concat!(
+                "defined_text = {\n",
+                "  name = GetSyntheticSide\n",
+                "  text = { trigger = { SOV = { exists = yes } } localization_key = SIDE_SOV_EXISTS }\n",
+                "  text = { localization_key = SIDE_FALLBACK }\n",
+                "}\n",
+            ),
+        ),
+        (
+            "localisation/test_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n",
+                " SYN_LEFT:0 \"[GetSyntheticSide]\"\n",
+                " SYN_RIGHT:0 \"[ROOT.GetTag]\"\n",
+                " SYN_RANGE:0 \"[ROOT.GetTag] range\"\n",
+                " SIDE_SOV_EXISTS:0 \"Council\"\n",
+                " SIDE_FALLBACK:0 \"Fallback\"\n",
+            ),
+        ),
+    ]);
+    let mut frame = crate::scope::tests::positive_frame();
+    *frame.tables[TableId::CountryCounterInputs.index()] =
+        TableView::Complete(TableRows::CountryCounterInputs(vec![
+            CountryCounterInputRow {
+                country: 100,
+                owned_state_count: 5,
+                ..Default::default()
+            },
+            CountryCounterInputRow {
+                country: 200,
+                owned_state_count: 5,
+                ..Default::default()
+            },
+        ]));
+    *frame.tables[TableId::PowerBalances.index()] =
+        TableView::Complete(TableRows::PowerBalances(vec![PowerBalanceRow {
+            balance: b"balance".to_vec(),
+            left: b"SYN_LEFT".to_vec(),
+            right: b"SYN_RIGHT".to_vec(),
+            active_range: b"SYN_RANGE".to_vec(),
+            ..Default::default()
+        }]));
+    *frame.tables[TableId::PowerBalanceMembers.index()] =
+        TableView::Complete(TableRows::PowerBalanceMembers(vec![
+            PowerBalanceMemberRow {
+                country: 100,
+                ..Default::default()
+            },
+        ]));
+    assert_eq!(description(&catalogue, &frame, "GetLeftSideName").unwrap(), "Council");
+    assert_eq!(description(&catalogue, &frame, "GetRightSideName").unwrap(), "");
+    assert_eq!(description(&catalogue, &frame, "GetActiveRangeName").unwrap(), "GER range");
+}
+
 pub const MAX_SCRIPTED_NESTING: usize = super::super::MAX_SCRIPTED_NESTING;
 
 pub struct BalanceEffectScopes<'a>(ExpansionScopes<'a, 'a>);

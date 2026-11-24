@@ -462,4 +462,15 @@ fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_
     assert!(refused.lines.is_empty(), "no line in a gap");
     assert!(refused.ranking.unwrap().refused.is_some(), "a gap's top is refused with its reason");
     assert!(reply(&line, "1", &serde_json::json!({ "binHours": bin_hours, "index": 0, "top": 1, "hour": FIRST, "countries": ["GER"] })).is_err());
+    let series = dashboard_declare::series("country-measure").unwrap();
+    let other = Line::new(&query, series, series.measure("commandPower").unwrap()).unwrap();
+    let hour = FIRST + 24;
+    let index = i64::from(hour).div_euclid(BINS as i64 * bin_hours);
+    let by = reply(&other, "1", &serde_json::json!({ "binHours": bin_hours, "index": index, "top": 2, "hour": hour, "rankBy": "politicalPower" })).unwrap();
+    let ranked = line.rank_at(hour, 2, false).unwrap().unwrap();
+    assert_eq!(by.lines.iter().map(|line| line.country.to_string()).collect::<Vec<_>>(), ranked, "ranked by the named measure");
+    let plain = tile(&other, "1", &whole(&ranked.iter().map(String::as_str).collect::<Vec<_>>()), None, bin_hours, index, false).unwrap();
+    assert_eq!(by.bins, plain.bins, "the tiles are of the asked measure");
+    assert_eq!(by.measure, "commandPower");
+    assert!(reply(&other, "1", &serde_json::json!({ "binHours": bin_hours, "index": index, "top": 2, "hour": hour, "rankBy": "noSuchMeasure" })).is_err());
 }

@@ -964,7 +964,7 @@ describe('several countries, one measure', () => {
   const rank = parseFollowed(message(10, [{ id: 1, answer: { keys: ranked.map((_, at) => BigInt(at + 1)), columns: 1, values: ranked.map(() => 1n), names: ranked } }])).answers[0]!.answer;
   const project = (projection: typeof navyLinesProjection, membership: Readonly<Record<string, readonly (readonly [number, number])[]>> | null) =>
     projection.project(createBoundedReadView({ hour, series: new Map([['main', lines]]), answers: new Map([['rank', rank]]) }),
-      { tags, top: null, membership, decimals: 0, extent: [base, base + 95], gaps: [], surface: '#111111' });
+      { tags, top: null, membership, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
 
   it('orders by the product ranking, colours eight and keeps the rest a grey tail without end labels', () => {
     const model = project(navyLinesProjection, null);
@@ -992,12 +992,23 @@ describe('several countries, one measure', () => {
       { country: 'A03', hour: base + 10, run: null, missing: 'Country did not exist' },
     ] } }]]);
     const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named]]), hovers }),
-      { tags: [], top: 3, membership: null, decimals: 0, extent: [base, base + 95], gaps: [], surface: '#111111' });
+      { tags: [], top: 3, membership: null, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
     assert.deepEqual(model.series.map(s => s.id), ['A07', 'A01', 'A03']);
     assert.equal(model.series.find(s => s.id === 'A07')!.exact, null);
     assert.deepEqual(model.series.find(s => s.id === 'A01')!.exact, { hour: base + 10, value: 1234 });
     assert.deepEqual(model.series.find(s => s.id === 'A03')!.exact, { hour: base + 10, value: null, reason: 'Country did not exist' });
     assert.equal(model.series[0]!.endLabel?.value, '7,000');
+  });
+
+  it('draws a second measure dashed beside each country in the same colour, keyed apart, with a legend naming both', () => {
+    const named = new Map(['A07', 'A01'].map(tag => [tag, lines.get(tag)!]));
+    const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named], ['second', named]]) }),
+      { tags: ['A07', 'A01'], top: null, membership: null, decimals: 0, digits: null, endLabels: false, second: { measure: 'other', legend: ['Resistance', 'Compliance'] }, options: {},
+        extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.deepEqual(model.series.map(s => [s.key.replace('\u0000', '|'), s.dash ? 'dashed' : 'solid']), [['A07', 'solid'], ['A07|second', 'dashed'], ['A01', 'solid'], ['A01|second', 'dashed']]);
+    assert.equal(model.series[1]!.color, model.series[0]!.color);
+    assert.ok(model.series.every(s => s.endLabel === null), 'end labels off by option');
+    assert.deepEqual(model.legend?.map(entry => [entry.label, !!entry.dash]), [['Resistance', false], ['Compliance', true]]);
   });
 });
 
@@ -1152,5 +1163,78 @@ describe('stacked bounded series, supply health, and ruling party', () => {
       'Fascist (ruling)=70.0%',
       'Democratic=30.0%',
     ]);
+  });
+
+  it('installs a cleared surface when model.empty is set and draws overlays on compact wide plots', () => {
+    const emptyModel: TimeChartModel = {
+      kind: 'test-empty',
+      measureTitle: 'Balance of power',
+      mode: 'lines',
+      hour: H1936 + 200,
+      extent: [H1936, H1936 + 500],
+      yAxis: { format: 'signed1', fixed: [-1, 1] },
+      series: [],
+      empty: { message: 'Germany has no balance of power in this campaign.', kind: 'empty' },
+    };
+    registerFamilyProjection({
+      kind: 'test-empty',
+      family: 'time-chart',
+      variant: 'line',
+      joinMode: 'step',
+      measureTitle: 'Balance of power',
+      project: () => emptyModel,
+    });
+    const created = mockCanvas(480, 180);
+    const view = laneOn(created);
+    const painted = view.paint(
+      {
+        widget: 1,
+        subs: [],
+        pictures: [],
+        model: {
+          family: 'time-chart',
+          kind: 'test-empty',
+          options: {},
+          sources: {},
+          extent: [H1936, H1936 + 500],
+          width: 480,
+          height: 180,
+          scrollTop: 0,
+          theme: LANE_THEME,
+        },
+        hour: H1936 + 200,
+        speed: 0,
+        binding: { surfaces: [{ width: 480, height: 180, dpr: 1 }], generation: 1, offset: 0, pin: null },
+        inspect: null,
+        now: 0,
+      },
+      new Map(),
+      () => 'c1',
+    );
+    assert.equal(painted.surfaces.length, 1, 'empty model must still install a surface so page.ts leaves reading mode');
+    assert.equal((painted.fields.meta?.value as { empty?: string })?.empty, 'Germany has no balance of power in this campaign.');
+
+    const withOverlays: TimeChartModel = {
+      ...emptyModel,
+      empty: null,
+      series: [{
+        id: 'bop',
+        key: 'bop',
+        name: 'Power Balance',
+        color: CHART_MEASURE_COLOURS.bopRight,
+        role: 'primary',
+        step: true,
+        points: [{ hour: H1936, value: 0.2 }, { hour: H1936 + 200, value: 0.4 }],
+      }],
+      overlays: [
+        { position: 'top-right', text: 'Benito Mussolini', arrow: 'right', color: CHART_MEASURE_COLOURS.bopRight },
+        { position: 'bottom-right', text: 'Grand Council of Fascism', arrow: 'left', color: CHART_MEASURE_COLOURS.bopLeft },
+      ],
+    };
+    const { ctx, ops } = mockCanvas(960, 160);
+    const layout = layoutTimeChart(withOverlays, 960, 160, FONT, measure);
+    drawTimeChart(ctx, withOverlays, layout, undefined, null, 1);
+    assert.ok(ops.includes('text:Benito Mussolini'), 'top-right overlay renders on wide 160px plot');
+    assert.ok(ops.includes('text:Grand Council of Fascism'), 'bottom-right overlay renders on wide 160px plot');
   });
 });

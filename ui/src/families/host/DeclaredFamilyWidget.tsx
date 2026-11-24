@@ -256,6 +256,12 @@ export default function DeclaredFamilyWidget<
     };
   }, [plan.staticBundle]);
 
+  const onRowWindow = plan.onRowWindow;
+  const handleWindowChange = useCallback((win: FamilyRowWindow, hour: number | null) => {
+    onRowWindow(win, hour);
+    onWindowChange?.(win, hour);
+  }, [onRowWindow, onWindowChange]);
+
   const host = (
     <FamilyHost
       key={branchKey}
@@ -264,7 +270,7 @@ export default function DeclaredFamilyWidget<
       {...(editableSettings ? { onSettings } : {})}
       editableSettings={editableSettings}
       {...(chrome ? { chrome } : {})}
-      {...(onWindowChange ? { onWindowChange } : {})}
+      onWindowChange={handleWindowChange}
       declaration={declaration.projection}
       view={view}
       options={projectionOptions}
@@ -278,6 +284,7 @@ export default function DeclaredFamilyWidget<
       allowEmptyFollow={plan.allowEmptyFollow}
       owner={view === DEFAULT_VIEW ? plan.owner : JSON.stringify([plan.owner, view])}
       staticSources={staticSources}
+      pagedRows={plan.pagedRows}
       tiledSeries={hasPixelBinned ? plan.tiledSeries : undefined}
       tiledRevision={hasPixelBinned ? plan.tiledRevision : 0}
       hovers={plan.hovers}
