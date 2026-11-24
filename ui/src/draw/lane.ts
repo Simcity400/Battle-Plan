@@ -567,7 +567,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (ownerChanged) {
       held.installed = null;
       held.parked = null;
+      held.inspect = null;
       this.parkedWidgets.delete(widget);
+      this.inspectedWidgets.delete(widget);
     }
     if (retry) {
       this.failedWidgets.delete(widget);

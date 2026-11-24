@@ -997,17 +997,49 @@ impl Product for LandBattles {
         let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
         let interval = dashboard_world::products::army_windows::windows(&query)?.get(params.window).cloned().ok_or_else(|| invalid("Battle window not in recording"))?;
         let (from, to) = (interval.first_hour, interval.last_hour);
-        let stretch = query.timeline.at(from).ok_or_else(|| invalid("Battle window not in recording"))?;
-        let run = stretch.run;
-        let observed = observed(&query, run, from, to)?;
-        let rows = window_rows(source, &query, run, stretch.first, from, to, cancelled)?;
-        let warnings = unread_warnings(&observed, from, to);
+        let stretches: Vec<_> = query.timeline.within(from, to).collect();
+        if stretches.is_empty() {
+            return Err(invalid("Battle window not in recording"));
+        }
+        let mut obs = Vec::new();
+        let mut by_id: HashMap<String, usize> = HashMap::new();
+        let mut rows: Vec<LandBattleHistory> = Vec::new();
+        for stretch in stretches {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let full_first = query.timeline.at(stretch.first).map_or(stretch.first, |held| held.first);
+            obs.extend(observed(&query, stretch.run, stretch.first, stretch.last)?);
+            for row in window_rows(source, &query, stretch.run, full_first, stretch.first, stretch.last, cancelled)? {
+                if let Some(&at) = by_id.get(&row.id) {
+                    let held = &mut rows[at];
+                    if held.province_id.is_none() {
+                        held.province_id = row.province_id;
+                    }
+                    held.runs.extend(row.runs);
+                    held.losses.extend(row.losses);
+                    if row.end.is_some() {
+                        held.end = row.end;
+                        held.end_unknown_hour = row.end_unknown_hour;
+                    }
+                    if row.result.is_some() {
+                        held.result = row.result;
+                    }
+                    if row.settled_hour.is_some() {
+                        held.settled_hour = row.settled_hour;
+                    }
+                } else {
+                    by_id.insert(row.id.clone(), rows.len());
+                    rows.push(row);
+                }
+            }
+        }
+        rows.sort_by(|a, b| a.start.hour.cmp(&b.start.hour).then_with(|| a.id.cmp(&b.id)));
+        let warnings = unread_warnings(&obs, from, to);
         Ok(LandBattlesReply {
             window: params.window,
             interval: BattleWindow { first_hour: from, last_hour: to },
             reasons: if warnings.is_empty() { Vec::new() } else { vec![ROSTER_UNREAD.into()] },
             warnings,
-            observed,
+            observed: obs,
             rows,
             content_warnings: Vec::new(),
         })

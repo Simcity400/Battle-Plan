@@ -1,0 +1,120 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { liveKey, valuesOf } from '../../charts/live.ts';
+import { assertBarsModelValid, deriveBarsAudit, type BarsDataRow } from '../../families/bars/model.ts';
+import { createBoundedReadView, displayedHour, FutureDataError } from '../../families/boundedView.ts';
+import type { AirSuperiorityReply } from '../../generated/dashboard';
+import { airSuperiorityRegionProjection, type AirSuperiorityProjectionOptions } from './airSuperiorityProjection.ts';
+
+const OPTS: AirSuperiorityProjectionOptions = {
+  mode: 'sides',
+  filteredSides: false,
+  order: 'contested',
+  factionColours: { '7': '#22c55e', '10': '#ef4444' },
+  factionNames: { '7': 'Allies', '10': 'Axis' },
+  enemyColor: '#e5484d',
+  mutedColor: '#8a8a8a',
+};
+
+const REPLY: AirSuperiorityReply = {
+  missing: null,
+  sides: [
+    { key: 'f:7', faction: '7', colourFaction: '7', factions: ['7'], tag: null, leader: 'ENG', coBelligerents: 1, anchor: { tag: 'ENG', hour: 0 }, name: 'Allies', color: [34, 197, 94] },
+    { key: 'f:10', faction: '10', colourFaction: '10', factions: ['10'], tag: null, leader: 'GER', coBelligerents: 0, anchor: { tag: 'GER', hour: 0 }, name: 'Axis', color: [239, 68, 68] },
+  ],
+  legend: [0, 1],
+  viewpoint: null,
+  regions: [
+    {
+      id: 11,
+      name: 'English Channel',
+      nameMissing: null,
+      active: true,
+      wings: 'live',
+      cell: {
+        kind: 'sides',
+        parts: [
+          { side: 0, tag: 'ENG', live: 'ENG@11' },
+          { side: 1, tag: 'GER', live: 'GER@11' },
+        ],
+        viewpoints: [],
+        unknown: [],
+        noAirObject: [],
+        filtered: false,
+        excluded: 0,
+      },
+    },
+    {
+      id: 12,
+      name: 'Northern France',
+      nameMissing: null,
+      active: true,
+      wings: 'unknown',
+      cell: {
+        kind: 'sides',
+        parts: [],
+        viewpoints: [],
+        unknown: [0],
+        noAirObject: [],
+        filtered: false,
+        excluded: 0,
+      },
+    },
+  ],
+  fallback: { kind: 'sides', parts: [], viewpoints: [], unknown: [], noAirObject: [], filtered: false, excluded: 0 },
+  scale: 100000,
+  badBelow: 40000,
+  goodAbove: 60000,
+  warnings: [],
+};
+
+test('air superiority projection preserves Rust region order, computes shares from Rust live total, and labels air wings', () => {
+  const live = valuesOf(new Map([
+    [liveKey('ENG@11', 'friendly'), 4100],
+    [liveKey('GER@11', 'friendly'), 5900],
+    [liveKey('11', 'total'), 10000],
+    [liveKey('11', 'wings'), 90],
+  ]), 'Not recorded at this hour');
+
+  const view = createBoundedReadView({
+    hour: displayedHour(400),
+    panels: new Map([['main', REPLY]]),
+    live: new Map([['main', live]]),
+  });
+
+  const model = airSuperiorityRegionProjection.project(view, OPTS);
+  assertBarsModelValid(model, 400);
+  assert.equal(model.form, 'share');
+
+  const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
+  assert.deepEqual(rows.map(r => r.key), ['11', '12']);
+  assert.equal(rows[0]!.readout?.primary, '90 air wings');
+  assert.deepEqual(rows[0]!.segments?.map(s => [s.label, Math.round(s.share * 100), s.inlineLabel]), [
+    ['Allies', 41, 'Allies 41%'],
+    ['Axis', 59, 'Axis 59%'],
+  ]);
+
+  assert.equal(rows[1]!.value?.value.kind, 'notRecorded');
+  assert.equal(rows[1]!.segments?.length, 0);
+  assert.equal(rows[1]!.readout?.primary, 'Wings not recorded');
+
+  const audit = deriveBarsAudit(model);
+  assert.ok(audit.some(entry => entry.row === '11' && entry.key === 'segment:f:7'));
+  assert.ok(audit.some(entry => entry.row === '12' && entry.key === 'value' && entry.value?.startsWith('["notRecorded"')));
+});
+
+test('air superiority projection shows missing when live total is absent and rejects future hours', () => {
+  const missingLive = valuesOf(new Map([[liveKey('11', 'wings'), 1]]), 'Air scores not recorded');
+  const view = createBoundedReadView({
+    hour: displayedHour(120),
+    panels: new Map([['main', REPLY]]),
+    live: new Map([['main', missingLive]]),
+  });
+
+  const model = airSuperiorityRegionProjection.project(view, OPTS);
+  assertBarsModelValid(model, 120);
+  const first = model.rows[0] as BarsDataRow;
+  assert.equal(first.value?.value.kind, 'notRecorded');
+  assert.equal(first.readout?.primary, '1 air wing');
+  assert.throws(() => view.who('country', 'ENG', displayedHour(121)), FutureDataError);
+});

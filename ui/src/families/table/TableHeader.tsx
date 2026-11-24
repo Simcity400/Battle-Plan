@@ -1,14 +1,14 @@
-import { useRef, type ReactNode } from 'react';
-import { Popover, usePopover } from '../../components/Popover';
+import { useRef, useState } from 'react';
 import {
   HEADER_CARET_LANE,
+  CELL_INSET,
   endAligned,
+  ROW_MARGIN_X,
   type TableColumnLayout,
   type TableDisplay,
   type TableSettings,
-  type TableTone,
 } from './settings.ts';
-import type { TableColumnSpec } from './model.ts';
+import type { TableColumnSpec, TableHeaderGroup } from './model.ts';
 import './tableFamily.css';
 
 export const columnWidthVar = (key: string) => `--tf-w-${key.replace(/[^A-Za-z0-9_-]/g, '_')}`;
@@ -21,8 +21,6 @@ export const DISPLAY_LABELS: Readonly<Record<TableDisplay, string>> = {
   meterBefore: 'Meter + number',
   underline: 'Number + underline',
   dot: 'Dot and text',
-  outline: 'Outlined pill',
-  filled: 'Filled pill',
   text: 'Text only',
   icon: 'Icon and text',
   flagName: 'Flag and name',
@@ -30,43 +28,22 @@ export const DISPLAY_LABELS: Readonly<Record<TableDisplay, string>> = {
   flag: 'Flag only',
 };
 
-export const TONES: readonly (readonly [TableTone, string])[] = [
-  ['blue', 'Blue'],
-  ['red', 'Red'],
-  ['amber', 'Amber'],
-  ['green', 'Green'],
-  ['grey', 'Grey'],
-  ['country', 'Country colour'],
-  ['value-bad', 'By value: high is bad'],
-  ['value-good', 'By value: high is good'],
-];
+const SORT_ARROW_DOWN = <svg className="tf-sort-arrow" viewBox="0 0 9 11" width="9" height="11" aria-hidden="true">
+  <path d="M4.5 1v8M1.5 6.2 4.5 9.2l3-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+</svg>;
 
-const BARRED = new Set<TableDisplay>(['faint', 'track', 'meterAfter', 'meterBefore', 'underline']);
+const SORT_ARROW_UP = <svg className="tf-sort-arrow" viewBox="0 0 9 11" width="9" height="11" aria-hidden="true">
+  <path d="M4.5 10V2M1.5 4.8 4.5 1.8l3 3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+</svg>;
 
-const line = (d: string) => <path d={d} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />;
-const GLYPH: Record<TableDisplay, ReactNode> = {
-  plain: <path d="M4.5 4.5v7M3 6l1.5-1.5M8.5 6c.4-1.2 3-1.4 3.3 0 .4 1.6-3.4 3.2-3.4 5.5h3.7" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />,
-  faint: <><rect x="1.5" y="4" width="13" height="8" rx="2" fill="currentColor" opacity=".28" />{line('M8.5 8h4')}</>,
-  track: <>{line('M1.5 8h3')}<rect x="6.5" y="6.5" width="8" height="3" rx="1.5" fill="currentColor" opacity=".28" /><rect x="6.5" y="6.5" width="5" height="3" rx="1.5" fill="currentColor" /></>,
-  meterAfter: <>{line('M1.5 8h5.5')}<rect x="9" y="7" width="5.5" height="2" rx="1" fill="currentColor" opacity=".28" /><rect x="9" y="7" width="3.2" height="2" rx="1" fill="currentColor" /></>,
-  meterBefore: <><rect x="1.5" y="7" width="5.5" height="2" rx="1" fill="currentColor" opacity=".28" /><rect x="1.5" y="7" width="3.2" height="2" rx="1" fill="currentColor" />{line('M9 8h5.5')}</>,
-  underline: <>{line('M6 6.5h7')}<path d="M3 10.5h10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" opacity=".28" fill="none" /><path d="M3 10.5h6.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" fill="none" /></>,
-  dot: <><circle cx="3.5" cy="8" r="2" fill="currentColor" />{line('M7.5 8h7')}</>,
-  outline: <rect x="1.5" y="4.5" width="13" height="7" rx="3.5" fill="none" stroke="currentColor" strokeWidth="1.3" />,
-  filled: <rect x="1.5" y="4.5" width="13" height="7" rx="3.5" fill="currentColor" opacity=".5" />,
-  text: line('M2.5 8h11'),
-  flagName: <><rect x="1.5" y="5" width="5" height="6" rx="1" fill="currentColor" opacity=".6" />{line('M9 8h5.5')}</>,
-  name: line('M2.5 8h11'),
-  flag: <rect x="4" y="4" width="8" height="8" rx="1.2" fill="currentColor" opacity=".6" />,
-  icon: <><rect x="1.5" y="5" width="5" height="6" rx="1" fill="none" stroke="currentColor" strokeWidth="1.3" />{line('M9 8h5.5')}</>,
-};
-
-const svg = (children: ReactNode) => <svg viewBox="0 0 16 16" aria-hidden="true">{children}</svg>;
-const CARET = svg(<path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />);
-const CHECK = svg(<path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />);
-const SORT_DOWN = svg(<path d="M4 3.5v9M2 10.5l2 2 2-2M8.5 4.5h5.5M8.5 8h4M8.5 11.5h2.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />);
-const SORT_UP = svg(<path d="M4 12.5v-9M2 5.5l2-2 2 2M8.5 4.5h2.5M8.5 8h4M8.5 11.5h5.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />);
-const HIDE = svg(<><path d="M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" /><circle cx="8" cy="8" r="1.7" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M3 13 13 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></>);
+const GRIP_DOTS = <svg className="tf-th-grip" viewBox="0 0 8 12" width="7" height="11" aria-hidden="true">
+  <circle cx="2" cy="2.5" r="1" fill="currentColor" />
+  <circle cx="6" cy="2.5" r="1" fill="currentColor" />
+  <circle cx="2" cy="6" r="1" fill="currentColor" />
+  <circle cx="6" cy="6" r="1" fill="currentColor" />
+  <circle cx="2" cy="9.5" r="1" fill="currentColor" />
+  <circle cx="6" cy="9.5" r="1" fill="currentColor" />
+</svg>;
 
 export interface TableHeaderColumn extends TableColumnLayout {
   displays: readonly (readonly [TableDisplay, string])[];
@@ -74,6 +51,7 @@ export interface TableHeaderColumn extends TableColumnLayout {
   hideable?: boolean;
   sortable?: boolean;
   hint?: string;
+  headerGroup?: TableHeaderGroup;
 }
 
 export interface FamilyTableHeaderProps {
@@ -84,161 +62,197 @@ export interface FamilyTableHeaderProps {
   unsorted?: boolean;
   editableColumns?: boolean;
   rankWidth?: number;
+  pinnedCount?: number;
   pinned: boolean;
   scrollLeft: number;
+  canScrollRight?: boolean;
   onChange(update: (next: TableSettings) => void): void;
   onResize(column: string, width: number | null): void;
-  onResizing(column: string, width: number): void;
-}
-
-function ColumnMenu({ column, settings, onChange, close }: {
-  column: TableHeaderColumn;
-  settings: TableSettings;
-  onChange(update: (next: TableSettings) => void): void;
-  close(): void;
-}) {
-  const own = settings.columns[column.key];
-  if (!own) return null;
-  const toned = BARRED.has(own.as);
-  const sorted = settings.sort.column === column.key ? settings.sort.direction : null;
-  const pair = column.text
-    ? [['ascending', 'A to Z'], ['descending', 'Z to A']] as const
-    : [['descending', 'High to low'], ['ascending', 'Low to high']] as const;
-  return <>
-    <div className="tf-menu-title">{column.label}</div>
-    {column.displays.length > 0 && <>
-      <div className="tf-menu-label">Show as</div>
-      {column.displays.map(([value, label]) => <button key={value} type="button" role="menuitemradio" aria-checked={own.as === value} className="tf-menu-item"
-        onClick={() => onChange(next => { next.columns[column.key]!.as = value; if (BARRED.has(value) && !next.columns[column.key]!.tone) next.columns[column.key]!.tone = 'blue'; })}>
-        <span className="tf-menu-icon">{svg(GLYPH[value])}</span><span className="tf-menu-text">{label}</span><span className="tf-menu-check">{CHECK}</span>
-      </button>)}
-    </>}
-    {toned && <>
-      <div className="tf-menu-label">Colour<span>{TONES.find(([tone]) => tone === own.tone)?.[1] ?? ''}</span></div>
-      <div className="tf-swatches">{TONES.map(([tone, label]) => <button key={tone} type="button" className={`tf-swatch tone-${tone}`} aria-pressed={own.tone === tone}
-        aria-label={label} title={label} onClick={() => onChange(next => { next.columns[column.key]!.tone = tone; })} />)}</div>
-    </>}
-    <div className="tf-menu-label">Sort</div>
-    <div className="tf-menu-pair">{pair.map(([direction, label]) => <button key={direction} type="button" aria-pressed={sorted === direction}
-      onClick={() => onChange(next => { next.sort = { column: column.key, direction }; })}>{direction === 'descending' ? SORT_DOWN : SORT_UP}<span>{label}</span></button>)}</div>
-    {settings.order[0] !== column.key && column.hideable !== false && <>
-      <div className="tf-menu-sep" />
-      <button type="button" className="tf-menu-item danger" onClick={() => { close(); onChange(next => { next.columns[column.key]!.show = false; }); }}>
-        <span className="tf-menu-icon">{HIDE}</span><span className="tf-menu-text">Hide column</span>
-      </button>
-    </>}
-  </>;
+  onResizing(column: string, width: number, guideX?: number | null): void;
 }
 
 export function FamilyTableHeader({
   columns,
-  allColumns,
-  hiddenColumns,
   settings,
   unsorted = false,
   editableColumns = true,
   rankWidth = 0,
+  pinnedCount = 1,
   pinned,
   scrollLeft,
+  canScrollRight = false,
   onChange,
   onResize,
   onResizing,
 }: FamilyTableHeaderProps) {
-  const menu = usePopover('end');
-  const chooser = usePopover('end');
-  const target = useRef<string | null>(null);
-  const drag = useRef<{ key: string; start: number; width: number; current: number } | null>(null);
-  const column = columns.find(item => item.key === target.current);
-  const hiddenSet = new Set(hiddenColumns);
+  const dragResize = useRef<{ key: string; start: number; width: number; current: number; originLeft: number } | null>(null);
+  const dragCol = useRef<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ key: string; side: 'left' | 'right' } | null>(null);
+  const headRef = useRef<HTMLDivElement>(null);
   const sort = settings.sort;
-  const firstKey = allColumns[0]?.key;
+  const hasTall = columns.some(col => Boolean(col.unit) || Boolean(col.headerGroup));
+  const showPinShadow = pinned && scrollLeft > 0;
 
-  const moreSlot = hiddenColumns.length > 0 && <div className="tf-more-slot">
-    <button type="button" className="tf-more-cols" aria-expanded={chooser.open}
-      aria-label={`Show ${hiddenColumns.length} hidden ${hiddenColumns.length === 1 ? 'column' : 'columns'}`}
-      onClick={event => {
-        const box = event.currentTarget.getBoundingClientRect();
-        chooser.openAt({ left: box.left, right: box.right, top: box.top, bottom: box.bottom });
-      }}>
-      +{hiddenColumns.length} {hiddenColumns.length === 1 ? 'column' : 'columns'}
-    </button>
-    <Popover menu={chooser} className="tf-menu tf-chooser" aria-label="Columns">
-      <div className="tf-menu-title">Columns</div>
-      {allColumns.map(col => {
-        const own = settings.columns[col.key];
-        const shown = own?.show ?? true;
-        const narrowed = shown && hiddenSet.has(col.key);
-        const locked = unsorted || !editableColumns || col.key === firstKey || col.key === sort.column || col.hideable === false;
-        return <button key={col.key} type="button" role="menuitemcheckbox" aria-checked={shown} disabled={locked}
-          className={`tf-menu-item${narrowed ? ' is-narrowed' : ''}`}
-          onClick={() => onChange(draft => {
-            const entry = draft.columns[col.key];
-            if (entry) entry.show = !entry.show;
-          })}>
-          <span className="tf-menu-text">{col.label}{narrowed ? ' (in tooltip)' : ''}</span>
-          <span className="tf-menu-check">{shown ? '\u2713' : ''}</span>
-        </button>;
-      })}
-    </Popover>
-  </div>;
+  const reorderColumns = (fromKey: string, toKey: string, side: 'left' | 'right') => {
+    if (fromKey === toKey) return;
+    onChange(next => {
+      const fromIndex = next.order.indexOf(fromKey);
+      if (fromIndex < 0) return;
+      next.order.splice(fromIndex, 1);
+      const targetIndex = next.order.indexOf(toKey);
+      if (targetIndex < 0) {
+        next.order.push(fromKey);
+        return;
+      }
+      next.order.splice(side === 'right' ? targetIndex + 1 : targetIndex, 0, fromKey);
+    });
+  };
 
-  if (unsorted) {
-    return <div className="tf-head-row">
-      <div className="tf-head" role="row" style={{ transform: `translateX(${-scrollLeft}px)` }}>
-        {rankWidth > 0 && <div className="tf-th tf-rank" role="columnheader" style={{ width: rankWidth, ...(pinned && { transform: `translateX(${scrollLeft}px)`, position: 'relative', zIndex: 3 }) }}>#</div>}
-        {columns.map((item, index) => {
-          const end = endAligned(item);
-          const stick = pinned && index === 0;
-          return <div key={item.key} role="columnheader" className={`tf-th${end ? ' end' : ''}${stick ? ' pinned' : ''}`}
-            style={{ width: `var(${columnWidthVar(item.key)}, ${item.width}px)`, ...(stick && { transform: `translateX(${scrollLeft}px)` }) }}>
-            <span className="tf-th-static" title={item.hint}>{item.label}</span>
-          </div>;
-        })}
-      </div>
-      {moreSlot}
-    </div>;
-  }
+  const renderLabel = (item: TableHeaderColumn, active: boolean, end: boolean) => {
+    const arrow = active ? (sort.direction === 'descending' ? SORT_ARROW_DOWN : SORT_ARROW_UP) : null;
+    if (item.headerGroup?.kind === 'shortOver') {
+      return <span className="tf-th-short-over">
+        <span className="tf-th-so-bar">
+          <span>Short</span>
+          <i className="tf-th-so-tick" aria-hidden="true" />
+          <span>Over</span>
+        </span>
+        {arrow && <span className="tf-sort-mark" aria-hidden="true">{arrow}</span>}
+      </span>;
+    }
+    if (item.headerGroup?.kind === 'parts') {
+      return <span className="tf-th-parts">
+        {item.headerGroup.parts.map((part, idx) => <span key={idx} className="tf-th-part" title={part.notRecordedReason}>
+          {part.notRecordedReason && <span className="tf-th-hatch" aria-hidden="true" />}
+          <span>{part.label}</span>
+        </span>)}
+      </span>;
+    }
+    const textBlock = <span className="tf-th-text-block">
+      <span className="tf-th-main">
+        {item.notRecordedReason && <span className="tf-th-hatch" aria-hidden="true" />}
+        <span>{item.label}</span>
+      </span>
+      {item.unit && <span className="tf-th-unit">{item.unit}</span>}
+    </span>;
+    return <>
+      {end && arrow && <span className="tf-sort-mark" aria-hidden="true">{arrow}</span>}
+      {textBlock}
+      {!end && arrow && <span className="tf-sort-mark" aria-hidden="true">{arrow}</span>}
+    </>;
+  };
 
-  return <div className="tf-head-row">
-    <div className="tf-head" role="row" style={{ transform: `translateX(${-scrollLeft}px)` }}>
-      {rankWidth > 0 && <div className="tf-th tf-rank" role="columnheader" style={{ width: rankWidth, ...(pinned && { transform: `translateX(${scrollLeft}px)`, position: 'relative', zIndex: 3 }) }}>#</div>}
+  return <div className={`tf-head-row${hasTall ? ' is-tall' : ''}${canScrollRight ? ' has-right-fade' : ''}`}>
+    <div ref={headRef} className="tf-head" role="row" style={{ transform: `translateX(${-scrollLeft}px)` }}>
+      {rankWidth > 0 && <div
+        className={`tf-th tf-rank${pinned ? ' pinned' : ''}`}
+        role="columnheader"
+        style={{ width: rankWidth, ...(pinned && { transform: `translateX(${scrollLeft}px)` }) }}
+      >
+        #
+      </div>}
       {columns.map((item, index) => {
-        const active = sort.column === item.key;
+        const active = !unsorted && sort.column === item.key;
         const end = endAligned(item);
-        const stick = pinned && index === 0;
-        const canSort = item.sortable !== false;
-        return <div key={item.key} role="columnheader" aria-sort={canSort ? (active ? sort.direction : 'none') : undefined}
-          className={`tf-th${end ? ' end' : ''}${active ? ' sorted' : ''}${stick ? ' pinned' : ''}`}
-          style={{ width: `var(${columnWidthVar(item.key)}, ${item.width}px)`, ...(stick && { transform: `translateX(${scrollLeft}px)` }) }}>
-          {canSort ? <button type="button" className="tf-th-label" title={item.hint} onClick={() => onChange(next => {
-            next.sort = active ? { column: item.key, direction: sort.direction === 'descending' ? 'ascending' : 'descending' }
-              : { column: item.key, direction: item.text ? 'ascending' : 'descending' };
-          })}><span>{item.label}</span>{active && <span className="tf-sort-mark" aria-hidden="true">{sort.direction === 'descending' ? '↓' : '↑'}</span>}</button>
-            : <span className="tf-th-static" title={item.hint}>{item.label}</span>}
-          {editableColumns && <button type="button" className="tf-th-menu" aria-label={`${item.label} options`} aria-expanded={menu.open && target.current === item.key}
-            onClick={event => { target.current = item.key; const box = event.currentTarget.getBoundingClientRect(); menu.openAt({ left: box.left, right: box.right, top: box.top, bottom: box.bottom }); }}>{CARET}</button>}
-          {editableColumns && <span className="tf-resize" title="Drag to resize. Double-click to fit." style={{ width: 8 }}
+        const isPinned = pinned && index < pinnedCount;
+        const isLastPinned = isPinned && index === pinnedCount - 1;
+        const canSort = !unsorted && item.sortable !== false && !item.notRecordedReason;
+        const canDrag = editableColumns && !unsorted && index >= pinnedCount;
+        const dropClass = dropTarget?.key === item.key ? ` is-drop-${dropTarget.side}` : '';
+        const title = item.notRecordedReason ?? item.hint;
+        return <div
+          key={item.key}
+          role="columnheader"
+          aria-sort={canSort ? (active ? sort.direction : 'none') : undefined}
+          className={`tf-th${end ? ' end' : ''}${active ? ' sorted' : ''}${isPinned ? ' pinned' : ''}${isLastPinned && showPinShadow ? ' pinned-shadow' : ''}${item.notRecordedReason ? ' is-unrecorded' : ''}${dropClass}`}
+          style={{
+            width: `var(${columnWidthVar(item.key)}, ${item.width}px)`,
+            ...(index === 0 && { paddingLeft: CELL_INSET + ROW_MARGIN_X }),
+            ...(index === columns.length - 1 && { paddingRight: CELL_INSET + ROW_MARGIN_X }),
+            ...(isPinned && { transform: `translateX(${scrollLeft}px)` }),
+          }}
+          draggable={canDrag}
+          onDragStart={canDrag ? event => {
+            dragCol.current = item.key;
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', item.key);
+          } : undefined}
+          onDragOver={canDrag ? event => {
+            if (!dragCol.current || dragCol.current === item.key) return;
+            event.preventDefault();
+            const box = event.currentTarget.getBoundingClientRect();
+            const side = event.clientX < box.left + box.width / 2 ? 'left' : 'right';
+            setDropTarget(prev => (prev?.key === item.key && prev.side === side ? prev : { key: item.key, side }));
+          } : undefined}
+          onDragLeave={canDrag ? () => {
+            setDropTarget(prev => (prev?.key === item.key ? null : prev));
+          } : undefined}
+          onDrop={canDrag ? event => {
+            event.preventDefault();
+            const from = dragCol.current;
+            const side = dropTarget?.key === item.key ? dropTarget.side : 'left';
+            dragCol.current = null;
+            setDropTarget(null);
+            if (from) reorderColumns(from, item.key, side);
+          } : undefined}
+          onDragEnd={() => {
+            dragCol.current = null;
+            setDropTarget(null);
+          }}
+        >
+          {canSort ? <button
+            type="button"
+            className="tf-th-label"
+            title={title}
+            onClick={() => onChange(next => {
+              next.sort = active
+                ? { column: item.key, direction: sort.direction === 'descending' ? 'ascending' : 'descending' }
+                : { column: item.key, direction: item.text ? 'ascending' : 'descending' };
+            })}
+          >
+            {canDrag && GRIP_DOTS}
+            {renderLabel(item, active, end)}
+          </button> : <span className="tf-th-static" title={title}>{renderLabel(item, false, end)}</span>}
+          {editableColumns && <span
+            className="tf-resize"
+            title="Drag to resize. Double-click to fit."
             onPointerDown={event => {
-              event.preventDefault(); event.stopPropagation();
+              event.preventDefault();
+              event.stopPropagation();
               event.currentTarget.setPointerCapture(event.pointerId);
-              const width = (event.currentTarget.parentElement as HTMLElement).offsetWidth;
-              drag.current = { key: item.key, start: event.clientX, width, current: width };
+              const th = event.currentTarget.parentElement as HTMLElement;
+              const width = th.offsetWidth;
+              const headBox = headRef.current?.parentElement?.getBoundingClientRect();
+              const thBox = th.getBoundingClientRect();
+              const originLeft = headBox ? thBox.left - headBox.left : 0;
+              dragResize.current = { key: item.key, start: event.clientX, width, current: width, originLeft };
+              onResizing(item.key, width, originLeft + width);
             }}
             onPointerMove={event => {
-              const now = drag.current; if (!now) return;
+              const now = dragResize.current;
+              if (!now) return;
               now.current = Math.max(40, Math.min(1000, Math.round(now.width + event.clientX - now.start)));
-              onResizing(now.key, now.current);
+              onResizing(now.key, now.current, now.originLeft + now.current);
             }}
-            onPointerUp={() => { const now = drag.current; drag.current = null; if (now && now.current !== now.width) onResize(now.key, now.current); }}
-            onPointerCancel={() => { drag.current = null; }}
-            onDoubleClick={() => onResize(item.key, null)} />}
+            onPointerUp={() => {
+              const now = dragResize.current;
+              dragResize.current = null;
+              onResizing(item.key, now?.current ?? item.width, null);
+              const insets = (index === 0 ? ROW_MARGIN_X : 0) + (index === columns.length - 1 ? ROW_MARGIN_X : 0);
+              if (now && now.current !== now.width) onResize(now.key, Math.max(40, now.current - insets));
+            }}
+            onPointerCancel={() => {
+              dragResize.current = null;
+              onResizing(item.key, item.width, null);
+            }}
+            onDoubleClick={() => {
+              onResizing(item.key, item.width, null);
+              onResize(item.key, null);
+            }}
+          />}
         </div>;
       })}
-      {editableColumns && <Popover menu={menu} className="tf-menu" aria-label={column ? `${column.label} options` : 'Column options'}>
-        {column && <ColumnMenu column={column} settings={settings} onChange={update => onChange(update)} close={menu.close} />}
-      </Popover>}
     </div>
-    {moreSlot}
   </div>;
 }
 
@@ -250,10 +264,13 @@ export function buildHeaderColumns(
     const spec = specs.get(col.key);
     return {
       ...col,
+      unit: spec?.unit,
       text: spec?.text,
       hideable: spec?.hideable,
       sortable: spec?.sortable,
       hint: spec?.hint,
+      notRecordedReason: spec?.notRecordedReason,
+      headerGroup: spec?.headerGroup,
       displays: spec && spec.offered.length > 1 ? spec.offered.map(display => [display, DISPLAY_LABELS[display]] as const) : [],
     };
   });

@@ -669,6 +669,8 @@ export class Page<B extends Bitmap = Bitmap> {
     this.retireEarly(widget, 'binding');
     if (ownerChanged) {
       widget.failed = false;
+      widget.inspect = null;
+      this.inspectedByLane[widget.lane]?.delete(widget);
       this.clear(widget, 'reading');
     } else if (change.subscription) { widget.failed = false; if (this.failedRoute(widget) || widget.status === 'failed' || widget.status === 'refused') this.reading(widget); }
     else if (change.pin !== undefined || change.offset !== undefined) this.revalidate(widget);

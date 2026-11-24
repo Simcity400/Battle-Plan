@@ -1,7 +1,9 @@
 import type { WidgetMeta, WidgetRenderer, WidgetViewSwitch } from '../dashboard/definitions';
 import type { OptionField, WidgetOptions } from '../dashboard/options';
+import type { LaneView } from '../draw/lane.ts';
 import type { AuditRow } from '../draw/notifications';
 import type { FamilyProjection } from './contract.ts';
+import type { FamilyHostAdapter } from './host/adapter.ts';
 import type { FamilyId, FamilyViewSpec } from './plan.ts';
 import { viewSwitchControl } from './settingsControls.ts';
 
@@ -13,6 +15,14 @@ export function normalizeView(view?: string): string {
 
 export function viewKey(kind: string, view?: string): string {
   return `${kind}\u0000${normalizeView(view)}`;
+}
+
+export function viewOwnedFields(fields: readonly OptionField[], view: string | undefined): readonly OptionField[] {
+  const active = normalizeView(view);
+  if (active === DEFAULT_VIEW) return fields;
+  return fields.map(field => (field.kind === 'choice' && field.choices.some(choice => choice.value === active)
+    ? field
+    : { ...field, storeAs: `${field.key}@${active}` }));
 }
 
 export type FamilyAuditProjection<TModel = unknown, TOptions = unknown> = (
@@ -38,6 +48,13 @@ export interface FamilyViewEntry {
   readonly viewOption?: string;
   readonly options?: readonly OptionField[];
   readonly loadSpec: () => Promise<FamilyViewModule>;
+}
+
+export interface FamilyManifestModule {
+  readonly family: FamilyId;
+  readonly laneView: (wake: (widget: number) => void) => LaneView;
+  readonly views: readonly FamilyViewEntry[];
+  readonly hostAdapter?: FamilyHostAdapter<any, any, any>;
 }
 
 export interface LegacyWidgetEntry {
@@ -95,7 +112,15 @@ export function declaredViewChoices(
     seen.add(view);
     out.push({ value: view, label: labelFor(view, entry.label), source: 'legacy' });
   }
-  return out;
+  const declared = metaChoiceField?.choices.map(choice => choice.value);
+  if (!declared) return out;
+  const rank = (view: string) => {
+    const at = declared.indexOf(view);
+    return at < 0 ? declared.length : at;
+  };
+  return out.map((choice, index) => ({ choice, index }))
+    .sort((a, b) => rank(a.choice.value) - rank(b.choice.value) || a.index - b.index)
+    .map(item => item.choice);
 }
 
 export function resolveActiveView(
@@ -141,7 +166,7 @@ export function scopedOptionFields(
     seen.add(viewField.key);
   }
 
-  for (const field of activeFamily.options) {
+  for (const field of viewOwnedFields(activeFamily.options, activeView)) {
     if (seen.has(field.key)) continue;
     seen.add(field.key);
     result.push(field);

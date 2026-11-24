@@ -49,6 +49,25 @@ export function keepWanted<T>(held: Held<T>, identity: string | null, wanted: Re
   return data === held.data && errors === held.errors ? held : { identity, data, errors };
 }
 
+export const MAX_WINDOW_CONCURRENCY = 4;
+
+export function runBoundedQueue<T>(items: readonly T[], limit: number, run: (item: T) => Promise<void>): void {
+  const cap = Math.max(1, Math.floor(limit));
+  let next = 0;
+  let active = 0;
+  const pump = () => {
+    while (active < cap && next < items.length) {
+      const item = items[next++];
+      active++;
+      void run(item).finally(() => {
+        active--;
+        pump();
+      });
+    }
+  };
+  pump();
+}
+
 export function useProductWindows<T>(client: DashboardClient, identity: string | null, request: (window: number) => ProductRequest,
   wanted: readonly number[], active: boolean, validate?: (data: unknown) => T, source?: DashboardSource, progressive = false): ProductWindows<T> {
   const owner = useMemo(() => ({ client, identity }), [client, identity]);
@@ -84,13 +103,14 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
       add();
       if (!scheduled) { scheduled = true; inFrame(commit); }
     };
-    for (const window of asking) {
+    runBoundedQueue(asking, MAX_WINDOW_CONCURRENCY, window => {
+      if (controller.signal.aborted) return Promise.resolve();
       const publish = progressive ? (data: T) => arrive(() => arrived.data.push([window, data])) : undefined;
-      void loadProduct<T>(client, request(window), controller.signal, validate, source, attempt > 0, publish, undefined, true).then(
+      return loadProduct<T>(client, request(window), controller.signal, validate, source, attempt > 0, publish, undefined, true).then(
         data => arrive(() => arrived.data.push([window, data])),
         error => arrive(() => arrived.errors.push([window, asFailure(error)])),
       );
-    }
+    });
     return () => { commit(); controller.abort(); };
   }, [owner, key, active, attempt]);
   const data = current?.data;

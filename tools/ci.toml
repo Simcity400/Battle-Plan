@@ -218,18 +218,21 @@ name = "dashboard-contract"
 group = "rust"
 tier = "check"
 toolchain = "rust"
-inputs = ["crates/**", "ui/src/generated/dashboard.ts"]
+inputs = ["ui/src/generated/dashboard.ts"]
+package = "dashboard"
 ci-only = true
 command = ["cargo", "run", "--profile", "ci", "-p", "dashboard", "--features", "export-types", "--bin", "export-types", "--", "--check"]
+warm = ["cargo", "build", "--profile", "ci", "-p", "dashboard", "--features", "export-types", "--lib"]
 
 [[job]]
 name = "dashboard-shipped"
 group = "rust"
 tier = "check"
 toolchain = "rust"
-inputs = ["crates/**"]
+package = "dashboard"
 ci-only = true
 command = ["cargo", "check", "--profile", "ci", "-p", "dashboard", "--lib"]
+warm = ["cargo", "check", "--profile", "ci", "-p", "dashboard", "--lib"]
 
 [[job]]
 name = "rust-test"

@@ -22,7 +22,7 @@ import type {
   SourcePlan,
 } from '../plan.ts';
 import type { TableColumnSpec, TableProjection } from './model.ts';
-import type { TableBase, TableSettings, TableSortDirection } from './settings.ts';
+import type { TableBase, TableSettings } from './settings.ts';
 
 export type GatedSpan = BoundWindow;
 export type DeclaredFactionRun = FamilyFactionRun;
@@ -50,7 +50,6 @@ export interface DeclaredTableContext<TAux = unknown> extends FamilyPlanContext<
 export type TableSettingsPolicy<TAux = unknown> =
   | { readonly kind: 'fixed'; readonly base: TableBase }
   | { readonly kind: 'table'; readonly key?: string; readonly base: TableBase }
-  | { readonly kind: 'options'; readonly defaultSort: { readonly column: string; readonly direction: TableSortDirection } }
   | {
       readonly kind: 'custom';
       readonly resolve: (ctx: FamilyPlanContext<TAux>, columns: readonly TableColumnSpec[]) => TableSettings;

@@ -1,5 +1,6 @@
 
 pub mod civil_wars;
+pub mod elections;
 pub mod history;
 pub mod state;
 

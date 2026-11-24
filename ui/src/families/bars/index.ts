@@ -38,6 +38,7 @@ export {
   BARS_SECTION_HEIGHT,
   BARS_SPLIT_CENTER_GAP,
   BARS_VALUE_GAP,
+  axisCeiling,
   layoutFamilyBars,
   visibleBarsRange,
   type BarsLayout,
@@ -75,3 +76,7 @@ export {
   type AnyBarsWidgetDeclaration,
   type BarsWidgetDeclaration,
 } from './declaration.ts';
+export {
+  barsHostAdapter,
+  parseBarsHit,
+} from './hostAdapter.ts';
