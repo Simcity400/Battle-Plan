@@ -15,7 +15,6 @@ export const CLOSED: PopOutState = { generation: 0, sequence: 0, viewer: 0, open
 export const openPopout = () => invoke<void>('popout_open');
 export const closePopout = (generation: number) => invoke<void>('popout_close', { generation });
 export const restartPopout = (generation: number) => invoke<void>('popout_restart', { generation });
-export const publishPopout = () => invoke<void>('popout_publish');
 export const nextPopoutMonitor = (generation: number) => invoke<void>('popout_next_monitor', { generation });
 export const popoutUnloaded = (path: string, generation: number) => invoke<void>('popout_unloaded', { path, generation });
 export const seekPopout = (generation: number, path: string, revision: string, branch: string, hour: number, playback?: MapPlayback) =>

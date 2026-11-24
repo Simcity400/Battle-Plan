@@ -16,8 +16,6 @@ import { useCampaignSettings } from './campaignSettings';
 import { useHeadHour } from '../widgets/army-size/headHour.ts';
 import { SPEC, axisAt } from './regionTime.ts';
 
-export { FACTION_OPTION } from './factionOption.ts';
-
 const covers = (run: { firstHour: number; lastHour: number }, hour: number) => run.firstHour <= hour && hour <= run.lastHour;
 
 export function factionOfCountry(groups: CountryGroupReply, key: string, hour: number): FactionGroup | null {
@@ -57,8 +55,6 @@ export function useFactionDisplayNames(source: { metadata: { campaignKey: string
     return named.length ? Object.fromEntries(named) : NO_NAMES;
   }, [styles]);
 }
-
-export const memberAt = (faction: FactionGroup, tag: string, hour: number) => faction.members.some(run => run.tag === tag && covers(run, hour));
 
 export function useChosenFaction(widget: WidgetSpec, runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean) {
   const groups = useCountryGroups(runtime, track, active);

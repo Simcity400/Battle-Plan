@@ -2,7 +2,6 @@ import { useSyncExternalStore } from 'react';
 import { normalizeColor } from '../shell/appearance/color.ts';
 import { opaqueTag } from './validation.ts';
 
-
 export interface FactionStyle { colour?: string; name?: string }
 export interface FactionColourSet { id: string; name: string; entries: { faction: string; colour: string; name?: string }[] }
 export interface CampaignSettings {
@@ -132,31 +131,6 @@ export function setCounterCountries(settings: CampaignSettings, campaign: string
   if (!safeKey(campaign, /^[0-9a-f]{1,128}$/) || scope.length > MAX_SCOPE || !safeKey(scope, /^./)) return settings;
   const entry = settings.campaigns[campaign] ?? { factions: {} };
   return { ...settings, campaigns: { ...settings.campaigns, [campaign]: { ...entry, counterCountries: { ...entry.counterCountries, [scope]: tagList(tags) ?? [] } } } };
-}
-
-export function saveColourSet(settings: CampaignSettings, id: string, name: string, campaign: string,
-  factions: readonly { id: string; name: string | null }[], colours: ReadonlyMap<string, string>): CampaignSettings {
-  const chosen = settings.campaigns[campaign]?.factions ?? {};
-  const entries = factions.flatMap(faction => {
-    const shown = chosen[faction.id]?.name ?? faction.name;
-    const hex = chosen[faction.id]?.colour ?? colours.get(faction.id);
-    return shown && hex ? [{ faction: faction.name ?? shown, colour: hex, ...(chosen[faction.id]?.name ? { name: chosen[faction.id].name } : {}) }] : [];
-  });
-  const set = { id, name: name.trim().slice(0, MAX_TEXT), entries };
-  return { ...settings, sets: [...settings.sets.filter(item => item.id !== id), set] };
-}
-
-export function applyColourSet(settings: CampaignSettings, set: FactionColourSet, campaign: string,
-  factions: readonly { id: string; name: string | null }[]): { settings: CampaignSettings; matched: number } {
-  let next = settings;
-  let matched = 0;
-  for (const faction of factions) {
-    const entry = faction.name && set.entries.find(item => item.faction.toLowerCase() === faction.name!.toLowerCase());
-    if (!entry) continue;
-    next = setFactionStyle(next, campaign, faction.id, { colour: entry.colour, ...(entry.name ? { name: entry.name } : {}) });
-    matched++;
-  }
-  return { settings: next, matched };
 }
 
 let current: CampaignSettings | null = null;

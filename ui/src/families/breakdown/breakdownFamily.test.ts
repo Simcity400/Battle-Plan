@@ -11,7 +11,7 @@ import type { IdentityProvider } from '../plan.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import { resolvePlaybackProvenInterval } from '../broker.ts';
 import type { FamilyTheme } from '../contract.ts';
-import { assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, assertTooltipDated, driveLane, firstRow, installRecordingCanvas } from '../laneRuntime.fixture.ts';
 import { createLaneView } from '../laneRuntime.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { parseBreakdownHit } from './hostAdapter.ts';
@@ -209,6 +209,7 @@ test('political power spending reads the product at the displayed hour', () => {
   const held = lane(reply(spent()));
   const surface = { width: 600, height: 300, dpr: 1 };
   assertQuietFrames(() => createLaneView(breakdownLane, () => {}), { label: 'spending', binding: held, hour: START + 10 }, 24, surface);
+  assertTooltipDated(() => createLaneView(breakdownLane, () => {}), { label: 'spending', binding: held, hour: START + 10 }, firstRow, 5, surface);
   assertFreshPaint(() => createLaneView(breakdownLane, () => {}), [
     { label: 'spent', binding: held, hour: START + 10, check: true },
     { label: 'later', binding: lane(reply(partlyKnown(), { hour: START + 20 })), hour: START + 20, speed: 24 },

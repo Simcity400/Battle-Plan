@@ -493,14 +493,36 @@ export class IdentityIndex {
     this.resolveChanges++;
   }
 
-  dropEntityRuns(keys: Iterable<EntityIdentityKey>, from: number, to: number): void {
+  dropEntityRuns(
+    keys: Iterable<EntityIdentityKey>,
+    from: number,
+    to: number,
+    kinds: readonly EntityIdentityKey['kind'][],
+    retained: readonly (readonly [number, number])[],
+  ): void {
     for (const key of keys) {
       const id = identityKeyString(key);
       const held = this.entityRuns.get(id);
-      if (!held) continue;
-      const kept = spliceSpan(held, from, to, []);
-      if (kept.length) this.entityRuns.set(id, kept);
-      else this.entityRuns.delete(id);
+      if (held) {
+        const kept = spliceSpan(held, from, to, []);
+        if (kept.length) this.entityRuns.set(id, kept);
+        else this.entityRuns.delete(id);
+      }
+      const failed = this.entityFailures.get(id);
+      if (failed) {
+        const kept = withoutSpan(failed, from, to);
+        if (kept.length) this.entityFailures.set(id, kept);
+        else this.entityFailures.delete(id);
+      }
+    }
+    if (!retained.some(([first, last]) => first <= to && last >= from)) {
+      for (const kind of kinds) {
+        const gaps = this.entityUnknown.get(kind);
+        if (!gaps) continue;
+        const kept = spliceSpan(gaps, from, to, []);
+        if (kept.length) this.entityUnknown.set(kind, kept);
+        else this.entityUnknown.delete(kind);
+      }
     }
     this.resolveChanges++;
   }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { OVERLAP_REASON, OVERLAP_WARNING } from './clockData.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { CLOCK_COLUMNS, CLOCK_TABLE_BASE, campaignClockProjection } from './clockProjection.ts';
-import { parseFollowed } from '../../dashboard/follow/message.ts';
+import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { buildColumnLayouts } from '../../families/table/layout.ts';
 import { deriveTableAudit, resolveTableRows } from '../../families/table/model.ts';

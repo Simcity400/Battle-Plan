@@ -15,7 +15,7 @@ import {
 import type { ChartGap, TimeChartModel, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf, missingSpansOf } from '../../families/time-chart/seriesHelpers.ts';
 import type { ApmPlayer, ApmReply, ApmSeries, ApmValue } from '../../generated/dashboard';
-import { GAPS_NOTE, playerNames, validateApm } from '../player-apm/apmData.ts';
+import { apmRateRational, formatApmOperands, formatApmRate, GAPS_NOTE, playerNames, validateApm } from '../player-apm/apmData.ts';
 import { apmHeadQuery, apmHeadRows } from '../player-apm/apmHead.ts';
 
 const TOP_NAMED = 8;
@@ -32,13 +32,9 @@ export interface ApmGraphOptions {
   readonly players?: readonly ApmPlayer[];
 }
 
-function formatApm(value: number): string {
-  return String(Math.round(value));
-}
-
 function unknownApmReason(value: ApmValue): string {
   if (!value.complete) return 'Player orders or unpaused time were not fully recorded for this period; the rate is unknown.';
-  if (value.unpausedMinutes === 0) return 'No unpaused time was observed in this period.';
+  if (value.unpausedMinutesNum === '0' || value.unpausedMinutes === 0) return 'No unpaused time was observed in this period.';
   return 'It is unclear whether some orders count toward eAPM; the rate is unknown.';
 }
 
@@ -63,6 +59,7 @@ interface SeriesEntry {
   readonly tag: string | null;
   readonly obsHour: number;
   readonly headValue: number | null;
+  readonly summary: ApmValue | null;
   readonly gaps: boolean;
   readonly bounded: BoundedSeries | null;
 }
@@ -131,14 +128,19 @@ function buildHoverDetail(
       ? (hoverDisambiguated?.get(row.id) ?? row.name ?? 'Name not recorded')
       : (identity?.name.status === 'ready' ? identity.name.value : row.tag ?? row.id);
     const swatch = colorById.get(row.id);
+    const rateText = formatApmRate(row.summary, 0);
     items.push({
       label,
-      ...(row.summary.apm !== null
-        ? { value: formatApm(row.summary.apm) }
+      ...(rateText !== null
+        ? { value: rateText }
         : { missingReason: unknownApmReason(row.summary), tone: 'muted' as const }),
       ...(swatch ? { swatch } : {}),
       ...(flagRes?.status === 'ready' && flagRes.url ? { countryFlag: { flag: flagRes.url } } : {}),
     });
+    const operands = formatApmOperands(row.summary);
+    if (operands !== null) {
+      items.push({ label: operands, indent: true, tone: 'muted' });
+    }
   }
   if (anyGaps) {
     items.push({ label: GAPS_NOTE, tone: 'muted', ...(items.length > 0 ? { divider: true } : {}) });
@@ -213,6 +215,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
         tag: row.tag,
         obsHour,
         headValue: row.summary.apm,
+        summary: row.summary,
         gaps: row.summary.gaps,
         bounded: tiled?.get(row.id) ?? null,
       });
@@ -233,6 +236,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
           tag: dated.tag,
           obsHour: lastHour,
           headValue: null,
+          summary: null,
           gaps: false,
           bounded,
         });
@@ -255,6 +259,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
     const topEntries = entries.slice(0, TOP_NAMED);
     const topColors = resolveSeriesColors(readView, topEntries, hour, options.surface);
     const colorById = new Map<string, string>();
+    const headTexts = new Map<string, string>();
     const series: TimeChartSeriesModel[] = entries.map((entry, rank) => {
       const isTop = rank < TOP_NAMED;
       const identity = entry.tag ? readView.who('country', entry.tag, entry.obsHour) : null;
@@ -267,6 +272,16 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
         : (identity?.name.status === 'ready' ? identity.name.value : entry.tag ?? entry.id);
       const color = isTop ? topColors[rank]! : CHART_MEASURE_COLOURS.mutedFallback;
       colorById.set(entry.id, color);
+      const headText = entry.summary ? formatApmRate(entry.summary, 0) : null;
+      if (headText !== null) headTexts.set(entry.id, headText);
+      const headRat = entry.summary ? apmRateRational(entry.summary) : null;
+      const exact = entry.headValue !== null
+        ? {
+            hour: entry.obsHour,
+            value: entry.headValue,
+            ...(headRat ? { raw: headRat.orders * headRat.minutesDen, denominator: headRat.minutesNum } : {}),
+          }
+        : undefined;
       return {
         id: entry.id,
         key: entry.id,
@@ -277,15 +292,16 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
         bounded: entry.bounded,
         headValue: entry.headValue,
         headHour: entry.obsHour,
+        ...(exact ? { exact } : {}),
         ...(flag ? { flag } : {}),
         missingSpans: missingSpansOf(entry.bounded),
         rank,
-        endLabel: isTop && entry.headValue !== null
+        endLabel: isTop && headText !== null
           ? {
               ...(flag ? { flag } : {}),
               name,
               fullName: name,
-              value: formatApm(entry.headValue),
+              value: headText,
               ...(entry.gaps ? { valueMuted: true } : {}),
             }
           : null,
@@ -294,8 +310,8 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
     const anyHeadGaps = entries.some(e => e.gaps);
     const hoverDetail = buildHoverDetail(readView, options, colorById, hour);
     const auditRows = series
-      .filter(s => s.role === 'primary' && s.headValue !== null && s.headValue !== undefined)
-      .map(s => (auditRow(s.id, formatApm(s.headValue!))));
+      .filter(s => s.role === 'primary' && headTexts.has(s.id))
+      .map(s => (auditRow(s.id, headTexts.get(s.id)!)));
     return {
       kind: 'apm-graph',
       measureTitle: 'eAPM',

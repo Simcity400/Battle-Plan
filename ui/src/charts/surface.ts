@@ -3,22 +3,17 @@ export type DrawingCanvas = HTMLCanvasElement | OffscreenCanvas;
 export interface DrawingSurface { canvas: DrawingCanvas; context: CanvasRenderingContext2D | null }
 
 const surfaces = new WeakMap<HTMLCanvasElement, DrawingSurface>();
-const elements = new WeakMap<OffscreenCanvas, HTMLCanvasElement>();
 
 export function drawingSurface(element: HTMLCanvasElement): DrawingSurface {
   let held = surfaces.get(element);
   if (held) return held;
   let canvas: DrawingCanvas = element;
   if (typeof element.transferControlToOffscreen === 'function') {
-    try { canvas = element.transferControlToOffscreen(); elements.set(canvas, element); } catch { canvas = element; }
+    try { canvas = element.transferControlToOffscreen(); } catch { canvas = element; }
   }
   held = { canvas, context: canvas.getContext('2d') as CanvasRenderingContext2D | null };
   surfaces.set(element, held);
   return held;
-}
-
-export function canvasElement(canvas: DrawingCanvas): HTMLCanvasElement | null {
-  return typeof HTMLCanvasElement !== 'undefined' && canvas instanceof HTMLCanvasElement ? canvas : elements.get(canvas as OffscreenCanvas) ?? null;
 }
 
 export function sizeCanvas(canvas: DrawingCanvas, width: number, height: number): boolean {

@@ -289,6 +289,3 @@ export function changedAnswerRows(prev: FollowedRows, next: FollowedRows): numbe
   return out;
 }
 
-export function mergeChanged(base: FollowedAnswer, changed: FollowedRows, _held = Infinity): Uint8Array {
-  return serializeAnswer(patchAnswer(base, changed));
-}

@@ -2,8 +2,6 @@ import { APPEARANCE_EVENT } from '../shell/appearance/events.ts';
 import { categoricalPalette } from './palette.ts';
 import type { MotionFeel } from './easing.ts';
 
-export { APPEARANCE_EVENT };
-
 export const CHART_LAYOUT = { right: 14, countryEndLabels: 150, measureEndLabels: 128, stripMin: 40, stripInset: 50, hatchSpacing: 8, gapOpacity: 0.08, heatLabelWidth: 118 } as const;
 
 export interface ChartTokens {

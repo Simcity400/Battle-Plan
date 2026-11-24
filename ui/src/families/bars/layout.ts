@@ -17,6 +17,8 @@ export const PICK_GAP = 24;
 export const PICK_ROW_HEIGHT = 22;
 export const PICK_DIVIDER_GAP = 8;
 
+const NET_NARROW = 480;
+
 export function pickListWidth(width: number): number {
   return width >= PICK_WIDTH + PICK_GAP + 360 ? PICK_WIDTH : 0;
 }
@@ -85,10 +87,10 @@ function hasAnyMedia(model: BarsModel): { kind: 'none' | 'flag' | 'art'; size: n
   return { kind: 'none', size: 0 };
 }
 
-function resolveRowMetrics(model: BarsModel, bodyHeight: number): { dataRowHeight: number; barHeight: number } {
+function resolveRowMetrics(model: BarsModel, bodyHeight: number, width: number): { dataRowHeight: number; barHeight: number } {
   const dataCount = model.rows.reduce((n, r) => (r.kind === 'data' ? n + 1 : n), 0);
   if (model.form === 'net') {
-    return { dataRowHeight: model.rowHeight ?? 48, barHeight: model.barHeight ?? 12 };
+    return { dataRowHeight: model.rowHeight ?? (width < NET_NARROW ? 25 : 48), barHeight: model.barHeight ?? 12 };
   }
   if (model.form === 'share') {
     return { dataRowHeight: model.rowHeight ?? 26, barHeight: model.barHeight ?? 14 };
@@ -191,7 +193,7 @@ function layoutBarsBody(
   const axisTop = bodyBottom;
   const legendTop = axisTop + axisHeight;
 
-  const { dataRowHeight, barHeight } = resolveRowMetrics(model, bodyHeight);
+  const { dataRowHeight, barHeight } = resolveRowMetrics(model, bodyHeight, w);
   const media = hasAnyMedia(model);
   const mediaWidth = media.kind === 'none' ? 0 : media.size;
   const mediaHeight = media.kind === 'flag' ? FLAG_SLOT_HEIGHT : media.kind === 'art' ? media.size : 0;
@@ -239,7 +241,7 @@ function layoutBarsBody(
   let valueInsideBar = false;
 
   if (form === 'net') {
-    const narrow = w < 480;
+    const narrow = w < NET_NARROW;
     showPair = !narrow && model.rows.some(r => r.kind === 'data' && Boolean(r.pair));
     showReadout = true;
     nameWidth = narrow ? 92 : Math.min(140, Math.max(92, Math.round(w * 0.2)));

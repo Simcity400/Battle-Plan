@@ -101,3 +101,84 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
   assert.equal(foldRow.initiallyOpen, false);
 });
 
+test('event feed projection renders merged choice letter and text, awaiting choice, paused choice, and unrecorded choice ordinal from page rows', () => {
+  const firedChosen = row('scriptEventFired', 100, ['GER', 'POL'], {
+    category: 'politics',
+    participants: ['GER', 'POL'],
+    item: { token: 'ev.10', name: 'Ultimatum', icon: null, description: 'Body', options: [{ ordinal: 0, name: 'Refuse' }, { ordinal: 1, name: 'Yield' }] },
+  });
+  const firedAwaiting = row('newsEventFired', 104, ['GER', 'FRA'], {
+    category: 'politics',
+    participants: ['GER', 'FRA'],
+    item: { token: 'ev.11', name: 'Border Tension', icon: null, description: null, options: [{ ordinal: 0, name: 'Mobilise' }] },
+  });
+  const firedPaused = row('scriptEventFired', 96, ['ITA', 'ETH'], {
+    category: 'politics',
+    participants: ['ITA', 'ETH'],
+    item: { token: 'ev.12', name: 'Stalled Talks', icon: null, description: null, options: [{ ordinal: 0, name: 'Press on' }] },
+  });
+  const firedUnknownOption = row('scriptEventFired', 92, ['SOV', 'FIN'], {
+    category: 'politics',
+    participants: ['SOV', 'FIN'],
+    item: { token: 'ev.13', name: 'Demands', icon: null, description: null, options: [{ ordinal: 0, name: 'Reject' }] },
+  });
+  const choiceEdge = {
+    row: row('eventOptionSelected', 102, ['POL'], { category: 'politics', participants: ['POL', null] }),
+    option: 1,
+    lifecycle: null,
+    days: null,
+    costs: null,
+  };
+  const missingOptionEdge = {
+    row: row('eventOptionSelected', 93, ['FIN'], { category: 'politics', participants: ['FIN', null] }),
+    option: null,
+    lifecycle: null,
+    days: null,
+    costs: null,
+  };
+  const head = {
+    branchId: '1',
+    offset: '0',
+    total: '4',
+    live: '1',
+    counts: [],
+    rows: [
+      { key: 'm-chosen', hour: 100, observed: 100, ordinal: '0', live: false, status: 'chosen', row: firedChosen, choice: choiceEdge },
+      { key: 'm-await', hour: 104, observed: 104, ordinal: '1', live: true, status: 'awaiting', row: firedAwaiting, choice: null },
+      { key: 'm-paused', hour: 96, observed: 96, ordinal: '2', live: false, status: 'notRecorded', row: firedPaused, choice: null },
+      { key: 'm-null-opt', hour: 92, observed: 92, ordinal: '3', live: false, status: 'chosen', row: firedUnknownOption, choice: missingOptionEdge },
+    ],
+    missing: [],
+    nextChange: null,
+    unavailable: [],
+    warnings: [],
+  };
+  const source = buildRowSourceFromHead('test:feed-merged', head, undefined, 120)!;
+  const model = eventFeedProjection.project(
+    createBoundedReadView({ hour: 120, rows: new Map([['main', source]]) }),
+    { categories: ['politics'], artwork: true },
+  );
+  const chosenRow = model.rows.find(r => r.key === 'm-chosen')!;
+  assert.equal(chosenRow.cells.detail?.inlinePrefix, 'B');
+  assert.deepEqual(chosenRow.cells.detail?.value, { kind: 'known', value: 'Yield' });
+  const chosenMeta = chosenRow.meta as EventDetailSubject;
+  assert.equal(chosenMeta.chosenOrdinal, 1);
+  assert.equal(chosenMeta.chosenHour, 102);
+  assert.equal(chosenMeta.awaiting, false);
+
+  const awaitingRow = model.rows.find(r => r.key === 'm-await')!;
+  assert.equal(awaitingRow.cells.detail?.statusKind, 'waiting');
+  assert.deepEqual(awaitingRow.cells.detail?.value, { kind: 'known', value: 'Awaiting choice' });
+  assert.equal((awaitingRow.meta as EventDetailSubject).awaiting, true);
+
+  const pausedRow = model.rows.find(r => r.key === 'm-paused')!;
+  assert.equal(pausedRow.cells.detail?.value.kind, 'notRecorded');
+  assert.equal(pausedRow.cells.detail?.missingFigure, 'Choice');
+  assert.equal((pausedRow.meta as EventDetailSubject).awaiting, false);
+
+  const nullOptRow = model.rows.find(r => r.key === 'm-null-opt')!;
+  assert.equal(nullOptRow.cells.detail?.value.kind, 'notRecorded');
+  assert.equal(nullOptRow.cells.detail?.missingFigure, 'Choice');
+  assert.equal((nullOptRow.meta as EventDetailSubject).awaiting, false);
+});
+
