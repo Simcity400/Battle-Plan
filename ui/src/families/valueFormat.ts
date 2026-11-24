@@ -289,7 +289,6 @@ export function formatShare(share: number): string {
 export function formatProgress(fraction: number): string {
   assertFiniteNumber(fraction, 'formatProgress');
   if (fraction <= 0) return '0%';
-  if (fraction >= 1) return '100%';
   const { units, scale } = decimalOf(fraction);
   return `${(units * 100n) / 10n ** BigInt(scale)}%`;
 }

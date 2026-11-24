@@ -90,7 +90,7 @@ export const transfersProjection: TableProjection<TransfersProjectionOptions> = 
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
       titleSummary: `${formatScalar(reply.transfers, 'integer')} ${reply.transfers === 1 ? 'transfer' : 'transfers'}`,
-      ...(reply.partial !== null ? { titleSummaryPartial: reply.partial } : {}),
+      ...(reply.partial !== null ? { titleSummaryPartial: reply.partial, populationPartial: reply.partial } : {}),
       ...(rows.length === 0
         ? reply.partial === null
           ? { empty: 'No territory transfers yet', emptyKind: 'empty' as const }
