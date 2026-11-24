@@ -668,8 +668,8 @@ export type AircraftRefusalCount = { kind: AircraftRefusalKind, label: string, c
 export type AircraftOriginFilter = "game" | { "mod": string };
 export type AircraftOrigin = { "kind": "game", dlc: string | null, } | { "kind": "mod", id: string, name: string, };
 export type AircraftOriginCount = { origin: AircraftOrigin, count: number, };
-export type SpriteArtworkParams = { sprites: Array<SpriteFrame>, };
-export type SpriteArtworkReply = { items: Array<SpriteImage>, warnings: Array<string>, };
+export type SpriteArtworkParams = { sprites: Array<SpriteFrame>, textures?: Array<TextureFrame>, };
+export type SpriteArtworkReply = { items: Array<SpriteImage>, textures: Array<TextureImage>, warnings: Array<string>, };
 export type SpriteFrame = {
 /**
  * The exact sprite key (doctrine mastery's `icon`, for one).
@@ -704,6 +704,8 @@ text?: boolean,
  * An artwork URL, or null with a named, counted refusal.
  */
 icon: string | null, resolution?: ArtResolution, };
+export type TextureFrame = { path: string, frame: number, frames: number, };
+export type TextureImage = { path: string, frame: number, frames: number, resolution: ArtResolution, };
 export type ArmyMeasure = "manpower" | "divisions" | "strength" | "battalions";
 export type ArmyAttribution = "owner" | "host";
 export type ArmySizeParams = { branchId: string, countries: Array<CountryRef>, top: number | null, measure: ArmyMeasure, countFor: ArmyAttribution, byType: boolean,
@@ -1791,7 +1793,7 @@ export type NavalSupremacyReply = { firstHour: number, lastHour: number,
  */
 firstDayHour: number, dayHours: number, days: number, unknown: Array<UnknownDays>, gaps: Array<HourSpan>, viewerName?: string, viewerNameMissing?: string, viewerColor?: [number, number, number], viewerColorMissing?: string, legend: Array<SupremacyLegendItem>, regions: Array<SupremacyRegion>, scale: number, warnings: Array<string>, };
 export type LeaderPortraitsParams = { branchId: string, hour: number, references: Array<string>, edge: number, };
-export type LeaderPortrait = { reference: string, image: string | null, missing: string | null, };
+export type LeaderPortrait = { reference: string, image: string | null, missing: string | null, resolution: ArtResolution, };
 export type LeaderPortraitsReply = { portraits: Array<LeaderPortrait>, warnings: Array<string>, };
 export type LeaderCareerParams = { branchId: string, reference: string, };
 export type CareerRun = { firstHour: number, lastHour: number, role: LeaderRole, skill: number | null, components: [number, number, number, number], };
@@ -6773,7 +6775,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "special-project-rewards": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "special-projects": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "special-projects-history": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "sprite-artwork": { "sprites": "node", "sprites[]": "node", "sprites[].frame": "leaf", "sprites[].key": "leaf", "sprites[].recorded": "leaf", "sprites[].text": "leaf" },
+  "sprite-artwork": { "sprites": "node", "sprites[]": "node", "sprites[].frame": "leaf", "sprites[].key": "leaf", "sprites[].recorded": "leaf", "sprites[].text": "leaf", "textures": "node", "textures[]": "node", "textures[].frame": "leaf", "textures[].frames": "leaf", "textures[].path": "leaf" },
   "stability-part-names": { "branchId": "leaf", "country": "any", "hour": "leaf", "parts": "node", "parts[]": "leaf" },
   "stability-reads": { "branchId": "leaf", "from": "leaf", "to": "leaf" },
   "stockpile-artwork": { "branchId": "leaf", "country": "any", "hour": "leaf", "variants": "node", "variants[]": "leaf" },
