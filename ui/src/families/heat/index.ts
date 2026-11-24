@@ -1,5 +1,6 @@
 export {
   marginColour,
+  regionLabel,
   resolveEntityFromReadView,
   resolveOrdinalColour,
   resolveRecordedColour,

@@ -10,6 +10,7 @@ import type {
   HeatLanesModel,
   HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
+import { regionLabel } from '../../families/heat/scale.ts';
 import { regionIds } from '../../families/regionTokens.ts';
 import type { ConvoyCellState, ConvoyCountry, ConvoyHealthReply, ConvoyView, HourSpan } from '../../generated/dashboard';
 import { mix } from '../../shell/appearance/color.ts';
@@ -61,9 +62,9 @@ function tooltipOf(name: string, hour: number, cell: HeatLaneCell, text: string 
   return { title: name, hour, items: [{ label: 'Efficiency', value: text ?? '', ...(cell.kind === 'solid' ? { swatch: cell.color } : {}) }] };
 }
 
-function regionRows(reply: ConvoyHealthReply, through: number, surface: string): HeatLaneRow[] {
+function regionRows(readView: BoundedReadView, reply: ConvoyHealthReply, through: number, surface: string): HeatLaneRow[] {
   return reply.regions.map(region => {
-    const label = region.name ?? 'Region name not recorded';
+    const { label, nameMissing } = regionLabel(readView, region.region, region.name);
     const runs: HeatLaneRun[] = [];
     for (const run of region.cells) {
       if (run.firstHour > through) break;
@@ -76,7 +77,7 @@ function regionRows(reply: ConvoyHealthReply, through: number, surface: string):
     return {
       id: `r:${region.region}`,
       label,
-      ...(region.name === null ? { nameMissing: region.missing ?? 'Region name not recorded' } : {}),
+      ...(nameMissing ? { nameMissing } : {}),
       pinned: region.pinned,
       runs,
       ...(readout ? { readout } : {}),
@@ -167,7 +168,7 @@ export function projectConvoyHealth(readView: BoundedReadView, options: ConvoyPr
   const reply = readView.panel<ConvoyHealthReply>('convoys');
   if (!reply || !options.surface || reply.lastHour > hour || reply.view !== options.view) return emptyModel(hour, {});
   const through = reply.lastHour;
-  const rows = reply.view === 'regions' ? regionRows(reply, through, options.surface) : tradeRows(reply, through, options.surface);
+  const rows = reply.view === 'regions' ? regionRows(readView, reply, through, options.surface) : tradeRows(reply, through, options.surface);
   return {
     hour: through,
     firstHour: reply.firstHour,

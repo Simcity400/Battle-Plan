@@ -6,7 +6,7 @@ const png = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png';
 
 test('sprite frames are asked once each, in a stable order, without missing keys', () => {
   assert.deepEqual(spriteFrames([{ key: 'GFX_b', frame: 0 }, null, { key: 'GFX_a', frame: 2 }, undefined, { key: '', frame: 0 },
-    { key: 'GFX_b', frame: 0 }, { key: 'GFX_a', frame: -1 }]), [{ key: 'GFX_b', frame: 0 }, { key: 'GFX_a', frame: 2 }]);
+    { key: 'GFX_b', frame: 0 }, { key: 'GFX_a', frame: -1 }]), [{ key: 'GFX_a', frame: 2 }, { key: 'GFX_b', frame: 0 }]);
 });
 
 test('sprite art maps each asked frame to its drawable image or null', () => {

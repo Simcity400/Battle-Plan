@@ -17,6 +17,14 @@ export function viewKey(kind: string, view?: string): string {
   return `${kind}\u0000${normalizeView(view)}`;
 }
 
+export function viewOwnedFields(fields: readonly OptionField[], view: string | undefined): readonly OptionField[] {
+  const active = normalizeView(view);
+  if (active === DEFAULT_VIEW) return fields;
+  return fields.map(field => (field.kind === 'choice' && field.choices.some(choice => choice.value === active)
+    ? field
+    : { ...field, storeAs: `${field.key}@${active}` }));
+}
+
 export type FamilyAuditProjection<TModel = unknown, TOptions = unknown> = (
   model: TModel,
   options: TOptions,
@@ -158,7 +166,7 @@ export function scopedOptionFields(
     seen.add(viewField.key);
   }
 
-  for (const field of activeFamily.options) {
+  for (const field of viewOwnedFields(activeFamily.options, activeView)) {
     if (seen.has(field.key)) continue;
     seen.add(field.key);
     result.push(field);

@@ -61,6 +61,25 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     assert.equal(generic.activatedSubject, 'GER', 'Enter activates the focused row from the installed picture');
     assert.equal(generic.activatedMatchesInstalled, true, 'the action carries the installed picture id');
 
+    const tuple = await act<{
+      blockedMeasured: boolean;
+      blockedShown: boolean;
+      description: string | null;
+      clearedDescription: boolean;
+      dateOnly: boolean;
+      activatedId: number | null;
+      activatedHour: number | null;
+      viewId: number | null;
+      viewHour: number | null;
+    }>('testGenericInstalledTuple()');
+    assert.equal(tuple.blockedMeasured, true, 'a blocked host still measures its body, so a cold chart can ask for its first tiles');
+    assert.equal(tuple.blockedShown, true, 'the blocked state shows inside the frame');
+    assert.equal(tuple.description, 'Four countries ranked by factories', 'the installed description is what the body is described by');
+    assert.equal(tuple.clearedDescription, true, 'the description goes when the picture goes');
+    assert.equal(tuple.dateOnly, true, 'a date-only install happened without an install notification');
+    assert.equal(tuple.activatedId, tuple.viewId, 'Enter after a date-only install carries the picture Page shows now');
+    assert.equal(tuple.activatedHour, tuple.viewHour, 'and its hour');
+
     const f12 = await act<{
       distinctCanvases: boolean;
       distinctPlacements: boolean;

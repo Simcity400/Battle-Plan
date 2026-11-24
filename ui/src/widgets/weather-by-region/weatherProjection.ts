@@ -10,7 +10,7 @@ import type {
   HeatLanesModel,
   HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
-import { signedRampColour } from '../../families/heat/scale.ts';
+import { regionLabel, signedRampColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { regionIds } from '../../families/regionTokens.ts';
 import { formatDateParts } from '../../families/valueFormat.ts';
@@ -215,13 +215,12 @@ export function projectWeather(readView: BoundedReadView, options: WeatherProjec
   const modifier = options.show === 'modifiers' ? options.modifier ?? reply.modifiers[0]?.id ?? null : null;
   const names = new Map(reply.regions.map(region => [region.id, region.name]));
   const rows: HeatLaneRow[] = reply.columns.regions.map(region => {
-    const name = names.get(region.id);
-    const label = name ?? 'Region name not recorded';
+    const { label, nameMissing } = regionLabel(readView, region.id, names.get(region.id) ?? null);
     const readout = readoutOf(region.readout, options.show, modifier, reply, colours);
     return {
       id: region.id,
       label,
-      ...(name === undefined ? { nameMissing: 'This region is not in the recorded map' } : {}),
+      ...(nameMissing ? { nameMissing } : {}),
       pinned: region.pinned,
       runs: lane(reply, region, label, through, options, modifier, colours),
       ...(readout ? { readout } : {}),

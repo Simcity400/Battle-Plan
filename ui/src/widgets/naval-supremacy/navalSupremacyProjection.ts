@@ -7,6 +7,7 @@ import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
 import type { HeatLaneCell, HeatLaneReadout, HeatLaneRow, HeatLaneRun, HeatLanesModel, HeatLanesProjection } from '../../families/heat/lanesModel.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
+import { regionLabel } from '../../families/heat/scale.ts';
 import { regionIds } from '../../families/regionTokens.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
 import type { MissionShips, NavalSupremacyReply, SupremacyRegion, SupremacyRun } from '../../generated/dashboard';
@@ -73,15 +74,16 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
   if (!reply || !options.surface || reply.lastHour > hour) return emptyBars(hour);
   const look = lookOf(reply, options.surface);
   const entry = (region: SupremacyRegion): ShareRowEntry => {
-    const base = { key: region.id, subject: region.id, label: region.name, countText: shipsText(region.ownShips, region.enemyShips) };
+    const named = regionLabel(readView, region.id, region.name);
+    const base = { key: region.id, subject: region.id, label: named.label, ...(named.nameMissing ? { labelMissing: true } : {}), countText: shipsText(region.ownShips, region.enemyShips) };
     const readout = region.readout;
     if (!readout || readout.kind === 'notRecorded') {
       const reason = readout?.reason ?? 'Naval region control was not recorded';
-      return { ...base, segments: [], missing: notRecorded(reason), tooltip: { title: region.name, hour, missingReason: reason, items: shipItems(region, look) } };
+      return { ...base, segments: [], missing: notRecorded(reason), tooltip: { title: named.label, hour, missingReason: reason, items: shipItems(region, look) } };
     }
     const share = shareOf(readout.share, reply.scale);
     if (share === null) {
-      return { ...base, segments: [], missing: notRecorded('The supremacy share was not recorded'), tooltip: { title: region.name, hour: readout.as_of_hour, missingReason: 'The supremacy share was not recorded' } };
+      return { ...base, segments: [], missing: notRecorded('The supremacy share was not recorded'), tooltip: { title: named.label, hour: readout.as_of_hour, missingReason: 'The supremacy share was not recorded' } };
     }
     const pct = Math.round(share * 100);
     const segments: BarsSegment[] = [
@@ -93,7 +95,7 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
       ...base,
       segments,
       tooltip: {
-        title: region.name,
+        title: named.label,
         hour: readout.as_of_hour,
         items: [
           { label: 'Control', value: control },
@@ -150,6 +152,7 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
     return { firstHour, lastHour, readHour: lastHour, cell: { kind: 'missing', reason: span.reason }, tooltip: { title: name, hour: lastHour, missingReason: span.reason } };
   });
   const rows: HeatLaneRow[] = reply.regions.map(region => {
+    const named = regionLabel(readView, region.id, region.name);
     const runs: HeatLaneRun[] = [];
     for (const run of region.runs) {
       const firstHour = Math.max(reply.firstHour, dayStart(run.firstDay));
@@ -159,11 +162,11 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
       runs.push({
         firstHour, lastHour, readHour: lastHour, cell: made.cell,
         tooltip: made.cell.kind === 'missing'
-          ? { title: region.name, hour: lastHour, missingReason: made.cell.reason }
-          : { title: region.name, hour: lastHour, items: made.items },
+          ? { title: named.label, hour: lastHour, missingReason: made.cell.reason }
+          : { title: named.label, hour: lastHour, items: made.items },
       });
     }
-    runs.push(...unknownRuns(region.name));
+    runs.push(...unknownRuns(named.label));
     runs.sort((a, b) => a.firstHour - b.firstHour);
     const readout = region.readout;
     let shown: HeatLaneReadout | undefined;
@@ -176,7 +179,7 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
         ? { kind: 'value', form: 'value', primary: '', secondary: 'Contested', swatch: color, audit: 'Contested' }
         : { kind: 'value', form: 'value', primary: share === null ? '' : `${Math.round((readout.control > 0 ? share : 1 - share) * 100)}%`, secondary: readout.control > 0 ? look.friendlyLabel : look.enemyLabel, swatch: color };
     }
-    return { id: region.id, label: region.name, pinned: region.pinned, runs, ...(shown ? { readout: shown } : {}) };
+    return { id: region.id, label: named.label, ...(named.nameMissing ? { nameMissing: named.nameMissing } : {}), pinned: region.pinned, runs, ...(shown ? { readout: shown } : {}) };
   });
   return {
     hour: through,

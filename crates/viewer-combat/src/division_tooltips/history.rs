@@ -260,7 +260,7 @@ pub(super) fn text(
     for (value, heading) in [
         (
             status
-                .and_then(|row| row.career_counter())
+                .and_then(|row| row.casualties_taken())
                 .map(|value| i64::from(value).wrapping_mul(100_000)),
             "HISTORY_KILL_COUNT_TEXT",
         ),
