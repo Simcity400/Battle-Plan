@@ -387,7 +387,7 @@ fn six_hour_ranked_request_and_complete_absent_none_summary_pin_main_behaviour()
 fn complete_tile_and_unvalued_scalar_state_match_main_storage_read_counts() {
     use crate::fixture::{Data, FIRST, Fixture, UNIT_HOURS, power};
 
-    let fixture = Fixture::new(Data::Power, FIRST..=FIRST + 2 * UNIT_HOURS);
+    let fixture = Fixture::new(Data::Power, FIRST..=FIRST + 6 * UNIT_HOURS);
     let query = fixture.query();
     let series = dashboard_declare::series("country-measure").unwrap();
     let line = Line::new(&query, series, series.measure("politicalPower").unwrap()).unwrap();
