@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { extname, join, resolve } from 'node:path';
+import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseAst } from 'rolldown/parseAst';
 import { astLang, extractImportSpecifiers, relPosix, resolveLocalImport, staticStringLiteral, walkAst, walkImportGraph } from './ui-import-graph.mjs';
@@ -859,8 +859,14 @@ function moduleProvidesExport(root, relPath, exportName, moduleCache, visiting =
   return false;
 }
 
-function readRatchetFile(root) {
+function readRatchetFile(root, { allowMissing = false } = {}) {
   const ratchetPath = resolve(root, 'tools/legacy-widgets-ratchet.json');
+  if (!existsSync(ratchetPath)) {
+    if (allowMissing) {
+      return { missing: true, maxLegacyViews: 0, maxLegacyRendererViews: 0, maxUnusedExports: 0 };
+    }
+    throw new Error('Missing tools/legacy-widgets-ratchet.json');
+  }
   const data = JSON.parse(readFileSync(ratchetPath, 'utf8'));
   const required = ['maxLegacyViews', 'maxLegacyRendererViews', 'maxUnusedExports'];
   for (const field of required) {
@@ -869,7 +875,7 @@ function readRatchetFile(root) {
       throw new Error(`tools/legacy-widgets-ratchet.json must set integer ${field} >= 0`);
     }
   }
-  return data;
+  return { ...data, missing: false };
 }
 
 function resolveImportFromFunction(fn, fromFile, root) {
@@ -2126,8 +2132,8 @@ export function checkConvertedLegacyReach(root, uiResult, legacyResult, loaded, 
   };
 }
 
-export async function runDeadCodeCheck(root) {
-  const ratchetData = readRatchetFile(root);
+export async function runDeadCodeCheck(root, options = {}) {
+  const ratchetData = readRatchetFile(root, { allowMissing: Boolean(options.allowMissingRatchet) });
   const loaded = await loadManifestData(root);
   const legacy = checkLegacyRatchet(root, loaded, ratchetData);
   const { ui, exports } = checkUiAndExports(root, legacy.activeLegacyTargets, ratchetData);
@@ -2142,42 +2148,45 @@ export async function runDeadCodeCheck(root) {
     + legacy.errors.length
     + convertedLegacy.errors.length
     + exports.errors.length;
-  return { ui, rust, legacy, convertedLegacy, exports, totalIssues };
+  return { ui, rust, legacy, convertedLegacy, exports, totalIssues, ratchetMissing: Boolean(ratchetData.missing) };
 }
 
 export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
   const shortBase = baseSha.slice(0, 9);
+  const baseRatchetMissing = Boolean(baseResult.ratchetMissing);
   const baseDeadProd = new Set(baseResult.ui.deadProduction);
   const baseDeadTestTargets = new Map(baseResult.ui.deadTests.map(entry => [entry.test, new Set(entry.targets)]));
   const baseDeadFixtures = new Set(baseResult.ui.deadFixturesAndSupport.map(entry => entry.file));
   const baseProdTestImports = new Set((baseResult.ui.productionTestImports ?? []).map(e => `${e.from}->${e.to}`));
   const baseDeadProducts = new Set(baseResult.rust.deadProducts.map(entry => entry.product));
   const baseUnwired = new Set(baseResult.rust.unwiredRegistrations);
-  const baseLegacyPairs = new Set(baseResult.legacy.pairs);
-  const baseLegacyErrors = new Set(baseResult.legacy.errors);
-  const baseOverRatchet = baseResult.legacy.count > baseResult.legacy.maxLegacyViews;
+  const baseLegacyPairs = baseRatchetMissing ? new Set() : new Set(baseResult.legacy.pairs);
+  const baseLegacyErrors = baseRatchetMissing ? new Set() : new Set(baseResult.legacy.errors);
+  const baseOverRatchet = !baseRatchetMissing && baseResult.legacy.count > baseResult.legacy.maxLegacyViews;
 
-  const baseConvertedPairs = new Set((baseResult.convertedLegacy?.violations ?? []).map(v => v.pair));
-  const baseConvertedErrors = new Set(baseResult.convertedLegacy?.errors ?? []);
-  const baseConvertedOver = (baseResult.convertedLegacy?.violations?.length ?? 0) > baseResult.convertedLegacy.maxLegacyRendererViews;
+  const baseConvertedPairs = baseRatchetMissing ? new Set() : new Set((baseResult.convertedLegacy?.violations ?? []).map(v => v.pair));
+  const baseConvertedErrors = baseRatchetMissing ? new Set() : new Set(baseResult.convertedLegacy?.errors ?? []);
+  const baseConvertedOver = !baseRatchetMissing && (baseResult.convertedLegacy?.violations?.length ?? 0) > baseResult.convertedLegacy.maxLegacyRendererViews;
 
-  const baseUnusedExportKeys = new Set((baseResult.exports?.unusedExports ?? []).map(item => item.key));
-  const baseExportErrors = new Set(baseResult.exports?.errors ?? []);
-  const baseExportsOver = (baseResult.exports?.unusedExports?.length ?? 0) > baseResult.exports.maxUnusedExports;
+  const baseUnusedExportKeys = baseRatchetMissing ? new Set() : new Set((baseResult.exports?.unusedExports ?? []).map(item => item.key));
+  const baseExportErrors = baseRatchetMissing ? new Set() : new Set(baseResult.exports?.errors ?? []);
+  const baseExportsOver = !baseRatchetMissing && (baseResult.exports?.unusedExports?.length ?? 0) > baseResult.exports.maxUnusedExports;
 
   const addedLegacyPairs = result.legacy.pairs.filter(pair => !baseLegacyPairs.has(pair));
   const addedConvertedViolations = result.convertedLegacy.violations.filter(v => !baseConvertedPairs.has(v.pair));
   const addedUnusedExports = result.exports.unusedExports.filter(item => !baseUnusedExportKeys.has(item.key));
 
   const ratchetRaises = [];
-  if (result.legacy.maxLegacyViews > baseResult.legacy.maxLegacyViews) {
-    ratchetRaises.push(`maxLegacyViews raised from ${baseResult.legacy.maxLegacyViews} to ${result.legacy.maxLegacyViews}`);
-  }
-  if (result.convertedLegacy.maxLegacyRendererViews > baseResult.convertedLegacy.maxLegacyRendererViews) {
-    ratchetRaises.push(`maxLegacyRendererViews raised from ${baseResult.convertedLegacy.maxLegacyRendererViews} to ${result.convertedLegacy.maxLegacyRendererViews}`);
-  }
-  if (result.exports.maxUnusedExports > baseResult.exports.maxUnusedExports) {
-    ratchetRaises.push(`maxUnusedExports raised from ${baseResult.exports.maxUnusedExports} to ${result.exports.maxUnusedExports}`);
+  if (!baseRatchetMissing) {
+    if (result.legacy.maxLegacyViews > baseResult.legacy.maxLegacyViews) {
+      ratchetRaises.push(`maxLegacyViews raised from ${baseResult.legacy.maxLegacyViews} to ${result.legacy.maxLegacyViews}`);
+    }
+    if (result.convertedLegacy.maxLegacyRendererViews > baseResult.convertedLegacy.maxLegacyRendererViews) {
+      ratchetRaises.push(`maxLegacyRendererViews raised from ${baseResult.convertedLegacy.maxLegacyRendererViews} to ${result.convertedLegacy.maxLegacyRendererViews}`);
+    }
+    if (result.exports.maxUnusedExports > baseResult.exports.maxUnusedExports) {
+      ratchetRaises.push(`maxUnusedExports raised from ${baseResult.exports.maxUnusedExports} to ${result.exports.maxUnusedExports}`);
+    }
   }
 
   let newIssues = 0;
@@ -2440,22 +2449,49 @@ function resolveBaseCommit(root, explicitRef) {
 export function materializeCommitSnapshot(root, sha, destDir) {
   const treeOut = execFileSync(
     'git',
-    ['ls-tree', '-r', '-z', '--name-only', sha],
+    ['ls-tree', '-r', '-z', sha],
     { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] },
   );
-  const files = treeOut.split('\0').filter(Boolean);
-  const activeSpecs = BASE_SNAPSHOT_RULES
-    .filter(rule => files.some(rule.match))
-    .map(rule => rule.pathspec);
-  if (activeSpecs.length === 0) return;
-  const tarPath = join(destDir, '__base.tar');
-  execFileSync(
+  const entries = [];
+  for (const record of treeOut.split('\0')) {
+    if (!record) continue;
+    const tab = record.indexOf('\t');
+    if (tab < 0) continue;
+    const meta = record.slice(0, tab).split(' ');
+    if (meta[1] !== 'blob') continue;
+    const rel = record.slice(tab + 1);
+    if (BASE_SNAPSHOT_RULES.some(rule => rule.match(rel))) {
+      entries.push({ oid: meta[2], rel });
+    }
+  }
+  if (entries.length === 0) return;
+  const input = `${entries.map(e => e.oid).join('\n')}\n`;
+  const raw = execFileSync(
     'git',
-    ['archive', '--output', tarPath, sha, '--', ...activeSpecs],
-    { cwd: root, stdio: ['ignore', 'ignore', 'pipe'] },
+    ['cat-file', '--batch'],
+    { cwd: root, input, maxBuffer: 256 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] },
   );
-  execFileSync('tar', ['-xf', '__base.tar'], { cwd: destDir, stdio: ['ignore', 'ignore', 'pipe'] });
-  rmSync(tarPath, { force: true });
+  const createdDirs = new Set();
+  let offset = 0;
+  for (const entry of entries) {
+    const nl = raw.indexOf(0x0a, offset);
+    if (nl < 0) throw new Error(`Unexpected end of git cat-file output at ${entry.rel}`);
+    const header = raw.subarray(offset, nl).toString('utf8').split(' ');
+    if (header[1] !== 'blob') {
+      throw new Error(`Expected blob from git cat-file for ${entry.rel}, got ${header.join(' ')}`);
+    }
+    const size = Number(header[2]);
+    const bodyStart = nl + 1;
+    const bodyEnd = bodyStart + size;
+    const target = join(destDir, entry.rel);
+    const dir = dirname(target);
+    if (!createdDirs.has(dir)) {
+      mkdirSync(dir, { recursive: true });
+      createdDirs.add(dir);
+    }
+    writeFileSync(target, raw.subarray(bodyStart, bodyEnd));
+    offset = bodyEnd + 1;
+  }
 }
 
 export async function runCheckAtCommit(root, sha) {
@@ -2469,7 +2505,7 @@ export async function runCheckAtCommit(root, sha) {
       symlinkSync(repoNodeModules, nodeModulesLink, 'junction');
       linkedNodeModules = true;
     }
-    return await runDeadCodeCheck(baseDir);
+    return await runDeadCodeCheck(baseDir, { allowMissingRatchet: true });
   } finally {
     if (linkedNodeModules) {
       try { unlinkSync(nodeModulesLink); } catch {}

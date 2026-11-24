@@ -592,3 +592,75 @@ export const REQUEST_PATHS = {
     assert.equal(cmp.deadProducts[0].inherited, false);
   });
 });
+
+test('missing ratchet file at base commit is read as no ratchet instead of throwing', async () => {
+  const files = baseFiles({
+    'ui/src/inheritedOrphan.ts': 'export const old = 1;',
+  });
+  delete files['tools/legacy-widgets-ratchet.json'];
+  delete files['ui/src/widgets/legacyManifest.ts'];
+  files['ui/src/main.tsx'] = `
+    import './styles.css';
+    import type { SharedType } from './types.ts';
+    import { REQUEST_PATHS } from './generated/dashboard.ts';
+    export const loadLazy = async () => (await import('./lazy.ts')).value;
+    export const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+    export type Ref = import('./inlineType.ts').Inline;
+    export const used: SharedType = { product: 'live-product', head: 'live-head' };
+    export const refs = [REQUEST_PATHS];
+  `;
+  await withRepo(files, async root => {
+    const git = args => execFileSync('git', args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] }).toString('utf8').trim();
+    git(['init', '-q', '-b', 'main']);
+    git(['add', '-A']);
+    git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'pre-ratchet base']);
+    const baseSha = git(['rev-parse', 'HEAD']);
+
+    const baseResult = await runCheckAtCommit(root, baseSha);
+    assert.equal(baseResult.ratchetMissing, true);
+    assert.deepEqual(baseResult.ui.deadProduction, ['ui/src/inheritedOrphan.ts']);
+
+    writeFileSync(
+      join(root, 'tools/legacy-widgets-ratchet.json'),
+      '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 1}',
+      'utf8',
+    );
+    mkdirSync(join(root, 'ui/src/widgets'), { recursive: true });
+    writeFileSync(
+      join(root, 'ui/src/widgets/legacyManifest.ts'),
+      'export const LEGACY_WIDGETS = [{ kind: "a", load: () => import("../lazy.ts") }];',
+      'utf8',
+    );
+    writeFileSync(
+      join(root, 'ui/src/main.tsx'),
+      `
+        import './styles.css';
+        import type { SharedType } from './types.ts';
+        import { REQUEST_PATHS } from './generated/dashboard.ts';
+        import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
+        import { live } from './mod.ts';
+        export const loadLazy = async () => (await import('./lazy.ts')).value;
+        export const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+        export type Ref = import('./inlineType.ts').Inline;
+        export const used: SharedType = { product: 'live-product', head: 'live-head' };
+        export const refs = [REQUEST_PATHS, LEGACY_WIDGETS, live];
+      `,
+      'utf8',
+    );
+    writeFileSync(
+      join(root, 'ui/src/mod.ts'),
+      'export const live = 1; export const unusedAtHead = 2;',
+      'utf8',
+    );
+
+    const headResult = await runDeadCodeCheck(root);
+    assert.equal(headResult.ratchetMissing, false);
+
+    const cmp = classifyAgainstBase(headResult, baseResult, baseSha);
+    assert.deepEqual(cmp.ratchetRaises, []);
+    assert.deepEqual(cmp.addedLegacyPairs, ['a:default']);
+    assert.deepEqual(cmp.addedUnusedExports.map(e => e.key), ['ui/src/mod.ts:unusedAtHead']);
+    assert.equal(cmp.deadProduction[0].inherited, true);
+    assert.equal(cmp.newIssues, 2);
+  });
+});
