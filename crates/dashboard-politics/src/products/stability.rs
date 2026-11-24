@@ -18,7 +18,6 @@ use std::{collections::BTreeSet, io, sync::Arc};
 use ts_rs::TS;
 
 pub mod naming;
-pub mod reads;
 #[cfg(test)]
 mod tests;
 

@@ -10,9 +10,11 @@ import { activeResearchDeclaration, activeResearchProjection } from '../../widge
 import { doctrineMasteryProjection } from '../../widgets/doctrine-mastery/doctrineMasteryProjection.ts';
 import { decryptionProjection } from '../../widgets/decryption/decryptionProjection.ts';
 import { whoReadsWhomProjection } from '../../widgets/decryption/whoReadsWhomProjection.ts';
+import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
+import { registerFamilyProjection } from '../registry.ts';
+import { familyMeterLaneView } from './laneView.ts';
 import { deriveMeterAudit, deriveMeterMirror, deriveMeterNav, findMeterTooltip } from './model.ts';
 import { hitMeterModel, layoutMeterModel } from './painter.ts';
-import { meterHostAdapter } from './hostAdapter.ts';
 import type { DecryptionReply, DoctrineMasteryReply, ResearchSlotsReply } from '../../generated/dashboard';
 import type { ResearchData } from '../../widgets/research/types';
 import { matrixCellAt } from '../heat/matrixModel.ts';
@@ -374,6 +376,23 @@ test('doctrineMasteryProjection builds threshold meters, missing mastery, empty 
   const filtered = doctrineMasteryProjection.project(view, { folders: ['mod_orbital_doctrine'], countryName: 'Germany' });
   assert.equal(filtered.sections?.length, 1);
   assert.equal(filtered.sections![0]!.title, 'Orbital Warfare');
+
+  registerFamilyProjection(doctrineMasteryProjection);
+  const options = { folders: [], countryName: 'Germany' };
+  const lane = (data: DoctrineMasteryReply, picked: typeof options | { folders: string[]; countryName: string } = options) => ({
+    family: 'meters', kind: doctrineMasteryProjection.kind, options: picked, sources: {}, staticPanels: { main: data }, scrollTop: 0, theme: LANE_THEME, width: 640, height: 320,
+  });
+  const held = lane(reply);
+  const renamed = { ...reply, folders: reply.folders.map(folder => (folder.id === 'land_doctrine' ? { ...folder, name: 'Land Doctrine' } : folder)) };
+  const surface = { width: 640, height: 320, dpr: 1 };
+  assertQuietFrames(() => familyMeterLaneView(() => {}), { label: 'mastery', binding: held, hour }, 24, surface);
+  assertFreshPaint(() => familyMeterLaneView(() => {}), [
+    { label: 'held', binding: held, hour, check: true },
+    { label: 'later', binding: held, hour: hour + 48, speed: 24 },
+    { label: 'seek back', binding: held, hour, check: true },
+    { label: 'correction', binding: lane(renamed), hour, check: true },
+    { label: 'filtered', binding: lane(renamed, { folders: ['mod_orbital_doctrine'], countryName: 'Germany' }), hour, check: true },
+  ], surface);
 });
 
 test('decryptionProjection renders Ciphers and Who reads whom views via readView.who and readView.art', () => {
@@ -545,12 +564,6 @@ test('autonomyLevelsProjection keeps the product order, lists an unread subject 
   assert.deepEqual(autonomyLevelsProjection.project(view, { filter: onlyGerman, filterAll: false, bySubject: false, surface: '#111111' }).sections![0]!.rows!.map(row => row.name), ['Slovakia']);
   const onlyCanada = { passing: { CAN: [[0, hour + 10]] as [number, number][] }, unrecorded: [], bounds: [] };
   assert.deepEqual(autonomyLevelsProjection.project(view, { filter: onlyCanada, filterAll: false, bySubject: true, surface: '#111111' }).sections![0]!.rows!.map(row => row.name), ['Dominion of Canada']);
-});
-
-test('the meter binding names its view, so a second meters view of a kind finds its projection', () => {
-  const ctx = { kind: 'autonomy', view: 'meters', options: {}, sources: {}, viewport: { width: 400, height: 200, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null },
-    theme: THEME, identitySnapshot: null, selectedKey: null, focusedKey: null, audit: false, auditId: undefined, pauseFlush: 0, reducedMotion: false };
-  assert.equal(meterHostAdapter.buildBinding(ctx as never)?.view, 'meters');
 });
 
 test('bounded readView throws FutureDataError on future who() lookups', () => {

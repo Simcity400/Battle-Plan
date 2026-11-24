@@ -59,6 +59,17 @@ export const HEAT_MATRIX_VIEWS: readonly FamilyViewEntry[] = [
       declaration: mod.whoReadsWhomDeclaration,
     })),
   },
+  {
+    kind: 'trade-flows',
+    view: 'matrix',
+    label: 'Matrix',
+    family: 'heat-matrix',
+    viewOption: 'view',
+    loadSpec: () => import('../trade-flows/tradeFlowsProjection.ts').then(mod => ({
+      family: 'heat-matrix', kind: 'trade-flows', view: 'matrix',
+      projection: mod.tradeMatrixProjection, declaration: mod.tradeMatrixDeclaration,
+    })),
+  },
 ];
 
 export const heatMatrixFamilyManifest: FamilyManifestModule = {

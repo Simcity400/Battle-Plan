@@ -85,6 +85,7 @@ export default function FactoriesWidget(props: WidgetProps) {
       <div ref={anchorRef} className="fh-frame">
         <DeclaredFamilyWidget
           {...props}
+          view="race"
           adapter={barsHostAdapter}
           declaration={factoriesDeclaration}
           selectedKey={detail?.key ?? null}

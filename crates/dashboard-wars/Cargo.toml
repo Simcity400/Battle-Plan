@@ -31,7 +31,6 @@ dashboard-declare = { workspace = true }
 dashboard-follow = { path = "../dashboard-follow" }
 dashboard-intelligence = { workspace = true }
 dashboard-query = { workspace = true }
-dashboard-effects.workspace = true
 dashboard-text = { workspace = true }
 dashboard-world = { workspace = true }
 engine-executable = { workspace = true }

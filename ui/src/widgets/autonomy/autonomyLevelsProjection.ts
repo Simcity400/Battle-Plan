@@ -154,7 +154,7 @@ export const autonomyLevelsProjection: MeterProjection<AutonomyLevelsOptions> = 
       warnings: reply.warnings,
     };
   },
-});
+}, 'meters');
 
 export const autonomyLevelsDeclaration: MeterWidgetDeclaration<AutonomyLevelsOptions> = {
   family: 'meters',

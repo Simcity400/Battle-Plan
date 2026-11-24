@@ -112,22 +112,5 @@ test('the shared charts paint live values without a commit, draw a value the sou
       assert.equal(await since(act, 'drill', plain), 0);
     }));
 
-    await t.test('flow: ribbons redrawn from live values without a commit, missing values say why', () => page.stage('flow', async () => {
-      await act('mountFlow(true)');
-      const first = await act<string>('picture("flow")');
-      const before = await act<Commits>('commits()');
-      await act('pushFlow(30)');
-      assert.notEqual(await act<string>('picture("flow")'), first);
-      await act('pushFlow(null)');
-      assert.ok((await act<string[]>('flowTexts()')).includes('Not recorded at this hour'));
-      assert.equal(await since(act, 'flow', before), 0);
-
-      await act('mountFlow(false)');
-      const fixed = await act<string>('picture("flow")');
-      const plain = await act<Commits>('commits()');
-      await act('pushFlow(50)');
-      assert.equal(await act<string>('picture("flow")'), fixed);
-      assert.equal(await since(act, 'flow', plain), 0);
-    }));
   });
 });

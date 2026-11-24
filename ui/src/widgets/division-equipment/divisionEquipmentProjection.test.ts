@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import type { DivisionEquipmentReply, EquipmentTemplate, EquipmentType } from '../../generated/dashboard';
-import { divisionEquipmentProjection } from './divisionEquipmentProjection.ts';
+import { equipmentTemplateProjection, equipmentTypeProjection } from './divisionEquipmentProjection.ts';
 
 const type = (archetype: string | null, extra: Partial<EquipmentType> = {}): EquipmentType => ({
   archetype, name: archetype ? 'Infantry Equipment' : null, nameMissing: null, heldRaw: '26514100000', neededRaw: '26937000000',
@@ -22,7 +22,7 @@ const reply = (extra: Partial<DivisionEquipmentReply> = {}): DivisionEquipmentRe
 });
 
 const project = (view: 'equipment' | 'template', raw: unknown) =>
-  divisionEquipmentProjection.project(createBoundedReadView({ hour: 48, panels: new Map([['main', raw]]) }), { view });
+  (view === 'template' ? equipmentTemplateProjection : equipmentTypeProjection).project(createBoundedReadView({ hour: 48, panels: new Map([['main', raw]]) }), {});
 
 test('by equipment: whole items from the product, the shortfall as a red negative, fill missing when the product has none', () => {
   const model = project('equipment', reply());
@@ -44,9 +44,9 @@ test('by template: shares of the product’s own figures; a figure it does not h
 
 test('a type’s picture is the one the stockpile artwork product answers for its archetype; no answer leaves the slot without art', () => {
   const pictures = { tag: 'GER', entries: [{ key: 'type:Infantry_Equipment', variant: '9', name: null, icon: 'asset://infantry.png', reason: null }], warnings: [] };
-  const model = divisionEquipmentProjection.project(
+  const model = equipmentTypeProjection.project(
     createBoundedReadView({ hour: 48, panels: new Map<string, unknown>([['main', reply()], ['pictures', pictures]]) }),
-    { view: 'equipment' },
+    {},
   );
   const [infantry, unclassified] = model.rows;
   const picture = infantry!.cells.picture!;
