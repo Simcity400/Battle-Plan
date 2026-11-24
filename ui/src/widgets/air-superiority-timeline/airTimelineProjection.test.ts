@@ -6,7 +6,8 @@ import type { AirSide, AirTimelineReply } from '../../generated/dashboard';
 import { askUnits } from '../../families/readUnits.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import type { FrozenGate } from '../../families/sources.ts';
-import { AIR_TILE_HOURS, airTimelineDeclaration, projectAirTimeline } from './airTimelineProjection.ts';
+import { DAY_TILE_HOURS } from '../../families/heat/dayTiles.ts';
+import { airTimelineDeclaration, projectAirTimeline } from './airTimelineProjection.ts';
 
 const SURFACE = '#161616';
 
@@ -143,7 +144,7 @@ test('a hundred played hours ask each completed tile once, the current tile once
       keys.set(unit.name, unit.key);
     }
   }
-  const completedTiles = Math.ceil(24 * 1000 / AIR_TILE_HOURS);
+  const completedTiles = Math.ceil(24 * 1000 / DAY_TILE_HOURS);
   assert.equal(tileAsks, completedTiles + 4, 'every tile up to today once, then the current tile at each of the four midnights');
   assert.equal(nowAsks, 100);
   assert.ok(widest <= 24, 'the hourly ask covers today only');
@@ -157,12 +158,12 @@ test('a hundred played hours ask each completed tile once, the current tile once
   });
   const sides = reply(0).sides;
   const cell = (friendly: string) => ({ kind: 'sides' as const, parts: [{ side: 0, tag: 'GER', friendly }, { side: 1, tag: 'ENG', friendly: '10' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false, lead: { kind: 'leading' as const, side: 0, share_bp: 8000 } });
-  const tileDays = AIR_TILE_HOURS / 24;
+  const tileDays = DAY_TILE_HOURS / 24;
   const tiles = Array.from({ length: completedTiles - 1 }, (_, k): AirTimelineReply => ({
     ...reply(0),
-    firstHour: k * AIR_TILE_HOURS,
-    lastHour: (k + 1) * AIR_TILE_HOURS - 1,
-    days: Array.from({ length: tileDays }, (_, day) => k * AIR_TILE_HOURS + day * 24 + 23),
+    firstHour: k * DAY_TILE_HOURS,
+    lastHour: (k + 1) * DAY_TILE_HOURS - 1,
+    days: Array.from({ length: tileDays }, (_, day) => k * DAY_TILE_HOURS + day * 24 + 23),
     sides,
     rows: Array.from({ length: 7 }, (_, region) => ({
       region, name: `Region ${region}`, nameMissing: null, pinned: false,

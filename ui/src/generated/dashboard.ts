@@ -2219,8 +2219,20 @@ country: CountryRef,
 /**
  * The hours read; the whole timeline when not given.
  */
-from: number | null, to: number | null, regions?: Array<number>, pinnedRegions?: Array<number>, hiddenRegions?: Array<number>, top?: number, };
+from: number | null, to: number | null, regions?: Array<number>, pinnedRegions?: Array<number>, hiddenRegions?: Array<number>, top?: number,
+/**
+ * Ranks the regions by their convoy losses over the hours from this one to the day before `from`, kept per source and extended by the days added since; in the trade view, lists every deal and lease of those hours.
+ */
+rankFrom?: number,
+/**
+ * Every region with a convoy efficiency in the hours, unranked, and `absent`: the cells of a region without one.
+ */
+every?: boolean, };
 export type ConvoyHealthReply = { branchId: string, view: ConvoyView, tag: string, firstHour: number, lastHour: number,
+/**
+ * The last hour through which nothing this reply shows changes: read beside the reply, never among its rows.
+ */
+validThrough: number,
 /**
  * Fixed-point denominator of every efficiency.
  */
@@ -2234,7 +2246,11 @@ known: Array<Array<HourSpan>>,
 /**
  * Hours no country held the tag: nothing is known of it there. Recording gaps are `gaps`.
  */
-unheld: Array<HourSpan>, gaps: Array<HourSpan>, regions: Array<ConvoyRegion>, deals: Array<ConvoyDeal>, leases: Array<ConvoyLease>, resources: Array<ConvoyResource>, warnings: Array<string>, };
+unheld: Array<HourSpan>, gaps: Array<HourSpan>, regions: Array<ConvoyRegion>,
+/**
+ * With `every`: the cells of a region without a convoy efficiency.
+ */
+absent?: Array<ConvoyCellRun>, deals: Array<ConvoyDeal>, leases: Array<ConvoyLease>, resources: Array<ConvoyResource>, warnings: Array<string>, };
 export type ConvoyView = "regions" | "trade";
 export type ConvoyCellState = { "kind": "efficiency", value: bigint, } | { "kind": "noTraffic" } | { "kind": "notRecorded", reason: string, };
 export type ConvoyCellRun = { firstHour: number, lastHour: number, state: ConvoyCellState, };
@@ -6347,7 +6363,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "construction-log": {},
   "construction-log-manifest": {},
   "content-entity-stats": { "hour": "read" },
-  "convoy-health": { "from": "start", "to": "end" },
+  "convoy-health": { "from": "start", "to": "end", "rankFrom": "start" },
   "country-faction-goals": { "hour": "read" },
   "country-facts": {},
   "country-flags": {},
@@ -6531,7 +6547,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "construction-log": { "branchId": "leaf", "window": "leaf" },
   "construction-log-manifest": { "branchId": "leaf" },
   "content-entity-stats": { "branchId": "leaf", "hour": "leaf", "kind": "leaf", "token": "leaf" },
-  "convoy-health": { "branchId": "leaf", "country": "any", "from": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "to": "leaf", "top": "leaf", "view": "leaf" },
+  "convoy-health": { "branchId": "leaf", "country": "any", "every": "leaf", "from": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "rankFrom": "leaf", "regions": "node", "regions[]": "leaf", "to": "leaf", "top": "leaf", "view": "leaf" },
   "country-faction-goals": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "country-facts": { "branchId": "leaf" },
   "country-flags": { "flags": "node", "flags[]": "node", "flags[].keys": "node", "flags[].keys.0": "leaf", "flags[].keys.1": "leaf", "flags[].keys.2": "leaf", "flags[].reasons": "node", "flags[].reasons.0": "leaf", "flags[].reasons.1": "leaf", "flags[].reasons.2": "leaf", "flags[].searched": "node", "flags[].searched.0": "leaf", "flags[].searched.1": "leaf", "flags[].searched.2": "leaf", "size": "leaf" },
@@ -6715,7 +6731,7 @@ export type RequestParams<E, B> = {
   "construction-log": {};
   "construction-log-manifest": {};
   "content-entity-stats": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "convoy-health": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
+  "convoy-health": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "rankFrom"?: B | null; readonly "to"?: B | null };
   "country-faction-goals": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "country-facts": {};
   "country-flags": {};

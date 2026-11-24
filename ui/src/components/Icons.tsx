@@ -57,6 +57,7 @@ const paths = {
   type: <path d="M5 7.5V5h14v2.5M12 5v14m-3 0h6" />,
   sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2.5v2m0 15v2M4.6 4.6 6 6m12 12 1.4 1.4M2.5 12h2m15 0h2M4.6 19.4 6 18M18 6l1.4-1.4" /></>,
   moon: <path d="M19.5 14.6A8 8 0 0 1 9.4 4.5a8 8 0 1 0 10.1 10.1Z" />,
+  cloud: <path d="M7 18.5h10.5a3.75 3.75 0 0 0 .4-7.48A5.75 5.75 0 0 0 6.9 9.6 4.45 4.45 0 0 0 7 18.5Z" />,
   monitor: <><rect x="3" y="4" width="18" height="12.5" rx="2" /><path d="M8.5 20.5h7m-3.5-4v4" /></>,
   gamepad: <><rect x="2.5" y="7" width="19" height="11" rx="4" /><path d="M7 10.5v4M5 12.5h4" /><circle cx="16" cy="11.5" r="1.1" fill="currentColor" stroke="none" /><circle cx="18" cy="14" r="1.1" fill="currentColor" stroke="none" /></>,
   sliders: <><path d="M4 7h9m4 0h3M4 17h3m4 0h9" /><circle cx="15" cy="7" r="2" /><circle cx="9" cy="17" r="2" /></>,

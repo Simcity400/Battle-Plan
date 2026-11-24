@@ -3,7 +3,7 @@ import { airChoiceKey } from '../../dashboard/airOptions.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
-import type { BranchToHourSourceRead, SourceEntry } from '../../families/plan.ts';
+import { dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
 import {
   spanIndexAt,
@@ -351,53 +351,22 @@ export const airTimelineProjection: HeatLanesProjection<AirTimelineProjectionOpt
   project: projectAirTimeline,
 };
 
-export const AIR_TILE_HOURS = 64 * 24;
-
-function dayStartOf(hour: number): number {
-  return Math.floor(hour / 24) * 24;
-}
-
-export function airTileCount(branch: { readonly firstHour: number; readonly lastHour: number }): number {
-  return Math.max(1, Math.ceil((branch.lastHour - dayStartOf(branch.firstHour) + 1) / AIR_TILE_HOURS));
-}
-
 function airEntries(ctx: FamilyPlanContext, params: Record<string, unknown>): SourcePlan['entries'] {
   const { top, pinnedRegions: _pinned, ...unranked } = params;
-  const origin = dayStartOf(ctx.branch.firstHour);
-  const entry = (name: string, read: Omit<BranchToHourSourceRead, 'shape' | 'product' | 'followQuery'>): SourceEntry => ({
-    name,
-    source: ctx.track.source,
-    branch: ctx.branch.id,
-    offset: ctx.track.axisOffset,
-    read: { shape: 'branch-to-hour' as const, product: 'air-superiority-timeline' as const, followQuery: null, ...read },
-  });
-  const now = entry('now', {
-    coverage: { mode: 'population', form: 'top', limit: Number(top) },
-    params,
-    buildSpanParams: (base, span) => {
-      const today = Math.max(span.firstHour, dayStartOf(span.lastHour));
-      return { ...base, firstHour: today, lastHour: span.lastHour, rankFrom: span.firstHour };
+  return dayTileEntries(ctx, {
+    product: 'air-superiority-timeline',
+    now: {
+      params,
+      coverage: { mode: 'population', form: 'top', limit: Number(top) },
+      span: (base, first, last, rankFrom) => ({ ...base, firstHour: first, lastHour: last, rankFrom }),
+      validThrough: () => null,
+    },
+    tile: {
+      params: { ...unranked, every: true },
+      coverage: { mode: 'population', form: 'all' },
+      span: (base, first, last) => ({ ...base, firstHour: first, lastHour: last }),
     },
   });
-  const tiles = Array.from({ length: airTileCount(ctx.branch) }, (_, k) => {
-    const tileFirst = origin + k * AIR_TILE_HOURS;
-    const tileLast = tileFirst + AIR_TILE_HOURS - 1;
-    return entry(`tile:${k}`, {
-      coverage: { mode: 'population', form: 'all' },
-      params: { ...unranked, every: true },
-      buildSpanParams: (base, span) => {
-        const first = Math.max(tileFirst, span.firstHour);
-        const last = Math.min(tileLast, dayStartOf(span.lastHour) - 1);
-        return first <= last ? { ...base, firstHour: first, lastHour: last } : null;
-      },
-      provenInterval: (data, _requested, at) => {
-        const reply = data as AirTimelineReply | undefined;
-        if (!reply) return null;
-        return reply.lastHour >= tileLast ? [at, Infinity] : [at, reply.lastHour + 24];
-      },
-    });
-  });
-  return [now, ...tiles];
 }
 
 export const airTimelineDeclaration: HeatLanesWidgetDeclaration<AirTimelineProjectionOptions> = {
@@ -423,7 +392,7 @@ export const airTimelineDeclaration: HeatLanesWidgetDeclaration<AirTimelineProje
   projection: airTimelineProjection,
   projectionOptions: (ctx, extra) => {
     const viewpoint = airTimelineMode(ctx).viewpoint;
-    return { viewpointCountry: viewpoint.startsWith('country:') ? viewpoint.slice(8) : null, tiles: airTileCount(ctx.branch), surface: extra.surface };
+    return { viewpointCountry: viewpoint.startsWith('country:') ? viewpoint.slice(8) : null, tiles: dayTileCount(ctx.branch), surface: extra.surface };
   },
   jumpToDate: true,
 };

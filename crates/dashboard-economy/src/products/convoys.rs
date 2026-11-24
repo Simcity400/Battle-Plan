@@ -134,6 +134,14 @@ pub struct ConvoyHealthParams {
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<usize>,
+    #[doc = " Ranks the regions by their convoy losses over the hours from this one to the day before `from`, kept per source and extended by the days added since; in the trade view, lists every deal and lease of those hours."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub rank_from: Option<i32>,
+    #[doc = " Every region with a convoy efficiency in the hours, unranked, and `absent`: the cells of a region without one."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub every: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -238,6 +246,8 @@ pub struct ConvoyHealthReply {
     pub tag: String,
     pub first_hour: i32,
     pub last_hour: i32,
+    #[doc = " The last hour through which nothing this reply shows changes: read beside the reply, never among its rows."]
+    pub valid_through: i32,
     #[doc = " Fixed-point denominator of every efficiency."]
     pub scale: u32,
     #[doc = " Hours each table the view reads was read and available (regional efficiency; resource"]
@@ -248,6 +258,9 @@ pub struct ConvoyHealthReply {
     pub unheld: Vec<HourSpan>,
     pub gaps: Vec<HourSpan>,
     pub regions: Vec<ConvoyRegion>,
+    #[doc = " With `every`: the cells of a region without a convoy efficiency."]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub absent: Option<Vec<ConvoyCellRun>>,
     pub deals: Vec<ConvoyDeal>,
     pub leases: Vec<ConvoyLease>,
     pub resources: Vec<ConvoyResource>,
@@ -546,7 +559,6 @@ struct Gathered {
     deals: BTreeMap<u128, ConvoyDeal>,
     leases: BTreeMap<u128, ConvoyLease>,
     known: [Vec<HourSpan>; 3],
-    resources: BTreeSet<u32>,
 }
 
 fn deal(key: u128) -> ConvoyDeal {
@@ -572,9 +584,7 @@ fn gather_deals(gathered: &mut Gathered, history: &History, rows: &BTreeMap<u128
         let runs = |value: &dyn Fn(&[Cell]) -> Option<i64>| numbers(&steps_runs(steps, history.to, value), spans);
         let row = gathered.deals.entry(*key).or_insert_with(|| deal(*key));
         countries(&runs(&|cells| number(cells, exporter)), names, links, &mut row.exporter);
-        let resources = runs(&|cells| number(cells, resource));
-        gathered.resources.extend(resources.iter().filter_map(|run| u32::try_from(run.2).ok()));
-        row.resource.extend(resources);
+        row.resource.extend(runs(&|cells| number(cells, resource)));
         row.efficiency.extend(runs(&|cells| product(number(cells, a)?, number(cells, b)?)));
         row.factors[0].extend(runs(&|cells| number(cells, a)));
         row.factors[1].extend(runs(&|cells| number(cells, b)));
@@ -859,11 +869,347 @@ pub(crate) fn resource_tokens(query: &Query<'_>, ids: Option<&BTreeSet<u32>>, wa
     Ok(out)
 }
 
+const DAY: i32 = 24;
+const ABSENT: u32 = u32::MAX;
+
+trait Run {
+    fn span(&self) -> (i32, i32);
+    fn clip(&mut self, last: i32);
+}
+
+impl Run for (i32, i32, i64) {
+    fn span(&self) -> (i32, i32) {
+        (self.0, self.1)
+    }
+    fn clip(&mut self, last: i32) {
+        self.1 = self.1.min(last);
+    }
+}
+
+impl Run for HourSpan {
+    fn span(&self) -> (i32, i32) {
+        (self.first_hour, self.last_hour)
+    }
+    fn clip(&mut self, last: i32) {
+        self.last_hour = self.last_hour.min(last);
+    }
+}
+
+impl Run for ConvoyCellRun {
+    fn span(&self) -> (i32, i32) {
+        (self.first_hour, self.last_hour)
+    }
+    fn clip(&mut self, last: i32) {
+        self.last_hour = self.last_hour.min(last);
+    }
+}
+
+impl Run for ConvoyCountry {
+    fn span(&self) -> (i32, i32) {
+        (self.first_hour, self.last_hour)
+    }
+    fn clip(&mut self, last: i32) {
+        self.last_hour = self.last_hour.min(last);
+    }
+}
+
+fn unchanged_through<R: Run>(runs: &[R], at: i32) -> i32 {
+    let index = runs.partition_point(|run| run.span().1 < at);
+    match runs.get(index).map(Run::span) {
+        Some((first, last)) if first <= at => last,
+        Some((first, _)) => first - 1,
+        None => i32::MAX,
+    }
+}
+
+fn cut<R: Run>(runs: &mut Vec<R>, at: i32) {
+    runs.retain(|run| run.span().0 <= at);
+    for run in runs.iter_mut() {
+        run.clip(at);
+    }
+}
+
+struct Window<'q> {
+    gathered: Gathered,
+    known: Vec<Vec<HourSpan>>,
+    unheld: Vec<HourSpan>,
+    gaps: Vec<(HourSpan, &'q str)>,
+}
+
+impl Window<'_> {
+    fn cells(&self, region: u32, efficiency: &[(i32, i32, i64)], from: i32, to: i32) -> Vec<ConvoyCellRun> {
+        build_region_cells(region, efficiency, &self.gathered.traffic, &self.known[0], &self.unheld, &self.gaps, from, to)
+    }
+}
+
+fn window<'q>(source: &Source, query: &'q Query<'_>, params: &ConvoyHealthParams, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Window<'q>> {
+    let (mut gathered, mut held) = if from <= to { gather(source, query, params, (from, to), cancelled)? } else { (Gathered::default(), Vec::new()) };
+    held.sort_unstable();
+    let gaps: Vec<(HourSpan, &str)> = query
+        .timeline
+        .unheld
+        .iter()
+        .filter_map(|gap| {
+            let (a, b) = (gap.first.max(from), gap.last.min(to));
+            (a <= b).then_some((HourSpan { first_hour: a, last_hour: b }, gap.reason.as_str()))
+        })
+        .collect();
+    let unheld = without(&outside(&held, from, to), &gaps);
+    let known = std::mem::take(&mut gathered.known).map(dashboard_world::products::subjects::settle).to_vec();
+    Ok(Window { gathered, known, unheld, gaps })
+}
+
+fn score(cells: &[ConvoyCellRun]) -> (i128, u64) {
+    let mut deficit: i128 = 0;
+    let mut active: u64 = 0;
+    for run in cells {
+        if let ConvoyCellState::Efficiency { value } = run.state {
+            let span = (i64::from(run.last_hour) - i64::from(run.first_hour) + 1).max(0) as u64;
+            active += span;
+            deficit += i128::from((i64::from(SCALE) - value).max(0)) * i128::from(span);
+        }
+    }
+    (deficit, active)
+}
+
+fn has_efficiency(cells: &[ConvoyCellRun]) -> bool {
+    cells.iter().any(|run| matches!(run.state, ConvoyCellState::Efficiency { .. }))
+}
+
+#[derive(Clone, Default)]
+struct Completed {
+    through: i32,
+    regions: HashMap<u32, (i128, u64)>,
+    deals: BTreeSet<u128>,
+    leases: BTreeSet<u128>,
+}
+
+#[derive(Default)]
+struct HeldCompleted(HashMap<String, Completed>);
+
+const HELD_COMPLETED: usize = 32;
+
+fn completed(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, from: i32, through: i32, cancelled: &AtomicBool) -> io::Result<Completed> {
+    let key = format!("{}|{:?}|{:?}|{from}", params.branch_id, params.view, params.country);
+    let state = source.state::<HeldCompleted>();
+    let held = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.get(&key).filter(|held| held.through <= through).cloned();
+    let (start, mut done) = held.map_or_else(|| (from, Completed::default()), |held| (held.through + 1, held));
+    if start > through {
+        return Ok(done);
+    }
+    match params.view {
+        ConvoyView::Regions => {
+            let added = window(source, query, params, start, through, cancelled)?;
+            for (&region, efficiency) in &added.gathered.regions {
+                let (deficit, active) = score(&added.cells(region, efficiency, start, through));
+                if deficit > 0 || active > 0 {
+                    let total = done.regions.entry(region).or_default();
+                    total.0 += deficit;
+                    total.1 += active;
+                }
+            }
+        }
+        ConvoyView::Trade => {
+            for stretch in query.timeline.within(start, through) {
+                dashboard_text::metadata::check_cancel(cancelled)?;
+                let index = cached_convoys(source, stretch.run)?;
+                for holder in query.holders.within(&params.country, stretch.first, stretch.last) {
+                    let Holder::Found { id, .. } = holder.holder else { continue };
+                    done.deals.extend(rows_of(&index.deals, id, holder.first, holder.last).into_keys());
+                    done.leases.extend(rows_of(&index.leases, id, holder.first, holder.last).into_keys());
+                }
+            }
+        }
+    }
+    done.through = through;
+    let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if state.0.len() >= HELD_COMPLETED && !state.0.contains_key(&key) {
+        state.0.clear();
+    }
+    state.0.insert(key, done.clone());
+    Ok(done)
+}
+
+fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<ConvoyHealthReply> {
+    let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
+    let query = dashboard_base::queries::query(source, branch)?;
+    let from = params.from.unwrap_or(query.timeline.first).max(query.timeline.first);
+    let to = params.to.unwrap_or(query.timeline.last).min(query.timeline.last);
+    let reach = if from <= to { to.div_euclid(DAY).saturating_mul(DAY).saturating_add(DAY - 1).min(query.timeline.last).max(to) } else { to };
+    let every = params.every == Some(true);
+    let mut warnings = Vec::new();
+    let mut held = window(source, &query, params, from, reach, cancelled)?;
+    let gap_spans: Vec<HourSpan> = held.gaps.iter().map(|(span, _)| *span).collect();
+    let mut valid = reach;
+    for spans in held.known.iter().chain([&held.unheld, &gap_spans]) {
+        valid = valid.min(unchanged_through(spans, to));
+    }
+    let rank_from = params.rank_from.filter(|&rank_from| !every && params.regions.is_none() && rank_from < from);
+    let done = rank_from.map(|rank_from| completed(source, &query, params, rank_from, from - 1, cancelled)).transpose()?;
+
+    let mut region_ids: BTreeSet<u32> = BTreeSet::new();
+    if params.view == ConvoyView::Regions {
+        region_ids.extend(held.gathered.regions.keys().copied());
+        region_ids.extend(params.regions.iter().flatten().copied());
+        region_ids.extend(params.pinned_regions.iter().flatten().copied());
+        if let Some(done) = &done {
+            region_ids.extend(done.regions.keys().copied());
+        }
+    }
+    let named = region_names(source, context, &region_ids, &mut warnings);
+    let absent = (params.view == ConvoyView::Regions).then(|| {
+        let mut cells = held.cells(ABSENT, &[], from, reach);
+        valid = valid.min(unchanged_through(&cells, to));
+        cut(&mut cells, to);
+        cells
+    });
+    let mut all_regions: BTreeMap<u32, ConvoyRegion> = BTreeMap::new();
+    for region in region_ids {
+        let mut efficiency = held.gathered.regions.remove(&region).unwrap_or_default();
+        let mut cells = held.cells(region, &efficiency, from, reach);
+        valid = valid.min(unchanged_through(&cells, to));
+        cut(&mut cells, to);
+        cut(&mut efficiency, to);
+        let readout = cells.last().map(|run| run.state.clone());
+        let (name, missing) = match named.get(&region) {
+            Some(Ok(name)) => (Some(name.clone()), None),
+            Some(Err(why)) => (None, Some(why.clone())),
+            None => (None, Some(format!("Region {region} absent from the recorded stack"))),
+        };
+        all_regions.insert(region, ConvoyRegion { region, name, missing, pinned: false, cells, readout, efficiency });
+    }
+    let regions: Vec<ConvoyRegion> = if let Some(explicit) = &params.regions {
+        explicit
+            .iter()
+            .filter_map(|id| {
+                let mut entry = all_regions.remove(id)?;
+                entry.pinned = true;
+                Some(entry)
+            })
+            .collect()
+    } else if !every && (params.top.is_some() || params.pinned_regions.is_some() || params.hidden_regions.is_some()) {
+        let mut seen = HashSet::new();
+        let pinned_list: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
+        let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
+        let open = all_regions.iter().filter(|(id, _)| !seen.contains(id) && !hidden.contains(id));
+        let mut auto: Vec<(u32, i128, u64)> = match &done {
+            Some(done) => open
+                .filter_map(|(&id, entry)| {
+                    let (deficit, active) = done.regions.get(&id).copied().unwrap_or_default();
+                    (deficit > 0 || active > 0 || has_efficiency(&entry.cells)).then_some((id, deficit, active))
+                })
+                .collect(),
+            None => {
+                valid = to;
+                open.map(|(&id, entry)| {
+                    let (deficit, active) = score(&entry.cells);
+                    (id, deficit, active)
+                })
+                .filter(|&(_, deficit, active)| deficit > 0 || active > 0)
+                .collect()
+            }
+        };
+        auto.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
+        if let Some(limit) = params.top {
+            auto.truncate(limit);
+        }
+        let mut ordered = Vec::with_capacity(pinned_list.len() + auto.len());
+        for id in pinned_list {
+            if let Some(mut entry) = all_regions.remove(&id) {
+                entry.pinned = true;
+                ordered.push(entry);
+            }
+        }
+        for (id, _, _) in auto {
+            if let Some(entry) = all_regions.remove(&id) {
+                ordered.push(entry);
+            }
+        }
+        ordered
+    } else {
+        all_regions.into_values().filter(|entry| has_efficiency(&entry.cells)).collect()
+    };
+
+    let listed = |key: &u128, set: fn(&Completed) -> &BTreeSet<u128>| done.as_ref().is_some_and(|done| set(done).contains(key));
+    let mut deals: BTreeMap<u128, ConvoyDeal> = std::mem::take(&mut held.gathered.deals);
+    let mut leases: BTreeMap<u128, ConvoyLease> = std::mem::take(&mut held.gathered.leases);
+    if let Some(done) = &done {
+        for &key in &done.deals {
+            deals.entry(key).or_insert_with(|| deal(key));
+        }
+        for &key in &done.leases {
+            leases.entry(key).or_insert_with(|| lease(key));
+        }
+    }
+    for row in deals.values_mut() {
+        valid = valid.min(unchanged_through(&row.exporter, to)).min(unchanged_through(&row.resource, to)).min(unchanged_through(&row.efficiency, to));
+        cut(&mut row.exporter, to);
+        cut(&mut row.resource, to);
+        cut(&mut row.efficiency, to);
+        row.factors.iter_mut().chain(row.convoys.iter_mut()).for_each(|runs| cut(runs, to));
+    }
+    for row in leases.values_mut() {
+        valid = valid.min(unchanged_through(&row.giver, to)).min(unchanged_through(&row.bad, to));
+        cut(&mut row.giver, to);
+        cut(&mut row.bad, to);
+        row.convoys.iter_mut().for_each(|runs| cut(runs, to));
+    }
+    let mut deals: Vec<ConvoyDeal> = deals
+        .into_iter()
+        .filter(|(key, deal)| listed(key, |done| &done.deals) || !deal.resource.is_empty() || !deal.efficiency.is_empty() || !deal.exporter.is_empty())
+        .map(|(_, deal)| deal)
+        .collect();
+    let mut leases: Vec<ConvoyLease> = leases.into_iter().filter(|(key, lease)| listed(key, |done| &done.leases) || !lease.bad.is_empty()).map(|(_, lease)| lease).collect();
+    let resources = if params.view == ConvoyView::Trade {
+        let shown: BTreeSet<u32> = deals.iter().flat_map(|deal| deal.resource.iter().filter_map(|run| u32::try_from(run.2).ok())).collect();
+        let tokens = resource_tokens(&query, Some(&shown), &mut warnings)?;
+        let (infos, notes) = ResourceNaming::stored(source, context).infos(&tokens, cancelled)?;
+        warnings.extend(notes);
+        infos.into_iter().map(|info| ConvoyResource { id: info.id, token: info.token, name: info.name }).collect()
+    } else {
+        Vec::new()
+    };
+    if params.view == ConvoyView::Trade && (!deals.is_empty() || !leases.is_empty()) {
+        let mut looks = LookResolver::new(source, &query.timeline, context, &mut warnings)?;
+        for country in deals.iter_mut().flat_map(|d| d.exporter.iter_mut()).chain(leases.iter_mut().flat_map(|l| l.giver.iter_mut())) {
+            if let Some(tag) = &country.tag {
+                let look = looks.at(tag, country.last_hour)?;
+                country.name = look.name;
+                country.name_missing = look.name_missing;
+            }
+        }
+    }
+    let mut known = std::mem::take(&mut held.known);
+    known.iter_mut().for_each(|spans| cut(spans, to));
+    let mut unheld = std::mem::take(&mut held.unheld);
+    cut(&mut unheld, to);
+    let mut gaps = gap_spans;
+    cut(&mut gaps, to);
+    Ok(ConvoyHealthReply {
+        branch_id: params.branch_id.clone(),
+        view: params.view,
+        tag: query.holders.name(&params.country, to),
+        first_hour: from,
+        last_hour: to,
+        valid_through: valid.max(to),
+        scale: SCALE,
+        known,
+        unheld,
+        gaps,
+        regions,
+        absent: every.then_some(absent).flatten(),
+        deals,
+        leases,
+        resources,
+        warnings,
+    })
+}
+
 impl Product for ConvoyHealth {
     const KEY: &'static str = KEY;
     const CONTENT_DEPENDENT: bool = true;
     type Params = ConvoyHealthParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, view, country, from: Start, to: End, regions, pinnedRegions, hiddenRegions, top, "regions[]", "pinnedRegions[]", "hiddenRegions[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, view, country, from: Start, to: End, regions, pinnedRegions, hiddenRegions, top, rankFrom: Start, every, "regions[]", "pinnedRegions[]", "hiddenRegions[]"];
     type Reply = ConvoyHealthReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -894,130 +1240,7 @@ impl Product for ConvoyHealth {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
-        let query = dashboard_base::queries::query(source, branch)?;
-        let from = params.from.unwrap_or(query.timeline.first).max(query.timeline.first);
-        let to = params.to.unwrap_or(query.timeline.last).min(query.timeline.last);
-        let mut warnings = Vec::new();
-        let (mut gathered, mut held) = if from <= to { gather(source, &query, params, (from, to), cancelled)? } else { (Gathered::default(), Vec::new()) };
-        held.sort_unstable();
-        let recorded_gaps: Vec<(HourSpan, &str)> = query
-            .timeline
-            .unheld
-            .iter()
-            .filter_map(|gap| {
-                let (a, b) = (gap.first.max(from), gap.last.min(to));
-                (a <= b).then_some((HourSpan { first_hour: a, last_hour: b }, gap.reason.as_str()))
-            })
-            .collect();
-        let unheld = without(&outside(&held, from, to), &recorded_gaps);
-        let [regional, deals_known, clients_known] = gathered.known;
-        let known = [regional, deals_known, clients_known].map(dashboard_world::products::subjects::settle).to_vec();
-        let gaps: Vec<HourSpan> = recorded_gaps.iter().map(|(span, _)| *span).collect();
-        let mut region_ids: BTreeSet<u32> = gathered.regions.keys().copied().collect();
-        region_ids.extend(params.regions.iter().flatten().copied());
-        region_ids.extend(params.pinned_regions.iter().flatten().copied());
-        let named = region_names(source, context, &region_ids, &mut warnings);
-        let mut all_regions: BTreeMap<u32, ConvoyRegion> = region_ids
-            .into_iter()
-            .map(|region| {
-                let efficiency = gathered.regions.remove(&region).unwrap_or_default();
-                let cells = build_region_cells(region, &efficiency, &gathered.traffic, &known[0], &unheld, &recorded_gaps, from, to);
-                let readout = cells.last().map(|run| run.state.clone());
-                let (name, missing) = match named.get(&region) {
-                    Some(Ok(name)) => (Some(name.clone()), None),
-                    Some(Err(why)) => (None, Some(why.clone())),
-                    None => (None, Some(format!("Region {region} absent from the recorded stack"))),
-                };
-                (region, ConvoyRegion { region, name, missing, pinned: false, cells, readout, efficiency })
-            })
-            .collect();
-        let regions: Vec<ConvoyRegion> = if let Some(explicit) = &params.regions {
-            explicit
-                .iter()
-                .filter_map(|id| {
-                    let mut entry = all_regions.remove(id)?;
-                    entry.pinned = true;
-                    Some(entry)
-                })
-                .collect()
-        } else if params.top.is_some() || params.pinned_regions.is_some() || params.hidden_regions.is_some() {
-            let mut seen = HashSet::new();
-            let pinned_list: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
-            let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
-            let mut auto: Vec<(u32, i128, u64)> = all_regions
-                .iter()
-                .filter(|(id, _)| !seen.contains(id) && !hidden.contains(id))
-                .map(|(&id, entry)| {
-                    let mut deficit: i128 = 0;
-                    let mut active_hours: u64 = 0;
-                    for run in &entry.cells {
-                        if let ConvoyCellState::Efficiency { value } = run.state {
-                            let span = (i64::from(run.last_hour) - i64::from(run.first_hour) + 1).max(0) as u64;
-                            active_hours += span;
-                            deficit += i128::from((i64::from(SCALE) - value).max(0)) * i128::from(span);
-                        }
-                    }
-                    (id, deficit, active_hours)
-                })
-                .filter(|&(_, deficit, active)| deficit > 0 || active > 0)
-                .collect();
-            auto.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
-            if let Some(limit) = params.top {
-                auto.truncate(limit);
-            }
-            let mut ordered = Vec::with_capacity(pinned_list.len() + auto.len());
-            for id in pinned_list {
-                if let Some(mut entry) = all_regions.remove(&id) {
-                    entry.pinned = true;
-                    ordered.push(entry);
-                }
-            }
-            for (id, _, _) in auto {
-                if let Some(entry) = all_regions.remove(&id) {
-                    ordered.push(entry);
-                }
-            }
-            ordered
-        } else {
-            all_regions.into_values().collect()
-        };
-        let resources = if params.view == ConvoyView::Trade {
-            let tokens = resource_tokens(&query, Some(&gathered.resources), &mut warnings)?;
-            let (infos, notes) = ResourceNaming::stored(source, context).infos(&tokens, cancelled)?;
-            warnings.extend(notes);
-            infos.into_iter().map(|info| ConvoyResource { id: info.id, token: info.token, name: info.name }).collect()
-        } else {
-            Vec::new()
-        };
-        let mut deals: Vec<ConvoyDeal> = gathered.deals.into_values().filter(|deal| !deal.resource.is_empty() || !deal.efficiency.is_empty() || !deal.exporter.is_empty()).collect();
-        let mut leases: Vec<ConvoyLease> = gathered.leases.into_values().filter(|lease| !lease.bad.is_empty()).collect();
-        if params.view == ConvoyView::Trade && (!deals.is_empty() || !leases.is_empty()) {
-            let mut looks = LookResolver::new(source, &query.timeline, context, &mut warnings)?;
-            for country in deals.iter_mut().flat_map(|d| d.exporter.iter_mut()).chain(leases.iter_mut().flat_map(|l| l.giver.iter_mut())) {
-                if let Some(tag) = &country.tag {
-                    let look = looks.at(tag, country.last_hour)?;
-                    country.name = look.name;
-                    country.name_missing = look.name_missing;
-                }
-            }
-        }
-        Ok(ConvoyHealthReply {
-            branch_id: params.branch_id.clone(),
-            view: params.view,
-            tag: query.holders.name(&params.country, to),
-            first_hour: from,
-            last_hour: to,
-            scale: SCALE,
-            known,
-            unheld,
-            gaps,
-            regions,
-            deals,
-            leases,
-            resources,
-            warnings,
-        })
+        health(source, params, context, cancelled)
     }
 }
 

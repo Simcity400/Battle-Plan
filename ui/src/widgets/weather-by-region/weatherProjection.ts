@@ -283,7 +283,7 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
   label: 'Weather by region',
   subject: 'weather',
   emptyCampaign: 'Load a campaign to see weather.',
-  icon: 'sun',
+  icon: 'cloud',
   countries: { mode: 'none' },
   sources: (ctx, view): SourcePlan => {
     const show = weatherShow(ctx.options);
