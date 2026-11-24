@@ -67,16 +67,26 @@ export function warSides(war: WarTimeline): WarSides {
   const attackers: WarParticipantRun[] = [];
   const defenders: WarParticipantRun[] = [];
   for (const run of war.participants) (sideOf(run, observation) === 'attackers' ? attackers : defenders).push(run);
-  const pair = observation?.representative ?? [];
-  const lead = (runs: readonly WarParticipantRun[]) => pair.find(tag => runs.some(run => run.tag === tag)) ?? runs[0]?.tag ?? null;
+  const named: readonly string[] = observation?.representative ?? [];
+  const lead = (runs: readonly WarParticipantRun[]) => {
+    if (observation && runs.some(run => run.tag === observation.viewpointTag)) return observation.viewpointTag;
+    const earliest = runs.reduce((least, run) => Math.min(least, run.firstHour), Infinity);
+    const first = runs.filter(run => run.firstHour === earliest);
+    return first.find(run => named.includes(run.tag))?.tag ?? first[0]?.tag ?? null;
+  };
+  const first = (runs: WarParticipantRun[], tag: string | null) => runs.sort((a, b) => Number(b.tag === tag) - Number(a.tag === tag) || a.firstHour - b.firstHour);
+  first(attackers, lead(attackers));
+  first(defenders, lead(defenders));
   return { attackers, defenders, leads: [lead(attackers), lead(defenders)] };
 }
 
 function countryAt(readView: BoundedReadView, tag: string, hour: number): { readonly name: string; readonly flag: ArtHandle | null; readonly colour: string | null } {
   const who = readView.who('country', tag, Math.min(hour, readView.hour));
+  const flag = who.flagChoice?.status === 'ready' ? flagArtHandle(who.flagChoice.value, 'panel') : null;
+  if (flag) readView.art(flag);
   return {
     name: who.name.status === 'ready' ? who.name.value : tag,
-    flag: who.flagChoice?.status === 'ready' ? flagArtHandle(who.flagChoice.value, 'small') : null,
+    flag,
     colour: who.colour?.status === 'ready' ? who.colour.value : null,
   };
 }
@@ -160,30 +170,41 @@ function warLanes(readView: BoundedReadView, reply: WarTimelineReply, opt: WarsO
       meta: { warId: war.id } satisfies WarLaneMeta,
     });
     const capitulated = new Map(war.capitulations.map(item => [item.tag, item.hour]));
-    const row = (run: WarParticipantRun, index: number): TimelineLane => {
-      const look = countryAt(readView, run.tag, Math.min(run.lastHour, hour));
-      const held = run.lastHour >= reply.hour && open;
-      const late = run.firstHour > war.firstHour;
-      const fell = capitulated.get(run.tag);
+    const row = (runs: readonly WarParticipantRun[], index: number): TimelineLane => {
+      const tag = runs[0]!.tag;
+      const look = countryAt(readView, tag, Math.min(runs.at(-1)!.lastHour, hour));
+      const late = runs[0]!.firstHour > war.firstHour;
+      const fell = capitulated.get(tag);
+      const fill = look.colour ? readableColour(look.colour, opt.surface) : colour(opt.surface, index + 2);
       return {
         key: `${key}:${index}`, kind: 'item', depth: 1, parentKey: key, height: ROW, barHeight: 10,
-        label: look.name, ...(late ? { aside: `Joined ${formatDateOnly(run.firstHour)}` } : {}),
-        flag: look.flag, flagTag: run.tag,
-        spans: [{
-          id: `${index}`, firstHour: run.firstHour, lastHour: held ? hour : run.lastHour, open: held,
-          color: look.colour ? readableColour(look.colour, opt.surface) : colour(opt.surface, index + 2),
-          startBy: run.joinedBy, endUnseen: run.leftBy && !held,
-          ...(fell !== undefined && fell <= hour ? { marks: [{ hour: fell, art: SURRENDER_FLAG, label: `${look.name} capitulated` }] } : {}),
-        }],
-        auditValue: `${run.tag}|${run.firstHour}-${held ? 'open' : run.lastHour}`,
-        meta: { warId: war.id, tag: run.tag } satisfies WarLaneMeta,
+        label: look.name, ...(late ? { aside: `Joined ${formatDateOnly(runs[0]!.firstHour)}` } : {}),
+        flag: look.flag, flagTag: tag,
+        spans: runs.map((run, at) => {
+          const held = run.lastHour >= reply.hour && open;
+          const last = at === runs.length - 1;
+          return {
+            id: `${index}:${at}`, firstHour: run.firstHour, lastHour: held ? hour : run.lastHour, open: held, color: fill,
+            startBy: run.joinedBy, endUnseen: run.leftBy && !held,
+            ...(last && fell !== undefined && fell <= hour ? { marks: [{ hour: fell, art: SURRENDER_FLAG, label: `${look.name} capitulated` }] } : {}),
+          };
+        }),
+        auditValue: `${tag}|${runs.map(run => `${run.firstHour}-${run.lastHour >= reply.hour && open ? 'open' : run.lastHour}`).join(',')}`,
+        meta: { warId: war.id, tag } satisfies WarLaneMeta,
       };
     };
-    sides.attackers.forEach((run, index) => lanes.push(row(run, index)));
-    if (sides.defenders.length) {
+    const byCountry = (runs: readonly WarParticipantRun[]) => {
+      const grouped = new Map<string, WarParticipantRun[]>();
+      for (const run of runs) (grouped.get(run.tag) ?? grouped.set(run.tag, []).get(run.tag)!).push(run);
+      return [...grouped.values()];
+    };
+    const attackers = byCountry(sides.attackers);
+    const defenders = byCountry(sides.defenders);
+    attackers.forEach((runs, index) => lanes.push(row(runs, index)));
+    if (defenders.length) {
       lanes.push({ key: `${key}:against`, kind: 'heading', depth: 1, parentKey: key, height: AGAINST, label: 'Against', spans: [], auditValue: 'Against' });
     }
-    sides.defenders.forEach((run, index) => lanes.push(row(run, sides.attackers.length + index)));
+    defenders.forEach((runs, index) => lanes.push(row(runs, attackers.length + index)));
   }
   return lanes;
 }

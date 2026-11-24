@@ -148,7 +148,7 @@ function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: Timeline
   ctx.restore();
 }
 
-function drawSide(ctx: Canvas2D, side: TimelineSideLabel, x: number, right: number, mid: number, input: TimelinePaintInput, leadName: boolean): number {
+function drawSide(ctx: Canvas2D, side: TimelineSideLabel, x: number, right: number, mid: number, input: TimelinePaintInput, leadName: boolean, stripLimit = right): number {
   const { theme, readView } = input;
   ctx.save();
   if (side.dim) ctx.globalAlpha = LOSER_ALPHA;
@@ -166,7 +166,7 @@ function drawSide(ctx: Canvas2D, side: TimelineSideLabel, x: number, right: numb
     x += textWidth(ctx, fitted) + 6;
   }
   for (const member of side.strip) {
-    if (x + STRIP_W > right) break;
+    if (x + STRIP_W > Math.min(right, stripLimit)) break;
     drawMediaSlot(ctx, x, mid, STRIP_W, STRIP_H, { kind: 'flag', art: member.flag ? readView.art(member.flag) : unavailableArt('Flag unavailable'), tag: member.tag }, theme);
     x += STRIP_W + 2;
   }
@@ -177,7 +177,8 @@ function drawSide(ctx: Canvas2D, side: TimelineSideLabel, x: number, right: numb
 function drawSides(ctx: Canvas2D, sides: readonly [TimelineSideLabel, TimelineSideLabel], x: number, right: number, mid: number, input: TimelinePaintInput): void {
   const { theme } = input;
   const names = !input.layout.compact;
-  x = drawSide(ctx, sides[0], x, right, mid, input, names) + 4;
+  const half = x + (right - x) * 0.5;
+  x = drawSide(ctx, sides[0], x, right, mid, input, names, half) + 4;
   if (x + 20 > right) return;
   ctx.save();
   ctx.textAlign = 'left';
