@@ -1,8 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SPRITE_BATCH, SpriteCaches, spriteFrames, spriteHandle, spriteIcons, spriteId } from './spriteArtwork.ts';
-import { artHandleKey, readyArt } from '../families/art/types.ts';
-import type { ArtHandle } from '../families/plan.ts';
+import { SPRITE_BATCH, SpriteCaches, spriteFrames, spriteHandle, spriteResolutions, type SpriteFrame } from './transport.ts';
+import { artHandleKey, readyArt, type ArtResolution } from './types.ts';
+import type { ArtHandle } from '../plan.ts';
+
+const spriteId = (sprite: SpriteFrame) => artHandleKey(spriteHandle(sprite));
+const urlOf = (resolution: ArtResolution | undefined) => resolution?.status === 'ready' ? resolution.url : null;
+const spriteIcons = (reply: unknown, asked: readonly SpriteFrame[]) => {
+  const icons = new Map<string, string | null>();
+  for (const [id, resolution] of spriteResolutions(reply, asked)) icons.set(id, urlOf(resolution));
+  return icons;
+};
 
 const png = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png';
 
@@ -51,24 +59,24 @@ test('a sprite reply answering frames it was not asked for is malformed', () => 
 test('each active recording and revision keeps its own icons, and a scope no one shows is dropped', () => {
   const caches = new SpriteCaches();
   const releaseA = caches.hold('a'), releaseB = caches.hold('b');
-  caches.icons('a').set('icon', png);
-  caches.icons('b').set('icon', null);
-  assert.equal(caches.icons('a').get('icon'), png, 'another recording shown at the same time never evicts these icons');
+  caches.resolutions('a').set('icon', readyArt(png));
+  caches.resolutions('b').set('icon', readyArt(png));
+  assert.equal(urlOf(caches.resolutions('a').get('icon')), png, 'another recording shown at the same time never evicts these icons');
   releaseA();
-  assert.equal(caches.icons('b').get('icon'), null);
-  assert.equal(caches.icons('a').has('icon'), false, 'a scope released by its last widget is not kept');
+  assert.equal(urlOf(caches.resolutions('b').get('icon')), png);
+  assert.equal(caches.resolutions('a').has('icon'), false, 'a scope released by its last widget is not kept');
   releaseB();
 });
 
 test('two recordings mounting together keep their own icons whatever order their renders and effects run in', () => {
   const caches = new SpriteCaches();
-  const a = caches.icons('a'), b = caches.icons('b');
+  const a = caches.resolutions('a'), b = caches.resolutions('b');
   const releaseA = caches.hold('a');
   const releaseB = caches.hold('b');
-  assert.equal(caches.icons('a'), a);
-  assert.equal(caches.icons('b'), b, 'a scope rendered but not yet held is not dropped when another is held');
-  b.set('icon', png);
-  assert.equal(caches.icons('b').get('icon'), png);
+  assert.equal(caches.resolutions('a'), a);
+  assert.equal(caches.resolutions('b'), b, 'a scope rendered but not yet held is not dropped when another is held');
+  b.set('icon', readyArt(png));
+  assert.equal(urlOf(caches.resolutions('b').get('icon')), png);
   releaseA(); releaseB();
 });
 
@@ -91,7 +99,7 @@ test('sprite requests from multiple callers in the same tick coalesce into bound
   await flush();
   assert.deepEqual(calls, [15]);
   assert.equal(aborted, 0);
-  assert.equal(caches.icons('s').get(spriteId({ key: 'GFX_14', frame: 0 })), png);
+  assert.equal(urlOf(caches.resolutions('s').get(spriteId({ key: 'GFX_14', frame: 0 }))), png);
   assert.equal(caches.resolutions('s').get(spriteId({ key: 'GFX_14', frame: 0 }))?.status, 'ready');
   const large = Array.from({ length: SPRITE_BATCH + 10 }, (_, i) => ({ key: `GFX_L_${i}`, frame: 0 }));
   caches.request('s', large.map(spriteHandle), fetcher);
@@ -109,7 +117,6 @@ test('failed sprite batches record errors without marking sprites as missing and
   caches.request('err', [spriteHandle({ key: 'GFX_fail', frame: 0 })], failing);
   for (let i = 0; i < 6; i++) await Promise.resolve();
   const id = spriteId({ key: 'GFX_fail', frame: 0 });
-  assert.equal(caches.icons('err').has(id), false);
   assert.equal(caches.errors('err').get(id), 'disk offline');
   assert.equal(caches.resolutions('err').has(id), false);
   assert.equal(notified, 1);

@@ -2,7 +2,7 @@ import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { LaneView, Painted, PaintInput, Scene } from '../../draw/lane.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
 import { createLaneArtProvider } from '../art/provider.ts';
-import type { ArtResolution } from '../art/types.ts';
+import { artHandleKey, type ArtResolution } from '../art/types.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
 import type { ArtProvider, FamilyTheme, IdentityProvider } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
@@ -66,6 +66,7 @@ interface HeldFamilyMeter {
   artProvider: ArtProvider;
   demandedArtUrls: readonly string[];
   identityDemandsField: FieldEntry | null;
+  artDemandsField: FieldEntry | null;
   kept: Map<string, { text: string; content: string }>;
   wake?: () => void;
 
@@ -200,6 +201,7 @@ export function familyMeterLaneView(
           artProvider: createLaneArtProvider(art),
           demandedArtUrls: [],
           identityDemandsField: null,
+          artDemandsField: null,
           kept: new Map(),
           prevParts: [],
           prevOptions: undefined,
@@ -284,6 +286,9 @@ export function familyMeterLaneView(
         model = projected.model;
         const readView = projected.view;
         held.demandedArtUrls = [...projected.artUrls];
+        held.artDemandsField = projected.artAsks.length
+          ? { value: projected.artAsks, content: cachedField(held, 'artDemands', JSON.stringify(projected.artAsks.map(artHandleKey)), content) }
+          : null;
         const demandsList = projected.identityDemands;
         if (demandsList.length) {
           const dText = JSON.stringify(demandsList);
@@ -380,6 +385,7 @@ export function familyMeterLaneView(
       const fields: Record<string, FieldEntry> = {};
 
       if (held.identityDemandsField) fields.identityDemands = held.identityDemandsField;
+      if (held.artDemandsField) fields.artDemands = held.artDemandsField;
 
       if (modelChanged || !held.metaField) {
         const mSig = JSON.stringify([
