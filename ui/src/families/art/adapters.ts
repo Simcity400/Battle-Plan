@@ -1,3 +1,4 @@
+import type { ArtSlotState, FlagSlotState } from '../../draw/kit.ts';
 import type { CountryFlagImage } from '../../generated/dashboard';
 import type { DrawnFlagEntry } from '../identity/types.ts';
 import {
@@ -9,6 +10,7 @@ import {
   readyArt,
   type ArtOrigin,
   type ArtResolution,
+  type DecodedArtState,
 } from './types.ts';
 
 export function flagEntryToArt(entry: DrawnFlagEntry | undefined, origin: ArtOrigin = CURRENT_INSTALLATION_ORIGIN): ArtResolution {
@@ -45,4 +47,42 @@ export function urlToArt(
   if (url) return readyArt(url, options.origin ?? CURRENT_INSTALLATION_ORIGIN);
   if (options.pending) return PENDING_ART;
   return missingArt(options.reason ?? 'Art not found in the current installation', options.origin ?? CURRENT_INSTALLATION_ORIGIN);
+}
+
+export function toArtSlotState<TBitmap extends CanvasImageSource>(
+  state: DecodedArtState<TBitmap>,
+  resolvedName?: string,
+): ArtSlotState {
+  switch (state.kind) {
+    case 'none':
+      return { kind: 'none' };
+    case 'pending':
+      return { kind: 'pending' };
+    case 'ready':
+      return { kind: 'ready', bitmap: state.bitmap, width: state.width, height: state.height };
+    case 'missing':
+      return { kind: 'missing', ...(resolvedName ? { resolvedName } : {}) };
+    case 'refused':
+      return { kind: 'refused', reason: state.reason };
+    case 'failed':
+      return { kind: 'failed', reason: state.reason };
+  }
+}
+
+export function toFlagSlotState<TBitmap extends CanvasImageSource>(
+  state: DecodedArtState<TBitmap>,
+  tag?: string,
+): FlagSlotState {
+  switch (state.kind) {
+    case 'pending':
+      return { kind: 'pending' };
+    case 'ready':
+      return { kind: 'ready', bitmap: state.bitmap, width: state.width, height: state.height };
+    case 'failed':
+      return { kind: 'failed' };
+    case 'none':
+    case 'missing':
+    case 'refused':
+      return { kind: 'missing', ...(tag ? { tag } : {}) };
+  }
 }
