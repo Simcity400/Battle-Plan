@@ -1575,6 +1575,11 @@ export interface IconStripItem {
   readonly count?: number;
 }
 
+export function iconStripSlotWidth(state: ArtSlotState, size: number): number {
+  if (state.kind !== 'ready' || state.width <= 0 || state.height <= 0) return size;
+  return Math.max(1, Math.min(size, Math.round(size * state.width / state.height)));
+}
+
 export function drawIconStrip(
   ctx: Canvas2D,
   left: number,
@@ -1599,9 +1604,10 @@ export function drawIconStrip(
       countW = textWidth(ctx, countText) + 3;
       ctx.restore();
     }
-    if (cursor + size + countW > right) break;
-    drawArtSlot(ctx, cursor, y, size, size, item.state, theme, { radius: 3 });
-    cursor += size;
+    const width = iconStripSlotWidth(item.state, size);
+    if (cursor + width + countW > right) break;
+    drawArtSlot(ctx, cursor, y, width, size, item.state, theme, { radius: 3 });
+    cursor += width;
     if (countText) {
       ctx.save();
       ctx.font = `600 11px ${theme.font}`;
