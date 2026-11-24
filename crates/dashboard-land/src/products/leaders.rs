@@ -8,7 +8,7 @@ use dashboard_intelligence::products::intelligence::Tags;
 use dashboard_base::{Source, catalogue::{self, Catalogue, View}};
 use dashboard_query::Query;
 use dashboard_text::triggers::{Evaluator, LeaderVisibility, RECORDED_TABLES, World, core_gap};
-use content_reader_gui::gui::native::{Guis, window_button_sprite};
+use content_reader_gui::gui::native::{Guis, window_icon_sprite};
 use content_reader_key_names::unit_leader::Leaders;
 use replay::campaign::Replay;
 use replay_data::rows::{CharacterRow, LexicalTokenRow, TableId, UnitLeaderRow, UnitLeaderTraitRow, tables};
@@ -622,35 +622,48 @@ pub struct UnitLeadersReply {
 
 dashboard_base::reply_warnings!(UnitLeadersReply, LeaderPortraitsReply);
 
-const LAND_WINDOW: &str = "armyleaderwindow";
-const NAVY_WINDOW: &str = "navyleaderwindow";
-const LAND_SKILL_BUTTONS: [&str; 5] = ["sort_skills", "sort_attack_skill", "sort_defense_skill", "sort_planning_skill", "sort_supply_skill"];
-const NAVY_SKILL_BUTTONS: [&str; 5] = ["sort_skills", "sort_attack_skill", "sort_defense_skill", "sort_maneuvering_skill", "sort_coordination_skill"];
+const SKILL_WINDOW: &str = "unitleader_trait_tree_window";
+const LAND_ENTRY_WINDOW: &str = "armyleaderentry";
+const NAVY_ENTRY_WINDOW: &str = "navyleaderentry";
+const LAND_SKILL_ICONS: [(&str, &str); 5] = [
+    (SKILL_WINDOW, "skill_bg"),
+    (LAND_ENTRY_WINDOW, "leader_stat_attack_bg"),
+    (LAND_ENTRY_WINDOW, "leader_stat_defense_bg"),
+    (LAND_ENTRY_WINDOW, "leader_stat_planning_bg"),
+    (LAND_ENTRY_WINDOW, "leader_stat_logistics_bg"),
+];
+const NAVY_SKILL_ICONS: [(&str, &str); 5] = [
+    (SKILL_WINDOW, "skill_bg"),
+    (NAVY_ENTRY_WINDOW, "leader_stat_attack_bg"),
+    (NAVY_ENTRY_WINDOW, "leader_stat_defense_bg"),
+    (NAVY_ENTRY_WINDOW, "leader_stat_maneuvering_bg"),
+    (NAVY_ENTRY_WINDOW, "leader_stat_coordination_bg"),
+];
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderSkillIcons {
-    #[doc = " Skill, attack, defense, planning and logistics: the army leader window's sort buttons; none where the installed interface draws none."]
+    #[doc = " Skill, attack, defense, planning and logistics from the installed leader interface; none where it draws none."]
     pub land: Vec<Option<SpriteFrame>>,
-    #[doc = " Skill, attack, defense, maneuvering and coordination: the navy leader window's sort buttons."]
+    #[doc = " Skill, attack, defense, maneuvering and coordination from the installed leader interface."]
     pub navy: Vec<Option<SpriteFrame>>,
 }
 
-pub(crate) fn window_icons(guis: Result<&Guis, String>, window: &str, buttons: [&str; 5], warnings: &mut Vec<String>) -> Vec<Option<SpriteFrame>> {
+pub(crate) fn window_icons(guis: Result<&Guis, String>, icons: [(&str, &str); 5], warnings: &mut Vec<String>) -> Vec<Option<SpriteFrame>> {
     let guis = match guis {
         Ok(guis) => guis,
         Err(why) => {
             warnings.push(format!("Leader skill icons are unavailable: {why}"));
-            return vec![None; buttons.len()];
+            return vec![None; icons.len()];
         }
     };
-    buttons
+    icons
         .iter()
-        .map(|button| match window_button_sprite(guis, window, button, warnings) {
+        .map(|&(window, icon)| match window_icon_sprite(guis, window, icon, warnings) {
             Ok(key) => Some(SpriteFrame { key, frame: 0, recorded: None, text: None }),
             Err(why) => {
-                warnings.push(format!("The installed interface draws no {button} icon in {window}: {why}"));
+                warnings.push(format!("The installed interface draws no {icon} icon in {window}: {why}"));
                 None
             }
         })
@@ -659,7 +672,23 @@ pub(crate) fn window_icons(guis: Result<&Guis, String>, window: &str, buttons: [
 
 pub(crate) fn skill_icons(catalogue: Result<&Catalogue, &String>, warnings: &mut Vec<String>) -> LeaderSkillIcons {
     let guis = || catalogue.map_err(Clone::clone).and_then(|catalogue| catalogue.guis().map_err(|error| error.to_string()));
-    LeaderSkillIcons { land: window_icons(guis(), LAND_WINDOW, LAND_SKILL_BUTTONS, warnings), navy: window_icons(guis(), NAVY_WINDOW, NAVY_SKILL_BUTTONS, warnings) }
+    LeaderSkillIcons { land: window_icons(guis(), LAND_SKILL_ICONS, warnings), navy: window_icons(guis(), NAVY_SKILL_ICONS, warnings) }
+}
+
+pub(crate) fn sort_leaders(rows: &mut [LeaderRow]) {
+    rows.sort_by(|a, b| {
+        b.skill.is_some().cmp(&a.skill.is_some())
+            .then_with(|| b.skill.cmp(&a.skill))
+            .then_with(|| b.won.cmp(&a.won))
+            .then_with(|| b.fought.cmp(&a.fought))
+            .then_with(|| {
+                let sum = |c: [i32; 4]| c.iter().map(|&v| i64::from(v)).sum::<i64>();
+                sum(b.components).cmp(&sum(a.components))
+            })
+            .then_with(|| b.name.is_some().cmp(&a.name.is_some()))
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.reference.cmp(&b.reference))
+    });
 }
 
 const BASE_TABLES: [TableId; 4] = [TableId::UnitLeaders, TableId::UnitLeaderTraits, TableId::Countries, TableId::CountryLinks];
@@ -856,6 +885,7 @@ impl AtHour for UnitLeaders {
                 lost: battles.lost,
             });
         }
+        sort_leaders(&mut out);
         let battles_partial_from = battles_partial_from(&query, query.timeline.first, at.hour)?;
         let (icons, icon_warnings) = content.skill_icons();
         warnings.extend(icon_warnings.iter().cloned());

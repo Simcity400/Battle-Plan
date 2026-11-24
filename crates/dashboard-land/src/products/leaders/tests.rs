@@ -286,23 +286,55 @@ fn skill_icons_are_the_installed_leader_windows_buttons_and_a_missing_one_is_nam
     engine_executable::executable_tables::initialize_for_tests().expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     use content_reader_gui::gui::native;
     let gui = native::read(
-        br#"guiTypes = { containerWindowType = {
-        name = "armyleaderwindow"
-        buttonType = { name = "sort_skills" spriteType = "GFX_mod_skill" }
-        buttonType = { name = "sort_attack_skill" spriteType = "GFX_mod_attack" }
-        buttonType = { name = "sort_defense_skill" spriteType = "GFX_mod_defense" }
-        buttonType = { name = "sort_supply_skill" spriteType = "GFX_mod_supply" }
-    } }"#,
+        br#"guiTypes = {
+            containerWindowType = {
+                name = "unitleader_trait_tree_window"
+                iconType = { name = "skill_bg" spriteType = "GFX_mod_skill" }
+            }
+            containerWindowType = {
+                name = "armyleaderentry"
+                containerWindowType = {
+                    name = "skill_container"
+                    iconType = { name = "leader_stat_attack_bg" spriteType = "GFX_mod_attack" }
+                    iconType = { name = "leader_stat_defense_bg" spriteType = "GFX_mod_defense" }
+                    iconType = { name = "leader_stat_logistics_bg" spriteType = "GFX_mod_logistics" }
+                }
+            }
+        }"#,
     );
     let guis = native::Guis::new(vec![("interface/unitleaderwindow.gui".into(), gui)]);
     let mut warnings = Vec::new();
-    let icons = super::window_icons(Ok(&guis), "armyleaderwindow", super::LAND_SKILL_BUTTONS, &mut warnings);
+    let icons = super::window_icons(Ok(&guis), super::LAND_SKILL_ICONS, &mut warnings);
     assert_eq!(
         icons.iter().map(|icon| icon.as_ref().map(|icon| (icon.key.as_str(), icon.frame, icon.text))).collect::<Vec<_>>(),
-        [Some(("GFX_mod_skill", 0, None)), Some(("GFX_mod_attack", 0, None)), Some(("GFX_mod_defense", 0, None)), None, Some(("GFX_mod_supply", 0, None))],
-        "a mod's own sprites, in skill, attack, defense, planning, logistics order"
+        [Some(("GFX_mod_skill", 0, None)), Some(("GFX_mod_attack", 0, None)), Some(("GFX_mod_defense", 0, None)), None, Some(("GFX_mod_logistics", 0, None))],
+        "a mod's own box-free icons, in skill, attack, defense, planning, logistics order"
     );
-    assert!(warnings.iter().any(|warning| warning.contains("sort_planning_skill")), "the missing button is named: {warnings:?}");
-    let refused = super::window_icons(Err("Game content is not configured".into()), "navyleaderwindow", super::NAVY_SKILL_BUTTONS, &mut warnings);
+    assert!(warnings.iter().any(|warning| warning.contains("leader_stat_planning_bg")), "the missing icon is named: {warnings:?}");
+    let refused = super::window_icons(Err("Game content is not configured".into()), super::NAVY_SKILL_ICONS, &mut warnings);
     assert!(refused.iter().all(Option::is_none));
+}
+
+#[test]
+fn leaders_order_by_skill_then_battles_won_and_fought() {
+    let row = |reference: &str, name: &str, skill: Option<i32>, won: u64, fought: u64, components: [i32; 4]| super::LeaderRow {
+        reference: reference.into(),
+        name: Some(name.into()),
+        role: super::LeaderRole { owner: Some("JAP".into()), kind: 1, category: 0, rank: Some("General".into()), attribute_names: [None, None, None, None], maximum_skill: Some(9) },
+        skill,
+        components,
+        traits: Some(Vec::new()),
+        trait_dates: Vec::new(),
+        first_seen_hour: Some(0),
+        fought,
+        won,
+        lost: fought.saturating_sub(won),
+    };
+    let mut rows = vec![
+        row("2", "Hisaichi Terauchi", Some(7), 831, 1643, [10, 6, 8, 2]),
+        row("3", "Toshizo Nishio", Some(6), 0, 0, [7, 4, 9, 5]),
+        row("1", "Tomoyuki Yamashita", Some(7), 1071, 1876, [9, 5, 7, 6]),
+    ];
+    super::sort_leaders(&mut rows);
+    assert_eq!(rows.iter().map(|r| r.reference.as_str()).collect::<Vec<_>>(), ["1", "2", "3"]);
 }

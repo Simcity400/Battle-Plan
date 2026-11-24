@@ -10,6 +10,7 @@ import {
   assertValue,
   compareTie,
   compareValueRows,
+  compareValues,
   hasMeasuredValue,
   knownValue,
   notApplicable,
@@ -220,6 +221,7 @@ export interface TableModel {
   readonly emptyDetail?: string;
   readonly emptyKind?: 'empty' | 'unavailable';
   readonly unsorted?: boolean;
+  readonly productTieBreak?: boolean;
   readonly populationPartial?: string;
   readonly dateGrouped?: boolean;
   readonly gaps?: readonly MissingSpan[];
@@ -308,24 +310,27 @@ function sortRowList(
   direction: 'ascending' | 'descending',
   hour: number,
   unsorted: boolean,
+  productTieBreak = false,
 ): { readonly row: TableRow; readonly name: string }[] {
-  const out: { readonly row: TableRow; readonly value: Value; readonly name: string; readonly key: string }[] = [];
+  const out: { readonly row: TableRow; readonly value: Value; readonly name: string; readonly key: string; readonly index: number }[] = [];
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]!;
     if (row.revealAt !== undefined && row.revealAt > hour) continue;
     validateRowCells(row);
     const name = row.name;
     if (unsorted) {
-      out.push({ row, value: notApplicable('Unsorted'), name, key: row.key });
+      out.push({ row, value: notApplicable('Unsorted'), name, key: row.key, index: i });
       continue;
     }
     const cell = row.cells[sortColumn];
     const sortVal = cell
       ? (cell.sortValue ?? cell.value)
       : notRecorded('Column not present on row');
-    out.push({ row, value: sortVal, name, key: row.key });
+    out.push({ row, value: sortVal, name, key: row.key, index: i });
   }
-  if (!unsorted) out.sort((a, b) => compareValueRows(a, b, direction));
+  if (!unsorted) {
+    out.sort((a, b) => (productTieBreak ? (compareValues(a.value, b.value, direction) || (a.index - b.index)) : compareValueRows(a, b, direction)));
+  }
   return out;
 }
 
@@ -596,7 +601,7 @@ function resolveBodyRows(
     const orderedGroups = [...groups.values()].sort((a, b) => compareGroups(a.spec, b.spec));
     let rank = 0;
     for (const entry of orderedGroups) {
-      const sorted = sortRowList(entry.rows, sortColumn, direction, hour, unsorted);
+      const sorted = sortRowList(entry.rows, sortColumn, direction, hour, unsorted, model.productTieBreak === true);
       if (!sorted.length) continue;
       flat.push({ kind: 'group-header', key: `group:${entry.spec.key}`, label: entry.spec.label, count: sorted.length });
       for (const item of sorted) {
@@ -620,7 +625,7 @@ function resolveBodyRows(
 
   let rank = 0;
   const visit = (list: readonly TableRow[], level: number, parent: string | null) => {
-    const sorted = sortRowList(list, sortColumn, direction, hour, unsorted);
+    const sorted = sortRowList(list, sortColumn, direction, hour, unsorted, model.productTieBreak === true);
     for (const item of sorted) {
       const row = item.row;
       const children = row.children;
@@ -1351,6 +1356,7 @@ export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
   readonly rowName: (row: TRow, hour: number, options: TOptions) => string;
   readonly naWhen?: (row: TRow, options: TOptions) => string | null;
   readonly unsorted?: boolean;
+  readonly productTieBreak?: boolean;
   readonly rank?: boolean | ((options: TOptions) => boolean);
   readonly defaultRankShown?: boolean;
   readonly rankMarkers?: boolean | ((options: TOptions) => boolean);
@@ -1576,6 +1582,7 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
         ...(extracted.titleSummaryPartial !== undefined ? { titleSummaryPartial: extracted.titleSummaryPartial } : {}),
         ...(extracted.clockSummary ? { clockSummary: extracted.clockSummary } : {}),
         unsorted: spec.unsorted,
+        ...(spec.productTieBreak ? { productTieBreak: true } : {}),
         rank,
         defaultRankShown: spec.defaultRankShown,
         rankMarkers,

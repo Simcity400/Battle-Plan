@@ -172,8 +172,10 @@ export function measureFixedColumnWidths(
       continue;
     }
     if (column.cellKind === 'skill') {
-      const hw = hideHeader ? 0 : measure(column.label, headFont) + SORT_ARROW_WIDTH + CELL_INSET * 2;
-      out[column.key] = Math.max(column.minWidth ?? 64, Math.ceil(hw));
+      const labelW = hideHeader ? 0 : measure(column.label, headFont);
+      const unitW = hideHeader || !column.unit ? 0 : measure(column.unit, unitFont);
+      const hw = hideHeader ? 0 : Math.max(labelW, unitW) + SORT_ARROW_WIDTH + CELL_INSET * 2;
+      out[column.key] = Math.max(column.minWidth ?? 68, Math.ceil(hw));
       continue;
     }
     const labelW = hideHeader ? 0 : measure(column.label, headFont) + (column.notRecordedReason ? 15 : 0);

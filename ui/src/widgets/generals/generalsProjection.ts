@@ -69,16 +69,25 @@ function shownRows(reply: UnitLeadersReply, hour: number, options: GeneralsOptio
   return leaderRows(reply, hour, passingAt(options.filter, hour), options.kind);
 }
 
-function columnNames(reply: UnitLeadersReply, options: GeneralsOptions): readonly string[] {
+interface SkillHeader {
+  readonly label?: string;
+  readonly unit?: string;
+}
+
+function columnNames(reply: UnitLeadersReply, options: GeneralsOptions): readonly SkillHeader[] {
   const roles = reply.leaders.filter(row => options.kind === 'all' || (row.role.kind === KIND_NAVY) === (options.kind === 'navy'));
-  return [0, 1, 2, 3].map(i => [...new Set(roles.map(row => attributeNames(row.role)[i]!))].join(' / '));
+  return [0, 1, 2, 3].map(i => {
+    const names = [...new Set(roles.map(row => attributeNames(row.role)[i]!))];
+    if (!names.length) return {};
+    return names.length === 1 ? { label: names[0]! } : { label: names[0]!, unit: `/ ${names.slice(1).join(' / ')}` };
+  });
 }
 
 const [PORTRAIT, COUNTRY, COMMANDER, SKILL, ATTACK, DEFENSE, THIRD, FOURTH, TRAITS, WON, LOST, WIN_RATE, FOUGHT, UNRESOLVED] = COLUMNS;
 
-function skillColumn(defaults: typeof SKILL, at: number, label: string | undefined, priority: number): DeclarativeColumnSpec<GeneralRow, GeneralsOptions> {
+function skillColumn(defaults: typeof SKILL, at: number, header: SkillHeader | undefined, priority: number): DeclarativeColumnSpec<GeneralRow, GeneralsOptions> {
   return {
-    ...defaults!, ...(label ? { label } : {}), priority, numeric: true, cellKind: 'skill', format: 'integer', barEligible: false,
+    ...defaults!, ...(header?.label ? { label: header.label } : {}), ...(header?.unit ? { unit: header.unit } : {}), priority, numeric: true, cellKind: 'skill', format: 'integer', barEligible: false,
     art: row => row.skills[at]?.art,
     extra: row => (row.skills[at]?.artKey ? { artKey: row.skills[at]!.artKey } : {}),
     value: row => {
@@ -95,7 +104,7 @@ function generalsColumns(reply: UnitLeadersReply, options: GeneralsOptions): rea
       extra: row => ({ artShape: 'portrait', artName: row.leader.name, ...(row.portrait.artKey ? { artKey: row.portrait.artKey } : {}) }),
       value: row => row.name },
     { ...COUNTRY!, priority: 1, iconSlot: true, art: row => row.flag, country: row => row.leader.role.owner, value: row => row.country },
-    { ...COMMANDER!, priority: 0, text: true, hideable: false, cellKind: 'item', widest: ['Erich von Manstein'],
+    { ...COMMANDER!, priority: 0, text: true, hideable: false, cellKind: 'item', minWidth: 180, grow: 1, widest: ['Erich von Manstein'],
       extra: row => (row.leader.role.rank ? { subtext: row.leader.role.rank } : {}),
       value: row => row.name },
     skillColumn(SKILL, 0, undefined, 1),
@@ -103,7 +112,7 @@ function generalsColumns(reply: UnitLeadersReply, options: GeneralsOptions): rea
     skillColumn(DEFENSE, 2, names[1], 2),
     skillColumn(THIRD, 3, names[2], 3),
     skillColumn(FOURTH, 4, names[3], 3),
-    { ...TRAITS!, priority: 5, sortable: false, cellKind: 'icons', minWidth: 136,
+    { ...TRAITS!, priority: 5, sortable: false, cellKind: 'icons', minWidth: 210, grow: 2,
       extra: row => ({ iconStripKind: 'traits', icons: row.traits }),
       value: row => row.leader.row.traits === null ? notRecorded('Traits not recorded') : row.traits.length ? knownValue(row.traits.length) : zeroValue(0) },
     { ...WON!, priority: 1, numeric: true, format: 'integer', barEligible: true, widest: ['9,999'],
@@ -147,6 +156,7 @@ export const generalsProjection: TableProjection<GeneralsOptions> = registerFami
     },
     columns: generalsColumns,
     rowHeightMode: 'media',
+    productTieBreak: true,
     rows: (reply, _live, hour, options, readView) => {
       if (reply.missing !== null) return { rows: [], empty: 'Leaders weren’t recorded at this time.', emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
       const unrecorded = options.filter.unrecorded.find(([first, last]) => first <= hour && hour <= last)?.[2] ?? null;

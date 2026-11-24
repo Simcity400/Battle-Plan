@@ -3,7 +3,10 @@ import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { artHandleKey, readyArt } from '../../families/art/types.ts';
 import type { ArtHandle, IdentityResult } from '../../families/plan.ts';
+import { resolveTableRows } from '../../families/table/model.ts';
+import { tableDefaults } from '../../families/table/settings.ts';
 import type { LeaderRow, UnitLeadersReply } from '../../generated/dashboard';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
 import { generalsProjection, leaderSelection, type GeneralsOptions } from './generalsProjection.ts';
 
 const land = { owner: 'GER', kind: 1, category: 0, rank: 'General', attributeNames: ['Attack', 'Defense', 'Planning', 'Logistics'] as LeaderRow['role']['attributeNames'], maximumSkill: 9 };
@@ -47,7 +50,25 @@ test('skill cells draw the product’s icons for each leader’s own window; an 
   assert.equal(general.cells.defense!.art, undefined);
   assert.equal(admiral.cells.attack!.art?.status === 'ready' ? admiral.cells.attack!.art.url : undefined, `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_naval_attack', frame: 0 })}`);
   assert.equal(admiral.cells.fourth!.art, undefined);
-  assert.deepEqual(model.columns.filter(column => column.key === 'third' || column.key === 'fourth').map(column => column.label), ['Planning / Maneuvering', 'Logistics / Coordination']);
+  assert.deepEqual(
+    model.columns.filter(column => column.key === 'third' || column.key === 'fourth').map(column => [column.label, column.unit]),
+    [['Planning', '/ Maneuvering'], ['Logistics', '/ Coordination']],
+  );
+  const landOnly = generalsProjection.project(view(reply([leader('1', land)])), { ...OPTIONS, kind: 'land' });
+  assert.deepEqual(
+    landOnly.columns.filter(column => column.key === 'third' || column.key === 'fourth').map(column => [column.label, column.unit]),
+    [['Planning', undefined], ['Logistics', undefined]],
+  );
+});
+
+test('equal-skill leaders keep the product’s order rather than alphabetical tie-breaking', () => {
+  const model = generalsProjection.project(view(reply([
+    leader('1', land, { name: 'Tomoyuki Yamashita', skill: 7, won: 1071 }),
+    leader('2', land, { name: 'Hisaichi Terauchi', skill: 7, won: 831 }),
+  ])), OPTIONS);
+  const settings = tableDefaults(COLUMNS, TABLE_BASE);
+  const flat = resolveTableRows(model, settings).filter(row => row.kind === 'data');
+  assert.deepEqual(flat.map(row => row.key), ['1', '2']);
 });
 
 test('a commander is named as at the hour, the portrait is the art cache’s, and a rename is the next change', () => {
