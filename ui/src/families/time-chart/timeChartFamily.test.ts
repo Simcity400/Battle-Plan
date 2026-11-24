@@ -361,7 +361,7 @@ describe('time-chart laneView integration', () => {
       joinMode: 'join',
       measureTitle: 'Political power',
       project: readView => {
-        const icon = readView.art({ kind: 'sprite', key: 'GFX_pol_power', frame: 0 });
+        const icon = readView.art({ kind: 'sprite', key: 'GFX_pol_power', frame: 0, recorded: 'recorded-sprite', text: true });
         return {
           kind: 'test-pp',
           measureTitle: 'Political power',
@@ -421,7 +421,8 @@ describe('time-chart laneView integration', () => {
 
     assert.equal(painted.surfaces.length, 1);
     assert.ok(painted.fields.audit);
-    assert.ok(painted.fields.artDemands);
+    assert.deepEqual(painted.fields.artDemands?.value, [{ kind: 'sprite', key: 'GFX_pol_power', frame: 0, recorded: 'recorded-sprite', text: true }],
+      'the full sprite handle goes to the art request');
     assert.ok(created.ops.some(op => op.startsWith('text:120')));
     const hit = painted.hit?.([300, 100]);
     assert.ok(hit && (hit.startsWith('plot:') || hit.startsWith('line:')));

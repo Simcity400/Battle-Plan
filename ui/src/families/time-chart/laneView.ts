@@ -336,7 +336,7 @@ export function timeChartLaneView(
       }
 
       const pendingIdentityDemands = new Map<string, readonly [EntityKind, string, number]>();
-      const pendingSpriteDemands = new Map<string, { readonly key: string; readonly frame: number }>();
+      const pendingSpriteDemands = new Map<string, Extract<ArtHandle, { kind: 'sprite' }>>();
       const demandedArtUrls = new Set<string>();
 
       let model: TimeChartModel;
@@ -360,13 +360,11 @@ export function timeChartLaneView(
           },
           handle => {
             if (handle.kind === 'sprite') {
-              const spriteKey = handle.key;
-              const frame = handle.frame ?? 0;
               const resolved = binding.spriteResolutions?.[spriteHandleKey(handle)];
               if (resolved?.status === 'ready' && resolved.url) {
                 demandedArtUrls.add(resolved.url);
               } else if (!resolved || resolved.status === 'pending') {
-                pendingSpriteDemands.set(spriteHandleKey(handle), { key: spriteKey, frame });
+                pendingSpriteDemands.set(spriteHandleKey(handle), handle);
               }
               return;
             }
