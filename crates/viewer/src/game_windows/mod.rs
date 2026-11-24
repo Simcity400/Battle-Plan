@@ -36,7 +36,7 @@ mod tests;
 
 pub const STEADY_TICK: Tick = Tick {
     time: 10.0,
-    dt: 0.0,
+    dt: 10.0,
 };
 pub const DEFAULT_VIEWPORT: [u32; 2] = [2752, 1152];
 const MAX_CACHED_WINDOWS: usize = 8;
@@ -472,21 +472,38 @@ pub fn render_layout_offscreen(
     sheets: &dyn Sheets,
     scale: f32,
 ) -> Result<OffscreenOutput, String> {
-    let scale = normalize_scale(scale);
     let [min_x, min_y, width, height] = drawn_bounds(layout);
-    let logical_size = [width as u32, height as u32];
-    let pixel_size = [
-        ((width as f32 * scale).round() as u32).clamp(1, MAX_SURFACE_DIM),
-        ((height as f32 * scale).round() as u32).clamp(1, MAX_SURFACE_DIM),
-    ];
     let mut batch = Batch::default();
     native_gui::draw(layout, [-min_x, -min_y], sheets, &mut batch)
         .map_err(|refusal| format!("Could not draw game window: {refusal}"))?;
+    render_batch_offscreen(
+        gpu,
+        pass,
+        &batch,
+        [width as u32, height as u32],
+        [min_x, min_y],
+        scale,
+    )
+}
+
+pub(crate) fn render_batch_offscreen(
+    gpu: &GpuContext,
+    pass: &mut SpritePass,
+    batch: &Batch,
+    logical_size: [u32; 2],
+    origin: [i32; 2],
+    scale: f32,
+) -> Result<OffscreenOutput, String> {
+    let scale = normalize_scale(scale);
+    let pixel_size = [
+        ((logical_size[0] as f32 * scale).round() as u32).clamp(1, MAX_SURFACE_DIM),
+        ((logical_size[1] as f32 * scale).round() as u32).clamp(1, MAX_SURFACE_DIM),
+    ];
     pass.upload(
         &gpu.device,
         &gpu.queue,
         &gpu.arena,
-        &batch,
+        batch,
         pixel_size,
         scale,
     );
@@ -527,7 +544,7 @@ pub fn render_layout_offscreen(
         png,
         logical_size,
         pixel_size,
-        origin: [min_x, min_y],
+        origin,
     })
 }
 

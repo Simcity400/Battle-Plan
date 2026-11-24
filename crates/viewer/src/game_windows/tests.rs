@@ -4,7 +4,7 @@ use content_reader_image::Rgba8Image;
 use viewer_gpu::test_support::gpu;
 use viewer_native_gui::{
     native_gui::{Hit, SpriteInfo, SpriteKind},
-    sprites::{IconTextures, SpritePass, SpriteSheet},
+    sprites::{IconTextures, Quad, SpritePass, SpriteSheet},
     test_support::gui as gui_fixture,
 };
 
@@ -234,7 +234,27 @@ fn offscreen_render_draws_synthetic_window_at_exact_dpr_without_game_files() {
         .unwrap()
         .unwrap();
 
-    let rendered_1x = render_layout_offscreen(&gpu, &mut pass, &layout, &sheets, 1.0).unwrap();
+    let bounds = drawn_bounds(&layout);
+    assert_eq!(bounds, [4, 4, 20, 12]);
+    let mut emitted = Batch::default();
+    native_gui::draw(&layout, [-bounds[0], -bounds[1]], &sheets, &mut emitted).unwrap();
+    assert!(!emitted.quads.is_empty());
+
+    let plain_batch = Batch::loose(vec![Quad {
+        texture: 0,
+        rect: [0.0, 0.0, 20.0, 12.0],
+        uv: [0.0, 0.0, 1.0, 1.0],
+        color: [1.0, 1.0, 1.0, 1.0],
+        rotation: None,
+        layer: 0,
+        shade: 1.0,
+        exact: None,
+        anchor: None,
+        present: None,
+    }]);
+
+    let rendered_1x =
+        render_batch_offscreen(&gpu, &mut pass, &plain_batch, [20, 12], [4, 4], 1.0).unwrap();
     assert_eq!(rendered_1x.logical_size, [20, 12]);
     assert_eq!(rendered_1x.pixel_size, [20, 12]);
     assert_eq!(rendered_1x.origin, [4, 4]);
@@ -243,7 +263,8 @@ fn offscreen_render_draws_synthetic_window_at_exact_dpr_without_game_files() {
     assert!(rendered_1x.rgba[center_1x + 3] > 200);
     assert!(rendered_1x.rgba[center_1x] > rendered_1x.rgba[center_1x + 2]);
 
-    let rendered_15x = render_layout_offscreen(&gpu, &mut pass, &layout, &sheets, 1.5).unwrap();
+    let rendered_15x =
+        render_batch_offscreen(&gpu, &mut pass, &plain_batch, [20, 12], [4, 4], 1.5).unwrap();
     assert_eq!(rendered_15x.logical_size, [20, 12]);
     assert_eq!(rendered_15x.pixel_size, [30, 18]);
     let center_15x = (9 * 30 + 15) * 4;
