@@ -2627,3 +2627,28 @@ fn variant_stats_oracle_checks_published_invariants_and_reports_withheld_lanes()
         fighter_bad.differences
     );
 }
+
+#[test]
+fn recorded_category_families_must_be_present_and_match_the_installed_executable() {
+    let families = engine_executable::executable_tables::auxiliary::CategoryFamilies {
+        land: 0x3c,
+        air: 0xfc00,
+        naval: 0x3c1,
+        ship_designer: 0x1c0,
+        tank_designer: 0x4,
+        plane_designer: 0x3c00,
+    };
+    let mut report = Report::default();
+    compare_category_families(Ok(&families), Ok(&families), &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    let other = engine_executable::executable_tables::auxiliary::CategoryFamilies { tank_designer: 0x8, ..families };
+    compare_category_families(Ok(&other), Ok(&families), &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    let error = compare_category_families(Err("not recorded in this recording".into()), Ok(&families), &mut Report::default()).unwrap_err();
+    assert!(error.to_string().contains("not recorded in this recording"), "{error}");
+    let mut withheld = Report::default();
+    compare_category_families(Ok(&families), Err("another build".into()), &mut withheld).unwrap();
+    assert!(withheld.differences.is_empty());
+    assert!(!withheld.limitations.is_empty());
+    assert!(withheld.compared_tables.is_empty(), "an uncertified recording is not counted as compared");
+}
