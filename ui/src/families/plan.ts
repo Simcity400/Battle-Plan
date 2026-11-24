@@ -395,7 +395,11 @@ export type CountryPolicy =
 
 export interface AuxProductSpec<TAux = unknown> {
   readonly product: DeclaredProduct;
-  readonly params: (track: BoundTrack, options: Readonly<Record<string, OptionValue>>) => Record<string, unknown> | null;
+  readonly params: (
+    track: BoundTrack,
+    options: Readonly<Record<string, OptionValue>>,
+    country: string | null,
+  ) => Record<string, unknown> | null;
   readonly validate: (raw: unknown) => TAux;
   readonly when?: (options: Readonly<Record<string, OptionValue>>) => boolean;
 }

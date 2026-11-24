@@ -6,7 +6,7 @@ import type { Canvas2D } from '../../charts/textWidth.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { ArtProvider, FamilyTheme, IdentityProvider } from '../contract.ts';
 import { missingArt, PENDING_ART, readyArt } from '../art/types.ts';
-import { activeResearchProjection } from '../../widgets/active-research/activeResearchProjection.ts';
+import { activeResearchDeclaration, activeResearchProjection } from '../../widgets/active-research/activeResearchProjection.ts';
 import { doctrineMasteryProjection } from '../../widgets/doctrine-mastery/doctrineMasteryProjection.ts';
 import { decryptionProjection } from '../../widgets/decryption/decryptionProjection.ts';
 import { whoReadsWhomProjection } from '../../widgets/decryption/whoReadsWhomProjection.ts';
@@ -99,6 +99,13 @@ function makeIdentity(countries: Readonly<Record<string, { name: string; colour?
     },
   };
 }
+
+test('activeResearch asks for the research history of the country the gate resolved', () => {
+  const track = { branch: { id: 'b1' }, selectedTag: null } as unknown as Parameters<NonNullable<typeof activeResearchDeclaration.aux>['params']>[0];
+  const params = activeResearchDeclaration.aux!.params;
+  assert.deepEqual(params(track, {}, 'USA'), { branchId: 'b1', country: 'USA' });
+  assert.equal(params(track, {}, null), null);
+});
 
 test('activeResearchProjection renders researching, idle, missing, stale caption, and daily nextChange', () => {
   const hour = 61320100;

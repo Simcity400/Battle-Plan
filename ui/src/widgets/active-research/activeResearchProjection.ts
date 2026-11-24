@@ -267,10 +267,7 @@ export const activeResearchDeclaration: MeterWidgetDeclaration<ActiveResearchPro
   countries: { mode: 'single', choose: 'Choose a country to see its research.' },
   aux: {
     product: 'research',
-    params: (track, options) => {
-      const country = typeof options.country === 'string' && options.country ? options.country : track.selectedTag;
-      return country ? { branchId: track.branch.id, country: countryFromKey(country) } : null;
-    },
+    params: (track, _options, country) => (country ? { branchId: track.branch.id, country: countryFromKey(country) } : null),
     validate: validateResearchReply,
   },
   sources: ctx => {

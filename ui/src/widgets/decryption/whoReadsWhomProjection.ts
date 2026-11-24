@@ -146,7 +146,7 @@ export const whoReadsWhomDeclaration: HeatMatrixWidgetDeclaration<DecryptionFilt
   kind: 'decryption',
   label: 'Who reads whom',
   subject: 'decryption',
-  emptyCampaign: 'Load a campaign to see its decryption races.',
+  emptyCampaign: 'Load a campaign to see who reads whom.',
   icon: 'lock',
   optionFields: OPTIONS,
   countries: { mode: 'filter', labels: true, colours: true },

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { existsSync, readFileSync } from 'node:fs';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { widgetMetas } from './definitions.ts';
 import { manifestSlotsForKind } from './manifest.ts';
@@ -46,7 +48,7 @@ test('every widget module loads with its registered lazy body and the catalogue 
       const registered = widgetDefinition(meta.kind);
       const renderer = await load(meta.kind);
       assert.ok(
-        typeof renderer.render === 'function' || renderer.declaration?.family === 'table',
+        typeof renderer.render === 'function' || renderer.declaration !== undefined,
         `${meta.kind} body or family declaration loads`,
       );
       if (renderer.declaration) {
@@ -58,6 +60,37 @@ test('every widget module loads with its registered lazy body and the catalogue 
       }
       if (renderer.usePresets) assert.equal(registered.usePresets, renderer.usePresets, `${meta.kind} presets are available on first catalogue open`);
     }
+
+  } finally { await vite.close(); }
+});
+
+test('a kind whose views are on two families renders the family of its active view', async () => {
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'family-view-ssr', enforce: 'pre',
+      transform(source, id) {
+        if (id.replaceAll('\\', '/').endsWith('/dashboard/follow/useFollowed.ts')) {
+          return source.replace(/export function usePipeline\(/, 'function real_usePipeline(') + '\nexport function usePipeline() { return null; }';
+        }
+      },
+    }] });
+  try {
+    await vite.ssrLoadModule('/ui/src/widgets/index.ts');
+    const { loadWidgetRenderer: load } = await vite.ssrLoadModule('/ui/src/widgets/rendererLoaders.ts');
+    const { loadFamilyViewSpec } = await vite.ssrLoadModule('/ui/src/widgets/manifest.ts');
+    const { widgetDefinition } = await vite.ssrLoadModule('/ui/src/dashboard/definitions.ts');
+    await load('decryption');
+    await loadFamilyViewSpec('decryption', 'ciphers');
+    await loadFamilyViewSpec('decryption', 'matrix');
+    const Body = widgetDefinition('decryption').render;
+    const runtime = { tracks: [], campaignTracks: [], defaultRoleId: null, maps: {}, client: { available: true },
+      clock: { getHour: () => 0, getSnapshot: () => ({ playing: false, hoursPerSecond: 1 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } };
+    const body = (view: string) => renderToStaticMarkup(createElement(Body, {
+      widget: { id: 'd', kind: 'decryption', configVersion: 1, title: 'Decryption', campaign: 'default', trackIds: [], time: { mode: 'follow' }, countries: { kind: 'all' }, options: { view } },
+      runtime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {},
+    }));
+    assert.match(body('ciphers'), /decryption races/, 'the Ciphers view renders its meters view');
+    assert.match(body('matrix'), /who reads whom/, 'the Who reads whom view renders its heat-matrix view');
   } finally { await vite.close(); }
 });
 
