@@ -51,7 +51,7 @@ fn a_factions_goal_lists_name_each_goal_once_and_follow_progress_by_its_own_rows
     ]);
     let mut reply = details::blank(&params());
     let cells = Cells::default();
-    details::goal_lists(&frame, FACTION, None, None, &mut reply, &cells).unwrap();
+    details::goal_lists(&frame, FACTION, None, None, &mut reply, &cells, None).unwrap();
     assert_eq!(reply.goal_reason, None);
     let tokens: Vec<Option<&str>> = reply.definitions.iter().map(|definition| definition.token.as_deref()).collect();
     assert_eq!(tokens, [Some("mod_manifest"), Some("mod_goal"), Some("mod_done"), None], "the manifest first, then each goal once");
@@ -72,19 +72,19 @@ fn a_factions_goal_lists_name_each_goal_once_and_follow_progress_by_its_own_rows
 fn goal_lists_that_skip_an_ordinal_or_lack_their_status_are_not_known() {
     let mut reply = details::blank(&params());
     let cells = Cells::default();
-    details::goal_lists(&goal_frame(vec![goal(FACTION, 0, 0, Some(2), 0), goal(FACTION, 0, 2, Some(1), 0)]), FACTION, None, None, &mut reply, &cells).unwrap();
+    details::goal_lists(&goal_frame(vec![goal(FACTION, 0, 0, Some(2), 0), goal(FACTION, 0, 2, Some(1), 0)]), FACTION, None, None, &mut reply, &cells, None).unwrap();
     assert_eq!(reply.goal_reason.as_deref(), Some("Faction goal ordinals are not contiguous"));
     assert!(reply.goals.is_empty() && reply.definitions.is_empty());
     assert!(cells.finish().is_empty());
     let mut missing = goal_frame(vec![]);
     set(&mut missing, TableId::FactionGoalStatus, TableRows::FactionGoalStatus(vec![FactionGoalStatusRow { faction: OTHER, manifest: None }]));
     let mut reply = details::blank(&params());
-    details::goal_lists(&missing, FACTION, None, None, &mut reply, &Cells::default()).unwrap();
+    details::goal_lists(&missing, FACTION, None, None, &mut reply, &Cells::default(), None).unwrap();
     assert_eq!(reply.goal_reason.as_deref(), Some("Faction goal status is absent"));
     let mut unread = goal_frame(vec![]);
     *unread.tables[TableId::FactionGoalEntries.index()] = TableView::Unavailable { reason: "writer not observed".into() };
     let mut reply = details::blank(&params());
-    details::goal_lists(&unread, FACTION, None, None, &mut reply, &Cells::default()).unwrap();
+    details::goal_lists(&unread, FACTION, None, None, &mut reply, &Cells::default(), None).unwrap();
     assert!(reply.goal_reason.unwrap().contains("writer not observed"));
 }
 
@@ -135,23 +135,37 @@ fn a_country_s_faction_is_the_one_listing_any_country_linked_to_its_slot() {
 }
 
 #[test]
-fn faction_goals_return_only_the_goals_the_filter_shows_and_an_unknown_state_is_never_in_progress() {
+fn faction_goals_resolve_name_and_follow_only_the_goals_the_filter_shows_and_an_unknown_state_is_never_in_progress() {
     use super::country_goals::{GoalFilter, GoalState, shown_goals};
-    use super::details::{FactionDetailParams, FactionHeldGoal, blank};
-    use super::goals::FactionGoalDefinition;
-    let named = |name: &str| FactionGoalDefinition { token: None, name: Some(name.into()), description: None, icon: None, category: None, category_name: None, bands: Vec::new(), reason: None };
-    let mut detail = blank(&FactionDetailParams { branch_id: "1".into(), faction: "9".into(), viewpoint: None });
-    detail.definitions = vec![named("Arsenal"), named("Union"), named("Seas"), named("Strange")];
-    let held = |ordinal: u32, definition: u32, status: i32| FactionHeldGoal { ordinal, definition, status, active_sections: Vec::new() };
-    detail.goals = vec![held(0, 0, 0), held(1, 3, 9), held(2, 1, 3)];
-    detail.completed = vec![2];
-    let (goals, definitions, warnings) = shown_goals(detail.clone(), GoalFilter::InProgress);
-    let shown: Vec<_> = goals.iter().map(|goal| (goal.key.as_str(), definitions[goal.definition as usize].name.as_deref(), goal.state)).collect();
-    assert_eq!(shown, [("goal:0", Some("Arsenal"), GoalState::InProgress), ("goal:2", Some("Union"), GoalState::Completing)]);
-    assert_eq!(definitions.len(), 2, "only the definitions the shown goals name");
-    assert!(warnings.iter().any(|warning| warning.starts_with("1 faction goals are in a state")));
-    let (all, _, _) = shown_goals(detail.clone(), GoalFilter::All);
+    let with = |status: i32, row: FactionGoalEntryRow| FactionGoalEntryRow { status, ..row };
+    let frame = goal_frame(vec![
+        goal(FACTION, 0, 0, Some(2), 25_000),
+        with(9, goal(FACTION, 0, 1, Some(1), 50_000)),
+        with(3, goal(FACTION, 0, 2, Some(2), 75_000)),
+        goal(FACTION, 1, 0, Some(3), 0),
+    ]);
+    let listed = |filter: GoalFilter| {
+        let mut reply = details::blank(&params());
+        let cells = Cells::default();
+        details::goal_lists(&frame, FACTION, None, None, &mut reply, &cells, Some(filter)).unwrap();
+        let live = cells.finish();
+        let rows = if live.is_empty() { serde_json::json!([]) } else { live.json(&live.values(&frame).into_iter().map(dashboard_follow::live::GroupState::Values).collect::<Vec<_>>())["rows"].clone() };
+        (reply, rows)
+    };
+    let (progress, rows) = listed(GoalFilter::InProgress);
+    assert_eq!(progress.manifest, None, "the manifest is not resolved for a list of goals");
+    let tokens: Vec<Option<&str>> = progress.definitions.iter().map(|definition| definition.token.as_deref()).collect();
+    assert_eq!(tokens, [Some("mod_goal")], "a hidden goal's definition is never resolved");
+    assert_eq!(rows, serde_json::json!(["goal:0", "goal:2"]), "a hidden goal registers no progress cell");
+    assert!(progress.warnings.iter().any(|warning| warning.starts_with("1 faction goals are in a state")));
+    let (goals, definitions, _) = shown_goals(progress);
+    let shown: Vec<_> = goals.iter().map(|goal| (goal.key.as_str(), definitions[goal.definition as usize].token.as_deref(), goal.state)).collect();
+    assert_eq!(shown, [("goal:0", Some("mod_goal"), GoalState::InProgress), ("goal:2", Some("mod_goal"), GoalState::Completing)]);
+    let (all, _) = listed(GoalFilter::All);
+    let (all, _, _) = shown_goals(all);
     assert_eq!(all.iter().find(|goal| goal.key == "goal:1").map(|goal| (goal.state, goal.unrecognised_status)), Some((GoalState::Unrecognised, Some(9))));
-    let (done, done_definitions, _) = shown_goals(detail, GoalFilter::Completed);
-    assert_eq!((done.len(), done[0].ordinal, done_definitions[0].name.as_deref()), (1, None, Some("Seas")));
+    let (done, rows) = listed(GoalFilter::Completed);
+    assert_eq!(rows, serde_json::json!([]));
+    let (done, done_definitions, _) = shown_goals(done);
+    assert_eq!((done.len(), done[0].ordinal, done_definitions[0].token.as_deref()), (1, None, Some("mod_done")));
 }

@@ -89,6 +89,8 @@ pub struct OccupationReserveReply {
     pub read_hour: Option<i32>,
     #[doc = " Holders whose recording named no tag at this hour."]
     pub unnamed: u32,
+    #[doc = " Why a country absent from the rows cannot be said to hold no reserve: the admissions were not read, or holders the recording names no tag for hold some."]
+    pub none_missing: Option<String>,
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -125,7 +127,7 @@ fn select_holders(
     params: &OccupationReserveParams,
     at: &At<'_, GroupsAt>,
     hour: i32,
-) -> Result<(Vec<ReserveHolder>, u32), String> {
+) -> Result<Selected, String> {
     let slots: HashMap<u32, u32> = at
         .holders
         .tags
@@ -154,13 +156,11 @@ fn select_holders(
             unplaced.push(holder.total);
         }
     }
+    let unplaced_positive = unplaced.len();
     if let Some(chosen) = chosen {
         named.retain(|holder| holder.slot.is_some_and(|slot| chosen.contains(&slot)));
-        if !named.iter().any(|holder| !holder.entries.is_empty()) {
-            return Ok((Vec::new(), unnamed));
-        }
         named.sort_unstable_by(|a, b| b.total.cmp(&a.total).then_with(|| a.country.tag.cmp(&b.country.tag)));
-        return Ok((named, unnamed));
+        return Ok(Selected { holders: named, unnamed, unplaced: unplaced_positive });
     }
     if let Some(limit) = params.top {
         named.retain(|holder| holder.total > 0);
@@ -175,13 +175,23 @@ fn select_holders(
                 return Err(format!("The top {limit} occupation reserve holders are not known: {contending} countries could not be matched to a tag at this hour and could be among them"));
             }
         }
-        return Ok((named, unnamed));
+        return Ok(Selected { holders: named, unnamed, unplaced: unplaced_positive });
     }
     if !named.iter().any(|holder| !holder.entries.is_empty()) {
-        return Ok((Vec::new(), unnamed));
+        return Ok(Selected { holders: Vec::new(), unnamed, unplaced: unplaced_positive });
     }
     named.sort_unstable_by(|a, b| b.total.cmp(&a.total).then_with(|| a.country.tag.cmp(&b.country.tag)));
-    Ok((named, unnamed))
+    Ok(Selected { holders: named, unnamed, unplaced: unplaced_positive })
+}
+
+struct Selected {
+    holders: Vec<ReserveHolder>,
+    unnamed: u32,
+    unplaced: usize,
+}
+
+fn none_missing(admission: Option<String>, unplaced: usize) -> Option<String> {
+    admission.or_else(|| (unplaced > 0).then(|| format!("{unplaced} holders the recording names no tag for hold reserve manpower at this hour")))
 }
 
 impl AtHour for OccupationReserve {
@@ -242,9 +252,16 @@ impl AtHour for OccupationReserve {
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let mut warnings = Vec::new();
         let read_hour = frame.tables[TableId::CountryOccupationReserveManpower.index()].sampled_at();
-        let made = (|| -> Result<(Vec<ReserveHolder>, u32), String> {
+        let mut admission = None;
+        let made = (|| -> Result<Selected, String> {
             let tags = Tags::read(frame).map_err(|error| error.to_string())?;
-            let admitted: Vec<u32> = population::<tables::OccupationSettings>(frame, &Keys::All)?.iter().map(|row| row.country).collect();
+            let admitted: Vec<u32> = match population::<tables::OccupationSettings>(frame, &Keys::All) {
+                Ok(rows) => rows.iter().map(|row| row.country).collect(),
+                Err(reason) => {
+                    admission = Some(format!("Which countries hold an occupation reserve is not known at this hour: {reason}"));
+                    Vec::new()
+                }
+            };
             let entries = population::<tables::CountryOccupationReserveManpower>(frame, &Keys::All)?;
             let owned: Option<HashMap<u32, i32>> = match population::<tables::CountryCounterInputs>(frame, &Keys::All) {
                 Ok(rows) => Some(rows.iter().map(|row| (row.country, row.owned_state_count)).collect()),
@@ -257,8 +274,15 @@ impl AtHour for OccupationReserve {
             select_holders(built, params, at, frame.hour)
         })();
         Ok(match made {
-            Ok((holders, unnamed)) => OccupationReserveReply { holders, read_hour, unnamed, missing: None, warnings },
-            Err(reason) => OccupationReserveReply { holders: Vec::new(), read_hour, unnamed: 0, missing: Some(reason), warnings },
+            Ok(selected) => OccupationReserveReply {
+                holders: selected.holders,
+                read_hour,
+                unnamed: selected.unnamed,
+                none_missing: none_missing(admission, selected.unplaced),
+                missing: None,
+                warnings,
+            },
+            Err(reason) => OccupationReserveReply { holders: Vec::new(), read_hour, unnamed: 0, none_missing: None, missing: Some(reason), warnings },
         })
     }
 }
@@ -717,9 +741,16 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         let chosen = |hour: i32| {
             let at = At { owner: None, holders: &tagged, hour, context: &groups, cancelled: &cancelled, live: &live };
-            select_holders(built.clone(), &params, &at, hour).map(|(rows, _)| rows.iter().map(|holder| (holder.country.id, holder.slot)).collect::<Vec<_>>())
+            select_holders(built.clone(), &params, &at, hour).map(|selected| selected.holders.iter().map(|holder| (holder.country.id, holder.slot)).collect::<Vec<_>>())
         };
         assert_eq!(chosen(10), Ok(vec![(1, Some(5))]), "T2 joins at 50; T3 is no member");
+        let zero = holders(&[1, 2], &[entry(2, 0, 9, 100)], None, named);
+        let at = At { owner: None, holders: &tagged, hour: 10, context: &groups, cancelled: &cancelled, live: &live };
+        let chosen_zero = select_holders(zero, &params, &at, 10).unwrap();
+        assert_eq!(chosen_zero.holders.iter().map(|holder| (holder.country.id, holder.admitted, holder.total)).collect::<Vec<_>>(), vec![(1, true, 0)], "a chosen admitted holder with no entry keeps its recorded zero");
+        assert_eq!(none_missing(None, 0), None);
+        assert!(none_missing(None, 2).is_some_and(|reason| reason.starts_with("2 holders")), "unnamed holders with manpower are not a proven empty reserve");
+        assert!(none_missing(Some("admissions unread".into()), 0).is_some());
         assert_eq!(chosen(60), Ok(vec![(1, Some(5)), (2, Some(6))]));
         assert_eq!(chosen(75), Err("Membership of this group is not recorded at this hour".to_owned()), "unknown membership is refused, never guessed");
     }

@@ -186,6 +186,7 @@ compared_tables!(
     DivisionEquipmentDeletions,
     BuildingBombingDamage,
     CombatEngagementRefreshes,
+    LandCombatEdges,
     NuclearStrikes,
     RaidPlayerAllowedTypes,
     CountryExperienceGains,

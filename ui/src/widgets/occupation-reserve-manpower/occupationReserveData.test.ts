@@ -12,6 +12,7 @@ const reply: OccupationReserveReply = {
   ],
   readHour: 100,
   unnamed: 1,
+  noneMissing: null,
   missing: null,
   warnings: [],
 };

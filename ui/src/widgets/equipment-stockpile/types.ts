@@ -1,6 +1,6 @@
-import type { ChartSummary, CountryRef, Domain, HourSpan, StockType, StockVariantName, StockpileCatalogueLogistics, StockpileCatalogueVariant, StockpileChoicePeak } from '../../generated/dashboard';
+import type { CountryRef, Domain, HourSpan, StockType, StockVariantName, StockpileCatalogueLogistics, StockpileCatalogueVariant, StockpileChoicePeak } from '../../generated/dashboard';
 
-export type { ChartSummary, Domain, HourSpan, StockVariantName };
+export type { Domain, HourSpan, StockVariantName };
 
 export interface AmountRun { firstHour: number; lastHour: number; amountRaw: string | null }
 

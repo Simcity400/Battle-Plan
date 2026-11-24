@@ -407,6 +407,8 @@ pub(crate) fn patches() -> Vec<Patch> {
         ("border_terminate", land_events::BORDER_TERMINATE_RVA),
         ("dispatch", land_events::DISPATCH_RVA),
         ("destruction", land_events::DESTRUCTION_RVA),
+        ("start_combat", engine_land_inputs::land_edges::START_COMBAT_RVA),
+        ("army_combat_ended", engine_land_inputs::land_edges::ARMY_COMBAT_ENDED_RVA),
     ] {
         add("land_events", name, rva, FIVE);
     }

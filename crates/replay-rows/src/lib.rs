@@ -19,7 +19,7 @@ pub mod value;
 pub type Hour = i32;
 pub type SessionId = u64;
 pub type BranchId = u64;
-pub const FORMAT_VERSION: u16 = rows::compatibility::EVENT_WINDOWS_FORMAT;
+pub const FORMAT_VERSION: u16 = rows::compatibility::LAND_COMBAT_EDGES_FORMAT;
 
 #[doc(hidden)]
 pub use engine_allocation as __allocation;

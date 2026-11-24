@@ -356,7 +356,11 @@ impl AtHour for TrainingQueue {
         let cat = &names.cat;
         names.group_notes(&mut refusals);
         let links = frame.complete::<tables::CountryLinks>()?;
-        let tags: BTreeMap<u32, String> = frame.complete::<tables::Countries>()?.iter().filter_map(|row| Some((row.canonical_slot, String::from_utf8(row.tag.clone()).ok()?))).collect();
+        let countries = witnessed_rows::<tables::Countries>(frame);
+        if let Some(why) = countries.missing {
+            refusals.note(format!("Country names unavailable: {why}"));
+        }
+        let tags: BTreeMap<u32, String> = countries.rows.iter().filter_map(|row| Some((row.canonical_slot, String::from_utf8(row.tag.clone()).ok()?))).collect();
         let tag_of = |raw: u32| tags.get(&link_slot(links, raw)?).cloned();
         let priority_names = priorities(cat, frame, owner.slot, &mut refusals);
         let content = super::divisions::equipment::template_needs(cat);

@@ -2,6 +2,7 @@
 use dashboard_base::products::Country;
 use super::{
     Art,
+    country_goals::{GoalFilter, GoalState},
     goals::{self, FactionGoalDefinition, Texts},
     owned,
 };
@@ -244,11 +245,11 @@ impl DetailContent {
     }
 }
 
-pub(super) fn goals_only(frame: &DecodedFrame, params: &FactionDetailParams, faction: u64, at: &At<'_, DetailContent>) -> io::Result<FactionDetailReply> {
+pub(super) fn goals_only(frame: &DecodedFrame, params: &FactionDetailParams, faction: u64, filter: GoalFilter, at: &At<'_, DetailContent>) -> io::Result<FactionDetailReply> {
     let mut reply = blank(params);
     let cat = at.context.catalogue.as_ref().map(Arc::as_ref);
     let texts = cat.ok().map(|cat| Texts::new(frame, faction, cat, &at.context.art, params.viewpoint.as_ref()));
-    goal_lists(frame, faction, texts.as_ref(), cat.err().map(String::as_str), &mut reply, at.live)?;
+    goal_lists(frame, faction, texts.as_ref(), cat.err().map(String::as_str), &mut reply, at.live, Some(filter))?;
     if let Some(texts) = &texts {
         reply.warnings.extend(texts.warnings());
     }
@@ -265,7 +266,7 @@ pub(super) fn reply(frame: &DecodedFrame, params: &FactionDetailParams, faction:
     let mut reply = blank(params);
     let cat = at.context.catalogue.as_ref().map(Arc::as_ref);
     let texts = cat.ok().map(|cat| Texts::new(frame, faction, cat, &at.context.art, params.viewpoint.as_ref()));
-    goal_lists(frame, faction, texts.as_ref(), cat.err().map(String::as_str), &mut reply, at.live)?;
+    goal_lists(frame, faction, texts.as_ref(), cat.err().map(String::as_str), &mut reply, at.live, None)?;
     if let Some(texts) = &texts {
         reply.warnings.extend(texts.warnings());
     }
@@ -359,7 +360,7 @@ impl<'h> Tags<'h> {
     }
 }
 
-pub(super) fn goal_lists(frame: &DecodedFrame, faction: u64, texts: Option<&Texts<'_>>, missing: Option<&str>, reply: &mut FactionDetailReply, live: &Cells) -> io::Result<()> {
+pub(super) fn goal_lists(frame: &DecodedFrame, faction: u64, texts: Option<&Texts<'_>>, missing: Option<&str>, reply: &mut FactionDetailReply, live: &Cells, filter: Option<GoalFilter>) -> io::Result<()> {
     let held = (|| -> Result<(Option<u32>, &[FactionGoalEntryRow]), String> {
         let header = owned(frame.complete::<tables::FactionGoalStatus>().map_err(|why| why.to_string())?, faction, |row| row.faction)
             .first()
@@ -395,8 +396,21 @@ pub(super) fn goal_lists(frame: &DecodedFrame, faction: u64, texts: Option<&Text
             definitions.len() as u32 - 1
         })
     };
-    reply.manifest = manifest.map(|token| define(Some(token)));
+    if filter.is_none() {
+        reply.manifest = manifest.map(|token| define(Some(token)));
+    }
+    let mut left_out = 0usize;
     for row in entries {
+        let state = match row.kind {
+            0 => GoalState::of(row.status),
+            1 => GoalState::Completed,
+            2 => GoalState::Cancelled,
+            _ => continue,
+        };
+        if filter.is_some_and(|filter| !state.shown(filter)) {
+            left_out += usize::from(state == GoalState::Unrecognised);
+            continue;
+        }
         match row.kind {
             0 => {
                 reply.goals.push(FactionHeldGoal { ordinal: row.ordinal, definition: define(row.token), status: row.status, active_sections: row.active_sections.clone() });
@@ -409,6 +423,9 @@ pub(super) fn goal_lists(frame: &DecodedFrame, faction: u64, texts: Option<&Text
         }
     }
     reply.definitions = definitions;
+    if left_out > 0 {
+        reply.warnings.push(format!("{left_out} faction goals are in a state this version does not recognise; only All shows them"));
+    }
     Ok(())
 }
 

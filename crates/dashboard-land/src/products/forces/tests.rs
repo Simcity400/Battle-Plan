@@ -6,12 +6,11 @@ use replay_data::rows::TableId;
 #[test]
 fn parts_split_a_total_only_where_their_rows_add_up_to_it() {
     let held = [(0, Some(30)), (0, Some(20)), (1, Some(10))];
-    assert_eq!(split(Some(60), &held, 2), vec![Some(50), Some(10)]);
-    assert_eq!(split(Some(50), &[(0, Some(50)), (1, None)], 2), vec![Some(50), Some(0)]);
-    assert_eq!(split(Some(60), &[(0, Some(50)), (1, None)], 2), vec![None, None]);
-    assert_eq!(split(Some(40), &held, 2), vec![None, None]);
-    assert_eq!(split(None, &held, 2), vec![None, None]);
-    assert_eq!(split(Some(0), &[], 3), vec![Some(0), Some(0), Some(0)]);
+    assert_eq!(split(Some(60), &held, 2), (vec![Some(50), Some(10)], true));
+    assert_eq!(split(Some(60), &[(0, Some(50)), (1, None)], 2), (vec![Some(50), None], false), "a witnessed part keeps its count beside an unread one");
+    assert_eq!(split(Some(40), &held, 2), (vec![Some(50), Some(10)], false), "parts that do not add up keep their counts; only their shares are withheld");
+    assert_eq!(split(None, &held, 2), (vec![Some(50), Some(10)], false), "a missing total does not clear the parts");
+    assert_eq!(split(Some(0), &[], 3), (vec![Some(0), Some(0), Some(0)], true));
 }
 
 #[test]
@@ -68,8 +67,8 @@ fn force_at_hour_ranks_top_and_withholds_unreconciled_parts() {
     assert_eq!(reply.rows.iter().map(|row| (row.tag.as_str(), row.slot, row.total)).collect::<Vec<_>>(), vec![("ENG", Some(2), Some(80)), ("FRA", Some(3), Some(80))]);
     assert_eq!(reply.rows[0].parts_missing, None);
     assert_eq!(reply.rows[0].values, vec![Some(80)]);
-    assert!(reply.rows[1].parts_missing.is_some(), "parts that do not add up to the total stay withheld");
-    assert_eq!(reply.rows[1].values, vec![None]);
+    assert!(reply.rows[1].parts_missing.is_some(), "parts that do not add up to the total are not its shares");
+    assert_eq!(reply.rows[1].values, vec![Some(60)], "and each witnessed count is kept");
 
     let truncated_params = AirForceAtParams { countries: vec![Country::from("ENG"), Country::from("GER")], top: None, ..params };
     let mut trunc_tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| TableView::Unavailable { reason: "outside test".into() }.into());
