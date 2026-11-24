@@ -1,12 +1,8 @@
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { IconName } from '../../components/Icons';
-import { useContentRevision } from '../../dashboard/contentRevision';
-import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
-import { useHeldTimeline } from '../../dashboard/countryNamesAt';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useSlotTagsState } from '../../dashboard/countrySlots.ts';
-import { lookStarts } from '../../dashboard/countryTimeline';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
@@ -22,26 +18,42 @@ import { axisAt, lastRecordedHour, SPEC } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime';
+import type { CountryFlagChoice } from '../../generated/dashboard';
 import { perfLog } from '../../shell/perf.ts';
+import { sharedDomArtCache } from '../art/domCache.ts';
+import { createDomArtProvider } from '../art/provider.ts';
 import { createBoundedReadView, displayedHour } from '../boundedView.ts';
 import { buildStaticRequest, compileFollowPlan, planSignature, primaryStaticEntry, readPlanExact } from '../broker.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
+import { identityBrokerFor } from '../identity/broker.ts';
+import { createBrokerIdentityProvider, parseEntityKey } from '../identity/provider.ts';
+import {
+  countryTagKey,
+  flagChoiceKey,
+  useIdentities,
+  useIdentityScope,
+  type IdentityAsk,
+  type IdentitySnapshot,
+} from '../identity/react.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import type {
+  ArtProvider,
   AuxProductSpec,
   BoundedReadView,
   CompiledFollowSubscription,
   CountryPolicy,
   DeclaredCountryFilter,
   DeclaredCountryState,
+  EntityKind,
   FamilyBodyStatus,
   FamilyPlanContext,
   FamilyViewportRequest,
+  IdentityProvider,
   SourcePlan,
 } from '../plan.ts';
 import {
-  buildDatedCountryLooks,
+  buildCountryLooksFromIdentity,
   effectiveCountryUnobserved,
   extractFactionData,
   freezeGate,
@@ -139,6 +151,10 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly pin: number | null;
   readonly offset: number;
   readonly loadingLabel: string;
+  readonly identitySnapshot: IdentitySnapshot | null;
+  readonly identityProvider: IdentityProvider | undefined;
+  readonly artProvider: ArtProvider;
+  readonly onIdentityDemands: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
 }
 
 export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
@@ -343,20 +359,94 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     return effectiveMulti?.tags ?? allTags;
   }, [wantsLabels, isFilter, isMulti, policy, allTags, effectiveMulti?.top, effectiveMulti?.tags, holders]);
 
-  const timeline = useHeldTimeline(runtime.client, wantsLabels ? track : undefined, useContentRevision(runtime.client, active && wantsLabels), active && wantsLabels);
-  const startsText = wantsLabels ? JSON.stringify(labelTags.map(tag => [tag, lookStarts(timeline, tag, firstHour, lastHour)])) : '[]';
-  const starts = useMemo(() => JSON.parse(startsText) as [string, [number, boolean][]][], [startsText]);
-  const wantedLabels = useMemo(
-    () => (wantsLabels ? starts.flatMap(([tag, hours]) => hours.flatMap(([at, held]) => (held ? [{ tag, hour: at }] : []))) : []),
-    [wantsLabels, starts],
+  const [laneDemands, setLaneDemands] = useState<readonly IdentityAsk[]>([]);
+  const laneDemandsSigRef = useRef('');
+  const onIdentityDemands = useCallback((demands: readonly (readonly [EntityKind, string, number])[]) => {
+    const sig = demands.map(([k, key, h]) => `${k}\u0000${key}\u0000${h}`).join('\u0001');
+    if (sig === laneDemandsSigRef.current) return;
+    laneDemandsSigRef.current = sig;
+    setLaneDemands(demands.map(([k, key, h]) => ({ key: parseEntityKey(k, key), hour: h })));
+  }, []);
+
+  const wantsIdentity = wantsLabels || laneDemands.length > 0;
+  const identityScope = useIdentityScope(runtime.client, track?.source, track?.branch.id, active && !!track);
+  const branchBounds = useMemo(
+    () => (track ? [track.branch.firstHour, track.branch.lastHour] as const : undefined),
+    [track?.branch.firstHour, track?.branch.lastHour],
   );
-  const { exactAt } = useCountryLabelsAt(runtime.client, wantsLabels ? track : undefined, wantedLabels, active && wantsLabels, Infinity, true);
-  const builtLooks = wantsLabels ? buildDatedCountryLooks(timeline, labelTags, firstHour, lastHour, exactAt, wantsColours) : NO_LOOKS;
+  const labelAskHour = pinHour ?? moment;
+  const labelAsks = useMemo<readonly IdentityAsk[]>(() => {
+    const asks: IdentityAsk[] = [];
+    if (wantsLabels && track) {
+      const at = Math.max(firstHour, Math.min(lastHour, Math.floor(labelAskHour)));
+      for (const tag of labelTags) asks.push({ key: countryTagKey(tag), hour: at });
+    }
+    for (const demand of laneDemands) asks.push(demand);
+    return asks;
+  }, [wantsLabels, track, labelTags, firstHour, lastHour, labelAskHour, laneDemands]);
+  const identityState = useIdentities(runtime.client, track?.source, wantsIdentity ? identityScope : null, labelAsks, {
+    active: active && wantsIdentity,
+    needFlags: true,
+    flagSize: 'panel',
+    branchBounds,
+  });
+  useEffect(() => {
+    if (!active || !wantsLabels || !identityScope || !track || !identityState.index?.hasFacts()) return;
+    const seen = new Set<string>();
+    const choices: CountryFlagChoice[] = [];
+    const limit = Math.floor(lastHour);
+    for (const tag of labelTags) {
+      const key = countryTagKey(tag);
+      let cursor = Math.floor(firstHour);
+      while (cursor <= limit) {
+        const res = identityState.index.resolve(key, cursor);
+        if (res.kind === 'known' && res.flagChoice.kind === 'known') {
+          const id = flagChoiceKey(res.flagChoice.value);
+          if (!seen.has(id)) {
+            seen.add(id);
+            choices.push(res.flagChoice.value);
+          }
+        }
+        cursor = (res.kind === 'known' || res.kind === 'absent') && Number.isFinite(res.nextBoundary) && res.nextBoundary > cursor
+          ? res.nextBoundary
+          : limit + 1;
+      }
+    }
+    if (choices.length) identityBrokerFor(runtime.client).requestFlagChoices(identityScope, 'panel', choices, track.source);
+  }, [active, wantsLabels, identityScope, runtime.client, track, identityState.index, identityState.version, labelTags, firstHour, lastHour]);
+
+  const builtLooks = useMemo(
+    () => (wantsLabels ? buildCountryLooksFromIdentity(identityState.index, labelTags, firstHour, lastHour, identityState.flagFor, wantsColours) : NO_LOOKS),
+    [wantsLabels, identityState.index, identityState.version, identityState.flagFor, labelTags, firstHour, lastHour, wantsColours],
+  );
   const labelsText = wantsLabels ? JSON.stringify(builtLooks) : '{}';
   const labels = useMemo<CountryLooksMap>(
     () => (wantsLabels ? JSON.parse(labelsText) as CountryLooksMap : NO_LOOKS),
     [wantsLabels, labelsText],
   );
+
+  const [providerOwner] = useState(() => ({}));
+  const broker = identityBrokerFor(runtime.client);
+  const identityProvider = useMemo<IdentityProvider | undefined>(() => {
+    if (!identityScope) return undefined;
+    return createBrokerIdentityProvider(broker, identityScope, providerOwner, {
+      recording: track?.source,
+      branchBounds,
+      needFlags: true,
+    });
+  }, [broker, identityScope, providerOwner, track?.source, branchBounds]);
+  useEffect(() => () => {
+    if (identityScope) broker.setDemand(providerOwner, identityScope, null);
+  }, [broker, identityScope, providerOwner]);
+
+  const artProvider = useMemo<ArtProvider>(
+    () => createDomArtProvider(sharedDomArtCache, { broker, scope: identityScope, recording: track?.source }),
+    [broker, identityScope, track?.source],
+  );
+  const identitySnapshot = useMemo<IdentitySnapshot | null>(() => {
+    void identityState.version;
+    return identityScope ? broker.snapshotOf(identityScope, track?.source, branchBounds) : null;
+  }, [broker, identityScope, track?.source, branchBounds, identityState.version]);
 
   const filterUnobserved = useMemo(
     () => (isFilter && widget.countries.kind === 'group' && groups.data ? groupUnobserved(groups.data, widget.countries.group) : undefined),
@@ -579,9 +669,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         hour: displayedHour(shownHour),
         panels: panelsMap,
         live,
+        identity: identityProvider,
+        art: artProvider,
       }),
     };
-  }, [following, displayedStatic, plan, pinHour, effectiveEndHour]);
+  }, [following, displayedStatic, plan, pinHour, effectiveEndHour, identityProvider, artProvider]);
 
   const retainedStaticSpan = staticBundle?.span ?? null;
   const displayedCtx = useMemo<FamilyPlanContext<TAux> | null>(() => {
@@ -613,8 +705,10 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       staticSpan: frozenStaticSpan,
       gate: g,
       exactOnce: (key, load) => perfLog!.exactOnce(key, load),
+      identity: identityProvider,
+      art: artProvider,
     });
-  }, [displayedCtx, displayedPlan, displayedGate, runtime.client, following, widget.time.mode, window]);
+  }, [displayedCtx, displayedPlan, displayedGate, runtime.client, following, widget.time.mode, window, identityProvider, artProvider]);
 
   const loadingLabel = `Loading ${subject}…`;
 
@@ -782,5 +876,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     pin,
     offset: track?.axisOffset ?? 0,
     loadingLabel,
+    identitySnapshot,
+    identityProvider,
+    artProvider,
+    onIdentityDemands,
   };
 }

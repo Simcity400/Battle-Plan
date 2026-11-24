@@ -136,13 +136,14 @@ export type TableProjection<TOptions = unknown> = FamilyProjection<TableModel, T
   readonly family: 'table';
 };
 
-export function resolveCellAtHour(cell: TableCell, hour: number): { readonly value: Value; readonly icon?: string; readonly missingName: boolean } {
+export function resolveCellAtHour(cell: TableCell, hour: number): { readonly value: Value; readonly icon?: string; readonly iconPending?: boolean; readonly missingName: boolean } {
   if (cell.looks) {
     const look = lookAt(cell.looks, cell.lookHour ?? hour);
+    const iconPending = look?.flagPending === true ? true : undefined;
     if (look && look.name !== null && look.name.trim() !== '') {
-      return { value: knownValue(look.name), icon: look.flag, missingName: false };
+      return { value: knownValue(look.name), icon: look.flag, ...(iconPending ? { iconPending } : {}), missingName: false };
     }
-    return { value: notRecorded(look?.status ?? 'Country name unavailable'), icon: look?.flag, missingName: true };
+    return { value: notRecorded(look?.status ?? 'Country name unavailable'), icon: look?.flag, ...(iconPending ? { iconPending } : {}), missingName: true };
   }
   assertValue(cell.value, 'table cell');
   if (cell.bar) assertValue(cell.bar.fraction, 'table cell bar');
@@ -473,6 +474,7 @@ export interface CellPaintModel {
   readonly countryColor: string | null;
   readonly icon: string | null;
   readonly iconSlot: boolean;
+  readonly iconPending?: boolean;
   readonly missingName: boolean;
 }
 
@@ -589,7 +591,7 @@ export function resolveCellPaintModel(
 ): CellPaintModel {
   const resolved = cell
     ? resolveCellAtHour(cell, hour)
-    : { value: notRecorded('Not recorded'), icon: undefined, missingName: false };
+    : { value: notRecorded('Not recorded'), icon: undefined, iconPending: undefined, missingName: false };
   const bar = cell
     ? barFractionOf(cell, resolved.value, cell.maximum ?? maxima.get(column.key))
     : { fraction: null, alert: false };
@@ -612,6 +614,7 @@ export function resolveCellPaintModel(
     countryColor,
     icon: resolved.icon ?? null,
     iconSlot: cell?.iconSlot === true,
+    ...(resolved.iconPending ? { iconPending: true } : {}),
     missingName: resolved.missingName,
   };
 }

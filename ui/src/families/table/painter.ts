@@ -21,6 +21,7 @@ import {
   type TableSettings,
   type TableTheme,
 } from './settings.ts';
+import type { LaneArtCache } from '../art/laneCache.ts';
 import { hasMeasuredValue, type Value } from '../value.ts';
 import { drawFormattedValue, drawHatchRect } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';
@@ -106,6 +107,7 @@ export interface DrawFamilyTableInput {
   readonly empty?: string;
   readonly icons?: ReadonlyMap<string, ImageBitmap | null>;
   readonly iconVersion?: number;
+  readonly artCache?: LaneArtCache;
   readonly dpr?: number;
   readonly hasGroupHeaders?: boolean;
   readonly precomputedMaxima?: Map<string, number>;
@@ -216,7 +218,7 @@ export function drawFamilyTable(
   picture?: FamilyTablePicture,
 ): PaintStats {
   const { layout, rows, settings, hour, width, height, scrollLeft, scrollTop, rankShown, rankWidth, theme, now, glideDuration, glide, markers,
-    inspectedKey, selectedKey, focusedKey, empty, icons, iconVersion, dpr = 1, precomputedMaxima, staticRowLooks } = input;
+    inspectedKey, selectedKey, focusedKey, empty, icons, iconVersion, artCache, dpr = 1, precomputedMaxima, staticRowLooks } = input;
   const rowHeight = ROW_HEIGHT[settings.density];
   const bounds = scrollBounds(layout, width, scrollLeft);
   const rank = rankShown ? rankWidth : 0;
@@ -315,6 +317,7 @@ export function drawFamilyTable(
     fraction: number | null,
     fill: string,
     iconUrl: string | undefined,
+    iconPending: boolean,
     formatted: ReturnType<typeof formatValueState>,
     missingName: boolean,
   ) => {
@@ -337,13 +340,14 @@ export function drawFamilyTable(
 
     const cell = item.row.cells[column.key];
     if (cell?.iconSlot && showsIcon(column.display)) {
-      const icon = iconUrl ? icons?.get(iconUrl) : undefined;
+      const icon = iconUrl ? (artCache?.bitmapOf(iconUrl) ?? icons?.get(iconUrl)) : undefined;
+      const pending = iconPending || (iconUrl !== undefined && artCache?.stateOfUrl(iconUrl) === 'pending');
       const iconHeight = Math.min(14, rowHeight - 8);
       if (icon) {
         const scale = Math.min(20 / icon.width, iconHeight / icon.height);
         const dw = icon.width * scale, dh = icon.height * scale;
         ctx.drawImage(icon, left + (20 - dw) / 2, middle - dh / 2, dw, dh);
-      } else {
+      } else if (!pending) {
         drawHatchRect(ctx, left, Math.round(middle - iconHeight / 2), 20, iconHeight, 2, theme);
       }
       if (column.display === 'flag') return;
@@ -514,11 +518,17 @@ export function drawFamilyTable(
     const fraction = paintModel.bar.fraction === null ? null : pixels / span;
     const fill = paintModel.bar.alert ? theme.red : colorOf(theme, paintModel.tone ?? undefined, paintModel.countryColor, fraction);
     const icon = paintModel.icon ?? undefined;
-    const art = icon === undefined ? '' : `${icon}\u0003${icons?.get(icon) ? 1 : icons?.get(icon) === null ? 2 : 0}`;
+    const iconPending = paintModel.iconPending === true;
+    const iconState = icon === undefined
+      ? (iconPending ? 3 : 0)
+      : (artCache
+        ? (artCache.bitmapOf(icon) ? 1 : artCache.stateOfUrl(icon) === 'failed' ? 2 : 3)
+        : (icons?.get(icon) ? 1 : icons?.get(icon) === null ? 2 : 0));
+    const art = icon === undefined && !iconPending ? '' : `${icon ?? ''}\u0003${iconState}`;
     const treeKey = item.isTreeGroup ? (item.isOpen ? 'o' : 'c') : String(item.level);
     const textVal = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text;
     const key = `${formatted.kind}\u0002${textVal}\u0002${paintModel.missingName ? 1 : 0}\u0002${pixels}\u0002${fill}\u0002${slotWidth}\u0002${art}\u0002${treeKey}\u0002${item.row.muted ? 1 : 0}\u0002${paintModel.status ?? ''}`;
-    return { formatted, fraction, fill, icon, missingName: paintModel.missingName, key };
+    return { formatted, fraction, fill, icon, iconPending, missingName: paintModel.missingName, key };
   };
 
   const drawGroupHeaderRow = (item: Extract<FlatTableRow, { kind: 'group-header' }>, y: number) => {
@@ -601,7 +611,7 @@ export function drawFamilyTable(
         if (picture.rowKeys[index] === item.key && picture.rowMarks[index] === mark && drawn[index] === cellSig) continue;
         const y = index * rowHeight - scrollTop;
         paintRowGround(ctx, theme, x, y, column.width, rowHeight, index % 2 === 1, inspectedKey === item.key, selectedKey === item.key, true);
-        drawSingleCell(item, column, colIndex, x, y, slotWidth, look.fraction, look.fill, look.icon, look.formatted, look.missingName);
+        drawSingleCell(item, column, colIndex, x, y, slotWidth, look.fraction, look.fill, look.icon, look.iconPending, look.formatted, look.missingName);
         drawn[index] = cellSig;
         dirtyRows.add(index);
         paintedCells++;
@@ -639,7 +649,7 @@ export function drawFamilyTable(
         ctx.clip();
         paintRowGround(ctx, theme, rank, y, col0.width, rowHeight, index % 2 === 1, inspectedKey === item.key, selectedKey === item.key, true);
         const look0 = computeLook(item, col0, slot0);
-        drawSingleCell(item, col0, 0, rank, y, slot0, look0.fraction, look0.fill, look0.icon, look0.formatted, look0.missingName);
+        drawSingleCell(item, col0, 0, rank, y, slot0, look0.fraction, look0.fill, look0.icon, look0.iconPending, look0.formatted, look0.missingName);
         if (rank > 0) drawRank(item, index, 0, y);
         ctx.restore();
         const edge = ctx.createLinearGradient(pinnedWidth - 1, 0, pinnedWidth + 12, 0);
@@ -753,7 +763,7 @@ export function drawFamilyTable(
           picture!.rowMarks[index] = mark;
         }
         paintRowGround(ctx, theme, x, y, column.width, rowHeight, index % 2 === 1, inspectedKey === item.key, selectedKey === item.key, true);
-        drawSingleCell(item, column, colIndex, x, y, slotWidth, look.fraction, look.fill, look.icon, look.formatted, look.missingName);
+        drawSingleCell(item, column, colIndex, x, y, slotWidth, look.fraction, look.fill, look.icon, look.iconPending, look.formatted, look.missingName);
         if (!pinned) paintedCells++;
       }
       if (isPinned) break;

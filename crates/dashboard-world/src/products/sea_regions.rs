@@ -1,18 +1,20 @@
 
-use dashboard_base::products::LoadContext;
+use dashboard_base::products::{BranchParams, LoadContext, Product};
 use dashboard_base::Source;
 use content_reader_layers::content::ResolvedContent;
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct SeaContent {
     pub sea: Result<BTreeSet<u32>, String>,
+    pub land: Result<BTreeSet<u32>, String>,
+    pub all: BTreeSet<u32>,
     pub minima: BTreeMap<u32, Result<i64, String>>,
     pub ratio: Result<i64, String>,
     pub notes: Vec<String>,
@@ -31,6 +33,27 @@ pub struct Choice {
     pub name: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct StrategicRegionEntry {
+    pub id: u32,
+    pub name: Option<String>,
+    pub name_missing: Option<String>,
+    pub land: bool,
+    pub sea: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct StrategicRegionsReply {
+    pub regions: Vec<StrategicRegionEntry>,
+    pub warnings: Vec<String>,
+}
+
+dashboard_base::reply_warnings!(StrategicRegionsReply);
+
 impl SeaContent {
     pub fn read(source: &Source, load: &LoadContext) -> io::Result<Arc<Self>> {
         let options = load.content.as_ref().ok_or_else(|| dashboard_core::refused("Sea regions need the recorded content stack"))?;
@@ -45,13 +68,26 @@ impl SeaContent {
         let layers = &resolved.layers;
         let regions = dashboard_base::content::strategic_regions(layers)?;
         let mut notes = regions.notes.clone();
-        let sea = (|| -> io::Result<BTreeSet<u32>> {
+        let kinds = (|| -> io::Result<(BTreeSet<u32>, BTreeSet<u32>)> {
             let files = content_reader_key_names::terrain::read_default_map(layers)?;
             let definitions = content_reader_map::map::read_definitions(&layers.read(&files.file("definitions")?)?)?;
-            Ok(definitions.provinces.values().filter(|province| province.kind == content_reader_map::map::ProvinceKind::Sea).map(|province| province.id).collect())
+            let mut sea = BTreeSet::new();
+            let mut land = BTreeSet::new();
+            for province in definitions.provinces.values() {
+                match province.kind {
+                    content_reader_map::map::ProvinceKind::Sea => {
+                        sea.insert(province.id);
+                    }
+                    content_reader_map::map::ProvinceKind::Land => {
+                        land.insert(province.id);
+                    }
+                    content_reader_map::map::ProvinceKind::Lake => {}
+                }
+            }
+            Ok((sea, land))
         })()
         .map_err(|error| error.to_string());
-        if let Err(why) = &sea {
+        if let Err(why) = &kinds {
             notes.push(format!("1 naval region membership unavailable: {why}"));
         }
         let terrain = content_reader_key_names::terrain::read_definitions(layers).map_err(|error| error.to_string());
@@ -74,9 +110,11 @@ impl SeaContent {
                 (id, minimum)
             })
             .collect();
-        let sea = sea.map(|sea| regions.regions.iter().filter(|(_, region)| region.provinces.iter().any(|province| sea.contains(province))).map(|(&id, _)| id).collect());
+        let all: BTreeSet<u32> = regions.regions.keys().copied().collect();
+        let sea = kinds.as_ref().map(|(sea, _)| regions.regions.iter().filter(|(_, region)| region.provinces.iter().any(|province| sea.contains(province))).map(|(&id, _)| id).collect()).map_err(Clone::clone);
+        let land = kinds.map(|(_, land)| regions.regions.iter().filter(|(_, region)| region.provinces.iter().any(|province| land.contains(province))).map(|(&id, _)| id).collect());
         let ratio = content_reader_defines::defines::read(layers).and_then(|defines| defines.fixed5("NNavy", "DOMINANCE_CONTROLLED_THRESHOLD_RATIO")).map_err(|error| error.to_string());
-        let content = Arc::new(Self { sea, minima, ratio, notes });
+        let content = Arc::new(Self { sea, land, all, minima, ratio, notes });
         state.held = Some((resolved, Arc::clone(&content)));
         Ok(content)
     }
@@ -100,4 +138,55 @@ pub fn choices(places: &super::place_names::Content, sea: &SeaContent, ids: impl
             }),
         })
         .collect()
+}
+
+pub fn catalogue_entries(places: &super::place_names::Content, sea: &SeaContent) -> Vec<StrategicRegionEntry> {
+    let sea_set = sea.sea.as_ref().ok();
+    let land_set = sea.land.as_ref().ok();
+    sea.all
+        .iter()
+        .map(|&id| {
+            let (name, name_missing) = match places.region(id) {
+                Ok(name) => (Some(name), None),
+                Err(reason) => (None, Some(reason)),
+            };
+            StrategicRegionEntry {
+                id,
+                name,
+                name_missing,
+                land: land_set.is_some_and(|set| set.contains(&id)),
+                sea: sea_set.is_some_and(|set| set.contains(&id)),
+            }
+        })
+        .collect()
+}
+
+pub struct StrategicRegions;
+
+impl Product for StrategicRegions {
+    const KEY: &'static str = "strategic-regions";
+    const CONTENT_DEPENDENT: bool = true;
+    type Params = BranchParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
+    type Reply = StrategicRegionsReply;
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        params.validate()
+    }
+
+    #[cfg(any(test, feature = "export-types"))]
+    fn types() -> Vec<String> {
+        vec![StrategicRegionEntry::decl(), StrategicRegionsReply::decl()]
+    }
+
+    fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let _branch = params.branch();
+        let places = super::place_names::Content::read(source, load)?;
+        let sea = SeaContent::read(source, load)?;
+        let regions = catalogue_entries(&places, &sea);
+        let mut warnings = sea.notes.clone();
+        warnings.extend(places.warnings());
+        Ok(StrategicRegionsReply { regions, warnings })
+    }
 }

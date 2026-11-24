@@ -48,6 +48,22 @@ pub struct CountryStyle {
     pub name: Option<String>,
     #[doc = " The recorded map colour as sRGB bytes; null when not recorded this hour."]
     pub color: Option<[u8; 3]>,
+    #[doc = " The inclusive `[first, last]` hour interval this style or absence is proven for."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub valid: Option<[i32; 2]>,
+    #[doc = " True when the tag is proven not to exist as a country across `valid`."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub absent: Option<bool>,
+    #[doc = " Why the style or part of it is missing at this hour."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub reason: Option<String>,
+    #[doc = " The dated flag choice for this country across `valid`."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub flag_choice: Option<CountryFlagChoice>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -108,7 +124,18 @@ pub(crate) fn style(tag: &str, look: &Look, localisation: Option<&Localisation>)
         (None, None) => Some(NO_COLOUR.to_owned()),
         (None, Some(_)) => None,
     };
-    (CountryStyle { tag: tag.to_owned(), name, color: look.colour }, problem)
+    (
+        CountryStyle {
+            tag: tag.to_owned(),
+            name,
+            color: look.colour,
+            valid: None,
+            absent: None,
+            reason: None,
+            flag_choice: None,
+        },
+        problem,
+    )
 }
 
 fn flag_chain(tag: &str, look: &Look) -> flag_choices::Chain {
@@ -400,42 +427,216 @@ impl Product for CountryStyles {
         }
         let mut warnings = Vec::new();
         let localisation = localisation(source, context.content.as_ref(), &mut warnings)?;
+        let folders = flag_folders(source, context.content.as_ref())?.map_err(|reason| CountryFlagChoice {
+            keys: [None, None, None],
+            reasons: [Some(reason.clone()), Some(reason.clone()), Some(reason)],
+        });
         let stretch = query.timeline.at(params.hour).copied().ok_or_else(|| invalid("The timeline holds no such hour"))?;
         let run = crate::products::styles::cached_looks(source, stretch.run)?;
-        let known = !run.unknown.iter().any(|&(a, b)| a <= params.hour && params.hour <= b);
-        let mut at: HashMap<&str, &Look> = HashMap::new();
-        for &(number, look, first, last) in &run.spans {
-            if first <= params.hour && params.hour <= last
-                && let (Some(tag), Some(look)) = (run.tags.get(&number), run.looks.get(&look))
-            {
-                at.insert(tag, look);
+        let unknown_span = run
+            .unknown
+            .iter()
+            .copied()
+            .find(|&(a, b)| a <= params.hour && params.hour <= b)
+            .map(|(a, b)| [a.max(stretch.first), b.min(stretch.last)]);
+        let known = unknown_span.is_none();
+        let mut known_first = stretch.first;
+        let mut known_last = stretch.last;
+        if known {
+            for &(a, b) in &run.unknown {
+                if b < params.hour {
+                    known_first = known_first.max(b.saturating_add(1));
+                } else if a > params.hour {
+                    known_last = known_last.min(a.saturating_sub(1));
+                }
             }
         }
-        let styles = params
-            .tags
-            .iter()
-            .map(|tag| {
-                let missing = |reason: &str, warnings: &mut Vec<String>| {
-                    warnings.push(format!("{tag}: {reason}"));
-                    CountryStyle { tag: tag.clone(), name: None, color: None }
-                };
-                match at.get(tag.as_str()) {
-                    Some(look) => {
-                        let (style, problem) = style(tag, look, localisation.as_deref());
-                        warnings.extend(problem.map(|problem| format!("{tag}: {problem}")));
-                        style
-                    }
-                    _ if !known => missing(UNKNOWN, &mut warnings),
-                    _ => missing(NOT_A_COUNTRY, &mut warnings),
+        let wanted: std::collections::HashSet<&str> = params.tags.iter().map(String::as_str).collect();
+        let mut at: HashMap<&str, (&Look, i32, i32)> = HashMap::new();
+        let mut prev_end: HashMap<&str, i32> = HashMap::new();
+        let mut next_start: HashMap<&str, i32> = HashMap::new();
+        if known {
+            for &(number, look, first, last) in &run.spans {
+                let (first, last) = (first.max(known_first), last.min(known_last));
+                if first > last {
+                    continue;
                 }
-            })
-            .collect();
+                let Some(tag) = run.tags.get(&number).map(Arc::as_ref) else { continue };
+                if !wanted.contains(tag) {
+                    continue;
+                }
+                if first <= params.hour && params.hour <= last {
+                    if let Some(look) = run.looks.get(&look) {
+                        at.insert(tag, (look, first, last));
+                    }
+                } else if last < params.hour {
+                    prev_end.entry(tag).and_modify(|end| *end = (*end).max(last)).or_insert(last);
+                } else {
+                    next_start.entry(tag).and_modify(|start| *start = (*start).min(first)).or_insert(first);
+                }
+            }
+        }
+        let mut styles = Vec::with_capacity(params.tags.len());
+        for tag in &params.tags {
+            match at.get(tag.as_str()) {
+                Some(&(look, first, last)) => {
+                    let (mut built, problem) = style(tag, look, localisation.as_deref());
+                    let choice = match &folders {
+                        Ok(folders) => folders.choose(&flag_chain(tag, look))?,
+                        Err(none) => none.clone(),
+                    };
+                    if let Some(ref text) = problem {
+                        warnings.push(format!("{tag}: {text}"));
+                    }
+                    built.valid = Some([first, last]);
+                    built.reason = problem;
+                    built.flag_choice = Some(choice);
+                    styles.push(built);
+                }
+                _ if !known => {
+                    warnings.push(format!("{tag}: {UNKNOWN}"));
+                    styles.push(CountryStyle {
+                        tag: tag.clone(),
+                        name: None,
+                        color: None,
+                        valid: unknown_span,
+                        absent: None,
+                        reason: Some(UNKNOWN.to_owned()),
+                        flag_choice: None,
+                    });
+                }
+                _ => {
+                    warnings.push(format!("{tag}: {NOT_A_COUNTRY}"));
+                    let absent_first = prev_end.get(tag.as_str()).map_or(known_first, |&end| end.saturating_add(1).max(known_first));
+                    let absent_last = next_start.get(tag.as_str()).map_or(known_last, |&start| start.saturating_sub(1).min(known_last));
+                    styles.push(CountryStyle {
+                        tag: tag.clone(),
+                        name: None,
+                        color: None,
+                        valid: Some([absent_first, absent_last]),
+                        absent: Some(true),
+                        reason: Some(NOT_A_COUNTRY.to_owned()),
+                        flag_choice: None,
+                    });
+                }
+            }
+        }
         Ok(CountryStyleReply {
             branch_id: params.branch_id.clone(),
             hour: params.hour,
             styles,
             warnings,
         })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResolvedCountryLook {
+    pub name: Option<String>,
+    pub color: Option<[u8; 3]>,
+    pub name_missing: Option<String>,
+    pub color_missing: Option<String>,
+}
+
+struct IndexedRunLooks {
+    run: Arc<RunLooks>,
+    by_tag: HashMap<Arc<str>, Vec<(i32, i32, u32)>>,
+}
+
+impl IndexedRunLooks {
+    fn new(run: Arc<RunLooks>) -> Self {
+        let mut by_tag: HashMap<Arc<str>, Vec<(i32, i32, u32)>> = HashMap::new();
+        for &(number, look, first, last) in &run.spans {
+            if let Some(tag) = run.tags.get(&number) {
+                by_tag.entry(Arc::clone(tag)).or_default().push((first, last, look));
+            }
+        }
+        for spans in by_tag.values_mut() {
+            spans.sort_unstable_by_key(|&(first, last, _)| (first, last));
+        }
+        Self { run, by_tag }
+    }
+
+    fn resolve(&self, tag: &str, hour: i32, localisation: Option<&Localisation>) -> ResolvedCountryLook {
+        let known = !self.run.unknown.iter().any(|&(a, b)| a <= hour && hour <= b);
+        if let Some(spans) = self.by_tag.get(tag) {
+            let at = spans.partition_point(|&(first, _, _)| first <= hour);
+            if let Some(&(_, last, look_id)) = at.checked_sub(1).and_then(|index| spans.get(index))
+                && hour <= last
+                && let Some(look) = self.run.looks.get(&look_id)
+            {
+                let (name, name_missing) = match localisation {
+                    None => (None, Some("Game content is not configured".to_owned())),
+                    Some(localisation) => {
+                        let names = CountryNames::recorded(localisation, look.chain.iter().cloned().collect(), look.built);
+                        match country_name(&names, look.slot) {
+                            Ok(name) => (Some(name), None),
+                            Err(reason) => (None, Some(reason)),
+                        }
+                    }
+                };
+                let color_missing = look.colour.is_none().then(|| NO_COLOUR.to_owned());
+                return ResolvedCountryLook { name, color: look.colour, name_missing, color_missing };
+            }
+        }
+        let reason = if known { NOT_A_COUNTRY } else { UNKNOWN }.to_owned();
+        ResolvedCountryLook { name: None, color: None, name_missing: Some(reason.clone()), color_missing: Some(reason) }
+    }
+}
+
+pub struct LookResolver<'a> {
+    source: &'a Source,
+    timeline: &'a dashboard_query::timeline::Timeline,
+    localisation: Option<Arc<Localisation>>,
+    runs: HashMap<u32, IndexedRunLooks>,
+}
+
+impl<'a> LookResolver<'a> {
+    pub fn new(source: &'a Source, timeline: &'a dashboard_query::timeline::Timeline, context: &LoadContext, warnings: &mut Vec<String>) -> io::Result<Self> {
+        let localisation = localisation(source, context.content.as_ref(), warnings)?;
+        Ok(Self { source, timeline, localisation, runs: HashMap::new() })
+    }
+
+    pub fn at(&mut self, tag: &str, hour: i32) -> io::Result<ResolvedCountryLook> {
+        let Some(stretch) = self.timeline.at(hour) else {
+            let reason = self.timeline.reason(hour);
+            return Ok(ResolvedCountryLook { name: None, color: None, name_missing: Some(reason.clone()), color_missing: Some(reason) });
+        };
+        let run = match self.runs.entry(stretch.run) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(slot) => slot.insert(IndexedRunLooks::new(cached_looks(self.source, stretch.run)?)),
+        };
+        Ok(run.resolve(tag, hour, self.localisation.as_deref()))
+    }
+}
+
+pub struct BranchLooks {
+    timeline: dashboard_query::timeline::Timeline,
+    localisation: Option<Arc<Localisation>>,
+    runs: HashMap<u32, IndexedRunLooks>,
+}
+
+impl BranchLooks {
+    pub fn load(source: &Source, timeline: &dashboard_query::timeline::Timeline, context: &LoadContext, warnings: &mut Vec<String>) -> io::Result<Self> {
+        let localisation = localisation(source, context.content.as_ref(), warnings)?;
+        let mut runs = HashMap::new();
+        for stretch in &timeline.stretches {
+            if let std::collections::hash_map::Entry::Vacant(slot) = runs.entry(stretch.run) {
+                slot.insert(IndexedRunLooks::new(cached_looks(source, stretch.run)?));
+            }
+        }
+        Ok(Self { timeline: timeline.clone(), localisation, runs })
+    }
+
+    pub fn at(&self, tag: &str, hour: i32) -> ResolvedCountryLook {
+        let Some(stretch) = self.timeline.at(hour) else {
+            let reason = self.timeline.reason(hour);
+            return ResolvedCountryLook { name: None, color: None, name_missing: Some(reason.clone()), color_missing: Some(reason) };
+        };
+        match self.runs.get(&stretch.run) {
+            Some(run) => run.resolve(tag, hour, self.localisation.as_deref()),
+            None => ResolvedCountryLook { name: None, color: None, name_missing: Some(UNKNOWN.to_owned()), color_missing: Some(UNKNOWN.to_owned()) },
+        }
     }
 }
 
@@ -447,6 +648,24 @@ mod tests {
     fn a_style_request_naming_1500_countries_is_valid() {
         let params = CountryStyleParams { branch_id: "1".into(), hour: 0, tags: (0..1_500).map(|at| format!("X{at:04}")).collect() };
         assert_eq!(CountryStyles::validate(&params), Ok(()));
+    }
+
+    #[test]
+    fn two_hours_for_the_same_tag_keep_distinct_recorded_colours() {
+        let red = Look { colour: Some([200, 40, 40]), ..Look::default() };
+        let blue = Look { colour: Some([40, 80, 220]), ..Look::default() };
+        let run = Arc::new(RunLooks {
+            spans: vec![(1, 10, 0, 71), (1, 20, 72, 200)],
+            unknown: vec![],
+            looks: HashMap::from([(10, red), (20, blue)]),
+            tags: HashMap::from([(1, Arc::from("GER"))]),
+        });
+        let indexed = IndexedRunLooks::new(run);
+        assert_eq!(indexed.resolve("GER", 0, None).color, Some([200, 40, 40]));
+        assert_eq!(indexed.resolve("GER", 72, None).color, Some([40, 80, 220]));
+        let missing = indexed.resolve("GER", 250, None);
+        assert_eq!(missing.color, None);
+        assert_eq!(missing.color_missing.as_deref(), Some(NOT_A_COUNTRY));
     }
 }
 

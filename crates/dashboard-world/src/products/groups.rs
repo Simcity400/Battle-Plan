@@ -637,6 +637,43 @@ pub(crate) fn forget(source: &dashboard_base::Source) {
     Runs::forget(source);
 }
 
+pub fn faction_name_at(faction: &FactionGroup, hour: i32) -> (Option<String>, Option<String>) {
+    if let Some(run) = faction.names.iter().find(|run| run.first_hour <= hour && hour <= run.last_hour) {
+        match &run.name {
+            Some(name) => (Some(name.clone()), None),
+            None => (None, Some(run.reason.clone().unwrap_or_else(|| "Faction name was not recorded at this hour".to_owned()))),
+        }
+    } else {
+        (None, Some("Faction name was not recorded at this hour".to_owned()))
+    }
+}
+
 pub fn cached_groups(source: &dashboard_base::Source, run: u32) -> io::Result<std::sync::Arc<RunGroups>> {
     Runs::held(&source.state::<Runs>(), run, || run_groups(source.replay_ref().recording(), run))
+}
+
+#[cfg(test)]
+mod faction_name_tests {
+    use super::*;
+
+    #[test]
+    fn unnamed_faction_at_hour_does_not_fall_back_to_later_name() {
+        let faction = FactionGroup {
+            id: "10".into(),
+            name: Some("New League".into()),
+            name_reason: None,
+            names: vec![
+                FactionNameRun { first_hour: 0, last_hour: 71, name: None, reason: Some("Faction name was not recorded".into()) },
+                FactionNameRun { first_hour: 72, last_hour: 200, name: Some("New League".into()), reason: None },
+            ],
+            recorded_name: "New League".into(),
+            first_hour: 0,
+            last_hour: 200,
+            members: Vec::new(),
+            leaders: Vec::new(),
+            incomplete: Vec::new(),
+        };
+        assert_eq!(faction_name_at(&faction, 47), (None, Some("Faction name was not recorded".into())));
+        assert_eq!(faction_name_at(&faction, 72), (Some("New League".into()), None));
+    }
 }
