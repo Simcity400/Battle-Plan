@@ -3,7 +3,7 @@ import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { projectForceAtMix, type ForceAtMixOptions } from '../../families/bars/forceAtMix.ts';
 import { validateForceAtReply } from '../../families/bars/forceAtRace.ts';
 import type { BarsModel, BarsProjection } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { buildShareRowsModel } from '../../families/bars/shareRows.ts';
 import { nextSeriesRaceChange, seriesRaceUnavailable, seriesRaceWarnings } from '../../families/bars/seriesRace.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
@@ -17,7 +17,7 @@ export interface AirForceSizeMixOptions extends ForceAtMixOptions {
 const airMeasure = (value: unknown): AirForceMeasureOption => (value === 'wings' ? 'wings' : 'planes');
 const airOwnership = (value: unknown): AirForceOwnershipOption => (value === 'effective' ? 'effective' : 'roster');
 
-export const airForceSizeMixProjection: BarsProjection<AirForceSizeMixOptions> = registerBarsProjection({
+export const airForceSizeMixProjection: BarsProjection<AirForceSizeMixOptions> = registerFamilyProjection({
   kind: 'air-force-size',
   family: 'bars',
   nextChange(readView, options) {

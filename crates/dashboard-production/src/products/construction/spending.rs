@@ -1,5 +1,5 @@
 
-use dashboard_base::products::{Country, validate_country};
+use dashboard_base::products::Country;
 use super::{COST_SCALE, Content, ConstructionStateName, ConstructionType, Line, ProjectKind, SpendingGap, gap_of, missing};
 use dashboard_base::{Source, products::LoadContext, queries::country_ids::Names};
 use dashboard_query::{Query, identity::Holder, series::MissingSpan};
@@ -235,11 +235,11 @@ pub(crate) fn history(source: &Source, params: &ConstructionSpendingParams, cont
     }
     let recorded = super::recorded(&query)?;
     if recorded && leaves.is_empty() {
-        warnings.push(query.holders.say(&params.country, query.timeline.last, |name| format!("{name}: no recorded construction in this branch")));
+        warnings.push(format!("{}: no recorded construction in this branch", query.holders.nearest_name(&params.country, query.timeline.last)));
     }
     let reply = ConstructionSpendingReply {
         branch_id: params.branch_id.clone(),
-        tag: query.holders.name(&params.country, query.timeline.last),
+        tag: query.holders.nearest_name(&params.country, query.timeline.last),
         cost_scale: COST_SCALE,
         recorded,
         types: content.types,

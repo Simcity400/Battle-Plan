@@ -14,6 +14,12 @@ pub mod equipment_type {
     pub const SHIP_MASK: u64 = 0x0000_0080_0040_03c1;
 }
 
+pub mod dlc_feature {
+    pub const MAN_THE_GUNS: u32 = 0x0000_0010;
+    pub const NO_STEP_BACK: u32 = 0x0000_0080;
+    pub const BY_BLOOD_ALONE: u32 = 0x0000_0100;
+}
+
 pub mod subject_relation {
     pub const TYPE_VALUE: u32 = 0x30d1;
 }

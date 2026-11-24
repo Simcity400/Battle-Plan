@@ -160,7 +160,7 @@ pub fn answer(query: &Query<'_>, params: &PoliticsHistoryParams, catalogue: Opti
         branch_id: params.branch_id.clone(),
         mode: params.mode,
         last_hour: Some(query.timeline.last),
-        tag: params.country.as_ref().map(|country| query.holders.name(country, query.timeline.last)),
+        tag: params.country.as_ref().map(|country| query.holders.nearest_name(country, query.timeline.last)),
         asked: params.country.clone(),
         known: Vec::new(),
         elections: Vec::new(),

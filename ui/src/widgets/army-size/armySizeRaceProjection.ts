@@ -2,7 +2,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { projectForceAtReply, validateForceAtReply, type ForceAtRaceBaseOptions } from '../../families/bars/forceAtRace.ts';
 import type { BarsModel, BarsProjection } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import {
   nextSeriesRaceChange,
   projectSeriesRace,
@@ -32,7 +32,7 @@ function seriesMeasure(measure: ArmyMeasure, countFor: ArmyAttribution): string 
   }
 }
 
-export const armySizeRaceProjection: BarsProjection<ArmySizeRaceOptions> = registerBarsProjection({
+export const armySizeRaceProjection: BarsProjection<ArmySizeRaceOptions> = registerFamilyProjection({
   kind: 'army-size',
   family: 'bars',
   nextChange(readView, options) {

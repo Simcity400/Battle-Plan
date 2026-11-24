@@ -2,7 +2,7 @@ import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsLegendItem, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/shareRows.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
 import { holderTagAt, inHourRanges, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
@@ -27,7 +27,7 @@ function sharePct(share: number): string {
   return `${Math.round(share * 100)}%`;
 }
 
-export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOptions> = registerBarsProjection({
+export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOptions> = registerFamilyProjection({
   kind: 'nuclear-arsenal',
   family: 'bars',
   nextChange(readView, options) {

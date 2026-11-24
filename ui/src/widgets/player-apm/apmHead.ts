@@ -3,8 +3,7 @@ import type { LiveValues } from '../../charts/live';
 import type { SortValue } from '../../charts/table/logic';
 import { CELL, cellState, cellValue, rowName, textAt } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer, FollowedRows } from '../../dashboard/follow/message';
-import type { ApmGroup, ApmMembership, ApmPlayer, ApmSeries, ApmValue } from '../../generated/dashboard';
-import { playerNames } from './apmData.ts';
+import type { ApmGroup, ApmMembership, ApmSeries, ApmValue } from '../../generated/dashboard';
 
 const APM = { apm: 0, confirmedApm: 1, orders: 2, pausedOrders: 3, minutes: 4, complete: 5, gaps: 6, tag: 7, hour: 8, name: 9, nameMissing: 10 } as const;
 const CLOCK = { recorded: 0, playing: 1, paused: 2, complete: 3 } as const;
@@ -93,64 +92,4 @@ export function clockHead(answer: FollowedAnswer | undefined): { recorded: numbe
   if (!answer.rows) return { reason: 'Not recorded at this hour' };
   return { recorded: float(answer, CLOCK.recorded), playing: float(answer, CLOCK.playing), paused: float(answer, CLOCK.paused),
     complete: whole(answer, CLOCK.complete) === 1n };
-}
-
-export function apmPausedView(head: number | null, first: number, last: number, windowHours: number): [number, number] | null {
-  if (head === null) return null;
-  const end = Math.max(first, Math.min(last, Math.floor(head)));
-  return [Math.max(first, end - windowHours), Math.max(end, first + 1)];
-}
-
-export function apmHolders(rows: readonly Pick<ApmSeries, 'id' | 'tag' | 'hour'>[], shown: number | null): { key: string; tag: string; hour: number }[] {
-  return rows.flatMap(row => row.tag ? [{ key: row.id, tag: row.tag, hour: shown === null ? row.hour : Math.min(row.hour, shown) }] : []);
-}
-
-export const ABSENT_PLAYER_NAME_REASON = 'Player name was not recorded in the period to this hour.';
-
-export function apmHeadNamesKey(answer: FollowedAnswer | undefined): string {
-  if (!answer) return '';
-  if (answer.kind === 'notRecorded') return `notRecorded:${answer.reason}`;
-  const rows = apmHeadRows(answer);
-  if (!rows.length) return '';
-  return JSON.stringify(rows.map(row => [row.id, row.name, row.nameMissing]));
-}
-
-export function datedPlayerNames(
-  rows: readonly Pick<ApmSeries, 'id' | 'name'>[],
-  headAnswer: FollowedAnswer | undefined,
-  registry?: readonly Pick<ApmPlayer, 'id' | 'name'>[],
-): Map<string, string> {
-  if (!headAnswer) return playerNames(rows, registry);
-  const headById = new Map(apmHeadRows(headAnswer).map(row => [row.id, row.name]));
-  const datedRows = rows.map(row => ({ id: row.id, name: headById.get(row.id) ?? null }));
-  return playerNames(datedRows, registry);
-}
-
-export function datedPlayerNameMissing(
-  rows: readonly Pick<ApmSeries, 'id' | 'name' | 'nameMissing'>[],
-  headAnswer: FollowedAnswer | undefined,
-): Map<string, string> {
-  const out = new Map<string, string>();
-  if (!headAnswer) {
-    for (const row of rows) {
-      if (row.name === null || row.name.trim() === '') {
-        out.set(row.id, row.nameMissing ?? ABSENT_PLAYER_NAME_REASON);
-      }
-    }
-    return out;
-  }
-  if (headAnswer.kind === 'notRecorded') {
-    for (const row of rows) out.set(row.id, headAnswer.reason);
-    return out;
-  }
-  const headById = new Map(apmHeadRows(headAnswer).map(row => [row.id, row]));
-  for (const row of rows) {
-    const dated = headById.get(row.id);
-    if (!dated) {
-      out.set(row.id, ABSENT_PLAYER_NAME_REASON);
-    } else if (dated.name === null || dated.name.trim() === '') {
-      out.set(row.id, dated.nameMissing ?? ABSENT_PLAYER_NAME_REASON);
-    }
-  }
-  return out;
 }

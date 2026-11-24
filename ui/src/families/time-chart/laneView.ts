@@ -21,6 +21,19 @@ interface ChartLayout {
 type ChartFrame = LaneFrame<TimeChartBinding, TimeChartModel, ChartLayout>;
 
 export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): readonly FamilyNavTuple[] {
+  if (model.mode === 'columns') {
+    return layout.columns.map((col, index) => {
+      if (col.kind === 'fold') {
+        const hour = col.foldMonths?.[0]?.firstHour;
+        const key = hour !== undefined ? `fold:${col.index}@${hour}` : `fold:${col.index}`;
+        return [key, col.foldSpanText ?? col.foldLabel ?? 'Folded months', index, 0, ''] as const;
+      }
+      const m = col.month!;
+      const key = `month:${col.index}@${m.firstHour}`;
+      const name = formatDateOnly(m.firstHour).replace(/^\d+\s+/, '');
+      return [key, name, index, 0, ''] as const;
+    });
+  }
   const stops: { readonly hour: number; readonly key: string; readonly name: string }[] = [];
   for (const tick of layout.axisTicks) {
     if (tick.hour <= model.hour) stops.push({ hour: tick.hour, key: `plot:${tick.hour}`, name: formatDateOnly(tick.hour) });

@@ -265,8 +265,24 @@ impl HeadValue for ApmHead {
             return Err("Player orders were not recorded in this campaign.".into());
         }
         let (first, last) = self.window_at(hour).ok_or("This time is outside the recording.")?;
-        for (series, Played { amount, tag, name, name_missing, .. }) in self.amounts(first, last) {
-            let value: ApmValue = amount.value();
+        let mut entries: Vec<_> = self
+            .amounts(first, last)
+            .into_iter()
+            .map(|(series, played)| {
+                let value: ApmValue = played.amount.value();
+                (series, played, value)
+            })
+            .collect();
+        entries.sort_by(|(a_series, _, a), (b_series, _, b)| {
+            match (a.apm, b.apm) {
+                (Some(x), Some(y)) => y.total_cmp(&x),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+            .then_with(|| self.ids[*a_series].cmp(&self.ids[*b_series]))
+        });
+        for (series, Played { amount, tag, name, name_missing, .. }, value) in entries {
             rows.row(series as u128, &self.ids[series]);
             rows.float(value.apm);
             rows.float(value.confirmed_apm);
@@ -384,7 +400,7 @@ pub fn tile_ask_walk() -> dashboard_query::fields::Walk {
 struct TileAsk {
     bin_hours: i64,
     index: i64,
-    tags: Vec<String>,
+    countries: Vec<String>,
 }
 
 pub fn tile(source: &Source, branch: u64, timeline_last: i32, params: &Value) -> io::Result<SeriesTileReply> {
@@ -396,20 +412,50 @@ pub fn tile(source: &Source, branch: u64, timeline_last: i32, params: &Value) ->
     }
     let (first, last) = tile::hours(ask.bin_hours, ask.index)?;
     let held = index(source, branch, &AtomicBool::new(false))?;
-    let reply = query(&held, &ApmParams {
+    tile_from_index(&held, branch, timeline_last, &family, &ask, first, last)
+}
+
+fn tile_from_index(
+    held: &Index,
+    branch: u64,
+    timeline_last: i32,
+    family: &TileFamily,
+    ask: &TileAsk,
+    first: i32,
+    last: i32,
+) -> io::Result<SeriesTileReply> {
+    if !held.analysis.recorded {
+        let covered_last = last.min(timeline_last);
+        let missing = if first <= covered_last {
+            vec![MissingSpan { first_hour: first, last_hour: covered_last, reason: "Player orders were not recorded in this campaign.".into() }]
+        } else {
+            Vec::new()
+        };
+        let lines = ask
+            .countries
+            .iter()
+            .map(|id| TileLine { country: id.clone().into(), part: None, missing: missing.clone(), parts: Vec::new(), marks: None })
+            .collect();
+        let (immutable, filled) = tile::closure(first, last, timeline_last);
+        let buckets: Vec<Option<ChartBucket>> = vec![None; ask.countries.len() * tile::BINS];
+        let (bins, raw_values, hour_bytes) = tile::encode(&buckets, first, ask.bin_hours, 1.0);
+        return Ok(SeriesTileReply { branch_id: branch.to_string(), measure: family.value.clone(), decimals: 0, bin_hours: ask.bin_hours, index: ask.index, first_hour: first,
+            immutable, filled, raw_values, hour_bytes, lines, bins: tile::base64(&bins), ranking: None });
+    }
+    let reply = query(held, &ApmParams {
         branch_id: branch.to_string(),
         group: family.group,
         registry: false,
         first_hour: Some(first),
         last_hour: Some(last),
-        tags: family.tags,
-        membership: family.membership,
-        players: family.players,
+        tags: family.tags.clone(),
+        membership: family.membership.clone(),
+        players: family.players.clone(),
         buckets: tile::BINS as u32,
     }, &AtomicBool::new(false))?;
-    let mut buckets: Vec<Option<ChartBucket>> = vec![None; ask.tags.len() * tile::BINS];
-    let mut lines = Vec::with_capacity(ask.tags.len());
-    for (at, id) in ask.tags.iter().enumerate() {
+    let mut buckets: Vec<Option<ChartBucket>> = vec![None; ask.countries.len() * tile::BINS];
+    let mut lines = Vec::with_capacity(ask.countries.len());
+    for (at, id) in ask.countries.iter().enumerate() {
         let mut missing = Vec::new();
         if let Some(series) = reply.series.iter().find(|series| &series.id == id) {
             let mut before = false;
@@ -433,7 +479,7 @@ pub fn tile(source: &Source, branch: u64, timeline_last: i32, params: &Value) ->
     }
     let (immutable, filled) = tile::closure(first, last, timeline_last);
     let (bins, raw_values, hour_bytes) = tile::encode(&buckets, first, ask.bin_hours, 1.0);
-    Ok(SeriesTileReply { branch_id: branch.to_string(), measure: family.value, decimals: 0, bin_hours: ask.bin_hours, index: ask.index, first_hour: first,
+    Ok(SeriesTileReply { branch_id: branch.to_string(), measure: family.value.clone(), decimals: 0, bin_hours: ask.bin_hours, index: ask.index, first_hour: first,
         immutable, filled, raw_values, hour_bytes, lines, bins: tile::base64(&bins), ranking: None })
 }
 

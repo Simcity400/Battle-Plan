@@ -4,7 +4,7 @@ import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { projectForceAtMix, type ForceAtMixOptions } from '../../families/bars/forceAtMix.ts';
 import { validateNavalLossesAtReply } from '../../families/bars/forceAtRace.ts';
 import type { BarsModel, BarsProjection } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { buildShareRowsModel } from '../../families/bars/shareRows.ts';
 import { nextSeriesRaceChange, seriesRaceUnavailable, seriesRaceWarnings } from '../../families/bars/seriesRace.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourceEntry, SourcePlan } from '../../families/contract.ts';
@@ -61,7 +61,7 @@ function provenInterval(data: unknown): readonly [number, number] | null {
     : null;
 }
 
-export const navalLossesMixProjection: BarsProjection<NavalLossesMixOptions> = registerBarsProjection({
+export const navalLossesMixProjection: BarsProjection<NavalLossesMixOptions> = registerFamilyProjection({
   kind: 'naval-losses',
   family: 'bars',
   nextChange(readView, options) {

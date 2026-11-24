@@ -3,7 +3,7 @@ import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { projectForceAtMix, type ForceAtMixOptions } from '../../families/bars/forceAtMix.ts';
 import { validateForceAtReply } from '../../families/bars/forceAtRace.ts';
 import type { BarsModel, BarsProjection } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { buildShareRowsModel } from '../../families/bars/shareRows.ts';
 import { nextSeriesRaceChange, seriesRaceUnavailable, seriesRaceWarnings } from '../../families/bars/seriesRace.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
@@ -15,7 +15,7 @@ export interface ArmySizeMixOptions extends ForceAtMixOptions {
 
 const armyCountFor = (value: unknown): ArmyAttribution => (value === 'host' ? 'host' : 'owner');
 
-export const armySizeMixProjection: BarsProjection<ArmySizeMixOptions> = registerBarsProjection({
+export const armySizeMixProjection: BarsProjection<ArmySizeMixOptions> = registerFamilyProjection({
   kind: 'army-size',
   family: 'bars',
   nextChange(readView, options) {

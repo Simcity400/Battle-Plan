@@ -233,7 +233,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         "game-score" => Ok("Scores, their reasons and the multipliers are the recorded CountryGameScores and GameScoreMultipliers rows; only the column hints localise the end screen's sort controls from the recorded content.".into()),
         "factory-groups" => Ok("Factory group names are the recorded stack's building types counted by each production flag, localised; the counts are the recorded CountryFactories rows.".into()),
         "factory-parts" => Ok("No content dependency: the three factory groups are the game's own, read from the recorded CountryFactories row.".into()),
-        "world-tension" | "threat-events" => Ok("No content dependency: tension, contributions and the game's own threat text are the recorded WorldTension, ThreatCountryAggregates, ThreatSources and ThreatEvents rows; display text only loses its presentation controls.".into()),
+        "world-tension" | "world-tension-stack" => Ok("No content dependency: tension, contributions and the game's own threat text are the recorded WorldTension, ThreatCountryAggregates, ThreatSources and ThreatEvents rows; display text only loses its presentation controls.".into()),
         "nuclear-arsenal" => Ok("Nuclear type names localise the token spellings recorded in LexicalTokens; amounts and type ordinals are the recorded Nukes rows. A type the game names no token for is counted and shown unnamed.".into()),
         <forces::AirForceAt as at_hour::AtHour>::KEY => {
             let units = dashboard_base::catalogue::equipment_units(content.catalogue()?)?;

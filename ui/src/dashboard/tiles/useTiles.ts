@@ -1,8 +1,6 @@
 import { countryFromKey } from '../countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Live } from '../../charts/live.ts';
-import { mapLive } from '../../charts/live.ts';
-import type { ChartSummary } from '../../charts/chartSummary';
 import type { DashboardClient, DashboardSource, ProductRequest } from '../client';
 import type { HourSpan } from '../../generated/dashboard';
 import type { TileReply } from './tile.ts';

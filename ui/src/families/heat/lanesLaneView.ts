@@ -83,7 +83,7 @@ const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, HeatLane
         warnings: model.warnings ?? [],
       },
       extent: { totalHeight: layout.totalHeight, rowStride: layout.rowStride, plotTop: layout.plotTop, plotHeight: layout.plotHeight, rows: laneIdentities(model.rows) },
-      nav: model.rows.map((row, index): FamilyNavTuple => [row.id, row.label, index, -1, '', row.meta ?? null]),
+      nav: model.rows.map((row, index): FamilyNavTuple => [row.id, row.label, index, -1, '', row.meta ?? null, index * layout.rowStride, layout.rowHeight]),
     };
   },
   mirror: frame => deriveLanesMirror(frame.model, frame.layout.firstRow, frame.layout.endRow),

@@ -4,7 +4,8 @@ import type { OptionValue } from '../../dashboard/options';
 import type { AuxProductSpec, BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../contract.ts';
 import type { HolderRun, HourRanges } from '../holders.ts';
 import { formatScalar } from '../valueFormat.ts';
-import { registerTimeChart, type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
+import { registerFamilyProjection } from '../registry.ts';
 import { formatChartAxisValue } from './layout.ts';
 import type { ChartGap, ChartValueFormat, TimeChartSeriesModel } from './model.ts';
 import {
@@ -63,7 +64,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
   readonly projection: TimeChartProjection<CountryLinesOptions>;
   readonly declaration: TimeChartWidgetDeclaration<CountryLinesOptions, TAux>;
 } {
-  const projection = registerTimeChart<CountryLinesOptions>({
+  const projection = registerFamilyProjection<TimeChartProjection<CountryLinesOptions>>({
     kind: spec.kind,
     family: 'time-chart',
     variant: 'line',

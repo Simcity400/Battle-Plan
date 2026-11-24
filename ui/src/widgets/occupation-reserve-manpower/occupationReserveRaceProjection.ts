@@ -3,7 +3,7 @@ import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
 import { inHourRanges, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
@@ -104,7 +104,7 @@ function makeHolderRow(readView: BoundedReadView, holder: ReserveHolder, readHou
   };
 }
 
-export const occupationReserveRaceProjection: BarsProjection<OccupationReserveRaceOptions> = registerBarsProjection({
+export const occupationReserveRaceProjection: BarsProjection<OccupationReserveRaceOptions> = registerFamilyProjection({
   kind: 'occupation-reserve-manpower',
   family: 'bars',
   nextChange(readView, options) {

@@ -46,7 +46,8 @@ export type TableCellKind =
   | 'action'
   | 'twoWay'
   | 'shaded'
-  | 'kind';
+  | 'kind'
+  | 'share';
 
 export type TableHeaderGroup =
   | { readonly kind: 'shortOver' }
@@ -190,6 +191,20 @@ export type TableModelSlot =
   | { readonly kind: 'refused'; readonly key: string; readonly reason: string }
   | { readonly kind: 'loading'; readonly key: string };
 
+export interface TablePaneTitle {
+  readonly name: Value<string>;
+  readonly flag?: string;
+  readonly flagPending?: boolean;
+  readonly country?: string;
+}
+
+export interface TablePane {
+  readonly key: string;
+  readonly title: TablePaneTitle;
+  readonly rows: readonly TableRow[];
+  readonly totalRow?: TableRow;
+}
+
 export interface TableModel {
   readonly columns: readonly TableColumnSpec[];
   readonly rows: readonly TableRow[];
@@ -214,6 +229,7 @@ export interface TableModel {
   readonly hideHeader?: boolean;
   readonly clockSummary?: ClockSummaryData;
   readonly totalRow?: TableRow;
+  readonly panes?: readonly TablePane[];
   readonly warnings?: readonly string[];
   readonly notes?: readonly string[];
   readonly titleSummary?: string | null;
@@ -257,6 +273,7 @@ export type FlatTableRow =
       readonly showDate?: boolean;
       readonly isDayEnd?: boolean;
       readonly isLiveEnd?: boolean;
+      readonly isTotal?: boolean;
     };
 
 export type TableProjection<TOptions = unknown> = FamilyProjection<TableModel, TOptions> & {
@@ -490,7 +507,37 @@ export function keepsProductOrder(model: Pick<TableModel, 'unsorted' | 'populati
   return model.unsorted === true || model.populationPartial !== undefined;
 }
 
+export function tableRank(model: TableModel, settings: TableSettings): { readonly shown: boolean; readonly markers: boolean; readonly width: number } {
+  const shown = model.rank === true && model.populationPartial === undefined && (settings.showRank === true || model.defaultRankShown === true);
+  const markers = shown && model.rankMarkers === true;
+  return { shown, markers, width: shown ? (markers ? 64 : 36) : 0 };
+}
+
 export function resolveTableRows(
+  model: TableModel,
+  settings: TableSettings,
+  expanded?: Readonly<Record<string, boolean>>,
+): FlatTableRow[] {
+  const body = resolveBodyRows(model, settings, expanded);
+  const total = model.totalRow;
+  if (!total || (total.revealAt !== undefined && total.revealAt > model.hour)) return body;
+  validateRowCells(total);
+  return [{
+    kind: 'data',
+    key: total.key,
+    name: rowNameAtHour(total, model.columns[0]?.key, model.hour),
+    row: total,
+    rank: 0,
+    level: 1,
+    parent: null,
+    isTreeGroup: false,
+    isOpen: false,
+    childCount: 0,
+    isTotal: true,
+  }, ...body];
+}
+
+function resolveBodyRows(
   model: TableModel,
   settings: TableSettings,
   expanded?: Readonly<Record<string, boolean>>,
@@ -660,6 +707,7 @@ export function resolveTableRowsIncremental(
     || prevModel.dateGrouped || model.dateGrouped
     || prevModel.gaps?.length || model.gaps?.length
     || prevModel.slots !== undefined || model.slots !== undefined
+    || prevModel.totalRow !== undefined || model.totalRow !== undefined
     || prevModel.rows.length !== model.rows.length
     || prevFlat.length !== model.rows.length
   ) return null;
