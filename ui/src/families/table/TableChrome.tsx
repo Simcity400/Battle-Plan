@@ -6,7 +6,7 @@ import type { TableChromeState } from './hostAdapter.ts';
 import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
 import type { TableColumnSpec } from './model.ts';
 import { updateTableSettings, type TableSettings } from './settings.ts';
-import { columnWidthVar, DISPLAY_LABELS, FamilyTableHeader, type TableHeaderColumn } from './TableHeader.tsx';
+import { columnWidthVar, DISPLAY_LABELS, FamilyTableHeader, type TableHeaderColumn, type TableHeaderIdentity } from './TableHeader.tsx';
 import './tableFamily.css';
 
 const HEADER_FALLBACK_WIDTH = 120;
@@ -21,6 +21,14 @@ interface ChromeMeta {
   readonly columns?: readonly TableColumnSpec[];
 }
 
+interface ChromePanes {
+  readonly width: number;
+  readonly gutter: number;
+  readonly xs: readonly number[];
+  readonly tableWidth: number;
+  readonly titles: readonly (TableHeaderIdentity & { readonly key: string })[];
+}
+
 interface ChromeWidths {
   readonly widths: Readonly<Record<string, number>>;
   readonly visible: readonly string[];
@@ -32,6 +40,7 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
   const chrome = state as TableChromeState | undefined;
   const meta = (chrome?.meta ?? {}) as ChromeMeta;
   const measured = chrome?.widths as ChromeWidths | undefined;
+  const panes = chrome?.panes as ChromePanes | undefined;
   const columns = meta.columns ?? NO_COLUMNS;
   const [scrollLeft, setScrollLeft] = useState(0);
   const [resizing, setResizing] = useState<{ key: string; width: number; guideX?: number | null } | null>(null);
@@ -69,11 +78,11 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
         };
       }
     }
-    return layoutFamilyTable(base, Math.max(1, viewportWidth || 320), {
+    return layoutFamilyTable(base, Math.max(1, panes?.width ?? (viewportWidth || 320)), {
       rankShown: meta.rankShown === true,
       rankWidth: meta.rankWidth || 36,
     });
-  }, [columns, settings, measured, resizing, meta.rankShown, meta.rankWidth, viewportWidth]);
+  }, [columns, settings, measured, resizing, meta.rankShown, meta.rankWidth, viewportWidth, panes?.width]);
 
   const specMap = useMemo(() => new Map(columns.map(col => [col.key, col])), [columns]);
   const headerColumns = useMemo<TableHeaderColumn[]>(() => (layout?.columns ?? []).map(col => {
@@ -96,6 +105,14 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
     for (const [key, px] of Object.entries(measured?.widths ?? NO_WIDTHS)) vars[columnWidthVar(key)] = `${px}px`;
     return vars as CSSProperties;
   }, [measured]);
+
+  const paned = panes !== undefined;
+  useLayoutEffect(() => {
+    const body = targets.body;
+    if (!body || !paned) return;
+    body.dataset.tfPanes = 'true';
+    return () => { delete body.dataset.tfPanes; };
+  }, [targets.body, paned]);
 
   useLayoutEffect(() => {
     const body = targets.body;
@@ -124,30 +141,43 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
   }, [targets.body, targets.extent]);
 
   if (!settings || !layout) return null;
-  const canScrollRight = layout.scrollable && scrollLeft < Math.max(0, layout.totalWidth - (viewportWidth || 320)) - 1;
+  const paneOverflow = panes ? Math.max(0, panes.tableWidth - panes.width) : 0;
+  const shownLeft = panes ? Math.min(scrollLeft, paneOverflow) : scrollLeft;
+  const canScrollRight = panes
+    ? shownLeft < paneOverflow - 1
+    : layout.scrollable && scrollLeft < Math.max(0, layout.totalWidth - (viewportWidth || 320)) - 1;
+  const header = (identity?: TableHeaderIdentity) => (
+    <FamilyTableHeader
+      columns={headerColumns}
+      allColumns={columns}
+      settings={settings}
+      unsorted={meta.unsorted}
+      editableColumns={editable}
+      rankWidth={meta.rankShown ? meta.rankWidth : 0}
+      pinnedCount={layout.pinnedCount}
+      pinned={layout.scrollable}
+      scrollLeft={shownLeft}
+      canScrollRight={canScrollRight}
+      {...(identity ? { identity } : {})}
+      onChange={changeSettings}
+      onResizing={(key, width, guideX) => setResizing(guideX === null ? null : { key, width, guideX })}
+      onResize={(key, width) => {
+        setResizing(null);
+        changeSettings(draft => { if (draft.columns[key]) draft.columns[key]!.width = width; });
+      }}
+    />
+  );
 
   return (
     <>
-      {!meta.hideHeader ? (
+      {!meta.hideHeader && panes ? (
+        <div className="tf-head-clip tf-pane-heads" style={bodyBlocked ? { ...widthVars, display: 'none' } : { ...widthVars, columnGap: panes.gutter }}>
+          {panes.titles.map(title => <div key={title.key} className="tf-pane-head" style={{ width: panes.width }}>{header(title)}</div>)}
+          {panes.xs.slice(1).map(x => <i key={x} className="tf-pane-rule" style={{ left: Math.round(x - panes.gutter / 2) }} aria-hidden="true" />)}
+        </div>
+      ) : !meta.hideHeader ? (
         <div className="tf-head-clip" style={bodyBlocked ? { ...widthVars, display: 'none' } : widthVars}>
-          <FamilyTableHeader
-            columns={headerColumns}
-            allColumns={columns}
-            settings={settings}
-            unsorted={meta.unsorted}
-            editableColumns={editable}
-            rankWidth={meta.rankShown ? meta.rankWidth : 0}
-            pinnedCount={layout.pinnedCount}
-            pinned={layout.scrollable}
-            scrollLeft={scrollLeft}
-            canScrollRight={canScrollRight}
-            onChange={changeSettings}
-            onResizing={(key, width, guideX) => setResizing(guideX === null ? null : { key, width, guideX })}
-            onResize={(key, width) => {
-              setResizing(null);
-              changeSettings(draft => { if (draft.columns[key]) draft.columns[key]!.width = width; });
-            }}
-          />
+          {header()}
         </div>
       ) : null}
       {targets.bodyWrap ? createPortal(
@@ -156,8 +186,8 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
           <div
             ref={edgesRef}
             className="tf-edges"
-            data-right={canScrollRight ? 'true' : undefined}
-            data-pinned={layout.scrollable && scrollLeft > 0 && layout.pinnedWidth > 0 ? 'true' : undefined}
+            data-right={canScrollRight && !panes ? 'true' : undefined}
+            data-pinned={!panes && layout.scrollable && scrollLeft > 0 && layout.pinnedWidth > 0 ? 'true' : undefined}
             style={{ '--tf-pinned-width': `${layout.pinnedWidth}px` } as CSSProperties}
             aria-hidden="true"
           >

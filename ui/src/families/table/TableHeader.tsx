@@ -54,6 +54,24 @@ export interface TableHeaderColumn extends TableColumnLayout {
   headerGroup?: TableHeaderGroup;
 }
 
+export interface TableHeaderIdentity {
+  readonly name: string;
+  readonly missing: boolean;
+  readonly flag: string | null;
+  readonly flagPending: boolean;
+  readonly country: string | null;
+}
+
+function HeaderIdentity({ identity }: { identity: TableHeaderIdentity }) {
+  const initials = identity.country ?? identity.name.slice(0, 3);
+  return <span className="tf-th-identity">
+    {identity.flag
+      ? <img className="tf-th-flag" src={identity.flag} alt="" aria-hidden="true" />
+      : <span className={`tf-th-flag${identity.flagPending ? '' : ' is-missing'}`} aria-hidden="true">{identity.flagPending ? null : initials}</span>}
+    <span className={`tf-th-identity-name${identity.missing ? ' is-missing' : ''}`}>{identity.name}</span>
+  </span>;
+}
+
 export interface FamilyTableHeaderProps {
   columns: readonly TableHeaderColumn[];
   allColumns: readonly TableColumnSpec[];
@@ -65,6 +83,7 @@ export interface FamilyTableHeaderProps {
   pinned: boolean;
   scrollLeft: number;
   canScrollRight?: boolean;
+  identity?: TableHeaderIdentity;
   onChange(update: (next: TableSettings) => void): void;
   onResize(column: string, width: number | null): void;
   onResizing(column: string, width: number, guideX?: number | null): void;
@@ -80,6 +99,7 @@ export function FamilyTableHeader({
   pinned,
   scrollLeft,
   canScrollRight = false,
+  identity,
   onChange,
   onResize,
   onResizing,
@@ -107,8 +127,14 @@ export function FamilyTableHeader({
     });
   };
 
-  const renderLabel = (item: TableHeaderColumn, active: boolean, end: boolean) => {
+  const renderLabel = (item: TableHeaderColumn, active: boolean, end: boolean, index: number) => {
     const arrow = active ? (sort.direction === 'descending' ? SORT_ARROW_DOWN : SORT_ARROW_UP) : null;
+    if (identity && index === 0) {
+      return <>
+        <HeaderIdentity identity={identity} />
+        {arrow && <span className="tf-sort-mark" aria-hidden="true">{arrow}</span>}
+      </>;
+    }
     if (item.headerGroup?.kind === 'shortOver') {
       return <span className="tf-th-short-over">
         <span className="tf-th-so-bar">
@@ -158,7 +184,7 @@ export function FamilyTableHeader({
         const canSort = !unsorted && item.sortable !== false && !item.notRecordedReason;
         const canDrag = editableColumns && !unsorted && index >= pinnedCount;
         const dropClass = dropTarget?.key === item.key ? ` is-drop-${dropTarget.side}` : '';
-        const title = item.notRecordedReason ?? item.hint;
+        const title = identity && index === 0 ? identity.name : (item.notRecordedReason ?? item.hint);
         return <div
           key={item.key}
           role="columnheader"
@@ -210,8 +236,8 @@ export function FamilyTableHeader({
             })}
           >
             {canDrag && GRIP_DOTS}
-            {renderLabel(item, active, end)}
-          </button> : <span className="tf-th-static" title={title}>{renderLabel(item, false, end)}</span>}
+            {renderLabel(item, active, end, index)}
+          </button> : <span className="tf-th-static" title={title}>{renderLabel(item, false, end, index)}</span>}
           {editableColumns && <span
             className="tf-resize"
             title="Drag to resize. Double-click to fit."

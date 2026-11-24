@@ -4,6 +4,7 @@ import type { AnyTableWidgetDeclaration } from './declaration.ts';
 import type { FamilyTableBinding } from './laneView.ts';
 import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
 import { deriveTableAudit, resolveTableRows, type TableColumnSpec, type TableModel } from './model.ts';
+import { combinedPaneRows, paneGeometry, resolvePanes } from './panes.ts';
 import { encodeTableSettings, MEDIA_ROW_HEIGHT, ROW_HEIGHT, TABLE_SETTINGS_KEY, tableSettingsOf, type TableSettings } from './settings.ts';
 
 const OVERSCAN = 4;
@@ -25,6 +26,7 @@ interface TableInfoField {
 export interface TableChromeState {
   readonly meta: unknown;
   readonly widths: unknown;
+  readonly panes: unknown;
 }
 
 function tableColumns(declaration: AnyTableWidgetDeclaration, ctx: FamilyPlanContext<unknown> | null): readonly TableColumnSpec[] {
@@ -81,8 +83,8 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
   rowGeometry,
   chromeState: (fields, previous) => {
     const prev = previous as TableChromeState | undefined;
-    if (prev && prev.meta === fields.meta && prev.widths === fields.widths) return prev;
-    const next: TableChromeState = { meta: fields.meta, widths: fields.widths };
+    if (prev && prev.meta === fields.meta && prev.widths === fields.widths && prev.panes === fields.panes) return prev;
+    const next: TableChromeState = { meta: fields.meta, widths: fields.widths, panes: fields.panes };
     return next;
   },
   parseHit: parseTableHit,
@@ -98,10 +100,12 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
   deriveAuditRows: (model, _hour, { settings, expanded, window, viewport, theme, fields }) => {
     if (!settings) return [];
     const measured = (fields.widths as TableWidthsField | undefined)?.widths ?? {};
-    const flatRows = resolveTableRows(model, settings, expanded);
+    const panes = model.panes ? resolvePanes(model, settings, expanded, model.rowHeightMode ?? 'standard') : null;
+    const flatRows = panes ? combinedPaneRows(panes) : resolveTableRows(model, settings, expanded);
     const rankShown = model.rank === true;
     const rankWidth = rankShown ? (model.rankMarkers ? 64 : 36) : 0;
-    const layout = layoutFamilyTable(buildColumnLayouts(model.columns, settings, measured), Math.max(1, viewport.width), {
+    const layoutWidth = panes ? paneGeometry(viewport.width, panes.length).width : viewport.width;
+    const layout = layoutFamilyTable(buildColumnLayouts(model.columns, settings, measured), Math.max(1, layoutWidth), {
       rankShown,
       rankWidth,
     });

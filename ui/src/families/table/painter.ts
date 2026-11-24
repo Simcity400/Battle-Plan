@@ -462,7 +462,7 @@ export function drawFamilyTable(
     : HAIRLINE_INSET;
   const hairlineSpec = (item: Extract<FlatTableRow, { kind: 'data' }>, index: number, pinned: boolean) => {
     if (item.isLiveEnd) return { kind: 'band' as const, left: HAIRLINE_INSET };
-    if (item.isDayEnd || isLastChildRow(rows, index)) return { kind: 'strong' as const, left: HAIRLINE_INSET };
+    if (item.isDayEnd || item.isTotal || isLastChildRow(rows, index)) return { kind: 'strong' as const, left: HAIRLINE_INSET };
     if (dateGrouped && intraDayLeftBase > HAIRLINE_INSET) {
       const shifted = pinned ? intraDayLeftBase : Math.max(HAIRLINE_INSET, intraDayLeftBase - bounds.left);
       return { kind: 'normal' as const, left: shifted };
