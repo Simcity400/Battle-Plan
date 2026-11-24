@@ -905,10 +905,11 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
   const pending: ((key: string | null, meta?: PointerHitMeta) => void)[] = [];
   const fakePipeline = {
     pointer(_pipe: number, _slot: number, _pt: unknown, cb?: (key: string | null, meta?: PointerHitMeta) => void) { if (cb) pending.push(cb); },
-    inspect() {},
+    inspect(_pipe: number, token: string | null) { inspected.push(token); },
     view() { return null; },
   } as unknown as Pipeline;
-  const reply = (key: string | null, id: number, owner = 'owner-A') => pending.shift()!(key, { installedId: id, owner });
+  const inspected: (string | null)[] = [];
+  const reply = (key: string | null, id: number, owner = 'owner-A', at = 0) => pending.splice(at, 1)[0]!(key, { installedId: id, owner });
   const activations: InstalledAction[] = [];
   const menus: (string | null)[] = [];
   const inspectedKeyRef = { current: null as string | null };
@@ -993,6 +994,22 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
   installed = picture(13, ['ENG'], 'owner-C');
   reply('row:ENG', 12, 'owner-B');
   assert.equal(activations.length, 2, 'an owner change before the release hit arrives refuses it');
+
+  body.dispatch('pointermove', { isTrusted: true, clientX: 24, clientY: 10 });
+  reply('row:GER', 13, 'owner-C');
+  assert.equal(inspectedKeyRef.current, 'GER');
+  body.dispatch('pointerdown', { button: 0, clientX: 24, clientY: 10, pointerId: 7 });
+  installed = picture(14, ['FRA', 'GER'], 'owner-C');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 25, clientY: 10 });
+  reply('row:FRA', 14, 'owner-C', 1);
+  assert.equal(inspectedKeyRef.current, 'FRA', 'FRA moved under the pointer and is the hover of picture 14');
+  inspected.length = 0;
+  reply('row:GER', 13, 'owner-C');
+  assert.equal(inspectedKeyRef.current, 'FRA', 'R4-S7: the late press reply keeps GER for click matching but does not publish it as the hover');
+  assert.deepEqual(inspected, [], 'R4-S7: and does not inspect GER in the lane');
+  body.dispatch('pointerup', { button: 0, clientX: 25, clientY: 10, pointerId: 7 });
+  reply('row:FRA', 14, 'owner-C');
+  assert.equal(activations.length, 2, 'press on GER and release on FRA is still not a click');
 
   stop();
   tooltips.dispose();
