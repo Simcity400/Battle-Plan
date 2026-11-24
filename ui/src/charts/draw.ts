@@ -9,7 +9,7 @@ import type { PathCommand, Run } from './series.ts';
 import { timeTicks } from './timeAxis.ts';
 import type { ChartTokens } from './tokens.ts';
 import { linearTicks, logTicks, thinLogTicks } from './valueAxis.ts';
-import { textWidth } from './textWidth.ts';
+import { type Canvas2D, type MeasureText, canvasMeasureText, textWidthRevision } from './textWidth.ts';
 
 
 export const font = (tokens: ChartTokens, size: number, weight = 400) => `${weight} ${size}px ${tokens.font}`;
@@ -17,7 +17,7 @@ export const LABEL_WEIGHT = 500;
 export const VALUE_WEIGHT = 600;
 const crisp = (value: number) => Math.round(value) + 0.5;
 
-export function tracePath(ctx: CanvasRenderingContext2D, commands: readonly PathCommand[]): void {
+export function tracePath(ctx: Canvas2D, commands: readonly PathCommand[]): void {
   for (const command of commands) {
     if (command[0] === 'M') ctx.moveTo(command[1], command[2]);
     else if (command[0] === 'L') ctx.lineTo(command[1], command[2]);
@@ -33,7 +33,7 @@ export function valueTicks(frame: PlotFrame, tokens: ChartTokens): number[] {
 
 export const VALUE_LABEL_GAP = 6;
 
-export function drawRecordedGap(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens,
+export function drawRecordedGap(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
   firstHour: number, lastHour: number, until: number | null = null): void {
   const first = Math.max(firstHour, frame.x[0]), last = Math.min(lastHour + 1, frame.x[1], until == null ? Infinity : until + 1);
   if (first >= last) return;
@@ -41,7 +41,7 @@ export function drawRecordedGap(ctx: CanvasRenderingContext2D, frame: PlotFrame,
   ctx.fillRect(frame.toX(first), frame.plotTop, frame.toX(last) - frame.toX(first), frame.plotHeight); ctx.restore();
 }
 
-export function drawPreparedCoverage(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens,
+export function drawPreparedCoverage(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
   coverage: { firstHour: number; lastHour: number; complete: boolean } | null, until: number | null = null): void {
   if (!coverage) return;
   const first = Math.max(frame.x[0], coverage.firstHour), last = Math.min(frame.x[1], coverage.lastHour + 1, until === null ? Infinity : until + 1);
@@ -50,22 +50,34 @@ export function drawPreparedCoverage(ctx: CanvasRenderingContext2D, frame: PlotF
   ctx.fillRect(frame.toX(first), frame.plotTop + frame.plotHeight - 2, frame.toX(last) - frame.toX(first), 2); ctx.restore();
 }
 
-export function valueLabelWidth(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string): number {
-  ctx.save();
-  ctx.font = font(tokens, tokens.fontSize.small);
+export function measureValueLabelWidth(frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string,
+  measure: MeasureText): number {
+  const labelFont = font(tokens, tokens.fontSize.small);
   const values = valueTicks(frame, tokens);
-  const width = Math.max(0, ...values.map(value => textWidth(ctx, formatValue(value, values))));
-  ctx.restore();
+  return Math.max(0, ...values.map(value => measure(formatValue(value, values), labelFont)));
+}
+
+export function valueLabelWidth(ctx: Canvas2D | null, frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string,
+  measure?: MeasureText): number {
+  if (measure) return measureValueLabelWidth(frame, tokens, formatValue, measure);
+  const context = ctx!;
+  context.save();
+  const labelFont = font(tokens, tokens.fontSize.small);
+  context.font = labelFont;
+  const width = measureValueLabelWidth(frame, tokens, formatValue, canvasMeasureText(context));
+  context.restore();
   return width;
 }
 
-const rowLabels = new WeakMap<CanvasRenderingContext2D, { font: string; width: number; labels: Map<string, string> }>();
-export function drawAxes(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string,
-  rows?: readonly string[]): void {
+const rowLabels = new WeakMap<Canvas2D, { font: string; width: number; measure: MeasureText; revision: number; labels: Map<string, string> }>();
+export function drawAxes(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string,
+  rows?: readonly string[], measure?: MeasureText): void {
   const { plotLeft, plotTop, plotWidth, plotHeight } = frame;
+  const measureText = measure ?? canvasMeasureText(ctx);
   ctx.save();
   ctx.lineWidth = tokens.lineWidth.grid;
-  ctx.font = font(tokens, tokens.fontSize.small);
+  const smallFont = font(tokens, tokens.fontSize.small);
+  ctx.font = smallFont;
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
   const values = rows ? [] : valueTicks(frame, tokens);
@@ -77,18 +89,24 @@ export function drawAxes(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens
     ctx.fillText(formatValue(value, values), plotLeft - VALUE_LABEL_GAP, y);
   }
   if (rows) {
-    ctx.font = font(tokens, tokens.fontSize.small, 500);
+    const rowFont = font(tokens, tokens.fontSize.small, 500);
+    ctx.font = rowFont;
     const width = plotLeft - VALUE_LABEL_GAP * 2;
+    const revision = textWidthRevision();
     let cached = rowLabels.get(ctx);
-    if (!cached || cached.font !== ctx.font || cached.width !== width) { cached = { font: ctx.font, width, labels: new Map() }; rowLabels.set(ctx, cached); }
+    if (!cached || cached.font !== rowFont || cached.width !== width || cached.measure !== measureText || cached.revision !== revision) {
+      cached = { font: rowFont, width, measure: measureText, revision, labels: new Map() };
+      rowLabels.set(ctx, cached);
+    }
     rows.forEach((label, index) => {
       let fitted = cached.labels.get(label);
-      if (fitted === undefined) { fitted = ellipsise(label, width, text => textWidth(ctx, text)); cached.labels.set(label, fitted); }
+      if (fitted === undefined) { fitted = ellipsise(label, width, text => measureText(text, rowFont)); cached.labels.set(label, fitted); }
       ctx.fillStyle = tokens.text;
       ctx.fillText(fitted, plotLeft - VALUE_LABEL_GAP, plotTop + (index + 0.5) / Math.max(1, rows.length) * plotHeight);
     });
   }
-  const ticks = timeTicks(frame.x[0], frame.x[1], plotWidth, text => textWidth(ctx, text));
+  const tickFont = rows ? font(tokens, tokens.fontSize.small, 500) : smallFont;
+  const ticks = timeTicks(frame.x[0], frame.x[1], plotWidth, text => measureText(text, tickFont));
   const dates = frame.timeAxisTop ? plotTop - tokens.fontSize.small * 2 : chartBottom(frame);
   ctx.strokeStyle = tokens.grid;
   for (const hour of ticks.grid) {
@@ -104,7 +122,7 @@ export function drawAxes(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens
   ctx.restore();
 }
 
-export function drawValueRule(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, value: number): void {
+export function drawValueRule(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, value: number): void {
   const y = frame.toY(value);
   if (!Number.isFinite(y) || y < frame.plotTop || y > frame.plotTop + frame.plotHeight) return;
   ctx.save();
@@ -114,13 +132,13 @@ export function drawValueRule(ctx: CanvasRenderingContext2D, frame: PlotFrame, t
   ctx.restore();
 }
 
-export function clipToPlot(ctx: CanvasRenderingContext2D, frame: PlotFrame): void {
+export function clipToPlot(ctx: Canvas2D, frame: PlotFrame): void {
   ctx.beginPath();
   ctx.rect(frame.plotLeft, frame.plotTop - 2, frame.plotWidth + 2, frame.plotHeight + 4);
   ctx.clip();
 }
 
-export function drawLine(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, runs: readonly Run[],
+export function drawLine(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, runs: readonly Run[],
   color: string, options: { area?: boolean; endDot?: boolean; until?: number; dash?: readonly number[]; held?: boolean } = {}): { x: number; y: number } | null {
   const until = Math.min(frame.x[1], options.until ?? Infinity);
   let last: { x: number; y: number } | null = null;
@@ -146,7 +164,7 @@ export function drawLine(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens
   return last;
 }
 
-export function drawGapFill(ctx: CanvasRenderingContext2D, frame: PlotFrame, first: readonly Run[], second: readonly Run[],
+export function drawGapFill(ctx: Canvas2D, frame: PlotFrame, first: readonly Run[], second: readonly Run[],
   aboveColor: string, belowColor: string, options: { until?: number; alpha?: number } = {}): void {
   const until = Math.min(frame.x[1], options.until ?? Infinity);
   const regions = gapRegions(curveSegments(first, frame.x[0], until, frame.toX, frame.toY), curveSegments(second, frame.x[0], until, frame.toX, frame.toY),
@@ -164,7 +182,7 @@ export function drawGapFill(ctx: CanvasRenderingContext2D, frame: PlotFrame, fir
   paint(regions.below, belowColor);
 }
 
-export function drawBands(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], bands: readonly { low: readonly number[]; high: readonly number[] }[], colors: readonly string[],
+export function drawBands(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], bands: readonly { low: readonly number[]; high: readonly number[] }[], colors: readonly string[],
   ends: { start?: boolean; end?: boolean } = {}): void {
   bands.forEach((band, layer) => {
     if (band.high.every((value, index) => value === band.low[index])) return;
@@ -191,7 +209,7 @@ export function drawBands(ctx: CanvasRenderingContext2D, frame: PlotFrame, token
   });
 }
 
-export function drawBandLine(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens,
+export function drawBandLine(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
   hours: readonly number[], values: readonly number[], color: string): void {
   if (!hours.length) return;
   ctx.save();
@@ -201,7 +219,7 @@ export function drawBandLine(ctx: CanvasRenderingContext2D, frame: PlotFrame, to
   ctx.restore();
 }
 
-function traceBandEdge(ctx: CanvasRenderingContext2D, frame: PlotFrame, hours: readonly number[], values: readonly number[]): void {
+function traceBandEdge(ctx: Canvas2D, frame: PlotFrame, hours: readonly number[], values: readonly number[]): void {
   if (hours.length === 1) {
     const x = frame.toX(hours[0]);
     const y = frame.toY(values[0]);
@@ -211,7 +229,7 @@ function traceBandEdge(ctx: CanvasRenderingContext2D, frame: PlotFrame, hours: r
   hours.forEach((hour, index) => index ? ctx.lineTo(frame.toX(hour), frame.toY(values[index])) : ctx.moveTo(frame.toX(hour), frame.toY(values[index])));
 }
 
-export function drawStack(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], tops: readonly (readonly number[])[], colors: readonly string[]): void {
+export function drawStack(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], tops: readonly (readonly number[])[], colors: readonly string[]): void {
   let base = hours.map(() => (frame.log ? frame.y[0] : 0));
   tops.forEach((top, layer) => {
     ctx.beginPath();
@@ -224,7 +242,7 @@ export function drawStack(ctx: CanvasRenderingContext2D, frame: PlotFrame, token
   });
 }
 
-export function drawEventTicks(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], color = tokens.muted): void {
+export function drawEventTicks(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], color = tokens.muted): void {
   ctx.save();
   ctx.strokeStyle = color; ctx.lineWidth = 1.5;
   const bottom = frame.plotTop + frame.plotHeight;
@@ -236,7 +254,7 @@ export function drawEventTicks(ctx: CanvasRenderingContext2D, frame: PlotFrame, 
   ctx.restore();
 }
 
-export function drawPlayhead(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, hour: number): void {
+export function drawPlayhead(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, hour: number): void {
   if (hour < frame.x[0] || hour > frame.x[1]) return;
   const x = crisp(frame.toX(hour));
   ctx.save();
@@ -245,7 +263,7 @@ export function drawPlayhead(ctx: CanvasRenderingContext2D, frame: PlotFrame, to
   ctx.restore();
 }
 
-export function drawCrosshair(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, hour: number): void {
+export function drawCrosshair(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, hour: number): void {
   const x = crisp(frame.toX(hour));
   ctx.save();
   ctx.strokeStyle = tokens.muted; ctx.globalAlpha = 0.6; ctx.lineWidth = 1;
@@ -253,7 +271,7 @@ export function drawCrosshair(ctx: CanvasRenderingContext2D, frame: PlotFrame, t
   ctx.restore();
 }
 
-export function drawSelection(ctx: CanvasRenderingContext2D, tokens: ChartTokens, box: { x0: number; y0: number; x1: number; y1: number }): void {
+export function drawSelection(ctx: Canvas2D, tokens: ChartTokens, box: { x0: number; y0: number; x1: number; y1: number }): void {
   const x = Math.min(box.x0, box.x1);
   const y = Math.min(box.y0, box.y1);
   ctx.save();
@@ -264,9 +282,12 @@ export function drawSelection(ctx: CanvasRenderingContext2D, tokens: ChartTokens
   ctx.restore();
 }
 
-export function drawEndLabels(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, labels: readonly { text: string; suffix?: string; y: number; from: number; color: string; muted?: boolean }[]): void {
+export function drawEndLabels(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, labels: readonly { text: string; suffix?: string; y: number; from: number; color: string; muted?: boolean }[],
+  measure?: MeasureText): void {
+  const measureText = measure ?? canvasMeasureText(ctx);
+  const labelFont = font(tokens, tokens.fontSize.small, 600);
   ctx.save();
-  ctx.font = font(tokens, tokens.fontSize.small, 600);
+  ctx.font = labelFont;
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   const x = frame.plotLeft + frame.plotWidth + 10;
   for (const label of labels) {
@@ -276,8 +297,7 @@ export function drawEndLabels(ctx: CanvasRenderingContext2D, frame: PlotFrame, t
     }
     ctx.fillStyle = label.muted ? tokens.muted : tokens.text;
     const room = frame.padding.right - 14, suffix = label.suffix ? ` ${label.suffix}` : '';
-    const measure = (text: string) => textWidth(ctx, text);
-    const text = room > 0 ? ellipsise(label.text, room - measure(suffix), measure) : label.text;
+    const text = room > 0 ? ellipsise(label.text, room - measureText(suffix, labelFont), text => measureText(text, labelFont)) : label.text;
     ctx.fillText(`${text}${suffix}`.trimStart(), x, label.y);
   }
   ctx.restore();
@@ -286,9 +306,9 @@ export function drawEndLabels(ctx: CanvasRenderingContext2D, frame: PlotFrame, t
 export interface LineEnd { id: string; y: number; text: string; suffix?: string; color: string; muted?: boolean }
 export const END_LABEL_HEIGHT = 14;
 
-export function placeEndLabels(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, ends: readonly LineEnd[], gap = 2): void {
+export function placeEndLabels(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, ends: readonly LineEnd[], gap = 2, measure?: MeasureText): void {
   const placed = layoutEndLabels(ends.map(end => ({ ...end, height: END_LABEL_HEIGHT })), frame.plotTop, frame.plotTop + frame.plotHeight, gap);
-  drawEndLabels(ctx, frame, tokens, ends.map(end => ({ text: end.text, suffix: end.suffix, y: placed.get(end.id)!, from: end.y, color: end.color, muted: end.muted })));
+  drawEndLabels(ctx, frame, tokens, ends.map(end => ({ text: end.text, suffix: end.suffix, y: placed.get(end.id)!, from: end.y, color: end.color, muted: end.muted })), measure);
 }
 
 export function dayLabel(hour: number): string {
