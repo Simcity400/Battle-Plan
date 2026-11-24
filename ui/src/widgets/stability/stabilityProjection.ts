@@ -9,6 +9,7 @@ import {
 } from '../../families/contract.ts';
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
+import { lineChartSettings } from '../../families/time-chart/settings.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
@@ -49,6 +50,7 @@ export interface StabilityOptions {
   readonly showStability: boolean;
   readonly showWarSupport: boolean;
   readonly zoom: boolean;
+  readonly windowHours?: number | null;
 }
 
 
@@ -291,6 +293,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
       mode: 'lines',
       hour,
       extent: options.extent,
+      ...(options.windowHours ? { view: { x: [Math.max(options.extent[0], hour - options.windowHours), hour] as const } } : {}),
       yAxis: {
         format: 'percent',
         fixed: options.zoom ? null : [0, 100],
@@ -340,7 +343,6 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
           family,
           tags,
           ...(within ? { within } : {}),
-          marks: false,
           headQuery: tags.length
             ? { product: 'series-state', params: { branchId: ctx.branch.id, family, reads: countries.map(country => ({ country })) } }
             : null,
@@ -361,7 +363,6 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
           family,
           tags,
           ...(within ? { within } : {}),
-          marks: false,
           headQuery: tags.length
             ? { product: 'series-state', params: { branchId: ctx.branch.id, family, reads: countries.map(country => ({ country })) } }
             : null,
@@ -422,6 +423,7 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
       showStability: ctx.options.stability !== false,
       showWarSupport: ctx.options.warSupport !== false,
       zoom: ctx.options.scale === 'zoom',
+      windowHours: lineChartSettings(ctx.options).windowHours,
     };
   },
 };

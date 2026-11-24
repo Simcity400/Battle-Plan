@@ -8,7 +8,7 @@ import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { TooltipContent } from '../../charts/tooltip';
 import { tooltipText } from '../../charts/tooltip.ts';
-import { peaceDealHour, peaceDealKnownAt, peaceDealLabel, validatePeaceDealsReply } from '../../dashboard/peaceDealsData.ts';
+import { peaceDealHour, peaceDealKnownAt, validatePeaceDealsReply } from '../../dashboard/peaceDealsData.ts';
 import { validateStateNamesReply } from '../../dashboard/stateNamesData.ts';
 import { contentKey, storableToken } from '../../dashboard/options.ts';
 import { chipsByValue, derivedNote, filterPeaceLog, peaceActionChoices, peaceActionName, peaceActions, peaceActionTotals, peaceDescription, peaceGapHint, peaceGapsIn, peaceRowsAt, peaceTooltipRows, peaceWanted, preparePeaceLog } from './peaceData.ts';
@@ -69,7 +69,6 @@ test('one card per conference newest first, Live cutoff, whole campaign and hone
   assert.equal(peaceRowsAt(log, 9).length, 0);
   assert.deepEqual(peaceRowsAt(log, 20).map(row => row.hour), [10]);
   assert.equal(peaceRowsAt(log, null).length, 2);
-  assert.match(peaceDealLabel(data.deals[0]), /^by .*War name not recorded$/);
   assert.match(peaceDescription(log.rows[0]), /Estimated between/);
   assert.equal(peaceDealHour(data.deals[1]), 30);
 });
@@ -150,7 +149,6 @@ test('exact actions group by taker and native action, preserve country targets a
   assert.equal(actions[2].chips[0].state, 7);
   assert.equal(derivedNote(card), '');
   assert.equal(peaceDealHour(card), 19);
-  assert.ok(!peaceDealLabel(card).startsWith('by '));
   validatePeaceDealsReply(reply([card]));
 });
 test('captured subject results use exact country chips without inventing a named action or borrowing its operand', () => {

@@ -1,23 +1,88 @@
 import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
-import { countryKey } from '../../dashboard/countryKey.ts';
-import { compareTags } from '../../dashboard/tagOrder.ts';
-import type { BoundedReadView } from '../contract.ts';
-import { holderTagAt, inHourRanges, type HolderRun, type HourRanges } from '../holders.ts';
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
+import type { DeclaredProduct } from '../../dashboard/request';
+import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../contract.ts';
+import { groupSelection } from '../groupSelection.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../value.ts';
 import { formatValueState, type ValueFormat } from '../valueFormat.ts';
 import type { ForceAtReply, ForceAtRow, ForcePart, NavalLossesAtReply } from '../../generated/dashboard';
-import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsSegment } from './model.ts';
+import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsSegment, type CountryRowPresentation } from './model.ts';
+import type { SeriesRaceBaseOptions } from './seriesRace.ts';
 
 const PART_SURFACE = DEFAULT_CARD_SURFACE;
 
-export interface ForceAtRaceBaseOptions {
-  readonly top: number | null;
-  readonly all?: boolean;
+export interface ForceAtRaceBaseOptions extends SeriesRaceBaseOptions {
   readonly split: boolean;
-  readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
-  readonly membership?: Readonly<Record<string, HourRanges>> | null;
-  readonly unobserved?: HourRanges;
+}
+
+export const GROUP_EMPTY = 'No country of this group at this date.';
+
+export interface ForceSelection {
+  readonly params: { readonly countries: readonly (string | number)[]; readonly top?: number; readonly group?: unknown };
+  readonly coverage: SourceCoverage;
+  readonly none: boolean;
+}
+
+export function forceSelection(ctx: FamilyPlanContext): ForceSelection {
+  const top = ctx.countries.top;
+  const all = ctx.countries.all;
+  const group = top == null && !all ? groupSelection(ctx.widget.countries) : null;
+  const countries = top == null && !all && !group ? ctx.countries.tags.map(countryFromKey) : [];
+  const coverage: SourceCoverage = top != null
+    ? { mode: 'population', form: 'top', limit: top }
+    : all || group
+      ? { mode: 'population', form: 'all' }
+      : { mode: 'keyed', keys: ctx.countries.tags };
+  return {
+    params: { countries, ...(top != null ? { top } : {}), ...(group ? { group } : {}) },
+    coverage,
+    none: top == null && !all && !group && !countries.length,
+  };
+}
+
+export function forceAtSources(
+  ctx: FamilyPlanContext,
+  owner: string,
+  product: DeclaredProduct,
+  extra: Readonly<Record<string, unknown>>,
+  validate: (value: unknown) => unknown = validateForceAtReply,
+): SourcePlan {
+  const selection = forceSelection(ctx);
+  const params = { branchId: ctx.branch.id, ...selection.params, ...extra };
+  return {
+    owner,
+    entries: selection.none ? [] : [{
+      name: 'main',
+      source: ctx.track.source,
+      branch: ctx.branch.id,
+      offset: ctx.track.axisOffset,
+      read: {
+        shape: 'point',
+        channel: 'panel',
+        coverage: selection.coverage,
+        product,
+        followQuery: { panel: product, ...params },
+        params,
+        validate,
+      },
+    }],
+    allowEmptyFollow: selection.none,
+  };
+}
+
+export interface ForceRowIdentity {
+  readonly key: string;
+  readonly tag: string;
+  readonly pres: CountryRowPresentation;
+}
+
+export function forceRowIdentity(readView: BoundedReadView, row: ForceAtRow): ForceRowIdentity {
+  const key = countryKey(row.slot ?? row.country);
+  const pres = countryRowPresentation(readView, key);
+  const identity = readView.who('country', key);
+  const tag = identity.tag?.status === 'ready' ? identity.tag.value : row.tag;
+  return { key, tag, pres: identity.name.status === 'ready' ? pres : { ...pres, label: row.tag } };
 }
 
 export interface ForceAtProjectConfig {
@@ -43,6 +108,7 @@ function isForcePart(v: unknown): v is ForcePart {
 function isForceAtRow(v: unknown): v is ForceAtRow {
   return isObj(v)
     && (typeof v.country === 'string' || typeof v.country === 'number')
+    && (v.slot === null || (typeof v.slot === 'number' && Number.isInteger(v.slot)))
     && typeof v.tag === 'string'
     && isNumOrNull(v.total)
     && (v.referenceTotal === undefined || isNumOrNull(v.referenceTotal))
@@ -76,6 +142,14 @@ export function validateNavalLossesAtReply(value: unknown): NavalLossesAtReply {
   return value as unknown as NavalLossesAtReply;
 }
 
+export function witnessedPartItems(reply: ForceAtReply, item: ForceAtRow, decimals: number, format: ValueFormat): TooltipListItem[] {
+  return reply.parts.flatMap((part, at): TooltipListItem[] => {
+    const raw = item.values[at] ?? null;
+    if (raw === null) return item.values.length ? [{ label: forcePartLabel(part), missingReason: 'Not recorded at this hour' }] : [];
+    return raw > 0 ? [{ label: forcePartLabel(part), value: formatScaled(scaleRaw(raw, decimals, null).value, format) }] : [];
+  });
+}
+
 export function forcePartLabel(part: ForcePart): string {
   return part.name ?? (part.unresolved ? 'Name unavailable' : part.key);
 }
@@ -97,14 +171,6 @@ function formatScaled(value: Value<bigint | number>, format: ValueFormat): strin
   return fmt.label;
 }
 
-function compareExplicitRows(a: BarsDataRow, b: BarsDataRow): number {
-  const aMissing = a.numeric === null || a.numeric === undefined;
-  const bMissing = b.numeric === null || b.numeric === undefined;
-  if (aMissing !== bMissing) return aMissing ? 1 : -1;
-  if (!aMissing && !bMissing && a.numeric !== b.numeric) return b.numeric! - a.numeric!;
-  return compareTags(a.subject ?? a.key, b.subject ?? b.key);
-}
-
 export function projectForceAtReply(
   readView: BoundedReadView,
   reply: ForceAtReply,
@@ -112,7 +178,6 @@ export function projectForceAtReply(
   config: ForceAtProjectConfig,
 ): BarsModel {
   const hour = readView.hour;
-  const ranked = options.top != null || options.all === true;
   const baseModel = {
     form: 'ordered' as const,
     hour,
@@ -129,13 +194,7 @@ export function projectForceAtReply(
   const partColours = reply.parts.map((_part, index) => colour(PART_SURFACE, index));
   const rows: BarsDataRow[] = [];
   for (const item of reply.rows) {
-    const key = countryKey(item.country);
-    const displayTag = options.holders ? (holderTagAt(options.holders[key], hour) ?? item.tag) : item.tag;
-    if (!ranked && options.membership) {
-      const inMember = inHourRanges(options.membership[key], hour) || inHourRanges(options.membership[displayTag], hour);
-      if (!inMember) continue;
-    }
-    const pres = countryRowPresentation(readView, displayTag);
+    const { key, tag: displayTag, pres } = forceRowIdentity(readView, item);
     const { value, numeric } = scaleRaw(item.total, config.decimals, item.missing);
     const totalItem: TooltipListItem = value.kind === 'notRecorded'
       ? { label: config.valueLabel, missingReason: value.reason }
@@ -154,7 +213,7 @@ export function projectForceAtReply(
     let segments: BarsSegment[] | undefined;
     if (options.split && numeric !== null && numeric > 0) {
       if (item.partsMissing !== null) {
-        tooltipItems.push({ label: config.partsLabel, missingReason: item.partsMissing });
+        tooltipItems.push({ label: config.partsLabel, missingReason: item.partsMissing }, ...witnessedPartItems(reply, item, config.decimals, config.valueFormat));
       } else if (reply.parts.length > 0 && item.values.length === reply.parts.length) {
         const built: BarsSegment[] = [];
         let knownSum = 0;
@@ -213,11 +272,10 @@ export function projectForceAtReply(
     });
   }
 
-  if (!ranked) rows.sort(compareExplicitRows);
   return {
     ...baseModel,
     rows,
     warnings: reply.warnings,
-    ...(!rows.length ? { empty: config.emptyMessage, emptyKind: 'empty' as const } : {}),
+    ...(!rows.length ? { empty: options.group ? GROUP_EMPTY : config.emptyMessage, emptyKind: 'empty' as const } : {}),
   };
 }

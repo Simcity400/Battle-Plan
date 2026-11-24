@@ -19,7 +19,7 @@ import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/r
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatRecordedPercent, formatScalar } from '../../families/valueFormat.ts';
-import type { EventFeedPageRow, EventFeedRow } from '../../generated/dashboard';
+import type { EventFeedItem, EventFeedPageRow, EventFeedRow, ScriptEdge, ScriptStatus } from '../../generated/dashboard';
 import { optionLetter } from '../event-choices/eventChoicesData.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import { CATEGORIES, EVENT_FEED_COLUMNS } from './definition.ts';
@@ -58,13 +58,14 @@ const KIND_SPRITES: Readonly<Record<string, string>> = {
   nukesIncreased: 'GFX_topbar_nuke',
 };
 
-type EventRowWithChoice = EventFeedRow & {
-  readonly chosenOption?: number | null;
-  readonly chosenHour?: number | null;
-};
+interface FeedPageInfo {
+  readonly choice: ScriptEdge | null;
+  readonly status?: ScriptStatus;
+  readonly live: boolean;
+}
 
-function parsedOptionOrdinal(event: EventRowWithChoice): number | null {
-  if (typeof event.chosenOption === 'number' && Number.isInteger(event.chosenOption)) return event.chosenOption;
+function parsedOptionOrdinal(event: EventFeedRow, choice: ScriptEdge | null): number | null {
+  if (choice && typeof choice.option === 'number' && Number.isInteger(choice.option)) return choice.option;
   if (event.kind === 'eventOptionSelected' && event.cause?.notes.length) {
     for (const note of event.cause.notes) {
       const match = /Selected native option ordinal:\s*(-?\d+)/.exec(note);
@@ -76,8 +77,18 @@ function parsedOptionOrdinal(event: EventRowWithChoice): number | null {
 
 const nonBlank = (value: string | null | undefined): string | null => (value && value.trim().length > 0 ? value : null);
 
-function optionCellOf(event: EventRowWithChoice, ordinal: number): TableCell {
-  const options = event.item?.options ?? [];
+function effectiveEventItem(event: EventFeedRow, choice: ScriptEdge | null): EventFeedItem | null {
+  const base = event.item;
+  const fallback = choice?.row.item ?? null;
+  if (!base) return fallback;
+  if ((!base.options || base.options.length === 0) && fallback?.options?.length) {
+    return { ...base, options: fallback.options };
+  }
+  return base;
+}
+
+function optionCellOf(item: EventFeedItem | null, ordinal: number): TableCell {
+  const options = item?.options ?? [];
   const index = options.findIndex(opt => opt.ordinal === ordinal);
   if (index >= 0) {
     const opt = options[index]!;
@@ -89,17 +100,33 @@ function optionCellOf(event: EventRowWithChoice, ordinal: number): TableCell {
   if (ordinal >= 0) {
     return { value: notRecorded('Event presentation was not recorded'), inlinePrefix: optionLetter(ordinal) };
   }
-  return { value: notRecorded('Choice not recorded') };
+  return { value: notRecorded('Choice not recorded'), missingFigure: 'Choice' };
+}
+
+function scriptEventDetailCell(item: EventFeedItem | null, chosenOrdinal: number | null, page: FeedPageInfo): TableCell {
+  if (page.choice) {
+    return chosenOrdinal !== null && chosenOrdinal >= 0
+      ? optionCellOf(item, chosenOrdinal)
+      : { value: notRecorded('Choice not recorded'), missingFigure: 'Choice' };
+  }
+  if (page.status === 'awaiting' || page.live) {
+    return logStatusCell('Awaiting choice', 'waiting');
+  }
+  if (page.status === 'notRecorded') {
+    return { value: notRecorded('Choice not recorded (recording paused)'), missingFigure: 'Choice' };
+  }
+  return { value: knownValue('Fired') };
 }
 
 function eventItemAndSubtext(
-  event: EventRowWithChoice,
+  event: EventFeedRow,
+  page: FeedPageInfo,
   readView: BoundedReadView,
 ): { readonly primary: string | null; readonly secondary?: string; readonly detail?: TableCell; readonly missingReason?: string } {
-  const item = event.item;
+  const item = effectiveEventItem(event, page.choice);
   const reasons = reasonsOf(item);
   const named = nonBlank(item?.name);
-  const chosenOrdinal = parsedOptionOrdinal(event);
+  const chosenOrdinal = parsedOptionOrdinal(event, page.choice);
   const stateLabel = (stateId: number | null | undefined): string | undefined => {
     if (stateId == null) return undefined;
     const res = readView.who('state', String(stateId), event.hour);
@@ -111,28 +138,22 @@ function eventItemAndSubtext(
       return {
         primary: named,
         missingReason: reasons.nameMissing ?? 'Event presentation was not recorded',
-        detail: chosenOrdinal !== null
-          ? optionCellOf(event, chosenOrdinal)
-          : event.chosenOption === null
-            ? logStatusCell('Awaiting choice', 'waiting')
-            : { value: knownValue('Fired') },
+        detail: scriptEventDetailCell(item, chosenOrdinal, page),
       };
     case 'newsEventFired':
       return {
         primary: named,
         secondary: 'News',
         missingReason: reasons.nameMissing ?? 'Event presentation was not recorded',
-        detail: chosenOrdinal !== null
-          ? optionCellOf(event, chosenOrdinal)
-          : event.chosenOption === null
-            ? logStatusCell('Awaiting choice', 'waiting')
-            : { value: knownValue('Fired') },
+        detail: scriptEventDetailCell(item, chosenOrdinal, page),
       };
     case 'eventOptionSelected':
       return {
         primary: named,
         missingReason: reasons.nameMissing ?? 'Event presentation was not recorded',
-        detail: chosenOrdinal !== null ? optionCellOf(event, chosenOrdinal) : { value: knownValue('Option chosen') },
+        detail: chosenOrdinal !== null && chosenOrdinal >= 0
+          ? optionCellOf(item, chosenOrdinal)
+          : { value: notRecorded('Choice not recorded'), missingFigure: 'Choice' },
       };
     case 'eventWindowPresented':
       return {
@@ -218,11 +239,11 @@ function eventItemAndSubtext(
     case 'nuclearStrike': {
       const targetState = stateLabel(event.strike?.state);
       const losses: string[] = [];
-      if (event.strike?.manpowerLost != null) losses.push(`${formatScalar(Math.round(event.strike.manpowerLost), 'integer')} casualties`);
+      if (event.strike?.manpowerLost != null) losses.push(`${formatScalar(event.strike.manpowerLost, 'integer')} casualties`);
       if (event.strike?.buildingLevels != null) losses.push(`${formatScalar(event.strike.buildingLevels, 'decimal1')} building levels`);
-      if (event.strike?.warSupport != null) losses.push(`${formatRecordedPercent(event.strike.warSupport, { signed: true, decimals: 1 })} war support`);
+      if (event.strike?.warSupport != null) losses.push(`${formatRecordedPercent(event.strike.warSupport, { signed: true })} war support`);
       if (event.strike?.units != null) losses.push(`${formatScalar(event.strike.units, 'integer')} ${event.strike.units === 1 ? 'unit' : 'units'}`);
-      if (event.strike?.equipmentLost != null) losses.push(`${formatScalar(Math.round(event.strike.equipmentLost), 'integer')} equipment`);
+      if (event.strike?.equipmentLost != null) losses.push(`${formatScalar(event.strike.equipmentLost, 'integer')} equipment`);
       const detailCell: TableCell | undefined = losses.length
         ? { value: knownValue(losses.join(' · ')) }
         : event.strike?.notRecorded.length
@@ -320,17 +341,19 @@ function foldConsecutiveSlots(
 
 function buildFeedTableRow(
   readView: BoundedReadView,
-  event: EventRowWithChoice,
+  event: EventFeedRow,
+  page: FeedPageInfo,
   key: string,
   artwork: boolean,
   displayedHour: number,
   boundary: ReturnType<typeof newIdentityBoundary>,
 ): { readonly row: TableRow; readonly fold: FoldMeta } {
-  const { primary, secondary, detail, missingReason } = eventItemAndSubtext(event, readView);
-  const reasons = reasonsOf(event.item);
-  const spriteKey = !event.item?.icon ? KIND_SPRITES[event.kind] : undefined;
+  const item = effectiveEventItem(event, page.choice);
+  const { primary, secondary, detail, missingReason } = eventItemAndSubtext(event, page, readView);
+  const reasons = reasonsOf(item);
+  const spriteKey = !item?.icon ? KIND_SPRITES[event.kind] : undefined;
   const artHandle = artwork
-    ? (urlArtHandle(event.item?.icon ?? null) ?? (spriteKey ? { kind: 'sprite' as const, key: spriteKey, frame: 0 } : null))
+    ? (urlArtHandle(item?.icon ?? null) ?? (spriteKey ? { kind: 'sprite' as const, key: spriteKey, frame: 0 } : null))
     : null;
   const artResult = artHandle ? readView.art(artHandle) : null;
   const icon = artResult?.status === 'ready' ? artResult.url : undefined;
@@ -356,8 +379,8 @@ function buildFeedTableRow(
   }
 
   const viewable = VIEWABLE_KINDS.has(event.kind);
-  const chosenOrdinal = parsedOptionOrdinal(event);
-  const chosenHour = event.chosenHour ?? (event.kind === 'eventOptionSelected' ? event.hour : null);
+  const chosenOrdinal = parsedOptionOrdinal(event, page.choice);
+  const chosenHour = page.choice?.row.hour ?? (event.kind === 'eventOptionSelected' ? event.hour : null);
   let detailSubject: EventDetailSubject | undefined;
   if (viewable) {
     const recipient = event.kind === 'eventOptionSelected'
@@ -365,22 +388,31 @@ function buildFeedTableRow(
       : (event.participants ? event.participants[1] : (event.tags[0] ?? null));
     const flag = recipient ? identityFlags(readView, 'country', [recipient], { atHour: event.nameHour, boundary })[0] : undefined;
     const countryName = recipient ? identityName(readView, 'country', recipient, event.nameHour) : null;
-    const awaiting = event.chosenOption === null;
+    const awaiting = !page.choice && (page.status === 'awaiting' || page.live);
+    const noChoiceReason = chosenOrdinal !== null
+      ? null
+      : awaiting
+        ? 'No option chosen yet'
+        : page.status === 'notRecorded'
+          ? 'No choice recorded'
+          : page.choice
+            ? 'Chosen option not recorded'
+            : 'Event fired';
     detailSubject = {
       key,
       hour: event.hour,
       firedHour: event.hour,
       asOfHour: displayedHour,
-      title: event.item?.name ?? null,
+      title: item?.name ?? null,
       countryTag: recipient,
       countryName,
       flagUrl: flag?.icon,
       flagPending: flag?.pending,
-      item: event.item,
+      item,
       chosenOrdinal,
       awaiting,
       chosenHour,
-      noChoiceReason: chosenOrdinal !== null ? null : (awaiting ? 'No option chosen yet' : 'Event fired'),
+      noChoiceReason,
     };
   }
 
@@ -392,21 +424,21 @@ function buildFeedTableRow(
     if (secondary) out.push({ label: 'Detail', value: knownValue(plainScripted(secondary)) });
     if (event.cause?.how) out.push({ label: 'Cause', value: knownValue(event.cause.how) });
     if (event.strike) {
-      if (event.strike.manpowerLost != null) out.push({ label: 'Casualties', value: knownValue(formatScalar(Math.round(event.strike.manpowerLost), 'integer')) });
+      if (event.strike.manpowerLost != null) out.push({ label: 'Casualties', value: knownValue(formatScalar(event.strike.manpowerLost, 'integer')) });
       if (event.strike.buildingLevels != null) out.push({ label: 'Building levels', value: knownValue(formatScalar(event.strike.buildingLevels, 'decimal1')) });
-      if (event.strike.warSupport != null) out.push({ label: 'War support', value: knownValue(formatRecordedPercent(event.strike.warSupport, { signed: true, decimals: 1 })) });
+      if (event.strike.warSupport != null) out.push({ label: 'War support', value: knownValue(formatRecordedPercent(event.strike.warSupport, { signed: true })) });
       if (event.strike.units != null) out.push({ label: 'Units', value: knownValue(formatScalar(event.strike.units, 'integer')) });
-      if (event.strike.equipmentLost != null) out.push({ label: 'Equipment lost', value: knownValue(formatScalar(Math.round(event.strike.equipmentLost), 'integer')) });
+      if (event.strike.equipmentLost != null) out.push({ label: 'Equipment lost', value: knownValue(formatScalar(event.strike.equipmentLost, 'integer')) });
       for (const reason of event.strike.notRecorded) {
         out.push({ label: 'Effect not recorded', value: notRecorded(reason) });
       }
     }
-    if (event.item?.token) out.push({ label: 'Content identity', value: knownValue(event.item.token) });
+    if (item?.token) out.push({ label: 'Content identity', value: knownValue(item.token) });
     if (reasons.nameMissing) out.push({ label: 'Name not recorded', value: notRecorded(reasons.nameMissing) });
     if (reasons.gaps) out.push({ label: 'Text not recorded', value: notRecorded(reasons.gaps) });
-    if (event.item?.description) out.push({ label: 'Description', value: knownValue(plainScripted(event.item.description)), divider: true });
-    if (event.item?.options?.length) {
-      event.item.options.forEach((opt, i) => {
+    if (item?.description) out.push({ label: 'Description', value: knownValue(plainScripted(item.description)), divider: true });
+    if (item?.options?.length) {
+      item.options.forEach((opt, i) => {
         out.push({
           label: `Option ${optionLetter(i)}`,
           value: opt.name !== null ? knownValue(plainScripted(opt.name)) : notRecorded('Option text not recorded'),
@@ -480,8 +512,12 @@ export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = 
         } catch {
           return null;
         }
-        const event: EventRowWithChoice = rawRow.choice ? { ...valid, chosenOption: rawRow.choice.option, chosenHour: rawRow.choice.row.hour } : valid;
-        const built = buildFeedTableRow(readView, event, rawRow.key, options.artwork, hour, boundary);
+        const page: FeedPageInfo = {
+          choice: rawRow.choice ?? null,
+          status: rawRow.status,
+          live: rawRow.live === true,
+        };
+        const built = buildFeedTableRow(readView, valid, page, rawRow.key, options.artwork, hour, boundary);
         foldByKey.set(built.row.key, built.fold);
         return built.row;
       },

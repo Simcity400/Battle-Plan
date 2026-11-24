@@ -1,5 +1,4 @@
 import type { ValueStateProps } from '../components/ValueState';
-import { exactDecimal } from '../charts/valueAxis.ts';
 import { formatDateTime, formatDay, gameDate, monthNames } from '../dashboard/calendar.ts';
 import { canonicalAuditValue } from './audit.ts';
 import { InvalidFamilyValueError, assertValue, type Scalar, type Value } from './value.ts';
@@ -28,6 +27,25 @@ function exactTruncBigInt(value: number | bigint): bigint {
   if (typeof value === 'bigint') return value;
   const whole = Math.trunc(value);
   return BigInt(whole === 0 ? 0 : whole);
+}
+
+function decimalOf(value: number): { readonly units: bigint; readonly scale: number } {
+  if (value === 0) return { units: 0n, scale: 0 };
+  if (Number.isInteger(value)) return { units: BigInt(value), scale: 0 };
+  const [mantissa = '', exponent = '0'] = String(value).split('e');
+  const negative = mantissa.startsWith('-');
+  const [whole = '', fraction = ''] = (negative ? mantissa.slice(1) : mantissa).split('.');
+  let units = BigInt(`${whole}${fraction}`);
+  let scale = fraction.length - Number(exponent);
+  if (scale < 0) {
+    units *= 10n ** BigInt(-scale);
+    scale = 0;
+  }
+  while (scale > 0 && units % 10n === 0n) {
+    units /= 10n;
+    scale--;
+  }
+  return { units: negative ? -units : units, scale };
 }
 
 function groupDigits(digits: string): string {
@@ -106,6 +124,11 @@ export function formatRational(
   );
 }
 
+export function formatScaledPercent(raw: bigint, scale: bigint, options?: { readonly signed?: boolean }): string {
+  const decimals = scale > 1n ? (scale - 1n).toString().length : 0;
+  return formatRationalCut(raw, scale, decimals, false, options?.signed === true, true, '');
+}
+
 export function formatShareRatio(numerator: bigint, denominator: bigint): string {
   if (denominator <= 0n) {
     throw new InvalidFamilyValueError(`formatShareRatio: non-positive denominator (${denominator}) is not valid`);
@@ -113,8 +136,11 @@ export function formatShareRatio(numerator: bigint, denominator: bigint): string
   if (numerator < 0n) {
     throw new InvalidFamilyValueError(`formatShareRatio: negative share (${numerator}/${denominator}) is not valid`);
   }
+  if (numerator > denominator) {
+    throw new InvalidFamilyValueError(`formatShareRatio: a share above one (${numerator}/${denominator}) is not valid`);
+  }
   if (numerator === 0n) return '0%';
-  if (numerator >= denominator) return '100%';
+  if (numerator === denominator) return '100%';
   if (numerator * 1000n < denominator) return '<0.1%';
   if (numerator * 10n >= denominator) {
     const whole = (numerator * 200n + denominator) / (denominator * 2n);
@@ -132,10 +158,7 @@ function toFixedDecimal(raw: number | bigint, decimals: number): { readonly unit
   if (typeof raw === 'bigint') {
     return { units: raw, scale: 0 };
   }
-  if (Math.abs(raw) >= 2 ** 53) {
-    return { units: exactTruncBigInt(raw), scale: 0 };
-  }
-  return exactDecimal(raw);
+  return decimalOf(raw);
 }
 
 export type ValueFormat =
@@ -158,11 +181,11 @@ export interface FormatValueOptions {
 }
 
 export type FormattedValue =
-  | { readonly kind: 'known'; readonly text: string; readonly exact?: string; readonly spoken: string; readonly audit: string }
-  | { readonly kind: 'zero'; readonly text: string; readonly exact?: string; readonly spoken: string; readonly audit: string }
+  | { readonly kind: 'known'; readonly text: string; readonly exact: string; readonly spoken: string; readonly audit: string }
+  | { readonly kind: 'zero'; readonly text: string; readonly exact: string; readonly spoken: string; readonly audit: string }
   | { readonly kind: 'notRecorded'; readonly label: string; readonly reason: string; readonly gameWindow?: boolean; readonly spoken: string; readonly audit: string }
   | { readonly kind: 'notApplicable'; readonly label: '\u2014'; readonly reason: string; readonly spoken: string; readonly audit: string }
-  | { readonly kind: 'partial'; readonly text: string; readonly exact?: string; readonly reason: string; readonly atLeast?: boolean; readonly spoken: string; readonly audit: string };
+  | { readonly kind: 'partial'; readonly text: string; readonly exact: string; readonly reason: string; readonly spoken: string; readonly audit: string };
 
 export const NOT_RECORDED_LABEL = 'Not recorded';
 export const NOT_APPLICABLE_LABEL = '\u2014';
@@ -174,26 +197,12 @@ export function notRecordedLabel(figure?: string): string {
   return clean ? `${clean} not recorded` : NOT_RECORDED_LABEL;
 }
 
-function formatGroupedBigInt(raw: bigint, plus = false): string {
-  if (raw === 0n) return '0';
-  const negative = raw < 0n;
-  const digits = (negative ? -raw : raw).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return `${negative ? '\u2212' : plus ? '+' : ''}${digits}`;
-}
-
-export function formatClockSeconds(seconds: number | bigint): string {
-  if (typeof seconds === 'bigint' || (Number.isFinite(seconds) && Math.abs(seconds) >= 2 ** 53)) {
-    const floored = typeof seconds === 'bigint' ? seconds : BigInt(Math.floor(seconds));
-    const total = floored < 0n ? 0n : floored;
-    const hours = total / 3600n;
-    const minutes = (total / 60n) % 60n;
-    const secs = total % 60n;
-    return `${hours.toString()}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  }
-  const total = Math.max(0, Math.floor(seconds));
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor(total / 60) % 60;
-  return `${String(hours)}:${String(minutes).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+function formatClockSeconds(seconds: number | bigint): string {
+  const floored = typeof seconds === 'bigint' ? seconds : BigInt(Math.floor(seconds));
+  const total = floored < 0n ? 0n : floored;
+  const minutes = (total / 60n) % 60n;
+  const secs = total % 60n;
+  return `${total / 3600n}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
 export function formatFixed5Amount(value: number | bigint): string {
@@ -249,31 +258,39 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
   return formatTruncatedFixed(units, scale, shownDecimals, fixed, signed, percent, suffix);
 }
 
+export function formatExactScalar(raw: Scalar, format?: ValueFormat): string {
+  assertFiniteScalar(raw, 'formatExactScalar');
+  if (typeof raw === 'string') return raw;
+  if (format === 'progress' || format === 'clockSeconds' || format === 'share' || format === 'recordedPercent') return formatScalar(raw, format);
+  if (format === 'fixed5Percent') return formatTruncatedFixed(exactTruncBigInt(raw), 5, 5, false, false, true, '');
+  if (format === 'fixed5Amount') {
+    const big = exactTruncBigInt(raw);
+    return big < 0n ? formatFixed5Amount(big) : formatTruncatedFixed(big, 5, 5, false, false, false, '');
+  }
+  if (format === 'fixed5Width') return formatTruncatedFixed(exactTruncBigInt(raw), 5, 5, false, false, false, '');
+  if (typeof format === 'object' && format.decimals > 0) {
+    const units = exactTruncBigInt(raw) * (format.percent ? 100n : 1n);
+    const suffix = format.unit ? ` ${format.unit}` : '';
+    return formatTruncatedFixed(units, format.decimals, format.decimals, false, format.signed === true, format.percent === true, suffix);
+  }
+  const { units, scale } = toFixedDecimal(raw, 0);
+  const percent = format === 'percent2' || (typeof format === 'object' && format.percent === true);
+  const signed = typeof format === 'object' && format.signed === true;
+  const suffix = typeof format === 'object' && format.unit ? ` ${format.unit}` : '';
+  return formatTruncatedFixed(units, scale, scale, false, signed, percent, suffix);
+}
+
 export function formatShare(share: number): string {
   assertFiniteNumber(share, 'formatShare');
-  if (share < 0) throw new InvalidFamilyValueError(`formatShare: negative share (${share}) is not valid`);
-  if (share === 0) return '0%';
-  if (share >= 1) return '100%';
-  const pct = share * 100;
-  if (pct < 0.1) return '<0.1%';
-  if (pct >= 10) return `${Math.min(99, Math.round(pct))}%`;
-  const { units, scale } = exactDecimal(pct);
-  let tenths: bigint;
-  if (scale > 1) {
-    const divisor = 10n ** BigInt(scale - 1);
-    tenths = (units + divisor / 2n) / divisor;
-  } else {
-    tenths = units * (10n ** BigInt(1 - scale));
-  }
-  const clamped = tenths > 99n ? 99n : tenths < 1n ? 1n : tenths;
-  return `${clamped / 10n}.${clamped % 10n}%`;
+  const { units, scale } = decimalOf(share);
+  return formatShareRatio(units, 10n ** BigInt(scale));
 }
 
 export function formatProgress(fraction: number): string {
   assertFiniteNumber(fraction, 'formatProgress');
   if (fraction <= 0) return '0%';
-  if (fraction >= 1) return '100%';
-  return `${Math.min(99, Math.floor(fraction * 100 + 1e-12))}%`;
+  const { units, scale } = decimalOf(fraction);
+  return `${(units * 100n) / 10n ** BigInt(scale)}%`;
 }
 
 export function formatRecordedPercent(
@@ -287,10 +304,7 @@ export function formatRecordedPercent(
   if (options?.decimals !== undefined && options.decimals > 0) {
     return formatTruncatedFixed(exactTruncBigInt(value), options.decimals, options.decimals, false, options.signed === true, true, '');
   }
-  if (typeof value === 'bigint' || Math.abs(value) >= 2 ** 53) {
-    return `${formatGroupedBigInt(exactTruncBigInt(value), options?.signed === true)}%`;
-  }
-  const { units, scale } = exactDecimal(value);
+  const { units, scale } = toFixedDecimal(value, 0);
   return formatTruncatedFixed(units, scale, Math.min(5, scale), false, options?.signed === true, true, '');
 }
 
@@ -336,8 +350,9 @@ export function formatCompactRational(
 }
 
 export function formatCompactScalar(raw: Scalar, format?: ValueFormat): CompactScalar {
-  const exact = formatScalar(raw, format);
-  if (typeof raw === 'string') return { text: exact, exact, compacted: false };
+  const shown = formatScalar(raw, format);
+  const exact = formatExactScalar(raw, format);
+  if (typeof raw === 'string') return { text: shown, exact, compacted: false };
   if (
     format === 'clockSeconds'
     || format === 'fixed5Percent'
@@ -346,10 +361,10 @@ export function formatCompactScalar(raw: Scalar, format?: ValueFormat): CompactS
     || format === 'share'
     || format === 'recordedPercent'
   ) {
-    return { text: exact, exact, compacted: false };
+    return { text: shown, exact, compacted: false };
   }
   if (typeof format === 'object' && format.percent) {
-    return { text: exact, exact, compacted: false };
+    return { text: shown, exact, compacted: false };
   }
   const { units, scale } = format === 'fixed5Amount' || format === 'fixed5Width'
     ? { units: exactTruncBigInt(raw), scale: 5 }
@@ -360,10 +375,10 @@ export function formatCompactScalar(raw: Scalar, format?: ValueFormat): CompactS
   const absUnits = negative ? -units : units;
   const whole = absUnits / (10n ** BigInt(scale));
   if (whole < 1000n) {
-    return { text: exact, exact, compacted: false };
+    return { text: shown, exact, compacted: false };
   }
   const tier = COMPACT_TIERS.find(entry => whole >= entry.threshold);
-  if (!tier) return { text: exact, exact, compacted: false };
+  if (!tier) return { text: shown, exact, compacted: false };
   const wholeInTier = whole / tier.threshold;
   const compactDecimals = wholeInTier >= 100n ? 0 : wholeInTier >= 10n ? 1 : 2;
   const signed = typeof format === 'object' && format.signed === true;
@@ -376,16 +391,13 @@ export function formatValueState(value: Value, format?: ValueFormat, options?: F
   assertValue(value, 'formatValueState');
   switch (value.kind) {
     case 'known': {
-      if (options?.compact) {
-        const compact = formatCompactScalar(value.value, format);
-        return { kind: 'known', text: compact.text, ...(compact.compacted ? { exact: compact.exact } : {}), spoken: compact.exact, audit: compact.exact };
-      }
-      const text = formatScalar(value.value, format);
-      return { kind: 'known', text, spoken: text, audit: text };
+      const text = options?.compact ? formatCompactScalar(value.value, format).text : formatScalar(value.value, format);
+      const exact = formatExactScalar(value.value, format);
+      return { kind: 'known', text, exact, spoken: exact, audit: exact };
     }
     case 'zero': {
       const text = formatScalar(value.value, format);
-      return { kind: 'zero', text, spoken: text, audit: text };
+      return { kind: 'zero', text, exact: text, spoken: text, audit: text };
     }
     case 'notRecorded': {
       const label = options?.gameWindow ? GAME_WINDOW_MISSING_LABEL : notRecordedLabel(options?.figure);
@@ -405,16 +417,14 @@ export function formatValueState(value: Value, format?: ValueFormat, options?: F
       return { kind: 'notApplicable', label: NOT_APPLICABLE_LABEL, reason: value.reason, spoken, audit: spoken };
     }
     case 'partial': {
-      const compact = options?.compact ? formatCompactScalar(value.value, format) : null;
-      const text = compact ? compact.text : formatScalar(value.value, format);
-      const exact = compact ? compact.exact : text;
+      const text = options?.compact ? formatCompactScalar(value.value, format).text : formatScalar(value.value, format);
+      const exact = formatExactScalar(value.value, format);
       const spoken = `${exact}, partial: ${value.reason}`;
       return {
         kind: 'partial',
         text,
-        ...(compact?.compacted ? { exact } : {}),
+        exact,
         reason: value.reason,
-        ...(value.atLeast ? { atLeast: true } : {}),
         spoken,
         audit: spoken,
       };
@@ -450,7 +460,7 @@ export function formatOutOf(
     };
   }
   const formattedMax = formatValueState(max, format, options);
-  const valueExact = formattedValue.exact ?? formattedValue.text;
+  const valueExact = formattedValue.exact;
   if (formattedMax.kind === 'notApplicable') {
     return {
       kind: formattedValue.kind,
@@ -472,7 +482,7 @@ export function formatOutOf(
       partialReason: reason,
     };
   }
-  const maxExact = formattedMax.exact ?? formattedMax.text;
+  const maxExact = formattedMax.exact;
   const text = `${formattedValue.text} / ${formattedMax.text}`;
   const exact = `${valueExact} / ${maxExact}`;
   const reasons: string[] = [];
@@ -576,7 +586,7 @@ export function valueStateProps(value: Value, format?: ValueFormat, narrow = fal
   switch (formatted.kind) {
     case 'known':
     case 'zero':
-      return { kind: formatted.kind, text: formatted.text, ...(narrow ? { narrow: true } : {}) };
+      return { kind: formatted.kind, text: formatted.exact, ...(narrow ? { narrow: true } : {}) };
     case 'notRecorded':
       return { kind: 'missing', reason: formatted.reason, ...(narrow ? { narrow: true } : {}) };
     case 'notApplicable':
@@ -584,9 +594,8 @@ export function valueStateProps(value: Value, format?: ValueFormat, narrow = fal
     case 'partial':
       return {
         kind: 'partial',
-        text: formatted.text,
+        text: formatted.exact,
         reason: formatted.reason,
-        ...(formatted.atLeast ? { atLeast: true } : {}),
         ...(narrow ? { narrow: true } : {}),
       };
   }

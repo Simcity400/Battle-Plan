@@ -1592,3 +1592,22 @@ fn compare_pool(
 
 #[cfg(test)]
 mod tests;
+
+pub fn compare_category_families(
+    recorded: Result<&engine_executable::executable_tables::auxiliary::CategoryFamilies, String>,
+    installed: Result<&engine_executable::executable_tables::auxiliary::CategoryFamilies, String>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let recorded = recorded.map_err(|reason| invalid(format!("equipment category families not recorded: {reason}")))?;
+    match installed {
+        Ok(installed) => {
+            equal(report, "equipment category families", recorded, installed);
+            report.compared("equipment category families", 1);
+        }
+        Err(reason) => report.limitation(
+            "the installed executable's category families cannot certify the recorded ones",
+            reason,
+        ),
+    }
+    Ok(())
+}

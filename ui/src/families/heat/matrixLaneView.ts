@@ -103,7 +103,7 @@ export const heatMatrixLane: LaneFamily<FamilyHeatMatrixBinding, HeatMatrixModel
     const cell = focus ? parseMatrixCellKey(key) : hoveredCellOf(key);
     if (!cell) return null;
     const payload = deriveMatrixTooltip(frame.model, cell.row, cell.column);
-    return payload ? { hour: frame.model.hour, rowKey: matrixCellKey(cell.row, cell.column), payload } : null;
+    return payload ? { rowKey: matrixCellKey(cell.row, cell.column), payload } : null;
   },
   structure({ model, layout }) {
     return {

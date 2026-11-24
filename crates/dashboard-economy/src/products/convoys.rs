@@ -1,9 +1,9 @@
 
-use dashboard_base::products::{Country, validate_country};
+use dashboard_base::products::{Country, regions::{ActiveRegions, NoRegions, automatic, no_regions}, validate_country};
 use dashboard_base::{products::{LoadContext, Product}, queries::country_ids::{Names, RunLinks}};
 use dashboard_base::{Source, catalogue, span::HourSpan};
 use dashboard_base::products::resources::ResourceNaming;
-use dashboard_query::{Query, identity::Holder, read};
+use dashboard_query::{Query, coverage::{self, Witness}, identity::Holder, read};
 use dashboard_world::products::styles::LookResolver;
 use replay_recording::columnar_frames::{Recording, complete as status_complete};
 use replay_lanes::{at::Seeker, lanes::{self, Cell, History, Keys}};
@@ -30,6 +30,7 @@ const NO_ROUTE: u8 = 0;
 const NAVAL_ROUTE: u8 = 2;
 pub const TRAFFIC_NOT_RECORDED: &str = "regional convoy traffic was not recorded";
 const GAP_NOT_RECORDED: &str = "The recording holds no hour here";
+const UNREAD_PROBE: u128 = u128::MAX;
 
 const REGION_EFFICIENCY: usize = 0;
 const LINK_SLOT: usize = 0;
@@ -260,6 +261,9 @@ pub struct ConvoyHealthReply {
     pub regions: Vec<ConvoyRegion>,
     #[doc = " Why the most strained regions are not a proven rank at the asked hour: the regions' convoy state there is not recorded. A top then lists only the pinned regions."]
     pub rank_missing: Option<String>,
+    #[doc = " Why no region is listed in the ranked regions view; set only when `regions` is empty."]
+    pub empty: Option<NoRegions>,
+    pub active_unlisted: ActiveRegions,
     #[doc = " With `every`: the cells of a region without a convoy efficiency."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub absent: Option<Vec<ConvoyCellRun>>,
@@ -480,6 +484,7 @@ pub(crate) fn build_region_cells(
     efficiency: &[(i32, i32, i64)],
     traffic: &[(i32, i32, TrafficProof)],
     known: &[HourSpan],
+    unread: &[(i32, i32, String)],
     unheld: &[HourSpan],
     gaps: &[(HourSpan, &str)],
     from: i32,
@@ -507,6 +512,9 @@ pub(crate) fn build_region_cells(
     for span in known {
         mark(span.first_hour, span.last_hour);
     }
+    for &(a, b, _) in unread {
+        mark(a, b);
+    }
     for span in unheld {
         mark(span.first_hour, span.last_hour);
     }
@@ -522,6 +530,10 @@ pub(crate) fn build_region_cells(
         let idx = efficiency.partition_point(|r| r.1 < h);
         (idx < efficiency.len() && efficiency[idx].0 <= h).then(|| efficiency[idx].2)
     };
+    let unread_at = |h: i32| {
+        let idx = unread.partition_point(|r| r.1 < h);
+        unread.get(idx).filter(|r| r.0 <= h).map(|r| r.2.clone())
+    };
     let traffic_at = |h: i32| {
         let idx = traffic.partition_point(|r| r.1 < h);
         (idx < traffic.len() && traffic[idx].0 <= h).then(|| &traffic[idx].2)
@@ -534,10 +546,10 @@ pub(crate) fn build_region_cells(
             ConvoyCellState::NotRecorded { reason: if reason.is_empty() { GAP_NOT_RECORDED.to_owned() } else { (*reason).to_owned() } }
         } else if in_spans(unheld, start) {
             ConvoyCellState::NotRecorded { reason: "No country holds this tag at this hour".into() }
-        } else if !in_spans(known, start) {
-            ConvoyCellState::NotRecorded { reason: "Regional convoy efficiency was not recorded".into() }
         } else if let Some(value) = eff_at(start) {
             ConvoyCellState::Efficiency { value }
+        } else if !in_spans(known, start) {
+            ConvoyCellState::NotRecorded { reason: unread_at(start).unwrap_or_else(|| "Regional convoy efficiency was not recorded".into()) }
         } else {
             match traffic_at(start) {
                 Some(proof) if proof.crossed.contains(&region) => ConvoyCellState::Efficiency { value: i64::from(SCALE) },
@@ -561,6 +573,7 @@ struct Gathered {
     deals: BTreeMap<u128, ConvoyDeal>,
     leases: BTreeMap<u128, ConvoyLease>,
     known: [Vec<HourSpan>; 3],
+    unread: Vec<(i32, i32, String)>,
 }
 
 fn deal(key: u128) -> ConvoyDeal {
@@ -684,6 +697,11 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                 (ConvoyView::Regions, ..) => {
                     let owner = u128::from(id) << 32;
                     let read = history(recording, run, TableId::RegionalConvoyEfficiency, &[REGION_EFFICIENCY], Keys::Range(owner, owner | u128::from(u32::MAX)), first, last)?;
+                    for held in read.statuses.iter().filter(|held| !status_complete(held.status)) {
+                        if let Witness::NotRecorded(reason) = coverage::reading_witness(TableId::RegionalConvoyEfficiency, read.reading(UNREAD_PROBE, held.first)) {
+                            gathered.unread.push((held.first.max(first), held.last.min(last), reason));
+                        }
+                    }
                     for (key, runs) in read.runs(REGION_EFFICIENCY).unwrap_or_default() {
                         let region = gathered.regions.entry(key as u32).or_default();
                         for run in numbers(&runs, &[(first, last)]) {
@@ -936,7 +954,7 @@ struct Window<'q> {
 
 impl Window<'_> {
     fn cells(&self, region: u32, efficiency: &[(i32, i32, i64)], from: i32, to: i32) -> Vec<ConvoyCellRun> {
-        build_region_cells(region, efficiency, &self.gathered.traffic, &self.known[0], &self.unheld, &self.gaps, from, to)
+        build_region_cells(region, efficiency, &self.gathered.traffic, &self.known[0], &self.gathered.unread, &self.unheld, &self.gaps, from, to)
     }
 }
 
@@ -1029,6 +1047,9 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         cells
     });
     let mut rank_missing = None;
+    let mut ranked_view = false;
+    let mut hidden_active = 0u32;
+    let mut active_unlisted = ActiveRegions::default();
     let mut all_regions: BTreeMap<u32, ConvoyRegion> = BTreeMap::new();
     for region in region_ids {
         let mut efficiency = held.gathered.regions.remove(&region).unwrap_or_default();
@@ -1057,13 +1078,14 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         let mut seen = HashSet::new();
         let pinned_list: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
         let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
+        ranked_view = true;
         let mut auto: Vec<(u32, i64)> = Vec::new();
         match absent.as_ref().and_then(|cells| cells.last()).map(|run| &run.state) {
             Some(ConvoyCellState::NotRecorded { reason }) => rank_missing = Some(reason.clone()),
             _ => {
                 auto = all_regions
                     .iter()
-                    .filter(|(id, _)| !seen.contains(id) && !hidden.contains(id))
+                    .filter(|(id, _)| !seen.contains(id))
                     .filter_map(|(&id, entry)| match entry.cells.last().map(|run| &run.state) {
                         Some(ConvoyCellState::Efficiency { value }) => Some((id, i64::from(SCALE) - value)),
                         _ => None,
@@ -1072,17 +1094,18 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
             }
         }
         auto.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        if let Some(limit) = params.top {
-            auto.truncate(limit);
-        }
-        let mut ordered = Vec::with_capacity(pinned_list.len() + auto.len());
+        let chosen = automatic(auto.into_iter().map(|(id, _)| id), &hidden, params.top.unwrap_or(usize::MAX), rank_missing.clone());
+        hidden_active = chosen.hidden;
+        active_unlisted = chosen.active_unlisted;
+        let listed = chosen.listed;
+        let mut ordered = Vec::with_capacity(pinned_list.len() + listed.len());
         for id in pinned_list {
             if let Some(mut entry) = all_regions.remove(&id) {
                 entry.pinned = true;
                 ordered.push(entry);
             }
         }
-        for (id, _) in auto {
+        for id in listed {
             if let Some(entry) = all_regions.remove(&id) {
                 ordered.push(entry);
             }
@@ -1158,8 +1181,10 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         known,
         unheld,
         gaps,
+        empty: no_regions(!ranked_view || !regions.is_empty(), rank_missing.as_deref(), hidden_active, 0),
         regions,
         rank_missing,
+        active_unlisted,
         absent: every.then_some(absent).flatten(),
         deals,
         leases,
@@ -1198,6 +1223,8 @@ impl Product for ConvoyHealth {
             ConvoyDeal::decl(),
             ConvoyLease::decl(),
             ConvoyResource::decl(),
+            NoRegions::decl(),
+            ActiveRegions::decl(),
             HourSpan::decl(),
         ]
     }

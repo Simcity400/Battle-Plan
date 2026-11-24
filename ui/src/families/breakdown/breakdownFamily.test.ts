@@ -11,7 +11,7 @@ import type { IdentityProvider } from '../plan.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import { resolvePlaybackProvenInterval } from '../broker.ts';
 import type { FamilyTheme } from '../contract.ts';
-import { assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, assertTooltipDated, driveLane, firstRow, installRecordingCanvas } from '../laneRuntime.fixture.ts';
 import { createLaneView } from '../laneRuntime.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { parseBreakdownHit } from './hostAdapter.ts';
@@ -167,7 +167,7 @@ test('expanding a part is held by the host, shared by the parts list and the rin
 });
 
 function reply(breakdown: Breakdown, extra: Partial<PowerSpendingBreakdownReply> = {}): PowerSpendingBreakdownReply {
-  return { from: START, hour: START + 10, through: START + 30, breakdown, gainedRaw: '5306', lostAtCapRaw: '1', gainedReason: null, warnings: [], ...extra };
+  return { from: START, hour: START + 10, through: START + 30, breakdown, gainedRaw: '5306', lostAtCapRaw: '1', gainedReason: null, lostAtCapReason: null, warnings: [], ...extra };
 }
 
 function project(data: PowerSpendingBreakdownReply | null) {
@@ -209,6 +209,7 @@ test('political power spending reads the product at the displayed hour', () => {
   const held = lane(reply(spent()));
   const surface = { width: 600, height: 300, dpr: 1 };
   assertQuietFrames(() => createLaneView(breakdownLane, () => {}), { label: 'spending', binding: held, hour: START + 10 }, 24, surface);
+  assertTooltipDated(() => createLaneView(breakdownLane, () => {}), { label: 'spending', binding: held, hour: START + 10 }, firstRow, 5, surface);
   assertFreshPaint(() => createLaneView(breakdownLane, () => {}), [
     { label: 'spent', binding: held, hour: START + 10, check: true },
     { label: 'later', binding: lane(reply(partlyKnown(), { hour: START + 20 })), hour: START + 20, speed: 24 },
@@ -401,9 +402,8 @@ test('territory asks the product for the chosen countries or the group itself, n
   assert.deepEqual(params({ kind: 'tags', tags: ['AAA', countryKey(9)] }), { ...base, countries: ['AAA', 9] });
   assert.deepEqual(params({ kind: 'group', group: { type: 'faction', id: '42' }, membership: 'hour', aggregate: false }),
     { ...base, group: { type: 'faction', id: '42', membership: 'hour' } }, 'a group is sent as the group: Rust resolves its members at the hour');
-  assert.match(territoryBreakdown.unavailable?.(ctx({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false })) ?? '', /end of the recording/,
-    'members at the end of the recording would read past the displayed hour: refused by name');
-  assert.equal(territoryBreakdown.unavailable?.(ctx({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false })), null);
+  assert.deepEqual(params({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false }),
+    { ...base, group: { type: 'humans', membership: 'ever' } }, 'the chosen membership is sent as chosen, never changed into another');
 });
 
 test('a breakdown reply proves the stretch it stands through, so a quiet hundred played hours asks once', () => {

@@ -2,51 +2,36 @@ import type { ComponentType } from 'react';
 import type { DesignerKind } from '../generated/dashboard';
 import type { DashboardClient } from './client';
 import type { BoundTrack } from './model';
+import type { RowSource } from '../families/table/rowSelection.ts';
 import { dayLabel } from '../charts/draw.ts';
 
-export interface IndustrialOrganisationSelection {
+export interface IndustrialOrganisationSelection extends RowSource {
   kind: 'industrialOrganisation';
-  sourceId: string;
-  revision: string;
-  branchId: string;
-  hour: number;
   organisation: string;
   subView?: 'traits' | 'history' | 'policy';
 }
 
-export interface DivisionDesignerSelection {
+export interface DivisionDesignerSelection extends RowSource {
   kind: 'divisionDesigner';
-  sourceId: string;
-  revision: string;
-  branchId: string;
-  hour: number;
   tag: string;
   template: string;
   designer: DesignerKind;
 }
 
-export interface EquipmentDesignerSelection {
+export interface EquipmentDesignerSelection extends RowSource {
   kind: 'equipmentDesigner';
-  sourceId: string;
-  revision: string;
-  branchId: string;
-  hour: number;
   tag: string;
   variant: string;
 }
 
-export interface AgencyUpgradesSelection {
-  kind: 'agencyUpgrades';
-  sourceId: string;
-  revision: string;
-  branchId: string;
-  hour: number;
-  tag: string;
+export interface IntelligenceAgencySelection extends RowSource {
+  kind: 'intelligenceAgency';
+  country: number;
 }
 
 export type GameWindowSelection =
   | IndustrialOrganisationSelection
-  | AgencyUpgradesSelection
+  | IntelligenceAgencySelection
   | DivisionDesignerSelection
   | EquipmentDesignerSelection;
 
@@ -137,11 +122,6 @@ export function registerGameWindow<S extends GameWindowSelection>(kind: S['kind'
   for (const listener of listeners) listener();
 }
 
-export function unregisterGameWindow(kind: GameWindowSelection['kind']) {
-  if (!windows.delete(kind)) return;
-  for (const listener of listeners) listener();
-}
-
 export const gameWindow = <K extends GameWindowSelection['kind']>(
   kind: K,
 ): ComponentType<GameWindowProps<Extract<GameWindowSelection, { kind: K }>>> | null =>
@@ -152,10 +132,3 @@ export function subscribeGameWindows(listener: () => void): () => void {
   return () => { listeners.delete(listener); };
 }
 
-export function withWindowDiagnostics(own: readonly string[], window: readonly string[]): readonly string[] {
-  if (!window.length) return own;
-  const seen = new Set(own);
-  const lines = [...own];
-  for (const line of window) if (!seen.has(line)) { seen.add(line); lines.push(line); }
-  return lines;
-}

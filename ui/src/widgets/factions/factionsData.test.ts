@@ -72,7 +72,7 @@ test('end membership keeps the human member’s faction visible before its chang
     factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 20, nameReason: null, names: [{ firstHour: 0, lastHour: 20, name: 'Pact', reason: null }], members: humans, leaders: [], incomplete: [] }],
   };
   const views = factionViews(renamed, summaryName, id => id);
-  const filter = worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [], renamed, 5, 20);
+  const filter = worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [], renamed, 5);
   const lanes = factionLanes(views, 5, { ...options, countries: filter.tags, countryIds: filter.countryIds }, text, [], 0).lanes;
   assert.deepEqual(lanes.map(lane => lane.identity?.label), ['Pact', 'AAA']);
 });
@@ -203,7 +203,7 @@ test('manual X includes every native holder and its aliases, while unrelated Y a
     factions: [run('Y', 10, 19), run('X', 20, 30), run('Y', 20, 30), run('X', 15, 16)].map((member, index) => ({
       ...factions[0], id: String(index + 1), firstHour: 0, lastHour: 30, members: [member], leaders: [], incomplete: [],
     })) };
-  const filter = worldFilter({ kind: 'tags', tags: ['X'] }, [], chosen, 30, 30);
+  const filter = worldFilter({ kind: 'tags', tags: ['X'] }, [], chosen, 30);
   const prepared = factionViews(chosen, summaryName, id => id);
   const lanes = factionLanes(prepared, 30, { ...options, countries: filter.tags, countryIds: filter.countryIds }, text, [], 0);
   assert.deepEqual(lanes.lanes.filter(lane => lane.heading).map(lane => lanes.info.get(lane.id)!.faction.id), ['1', '2']);

@@ -3,6 +3,9 @@ use content_reader_image::{dds, native::Decode};
 use content_reader_layers::ResolvedLayers;
 use content_reader_localisation::localisation::{self, Localisation, Piece, pieces};
 use dashboard_base::Source;
+use replay::campaign::SeekResult;
+use replay_data::rows::TableId;
+use replay_frame::frame::DecodedFrame;
 use dashboard_core::config::Config;
 use eframe::wgpu;
 use serde::{Deserialize, Serialize};
@@ -38,6 +41,7 @@ mod tests;
 mod compose;
 pub mod equipment_designer;
 pub mod industrial_organisation;
+pub mod intelligence_agency;
 
 pub const SETTLE_TICK: Tick = Tick {
     time: 10.0,
@@ -51,6 +55,7 @@ pub const DEFAULT_VIEWPORT: [u32; 2] = [2752, 1152];
 const MAX_CACHED_WINDOWS: usize = 8;
 const MAX_DYNAMIC_WINDOW_IMAGES: usize = 64;
 const MAX_CACHED_RENDERS: usize = 16;
+const MAX_DECODED_FRAMES: usize = 4;
 const MAX_SURFACE_DIM: u32 = 4096;
 const NO_COUNTRIES: &str =
     "a flag's country is unknown: the hour's countries (CountryAppearance) are not recorded";
@@ -172,6 +177,14 @@ pub struct GameWindowRegion {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GameWindowPlaceholder {
+    pub path: String,
+    pub rect: [f32; 4],
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GameWindowRender {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -185,6 +198,8 @@ pub struct GameWindowRender {
     pub regions: Vec<GameWindowRegion>,
     pub warnings: Vec<String>,
     pub text: Vec<GameWindowText>,
+    #[serde(default)]
+    pub placeholders: Vec<GameWindowPlaceholder>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -924,6 +939,7 @@ pub struct ComposedPlan {
     scroll: BTreeMap<String, f32>,
     scrollbars: Vec<ComposedSubWindow>,
     text: Vec<GameWindowText>,
+    placeholders: Vec<(String, Option<[f32; 4]>, GameWindowTooltip)>,
 }
 
 impl ComposedPlan {
@@ -945,6 +961,53 @@ impl ComposedPlan {
             value,
             missing,
         });
+    }
+
+    pub fn placeholder(&mut self, path: &str, rect: Option<[f32; 4]>, item: &str, asset: &str, reason: &str) {
+        let missing = format!("{asset}: {reason}");
+        self.text(path, item, Err(missing.clone()));
+        self.placeholders.push((
+            path.to_owned(),
+            rect,
+            GameWindowTooltip {
+                title: item.to_owned(),
+                body: Some(missing),
+                detail: None,
+            },
+        ));
+    }
+
+    fn place_placeholders(&mut self, layout: &mut Layout) -> Vec<GameWindowPlaceholder> {
+        let mut placed = Vec::with_capacity(self.placeholders.len());
+        for (path, rect, tooltip) in std::mem::take(&mut self.placeholders) {
+            let rect = rect.or_else(|| blank(layout, &path).map(|region| region.rect));
+            let Some(rect) = rect else {
+                self.warnings.push(format!(
+                    "{}: {} is not drawn at {path}, so its placeholder is given in the text only.",
+                    tooltip.title,
+                    tooltip.body.as_deref().unwrap_or_default()
+                ));
+                continue;
+            };
+            placed.push(GameWindowPlaceholder {
+                path: path.clone(),
+                rect,
+                label: tooltip.title.clone(),
+            });
+            self.extra_regions.push(GameWindowRegion {
+                path,
+                rect,
+                clip: None,
+                disabled: true,
+                close: false,
+                passthrough: false,
+                view: None,
+                tooltip: Some(tooltip),
+                alpha_mask: None,
+                scroll: None,
+            });
+        }
+        placed
     }
 
     pub fn list_rows(
@@ -1079,6 +1142,13 @@ impl ComposedPlan {
             })
             .collect())
     }
+}
+
+pub fn blank(layout: &mut Layout, path: &str) -> Option<Region> {
+    let region = layout.regions.iter().find(|region| region.path == path)?.clone();
+    layout.parts.retain(|part| part.path != path);
+    layout.regions.retain(|region| region.path != path);
+    Some(region)
 }
 
 fn list_overflow(smooth: bool, vertical: bool, fields: &native::ListBox, sizes: &[[i32; 2]]) -> i32 {
@@ -1724,10 +1794,58 @@ impl RenderFrameCache {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DecodedFrameKey {
+    source_id: String,
+    revision: String,
+    branch: u64,
+    hour: i32,
+    tables: Vec<TableId>,
+}
+
+struct DecodedFrames<T> {
+    capacity: usize,
+    entries: VecDeque<(DecodedFrameKey, Arc<T>)>,
+}
+
+impl<T> DecodedFrames<T> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            entries: VecDeque::new(),
+        }
+    }
+
+    fn get(&mut self, key: &DecodedFrameKey) -> Option<Arc<T>> {
+        let at = self.entries.iter().position(|(held, _)| held == key)?;
+        let entry = self.entries.remove(at)?;
+        let frame = Arc::clone(&entry.1);
+        self.entries.push_back(entry);
+        Some(frame)
+    }
+
+    fn insert(&mut self, key: DecodedFrameKey, frame: Arc<T>) {
+        self.entries.retain(|(held, _)| *held != key);
+        self.entries.push_back((key, frame));
+        while self.entries.len() > self.capacity {
+            self.entries.pop_front();
+        }
+    }
+
+    fn evict_source(&mut self, source_id: &str) {
+        self.entries.retain(|(held, _)| held.source_id != source_id);
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
 struct CacheState {
     interfaces: HashMap<InterfaceCacheKey, Arc<SharedInterface>>,
     windows: WindowCache<Arc<Mutex<CachedWindow>>>,
     renders: RenderFrameCache,
+    frames: DecodedFrames<DecodedFrame>,
     source_generations: HashMap<String, u64>,
     global_generation: u64,
     cancels: HashMap<String, Arc<AtomicBool>>,
@@ -1739,6 +1857,7 @@ impl Default for CacheState {
             interfaces: HashMap::new(),
             windows: WindowCache::new(MAX_CACHED_WINDOWS),
             renders: RenderFrameCache::new(MAX_CACHED_RENDERS),
+            frames: DecodedFrames::new(MAX_DECODED_FRAMES),
             source_generations: HashMap::new(),
             global_generation: 0,
             cancels: HashMap::new(),
@@ -1834,6 +1953,7 @@ impl Service {
                 .collect();
             let windows = cache.windows.evict_source(source_id);
             cache.renders.evict_source(source_id);
+            cache.frames.evict_source(source_id);
             (interfaces, windows)
         };
         drop(dropped_windows);
@@ -1848,6 +1968,7 @@ impl Service {
                 cache.interfaces.drain().map(|(_, value)| value).collect();
             let windows = cache.windows.clear();
             cache.renders.clear();
+            cache.frames.clear();
             (interfaces, windows)
         };
         drop(dropped_windows);
@@ -1924,6 +2045,56 @@ impl Service {
         if current == expected_gen {
             cache.renders.insert(key, render.clone());
         }
+    }
+
+    pub fn frame_at(
+        &self,
+        source: &Source,
+        request: &GameWindowRequest,
+        admitted_gen: (u64, u64),
+        branch: u64,
+        tables: &[TableId],
+    ) -> Result<Arc<DecodedFrame>, GameWindowError> {
+        let key = DecodedFrameKey {
+            source_id: request.source_id.clone(),
+            revision: request.revision.clone(),
+            branch,
+            hour: request.hour,
+            tables: tables.to_vec(),
+        };
+        if let Some(frame) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).frames.get(&key) {
+            return Ok(frame);
+        }
+        let frame: Arc<DecodedFrame> = match source
+            .replay_ref()
+            .seek_selected(branch, request.hour, Some(tables))
+            .map_err(|error| {
+                GameWindowError::failed(format!(
+                    "Could not seek recording to hour {}: {error}",
+                    request.hour
+                ))
+            })? {
+            SeekResult::Frame(frame) => Arc::from(frame),
+            SeekResult::Gap { reason, .. } => {
+                return Err(GameWindowError::refused(format!(
+                    "Hour {} is not recorded on this branch: {reason}",
+                    request.hour
+                )));
+            }
+        };
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let current = (
+            cache
+                .source_generations
+                .get(&request.source_id)
+                .copied()
+                .unwrap_or(0),
+            cache.global_generation,
+        );
+        if current == admitted_gen {
+            cache.frames.insert(key, Arc::clone(&frame));
+        }
+        Ok(frame)
     }
 
     fn generations(&self, source_id: &str) -> (u64, u64) {
@@ -2150,7 +2321,7 @@ impl Service {
             (DEFAULT_VIEWPORT[1] as f32 * scale).round() as i32,
         ];
 
-        let (output, regions, warnings, title, effective_read_hour, effective_art_label, text) = {
+        let (output, regions, warnings, title, effective_read_hour, effective_art_label, text, placeholders) = {
             let reloaded_entry: Option<Arc<Mutex<CachedWindow>>>;
             let mut cached = match window_entry.lock() {
                 Ok(guard) => guard,
@@ -2214,7 +2385,7 @@ impl Service {
             instance
                 .tick(root, &assets, STEADY_TICK)
                 .map_err(GameWindowError::failed)?;
-            let layout = instance
+            let mut layout = instance
                 .layout_with_regions(root, &assets, None, true)
                 .map_err(|refusals| GameWindowError::failed(format_refusals(&refusals)))?
                 .ok_or_else(|| {
@@ -2234,6 +2405,7 @@ impl Service {
             )?;
             let mut scrollbars = std::mem::take(&mut plan.scrollbars);
             plan.sub_windows.append(&mut scrollbars);
+            let mut placeholders = plan.place_placeholders(&mut layout);
             if cancel.load(Ordering::SeqCst) {
                 return Err(GameWindowError::Cancelled);
             }
@@ -2316,6 +2488,10 @@ impl Service {
                 }
                 regions.push(region);
             }
+            for placeholder in &mut placeholders {
+                placeholder.rect[0] -= output.origin[0];
+                placeholder.rect[1] -= output.origin[1];
+            }
             let mut warnings = extra_warnings;
             warnings.extend(cached.warnings.iter().cloned());
             warnings.extend(plan.warnings);
@@ -2341,6 +2517,7 @@ impl Service {
                 plan.read_hour.or(read_hour),
                 plan.art_label,
                 plan.text,
+                placeholders,
             )
         };
 
@@ -2365,6 +2542,7 @@ impl Service {
             regions,
             warnings,
             text,
+            placeholders,
         };
         if let Some(frame_key) = frame_key {
             self.store_render(frame_key, expected_gen, &render);
@@ -2457,6 +2635,22 @@ impl Service {
                 cancel,
             ),
             "industrialOrganisation" => industrial_organisation::render(
+                self,
+                equipment_designer::RenderContext {
+                    source,
+                    content: &content,
+                    layers: &layers,
+                    resolve: &resolve,
+                    visual_revision: &visual_revision,
+                    language: &language,
+                    decode,
+                    admitted_gen,
+                    extra_warnings: visual_warnings,
+                },
+                request,
+                cancel,
+            ),
+            "intelligenceAgency" => intelligence_agency::render(
                 self,
                 equipment_designer::RenderContext {
                     source,

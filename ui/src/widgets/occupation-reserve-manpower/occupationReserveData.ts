@@ -7,7 +7,7 @@ const warnings = (value: Record<string, unknown>) => Array.isArray(value.warning
 
 export function validateOccupationReserve(value: unknown): OccupationReserveReply {
   const ok = object(value) && (value.missing === null || typeof value.missing === 'string') && (value.readHour === null || integer(value.readHour))
-    && integer(value.unnamed) && (value.unnamed as number) >= 0 && warnings(value)
+    && integer(value.unnamed) && (value.unnamed as number) >= 0 && (value.noneMissing === null || typeof value.noneMissing === 'string') && warnings(value)
     && Array.isArray(value.holders) && value.holders.every(holder => object(holder) && country(holder.country) && typeof holder.admitted === 'boolean'
       && integer(holder.total)
       && Array.isArray(holder.entries) && holder.entries.every(entry => object(entry) && integer(entry.ordinal) && country(entry.source) && integer(entry.amount)));

@@ -371,21 +371,6 @@ export const mostNamed = (reasons: readonly string[]): string => {
   return [...counts].reduce((best, entry) => entry[1] > best[1] ? entry : best)[0];
 };
 
-export function viewRuns(line: TiledLine, from: number, to: number): Run[] {
-  const segment = line.parts.find(part => part.firstHour <= from && from <= part.lastHour)?.segmentFirstHour;
-  return (line.summary.runs ?? []).filter(run => run.lastHour >= from && run.firstHour <= to).map(run => run.firstHour <= from
-    ? { ...run, firstHour: from, lastHour: Math.min(to, run.lastHour), breakBefore: segment === from }
-    : { ...run, lastHour: Math.min(to, run.lastHour) });
-}
-
-export function viewBins(summary: ChartSummary, from: number, to: number): (ChartBucket | null)[] {
-  const binHours = summary.tiles!.binHours;
-  const first = Math.floor(from / binHours) - Math.floor(summary.from / binHours), last = Math.floor(to / binHours) - Math.floor(summary.from / binHours);
-  const bins = summary.buckets.slice(first, last + 1);
-  if (bins[0]) bins[0] = { ...bins[0], firstBreak: true };
-  return bins;
-}
-
 const caches = new WeakMap<object, TileCache>();
 export function tileCache(client: object): TileCache {
   client = (client as { base?: object }).base ?? client;

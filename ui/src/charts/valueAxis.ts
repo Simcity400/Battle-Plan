@@ -76,11 +76,6 @@ export function rescale(raw: string | bigint, denominator: bigint | number, deci
   return value < 0n ? -((-value + half) / whole) : (value + half) / whole;
 }
 
-export function rescaleSum(values: Iterable<readonly [bigint, bigint | number]>, decimals: number): bigint {
-  const [raw, denominator] = fractionSum(values);
-  return rescale(raw, denominator, decimals);
-}
-
 export function fractionSum(values: Iterable<readonly [bigint, bigint | number]>): readonly [bigint, bigint] {
   const totals = new Map<bigint, bigint>();
   for (const [raw, denominator] of values) {

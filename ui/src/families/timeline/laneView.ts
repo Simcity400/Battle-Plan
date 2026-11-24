@@ -162,7 +162,7 @@ export const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, Time
     const hit = focus ? focusHit(frame.model, key, frame.hour) : decodeTimelineHit(key);
     if (!hit) return null;
     const payload = tooltipFor(frame.projection as TimelineProjection<unknown>, frame.model, hit, frame.readNow(), frame.binding.options);
-    return payload ? { hour: hit.hour ?? frame.hour, rowKey: hit.laneKey, payload } : null;
+    return payload ? { ...(!focus && hit.hour !== undefined ? { hour: hit.hour } : {}), rowKey: hit.laneKey, payload } : null;
   },
   structure({ model, layout }) {
     return {
@@ -171,6 +171,7 @@ export const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, Time
         emptyDetail: null,
         emptyKind: model.emptyKind ?? 'empty',
         summaryText: model.summaryText ?? null,
+        summaryPartial: model.summaryPartial ?? null,
         notes: model.notes ?? [],
         warnings: model.warnings,
       },

@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
-import { breakdownAt, efficiencyPercent, iconImage, validateAtReply, validateBreakdownReply, variantName, variantOf, weeklyRaw } from './productionData.ts';
+import { compareValues, knownValue } from '../../families/value.ts';
+import { efficiencyPercent, iconImage, validateAtReply, validateBreakdownReply, variantName, variantOf, weeklyRaw } from './productionData.ts';
 import { productionLinesProjection, type ProductionLineMeta } from './productionLinesProjection.ts';
 import type { LineNow, ProductionLineBreakdownReply, ProductionLinesAtReply } from '../../generated/dashboard';
 
@@ -36,18 +37,22 @@ test('a line shows its recorded maximum factories, and output counted since a la
   assert.deepEqual([cells.factories!.value, cells.factories!.secondaryValue], [{ kind: 'known', value: 4 }, { kind: 'known', value: 15 }], 'assigned / the recorded maximum, never the requested count');
   assert.equal(cells.total!.value.kind, 'partial');
   assert.equal(cells.total!.value.kind === 'partial' && cells.total!.value.value, 12);
+  const sorted = cells.total!.sortValue ?? cells.total!.value;
+  for (const direction of ['ascending', 'descending'] as const) {
+    assert.ok(compareValues(sorted, knownValue(10), direction) > 0, `a partial lifetime total is unranked, after complete ones, ${direction}`);
+  }
 });
 
 test('a row carries its line and country, so a freshly drawn table opens the breakdown at the clicked hour without any history', () => {
   const row = project(at([now('9', 0)]), new Map()).rows[0]!;
   assert.deepEqual(row.meta, { handle: '9', country: 'GER', name: 'Rifle' } satisfies ProductionLineMeta);
   const group = (id: string, totalRaw: string) => ({ id, label: id, totalRaw, decimals: 5, unit: '%', parts: [{ id: 'base', label: 'Base', raw: totalRaw, unknown: null }], note: '' });
-  const breakdown: ProductionLineBreakdownReply = { branchId: '1', tag: 'GER', key: '9#1', firstHour: 720, lastHour: 1439, groups: [{ id: 'efficiency', label: 'Efficiency' }], warnings: [],
-    runs: [{ firstHour: 720, lastHour: 999, groups: [group('efficiency', '1000')], warnings: [] }, { firstHour: 1000, lastHour: 1439, groups: [group('efficiency', '2000')], warnings: [] }] } as ProductionLineBreakdownReply;
+  const breakdown: ProductionLineBreakdownReply = { branchId: '1', tag: 'GER', hour: 1200, groups: [{ id: 'efficiency', label: 'Efficiency' }], group: group('efficiency', '2000'),
+    missing: null, warnings: ['Organisation bonuses were pending refresh at this read; retained values are shown'] };
   assert.deepEqual(validateBreakdownReply(breakdown), breakdown);
-  assert.equal(breakdownAt(breakdown, 1200, 'efficiency')?.totalRaw, '2000', 'the run holding the clicked hour, not the window’s first');
-  assert.equal(breakdownAt(breakdown, 1200, 'output'), null);
-  assert.equal(breakdownAt(breakdown, 1500, 'efficiency'), null);
+  const unread = { ...breakdown, group: null, missing: "The country's production modifiers were not recorded at this hour" };
+  assert.deepEqual(validateBreakdownReply(unread), unread);
+  assert.throws(() => validateBreakdownReply({ ...breakdown, group: null }), 'a factor with no reading carries the reason it is missing');
 });
 
 test('a picture is drawn only from an artwork URL; an image no host serves is missing art, never a broken link', () => {

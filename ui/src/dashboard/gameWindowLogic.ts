@@ -1,5 +1,5 @@
 import type { TooltipContent } from '../charts/tooltip.ts';
-import type { GameWindowRegion, GameWindowRequest, GameWindowScroll } from './client.ts';
+import type { GameWindowPlaceholder, GameWindowRegion, GameWindowRequest, GameWindowScroll } from './client.ts';
 
 export function normalizeScale(dpr: number): number {
   if (!Number.isFinite(dpr) || dpr <= 0) return 1;
@@ -305,6 +305,17 @@ function intersectRect(
   const bottom = Math.min(a[1] + a[3], b[1] + b[3]);
   if (right <= left || bottom <= top) return null;
   return [left, top, right - left, bottom - top];
+}
+
+export function shownPlaceholders(
+  placeholders: readonly GameWindowPlaceholder[],
+  logicalSize: readonly [number, number],
+): { readonly placeholder: GameWindowPlaceholder; readonly rect: readonly [number, number, number, number] }[] {
+  const bounds: readonly [number, number, number, number] = [0, 0, logicalSize[0], logicalSize[1]];
+  return placeholders.flatMap(placeholder => {
+    const rect = intersectRect(placeholder.rect, bounds);
+    return rect ? [{ placeholder, rect }] : [];
+  });
 }
 
 export function accessibleRegions(

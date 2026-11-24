@@ -1,10 +1,11 @@
 import { ellipsise, layoutEndLabels } from '../../charts/labels.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { MeasureText } from '../../charts/textWidth.ts';
-import { exactDecimal, linearTicks } from '../../charts/valueAxis.ts';
+import { exactDecimal, linearTicks, logTicks, thinLogTicks } from '../../charts/valueAxis.ts';
 import { monthNames } from '../../dashboard/calendar.ts';
 import { computeTimeAxisTicks, type TimeAxisTick } from '../../draw/kit.ts';
 import type { BoundedSeries } from '../plan.ts';
+import { closedExtent, historyFits } from './history.ts';
 import { formatCompactScalar, formatDateOnly, formatScalar } from '../valueFormat.ts';
 import type {
   ChartColumnModel,
@@ -20,38 +21,32 @@ function shortMonth(month: number): string {
   return monthNames[month - 1]!.slice(0, 3);
 }
 
-function axisDecimalPlaces(ticks: readonly number[] | undefined, cap: number): number | null {
-  if (!ticks || ticks.length === 0) return null;
-  let max = 0;
-  for (const tick of ticks) {
-    if (!Number.isFinite(tick)) continue;
-    const scale = exactDecimal(tick).scale;
-    if (scale > max) max = scale;
+const AXIS_MAX_DECIMALS = 12;
+
+function axisDecimalPlaces(ticks: readonly number[] | undefined, value: number, cap: number): number {
+  let places = 0;
+  for (const tick of ticks?.length ? ticks : [value]) {
+    if (Number.isFinite(tick)) places = Math.max(places, exactDecimal(tick).scale);
   }
-  return Math.min(cap, max);
+  return Math.min(ticks?.length ? AXIS_MAX_DECIMALS : cap, places);
 }
 
 export function formatChartAxisValue(value: number, format: ChartValueFormat, ticks?: readonly number[]): string {
   if (!Number.isFinite(value)) return '';
-  if (format === 'percent') {
-    const places = axisDecimalPlaces(ticks, 2) ?? Math.min(2, exactDecimal(value).scale);
+  if (format === 'percent' || format === 'share' || format === 'signedPercent') {
+    const places = axisDecimalPlaces(ticks, value, 2);
     return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0, percent: true });
   }
   if (format === 'signed1') {
-    if (Math.abs(value) < 1e-9) return '0';
-    const places = axisDecimalPlaces(ticks, 1) ?? Math.min(1, exactDecimal(value).scale);
+    const places = axisDecimalPlaces(ticks, value, 1);
     return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0, signed: true });
   }
   if (format === 'compact') {
     if (value === 0) return '0';
     return formatCompactScalar(Math.round(value), 'integer').text;
   }
-  if (format === 'power') {
-    if (Math.abs(value) >= 1e4) return formatCompactScalar(Math.round(value), 'integer').text;
-    const places = axisDecimalPlaces(ticks, 2) ?? 0;
-    return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0 });
-  }
-  const places = axisDecimalPlaces(ticks, 2) ?? 0;
+  const places = axisDecimalPlaces(ticks, value, 2);
+  if (format === 'power' && Math.abs(value) >= 1e4) return formatCompactScalar(Math.round(value), 'integer').text;
   return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0 });
 }
 
@@ -85,58 +80,11 @@ export interface PlacedMarker {
   readonly size: number;
 }
 
-export interface PlacedAxisTick {
-  readonly hour: number;
-  readonly x: number;
-  readonly label: string | null;
-  readonly major: boolean;
-}
-
-export interface AxisCandidate extends PlacedAxisTick {
-  readonly labelWidth: number;
-}
-
-function placeAxisTicks(candidates: readonly AxisCandidate[], keepOut: readonly (readonly [number, number])[], small: boolean): PlacedAxisTick[] {
-  const ticks: PlacedAxisTick[] = [];
-  let shownFirst = false;
-  let lastLabelRight = -1e9;
-  for (const tick of candidates) {
-    let label = tick.label;
-    if (label) {
-      const hiddenByTab = keepOut.some(([kx, kr]) => Math.abs(tick.x - kx) < kr);
-      const hiddenBySmall = small && shownFirst;
-      const hiddenByOverlap = tick.x - tick.labelWidth / 2 < lastLabelRight + 8;
-      if (hiddenByTab || hiddenBySmall || hiddenByOverlap) {
-        label = null;
-      } else {
-        shownFirst = true;
-        lastLabelRight = tick.x + tick.labelWidth / 2;
-      }
-    }
-    ticks.push({ hour: tick.hour, x: tick.x, label, major: tick.major });
-  }
-  return ticks;
-}
-
-export function hoverTimeChartLayout(
-  base: TimeChartLayout,
-  headHour: number,
-  fontFamily: string,
-  measure: MeasureText,
-  hoverHour: number | null,
-  hoveredSeriesId: string | null,
-): TimeChartLayout {
+export function hoverTimeChartLayout(base: TimeChartLayout, hoveredSeriesId: string | null): TimeChartLayout {
   const endLabels = hoveredSeriesId === null
     ? base.endLabels
     : base.endLabels.map(label => (label.id === TOTAL_LABEL || label.seriesId === hoveredSeriesId ? label : { ...label, faded: true }));
-  if (hoverHour === null || hoverHour < base.xDomain[0] || hoverHour > headHour) return endLabels === base.endLabels ? base : { ...base, endLabels };
-  const hx = base.toX(hoverHour);
-  const hTabW = Math.ceil(measure(formatDateOnly(hoverHour), `600 11px ${fontFamily}`) + 14);
-  const keepOut: [number, number][] = [
-    [base.dateTabX, base.dateTabWidth / 2 + 14],
-    [Math.max(base.left + hTabW / 2, Math.min(hx, base.width - 6 - hTabW / 2)), hTabW / 2 + 14],
-  ];
-  return { ...base, endLabels, axisTicks: placeAxisTicks(base.axisCandidates, keepOut, base.small) };
+  return endLabels === base.endLabels ? base : { ...base, endLabels };
 }
 
 export interface PlacedColumnItem {
@@ -177,14 +125,14 @@ export interface TimeChartLayout {
   readonly axisY: number;
   readonly xDomain: readonly [number, number];
   readonly yDomain: readonly [number, number];
+  readonly logShown: boolean;
+  readonly logRefused: boolean;
   readonly yTicks: readonly number[];
   readonly playheadX: number;
   readonly dateTabText: string;
   readonly dateTabX: number;
   readonly dateTabWidth: number;
-  readonly axisTicks: readonly PlacedAxisTick[];
   readonly rawAxisTicks: readonly TimeAxisTick[];
-  readonly axisCandidates: readonly AxisCandidate[];
   readonly endLabels: readonly PlacedEndLabel[];
   readonly markers: readonly PlacedMarker[];
   readonly gaps: readonly PlacedGap[];
@@ -211,13 +159,23 @@ function boundedExtent(bounded: BoundedSeries, xDomain: readonly [number, number
     if (scaled < low) low = scaled;
     if (scaled > high) high = scaled;
   };
-  if (bounded.runs && bounded.runs.length > 0) {
-    for (const run of bounded.runs) {
+  const runs = bounded.runs && bounded.runs.length > 0 ? bounded.runs : null;
+  const history = closedExtent(bounded, scale);
+  const fits = historyFits(history, { from: xDomain[0], to: xDomain[1] });
+  if (fits) {
+    if (history.low < low) low = history.low;
+    if (history.high > high) high = history.high;
+  }
+  const from = fits ? history.items : 0;
+  if (runs) {
+    for (let i = from; i < runs.length; i++) {
+      const run = runs.at(i)!;
       if (run.lastHour < xDomain[0] || run.firstHour > xDomain[1]) continue;
       include(run.value);
     }
   } else {
-    for (const bucket of bounded.buckets) {
+    for (let i = from; i < bounded.buckets.length; i++) {
+      const bucket = bounded.buckets.at(i);
       if (!bucket || bucket.lastHour < xDomain[0] || bucket.firstHour > xDomain[1]) continue;
       include(bucket.minValue);
       include(bucket.maxValue);
@@ -472,15 +430,21 @@ export function layoutTimeChart(
 
   let yLo: number;
   let yHi: number;
+  const fullPercent = !model.view?.y && !model.yAxis.fixed && (model.yAxis.format === 'percent' || model.yAxis.format === 'share') && model.yAxis.fixed !== null;
+  const logAsked = model.yAxis.log === true && !model.view?.y && !model.yAxis.fixed;
+  const logShown = logAsked && dataMin > 0 && dataMax >= dataMin;
   if (model.view?.y) {
     yLo = model.view.y[0];
     yHi = model.view.y[1];
   } else if (model.yAxis.fixed) {
     yLo = model.yAxis.fixed[0];
     yHi = model.yAxis.fixed[1];
-  } else if (model.yAxis.format === 'percent' && model.yAxis.fixed !== null) {
+  } else if (fullPercent) {
     yLo = 0;
     yHi = 100;
+  } else if (logShown) {
+    yLo = model.yAxis.min != null && model.yAxis.min > 0 ? model.yAxis.min : dataMin;
+    yHi = model.yAxis.max != null && model.yAxis.max > yLo ? model.yAxis.max : Math.max(dataMax * 1.08, yLo * 10);
   } else if (dataMin <= dataMax) {
     const autoLo = model.yAxis.min != null ? model.yAxis.min : Math.min(0, dataMin);
     const padTop = Math.max(Math.abs(dataMax - Math.min(0, autoLo)) * 0.08, 1e-6);
@@ -493,9 +457,12 @@ export function layoutTimeChart(
     yHi = model.yAxis.max ?? 1;
   }
   const yDomain: readonly [number, number] = [yLo, yHi];
+  const decadeHeight = Math.max(1, height - 44) / Math.max(1e-9, Math.log10(yHi) - Math.log10(yLo));
   const yTicks = model.yAxis.ticks
     ? [...model.yAxis.ticks]
-    : model.yAxis.fixed
+    : logShown
+      ? thinLogTicks(logTicks(yLo, yHi), value => Math.log10(value) * decadeHeight, 18)
+      : model.yAxis.fixed || fullPercent
       ? linearTicks(yLo, yHi, small ? 2 : 4)
       : linearTicks(yLo, yHi, small ? 3 : 5);
 
@@ -667,7 +634,7 @@ export function layoutTimeChart(
   const toX = (h: number) => left + ((h - xDomain[0]) / (xDomain[1] - xDomain[0])) * plotWidth;
   const fromX = (px: number) => xDomain[0] + ((px - left) / plotWidth) * (xDomain[1] - xDomain[0]);
   const toY = (v: number) => {
-    if (model.yAxis.log && yDomain[0] > 0 && yDomain[1] > yDomain[0] && v > 0) {
+    if (logShown && v > 0) {
       const l0 = Math.log10(yDomain[0]);
       const l1 = Math.log10(yDomain[1]);
       return top + (1 - (Math.log10(v) - l0) / (l1 - l0)) * plotHeight;
@@ -764,10 +731,6 @@ export function layoutTimeChart(
   const dateTabX = Math.max(left + dateTabWidth / 2, Math.min(playheadX, width - 6 - dateTabWidth / 2));
 
   const rawAxisTicks: TimeAxisTick[] = model.mode !== 'columns' ? computeTimeAxisTicks(xDomain[0], xDomain[1], plotWidth) : [];
-  const axisCandidates: AxisCandidate[] = rawAxisTicks.map(tick => ({
-    hour: tick.hour, x: toX(tick.hour), label: tick.label || null, major: tick.major ?? true, labelWidth: tick.label ? measure(tick.label, smallFont) : 0,
-  }));
-  const axisTicks = placeAxisTicks(axisCandidates, [[dateTabX, dateTabWidth / 2 + 14]], small);
 
   return {
     width,
@@ -784,14 +747,14 @@ export function layoutTimeChart(
     axisY,
     xDomain,
     yDomain,
+    logShown,
+    logRefused: logAsked && !logShown,
     yTicks,
     playheadX,
     dateTabText,
     dateTabX,
     dateTabWidth,
-    axisTicks,
     rawAxisTicks,
-    axisCandidates,
     endLabels,
     markers: placedMarkers,
     gaps: placedGaps,

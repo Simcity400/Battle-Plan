@@ -9,7 +9,9 @@ import { FutureDataError, type BoundedReadView, type BoundedSeries, type FamilyP
 import { holderRunAt, type HolderRun, type HourRanges } from '../holders.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
-import type { ChartArtSlot, ChartEndLabel, ChartGap, ChartIdentityRun, ChartMarker, ChartMissingSpan, ChartSeriesLook, ChartStackBand, ChartStackModel } from './model.ts';
+import type { ChartArtSlot, ChartEndLabel, ChartGap, ChartIdentityRun, ChartMarker, ChartMarkerItem, ChartMissingSpan, ChartSeriesLook, ChartStackBand, ChartStackModel } from './model.ts';
+import type { PowerSpendMarker, PowerSpendMarkersParams, PowerSpendMarkersReply } from '../../generated/dashboard';
+import { formatCompactRational, formatCompactScalar, formatDateOnly, formatRational, formatScalar } from '../valueFormat.ts';
 
 export interface RationalScale {
   readonly numerator?: bigint;
@@ -28,6 +30,7 @@ export interface HeadKey {
   readonly tag: string;
   readonly part?: string;
   readonly partBits?: number;
+  readonly reading?: number;
 }
 
 interface PanelState {
@@ -92,9 +95,10 @@ export function headReading(
   const panel = readView.panel<{ readonly decimals?: number; readonly states?: readonly PanelState[] } & Partial<RankPanel>>(name);
   const ranked = panel?.rows?.find(row => countryKey(row.country) === key.tag);
   if (ranked) {
-    const reading = ranked.readings[0];
+    const at = key.reading ?? 0;
+    const reading = ranked.readings[at];
     if (!reading?.run) return { missing: reading?.missing ?? NOT_READ_AT_HOUR };
-    return scaledReading(BigInt(reading.run.valueRaw), panel?.measures?.[0]?.decimals ?? places, scale) ?? { missing: NOT_READ_AT_HOUR };
+    return scaledReading(BigInt(reading.run.valueRaw), panel?.measures?.[at]?.decimals ?? places, scale) ?? { missing: NOT_READ_AT_HOUR };
   }
   const state = panel?.states?.find(item => countryKey(item.country) === key.tag && (key.part === undefined || item.part === key.part));
   if (state) {
@@ -117,6 +121,18 @@ export function headReading(
 
 export const headValueOf = (reading: HeadReading | null | undefined): number | null =>
   reading != null && 'value' in reading ? reading.value : null;
+
+export function formatPowerAmount(reading: KnownHeadReading, decimals: number): string {
+  if (reading.raw !== undefined && reading.denominator !== undefined) {
+    const absWhole = (reading.raw < 0n ? -reading.raw : reading.raw) / reading.denominator;
+    return absWhole >= 10_000n
+      ? formatCompactRational(reading.raw, reading.denominator, { maxDecimals: 0 }).text
+      : formatRational(reading.raw, reading.denominator, { maxDecimals: decimals, fixedDecimals: true });
+  }
+  return Math.abs(reading.value) >= 1e4
+    ? formatCompactScalar(Math.trunc(reading.value), 'integer').text
+    : formatScalar(reading.value, { decimals, maxDecimals: decimals, fixedDecimals: true });
+}
 
 export function auditReading(
   row: string,
@@ -379,19 +395,64 @@ export function withinMapOf(
   return entries.length > 0 ? new Map(entries) : undefined;
 }
 
-export function spendMarkersOf(bounded: BoundedSeries | null | undefined, title: string): ChartMarker[] {
-  if (!bounded) return [];
-  const hours = new Set<number>();
-  for (const cluster of bounded.marks) {
-    if (cluster.bins && cluster.bins.length > 0) {
-      for (const [binHour] of cluster.bins) hours.add(binHour);
-    } else {
-      hours.add(cluster.firstHour);
+export type SpendCurrency = PowerSpendMarkersParams['currency'];
+
+export function spendMarkerEntry(ctx: FamilyPlanContext, currency: SpendCurrency): SourceEntry | null {
+  const tags = ctx.countries.tags;
+  if (tags.length !== 1 || ctx.options.spendTicks === false) return null;
+  return {
+    name: 'spending',
+    source: ctx.track.source,
+    branch: ctx.branch.id,
+    offset: ctx.track.axisOffset,
+    read: {
+      shape: 'point',
+      channel: 'panel',
+      coverage: { mode: 'keyed', keys: tags },
+      product: 'power-spend-markers',
+      followQuery: null,
+      params: { branchId: ctx.branch.id, country: countryFromKey(tags[0]!), currency },
+      provenInterval: (data, hour) => {
+        const next = (data as PowerSpendMarkersReply | null)?.nextChange;
+        return [hour, next == null ? Infinity : next - 1] as const;
+      },
+    },
+  };
+}
+
+export interface SpendMarkers {
+  readonly markers: readonly ChartMarker[];
+  readonly warnings: readonly string[];
+}
+
+const formatSpend = (value: number) => `−${formatScalar(Math.abs(value), { decimals: 0, maxDecimals: 2 })}`;
+
+function spendDetail(marker: PowerSpendMarker, decimals: number): string {
+  const parts: string[] = [];
+  if (marker.chargeRaw !== null) parts.push(formatSpend(Number(marker.chargeRaw) / 10 ** decimals));
+  if (marker.unknown > 0) parts.push(marker.unknown === marker.payments ? 'Cost not recorded' : `${marker.unknown} costs not recorded`);
+  if (marker.since !== null) parts.push(`${marker.payments} payments from ${formatDateOnly(marker.since)} to ${formatDateOnly(marker.hour)}`);
+  if (!marker.dated) parts.push(`Paid by ${formatDateOnly(marker.hour)}`);
+  return parts.join(' · ');
+}
+
+export function spendMarkersOf(readView: BoundedReadView, title: string, extentStart: number): SpendMarkers {
+  const reply = readView.panel<PowerSpendMarkersReply>('spending');
+  if (!reply) return { markers: [], warnings: [] };
+  const markers: ChartMarker[] = [];
+  let at = 0;
+  while (at < reply.markers.length) {
+    const hour = reply.markers[at]!.hour;
+    const day: ChartMarkerItem[] = [];
+    for (; at < reply.markers.length && reply.markers[at]!.hour === hour; at++) {
+      const marker = reply.markers[at]!;
+      day.push({ title: marker.title, detail: spendDetail(marker, reply.decimals) });
     }
+    if (hour < extentStart || hour > readView.hour) continue;
+    markers.push({ id: `spend:${hour}`, hour, title: day.length === 1 ? day[0]!.title : title, items: day });
   }
-  return [...hours]
-    .sort((a, b) => a - b)
-    .map((h, idx) => ({ id: `spend:${idx}:${h}`, hour: h, title }));
+  const warnings = reply.unrecorded.map(gap => `${title} not recorded ${gap.firstHour === gap.lastHour ? `on ${formatDateOnly(gap.firstHour)}` : `from ${formatDateOnly(gap.firstHour)} to ${formatDateOnly(gap.lastHour)}`}: ${gap.reason}`);
+  return { markers, warnings };
 }
 
 export function missingSpansOf(bounded: BoundedSeries | null | undefined): readonly ChartMissingSpan[] | undefined {

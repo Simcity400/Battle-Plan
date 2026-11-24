@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseDatedPanels, parseFollowed } from './message.ts';
+import { parseDatedPanels, parseFollowed } from '../../test-support/followMessage.ts';
 import { datedPanel, message } from './messages.fixture.ts';
 import { charge, laneOf, resetStamps, splitForLanes } from './split.ts';
 

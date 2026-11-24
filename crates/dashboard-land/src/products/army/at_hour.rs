@@ -1,7 +1,7 @@
 use super::{ArmyAttribution, group_info};
 use crate::products::forces::{
     ForceAtReply, ForcePart, Named,
-    at_hour::{ForceContext, attach_parts, frame_literals, frame_rows, load_context, recorded_value, select_explicit, select_population},
+    at_hour::{Chosen, ForceContext, attach_parts, chosen, chosen_reads, chosen_set, frame_literals, frame_rows, load_context, load_context_for, parts_keys, recorded_value, select_explicit, select_population, validate_group},
     validate_selection,
 };
 use content_reader_script::sub_units::SubUnits;
@@ -10,10 +10,10 @@ use dashboard_base::{
     catalogue::{self, Catalogue},
     products::{
         Country, LoadContext,
-        at_hour::{At, AtHour, Clock, Owner, Read},
+        at_hour::{At, AtHour, Clock, Owner, Read, ReadsAt},
     },
 };
-use dashboard_query::coverage::population;
+use dashboard_query::{coverage::population, series::ranked::GroupSelection};
 use replay_data::rows::{ArmyMixRow, ArmyTotalRow, TableId, tables};
 use replay_frame::frame::{DecodedFrame, Keys};
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,10 @@ pub struct ArmyAtParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<u32>,
+    #[doc = " The group whose members at the hour are the rows; never with countries or a top."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
     pub count_for: ArmyAttribution,
 }
 
@@ -85,9 +89,9 @@ impl AtHour for ArmyAt {
     const KEY: &'static str = "army-at";
     const TITLE: &'static str = "Army size";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: Clock = Clock::InputsOnly;
+    const CLOCK: Clock = Clock::Boundaries;
     type Params = ArmyAtParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, countFor, "countries[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, group, countFor, "countries[]"];
     type Reply = ForceAtReply;
     type Context = ForceContext;
 
@@ -97,7 +101,8 @@ impl AtHour for ArmyAt {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        validate_selection(&params.branch_id, &params.countries, params.top.map(|n| n as usize))
+        validate_selection(&params.branch_id, &params.countries, params.top.map(|n| n as usize))?;
+        validate_group(params.group.as_ref(), &params.countries, params.top)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -125,29 +130,46 @@ impl AtHour for ArmyAt {
         Ok(load_context(source, load, "Unit-group content"))
     }
 
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        load_context_for(source, load, "Unit-group content", &params.branch_id, params.group.as_ref())
+    }
+
+    fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        match (step, chosen_set(&params.countries, params.group.as_ref(), &at.context.groups, at.holders, at.hour)) {
+            (0, Some(slots)) => chosen_reads(&slots, TableId::ArmyTotals, &[(TableId::ArmyMix, 40)]),
+            _ => Self::reads(params, owner, step, held),
+        }
+    }
+
+    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        at.context.groups.valid_through(params.group.as_ref(), at.hour)
+    }
+
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let mut warnings = at.context.1.clone();
+        let mut warnings = at.context.warnings.clone();
         let total_of = |row: &ArmyTotalRow| match params.count_for {
             ArmyAttribution::Owner => recorded_value(row.owner_battalions),
             ArmyAttribution::Host => recorded_value(row.host_battalions),
         };
-        let selected = if params.countries.is_empty() {
-            let totals = match population::<tables::ArmyTotals>(frame, &Keys::All) {
-                Ok(rows) => rows,
-                Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
-            };
-            match select_population(totals, |row| row.slot, total_of, |_| None, at.holders, frame.hour, params.top, "battalions") {
-                Ok(rows) => rows,
-                Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+        let selected = match chosen(&params.countries, params.group.as_ref(), &at.context.groups, frame.hour)? {
+            Chosen::Refused(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+            Chosen::Population => {
+                let totals = match population::<tables::ArmyTotals>(frame, &Keys::All) {
+                    Ok(rows) => rows,
+                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+                };
+                match select_population(totals, |row| row.slot, total_of, |_| None, at.holders, frame.hour, params.top, "battalions") {
+                    Ok(rows) => rows,
+                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+                }
             }
-        } else {
-            select_explicit::<tables::ArmyTotals>(frame, &params.countries, total_of, |_| None, None, at.holders, frame.hour, "battalions")
+            Chosen::These(countries) => select_explicit::<tables::ArmyTotals>(frame, &countries, total_of, |_| None, None, at.holders, frame.hour, "battalions"),
         };
         let selected_slots: BTreeSet<u32> = selected.iter().filter_map(|row| row.slot).collect();
         let attr_code = u8::from(params.count_for == ArmyAttribution::Host);
         let mut met = BTreeSet::new();
         let mut by_slot: HashMap<u32, Vec<(u128, Option<i64>)>> = HashMap::new();
-        let parts_error = match population::<tables::ArmyMix>(frame, &Keys::All) {
+        let parts_error = match population::<tables::ArmyMix>(frame, &parts_keys(&params.countries, params.group.as_ref(), at, 40)) {
             Ok(rows) => {
                 for row in rows {
                     let row: &ArmyMixRow = row;
@@ -162,7 +184,7 @@ impl AtHour for ArmyAt {
             }
             Err(reason) => Some(reason),
         };
-        let named = if parts_error.is_some() { Named::default() } else { name_army_groups(frame, &met, at.context.0.as_deref(), &mut warnings) };
+        let named = if parts_error.is_some() { Named::default() } else { name_army_groups(frame, &met, at.context.catalogue.as_deref(), &mut warnings) };
         let (parts, rows, extra_warnings) = attach_parts(selected, named, &by_slot, parts_error);
         warnings.extend(extra_warnings);
         let mut seen = BTreeSet::new();

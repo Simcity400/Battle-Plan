@@ -26,7 +26,6 @@ function serializeTiledLine(source: string, line: TiledLine): SerializedTiledLin
     ...(line.summary.runs ? { runs: line.summary.runs } : {}),
     missing: line.missing,
     parts: line.parts,
-    marks: line.marks,
   };
   serializedLines.set(line, serialized);
   return serialized;

@@ -17,6 +17,7 @@ import type { OptionSection, OptionValue } from '../options';
 import { SECTION_TITLES, settingsSections } from '../settingsSections';
 import type { SettingsSection } from '../settingsSections';
 import { resolveWidgetScopedOptions } from '../../widgets/manifest';
+import { useRegion, useRegionHour } from '../widgetTime';
 import { CountriesSection } from './CountriesSection';
 import { OptionFields } from './OptionFields';
 import { TimeSection } from './TimeSection';
@@ -52,6 +53,7 @@ function SettingsBody({ widget, template, runtime, onChange, choices, mapOptions
   const values = resolveOptions(optionFields, widget.options);
   const effective = resolveWidgetCampaign(widget, template, runtime.defaultRoleId);
   const reference = runtime.tracks.find(track => track.id === effective.trackIds[0]);
+  const regionHour = useRegionHour(runtime, useRegion(widget));
   const save = (next: WidgetSpec) => onChange(next, true);
   const setValue = (key: string, value: OptionValue) => {
     const options = setOption(optionFields, widget.options, key, value);
@@ -63,7 +65,7 @@ function SettingsBody({ widget, template, runtime, onChange, choices, mapOptions
     save({ ...widget, options, title });
   };
   const fields = (section: OptionSection) => <OptionFields fields={sectionFields(optionFields, section, values, widget.countries, widget.time.mode)} values={values}
-    choices={choices} regionSource={{ client: runtime.client, track: reference }} onChange={setValue} />;
+    choices={choices} regionSource={{ client: runtime.client, track: reference, hour: regionHour }} onChange={setValue} />;
   const body = (section: SettingsSection) => {
     switch (section) {
       case 'campaign': return <CampaignPicker widget={widget} template={template} runtime={runtime} />;

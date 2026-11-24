@@ -26,7 +26,7 @@ import type {
 } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { CountryLooksMap } from '../looks.ts';
-import type { PagedRowsSnapshot } from '../table/rowSource.ts';
+import type { PagedRows } from '../table/rowSource.ts';
 import {
   familyBinding,
   familyInspectToken,
@@ -183,7 +183,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly owner?: string;
   readonly staticSources?: FamilyStaticSources | null;
   readonly staticProof?: FamilyStaticProof;
-  readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
+  readonly pagedRows?: PagedRows;
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly tiledRevision?: number;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
@@ -204,7 +204,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly onActivate?: (action: InstalledAction) => void;
   readonly onToggle?: (action: InstalledAction) => void;
   readonly onRegions?: (command: RegionCommand) => string | null;
-  readonly emptyAction?: ReactNode;
+  readonly emptyAction?: ReactNode | ((openRegions: (anchor: { readonly x: number; readonly y: number }) => void) => ReactNode);
   readonly contextMenuItems?: (hit: FamilyContextHit) => MenuItem[];
   readonly headerSlot?: HTMLElement | null;
   readonly onDiagnostics?: (warnings: string[]) => void;
@@ -292,7 +292,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const mirrorHeadRef = useRef<HTMLTableSectionElement>(null);
   const bodyWrapRef = useRef<HTMLDivElement>(null);
   const [targets, setTargets] = useState<FamilyChromeTargets>(NO_TARGETS);
-  const windowRef = useRef<FamilyRowWindow | null>(null);
+  const windowRef = useRef<{ readonly window: FamilyRowWindow; readonly hour: number } | null>(null);
   const requestedWindowRef = useRef<FamilyRowWindow | null>(null);
   const [chromeState, setChromeState] = useState<unknown>(undefined);
   const chromeStateRef = useRef<unknown>(undefined);
@@ -350,7 +350,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const lastTableRef = useRef<unknown>(null);
   const lastRowCountRef = useRef(-1);
   const lastFocusNavRef = useRef<unknown>(null);
-  const lastAuditRef = useRef<{ readonly id: number; readonly key: readonly unknown[]; readonly context: { fields: Readonly<Record<string, unknown>> } } | null>(null);
+  const lastAuditRef = useRef<{ readonly id: number; readonly key: readonly unknown[] } | null>(null);
 
   const [meta, setMeta] = useState<FamilyMetaState>(() => ({
     mode: staticSources ? 'picture' : 'reading',
@@ -446,6 +446,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     captureActive: audit.captureActive,
   };
   const latestRef = useRef(latest);
+  const openRegionsAt = (anchor: { readonly x: number; readonly y: number }) => {
+    const field = fieldsNow().regions as RegionRowsField | undefined;
+    latestRef.current.onRegions?.({ op: 'open', x: anchor.x, y: anchor.y, rows: field?.rows ?? [], ...(field?.active ? { active: field.active } : {}) });
+  };
   latestRef.current = latest;
 
   const publishHoverHour = useCallback((nextHour: number | null) => {
@@ -475,8 +479,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const requested = requestedWindowRef.current;
     const installed = recordRef.current?.picture;
     const reported = windowRef.current;
-    if (!requested || !installed || (reported && reported.first === requested.first && reported.count === requested.count)) return;
-    windowRef.current = requested;
+    if (!requested || !installed || (reported && reported.window === requested && installed.hour >= reported.hour)) return;
+    windowRef.current = { window: requested, hour: installed.hour };
     latestRef.current.onWindowChange?.(requested, installed.hour);
   }, []);
 
@@ -548,7 +552,9 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       scrollTop: physicalToLogicalTop(vp.scrollTop, scrollGeometryRef.current),
       zoomWindow: vp.zoomWindow,
     };
-    const rowWindow = requestedRowWindow(curAdapter, cur.plan, viewport, cur.settings, fieldsNow());
+    const asked = requestedRowWindow(curAdapter, cur.plan, viewport, cur.settings, fieldsNow());
+    const held = requestedWindowRef.current;
+    const rowWindow = asked && held && asked.first === held.first && asked.count === held.count ? held : asked;
 
     let auditId: number | undefined;
     if (perfLog && cur.captureActive && cur.exactReadView && curAdapter.deriveAuditRows) {
@@ -559,16 +565,16 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       } else {
         const deriveRows = curAdapter.deriveAuditRows;
         const readExact = cur.exactReadView;
-        const context = { viewport, settings: cur.settings, expanded: expansionRef.current, theme: cur.theme, fields: fieldsNow() };
+        const context = { viewport, settings: cur.settings, expanded: expansionRef.current, theme: cur.theme };
         const snapshot: PlanAuditSnapshot<TModel, TOptions> = {
           projection: cur.declaration,
           options: cur.options,
           exactReadView: hour => readExact(hour, rowWindow),
-          deriveRows: (model, hour) => deriveRows(model, hour, context),
+          deriveRows: (model, hour, fields) => deriveRows(model, hour, { ...context, fields: fields ?? EMPTY_FIELDS }),
           ...(curAdapter.auditOrdered !== undefined ? { ordered: curAdapter.auditOrdered } : {}),
         };
         auditId = audit.capture(snapshot, PLAN_VERIFIER);
-        lastAuditRef.current = { id: auditId, key, context };
+        lastAuditRef.current = { id: auditId, key };
       }
     }
 
@@ -664,7 +670,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         const at = field.add
           ? { x: (box?.left ?? 0) + field.nameLeft, y: (box?.top ?? 0) + field.add.top + field.add.height - viewportRef.current.scrollTop }
           : focusAnchorRef.current;
-        cur.onRegions!({ op: 'open', x: at.x, y: at.y, rows: field.rows });
+        cur.onRegions!({ op: 'open', x: at.x, y: at.y, aside: (box?.left ?? 0) + field.nameRight, rows: field.rows, ...(field.active ? { active: field.active } : {}) });
         return true;
       }
       case 'region-remove': {
@@ -859,8 +865,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         scrollTop: viewportRef.current.scrollTop,
       };
       const installedAuditId = auditIdOf(fields.audit);
-      const capturedAudit = lastAuditRef.current;
-      if (capturedAudit && capturedAudit.id === installedAuditId) capturedAudit.context.fields = fields;
       const installed: InstalledPicture = {
         id: shown.id,
         owner: shown.installedOwner ?? shown.owner ?? '',
@@ -1300,7 +1304,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     pipe,
     onRetryStream: retryStream,
     onRetryLocal,
-    emptyAction,
+    emptyAction: typeof emptyAction === 'function' ? emptyAction(openRegionsAt) : emptyAction,
   });
 
   const summary = meta.mode === 'picture' && !meta.empty && meta.summaryText
@@ -1350,7 +1354,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           className="fh-sr-only"
           aria-label={label}
           role={adapter.tree ? 'treegrid' : undefined}
-          {...(rowsFocus ? { onFocus: onRowFocus, onBlur: onRowBlur, onKeyDown } : {})}
+          {...(rowsFocus ? { tabIndex: -1, onFocus: onRowFocus, onBlur: onRowBlur, onKeyDown } : {})}
         >
           <thead ref={mirrorHeadRef} />
           <tbody ref={mirrorBodyRef} />

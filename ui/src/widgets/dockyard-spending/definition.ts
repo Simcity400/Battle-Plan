@@ -5,7 +5,6 @@ import { SUNBURST_OPTIONS, levelOption } from '../../charts/sunburst/sunburstOpt
 import { IC_DECIMALS_OPTION } from '../../dashboard/icDecimals.ts';
 
 export const VIEWS = [{ value: 'circle', label: 'Breakdown' }, { value: 'months', label: 'By month' }] as const;
-export type DockyardViewChoice = typeof VIEWS[number]['value'];
 
 const circle = (options: Readonly<Record<string, OptionValue>>) => options.view !== 'months';
 

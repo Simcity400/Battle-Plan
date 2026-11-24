@@ -1,7 +1,7 @@
 
 use super::{CountrySpan, UnobservedSpan};
 use crate::{
-    identity::{Holder, Holders},
+    identity::{Country, Holder, Holders},
     series::MissingSpan,
 };
 use serde::{Deserialize, Serialize};
@@ -141,7 +141,7 @@ struct Signature {
 }
 
 struct Filtered {
-    display: Vec<u32>,
+    display: Vec<(u32, i32)>,
     observed: Vec<i32>,
     changes: Vec<i32>,
     unattributed: Vec<i32>,
@@ -174,7 +174,7 @@ fn within(spans: &[(i32, i32)], hour: i32) -> bool {
 }
 
 enum Admit {
-    Yes,
+    Yes(i32),
     No,
     Unknown,
     Unattributed,
@@ -189,6 +189,10 @@ impl Members {
     fn resolve(holders: &Holders, selection: &Selection) -> Self {
         let mut slots: HashMap<u32, Vec<(i32, i32)>> = HashMap::new();
         for span in &selection.membership {
+            if let Country::Slot(slot) = span.country {
+                slots.entry(slot).or_default().push((span.first_hour, span.last_hour));
+                continue;
+            }
             for run in holders.within(&span.country, span.first_hour, span.last_hour) {
                 if let Holder::Found { slot, .. } = run.holder {
                     slots.entry(slot).or_default().push((run.first.max(span.first_hour), run.last.min(span.last_hour)));
@@ -201,21 +205,25 @@ impl Members {
         Self { slots, unknown: sorted_spans(selection.unobserved.iter().map(|span| (span.first_hour, span.last_hour)).collect()) }
     }
 
-    fn admits(&self, roles: &[Role]) -> Admit {
+    fn admits(&self, roles: &[Role], observed: i32) -> Admit {
         let mut unknown = false;
         let mut named = false;
+        let mut admitted: Option<i32> = None;
         for role in roles {
             let Some(slot) = role.slot else { continue };
             named = true;
             if self.slots.get(&slot).is_some_and(|spans| within(spans, role.at)) {
-                return Admit::Yes;
+                let known = role.at.max(observed);
+                admitted = Some(admitted.map_or(known, |held| held.min(known)));
+                continue;
             }
             unknown |= within(&self.unknown, role.at);
         }
-        match (unknown, named) {
-            (true, _) => Admit::Unknown,
-            (false, false) => Admit::Unattributed,
-            (false, true) => Admit::No,
+        match (admitted, unknown, named) {
+            (Some(hour), ..) => Admit::Yes(hour),
+            (None, true, _) => Admit::Unknown,
+            (None, false, false) => Admit::Unattributed,
+            (None, false, true) => Admit::No,
         }
     }
 }
@@ -298,15 +306,15 @@ impl<P> Index<P> {
             if signature.search.as_ref().is_some_and(|needle| !entry.text.to_lowercase().contains(needle.as_str())) {
                 continue;
             }
-            match members.as_ref().map_or(Admit::Yes, |members| members.admits(&entry.roles)) {
-                Admit::Yes => display.push(at as u32),
+            match members.as_ref().map_or(Admit::Yes(entry.observed), |members| members.admits(&entry.roles, entry.observed)) {
+                Admit::Yes(from) => display.push((at as u32, from)),
                 Admit::Unattributed => unattributed.push(entry.observed),
                 Admit::No | Admit::Unknown => {}
             }
         }
-        let mut observed: Vec<i32> = display.iter().map(|&at| self.entries[at as usize].observed).collect();
+        let mut observed: Vec<i32> = display.iter().map(|&(_, from)| from).collect();
         observed.sort_unstable();
-        let mut changes: Vec<i32> = display.iter().flat_map(|&at| self.entries[at as usize].states.iter().skip(1).map(|&(from, _)| from)).collect();
+        let mut changes: Vec<i32> = display.iter().flat_map(|&(at, _)| self.entries[at as usize].states.iter().skip(1).map(|&(from, _)| from)).collect();
         changes.sort_unstable();
         unattributed.sort_unstable();
         let made = Arc::new(Filtered { display, observed, changes, unattributed, unknown: signature.unobserved.clone() });
@@ -371,10 +379,10 @@ impl<P> Index<P> {
         let mut descending: Vec<usize> = (0..gaps.len()).collect();
         descending.sort_by_key(|&at| std::cmp::Reverse((gaps[at].last_hour, gaps[at].first_hour)));
         let mut next_gap = 0usize;
-        let start = filtered.display.partition_point(|&at| self.entries[at as usize].date > hour);
-        for &at in &filtered.display[start..] {
+        let start = filtered.display.partition_point(|&(at, _)| self.entries[at as usize].date > hour);
+        for &(at, from) in &filtered.display[start..] {
             let entry = &self.entries[at as usize];
-            if entry.observed > hour {
+            if from > hour {
                 continue;
             }
             let state = entry.state_at(hour);
@@ -477,10 +485,10 @@ impl<P> Index<P> {
         let first_bin = i64::from(first).div_euclid(bin_hours) * bin_hours;
         let mut before = 0u64;
         let mut bins: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
-        let start = filtered.display.partition_point(|&at| self.entries[at as usize].date > last.min(ask.hour));
-        for &at in &filtered.display[start..] {
+        let start = filtered.display.partition_point(|&(at, _)| self.entries[at as usize].date > last.min(ask.hour));
+        for &(at, from) in &filtered.display[start..] {
             let entry = &self.entries[at as usize];
-            if entry.observed > ask.hour || ask.states.is_some_and(|states| entry.state_at(ask.hour).is_none_or(|state| !states.contains(&state))) {
+            if from > ask.hour || ask.states.is_some_and(|states| entry.state_at(ask.hour).is_none_or(|state| !states.contains(&state))) {
                 continue;
             }
             if entry.date < first {

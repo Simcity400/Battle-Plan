@@ -5,6 +5,7 @@ import type { LogCell, LogFacetCountAsk, MissingSpan } from '../../generated/das
 export type TailProduct =
   | 'log-tail'
   | 'market-ledger-tail'
+  | 'raid-log-tail'
   | 'event-feed-tail'
   | 'decisions-tail'
   | 'event-choices-tail';
@@ -55,47 +56,27 @@ export interface PageFetchAsk {
   readonly hour: number;
 }
 
-export interface WindowPlan {
-  readonly fetch: readonly PageFetchAsk[];
-  readonly cancel: readonly number[];
-}
+export type SnapshotPage<TRow extends DatedLogRow = DatedLogRow> =
+  | { readonly hour: number; readonly offset: number; readonly limit: number; readonly reply: TailReply<TRow>; readonly raw: unknown }
+  | { readonly hour: number; readonly offset: number; readonly limit: number; readonly refused: string };
 
-export interface FreezeState {
-  readonly hour: number;
-  readonly total: number;
-  readonly firstOrdinal: number;
-  readonly missing: readonly MissingSpan[];
-}
+export type SnapshotPages<TRow extends DatedLogRow = DatedLogRow> = Readonly<Record<number, SnapshotPage<TRow>>>;
 
-export interface HeadApplyOptions {
-  readonly forceFull?: boolean;
-}
-
-export interface PagedRowsSnapshot {
-  readonly identity: string;
-  readonly frozenHour: number | null;
-  readonly headLimit: number;
-  readonly pageSize: number;
-  readonly pages: Readonly<Record<number, readonly DatedLogRow[]>>;
-  readonly refusals: Readonly<Record<number, string>>;
-}
+export type PagedRows = Readonly<Record<string, SnapshotPages>>;
 
 export interface TableRowSource<TRow extends DatedLogRow> {
   readonly identity: string;
   readonly total: number;
-  readonly liveCount: number;
   readonly at: number | null;
-  readonly missing: readonly MissingSpan[];
+  readonly missing: readonly PlacedSpan[];
   readonly refused: string | null;
-  readonly frozen: FreezeState | null;
   readonly facetTotals?: ReadonlyMap<string, number>;
   readonly rawHead?: unknown;
   sliceAt(hour: number, first: number, count: number): readonly LogRowSlot<TRow>[];
 }
 
 export const DEFAULT_TAIL_PAGE_SIZE = 256;
-const NO_MISSING: readonly MissingSpan[] = [];
-const NO_PLAN: WindowPlan = { fetch: [], cancel: [] };
+const NO_PAGES: SnapshotPages = {};
 
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -196,75 +177,95 @@ export function isTailReplyLike(value: unknown): boolean {
   return isObject(value) && Array.isArray(value.rows) && typeof value.total === 'string' && typeof value.offset === 'string';
 }
 
+export function pageOffsets(window: RowWindow, pageSize: number): readonly number[] {
+  const first = Math.max(0, Math.floor(window.first));
+  const count = Math.max(0, Math.floor(window.count));
+  if (count === 0) return [];
+  const size = Math.max(1, Math.floor(pageSize));
+  const offsets: number[] = [];
+  for (let page = Math.floor(first / size); page * size < first + count; page++) offsets.push(page * size);
+  return offsets;
+}
+
+function sliceSlots<TRow extends DatedLogRow>(
+  reqHour: number,
+  first: number,
+  count: number,
+  total: number,
+  slot: (ordinal: number) => LogRowSlot<TRow>,
+): LogRowSlot<TRow>[] {
+  const start = Math.max(0, Math.floor(first));
+  const end = Math.min(total, start + Math.max(0, Math.floor(count)));
+  const out: LogRowSlot<TRow>[] = [];
+  for (let ordinal = start; ordinal < end; ordinal++) {
+    const made = slot(ordinal);
+    out.push(made.kind === 'data' && made.row.hour > reqHour
+      ? { kind: 'refused', ordinal, readAt: reqHour, reason: `Row ${made.row.key} came from after the displayed hour.` }
+      : made);
+  }
+  return out;
+}
+
+function pageAt<TRow extends DatedLogRow>(pages: SnapshotPages<TRow>, ordinal: number, pageSize: number): SnapshotPage<TRow> | undefined {
+  return pages[Math.floor(ordinal / pageSize) * pageSize];
+}
+
 export function buildRowSourceFromHead(
   identity: string,
   headRaw: unknown,
   headRefused: string | undefined,
   hour: number,
-  snapshot?: PagedRowsSnapshot,
+  pages: SnapshotPages = NO_PAGES,
 ): TableRowSource<DatedLogRow> | null {
-  const pageSize = snapshot?.pageSize ?? DEFAULT_TAIL_PAGE_SIZE;
+  const held = Object.values(pages);
+  const shown = held.length > 0 && held.every(page => page.hour <= hour) ? pages : NO_PAGES;
+  const answered = Object.values(shown).find((page): page is Extract<SnapshotPage, { reply: unknown }> => 'reply' in page);
+  if (answered) {
+    const { reply, hour: at, limit } = answered;
+    return {
+      identity,
+      total: reply.total,
+      at,
+      missing: reply.missing,
+      refused: null,
+      facetTotals: reply.facetTotals,
+      rawHead: answered.raw,
+      sliceAt: (reqHour, first, count) => sliceSlots(reqHour, first, count, reply.total, ordinal => {
+        const page = pageAt(shown, ordinal, limit);
+        if (!page || page.hour !== at) return { kind: 'loading', ordinal, readAt: reqHour };
+        if ('refused' in page) return { kind: 'refused', ordinal, readAt: reqHour, reason: page.refused };
+        const row = page.reply.rows[ordinal - page.offset];
+        return row ? { kind: 'data', ordinal, readAt: reqHour, row } : { kind: 'loading', ordinal, readAt: reqHour };
+      }),
+    };
+  }
   if (headRefused !== undefined) {
-    const controller = new TailWindowController<DatedLogRow>(identity, pageSize);
-    controller.refuseHead(hour, headRefused);
-    return controller.snapshot();
+    return {
+      identity,
+      total: 0,
+      at: hour,
+      missing: [],
+      refused: headRefused,
+      sliceAt: (reqHour, first, count) => (count > 0 ? [{ kind: 'refused', ordinal: Math.max(0, Math.floor(first)), readAt: reqHour, reason: headRefused }] : []),
+    };
   }
   if (!isTailReplyLike(headRaw)) return null;
-  const activeHour = snapshot?.frozenHour !== null && snapshot?.frozenHour !== undefined && snapshot.frozenHour <= hour
-    ? snapshot.frozenHour
-    : hour;
-  const head = validateGenericTailReply(headRaw, activeHour);
-  const frozenState: FreezeState | null = snapshot?.frozenHour !== null && snapshot?.frozenHour !== undefined && snapshot.frozenHour <= hour
-    ? { hour: snapshot.frozenHour, total: head.total, firstOrdinal: head.firstOrdinal, missing: head.missing }
-    : null;
-  const pages = snapshot ? new Map<number, readonly DatedLogRow[]>(Object.entries(snapshot.pages).map(([k, v]) => [Number(k), v])) : null;
-  const refusals = snapshot ? new Map<number, string>(Object.entries(snapshot.refusals).map(([k, v]) => [Number(k), v])) : null;
-  const headRows = head.rows;
-  const total = head.total;
-  const missing = head.missing;
+  const head = validateGenericTailReply(headRaw, hour);
+  const refusals = Object.values(shown);
   return {
     identity,
-    total,
-    liveCount: 0,
-    at: activeHour,
-    missing,
+    total: head.total,
+    at: hour,
+    missing: head.missing,
     refused: null,
-    frozen: frozenState,
     facetTotals: head.facetTotals,
     rawHead: headRaw,
-    sliceAt(reqHour: number, first: number, count: number): readonly LogRowSlot<DatedLogRow>[] {
-      const start = Math.max(0, Math.floor(first));
-      const len = Math.max(0, Math.floor(count));
-      if (len === 0) return [];
-      const out: LogRowSlot<DatedLogRow>[] = [];
-      const end = Math.min(total, start + len);
-      const baseOffset = headRows.length;
-      for (let ordinal = start; ordinal < end; ordinal++) {
-        if (ordinal < baseOffset) {
-          const row = headRows[ordinal]!;
-          out.push(row.hour <= reqHour
-            ? { kind: 'data', ordinal, readAt: reqHour, row }
-            : { kind: 'refused', ordinal, readAt: reqHour, reason: `Row ${row.key} came from after the displayed hour.` });
-          continue;
-        }
-        const pageOffset = baseOffset + Math.floor((ordinal - baseOffset) / pageSize) * pageSize;
-        const pageRefused = refusals?.get(pageOffset);
-        if (pageRefused !== undefined) {
-          out.push({ kind: 'refused', ordinal, readAt: reqHour, reason: pageRefused });
-          continue;
-        }
-        const page = pages?.get(pageOffset);
-        const row = page?.[ordinal - pageOffset];
-        if (row) {
-          out.push(row.hour <= reqHour
-            ? { kind: 'data', ordinal, readAt: reqHour, row }
-            : { kind: 'refused', ordinal, readAt: reqHour, reason: `Row ${row.key} came from after the displayed hour.` });
-        } else {
-          out.push({ kind: 'loading', ordinal, readAt: reqHour });
-        }
-      }
-      return out;
-    },
+    sliceAt: (reqHour, first, count) => sliceSlots(reqHour, first, count, head.total, ordinal => {
+      const row = head.rows[ordinal];
+      if (row) return { kind: 'data', ordinal, readAt: reqHour, row };
+      const refusal = refusals.find(page => 'refused' in page && ordinal >= page.offset && ordinal < page.offset + page.limit);
+      return refusal && 'refused' in refusal ? { kind: 'refused', ordinal, readAt: reqHour, reason: refusal.refused } : { kind: 'loading', ordinal, readAt: reqHour };
+    }),
   };
 }
 
@@ -378,218 +379,98 @@ function placeByOrdinal<TRow extends DatedLogRow>(
   return out;
 }
 
-interface FrozenPicture<TRow extends DatedLogRow> {
-  readonly state: FreezeState;
-  readonly liveCount: number;
-  readonly headRows: readonly TRow[];
-  readonly pages: Map<number, readonly TRow[]>;
-  readonly refusals: Map<number, string>;
+export interface PagerStep {
+  readonly fetch: readonly PageFetchAsk[];
+  readonly cancel: readonly number[];
 }
 
-export class TailWindowController<TRow extends DatedLogRow> {
-  #identity: string;
-  #pageSize: number;
-  #headHour: number | null = null;
-  #head: TailReply<TRow> | null = null;
-  #headRefused: string | null = null;
-  #liveCount = 0;
-  #frozen: FrozenPicture<TRow> | null = null;
+const NO_STEP: PagerStep = { fetch: [], cancel: [] };
+
+export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
+  readonly #headLimit: number;
+  readonly #pageSize: number;
+  #hour: number | null = null;
+  #pages = new Map<number, SnapshotPage<TRow>>();
   #inFlight = new Set<number>();
+  #published: SnapshotPages<TRow> = NO_PAGES as SnapshotPages<TRow>;
+  #dirty = false;
 
-  constructor(identity: string, pageSize = DEFAULT_TAIL_PAGE_SIZE) {
-    this.#identity = identity;
-    this.#pageSize = Math.max(1, pageSize);
+  constructor(headLimit: number, pageSize = DEFAULT_TAIL_PAGE_SIZE) {
+    this.#headLimit = Math.max(1, Math.floor(headLimit));
+    this.#pageSize = Math.max(1, Math.floor(pageSize));
   }
 
-  get identity(): string { return this.#identity; }
-  get frozen(): FreezeState | null { return this.#frozen?.state ?? null; }
-  get at(): number | null { return this.#frozen ? this.#frozen.state.hour : this.#headHour; }
+  get hour(): number | null { return this.#hour; }
 
-  reset(identity: string): readonly number[] {
-    const cancel = [...this.#inFlight];
-    this.#identity = identity;
-    this.#headHour = null;
-    this.#head = null;
-    this.#headRefused = null;
-    this.#liveCount = 0;
-    this.#frozen = null;
-    this.#inFlight.clear();
-    return cancel;
+  get shownHour(): number | null {
+    for (const page of this.#pages.values()) if ('reply' in page) return page.hour;
+    return null;
   }
 
-  applyHead(acknowledgedHour: number, reply: TailReply<TRow>, liveCount = 0, options?: HeadApplyOptions): readonly number[] {
-    for (const row of reply.rows) {
-      if (row.hour > acknowledgedHour) {
-        throw new Error(`Row ${row.key} at hour ${row.hour} exceeds acknowledged hour ${acknowledgedHour}.`);
-      }
-    }
-    this.#headHour = acknowledgedHour;
-    this.#head = reply;
-    this.#headRefused = null;
-    this.#liveCount = Math.max(0, liveCount);
-    if (this.#frozen && (options?.forceFull || acknowledgedHour < this.#frozen.state.hour)) {
-      return this.releaseFreeze();
-    }
-    return [];
-  }
-
-  refuseHead(acknowledgedHour: number, reason: string, options?: HeadApplyOptions): readonly number[] {
-    this.#headHour = acknowledgedHour;
-    this.#head = null;
-    this.#headRefused = reason;
-    if (this.#frozen && (options?.forceFull || acknowledgedHour < this.#frozen.state.hour)) {
-      return this.releaseFreeze();
-    }
-    return [];
-  }
-
-  releaseFreeze(): readonly number[] {
-    const cancel = [...this.#inFlight];
-    this.#frozen = null;
-    this.#inFlight.clear();
-    return cancel;
-  }
-
-  setWindow(window: RowWindow): WindowPlan {
+  window(window: RowWindow, installedHour: number | null): PagerStep {
     const first = Math.max(0, Math.floor(window.first));
     const count = Math.max(0, Math.floor(window.count));
-    if (count === 0) return NO_PLAN;
-    const end = first + count;
-
-    const headLength = this.#frozen ? this.#frozen.headRows.length : (this.#head?.rows.length ?? 0);
-    if (first === 0 && end <= headLength) {
-      return this.#frozen ? { fetch: [], cancel: this.releaseFreeze() } : NO_PLAN;
-    }
-
-    if (!this.#frozen) {
-      if (this.#head === null || this.#headHour === null) return NO_PLAN;
-      if (end <= this.#head.rows.length || this.#head.rows.length >= this.#head.total) return NO_PLAN;
-      this.#frozen = {
-        state: {
-          hour: this.#headHour,
-          total: this.#head.total,
-          firstOrdinal: this.#head.firstOrdinal,
-          missing: this.#head.missing,
-        },
-        liveCount: this.#liveCount,
-        headRows: this.#head.rows,
-        pages: new Map(),
-        refusals: new Map(),
-      };
-    }
-
-    const frozen = this.#frozen;
-    const baseOffset = frozen.headRows.length;
-    const clampedEnd = Math.min(end, frozen.state.total);
-    const wanted = new Set<number>();
-    if (clampedEnd > baseOffset) {
-      const startPage = Math.max(0, Math.floor((Math.max(first, baseOffset) - baseOffset) / this.#pageSize));
-      const endPage = Math.floor((clampedEnd - 1 - baseOffset) / this.#pageSize);
-      for (let page = startPage; page <= endPage; page++) {
-        wanted.add(baseOffset + page * this.#pageSize);
-      }
-    }
-
+    if (count === 0) return NO_STEP;
+    if (first + count <= this.#headLimit) return { fetch: [], cancel: this.#release() };
+    if (installedHour === null || !Number.isFinite(installedHour)) return NO_STEP;
+    const hour = Math.floor(installedHour);
     const cancel: number[] = [];
-    for (const offset of this.#inFlight) {
-      if (!wanted.has(offset)) {
-        this.#inFlight.delete(offset);
-        cancel.push(offset);
-      }
+    if (this.#hour === null || this.#hour > hour) {
+      cancel.push(...this.#release());
+      this.#hour = hour;
     }
-
+    const wanted = pageOffsets({ first, count }, this.#pageSize);
+    const keep = new Set(wanted);
+    keep.add(wanted[0]! - this.#pageSize);
+    keep.add(wanted[wanted.length - 1]! + this.#pageSize);
+    for (const offset of this.#pages.keys()) {
+      if (keep.has(offset)) continue;
+      this.#pages.delete(offset);
+      this.#dirty = true;
+    }
+    for (const offset of this.#inFlight) {
+      if (wanted.includes(offset)) continue;
+      this.#inFlight.delete(offset);
+      cancel.push(offset);
+    }
     const fetch: PageFetchAsk[] = [];
     for (const offset of wanted) {
-      if (frozen.pages.has(offset) || frozen.refusals.has(offset) || this.#inFlight.has(offset)) continue;
-      const limit = Math.min(this.#pageSize, frozen.state.total - offset);
-      if (limit <= 0) continue;
+      if (this.#pages.has(offset) || this.#inFlight.has(offset)) continue;
       this.#inFlight.add(offset);
-      fetch.push({ offset, limit, hour: frozen.state.hour });
+      fetch.push({ offset, limit: this.#pageSize, hour });
     }
     return { fetch, cancel };
   }
 
-  applyPage(hour: number, offset: number, rows: readonly TRow[]): boolean {
-    if (!this.#frozen || this.#frozen.state.hour !== hour) return false;
-    for (const row of rows) {
-      if (row.hour > hour) {
-        throw new Error(`Page row ${row.key} at hour ${row.hour} exceeds frozen hour ${hour}.`);
-      }
+  answer(ask: PageFetchAsk, reply: TailReply<TRow>, raw: unknown): boolean {
+    return this.#settle(ask, { hour: ask.hour, offset: ask.offset, limit: ask.limit, reply, raw });
+  }
+
+  refuse(ask: PageFetchAsk, reason: string): boolean {
+    return this.#settle(ask, { hour: ask.hour, offset: ask.offset, limit: ask.limit, refused: reason });
+  }
+
+  pages(): SnapshotPages<TRow> {
+    if (this.#dirty) {
+      this.#published = Object.fromEntries(this.#pages) as SnapshotPages<TRow>;
+      this.#dirty = false;
     }
-    this.#inFlight.delete(offset);
-    this.#frozen.refusals.delete(offset);
-    this.#frozen.pages.set(offset, rows);
+    return this.#published;
+  }
+
+  #settle(ask: PageFetchAsk, page: SnapshotPage<TRow>): boolean {
+    if (ask.hour !== this.#hour || !this.#inFlight.delete(ask.offset)) return false;
+    this.#pages.set(ask.offset, page);
+    this.#dirty = true;
     return true;
   }
 
-  refusePage(hour: number, offset: number, reason: string): boolean {
-    if (!this.#frozen || this.#frozen.state.hour !== hour) return false;
-    this.#inFlight.delete(offset);
-    this.#frozen.refusals.set(offset, reason);
-    return true;
-  }
-
-  snapshot(): TableRowSource<TRow> {
-    const frozen = this.#frozen;
-    const activeHour = frozen ? frozen.state.hour : this.#headHour;
-    const total = frozen ? frozen.state.total : (this.#head?.total ?? 0);
-    const missing = frozen ? frozen.state.missing : (this.#head?.missing ?? NO_MISSING);
-    const refused = frozen ? null : this.#headRefused;
-    const headRows = frozen ? frozen.headRows : (this.#head?.rows ?? []);
-    const pageSize = this.#pageSize;
-    const pages = frozen ? new Map(frozen.pages) : null;
-    const refusals = frozen ? new Map(frozen.refusals) : null;
-
-    return {
-      identity: this.#identity,
-      total,
-      liveCount: frozen ? frozen.liveCount : this.#liveCount,
-      at: activeHour,
-      missing,
-      refused,
-      frozen: frozen?.state ?? null,
-      sliceAt(hour: number, first: number, count: number): readonly LogRowSlot<TRow>[] {
-        const start = Math.max(0, Math.floor(first));
-        const len = Math.max(0, Math.floor(count));
-        if (len === 0) return [];
-        if (refused !== null && activeHour === hour) {
-          return [{ kind: 'refused', ordinal: start, readAt: hour, reason: refused }];
-        }
-        if (activeHour === null || activeHour !== hour) {
-          const out: LogRowSlot<TRow>[] = [];
-          const limit = activeHour === null ? len : Math.min(len, Math.max(0, total - start));
-          for (let i = 0; i < limit; i++) out.push({ kind: 'loading', ordinal: start + i, readAt: hour });
-          return out;
-        }
-        const out: LogRowSlot<TRow>[] = [];
-        const end = Math.min(total, start + len);
-        const baseOffset = headRows.length;
-        for (let ordinal = start; ordinal < end; ordinal++) {
-          if (ordinal < baseOffset) {
-            const row = headRows[ordinal]!;
-            out.push(row.hour <= hour
-              ? { kind: 'data', ordinal, readAt: hour, row }
-              : { kind: 'refused', ordinal, readAt: hour, reason: `Row ${row.key} came from after the displayed hour.` });
-            continue;
-          }
-          const pageOffset = baseOffset + Math.floor((ordinal - baseOffset) / pageSize) * pageSize;
-          const pageRefused = refusals?.get(pageOffset);
-          if (pageRefused !== undefined) {
-            out.push({ kind: 'refused', ordinal, readAt: hour, reason: pageRefused });
-            continue;
-          }
-          const page = pages?.get(pageOffset);
-          const row = page?.[ordinal - pageOffset];
-          if (row) {
-            out.push(row.hour <= hour
-              ? { kind: 'data', ordinal, readAt: hour, row }
-              : { kind: 'refused', ordinal, readAt: hour, reason: `Row ${row.key} came from after the displayed hour.` });
-          } else {
-            out.push({ kind: 'loading', ordinal, readAt: hour });
-          }
-        }
-        return out;
-      },
-    };
+  #release(): number[] {
+    const cancel = [...this.#inFlight];
+    if (this.#hour !== null || this.#pages.size > 0) this.#dirty = true;
+    this.#hour = null;
+    this.#pages.clear();
+    this.#inFlight.clear();
+    return cancel;
   }
 }

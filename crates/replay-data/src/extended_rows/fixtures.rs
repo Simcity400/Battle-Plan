@@ -676,6 +676,23 @@ sample_struct!(LandResultSide { countries:Vec<u32>, secondary_countries:Vec<u32>
 fixture!(DivisionLandInputsRow, |key| {division:key as u64}, {manpower:Vec<DivisionManpowerContributor>, received_supply:RetiredI64, maximum_grace:RetiredI64, remaining_grace:RetiredI64, naval_transfer:bool});
 fixture!(DestroyedDivisionsRow, |key| {id:key as u64}, {division:u64, owner:u32, killer_country:u32, killer_division:Option<u64>, province:u32, destination:Option<u32>, combats:Vec<u64>, hour:i32, triggering_combat:Option<u64>, combat_province:Option<u32>});
 fixture!(LandEventCoverageRow, |key| {id:key as u32}, {epoch:u64, from_hour:i32, to_hour:i32, complete:bool, lost_events:u64});
+impl Fixture for LandCombatEdgesRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        Self {
+            id: key as u64,
+            kind: (tick % 2) as u8,
+            hour: i32::sample(tick),
+            combat: (key >> 64) as u64,
+            division: Option::<u64>::sample(tick),
+            side: [0, 1, Self::NO_SIDE][tick % 3],
+            manpower: Option::<i32>::sample(tick),
+            casualties_before: Option::<i32>::sample(tick),
+            casualties_after: Option::<i32>::sample(tick),
+            withheld: (tick % 5) as u8,
+        }
+    }
+}
+
 impl Fixture for LandCombatResultsRow {
     fn fixture(key: u128, tick: usize) -> Self {
         Self {
@@ -4327,6 +4344,9 @@ pub fn sample_extended_table(table: TableId, tick: usize) -> Option<TableRows> {
             TableRows::LandCombatProgress(rows::<LandCombatProgressRow>(tick))
         }
         TableId::LandCombatSides => TableRows::LandCombatSides(rows::<LandCombatSideRow>(tick)),
+        TableId::LandCombatEdges => {
+            TableRows::LandCombatEdges(rows::<LandCombatEdgesRow>(tick))
+        }
         TableId::CombatEngagementRefreshes => {
             TableRows::CombatEngagementRefreshes(rows::<CombatEngagementRefreshRow>(tick))
         }
@@ -6535,6 +6555,7 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<LandCombatProgressRow>(TableId::LandCombatProgress);
     check_table::<LandCombatSideRow>(TableId::LandCombatSides);
     check_table::<CombatEngagementRefreshRow>(TableId::CombatEngagementRefreshes);
+    check_table::<LandCombatEdgesRow>(TableId::LandCombatEdges);
     check_table::<ThreatSourceRow>(TableId::ThreatSources);
     check_table::<ThreatCountryAggregateRow>(TableId::ThreatCountryAggregates);
     check_table::<RelationOpinionRow>(TableId::RelationOpinions);

@@ -305,7 +305,7 @@ fn a_followed_top_of_named_countries_ranks_only_them_as_series_state_does() {
         expected.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
         let named: Vec<&str> = (0..answer.keys.len()).filter_map(|row| answer.name(row)).collect();
         assert_eq!(named, expected.iter().map(|(_, tag)| tag.as_str()).collect::<Vec<_>>(), "hour {hour}");
-        assert_eq!(Ok(named.iter().map(|tag| (*tag).to_owned()).collect::<Vec<_>>()), line.rank_at(hour, 2, false).unwrap(), "the followed top is the exact rank at {hour}");
+        assert_eq!(Ok(named.iter().map(|tag| dashboard_query::identity::Country::from(*tag)).collect::<Vec<_>>()), line.rank_at(hour, 2, false).unwrap(), "the followed top is the exact rank at {hour}");
         compared += 1;
     }
     assert!(compared > 3 && refused == 2, "{compared} hours ranked both countries, {refused} refused");

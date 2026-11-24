@@ -13,9 +13,9 @@ import {
 } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded, partialValue, wireFloat, wireWhole, type NullableMeaning, type Value } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, wireFloat, wireWhole, zeroValue, type NullableMeaning, type Value } from '../../families/value.ts';
 import type { ApmReply, ApmSeries, ApmValue } from '../../generated/dashboard';
-import { GAPS_NOTE, playerNames, validateApm, valueNote } from './apmData.ts';
+import { formatApmRate, formatUnpausedMinutesText, GAPS_NOTE, parseUnsignedInt, playerNames, validateApm, valueNote } from './apmData.ts';
 import { apmHeadQuery } from './apmHead.ts';
 import { TABLE_BASE } from './definition.ts';
 
@@ -38,7 +38,22 @@ interface ParsedApm {
   readonly warnings: readonly string[];
 }
 
-const APM = { apm: 0, confirmedApm: 1, orders: 2, pausedOrders: 3, minutes: 4, complete: 5, gaps: 6, tag: 7, hour: 8, name: 9, nameMissing: 10 } as const;
+const APM = {
+  apm: 0,
+  confirmedApm: 1,
+  orders: 2,
+  pausedOrders: 3,
+  minutes: 4,
+  complete: 5,
+  gaps: 6,
+  tag: 7,
+  hour: 8,
+  name: 9,
+  nameMissing: 10,
+  confirmedOrders: 11,
+  minutesNum: 12,
+  minutesDen: 13,
+} as const;
 
 function withDisplayNames(rows: readonly ApmSeries[]): DisplayApmRow[] {
   const names = playerNames(rows);
@@ -47,16 +62,26 @@ function withDisplayNames(rows: readonly ApmSeries[]): DisplayApmRow[] {
 
 function apmReason(summary: ApmValue): NullableMeaning {
   if (!summary.complete) return { kind: 'notRecorded', reason: 'Player orders or unpaused time were not fully recorded for this period; the rate is unknown.' };
-  if (summary.unpausedMinutes === 0) return { kind: 'notApplicable', reason: 'No unpaused time was observed in this period.' };
+  if (summary.unpausedMinutesNum === '0' || summary.unpausedMinutes === 0) return { kind: 'notApplicable', reason: 'No unpaused time was observed in this period.' };
   return { kind: 'notRecorded', reason: 'It is unclear whether some orders count toward eAPM; the rate is unknown.' };
 }
 
-function rateValue(summary: ApmValue): Value<number> {
+function rateValue(summary: ApmValue): Value {
+  const text = formatApmRate(summary, 1);
+  if (text === null) {
+    const why = apmReason(summary);
+    return why.kind === 'notApplicable' ? notApplicable(why.reason) : notRecorded(why.reason);
+  }
+  if (summary.gaps) return partialValue(text, GAPS_NOTE);
+  return text === '0' ? zeroValue(0) : knownValue(text);
+}
+
+function rateSortValue(summary: ApmValue): Value {
   if (summary.apm === null) {
     const why = apmReason(summary);
     return why.kind === 'notApplicable' ? notApplicable(why.reason) : notRecorded(why.reason);
   }
-  return summary.gaps ? partialValue(summary.apm, GAPS_NOTE) : knownValue(summary.apm);
+  return summary.apm === 0 ? zeroValue(0) : knownValue(summary.apm);
 }
 
 const observationHour = (row: ApmSeries, fallback: number): number =>
@@ -85,8 +110,11 @@ function parseAnswer(answer: FollowedAnswer): ParsedApm {
       apm: readFloat(APM.apm),
       confirmedApm: readFloat(APM.confirmedApm),
       orders: readBig(APM.orders)?.toString() ?? null,
+      confirmedOrders: readText(APM.confirmedOrders),
       pausedOrders: readBig(APM.pausedOrders)?.toString() ?? null,
       unpausedMinutes: readFloat(APM.minutes),
+      unpausedMinutesNum: readText(APM.minutesNum),
+      unpausedMinutesDen: readText(APM.minutesDen),
       complete: readBig(APM.complete) === 1n,
       gaps: readBig(APM.gaps) === 1n,
     };
@@ -110,8 +138,22 @@ function parseReply(raw: unknown): ParsedApm {
     : { rows: [], refusal: 'Player orders were not recorded in this campaign.', warnings: reply.warnings };
 }
 
-function formatPlayedHm(minutes: number): string {
-  const totalMins = Math.max(0, Math.round(minutes));
+function formatPlayedHm(summary: ApmValue): string | null {
+  const minutesNum = parseUnsignedInt(summary.unpausedMinutesNum);
+  const minutesDen = parseUnsignedInt(summary.unpausedMinutesDen);
+  if (minutesNum !== null && minutesDen !== null && minutesDen > 0n) {
+    if (minutesNum === 0n) return '0:00';
+    const wholeMins = minutesNum / minutesDen;
+    if (wholeMins === 0n) return '<0:01';
+    const h = wholeMins / 60n;
+    const m = wholeMins % 60n;
+    return `${h.toString()}:${m.toString().padStart(2, '0')}`;
+  }
+  const minutes = summary.unpausedMinutes;
+  if (minutes === null) return null;
+  if (minutes <= 0) return '0:00';
+  const totalMins = Math.trunc(minutes);
+  if (totalMins === 0) return '<0:01';
   const h = Math.floor(totalMins / 60);
   const m = totalMins % 60;
   return `${h}:${String(m).padStart(2, '0')}`;
@@ -150,9 +192,10 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
     ),
     rank: true,
     rankMarkers: opt => opt.rankMarkers,
-    columns: (_parsed, opt): readonly DeclarativeColumnSpec<DisplayApmRow, ApmTableProjectionOptions>[] => {
+    columns: (parsed, opt): readonly DeclarativeColumnSpec<DisplayApmRow, ApmTableProjectionOptions>[] => {
       const specs = apmTableColumns(opt.players, opt.showPaused);
       const gapsPartial = (row: DisplayApmRow) => (row.summary.gaps ? GAPS_NOTE : null);
+      const maxApm = parsed.rows.reduce((max, r) => (r.summary.apm !== null && r.summary.apm > max ? r.summary.apm : max), 0);
       return specs.map((spec): DeclarativeColumnSpec<DisplayApmRow, ApmTableProjectionOptions> => {
         if (spec.key === 'name') {
           return opt.players
@@ -165,7 +208,18 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
             : { ...spec, countryField: 'tag', lookHour: (row, h) => observationHour(row, h) };
         }
         if (spec.key === 'country') return { ...spec, countryField: 'tag', lookHour: (row, h) => observationHour(row, h) };
-        if (spec.key === 'apm') return { ...spec, country: 'tag', lookHour: (row, h) => observationHour(row, h), value: row => rateValue(row.summary) };
+        if (spec.key === 'apm') {
+          return {
+            ...spec,
+            country: 'tag',
+            lookHour: (row, h) => observationHour(row, h),
+            value: row => rateValue(row.summary),
+            bar: row => (row.summary.apm !== null && row.summary.apm > 0 && maxApm > 0
+              ? { fraction: knownValue(row.summary.apm / maxApm) }
+              : null),
+            sortValue: row => rateSortValue(row.summary),
+          };
+        }
         if (spec.key === 'orders') {
           return {
             ...spec,
@@ -191,9 +245,8 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
         return {
           ...spec,
           value: row => {
-            const mins = row.summary.unpausedMinutes;
-            if (mins === null) return notRecorded('Unpaused play time was not recorded for this period.');
-            const text = formatPlayedHm(mins);
+            const text = formatPlayedHm(row.summary);
+            if (text === null) return notRecorded('Unpaused play time was not recorded for this period.');
             return row.summary.gaps ? partialValue(text, GAPS_NOTE) : knownValue(text);
           },
           sortPath: 'summary.unpausedMinutes',
@@ -220,6 +273,15 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
     tooltipTitle: (row, hour, opt) => opt.players
       ? (row.displayName ?? 'Name not recorded')
       : (lookAt(row.tag ? opt.labels[row.tag] : undefined, observationHour(row, hour))?.name ?? 'Name not recorded'),
+    tooltipExtra: row => {
+      const minsText = formatUnpausedMinutesText(row.summary);
+      if (minsText === null) return undefined;
+      return [{
+        label: 'Unpaused time',
+        value: row.summary.gaps ? partialValue(minsText, GAPS_NOTE) : knownValue(minsText),
+        divider: true,
+      }];
+    },
     tooltipNote: row => valueNote(row.summary),
   }),
 );

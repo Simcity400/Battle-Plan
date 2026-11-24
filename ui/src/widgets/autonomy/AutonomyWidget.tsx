@@ -112,7 +112,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'subjects', params: { branchId: track.branch.id } }) : null;
   const product = useProduct<SubjectReply>(runtime.client, request, active, validateSubjectReply, track?.source);
   const data = product.data;
-  const selection = useMemo(() => worldFilterQuery(widget.countries, fallback ? [fallback] : [], groups.data, lastHour), [widget.countries, fallback, groups.data, lastHour]);
+  const selection = useMemo(() => worldFilterQuery(widget.countries, fallback ? [fallback] : [], groups.data), [widget.countries, fallback, groups.data]);
   const filter = useMemo(() => selection.at(head), [selection, head]);
   const lanesData = useMemo(() => data ? autonomyLanes(data, filter.tags, bySubject) : [], [data, filter.tags, bySubject]);
   const tags = useMemo(() => lanesData.map(lane => lane.tag), [lanesData]);

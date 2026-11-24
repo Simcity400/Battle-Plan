@@ -176,58 +176,6 @@ export function fitTimeChartFrame(input: FitTimeChartFrameInput): PlotFrame {
   return frame;
 }
 
-export interface ResolveTimeChartFrameInput extends TimeChartDomainInput {
-  readonly layoutWidth: number;
-  readonly layoutHeight: number;
-  readonly tokens: ChartTokens;
-  readonly layers: readonly Pick<ChartLayer, 'extent'>[];
-  readonly fitValues?: ChartFitId | ValueFit;
-  readonly formatValue?: ChartAxisFormatterId | AxisValueFormatter;
-  readonly valueTicks?: readonly number[];
-  readonly stripHeight?: number;
-  readonly hasBadges?: boolean;
-  readonly hasBadgeSummary?: boolean;
-  readonly padding?: Partial<Padding>;
-  readonly rowLabelWidth?: number;
-  readonly measure: MeasureText;
-}
-
-export function resolveTimeChartFrame(input: ResolveTimeChartFrameInput): {
-  readonly frame: PlotFrame;
-  readonly targetX: Range;
-  readonly targetY: { readonly range: Range; readonly log: boolean };
-  readonly padding: Padding;
-} {
-  const stripHeight = normalizeStripHeight(input.stripHeight);
-  const padding = resolveTimeChartPadding({
-    layoutWidth: input.layoutWidth,
-    tokens: input.tokens,
-    stripHeight,
-    hasBadges: input.hasBadges === true,
-    hasBadgeSummary: input.hasBadgeSummary === true,
-    padding: input.padding,
-    rowLabelWidth: input.rowLabelWidth,
-  });
-  const targetX = resolveTimeChartTargetX(input);
-  const targetY = resolveTimeChartTargetY(input.layers, targetX, input.view, input.axes, input.fitValues);
-  const frame = fitTimeChartFrame({
-    layoutWidth: input.layoutWidth,
-    layoutHeight: input.layoutHeight,
-    padding,
-    x: targetX,
-    y: targetY.range,
-    log: targetY.log,
-    stripHeight,
-    hasRows: input.rowLabelWidth !== undefined,
-    hasExplicitLeftPadding: input.padding?.left != null,
-    valueTicks: input.valueTicks,
-    tokens: input.tokens,
-    formatValue: input.formatValue,
-    measure: input.measure,
-  });
-  return { frame, targetX, targetY, padding };
-}
-
 export interface TimeChartScene<C extends Canvas2D = Canvas2D> {
   readonly layoutWidth: number;
   readonly layoutHeight: number;
@@ -293,37 +241,3 @@ export function drawTimeChartScene<C extends Canvas2D>(
   }
 }
 
-export function chartTokensEqual(a: ChartTokens | null | undefined, b: ChartTokens | null | undefined): boolean {
-  if (a === b) return true;
-  if (!a || !b) return false;
-  return (
-    a.surface === b.surface &&
-    a.raised === b.raised &&
-    a.text === b.text &&
-    a.muted === b.muted &&
-    a.border === b.border &&
-    a.grid === b.grid &&
-    a.axis === b.axis &&
-    a.accent === b.accent &&
-    a.positive === b.positive &&
-    a.warning === b.warning &&
-    a.error === b.error &&
-    a.blueprint === b.blueprint &&
-    a.blueprintBorder === b.blueprintBorder &&
-    a.blueprintText === b.blueprintText &&
-    a.font === b.font &&
-    a.fontSize.small === b.fontSize.small &&
-    a.fontSize.body === b.fontSize.body &&
-    a.fontSize.title === b.fontSize.title &&
-    a.lineWidth.grid === b.lineWidth.grid &&
-    a.lineWidth.series === b.lineWidth.series &&
-    a.lineWidth.emphasis === b.lineWidth.emphasis &&
-    a.hatchSpacing === b.hatchSpacing &&
-    a.gapOpacity === b.gapOpacity &&
-    a.motion === b.motion &&
-    a.reducedMotion === b.reducedMotion &&
-    a.countryColours === b.countryColours &&
-    a.categories.length === b.categories.length &&
-    a.categories.every((color, index) => color === b.categories[index])
-  );
-}

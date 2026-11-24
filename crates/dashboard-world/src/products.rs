@@ -3,6 +3,7 @@ pub mod identities;
 pub mod group_members;
 pub mod groups;
 pub mod group_counts;
+pub mod history_at;
 pub mod styles;
 pub mod country_flags;
 pub mod land_owners;

@@ -1,7 +1,5 @@
-import { useRef } from 'react';
 import { logEntryItems, newestFirst, ROW_HEIGHT, visibleRange } from './logData.ts';
 import type { LogDensity, LogEntry, LogItem, LogPage, LogRow } from './logData';
-export type { LogPage } from './logData';
 
 export function stableLogPages<T>(previous: readonly LogPage<T>[], next: readonly LogPage<T>[]): readonly LogPage<T>[] {
   if (previous.length !== next.length) return next;
@@ -12,24 +10,6 @@ export function stableLogPages<T>(previous: readonly LogPage<T>[], next: readonl
       || before.rows !== after.rows || before.error !== after.error) return next;
   }
   return previous;
-}
-
-export function withContinuation<D extends { cursor: string | null }, P extends { nextCursor: string | null }>(
-  described: readonly D[], loaded: ReadonlyMap<number, P>, next: (page: P, index: number) => D): readonly D[] {
-  const last = described.length - 1;
-  const page = loaded.get(last);
-  if (!page || page.nextCursor === null || described.some(info => info.cursor === page.nextCursor)) return described;
-  return [...described, next(page, last)];
-}
-
-export function useEstimatedPages<D>(stored: readonly D[] | null, holds: (info: D) => boolean, estimate: (info: D) => D): readonly D[] | null {
-  const kept = useRef<{ stored: readonly D[] | null; mask: string; pages: readonly D[] | null }>({ stored: null, mask: '', pages: null });
-  if (!stored) return null;
-  const mask = stored.map(info => holds(info) ? '1' : '0').join('');
-  if (kept.current.stored !== stored || kept.current.mask !== mask) {
-    kept.current = { stored, mask, pages: mask.includes('0') ? stored.map(info => holds(info) ? info : estimate(info)) : stored };
-  }
-  return kept.current.pages;
 }
 
 export function logPageEntries<T>(pages: readonly LogPage<T>[]): LogEntry<T>[] {
@@ -107,7 +87,6 @@ export function wantedLogPages(items: readonly LogItem<unknown>[], start: number
   }
   return [...wanted];
 }
-
 
 export function logPixelTarget<T>(items: readonly LogItem<T>[], offsets: readonly number[], ordinals: readonly number[],
   ordinal: number, height: number, direction: 1 | -1): LogRowTarget<T> | null {
