@@ -28,6 +28,7 @@ import type { StabilityBreakdownReply } from '../../generated/dashboard';
 import {
   assignCountrySeriesColours,
   branchGapsOf,
+  cardItems,
   countrySeriesIdentity,
   memberAt,
   missingSpansOf,
@@ -104,14 +105,9 @@ function breakdownDetail(readView: BoundedReadView, measures: readonly { readonl
   const perMeasure = linesPerMeasure(measures.length);
   for (const measure of measures) {
     const { rows } = breakdownRows(reply.breakdown, measure.key, BREAKDOWN_DECIMALS, measure.label, perMeasure);
-    rows.forEach((row, index) => items.push({
-      label: row.label,
-      ...(row.value !== undefined ? { value: row.value } : {}),
-      ...(row.tone ? { tone: row.tone } : {}),
-      ...(row.strong ? { strong: true } : {}),
-      ...(index === 0 && items.length > 0 ? { divider: true } : {}),
-      ...(index > 0 && !row.strong ? { indent: true } : {}),
-    }));
+    const mapped = cardItems(rows, true);
+    if (items.length > 0 && mapped[0]) mapped[0] = { ...mapped[0], divider: true };
+    items.push(...mapped);
   }
   return { hour: hover.hour, items };
 }
@@ -151,7 +147,7 @@ function markerDays(raw: readonly StabilityRawMarker[]): readonly MarkerDay[] {
 
 export const stabilityProjection: TimeChartProjection<StabilityOptions> = registerTimeChart({
   kind: 'stability',
-  family: 'series',
+  family: 'time-chart',
   variant: 'line',
   joinMode: 'step',
   measureTitle: 'Stability & War support',
@@ -315,7 +311,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
 });
 
 export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> = {
-  family: 'series',
+  family: 'time-chart',
   kind: 'stability',
   label: 'Stability & War support',
   subject: 'stability and war support',

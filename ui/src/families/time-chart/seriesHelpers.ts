@@ -6,6 +6,7 @@ import { failedArt, missingArt, PENDING_ART } from '../art/types.ts';
 import { FutureDataError, type BoundedReadView, type BoundedSeries } from '../contract.ts';
 import { holderTagAt, type HolderRun, type HourRanges } from '../holders.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
+import type { TooltipListItem } from '../host/tooltips.ts';
 import type { ChartArtSlot, ChartGap, ChartMarker, ChartMissingSpan } from './model.ts';
 
 export function seriesHeadValue(
@@ -189,5 +190,26 @@ export function missingSpansOf(bounded: BoundedSeries | null | undefined): reado
     firstHour: sp.firstHour,
     lastHour: sp.lastHour,
     reason: sp.reason ?? 'Not recorded',
+  }));
+}
+
+export interface CardRow {
+  readonly label: string;
+  readonly value?: string;
+  readonly tone?: TooltipListItem['tone'];
+  readonly strong?: boolean;
+  readonly swatch?: string;
+  readonly divider?: boolean;
+}
+
+export function cardItems(rows: readonly CardRow[], heading: boolean): TooltipListItem[] {
+  return rows.map((row, index) => ({
+    label: row.label,
+    ...(row.value !== undefined ? { value: row.value } : {}),
+    ...(row.tone ? { tone: row.tone } : {}),
+    ...(row.strong ? { strong: true } : {}),
+    ...(row.swatch ? { swatch: row.swatch } : {}),
+    ...(row.divider ? { divider: true } : {}),
+    ...(heading && index > 0 && !row.strong ? { indent: true } : {}),
   }));
 }
