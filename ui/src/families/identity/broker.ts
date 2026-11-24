@@ -225,6 +225,8 @@ interface LoadedWindow {
 
 export const MAX_ENTITY_WINDOWS = 16;
 
+const entityRetryKey = (request: string, key: string): string => `${request}\u0000${key}`;
+
 interface BranchReadState {
   controller: AbortController | null;
   retryTimer: (() => void) | null;
@@ -408,12 +410,16 @@ export class IdentityBroker {
     const existing = this.scopes.get(key);
     if (!demand) {
       if (!existing) return;
-      if (existing.demands.delete(owner)) this.reconcile(existing);
+      if (existing.demands.delete(owner)) {
+        this.reconcile(existing);
+        this.trimWindows(existing);
+      }
       return;
     }
     const state = this.getState(scope, recording, branchBounds);
     state.demands.set(owner, demand);
     this.reconcile(state);
+    this.trimWindows(state);
   }
 
   requestFlagChoices(
@@ -606,12 +612,16 @@ export class IdentityBroker {
     for (const [id, item] of wanted) {
       if (state.entityRunning.size >= ENTITY_MAX_CONCURRENT) break;
       if (state.entityRunning.has(id)) continue;
-      const failed = state.entityRetryAt.get(id);
-      if (failed && failed.at > now) {
-        soonestRetry = Math.min(soonestRetry, failed.at);
-        continue;
+      let due: Map<string, EntityIdentityKey> | null = null;
+      for (const [keyId, key] of item.keys) {
+        const failed = state.entityRetryAt.get(entityRetryKey(id, keyId));
+        if (failed && failed.at > now) {
+          soonestRetry = Math.min(soonestRetry, failed.at);
+          continue;
+        }
+        (due ??= new Map()).set(keyId, key);
       }
-      this.startEntityTask(state, item.request, item.keys);
+      if (due) this.startEntityTask(state, item.request, due);
     }
     if (soonestRetry < Infinity && !state.entityRetryTimer) {
       state.entityRetryTimer = this.clock.after(Math.max(0, soonestRetry - now), () => {
@@ -644,11 +654,11 @@ export class IdentityBroker {
     }
   }
 
-  private loadEntityRequest(state: ScopeState, request: EntityRequest, keys: ReadonlyMap<string, EntityIdentityKey>, signal: AbortSignal): Promise<void> {
+  private loadEntityRequest(state: ScopeState, request: EntityRequest, keys: ReadonlyMap<string, EntityIdentityKey>, signal: AbortSignal): Promise<() => void> {
     const index = state.index;
     switch (request.kind) {
       case 'regions':
-        return this.transport.loadRegions(state.scope, signal, state.recording).then(reply => {
+        return this.transport.loadRegions(state.scope, signal, state.recording).then(reply => () => {
           const bounds = index.bounds();
           for (const region of reply.regions) {
             index.setEntityRuns({ kind: 'region', id: region.id }, [{
@@ -668,7 +678,7 @@ export class IdentityBroker {
           const id = numericId(key.id);
           if (id !== null) (key.kind === 'state' ? states : provinces).push(id);
         }
-        return this.transport.loadPlaceNameRuns(state.scope, request.from, request.to, states, provinces, signal, state.recording).then(reply => {
+        return this.transport.loadPlaceNameRuns(state.scope, request.from, request.to, states, provinces, signal, state.recording).then(reply => () => {
           const entry = (run: NameRun) => runEntry(run, PLACE_ABSENT, reply.warnings);
           index.replaceEntityUnknown(['state', 'province'], reply.from, reply.to, reply.unknown);
           for (const place of reply.states) index.replaceEntityRuns({ kind: 'state', id: place.id }, reply.from, reply.to, place.runs.map(entry));
@@ -679,7 +689,7 @@ export class IdentityBroker {
       {
         const references: string[] = [];
         for (const key of keys.values()) if (key.kind === 'leader') references.push(String(key.id));
-        return this.transport.loadLeaderNameRuns(state.scope, request.owner, request.from, request.to, references, signal, state.recording).then(reply => {
+        return this.transport.loadLeaderNameRuns(state.scope, request.owner, request.from, request.to, references, signal, state.recording).then(reply => () => {
           const entry = (run: NameRun) => runEntry(run, LEADER_ABSENT, reply.warnings);
           index.replaceEntityUnknown(['leader'], reply.from, reply.to, reply.unknown);
           for (const leader of reply.leaders) {
@@ -695,10 +705,11 @@ export class IdentityBroker {
     const task: EntityTask = { request, keys, controller };
     state.entityRunning.set(request.id, task);
     void this.loadEntityRequest(state, request, keys, controller.signal).then(
-      () => {
+      apply => {
         if (state.entityRunning.get(request.id) !== task || controller.signal.aborted) return;
+        apply();
         state.entityRunning.delete(request.id);
-        state.entityRetryAt.delete(request.id);
+        for (const keyId of keys.keys()) state.entityRetryAt.delete(entityRetryKey(request.id, keyId));
         if (request.kind === 'regions') state.entityLoaded.add(request.id);
         else this.keepWindow(state, request, keys);
         this.settleUnanswered(state, request, keys.values());
@@ -709,10 +720,14 @@ export class IdentityBroker {
         if (state.entityRunning.get(request.id) !== task || controller.signal.aborted) return;
         state.entityRunning.delete(request.id);
         const failure = asFailure(error);
-        const count = (state.entityRetryAt.get(request.id)?.count ?? 0) + 1;
-        state.entityRetryAt.set(request.id, { count, at: transientError(error) ? this.clock.now() + retryDelay(count) : Infinity });
+        for (const keyId of keys.keys()) {
+          const retry = entityRetryKey(request.id, keyId);
+          const count = (state.entityRetryAt.get(retry)?.count ?? 0) + 1;
+          state.entityRetryAt.set(retry, { count, at: transientError(error) ? this.clock.now() + retryDelay(count) : Infinity });
+        }
         const [from, to] = request.kind === 'regions' ? state.index.bounds() : [request.from, request.to];
         for (const key of keys.values()) state.index.setEntityFailure(key, from, to, failure);
+        if (request.kind !== 'regions') this.keepWindow(state, request, keys);
         this.notify(state);
         this.reconcile(state);
       },
@@ -724,15 +739,25 @@ export class IdentityBroker {
     if (!held) state.entityWindows.set(request.id, held = { request, keys: new Map(), used: 0 });
     for (const [id, key] of keys) held.keys.set(id, key);
     held.used = ++state.windowUse;
+    this.trimWindows(state);
+  }
+
+  private trimWindows(state: ScopeState): void {
     if (state.entityWindows.size <= MAX_ENTITY_WINDOWS) return;
     const pinned = new Set<string>();
     for (const demand of state.demands.values()) for (const id of this.wantsOf(state, demand).windows) pinned.add(id);
     const oldest = [...state.entityWindows.values()].filter(window => !pinned.has(window.request.id)).sort((a, b) => a.used - b.used);
+    let dropped = false;
     for (const window of oldest) {
       if (state.entityWindows.size <= MAX_ENTITY_WINDOWS) break;
       state.entityWindows.delete(window.request.id);
-      state.index.dropEntityRuns(window.keys.values(), window.request.from, window.request.to);
+      for (const keyId of window.keys.keys()) state.entityRetryAt.delete(entityRetryKey(window.request.id, keyId));
+      const kinds = window.request.kind === 'places' ? ['state', 'province'] as const : ['leader'] as const;
+      const still = [...state.entityWindows.values()].filter(other => other.request.kind === window.request.kind).map(other => [other.request.from, other.request.to] as const);
+      state.index.dropEntityRuns(window.keys.values(), window.request.from, window.request.to, kinds, still);
+      dropped = true;
     }
+    if (dropped) this.notify(state);
   }
 
   private wantsOf(state: ScopeState, demand: DemandEntry): DemandWants {
