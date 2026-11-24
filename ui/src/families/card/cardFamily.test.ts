@@ -64,10 +64,11 @@ test('war goals keep the product’s order and states, show a missing expiry by 
     standings: [],
     justifications: [{ id: '11', ordinal: 0, name: 'Take state', actor: 'GER', recipient: 'SWE', states: [1], total: '1000000', daily: '10000', payUpfront: false, start: null, completion: hour + 21 * DAY, paused: false }],
     goals: [
-      { handle: '1', name: 'Puppet', actor: 'GER', recipient: 'SOV', available: false, expires: null, states: [2, 3], liberate: [], puppets: [], state: 'atWar' },
-      { handle: '2', name: 'Conquer', actor: 'GER', recipient: 'DEN', available: true, expires: null, states: [4], liberate: [], puppets: [], state: 'ready' },
-      { handle: '3', name: 'Conquer', actor: 'GER', recipient: 'POL', available: true, expires: hour - 10 * DAY, states: [5, 6], liberate: [], puppets: [], state: 'expired' },
+      { handle: '1', name: 'Puppet', actor: 'GER', recipient: 'SOV', available: false, expires: null, states: [2, 3], liberate: [], puppets: [], state: 'atWar', granted: null, grantedMissing: 'Held when the branch began' },
+      { handle: '2', name: 'Conquer', actor: 'GER', recipient: 'DEN', available: true, expires: null, states: [4], liberate: [], puppets: [], state: 'ready', granted: hour - 40 * DAY, grantedMissing: null },
+      { handle: '3', name: 'Conquer', actor: 'GER', recipient: 'POL', available: true, expires: hour - 10 * DAY, states: [5, 6], liberate: [], puppets: [], state: 'expired', granted: hour - 300 * DAY, grantedMissing: null },
     ],
+    removed: [{ handle: '9', name: 'Take state', recipient: 'NOR', granted: hour - 90 * DAY, grantedMissing: null, removed: hour - 5 * DAY, removedExact: false, reasonMissing: 'War goal removal reason was not recorded' }],
     warnings: [],
     stateNames: [{ id: 1, name: 'Norrbotten', known: true }, { id: 2, name: 'Moskva', known: true }, { id: 3, name: 'Leningrad', known: true }, { id: 4, name: 'Sjaelland', known: true }, { id: 5, name: 'Danzig', known: true }],
   };
@@ -75,7 +76,9 @@ test('war goals keep the product’s order and states, show a missing expiry by 
   const model = warGoalsProjection.project(view(hour, reply, live), { targetNames: false });
   assertCardModelValid(model, hour);
   const rows = items(model);
-  assert.deepEqual(rows.map(row => row.state?.label), ['Justifying', 'At war', 'Ready', 'Expired']);
+  assert.deepEqual(rows.map(row => row.state?.label), ['Justifying', 'At war', 'Ready', 'Expired', 'Removed']);
+  assert.match(String(rows[4]!.figure?.value.kind === 'known' && rows[4]!.figure.value.value), /^By /, 'a removal seen only after a gap is a bound, not an exact date');
+  assert.ok(rows[4]!.tooltip?.items?.some(item => item.label === 'Reason' && item.missingReason === 'War goal removal reason was not recorded'));
   assert.deepEqual(rows[0]!.meter?.fraction, { kind: 'known', value: 0.64 });
   assert.deepEqual(rows[0]!.figure?.value, { kind: 'known', value: '21 days left' });
   assert.equal(rows[1]!.place, 'Moskva · Leningrad');

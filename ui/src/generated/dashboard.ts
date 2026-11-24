@@ -1465,7 +1465,10 @@ countries: Array<CountryRef>,
 catalogue: boolean, };
 export type RaidTypeInfo = { token: string, name: string | null, missing: string | null, };
 export type RaidArtwork = { key: string, image: string | null, missing: string | null, };
-export type RaidPhaseRun = { firstHour: number, lastHour: number, phase: number, phaseName: string | null, outcome: number, outcomeName: string | null, };
+export type RaidVictimSource = "completionCountry" | "fixedTarget" | "controllerAtFirstEndedRead" | "controllerAtObservedRead" | "captorAtFirstEndedRead" | "captorAtObservedRead";
+export type RaidEndedSource = "nativeEndDate" | "observedEndedRead";
+export type RaidVictimAt = { hour: number, tag: string | null, missing: string | null, source: RaidVictimSource | null, };
+export type RaidPhaseRun = { firstHour: number, lastHour: number, firstExact: boolean, afterHour: number | null, raider: string | null, phase: number, phaseName: string | null, outcome: number, outcomeName: string | null, };
 export type RaidPreparationRun = [number, number, number, number];
 export type RaidEpisode = {
 /**
@@ -1475,11 +1478,11 @@ id: string,
 /**
  * The first and last hour its row lived within the span.
  */
-firstHour: number, lastHour: number, raider: string | null, victim: string | null,
+firstHour: number, firstHourExact: boolean, lastHour: number, raider: string | null, launchedRaider: string | null, endedRaider: string | null, victim: string | null,
 /**
  * Why the victim is not named, when it is not.
  */
-victimMissing: string | null,
+victimMissing: string | null, victimSource: RaidVictimSource | null, victims: Array<RaidVictimAt>,
 /**
  * The raid type's token and its name in the reader's language.
  */
@@ -1491,11 +1494,11 @@ icon: string | null, iconMissing: string | null, province: number | null, state:
 /**
  * Its last phase and outcome.
  */
-phase: number | null, phaseName: string | null, outcome: number | null, outcomeName: string | null,
+phase: number | null, phaseName: string | null, outcome: number | null, outcomeName: string | null, outcomeMissing: string | null,
 /**
  * Its phases over the span, in hour order.
  */
-runs: Array<RaidPhaseRun>, preparation: Array<RaidPreparationRun>, launchedHour: number | null, launched: boolean, endedHour: number | null, succeeded: boolean, };
+runs: Array<RaidPhaseRun>, preparation: Array<RaidPreparationRun>, launchedHour: number | null, launchedExact: boolean, launched: boolean, endedHour: number | null, endedExact: boolean, endedSource: RaidEndedSource | null, disappearedHour: number | null, disappearedExact: boolean, succeeded: boolean, };
 export type RaidLogReply = {
 /**
  * False only when the content proves no raid type exists; true once a raid was recorded; none
@@ -1505,7 +1508,7 @@ available: boolean | null, unavailable: string | null,
 /**
  * The game's phase and outcome numbers a reader compares with.
  */
-phasePreparing: number, phaseEnded: number, outcomeNone: number,
+phasePreparing: number, phaseEnded: number, outcomeNone: number, outcomeFailure: number, outcomeLimitedSuccess: number, outcomeSuccess: number, outcomeCriticalSuccess: number, outcomeCanceled: number,
 /**
  * Every raid type the content declares, then each it holds undecided with why.
  */
@@ -1791,8 +1794,9 @@ export type NavalSupremacyParams = { branchId: string, country: CountryRef,
  */
 window?: number, firstHour?: number, lastHour?: number, regions?: Array<number>, pinnedRegions?: Array<number>, hiddenRegions?: Array<number>, top?: number, };
 export type SupremacyRun = { firstDay: number, lastDay: number, control: number | null, friendly: string | null, enemy: string | null, share: string | null, own: string | null, };
-export type SupremacyRegion = { id: string, name: string, pinned: boolean, ownMissionShips?: number, enemyMissionShips?: number, shipsMissing?: string, readout?: SupremacyReadout, runs: Array<SupremacyRun>, };
-export type SupremacyReadout = { "kind": "control", control: number, share: string | null, friendly: string | null, enemy: string | null, own: string | null, own_mission_ships: number | null, enemy_mission_ships: number | null, ships_missing: string | null, as_of_hour: number, } | { "kind": "notRecorded", reason: string, };
+export type SupremacyRegion = { id: string, name: string, pinned: boolean, ownShips: MissionShips, enemyShips: MissionShips, readout?: SupremacyReadout, runs: Array<SupremacyRun>, };
+export type SupremacyReadout = { "kind": "control", control: number, share: string | null, friendly: string | null, enemy: string | null, own: string | null, as_of_hour: number, } | { "kind": "notRecorded", reason: string, };
+export type MissionShips = { "kind": "counted", ships: number, } | { "kind": "notRecorded", reason: string, };
 export type SupremacyLegendItem = { id: string, label: string, control: number, };
 export type UnknownDays = { firstDay: number, lastDay: number, reason: string, };
 export type SeaRegionChoice = { id: string, name: string, };
@@ -2349,7 +2353,7 @@ scale: number,
  */
 known: Array<Array<HourSpan>>,
 /**
- * Hours the tag had no country, or the recording holds none: nothing is known of it there.
+ * Hours no country held the tag: nothing is known of it there. Recording gaps are `gaps`.
  */
 unheld: Array<HourSpan>, gaps: Array<HourSpan>, regions: Array<ConvoyRegion>, deals: Array<ConvoyDeal>, leases: Array<ConvoyLease>, resources: Array<ConvoyResource>, warnings: Array<string>, };
 export type ConvoyView = "regions" | "trade";
@@ -4496,7 +4500,7 @@ reason: string | null, readHour?: number, name?: string, nameMissing?: string, c
 export type DiplomaticRelationsReply = { owners: Array<OpinionOwner>, cells: Array<OpinionMatrixCell>, domain: [number, number], warnings: Array<string>, };
 export type DiplomaticRelationsParamsAtHour = DiplomaticRelationsParams & { hour: number };
 export type WargoalsParams = { branchId: string, country: CountryRef, };
-export type WargoalEntry = { handle: string, name: string, actor: string, recipient: string, available: boolean, expires: number | null, states: Array<number>, liberate: Array<string>, puppets: Array<string>, state: WargoalState, };
+export type WargoalEntry = { handle: string, name: string, actor: string, recipient: string, available: boolean, expires: number | null, states: Array<number>, liberate: Array<string>, puppets: Array<string>, state: WargoalState, granted: number | null, grantedMissing: string | null, };
 export type WargoalJustification = {
 /**
  * Its row key: the row of its live cell `points`, the stored fixed5 progress.
@@ -4506,7 +4510,7 @@ export type WargoalsReply = { branchId: string, tag: string,
 /**
  * The country the request named, which a reply is matched to: a slot follows its country through any tag.
  */
-asked: CountryRef, standings: Array<WargoalPair>, goals: Array<WargoalEntry>, justifications: Array<WargoalJustification>, warnings: Array<string>, stateNames: Array<WargoalStateName>, };
+asked: CountryRef, standings: Array<WargoalPair>, goals: Array<WargoalEntry>, justifications: Array<WargoalJustification>, removed: Array<WargoalRemoved>, warnings: Array<string>, stateNames: Array<WargoalStateName>, };
 export type WargoalPair = { actor: string, recipient: string,
 /**
  * What the recorded wars and factions prove about the pair; none when neither applies.
@@ -4515,6 +4519,7 @@ standing: WargoalStanding | null, };
 export type WargoalStanding = "atWar" | "sameFaction";
 export type WargoalState = "atWar" | "ready" | "inUse" | "expired";
 export type WargoalStateName = { id: number, name: string, known: boolean, };
+export type WargoalRemoved = { handle: string, name: string | null, recipient: string | null, granted: number | null, grantedMissing: string | null, removed: number, removedExact: boolean, reasonMissing: string, };
 export type WargoalsParamsAtHour = WargoalsParams & { hour: number };
 export type DecryptionParams = { branchId: string, };
 export type Country = { id: number, tag: string | null, };

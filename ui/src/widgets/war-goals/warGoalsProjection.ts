@@ -6,8 +6,9 @@ import { cardFlag, type CardItemRow, type CardModel, type CardProjection } from 
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded, valueFromLive, type Value } from '../../families/value.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
-import type { WargoalEntry, WargoalJustification, WargoalState, WargoalsReply } from '../../generated/dashboard';
+import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
+import type { WargoalEntry, WargoalJustification, WargoalRemoved, WargoalState, WargoalsReply } from '../../generated/dashboard';
+import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { validateWargoalsReply } from './warGoalsData.ts';
 
 export interface WarGoalsOptions {
@@ -70,6 +71,43 @@ function justificationRow(reply: WargoalsReply, readView: BoundedReadView, entry
   };
 }
 
+const GRANT_SOURCE = 'War goal grant source was not recorded';
+
+function grantItems(granted: number | null, grantedMissing: string | null): TooltipListItem[] {
+  return [
+    granted !== null ? { label: 'Granted', value: formatDateHover(granted) } : { label: 'Granted', missingReason: grantedMissing ?? 'The grant date was not recorded' },
+    { label: 'Granted by', missingReason: GRANT_SOURCE },
+  ];
+}
+
+function tipTitle(row: Pick<CardItemRow, 'title'>): string {
+  return row.title.kind === 'known' ? String(row.title.value) : 'Kind not recorded';
+}
+
+function removedRow(readView: BoundedReadView, removed: WargoalRemoved, options: WarGoalsOptions): CardItemRow {
+  const base = removed.recipient
+    ? titled(readView, removed.recipient, removed.name ?? UNNAMED_GOAL, options)
+    : { title: removed.name ? knownValue(removed.name) : notRecorded('The kind of war goal was not recorded') };
+  const date = formatDateOnly(removed.removed);
+  return {
+    kind: 'item',
+    key: `removed:${removed.handle}:${removed.removed}`,
+    ...base,
+    figure: { value: knownValue(removed.removedExact ? date : `By ${date}`), figure: 'Removed' },
+    state: { mark: 'ended', label: 'Removed' },
+    muted: true,
+    tooltip: {
+      title: tipTitle(base),
+      hour: readView.hour,
+      items: [
+        ...grantItems(removed.granted, removed.grantedMissing),
+        { label: removed.removedExact ? 'Removed' : 'Removed by', value: formatDateHover(removed.removed) },
+        { label: 'Reason', missingReason: removed.reasonMissing },
+      ],
+    },
+  };
+}
+
 function goalRow(reply: WargoalsReply, readView: BoundedReadView, goal: WargoalEntry, options: WarGoalsOptions): CardItemRow {
   const state = STATE[goal.state];
   let figure: CardItemRow['figure'];
@@ -88,6 +126,15 @@ function goalRow(reply: WargoalsReply, readView: BoundedReadView, goal: WargoalE
     ...(figure ? { figure } : {}),
     state,
     ...(goal.state === 'expired' ? { muted: true } : {}),
+    tooltip: {
+      title: kindOf(goal.name).kind === 'known' ? goal.name : 'Kind not recorded',
+      hour: readView.hour,
+      items: [
+        { label: 'State', value: state.label },
+        ...(goal.expires !== null ? [{ label: 'Expires', value: formatDateHover(goal.expires) }] : []),
+        ...grantItems(goal.granted, goal.grantedMissing),
+      ],
+    },
   };
 }
 
@@ -103,6 +150,7 @@ export const warGoalsProjection: CardProjection<WarGoalsOptions> = registerFamil
     const rows: CardItemRow[] = [
       ...reply.justifications.map(entry => justificationRow(reply, readView, entry, options)),
       ...reply.goals.map(goal => goalRow(reply, readView, goal, options)),
+      ...reply.removed.map(removed => removedRow(readView, removed, options)),
     ];
     return {
       hour,

@@ -1,14 +1,42 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseAst } from 'rolldown/parseAst';
 import { DEFAULT_VIEW, normalizeView, viewKey } from '../ui/src/families/manifest.ts';
 import { widgetMetas } from '../ui/src/widgets/definitions.ts';
-import { FAMILY_VIEWS } from '../ui/src/widgets/familyManifest.ts';
+import { FAMILY_MANIFESTS, FAMILY_VIEWS } from '../ui/src/widgets/familyManifest.ts';
 import { LEGACY_WIDGETS } from '../ui/src/widgets/legacyManifest.ts';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const errors = [];
+
+const manifestDir = resolve(root, 'ui/src/widgets/manifest');
+const manifestFiles = existsSync(manifestDir)
+  ? readdirSync(manifestDir).filter(name => name.endsWith('.ts') && !name.endsWith('.test.ts')).sort()
+  : [];
+
+const registeredFamilies = new Set();
+for (const mod of FAMILY_MANIFESTS) {
+  if (!mod.family || typeof mod.family !== 'string') {
+    errors.push('FAMILY_MANIFESTS entry missing family id');
+    continue;
+  }
+  if (registeredFamilies.has(mod.family)) errors.push(`duplicate FAMILY_MANIFESTS family: ${mod.family}`);
+  registeredFamilies.add(mod.family);
+  if (typeof mod.laneView !== 'function') errors.push(`FAMILY_MANIFESTS(${mod.family}) missing laneView factory`);
+  for (const entry of mod.views) {
+    if (entry.family !== mod.family) {
+      errors.push(`view (${entry.kind}, ${normalizeView(entry.view)}) declares family "${entry.family}" inside "${mod.family}" manifest`);
+    }
+  }
+}
+
+for (const file of manifestFiles) {
+  const expectedFamily = file.slice(0, -'.ts'.length);
+  if (!registeredFamilies.has(expectedFamily)) {
+    errors.push(`ui/src/widgets/manifest/${file} is not registered in FAMILY_MANIFESTS in ui/src/widgets/familyManifest.ts`);
+  }
+}
 
 const metaByKind = new Map();
 for (const meta of widgetMetas) {
@@ -133,12 +161,9 @@ function checkWorkerSafe(entryRelPaths) {
 
 checkWorkerSafe([
   'ui/src/widgets/familyManifest.ts',
+  ...manifestFiles.map(file => `ui/src/widgets/manifest/${file}`),
   'ui/src/families/manifest.ts',
   'ui/src/families/registry.ts',
-  'ui/src/families/table/registry.ts',
-  'ui/src/families/bars/registry.ts',
-  'ui/src/families/card/registry.ts',
-  'ui/src/families/time-chart/declaration.ts',
 ]);
 
 const drawnSource = readFileSync(resolve(root, 'ui/src/draw/views/drawn.ts'), 'utf8');

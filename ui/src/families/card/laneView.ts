@@ -9,9 +9,8 @@ import type { ArtProvider, EntityKind, FamilyTheme, IdentityProvider } from '../
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
-import { familyProjection } from '../registry.ts';
 import { layoutCards, type CardLayout } from './layout.ts';
-import { assertCardModelValid, deriveCardAudit, deriveCardMirror, deriveCardTooltip, type CardModel, type CardProjection } from './model.ts';
+import { assertCardModelValid, deriveCardAudit, deriveCardMirror, deriveCardTooltip, type CardModel } from './model.ts';
 import { drawCards, hitCards, visibleCardIcons } from './painter.ts';
 import { ensureCardProjection } from './registry.ts';
 
@@ -182,8 +181,9 @@ export function familyCardLaneView(wake: (widget: number) => void, options?: Fam
     next(scene: Scene, hour: number): number {
       const bound = scene.model;
       if (!isFamilyCardBinding(bound)) return Infinity;
-      const proj = familyProjection('card', bound.kind, bound.view) as CardProjection<unknown> | undefined;
-      if (!proj?.nextChange) return Infinity;
+      const proj = ensureCardProjection(bound.kind, bound.view, () => wake(scene.widget));
+      if (proj === 'loading') return hour + 1;
+      if (proj === 'unknown' || !proj.nextChange) return Infinity;
       const index = bound.identitySnapshot ? IdentityIndex.fromSnapshot(bound.identitySnapshot) : null;
       return proj.nextChange(barsReadViewFromScene(scene, bound, hour, index ? { identity: createSnapshotIdentityProvider(index) } : undefined), bound.options);
     },
@@ -193,7 +193,7 @@ export function familyCardLaneView(wake: (widget: number) => void, options?: Fam
       const surface = input.binding.surfaces[0];
       if (!isFamilyCardBinding(bound) || !surface || !bound.theme) return EMPTY;
       const proj = ensureCardProjection(bound.kind, bound.view, () => wake(input.widget));
-      if (proj === 'loading') return EMPTY;
+      if (proj === 'loading') return { ...EMPTY, nextChangeAt: input.hour + 1 };
       if (proj === 'unknown') return { ...EMPTY, mode: 'refused', reason: `Unknown card declaration: ${bound.kind}` };
 
       let held = state.get('card') as HeldCards | undefined;

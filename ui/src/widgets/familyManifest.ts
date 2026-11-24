@@ -1,152 +1,30 @@
-import { DEFAULT_VIEW, type FamilyViewEntry, type FamilyViewModule } from '../families/manifest.ts';
+import type { LaneView } from '../draw/lane.ts';
+import type { FamilyManifestModule, FamilyViewEntry } from '../families/manifest.ts';
 import { bindFamilyManifest } from '../families/registry.ts';
-import type { AnyCardWidgetDeclaration } from '../families/card/declaration.ts';
-import type { CardProjection } from '../families/card/model.ts';
-import type { AnyTableWidgetDeclaration } from '../families/table/declaration.ts';
-import type { TableProjection } from '../families/table/model.ts';
-import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../families/time-chart/declaration.ts';
-import { OPTIONS as GAME_SCORE_OPTIONS } from './game-score/definition.ts';
+import { barsFamilyManifest } from './manifest/bars.ts';
+import { cardFamilyManifest } from './manifest/card.ts';
+import { heatLanesFamilyManifest } from './manifest/heat-lanes.ts';
+import { heatMatrixFamilyManifest } from './manifest/heat-matrix.ts';
+import { tableFamilyManifest } from './manifest/table.ts';
+import { timeChartFamilyManifest } from './manifest/time-chart.ts';
 
-function tableSpec<TModule>(
-  kind: string,
-  view: string,
-  load: () => Promise<TModule>,
-  pick: (mod: TModule) => { readonly projection: TableProjection<any>; readonly declaration: AnyTableWidgetDeclaration },
-): () => Promise<FamilyViewModule> {
-  return () => load().then(mod => {
-    const { projection, declaration } = pick(mod);
-    return { family: 'table', kind, view, projection, declaration };
-  });
-}
-
-function timeChartSpec<TModule>(
-  kind: string,
-  view: string,
-  load: () => Promise<TModule>,
-  pick: (mod: TModule) => { readonly projection: TimeChartProjection<any>; readonly declaration: TimeChartWidgetDeclaration<any, any> },
-): () => Promise<FamilyViewModule> {
-  return () => load().then(mod => {
-    const { projection, declaration } = pick(mod);
-    return { family: 'time-chart', kind, view, projection, declaration };
-  });
-}
-
-function cardSpec<TModule>(
-  kind: string,
-  load: () => Promise<TModule>,
-  pick: (mod: TModule) => { readonly projection: CardProjection<any>; readonly declaration: AnyCardWidgetDeclaration },
-): () => Promise<FamilyViewModule> {
-  return () => load().then(mod => {
-    const { projection, declaration } = pick(mod);
-    return { family: 'card', kind, view: DEFAULT_VIEW, projection, declaration };
-  });
-}
-
-const GAME_SCORE_TABLE_OPTION_KEYS = new Set(['view', 'factions', 'topMeasure', 'cellBars', 'rankMarkers', 'density', 'narrowTable', 'tableSort']);
-const GAME_SCORE_TABLE_OPTIONS = GAME_SCORE_OPTIONS.filter(field => GAME_SCORE_TABLE_OPTION_KEYS.has(field.key));
-
-export const FAMILY_VIEWS: readonly FamilyViewEntry[] = [
-  {
-    kind: 'campaign-clock',
-    view: DEFAULT_VIEW,
-    family: 'table',
-    loadSpec: tableSpec(
-      'campaign-clock',
-      DEFAULT_VIEW,
-      () => import('./campaign-clock/clockProjection.ts'),
-      mod => ({ projection: mod.campaignClockProjection, declaration: mod.campaignClockDeclaration }),
-    ),
-  },
-  {
-    kind: 'occupied-states',
-    view: DEFAULT_VIEW,
-    family: 'table',
-    loadSpec: tableSpec(
-      'occupied-states',
-      DEFAULT_VIEW,
-      () => import('./occupied-states/occupiedProjection.ts'),
-      mod => ({ projection: mod.occupiedStatesProjection, declaration: mod.occupiedStatesDeclaration }),
-    ),
-  },
-  {
-    kind: 'scoreboard',
-    view: DEFAULT_VIEW,
-    family: 'table',
-    loadSpec: tableSpec(
-      'scoreboard',
-      DEFAULT_VIEW,
-      () => import('./scoreboard/scoreboardProjection.ts'),
-      mod => ({ projection: mod.scoreboardProjection, declaration: mod.scoreboardDeclaration }),
-    ),
-  },
-  {
-    kind: 'apm-table',
-    view: DEFAULT_VIEW,
-    family: 'table',
-    loadSpec: tableSpec(
-      'apm-table',
-      DEFAULT_VIEW,
-      () => import('./player-apm/apmProjection.ts'),
-      mod => ({ projection: mod.apmTableProjection, declaration: mod.apmTableDeclaration }),
-    ),
-  },
-  {
-    kind: 'division-template',
-    view: DEFAULT_VIEW,
-    family: 'table',
-    loadSpec: tableSpec(
-      'division-template',
-      DEFAULT_VIEW,
-      () => import('./division-template/divisionTemplateProjection.ts'),
-      mod => ({ projection: mod.divisionTemplateProjection, declaration: mod.divisionTemplateDeclaration }),
-    ),
-  },
-  {
-    kind: 'game-score',
-    view: 'table',
-    label: 'Table',
-    family: 'table',
-    viewOption: 'view',
-    options: GAME_SCORE_TABLE_OPTIONS,
-    loadSpec: tableSpec(
-      'game-score',
-      'table',
-      () => import('./game-score/gameScoreProjection.ts'),
-      mod => ({ projection: mod.gameScoreProjection, declaration: mod.gameScoreDeclaration }),
-    ),
-  },
-  {
-    kind: 'political-power',
-    view: DEFAULT_VIEW,
-    family: 'time-chart',
-    loadSpec: timeChartSpec(
-      'political-power',
-      DEFAULT_VIEW,
-      () => import('./political-power/politicalPowerProjection.ts'),
-      mod => ({ projection: mod.politicalPowerProjection, declaration: mod.politicalPowerDeclaration }),
-    ),
-  },
-  {
-    kind: 'national-focus',
-    view: DEFAULT_VIEW,
-    family: 'card',
-    loadSpec: cardSpec('national-focus', () => import('./national-focus/nationalFocusProjection.ts'),
-      mod => ({ projection: mod.nationalFocusProjection, declaration: mod.nationalFocusDeclaration })),
-  },
-  {
-    kind: 'national-spirits',
-    view: DEFAULT_VIEW,
-    family: 'card',
-    loadSpec: cardSpec('national-spirits', () => import('./national-spirits/nationalSpiritsProjection.ts'),
-      mod => ({ projection: mod.nationalSpiritsProjection, declaration: mod.nationalSpiritsDeclaration })),
-  },
-  {
-    kind: 'war-goals',
-    view: DEFAULT_VIEW,
-    family: 'card',
-    loadSpec: cardSpec('war-goals', () => import('./war-goals/warGoalsProjection.ts'),
-      mod => ({ projection: mod.warGoalsProjection, declaration: mod.warGoalsDeclaration })),
-  },
+export const FAMILY_MANIFESTS: readonly FamilyManifestModule[] = [
+  barsFamilyManifest,
+  cardFamilyManifest,
+  heatLanesFamilyManifest,
+  heatMatrixFamilyManifest,
+  tableFamilyManifest,
+  timeChartFamilyManifest,
 ];
+
+export const FAMILY_VIEWS: readonly FamilyViewEntry[] = FAMILY_MANIFESTS.flatMap(entry => entry.views);
+
+const laneViewFactories = new Map<string, (wake: (widget: number) => void) => LaneView>(
+  FAMILY_MANIFESTS.map(entry => [entry.family, entry.laneView]),
+);
+
+export function familyLaneView(family: string, wake: (widget: number) => void): LaneView | undefined {
+  return laneViewFactories.get(family)?.(wake);
+}
 
 bindFamilyManifest(FAMILY_VIEWS);
