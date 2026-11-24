@@ -178,6 +178,24 @@ export function hitTestTimeChart(
       }
     }
     if (bestId) return `line:${bestId}@${clampedHour}`;
+  } else if (model.mode === 'stack' && model.stack && model.stack.hours.length > 0) {
+    let at = -1;
+    for (let i = 0; i < model.stack.hours.length; i++) {
+      if (model.stack.hours[i]! <= clampedHour) at = i;
+      else break;
+    }
+    if (at >= 0 && model.stack.bands.every(b => b.values[at] != null && Number.isFinite(b.values[at]!))) {
+      let acc = 0;
+      for (const band of model.stack.bands) {
+        const v = band.values[at]!;
+        const yBot = layout.toY(acc);
+        const yTop = layout.toY(acc + v);
+        acc += v;
+        if (py >= Math.min(yTop, yBot) && py <= Math.max(yTop, yBot)) {
+          return `line:${band.id}@${clampedHour}`;
+        }
+      }
+    }
   }
 
   return `plot:${clampedHour}`;
@@ -421,13 +439,26 @@ export function deriveTimeChartTooltip(
 
   if (parsed.kind === 'label') {
     const s = model.series.find(item => item.id === parsed.seriesId);
-    if (!s) return null;
-    const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === s.name);
+    if (s) {
+      const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === s.name);
+      return {
+        hour: model.hour,
+        rowKey: inspectKey,
+        payload: {
+          title: s.endLabel?.fullName ?? s.name,
+          subtitle: model.measureTitle,
+          items,
+        },
+      };
+    }
+    const band = model.mode === 'stack' ? model.stack?.bands.find(item => item.id === parsed.seriesId) : undefined;
+    if (!band) return null;
+    const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === band.name);
     return {
       hour: model.hour,
       rowKey: inspectKey,
       payload: {
-        title: s.endLabel?.fullName ?? s.name,
+        title: band.endLabel?.fullName ?? band.name,
         subtitle: model.measureTitle,
         items,
       },

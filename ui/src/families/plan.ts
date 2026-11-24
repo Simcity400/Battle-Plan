@@ -107,6 +107,8 @@ export interface PixelBinnedSourceRead {
   readonly coverage: SourceCoverage;
   readonly family: Readonly<Record<string, unknown>>;
   readonly tags: readonly string[];
+  readonly keys?: readonly { readonly tag: string; readonly part: string }[];
+  readonly partBits?: number;
   readonly within?: ReadonlyMap<string, readonly HourSpan[]>;
   readonly marks?: boolean;
   readonly headQuery?: Readonly<Record<string, unknown>> | null;
