@@ -1,4 +1,5 @@
 import { CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey } from '../../charts/live.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
@@ -6,7 +7,6 @@ import { flagArtHandle } from '../../families/art/provider.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import {
-  registerTimeChart,
   type TimeChartProjection,
   type TimeChartWidgetDeclaration,
 } from '../../families/time-chart/declaration.ts';
@@ -207,7 +207,7 @@ function buildHoverDetail(
   return { hour: hover.hour, items, replacesSeries: true };
 }
 
-export const worldTensionProjection: TimeChartProjection<WorldTensionChartOptions> = registerTimeChart({
+export const worldTensionProjection: TimeChartProjection<WorldTensionChartOptions> = registerFamilyProjection({
   kind: 'world-tension',
   family: 'time-chart',
   variant: 'stacked-area',

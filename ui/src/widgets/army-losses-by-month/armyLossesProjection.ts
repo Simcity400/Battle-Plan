@@ -1,4 +1,5 @@
 import { liveKey } from '../../charts/live.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
 import { firstHourOfMonth, gameDate, monthAt, monthIndex, monthNames } from '../../dashboard/calendar.ts';
@@ -6,7 +7,6 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import {
-  registerTimeChart,
   type TimeChartProjection,
   type TimeChartWidgetDeclaration,
 } from '../../families/time-chart/declaration.ts';
@@ -188,7 +188,7 @@ function resolveBar(
   };
 }
 
-export const armyLossesProjection: TimeChartProjection<ArmyLossesChartOptions> = registerTimeChart({
+export const armyLossesProjection: TimeChartProjection<ArmyLossesChartOptions> = registerFamilyProjection({
   kind: 'army-losses-by-month',
   family: 'time-chart',
   variant: 'columns',
