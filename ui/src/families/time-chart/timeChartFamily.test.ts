@@ -1077,15 +1077,55 @@ describe('multi-country order from the product', () => {
     ...(extra.panels ? { panels: extra.panels } : {}),
   }), { tags: ['GER', 'ITA'], extent: [base, base + 95], gaps: [], surface: '#111111' });
 
-  it('orders lines by the followed ranking, not by the values it holds', () => {
-    const rank = parseFollowed(message(10, [{ id: 1, answer: { keys: [2n, 1n], columns: 1, values: [10n, 90n], names: ['ITA', 'GER'] } }])).answers[0]!.answer;
-    assert.deepEqual(project({ answers: new Map([['rank', rank as never]]) }).series.map(s => s.id), ['ITA', 'GER']);
+  const rankReply = (countries: readonly string[], refused: string | null = null) => ({
+    hour, from: hour, until: hour, refused, measures: [{ name: 'politicalPower', decimals: 5 }],
+    rows: countries.map(country => ({ country, readings: [{ country, hour, run: { valueRaw: '1000000', firstHour: hour, lastHour: hour }, missing: null }] })),
   });
 
-  it('orders lines by the paused ranking reply, and keeps the recorded order before any ranking', () => {
-    const panels = new Map<string, unknown>([['rank', { states: [{ country: 'ITA', run: { valueRaw: '1000000' }, missing: null }, { country: 'GER', run: { valueRaw: '9000000' }, missing: null }] }]]);
-    assert.deepEqual(project({ panels }).series.map(s => s.id), ['ITA', 'GER']);
+  it('orders lines by the product’s rank reply, says a refused order, and keeps the recorded order before any ranking', () => {
+    const ranked = project({ panels: new Map([['rank', rankReply(['ITA', 'GER'])]]) });
+    assert.deepEqual(ranked.series.map(s => s.id), ['ITA', 'GER']);
+    assert.equal(ranked.warnings, undefined);
+    const refused = project({ panels: new Map([['rank', rankReply(['ITA', 'GER'], 'Political power is not recorded for GER at this hour')]]) });
+    assert.deepEqual(refused.series.map(s => s.id), ['ITA', 'GER'], 'the product’s order, kept verbatim');
+    assert.deepEqual(refused.warnings, ['Not in rank order: Political power is not recorded for GER at this hour'], 'an unproven order is said, never shown as a rank');
     assert.deepEqual(project({}).series.map(s => s.id), ['GER', 'ITA'], 'no ranking yet: the recorded order, never a client sort');
+  });
+
+  it('ranks chosen countries through series-rank alone, paused and followed, and keyed heads ask row coverage', async () => {
+    const asked: { product: string; params: Record<string, unknown> }[] = [];
+    const client = {
+      product: async (request: { product: string; params: Record<string, unknown> & { reads?: readonly { country: unknown }[] } }) => {
+        asked.push(request);
+        if (request.product === 'series-state' && request.params.top !== undefined) throw new Error('series-state does not rank');
+        if (request.product === 'series-rank') return { data: rankReply(['ITA', 'GER']) };
+        return { data: { decimals: 5, states: (request.params.reads ?? []).map(read => ({ country: read.country, hour, run: { valueRaw: '1000000' }, missing: null })) } };
+      },
+    } as unknown as Parameters<typeof readPlanExact>[2]['client'];
+    const gate = {
+      recorded: (h: number | null | undefined) => (typeof h === 'number' ? h : null) as never,
+      span: (firstHour: number, lastHour: number) => ({ firstHour, lastHour } as never),
+    };
+    const ctx = (following: boolean) => ({
+      track: { source: { id: 's', revision: '1' }, axisOffset: 0 }, branch: { id: '1', gaps: [] }, following,
+      countries: { tags: ['GER', 'ITA'], membership: null }, options: { spendTicks: false },
+    }) as unknown as Parameters<typeof politicalPowerDeclaration.sources>[0];
+    const VIEW = { width: 800, height: 300 } as Parameters<typeof politicalPowerDeclaration.sources>[1];
+    for (const following of [false, true]) {
+      const plan = politicalPowerDeclaration.sources(ctx(following), VIEW);
+      const rank = plan.entries.find(entry => entry.name === 'rank')!.read as { product: string; followQuery: unknown };
+      assert.deepEqual([rank.product, rank.followQuery], ['series-rank', null], 'one rank product, whether following or not');
+      const head = (plan.entries.find(entry => entry.name === 'main')!.read as { headQuery: { coverage?: string } }).headQuery;
+      assert.equal(head.coverage, 'row', 'one unread country never hides a witnessed one');
+    }
+    asked.length = 0;
+    const exact = await readPlanExact(politicalPowerDeclaration.sources(ctx(false), VIEW), hour,
+      { client, following: false, timeMode: 'pin', branch: { firstHour: base, lastHour: hour }, window: null, staticSpan: null, gate });
+    assert.ok(!asked.some(request => request.product === 'series-state' && request.params.top !== undefined), 'no second rank request');
+    assert.deepEqual(asked.filter(request => request.product === 'series-rank').map(request => request.params.countries), [['GER', 'ITA']]);
+    const model = politicalPowerProjection.project(exact!, { tags: ['GER', 'ITA'], extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.deepEqual(model.series.map(s => s.id), ['ITA', 'GER']);
+    assert.deepEqual(model.auditRows?.map(row => `${row.row}=${row.value}`), ['ITA=10', 'GER=10']);
   });
 
   it('takes a head from the exact read when there is no followed answer and no tiles', () => {
@@ -1189,8 +1229,14 @@ describe('several countries, one measure', () => {
       track: { source: { id: 's', revision: '1' }, axisOffset: 0 }, branch: { id: '1' }, following: false,
       countries: { tags: [], membership: null, top: 3, all: false, every: [] }, options: { measure: 'both' }, aux: undefined,
     } as unknown as Parameters<typeof occupationLinesDeclaration.sources>[0];
-    const main = occupationLinesDeclaration.sources(ctx, { width: 800, height: 300 } as Parameters<typeof occupationLinesDeclaration.sources>[1]).entries.find(entry => entry.name === 'main')!;
+    const plan = occupationLinesDeclaration.sources(ctx, { width: 800, height: 300 } as Parameters<typeof occupationLinesDeclaration.sources>[1]);
+    const main = plan.entries.find(entry => entry.name === 'main')!;
     assert.ok(((main.read as { params?: { measures?: readonly string[] } }).params?.measures ?? []).length === 1, 'the ranked exact read asks the second measure too');
+    assert.ok(!plan.entries.some(entry => entry.name === 'rank'), 'a ranked top takes its order from its own ranked read, not a second rank request');
+    const keyed = occupationLinesDeclaration.sources({ ...ctx, countries: { tags: ['A07', 'A01'], membership: null, top: null, all: false, every: [] } },
+      { width: 800, height: 300 } as Parameters<typeof occupationLinesDeclaration.sources>[1]);
+    assert.deepEqual(keyed.entries.filter(entry => entry.read.shape === 'pixel-binned').map(entry => (entry.read as { headQuery: { coverage?: string } }).headQuery.coverage), ['row', 'row'], 'keyed heads ask row coverage');
+    assert.equal((keyed.entries.find(entry => entry.name === 'rank')!.read as { product: string }).product, 'series-rank');
   });
 
   it('audits a ranked chart from the product’s exact ranked reply and hovers only members at the hovered hour', () => {
