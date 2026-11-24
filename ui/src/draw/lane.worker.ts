@@ -3,7 +3,7 @@ import { panelViews, readingStructure } from './panels/views.ts';
 import { stretch } from './weakCpu.ts';
 import type { FromLane, ToLane } from './laneMessages';
 import { drawnViews } from './views/drawn.ts';
-import { laneDispatch } from './laneDispatch.ts';
+import { laneDispatch, macrotaskSchedule } from './laneDispatch.ts';
 
 const post = (message: FromLane, transfer: Transferable[] = []) => self.postMessage(message, { transfer });
 const fields = fieldsView(readingStructure, (product, panel, hour) => {
@@ -11,12 +11,7 @@ const fields = fieldsView(readingStructure, (product, panel, hour) => {
   return view?.nextChange && panel.data !== undefined ? view.nextChange(panel.data, hour) : undefined;
 });
 
-const wake = typeof MessageChannel === 'function' ? new MessageChannel() : null;
-let pendingRun: (() => void) | null = null;
-if (wake) wake.port1.onmessage = () => { const run = pendingRun; pendingRun = null; run?.(); };
-const schedule = wake
-  ? (run: () => void) => { pendingRun = run; wake.port2.postMessage(null); }
-  : undefined;
+const schedule = macrotaskSchedule();
 
 const dispatch = laneDispatch(post, {
   views: (kind, wake) => kind === 'fields' ? fields : drawnViews(kind, wake) ?? fields,

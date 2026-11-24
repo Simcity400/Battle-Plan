@@ -1225,21 +1225,29 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private schedule() {
     if (this.working || !this.request) return;
     this.working = true;
-    const defer = this.host.schedule ?? queueMicrotask;
-    defer(() => { void this.run(); });
+    queueMicrotask(() => { void this.run(); });
+  }
+
+  private finishRun() {
+    this.working = false;
+    if (this.request) this.schedule();
+    else if (!this.pacing && this.motionWidgets.size > 0) {
+      this.pacing = true;
+      this.host.later(() => { this.pacing = false; this.wake(); });
+    }
   }
 
   private async run() {
     const request = this.request;
     this.request = null;
+    const began = this.time();
     try { if (request) await this.serve(request); }
     catch (error) { this.host.fail(error instanceof Error ? error.message : String(error)); }
     finally {
-      this.working = false;
-      if (this.request) this.schedule();
-      else if (!this.pacing && this.motionWidgets.size > 0) {
-        this.pacing = true;
-        this.host.later(() => { this.pacing = false; this.wake(); });
+      if (this.host.schedule && (this.request || this.time() - began >= (this.host.budget ?? 10))) {
+        this.host.schedule(() => this.finishRun());
+      } else {
+        this.finishRun();
       }
     }
   }
@@ -1569,10 +1577,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       surfaces.push(parts);
     }
     const resets: [number, number][] = [];
+    const toldMoved: [number, number | undefined][] = [];
     let moved = false;
     for (const [route, native] of this.natives) {
       const count = this.resets.get(native) ?? 0;
-      if (this.told.get(route) !== count) { moved = true; this.told.set(route, count); }
+      const prev = this.told.get(route);
+      if (prev !== count) { moved = true; toldMoved.push([route, prev]); this.told.set(route, count); }
       resets.push([route, count]);
     }
     const confirmed: [number, 'followed' | 'panel', number, number, number][] = [];
@@ -1624,6 +1634,32 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         }
       }
       slots.length = 0;
+    }
+    if (this.seekSuperseded(request.seek)) {
+      for (const crop of crops) crop.close();
+      for (let e = 0; e < entries.length; e++) {
+        const orig = entries[e]!;
+        const { widget } = made[e]!;
+        this.presented.delete(orig.id);
+        if (this.widgets.get(widget.id) === widget) {
+          if (widget.inflight?.id === orig.id) widget.inflight = null;
+          if (widget.binding.generation === orig.binding) widget.sent = { ...widget.installed?.contents ?? {} };
+          this.dirtyWidgets.add(widget.id);
+          this.syncWindowTracking(widget);
+        }
+      }
+      if (closed) for (const wid of closed) if (this.widgets.has(wid)) this.pendingClosed.add(wid);
+      for (const [route, prev] of toldMoved) {
+        if (!this.natives.has(route)) continue;
+        if (prev === undefined) this.told.delete(route);
+        else this.told.set(route, prev);
+      }
+      for (const id of this.facts.drain()) this.gone.add(id);
+      const bytes = this.freed + this.releasedFacts();
+      this.freed = 0;
+      if (bytes) this.host.release(bytes);
+      this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: 0, ms: this.time() - began });
+      return;
     }
     this.stats.crops += crops.length;
     slots.forEach(([e, k], at) => { surfaces[e]![k] = crops[at]!; });

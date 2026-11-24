@@ -1,11 +1,34 @@
 import { Lane, type LaneHost, type LaneView } from './lane.ts';
 import type { FromLane, FromPull, ToLane, ToPull } from './laneMessages';
 
+export interface WakeChannel {
+  readonly port1: { onmessage: ((ev: MessageEvent) => unknown) | null };
+  readonly port2: { postMessage(message: unknown): void };
+}
+
+export function macrotaskSchedule(
+  createChannel: (() => WakeChannel) | null = typeof MessageChannel === 'function' ? () => new MessageChannel() : null,
+): ((run: () => void) => void) | undefined {
+  if (!createChannel) return undefined;
+  const wake = createChannel();
+  let pending: (() => void) | null = null;
+  wake.port1.onmessage = () => {
+    const run = pending;
+    pending = null;
+    run?.();
+  };
+  return run => {
+    pending = run;
+    wake.port2.postMessage(null);
+  };
+}
+
 export interface LaneSide {
   views(kind: string, wake: (widget: number) => void): LaneView;
   crop: LaneHost<ImageBitmap>['crop'];
   later(run: () => void): void;
   schedule?: LaneHost<ImageBitmap>['schedule'];
+  clock?: LaneHost<ImageBitmap>['clock'];
   stretch?(ms: number, rate: number): void;
 }
 
@@ -21,6 +44,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
     const made = new Lane<ImageBitmap>({
       lane: index, lanes, views: viewOf, crop: side.crop, later: side.later,
       ...side.schedule ? { schedule: side.schedule } : {},
+      ...side.clock ? { clock: side.clock } : {},
       present: (presentation, transfer) => post({ type: 'presentation', ...presentation }, transfer),
       release: bytes => port.postMessage({ release: bytes } satisfies ToPull),
       hit: (widget, key) => post({ type: 'hit', widget, key }),
