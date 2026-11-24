@@ -2,7 +2,7 @@ import { CHART_MEASURE_COLOURS, readableColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
-import type { HeatMatrixModel, HeatMatrixProjection, MatrixAxisEntity, MatrixCell } from '../../families/heat/matrixModel.ts';
+import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
 import { resolveEntityFromReadView, sequentialRampColour } from '../../families/heat/scale.ts';
 import type { IntelCoverageBasis, IntelCoverageCell, IntelCoverageMeasure, IntelCoverageReply } from '../../generated/dashboard';
 import { mix } from '../../shell/appearance/color.ts';
@@ -26,10 +26,10 @@ function strengthText(raw: number | bigint): string {
 }
 
 function emptyModel(hour: number, extra: Partial<HeatMatrixModel>): HeatMatrixModel {
-  return { hour, rows: [], columns: [], cell: () => ({ kind: 'diagonal' }), ...extra };
+  return { hour, rows: [], columns: [], cells: NO_CELLS, ...extra };
 }
 
-function present(cell: IntelCoverageCell | undefined): Extract<IntelCoverageCell, { kind: 'present' }> | null {
+function presentCell(cell: IntelCoverageCell | undefined): Extract<IntelCoverageCell, { kind: 'present' }> | null {
   return cell && cell.kind === 'present' ? cell : null;
 }
 
@@ -64,20 +64,18 @@ export function projectIntelCoverage(readView: BoundedReadView, options: IntelCo
   const cells = reply.cells;
   const highest = Math.max(1, Number(reply.maxValue));
   const hasMissing = cells.some(cell => cell.kind === 'missing');
-  const cell = (rowIndex: number, columnIndex: number): MatrixCell => {
-    if (rowIndex === columnIndex) return { kind: 'diagonal' };
-    const raw = cells[rowIndex * n + columnIndex];
-    if (!raw) return { kind: 'missing', reason: 'Intel network not recorded' };
-    if (raw.kind === 'diagonal') return { kind: 'diagonal' };
-    if (raw.kind === 'noNetwork') return { kind: 'empty', label: 'No network', selectable: false };
-    if (raw.kind === 'missing') return { kind: 'missing', reason: raw.reason };
-    return { kind: 'value', color: sequentialRampColour(Number(raw.value), highest, grey, accent), text: coverageText(raw.value, reply.scale, options.measure), value: raw.value };
-  };
+  const present = new Map<number, MatrixCell>();
+  cells.forEach((raw, at) => {
+    if (raw.kind === 'diagonal' || raw.kind === 'noNetwork' || Math.floor(at / n) === at % n) return;
+    present.set(at, raw.kind === 'missing'
+      ? { kind: 'missing', reason: raw.reason }
+      : { kind: 'value', color: sequentialRampColour(Number(raw.value), highest, grey, accent), text: coverageText(raw.value, reply.scale, options.measure), value: raw.value });
+  });
   return {
     hour,
     rows: entities,
     columns: entities,
-    cell,
+    cells: { present, absent: { kind: 'empty', label: 'No network', selectable: false } },
     legend: {
       gradient: { lowLabel: '0', highLabel: coverageText(reply.maxValue, reply.scale, options.measure), stops: [grey, accent] },
       entries: [
@@ -91,7 +89,7 @@ export function projectIntelCoverage(readView: BoundedReadView, options: IntelCo
       const readHour = reply.readHour ?? hour;
       if (item.kind === 'missing') return { title, hour: readHour, missingReason: item.reason };
       if (item.kind === 'empty') return { title, hour: readHour, items: [{ label: 'No intel network' }] };
-      const raw = present(cells[rowIndex * n + columnIndex]);
+      const raw = presentCell(cells[rowIndex * n + columnIndex]);
       return {
         title,
         hour: readHour,

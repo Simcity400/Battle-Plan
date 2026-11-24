@@ -141,6 +141,7 @@ interface StraddleState {
   readonly points: readonly WitnessedPoint[] | null;
   hour: number;
   runIndex: number;
+  observedRun: number;
   pointIndex: number;
   found: boolean;
   firstHour: number;
@@ -169,6 +170,7 @@ function freshStraddle(
     points,
     hour: -Infinity,
     runIndex: runs && runs.length ? lowerBoundRunOverlap(runs, coarse.firstHour, counter) : 0,
+    observedRun: -1,
     pointIndex: points && points.length ? lowerBoundPoint(points, coarse.firstHour, counter) : 0,
     found: false,
     firstHour: Infinity,
@@ -243,7 +245,8 @@ export function cutStraddlingBucket(
       const run = runs[i]!;
       if (counter) counter.visits++;
       if (run.firstHour > hour) break;
-      observeSpan(st, hour, run.firstHour, run.lastHour, run.value, run.breakBefore === true);
+      observeSpan(st, hour, run.firstHour, run.lastHour, run.value, i !== st.observedRun && run.breakBefore === true);
+      st.observedRun = i;
       st.runIndex = i;
     }
   }

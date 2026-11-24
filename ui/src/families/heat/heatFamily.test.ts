@@ -33,6 +33,10 @@ import {
   type MatrixCell,
 } from './index.ts';
 
+function gridCells(grid: readonly (readonly MatrixCell[])[], width: number) {
+  return { present: new Map(grid.flatMap((row, r) => row.map((cell, c) => [r * width + c, cell] as const))), absent: { kind: 'empty' } as MatrixCell };
+}
+
 const THEME: FamilyTheme = {
   surface: '#11161f',
   raised: '#1a212e',
@@ -118,7 +122,7 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
     hour: 240,
     rows,
     columns,
-    cell: (r, c) => grid[r]![c]!,
+    cells: gridCells(grid, columns.length),
     legend: {
       gradient: { lowLabel: '-80', highLabel: '+50', stops: ['#e55353', '#3a4556', '#2eb872'] },
       entries: [{ id: 'missing', label: 'Not recorded', color: '#3a4556', hatched: true }],
@@ -213,11 +217,14 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
     corner: 'Reads',
     rows: rows.map((row, i) => ({ ...row, trailing: `Broken ${i} · Decrypting 1` })),
     columns,
-    cell: (_r, c) => (c === 0
-      ? { kind: 'value', mark: 'square', color: '#d0607c' }
-      : c === 1
-        ? { kind: 'value', mark: 'ring', fraction: 0.4, color: '#d0607c' }
-        : { kind: 'empty', mark: 'dot' }),
+    cells: {
+      present: new Map(rows.flatMap((_row, r) => [
+        [r * columns.length, { kind: 'value', mark: 'square', color: '#d0607c' } as MatrixCell],
+        [r * columns.length + 1, { kind: 'value', mark: 'ring', fraction: 0.4, color: '#d0607c' } as MatrixCell],
+      ] as const)),
+      absent: { kind: 'empty', mark: 'dot' },
+      self: { kind: 'empty', mark: 'dot' },
+    },
   };
   const markedLayout = layoutHeatMatrix({ width: 640, height: 260, scrollLeft: 0, scrollTop: 0, rows: marked.rows, columns, widestTrailing: 120 });
   assert.ok(markedLayout.trailingWidth > 120);
@@ -246,6 +253,32 @@ test('heat matrix scales to 1,500 countries with bounded visible row and column 
   });
   assert.ok(layout.endRow - layout.firstRow < 30);
   assert.ok(layout.endCol - layout.firstCol < 35);
+});
+
+test('a 1,500 by 1,500 matrix reads only the cells a 20 by 20 viewport shows, its tooltip and its audit', () => {
+  const entities: MatrixAxisEntity[] = Array.from({ length: 1500 }, (_, i) => ({ id: `C${i}`, label: `Country ${i}`, tag: `C${i}` }));
+  let visits = 0;
+  class CountingMap extends Map<number, MatrixCell> {
+    override get(key: number): MatrixCell | undefined {
+      visits++;
+      return super.get(key);
+    }
+  }
+  const present = new CountingMap();
+  for (let i = 0; i < 1500; i++) present.set(i * 1500 + ((i + 1) % 1500), { kind: 'value', color: '#2eb872', text: '1', value: 1 });
+  const model: HeatMatrixModel = { hour: 1, rows: entities, columns: entities, cells: { present, absent: { kind: 'empty', label: 'None' } } };
+  const layout = layoutHeatMatrix({ width: 20 * 22 + 200, height: 20 * 22 + 120, scrollLeft: 22 * 700, scrollTop: 22 * 700, rows: entities, columns: entities });
+  const shown = (layout.endRow - layout.firstRow) * (layout.endCol - layout.firstCol);
+  assert.ok(shown <= 32 * 32, `the viewport is small: ${shown}`);
+  const fake = makeFakeCtx();
+  drawHeatMatrix(fake.ctx, { model, layout, theme: THEME, scrollLeft: 22 * 700, scrollTop: 22 * 700, hoveredCell: null, focusedCell: null }, createMatrixPicture());
+  deriveMatrixMirror(model, layout.firstRow, layout.endRow, layout.firstCol, layout.endCol);
+  deriveMatrixAudit(model, { firstRow: layout.firstRow, endRow: layout.endRow, firstCol: layout.firstCol, endCol: layout.endCol });
+  deriveMatrixTooltip(model, layout.firstRow, layout.firstCol);
+  assert.ok(visits <= shown * 3 + 1, `cells read: ${visits} for ${shown} shown`);
+  visits = 0;
+  assert.equal(deriveMatrixAudit(model).length, 1501, 'the whole-model audit lists the present pairs and the absent cell once');
+  assert.equal(visits, 0, 'and reads no absent pair');
 });
 
 test('heat lanes never leak readings past displayed hour, never stretch over uncovered days, and keep 1px midnight terminal column', () => {
