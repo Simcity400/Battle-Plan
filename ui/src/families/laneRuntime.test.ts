@@ -150,6 +150,8 @@ test('the shared quiet-frame check: no drawing or new field between boundaries, 
   assert.equal(assertQuietFrames(() => createLaneView(hourly, () => {}), { label: 'hourly', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 12 }), 13);
 });
 
+const settle = async () => { for (let i = 0; i < 8; i++) await null; };
+
 test('a cold projection load walks no history, keeps one waiter per placement, and a failed import is refused by name, not retried', async () => {
   let release: (value: unknown) => void = () => {};
   let loads = 0;
@@ -167,12 +169,12 @@ test('a cold projection load walks no history, keeps one waiter per placement, a
     for (let hour = 0; hour < 1000; hour++) assert.equal(view.next!(scene, hour, lane.state), Infinity, 'loading answers no boundary, so the lane walks no history');
     for (let i = 0; i < 5; i++) assert.equal(lane.paint({ label: 'loading', binding: cold, hour: 10 }).surfaces.length, 0);
     release({ projection: { kind: 'cold', family: 'test-lane', project: (view: BoundedReadView) => ({ hour: view.hour, bucket: 0, rows: [], name: '' }) } });
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await settle();
     assert.deepEqual([loads, wakes], [1, 1], 'one import and one wake for the placement');
 
     const broken = { ...binding(rowsAt([])), kind: 'broken' };
     lane.paint({ label: 'broken', binding: broken, hour: 10 });
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await settle();
     for (let i = 0; i < 5; i++) {
       const refused = lane.paint({ label: 'broken', binding: broken, hour: 10 });
       assert.equal(refused.mode, 'refused');
