@@ -37,6 +37,7 @@ export const bombingDamageDeclaration: BarsWidgetDeclaration<MilitaryAirAtOption
     rightHeader: 'Damage inflicted',
     unit: 'Building levels',
     ratio: false,
+    none: 'No bombing damage yet.',
     chosen: !ctx.countries.all && ctx.countries.top == null ? ctx.countries.tags : null,
   }),
   jumpToDate: true,

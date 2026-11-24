@@ -112,6 +112,7 @@ const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> =
         empty: null,
         emptyDetail: null,
         emptyKind: 'empty',
+        ...(model.subject ? { subject: model.subject } : {}),
         notes: model.note ? [model.note] : [],
         warnings: model.warnings ?? [],
         transform: {

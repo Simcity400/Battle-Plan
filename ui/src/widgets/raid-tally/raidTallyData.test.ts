@@ -16,11 +16,11 @@ test('raid tally keeps recorded zero apart from missing, gaps, and uncertain lau
   const series = tallyModel([item]);
   assert.equal(tallyEntries(series, ['MOD A', 'missing'], 101, 'launched', 10).length, 1);
   assert.equal(tallyEntries(series, ['MOD A'], 102, 'launched', 10).length, 0);
-  assert.equal(tallyEntries(series, ['MOD A'], 103, 'succeeded', 10)[0].label, '1+');
-  assert.equal(tallyEntries(series, ['MOD A'], 103, 'launched', 10)[0].label, '0+');
+  assert.equal(tallyEntries(series, ['MOD A'], 103, 'succeeded', 10)[0].label, '1');
+  assert.equal(tallyEntries(series, ['MOD A'], 103, 'launched', 10)[0].label, '0');
   const tip = tallyTooltip(series, 'MOD A', 104, 'Renamed country at the hovered hour');
   assert.equal(tip.title, 'Renamed country at the hovered hour');
-  assert.match(tip.note!, /\+ means at least this many/);
+  assert.doesNotMatch(tip.note!, /\+ means|at least/i);
   assert.match(tip.note!, /Success includes critical success and excludes limited success/);
   assert.deepEqual(tallyTooltip(series, 'MOD A', 102, 'Country').rows, [{ label: 'Not recorded at this time', tone: 'muted' }]);
   assert.equal(tallyLines([item], 'succeeded', { firstHour: 100, lastHour: 105 }, null)[0].runs.length, 2);
@@ -58,11 +58,11 @@ test('Both defaults to launched ranking with exact inner successes, including su
   const series = tallyModel([item, overflow]);
   const entries = tallyEntries(series, [...series.keys()], 104, 'both', undefined, true);
   assert.deepEqual(entries.map(entry => [entry.tag, entry.value, entry.inset, entry.label]),
-    [['MOD A', 4, 1, '4+ launched · 1+ succeeded'], ['MOD B', 0, 7, '0+ launched · 7+ succeeded']]);
+    [['MOD A', 4, 1, '4 launched · 1 succeeded'], ['MOD B', 0, 7, '0 launched · 7 succeeded']]);
   assert.equal(countryRaceItems(entries, new Map(), () => 'country', 'unknown', false)[1].inset?.value, 7);
   const tip = tallyLineTooltip(series, 104, ['MOD A', 'MOD A', 'MOD B'], () => tag => ({ name: `${tag} at hover`, flag: 'hover flag' }), () => 'country', 'both');
   assert.deepEqual(tip.rows.map(row => [row.label, row.countryFlag?.flag, row.value]),
-    [['MOD A at hover', 'hover flag', '4+ launched · 1+ succeeded'], ['MOD B at hover', 'hover flag', '0+ launched · 7+ succeeded']]);
+    [['MOD A at hover', 'hover flag', '4 launched · 1 succeeded'], ['MOD B at hover', 'hover flag', '0 launched · 7 succeeded']]);
 });
 
 

@@ -181,8 +181,8 @@ export function measureFixedColumnWidths(
       continue;
     }
     if (column.cellKind === 'share') {
-      const track = settings.sort.column === column.key ? SHARE_TRACK_WIDTH + SHARE_TRACK_GAP : 0;
-      const shareW = Math.max(column.minWidth ?? 0, headerWidth, SHARE_FIGURE_SLOT + SHARE_PARTIAL_TAB + track + CELL_INSET * 2);
+      const track = settings.sort.column === column.key ? SHARE_TRACK_WIDTH : 0;
+      const shareW = Math.max(column.minWidth ?? 0, SHARE_FIGURE_SLOT + SHARE_PARTIAL_TAB + CELL_INSET * 2) + track;
       out[column.key] = Math.ceil(column.maxWidth !== undefined ? Math.min(column.maxWidth, shareW) : shareW);
       continue;
     }

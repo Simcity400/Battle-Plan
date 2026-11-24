@@ -3,9 +3,10 @@ import { textWidth } from '../../charts/textWidth.ts';
 import type { LaneView } from '../../draw/lane.ts';
 import { createLaneView, type LaneBinding, type LaneFamily, type LaneFrame, type LaneRuntimeOptions } from '../laneRuntime.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
-import { layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
+import { barsAuditWindow, barsScrollHeight, layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
 import { assertBarsModelValid, deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip, type BarsModel } from './model.ts';
 import { collectVisibleBarsIcons, drawFamilyBars, hitFamilyBars, type BarsGlideOffset } from './painter.ts';
+import { hitPickList, pickAudit, pickedKey, pickNav, pickTooltip } from './pickList.ts';
 import { barsRegionRows } from './shareRows.ts';
 import { regionHitKey } from '../regions/regionRows.ts';
 
@@ -51,6 +52,7 @@ function glideOf(frame: BarsFrame): Glide {
 function inspected(inspect: string | null): { readonly key: string; readonly side?: 'right' } | null {
   if (inspect?.startsWith('row:')) return { key: inspect.slice(4) };
   if (inspect?.startsWith('right:')) return { key: inspect.slice(6), side: 'right' };
+  if (inspect?.startsWith('pick:')) return { key: inspect };
   return null;
 }
 
@@ -89,6 +91,11 @@ const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
     return glide.moving;
   },
   hit(frame, point) {
+    if (frame.model.pickList) {
+      const picked = hitPickList(frame.model.pickList, frame.layout, { x: point[0], y: point[1] });
+      if (picked) return picked;
+      if (point[0] < frame.layout.bodyLeft) return null;
+    }
     const glide = glideOf(frame);
     const shown = new Set<string>();
     const hovered = inspected(frame.inspect)?.key;
@@ -105,6 +112,11 @@ const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
   tooltip(frame, key, focus) {
     const target = focus ? { key } : inspected(key);
     if (!target) return null;
+    const picked = pickedKey(target.key);
+    if (picked !== null) {
+      const tip = frame.model.pickList ? pickTooltip(frame.model.pickList, picked, frame.model.hour) : null;
+      return tip ? { hour: frame.model.hour, rowKey: target.key, payload: tip } : null;
+    }
     const payload = deriveBarsTooltip(frame.model, target.key, target.side);
     return payload ? { hour: frame.model.hour, rowKey: target.key, payload } : null;
   },
@@ -116,6 +128,8 @@ const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
         form: model.form,
         count: model.rows.length,
         totalHeight: layout.totalHeight,
+        scrollHeight: barsScrollHeight(layout),
+        rowViewport: { top: layout.bodyTop, height: layout.bodyHeight },
         bodyHeight: layout.bodyHeight,
         rowHeight: layout.dataRowHeight,
         bodyTop: layout.bodyTop,
@@ -126,14 +140,17 @@ const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
         notes: model.notes ?? [],
         warnings: model.warnings ?? [],
       },
-      nav: model.rows.flatMap((row, index) => (row.kind === 'section' ? [] : [[row.key, row.label, index, -1, '', row.kind === 'data' ? (row.meta ?? null) : null, layout.rowTops[index]!, layout.rowHeights[index]!] as const])),
+      nav: [
+        ...(model.pickList && layout.pickWidth > 0 ? pickNav(model.pickList) : []),
+        ...model.rows.flatMap((row, index) => (row.kind === 'section' ? [] : [[row.key, row.label, index, -1, '', row.kind === 'data' ? (row.meta ?? null) : null, layout.rowTops[index]!, layout.rowHeights[index]!] as const])),
+      ],
     };
   },
   mirror(frame) {
     const shown = visibleBarsRange(frame.layout, frame.binding.scrollTop);
     return deriveBarsMirror(frame.model, { first: shown.first, count: Math.max(0, shown.last - shown.first) }, frame.binding.focusedKey);
   },
-  audit: frame => deriveBarsAudit(frame.model),
+  audit: frame => [...(frame.model.pickList ? pickAudit(frame.model.pickList) : []), ...deriveBarsAudit(frame.model, { window: barsAuditWindow(frame.layout, frame.binding.scrollTop) })],
   visibleArt: frame => collectVisibleBarsIcons(frame.model, frame.layout, frame.binding.scrollTop),
 };
 

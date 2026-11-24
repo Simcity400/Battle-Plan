@@ -187,7 +187,7 @@ test('linked result length and peak stay at the observed reads rather than exten
     assert.equal(navalBattleSize(shown, 'Length').value, 4);
     assert.equal(navalBattleSize(shown, 'Peak ships').value, 8);
     assert.equal(shown.peakHour, 104);
-    assert.equal(navalBattleMeasureText(navalBattleSize(shown, 'Length'), shown), '≥ 4 h');
+    assert.equal(navalBattleMeasureText(navalBattleSize(shown, 'Length'), shown), '4 h');
   }
 });
 

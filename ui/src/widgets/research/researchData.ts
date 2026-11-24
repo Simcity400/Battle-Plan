@@ -91,18 +91,6 @@ export function researchRateAt(state: ResearchSlotState, hour: number): { rateRa
   return { rateRaw: (rate > minimum ? rate : minimum).toString(), penaltyRaw: penalty.toString(), floored: rate < minimum };
 }
 
-export function researchLatestProgress(slot: ResearchSlotHistory, state: ResearchSlotState, hour: number): { fraction: number; hour: number } | null {
-  if (state.entryFirstObservedHour === null) return null;
-  const samples = slot.progress.filter(sample => sample.entryFirstObservedHour === state.entryFirstObservedHour);
-  let low = 0, high = samples.length;
-  while (low < high) { const mid = (low + high) >>> 1; if (samples[mid].firstHour <= hour) low = mid + 1; else high = mid; }
-  const sample = samples[low - 1];
-  if (!sample?.baseDaysRaw) return null;
-  const base = BigInt(sample.baseDaysRaw), done = BigInt(sample.progressRaw);
-  if (base <= 0n || done < 0n) return null;
-  return { fraction: done >= base ? 1 : Number(done * 10_000n / base) / 10_000, hour: Math.min(sample.lastHour, hour) };
-}
-
 export interface ResearchFolderLook { key: string; name: string; colour: string; order: number }
 
 export type ResearchUse = string | readonly [token: string, databaseIndex: number];
@@ -178,6 +166,15 @@ export function researchReadName(artwork: ResearchArtwork, read: ResearchSlotNow
   const { token, databaseIndex } = read.state;
   if (token === null) return undefined;
   return isUnjoinedResearch(read.state) ? read.definition?.name : researchArt(artwork, token, databaseIndex)?.name;
+}
+
+export function historyTokens(history: ResearchHistory): ResearchUse[] {
+  const tokens = new Set<string>(), definitions = new Map<string, Set<number>>();
+  for (const slot of history.slots) {
+    for (const entry of slot.entries) definitions.set(entry.token, (definitions.get(entry.token) ?? new Set<number>()).add(entry.databaseIndex));
+    for (const state of slot.states) if (state.token && !definitions.has(state.token)) tokens.add(state.token);
+  }
+  return [...tokens, ...[...definitions].flatMap(([token, indices]) => [...indices].map(index => [token, index] as const))];
 }
 
 export function researchFolderList(looks: ResearchFolderLooks): ResearchFolderLook[] {

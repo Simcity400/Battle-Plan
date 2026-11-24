@@ -409,7 +409,8 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
   assert.ok(clock.ops.some(op => op.op === 'fillText' && op.args[0] === '12:30:00'));
 
   assert.equal(contrastInkForFill('#f4f6f9', THEME), 'rgba(17, 17, 17, 0.88)');
-  assert.equal(contrastInkForFill('#3987e5', THEME), 'rgba(255, 255, 255, 0.96)');
+  assert.equal(contrastInkForFill('#888888', THEME), 'rgba(17, 17, 17, 0.88)');
+  assert.equal(contrastInkForFill('#1e4fa3', THEME), 'rgba(255, 255, 255, 0.96)');
   assert.equal(contrastInkForFill('#16181d', THEME), 'rgba(255, 255, 255, 0.96)');
   assert.equal(contrastInkForFill('not-a-colour', THEME), THEME.text);
 });

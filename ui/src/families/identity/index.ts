@@ -13,7 +13,8 @@ import type {
 } from '../../generated/dashboard';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import { artHandleKey } from '../art/types.ts';
-import { resolveSlotHolderRuns, type HolderRun } from '../holders.ts';
+import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { mergeTagExistenceRuns, resolveSlotHolderRuns, type HolderRun } from '../holders.ts';
 import {
   countryTagKey,
   flagChoiceKey,
@@ -36,12 +37,38 @@ import {
   type IdentitySnapshot,
   type SnapshotFailure,
   type SnapshotFailures,
+  type SpanFailure,
   type StyleIntervalEntry,
 } from './types.ts';
 
 type FactRun = readonly [number, number, number, number, number];
+type EntityFailure = { readonly from: number; readonly to: number; readonly failure: Failure };
+
+function spliceSpan<T extends { readonly firstHour: number; readonly lastHour: number }>(held: readonly T[], from: number, to: number, added: readonly T[]): T[] {
+  let lo = 0;
+  let hi = held.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (held[mid]!.lastHour < from) lo = mid + 1;
+    else hi = mid;
+  }
+  let end = lo;
+  hi = held.length;
+  while (end < hi) {
+    const mid = (end + hi) >> 1;
+    if (held[mid]!.firstHour <= to) end = mid + 1;
+    else hi = mid;
+  }
+  const middle = added.length > 1 ? [...added].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour) : added;
+  return [...held.slice(0, lo), ...middle, ...held.slice(end)];
+}
+
+function withoutSpan(failures: readonly EntityFailure[] | undefined, from: number, to: number): readonly EntityFailure[] {
+  return (failures ?? []).filter(held => held.to < from || held.from > to);
+}
 type RawSlotEntry = { readonly firstHour: number; readonly lastHour: number; readonly countryId: number; readonly tag: string };
 
+const NO_RUNS: readonly HolderRun[] = [];
 const NOT_A_COUNTRY = 'not a country at this hour';
 const FACTS_NOT_RECORDED = 'country facts were not recorded at this hour';
 const NO_COLOUR = 'no recorded map colour';
@@ -182,6 +209,7 @@ export class IdentityIndex {
   private tagIdentities = new Map<string, readonly { readonly firstHour: number; readonly lastHour: number; readonly slot: number; readonly countryId: number }[]>();
   private tagUnresolved = new Map<string, readonly HourSpan[]>();
   private identitiesFailure?: Failure;
+  private slotChanges = 0;
 
   private groups?: CountryGroupReply;
   private factionsById = new Map<string, FactionGroup>();
@@ -192,10 +220,11 @@ export class IdentityIndex {
   private styleRuns = new Map<string, StyleIntervalEntry[]>();
   private styleFailures = new Map<string, Failure>();
   private entityRuns = new Map<string, EntityRunEntry[]>();
-  private entityFailures = new Map<string, Failure>();
+  private entityFailures = new Map<string, readonly EntityFailure[]>();
   private entityUnknown = new Map<EntityIdentityKey['kind'], RecordingGap[]>();
   private drawnFlags = new Map<string, DrawnFlagEntry>();
   private resolveChanges = 0;
+  private countryChanges = 0;
 
   constructor(scope: IdentityScope, branchBounds?: HourInterval) {
     this.scope = scope;
@@ -230,7 +259,9 @@ export class IdentityIndex {
     if (failures?.identities) index.identitiesFailure = keptFailure(failures.identities);
     if (failures?.groups) index.groupsFailure = keptFailure(failures.groups);
     for (const [key, sent] of Object.entries(failures?.styles ?? {})) index.styleFailures.set(key, keptFailure(sent));
-    for (const [key, sent] of Object.entries(failures?.entities ?? {})) index.entityFailures.set(key, keptFailure(sent));
+    for (const [key, sent] of Object.entries(failures?.entities ?? {})) {
+      index.entityFailures.set(key, sent.map(span => ({ from: span.from, to: span.to, failure: keptFailure(span) })));
+    }
     return index;
   }
 
@@ -244,7 +275,10 @@ export class IdentityIndex {
     const entityUnknown: Partial<Record<EntityIdentityKey['kind'], readonly RecordingGap[]>> = {};
     for (const [kind, spans] of this.entityUnknown) entityUnknown[kind] = spans;
     const styleFailures = sentFailures(this.styleFailures);
-    const entityFailures = sentFailures(this.entityFailures);
+    let entityFailures: Record<string, readonly SpanFailure[]> | undefined;
+    for (const [key, spans] of this.entityFailures) {
+      if (spans.length) (entityFailures ??= {})[key] = spans.map(span => ({ from: span.from, to: span.to, ...sentFailure(span.failure) }));
+    }
     const failures: SnapshotFailures = {
       ...(this.factsFailure ? { facts: sentFailure(this.factsFailure) } : {}),
       ...(this.identitiesFailure ? { identities: sentFailure(this.identitiesFailure) } : {}),
@@ -270,10 +304,15 @@ export class IdentityIndex {
     if (this.branchBounds[0] === bounds[0] && this.branchBounds[1] === bounds[1]) return;
     this.branchBounds = bounds;
     this.resolveChanges++;
+    this.countryChanges++;
   }
 
   resolveRevision(): number {
     return this.resolveChanges;
+  }
+
+  countryRevision(): number {
+    return this.countryChanges;
   }
 
   bounds(): HourInterval {
@@ -287,6 +326,7 @@ export class IdentityIndex {
     this.factsKnown = reply.known.map(span => [span[0], span[1]] as const);
     this.factsByTag = new Map(reply.countries.map(country => [country.tag, country.runs as readonly FactRun[]]));
     this.resolveChanges++;
+    this.countryChanges++;
   }
 
   setReadFailure(read: BranchRead, failure: Failure | undefined): void {
@@ -296,12 +336,39 @@ export class IdentityIndex {
         break;
       case 'identities':
         this.identitiesFailure = failure;
+        this.slotChanges++;
         break;
       case 'groups':
         this.groupsFailure = failure;
         break;
     }
     this.resolveChanges++;
+    this.countryChanges++;
+  }
+
+  readFailure(read: BranchRead): Failure | undefined {
+    switch (read) {
+      case 'facts':
+        return this.factsFailure;
+      case 'identities':
+        return this.identitiesFailure;
+      case 'groups':
+        return this.groupsFailure;
+    }
+  }
+
+  slotRevision(): number {
+    return this.slotChanges;
+  }
+
+  tagRuns(slot: number): readonly HolderRun[] {
+    return this.slotRuns.get(slot) ?? NO_RUNS;
+  }
+
+  runsForKey(key: string): readonly HolderRun[] {
+    const ref = countryFromKey(key);
+    if (typeof ref === 'number') return this.tagRuns(ref);
+    return mergeTagExistenceRuns(ref, this.tagIdentities.get(ref) ?? [], this.tagUnresolved.get(ref) ?? []);
   }
 
   readFailed(read: BranchRead): boolean {
@@ -364,7 +431,9 @@ export class IdentityIndex {
       list.sort((a, b) => a.firstHour - b.firstHour || a.countryId - b.countryId || compareTags(a.tag, b.tag));
       this.slotRuns.set(slot, resolveSlotHolderRuns(list));
     }
+    this.slotChanges++;
     this.resolveChanges++;
+    this.countryChanges++;
   }
 
   setGroups(reply: CountryGroupReply): void {
@@ -388,16 +457,19 @@ export class IdentityIndex {
     this.styleRuns.set(style.tag, mergeStyleEntry(existing, entry));
     this.styleFailures.delete(`${Math.floor(hour)}\u0000${style.tag}`);
     this.resolveChanges++;
+    this.countryChanges++;
   }
 
   setStyleFailure(tag: string, hour: number, failure: Failure): void {
     this.styleFailures.set(`${Math.floor(hour)}\u0000${tag}`, failure);
     this.resolveChanges++;
+    this.countryChanges++;
   }
 
   clearStyleFailure(tag: string, hour: number): void {
     this.styleFailures.delete(`${Math.floor(hour)}\u0000${tag}`);
     this.resolveChanges++;
+    this.countryChanges++;
   }
 
   setEntityRuns(key: EntityIdentityKey, runs: readonly EntityRunEntry[]): void {
@@ -409,26 +481,33 @@ export class IdentityIndex {
 
   replaceEntityRuns(key: EntityIdentityKey, from: number, to: number, runs: readonly EntityRunEntry[]): void {
     const id = identityKeyString(key);
-    const kept = (this.entityRuns.get(id) ?? []).filter(item => item.lastHour < from || item.firstHour > to);
-    kept.push(...runs);
-    kept.sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
-    this.entityRuns.set(id, kept);
-    this.entityFailures.delete(id);
+    this.entityRuns.set(id, spliceSpan(this.entityRuns.get(id) ?? [], from, to, runs));
+    const failures = withoutSpan(this.entityFailures.get(id), from, to);
+    if (failures.length) this.entityFailures.set(id, failures);
+    else this.entityFailures.delete(id);
     this.resolveChanges++;
   }
 
   replaceEntityUnknown(kinds: readonly EntityIdentityKey['kind'][], from: number, to: number, spans: readonly RecordingGap[]): void {
-    for (const kind of kinds) {
-      const kept = (this.entityUnknown.get(kind) ?? []).filter(span => span.lastHour < from || span.firstHour > to);
-      kept.push(...spans);
-      kept.sort((a, b) => a.firstHour - b.firstHour);
-      this.entityUnknown.set(kind, kept);
+    for (const kind of kinds) this.entityUnknown.set(kind, spliceSpan(this.entityUnknown.get(kind) ?? [], from, to, spans));
+    this.resolveChanges++;
+  }
+
+  dropEntityRuns(keys: Iterable<EntityIdentityKey>, from: number, to: number): void {
+    for (const key of keys) {
+      const id = identityKeyString(key);
+      const held = this.entityRuns.get(id);
+      if (!held) continue;
+      const kept = spliceSpan(held, from, to, []);
+      if (kept.length) this.entityRuns.set(id, kept);
+      else this.entityRuns.delete(id);
     }
     this.resolveChanges++;
   }
 
-  setEntityFailure(key: EntityIdentityKey, failure: Failure): void {
-    this.entityFailures.set(identityKeyString(key), failure);
+  setEntityFailure(key: EntityIdentityKey, from: number, to: number, failure: Failure): void {
+    const id = identityKeyString(key);
+    this.entityFailures.set(id, [...withoutSpan(this.entityFailures.get(id), from, to), { from, to, failure }]);
     this.resolveChanges++;
   }
 
@@ -828,8 +907,8 @@ export class IdentityIndex {
   private resolveEntity(key: EntityIdentityKey, at: number): EntityIdentityResult {
     const id = identityKeyString(key);
     const unknown = this.entityUnknown.get(key.kind) ?? [];
-    const after = unknown.findIndex(span => span.firstHour > at);
-    const before = after < 0 ? unknown.length - 1 : after - 1;
+    const before = findRunBeforeOrAt(unknown, at, span => span.firstHour);
+    const after = before + 1 < unknown.length ? before + 1 : -1;
     const gap = before >= 0 && unknown[before]!.lastHour >= at ? unknown[before]! : null;
     if (gap) {
       const unrecorded: IdentityField<never> = { kind: 'missing', reason: gap.reason };
@@ -884,8 +963,8 @@ export class IdentityIndex {
         warnings: entry.warnings ?? [],
       };
     }
-    const failure = this.entityFailures.get(id);
-    if (failure) return { kind: 'failed', failure };
+    const failed = this.entityFailures.get(id)?.find(span => span.from <= at && at <= span.to);
+    if (failed) return { kind: 'failed', failure: failed.failure };
     return { kind: 'pending' };
   }
 }

@@ -107,8 +107,11 @@ export interface ChartMonthSlot {
   readonly partial?: boolean;
   readonly partialToHour?: number;
   readonly segments: readonly ChartColumnSegment[];
+  readonly missingParts?: readonly { readonly label: string; readonly color: string; readonly reason: string }[];
   readonly totalValue: number;
   readonly totalText: string;
+  readonly totalMissingReason?: string;
+  readonly note?: string;
 }
 
 export interface ChartColumnModel {
@@ -173,6 +176,7 @@ export interface ChartYAxisSpec {
 
 export interface TimeChartModel {
   readonly kind: string;
+  readonly subject?: string;
   readonly measureTitle: string;
   readonly mode: 'lines' | 'stack' | 'columns';
   readonly hour: number;

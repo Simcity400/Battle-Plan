@@ -128,6 +128,7 @@ pub(crate) fn row(strike: &NuclearStrikeRow, read_hour: i32, participants: [Opti
         cause: None,
         strike: Some(detail(strike)),
         decision_state: None,
+        window: None,
     }
 }
 
