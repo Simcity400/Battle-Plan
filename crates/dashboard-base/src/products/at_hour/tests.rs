@@ -52,6 +52,7 @@ impl AtHour for Power {
     const KEY: &'static str = "test-power";
     const TITLE: &'static str = "Power";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: Clock = Clock::InputsOnly;
     type Params = PowerParams;
     const FIELDS: crate::products::Fields = crate::fields![branchId, country];
     type Reply = PowerReply;
@@ -270,6 +271,7 @@ impl AtHour for Scoped {
     const KEY: &'static str = "test-scoped";
     const TITLE: &'static str = "Scoped";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: Clock = Clock::InputsOnly;
     type Params = ScopedParams;
     const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = ScopedReply;
@@ -315,7 +317,7 @@ impl AtHour for Static {
     const KEY: &'static str = "test-static";
     const TITLE: &'static str = "Static";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK_DEPENDENT: bool = false;
+    const CLOCK: Clock = Clock::InputsOnly;
     const REPLY_NAMES_NO_HOUR: bool = true;
     type Params = ScopedParams;
     const FIELDS: crate::products::Fields = crate::fields![branchId];
@@ -380,6 +382,7 @@ impl AtHour for Planned {
     const KEY: &'static str = "test-planned";
     const TITLE: &'static str = "Planned";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: Clock = Clock::Boundaries;
     type Params = PlannedParams;
     const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = PlannedReply;
@@ -463,6 +466,7 @@ impl AtHour for Clocked {
     const KEY: &'static str = "test-clocked";
     const TITLE: &'static str = "Clocked";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: Clock = Clock::EveryHour("test fixture reads CountryLinks starting at CLOCKED_FROM and stamps at.hour");
     type Params = PlannedParams;
     const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = ClockedReply;
@@ -527,7 +531,7 @@ impl AtHour for Dropping {
     const KEY: &'static str = "test-dropping";
     const TITLE: &'static str = "Dropping";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK_DEPENDENT: bool = false;
+    const CLOCK: Clock = Clock::InputsOnly;
     type Params = PlannedParams;
     const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = DroppingReply;
@@ -597,7 +601,7 @@ impl AtHour for Steady {
     const KEY: &'static str = "test-steady";
     const TITLE: &'static str = "Steady";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK_DEPENDENT: bool = false;
+    const CLOCK: Clock = Clock::InputsOnly;
     type Params = PlannedParams;
     const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = SteadyReply;
@@ -687,6 +691,7 @@ fn a_keyed_read_names_the_rows_it_chose() {
 
 struct Stepped {
     hour: i32,
+    rows: u64,
     fresh: bool,
     pending: bool,
     waited: bool,
@@ -706,7 +711,7 @@ fn stepped(pages: &Arc<dyn Pages>, exact: &dashboard_follow::panel::AtHour, ever
             if waited { read = advance(step.last(), true, &token, None); }
             seeded = true;
             first = read.pending;
-            Stepped { hour: step.last(), fresh: read.fresh, pending: read.pending, waited, value: read.value, lanes: read.lanes }
+            Stepped { hour: step.last(), rows: read.rows, fresh: read.fresh, pending: read.pending, waited, value: read.value, lanes: read.lanes }
         });
         let _ = send.send((step.last(), read));
     });
@@ -808,6 +813,7 @@ impl AtHour for Partial {
     const KEY: &'static str = "test-partial";
     const TITLE: &'static str = "Partial";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: Clock = Clock::InputsOnly;
     type Params = PlannedParams;
     const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = PartialReply;
@@ -875,6 +881,7 @@ fn at_hour_live_cells_apply_witness_rule_on_cold_and_incremental_across_truncate
         const KEY: &'static str = "test-coal-scopes";
         const TITLE: &'static str = "Test coal scopes";
         const CONTENT_DEPENDENT: bool = false;
+        const CLOCK: Clock = Clock::InputsOnly;
         type Params = PowerParams;
         const FIELDS: crate::products::Fields = crate::fields![branchId, country];
         type Reply = PowerReply;
@@ -960,4 +967,112 @@ fn at_hour_live_cells_apply_witness_rule_on_cold_and_incremental_across_truncate
         let cold = (exact.cold)(read.hour, &token);
         assert_eq!(streamed(&read.value, read.fresh), streamed(&cold, read.fresh), "stepped equals cold at hour {}", read.hour);
     }
+}
+
+#[test]
+fn a_quiet_advance_on_a_populated_product_visits_zero_rows() {
+    struct Quiet;
+    struct Expiring;
+
+    #[derive(Serialize, PartialEq)]
+    #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+    #[serde(rename_all = "camelCase")]
+    struct ExpiryReply {
+        expired: bool,
+        count: usize,
+        warnings: Vec<String>,
+    }
+    crate::reply_warnings!(ExpiryReply);
+
+    impl AtHour for Quiet {
+        const KEY: &'static str = "test-quiet";
+        const TITLE: &'static str = "Quiet";
+        const CONTENT_DEPENDENT: bool = false;
+        const CLOCK: Clock = Clock::InputsOnly;
+        type Params = PlannedParams;
+        const FIELDS: crate::products::Fields = crate::fields![branchId];
+        type Reply = SteadyReply;
+        type Context = std::sync::atomic::AtomicUsize;
+
+        fn tables(_params: &Self::Params) -> Vec<TableId> {
+            vec![TableId::CountryLinks]
+        }
+
+        fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
+            Ok(0.into())
+        }
+
+        fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+            at.context.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let links = frame.complete::<tables::CountryLinks>()?;
+            Ok(SteadyReply { tags: links.iter().map(|row| row.id.to_string()).collect(), warnings: Vec::new() })
+        }
+    }
+
+    const EXPIRES_AT: i32 = FIRST + 6;
+
+    impl AtHour for Expiring {
+        const KEY: &'static str = "test-expiring";
+        const TITLE: &'static str = "Expiring";
+        const CONTENT_DEPENDENT: bool = false;
+        const CLOCK: Clock = Clock::Boundaries;
+        type Params = PlannedParams;
+        const FIELDS: crate::products::Fields = crate::fields![branchId];
+        type Reply = ExpiryReply;
+        type Context = std::sync::atomic::AtomicUsize;
+
+        fn tables(_params: &Self::Params) -> Vec<TableId> {
+            vec![TableId::CountryLinks]
+        }
+
+        fn valid_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
+            if frame.hour < EXPIRES_AT { EXPIRES_AT - 1 } else { i32::MAX }
+        }
+
+        fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
+            Ok(0.into())
+        }
+
+        fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+            let count = at.context.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            let links = frame.complete::<tables::CountryLinks>()?;
+            assert!(!links.is_empty());
+            Ok(ExpiryReply { expired: frame.hour >= EXPIRES_AT, count, warnings: Vec::new() })
+        }
+    }
+
+    let frames: Vec<DecodedFrame> = (FIRST..=LAST)
+        .map(|hour| {
+            let mut f = frame(FIRST);
+            f.hour = hour;
+            f
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let source = Source::from_replay(crate::SourceKey { source_id: "at-hour-quiet".into(), revision: "1".into() }, "quiet.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+
+    let quiet_panel = exact_panel::<Quiet>(&source, &load(), &json!({ "branchId": "1" })).unwrap();
+    let quiet_reads = stepped(&pages, quiet_panel.exact().unwrap(), 1, FIRST, 1);
+    let settled: Vec<&Stepped> = quiet_reads.iter().filter(|r| !r.pending).collect();
+    let quiet_after: Vec<&&Stepped> = settled.iter().filter(|r| r.hour > FIRST + 1).collect();
+    assert!(quiet_after.len() >= 10, "expected quiet steps after lane attachment, got {}", quiet_after.len());
+    assert!(settled[0].rows > 0, "initial seed reads populated rows");
+    for read in &quiet_after[1..] {
+        assert_eq!(read.rows, 0, "quiet hour {} must visit zero rows", read.hour);
+        assert!(Arc::ptr_eq(&read.value, &quiet_after[0].value), "quiet hour {} reuses the held reply", read.hour);
+    }
+
+    let expiring_panel = exact_panel::<Expiring>(&source, &load(), &json!({ "branchId": "1" })).unwrap();
+    let expiring_reads = stepped(&pages, expiring_panel.exact().unwrap(), 1, FIRST, 1);
+    let settled: Vec<&Stepped> = expiring_reads.iter().filter(|r| !r.pending).collect();
+    let before = settled.iter().find(|r| r.hour == EXPIRES_AT - 1).unwrap();
+    let at_expiry = settled.iter().find(|r| r.hour == EXPIRES_AT).unwrap();
+    let after = settled.iter().find(|r| r.hour == EXPIRES_AT + 1).unwrap();
+    assert_eq!(before.rows, 0);
+    assert_eq!(before.value.as_ref().as_ref().unwrap()["expired"], false);
+    assert_eq!(at_expiry.rows, 0);
+    assert_eq!(at_expiry.value.as_ref().as_ref().unwrap()["expired"], true);
+    assert_eq!(after.rows, 0);
+    assert!(Arc::ptr_eq(&after.value, &at_expiry.value));
 }

@@ -162,6 +162,7 @@ impl AtHour for DivisionCareers {
     const KEY: &'static str = "division-careers";
     const TITLE: &'static str = "Division careers";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = DivisionCareersParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]"];
     type Reply = DivisionCareersReply;
@@ -216,6 +217,7 @@ impl AtHour for DivisionRecord {
     const KEY: &'static str = "division-record";
     const TITLE: &'static str = "Division record";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = DivisionRecordParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, division];
     type Reply = DivisionRecordReply;
