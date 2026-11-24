@@ -80,10 +80,16 @@ fn a_nuclear_total_adds_the_shown_counts_as_the_top_bar_does_and_ranks_ties_by_t
     let mut rank = serde_json::to_value(&countries).unwrap();
     let mut changed = rows.to_vec();
     changed[0] = nuke(1, 0, 8);
-    nuclear_arsenal::rerank(&mut rank, &changed, 1, "GER").unwrap();
+    nuclear_arsenal::rerank(&mut rank, &changed, 1, "GER", None).unwrap();
     assert_eq!(rank, serde_json::to_value(nuclear_arsenal::countries(&changed, tag).0).unwrap());
     let (sentinel, _, _) = nuclear_arsenal::countries(&[NukeRow { country: 1, nuke_type: 0, amount_raw: i64::MAX, ready: 0 }, nuke(1, 1, 1)], tag);
     assert_eq!(sentinel[0].total, 0xa7c5 + 1, "the top bar adds the game's sentinel as it shows it");
+    let chosen = nuclear_arsenal::chosen_countries(countries, &[(9, 3, "FRA".to_owned()), (8, 5, "ITA".to_owned()), (7, 1, "GER".to_owned())]);
+    assert_eq!(
+        chosen.iter().map(|country| (country.tag.as_str(), country.slot, country.total)).collect::<Vec<_>>(),
+        [("GER", Some(7), 5), ("FRA", Some(9), 1), ("ITA", Some(8), 0)],
+        "each chosen holder is one row keyed by its slot, the product orders them, and one with no stockpile row in a whole table holds none"
+    );
 }
 
 #[test]
@@ -310,24 +316,40 @@ fn world_tension_stack_computes_exact_shares_folds_other_and_clips_future() {
     let out = compute_stack(&input, 10, 25, 2, TensionValueMode::Share, None, None, None, 200, tag_of, no_change);
     assert_eq!(out.end_hour, Some(25));
     assert_eq!(out.capped_end_tension, Some(100.0));
+    assert_eq!(out.capped_end_tension_raw.as_deref(), Some("100000"));
+    assert_eq!(out.end_total_raw.as_deref(), Some("100000"));
+    assert_eq!(out.end_sum_raw.as_deref(), Some("12000000"));
     assert!(!out.downsampled);
     assert_eq!(out.hours, [10, 20]);
     assert_eq!(out.total, [Some(25.0), Some(100.0)]);
+    assert_eq!(out.total_raw, [Some("25000".into()), Some("100000".into())]);
+    assert_eq!(out.sum_raw, [Some("2500000".into()), Some("12000000".into())]);
     assert_eq!(out.bands.len(), 2);
     assert_eq!(out.bands[0].tag.as_deref(), Some("GER"));
     assert_eq!(out.bands[1].tag.as_deref(), Some("JAP"));
     assert_eq!(out.bands[0].end_value, Some(50.0));
+    assert_eq!(out.bands[0].end_raw.as_deref(), Some("6000000"));
+    assert_eq!(out.bands[0].values_raw, [Some("1500000".into()), Some("6000000".into())]);
     assert!((out.bands[1].end_value.unwrap() - 100.0 / 3.0).abs() < 1e-9);
+    assert_eq!(out.bands[1].end_raw.as_deref(), Some("4000000"));
     let other = out.other.unwrap();
     assert_eq!(other.count, 1);
     assert!((other.end_value.unwrap() - 100.0 / 6.0).abs() < 1e-9);
+    assert_eq!(other.end_raw.as_deref(), Some("2000000"));
+    assert_eq!(other.values_raw, [Some("0".into()), Some("2000000".into())]);
     assert_eq!(out.next_change_hour, Some(30));
 
     let rec = compute_stack(&input, 10, 25, 2, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(rec.total, [Some(25.0), Some(120.0)]);
+    assert_eq!(rec.total_raw, [Some("2500000".into()), Some("12000000".into())]);
+    assert_eq!(rec.end_total_raw.as_deref(), Some("12000000"));
     assert_eq!(rec.bands[0].end_value, Some(60.0));
+    assert_eq!(rec.bands[0].end_raw.as_deref(), Some("6000000"));
     assert_eq!(rec.bands[1].end_value, Some(40.0));
-    assert_eq!(rec.other.unwrap().end_value, Some(20.0));
+    assert_eq!(rec.bands[1].end_raw.as_deref(), Some("4000000"));
+    let rec_other = rec.other.unwrap();
+    assert_eq!(rec_other.end_value, Some(20.0));
+    assert_eq!(rec_other.end_raw.as_deref(), Some("2000000"));
 }
 
 #[test]
@@ -553,4 +575,43 @@ fn world_tension_stack_applies_dated_group_membership_and_top_limit() {
     let top_out = compute_stack(&input, 10, 30, 5, TensionValueMode::Recorded, None, None, Some(2), 200, tag_of, |_, _| None);
     assert_eq!(top_out.bands.len(), 2);
     assert!(top_out.other.is_none(), "Top-N selection omits Other band");
+}
+
+#[test]
+fn factory_mix_computes_rust_shares_keeps_witnessed_parts_and_refuses_unreconciled_shares() {
+    use super::factory_mix::row_mix;
+    use replay_data::rows::CountryFactoriesRow;
+
+    let base = CountryFactoriesRow {
+        country: 1,
+        military_total_raw: 40 * 100_000,
+        military_damaged_raw: 10 * 100_000,
+        naval_total_raw: 20 * 100_000,
+        civilian_total_raw: 40 * 100_000,
+        ..Default::default()
+    };
+    let (total, values, shares, total_missing, parts_missing) = row_mix(&base, "built", &[0, 1, 2]);
+    assert_eq!(total, Some(100));
+    assert_eq!(values, vec![Some(30), Some(20), Some(40), Some(10), Some(0), Some(0)]);
+    assert_eq!(shares, vec![Some(0.3), Some(0.2), Some(0.4), Some(0.1), Some(0.0), Some(0.0)]);
+    assert!(total_missing.is_none());
+    assert!(parts_missing.is_none());
+
+    let mut partial = base.clone();
+    partial.military_damaged_raw = 50 * 100_000;
+    let (total_p, values_p, shares_p, total_missing_p, parts_missing_p) = row_mix(&partial, "built", &[0, 1, 2]);
+    assert_eq!(total_p, Some(100));
+    assert_eq!(values_p, vec![None, Some(20), Some(40), None, Some(0), Some(0)], "witnessed naval and civilian counts stay");
+    assert_eq!(shares_p, vec![None, Some(0.2), Some(0.4), None, Some(0.0), Some(0.0)], "witnessed shares stay beside unreconciled military");
+    assert!(total_missing_p.is_none());
+    assert!(parts_missing_p.is_some());
+
+    let mut neg_free = base;
+    neg_free.consumer_goods = 50;
+    let (total_n, values_n, shares_n, total_missing_n, parts_missing_n) = row_mix(&neg_free, "free", &[0, 1, 2]);
+    assert_eq!(total_n, Some(40));
+    assert_eq!(values_n, vec![Some(30), Some(20), Some(-10)], "witnessed counts stay even when civilian free is negative");
+    assert_eq!(shares_n, vec![None, None, None], "shares refused when a part is negative");
+    assert!(total_missing_n.is_none());
+    assert!(parts_missing_n.is_some());
 }

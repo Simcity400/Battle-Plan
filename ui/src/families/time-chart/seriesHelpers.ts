@@ -11,7 +11,7 @@ import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import type { ChartArtSlot, ChartEndLabel, ChartGap, ChartIdentityRun, ChartMarker, ChartMarkerItem, ChartMissingSpan, ChartSeriesLook, ChartStackBand, ChartStackModel } from './model.ts';
 import type { PowerSpendMarker, PowerSpendMarkersParams, PowerSpendMarkersReply } from '../../generated/dashboard';
-import { formatDateOnly, formatScalar } from '../valueFormat.ts';
+import { formatCompactRational, formatCompactScalar, formatDateOnly, formatRational, formatScalar } from '../valueFormat.ts';
 
 export interface RationalScale {
   readonly numerator?: bigint;
@@ -30,6 +30,7 @@ export interface HeadKey {
   readonly tag: string;
   readonly part?: string;
   readonly partBits?: number;
+  readonly reading?: number;
 }
 
 interface PanelState {
@@ -94,9 +95,10 @@ export function headReading(
   const panel = readView.panel<{ readonly decimals?: number; readonly states?: readonly PanelState[] } & Partial<RankPanel>>(name);
   const ranked = panel?.rows?.find(row => countryKey(row.country) === key.tag);
   if (ranked) {
-    const reading = ranked.readings[0];
+    const at = key.reading ?? 0;
+    const reading = ranked.readings[at];
     if (!reading?.run) return { missing: reading?.missing ?? NOT_READ_AT_HOUR };
-    return scaledReading(BigInt(reading.run.valueRaw), panel?.measures?.[0]?.decimals ?? places, scale) ?? { missing: NOT_READ_AT_HOUR };
+    return scaledReading(BigInt(reading.run.valueRaw), panel?.measures?.[at]?.decimals ?? places, scale) ?? { missing: NOT_READ_AT_HOUR };
   }
   const state = panel?.states?.find(item => countryKey(item.country) === key.tag && (key.part === undefined || item.part === key.part));
   if (state) {
@@ -119,6 +121,18 @@ export function headReading(
 
 export const headValueOf = (reading: HeadReading | null | undefined): number | null =>
   reading != null && 'value' in reading ? reading.value : null;
+
+export function formatPowerAmount(reading: KnownHeadReading, decimals: number): string {
+  if (reading.raw !== undefined && reading.denominator !== undefined) {
+    const absWhole = (reading.raw < 0n ? -reading.raw : reading.raw) / reading.denominator;
+    return absWhole >= 10_000n
+      ? formatCompactRational(reading.raw, reading.denominator, { maxDecimals: 0 }).text
+      : formatRational(reading.raw, reading.denominator, { maxDecimals: decimals, fixedDecimals: true });
+  }
+  return Math.abs(reading.value) >= 1e4
+    ? formatCompactScalar(Math.trunc(reading.value), 'integer').text
+    : formatScalar(reading.value, { decimals, maxDecimals: decimals, fixedDecimals: true });
+}
 
 export function auditReading(
   row: string,

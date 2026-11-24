@@ -55,8 +55,9 @@ const landed = () => {
   const pipeline = pipelineOf(pageClock(clock));
   if (!pipeline) return false;
   const views = [...pipeline.page.widgets.keys()].flatMap(widget => { const view = pipeline.view(widget); return view?.fields ? [view] : []; });
-  return [...pushed].every(([id, hour]) => views.some(view => (`model:${id}` in view.fields! || `refused:${id}` in view.fields!)
-    && (view.through ?? -Infinity) >= Math.min(hour, view.target)));
+  const perFollow = (key: string) => key.startsWith('model:') || key.startsWith('refused:');
+  const holds = (fields: Readonly<Record<string, unknown>>, id: number) => `model:${id}` in fields || `refused:${id}` in fields || !Object.keys(fields).some(perFollow);
+  return [...pushed].every(([id, hour]) => views.some(view => holds(view.fields!, id) && (view.through ?? -Infinity) >= Math.min(hour, view.target)));
 };
 const refusedPanel = (id: number, hour: number, reason: string, seek: number) => {
   const body = new TextEncoder().encode(reason), out = new Uint8Array((40 + body.length + 7) & ~7), words = new Uint32Array(out.buffer);

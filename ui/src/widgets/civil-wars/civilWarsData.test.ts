@@ -185,7 +185,7 @@ test('chosen countries narrow to civil wars they were a side in, through aliases
     war('b', 200, 250, [side(tags([0, 'REU']), 200, 250, null, true), side(tags([200, 'D02']), 200, 250, 0)]),
   ]));
   const narrowed = (chosen: string[]) => {
-    const filter = worldFilter({ kind: 'tags', tags: chosen }, [], undefined, 1000, 1000, identities);
+    const filter = worldFilter({ kind: 'tags', tags: chosen }, [], undefined, 1000, identities);
     return civilWarsAt(data, 1000, { ...all(), countryIds: filter.countryIds ?? null, identities });
   };
   assert.deepEqual(narrowed(['MOD']).wars.map(item => item.war.id), ['a']);

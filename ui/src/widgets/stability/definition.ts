@@ -1,13 +1,9 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import { AFTER_PLAYHEAD_OPTION } from '../../dashboard/options.ts';
+import { TIME_CHART_TIME_OPTIONS } from '../../dashboard/lineChartOptions.ts';
 import type { OptionField } from '../../dashboard/options';
 
 export const STABILITY_OPTIONS: readonly OptionField[] = [
-  { key: 'playback', section: 'time', label: 'While following playback', kind: 'choice', default: 'draw-in',
-    choices: [{ value: 'draw-in', label: 'Grow to now' }, { value: 'cursor', label: 'Whole campaign' }, { value: 'window', label: 'Recent window' }] },
-  AFTER_PLAYHEAD_OPTION,
-  { key: 'windowDays', section: 'time', label: 'Window length', kind: 'number', min: 7, max: 3650, step: 1, unit: 'days', default: 365,
-    visibleWhen: options => options.playback === 'window' },
+  ...TIME_CHART_TIME_OPTIONS,
   { key: 'stability', section: 'options', label: 'Stability', kind: 'toggle', default: true },
   { key: 'warSupport', section: 'options', label: 'War support', kind: 'toggle', default: true },
   { key: 'markWars', section: 'options', label: 'Markers: wars and capitulations', kind: 'toggle', default: true },
