@@ -568,10 +568,7 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
   if (!narrow) {
     const pieces = [periodLabel, level.total.shortReason].filter((s): s is string => Boolean(s && s.trim()));
     const text = pieces.join(' · ');
-    const textW = text ? measure(text, `400 12px ${theme.font}`) : 0;
-    const partialTabRect = (level.total.atLeast || level.total.partial)
-      ? { x: padX + textW + (text ? 6 : 0), y: y + Math.round((RING_TOP_LINE_HEIGHT - 13) / 2), width: 6, height: 13 }
-      : undefined;
+    const partialTabRect = undefined;
     topLine = {
       rect: { x: padX, y, width: innerW, height: RING_TOP_LINE_HEIGHT },
       text,

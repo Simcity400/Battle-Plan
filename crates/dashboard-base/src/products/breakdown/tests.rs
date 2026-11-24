@@ -55,6 +55,14 @@ fn nothing_recorded_is_not_a_zero() {
 }
 
 #[test]
+fn nothing_spent_is_a_known_zero_and_unrecorded_hours_keep_it_partial() {
+    let reply = breakdown(5, &[], &Unrecorded::default());
+    assert_eq!(reply.total, BreakdownTotal { raw: Some("0".into()), state: BreakdownState::Known, reason: None });
+    let gap = breakdown(5, &[], &Unrecorded { hours: 3, reason: Some("Spending was not recorded".into()) });
+    assert_eq!(gap.total, BreakdownTotal { raw: Some("0".into()), state: BreakdownState::Partial, reason: Some("Spending was not recorded".into()) });
+}
+
+#[test]
 fn unrecorded_hours_mark_the_whole_partial_and_keep_its_shares() {
     let leaves = [leaf(&[node("a", 0)], Amount::Known(30)), leaf(&[node("b", 1)], Amount::Partial(10, "Some costs were not recorded".into()))];
     let reply = breakdown(0, &leaves, &Unrecorded { hours: 2, reason: Some("Spending was not recorded for 2 hours".into()) });

@@ -86,9 +86,20 @@ interface HeldBreakdown {
   validUntil: number;
   cachedModel: BreakdownModel | null;
   cachedModelKind: string;
-  cachedLayout: BreakdownLayout | null;
-  cachedLevel: ResolvedBreakdownLevel | null;
-  paintSig: string;
+  structure: HeldStructure | null;
+  structureKey: readonly unknown[];
+  paintKey: readonly unknown[];
+}
+
+interface HeldStructure {
+  readonly revision: string;
+  readonly level: ResolvedBreakdownLevel;
+  readonly layout: BreakdownLayout | null;
+  readonly meta: FieldEntry;
+  readonly nav: FieldEntry;
+  readonly mirror: FieldEntry;
+  readonly tips: Map<string, FieldEntry>;
+  audit: { readonly value: { readonly id: number; readonly rows: readonly unknown[] }; readonly content: string } | null;
 }
 
 const liveAdapter = (map: LiveMap | null): LiveValues<number | bigint | string> | null => map && {
@@ -292,13 +303,13 @@ export function familyBreakdownLaneView(
           validUntil: -Infinity,
           cachedModel: null,
           cachedModelKind: '',
-          cachedLayout: null,
-          cachedLevel: null,
-          paintSig: '',
+          structure: null,
+          structureKey: [],
+          paintKey: [],
         });
         const holder = held;
         art.setOnSettle(() => {
-          holder.paintSig = '';
+          holder.paintKey = [];
           holder.wake?.();
         });
       }
@@ -314,7 +325,7 @@ export function familyBreakdownLaneView(
       if (held.canvas.width !== widthPx || held.canvas.height !== heightPx) {
         held.canvas.width = widthPx;
         held.canvas.height = heightPx;
-        held.paintSig = '';
+        held.paintKey = [];
       }
       held.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
@@ -380,28 +391,27 @@ export function familyBreakdownLaneView(
         held.art.requestVisible(held.demandedArtUrls);
       }
 
-      const level = resolveDrillLevel(model, bound.interaction.drill);
-      held.cachedLevel = level;
-
-      const measure = (text: string, font: string) => {
-        const key = `${font}\u0000${text}`;
-        let w = held!.measures.get(key);
-        if (w === undefined) {
-          if (held!.measures.size > 4096) held!.measures.clear();
-          held!.ctx.font = font;
-          w = held!.ctx.measureText(text).width;
-          held!.measures.set(key, w);
-        }
-        return w;
-      };
-
       const inspectedKey = typeof input.inspect === 'string' && input.inspect.startsWith('row:') ? input.inspect.slice(4) : null;
       const selectedKey = bound.selectedKey ?? null;
       const focusedKey = bound.focusedKey ?? null;
-
-      let layout: BreakdownLayout | null = null;
-      if (bound.theme) {
-        layout = layoutBreakdown({
+      const structureKey: readonly unknown[] = [model, bound.interaction, bound.options, bound.width, bound.height, bound.theme];
+      const sameStructure = held.structure !== null
+        && held.structureKey.length === structureKey.length
+        && held.structureKey.every((part, at) => part === structureKey[at]);
+      if (!sameStructure) {
+        const level = resolveDrillLevel(model, bound.interaction.drill);
+        const measure = (text: string, font: string) => {
+          const key = `${font}\u0000${text}`;
+          let w = held!.measures.get(key);
+          if (w === undefined) {
+            if (held!.measures.size > 4096) held!.measures.clear();
+            held!.ctx.font = font;
+            w = held!.ctx.measureText(text).width;
+            held!.measures.set(key, w);
+          }
+          return w;
+        };
+        const layout = bound.theme ? layoutBreakdown({
           view: bound.options.view,
           level,
           periodLabel: model.periodLabel,
@@ -413,28 +423,39 @@ export function familyBreakdownLaneView(
           userExpanded: bound.interaction.expanded,
           ringOpenKey: bound.interaction.ringOpen,
           measure,
-        });
-        held.cachedLayout = layout;
+        }) : null;
+        const contentHeight = layout
+          ? (layout.view === 'ring' ? (layout.sideList?.contentHeight ?? bound.height) : layout.contentHeight)
+          : bound.height;
+        const { nav, mirror } = deriveBreakdownNavAndMirror(level, layout?.expanded ?? {}, bound.options.view);
+        const revision = content();
+        held.structure = {
+          revision,
+          level,
+          layout,
+          meta: {
+            value: {
+              empty: model.empty ?? null,
+              emptyDetail: model.emptyDetail ?? null,
+              emptyKind: model.emptyKind ?? 'empty',
+              warnings: model.warnings ?? [],
+              contentHeight,
+            },
+            content: revision,
+          },
+          nav: { value: nav, content: revision },
+          mirror: { value: mirror, content: revision },
+          tips: new Map(),
+          audit: null,
+        };
+        held.structureKey = structureKey;
+      }
+      const structure = held.structure!;
+      const { level, layout } = structure;
 
-        const paintSig = JSON.stringify([
-          bound.options.view,
-          bound.options.namesInRing,
-          bound.width,
-          bound.height,
-          bound.scrollTop,
-          inspectedKey,
-          selectedKey,
-          focusedKey,
-          bound.interaction,
-          model.hour,
-          model.total.text,
-          model.total.atLeast ?? false,
-          model.total.partial ?? false,
-          level.parts.length,
-          level.parts.map(p => [p.key, p.text, p.notRecorded ? 1 : 0, p.children?.length ?? 0]),
-          held.art.cachedCount,
-        ]);
-        if (paintSig !== held.paintSig) {
+      if (layout && bound.theme) {
+        const paintKey: readonly unknown[] = [structure.revision, bound.scrollTop, inspectedKey, selectedKey, focusedKey, held.art.cachedCount];
+        if (held.paintKey.length !== paintKey.length || held.paintKey.some((part, at) => part !== paintKey[at])) {
           drawBreakdown(held.ctx, {
             layout,
             theme: bound.theme,
@@ -445,52 +466,31 @@ export function familyBreakdownLaneView(
             focusedKey,
             artCache: held.art,
           });
-          held.paintSig = paintSig;
+          held.paintKey = paintKey;
           held.content = content();
         }
       }
 
-      const fields: Record<string, FieldEntry> = {};
+      const fields: Record<string, FieldEntry> = { meta: structure.meta, nav: structure.nav, mirror: structure.mirror };
       if (held.identityDemandsField) fields.identityDemands = held.identityDemandsField;
 
-      const contentHeight = layout
-        ? (layout.view === 'ring' ? (layout.sideList?.contentHeight ?? bound.height) : layout.contentHeight)
-        : bound.height;
-
-      const metaVal = {
-        empty: model.empty ?? null,
-        emptyDetail: model.emptyDetail ?? null,
-        emptyKind: model.emptyKind ?? 'empty',
-        emptyAction: model.emptyAction ?? null,
-        warnings: model.warnings ?? [],
-        footnote: model.footnote ?? null,
-        contentHeight,
-        bodyTop: layout?.view === 'parts' ? layout.bodyTop : (layout?.view === 'ring' ? (layout.sideList?.top ?? 0) : 0),
-        crumbs: level.crumbs,
+      const tipField = (token: string, key: string): FieldEntry => {
+        const held = structure.tips.get(token);
+        if (held) return held;
+        const tip = bound.theme ? buildBreakdownTooltip(model, level, key, bound.theme) : null;
+        const made = { value: { key: token, text: tip ? { hour: model.hour, rowKey: key, content: tip } : null }, content: content() };
+        structure.tips.set(token, made);
+        return made;
       };
-      fields.meta = { value: metaVal, content: cachedField(held, 'meta', JSON.stringify(metaVal), content) };
-
-      const { nav, mirror } = deriveBreakdownNavAndMirror(level, layout?.expanded ?? {}, bound.options.view);
-      fields.nav = { value: nav, content: cachedField(held, 'nav', JSON.stringify(nav), content) };
-      fields.mirror = { value: mirror, content: cachedField(held, 'mirror', JSON.stringify(mirror), content) };
-
-      if (bound.theme) {
-        if (inspectedKey) {
-          const tip = buildBreakdownTooltip(model, level, inspectedKey, bound.theme);
-          const payload = { key: `row:${inspectedKey}`, text: tip ? { hour: model.hour, rowKey: inspectedKey, content: tip } : null };
-          fields.tooltip = { value: payload, content: cachedField(held, 'tooltip', JSON.stringify(payload), content) };
-        }
-        if (focusedKey) {
-          const tip = buildBreakdownTooltip(model, level, focusedKey, bound.theme);
-          const payload = { key: `focus:${focusedKey}`, text: tip ? { hour: model.hour, rowKey: focusedKey, content: tip } : null };
-          fields.focusTooltip = { value: payload, content: cachedField(held, 'focusTooltip', JSON.stringify(payload), content) };
-        }
-      }
+      if (inspectedKey) fields.tooltip = tipField(`row:${inspectedKey}`, inspectedKey);
+      if (focusedKey) fields.focusTooltip = tipField(`focus:${focusedKey}`, focusedKey);
 
       if (bound.audit) {
-        const auditRows = deriveBreakdownAudit(model);
-        const auditVal = { id: bound.auditId ?? -1, rows: auditRows };
-        fields.audit = { value: auditVal, content: cachedField(held, 'audit', JSON.stringify(auditVal), content) };
+        const id = bound.auditId ?? -1;
+        if (!structure.audit || structure.audit.value.id !== id) {
+          structure.audit = { value: { id, rows: deriveBreakdownAudit(model) }, content: content() };
+        }
+        fields.audit = structure.audit;
       }
 
       const activeLayout = layout;

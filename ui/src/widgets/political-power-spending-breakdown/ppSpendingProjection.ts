@@ -54,6 +54,9 @@ export const ppSpendingProjection: BreakdownProjection<PoliticalPowerSpendingOpt
     if (reply.breakdown.total.state === 'notRecorded') {
       return { ...model, empty: 'Not recorded at this time.', emptyDetail: total.reason ?? 'Political power spending was not recorded.', emptyKind: 'unavailable' };
     }
+    if (reply.breakdown.total.state === 'partial') {
+      return { ...model, empty: 'No spending recorded at this date.', emptyDetail: total.reason ?? total.shortReason ?? 'Some hours were not recorded.' };
+    }
     return { ...model, empty: 'No spending at this date.' };
   },
 };

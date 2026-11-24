@@ -139,7 +139,7 @@ impl Sum {
     }
 
     fn raw(&self) -> Option<String> {
-        (self.measured > 0).then(|| self.known.to_string())
+        (self.measured > 0 || self.missing.is_empty()).then(|| self.known.to_string())
     }
 }
 

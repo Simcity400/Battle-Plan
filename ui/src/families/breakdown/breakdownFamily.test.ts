@@ -187,6 +187,10 @@ test('political power spending reads the product at the displayed hour', () => {
   const zero = project(reply({ decimals: 0, total: { raw: '0', state: 'known', reason: null }, parts: [], unrecordedHours: 0 }));
   assert.equal(zero.empty, 'No spending at this date.');
   assert.equal(zero.total.text, '0', 'a known zero is 0');
+
+  const unrecorded = project(reply({ decimals: 0, total: { raw: '0', state: 'partial', reason: 'Spending was not recorded' }, parts: [], unrecordedHours: 5 }));
+  assert.equal(unrecorded.empty, 'No spending recorded at this date.', 'unrecorded hours never read as no spending');
+  assert.equal(unrecorded.emptyDetail, 'Spending was not recorded');
 });
 
 test('nothing after the displayed hour reaches the projection', () => {
