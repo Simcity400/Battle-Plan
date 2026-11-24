@@ -125,6 +125,13 @@ describe('world-tension projections', () => {
     const table = worldTensionEventsProjection.project(readView, { branchFirst: H1936 });
     assert.equal(table.rows.length, 1);
     assert.equal(table.rows[0]?.name, 'Remilitarised the Rhineland');
+
+    const thirds = { ...reply, contributionScale: 3, events: [{ ...reply.events[0]!, addedRaw: '1' }] };
+    const thirdsTable = worldTensionEventsProjection.project(
+      createBoundedReadView({ hour: H1941, panels: new Map([['main', thirds]]), identity: makeIdentity() }),
+      { branchFirst: H1936 },
+    );
+    assert.deepEqual(thirdsTable.rows[0]?.cells.added?.value, { kind: 'known', value: '+0.3%' }, 'R2-K5: a non-decimal scale is cut from the recorded integer and its denominator');
   });
 
   it('projects world-tension lines view with top-8 coloured lines and stepped inline points', () => {
