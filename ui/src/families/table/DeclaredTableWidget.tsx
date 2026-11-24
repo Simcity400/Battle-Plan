@@ -4,6 +4,7 @@ import { jumpItem } from '../../charts/jump';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { perfLog } from '../../shell/perf.ts';
+import { useArtHandleResolutions } from '../art/react.ts';
 import { renderFamilyStatus, useFamilyPlan } from '../host/index.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import type { FamilyPlanContext } from '../plan.ts';
@@ -74,6 +75,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     active,
     setOption,
   });
+  const art = useArtHandleResolutions(runtime, plan.track, active);
 
   const liveColumns = useMemo(
     () => (typeof declaration.columns === 'function' ? (plan.ctx ? declaration.columns(plan.ctx) : []) : declaration.columns),
@@ -167,6 +169,8 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     countryLooks={plan.displayedCountryLooks}
     identitySnapshot={plan.identitySnapshot}
     onIdentityDemands={plan.onIdentityDemands}
+    artResolutions={art.resolutions}
+    onArtDemands={art.onArtDemands}
     onViewportSize={plan.measureViewport}
     selectedKey={selectedKey}
     onActivate={onActivate}

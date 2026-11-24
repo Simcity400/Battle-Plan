@@ -46,9 +46,19 @@ function directUrlOf(handle: ArtHandle): string | null {
   return null;
 }
 
-export function artUrlForHandle(handle: ArtHandle, index?: IdentityIndex | null): string | null {
+export type ArtResolutions = Readonly<Record<string, ArtResolution>>;
+
+export function needsArtResolution(handle: ArtHandle): boolean {
+  return handle.kind === 'sprite' || handle.kind === 'portrait' || (handle.kind === 'path' && !isDirectUrl(handle.path));
+}
+
+export function artUrlForHandle(handle: ArtHandle, index?: IdentityIndex | null, resolutions?: ArtResolutions): string | null {
   const direct = directUrlOf(handle);
   if (direct) return direct;
+  if (needsArtResolution(handle)) {
+    const resolved = resolutions?.[artHandleKey(handle)];
+    return resolved?.status === 'ready' ? resolved.url : null;
+  }
   if (handle.kind === 'flag' && index) {
     const choice = parseFlagChoiceKey(handle.choice);
     if (choice) {
@@ -61,17 +71,24 @@ export function artUrlForHandle(handle: ArtHandle, index?: IdentityIndex | null)
   return null;
 }
 
+export function laneArtDemand(
+  handle: ArtHandle,
+  index: IdentityIndex | null | undefined,
+  resolutions: ArtResolutions | undefined,
+  urls: Set<string>,
+  asks: Map<string, ArtHandle>,
+): void {
+  const url = artUrlForHandle(handle, index, resolutions);
+  if (url) urls.add(url);
+  else if (needsArtResolution(handle) && !resolutions?.[artHandleKey(handle)]) asks.set(artHandleKey(handle), handle);
+}
+
 function resolutionFromHandle(
   handle: ArtHandle,
   lookupFlag: (choiceKey: string, size: ArtFlagSize) => DrawnFlagEntry | undefined,
-  resolveHandle?: (handle: ArtHandle) => ArtResolution,
+  resolutions?: ArtResolutions,
 ): ArtResolution {
-  if (resolveHandle) {
-    const custom = resolveHandle(handle);
-    if (custom.status !== 'pending' || (handle.kind !== 'flag' && !directUrlOf(handle))) {
-      return custom;
-    }
-  }
+  if (needsArtResolution(handle)) return resolutions?.[artHandleKey(handle)] ?? PENDING_ART;
   const direct = directUrlOf(handle);
   if (direct) {
     const frameIndex = handle.kind === 'url' || handle.kind === 'path' ? handle.frame : undefined;
@@ -89,7 +106,7 @@ function resolutionFromHandle(
 
 export interface LaneArtProviderOptions {
   readonly index?: IdentityIndex | null;
-  readonly resolveHandle?: (handle: ArtHandle) => ArtResolution;
+  readonly resolutions?: ArtResolutions;
 }
 
 export function createLaneArtProvider(
@@ -104,7 +121,7 @@ export function createLaneArtProvider(
   return {
     demandOwner: 'view',
     resolve(handle: ArtHandle): ArtResult {
-      return cache.resolve(resolutionFromHandle(handle, lookupFlag, options.resolveHandle));
+      return cache.resolve(resolutionFromHandle(handle, lookupFlag, options.resolutions));
     },
   };
 }
@@ -113,7 +130,7 @@ export interface DomArtProviderOptions {
   readonly broker?: IdentityBroker;
   readonly scope?: IdentityScope | null;
   readonly recording?: DashboardSource;
-  readonly resolveHandle?: (handle: ArtHandle) => ArtResolution;
+  readonly resolutions?: ArtResolutions;
 }
 
 export function createDomArtProvider(
@@ -133,7 +150,7 @@ export function createDomArtProvider(
   return {
     demandOwner: 'view',
     resolve(handle: ArtHandle): ArtResult {
-      const result = cache.resolve(resolutionFromHandle(handle, lookupFlag, options.resolveHandle));
+      const result = cache.resolve(resolutionFromHandle(handle, lookupFlag, options.resolutions));
       if (result.status === 'ready') {
         const { bitmap: _domImage, ...withoutBitmap } = result;
         return withoutBitmap;
