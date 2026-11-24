@@ -138,11 +138,7 @@ export function identityResultFromIndex(
         nextChangeAt: Infinity,
       };
     }
-    const holder: FieldStatus<string> = res.holder.kind === 'known'
-      ? { status: 'ready', value: res.holder.value.tag }
-      : parsed.by === 'tag' && res.tag.kind === 'known'
-        ? { status: 'ready', value: res.tag.value }
-        : toFieldStatus(res.holder, () => '');
+    const holder = toFieldStatus(res.holder, held => held.tag);
     return {
       kind,
       key,

@@ -538,8 +538,9 @@ impl Product for NavalSupremacy {
         let mut warnings = sea.notes.clone();
         warnings.extend(places.warnings());
         let mut looks = LookResolver::new(source, &query.timeline, load, &mut warnings)?;
-        let viewer_tag = query.holders.name(&params.country, last);
-        let viewer_look = looks.at(&viewer_tag, last)?;
+        let look_hour = count.checked_sub(1).and_then(|idx| hours.get(&idx).map(|&(_, hour)| hour)).unwrap_or(last);
+        let viewer_tag = query.holders.name(&params.country, look_hour);
+        let viewer_look = looks.at(&viewer_tag, look_hour)?;
         let viewer_label = viewer_look.name.clone().unwrap_or_else(|| viewer_tag.clone());
         let mut runs = runs(pieces);
         let mut names = Refusals::default();

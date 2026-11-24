@@ -44,6 +44,28 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     })),
   },
   {
+    kind: 'who-spies-on-whom',
+    view: 'pairs',
+    label: 'Top pairs',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../who-spies-on-whom/whoSpiesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'who-spies-on-whom', view: 'pairs',
+      projection: mod.operativePairsProjection, declaration: mod.operativePairsDeclaration,
+    })),
+  },
+  {
+    kind: 'casualties-between',
+    view: 'opponents',
+    label: 'By opponent',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../casualties-between/casualtiesBetweenProjection.ts').then(mod => ({
+      family: 'bars', kind: 'casualties-between', view: 'opponents',
+      projection: mod.casualtyOpponentsProjection, declaration: mod.casualtyOpponentsDeclaration,
+    })),
+  },
+  {
     kind: 'lend-lease-balance',
     view: DEFAULT_VIEW,
     family: 'bars',

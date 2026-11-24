@@ -64,6 +64,11 @@ test('multi-view widget routes each (kind, view) to its own family or legacy ent
   assert.equal(resolveWidgetActiveView('game-score', { view: 'lines' }), 'lines');
   assert.equal(isFamilyWidgetView('game-score', { view: 'lines' }), false);
 
+  assert.equal(activeFamilyView('casualties-between')?.family, 'heat-matrix', 'the view option picks the default');
+  assert.equal(activeFamilyView('casualties-between', { view: 'opponents' })?.family, 'bars');
+  assert.equal(activeFamilyView('who-spies-on-whom', { view: 'pairs' })?.family, 'bars');
+  assert.equal(activeFamilyView('who-spies-on-whom')?.family, 'heat-matrix');
+
   const tableKeys = resolveWidgetScopedOptions('game-score', { view: 'table' }).map(field => field.key);
   assert.ok(tableKeys.includes('view'));
   assert.ok(tableKeys.includes('factions'));
@@ -215,9 +220,9 @@ test('worker projection registry loads table and bars projections lazily on dema
 
   assert.deepEqual(
     FAMILY_MANIFESTS.map(entry => entry.family),
-    ['bars', 'card', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline'],
+    ['bars', 'breakdown', 'card', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline'],
   );
-  for (const family of ['bars', 'card', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline']) {
+  for (const family of ['bars', 'breakdown', 'card', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline']) {
     assert.ok(familyLaneView(family, () => {}), `familyLaneView resolves ${family}`);
   }
 });

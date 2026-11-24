@@ -4,7 +4,7 @@ import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { identityCell, newIdentityBoundary } from '../../families/table/identityCell.ts';
-import type { TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
+import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, valueFromLive, valueNumber, zeroValue, type Value } from '../../families/value.ts';
@@ -33,8 +33,10 @@ export const EXILE_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(column => (
   priority: PRIORITY[column.key] ?? 9,
   numeric: column.key !== 'country' && column.key !== 'host',
   text: column.key === 'country' || column.key === 'host',
-  ...(column.key === 'legitimacy' ? { format: { decimals: 0, maxDecimals: 0, percent: true } as const, widest: ['100%'] } : {}),
-  ...(column.key === 'manpower' ? { widest: ['999,999 / 9,999,999'] } : {}),
+  ...(column.key === 'country' ? { pinned: true } : {}),
+  ...(column.key === 'legitimacy' ? { cellKind: 'track' as const, trackTone: 'grey' as const, format: { decimals: 0, maxDecimals: 0, percent: true } as const, widest: ['100%'] } : {}),
+  ...(column.key === 'manpower' ? { cellKind: 'outOf' as const, barEligible: true, unit: 'available / total', format: 'integer' as const, widest: ['999,999 / 9,999,999'] } : {}),
+  ...(column.key === 'air' || column.key === 'leaders' ? { barEligible: true } : {}),
 }));
 
 const passes = (filter: DeclaredCountryFilter, tag: string | null, hour: number): boolean =>
@@ -50,14 +52,16 @@ function filterNext(filter: DeclaredCountryFilter, hour: number): number {
 
 const count = (live: LiveValues<number | bigint | string> | null, id: string, cell: string): Value => valueFromLive(live, liveKey(id, cell));
 
-function manpowerCell(available: Value, cap: Value, top: number) {
+function manpowerCell(available: Value, cap: Value, top: number): TableCell {
   const known = valueNumber(available);
   const total = valueNumber(cap);
   if (known === undefined) return { value: available, bar: null };
-  const bar = top > 0 && known > 0 ? { fraction: knownValue(known / top) } : null;
-  if (total === undefined) return { value: available, format: 'integer' as const, bar };
-  const grouped = (n: number) => Math.trunc(n).toLocaleString('en-US');
-  return { value: knownValue(`${grouped(known)} / ${grouped(total)}`), sortValue: available, bar };
+  return {
+    value: available,
+    format: 'integer',
+    bar: top > 0 && known > 0 ? { fraction: knownValue(known / top) } : null,
+    ...(total !== undefined ? { secondaryValue: knownValue(Math.trunc(total).toLocaleString('en-US')) } : {}),
+  };
 }
 
 function exileExtra(live: LiveValues<number | bigint | string> | null, id: string, hour: number): readonly TooltipExtraRow[] {
