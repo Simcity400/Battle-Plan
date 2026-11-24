@@ -1,4 +1,6 @@
 import type { AuditRow } from '../../draw/notifications.ts';
+import { flagArtHandle } from '../art/provider.ts';
+import { missingArt, PENDING_ART, type ArtResult } from '../art/types.ts';
 import { canonicalAuditValue } from '../audit.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyActionPayload, FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
@@ -11,12 +13,45 @@ export type BarsTwoSidedLayout = 'paired' | 'split-sides';
 
 export interface BarsRowMedia {
   readonly kind: 'none' | 'flag' | 'art';
-  readonly state: 'none' | 'pending' | 'ready' | 'missing' | 'refused' | 'failed';
+  readonly art: ArtResult;
   readonly iconUrl?: string;
   readonly tag?: string;
   readonly resolvedName?: string;
   readonly dimmed?: boolean;
-  readonly reason?: string;
+}
+
+export interface CountryRowPresentation {
+  readonly label: string;
+  readonly labelMissing: boolean;
+  readonly color?: string;
+  readonly media: BarsRowMedia;
+}
+
+export function countryRowPresentation(
+  readView: BoundedReadView,
+  tag: string,
+  fallbackColor?: string,
+  dimmed?: boolean,
+): CountryRowPresentation {
+  const identity = readView.who('country', tag);
+  const labelMissing = identity.name.status === 'absent';
+  const label = identity.name.status === 'ready' ? identity.name.value : tag;
+  const color = identity.colour?.status === 'ready' ? identity.colour.value : fallbackColor;
+  let art: ArtResult;
+  if (identity.flagChoice?.status === 'ready') {
+    art = readView.art(flagArtHandle(identity.flagChoice.value));
+  } else if (identity.flagChoice?.status === 'absent') {
+    art = missingArt(identity.flagChoice.reason);
+  } else {
+    art = PENDING_ART;
+  }
+  const iconUrl = art.status === 'ready' ? art.url : undefined;
+  return {
+    label,
+    labelMissing,
+    color,
+    media: { kind: 'flag', art, ...(iconUrl ? { iconUrl } : {}), tag, dimmed },
+  };
 }
 
 export interface BarsSegment {
@@ -343,8 +378,8 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
   if (row.readout?.primary && !items.length && !missingReason) {
     items.push({ label: row.readout.secondary ?? 'Count', value: row.readout.primary });
   }
-  if (row.media?.state === 'missing' && row.media.reason) {
-    items.push({ label: 'Artwork', missingReason: row.media.reason });
+  if (row.media?.art.status === 'confirmedMissing') {
+    items.push({ label: 'Artwork', missingReason: row.media.art.reason });
   }
 
   return {

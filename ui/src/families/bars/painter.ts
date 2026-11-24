@@ -21,6 +21,9 @@ import {
   type ArtSlotState,
   type FlagSlotState,
 } from '../../draw/kit.ts';
+import { toArtSlotState, toFlagSlotState, urlToArt } from '../art/adapters.ts';
+import type { LaneArtCache } from '../art/laneCache.ts';
+import type { ArtResult } from '../art/types.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import { formatCompactScalar, formatValueState, notRecordedLabel } from '../valueFormat.ts';
 import { mix, parseColor } from '../../shell/appearance/color.ts';
@@ -58,6 +61,7 @@ export interface DrawFamilyBarsInput {
   readonly glideDuration: number;
   readonly glide?: ReadonlyMap<string, BarsGlideOffset>;
   readonly icons?: BarsIconLookup;
+  readonly artCache?: LaneArtCache;
   readonly inspectedKey?: string | null;
   readonly selectedKey?: string | null;
   readonly focusedKey?: string | null;
@@ -115,47 +119,27 @@ function drawRowMedia(
   media: BarsRowMedia | undefined,
   theme: FamilyTheme,
   icons?: BarsIconLookup,
+  artCache?: LaneArtCache,
 ): void {
   if (!media || media.kind === 'none' || width <= 0 || height <= 0) return;
   const y = Math.round(middleY - height / 2);
-  if (media.kind === 'flag') {
-    const bitmap = media.iconUrl ? icons?.get(media.iconUrl) : undefined;
-    let state: FlagSlotState;
-    if (media.state === 'ready' && bitmap) {
-      state = { kind: 'ready', bitmap, width: bitmap.width, height: bitmap.height };
-    } else if (media.state === 'ready' && media.iconUrl && bitmap === null) {
-      state = { kind: 'failed' };
-    } else if (media.state === 'ready' && media.iconUrl && bitmap === undefined) {
-      state = { kind: 'pending' };
-    } else if (media.state === 'missing') {
-      state = { kind: 'missing', tag: media.tag };
-    } else if (media.state === 'failed' || media.state === 'refused') {
-      state = { kind: 'failed' };
+  let resolved = media.art;
+  if (resolved.status === 'ready' && !resolved.bitmap) {
+    const url = media.iconUrl ?? resolved.url;
+    const cached = artCache ? artCache.resolve(resolved) : null;
+    if (cached) {
+      resolved = cached;
     } else {
-      state = { kind: 'pending' };
+      const bmp = icons?.get(url);
+      if (bmp) resolved = { ...resolved, bitmap: bmp };
     }
+  }
+  if (media.kind === 'flag') {
+    const state: FlagSlotState = toFlagSlotState(resolved, media.tag);
     drawFlagSlot(ctx, x, y, state, theme, { width, height, dimmed: media.dimmed });
     return;
   }
-  const bitmap = media.iconUrl ? icons?.get(media.iconUrl) : undefined;
-  let state: ArtSlotState;
-  if (media.state === 'ready' && bitmap) {
-    state = { kind: 'ready', bitmap, width: bitmap.width, height: bitmap.height };
-  } else if (media.state === 'ready' && media.iconUrl && bitmap === null) {
-    state = { kind: 'failed', reason: media.reason };
-  } else if (media.state === 'ready' && media.iconUrl && bitmap === undefined) {
-    state = { kind: 'pending' };
-  } else if (media.state === 'missing') {
-    state = { kind: 'missing', resolvedName: media.resolvedName };
-  } else if (media.state === 'refused') {
-    state = { kind: 'refused', reason: media.reason };
-  } else if (media.state === 'failed') {
-    state = { kind: 'failed', reason: media.reason };
-  } else if (media.state === 'none') {
-    state = { kind: 'none' };
-  } else {
-    state = { kind: 'pending' };
-  }
+  const state: ArtSlotState = toArtSlotState(resolved, media.resolvedName);
   drawArtSlot(ctx, x, y, width, height, state, theme, { radius: 2 });
 }
 
@@ -295,7 +279,7 @@ function drawLegend(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: 
 }
 
 export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsPaintStats {
-  const { model, layout, theme, scrollTop, now, glideDuration, glide, icons, inspectedKey, selectedKey, focusedKey } = input;
+  const { model, layout, theme, scrollTop, now, glideDuration, glide, icons, artCache, inspectedKey, selectedKey, focusedKey } = input;
   const tokens = resolveKitTokens(theme);
   ctx.clearRect(0, 0, layout.width, layout.height);
 
@@ -377,7 +361,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
       drawRowHairline(ctx, BARS_PAD_X, layout.width - BARS_PAD_X, y + rowH - 1, theme, 'normal');
     }
 
-    drawRowMedia(ctx, BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, icons);
+    drawRowMedia(ctx, BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, icons, artCache);
 
     if (layout.nameWidth > 0) {
       const reserveRemove = row.removable && (isHovered || isFocused) ? BARS_REMOVE_BUTTON_SIZE + 4 : 0;
@@ -569,7 +553,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           { align: 'right', color: right.labelMissing ? theme.muted : theme.text },
         );
         if (rightName.truncated) truncatedKeys.push(right.key);
-        drawRowMedia(ctx, layout.width - BARS_PAD_X - layout.mediaWidth, middleY, layout.mediaWidth, layout.mediaHeight, right.media, theme, icons);
+        drawRowMedia(ctx, layout.width - BARS_PAD_X - layout.mediaWidth, middleY, layout.mediaWidth, layout.mediaHeight, right.media, theme, icons, artCache);
       }
       continue;
     }
@@ -706,12 +690,14 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         const iconSize = 16;
         const iconX = cursorRight - primaryW - iconSize - 5;
         if (iconX >= layout.readoutX) {
-          const bmp = row.readout.iconUrl ? icons?.get(row.readout.iconUrl) : undefined;
-          const artState: ArtSlotState = row.readout.iconMissing
-            ? { kind: 'missing' }
-            : bmp
-              ? { kind: 'ready', bitmap: bmp, width: bmp.width, height: bmp.height }
-              : { kind: 'pending' };
+          const res = urlToArt(row.readout.iconUrl, { pending: !row.readout.iconMissing && !row.readout.iconUrl });
+          const resolvedArt: ArtResult = artCache && res.status === 'ready' ? artCache.resolve(res) : res;
+          const fallbackBmp = row.readout.iconUrl ? icons?.get(row.readout.iconUrl) : undefined;
+          const artState = toArtSlotState(
+            resolvedArt.status === 'ready' && !resolvedArt.bitmap && fallbackBmp
+              ? { ...resolvedArt, bitmap: fallbackBmp }
+              : resolvedArt,
+          );
           drawArtSlot(ctx, iconX, Math.round(middleY - iconSize / 2), iconSize, iconSize, artState, theme, { radius: 2 });
         }
       }

@@ -1,5 +1,6 @@
 export {
   assertBarsModelValid,
+  countryRowPresentation,
   deriveBarsAudit,
   deriveBarsMirror,
   deriveBarsTooltip,
@@ -23,6 +24,7 @@ export {
   type BarsStackedPair,
   type BarsTwoSidedLayout,
   type BarsValueField,
+  type CountryRowPresentation,
 } from './model.ts';
 export {
   BARS_AXIS_HEIGHT,
@@ -58,14 +60,10 @@ export {
   barsReadViewFromScene,
   familyBarsLaneView,
   isFamilyBarsBinding,
+  type BarsReadViewProviders,
   type FamilyBarsBinding,
+  type FamilyBarsLaneOptions,
 } from './laneView.ts';
-export {
-  createLoaderArtProvider,
-  createLooksIdentityProvider,
-  resolveCountryPresentation,
-  type ResolvedCountryPresentation,
-} from './identitySeam.ts';
 export {
   buildShareRowsModel,
   type ShareRowEntry,

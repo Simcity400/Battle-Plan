@@ -2,13 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { PaintInput } from '../../draw/lane.ts';
+import { LaneArtCache } from '../art/laneCache.ts';
+import { createLaneArtProvider } from '../art/provider.ts';
+import { missingArt, PENDING_ART } from '../art/types.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { FamilyTheme } from '../contract.ts';
+import { IdentityIndex } from '../identity/index.ts';
+import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../value.ts';
 import {
   assertBarsModelValid,
   buildShareRowsModel,
-  createLooksIdentityProvider,
+  countryRowPresentation,
   deriveBarsAudit,
   deriveBarsMirror,
   deriveBarsTooltip,
@@ -19,7 +24,6 @@ import {
   InvalidBarsModelError,
   layoutFamilyBars,
   registerBarsProjection,
-  resolveCountryPresentation,
   type BarsModel,
   type FamilyBarsBinding,
 } from './index.ts';
@@ -133,16 +137,32 @@ test('guards reject future hours, bare nulls, and missing values carrying bar ma
       }],
     }, h),
   );
+  const idx = new IdentityIndex({ sourceId: 's', revision: '1', branchId: '1', content: 1 });
+  idx.ingestStylesReply({
+    branchId: '1',
+    hour: h,
+    styles: [{
+      tag: 'GER',
+      name: 'German Reich',
+      color: [102, 102, 102],
+      valid: [h - 10, h + 10],
+      flagChoice: { keys: ['GER_fascism', null, null], reasons: [null, null, null] },
+    }],
+    warnings: [],
+  });
+  const artCache = new LaneArtCache();
   const rv = createBoundedReadView({
     hour: h,
-    identity: createLooksIdentityProvider({ GER: [{ from: h - 10, name: 'German Reich', flag: 'http://artwork.localhost/ger.png' }] }, { GER: '#666666' }),
+    identity: createSnapshotIdentityProvider(idx),
+    art: createLaneArtProvider(artCache, { index: idx }),
   });
   assert.throws(() => rv.who('country', 'GER', h + 1), FutureDataError);
-  const pres = resolveCountryPresentation(rv, 'GER');
+  const pres = countryRowPresentation(rv, 'GER');
   assert.equal(pres.label, 'German Reich');
   assert.equal(pres.labelMissing, false);
-  assert.equal(pres.color, '#666666');
+  assert.equal(pres.color, 'rgb(102, 102, 102)');
   assert.equal(pres.media.kind, 'flag');
+  assert.equal(pres.media.art.status, 'pending');
 });
 
 test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked share render on one layout and painter', () => {
@@ -155,10 +175,10 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
     scaleUnit: 'Factories',
     showAxis: true,
     rows: [
-      { kind: 'data', key: 'GER', label: 'German Reich', media: { kind: 'flag', state: 'missing', tag: 'GER' }, color: '#999999', value: { value: knownValue(293), format: 'integer' }, numeric: 293 },
-      { kind: 'data', key: 'USA', label: 'United States of America Long Name', media: { kind: 'flag', state: 'pending', tag: 'USA' }, color: '#4f86f7', value: { value: partialValue(292, '1 state unread'), format: 'integer' }, numeric: 292 },
-      { kind: 'data', key: 'LUX', label: 'Luxembourg', media: { kind: 'flag', state: 'missing', tag: 'LUX' }, color: '#3fb950', value: { value: zeroValue(0), format: 'integer' }, numeric: 0 },
-      { kind: 'data', key: 'TIB', label: 'Tibet', media: { kind: 'flag', state: 'missing', tag: 'TIB' }, color: '#d29922', value: { value: notRecorded('Country unread') }, numeric: null },
+      { kind: 'data', key: 'GER', label: 'German Reich', media: { kind: 'flag', art: missingArt('Flag missing'), tag: 'GER' }, color: '#999999', value: { value: knownValue(293), format: 'integer' }, numeric: 293 },
+      { kind: 'data', key: 'USA', label: 'United States of America Long Name', media: { kind: 'flag', art: PENDING_ART, tag: 'USA' }, color: '#4f86f7', value: { value: partialValue(292, '1 state unread'), format: 'integer' }, numeric: 292 },
+      { kind: 'data', key: 'LUX', label: 'Luxembourg', media: { kind: 'flag', art: missingArt('Flag missing'), tag: 'LUX' }, color: '#3fb950', value: { value: zeroValue(0), format: 'integer' }, numeric: 0 },
+      { kind: 'data', key: 'TIB', label: 'Tibet', media: { kind: 'flag', art: missingArt('Flag missing'), tag: 'TIB' }, color: '#d29922', value: { value: notRecorded('Country unread') }, numeric: null },
     ],
   };
   assertBarsModelValid(raceModel, h);

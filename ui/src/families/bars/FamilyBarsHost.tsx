@@ -10,7 +10,8 @@ import { useWidgetSkeleton, WidgetCaption } from '../../dashboard/widgetFrame.ts
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { holdElement } from '../../draw/bitmapSurface.ts';
 import { perfLog } from '../../shell/perf.ts';
-import type { BoundedReadView, FamilySourceSubscription, MirrorModel } from '../contract.ts';
+import type { BoundedReadView, EntityKind, FamilySourceSubscription, MirrorModel } from '../contract.ts';
+import type { IdentitySnapshot } from '../identity/types.ts';
 import {
   attachAuditWatch,
   bindFamilyPointer,
@@ -85,6 +86,8 @@ export interface FamilyBarsHostProps<TOptions> {
   readonly bounds?: readonly [number, number] | null;
   readonly countryColours?: ReadonlyMap<string, string>;
   readonly countryLooks?: CountryLooksMap;
+  readonly identitySnapshot?: IdentitySnapshot | null;
+  readonly onIdentityDemands?: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
   readonly selectedKey?: string | null;
   readonly onActivate?: (key: string, meta?: unknown, hour?: number) => void;
   readonly onAddRegion?: () => void;
@@ -117,6 +120,8 @@ export default function FamilyBarsHost<TOptions>({
   bounds = null,
   countryColours,
   countryLooks,
+  identitySnapshot = null,
+  onIdentityDemands,
   selectedKey = null,
   onActivate,
   onAddRegion,
@@ -219,6 +224,8 @@ export default function FamilyBarsHost<TOptions>({
     reducedMotion,
     staticBundle,
     exactReadView,
+    identitySnapshot,
+    onIdentityDemands,
     selectedKey,
     onActivate,
     onAddRegion,
@@ -234,6 +241,8 @@ export default function FamilyBarsHost<TOptions>({
     reducedMotion,
     staticBundle,
     exactReadView,
+    identitySnapshot,
+    onIdentityDemands,
     selectedKey,
     onActivate,
     onAddRegion,
@@ -274,6 +283,7 @@ export default function FamilyBarsHost<TOptions>({
       height: h,
       scrollTop: viewportRef.current.scrollTop,
       theme: latest.theme,
+      ...(latest.identitySnapshot ? { identitySnapshot: latest.identitySnapshot } : {}),
       selectedKey: latest.selectedKey,
       focusedKey: focusedKeyRef.current,
       reducedMotion: latest.reducedMotion,
@@ -354,6 +364,11 @@ export default function FamilyBarsHost<TOptions>({
         metaSigRef.current = nextSig;
         setMeta(nextMeta);
       }
+      const demandsField = shown?.fields?.identityDemands as readonly (readonly [EntityKind, string, number])[] | undefined;
+      if (demandsField && latestRef.current.onIdentityDemands) {
+        latestRef.current.onIdentityDemands(demandsField);
+      }
+
       if (!visible || !shown?.fields) {
         tooltips.hideIfUnpinned();
         return;
@@ -485,7 +500,7 @@ export default function FamilyBarsHost<TOptions>({
 
   useEffect(() => {
     bindRef.current();
-  }, [declaration, options, theme, reducedMotion, staticBundle, selectedKey, subsReady, audit.captureActive]);
+  }, [declaration, options, theme, reducedMotion, staticBundle, identitySnapshot, selectedKey, subsReady, audit.captureActive]);
 
   const onKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     handleFamilyKeyDown(event, {

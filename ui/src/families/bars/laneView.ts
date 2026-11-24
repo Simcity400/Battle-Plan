@@ -4,13 +4,16 @@ import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
-import { FamilyArtLoader, type FamilyArtFetcher } from '../artLoader.ts';
+import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
+import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
 import { createBoundedReadView } from '../boundedView.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
-import type { BoundedReadView, FamilyTheme } from '../contract.ts';
+import type { ArtDemand, ArtProvider, BoundedReadView, EntityKind, FamilyTheme, IdentityDemand, IdentityProvider } from '../contract.ts';
+import { IdentityIndex } from '../identity/index.ts';
+import { createSnapshotIdentityProvider } from '../identity/provider.ts';
+import type { IdentitySnapshot } from '../identity/types.ts';
 import { nextLookChange } from '../looks.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
-import { createLoaderArtProvider, createLooksIdentityProvider } from './identitySeam.ts';
 import { layoutFamilyBars, type BarsLayout } from './layout.ts';
 import {
   assertBarsModelValid,
@@ -38,6 +41,7 @@ export interface FamilyBarsBinding<TOptions = unknown> {
   readonly height: number;
   readonly scrollTop: number;
   readonly theme?: FamilyTheme;
+  readonly identitySnapshot?: IdentitySnapshot | null;
   readonly selectedKey?: string | null;
   readonly focusedKey?: string | null;
   readonly reducedMotion?: boolean;
@@ -59,7 +63,13 @@ interface HeldFamilyBars {
   canvas: OffscreenCanvas;
   ctx: OffscreenCanvasRenderingContext2D;
   content: string;
-  art: FamilyArtLoader;
+  art: LaneArtCache;
+  identitySnapshot: IdentitySnapshot | null | undefined;
+  identityIndex: IdentityIndex | null;
+  identityProvider: IdentityProvider | undefined;
+  artProvider: ArtProvider;
+  demandedArtUrls: string[];
+  identityDemandsField: FieldEntry | null;
   wake?: () => void;
   prevParts: readonly (readonly unknown[])[];
   prevOptions: unknown;
@@ -135,11 +145,18 @@ function snapshotPictures(pictures: readonly Picture<LaneValue>[]): readonly (re
   return pictures.map(picture => picture.parts.slice());
 }
 
+export interface BarsReadViewProviders {
+  readonly identity?: IdentityProvider;
+  readonly onIdentityDemand?: IdentityDemand;
+  readonly art?: ArtProvider;
+  readonly onArtDemand?: ArtDemand;
+}
+
 export function barsReadViewFromScene(
   scene: Scene,
   binding: FamilyBarsBinding,
   hour: number,
-  artLoader?: FamilyArtLoader,
+  providers?: BarsReadViewProviders,
 ): BoundedReadView {
   const liveCache = new Map<string, LiveValues<number | bigint | string> | null>();
   const resolveLive = (name: string): LiveValues<number | bigint | string> | null | undefined => {
@@ -168,13 +185,9 @@ export function barsReadViewFromScene(
     const rev = at < 0 ? undefined : scene.pictures[at]?.parts[0]?.version;
     if (rev !== undefined) revisions[name] = rev;
   }
-  const identity = createLooksIdentityProvider(binding.theme?.countryLooks, binding.theme?.country);
-  const art = artLoader ? createLoaderArtProvider(artLoader) : undefined;
   return createBoundedReadView({
     hour,
     revisions,
-    identity,
-    art,
     ensureNonLive: () => {
       const answers = new Map<string, FollowedAnswer | undefined>();
       const panels = new Map<string, unknown>();
@@ -199,6 +212,10 @@ export function barsReadViewFromScene(
       return { panels, answers, refused };
     },
     resolveLive,
+    ...(providers?.identity ? { identity: providers.identity } : {}),
+    ...(providers?.onIdentityDemand ? { onIdentityDemand: providers.onIdentityDemand } : {}),
+    ...(providers?.art ? { art: providers.art } : {}),
+    ...(providers?.onArtDemand ? { onArtDemand: providers.onArtDemand } : {}),
   });
 }
 
@@ -217,9 +234,15 @@ function intervalOf(scene: Scene, binding: FamilyBarsBinding): readonly [number,
   return [validFrom, validUntil];
 }
 
+export interface FamilyBarsLaneOptions {
+  readonly fetchBitmap?: LaneArtFetcher;
+  readonly artMaxEntries?: number;
+  readonly timers?: CadenceTimers;
+}
+
 export function familyBarsLaneView(
   wake: (widget: number) => void,
-  options?: { readonly fetchArt?: FamilyArtFetcher; readonly timers?: CadenceTimers },
+  options?: FamilyBarsLaneOptions,
 ): LaneView {
   return {
     next(scene: Scene, hour: number): number {
@@ -228,7 +251,8 @@ export function familyBarsLaneView(
       const proj = barsProjection(bound.kind);
       let next = Infinity;
       if (proj?.nextChange) {
-        const readView = barsReadViewFromScene(scene, bound, hour);
+        const index = bound.identitySnapshot ? IdentityIndex.fromSnapshot(bound.identitySnapshot) : null;
+        const readView = barsReadViewFromScene(scene, bound, hour, index ? { identity: createSnapshotIdentityProvider(index) } : undefined);
         next = Math.min(next, proj.nextChange(readView, bound.options));
       }
       const looks = bound.theme?.countryLooks;
@@ -257,12 +281,21 @@ export function familyBarsLaneView(
         const tipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
         const focusTipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
         const flusher = new TrailingFlushScheduler([mirrorGate, tipGate, focusTipGate], options?.timers);
-        const art = new FamilyArtLoader({ onLoad: () => wake(input.widget), fetchBitmap: options?.fetchArt });
+        const art = new LaneArtCache({
+          maxEntries: options?.artMaxEntries,
+          fetchBitmap: options?.fetchBitmap,
+        });
         held = {
           canvas,
           ctx,
           content: content(),
           art,
+          identitySnapshot: undefined,
+          identityIndex: null,
+          identityProvider: undefined,
+          artProvider: createLaneArtProvider(art),
+          demandedArtUrls: [],
+          identityDemandsField: null,
           wake: () => wake(input.widget),
           prevParts: [],
           prevOptions: undefined,
@@ -291,7 +324,18 @@ export function familyBarsLaneView(
           auditWindowKey: '',
           auditField: null,
         };
+        const holder = held;
+        art.setOnSettle(() => { holder.wake?.(); });
         state.set('bars', held);
+      }
+      held.wake = () => wake(input.widget);
+
+      const snapshotChanged = held.identitySnapshot !== bound.identitySnapshot;
+      if (snapshotChanged) {
+        held.identitySnapshot = bound.identitySnapshot;
+        held.identityIndex = bound.identitySnapshot ? IdentityIndex.fromSnapshot(bound.identitySnapshot) : null;
+        held.identityProvider = held.identityIndex ? createSnapshotIdentityProvider(held.identityIndex) : undefined;
+        held.artProvider = createLaneArtProvider(held.art, { index: held.identityIndex });
       }
 
       const dpr = Math.max(1, surface.dpr);
@@ -305,6 +349,7 @@ export function familyBarsLaneView(
       const hour = Math.floor(input.hour);
       const [validFrom, validUntil] = intervalOf(input, bound);
       const partsUnchanged = held.cachedModel !== null
+        && !snapshotChanged
         && held.cachedModelKind === bound.kind
         && samePictures(held.prevParts, input.pictures)
         && held.prevOptions === bound.options
@@ -320,9 +365,29 @@ export function familyBarsLaneView(
       if (partsUnchanged && held.cachedModel) {
         model = held.cachedModel;
       } else {
-        const readView = barsReadViewFromScene(input, bound, hour, held.art);
+        const pendingIdentityDemands = new Map<string, readonly [EntityKind, string, number]>();
+        const demandedArt = new Set<string>();
+        const readView = barsReadViewFromScene(input, bound, hour, {
+          identity: held.identityProvider,
+          onIdentityDemand: (kind, key, atHour) => {
+            pendingIdentityDemands.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]);
+          },
+          art: held.artProvider,
+          onArtDemand: handle => {
+            const url = artUrlForHandle(handle, held!.identityIndex);
+            if (url) demandedArt.add(url);
+          },
+        });
         model = proj.project(readView, bound.options);
         assertBarsModelValid(model, hour);
+        held.demandedArtUrls = [...demandedArt];
+        const demandsList = [...pendingIdentityDemands.values()];
+        if (demandsList.length) {
+          const dText = JSON.stringify(demandsList);
+          held.identityDemandsField = { value: demandsList, content: cachedField(held, 'identityDemands', dText, content) };
+        } else {
+          held.identityDemandsField = null;
+        }
         held.cachedModel = model;
         held.cachedModelKind = bound.kind;
         held.prevParts = snapshotPictures(input.pictures);
@@ -377,7 +442,7 @@ export function familyBarsLaneView(
       const moving = glideMs > 0 && held.glide.size > 0;
 
       const visibleIcons = collectVisibleBarsIcons(model, layout, bound.scrollTop);
-      held.art.requestVisible(visibleIcons);
+      held.art.requestVisible(held.demandedArtUrls.length ? [...visibleIcons, ...held.demandedArtUrls] : visibleIcons);
 
       const inspectedKey = input.inspect?.startsWith('row:')
         ? input.inspect.slice(4)
@@ -398,7 +463,8 @@ export function familyBarsLaneView(
         now,
         glideDuration: glideMs,
         glide: held.glide,
-        icons: held.art,
+        icons: held.art.map,
+        artCache: held.art,
         inspectedKey,
         selectedKey: bound.selectedKey,
         focusedKey: bound.focusedKey,
@@ -407,6 +473,8 @@ export function familyBarsLaneView(
       held.content = content();
 
       const fields: Record<string, FieldEntry> = {};
+      if (held.identityDemandsField) fields.identityDemands = held.identityDemandsField;
+
       const metaValue = {
         form: model.form,
         count: model.rows.length,
