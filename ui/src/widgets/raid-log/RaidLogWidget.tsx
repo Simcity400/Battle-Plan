@@ -5,6 +5,7 @@ import { CountryFlagUrl } from '../../components/CountryFlag';
 import WidgetState from '../../components/WidgetState';
 import LiveText, { liveTexts } from '../../charts/LiveText';
 import LogList from '../../charts/log/LogList';
+import type { LogListSection } from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
 import { logCountryRequests } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
@@ -19,7 +20,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken, storableToken, toggleContentSet, UNSTORABLE } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
-import { eventsThrough, raidChangeHours, raidIcon, raidPreparationText, raidPreparing, raidStatus, raidTypeText, useRaidLog } from '../../dashboard/raids';
+import { eventsThrough, raidChangeHours, raidIcon, raidPreparationText, raidPreparing, raidStatus, raidTypeText, raidVictimRole, useRaidLog } from '../../dashboard/raids';
 import type { RaidAt } from '../../dashboard/raids';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -27,7 +28,7 @@ import { useShownEachFrame, useShownHour } from '../../dashboard/widgetPerf';
 import { useHeadHour } from '../army-size/headHour';
 import type { PlaceNamesReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
-import { raidDescription, raidLogRows, raidLogTypes, raidTooltip, targetNameRequest, targetNames, targetText } from './raidLogData';
+import { raidDescription, raidLogGroups, raidLogSections, raidLogTypes, raidTooltip, targetNameRequest, targetNames, targetText } from './raidLogData';
 import '../../charts/log/log.css';
 import '../../dashboard/intelligence.css';
 import { productRequest } from '../../dashboard/request.ts';
@@ -57,9 +58,14 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const types = typeof options.types === 'string' ? options.types : '';
-  const rows = useMemo(() => data && match.ready && inBranch && hour !== null ? raidLogRows(data, hour, contentSet(types).map(contentKey),
-    (tag, read) => tag === null ? widget.countries.kind === 'all' : match.matches(tag, read), from) : NO_ROWS,
+  const raidGroups = useMemo(() => data && match.ready && inBranch && hour !== null ? raidLogGroups(data, hour, contentSet(types).map(contentKey),
+    (tag, read) => tag === null ? widget.countries.kind === 'all' : match.matches(tag, read), from) : [],
   [data, match, types, from, widget.countries.kind, inBranch, hour]);
+  const rows = useMemo(() => raidGroups.length ? raidGroups.flatMap(group => group.rows) : NO_ROWS, [raidGroups]);
+  const sections = useMemo<readonly LogListSection<RaidAt>[] | null>(() => {
+    const raw = raidLogSections(raidGroups, log.months);
+    return raw ? raw.map(section => ({ ...section, note: null })) : null;
+  }, [raidGroups, log.months]);
   const liveHour = useCallback(() => following ? trackHour(runtime.clock.getHour()) ?? hour ?? 0 : hour ?? 0,
     [following, runtime.clock, hour, track, widget]);
   useShownEachFrame(runtime.clock, () => data && hour !== null ? Math.floor(liveHour()) : null);
@@ -69,12 +75,12 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
   const preparation = useMemo(() => data && preparing.length ? liveTexts(runtime.clock, () => Math.floor(liveHour()),
     at => new Map(preparing.map(row => [row.key, raidPreparationText(data, row.item, at) ?? '']))) : null,
   [data, preparing, runtime.clock, liveHour]);
-  const wanted = useMemo(() => logCountryRequests(rows, row => ({ hour: row.hour, tags: [row.item.episode.raider, row.item.episode.victim] })), [rows]);
+  const wanted = useMemo(() => logCountryRequests(rows, row => ({ hour: row.hour, tags: [row.item.raider, row.item.victim.tag] })), [rows]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const labels = useCallback((row: LogRow<RaidAt>): { raider: ReturnType<CountryLabel>; victim: ReturnType<CountryLabel> } => {
     const at = labelAt(row.hour);
-    return { raider: row.item.episode.raider === null ? { name: 'Raider not known' } : at(row.item.episode.raider),
-      victim: row.item.episode.victim === null ? { name: 'Controller not known' } : at(row.item.episode.victim) };
+    return { raider: row.item.raider === null ? { name: 'Raider not known' } : at(row.item.raider),
+      victim: row.item.victim.tag === null ? { name: row.item.victim.missing ?? 'Target country not known' } : at(row.item.victim.tag) };
   }, [labelAt]);
   const lastHour = track?.branch.lastHour;
   const gate = useCampaignGate(runtime, widget, active);
@@ -104,11 +110,17 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
   const renderRow = (row: LogRow<RaidAt>) => {
     const icon = raidIcon(data, row.item.episode);
     const { raider, victim } = labels(row);
+    const role = raidVictimRole(row.item.victim.source);
+    const fixed = role === null && row.item.victim.tag !== null;
+    const victimNode = <>
+      {row.item.victim.tag !== null && <CountryFlagUrl className="log-flag" url={victim.flag} detail={victim.flagDetail} reason={victim.flagReason} pending={victim.flagPending} />}
+      <b title={row.item.victim.missing ?? undefined}>{victim.name}</b>
+    </>;
     return <>
       <span className={`log-art${icon ? '' : ' is-missing'}`} aria-hidden="true" title={icon ? undefined : row.item.episode.iconMissing ?? undefined}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="target" />}</span>
       <span className="log-text">
-        {row.item.episode.raider !== null && <CountryFlagUrl className="log-flag" url={raider.flag} detail={raider.flagDetail} reason={raider.flagReason} pending={raider.flagPending} />}<b>{raider.name}</b> targets{' '}
-        {row.item.episode.victim !== null && <CountryFlagUrl className="log-flag" url={victim.flag} detail={victim.flagDetail} reason={victim.flagReason} pending={victim.flagPending} />}<b title={row.item.episode.victimMissing ?? undefined}>{victim.name}</b> at {targetText(row.item.episode, names)}
+        {row.item.raider !== null && <CountryFlagUrl className="log-flag" url={raider.flag} detail={raider.flagDetail} reason={raider.flagReason} pending={raider.flagPending} />}<b>{raider.name}</b> targets{' '}
+        {fixed ? <>{victimNode} at {targetText(row.item.episode, names)}</> : <>{targetText(row.item.episode, names)} ({role ?? 'target country'}: {victimNode})</>}
         {' · '}{raidStatus(data, row.item)}
         {preparation && raidPreparing(data, row.item) ? <>{' · '}<LiveText live={preparation} at={row.key} /></> : null}
       </span>
@@ -123,7 +135,7 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
         if (value === '') setOption?.('types', '');
         else { const next = toggleContentSet(types, value, Number.MAX_SAFE_INTEGER); if (next !== null) setOption?.('types', next); }
       }} /></div>}
-    <LogList rows={rows} label="Raids" density={log.density} months={log.months} animate={log.animate && widget.time.mode === 'follow'}
+    <LogList rows={sections ? undefined : rows} sections={sections ?? undefined} label="Raids" density={log.density} months={log.months} animate={log.animate && widget.time.mode === 'follow'}
       playhead={widget.time.mode === 'follow' ? hour : null} columns={COLUMNS} renderRow={renderRow}
       describe={row => { const named = labels(row); return raidDescription(data, row.item, named.raider.name, named.victim.name, targetText(row.item.episode, names), Math.floor(liveHour())); }}
       tooltip={row => { const named = labels(row); return [{ ...raidTooltip(data, row.item, named.raider.name, named.victim.name, targetText(row.item.episode, names), Math.floor(liveHour())), ...countryNameDetails(named.raider, named.victim) }]; }}

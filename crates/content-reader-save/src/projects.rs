@@ -117,6 +117,7 @@ pub struct Raid {
     pub equipment: Option<super::production::Pool>,
     pub nukes: i32,
     pub end_date: Option<SavedDate>,
+    pub victim_country: Option<Vec<u8>>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RaidTarget {
@@ -509,6 +510,7 @@ fn parse_raid(items: &[Item]) -> io::Result<Raid> {
         end_date: bytes(items, b"end_date")?
             .map(|text| SavedDate::parse(&text))
             .transpose()?,
+        victim_country: bytes(items, b"victim_country")?,
         preparation_hours: bytes(items, b"prep_time")?
             .map(|text| integer(&text))
             .transpose()?
@@ -766,7 +768,7 @@ mod tests {
 
     #[test]
     fn raid_order_source_omission_and_signed_fields_remain_distinct() {
-        let pack = parsed(br#"countries={} raids={targets={next_state=1 target={valid=yes target={building={template=dam location=-1}} detected={ 4 0 }} target={valid=no target={leader={id=9 type=4713} leader_province=5}}} countries={{priority=-2 raid_instance={{id={id=4294967295 type=84} phase=PREPARED prep_time=-1}}} {tag=GER priority=1 raid_instance={{id={id=1 type=84} phase=ENDED outcome=SUCCESS end_date=1936.1.1.1 show_for={ "GER" "SOV" } raid_source={type=carrier ship={id=0 type=51} tag=GER}}} used_types={ oilfield_raid } target_cooldowns={{target={state=3} type="oilfield_raid" cooldown=2}}}}}"#);
+        let pack = parsed(br#"countries={} raids={targets={next_state=1 target={valid=yes target={building={template=dam location=-1}} detected={ 4 0 }} target={valid=no target={leader={id=9 type=4713} leader_province=5}}} countries={{priority=-2 raid_instance={{id={id=4294967295 type=84} phase=PREPARED prep_time=-1}}} {tag=GER priority=1 raid_instance={{id={id=1 type=84} phase=ENDED outcome=SUCCESS end_date=1936.1.1.1 victim_country="SOV" show_for={ "GER" "SOV" } raid_source={type=carrier ship={id=0 type=51} tag=GER}}} used_types={ oilfield_raid } target_cooldowns={{target={state=3} type="oilfield_raid" cooldown=2}}}}}"#);
         let parents = pack.raids.unwrap();
         assert_eq!(parents.len(), 2);
         assert_eq!(parents[0].ordinal, 0);
@@ -780,7 +782,9 @@ mod tests {
             raid.end_date,
             Some(SavedDate::Calendar(GameDate::parse(b"1936.1.1.1").unwrap()))
         );
+        assert_eq!(raid.victim_country.as_deref(), Some(b"SOV".as_slice()));
         assert_eq!(parents[0].instances[0].end_date, None);
+        assert_eq!(parents[0].instances[0].victim_country, None);
         assert_eq!(parents[1].used_types, [b"oilfield_raid".to_vec()]);
         assert_eq!(parents[1].cooldowns[0].target.state, Some(3));
         let targets = pack.raid_targets.unwrap();
