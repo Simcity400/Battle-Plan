@@ -35,19 +35,20 @@ pub(crate) fn ordinals(faction: u64) -> (u128, u128) {
 #[derive(Default)]
 pub(crate) struct Art {
     default_icon: OnceLock<Result<String, String>>,
-    drawn: Mutex<HashMap<(String, u32), Result<String, String>>>,
+    drawn: Mutex<HashMap<([u8; 32], String, u32), Result<String, String>>>,
 }
 
 impl Art {
     fn sprite(&self, cat: &Catalogue, name: &str, size: u32, what: &str) -> Result<String, String> {
-        let key = (name.to_owned(), size);
+        let key = (cat.content.layers.art_stack_key(), name.to_owned(), size);
         if let Some(found) = self.drawn.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key) {
             return found.clone();
         }
         let read = |cat: &Catalogue| -> io::Result<String> {
             let sprite = cat.sprites.lookup(name).map_err(dashboard_core::invalid)?;
-            let decode = cat.gui_decode.as_ref().map_err(dashboard_core::invalid)?;
-            catalogue::sprite_frame_png(&cat.content.layers, sprite, *decode, 0, size)
+            dashboard_base::products::artwork::resolve_sprite_type(cat, sprite, 0, size)
+                .into_io_result()?
+                .ok_or_else(|| dashboard_core::invalid("faction artwork unavailable"))
         };
         let drawn = catalogue::draw(|| format!("{what} {name}"), cat, |cat| read(cat).map_err(|why| format!("{what} {name}: {why}")))
             .get()

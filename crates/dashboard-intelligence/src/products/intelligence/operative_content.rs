@@ -271,18 +271,22 @@ fn icon_png(catalogue: &Catalogue, mission: bool, name: &str, frame: u32) -> Sho
     let context = if mission { format!("Mission text icon {name}") } else { format!("Operative icon {name}") };
     let sprite = if mission { catalogue::text_icon_sprite(&catalogue.sprites, name) } else { catalogue::created_gui_sprite(&catalogue.sprites, name) }
         .map_err(|error| format!("{context}: {error}"))?;
-    let decode = *catalogue.gui_decode.as_ref().map_err(|why| format!("{context}: {why}"))?;
-    catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, frame, 96).map_err(|error| {
-        let context = if mission { format!("{context} frame{}", frame + 1) } else { context };
-        format!("{context}: {error}")
-    })
+    dashboard_base::products::artwork::resolve_sprite_type(catalogue, sprite, frame, 96)
+        .into_result()
+        .and_then(|url| url.ok_or_else(|| "artwork unavailable".to_owned()))
+        .map_err(|error| {
+            let context = if mission { format!("{context} frame{}", frame + 1) } else { context };
+            format!("{context}: {error}")
+        })
 }
 
 fn sprite_png(catalogue: &Catalogue, name: &str) -> Shown {
     let context = format!("Operation icon {name}");
     let sprite = catalogue.sprites.lookup(name).map_err(|error| format!("{context}: {error}"))?;
-    let decode = *catalogue.gui_decode.as_ref().map_err(|why| format!("{context}: {why}"))?;
-    catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, 0, 96).map_err(|error| format!("{context}: {error}"))
+    dashboard_base::products::artwork::resolve_sprite_type(catalogue, sprite, 0, 96)
+        .into_result()
+        .and_then(|url| url.ok_or_else(|| "artwork unavailable".to_owned()))
+        .map_err(|error| format!("{context}: {error}"))
 }
 
 pub fn name(localisation: Option<&Localisation>, row: &OperativeMembershipRow) -> Name {

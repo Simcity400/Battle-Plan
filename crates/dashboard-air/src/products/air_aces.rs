@@ -537,7 +537,9 @@ fn portrait(facts: &PortraitOperands, cat: &Catalogue) -> Result<String, String>
             }
         }
     };
-    catalogue::sprite_frame_png(&cat.content.layers, sprite, cat.gui_decode.clone()?, 0, 96).map_err(|error| error.to_string())
+    dashboard_base::products::artwork::resolve_sprite_type(cat, sprite, 0, 96)
+        .into_result()?
+        .ok_or_else(|| "Ace portrait artwork unavailable".to_owned())
 }
 
 #[derive(Default)]
