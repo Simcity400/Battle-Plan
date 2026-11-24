@@ -25,8 +25,8 @@ const RATE_CUT = 100n * 100_000n;
 const UNIT = 100_000;
 
 const PICTURE: TableColumnSpec = { key: 'picture', label: 'Picture', as: 'plain', cellKind: 'kind', offered: OFFERED.text, priority: 0, sortable: false, hideable: false, pinned: true };
-const NAME: TableColumnSpec = { key: 'equipment', label: 'Equipment', as: 'plain', cellKind: 'item', offered: OFFERED.text, priority: 0, text: true, hideable: false, sortable: false, pinned: true, widest: ['Support Equipment'] };
-const NET: TableColumnSpec = { key: 'net', label: 'Short or over', as: 'plain', cellKind: 'stockpileNet', offered: OFFERED.number, priority: 1, sortable: false, hideable: false, headerGroup: { kind: 'shortOver' }, minWidth: 76 };
+const NAME: TableColumnSpec = { key: 'equipment', label: 'Equipment', as: 'plain', cellKind: 'item', offered: OFFERED.text, priority: 0, text: true, hideable: false, sortable: false, pinned: true, widest: ['Support Equipment'], grow: 1 };
+const NET: TableColumnSpec = { key: 'net', label: 'Short or over', as: 'plain', cellKind: 'stockpileNet', offered: OFFERED.number, priority: 1, sortable: false, hideable: false, headerGroup: { kind: 'shortOver' }, minWidth: 76, grow: 1 };
 
 function sumColumn(ai: string | null): TableColumnSpec {
   return {
@@ -38,7 +38,8 @@ function sumColumn(ai: string | null): TableColumnSpec {
 const BALANCE: TableColumnSpec = { key: 'sum', label: 'Balance a day', as: 'plain', cellKind: 'stockpileBalance', offered: OFFERED.number, priority: 1, sortable: false, hideable: false, numeric: true, minWidth: 174 };
 
 export function stockpileColumns(layout: StockpileLayout, ai: string | null): TableColumnSpec[] {
-  return layout === 'parts' ? [PICTURE, NAME, NET, BALANCE] : [PICTURE, NAME, NET, sumColumn(ai)];
+  const figures = layout === 'parts' ? BALANCE : sumColumn(ai);
+  return ai ? [PICTURE, NAME, figures] : [PICTURE, NAME, NET, figures];
 }
 
 export const STOCKPILE_BASE: TableBase = { density: 'normal', barsBehind: 'off', showRank: false, sort: { column: 'equipment', direction: 'ascending' } };

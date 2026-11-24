@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import type { StockFigure, StockTypeRow, StockpileArtworkReply, StockpileTypesReply } from '../../generated/dashboard';
-import { stockpileProjection } from './stockpileProjection.ts';
+import { buildColumnLayouts, measureFixedColumnWidths } from '../../families/table/layout.ts';
+import { tableSettingsOf } from '../../families/table/settings.ts';
+import { STOCKPILE_BASE, stockpileColumns, stockpileProjection } from './stockpileProjection.ts';
 
 const known = (raw: number): StockFigure => ({ raw: String(Math.round(raw * 100_000)), missing: null });
 const missing = (why: string): StockFigure => ({ raw: null, missing: why });
@@ -51,7 +53,7 @@ test('the stockpile table draws the product\'s rows in its order, each figure as
     [['', 'Produced', ''], ['−', 'Need', ''], ['=', 'Balance', '']]);
 });
 
-test('an AI country hatches Need and Balance in the header and draws no bar; the parts layout has no header', () => {
+test('an AI country hatches Need and Balance in the header and has no net column; the parts layout has no header', () => {
   const rows = [type('infantry', { stored: known(19819), produced: known(623), need: missing(AI), balance: missing(AI) })];
   const view = createBoundedReadView({ hour: 100, panels: new Map<string, unknown>([['main', reply(rows, AI)]]) });
   const model = stockpileProjection.project(view, { layout: 'sum' });
@@ -59,7 +61,16 @@ test('an AI country hatches Need and Balance in the header and draws no bar; the
   assert.deepEqual(header?.kind === 'parts' ? header.parts.map(part => part.notRecordedReason ?? null) : null, [null, AI, AI]);
   const cell = model.rows[0]!.cells.sum!.stockpile!;
   assert.deepEqual([cell.ai, cell.produced, cell.share], [true, '623', null]);
+  assert.deepEqual(model.columns.map(column => column.key), ['picture', 'equipment', 'sum']);
   const parts = stockpileProjection.project(view, { layout: 'parts' });
   assert.equal(parts.hideHeader, true);
   assert.equal(parts.columns.find(column => column.key === 'sum')!.cellKind, 'stockpileBalance');
+});
+
+test('the Short or over and Produced − Need = Balance headers are as wide as their words', () => {
+  const columns = stockpileColumns('sum', null);
+  const settings = tableSettingsOf(undefined, columns, STOCKPILE_BASE);
+  const widths = measureFixedColumnWidths(buildColumnLayouts(columns, settings), settings, { font: 'sans-serif', fontSize: 13 }, text => text.length * 10);
+  assert.ok(widths.net! >= 'ShortOver'.length * 10, `net ${widths.net}`);
+  assert.ok(widths.sum! >= 'ProducedNeedBalance−='.length * 10, `sum ${widths.sum}`);
 });
