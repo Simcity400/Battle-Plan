@@ -68,14 +68,26 @@ fn nothing_spent_is_a_known_zero_and_unrecorded_hours_keep_it_partial() {
 }
 
 #[test]
-fn unrecorded_hours_mark_the_whole_partial_and_keep_its_shares() {
+fn partial_amounts_and_unrecorded_hours_withhold_global_shares() {
     let leaves = [leaf(&[node("a", 0)], Amount::Known(Exact::whole(30))), leaf(&[node("b", 1)], Amount::Partial(Exact::whole(10), "Some costs were not recorded".into()))];
     let reply = breakdown(&leaves, &Unrecorded { hours: 2, reason: Some("Spending was not recorded for 2 hours".into()) });
     assert_eq!(reply.total.state, BreakdownState::Partial);
     assert_eq!(reply.total.reason.as_deref(), Some("Spending was not recorded for 2 hours; Some costs were not recorded"));
     assert_eq!(reply.unrecorded_hours, 2);
-    assert_eq!(reply.parts[0].share, Some(0.75));
+    assert_eq!(reply.parts[0].share, None);
+    assert_eq!(reply.parts[0].parent_share, None);
+    assert_eq!(reply.parts[1].share, None);
+    assert_eq!(reply.parts[1].parent_share, None);
     assert_eq!(reply.parts[1].state, BreakdownState::Partial);
+    assert_eq!(reply.parts[1].reason.as_deref(), Some("Some costs were not recorded"));
+
+    let only_gap = breakdown(&[leaf(&[node("a", 0)], Amount::Known(Exact::whole(30)))], &Unrecorded { hours: 2, reason: Some("Spending was not recorded for 2 hours".into()) });
+    assert_eq!(only_gap.total.state, BreakdownState::Partial);
+    assert_eq!(only_gap.parts[0].share, None);
+
+    let only_partial = breakdown(&leaves, &Unrecorded::default());
+    assert_eq!(only_partial.total.state, BreakdownState::Partial);
+    assert!(only_partial.parts.iter().all(|part| part.share.is_none()));
 }
 
 #[test]
@@ -88,7 +100,24 @@ fn corrections_below_zero_follow_the_positive_parts_without_a_share() {
     let reply = breakdown(&leaves, &Unrecorded::default());
     assert_eq!(keys(&reply.parts), ["lost", "level", "returned"]);
     assert_eq!(reply.total.amount, figure("87"));
+    assert_eq!(reply.parts[0].amount, figure("100"));
+    assert_eq!(reply.parts[1].amount, figure("0"));
+    assert_eq!(reply.parts[2].amount, figure("-13"));
+    assert_eq!(reply.parts[0].share, None, "a part larger than the net total has no share");
+    assert_eq!(reply.parts[0].parent_share, None);
+    assert_eq!(reply.parts[1].share, None);
     assert_eq!(reply.parts[2].share, None);
+
+    let siblings = breakdown(
+        &[
+            leaf(&[node("a", 0)], Amount::Known(Exact::whole(60))),
+            leaf(&[node("b", 1)], Amount::Known(Exact::whole(50))),
+            leaf(&[node("refund", 2)], Amount::Known(Exact::whole(-10))),
+        ],
+        &Unrecorded::default(),
+    );
+    assert_eq!(siblings.total.amount, figure("100"));
+    assert!(siblings.parts.iter().all(|part| part.share.is_none() && part.parent_share.is_none()), "negative siblings invalidate shares at that level");
 }
 
 #[test]
@@ -205,8 +234,10 @@ fn a_share_of_a_parent_is_given_only_when_both_amounts_are_known() {
     let decisions = reply.parts.iter().find(|part| part.key == "decisions").expect("decisions");
     assert_eq!(decisions.state, BreakdownState::Partial);
     assert!(decisions.children.iter().all(|child| child.parent_share.is_none()), "a part whose output is partly missing is no denominator: never 100% of it");
+    assert_eq!(decisions.share, None, "nor is a partial part a share of the whole");
     assert_eq!(decisions.parent_share, None, "nor is a partial part a share of the whole");
     let daily = reply.parts.iter().find(|part| part.key == "daily").expect("daily");
+    assert!(daily.share.is_none(), "the whole is partial, so no part is an exact share of it");
     assert!(daily.parent_share.is_none(), "the whole is partial, so no part is an exact share of it");
     let known = breakdown(&partly[..1], &Unrecorded::default());
     assert_eq!(known.parts[0].children[0].parent_share, Some(1.0), "a known child of a known part keeps its share");
