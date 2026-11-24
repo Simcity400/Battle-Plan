@@ -907,6 +907,8 @@ pub struct FeedEventRow {
     pub failure: Vec<u8>,
     pub backlog: bool,
     pub incomplete: Option<u32>,
+    pub window: Recorded<Option<u32>>,
+    pub presentation: Recorded<Option<replay_rows::event_window_values::EventPresentation>>,
 }
 
 impl FeedEventRow {
@@ -920,6 +922,10 @@ impl FeedEventRow {
     pub const CEASED_TO_EXIST: u8 = 128;
     pub const GUARANTEE_GRANTED: u8 = 129;
     pub const READ_INCOMPLETE: u8 = 130;
+    pub const WINDOW_PRESENTED: u8 = 131;
+    pub const WINDOWS_UNRECORDED: u8 = 132;
+    pub const VERDICTS_UNRECORDED: u32 = 1;
+    pub const PRESENTATIONS_UNRECORDED: u32 = 2;
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -2071,7 +2077,7 @@ row_codec!(CasualtyTotalRow, 64, |row| (row.slot as u128) << 32 | row.id as u128
 row_codec!(OccupierTotalRow, 64, |row| (row.slot as u128) << 32 | row.id as u128, |key| { slot: (key >> 32) as u32, id: key as u32 }, {0 => resistance_sum: I64, 1 => compliance_sum: I64, 2 => states: I64, 3 => held_states: I64, 4 => held_complete: U8}, |_row| Ok(()));
 row_codec!(AirMissionCountRow, 64, |row| (row.slot as u128) << 32 | row.region as u128, |key| { slot: (key >> 32) as u32, region: key as u32 }, {0 => wings: I64, 1 => mission_0: I32, 2 => mission_1: I32, 3 => mission_2: I32, 4 => mission_3: I32, 5 => mission_4: I32, 6 => mission_5: I32, 7 => mission_6: I32, 8 => mission_7: I32, 9 => mission_8: I32, 10 => mission_9: I32, 11 => mission_10: I32, 12 => mission_11: I32, 13 => mission_12: I32, 14 => mission_13: I32, 15 => mission_14: I32, 16 => mission_15: I32, 17 => mission_16: I32, 18 => mission_17: I32}, |_row| Ok(()));
 row_codec!(AirRegionWingRow, 32, |row| row.region as u128, |key| { region: key as u32 }, {0 => wings: I64}, |_row| Ok(()));
-row_codec!(FeedEventRow, 128, |row| (row.generation as u128) << 64 | row.sequence as u128, |key| { generation: (key >> 64) as u64, sequence: key as u64 }, {0 => hour: I32, 1 => read_hour: I32, 2 => kind: U8, 3 => actor_reference: U32, 4 => actor_id: U32, 5 => actor_instance: U32, 6 => actor_slot: U32, 7 => target_reference: U32, 8 => target_id: U32, 9 => target_instance: U32, 10 => target_slot: U32, 11 => route: U8, 12 => within: U8, 13 => conference: OptionalU64, 14 => state: OptionalU32, 15 => ally_reference: OptionalU32, 16 => ally_id: OptionalU32, 17 => ally_instance: OptionalU32, 18 => ally_slot: OptionalU32, 19 => reason: OptionalU32, 20 => flags: U8, 21 => token: Bytes, 22 => native_event_kind: OptionalU32, 23 => native_event_id: OptionalU32, 24 => instance: OptionalU32, 25 => option: OptionalI32, 26 => country_target: OptionalU32, 27 => numeric_target: OptionalI32, 28 => lifecycle: OptionalI32, 29 => days: OptionalI32, 30 => scopes: Opaque, 31 => opener: OptionalU64, 32 => opener_hour: OptionalI32, 33 => dated: OptionalI32, 34 => political_power: OptionalI64, 35 => command_power: OptionalI64, 36 => coverage: OptionalU32, 37 => outstanding: OptionalU64, 38 => refusals: OptionalU32, 39 => failure: Bytes, 40 => backlog: Bool, 41 => incomplete: OptionalU32}, |_row| Ok(()));
+row_codec!(FeedEventRow, 128, |row| (row.generation as u128) << 64 | row.sequence as u128, |key| { generation: (key >> 64) as u64, sequence: key as u64 }, {0 => hour: I32, 1 => read_hour: I32, 2 => kind: U8, 3 => actor_reference: U32, 4 => actor_id: U32, 5 => actor_instance: U32, 6 => actor_slot: U32, 7 => target_reference: U32, 8 => target_id: U32, 9 => target_instance: U32, 10 => target_slot: U32, 11 => route: U8, 12 => within: U8, 13 => conference: OptionalU64, 14 => state: OptionalU32, 15 => ally_reference: OptionalU32, 16 => ally_id: OptionalU32, 17 => ally_instance: OptionalU32, 18 => ally_slot: OptionalU32, 19 => reason: OptionalU32, 20 => flags: U8, 21 => token: Bytes, 22 => native_event_kind: OptionalU32, 23 => native_event_id: OptionalU32, 24 => instance: OptionalU32, 25 => option: OptionalI32, 26 => country_target: OptionalU32, 27 => numeric_target: OptionalI32, 28 => lifecycle: OptionalI32, 29 => days: OptionalI32, 30 => scopes: Opaque, 31 => opener: OptionalU64, 32 => opener_hour: OptionalI32, 33 => dated: OptionalI32, 34 => political_power: OptionalI64, 35 => command_power: OptionalI64, 36 => coverage: OptionalU32, 37 => outstanding: OptionalU64, 38 => refusals: OptionalU32, 39 => failure: Bytes, 40 => backlog: Bool, 41 => incomplete: OptionalU32, 42 => window: OptionalU32, 43 => presentation: Opaque}, |_row| Ok(()));
 row_codec!(FeedOpenEventRow, 128, |row| (row.kind as u128) << 96 | (row.id as u128) << 64 | (row.instance as u128) << 32 | row.receiver as u128, |key| { kind: (key >> 96) as u32, id: (key >> 64) as u32, instance: (key >> 32) as u32, receiver: key as u32 }, {0 => generation: U64, 1 => sequence: U64, 2 => read_hour: I32}, |_row| Ok(()));
 row_codec!(FeedOpenDecisionRow, 128, |row| (row.generation as u128) << 64 | row.sequence as u128, |key| { generation: (key >> 64) as u64, sequence: key as u64 }, {0 => country: U32, 1 => token: Bytes, 2 => country_target: OptionalU32, 3 => numeric_target: OptionalI32, 4 => read_hour: I32}, |_row| Ok(()));
 row_codec!(FeedGuaranteeRow, 96, |row| (row.first as u128) << 64 | (row.second as u128) << 32 | row.start as u32 as u128, |key| { first: (key >> 64) as u32, second: (key >> 32) as u32, start: key as u32 as i32 }, {0 => hour: OptionalI32, 1 => rows: U32}, |_row| Ok(()));

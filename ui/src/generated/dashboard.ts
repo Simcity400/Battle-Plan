@@ -2862,7 +2862,7 @@ export type ResearchBreakdownSlot = { slot: number, firstObservedHour: number, s
 missing: string | null, };
 export type FeedTailParams = { branchId: string, facets: Array<FacetFilter>, from: number | null, hour?: number, offset?: string, limit: number, countFacets: Array<LogFacetCountAsk>, scope: Array<MembershipRun> | null, };
 export type EventFeedCategory = "warsPeace" | "diplomacy" | "politics" | "milestones";
-export type EventFeedKind = "warStarted" | "warDeclared" | "warJoined" | "civilWarWarTransferred" | "annexed" | "warEnded" | "released" | "stateTransferred" | "peaceConferenceStarted" | "peace" | "capitulated" | "ceasedToExist" | "factionJoined" | "factionLeft" | "becameSubject" | "guaranteeGranted" | "rulingPartyChanged" | "lawChanged" | "advisorHired" | "focusCompleted" | "projectFinished" | "nukesIncreased" | "nuclearStrike" | "scriptEventFired" | "newsEventFired" | "eventOptionSelected" | "decisionSelected" | "decisionRemoved" | "decisionCancelled" | "decisionTimedOut" | "decisionActivated" | "decisionCompleted" | "decisionReenabled" | "decisionRemovalEffect" | "decisionCancellationEffect" | "decisionCompletionEffect" | "decisionTimeoutEffect" | "decisionDurationChanged";
+export type EventFeedKind = "warStarted" | "warDeclared" | "warJoined" | "civilWarWarTransferred" | "annexed" | "warEnded" | "released" | "stateTransferred" | "peaceConferenceStarted" | "peace" | "capitulated" | "ceasedToExist" | "factionJoined" | "factionLeft" | "becameSubject" | "guaranteeGranted" | "rulingPartyChanged" | "lawChanged" | "advisorHired" | "focusCompleted" | "projectFinished" | "nukesIncreased" | "nuclearStrike" | "scriptEventFired" | "newsEventFired" | "eventOptionSelected" | "decisionSelected" | "decisionRemoved" | "decisionCancelled" | "decisionTimedOut" | "decisionActivated" | "decisionCompleted" | "decisionReenabled" | "decisionRemovalEffect" | "decisionCancellationEffect" | "decisionCompletionEffect" | "decisionTimeoutEffect" | "decisionDurationChanged" | "eventWindowPresented";
 export type EventFeedOption = { ordinal: number, name: string | null, };
 export type EventFeedItem = { token: string | null, name: string | null, icon: string | null, description: string | null,
 /**
@@ -2909,6 +2909,60 @@ reason: string | null,
  */
 notes: Array<string>, };
 export type DecisionLifecycleState = { "kind": "active" } | { "kind": "available" } | { "kind": "completed" } | { "kind": "failed", observedHour: number, } | { "kind": "aborted" } | { "kind": "reEnableCooldown" } | { "kind": "unsupported", raw: number, } | { "kind": "notApplicable", reason: string, } | { "kind": "notRecorded", reason: string, };
+export type EventWindowDecision = "requested" | "aiControlled" | "hiddenOrAiControlled" | "notViewingCountry" | "senderExcluded" | "playerRestrictedNotMajor" | "playerRestrictedOptionTrigger" | "existingInstance" | "alreadyOpen";
+export type EventWindowKind = "normal" | "news" | "leader" | "operative";
+export type EventWindowOption = {
+/**
+ * The option's place in the live event's own list; null for the fallback OK button.
+ */
+ordinal: number | null,
+/**
+ * Null when the label's copy was refused; the button was still offered.
+ */
+label: string | null, };
+export type EventWindowPresented = { kind: EventWindowKind,
+/**
+ * False when the user's popup settings hid the built window; null when not recorded.
+ */
+shown: boolean | null,
+/**
+ * Built again by an interface reload, with the same scope.
+ */
+rebuilt: boolean, title: string | null, description: string | null,
+/**
+ * The resolved picture key; null with `pictureHidden` when the window showed none.
+ */
+picture: string | null, pictureHidden: boolean,
+/**
+ * The offered options in button order.
+ */
+options: Array<EventWindowOption> | null,
+/**
+ * The event's options the window did not offer, from the recorded content; null when
+ * the offered options or the content's option list could not prove it.
+ */
+notOffered: Array<EventFeedOption> | null,
+/**
+ * Each field the recording does not hold, with why.
+ */
+notRecorded: Array<string>, };
+export type EventFeedWindow = {
+/**
+ * The native pending instance joining a firing to the window built for it.
+ */
+instance: number | null,
+/**
+ * On a fired event: whether this client asked for a window, or the gate that refused it.
+ */
+decision: EventWindowDecision | null,
+/**
+ * On a presented window: what it showed.
+ */
+presented: EventWindowPresented | null,
+/**
+ * Why `decision` or `presented` is null where the kind carries one.
+ */
+missing: string | null, };
 export type EventFeedRow = { id: string, hour: number,
 /**
  * The read supplying this fact; the head never shows it before this hour.
@@ -2930,7 +2984,12 @@ cause?: EventFeedCause,
 /**
  * A nuclear strike's target and outcome; absent for every other kind.
  */
-strike?: EventFeedStrike, decisionState?: DecisionLifecycleState, };
+strike?: EventFeedStrike, decisionState?: DecisionLifecycleState,
+/**
+ * A fired event's window decision, or a presented window's recorded content; absent for
+ * every other kind.
+ */
+window?: EventFeedWindow, };
 export type EventFeedStrike = { province: number,
 /**
  * None for a province without a state.

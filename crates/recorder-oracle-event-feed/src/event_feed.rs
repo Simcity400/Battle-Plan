@@ -20,6 +20,7 @@ pub fn compare(
     let selected = [TableId::EventFeedHistory];
     let mut check = Check::default();
     let mut state = replay_data::event_feed_rows::ScriptEventState::default();
+    let mut windows = super::windows::Witness::default();
     let mut blocks: Vec<_> = replay
         .index
         .iter()
@@ -52,13 +53,14 @@ pub fn compare(
                 );
             }
             state.observe(row)?;
+            windows.observe(row);
             report_coverage(row, decoded.hour, frame.hour, report);
                 Ok(true)
             },
             || Ok(()),
         )?;
     }
-    super::script_events::compare(frame, document, &state, report)
+    super::script_events::compare(frame, document, &state, &windows, report)
 }
 
 fn report_coverage(row: &EventFeedHistoryRow, hour: i32, save_hour: i32, report: &mut Report) {
@@ -160,6 +162,7 @@ mod tests {
             outstanding: 0,
             failure: Some(b"Event feed world observation unavailable".to_vec()),
             events: Vec::new(),
+            windows: Default::default(),
         };
         report_coverage(&row, 10, 11, &mut report);
         assert!(report.differences.is_empty());
@@ -224,6 +227,7 @@ mod tests {
                 },
                 cause: Default::default(),
             }],
+            windows: Default::default(),
         };
         for mode in 0..5 {
             let mut check = Check::default();
