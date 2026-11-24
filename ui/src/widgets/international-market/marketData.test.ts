@@ -19,6 +19,7 @@ const raw = { branchId: '1', purchasesMissing: null, unattributed: 1, warnings: 
     { key: '1', id: '51', seller: 'FRA', buyer: 'GER', request: false, speed: 1, equipment: [item('5', '100000'), item('6', '1')], prices: [], levels: [], subsidies: [], purchase: true },
     { key: '2', id: '52', seller: 'FRA', buyer: null, request: true, speed: 0, equipment: [item('5', '1')], prices: [], levels: [{ variant: '5', name: null, level: 0 }], subsidies: [], purchase: false },
     { key: '3', id: '53', seller: 'ITA', buyer: 'ENG', request: false, speed: 0, equipment: [], prices: [], levels: [], subsidies: [], purchase: false },
+    { key: '4', id: '54', seller: 'ITA', buyer: 'ENG', request: true, speed: 0, equipment: [item('6', '200000')], prices: [], levels: [{ variant: '5', name: null, level: 0 }, { variant: '6', name: null, level: 2 }], subsidies: [], purchase: false },
   ],
   agreements: null };
 const reply: MarketAt = { ...validateMarketReply(raw), hour: 7 };
@@ -61,4 +62,16 @@ test('contract cells show the live figures exactly as recorded and say why one i
   assert.deepEqual(cells.deliveries!.value, { kind: 'known', value: 4 });
   const unread = model.rows.find(row => row.key === '3')!.cells;
   assert.deepEqual(unread.collected!.value, { kind: 'notRecorded', reason: 'Convoy progress was not recorded at this hour' });
+});
+
+test('each amount, price and level belongs to its own variant: reordered levels never swap prices between variants, and several equipment are listed one by one', () => {
+  const view = createBoundedReadView({ hour: 7, panels: new Map([['main', raw]]) });
+  const all = { passing: null, unrecorded: [], bounds: [] };
+  const requests = internationalMarketProjection.project(view, { view: 'requests', filterAll: true, filter: all });
+  assert.deepEqual(requests.rows.find(row => row.key === '4')!.cells.level!.value, { kind: 'known', value: 'High' }, 'variant 6 is High though variant 5 is listed first');
+  const contracts = internationalMarketProjection.project(view, { view: 'contracts', filterAll: true, filter: all });
+  const several = contracts.rows.find(row => row.key === '1')!;
+  assert.equal(several.cells.price!.value.kind, 'notApplicable', 'two equipment never show one price');
+  const extra = typeof several.tooltipExtra === 'function' ? several.tooltipExtra() : several.tooltipExtra!;
+  assert.deepEqual(extra.filter(entry => entry.lookupKey).map(entry => entry.lookupKey), ['5', '6']);
 });
