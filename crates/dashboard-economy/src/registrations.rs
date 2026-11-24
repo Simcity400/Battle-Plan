@@ -1,7 +1,6 @@
 dashboard_base::register_products! {
     ECONOMY_RESOURCES_RESOURCESIZES => crate::products::economy::resources::ResourceSizes,
     CONVOYS_CONVOYHEALTH => crate::products::convoys::ConvoyHealth,
-    ECONOMY_MARKET_LEDGER_MARKETLEDGER => crate::products::economy::market::ledger::MarketLedger,
     ECONOMY_MARKET_LEDGER_MARKETLEDGERTAIL => crate::products::economy::market::ledger::MarketLedgerTail,
     ECONOMY_FUEL_AWARDS_COUNTRYFUELAWARDS => crate::products::economy::fuel::awards::CountryFuelAwards,
     ECONOMY_FUEL_AWARDS_COUNTRYFUELAWARDHISTORY => crate::products::economy::fuel::awards::CountryFuelAwardHistory,

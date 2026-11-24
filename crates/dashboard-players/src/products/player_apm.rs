@@ -32,6 +32,8 @@ pub struct ApmParams {
     pub group: ApmGroup,
     #[serde(default)]
     pub registry: bool,
+    #[serde(default)]
+    pub hour: Option<i32>,
     pub first_hour: Option<i32>,
     pub last_hour: Option<i32>,
     pub tags: Option<Vec<String>>,
@@ -212,7 +214,7 @@ fn tag(bytes: &[u8]) -> Option<&str> {
 }
 
 #[derive(Default)]
-struct Amount {
+pub(super) struct Amount {
     counts: Counts,
     minutes: f64,
     incomplete: bool,
@@ -338,6 +340,140 @@ impl Coverage {
             .is_some_and(|&(start, end)| start <= from && to <= end)
             && self.seams.get(seam).is_none_or(|&hour| hour > to)
     }
+
+    pub(super) fn missing_spans(&self, from: i32, to: i32) -> Vec<(i32, i32)> {
+        if from > to {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut cursor = i64::from(from);
+        let end_all = i64::from(to);
+        let start_at = self.covered.partition_point(|&(_, end)| end < from);
+        for &(c_first, c_last) in &self.covered[start_at..] {
+            if i64::from(c_first) > end_all {
+                break;
+            }
+            if i64::from(c_first) > cursor {
+                out.push((cursor as i32, (i64::from(c_first) - 1).min(end_all) as i32));
+            }
+            cursor = cursor.max(i64::from(c_last) + 1);
+            if cursor > end_all {
+                break;
+            }
+        }
+        if cursor <= end_all {
+            out.push((cursor as i32, end_all as i32));
+        }
+        out
+    }
+}
+
+pub(super) fn hourly_amounts(
+    index: &Index,
+    group: ApmGroup,
+    first: i32,
+    last: i32,
+    tags: Option<&[String]>,
+    membership: Option<&[ApmMembership]>,
+    players: &[String],
+    wanted_ids: &BTreeSet<&str>,
+) -> io::Result<BTreeMap<String, BTreeMap<i32, Amount>>> {
+    let wanted_tags: Option<BTreeSet<&str>> = tags.map(|list| list.iter().map(String::as_str).collect());
+    let wanted_players: BTreeSet<&str> = players.iter().map(String::as_str).collect();
+    let mut memberships: BTreeMap<&str, Vec<(i32, i32)>> = BTreeMap::new();
+    if let Some(members) = membership {
+        for member in members {
+            memberships.entry(&member.tag).or_default().push((member.first_hour, member.last_hour));
+        }
+        for runs in memberships.values_mut() {
+            merge_intervals(runs);
+        }
+    }
+    let mut out: BTreeMap<String, BTreeMap<i32, Amount>> = BTreeMap::new();
+    for timeline in &index.timelines {
+        let (lo, hi) = (first.max(timeline.hours.0), last.min(timeline.hours.1));
+        if lo > hi {
+            continue;
+        }
+        let Some((capture_from, capture_to)) = timeline.bounds(lo, hi) else {
+            continue;
+        };
+        let span_from = timeline.spans.partition_point(|span| span.hour < lo);
+        let span_to = timeline.spans.partition_point(|span| span.hour <= hi);
+        let mut observed_hours: Vec<i32> = timeline.spans[span_from..span_to].iter().map(|s| s.hour).collect();
+        observed_hours.sort_unstable();
+        observed_hours.dedup();
+        if observed_hours.is_empty() {
+            continue;
+        }
+        let mut intervals: BTreeMap<(String, String), Vec<(u64, u64)>> = BTreeMap::new();
+        let mut versions: BTreeMap<(u64, usize), (String, String)> = BTreeMap::new();
+        for (&actor, history) in &timeline.actors {
+            let player = player_id(timeline, actor, history);
+            if group == ApmGroup::Player && !wanted_players.is_empty() && !wanted_players.contains(player.as_str()) {
+                continue;
+            }
+            for (version, observation) in history.iter().enumerate() {
+                let Some(tag) = tag(&observation.tag) else { continue };
+                if wanted_tags.as_ref().is_some_and(|set| !set.contains(tag)) {
+                    continue;
+                }
+                let id = if group == ApmGroup::Country { tag.to_owned() } else { player.clone() };
+                if !wanted_ids.contains(id.as_str()) {
+                    continue;
+                }
+                let departed = timeline.departures.get(&actor).copied().unwrap_or(u64::MAX);
+                let end = history.get(version + 1).map_or(departed, |next| next.at_qpc).min(departed);
+                if end < capture_from || observation.at_qpc > capture_to {
+                    continue;
+                }
+                intervals.entry((id.clone(), tag.to_owned())).or_default().push((observation.at_qpc, end));
+                versions.insert((actor, version), (id, tag.to_owned()));
+            }
+        }
+        let member_contains = |tag: &str, h: i32| -> bool {
+            match membership {
+                None => true,
+                Some(_) => memberships.get(tag).is_some_and(|runs| {
+                    let at = runs.partition_point(|&(_, end)| end < h);
+                    runs.get(at).is_some_and(|&(start, end)| start <= h && h <= end)
+                }),
+            }
+        };
+        for ((id, tag), mut ranges) in intervals {
+            merge_intervals(&mut ranges);
+            let entry = out.entry(id).or_default();
+            for &h in &observed_hours {
+                if !member_contains(&tag, h) {
+                    continue;
+                }
+                for &(from, to) in &ranges {
+                    if let Some(measured) = timeline.measure(h, h, from, to) {
+                        let slot = entry.entry(h).or_default();
+                        slot.observe(&measured);
+                        slot.paused_incomplete |= timeline
+                            .paused_unknown_hours
+                            .range(h..=h)
+                            .next()
+                            .is_some();
+                    }
+                }
+            }
+        }
+        for (key, (id, tag)) in &versions {
+            let Some(counts) = timeline.counts.get(key) else { continue };
+            let Some(hours_map) = out.get_mut(id) else { continue };
+            for (&h, amount) in hours_map.iter_mut() {
+                if h < lo || h > hi || !member_contains(tag, h) {
+                    continue;
+                }
+                let (count, incomplete) = counts.range(h, h);
+                amount.counts.add(count);
+                amount.incomplete |= incomplete;
+            }
+        }
+    }
+    Ok(out)
 }
 
 impl Product for PlayerApm {
@@ -345,7 +481,7 @@ impl Product for PlayerApm {
     const CONTENT_DEPENDENT: bool = false;
     const INTERACTIVE: bool = true;
     type Params = ApmParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, group, registry, firstHour: Start, lastHour: End, tags, players, buckets, "membership[].firstHour": Start, "membership[].lastHour": End];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, group, registry, hour: Read, firstHour: Start, lastHour: End, tags, players, buckets, "membership[].firstHour": Start, "membership[].lastHour": End];
     type Reply = ApmReply;
 
     fn validate(params: &ApmParams) -> Result<(), &'static str> {
@@ -357,6 +493,7 @@ impl Product for PlayerApm {
             return Err("Invalid APM display resolution");
         }
         if !params.registry
+            && params.hour.is_none()
             && !params
                 .first_hour
                 .zip(params.last_hour)
@@ -453,7 +590,7 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
         check_reply_budget(&reply)?;
         return Ok(reply);
     }
-    let (first, last) = params.first_hour.zip(params.last_hour).unwrap();
+    let (first, last) = params.hour.map(|h| (h, h)).or_else(|| params.first_hour.zip(params.last_hour)).unwrap();
     let width = ((i64::from(last) - i64::from(first) + 1) + i64::from(params.buckets) - 1)
         / i64::from(params.buckets);
     let wanted_tags: Option<BTreeSet<_>> = params
@@ -777,6 +914,7 @@ mod tests {
             branch_id: "4".into(),
             group,
             registry: false,
+            hour: None,
             first_hour: Some(first),
             last_hour: Some(last),
             tags: None,

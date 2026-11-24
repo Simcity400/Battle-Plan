@@ -1,4 +1,5 @@
 import { flagArtHandle } from '../art/provider.ts';
+import { artHandleKey } from '../art/types.ts';
 import type { ArtFlagSize, ArtHandle, BoundedReadView, EntityKind, FieldStatus } from '../plan.ts';
 import { knownValue, notRecorded, type Value } from '../value.ts';
 import type { TableCell, TableCellFlag } from './model.ts';
@@ -14,14 +15,16 @@ export function newIdentityBoundary(): IdentityBoundary {
 export interface ArtState {
   readonly icon?: string;
   readonly iconPending?: boolean;
+  readonly iconArt?: string;
 }
 
 export function artState(readView: BoundedReadView, handle: ArtHandle | null): ArtState {
   if (!handle) return {};
   const art = readView.art(handle);
-  if (art.status === 'ready') return { icon: art.url };
-  if (art.status === 'pending') return { iconPending: true };
-  return {};
+  const iconArt = artHandleKey(handle);
+  if (art.status === 'ready') return { icon: art.url, iconArt };
+  if (art.status === 'pending') return { iconPending: true, iconArt };
+  return { iconArt };
 }
 
 function flagState(readView: BoundedReadView, choice: FieldStatus<string> | undefined, size: ArtFlagSize): ArtState {

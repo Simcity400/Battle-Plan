@@ -3,7 +3,7 @@ import { flagArtHandle } from '../../families/art/provider.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import type { TableCell, TableColumnSpec, TableModel, TablePane, TablePaneTitle, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import type { WarContributionGroup, WarMeasure, WarMeasureKey, WarMeasureMember, WarMeasureSide, WarsReply } from '../../generated/dashboard';
 import { chosenGroup, leadOf, savedWar, warContributionSources, warCountries, warsAux, type WarChoiceOptions, type WarSide } from './warContributionPlan.ts';
@@ -146,7 +146,7 @@ function paneOf(readView: BoundedReadView, group: WarContributionGroup, side: Wa
   };
 }
 
-export const warContributionSidesProjection: TableProjection<SidesOptions> = registerTableProjection({
+export const warContributionSidesProjection: TableProjection<SidesOptions> = registerFamilyProjection({
   kind: 'war-contribution',
   family: 'table',
   project(readView, options): TableModel {

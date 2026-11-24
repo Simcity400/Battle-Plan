@@ -31,7 +31,7 @@ fn names() -> Names {
 fn a_region_s_counts_are_live_cells_and_only_the_missions_it_records_are_named() {
     let rows = [counts(7, 10, 1, &[(0, 24), (2, 0)]), counts(7, 11, 2, &[(1, 50)]), counts(8, 10, 5, &[(0, 9)])];
     let cells = Cells::default();
-    let reply = reply(Ok(&rows), 7, Some(40), Ok(Vec::new()), &names(), &cells).unwrap();
+    let reply = reply(Ok(&rows), 7, Some(40), &names(), &cells).unwrap();
     assert_eq!(reply.read_hour, Some(40));
     assert_eq!(reply.missing, None);
     let regions: Vec<_> = reply.regions.iter().map(|region| (region.region.as_str(), region.missions.clone())).collect();
@@ -40,7 +40,6 @@ fn a_region_s_counts_are_live_cells_and_only_the_missions_it_records_are_named()
     let missions: Vec<_> = reply.missions.iter().map(|mission| (mission.id.as_str(), mission.name.as_str(), mission.icon.as_ref().map(|icon| icon.frame))).collect();
     assert_eq!(missions, [("0", "Mission 0", Some(0)), ("1", "Mission 1", Some(1)), ("2", "Mission name unavailable", Some(2))]);
     assert!(reply.warnings.iter().any(|warning| warning.contains("AIRWING_MISSION_TYPE_INTERCEPTION")), "{:?}", reply.warnings);
-    assert_eq!(reply.theatres, Some(Vec::new()));
     let live = cells.finish();
     let mut frame = DecodedFrame { branch: 1, hour: 41, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
     *frame.tables[TableId::AirMissionCounts.index()] = TableView::Complete(TableRows::AirMissionCounts(rows.to_vec()));
@@ -56,13 +55,13 @@ fn a_region_s_counts_are_live_cells_and_only_the_missions_it_records_are_named()
 }
 
 #[test]
-fn missions_or_theatres_not_recorded_at_the_hour_are_missing_not_empty() {
+fn missions_not_recorded_at_the_hour_are_missing_not_empty() {
     let cells = Cells::default();
-    let reply = reply(Err(io::Error::other("air mission counts was withheld")), 7, None, Err("Air-theatre owner is unresolved".to_owned()), &names(), &cells).unwrap();
+    let reply = reply(Err(io::Error::other("air mission counts was withheld")), 7, None, &names(), &cells).unwrap();
     assert!(reply.regions.is_empty() && reply.missions.is_empty());
     assert!(cells.finish().is_empty(), "no region, no cell");
     assert!(reply.missing.unwrap().contains("air mission counts was withheld"));
-    assert_eq!((reply.theatres, reply.theatres_missing.as_deref()), (None, Some("Air-theatre owner is unresolved")));
+    assert_eq!(AirMissionsAt::tables(&AirMissionsParams { branch_id: "1".into(), country: "GER".into() }), [TableId::AirMissionCounts, TableId::AirRegionalMissions], "the table reads only what it shows");
 }
 
 fn theatre(id: u64, owner: u32, ordinal: u32) -> AirTheatreRow {
