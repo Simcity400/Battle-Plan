@@ -13,20 +13,20 @@ test('spending rows are the product\'s categories and items, dated by their late
   const reply: PowerSpendingBreakdownReply = {
     from: 0, hour: 100, through: 120,
     breakdown: {
-      decimals: 5,
-      total: { raw: '145000000', state: 'partial', reason: 'Some hours were not recorded' },
+      decimals: 2,
+      total: { raw: '145000', state: 'partial', reason: 'Some hours were not recorded' },
       parts: [
-        part('decisions', '101000000', { share: 0.7, last: 90, children: [part('war', '2500000', { share: 0.02, last: 90 })] }),
+        part('decisions', '101000', { share: 0.7, last: 90, children: [part('war', '2500', { share: 0.02, last: 90 })] }),
         part('laws', null),
       ],
       unrecordedHours: 4,
     },
-    gainedRaw: '134700000', lostAtCapRaw: '7600000', gainedReason: null, warnings: [],
+    gainedRaw: '134700', lostAtCapRaw: '7600', gainedReason: null, warnings: [],
   };
   const model = commandSpendingProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['main', reply]]) }), { currency: 'Command' });
   assert.deepEqual(model.rows.map(row => row.key), ['decisions', 'laws']);
   const decisions = model.rows[0]!;
-  assert.deepEqual(decisions.cells.spent!.value, { kind: 'known', value: 101000000n });
+  assert.deepEqual(decisions.cells.spent!.value, { kind: 'known', value: 101000n });
   assert.deepEqual(decisions.cells.last!.value, { kind: 'known', value: 90 });
   assert.equal(decisions.cells.share!.value.kind, 'known');
   const child = decisions.children![0]!;
