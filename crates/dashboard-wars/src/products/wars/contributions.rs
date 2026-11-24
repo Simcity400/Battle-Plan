@@ -95,6 +95,10 @@ impl AtHour for WarContributions {
             WarContributionsParams::decl(),
             super::WarSide::decl(),
             super::WarContributionCountry::decl(),
+            super::WarMeasureKey::decl(),
+            super::WarMeasureMember::decl(),
+            super::WarMeasureSide::decl(),
+            super::WarMeasure::decl(),
             WarContributionGroup::decl(),
             WarContributionsReply::decl(),
         ]

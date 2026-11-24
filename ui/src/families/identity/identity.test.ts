@@ -858,11 +858,44 @@ test('a country the lane asks for and the snapshot lacks becomes a broker demand
   broker.dispose();
 });
 
+test('a failed branch read is not restarted by later demands: a transient failure waits for its backoff, a refusal for an explicit retry', async () => {
+  let now = 0;
+  const timers: { at: number; run: () => void }[] = [];
+  let identityReads = 0;
+  let groupReads = 0;
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: async () => { identityReads++; throw new RefusedError('Unsupported identity table'); },
+    loadGroups: async () => { groupReads++; throw new TypeError('connection reset'); },
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size) => ({ size, flags: [], unavailable: [], warnings: [] }),
+  };
+  const broker = new IdentityBroker({ transport, clock: { now: () => now, after: (ms, run) => { timers.push({ at: now + ms, run }); return () => {}; } } });
+  const owner = {};
+  for (let hour = 100; hour < 160; hour++) {
+    broker.setDemand(owner, SCOPE, { asks: [{ key: countryTagKey('GER'), hour }], needFlags: false, needGroups: true, flagSize: 'panel' });
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+  }
+  assert.equal(identityReads, 1, 'a refused read is asked once');
+  assert.equal(groupReads, 1, 'a transient failure waits for its backoff');
+  assert.equal(timers.length, 1);
+  now = timers[0]!.at;
+  timers[0]!.run();
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.equal(groupReads, 2, 'the backoff asks again');
+  assert.equal(identityReads, 1);
+  broker.retry(SCOPE);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.equal(identityReads, 2, 'an explicit retry asks a refused read again');
+  broker.dispose();
+});
+
 test('a status is carried, not rebuilt: unresolved holders, failures across the worker snapshot, retried flags and refused art', async () => {
   const index = new IdentityIndex(SCOPE, [0, 500]);
   index.setFacts(sampleFacts(), true);
   index.setIdentities({ ...sampleIdentities(), countries: [{ tag: 'GER', identities: [], unresolved: [{ firstHour: 0, lastHour: 500 }] }] });
-  index.setGroupsFailure(new RefusedError('Unsupported faction table'));
+  index.setReadFailure('groups', new RefusedError('Unsupported faction table'));
   const worker = createSnapshotIdentityProvider(IdentityIndex.fromSnapshot(structuredClone(index.exportSnapshot())));
   const ger = worker.resolve('country', 'GER', 100 as DisplayedHour);
   assert.deepEqual(ger.tag, { status: 'ready', value: 'GER' });

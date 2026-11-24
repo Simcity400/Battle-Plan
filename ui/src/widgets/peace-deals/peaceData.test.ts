@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deepFreeze } from '../../testFrozen.ts';
+import { deepFreeze } from '../../test-support/frozen.ts';
 import { peaceBlockRows, peaceChangeHours, peacePlayback } from './peaceData.ts';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';

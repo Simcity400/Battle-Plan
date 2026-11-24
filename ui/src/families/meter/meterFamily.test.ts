@@ -200,7 +200,7 @@ test('activeResearchProjection renders researching, idle, missing, stale caption
   };
 
   const art: ArtProvider = {
-    resolve: handle => handle.kind === 'sprite' && handle.key === 'technology:basic_machine_tools'
+    resolve: handle => handle.kind === 'technology' && handle.token === 'basic_machine_tools'
       ? readyArt('asset://tech/basic_machine_tools.png')
       : missingArt('Art missing from the current installation'),
   };
@@ -469,6 +469,12 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
   assert.ok(chip.dateText?.startsWith('By '), 'a break first witnessed after a gap keeps its upper bound on the chip');
   assert.match(chip.spoken, / By /);
   assert.match(chip.audit, /\|broken\|By /);
+
+  const partialReply: DecryptionReply = { ...reply, attemptsUnknown: 'Attempt starts and breaks are not known: history unreadable' };
+  const partialView = createBoundedReadView({ hour, panels: new Map([['main', partialReply]]), live: new Map([['main', makeLive({ [liveKey('2:3', 'amount')]: 6200000 })]]), identity, art });
+  const onlyGerman = { passing: { GER: [[0, hour + 1000]] as [number, number][] }, unrecorded: [], bounds: [] };
+  const filtered = decryptionProjection.project(partialView, { filter: onlyGerman, filterAll: false, side: 'decryptor' });
+  assert.equal(filtered.summaryText, '0 broken \u00b7 1 decrypting \u00b7 Partial', 'a filtered count over a partially known population is marked, never exact');
 
   const matrix = whoReadsWhomProjection.project(view, { filter: allFilter, filterAll: true, side: 'decryptor' });
   assert.equal(matrix.corner, 'Reads');

@@ -1,2 +1,0 @@
-.casualties { display: flex; flex-direction: column; height: 100%; min-height: 0; box-sizing: border-box; padding: var(--space-2) 0; }
-.casualties-unknown { display: block; max-height: 30%; overflow-y: auto; }

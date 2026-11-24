@@ -1,6 +1,6 @@
 import { formatAmount, formatRate } from '../../charts/valueAxis.ts';
 import type { MeterMark } from '../../charts/meter/ProgressMeter';
-import type { SpriteFrame } from '../../dashboard/spriteArtwork';
+import type { SpriteFrame } from '../../generated/dashboard';
 import type { DescribedReward, DoctrineMasteryReply, DoctrineRewardsReply, MasteryChoice, MasteryFolder, MasteryReward, MasteryTrack } from '../../generated/dashboard';
 
 const text = (value: unknown): value is string => typeof value === 'string';

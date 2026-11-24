@@ -18,8 +18,8 @@ const template = (extra: Partial<EquipmentTemplate> = {}): EquipmentTemplate => 
 const reply = (extra: Partial<DivisionEquipmentReply> = {}): DivisionEquipmentReply => ({
   tag: 'GER', countFor: 'owner', missing: null, poolHour: 40, divisions: 60, divisionsShort: 213, unknownDivisions: 0,
   types: [type('infantry_equipment'), type(null, { missingRaw: '0', divisionsShort: 0, filledRaw: null })], templates: [template()],
-  divisionRows: null, pool: null, warnings: [], ...extra,
-} as DivisionEquipmentReply);
+  warnings: [], ...extra,
+});
 
 const project = (view: 'equipment' | 'template', raw: unknown) =>
   divisionEquipmentProjection.project(createBoundedReadView({ hour: 48, panels: new Map([['main', raw]]) }), { view });
