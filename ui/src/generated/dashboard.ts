@@ -1000,6 +1000,11 @@ export type MilitaryAirParams = { branchId: string, family: MilitaryAirFamily, r
  * A range starts at the events' own game hour.
  */
 fromHour: number | null, window: number, top: MilitaryAirTop | null, };
+export type MilitaryAirCauseName = { cause: number, name: string | null,
+/**
+ * Why the cause has no name: its recorded id has no proved display meaning.
+ */
+missing: string | null, };
 export type MilitaryAirFamily = "airLosses" | "bombing";
 export type MilitaryAirMetric = "dealt" | "taken" | "total";
 export type MilitaryAirTop = { count: number, metric: MilitaryAirMetric, };
@@ -1038,7 +1043,11 @@ incomplete: Array<HourSpan>,
 /**
  * Hours whose events were read but whose country links were not, so no event can be credited to a country.
  */
-unjoined: Array<HourSpan>, countries: Array<MilitaryAirCountry>, openings: Array<MilitaryAirOpening>, parts: Array<MilitaryAirPart>, regions: Array<MilitaryAirName>, buildings: Array<MilitaryAirName>, notes: Array<MilitaryAirNote>, warnings: Array<string>, };
+unjoined: Array<HourSpan>,
+/**
+ * Air losses: every cause the window's events name, with its name or why it has none.
+ */
+causes: Array<MilitaryAirCauseName>, countries: Array<MilitaryAirCountry>, openings: Array<MilitaryAirOpening>, parts: Array<MilitaryAirPart>, regions: Array<MilitaryAirName>, buildings: Array<MilitaryAirName>, notes: Array<MilitaryAirNote>, warnings: Array<string>, };
 export type MilitaryAirAtParams = { branchId: string, family: MilitaryAirFamily, regions: Array<number>, causes: Array<number>,
 /**
  * A range starts at the events' own game hour; the timeline's first observed hour when absent.
@@ -1047,17 +1056,33 @@ fromHour?: number, hour: number, metric: MilitaryAirMetric, top?: number,
 /**
  * Only these countries' rows, a recorded zero included.
  */
-countries?: Array<CountryRef>, };
-export type MilitaryAirCauseTotal = { cause: number, taken: string, };
+countries?: Array<CountryRef>,
+/**
+ * Only the members of this group at the hour, resolved from the recorded group history.
+ */
+group?: GroupSelection, };
+export type MilitaryAirCauseTotal = { taken: string, cause: number, name: string | null,
+/**
+ * Why the cause has no name: its recorded id has no proved display meaning.
+ */
+missing: string | null, };
 export type MilitaryAirAtRow = { tag: string, identity: string,
 /**
  * The first hour of the holder's unbroken presence that holds the hour.
  */
 segmentFirstHour: number, dealt: string, taken: string,
 /**
- * False where events since the totals' start may be missing: the totals are at least these.
+ * False where events since the totals' start may be missing, or have no recorded country.
  */
 complete: boolean,
+/**
+ * Why the totals may be incomplete.
+ */
+partial: string | null,
+/**
+ * Dealt per taken in hundredths, when both are complete and taken is not zero.
+ */
+ratioHundredths: string | null,
 /**
  * Air losses: own losses by recorded cause since the totals' start, most first; empty for bombing.
  */
@@ -1075,6 +1100,10 @@ missing: string | null,
  * Why the rows are not in rank order: the population is not fully read since the totals' start.
  */
 rankMissing: string | null, rows: Array<MilitaryAirAtRow>,
+/**
+ * Asked countries not present at the hour.
+ */
+absent: Array<CountryRef>,
 /**
  * Totals whose country is not recorded: dealt, then taken.
  */
@@ -6899,7 +6928,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "log-tail": { "branchId": "leaf", "columns": "node", "columns[]": "leaf", "countFacets": "node", "countFacets[]": "node", "countFacets[].facets": "node", "countFacets[].facets[]": "node", "countFacets[].facets[].countries": "node", "countFacets[].facets[].countries[]": "any", "countFacets[].facets[].deduplicate": "leaf", "countFacets[].facets[].membership": "node", "countFacets[].facets[].membership[]": "node", "countFacets[].facets[].membership[].country": "any", "countFacets[].facets[].membership[].firstHour": "leaf", "countFacets[].facets[].membership[].lastHour": "leaf", "countFacets[].facets[].name": "leaf", "countFacets[].facets[].unobserved": "node", "countFacets[].facets[].unobserved[]": "node", "countFacets[].facets[].unobserved[].firstHour": "leaf", "countFacets[].facets[].unobserved[].lastHour": "leaf", "countFacets[].facets[].values": "node", "countFacets[].facets[].values[]": "leaf", "countFacets[].key": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "hour": "leaf", "limit": "leaf", "log": "leaf", "offset": "leaf" },
   "market-ledger-tail": { "branchId": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf" },
   "market-lendlease": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "leaseSide": "leaf", "only": "leaf" },
-  "military-air-at": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "countries": "node", "countries[]": "any", "family": "leaf", "fromHour": "leaf", "hour": "leaf", "metric": "leaf", "regions": "node", "regions[]": "leaf", "top": "leaf" },
+  "military-air-at": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "countries": "node", "countries[]": "any", "family": "leaf", "fromHour": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "metric": "leaf", "regions": "node", "regions[]": "leaf", "top": "leaf" },
   "military-air-ledger": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "family": "leaf", "fromHour": "leaf", "regions": "node", "regions[]": "leaf", "top": "node", "top.count": "leaf", "top.metric": "leaf", "window": "leaf" },
   "minefields": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "hour": "leaf", "order": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf" },
   "national-focus": { "branchId": "leaf", "country": "any" },
