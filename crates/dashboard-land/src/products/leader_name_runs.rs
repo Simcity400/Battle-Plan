@@ -12,7 +12,11 @@ use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use replay_recording::cells::TableReader;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, io, sync::atomic::AtomicBool};
+use std::{
+    collections::{BTreeSet, HashMap},
+    io,
+    sync::atomic::AtomicBool,
+};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -56,6 +60,59 @@ dashboard_base::reply_warnings!(LeaderNameRunsReply);
 fn references(params: &LeaderNameRunsParams) -> Result<Vec<u64>, &'static str> {
     let held: BTreeSet<u64> = params.references.iter().map(|reference| reference.parse::<u64>().map_err(|_| "Invalid leader reference")).collect::<Result<_, _>>()?;
     Ok(held.into_iter().collect())
+}
+
+const UNIT_LEADERS: usize = 0;
+const COUNTRY_TABLES: std::ops::Range<usize> = 1..3;
+const CHARACTERS: usize = 3;
+const TOKENS: usize = 4;
+const LEADER_CHARACTER: usize = 1;
+const CHARACTER_TOKEN: usize = 1;
+
+pub const LEADER_TABLES: [(TableId, Option<&[usize]>); 5] = [
+    (TableId::UnitLeaders, Some(&[LEADER_CHARACTER, 16])),
+    (TableId::CountryLinks, None),
+    (TableId::Countries, Some(&[0, 1])),
+    (TableId::Characters, Some(&[CHARACTER_TOKEN, 4, 5])),
+    (TableId::LexicalTokens, None),
+];
+
+#[derive(Default)]
+pub struct LeaderInputs {
+    character: HashMap<u64, u32>,
+    token: HashMap<u32, u32>,
+}
+
+impl LeaderInputs {
+    pub fn dirty(&mut self, readers: &[TableReader], opening: bool, keys: &[u64]) -> Vec<u64> {
+        let countries_moved = opening || readers[COUNTRY_TABLES].iter().any(|reader| reader.changes().rows_moved());
+        let dirty: Vec<u64> = keys
+            .iter()
+            .copied()
+            .filter(|&key| {
+                let character = self.character.get(&key).copied();
+                countries_moved
+                    || touched(&readers[UNIT_LEADERS], u128::from(key))
+                    || character.is_some_and(|character| touched(&readers[CHARACTERS], u128::from(character)))
+                    || character.and_then(|character| self.token.get(&character)).is_some_and(|&token| touched(&readers[TOKENS], u128::from(token)))
+            })
+            .collect();
+        for &key in &dirty {
+            match read::number(&readers[UNIT_LEADERS], u128::from(key), LEADER_CHARACTER).and_then(|character| u32::try_from(character).ok()) {
+                Some(character) => {
+                    self.character.insert(key, character);
+                    match read::number(&readers[CHARACTERS], u128::from(character), CHARACTER_TOKEN).and_then(|token| u32::try_from(token).ok()) {
+                        Some(token) => self.token.insert(character, token),
+                        None => self.token.remove(&character),
+                    };
+                }
+                None => {
+                    self.character.remove(&key);
+                }
+            }
+        }
+        dirty
+    }
 }
 
 fn read_hour(query: &dashboard_query::Query<'_>, frames: &mut at_hour::Frames<'_>, hour: i32, keys: &[u64]) -> Result<DecodedFrame, String> {
@@ -167,13 +224,12 @@ impl Product for LeaderNameRuns {
         let mut book = RunBook::new(keys.iter().copied());
         let recording = query.replay.recording();
         let mut frames = at_hour::Frames::new(&query)?;
-        let tables: [(TableId, Option<&[usize]>); 3] = [(TableId::UnitLeaders, Some(&[1, 16])), (TableId::CountryLinks, None), (TableId::Countries, Some(&[0, 1]))];
         for stretch in query.timeline.stretches.iter().filter(|stretch| stretch.first <= to && stretch.last >= from) {
             let (first, last) = (stretch.first.max(from), stretch.last.min(to));
-            read::walk(recording, stretch.run, &tables, first, last, |hour, readers: &[TableReader]| {
+            let mut inputs = LeaderInputs::default();
+            read::walk(recording, stretch.run, &LEADER_TABLES, first, last, |hour, readers: &[TableReader]| {
                 check_cancel(cancelled)?;
-                let countries_moved = hour == first || readers[1..].iter().any(|reader| !reader.changes().quiet());
-                let dirty: Vec<u64> = keys.iter().copied().filter(|&key| countries_moved || touched(&readers[0], u128::from(key))).collect();
+                let dirty = inputs.dirty(readers, hour == first, &keys);
                 if dirty.is_empty() {
                     return Ok(());
                 }
@@ -212,5 +268,41 @@ mod tests {
         assert_eq!(owned_by(&tag, Some(7), None), None, "a tag owner with an unnamed tag is unknown, not absent");
         assert_eq!(owned_by(&tag, Some(7), Some("AAA".into())), Some(true));
         assert_eq!(owned_by(&tag, Some(7), Some("BBB".into())), Some(false));
+    }
+
+    #[test]
+    fn a_leader_is_named_again_when_its_character_or_its_name_token_changes_and_never_for_a_fresh_sample_alone() {
+        use replay_data::rows::{CharacterRow, LexicalTokenRow, TableRows, UnitLeaderRow};
+        use replay_frame::frame::TableView;
+        let frame = |hour: i32| {
+            let mut frame = dashboard_core::test_fixtures::source(1, hour, Some(1));
+            *frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(vec![UnitLeaderRow { id: 4, reference_type: 1, character_id: 5, owner: 9001, ..UnitLeaderRow::default() }]));
+            let token = if hour < 1_040 { 10 } else { 11 };
+            *frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![CharacterRow { id: 5, name_token_id: token, token: b"SAMPLE_LEADER".to_vec(), ..CharacterRow::default() }]));
+            let spelling: &[u8] = if hour < 1_070 { b"Ada Vance" } else { b"Ada Vane" };
+            *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![
+                LexicalTokenRow { token: 10, literal: b"Ada".to_vec() },
+                LexicalTokenRow { token: 11, literal: spelling.to_vec() },
+            ]));
+            frame
+        };
+        let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), dashboard_core::test_fixtures::CAMPAIGN.into(), &[dashboard_core::test_fixtures::records(1, (1_000..=1_100).map(frame).collect())])
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
+        let source = Source::from_replay(dashboard_base::SourceKey { source_id: "leaders".into(), revision: "1".into() }, "synthetic.battleplan".into(), std::sync::Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let run = query.timeline.stretches[0].run;
+        let key = (4_u64 << 32) | 1;
+        let mut inputs = LeaderInputs::default();
+        let mut named = Vec::new();
+        read::walk(query.replay.recording(), run, &LEADER_TABLES, 1_000, 1_100, |hour, readers| {
+            if !inputs.dirty(readers, hour == 1_000, &[key]).is_empty() {
+                named.push(hour);
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(named, vec![1_000, 1_040, 1_070], "the opening hour, the character's new name token and that token's new spelling");
     }
 }
