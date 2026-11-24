@@ -111,9 +111,7 @@ export function layoutHeatLanes(input: LayoutHeatLanesInput): HeatLanesLayout {
   const contentHeight = y > 0 ? y - LANE_ROW_GAP + 8 : 0;
   const totalHeight = Math.max(height, plotTop + contentHeight + axisHeight);
 
-  const scrollTop = Math.max(0, input.scrollTop);
-  const firstRow = Math.max(0, rowAtOrBelow(rowTops, scrollTop) - 1);
-  const endRow = Math.min(input.rows.length, rowAtOrBelow(rowTops, scrollTop + plotHeight) + 2);
+  const { firstRow, endRow } = lanesWindow({ rowTops, plotHeight }, input.rows.length, input.scrollTop);
 
   const firstHour = input.firstHour;
   const lastHour = Math.max(firstHour, input.lastHour);
@@ -142,6 +140,14 @@ export function layoutHeatLanes(input: LayoutHeatLanesInput): HeatLanesLayout {
     firstHour,
     lastHour,
     displayedHour: input.displayedHour,
+  };
+}
+
+export function lanesWindow(layout: Pick<HeatLanesLayout, 'rowTops' | 'plotHeight'>, rows: number, scrollTopRaw: number): Pick<HeatLanesLayout, 'firstRow' | 'endRow'> {
+  const scrollTop = Math.max(0, scrollTopRaw);
+  return {
+    firstRow: Math.max(0, rowAtOrBelow(layout.rowTops, scrollTop) - 1),
+    endRow: Math.min(rows, rowAtOrBelow(layout.rowTops, scrollTop + layout.plotHeight) + 2),
   };
 }
 

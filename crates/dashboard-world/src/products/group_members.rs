@@ -92,6 +92,10 @@ pub struct GroupsAt {
 }
 
 impl GroupsAt {
+    pub fn new(reply: Arc<CountryGroupReply>, first: i32) -> Self {
+        Self { reply: Some(reply), first }
+    }
+
     pub fn load(source: &Source, load: &LoadContext, branch_id: &str, group: Option<&GroupSelection>) -> io::Result<Self> {
         let (Some(_), Ok(branch)) = (group, branch_id.parse::<u64>()) else { return Ok(Self::default()) };
         let query = dashboard_base::queries::query(source, branch)?;

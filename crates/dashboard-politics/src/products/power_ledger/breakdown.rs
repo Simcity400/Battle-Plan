@@ -273,7 +273,7 @@ pub(super) fn index(reply: &PowerSpendingReply, spend_unread: &[(i32, i32, Strin
             let next = kinds.len() as u32;
             let ordinal = *kinds.entry(key.clone()).or_insert(next);
             path.push(match &kind.name {
-                Some(name) if kind.id.is_some() => Node::new(key, name.clone(), ordinal),
+                Some(name) if kind.id.is_some() => Node::new(key, name.clone(), ordinal).name_missing(kind.unknown.clone()),
                 _ => Node::new(key, "Category not recorded", ordinal).other(),
             });
         }

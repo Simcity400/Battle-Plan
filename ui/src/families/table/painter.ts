@@ -1,5 +1,6 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
+import { measureCanvasText, textWidthCacheStats } from '../../charts/textWidth.ts';
 import { formatDateRange } from '../../dashboard/calendar.ts';
 import {
   drawChildRowTint,
@@ -12,13 +13,15 @@ import {
   resolveKitTokens,
   type ClockSummaryData,
 } from '../../draw/kit.ts';
+import { resolveCachedArt } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
+import { readyArt } from '../art/types.ts';
 import { hasMeasuredValue, type Value } from '../value.ts';
 import { drawHatchRect, MISSING_BOX_SIZE } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';
 import { drawApprovedCell, treeLevelsOf, treeTextStart, type CellRenderContext } from './cellPainters.ts';
 import { LIVE_END_GAP, treeColumnOf, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
-import { computeColumnMaxima, resolveCellAtHour, resolveCellPaintModel, type FlatTableRow, type TableCell, type TableRow } from './model.ts';
+import { computeColumnMaxima, resolveCellPaintModel, type FlatTableRow, type TableCell, type TableRow } from './model.ts';
 import {
   CELL_INSET,
   MEDIA_ROW_HEIGHT,
@@ -27,7 +30,6 @@ import {
   glideOffset,
   measuresColumn,
   scrollBounds,
-  showsIcon,
   type GlideOffset,
   type RankMarker,
   type TableCanvasContext,
@@ -61,7 +63,6 @@ export interface FamilyTablePicture {
   rowMarks: (string | undefined)[];
   cells: Map<string, (string | undefined)[]>;
   ranks: (string | undefined)[];
-  measures: Map<string, number>;
   fittedTexts: Map<string, string>;
   maximaRows?: readonly FlatTableRow[];
   maximaHour?: number;
@@ -82,7 +83,6 @@ export function createTablePicture(): FamilyTablePicture {
     rowMarks: [],
     cells: new Map(),
     ranks: [],
-    measures: new Map(),
     fittedTexts: new Map(),
   };
 }
@@ -308,19 +308,12 @@ export function drawFamilyTable(
   }
 
   let measurements = 0;
-  const measureCache = picture?.measures ?? new Map<string, number>();
   const fitCache = picture?.fittedTexts ?? new Map<string, string>();
 
   const measure = (text: string, font: string): number => {
-    const key = `${font}\u0000${text}`;
-    let w = measureCache.get(key);
-    if (w === undefined) {
-      if (measureCache.size > 4096) measureCache.clear();
-      ctx.font = font;
-      w = ctx.measureText(text).width;
-      measureCache.set(key, w);
-      measurements++;
-    }
+    const before = textWidthCacheStats().misses;
+    const w = measureCanvasText(ctx, text, font);
+    measurements += textWidthCacheStats().misses - before;
     return w;
   };
 
@@ -467,9 +460,10 @@ export function drawFamilyTable(
     return marker && marker.until > now ? `${item.key}\u0002${item.rank}\u0002${marker.delta}` : `${item.key}\u0002${item.rank}`;
   };
 
-  const artStateOf = (url: string): number => (artCache
-    ? (artCache.bitmapOf(url) ? 1 : artCache.stateOfUrl(url) === 'failed' ? 2 : 3)
-    : (icons?.get(url) ? 1 : icons?.get(url) === null ? 2 : 0));
+  const artStateOf = (url: string): string => {
+    const resolved = resolveCachedArt(readyArt(url), { artCache, icons });
+    return resolved.status === 'ready' ? (resolved.bitmap ? 'r' : 'p') : resolved.status;
+  };
 
   const cellListSignature = (cell: TableCell): string => {
     let sig = '';
@@ -1029,60 +1023,6 @@ export function hitFamilyTable(
     x += col.width;
   }
   return { kind: 'row', rowKey: item.key };
-}
-
-export function collectVisibleCellIcons(
-  rows: readonly FlatTableRow[],
-  columns: readonly Pick<FamilyColumnLayout, 'key' | 'display' | 'skillIcon'>[],
-  hour: number,
-  first: number,
-  last: number,
-): string[] {
-  const urls = new Set<string>();
-  const start = Math.max(0, first);
-  const end = Math.min(rows.length, last);
-  for (let c = 0; c < columns.length; c++) {
-    const col = columns[c]!;
-    if (col.skillIcon) urls.add(col.skillIcon);
-  }
-  for (let i = start; i < end; i++) {
-    const item = rows[i]!;
-    if (item.kind !== 'data') continue;
-    for (let c = 0; c < columns.length; c++) {
-      const col = columns[c]!;
-      const cell = item.row.cells[col.key];
-      if (!cell) continue;
-      if (cell.flags) {
-        for (const fl of cell.flags) if (fl.icon) urls.add(fl.icon);
-      }
-      if (cell.icons) {
-        for (const ic of cell.icons) if (ic.url) urls.add(ic.url);
-      }
-      if (cell.icon) urls.add(cell.icon);
-      if (cell.unitIcon) urls.add(cell.unitIcon);
-      if (cell.iconSlot && showsIcon(col.display)) {
-        const resolved = resolveCellAtHour(cell, hour);
-        if (resolved.icon) urls.add(resolved.icon);
-      }
-    }
-  }
-  return [...urls];
-}
-
-export function collectCellIcons(rows: readonly FlatTableRow[]): string[] {
-  const urls = new Set<string>();
-  for (const item of rows) {
-    if (item.kind !== 'data') continue;
-    for (const key in item.row.cells) {
-      const cell = item.row.cells[key]!;
-      if (cell.icon) urls.add(cell.icon);
-      if (cell.unitIcon) urls.add(cell.unitIcon);
-      if (cell.flags) for (const fl of cell.flags) if (fl.icon) urls.add(fl.icon);
-      if (cell.icons) for (const ic of cell.icons) if (ic.url) urls.add(ic.url);
-      if (cell.looks) for (const look of cell.looks) if (look.flag) urls.add(look.flag);
-    }
-  }
-  return [...urls];
 }
 
 export function hasNonZeroMeasured(value: Value): boolean {

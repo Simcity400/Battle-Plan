@@ -294,6 +294,8 @@ export default function DeclaredFamilyWidget<
   const staticSources = useMemo<FamilyStaticSources | null>(() => {
     if (!plan.staticBundle) return null;
     return {
+      stamp: plan.staticBundle.stamp,
+      proof: plan.staticBundle.proof,
       panels: plan.staticBundle.panels,
       ...(plan.staticBundle.shifts ? { shifts: plan.staticBundle.shifts } : {}),
       hour: plan.staticBundle.hour,

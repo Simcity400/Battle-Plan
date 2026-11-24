@@ -1,13 +1,14 @@
-import { CHART_MEASURE_COLOURS, readableColour, reservedGrey } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection, BarsSegment } from '../../families/bars/model.ts';
 import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/shareRows.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
+import { dayHistoryNames, dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
 import { findRunAtHour, spanIndexAt, type HeatLaneCell, type HeatLaneReadout, type HeatLaneRow, type HeatLaneRun, type HeatLanesModel, type HeatLanesProjection } from '../../families/heat/lanesModel.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
-import { countryColourAt, regionLabel, type DatedColour } from '../../families/heat/scale.ts';
+import { contestedGrey, countryColourAt, readableOn, regionLabel, type DatedColour } from '../../families/heat/scale.ts';
 import { formatDateOnly, formatShare } from '../../families/valueFormat.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
 import { ADD_REGION_LABEL, mostActiveHeading, PICKED_REGIONS_HEADING } from '../../families/regions/regionRows.ts';
@@ -19,6 +20,7 @@ export const SUPREMACY_TOP_DEFAULT = 7;
 export interface SupremacyOptions {
   readonly viewer: string | null;
   readonly surface: string;
+  readonly tiles: number;
 }
 
 interface Look {
@@ -32,14 +34,14 @@ interface Look {
 
 function lookOf(readView: BoundedReadView, reply: NavalSupremacyReply, options: SupremacyOptions): Look {
   const { surface, viewer } = options;
-  const noColour = readableColour(CHART_MEASURE_COLOURS.bopRight, surface);
+  const noColour = readableOn(CHART_MEASURE_COLOURS.bopRight, surface);
   const friendly = viewer
     ? (hour: number) => countryColourAt(readView, viewer, hour, surface, noColour)
     : () => ({ colour: noColour, through: Infinity });
   return {
     friendly,
-    enemy: readableColour(CHART_MEASURE_COLOURS.short, surface),
-    contested: reservedGrey(surface, [friendly(reply.lastHour).colour]),
+    enemy: readableOn(CHART_MEASURE_COLOURS.short, surface),
+    contested: contestedGrey(surface, [friendly(reply.lastHour).colour]),
     friendlyLabel: 'Friendly control',
     enemyLabel: 'Enemy control',
     viewer: reply.viewerName ?? 'Viewer',
@@ -72,9 +74,9 @@ function emptyBars(hour: number): BarsModel {
 
 export function projectSupremacyShares(readView: BoundedReadView, options: SupremacyOptions): BarsModel {
   const hour: number = readView.hour;
-  const refused = readView.refused('supremacy');
+  const refused = readView.refused('now');
   if (refused) return buildShareRowsModel({ hour, empty: refused, emptyKind: 'unavailable' });
-  const reply = readView.panel<NavalSupremacyReply>('supremacy');
+  const reply = readView.panel<NavalSupremacyReply>('now');
   if (!reply || !options.surface || reply.lastHour > hour) return emptyBars(hour);
   const look = lookOf(readView, reply, options);
   const entry = (region: SupremacyRegion): ShareRowEntry => {
@@ -124,8 +126,8 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
     pickedHeading: PICKED_REGIONS_HEADING,
     automaticHeading: mostActiveHeading(look.viewer),
     addRegionLabel: ADD_REGION_LABEL,
-    ...(reply.regions.length ? {} : { empty: `No naval activity for ${look.viewer} at this date.` }),
-    warnings: reply.warnings,
+    ...(reply.regions.length ? {} : reply.rankMissing ? { empty: reply.rankMissing, emptyKind: 'unavailable' as const } : { empty: `No naval activity for ${look.viewer} at this date.` }),
+    warnings: reply.regions.length && reply.rankMissing ? [...reply.warnings, reply.rankMissing] : reply.warnings,
   });
 }
 
@@ -150,43 +152,100 @@ function emptyLanes(hour: number, extra: Partial<HeatLanesModel>): HeatLanesMode
   return { hour, firstHour: hour, lastHour: hour, dayHours: 24, playhead: null, rows: [], ...extra };
 }
 
-export function projectSupremacyTimeline(readView: BoundedReadView, options: SupremacyOptions): HeatLanesModel {
-  const hour: number = readView.hour;
-  const refused = readView.refused('supremacy');
-  if (refused) return emptyLanes(hour, { refused });
-  const reply = readView.panel<NavalSupremacyReply>('supremacy');
-  if (!reply || !options.surface || reply.lastHour > hour) return emptyLanes(hour, {});
-  const look = lookOf(readView, reply, options);
-  const through = reply.lastHour;
+function unknownRunsOf(reply: NavalSupremacyReply, through: number): HeatLaneRun[] {
   const dayStart = (day: number) => reply.firstDayHour + day * reply.dayHours;
-  const lastDay = Math.floor((through - reply.firstDayHour) / reply.dayHours);
-  const unknownRuns: HeatLaneRun[] = reply.unknown.map(span => {
+  return reply.unknown.map(span => {
     const firstHour = Math.max(reply.firstHour, dayStart(span.firstDay));
     const lastHour = Math.min(through, dayStart(span.lastDay + 1) - 1);
     return { firstHour, lastHour, readHour: lastHour, cell: { kind: 'missing', reason: span.reason } };
   });
-  const rows: HeatLaneRow[] = reply.regions.map(region => {
-    const named = regionLabel(readView, region.id, region.name);
-    const runs: HeatLaneRun[] = [];
-    for (const run of region.runs) {
-      for (let day = run.firstDay; day <= run.lastDay;) {
-        const firstHour = Math.max(reply.firstHour, dayStart(day));
-        if (firstHour > through) break;
-        const friendly = look.friendly(firstHour);
-        const until = Math.max(day, Math.min(run.lastDay, Math.floor((friendly.through - reply.firstDayHour) / reply.dayHours)));
-        const lastHour = Math.min(through, dayStart(until + 1) - 1);
-        runs.push({ firstHour, lastHour, readHour: lastHour, cell: runCell(run, look, reply.scale, friendly.colour).cell });
-        day = until + 1;
-      }
+}
+
+function regionRuns(reply: NavalSupremacyReply, region: SupremacyRegion, look: Look, through: number, unknownRuns: readonly HeatLaneRun[]): HeatLaneRun[] {
+  const dayStart = (day: number) => reply.firstDayHour + day * reply.dayHours;
+  const runs: HeatLaneRun[] = [];
+  for (const run of region.runs) {
+    for (let day = run.firstDay; day <= run.lastDay;) {
+      const firstHour = Math.max(reply.firstHour, dayStart(day));
+      if (firstHour > through) break;
+      const friendly = look.friendly(firstHour);
+      const until = Math.max(day, Math.min(run.lastDay, Math.floor((friendly.through - reply.firstDayHour) / reply.dayHours)));
+      const lastHour = Math.min(through, dayStart(until + 1) - 1);
+      runs.push({ firstHour, lastHour, readHour: lastHour, cell: runCell(run, look, reply.scale, friendly.colour).cell });
+      day = until + 1;
     }
-    runs.push(...unknownRuns);
-    runs.sort((a, b) => a.firstHour - b.firstHour);
+  }
+  runs.push(...unknownRuns);
+  runs.sort((a, b) => a.firstHour - b.firstHour);
+  return runs;
+}
+
+interface TileLanes {
+  readonly sig: string;
+  readonly byRegion: ReadonlyMap<string, readonly HeatLaneRun[]>;
+  readonly unknown: readonly HeatLaneRun[];
+}
+
+const heldTiles = new WeakMap<NavalSupremacyReply, TileLanes>();
+
+function tileLanes(tile: NavalSupremacyReply, sig: string, look: Look): TileLanes {
+  const held = heldTiles.get(tile);
+  if (held && held.sig === sig) return held;
+  const unknown = unknownRunsOf(tile, tile.lastHour);
+  const made = { sig, unknown, byRegion: new Map(tile.regions.map(region => [region.id, regionRuns(tile, region, look, tile.lastHour, unknown)])) };
+  heldTiles.set(tile, made);
+  return made;
+}
+
+function datedSignature(look: Look, first: number, last: number): string {
+  const out: string[] = [];
+  for (let at = first; at <= last;) {
+    const dated = look.friendly(at);
+    out.push(dated.colour);
+    if (dated.through >= last) break;
+    at = dated.through + 1;
+  }
+  return out.join(',');
+}
+
+function inspectDay(reply: NavalSupremacyReply, region: SupremacyRegion | undefined, title: string, at: number, look: Look, painted: HeatLaneCell | undefined, readoutDay: boolean) {
+  const dayStart = (day: number) => reply.firstDayHour + day * reply.dayHours;
+  const day = Math.floor((at - reply.firstDayHour) / reply.dayHours);
+  const readout = region?.readout;
+  const dated = readoutDay && readout?.kind === 'control' ? { hour: readout.as_of_hour } : { subtitle: formatDateOnly(dayStart(day)) };
+  const unknown = reply.unknown[spanIndexAt(reply.unknown, day, span => span.firstDay)];
+  if (unknown && day <= unknown.lastDay) return { title, ...dated, missingReason: unknown.reason };
+  const run = region?.runs[spanIndexAt(region.runs, day, item => item.firstDay)];
+  if (!run || day > run.lastDay) return { title, ...dated, missingReason: 'Naval region control was not recorded' };
+  const made = runCell(run, look, reply.scale, painted?.kind === 'solid' ? painted.color : look.contested);
+  return made.cell.kind === 'missing' ? { title, ...dated, missingReason: made.cell.reason } : { title, ...dated, items: made.items };
+}
+
+export function projectSupremacyTimeline(readView: BoundedReadView, options: SupremacyOptions): HeatLanesModel {
+  const hour: number = readView.hour;
+  const refused = refusedOf(readView, options.tiles);
+  if (refused) return emptyLanes(hour, { refused });
+  const now = readView.panel<NavalSupremacyReply>('now');
+  if (!now || !options.surface || now.lastHour > hour) return emptyLanes(hour, {});
+  const tiles: NavalSupremacyReply[] = [];
+  for (const name of dayHistoryNames(options.tiles)) {
+    const tile = readView.panel<NavalSupremacyReply>(name);
+    if (tile && tile.lastHour < now.firstHour) tiles.push(tile);
+  }
+  const look = lookOf(readView, now, options);
+  const through = Math.min(hour, now.validThrough);
+  const held = tiles.map(tile => tileLanes(tile, `${options.surface}|${look.contested}|${datedSignature(look, tile.firstHour, tile.lastHour)}`, look));
+  const nowUnknown = unknownRunsOf(now, through);
+  const lastDay = Math.floor((through - now.firstDayHour) / now.dayHours);
+  const rows: HeatLaneRow[] = now.regions.map(region => {
+    const named = regionLabel(readView, region.id, region.name);
+    const runs = [...held.flatMap(lanes => lanes.byRegion.get(region.id) ?? lanes.unknown), ...regionRuns(now, region, look, through, nowUnknown)];
     const readout = region.readout;
     let shown: HeatLaneReadout | undefined;
     if (readout?.kind === 'notRecorded') shown = { kind: 'missing', reason: readout.reason };
     else if (readout && idle(readout.friendly, readout.enemy)) shown = { kind: 'clear', label: 'No activity' };
     else if (readout) {
-      const share = shareOf(readout.share, reply.scale);
+      const share = shareOf(readout.share, now.scale);
       const color = readout.control > 0 ? look.friendly(readout.as_of_hour).colour : readout.control < 0 ? look.enemy : look.contested;
       shown = readout.control === 0
         ? { kind: 'value', form: 'value', primary: '', secondary: 'Contested', swatch: color, audit: 'Contested' }
@@ -194,55 +253,61 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
     }
     return { id: region.id, label: named.label, ...(named.nameMissing ? { nameMissing: named.nameMissing } : {}), pinned: region.pinned, region: Number(region.id), runs, ...(shown ? { readout: shown } : {}) };
   });
+  const pieces = [...tiles, now];
+  const gaps = new Map<string, { firstHour: number; lastHour: number; reason: string }>();
+  for (const reply of pieces) for (const gap of reply.gaps) gaps.set(`${gap.firstHour}:${gap.lastHour}`, { firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' });
   return {
     hour: through,
-    firstHour: reply.firstHour,
+    firstHour: tiles[0]?.firstHour ?? now.firstHour,
     lastHour: through,
-    dayHours: reply.dayHours,
+    dayHours: now.dayHours,
     playhead: through,
-    gaps: reply.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' })),
+    gaps: [...gaps.values()],
     rows,
     regions: { pickedHeading: PICKED_REGIONS_HEADING, automaticHeading: mostActiveHeading(look.viewer), addLabel: ADD_REGION_LABEL },
     readoutWidth: 204,
     inspect: (rowIndex, at) => {
-      const region = reply.regions[rowIndex];
-      if (!region) return null;
-      const day = Math.floor((at - reply.firstDayHour) / reply.dayHours);
-      const title = rows[rowIndex]!.label;
-      const readout = region.readout;
-      const dated = day === lastDay && readout?.kind === 'control' ? { hour: readout.as_of_hour } : { subtitle: formatDateOnly(dayStart(day)) };
-      const unknown = reply.unknown[spanIndexAt(reply.unknown, day, span => span.firstDay)];
-      if (unknown && day <= unknown.lastDay) return { title, ...dated, missingReason: unknown.reason };
-      const run = region.runs[spanIndexAt(region.runs, day, item => item.firstDay)];
-      if (!run || day > run.lastDay) return { title, ...dated, missingReason: 'Naval region control was not recorded' };
-      const painted = findRunAtHour(rows[rowIndex]!.runs, at, through)?.cell;
-      const made = runCell(run, look, reply.scale, painted?.kind === 'solid' ? painted.color : look.contested);
-      return made.cell.kind === 'missing' ? { title, ...dated, missingReason: made.cell.reason } : { title, ...dated, items: made.items };
+      const row = rows[rowIndex];
+      if (!row) return null;
+      const reply = pieces[spanIndexAt(pieces, at, item => item.firstHour)];
+      if (!reply || at > (reply === now ? through : reply.lastHour)) return null;
+      const region = reply === now ? now.regions[rowIndex] : reply.regions.find(item => item.id === row.id);
+      const readoutDay = reply === now && Math.floor((at - now.firstDayHour) / now.dayHours) === lastDay;
+      return inspectDay(reply, region, row.label, at, look, findRunAtHour(row.runs, at, through)?.cell, readoutDay);
     },
-    ...(rows.length ? {} : { empty: `No naval activity for ${look.viewer} at this date.` }),
-    warnings: reply.warnings,
+    ...(rows.length ? {} : now.rankMissing ? { empty: now.rankMissing, emptyKind: 'unavailable' as const } : { empty: `No naval activity for ${look.viewer} at this date.` }),
+    warnings: [...new Set(pieces.flatMap(reply => reply.warnings).concat(rows.length && now.rankMissing ? [now.rankMissing] : []))],
   };
+}
+
+function refusedOf(readView: BoundedReadView, tiles: number): string | undefined {
+  return readView.refused('now') ?? dayHistoryNames(tiles).map(name => readView.refused(name)).find(Boolean);
 }
 
 function supremacySources(ctx: FamilyPlanContext, shares: boolean): SourcePlan {
   if (!ctx.countryTag) return { owner: `naval-supremacy:${ctx.branch.id}:none`, entries: [], unavailable: 'Choose a country in the widget’s header.' };
   const top = typeof ctx.options.rowCount === 'number' ? ctx.options.rowCount : SUPREMACY_TOP_DEFAULT;
-  const params = { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), top, ...regionParams(readRegionChoice(ctx.options.regions)) };
+  const regions: Record<string, unknown> = regionParams(readRegionChoice(ctx.options.regions));
+  const base = { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) };
+  const params = { ...base, top, ...regions };
+  const { pinnedRegions: _pinned, hiddenRegions: _hidden, ...rankMissing } = regions;
+  const entries = dayTileEntries(ctx, {
+    product: 'naval-supremacy',
+    now: {
+      params,
+      coverage: { mode: 'population', form: 'top', limit: top },
+      span: (params, first, last) => ({ ...params, firstHour: first, lastHour: last }),
+      validThrough: data => (data as NavalSupremacyReply | undefined)?.validThrough ?? null,
+    },
+    tile: {
+      params: { ...base, ...rankMissing },
+      coverage: { mode: 'population', form: 'all' },
+      span: (params, first, last) => ({ ...params, firstHour: first, lastHour: last }),
+    },
+  });
   return {
     owner: `naval-supremacy:${shares ? 'shares' : 'timeline'}:${JSON.stringify(params)}`,
-    entries: [{
-      name: 'supremacy',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'branch-to-hour',
-        coverage: { mode: 'population', form: 'top', limit: top },
-        product: 'naval-supremacy',
-        followQuery: null,
-        params,
-      },
-    }],
+    entries: shares ? entries.filter(entry => entry.name === 'now') : entries,
   };
 }
 
@@ -265,7 +330,7 @@ export const supremacySharesDeclaration: BarsWidgetDeclaration<SupremacyOptions>
   family: 'bars',
   sources: ctx => supremacySources(ctx, true),
   projection: supremacySharesProjection,
-  projectionOptions: (ctx, extra) => ({ viewer: ctx.countryTag, surface: extra?.surface ?? '' }),
+  projectionOptions: (ctx, extra) => ({ viewer: ctx.countryTag, surface: extra?.surface ?? '', tiles: 0 }),
 };
 
 export const supremacyTimelineDeclaration: HeatLanesWidgetDeclaration<SupremacyOptions> = {
@@ -273,5 +338,5 @@ export const supremacyTimelineDeclaration: HeatLanesWidgetDeclaration<SupremacyO
   family: 'heat-lanes',
   sources: ctx => supremacySources(ctx, false),
   projection: supremacyTimelineProjection,
-  projectionOptions: (ctx, extra) => ({ viewer: ctx.countryTag, surface: extra.surface }),
+  projectionOptions: (ctx, extra) => ({ viewer: ctx.countryTag, surface: extra.surface, tiles: dayTileCount(ctx.branch) }),
 };
