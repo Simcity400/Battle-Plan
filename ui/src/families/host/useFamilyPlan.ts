@@ -828,20 +828,30 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     const tops = [...tileViewsRef.current.values()].filter(tv => tv.isTop);
     if (!active || !tops.length) return;
     const now = () => (following ? Math.floor(runtime.clock.getHour()) + trackOffset : tileHour);
-    for (const tv of tops) tv.setHour(now());
+    const apply = () => {
+      const at = now();
+      if (gateRecordedRef.current(at) === null) return;
+      for (const tv of tops) tv.setHour(at);
+    };
+    apply();
     if (!following) return;
     const proof = (): readonly [number, number] => {
+      const at = now();
+      if (gateRecordedRef.current(at) === null) {
+        const [unrecordedLo, unrecordedHi] = track ? coverageSpan(track, at) : [at, at];
+        return [unrecordedLo - trackOffset, unrecordedHi + 1 - trackOffset];
+      }
       let lo = -Infinity;
       let hi = Infinity;
       for (const tv of tops) {
         const held = tv.top;
-        lo = Math.max(lo, held ? held.from : now());
-        hi = Math.min(hi, held ? held.until : now());
+        lo = Math.max(lo, held ? held.from : at);
+        hi = Math.min(hi, held ? held.until : at);
       }
       return [lo - trackOffset, hi + 1 - trackOffset];
     };
-    return watchBoundary(runtime.clock, proof, () => { for (const tv of tops) tv.setHour(now()); });
-  }, [active, following, tileHour, pixelBinnedKey, currentTiled?.revision, runtime.clock, trackOffset]);
+    return watchBoundary(runtime.clock, proof, apply);
+  }, [active, following, tileHour, pixelBinnedKey, currentTiled?.revision, runtime.clock, track, trackOffset]);
   const tileUnrecorded = useMemo(() => {
     if (!currentTiled) return null;
     const lines: UnrecordedLine[] = [];
