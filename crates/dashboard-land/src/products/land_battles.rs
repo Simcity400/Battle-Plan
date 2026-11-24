@@ -34,8 +34,14 @@ const NOT_RECORDED: &str = "Not in this recording";
 const OPENED_EARLIER: &str = "The battle began before this part of the recording";
 const NO_OPENING: &str = "No opening was recorded; the game starts border wars outside the recorded combat start";
 const CASUALTIES_UNREAD: &str = "Casualties not read";
-const MEMBER_UNREAD: &str = "Manpower or casualties not read";
+const MANPOWER_UNREAD: &str = "Manpower not read";
 const UNATTRIBUTED: &str = "An edge in this hour could not be tied to its combat";
+const UNATTRIBUTED_DRAINED: &str = "An edge drained in this hour could not be tied to its combat; its own hour was not read";
+
+fn joined(parts: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+    let parts: Vec<String> = parts.into_iter().flatten().collect();
+    (!parts.is_empty()).then(|| parts.join("; "))
+}
 const ROSTER_UNREAD: &str = "Combat census not read";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -1448,7 +1454,10 @@ fn battle_edges(query: &Query<'_>, run: u32, battle: &Battle, first: i32, last: 
             .collect())
     };
     let rows = read_combat(battle.combat)?;
-    let unattributed: Vec<i32> = read_combat(0)?.iter().map(|row| row.hour).collect();
+    let unattributed: Vec<(i32, bool)> = read_combat(0)?
+        .iter()
+        .map(|row| (row.hour, row.withheld & Edge::HOUR_UNREADABLE != 0))
+        .collect();
     let complete = dashboard_query::cost::storage(|| lanes::complete_reads(recording, run, TableId::LandCombatEdges, from, last))?;
     Ok(shape_edges(&rows, &complete, &unattributed, battle, from, last))
 }
@@ -1459,16 +1468,19 @@ fn occurrence(rows: &[replay_data::rows::LandCombatEdgesRow], battle: &Battle) -
     rows.sort_unstable_by_key(|row| row.id);
     let opened = |at: usize| rows[at].kind == Edge::OPENED;
     let groups: Vec<usize> = (0..rows.len()).filter(|&at| opened(at) && (at == 0 || !opened(at - 1))).collect();
-    let (begin, end) = match groups.iter().position(|&at| rows[at].hour >= battle.start - 1) {
+    let (begin, end) = match groups.iter().position(|&at| (battle.start - 1..=battle.start).contains(&rows[at].hour)) {
         Some(own) => (groups[own], groups.get(own + 1).copied().unwrap_or(rows.len())),
-        None => (rows.iter().rposition(|row| row.kind == Edge::OPENED).map_or(0, |at| at + 1), rows.len()),
+        None => (
+            rows.iter().rposition(|row| row.kind == Edge::OPENED && row.hour < battle.start - 1).map_or(0, |at| at + 1),
+            groups.iter().copied().find(|&at| rows[at].hour > battle.start).unwrap_or(rows.len()),
+        ),
     };
     let mut kept = rows[begin..end].to_vec();
     kept.sort_unstable_by_key(|row| (row.hour, row.id));
     kept
 }
 
-fn shape_edges(rows: &[replay_data::rows::LandCombatEdgesRow], complete: &[(i32, i32)], unattributed: &[i32], battle: &Battle, from: i32, last: i32) -> LandBattleEdges {
+fn shape_edges(rows: &[replay_data::rows::LandCombatEdgesRow], complete: &[(i32, i32)], unattributed: &[(i32, bool)], battle: &Battle, from: i32, last: i32) -> LandBattleEdges {
     use replay_data::rows::LandCombatEdgesRow as Edge;
     let rows = &occurrence(rows, battle)[..];
     let mut unrecorded = Vec::new();
@@ -1482,10 +1494,14 @@ fn shape_edges(rows: &[replay_data::rows::LandCombatEdgesRow], complete: &[(i32,
     if next <= last {
         unrecorded.push(LandEdgeGap { first_hour: next, last_hour: last, reason: NOT_RECORDED.into() });
     }
-    let mut lost: Vec<i32> = unattributed.iter().copied().filter(|hour| (from..=last).contains(hour)).collect();
+    let mut lost: Vec<(i32, bool)> = unattributed.iter().copied().filter(|(hour, _)| (from..=last).contains(hour)).collect();
     lost.sort_unstable();
     lost.dedup();
-    unrecorded.extend(lost.into_iter().map(|hour| LandEdgeGap { first_hour: hour, last_hour: hour, reason: UNATTRIBUTED.into() }));
+    unrecorded.extend(lost.into_iter().map(|(hour, drained)| LandEdgeGap {
+        first_hour: hour,
+        last_hour: hour,
+        reason: if drained { UNATTRIBUTED_DRAINED } else { UNATTRIBUTED }.into(),
+    }));
     let division = |row: &Edge| row.division.map(|division| division.to_string());
     let opened: Vec<&Edge> = rows.iter().filter(|row| row.kind == Edge::OPENED).collect();
     let opening = opened.first().map(|row| LandBattleOpening {
@@ -1498,9 +1514,11 @@ fn shape_edges(rows: &[replay_data::rows::LandCombatEdgesRow], complete: &[(i32,
                 side: row.side,
                 manpower: row.manpower,
                 casualties: row.casualties_before,
-                missing: row
-                    .withheld_reason()
-                    .or_else(|| (row.manpower.is_none() || row.casualties_before.is_none()).then(|| MEMBER_UNREAD.into())),
+                missing: joined([
+                    row.withheld_reason(),
+                    row.manpower.is_none().then(|| MANPOWER_UNREAD.into()),
+                    row.casualties_before.is_none().then(|| CASUALTIES_UNREAD.into()),
+                ]),
             })
             .collect(),
     });
@@ -1522,7 +1540,11 @@ fn shape_edges(rows: &[replay_data::rows::LandCombatEdgesRow], complete: &[(i32,
                 side: (row.side <= 1).then_some(row.side),
                 losses,
                 manpower: row.manpower,
-                missing: row.withheld_reason().or_else(|| losses.is_none().then(|| CASUALTIES_UNREAD.into())),
+                missing: joined([
+                    row.withheld_reason(),
+                    row.manpower.is_none().then(|| MANPOWER_UNREAD.into()),
+                    losses.is_none().then(|| CASUALTIES_UNREAD.into()),
+                ]),
             }
         })
         .collect();
