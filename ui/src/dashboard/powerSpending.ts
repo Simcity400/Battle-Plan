@@ -52,7 +52,8 @@ export function validatePowerSpending(data: unknown): PowerSpendingReply {
     && list(reply.balances, entry => object(entry) && integer(entry.firstHour) && integer(entry.lastHour) && entry.firstHour <= entry.lastHour
       && optionalRaw(entry.valueRaw) && text(entry.reason))
     && object(reply.reconciliation) && optionalRaw(reply.reconciliation.openingRaw) && optionalRaw(reply.reconciliation.gainedRaw)
-      && optionalRaw(reply.reconciliation.lostAtCapRaw) && optionalRaw(reply.reconciliation.spentRaw) && optionalRaw(reply.reconciliation.closingRaw)
+      && optionalRaw(reply.reconciliation.lostAtCapRaw) && optionalRaw(reply.reconciliation.spentRaw)
+      && optionalRaw(reply.reconciliation.allocatedRaw) && optionalRaw(reply.reconciliation.releasedRaw) && optionalRaw(reply.reconciliation.closingRaw)
       && optionalRaw(reply.reconciliation.otherChangesRaw) && text(reply.reconciliation.reason)
     && list(reply.icons, icon => object(icon) && typeof icon.key === 'string' && typeof icon.image === 'string');
   if (!ok) throw new Error('The power spending reply is malformed.');

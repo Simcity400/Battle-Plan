@@ -102,12 +102,12 @@ export function useIdentity<K extends IdentityKey>(
         } else if (country.flagChoice.kind === 'missing') {
           flagArt = missingArt(country.flagChoice.reason);
         } else if (country.flagChoice.kind === 'failed') {
-          flagArt = { kind: 'failed', reason: country.flagChoice.failure.message, retryable: true };
+          flagArt = { status: 'failed', reason: country.flagChoice.failure.message, retryable: true };
         }
       } else if (country.kind === 'absent') {
         flagArt = missingArt(country.reason);
       } else if (country.kind === 'failed') {
-        flagArt = { kind: 'failed', reason: country.failure.message, retryable: true };
+        flagArt = { status: 'failed', reason: country.failure.message, retryable: true };
       }
     }
     return { result, flag, flagArt };

@@ -1,4 +1,4 @@
-import type { ArtBitmap, ArtResolution, DecodedArtState } from './types.ts';
+import type { ArtBitmap, ArtResolution, ArtResult } from './types.ts';
 
 export type LaneArtFetcher<TBitmap extends ArtBitmap = ImageBitmap> = (
   url: string,
@@ -80,45 +80,33 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     this.onSettle?.();
   }
 
-  resolve(resolution: ArtResolution): DecodedArtState<TBitmap> {
-    switch (resolution.kind) {
-      case 'none':
-        return { kind: 'none' };
+  resolve(resolution: ArtResolution): ArtResult<TBitmap> {
+    switch (resolution.status) {
+      case 'noArtExpected':
       case 'pending':
-        return { kind: 'pending' };
-      case 'missing':
-        return { kind: 'missing', reason: resolution.reason, ...(resolution.origin ? { origin: resolution.origin } : {}) };
+      case 'confirmedMissing':
       case 'refused':
-        return { kind: 'refused', reason: resolution.reason };
+        return resolution;
       case 'failed':
-        return {
-          kind: 'failed',
-          reason: resolution.reason,
-          retryable: resolution.retryable,
-          retry: () => this.retry(),
-        };
+        return { ...resolution, retry: () => this.retry() };
       case 'ready': {
-        const bitmap = this.touch(resolution.asset);
+        const bitmap = this.touch(resolution.url);
         if (bitmap !== undefined) {
           return {
-            kind: 'ready',
+            ...resolution,
             bitmap,
-            origin: resolution.origin,
-            ...(resolution.frame ? { frame: resolution.frame } : {}),
-            width: resolution.width ?? bitmap.width,
-            height: resolution.height ?? bitmap.height,
           };
         }
-        const failReason = this.failed.get(resolution.asset);
+        const failReason = this.failed.get(resolution.url);
         if (failReason !== undefined) {
           return {
-            kind: 'failed',
+            status: 'failed',
             reason: failReason,
             retryable: true,
-            retry: () => this.retry(resolution.asset),
+            retry: () => this.retry(resolution.url),
           };
         }
-        return { kind: 'pending' };
+        return { status: 'pending' };
       }
     }
   }
@@ -144,8 +132,8 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     for (const item of resolutions) {
       if (typeof item === 'string') {
         if (item) wanted.add(item);
-      } else if (item.kind === 'ready' && item.asset) {
-        wanted.add(item.asset);
+      } else if (item.status === 'ready' && item.url) {
+        wanted.add(item.url);
       }
     }
     this.wanted = wanted;

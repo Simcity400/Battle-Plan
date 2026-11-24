@@ -91,15 +91,15 @@ export function CountryFlagUrl({ url, reason, detail, pending, className = '', t
 }) {
   const resolution = useMemo(() => urlToArt(url, { pending, reason }), [url, pending, reason]);
   const art = useDomArt(resolution);
-  if (art.kind === 'ready') {
-    return <img className={`country-flag-art ${className}`} src={art.bitmap.src} data-art-origin={art.origin.label} alt="" />;
+  if (art.status === 'ready' && art.bitmap) {
+    return <img className={`country-flag-art ${className}`} src={art.bitmap.src} data-art-origin={art.provenance.label} alt="" />;
   }
-  if (art.kind === 'pending') {
+  if (art.status === 'pending' || art.status === 'ready') {
     const { text: tooltip } = countryFlagUnavailable(reason, true, false);
     return <FlagPlaceholder className={className} tag={tag} name={name} pending detail={detail} tooltip={tooltip} />;
   }
-  const { text: tooltip } = countryFlagUnavailable(reason, false, art.kind === 'failed');
-  return <FlagPlaceholder className={className} tag={tag} name={name} pending={false} detail={detail ?? (art.kind === 'failed' ? art.reason : undefined)} tooltip={tooltip} />;
+  const { text: tooltip } = countryFlagUnavailable(reason, false, art.status === 'failed');
+  return <FlagPlaceholder className={className} tag={tag} name={name} pending={false} detail={detail ?? (art.status === 'failed' ? art.reason : undefined)} tooltip={tooltip} />;
 }
 
 export function SourceFlag({ client, source, tag, size = 'panel' }: { client: DashboardClient; source: DashboardSource; tag: string | null; size?: CountryFlagSize }) {
@@ -112,5 +112,5 @@ export function SourceFlag({ client, source, tag, size = 'panel' }: { client: Da
   const key = useMemo(() => (tag ? countryTagKey(tag) : null), [tag]);
   const branchBounds = useMemo(() => (branch ? [branch.firstHour, branch.lastHour] as const : undefined), [branch?.firstHour, branch?.lastHour]);
   const { flag, flagArt } = useIdentity(client, source, scope, key, hour ?? null, { active: !!tag && !!branch, needFlag: true, flagSize: size, branchBounds });
-  return <CountryFlag image={flag?.image} tag={tag} name={country?.name} pending={flagArt.kind === 'pending'} decorative />;
+  return <CountryFlag image={flag?.image} tag={tag} name={country?.name} pending={flagArt.status === 'pending'} decorative />;
 }

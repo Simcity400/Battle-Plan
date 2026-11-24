@@ -89,19 +89,19 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
           version: s.content,
           resolve: (key, hour) => (scope ? resolveKey(key, hour) : { kind: 'pending' }),
           flagFor: () => undefined,
-          flagArtFor: () => ({ kind: 'pending' }),
+          flagArtFor: () => ({ status: 'pending' }),
           retry() {},
         };
       };
       export const useIdentity = (client, _rec, scope, key, hour, opts = {}) => {
         const s = globalThis.__pickerWitness;
-        if (!opts.active || !scope || !key || hour === null) return { result: null, flag: undefined, flagArt: { kind: 'pending' } };
+        if (!opts.active || !scope || !key || hour === null) return { result: null, flag: undefined, flagArt: { status: 'pending' } };
         if (!s.headerReads.some(seen => seen.tag === key.tag && seen.hour === hour)) s.headerReads.push({ tag: key.tag, hour });
         const drawn = s.drawn.get(client) ?? new Set();
         if (!drawn.has(s.content)) s.effects.push(() => { s.drawn.set(client, drawn.add(s.content)); });
         const res = resolveKey(key, hour);
         const flag = res.kind === 'known' && drawn.has(s.content) ? { image: { tag: key.tag } } : undefined;
-        return { result: res, flag, flagArt: flag ? { kind: 'ready' } : { kind: 'pending' } };
+        return { result: res, flag, flagArt: flag ? { status: 'ready' } : { status: 'pending' } };
       };`,
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
@@ -213,8 +213,8 @@ test('the listbox names its active option only while that row is drawn, and is m
     '/families/identity/broker.ts': 'export const identityBrokerFor = () => ({ retry() {} });',
     '/families/identity/react.ts': `export const countryTagKey = tag => ({ kind: 'country', by: 'tag', tag });
       export const useIdentityScope = () => null;
-      export const useIdentities = () => ({ index: null, version: 0, resolve: () => ({ kind: 'pending' }), flagFor: () => undefined, flagArtFor: () => ({ kind: 'pending' }), retry() {} });
-      export const useIdentity = () => ({ result: null, flag: undefined, flagArt: { kind: 'pending' } });`,
+      export const useIdentities = () => ({ index: null, version: 0, resolve: () => ({ kind: 'pending' }), flagFor: () => undefined, flagArtFor: () => ({ status: 'pending' }), retry() {} });
+      export const useIdentity = () => ({ result: null, flag: undefined, flagArt: { status: 'pending' } });`,
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'picker-list-fixture', enforce: 'pre',

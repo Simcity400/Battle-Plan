@@ -18,7 +18,7 @@ export interface IdentityScope {
   readonly language?: string;
 }
 
-export type IdentityKind = 'country' | 'faction' | 'leader' | 'design' | 'state' | 'region';
+export type IdentityKind = 'country' | 'faction' | 'leader' | 'design' | 'state' | 'province' | 'region';
 
 export type CountryIdentityKey =
   | { readonly kind: 'country'; readonly by: 'tag'; readonly tag: string }
@@ -44,12 +44,17 @@ export interface DesignIdentityKey {
 
 export interface StateIdentityKey {
   readonly kind: 'state';
-  readonly id: number;
+  readonly id: number | string;
+}
+
+export interface ProvinceIdentityKey {
+  readonly kind: 'province';
+  readonly id: number | string;
 }
 
 export interface RegionIdentityKey {
   readonly kind: 'region';
-  readonly id: number;
+  readonly id: number | string;
 }
 
 export type IdentityKey =
@@ -58,6 +63,7 @@ export type IdentityKey =
   | LeaderIdentityKey
   | DesignIdentityKey
   | StateIdentityKey
+  | ProvinceIdentityKey
   | RegionIdentityKey;
 
 export type IdentityField<T> =
@@ -118,7 +124,7 @@ export type FactionIdentityResult =
 export type EntityIdentityResult =
   | {
       readonly kind: 'known';
-      readonly entityKind: 'leader' | 'design' | 'state' | 'region';
+      readonly entityKind: 'leader' | 'design' | 'state' | 'province' | 'region';
       readonly valid: HourInterval;
       readonly nextBoundary: number;
       readonly name: IdentityField<string>;
@@ -195,13 +201,28 @@ export const countryHolderKey = (slot: number, countryId: number): CountryIdenti
 export const factionKey = (id: string): FactionIdentityKey => ({ kind: 'faction', id });
 export const leaderKey = (owner: string, id: string): LeaderIdentityKey => ({ kind: 'leader', owner, id });
 export const designKey = (owner: string, variant: string): DesignIdentityKey => ({ kind: 'design', owner, variant });
-export const stateKey = (id: number): StateIdentityKey => ({ kind: 'state', id });
-export const regionKey = (id: number): RegionIdentityKey => ({ kind: 'region', id });
+export const stateKey = (id: number | string): StateIdentityKey => ({ kind: 'state', id });
+export const provinceKey = (id: number | string): ProvinceIdentityKey => ({ kind: 'province', id });
+export const regionKey = (id: number | string): RegionIdentityKey => ({ kind: 'region', id });
 
 export function countryKeyFromString(raw: string): CountryIdentityKey {
   if (raw.startsWith('#')) {
     const slot = Number(raw.slice(1));
     if (Number.isInteger(slot) && slot >= 0) return countrySlotKey(slot);
+  }
+  if (raw.startsWith('slot:')) {
+    const slot = Number(raw.slice(5));
+    if (Number.isInteger(slot) && slot >= 0) return countrySlotKey(slot);
+  }
+  if (raw.startsWith('holder:')) {
+    const parts = raw.slice(7).split(':');
+    if (parts.length === 2) {
+      const slot = Number(parts[0]);
+      const countryId = Number(parts[1]);
+      if (Number.isInteger(slot) && slot >= 0 && Number.isInteger(countryId) && countryId >= 0) {
+        return countryHolderKey(slot, countryId);
+      }
+    }
   }
   return countryTagKey(raw);
 }
@@ -220,6 +241,8 @@ export function identityKeyString(key: IdentityKey): string {
       return `design:${key.owner}\u0000${key.variant}`;
     case 'state':
       return `state:${key.id}`;
+    case 'province':
+      return `province:${key.id}`;
     case 'region':
       return `region:${key.id}`;
   }
@@ -231,6 +254,29 @@ export function identityScopeKey(scope: IdentityScope): string {
 
 export function flagChoiceKey(choice: CountryFlagChoice): string {
   return JSON.stringify([choice.keys, choice.reasons]);
+}
+
+export function parseFlagChoiceKey(raw: string): CountryFlagChoice | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed) || parsed.length !== 2) return null;
+    const [keys, reasons] = parsed;
+    if (!Array.isArray(keys) || keys.length !== 3 || !Array.isArray(reasons) || reasons.length !== 3) return null;
+    return {
+      keys: [
+        typeof keys[0] === 'string' ? keys[0] : null,
+        typeof keys[1] === 'string' ? keys[1] : null,
+        typeof keys[2] === 'string' ? keys[2] : null,
+      ],
+      reasons: [
+        typeof reasons[0] === 'string' ? reasons[0] : null,
+        typeof reasons[1] === 'string' ? reasons[1] : null,
+        typeof reasons[2] === 'string' ? reasons[2] : null,
+      ],
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function styleEntryFromReply(style: CountryStyle, hour: number, warnings: readonly string[]): StyleIntervalEntry {

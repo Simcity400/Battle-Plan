@@ -22,7 +22,7 @@ function chunks(): PowerSpendingReply[] {
       { firstHour: day(1, 1) + 2, lastHour: day(1, 3) - 1, covered: true, reason: null }],
     gainCoverage: [{ firstHour: day(1, 1), lastHour: day(1, 3) - 1, covered: true, reason: null }],
     balances: [{ firstHour: day(1, 1), lastHour: day(1, 3) - 1, valueRaw: '0', reason: null }],
-    reconciliation: { openingRaw: null, gainedRaw: null, lostAtCapRaw: null, spentRaw: null, closingRaw: '0', otherChangesRaw: null, reason: 'Spending events were not recorded at this read' } };
+    reconciliation: { openingRaw: null, gainedRaw: null, lostAtCapRaw: null, spentRaw: null, allocatedRaw: null, releasedRaw: null, closingRaw: '0', otherChangesRaw: null, reason: 'Spending events were not recorded at this read' } };
   const second: PowerSpendingReply = { ...first, from: day(1, 3), to: day(4, 1),
     items: [item('7:1:1', 'dailyCosts', true, 'Advisor cost'), item('7:0:1', 'decisions', false, 'Recorded decision')],
     payments: [{ item: 1, hour: day(3, 2), read: day(3, 2), sequence: '9', ordinal: 0, knownRaw: '7000000', payments: 2, unknown: 1, uncovered: false }],
@@ -31,7 +31,7 @@ function chunks(): PowerSpendingReply[] {
     coverage: [{ firstHour: day(1, 3), lastHour: day(4, 1), covered: true, reason: null }],
     gainCoverage: [{ firstHour: day(1, 3), lastHour: day(4, 1), covered: true, reason: null }],
     balances: [{ firstHour: day(1, 3) - 1, lastHour: day(4, 1), valueRaw: '0', reason: null }],
-    reconciliation: { openingRaw: '0', gainedRaw: null, lostAtCapRaw: null, spentRaw: null, closingRaw: '0', otherChangesRaw: null, reason: 'Some payment costs were not recorded' } };
+    reconciliation: { openingRaw: '0', gainedRaw: null, lostAtCapRaw: null, spentRaw: null, allocatedRaw: '0', releasedRaw: '0', closingRaw: '0', otherChangesRaw: null, reason: 'Some payment costs were not recorded' } };
   return [second, first].map(validatePowerSpending);
 }
 

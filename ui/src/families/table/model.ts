@@ -2,7 +2,7 @@ import type { LiveValues } from '../../charts/live';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { AuditRow } from '../../draw/notifications';
-import type { FamilyProjection, FamilySources, MirrorModel, MirrorRow } from '../contract.ts';
+import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import {
   assertValue,
   compareTie,
@@ -693,7 +693,7 @@ export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
   readonly tooltipNote?: (row: TRow, reply: TReply, live: LiveValues<number | bigint | string> | null, hour: number, options: TOptions) => string | undefined;
   readonly tooltipAction?: (row: TRow, options: TOptions) => string | undefined;
   readonly rowMeta?: (row: TRow, reply: TReply, options: TOptions) => unknown;
-  readonly nextChange?: (sources: FamilySources, hour: number, options: TOptions) => number;
+  readonly nextChange?: (readView: BoundedReadView, options: TOptions) => number;
 }
 
 function resolveNullable<TRow, TOptions>(
@@ -736,10 +736,11 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
     kind: spec.kind,
     family: 'table',
     nextChange: spec.nextChange,
-    project(sources, hour, options): TableModel {
-      const answer = sources.answers.get(panelKey);
-      const rawPanel = sources.panels.get(panelKey);
-      const live = sources.live.get(panelKey) ?? null;
+    project(readView, options): TableModel {
+      const hour = readView.hour;
+      const answer = readView.answer(panelKey);
+      const rawPanel = readView.panel(panelKey);
+      const live = readView.live(panelKey) ?? null;
       const reply = answer !== undefined && spec.fromAnswer
         ? spec.fromAnswer(answer, options)
         : rawPanel !== undefined
@@ -766,7 +767,7 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
       }));
       const rank = typeof spec.rank === 'function' ? spec.rank(options) : spec.rank;
       const rankMarkers = typeof spec.rankMarkers === 'function' ? spec.rankMarkers(options) : spec.rankMarkers;
-      const panelRefused = sources.refused?.get(panelKey);
+      const panelRefused = readView.refused(panelKey);
       if (panelRefused !== undefined) {
         return { columns, rows: [], hour, refused: panelRefused, unsorted: spec.unsorted, rank, rankMarkers };
       }

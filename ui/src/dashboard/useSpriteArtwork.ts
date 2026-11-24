@@ -9,7 +9,7 @@ import { SpriteCaches, spriteFrames, spriteIcons, spriteId } from './spriteArtwo
 import type { SpriteFrame } from './spriteArtwork';
 import { PerClient } from './prepare.ts';
 import { productRequest } from './request.ts';
-import { CURRENT_INSTALLATION_ORIGIN, NO_ART, PENDING_ART, failedArt, missingArt, readyArt, type ArtResolution } from '../families/art/types.ts';
+import { CURRENT_INSTALL_PROVENANCE, NO_ART, PENDING_ART, failedArt, missingArt, readyArt, type ArtResolution } from '../families/art/types.ts';
 
 interface SpriteState {
   readonly caches: SpriteCaches;
@@ -101,7 +101,7 @@ export function useSpriteArtResolutions(
     if (err !== undefined) return failedArt(err, true);
     if (!icons.has(id)) return PENDING_ART;
     const url = icons.get(id);
-    return url ? readyArt(url, CURRENT_INSTALLATION_ORIGIN) : missingArt('Sprite art not found in current installation', CURRENT_INSTALLATION_ORIGIN);
+    return url ? readyArt(url, { assetId: id, provenance: CURRENT_INSTALL_PROVENANCE }) : missingArt('Sprite art not found in current installation');
   }, [icons, errors]);
 }
 
@@ -115,6 +115,6 @@ export function useSpriteArtwork(
   const resolve = useSpriteArtResolutions(runtime, track, sprites, active, paint);
   return sprite => {
     const art = resolve(sprite);
-    return art.kind === 'ready' ? art.asset : null;
+    return art.status === 'ready' ? art.url : null;
   };
 }

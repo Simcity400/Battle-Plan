@@ -52,13 +52,13 @@ test('invalid replies are refused', () => {
   assert.throws(() => validateDivisionTemplates({ tag: 'GER', countFor: 'both', templates: [], fieldedMissing: null, warnings: [] }));
 });
 
+import { createBoundedReadView } from '../../families/boundedView.ts';
 import { divisionTemplateProjection } from './divisionTemplateProjection.ts';
 
 test('missing template name projects as notRecorded with nameMissing instead of a known placeholder', () => {
   const rep = reply([entry('1', { name: null, nameMissing: 'Localisation missing for template 1' })]);
   const model = divisionTemplateProjection.project(
-    { answers: new Map(), panels: new Map([['main', rep]]), live: new Map() },
-    50,
+    createBoundedReadView({ hour: 50, panels: new Map([['main', rep]]) }),
     { countryName: 'Germany', cellBars: false, canOpenDesigner: false },
   );
   assert.deepEqual(model.rows[0]!.cells.template!.value, { kind: 'notRecorded', reason: 'Localisation missing for template 1' });
@@ -77,8 +77,7 @@ test('unread template settings separate unknown obsolete status from current cou
     entry('2', { obsolete: null, designer: null, settingsMissing: 'Template settings table unread', units: mixedUnits }),
   ]);
   const model = divisionTemplateProjection.project(
-    { answers: new Map(), panels: new Map([['main', rep]]), live: new Map() },
-    50,
+    createBoundedReadView({ hour: 50, panels: new Map([['main', rep]]) }),
     { countryName: 'Germany', cellBars: false, canOpenDesigner: true },
   );
   assert.equal(model.summaryPill, '1 current \u00b7 1 status not recorded');

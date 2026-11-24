@@ -122,7 +122,7 @@ export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = 
   declareTableProjection<GameScoreReply, GameScoreRow, GameScoreProjectionOptions>({
     kind: 'game-score',
     validate: validateGameScore,
-    nextChange: (_sources, hour, options) => nextGameScoreChange(hour, options),
+    nextChange: (readView, options) => nextGameScoreChange(readView.hour, options),
     rank: true,
     rankMarkers: options => options.rankMarkers,
     columns: (reply, options): readonly DeclarativeColumnSpec<GameScoreRow, GameScoreProjectionOptions>[] => {
@@ -210,12 +210,24 @@ export const gameScoreDeclaration: TableWidgetDeclaration<GameScoreProjectionOpt
     allTagsForLabels: true,
     requireGroupsWhen: (widget, options) => options.factions === true || (widget.countries.kind === 'group' && widget.countries.group.type !== 'top'),
   },
-  source: {
-    kind: 'panel',
-    product: 'game-score',
-    params: ctx => ({ branchId: ctx.branch.id }),
-    validate: validateGameScore,
-  },
+  sources: ctx => ({
+    owner: `game-score:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
+    entries: [{
+      name: 'main',
+      source: ctx.track.source,
+      branch: ctx.branch.id,
+      offset: ctx.track.axisOffset,
+      read: {
+        shape: 'point',
+        channel: 'panel',
+        coverage: { mode: 'population', form: 'all' },
+        product: 'game-score',
+        followQuery: { panel: 'game-score', branchId: ctx.branch.id },
+        params: { branchId: ctx.branch.id },
+        validate: validateGameScore,
+      },
+    }],
+  }),
   projection: gameScoreProjection,
   columns: ctx => gameScoreColumns(undefined, ctx.options.cellBars === true),
   settings: { kind: 'options', defaultSort: DEFAULT_SORT },

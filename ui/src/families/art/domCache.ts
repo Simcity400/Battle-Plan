@@ -1,4 +1,4 @@
-import type { ArtResolution, DecodedArtState } from './types.ts';
+import type { ArtResolution, ArtResult } from './types.ts';
 
 export interface DomArtImage {
   readonly complete: boolean;
@@ -96,54 +96,42 @@ export class DomArtCache<TImage extends DomArtImage = HTMLImageElement> {
     }
   }
 
-  resolve(resolution: ArtResolution): DecodedArtState<TImage> {
-    switch (resolution.kind) {
-      case 'none':
-        return { kind: 'none' };
+  resolve(resolution: ArtResolution): ArtResult<TImage> {
+    switch (resolution.status) {
+      case 'noArtExpected':
       case 'pending':
-        return { kind: 'pending' };
-      case 'missing':
-        return { kind: 'missing', reason: resolution.reason, ...(resolution.origin ? { origin: resolution.origin } : {}) };
+      case 'confirmedMissing':
       case 'refused':
-        return { kind: 'refused', reason: resolution.reason };
+        return resolution;
       case 'failed':
-        return {
-          kind: 'failed',
-          reason: resolution.reason,
-          retryable: resolution.retryable,
-          retry: () => this.retry(),
-        };
+        return { ...resolution, retry: () => this.retry() };
       case 'ready': {
-        const failReason = this.failed.get(resolution.asset);
+        const failReason = this.failed.get(resolution.url);
         if (failReason !== undefined) {
           return {
-            kind: 'failed',
+            status: 'failed',
             reason: failReason,
             retryable: true,
-            retry: () => this.retry(resolution.asset),
+            retry: () => this.retry(resolution.url),
           };
         }
-        const entry = this.ensure(resolution.asset);
-        if (!entry) return { kind: 'pending' };
+        const entry = this.ensure(resolution.url);
+        if (!entry) return { status: 'pending' };
         if (entry.status === 'ready') {
           return {
-            kind: 'ready',
+            ...resolution,
             bitmap: entry.image,
-            origin: resolution.origin,
-            ...(resolution.frame ? { frame: resolution.frame } : {}),
-            width: resolution.width ?? entry.image.naturalWidth,
-            height: resolution.height ?? entry.image.naturalHeight,
           };
         }
         if (entry.status === 'failed') {
           return {
-            kind: 'failed',
+            status: 'failed',
             reason: entry.reason ?? 'Image decode failed',
             retryable: true,
-            retry: () => this.retry(resolution.asset),
+            retry: () => this.retry(resolution.url),
           };
         }
-        return { kind: 'pending' };
+        return { status: 'pending' };
       }
     }
   }

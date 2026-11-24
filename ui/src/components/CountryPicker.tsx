@@ -223,7 +223,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     : datedMode
       ? (!displayHeaderTag ? undefined : !headerRead ? ABSENT_NAME : nameReadFromIdentity(headerIdentity.result))
       : (selected ? { kind: 'value', value: selected.name } : undefined);
-  const headerFlagPending = headerActive && headerIdentity.flagArt.kind === 'pending';
+  const headerFlagPending = headerActive && headerIdentity.flagArt.status === 'pending';
 
   const visibleFlagStates = visible.map(({ country }) => rowFlagState(country));
   const flagFailure = headerIdentity.flag?.failed ?? visibleFlagStates.find(item => item.failure)?.failure;

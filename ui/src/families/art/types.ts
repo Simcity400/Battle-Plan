@@ -1,40 +1,6 @@
-export type ArtOriginKind = 'current-installation' | 'mod' | 'dlc' | 'base-game' | 'recorded';
+import type { ArtFrame, ArtOrigin, ArtProvenance, ArtResolution, ArtResult } from '../plan.ts';
 
-export interface ArtOrigin {
-  readonly kind: ArtOriginKind;
-  readonly label: string;
-  readonly currentInstallation: boolean;
-}
-
-export const CURRENT_INSTALLATION_ORIGIN: ArtOrigin = Object.freeze({
-  kind: 'current-installation',
-  label: 'Current installation',
-  currentInstallation: true,
-});
-
-export interface ArtFrame {
-  readonly index: number;
-  readonly count: number;
-  readonly x?: number;
-  readonly y?: number;
-  readonly width?: number;
-  readonly height?: number;
-}
-
-export type ArtResolution =
-  | { readonly kind: 'none' }
-  | { readonly kind: 'pending' }
-  | {
-      readonly kind: 'ready';
-      readonly asset: string;
-      readonly origin: ArtOrigin;
-      readonly frame?: ArtFrame;
-      readonly width?: number;
-      readonly height?: number;
-    }
-  | { readonly kind: 'missing'; readonly reason: string; readonly origin?: ArtOrigin }
-  | { readonly kind: 'refused'; readonly reason: string }
-  | { readonly kind: 'failed'; readonly reason: string; readonly retryable: boolean };
+export type { ArtFrame, ArtOrigin, ArtProvenance, ArtResolution, ArtResult };
 
 export interface ArtBitmap {
   readonly width: number;
@@ -42,52 +8,77 @@ export interface ArtBitmap {
   close(): void;
 }
 
-export type DecodedArtState<TBitmap = ImageBitmap> =
-  | { readonly kind: 'none' }
-  | { readonly kind: 'pending' }
-  | {
-      readonly kind: 'ready';
-      readonly bitmap: TBitmap;
-      readonly origin: ArtOrigin;
-      readonly frame?: ArtFrame;
-      readonly width: number;
-      readonly height: number;
-    }
-  | { readonly kind: 'missing'; readonly reason: string; readonly origin?: ArtOrigin }
-  | { readonly kind: 'refused'; readonly reason: string }
-  | {
-      readonly kind: 'failed';
-      readonly reason: string;
-      readonly retryable: boolean;
-      readonly retry: () => void;
-    };
+export const DEFAULT_ART_ORIGIN: ArtOrigin = Object.freeze({ kind: 'baseGame' });
 
-export const NO_ART: ArtResolution = Object.freeze({ kind: 'none' });
-export const PENDING_ART: ArtResolution = Object.freeze({ kind: 'pending' });
+export const CURRENT_INSTALL_PROVENANCE: ArtProvenance = Object.freeze({
+  fromCurrentInstall: true,
+  label: 'Current installation',
+  scopeKey: 'current',
+});
 
-export function readyArt(
-  asset: string,
-  origin: ArtOrigin = CURRENT_INSTALLATION_ORIGIN,
-  extra?: { readonly frame?: ArtFrame; readonly width?: number; readonly height?: number },
-): Extract<ArtResolution, { kind: 'ready' }> {
+export function defaultArtFrame(width = 0, height = 0, frameIndex = 0, frameCount = 1): ArtFrame {
   return {
-    kind: 'ready',
-    asset,
-    origin,
-    ...(extra?.frame ? { frame: extra.frame } : {}),
-    ...(extra?.width !== undefined ? { width: extra.width } : {}),
-    ...(extra?.height !== undefined ? { height: extra.height } : {}),
+    frameIndex,
+    frameCount,
+    frameWidth: width,
+    frameHeight: height,
+    textureWidth: width * frameCount,
+    textureHeight: height,
+    outputWidth: width,
+    outputHeight: height,
   };
 }
 
-export function missingArt(reason: string, origin?: ArtOrigin): Extract<ArtResolution, { kind: 'missing' }> {
-  return origin ? { kind: 'missing', reason, origin } : { kind: 'missing', reason };
+export const NO_ART: ArtResolution = Object.freeze({ status: 'noArtExpected' });
+export const PENDING_ART: ArtResolution = Object.freeze({ status: 'pending' });
+
+export function readyArt(
+  url: string,
+  options: {
+    readonly assetId?: string;
+    readonly origin?: ArtOrigin;
+    readonly file?: string;
+    readonly frame?: ArtFrame;
+    readonly provenance?: ArtProvenance;
+  } = {},
+): Extract<ArtResolution, { status: 'ready' }> {
+  return {
+    status: 'ready',
+    assetId: options.assetId ?? url,
+    url,
+    origin: options.origin ?? DEFAULT_ART_ORIGIN,
+    file: options.file ?? '',
+    frame: options.frame ?? defaultArtFrame(),
+    provenance: options.provenance ?? CURRENT_INSTALL_PROVENANCE,
+  };
 }
 
-export function refusedArt(reason: string): Extract<ArtResolution, { kind: 'refused' }> {
-  return { kind: 'refused', reason };
+export function missingArt(
+  reason: string,
+  options: { readonly origin?: ArtOrigin | null; readonly file?: string | null } = {},
+): Extract<ArtResolution, { status: 'confirmedMissing' }> {
+  return {
+    status: 'confirmedMissing',
+    reason,
+    ...(options.origin !== undefined ? { origin: options.origin } : {}),
+    ...(options.file !== undefined ? { file: options.file } : {}),
+  };
 }
 
-export function failedArt(reason: string, retryable = true): Extract<ArtResolution, { kind: 'failed' }> {
-  return { kind: 'failed', reason, retryable };
+export function refusedArt(
+  reason: string,
+  construct = 'unsupported',
+  options: { readonly origin?: ArtOrigin | null; readonly file?: string | null } = {},
+): Extract<ArtResolution, { status: 'refused' }> {
+  return {
+    status: 'refused',
+    reason,
+    construct,
+    ...(options.origin !== undefined ? { origin: options.origin } : {}),
+    ...(options.file !== undefined ? { file: options.file } : {}),
+  };
+}
+
+export function failedArt(reason: string, retryable = true): Extract<ArtResolution, { status: 'failed' }> {
+  return { status: 'failed', reason, retryable };
 }

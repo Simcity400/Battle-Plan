@@ -8,7 +8,9 @@ import type {
   CountryIdentitiesReply,
   CountryStyleReply,
 } from '../../generated/dashboard';
+import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import { IdentityBroker, type IdentityTransport } from './broker.ts';
+import { createBrokerIdentityProvider, createSnapshotIdentityProvider } from './provider.ts';
 import {
   IdentityIndex,
   countrySlotKey,
@@ -411,5 +413,77 @@ test('1,500 countries use one facts request, batched flags, zero requests advanc
   await Promise.resolve();
   assert.equal(factsCalls, 1);
   assert.equal(flagCalls, beforeFlags, 'advancing inside loaded run adds zero requests');
+  broker.dispose();
+});
+
+test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot and broker modes without leaking past displayed hour', async () => {
+  const index = new IdentityIndex(SCOPE, [0, 500]);
+  index.setFacts(sampleFacts(), true);
+  index.setIdentities(sampleIdentities());
+  index.setGroups(sampleGroups());
+
+  const workerSnapshot = structuredClone(index.exportSnapshot());
+  const workerIndex = IdentityIndex.fromSnapshot(workerSnapshot);
+  const workerProvider = createSnapshotIdentityProvider(workerIndex);
+  const workerDemands: [string, string, number][] = [];
+
+  const view = createBoundedReadView({
+    hour: 200,
+    identity: workerProvider,
+    onIdentityDemand: (kind, key, atHour) => { workerDemands.push([kind, key, atHour]); },
+  });
+
+  const ger149 = view.who('country', 'GER', 149);
+  assert.deepEqual(ger149.name, { status: 'ready', value: 'Early Republic' });
+  assert.deepEqual(ger149.colour, { status: 'ready', value: 'rgb(51, 68, 85)' });
+  assert.equal(ger149.flagChoice?.status, 'ready');
+  assert.deepEqual(ger149.validInterval, [0, 149]);
+  assert.equal(ger149.nextChangeAt, 150);
+
+  const ger150 = view.who('country', 'GER', 150);
+  assert.deepEqual(ger150.name, { status: 'ready', value: 'Later Empire' });
+  assert.deepEqual(ger150.validInterval, [150, 500]);
+
+  const annexed = view.who('country', 'slot:2', 160);
+  assert.equal(annexed.holder.status, 'absent');
+  assert.deepEqual(annexed.validInterval, [150, 500]);
+
+  const faction = view.who('faction', '7', 100);
+  assert.deepEqual(faction.name, { status: 'ready', value: 'Berlin Pact' });
+  assert.deepEqual(faction.holder, { status: 'ready', value: 'GER' });
+  assert.deepEqual(faction.colour, { status: 'ready', value: 'rgb(51, 68, 85)' });
+  assert.equal(workerDemands.length, 0);
+
+  assert.throws(() => view.who('country', 'GER', 201), FutureDataError);
+
+  const factsHold = deferred<CountryFactsReply>();
+  const transport: IdentityTransport = {
+    loadFacts: () => factsHold.promise,
+    loadIdentities: async () => sampleIdentities(),
+    loadGroups: async () => sampleGroups(),
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size, choices) => ({
+      size,
+      flags: choices.map((c, i) => ({ flag: i, asset: `${c.keys[0]}.tga`, key: `${c.keys[0]}:${size}`, width: 41, height: 26, png: `flag://${c.keys[0]}` })),
+      unavailable: [],
+      warnings: [],
+    }),
+  };
+  const broker = new IdentityBroker({ transport });
+  let woke = 0;
+  const unsub = broker.subscribe(SCOPE, () => { woke++; });
+  const owner = {};
+  const brokerProvider = createBrokerIdentityProvider(broker, SCOPE, owner, { branchBounds: [0, 500] });
+  const liveView = createBoundedReadView({ hour: 150, identity: brokerProvider });
+
+  const pending = liveView.who('country', 'GER', 100);
+  assert.equal(pending.name.status, 'pending');
+  await Promise.resolve();
+  factsHold.resolve(sampleFacts());
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.ok(woke >= 1, 'broker wakes subscribers when pending who() settles');
+  const settled = liveView.who('country', 'GER', 100);
+  assert.deepEqual(settled.name, { status: 'ready', value: 'Early Republic' });
+  unsub();
   broker.dispose();
 });
