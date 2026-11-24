@@ -14,12 +14,14 @@ import {
   headReading,
   headValueOf,
   type HeadReading,
+  type KnownHeadReading,
 } from '../../families/time-chart/seriesHelpers.ts';
-import { formatCompactScalar, formatDateOnly } from '../../families/valueFormat.ts';
+import { formatCompactRational, formatCompactScalar, formatDateOnly } from '../../families/valueFormat.ts';
 import type { CountryFuelReply } from '../../generated/dashboard';
 import { fuelDecimals, fuelTooltips, validateCountryFuel } from './fuelData.ts';
 
 export const FUEL_SCALE = 1 / 32_768;
+const FUEL_RATIONAL_SCALE = { denominator: 32_768n } as const;
 const CEILING_DASH = [5, 4] as const;
 
 export interface FuelOptions {
@@ -32,8 +34,14 @@ export interface FuelOptions {
 }
 
 export function formatFuelAmount(value: number): string {
-  const rounded = Math.round(value);
-  return rounded === 0 ? '0' : formatCompactScalar(rounded, 'integer').text;
+  return formatCompactScalar(value, 'integer').text;
+}
+
+function formatFuelReading(reading: KnownHeadReading): string {
+  if (reading.raw !== undefined && reading.denominator !== undefined) {
+    return formatCompactRational(reading.raw, reading.denominator, { maxDecimals: 0 }).text;
+  }
+  return formatFuelAmount(reading.value);
 }
 
 export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyProjection({
@@ -47,7 +55,7 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
     const tag = options.tag;
     const fuel = tag ? readView.series('fuel')?.get(tag) ?? null : null;
     const readings: [string, HeadReading | null][] = [];
-    const fuelReading = tag ? headReading(readView, 'fuel', { tag }, 0, FUEL_SCALE) : null;
+    const fuelReading = tag ? headReading(readView, 'fuel', { tag }, 0, FUEL_RATIONAL_SCALE) : null;
     if (tag) readings.push(['fuel', fuelReading]);
     const fuelHead = headValueOf(fuelReading);
     const icon = { art: readView.art(measureArtHandle('fuel')), label: 'Fuel' };
@@ -66,11 +74,11 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
       icon,
       missingSpans: missingSpansOf(fuel),
       rank: 0,
-      endLabel: fuelHead === null ? null : { icon, name: 'Fuel', fullName: 'Fuel', value: formatFuelAmount(fuelHead) },
+      endLabel: !fuelReading || !('value' in fuelReading) ? null : { icon, name: 'Fuel', fullName: 'Fuel', value: formatFuelReading(fuelReading) },
     }];
     if (options.capacity) {
       const capacity = tag ? readView.series('capacity')?.get(tag) ?? null : null;
-      const capacityReading = tag ? headReading(readView, 'capacity', { tag }, 0, FUEL_SCALE) : null;
+      const capacityReading = tag ? headReading(readView, 'capacity', { tag }, 0, FUEL_RATIONAL_SCALE) : null;
       if (tag) readings.push(['capacity', capacityReading]);
       const capacityHead = headValueOf(capacityReading);
       series.push({
@@ -89,9 +97,9 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
         headHour: hour,
         missingSpans: missingSpansOf(capacity),
         rank: 1,
-        endLabel: capacityHead === null
+        endLabel: !capacityReading || !('value' in capacityReading)
           ? null
-          : { name: 'Capacity', fullName: 'Fuel capacity', value: formatFuelAmount(capacityHead), valueMuted: true },
+          : { name: 'Capacity', fullName: 'Fuel capacity', value: formatFuelReading(capacityReading), valueMuted: true },
       });
     }
     return {
@@ -104,7 +112,7 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
       series,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       hoverDetail: fuelHoverDetail(readView, options.digits),
-      auditRows: readings.map(([row, reading]) => auditReading(row, reading, formatFuelAmount)),
+      auditRows: readings.map(([row, reading]) => auditReading(row, reading, formatFuelReading)),
     };
   },
 });

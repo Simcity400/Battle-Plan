@@ -1,7 +1,7 @@
-import type { WidgetProps, WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/definitions';
 import type { AgencyUpgradesSelection } from '../../dashboard/gameWindows';
 import GameWindowTable, { type GameWindowRow } from '../../families/table/GameWindowTable';
-import { agencyDeclaration, type AgencyMeta } from './agencyProjection';
+import { type AgencyMeta } from './agencyProjection';
 
 const UPGRADES: GameWindowRow<AgencyUpgradesSelection> = {
   kind: 'agencyUpgrades',
@@ -12,8 +12,8 @@ const UPGRADES: GameWindowRow<AgencyUpgradesSelection> = {
   label: 'Intelligence agency',
 };
 
-function AgencyComparisonWidget(props: WidgetProps) {
-  return <GameWindowTable {...props} declaration={agencyDeclaration} window={UPGRADES} />;
+function AgencyComparisonWidget(props: FamilyViewProps) {
+  return <GameWindowTable {...props} window={UPGRADES} />;
 }
 
-export default { render: AgencyComparisonWidget } satisfies WidgetRenderer;
+export default { render: AgencyComparisonWidget } satisfies FamilyViewRenderer;

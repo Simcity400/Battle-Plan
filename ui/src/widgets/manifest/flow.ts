@@ -1,5 +1,4 @@
 import { flowHostAdapter } from '../../families/flow/hostAdapter.ts';
-import { familyFlowLaneView } from '../../families/flow/laneView.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '../../families/manifest.ts';
 
 export const FLOW_VIEWS: readonly FamilyViewEntry[] = [
@@ -36,7 +35,7 @@ export const FLOW_VIEWS: readonly FamilyViewEntry[] = [
 
 export const flowFamilyManifest: FamilyManifestModule = {
   family: 'flow',
-  laneView: familyFlowLaneView,
+  lane: () => import('../../families/flow/laneView.ts').then(m => m.flowLane),
   views: FLOW_VIEWS,
   hostAdapter: flowHostAdapter,
 };

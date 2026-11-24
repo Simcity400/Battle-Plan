@@ -601,6 +601,118 @@ struct MonthArmyAcc {
     ledgers: BTreeMap<u8, MonthLedgerAcc>,
 }
 
+pub(super) fn advance_keeps(
+    frame: &DecodedFrame,
+    params: &ArmyLossesParams,
+    holders: &dashboard_query::identity::Holders,
+    hour: i32,
+    edits: &dashboard_base::products::at_hour::Edits,
+    live: &dashboard_follow::live::Live,
+    held_parts_count: Option<usize>,
+) -> io::Result<bool> {
+    if !edits.replaced.is_empty() {
+        return Ok(false);
+    }
+    let Some(Holder::Found { slot, .. }) = holders.at(&params.country, hour).map(|run| run.holder) else {
+        return Ok(false);
+    };
+    let Ok(links) = frame.complete::<tables::CountryLinks>() else {
+        return Ok(false);
+    };
+    let ours = |raw: u32| link_slot(links, raw) == Some(slot);
+    let mp_mask = dashboard_base::products::at_hour::field_mask(TableId::CombatLogManpower, &["losses_0", "losses_1", "losses_2"]);
+    let eq_mask = dashboard_base::products::at_hour::field_mask(TableId::CombatLogEquipment, &["amount_raw"]);
+    let enemy_mask = dashboard_base::products::at_hour::field_mask(TableId::CombatLogEnemyEquipment, &["amount_raw"]);
+    let dropped_mask = dashboard_base::products::at_hour::field_mask(TableId::CombatLogDropped, &["amount"]);
+    let has_live = |table: TableId, mask: u64, key: u128| -> bool {
+        let mut bits = mask;
+        while bits != 0 {
+            let col = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            if !live.groups.iter().any(|g| g.table == table && g.columns.contains(&col) && g.keys.binary_search(&key).is_ok()) {
+                return false;
+            }
+        }
+        true
+    };
+    let mut our_edited = false;
+    for (&table, keys) in &edits.tables {
+        let allowed = match table {
+            TableId::CombatLogManpower => mp_mask,
+            TableId::CombatLogEquipment => eq_mask,
+            TableId::CombatLogEnemyEquipment => enemy_mask,
+            TableId::CombatLogDropped => dropped_mask,
+            _ => return Ok(false),
+        };
+        if keys.values().any(|&mask| mask & !allowed != 0) {
+            return Ok(false);
+        }
+        match table {
+            TableId::CombatLogManpower => {
+                let Ok(rows) = frame.complete::<tables::CombatLogManpower>() else { return Ok(false) };
+                for (&key, &mask) in keys {
+                    let Ok(idx) = rows.binary_search_by_key(&key, |r| r.key()) else { return Ok(false) };
+                    if !ours(rows[idx].country) {
+                        continue;
+                    }
+                    if !has_live(table, mask, key) {
+                        return Ok(false);
+                    }
+                    our_edited = true;
+                }
+            }
+            TableId::CombatLogEquipment => {
+                let Ok(rows) = frame.complete::<tables::CombatLogEquipment>() else { return Ok(false) };
+                for (&key, &mask) in keys {
+                    let Ok(idx) = rows.binary_search_by_key(&key, |r| r.key()) else { return Ok(false) };
+                    if !ours(rows[idx].country) {
+                        continue;
+                    }
+                    if !has_live(table, mask, key) {
+                        return Ok(false);
+                    }
+                    our_edited = true;
+                }
+            }
+            TableId::CombatLogEnemyEquipment => {
+                let Ok(rows) = frame.complete::<tables::CombatLogEnemyEquipment>() else { return Ok(false) };
+                for (&key, &mask) in keys {
+                    let Ok(idx) = rows.binary_search_by_key(&key, |r| r.key()) else { return Ok(false) };
+                    if !ours(rows[idx].country) {
+                        continue;
+                    }
+                    if !has_live(table, mask, key) {
+                        return Ok(false);
+                    }
+                    our_edited = true;
+                }
+            }
+            TableId::CombatLogDropped => {
+                let Ok(rows) = frame.complete::<tables::CombatLogDropped>() else { return Ok(false) };
+                for (&key, &mask) in keys {
+                    let Ok(idx) = rows.binary_search_by_key(&key, |r| r.key()) else { return Ok(false) };
+                    if !ours(rows[idx].country) {
+                        continue;
+                    }
+                    if !matches!(rows[idx].amount, Recorded::Value(_)) || !has_live(table, mask, key) {
+                        return Ok(false);
+                    }
+                    our_edited = true;
+                }
+            }
+            _ => return Ok(false),
+        }
+    }
+    if !our_edited {
+        return Ok(true);
+    }
+    match &params.view {
+        LossView::Month { .. } => Ok(true),
+        LossView::Manpower if matches!(params.stack.unwrap_or(LossStack::Channel), LossStack::Channel | LossStack::Type) => Ok(true),
+        _ => Ok(held_parts_count.is_some_and(|n| n <= 1)),
+    }
+}
+
 impl AtHour for ArmyLosses {
     const KEY: &'static str = "army-losses";
     const TITLE: &'static str = "Army losses";
@@ -650,6 +762,22 @@ impl AtHour for ArmyLosses {
         let catalogue = load.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|why| format!("Combat Log names unavailable: {why}"));
         let units = catalogue.as_ref().ok().and_then(|catalogue| catalogue::equipment_units(catalogue).ok());
         Ok(Content { catalogue, units })
+    }
+
+    fn advance(
+        frame: &DecodedFrame,
+        params: &Self::Params,
+        at: &At<'_, Self::Context>,
+        edits: &dashboard_base::products::at_hour::Edits,
+        live: &dashboard_follow::live::Live,
+        data: &mut dashboard_base::products::at_hour::Held<'_>,
+    ) -> io::Result<bool> {
+        let parts_count = data
+            .get("rollup")
+            .and_then(|rollup| rollup.get("parts"))
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len);
+        advance_keeps(frame, params, at.holders, at.hour, edits, live, parts_count)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {

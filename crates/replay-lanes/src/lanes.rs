@@ -270,9 +270,86 @@ pub struct History {
     pub to: i32,
     pub texts: Vec<Box<[u8]>>,
     pub keys: Vec<(u128, Vec<Step>)>,
+    pub statuses: Vec<StatusRun>,
+    pub reasons: HashMap<u32, String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reading<'a> {
+    Cells(&'a [Cell]),
+    Absent,
+    Unread { status: Status, reason: Option<&'a str> },
+}
+
+fn push_reading<'a>(out: &mut Vec<(i32, i32, Reading<'a>)>, first: i32, last: i32, reading: Reading<'a>) {
+    if first > last {
+        return;
+    }
+    match out.last_mut() {
+        Some(prev) if prev.2 == reading && prev.1 + 1 == first => prev.1 = last,
+        _ => out.push((first, last, reading)),
+    }
 }
 
 impl History {
+    fn steps(&self, key: u128) -> &[Step] {
+        self.keys.binary_search_by_key(&key, |(held, _)| *held).map_or(&[], |at| &self.keys[at].1)
+    }
+
+    fn without_cells(&self, status: Option<Status>) -> Reading<'_> {
+        match status {
+            Some(Status::Complete) => Reading::Absent,
+            Some(status @ Status::Unavailable { reason }) => Reading::Unread { status, reason: self.reasons.get(&reason).map(String::as_str) },
+            Some(status) => Reading::Unread { status, reason: None },
+            None => Reading::Unread { status: Status::NotRecorded, reason: None },
+        }
+    }
+
+    pub fn reading(&self, key: u128, hour: i32) -> Reading<'_> {
+        let at = self.statuses.partition_point(|held| held.last < hour);
+        let status = self.statuses.get(at).filter(|held| held.first <= hour).map(|held| held.status);
+        if status.is_none() {
+            return self.without_cells(None);
+        }
+        let steps = self.steps(key);
+        match steps.partition_point(|step| step.hour <= hour).checked_sub(1).and_then(|at| steps[at].cells.as_deref()) {
+            Some(cells) => Reading::Cells(cells),
+            None => self.without_cells(status),
+        }
+    }
+
+    pub fn readings(&self, key: u128) -> Vec<(i32, i32, Reading<'_>)> {
+        let (Some(start), Some(end)) = (self.statuses.first().map(|held| held.first), self.statuses.last().map(|held| held.last.min(self.to))) else { return Vec::new() };
+        let steps = self.steps(key);
+        let mut out = Vec::new();
+        let mut held = steps.first().map_or(end + 1, |step| step.hour);
+        let mut stretches = vec![(start, held - 1, None)];
+        for (index, step) in steps.iter().enumerate() {
+            held = steps.get(index + 1).map_or(end + 1, |next| next.hour);
+            stretches.push((step.hour.max(start), held.min(end + 1) - 1, step.cells.as_deref()));
+        }
+        for (first, last, cells) in stretches {
+            if let Some(cells) = cells {
+                push_reading(&mut out, first, last, Reading::Cells(cells));
+                continue;
+            }
+            let (mut hour, mut at) = (first, self.statuses.partition_point(|run| run.last < first));
+            while hour <= last {
+                let (until, status) = match self.statuses.get(at) {
+                    Some(run) if run.first <= hour => (run.last.min(last), Some(run.status)),
+                    Some(run) => ((run.first - 1).min(last), None),
+                    None => (last, None),
+                };
+                push_reading(&mut out, hour, until, self.without_cells(status));
+                if status.is_some() {
+                    at += 1;
+                }
+                hour = until + 1;
+            }
+        }
+        out
+    }
+
     pub fn text(&self, cell: Cell) -> Option<&[u8]> {
         match cell {
             Cell::Text(index) => self.texts.get(index as usize).map(|text| &**text),
@@ -304,13 +381,15 @@ impl History {
 
 pub fn history(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>, from: i32, to: i32) -> io::Result<History> {
     let mut held: HashMap<u128, Vec<Step>, foldhash::fast::RandomState> = HashMap::default();
-    let (columns, texts) = crate::points::cells(recording, run, table, columns, keys, from, to, &mut |hour, key, cells| {
+    let mut statuses = Vec::new();
+    let (columns, texts) = crate::points::cells(recording, run, table, columns, keys, from, to, Some(&mut statuses), &mut |hour, key, cells| {
         held.entry(key).or_default().push(Step { hour, cells: cells.map(Box::from) });
         true
     })?;
+    let reasons = status_reasons(recording, run, table, &statuses)?;
     let mut keys: Vec<(u128, Vec<Step>)> = held.into_iter().collect();
     keys.sort_unstable_by_key(|(key, _)| *key);
-    Ok(History { columns, to, texts, keys })
+    Ok(History { columns, to, texts, keys, statuses, reasons })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

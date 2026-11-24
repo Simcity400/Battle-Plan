@@ -3,12 +3,13 @@ import test from 'node:test';
 import { createBoundedReadView } from '../boundedView.ts';
 import type { CountryFlowReply, FlowEndpoint, FlowLink, FlowSide } from '../../generated/dashboard';
 import { projectCountryFlow, type CountryFlowText } from './countryFlow.ts';
-import { deriveFlowAudit, findFlowTooltip } from './model.ts';
+import { deriveFlowAudit, deriveFlowNav, findFlowTooltip } from './model.ts';
 import { hitFlow, layoutFlow } from './painter.ts';
 import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
 import { registerFamilyProjection } from '../registry.ts';
-import { familyFlowLaneView } from './laneView.ts';
+import { flowLane } from './laneView.ts';
 import { projectTradeMatrix, projectTradeTable } from '../../widgets/trade-flows/tradeFlowsProjection.ts';
+import { createLaneView } from '../laneRuntime.ts';
 
 const HOUR = 60_810_000;
 const TEXT: CountryFlowText = {
@@ -77,7 +78,9 @@ test('a country-centred flow: partners in the product\'s order, an unrecorded pa
   const ribbon = model.ribbons.find(item => item.from === 'left:2')!;
   assert.deepEqual(ribbon.bands, [{ part: 0, numeric: 20 }, { part: 1, numeric: 6 }]);
   assert.equal(findFlowTooltip(model, 'ribbon:left:3>centre:1')?.missingReason, 'A deal\'s daily delivery was not recorded at this hour');
-  assert.ok(deriveFlowAudit(model).some(row => row.key === 'node:left:3' && row.value === 'Not recorded'));
+  assert.ok(deriveFlowAudit(model).some(row => row.key === 'node:left:3' && (row.value ?? '').startsWith('Not recorded · Steel: Not recorded (')));
+  assert.equal(model.left[0]!.audit, '26 · Oil: 20; Steel: 6', 'the audit carries each part, so swapped bands differ');
+  assert.ok(deriveFlowNav(model).some(tuple => tuple[0] === 'ribbon:left:2>centre:1'), 'a ribbon takes keyboard focus');
   assert.deepEqual(model.notes, ['A deal\'s daily delivery was not recorded at this hour'], 'the side whose total is unproven says why');
   assert.match(model.centre!.audit, /Imports from Not recorded: .*Exports to 74/);
 });
@@ -163,8 +166,8 @@ test('the layout gives every ribbon its width at both ends, keeps labels apart, 
   const held = lane(centred);
   const corrected: CountryFlowReply = { ...centred, outgoing: side([link(USA, ENG, [[0, 70]])], amount(70)) };
   const surface = { width: 846, height: 360, dpr: 1 };
-  assertQuietFrames(() => familyFlowLaneView(() => {}), { label: 'flow', binding: held, hour: HOUR }, 24, surface);
-  assertFreshPaint(() => familyFlowLaneView(() => {}), [
+  assertQuietFrames(() => createLaneView(flowLane, () => {}), { label: 'flow', binding: held, hour: HOUR }, 24, surface);
+  assertFreshPaint(() => createLaneView(flowLane, () => {}), [
     { label: 'held', binding: held, hour: HOUR, check: true },
     { label: 'later', binding: held, hour: HOUR + 30, speed: 24 },
     { label: 'seek back', binding: held, hour: HOUR, check: true },
@@ -234,4 +237,83 @@ test('a faction is sent as the group, resolved in Rust at the hour, never as the
   assert.deepEqual(paramsOf('ever').group, { type: 'faction', id: '42', membership: 'ever' });
   assert.match(tradeFlowDeclaration.unavailable!(ctx('end'), 0) ?? '', /end of the recording/);
   assert.equal(tradeFlowDeclaration.unavailable!(ctx('hour'), 0), null);
+});
+
+test('a recorded 0.04 a day is drawn as under one tenth and read exactly with its unit, never as 0', () => {
+  const small: CountryFlowReply = {
+    ...base,
+    endpoints: [endpoint(1, 'USA'), endpoint(2, 'HOL')],
+    subject: 0,
+    incoming: side([{ from: 1, to: 0, others: null, amounts: [{ part: 0, amount: '4000' }], total: '4000', missing: null }], '4000'),
+    largest: '4000',
+    largestLink: '4000',
+  };
+  const model = projectCountryFlow(view(small), { ...TEXT, unit: 'per day' });
+  const node = model.left[0]!;
+  assert.equal(node.figure, '<0.1');
+  assert.equal(node.audit, '0.04 per day · Oil: 0.04 per day');
+  assert.equal(findFlowTooltip(model, 'node:left:2')?.items?.[0]?.value, '0.04 per day');
+});
+
+test('a witnessed zero delivery keeps its partner but its ribbon, which paints nothing, takes no hit', () => {
+  const zero: CountryFlowReply = {
+    ...base,
+    endpoints: [endpoint(1, 'USA'), endpoint(2, 'HOL'), endpoint(6, 'ENG')],
+    subject: 0,
+    incoming: side([link(1, 0, [[0, 0]])], '0'),
+    outgoing: side([link(0, 2, [[0, 40]])], amount(40)),
+    largest: amount(40),
+    largestLink: amount(40),
+  };
+  const model = projectCountryFlow(view(zero), TEXT);
+  assert.equal(model.left[0]!.figure, '0', 'the witnessed zero stays on the partner node');
+  const layout = layoutFlow(model, 846, 360);
+  const box = layout.ribbons.find(item => item.ribbon.from === 'left:2')!;
+  const x = (box.x0 + box.x1) / 2;
+  for (let y = layout.bodyTop; y < layout.height; y++) assert.notEqual(hitFlow(layout, x, y), 'ribbon:left:2>centre:1');
+});
+
+test('the other partners band is one neutral band, its parts kept for the tooltip', () => {
+  const model = projectCountryFlow(view(centred), TEXT);
+  const others = model.ribbons.find(ribbon => ribbon.from === 'left:others')!;
+  assert.equal(others.others, true);
+  assert.equal(model.ribbons.filter(ribbon => ribbon.others).length, 1, 'named partners keep their resource colours');
+  assert.equal(findFlowTooltip(model, `ribbon:${others.key}`)?.items?.[0]?.label, 'Oil');
+});
+
+test('a Top N choice reaches the product as its ranked limit and the request key, not replaced by the viewport', async () => {
+  const { tradeFlowDeclaration } = await import('../../widgets/trade-flows/tradeFlowsProjection.ts');
+  const ctx = (top: number | null) => ({
+    track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
+    branch: { id: '1' },
+    options: {},
+    countryTag: null,
+    countries: { all: top === null, top, tags: [] },
+    widget: { countries: top === null ? { kind: 'all' } : { kind: 'group', group: { type: 'top', count: top }, membership: 'hour', aggregate: false } },
+  }) as never;
+  const view = { following: true, staticSpan: null, height: 360 };
+  const plan = (top: number | null) => tradeFlowDeclaration.sources(ctx(top), view);
+  const limit = (top: number | null) => (plan(top).entries[0]!.read as unknown as { params: { limit: number } }).params.limit;
+  assert.equal(limit(10), 10);
+  assert.equal(limit(3), 3);
+  assert.notEqual(plan(10).owner, plan(null).owner, 'Top 10 and All are different requests');
+});
+
+test('in a group, a sender whose total is unknown reserves the width of its known ribbons and its missing marks, so nothing runs into the next node', () => {
+  const reply: CountryFlowReply = {
+    ...base,
+    endpoints: [endpoint(10, 'ITA'), endpoint(8, 'SOV'), endpoint(11, 'SPD'), endpoint(9, 'SPR')],
+    senders: side([link(0, null, [[0, 9], [1, null]]), link(1, null, [[0, 4]])], null, 'A deal\'s daily delivery was not recorded at this hour'),
+    receivers: side([link(null, 2, [[0, 9]]), link(null, 3, [[0, 4], [1, null]])], null, 'A deal\'s daily delivery was not recorded at this hour'),
+    links: [link(0, 2, [[0, 9]]), link(0, 3, [[1, null]]), link(1, 3, [[0, 4]])],
+    largest: amount(13),
+    largestLink: amount(9),
+  };
+  const layout = layoutFlow(projectCountryFlow(view(reply), TEXT), 846, 360);
+  const ita = layout.nodes.find(box => box.node.key === 'left:10')!;
+  const sov = layout.nodes.find(box => box.node.key === 'left:8')!;
+  const out = layout.ribbons.filter(box => box.ribbon.from === 'left:10');
+  const end = Math.max(...out.map(box => box.a1));
+  assert.ok(ita.height >= end - ita.y - 0.01, 'the unknown node holds all its ribbons');
+  assert.ok(sov.slotTop >= end, 'the next node starts below them');
 });

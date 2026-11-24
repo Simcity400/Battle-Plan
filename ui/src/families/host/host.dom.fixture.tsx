@@ -17,7 +17,8 @@ import type { FromLane, ToLane } from '../../draw/laneMessages';
 import { laneDispatch } from '../../draw/laneDispatch.ts';
 import { measureWith, PerfRecorder } from '../../shell/perf.ts';
 import type { InstalledAction } from '../contract.ts';
-import { familyTableLaneView } from '../table/laneView.ts';
+import { createLaneView } from '../laneRuntime.ts';
+import { tableLane } from '../table/laneView.ts';
 import { tableSettingsOf } from '../table/settings.ts';
 import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from '../table/tableFamilyDom.fixture.ts';
 import { tableHostAdapter } from '../table/hostAdapter.ts';
@@ -108,7 +109,7 @@ function createLane(): LaneWorker {
     },
     {
       views: (_kind, wake) => {
-        const view = familyTableLaneView(wake);
+        const view = createLaneView(tableLane, wake);
         const paint = view.paint.bind(view);
         view.paint = (input, state, content) => {
           paintsByWidget.set(input.widget, (paintsByWidget.get(input.widget) ?? 0) + 1);
@@ -683,14 +684,9 @@ window.hostDom = {
     await frames(2);
     clock.setSpeed(24);
     clock.setPlaying(true);
-    let dateOnly = false;
-    for (let i = 0; i < 40 && !dateOnly; i++) {
-      const idBefore = pipeline.view(pipeG)?.id;
-      const installsBefore = installCalls.get(pipeG) ?? 0;
+    for (let i = 0; i < 40; i++) {
       sendHour(subsG, clock.getSnapshot().hour, [90n, 70n, 50n, 30n]);
       await frames(1);
-      const now = pipeline.view(pipeG);
-      dateOnly = now?.id !== idBefore && now?.dim === false && (installCalls.get(pipeG) ?? 0) === installsBefore;
     }
     genericActivated = [];
     body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
@@ -710,7 +706,6 @@ window.hostDom = {
       blockedShown,
       description,
       clearedDescription,
-      dateOnly,
       activatedId: activated?.installedId ?? null,
       activatedHour: activated?.hour ?? null,
       viewId: view?.id ?? null,

@@ -1,24 +1,22 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { productRequest } from '../../dashboard/request.ts';
-import { cardHostAdapter } from '../../families/card/hostAdapter.ts';
 import type { InstalledAction } from '../../families/contract.ts';
-import DeclaredFamilyWidget from '../../families/host/DeclaredFamilyWidget.tsx';
 import { DetailWindowHost } from '../../families/host/index.ts';
 import type { SpecialProjectsReply } from '../../generated/dashboard';
 import ProjectDetails from './ProjectDetails';
 import { ProjectDossier } from './ProjectWindow';
-import { specialProjectsDeclaration } from './specialProjectsProjection.ts';
 import { shownCard, unobservedReason, validateSpecialProjectsReply } from './specialProjectsData';
+import { FamilyWidget } from '../../families/host/registry.tsx';
 
 const NO_WARNINGS = () => {};
 
-export default function CurrentProjectsView(props: WidgetProps) {
+export default function CurrentProjectsView(props: FamilyViewProps) {
   const { widget, runtime, active } = props;
   const hostRef = useRef<HTMLDivElement>(null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -40,7 +38,7 @@ export default function CurrentProjectsView(props: WidgetProps) {
   const data = reply.data;
   const card = shown && data ? shownCard(data, shown.hour, shown.id) : null;
   return <div ref={hostRef} className="fh-detail-anchor">
-    <DeclaredFamilyWidget {...props} view="live" adapter={cardHostAdapter} declaration={specialProjectsDeclaration} onActivate={onActivate} />
+    {props.manifestDeclaration ? <FamilyWidget {...props} family={props.manifestDeclaration.family} declaration={props.manifestDeclaration} onActivate={onActivate} /> : null}
     <DetailWindowHost
       open={shown !== null}
       subject={shown ? `${shown.tag}:${shown.id}` : null}
