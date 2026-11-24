@@ -2165,7 +2165,11 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
   const baseExportErrors = new Set(baseResult.exports?.errors ?? []);
   const baseExportsOver = (baseResult.exports?.unusedExports?.length ?? 0) > baseResult.exports.maxUnusedExports;
 
-  const addedLegacyPairs = result.legacy.pairs.filter(pair => !baseLegacyPairs.has(pair));
+  const kindOf = pair => pair.slice(0, pair.indexOf(':'));
+  const legacyViewsOf = (pairs, kind) => pairs.filter(pair => kindOf(pair) === kind).length;
+  const namedDefault = pair => baseLegacyPairs.has(`${kindOf(pair)}:default`) && !result.legacy.pairs.includes(`${kindOf(pair)}:default`)
+    && legacyViewsOf(result.legacy.pairs, kindOf(pair)) === 1 && legacyViewsOf([...baseLegacyPairs], kindOf(pair)) === 1;
+  const addedLegacyPairs = result.legacy.pairs.filter(pair => !baseLegacyPairs.has(pair) && !namedDefault(pair));
   const addedConvertedViolations = result.convertedLegacy.violations.filter(v => !baseConvertedPairs.has(v.pair));
   const addedUnusedExports = result.exports.unusedExports.filter(item => !baseUnusedExportKeys.has(item.key));
 

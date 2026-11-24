@@ -23,7 +23,7 @@ import { careerEmptyEntry, careerLanes, leaderName, recordedSince, runAt, traitD
 import { LeaderIdentity, leaderIdentityProps, leaderPortraitProps } from '../generals/LeaderIdentity.tsx';
 import { useLeaderPortraits } from '../generals/portraits';
 import type { PortraitAt } from '../generals/portraits';
-import { experienceFactorText, experienceText } from '../generals/experience';
+import { experienceFactorText, experienceText } from './experience.ts';
 import { OPTIONS } from './definition';
 import { LiveText } from './LiveText';
 import '../generals/generals.css';

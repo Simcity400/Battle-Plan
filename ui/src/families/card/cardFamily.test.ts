@@ -271,3 +271,46 @@ test('faction upgrades list the rules and upgrades in force, each since its own 
   assert.equal(model.columns.lists, true);
   assert.equal(model.nextChangeAt, 401);
 });
+
+test('a general’s dossier splits the record won and lost, measures experience and training against what each needs, lists traits as dated text, and leaves unread experience not recorded', async () => {
+  const { dossierProjection } = await import('../../widgets/general-career/dossierProjection.ts');
+  const { valuesOf, liveKey } = await import('../../charts/live.ts');
+  const hour = engineHour({ year: 1941, month: 6, day: 1, hour: 1 })!;
+  const gained = engineHour({ year: 1938, month: 3, day: 12, hour: 1 })!;
+  const trait = (token: string, name: string) => ({ token, name, icon: null, missing: 'No sprite' });
+  const reply = {
+    reference: '42', missing: null, name: 'Invented General',
+    role: { owner: 'AAA', kind: 1, category: 1, rank: 'General', attributeNames: ['Attack', 'Defence', 'Planning', 'Logistics'], maximumSkill: 9 },
+    skill: 7, components: [3, 4, 5, 6], traits: [0, 1], traitDates: [[gained, 1], null], traitCatalogue: [trait('a', 'Invented trait A'), trait('b', 'Invented trait B')],
+    fought: 1600, won: 841, lost: 737, battlesPartialFrom: null, firstSeenHour: hour - 5000,
+    progress: { nextRequiredRaw: '250000000', training: [{ key: '7', token: 'c', name: 'Invented trait C', requiredRaw: '70000000' }], factors: [] },
+    warnings: [],
+  };
+  const live = valuesOf(new Map([[liveKey('42', 'experience'), 190000000]]), 'Not read at this hour');
+  const model = dossierProjection.project(view(hour, reply, live), { reference: null });
+  assert.deepEqual(model.rows.map(row => `${row.kind}:${row.key}`), ['item:leader', 'meter:record', 'meter:experience', 'list:traits', 'meter:training:7']);
+  const row = <K extends string>(key: K) => model.rows.find(item => item.key === key)!;
+  const record = row('record');
+  assert.ok(record.kind === 'meter' && record.bar.kind === 'share');
+  assert.deepEqual(record.bar.segments.map(s => [s.tone, s.label]), [['positive', '841 won'], ['negative', '737 lost']]);
+  assert.equal(record.bar.segments[0]!.share + record.bar.segments[1]!.share, 1);
+  const xp = row('experience');
+  assert.ok(xp.kind === 'meter' && xp.bar.kind === 'meter');
+  assert.deepEqual(xp.bar.fraction, { kind: 'known', value: 0.76 });
+  assert.deepEqual(xp.figure?.value, { kind: 'known', value: '1900.0 / 2500.0' });
+  const traits = row('traits');
+  assert.ok(traits.kind === 'list');
+  assert.deepEqual(traits.items, ['Invented trait A · 1938', 'Invented trait B · date not recorded']);
+  const training = row('training:7');
+  assert.ok(training.kind === 'meter' && training.bar.kind === 'meter');
+  assert.equal(training.label, 'Training');
+  assert.equal(training.bar.fraction.kind, 'notRecorded', 'training experience the hour did not read is not recorded, never zero');
+  assert.equal(training.figure?.value.kind, 'notRecorded');
+  const header = row('leader');
+  assert.ok(header.kind === 'item');
+  assert.equal(header.subtitle, 'General · ★ 7 / 9');
+  const none = dossierProjection.project(view(hour, { ...reply, reference: null, role: null }, live), { reference: null });
+  assert.deepEqual([none.empty, none.emptyKind], ['No generals yet.', 'empty']);
+  const unread = dossierProjection.project(view(hour, { ...reply, reference: null, role: null, missing: 'Leaders were not recorded' }, live), { reference: null });
+  assert.deepEqual([unread.empty, unread.emptyKind], ['Leaders were not recorded', 'unavailable']);
+});
