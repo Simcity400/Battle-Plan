@@ -133,6 +133,23 @@ test('a dirty mirror or tooltip arms one wake per boundary, never one per hour',
   }
 });
 
+test('while playing, a correction inside the cadence never publishes the old tooltip or mirror beside the corrected picture', () => {
+  reset();
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(family, () => {}), recording.canvases);
+    lane.paint({ label: 'first', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 12, speed: 24, inspect: 'A', seek: 1 });
+    const corrected = lane.paint({ label: 'corrected', binding: binding(rowsAt([{ key: 'A', v: 7 }])), hour: 12, speed: 24, inspect: 'A', seek: 1 });
+    assert.deepEqual((corrected.fields.tooltip?.value as { text: { rowKey: string } } | undefined)?.text?.rowKey, 'A');
+    assert.ok(counts.tooltip >= 2, 'the tooltip was derived again from the corrected frame');
+    assert.equal(corrected.fields.mirror, undefined, 'the mirror is withheld until it is due, never the old rows');
+    const due = lane.paint({ label: 'paused', binding: binding(rowsAt([{ key: 'A', v: 7 }])), hour: 12, speed: 0, inspect: 'A', seek: 1 });
+    assert.deepEqual(due.fields.mirror?.value, ['A 7'], 'paused, the mirror is published at once');
+  } finally {
+    recording.restore();
+  }
+});
+
 test('after a seek back, a same-hour correction and a reorder the picture equals a fresh paint', () => {
   const atTen = rowsAt([{ key: 'A', v: 1 }, { key: 'B', v: 2 }]);
   const atTwenty = rowsAt([{ key: 'A', v: 5 }, { key: 'B', v: 3 }]);
@@ -236,6 +253,25 @@ registerFamilyProjection<FamilyProjection<Model, Options>>({
   kind: 'unbounded',
   family: 'test-lane',
   project: (view: BoundedReadView): Model => ({ hour: view.hour, bucket: view.hour, rows: [{ key: 'A', v: view.hour }], name: '' }),
+});
+
+test('a placement unmounted while its projection loads is not woken by the load, and a loading paint waits instead of presenting', async () => {
+  let release: (value: unknown) => void = () => {};
+  bindFamilyManifest([{ family: 'test-lane', kind: 'slow', loadSpec: () => new Promise(resolve => { release = resolve; }) as never }]);
+  const recording = installRecordingCanvas();
+  try {
+    let wakes = 0;
+    const view = createLaneView(family, () => { wakes++; });
+    const lane = driveLane(view, recording.canvases);
+    const slow = { ...binding(rowsAt([])), kind: 'slow' };
+    assert.equal(lane.paint({ label: 'loading', binding: slow, hour: 10 }).waiting, true, 'nothing to present until the import settles');
+    view.unmount!(1, lane.state);
+    release({ projection: { kind: 'slow', family: 'test-lane', project: (read: BoundedReadView) => ({ hour: read.hour, bucket: 0, rows: [], name: '' }) } });
+    await settle();
+    assert.equal(wakes, 0, 'the unmounted placement left the registry');
+  } finally {
+    recording.restore();
+  }
 });
 
 test('a seek to an hour the held proof cannot locate paints at that hour, through Lane.frame', async () => {

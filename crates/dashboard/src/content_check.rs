@@ -434,7 +434,8 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         }
         feed::EventFeedTail::KEY
         | feed::EventChoicesTail::KEY
-        | feed::DecisionsTail::KEY => {
+        | feed::DecisionsTail::KEY
+        | feed::EventFeedActivity::KEY => {
             let catalogue = content.catalogue()?;
             catalogue.scripted_content()?.effects()?;
             take(catalogue, "event feed text", findings);
@@ -449,6 +450,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         <occupation::detail::OccupationDetail as at_hour::AtHour>::KEY => Ok("No content dependency: occupier totals and collaboration are recorded tables.".into()),
         key if key == dashboard_production::products::stockpile::EquipmentStockpileCatalogue::KEY
             || key == dashboard_production::products::stockpile::EquipmentStockpileChart::KEY
+            || key == dashboard_production::products::stockpile::EquipmentStockpileLines::KEY
             || key == <dashboard_production::products::stockpile::EquipmentStockpileAt as dashboard_base::products::at_hour::AtHour>::KEY
             || key == <dashboard_production::products::stockpile::StockpileArtwork as dashboard_base::products::at_hour::AtHour>::KEY =>
         {

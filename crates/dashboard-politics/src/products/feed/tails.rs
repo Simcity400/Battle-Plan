@@ -67,6 +67,88 @@ pub struct EventFeedTailParams {
     pub offset: Option<String>,
     pub limit: u32,
     pub categories: Vec<EventFeedCategory>,
+    #[doc = " Kinds left out of the categories asked, by name; an unknown name is refused."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub exclude: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EventFeedActivityParams {
+    pub branch_id: String,
+    #[doc = " The observation cutoff and the last hour binned."]
+    pub hour: i32,
+    #[doc = " The first hour binned; rows dated before it are counted in `before`."]
+    pub from: i32,
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
+    pub bin_hours: i64,
+    pub categories: Vec<EventFeedCategory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub exclude: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub countries: Option<Vec<Country>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedActivityLine {
+    pub category: EventFeedCategory,
+    pub before: String,
+    #[doc = " Per bin with rows: its index from `firstHour` and its count."]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<[number, number]>"))]
+    pub bins: Vec<(u32, u64)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedActivityReply {
+    pub branch_id: String,
+    #[doc = " The first hour of bin 0."]
+    pub first_hour: i32,
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
+    pub bin_hours: i64,
+    pub lines: Vec<EventFeedActivityLine>,
+    #[doc = " Hours of the span the feed does not hold, cut at the hour asked."]
+    pub missing: Vec<dashboard_query::series::MissingSpan>,
+    pub warnings: Vec<String>,
+}
+
+dashboard_base::reply_warnings!(EventFeedActivityReply);
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedKindInfo {
+    pub kind: EventFeedKind,
+    pub category: EventFeedCategory,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedKindsReply {
+    pub kinds: Vec<EventFeedKindInfo>,
+    pub warnings: Vec<String>,
+}
+
+dashboard_base::reply_warnings!(EventFeedKindsReply);
+
+fn feed_kinds(categories: &[EventFeedCategory], exclude: Option<&[String]>) -> io::Result<Vec<u16>> {
+    let mut left_out = Vec::new();
+    for name in exclude.unwrap_or_default() {
+        let kind: EventFeedKind = serde_json::from_value(serde_json::Value::String(name.clone())).map_err(|_| invalid(format!("The event feed has no kind {name}")))?;
+        left_out.push(kind);
+    }
+    Ok(EventFeedKind::ALL.iter().filter(|kind| categories.contains(&kind.category()) && !left_out.contains(kind)).map(|&kind| kind_code(kind)).collect())
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -129,7 +211,7 @@ impl ScriptEventKind {
 }
 
 const FEED_FIELDS: dashboard_base::products::Fields =
-    dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, categories];
+    dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, categories, exclude, "exclude[]"];
 
 const CARD_FIELDS: dashboard_base::products::Fields =
     dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, events, statuses];
@@ -325,7 +407,7 @@ fn notices_for(prepared: &Prepared, answer: &Answer, windows: bool, from: i32, h
 fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailParams, hour: i32, cancelled: &AtomicBool) -> io::Result<EventFeedTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     let feed = prepared.feed.as_ref().ok_or_else(|| invalid("The event feed's index is not prepared"))?;
-    let kinds: Vec<u16> = EventFeedKind::ALL.iter().filter(|kind| params.categories.contains(&kind.category())).map(|&kind| kind_code(kind)).collect();
+    let kinds = feed_kinds(&params.categories, params.exclude.as_deref())?;
     let window = Window { from: params.from, to: params.to, selection: prepared.selection.as_ref(), search: params.search.as_deref(), sort: params.sort.as_ref(), offset: params.offset.as_deref(), limit: params.limit };
     let answer = answer(&feed.index, query, &window, hour, Some(&kinds), None, false, &[])?;
     let read = index::read_events(query, &locators(&feed.index, &answer, hour))?;
@@ -577,6 +659,95 @@ fn cards_dated_panel(list: List, name: &str, source: &Source, load: &LoadContext
         let hour = occurrences::cutoff(&query, Some(hour))?;
         load_cards_at(list, &prepared, &query, &params, hour, cancelled)
     }))
+}
+
+pub struct EventFeedActivity;
+
+impl Product for EventFeedActivity {
+    const KEY: &'static str = "event-feed-activity";
+    const CONTENT_DEPENDENT: bool = true;
+    type Params = EventFeedActivityParams;
+    const FIELDS: dashboard_base::products::Fields =
+        dashboard_base::fields![branchId, hour: Read, from: Start, binHours, categories, exclude, "exclude[]", countries, "countries[]", group];
+    type Reply = EventFeedActivityReply;
+
+    #[cfg(any(test, feature = "export-types"))]
+    fn types() -> Vec<String> {
+        vec![EventFeedActivityParams::decl(), EventFeedActivityLine::decl(), EventFeedActivityReply::decl()]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        branch(&params.branch_id)
+    }
+
+    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        let branch = branch_id(&params.branch_id)?;
+        let query = dashboard_base::queries::query(source, branch)?;
+        let hour = occurrences::cutoff(&query, Some(params.hour))?;
+        if params.from > hour || params.bin_hours < 1 {
+            return Err(invalid("Invalid activity span"));
+        }
+        let prepared = prepare(source, &query, branch, context, None, (params.countries.as_deref(), params.group.as_ref()), cancelled)?;
+        let feed = prepared.feed.as_ref().ok_or_else(|| invalid("The event feed's index is not prepared"))?;
+        let mut lines = Vec::with_capacity(params.categories.len());
+        for &category in &params.categories {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let kinds = feed_kinds(&[category], params.exclude.as_deref())?;
+            let ask = Ask {
+                hour,
+                from: None,
+                to: None,
+                selection: prepared.selection.as_ref(),
+                kinds: Some(&kinds),
+                states: None,
+                search: None,
+                order: dashboard_query::log::occurrence::Order::Date(dashboard_query::log::occurrence::Direction::Descending),
+                live_first: false,
+                offset: 0,
+                limit: 1,
+                chips: &[],
+            };
+            let (before, bins) = feed.index.bins(&query.holders, &ask, params.from, hour, params.bin_hours)?;
+            lines.push(EventFeedActivityLine { category, before: before.to_string(), bins });
+        }
+        let missing = feed
+            .index
+            .gaps()
+            .iter()
+            .filter(|gap| gap.first_hour <= hour && gap.last_hour >= params.from)
+            .map(|gap| dashboard_query::series::MissingSpan { first_hour: gap.first_hour.max(params.from), last_hour: gap.last_hour.min(hour), reason: gap.reason.clone() })
+            .collect();
+        Ok(EventFeedActivityReply {
+            branch_id: params.branch_id.clone(),
+            first_hour: (i64::from(params.from).div_euclid(params.bin_hours) * params.bin_hours) as i32,
+            bin_hours: params.bin_hours,
+            lines,
+            missing,
+            warnings: Vec::new(),
+        })
+    }
+}
+
+pub struct EventFeedKinds;
+
+impl Product for EventFeedKinds {
+    const KEY: &'static str = "event-feed-kinds";
+    const CONTENT_DEPENDENT: bool = false;
+    type Params = dashboard_base::products::BranchParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
+    type Reply = EventFeedKindsReply;
+
+    #[cfg(any(test, feature = "export-types"))]
+    fn types() -> Vec<String> {
+        vec![EventFeedKindInfo::decl(), EventFeedKindsReply::decl()]
+    }
+
+    fn load(_source: &Source, _params: &Self::Params, _context: &LoadContext, _cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        Ok(EventFeedKindsReply {
+            kinds: EventFeedKind::ALL.iter().filter(|kind| !super::index::internal(**kind)).map(|&kind| EventFeedKindInfo { kind, category: kind.category() }).collect(),
+            warnings: Vec::new(),
+        })
+    }
 }
 
 pub struct EventChoicesTail;

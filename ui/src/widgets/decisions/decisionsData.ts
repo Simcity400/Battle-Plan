@@ -73,6 +73,10 @@ export function decisionAt(row: LogRow<DecisionCard | null>, hour: number, break
   if (state?.kind === 'failed') {
     status = 'failed';
     failedAt = state.observedHour;
+  } else if (state?.kind === 'completed' && !end) {
+    status = 'completed';
+  } else if (state?.kind === 'aborted' && !end) {
+    status = 'cancelled';
   } else if (state?.kind === 'unsupported') {
     status = 'unsupported';
     unsupportedState = state.raw;
@@ -112,13 +116,13 @@ export function lifecycleLine(at: DecisionAt): string {
       return `${at.timer.days.toLocaleString()}-day timer${left === null ? '' : ` · ${daysText(left)} left`}`;
     }
     case 'taken': return started ?? 'Taken';
-    case 'completed': return `${started ? `${started} → completed ${dayOf(at.end!.row.hour)}` : `Completed ${dayOf(at.end!.row.hour)}`}${missing}`;
+    case 'completed': return `${at.end ? (started ? `${started} → completed ${dayOf(at.end.row.hour)}` : `Completed ${dayOf(at.end.row.hour)}`) : (started ? `${started} → completed` : 'Completed')}${missing}`;
     case 'failed': {
       if (at.end?.row.kind === 'decisionTimedOut') return `Failed · ${after('Timed out')}`;
       if (at.end?.row.kind === 'decisionCancelled') return `Failed · ${after('Cancelled')}`;
       return at.start ? `${started} → failed ${dayOf(at.failedAt!)}` : `Failed ${dayOf(at.failedAt!)}`;
     }
-    case 'cancelled': return `${after('Cancelled')}${missing}`;
+    case 'cancelled': return `${at.end ? after('Cancelled') : (started ? `${started} → aborted` : 'Aborted')}${missing}`;
     case 'timedOut': return `${after('Timed out')}${missing}`;
     case 'removed': return `Removed by the game${missing}`;
     case 'unsupported': return `Unsupported native state ${at.unsupportedState}`;

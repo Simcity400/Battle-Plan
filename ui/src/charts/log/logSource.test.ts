@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { aheadThrough, askedPages, binPages, countsAhead, cumulativeCounts, drawnAhead, failedPage, heldPage, logPageRequest, missingNote, missingThrough, noPages, pageFirstHour, pageInSpan, pagesOf, rowsAhead, shownPages, shownThrough, validateLogCounts, validateLogPage } from './logSource.ts';
 import type { LogRow } from './logData';
-import { gatedWindow } from '../../test-support/gated.ts';
+import { tailFollowParams } from '../../families/table/logHelpers.ts';
 
 const hours = [100, 101, 104, 106, 106, 110, 111, 112, 115, 117];
 const counts = validateLogCounts({ branchId: '1', log: 'test', firstHour: 100, binHours: 6, missing: [], warnings: [],
@@ -101,8 +101,15 @@ test('a family\'s own page is asked without the log it fixes, as its strict para
   const generic = logPageRequest(span, 24, 500);
   assert.equal(generic.product, 'log-page');
   assert.equal(generic.params.log, 'market-events');
-  const scope = [{ tag: 'GER', ...gatedWindow(100, 110) }];
-  assert.deepEqual(logPageRequest({ ...span, product: 'event-feed-tail', scope }, 0, 500).params.scope, scope, 'a country scope is asked with the page');
+  const tail = tailFollowParams({
+    product: 'event-feed-tail',
+    branchId: '1',
+    from: gatedHour(100),
+    limit: 256,
+    ask: { categories: ['politics'], group: { type: 'faction', id: '42', membership: 'hour' } },
+  });
+  assert.deepEqual(tail, { panel: 'event-feed-tail', branchId: '1', from: 100, limit: 256, categories: ['politics'], group: { type: 'faction', id: '42', membership: 'hour' } },
+    'a tail panel carries its real follow parameters and the group, never a member list');
   assert.equal('scope' in generic.params, false, 'no scope asks every row');
 });
 

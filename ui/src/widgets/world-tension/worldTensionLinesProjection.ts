@@ -105,7 +105,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
     const hasNegative = reply.bands.some(band => band.values.some(v => v !== null && v < 0));
     const infos = reply.bands.map(band => {
       if (!band.tag) return { name: 'Unknown', fullName: 'Unknown country', color: null, flagChoice: null };
-      const id = readView.who('country', band.tag, labelHour);
+      const id = readView.who('country', band.tag, hour);
       const baseName = id.name.status === 'ready' ? id.name.value : band.tag;
       return {
         name: baseName,
@@ -162,8 +162,8 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
         }
       }
       return {
-        id: band.tag ?? `slot:${band.slot}`,
-        key: band.tag ?? `slot:${band.slot}`,
+        id: `slot:${band.slot}`,
+        key: `slot:${band.slot}`,
         name: info.fullName,
         color: isTop ? topColors[rank]! : CHART_MEASURE_COLOURS.tailLine,
         role: isTop ? 'primary' : 'tail',

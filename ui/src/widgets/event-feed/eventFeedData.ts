@@ -1,6 +1,8 @@
 import { drawableIcon } from '../../dashboard/artwork.ts';
+import type { ProductRequest } from '../../dashboard/client';
 import { int, object, opaqueTag } from '../../dashboard/validation.ts';
-import type { EventFeedItem, EventFeedRow } from '../../generated/dashboard';
+import type { EventFeedItem, EventFeedKindInfo, EventFeedRow } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const SCRIPT_KINDS = new Set(['scriptEventFired', 'newsEventFired', 'eventOptionSelected', 'decisionSelected', 'decisionRemoved', 'decisionCancelled',
   'decisionTimedOut', 'decisionActivated', 'decisionCompleted', 'decisionReenabled', 'decisionRemovalEffect', 'decisionCancellationEffect',
@@ -67,3 +69,56 @@ export function validateFeedRow(value: unknown): EventFeedRow {
   return row.item && icon !== row.item.icon ? { ...row, item: { ...row.item, icon } } : row;
 }
 
+export function kindsRequest(track: { source: { id: string; revision: string }; branch: { id: string } }): ProductRequest {
+  return productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'event-feed-kinds', params: { branchId: track.branch.id } });
+}
+
+export function validateKinds(value: unknown): readonly EventFeedKindInfo[] {
+  if (!object(value) || !Array.isArray(value.kinds)
+    || !value.kinds.every(kind => object(kind) && typeof kind.kind === 'string' && KINDS.has(kind.kind) && typeof kind.category === 'string' && CATEGORY_NAMES.has(kind.category))) {
+    throw new Error('The event feed kinds reply is malformed.');
+  }
+  return value.kinds as unknown as EventFeedKindInfo[];
+}
+
+const KIND_LABELS: Readonly<Record<string, string>> = {
+  warStarted: 'War started',
+  warDeclared: 'War declared',
+  warJoined: 'Joined a war',
+  civilWarWarTransferred: 'Civil war transferred',
+  annexed: 'Annexed',
+  warEnded: 'War ended',
+  released: 'Released',
+  stateTransferred: 'State transferred',
+  peaceConferenceStarted: 'Peace conference',
+  peace: 'Peace',
+  capitulated: 'Capitulated',
+  ceasedToExist: 'Ceased to exist',
+  factionJoined: 'Joined faction',
+  factionLeft: 'Left faction',
+  becameSubject: 'Became subject',
+  guaranteeGranted: 'Guaranteed',
+  rulingPartyChanged: 'New government',
+  lawChanged: 'Law changed',
+  advisorHired: 'Advisor hired',
+  focusCompleted: 'Focus completed',
+  projectFinished: 'Project finished',
+  nukesIncreased: 'Nuclear stockpile',
+  nuclearStrike: 'Nuclear strike',
+  scriptEventFired: 'Country events',
+  newsEventFired: 'News events',
+  eventOptionSelected: 'Event choices',
+  decisionSelected: 'Decision taken',
+  decisionActivated: 'Mission activated',
+  decisionCompleted: 'Decision completed',
+  decisionCancelled: 'Decision cancelled',
+  decisionTimedOut: 'Decision timed out',
+  decisionRemoved: 'Decision removed',
+};
+
+export function feedKindLabel(kind: string): string {
+  const known = KIND_LABELS[kind];
+  if (known) return known;
+  const spaced = kind.replace(/([A-Z])/g, ' $1').trim();
+  return spaced ? spaced[0]!.toUpperCase() + spaced.slice(1).toLowerCase() : kind;
+}

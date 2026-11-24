@@ -3,28 +3,63 @@ export interface Rgb { r: number; g: number; b: number }
 export interface Oklch { l: number; c: number; h: number }
 
 const clamp = (value: number, min = 0, max = 1) => Math.min(max, Math.max(min, value));
+const MAX_COLOR_CACHE = 1024;
+const parseCache = new Map<string, { readonly rgb: Rgb; readonly alpha: number } | null>();
+const mixCache = new Map<string, string>();
+const rgbaCache = new Map<string, string>();
+const oklchRgbCache = new Map<string, Rgb>();
+let parseMisses = 0;
+let mixMisses = 0;
+let rgbaMisses = 0;
+let oklchToRgbMisses = 0;
+
+function cacheSet<V>(map: Map<string, V>, key: string, value: V): V {
+  if (map.size >= MAX_COLOR_CACHE) map.clear();
+  map.set(key, value);
+  return value;
+}
+
+export const colorCache = {
+  get parses() { return parseMisses; },
+  get mixes() { return mixMisses; },
+  get rgba() { return rgbaMisses; },
+  get oklchToRgb() { return oklchToRgbMisses; },
+  clear(): void {
+    parseCache.clear();
+    mixCache.clear();
+    rgbaCache.clear();
+    oklchRgbCache.clear();
+    parseMisses = 0;
+    mixMisses = 0;
+    rgbaMisses = 0;
+    oklchToRgbMisses = 0;
+  },
+};
 
 export function parseColorAlpha(value: unknown): { rgb: Rgb; alpha: number } | null {
   if (typeof value !== 'string') return null;
+  const cached = parseCache.get(value);
+  if (cached !== undefined) return cached;
+  parseMisses++;
   const text = value.trim().toLowerCase();
   const hex = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(text);
   if (hex) {
     const digits = hex[1].length <= 4 ? [...hex[1]].map(digit => digit + digit).join('') : hex[1];
     const channel = (index: number) => parseInt(digits.slice(index * 2, index * 2 + 2), 16);
-    return { rgb: { r: channel(0), g: channel(1), b: channel(2) }, alpha: digits.length === 8 ? channel(3) / 255 : 1 };
+    return cacheSet(parseCache, value, { rgb: { r: channel(0), g: channel(1), b: channel(2) }, alpha: digits.length === 8 ? channel(3) / 255 : 1 });
   }
   const functional = /^rgba?\(\s*([^)]*)\)$/.exec(text);
-  if (!functional) return null;
+  if (!functional) return cacheSet(parseCache, value, null);
   const parts = functional[1].split(/\s*[,/]\s*|\s+/).filter(Boolean);
-  if (parts.length < 3 || parts.length > 4) return null;
+  if (parts.length < 3 || parts.length > 4) return cacheSet(parseCache, value, null);
   const numbers = parts.map((part, index) => {
     const percent = part.endsWith('%');
     const number = Number(percent ? part.slice(0, -1) : part);
     if (!Number.isFinite(number)) return NaN;
     return index < 3 ? (percent ? number * 2.55 : number) : (percent ? number / 100 : number);
   });
-  if (numbers.some(Number.isNaN)) return null;
-  return { rgb: { r: clamp(numbers[0], 0, 255), g: clamp(numbers[1], 0, 255), b: clamp(numbers[2], 0, 255) }, alpha: clamp(numbers[3] ?? 1) };
+  if (numbers.some(Number.isNaN)) return cacheSet(parseCache, value, null);
+  return cacheSet(parseCache, value, { rgb: { r: clamp(numbers[0], 0, 255), g: clamp(numbers[1], 0, 255), b: clamp(numbers[2], 0, 255) }, alpha: clamp(numbers[3] ?? 1) });
 }
 
 export function parseColor(value: unknown): Rgb | null {
@@ -55,13 +90,24 @@ export function mixRgb(from: Rgb, to: Rgb, amount: number): Rgb {
 }
 
 export function mix(from: string, to: string, amount: number): string {
-  return toHex(mixRgb(parseColor(from) ?? { r: 0, g: 0, b: 0 }, parseColor(to) ?? { r: 0, g: 0, b: 0 }, amount));
+  const key = `${from}\0${to}\0${amount}`;
+  const cached = mixCache.get(key);
+  if (cached !== undefined) return cached;
+  mixMisses++;
+  return cacheSet(mixCache, key, toHex(mixRgb(parseColor(from) ?? { r: 0, g: 0, b: 0 }, parseColor(to) ?? { r: 0, g: 0, b: 0 }, amount)));
+}
+
+export function rgbaRgb(rgb: Rgb, alpha: number): string {
+  return `rgba(${Math.round(rgb.r)}, ${Math.round(rgb.g)}, ${Math.round(rgb.b)}, ${alpha})`;
 }
 
 export function rgbaColor(color: string, alpha: number, fallback: string): string {
+  const key = `${color}\0${alpha}\0${fallback}`;
+  const cached = rgbaCache.get(key);
+  if (cached !== undefined) return cached;
+  rgbaMisses++;
   const rgb = parseColor(color);
-  if (!rgb) return fallback;
-  return `rgba(${Math.round(rgb.r)}, ${Math.round(rgb.g)}, ${Math.round(rgb.b)}, ${alpha})`;
+  return cacheSet(rgbaCache, key, rgb ? rgbaRgb(rgb, alpha) : fallback);
 }
 
 export function tintColour(color: string, amount: number): string {
@@ -76,7 +122,15 @@ export function surfaceMix(surface: string, amount: number): string {
   return mix(surface, '#f5f5f5', amount);
 }
 
-const toLinear = (channel: number) => { const value = channel / 255; return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4; };
+const LINEAR_BYTE = Float64Array.from({ length: 256 }, (_, i) => {
+  const value = i / 255;
+  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+});
+const toLinear = (channel: number) => {
+  if ((channel | 0) === channel && channel >= 0 && channel <= 255) return LINEAR_BYTE[channel]!;
+  const value = channel / 255;
+  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+};
 const fromLinear = (value: number) => 255 * (value <= 0.0031308 ? value * 12.92 : 1.055 * value ** (1 / 2.4) - 0.055);
 
 export function luminance({ r, g, b }: Rgb): number {
@@ -118,6 +172,10 @@ function oklchToLinear({ l, c, h }: Oklch): [number, number, number] {
 }
 
 export function oklchToRgb(color: Oklch): Rgb {
+  const key = `${color.l}\0${color.c}\0${color.h}`;
+  const cached = oklchRgbCache.get(key);
+  if (cached !== undefined) return cached;
+  oklchToRgbMisses++;
   const target = { ...color, l: clamp(color.l), c: Math.max(0, color.c) };
   let low = 0, high = target.c;
   let linear = oklchToLinear(target);
@@ -130,7 +188,7 @@ export function oklchToRgb(color: Oklch): Rgb {
     linear = oklchToLinear({ ...target, c: low });
   }
   const [r, g, b] = linear.map(value => fromLinear(clamp(value)));
-  return { r, g, b };
+  return cacheSet(oklchRgbCache, key, { r, g, b });
 }
 
 export function mixOklab(from: Rgb, to: Rgb, amount: number): Rgb {

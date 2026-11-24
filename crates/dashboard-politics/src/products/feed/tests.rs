@@ -720,6 +720,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
         offset: None,
         limit: 64,
         categories: vec![EventFeedCategory::WarsPeace, EventFeedCategory::Diplomacy, EventFeedCategory::Politics, EventFeedCategory::Milestones],
+        exclude: None,
     };
     let cards_at = |hour: i32| ScriptTailParams { branch_id: "1".into(), hour: Some(hour), from: Some(100), to: None, countries: None, group: None, search: None, sort: None, offset: None, limit: 64, events: None, statuses: None };
 
@@ -906,6 +907,7 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
         offset: None,
         limit: 64,
         categories: vec![EventFeedCategory::Politics],
+        exclude: None,
     };
     let cards = |hour: i32, statuses: Option<Vec<ScriptStatus>>, countries: Option<Vec<Country>>| ScriptTailParams {
         branch_id: "1".into(),
@@ -936,6 +938,17 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
     let scoped = EventFeedTail::load(&replay_source, &feed(106, None, selection("GER")), &context, &cancel).unwrap();
     assert_eq!(scoped.rows, at_106.rows);
     assert_eq!(EventFeedTail::load(&replay_source, &feed(106, None, selection("ITA")), &context, &cancel).unwrap().total, "0");
+    let without = EventFeedTail::load(&replay_source, &EventFeedTailParams { exclude: Some(vec!["decisionActivated".into(), "decisionTimedOut".into()]), ..feed(106, None, None) }, &context, &cancel).unwrap();
+    assert_eq!((without.total.as_str(), hours(&without)), ("4", vec![105, 102, 101, 100]), "a kind left out is left out before the count");
+    assert!(EventFeedTail::load(&replay_source, &EventFeedTailParams { exclude: Some(vec!["noSuchKind".into()]), ..feed(106, None, None) }, &context, &cancel).is_err(), "an unknown kind is refused by name");
+    let activity = super::EventFeedActivity::load(
+        &replay_source,
+        &super::tails::EventFeedActivityParams { branch_id: "1".into(), hour: 103, from: 101, bin_hours: 2, categories: vec![EventFeedCategory::Politics], exclude: None, countries: None, group: None },
+        &context,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!((activity.first_hour, activity.lines[0].before.as_str(), activity.lines[0].bins.clone()), (100, "2", vec![(1, 2)]), "binned by occurrence date, nothing read after 103, the event of 101 not yet");
 
     let decisions = DecisionsTail::load(&replay_source, &cards(106, None, None), &context, &cancel).unwrap();
     assert_eq!(decisions.total, "1");

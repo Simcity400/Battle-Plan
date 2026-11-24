@@ -1,10 +1,10 @@
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
-import { formatPowerChange, formatSpent } from '../../dashboard/powerDecimals.ts';
+import { formatPower, formatPowerChange } from '../../dashboard/powerDecimals.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { newIdentityBoundary } from '../../families/table/identityCell.ts';
+import { identityFlags, identityName, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import {
   LOG_TABLE_BASE,
   logCountryCell,
@@ -24,6 +24,7 @@ import { formatScalar } from '../../families/valueFormat.ts';
 import type { ScriptCurrency, ScriptOccurrence, ScriptPageRow, ScriptStatus } from '../../generated/dashboard';
 import { plainScripted, reasonsOf } from '../event-feed/scriptedGaps.ts';
 import { recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
+import type { DecisionDetailSubject } from './DecisionDetailWindow.tsx';
 import {
   daysLeft,
   decisionAt,
@@ -56,48 +57,93 @@ const DECISION_STATUS_MARKS: Readonly<Record<DecisionAt['status'], { readonly ma
   unknown: { mark: 'ended', label: 'Not recorded', muted: true },
 };
 
-function decisionCostCell(at: DecisionAt): TableCell {
+const CHARGEABLE_KINDS = new Set(['decisionSelected', 'decisionTimeoutEffect']);
+
+function decisionCostInfo(
+  readView: BoundedReadView,
+  at: DecisionAt,
+): { readonly cell: TableCell; readonly costText: string | null; readonly costMissing: string | null } {
+  const chargeable = at.edges.filter(edge => CHARGEABLE_KINDS.has(edge.row.kind));
   const proven = at.edges.filter(edge => edge.costs !== null);
-  if (!proven.length) return { value: notRecorded('Decision cost was not recorded') };
+  if (!chargeable.length && !proven.length) {
+    return { cell: { value: notApplicable('No selection cost'), blank: true }, costText: null, costMissing: null };
+  }
+  if (chargeable.some(edge => edge.costs === null)) {
+    return {
+      cell: { value: notRecorded('Decision cost was not recorded') },
+      costText: null,
+      costMissing: 'Decision cost was not recorded',
+    };
+  }
   const totals = new Map<ScriptCurrency, bigint>();
   for (const edge of proven) {
     for (const cost of edge.costs!) {
       totals.set(cost.currency, (totals.get(cost.currency) ?? 0n) + BigInt(cost.amount));
     }
   }
-  if (!totals.size) return { value: notApplicable('No cost') };
+  if (!totals.size) {
+    return { cell: { value: notApplicable('No cost'), blank: true }, costText: null, costMissing: null };
+  }
   const pp = totals.get('politicalPower');
   const cp = totals.get('commandPower');
+  const formatCost = (raw: bigint) => (raw < 0n ? formatPower(-raw, 0) : formatPowerChange(raw, 0));
   if (pp !== undefined && cp === undefined) {
-    const text = pp < 0n ? formatSpent(-pp, 0) : formatPowerChange(pp, 0);
-    return { value: knownValue(text), unitSuffix: 'PP' };
+    const text = formatCost(pp);
+    const sprite = readView.art({ kind: 'sprite', key: 'GFX_pol_power', frame: 0 });
+    return {
+      cell: {
+        value: knownValue(text),
+        unitSuffix: 'PP',
+        ...(sprite.status === 'ready' ? { unitIcon: sprite.url } : sprite.status === 'pending' ? { unitIconPending: true } : {}),
+      },
+      costText: `${text} PP`,
+      costMissing: null,
+    };
   }
   if (cp !== undefined && pp === undefined) {
-    const text = cp < 0n ? formatSpent(-cp, 0) : formatPowerChange(cp, 0);
-    return { value: knownValue(text), unitSuffix: 'CP' };
+    const text = formatCost(cp);
+    const sprite = readView.art({ kind: 'sprite', key: 'GFX_command_power', frame: 0 });
+    return {
+      cell: {
+        value: knownValue(text),
+        unitSuffix: 'CP',
+        ...(sprite.status === 'ready' ? { unitIcon: sprite.url } : sprite.status === 'pending' ? { unitIconPending: true } : {}),
+      },
+      costText: `${text} CP`,
+      costMissing: null,
+    };
   }
   const parts: string[] = [];
-  if (pp !== undefined) parts.push(`${pp < 0n ? formatSpent(-pp, 0) : formatPowerChange(pp, 0)} PP`);
-  if (cp !== undefined) parts.push(`${cp < 0n ? formatSpent(-cp, 0) : formatPowerChange(cp, 0)} CP`);
-  return { value: knownValue(parts.join(', ')) };
+  if (pp !== undefined) parts.push(`${formatCost(pp)} PP`);
+  if (cp !== undefined) parts.push(`${formatCost(cp)} CP`);
+  const joined = parts.join(', ');
+  return { cell: { value: knownValue(joined) }, costText: joined, costMissing: null };
 }
 
-function decisionTimerCell(at: DecisionAt): TableCell {
-  if (at.status !== 'active' || !at.timer) return { value: notApplicable('No active timer'), blank: true };
+function decisionTimerCell(at: DecisionAt): { readonly cell: TableCell; readonly nextChangeAt: number } {
+  if (at.status !== 'active' || !at.timer) {
+    return { cell: { value: notApplicable('No active timer'), blank: true }, nextChangeAt: Infinity };
+  }
   const left = daysLeft(at);
   const totalDays = Math.max(1, at.timer.days);
-  const elapsedHours = Math.max(0, at.hour - at.timer.from);
-  const fraction = Math.max(0, Math.min(1, 1 - elapsedHours / (totalDays * 24)));
+  const fraction = left !== null ? Math.max(0, Math.min(1, left / totalDays)) : 0;
+  const nextChangeAt = left !== null ? at.timer.from + (at.timer.days - left + 1) * 24 : Infinity;
   if (left === null) {
     return {
-      value: knownValue('Ending'),
-      bar: { fraction: knownValue(fraction) },
+      cell: {
+        value: knownValue('Ending'),
+        bar: { fraction: knownValue(fraction) },
+      },
+      nextChangeAt: Infinity,
     };
   }
   return {
-    value: knownValue(formatScalar(left, 'integer')),
-    unitSuffix: left === 1 ? 'day left' : 'days left',
-    bar: { fraction: knownValue(fraction) },
+    cell: {
+      value: knownValue(formatScalar(left, 'integer')),
+      unitSuffix: left === 1 ? 'day left' : 'days left',
+      bar: { fraction: knownValue(fraction) },
+    },
+    nextChangeAt,
   };
 }
 
@@ -106,7 +152,7 @@ function buildDecisionRow(
   at: DecisionAt,
   artwork: boolean,
   boundary: ReturnType<typeof newIdentityBoundary>,
-): TableRow {
+): { readonly row: TableRow; readonly nextChangeAt: number } {
   const { card } = at;
   const firstRow = card.occurrence.edges[0]!.row;
   const nameHour = firstRow.nameHour;
@@ -121,7 +167,8 @@ function buildDecisionRow(
   const icon = artResult?.status === 'ready' ? artResult.url : undefined;
   const iconPending = artResult?.status === 'pending' ? true : undefined;
 
-  const rawName = card.item?.name ?? null;
+  const rawName = card.item?.name && card.item.name.trim().length > 0 ? card.item.name : null;
+  const safeName = plainScripted(rawName ?? decisionName(card)) || 'Decision name not recorded';
   const reasons = reasonsOf(card.item);
   const participants = firstRow.participants ?? [card.country, card.target];
   const countryEntries: { readonly tag: string | null; readonly missingLabel?: string }[] = [
@@ -135,14 +182,52 @@ function buildDecisionRow(
 
   const stateId = at.edges.find(e => e.row.cause?.state != null)?.row.cause?.state ?? null;
   let placeCell: TableCell = { value: notApplicable('No target state'), blank: true };
+  let placeLabel: string | null = null;
   if (stateId !== null) {
     const stateRes = readView.who('state', String(stateId), firstRow.hour);
-    placeCell = stateRes.name.status === 'ready'
-      ? { value: knownValue(stateRes.name.value) }
-      : stateRes.name.status === 'pending'
-        ? { value: knownValue(`State ${stateId}`) }
-        : { value: notRecorded('State name not recorded') };
+    if (stateRes.name.status === 'ready') {
+      placeLabel = stateRes.name.value;
+      placeCell = { value: knownValue(placeLabel) };
+    } else if (stateRes.name.status === 'pending') {
+      placeLabel = `State ${stateId}`;
+      placeCell = { value: knownValue(placeLabel) };
+    } else {
+      placeCell = { value: notRecorded('State name not recorded') };
+    }
   }
+
+  const timer = decisionTimerCell(at);
+  const cost = decisionCostInfo(readView, at);
+  const countryFlag = card.country ? identityFlags(readView, 'country', [card.country], { atHour: nameHour, boundary })[0] : undefined;
+  const targetFlag = card.target ? identityFlags(readView, 'country', [card.target], { atHour: nameHour, boundary })[0] : undefined;
+  const detailSubject: DecisionDetailSubject = {
+    key: card.occurrence.id,
+    asOfHour: at.hour,
+    startedHour: firstRow.hour,
+    name: rawName,
+    isMission,
+    icon,
+    countryTag: card.country,
+    countryName: card.country ? identityName(readView, 'country', card.country, nameHour) : null,
+    countryFlagUrl: countryFlag?.icon,
+    countryFlagPending: countryFlag?.pending,
+    targetTag: card.target,
+    targetName: card.target ? identityName(readView, 'country', card.target, nameHour) : null,
+    targetFlagUrl: targetFlag?.icon,
+    targetFlagPending: targetFlag?.pending,
+    place: placeLabel,
+    statusLabel: labelText,
+    lifecycle: lifecycleLine(at),
+    daysLeft: daysLeft(at),
+    costText: cost.costText,
+    costMissing: cost.costMissing,
+    token: card.item?.token ?? null,
+    description: card.item?.description ?? null,
+    failedAt: at.failedAt,
+    failureMissing: at.failureMissing,
+    nameMissing: reasons.nameMissing ?? null,
+    gaps: reasons.gaps ?? null,
+  };
 
   const tooltipExtra = (): TooltipExtraRow[] => {
     const out: TooltipExtraRow[] = [
@@ -159,34 +244,39 @@ function buildDecisionRow(
   };
 
   return {
-    key: card.occurrence.id,
-    name: plainScripted(decisionName(card)),
-    rowHour: firstRow.hour,
-    live: at.status === 'active',
-    muted,
-    cells: {
-      date: logDateCell(firstRow.hour),
-      kind: artwork
-        ? {
-            value: rawName !== null ? knownValue(plainScripted(rawName)) : notRecorded(reasons.nameMissing ?? 'Decision icon not recorded'),
-            icon,
-            iconPending,
-            iconSlot: true,
-            artShape: 'square',
-            artName: plainScripted(decisionName(card)),
-          }
-        : { value: notApplicable('Game artwork hidden'), blank: true },
-      country: logCountryCell(readView, countryEntries, nameHour, boundary),
-      item: rawName !== null
-        ? { value: knownValue(rawName), ...(isMission ? { inlineSubtext: 'Mission' } : {}) }
-        : { value: notRecorded(reasons.nameMissing ?? 'Decision name not recorded') },
-      place: placeCell,
-      timer: decisionTimerCell(at),
-      cost: decisionCostCell(at),
-      status: logStatusCell(labelText, statusMark, muted ? 'muted' : undefined),
+    nextChangeAt: timer.nextChangeAt,
+    row: {
+      key: card.occurrence.id,
+      name: safeName,
+      rowHour: firstRow.hour,
+      live: at.status === 'active',
+      muted,
+      cells: {
+        date: logDateCell(firstRow.hour),
+        kind: artwork
+          ? {
+              value: rawName !== null ? knownValue(safeName) : notRecorded(reasons.nameMissing ?? 'Decision icon not recorded'),
+              icon,
+              iconPending,
+              iconSlot: true,
+              artShape: 'square',
+              artName: safeName,
+            }
+          : { value: notApplicable('Game artwork hidden'), blank: true },
+        country: logCountryCell(readView, countryEntries, nameHour, boundary),
+        item: rawName !== null
+          ? { value: knownValue(rawName), ...(isMission ? { inlineSubtext: 'Mission' } : {}) }
+          : { value: notRecorded(reasons.nameMissing ?? 'Decision name not recorded') },
+        place: placeCell,
+        timer: timer.cell,
+        cost: cost.cell,
+        status: logStatusCell(labelText, statusMark, muted ? 'muted' : undefined),
+      },
+      tooltipTitle: safeName,
+      tooltipExtra,
+      tooltipAction: 'Click to view decision',
+      meta: detailSubject,
     },
-    tooltipTitle: plainScripted(decisionName(card)),
-    tooltipExtra,
   };
 }
 
@@ -209,13 +299,19 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
   family: 'table',
   project(readView, options): TableModel {
     const hour = readView.hour;
-    const empty = { columns: DECISIONS_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true } as const;
     const refused = readView.refused('main');
-    if (refused !== undefined) return { ...empty, refused };
+    if (refused !== undefined) {
+      return { columns: DECISIONS_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused };
+    }
     const source = readView.rows<ScriptPageRow & DatedLogRow>('main');
-    if (!source) return empty;
-    if (source.refused !== null) return { ...empty, refused: source.refused };
+    if (!source) {
+      return { columns: DECISIONS_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true };
+    }
+    if (source.refused !== null) {
+      return { columns: DECISIONS_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused: source.refused };
+    }
     const boundary = newIdentityBoundary();
+    let nextTimerChange = Infinity;
     const { slots, rows, windowOffset, totalRows } = projectPagedSlots(
       source,
       hour,
@@ -237,23 +333,34 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
         );
         if (!resolved) return null;
         const recorded = rawRow.status ? RECORDED_STATUS[rawRow.status] : null;
-        return buildDecisionRow(readView, recorded ? { ...resolved.item, status: recorded } : resolved.item, options.artwork, boundary);
+        const built = buildDecisionRow(readView, recorded ? { ...resolved.item, status: recorded } : resolved.item, options.artwork, boundary);
+        if (built.nextChangeAt > hour && built.nextChangeAt < nextTimerChange) nextTimerChange = built.nextChangeAt;
+        return built.row;
       },
     );
-    const running = source.facetTotals?.get('running') ?? null;
-    const titleSummary = running !== null && running > 0 ? `${formatScalar(running, 'integer')} running` : null;
-    const rawHead = source.rawHead as { readonly warnings?: readonly string[]; readonly unavailable?: readonly { readonly label: string; readonly reason: string }[] } | undefined;
+
+    const rawHead = source.rawHead as {
+      readonly warnings?: readonly string[];
+      readonly unavailable?: readonly { readonly label: string; readonly reason: string }[];
+    } | undefined;
+    const runningCount = source.facetTotals?.get('running') ?? null;
+    const titleSummary = runningCount !== null && runningCount > 0 ? `${formatScalar(runningCount, 'integer')} running` : null;
     const warnings = [
       ...(rawHead?.warnings ?? []),
       ...(rawHead?.unavailable ?? []).map(u => `${u.label}: ${u.reason}`),
     ];
+
     return {
-      ...empty,
+      columns: DECISIONS_COLUMNS,
       rows,
       slots,
+      hour,
+      hideHeader: true,
+      unsorted: true,
+      dateGrouped: true,
       windowOffset,
       totalRows,
-      nextChangeAt: boundary.next,
+      nextChangeAt: Math.min(boundary.next, nextTimerChange),
       rowTimeBoundaries: false,
       titleSummary,
       ...(source.missing.length > 0 && titleSummary ? { titleSummaryPartial: 'Count from recorded hours' } : {}),

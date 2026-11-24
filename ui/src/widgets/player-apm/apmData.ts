@@ -12,7 +12,12 @@ export function validateApm(value: unknown): ApmReply {
     || !Array.isArray(reply.players) || !reply.players.every(player => player && typeof player.id === 'string'
       && (player.name === null || typeof player.name === 'string')
       && (player.nameMissing === null || typeof player.nameMissing === 'string')
-      && Array.isArray(player.tags) && player.tags.every(tag => typeof tag === 'string'))
+      && Array.isArray(player.tags) && player.tags.every(tag => typeof tag === 'string')
+      && (player.runs === undefined || (Array.isArray(player.runs) && player.runs.every(run => run
+        && Number.isSafeInteger(run.firstHour) && Number.isSafeInteger(run.lastHour) && run.firstHour <= run.lastHour
+        && typeof run.tag === 'string'
+        && (run.name === null || typeof run.name === 'string')
+        && (run.nameMissing === null || typeof run.nameMissing === 'string')))))
     || !Array.isArray(reply.series) || !reply.series.every(series => series && typeof series.id === 'string'
       && (series.name === null || typeof series.name === 'string')
       && (series.nameMissing === null || typeof series.nameMissing === 'string')

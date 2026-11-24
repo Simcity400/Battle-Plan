@@ -67,7 +67,8 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     assert.ok(still.installs >= 20, `twenty same-hour installs happened (${still.installs})`);
     assert.deepEqual([still.storeUpdates, still.commits], [0, 0], `a stationary tooltip across installs: no tooltip-store update, no React render including TooltipLayer (${still.installs} installs)`);
 
-    const statics = await act<{ rounds: number; commits: number; binds: number; staticsSupplied: number; generationKept: boolean }>('testStaticPanelsReplaced()');
+    const statics = await act<{ rounds: number; commits: number; binds: number; staticsSupplied: number; generationKept: boolean; mode: string }>('testStaticPanelsReplaced()');
+    assert.ok(!statics.mode.startsWith('failed'), `the static host draws (${statics.mode})`);
     assert.deepEqual([statics.binds, statics.generationKept], [0, true], `replacing only a mounted host's static panels ${statics.rounds} times binds nothing and keeps the binding generation (R4-S4: ${statics.binds} binds)`);
     assert.equal(statics.staticsSupplied, statics.rounds, 'each new panel set is one statics supply');
     assert.equal(statics.commits, statics.rounds, 'and costs one React commit, the one that passed the panels');

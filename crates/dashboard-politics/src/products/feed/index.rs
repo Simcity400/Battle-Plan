@@ -141,7 +141,7 @@ fn slot_of(slot: Slot) -> Option<u32> {
     }
 }
 
-fn internal(kind: EventFeedKind) -> bool {
+pub(crate) fn internal(kind: EventFeedKind) -> bool {
     use EventFeedKind::*;
     matches!(kind, DecisionRemovalEffect | DecisionCancellationEffect | DecisionCompletionEffect | DecisionTimeoutEffect | DecisionDurationChanged | DecisionReenabled)
 }

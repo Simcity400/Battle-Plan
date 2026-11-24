@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
+import { createBoundedReadView } from '../../families/boundedView.ts';
+import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
 import { awaitingText, choiceAt, choiceCard, choiceDates, choiceText, choiceTitle, isOpen, noChoiceText, optionLetter, optionLines } from './eventChoicesData.ts';
+import { eventChoicesProjection } from './eventChoicesProjection.ts';
+import type { EventDetailSubject } from './EventDetailWindow.tsx';
 import type { EventFeedItem, EventFeedKind, EventFeedRow, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
 
 const day = (month: number, date: number, year = 1938) => engineHour({ year, month, day: date, hour: 1 })!;
@@ -66,4 +70,50 @@ test('an event the recording cannot title reads "Title not recorded"; a gap in i
   const gapped = edge('scriptEventFired', day(1, 6), ['GER', 'FRA'], { item: { ...authored(), name: 'Recruit in \uFFFC', gaps: 'it names a highlighted state the recording does not hold' } as EventFeedItem });
   const shown = choiceAt(row(occurrence([gapped])), day(1, 7), [])!.item;
   assert.equal(choiceText(shown.card), 'Recruit in [not recorded]');
+});
+
+test('event choices projection turns blank authored title or option text into notRecorded and tracks awaiting day boundaries', () => {
+  const fired = day(3, 3);
+  const chosen = day(3, 4);
+  const blankItem: EventFeedItem = { token: 'blank.1', name: '   ', icon: null, description: null, options: [{ ordinal: 0, name: '   ' }] };
+  const blankOcc = occurrence([
+    edge('scriptEventFired', fired, ['GER', 'POL'], { item: blankItem }),
+    edge('eventOptionSelected', chosen, ['POL', null], { item: blankItem }, { option: 0 }),
+  ]);
+  const openOcc = occurrence([fire(fired, 'FRA', 'GER')]);
+  const head = {
+    branchId: '1',
+    log: 'event-choices',
+    columns: [],
+    baseOrdinal: '0',
+    firstOrdinal: '0',
+    offset: '0',
+    total: '2',
+    rows: [
+      { hour: fired, key: blankOcc.id, ordinal: '0', cells: [], occurrence: blankOcc },
+      { hour: fired, key: openOcc.id, ordinal: '1', cells: [], occurrence: openOcc },
+    ],
+    facetTotals: [],
+    missing: [],
+    unavailable: [],
+    warnings: [],
+  };
+  const atHour = chosen + 6;
+  const source = buildRowSourceFromHead('test:choices', head, undefined, atHour)!;
+  const readView = createBoundedReadView({ hour: atHour, rows: new Map([['main', source]]) });
+  const model = eventChoicesProjection.project(readView, {
+    events: ['country'],
+    awaiting: false,
+    artwork: true,
+    breaks: [],
+  });
+  assert.equal(model.titleSummary, '2 events');
+  assert.equal(model.nextChangeAt, fired + 48, 'nextChangeAt steps to the next awaiting day boundary');
+  const blankRow = model.rows.find(r => r.key === blankOcc.id)!;
+  assert.equal(blankRow.cells.item?.value.kind, 'notRecorded');
+  assert.equal(blankRow.cells.choice?.value.kind, 'notRecorded');
+  assert.equal(blankRow.cells.choice?.inlinePrefix, 'A');
+  const openMeta = model.rows.find(r => r.key === openOcc.id)!.meta as EventDetailSubject;
+  assert.equal(openMeta.firedHour, fired);
+  assert.equal(openMeta.asOfHour, atHour);
 });

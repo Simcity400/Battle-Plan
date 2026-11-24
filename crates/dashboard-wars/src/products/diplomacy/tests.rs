@@ -229,3 +229,23 @@ fn a_country_chosen_by_slot_is_named_by_the_tag_that_holds_it() {
     let ids = holder_ids(&holders, &[Country::Slot(2)], 500);
     assert_eq!(ids[0].0, "ENG", "a country chosen by slot is named by the tag that holds it");
 }
+
+#[test]
+fn the_largest_countries_are_named_only_from_a_whole_factories_read() {
+    use dashboard_query::identity::{Holder, HolderRun};
+    let holders = dashboard_query::identity::Holders::new(
+        [("GER", 1), ("ENG", 2)].iter().map(|(tag, id)| ((*tag).to_owned(), vec![HolderRun { first: 0, last: 1000, holder: Holder::Found { slot: *id, id: *id }, starts_segment: true }])).collect(),
+        vec![],
+    );
+    let factories = |rows: Vec<CountryFactoriesRow>, whole: bool| {
+        let mut held = frame(Vec::new(), Vec::new());
+        let rows = TableRows::CountryFactories(rows);
+        *held.tables[TableId::CountryFactories.index()] = if whole { TableView::Complete(rows) } else { TableView::Truncated { rows, missing: 1 } };
+        held
+    };
+    let row = |country: u32, military_levels: i32| CountryFactoriesRow { country, military_levels, ..CountryFactoriesRow::default() };
+    assert_eq!(top_countries_at(&factories(vec![row(1, 5), row(2, 9)], true), &holders, 500, 1), Ok(vec![Country::from("ENG")]));
+    assert!(top_countries_at(&factories(vec![row(1, 5)], false), &holders, 500, 1).is_err(), "a truncated read never ranks the rest at zero");
+    assert!(top_countries_at(&frame(Vec::new(), Vec::new()), &holders, 500, 1).is_err(), "an unread table never picks countries alphabetically");
+    assert!(top_countries_at(&factories(vec![row(1, 5), row(7, 99)], true), &holders, 500, 1).is_err(), "a row of an unknown country could be the largest");
+}

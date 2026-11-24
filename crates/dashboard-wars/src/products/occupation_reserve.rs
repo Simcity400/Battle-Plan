@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::atomic::AtomicBool,
+    sync::{Arc, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -251,6 +251,8 @@ pub struct ReserveHistoryParams {
     pub branch_id: String,
     #[doc = " The holder's raw country id."]
     pub holder: u32,
+    #[doc = " The hour answered: nothing recorded after it is read into the reply."]
+    pub hour: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -295,9 +297,13 @@ pub struct ReserveSource {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ReserveHistoryReply {
-    #[doc = " In hour order; hours the timeline does not hold are not in it."]
+    #[doc = " The hour answered, never after the branch's last hour."]
+    pub hour: i32,
+    #[doc = " The first hour after `hour` at which an entry, admission, table coverage, source tag or timeline stretch changes; null when none does."]
+    pub next_change: Option<i32>,
+    #[doc = " In hour order through `hour`; hours the timeline does not hold are not in it."]
     pub segments: Vec<ReserveSegment>,
-    #[doc = " Every source the segments name, by raw id."]
+    #[doc = " Every source the segments by `hour` name, by raw id, with tags through `hour`."]
     pub sources: Vec<ReserveSource>,
     pub warnings: Vec<String>,
 }
@@ -310,6 +316,15 @@ fn status_reason(status: Status) -> Option<String> {
         Status::NotRecorded => Some("The reserve was not recorded at these hours".to_owned()),
         Status::Truncated { missing } => Some(format!("The reserve was read in part at these hours ({missing} rows not read)")),
         Status::Unavailable { .. } => Some("The reserve was not available at these hours".to_owned()),
+    }
+}
+
+fn admission_status_reason(status: Status) -> Option<String> {
+    match status {
+        Status::Complete => None,
+        Status::NotRecorded => Some("Occupation settings were not recorded at these hours".to_owned()),
+        Status::Truncated { missing } => Some(format!("Occupation settings were read in part at these hours ({missing} rows not read)")),
+        Status::Unavailable { .. } => Some("Occupation settings were not available at these hours".to_owned()),
     }
 }
 
@@ -327,11 +342,19 @@ fn cells_at<'a>(steps: &'a [lanes::Step], at: &mut usize, hour: i32) -> Option<&
     steps.get(*at).filter(|step| step.hour <= hour).and_then(|step| step.cells.as_deref())
 }
 
-fn stretch_segments(entries: &lanes::History, admission: &lanes::History, statuses: &[lanes::StatusRun], first: i32, last: i32) -> Vec<ReserveSegment> {
+fn stretch_segments(
+    entries: &lanes::History,
+    admission: &lanes::History,
+    statuses: &[lanes::StatusRun],
+    admission_statuses: &[lanes::StatusRun],
+    first: i32,
+    last: i32,
+) -> Vec<ReserveSegment> {
     let mut cuts: BTreeSet<i32> = BTreeSet::from([first]);
     cuts.extend(entries.keys.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour)));
     cuts.extend(admission.keys.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour)));
-    cuts.extend(statuses.iter().map(|run| run.first));
+    cuts.extend(statuses.iter().flat_map(|run| [run.first, run.last.saturating_add(1)]));
+    cuts.extend(admission_statuses.iter().flat_map(|run| [run.first, run.last.saturating_add(1)]));
     let cuts: Vec<i32> = cuts.into_iter().filter(|&hour| first <= hour && hour <= last).collect();
     let mut places = vec![0usize; entries.keys.len()];
     let mut admitted_at = 0usize;
@@ -339,8 +362,8 @@ fn stretch_segments(entries: &lanes::History, admission: &lanes::History, status
     for (index, &hour) in cuts.iter().enumerate() {
         let end = cuts.get(index + 1).map_or(last, |next| next - 1);
         let status = statuses.iter().find(|run| run.first <= hour && hour <= run.last).map_or(Status::NotRecorded, |run| run.status);
-        let admitted = admission.keys.first().is_some_and(|(_, steps)| cells_at(steps, &mut admitted_at, hour).is_some());
-        let unknown = status_reason(status);
+        let admission_status = admission_statuses.iter().find(|run| run.first <= hour && hour <= run.last).map_or(Status::NotRecorded, |run| run.status);
+        let admitted = admission_status == Status::Complete && admission.keys.first().is_some_and(|(_, steps)| cells_at(steps, &mut admitted_at, hour).is_some());
         let mut held = Vec::new();
         for ((_, steps), place) in entries.keys.iter().zip(places.iter_mut()) {
             if let Some(cells) = cells_at(steps, place, hour)
@@ -349,6 +372,7 @@ fn stretch_segments(entries: &lanes::History, admission: &lanes::History, status
                 held.push(ReserveAmount { source: source as u32, amount: amount as i32 });
             }
         }
+        let unknown = status_reason(status).or_else(|| held.is_empty().then(|| admission_status_reason(admission_status)).flatten());
         let segment = ReserveSegment { first_hour: hour, last_hour: end, admitted, entries: unknown.is_none().then_some(held), unknown };
         match out.last_mut() {
             Some(previous) if previous.last_hour + 1 == hour && (previous.admitted, &previous.entries, &previous.unknown) == (segment.admitted, &segment.entries, &segment.unknown) => {
@@ -360,12 +384,80 @@ fn stretch_segments(entries: &lanes::History, admission: &lanes::History, status
     out
 }
 
+fn next_history_change(
+    entries: &lanes::History,
+    admission: &lanes::History,
+    statuses: &[lanes::StatusRun],
+    admission_statuses: &[lanes::StatusRun],
+    hour: i32,
+    limit: i32,
+) -> Option<i32> {
+    let mut next = i32::MAX;
+    let mut after = |at: i32| {
+        if at > hour && at <= limit && at < next {
+            next = at;
+        }
+    };
+    for (_, steps) in &entries.keys {
+        for step in steps {
+            after(step.hour);
+        }
+    }
+    for (_, steps) in &admission.keys {
+        for step in steps {
+            after(step.hour);
+        }
+    }
+    for run in statuses.iter().chain(admission_statuses.iter()) {
+        after(run.first);
+        after(run.last.saturating_add(1));
+    }
+    (next != i32::MAX).then_some(next)
+}
+
+struct HolderRunHistory {
+    entries: lanes::History,
+    admitted: lanes::History,
+    statuses: Vec<lanes::StatusRun>,
+    admission_statuses: Vec<lanes::StatusRun>,
+}
+
+#[derive(Default)]
+struct HistoryCache {
+    by_stretch_holder: HashMap<(u32, i32, i32, u32), Arc<HolderRunHistory>>,
+}
+
+fn cached_holder_history(source: &Source, run: u32, first: i32, last: i32, holder: u32) -> io::Result<Arc<HolderRunHistory>> {
+    let cache = source.state::<HistoryCache>();
+    let key = (run, first, last, holder);
+    if let Some(held) = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).by_stretch_holder.get(&key) {
+        return Ok(Arc::clone(held));
+    }
+    let recording = source.replay_ref().recording();
+    let table = TableId::CountryOccupationReserveManpower;
+    let columns = [dashboard_declare::field(table, "source_country")?, dashboard_declare::field(table, "amount")?];
+    let admission = [dashboard_declare::field(TableId::OccupationSettings, "default_law_present")?];
+    let holder_key = [u128::from(holder)];
+    let range = lanes::Keys::Range(entry_key(holder, 0), entry_key(holder, u32::MAX));
+    let (entries, admitted, statuses, admission_statuses) = dashboard_query::cost::storage(|| {
+        io::Result::Ok((
+            lanes::history(recording, run, table, &columns, range, first, last)?,
+            lanes::history(recording, run, TableId::OccupationSettings, &admission, lanes::Keys::These(&holder_key), first, last)?,
+            lanes::statuses(recording, run, table, first, last)?,
+            lanes::statuses(recording, run, TableId::OccupationSettings, first, last)?,
+        ))
+    })?;
+    let built = Arc::new(HolderRunHistory { entries, admitted, statuses, admission_statuses });
+    let mut guard = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    Ok(Arc::clone(guard.by_stretch_holder.entry(key).or_insert(built)))
+}
+
 impl Product for ReserveHistory {
     const KEY: &'static str = "occupation-reserve-history";
     const CONTENT_DEPENDENT: bool = false;
     const INTERACTIVE: bool = true;
     type Params = ReserveHistoryParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, holder];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, holder, hour: Read];
     type Reply = ReserveHistoryReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -379,43 +471,64 @@ impl Product for ReserveHistory {
 
     fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
-        let recording = query.replay.recording();
-        let table = TableId::CountryOccupationReserveManpower;
-        let columns = [dashboard_declare::field(table, "source_country")?, dashboard_declare::field(table, "amount")?];
-        let admission = [dashboard_declare::field(TableId::OccupationSettings, "default_law_present")?];
-        let holder = [u128::from(params.holder)];
-        let range = lanes::Keys::Range(entry_key(params.holder, 0), entry_key(params.holder, u32::MAX));
         let names = Names::new(&query.holders);
+        let branch_last = query.timeline.last;
+        let hour = params.hour.min(branch_last);
+        let mut next = i32::MAX;
+        let mut after = |at: i32| {
+            if at > hour && at <= branch_last && at < next {
+                next = at;
+            }
+        };
         let mut segments = Vec::new();
         let mut sources: BTreeMap<u32, Vec<SourceTag>> = BTreeMap::new();
         for stretch in query.timeline.stretches.iter() {
             dashboard_text::metadata::check_cancel(cancelled)?;
-            let (first, last) = (stretch.first, stretch.last);
-            let (entries, admitted, statuses) = dashboard_query::cost::storage(|| {
-                io::Result::Ok((
-                    lanes::history(recording, stretch.run, table, &columns, range, first, last)?,
-                    lanes::history(recording, stretch.run, TableId::OccupationSettings, &admission, lanes::Keys::These(&holder), first, last)?,
-                    lanes::statuses(recording, stretch.run, table, first, last)?,
-                ))
-            })?;
-            let made = stretch_segments(&entries, &admitted, &statuses, first, last);
+            after(stretch.first);
+            after(stretch.last.saturating_add(1));
+            if stretch.first > hour {
+                continue;
+            }
+            let (first, stretch_last) = (stretch.first, stretch.last);
+            let upto = stretch_last.min(hour);
+            let held = cached_holder_history(source, stretch.run, first, stretch_last, params.holder)?;
+            let made = stretch_segments(&held.entries, &held.admitted, &held.statuses, &held.admission_statuses, first, upto);
+            if stretch_last > hour
+                && let Some(at) = next_history_change(&held.entries, &held.admitted, &held.statuses, &held.admission_statuses, hour, stretch_last)
+            {
+                after(at);
+            }
             let links = dashboard_base::queries::links(source, stretch.run)?;
             let named: BTreeSet<u32> = made.iter().flat_map(|segment| segment.entries.iter().flatten().map(|entry| entry.source)).collect();
             for raw in named {
                 let tags = sources.entry(raw).or_default();
-                for (tag, a, b) in names.tags_over(&links, raw, first, last) {
-                    tags.push(SourceTag { tag: tag.map(str::to_owned), first_hour: a, last_hour: b });
+                for (tag, a, b) in names.tags_over(&links, raw, first, stretch_last) {
+                    after(a);
+                    after(b.saturating_add(1));
+                    if a <= hour {
+                        tags.push(SourceTag { tag: tag.map(str::to_owned), first_hour: a, last_hour: b.min(hour) });
+                    }
                 }
             }
             segments.extend(made);
         }
-        Ok(ReserveHistoryReply { segments, sources: sources.into_iter().map(|(id, tags)| ReserveSource { id, tags }).collect(), warnings: Vec::new() })
+        Ok(ReserveHistoryReply {
+            hour,
+            next_change: (next != i32::MAX).then_some(next),
+            segments,
+            sources: sources.into_iter().map(|(id, tags)| ReserveSource { id, tags }).collect(),
+            warnings: Vec::new(),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
+    use replay::campaign::Replay;
+    use replay_data::rows::{CountryLinkRow, CountryRow, OccupationSettingsRow, TableRows};
+    use replay_frame::frame::TableView;
 
     fn entry(country: u32, ordinal: u32, source_country: u32, amount: i32) -> CountryOccupationReserveManpowerRow {
         CountryOccupationReserveManpowerRow { country, ordinal, source_country, amount }
@@ -457,7 +570,8 @@ mod tests {
         );
         let admission = history(vec![(2, vec![step(10, Some(&[1, 0]))])], 40);
         let statuses = [lanes::StatusRun { first: 10, last: 29, status: Status::Complete }, lanes::StatusRun { first: 30, last: 40, status: Status::NotRecorded }];
-        let segments = stretch_segments(&entries, &admission, &statuses, 10, 40);
+        let admission_statuses = [lanes::StatusRun { first: 10, last: 40, status: Status::Complete }];
+        let segments = stretch_segments(&entries, &admission, &statuses, &admission_statuses, 10, 40);
         let amounts = |segment: &ReserveSegment| segment.entries.as_ref().map(|entries| entries.iter().map(|entry| (entry.source, entry.amount)).collect::<Vec<_>>());
         assert_eq!(segments.iter().map(|segment| (segment.first_hour, segment.last_hour)).collect::<Vec<_>>(), vec![(10, 14), (15, 19), (20, 24), (25, 29), (30, 40)]);
         assert_eq!(amounts(&segments[0]), Some(vec![(9, 100)]));
@@ -467,6 +581,74 @@ mod tests {
         assert!(segments.iter().take(4).all(|segment| segment.admitted && segment.unknown.is_none()));
         assert_eq!(segments[4].entries, None);
         assert!(segments[4].unknown.is_some());
+    }
+
+    #[test]
+    fn unread_occupation_settings_withholds_zero_while_keeping_witnessed_entries() {
+        let entries = history(vec![(entry_key(2, 0), vec![step(10, Some(&[9, 100])), step(15, None)])], 20);
+        let admission = history(vec![], 20);
+        let statuses = [lanes::StatusRun { first: 10, last: 20, status: Status::Complete }];
+        let admission_statuses = [lanes::StatusRun { first: 10, last: 20, status: Status::NotRecorded }];
+        let segments = stretch_segments(&entries, &admission, &statuses, &admission_statuses, 10, 20);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].entries, Some(vec![ReserveAmount { source: 9, amount: 100 }]));
+        assert!(!segments[0].admitted);
+        assert_eq!(segments[1].entries, None);
+        assert!(segments[1].unknown.as_deref().is_some_and(|reason| reason.contains("Occupation settings")));
+    }
+
+    #[test]
+    fn a_reply_asked_at_an_hour_holds_no_entry_or_source_first_seen_after_it_and_reports_next_change() {
+        let frames: Vec<DecodedFrame> = (10..=20)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                let third_tag = if hour >= 18 { b"DDD".to_vec() } else { b"CCC".to_vec() };
+                *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+                    CountryRow { id: 9001, canonical_slot: 1, tag: b"AAA".to_vec(), ..CountryRow::default() },
+                    CountryRow { id: 9002, canonical_slot: 2, tag: b"BBB".to_vec(), ..CountryRow::default() },
+                    CountryRow { id: 9003, canonical_slot: 3, tag: third_tag, ..CountryRow::default() },
+                ]));
+                *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+                    CountryLinkRow { id: 9001, canonical_slot: 1 },
+                    CountryLinkRow { id: 9002, canonical_slot: 2 },
+                    CountryLinkRow { id: 9003, canonical_slot: 3 },
+                ]));
+                *frame.tables[TableId::OccupationSettings.index()] = TableView::Complete(TableRows::OccupationSettings(vec![
+                    OccupationSettingsRow { country: 9001, default_law_present: 1, ..Default::default() },
+                ]));
+                let mut rows = vec![entry(9001, 0, 9002, 100)];
+                if hour >= 15 {
+                    rows.push(entry(9001, 1, 9003, 250));
+                }
+                *frame.tables[TableId::CountryOccupationReserveManpower.index()] = TableView::Complete(TableRows::CountryOccupationReserveManpower(rows));
+                frame
+            })
+            .collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let src = Source::from_replay(dashboard_base::SourceKey { source_id: "reserve".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let ctx = LoadContext { content: None };
+
+        let at14 = ReserveHistory::load(&src, &ReserveHistoryParams { branch_id: "1".into(), holder: 9001, hour: 14 }, &ctx, &AtomicBool::new(false)).unwrap();
+        assert_eq!(at14.hour, 14);
+        assert_eq!(at14.next_change, Some(15));
+        assert_eq!(at14.segments.len(), 1);
+        assert_eq!((at14.segments[0].first_hour, at14.segments[0].last_hour), (10, 14));
+        assert_eq!(at14.segments[0].entries, Some(vec![ReserveAmount { source: 9002, amount: 100 }]));
+        assert_eq!(at14.sources.iter().map(|s| s.id).collect::<Vec<_>>(), vec![9002], "source 9003 first seen at 15 must be absent at 14");
+
+        let at15 = ReserveHistory::load(&src, &ReserveHistoryParams { branch_id: "1".into(), holder: 9001, hour: 15 }, &ctx, &AtomicBool::new(false)).unwrap();
+        assert_eq!(at15.hour, 15);
+        assert_eq!(at15.next_change, Some(18));
+        assert_eq!(at15.sources.iter().map(|s| s.id).collect::<Vec<_>>(), vec![9002, 9003]);
+        assert_eq!(
+            at15.sources.iter().find(|s| s.id == 9003).unwrap().tags,
+            vec![SourceTag { tag: Some("CCC".into()), first_hour: 10, last_hour: 15 }],
+            "future tag DDD at hour 18 must be absent at 15"
+        );
+
+        let at20 = ReserveHistory::load(&src, &ReserveHistoryParams { branch_id: "1".into(), holder: 9001, hour: 20 }, &ctx, &AtomicBool::new(false)).unwrap();
+        assert_eq!(at20.hour, 20);
+        assert_eq!(at20.next_change, None);
     }
 
     #[test]

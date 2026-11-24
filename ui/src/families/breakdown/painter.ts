@@ -3,7 +3,6 @@ import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   drawBar,
   drawChevron,
-  drawFlagSlot,
   drawMissingMark,
   drawPartialTab,
   drawRowFocusRing,
@@ -11,14 +10,14 @@ import {
   drawRowHover,
   drawRowSelected,
   drawScrollFade,
+  FLAG_SLOT_HEIGHT,
+  FLAG_SLOT_WIDTH,
   resolveKitTokens,
-  type FlagSlotState,
 } from '../../draw/kit.ts';
-import { toFlagSlotState } from '../art/adapters.ts';
+import { drawMediaSlot } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { drawHatchLines } from '../valueCanvas.ts';
-import type { ArtResult } from '../plan.ts';
 import {
   firstRowFrom,
   type BreakdownLayout,
@@ -29,7 +28,7 @@ import {
   type RingViewLayout,
   type TotalLineLayout,
 } from './layout.ts';
-import type { BreakdownComparison } from './model.ts';
+import type { BreakdownComparison, BreakdownPart } from './model.ts';
 
 export interface BreakdownPaintInput {
   readonly layout: BreakdownLayout;
@@ -47,18 +46,17 @@ function fitText(ctx: Canvas2D, text: string, maxWidth: number): string {
   return ellipsise(text, maxWidth, s => textWidth(ctx, s));
 }
 
-function flagStateOf(
-  tag: string | undefined,
-  flagArt: ArtResult | undefined,
-  _hour: number,
-  _theme: FamilyTheme,
-  _artCache: LaneArtCache | undefined,
-): FlagSlotState | null {
-  if (flagArt) {
-    return toFlagSlotState(flagArt, tag);
+function drawPartName(ctx: Canvas2D, part: BreakdownPart, x: number, cy: number, maxWidth: number, theme: FamilyTheme): void {
+  let at = x;
+  let room = maxWidth;
+  if (part.nameMissing) {
+    const { font, fillStyle, textAlign, textBaseline } = ctx;
+    const mark = drawMissingMark(ctx, at, cy, 10, theme);
+    Object.assign(ctx, { font, fillStyle, textAlign, textBaseline });
+    at += mark.width + 5;
+    room -= mark.width + 5;
   }
-  if (!tag) return null;
-  return { kind: 'pending' };
+  ctx.fillText(fitText(ctx, part.name, room), at, cy);
 }
 
 function drawComparison(ctx: Canvas2D, comparison: BreakdownComparison, box: Rect, cy: number, theme: FamilyTheme): void {
@@ -122,7 +120,7 @@ function drawTotalLine(ctx: Canvas2D, line: TotalLineLayout, theme: FamilyTheme)
 }
 
 function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsViewLayout): void {
-  const { theme, hour, scrollTop, inspectedKey, selectedKey, focusedKey, artCache } = input;
+  const { theme, scrollTop, inspectedKey, selectedKey, focusedKey, artCache } = input;
   const tokens = resolveKitTokens(theme);
   drawTotalLine(ctx, layout.totalLine, theme);
 
@@ -158,10 +156,9 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
         drawChevron(ctx, row.chevronRect.x - 1, cy, row.expanded, theme);
       }
       let cursorX = row.nameX;
-      const flagState = flagStateOf(row.part.flag, row.part.flagArt, hour, theme, artCache);
-      if (flagState && !layout.narrow) {
-        drawFlagSlot(ctx, cursorX, Math.round(cy - 6), flagState, theme, { width: 18, height: 12 });
-        cursorX += 24;
+      if (row.part.flagArt && !layout.narrow) {
+        drawMediaSlot(ctx, cursorX, cy, FLAG_SLOT_WIDTH, FLAG_SLOT_HEIGHT, { kind: 'flag', art: row.part.flagArt, ...(row.part.flag ? { tag: row.part.flag } : {}) }, theme, { artCache });
+        cursorX += FLAG_SLOT_WIDTH + 6;
       } else {
         ctx.save();
         ctx.fillStyle = row.swatchColor;
@@ -178,7 +175,7 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
       ctx.fillStyle = theme.text;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(fitText(ctx, row.part.name, textMaxW), cursorX, cy);
+      drawPartName(ctx, row.part, cursorX, cy, textMaxW, theme);
       ctx.restore();
 
       const barH = 12;
@@ -255,7 +252,7 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
       ctx.fillStyle = row.depth === 1 ? theme.text : theme.muted;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(fitText(ctx, row.part.name, row.nameWidth), row.nameX, cy);
+      drawPartName(ctx, row.part, row.nameX, cy, row.nameWidth, theme);
       ctx.restore();
 
       const barH = row.depth === 1 ? 8 : 6;
@@ -512,7 +509,7 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
         ctx.fillStyle = row.part.notRecorded ? theme.muted : theme.text;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        ctx.fillText(fitText(ctx, row.part.name, nameW), nameX, cy);
+        drawPartName(ctx, row.part, nameX, cy, nameW, theme);
 
         ctx.textAlign = 'right';
         if (row.part.notRecorded) {
@@ -546,7 +543,7 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
         ctx.fillStyle = theme.muted;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        ctx.fillText(fitText(ctx, row.part.name, nameW), nameX, cy);
+        drawPartName(ctx, row.part, nameX, cy, nameW, theme);
 
         ctx.textAlign = 'right';
         if (row.part.notRecorded) {

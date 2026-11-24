@@ -3,6 +3,9 @@ import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
 import { daysLeft, decisionAt, decisionCard, lifecycleLine, STATUS_CHOICES, statusLabel } from './decisionsData.ts';
 import { plainScripted, scriptedParts } from '../event-feed/scriptedGaps.ts';
+import { createBoundedReadView } from '../../families/boundedView.ts';
+import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
+import { decisionsProjection } from './decisionsProjection.ts';
 import type { EventFeedKind, EventFeedRow, ScriptCost, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
 
 const day = (month: number, date: number, year = 1939) => engineHour({ year, month, day: date, hour: 1 })!;
@@ -95,4 +98,69 @@ test('a mission with a recorded Failed native state shows Failed with its observ
   const unknownNative = at(unsupported, day(6, 1))!;
   assert.equal(unknownNative.status, 'unsupported');
   assert.equal(statusLabel(unknownNative), 'Unsupported (state 99)');
+
+  const completedLifecycle = at([
+    edge('decisionActivated', start, { days: 30, row: { ...edge('decisionActivated', start).row, decisionState: { kind: 'completed' } } }),
+  ], day(4, 1))!;
+  assert.equal(completedLifecycle.status, 'completed');
+  assert.match(lifecycleLine(completedLifecycle), /completed/);
+
+  const abortedLifecycle = at([
+    edge('decisionActivated', start, { days: 30, row: { ...edge('decisionActivated', start).row, decisionState: { kind: 'aborted' } } }),
+  ], day(4, 1))!;
+  assert.equal(abortedLifecycle.status, 'cancelled');
+  assert.match(lifecycleLine(abortedLifecycle), /aborted/);
+});
+
+test('decisions projection formats unsigned costs with PP icon, keeps unknown chargeable edges missing, omits cost on missions, and bounds timer validity', () => {
+  const start = day(3, 1);
+  const hour = start + 10;
+  const missionOcc = card([edge('decisionActivated', start, { days: 10 })]);
+  const mixedUnknownOcc = card([
+    edge('decisionSelected', start, { costs: null }),
+    edge('decisionTimeoutEffect', start + 2, { costs: [] }),
+  ]);
+  const chargedOcc = card([edge('decisionSelected', start, { days: 10, costs: pp('-5000000') })]);
+  const head = {
+    branchId: '1',
+    log: 'feed-events',
+    columns: [],
+    baseOrdinal: '0',
+    firstOrdinal: '0',
+    offset: '0',
+    total: '3',
+    counts: [{ key: 'running', total: '2' }],
+    rows: [
+      { hour: start, key: 'k3', ordinal: '2', cells: [], occurrence: chargedOcc },
+      { hour: start, key: 'k2', ordinal: '1', cells: [], occurrence: mixedUnknownOcc },
+      { hour: start, key: 'k1', ordinal: '0', cells: [], occurrence: missionOcc },
+    ],
+    facetTotals: [],
+    missing: [],
+    unavailable: [],
+    warnings: [],
+  };
+  const source = buildRowSourceFromHead('test:decisions', head, undefined, hour)!;
+  const readView = createBoundedReadView({
+    hour,
+    rows: new Map([['main', source]]),
+    art: { resolve: () => ({ status: 'ready', assetId: 'pp', url: 'art://pp', origin: 'vanilla', file: 'pp.dds', frame: 0, provenance: 'recorded' }) as never },
+  });
+  const model = decisionsProjection.project(readView, {
+    artwork: true,
+    breaks: [],
+  });
+  assert.equal(model.titleSummary, '2 running');
+  assert.equal(model.nextChangeAt, start + 24);
+  const byKey = new Map(model.rows.map(r => [r.key, r]));
+  const chargedRow = byKey.get(chargedOcc.id)!;
+  assert.deepEqual(chargedRow.cells.cost?.value, { kind: 'known', value: '50' });
+  assert.equal(chargedRow.cells.cost?.unitSuffix, 'PP');
+  assert.equal(chargedRow.cells.cost?.unitIcon, 'art://pp');
+  assert.ok(chargedRow.meta, 'decision row carries detail subject');
+  const mixedRow = byKey.get(mixedUnknownOcc.id)!;
+  assert.equal(mixedRow.cells.cost?.value.kind, 'notRecorded', 'unknown selection cost never collapses to No cost');
+  const missionRow = byKey.get(missionOcc.id)!;
+  assert.equal(missionRow.cells.cost?.value.kind, 'notApplicable');
+  assert.equal(missionRow.cells.cost?.blank, true);
 });
