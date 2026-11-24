@@ -168,6 +168,7 @@ export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOption
       hour,
       rows,
       legend,
+      unit: 'Warheads',
       warnings: reply.warnings,
       ...(!rows.length ? { empty: 'No nuclear stockpile recorded at this date.', emptyKind: 'empty' as const } : {}),
     });
