@@ -84,24 +84,33 @@ function grantLines(grants: readonly MarketGrant[]): MarketDetailLine[] {
   }));
 }
 
-export function marketDetail(reply: MarketLendLeaseReply, selected: string): MarketDetail {
+export interface MarketRowKey {
+  readonly section: 'offers' | 'contracts';
+  readonly row: string;
+  readonly variant: string | null;
+}
+
+export interface MarketRowMeta extends MarketRowKey {
+  readonly title: string;
+}
+
+export function marketDetail(reply: MarketLendLeaseReply, selected: MarketRowKey): MarketDetail {
   const equipment = equipmentOf(reply);
   const name = (item: { variant: string; name: string | null }) => item.name ?? equipment(item.variant).name ?? NAME_MISSING;
-  const [kind, first, second] = selected.split(':');
-  if (kind === 'offer') {
+  if (selected.section === 'offers') {
     if (reply.offers === null) return { missing: 'Market inventory was not recorded at this date.', sections: [] };
-    const offer = reply.offers.find(row => String(row.country) === first);
+    const offer = reply.offers.find(row => String(row.country) === selected.row);
     if (!offer) return { missing: 'This seller lists nothing on the market at this date.', sections: [] };
     const levels = new Map(offer.prices.map(level => [level.variant, level.level]));
     return { missing: null, sections: [
       { title: 'Listed inventory', empty: 'Nothing listed.', lines: offer.inventory.map(item => ({
-        label: name(item), value: `${units(BigInt(item.amountRaw))} · ${levels.has(item.variant) ? levelText(levels.get(item.variant)!) : 'Price level not recorded'}`, marked: item.variant === second })) },
+        label: name(item), value: `${units(BigInt(item.amountRaw))} · ${levels.has(item.variant) ? levelText(levels.get(item.variant)!) : 'Price level not recorded'}`, marked: item.variant === selected.variant })) },
       { title: 'Subsidies', empty: 'No subsidies.', lines: [...grantLines(offer.subsidies), { label: 'Subsidy balance', value: cic(BigInt(offer.subsidyTotalRaw)) }] },
       { title: 'Market access', empty: '', lines: [{ label: 'Automatically send market access', value: offer.autoSendMarketAccess ? 'Yes' : 'No' }] },
     ] };
   }
   if (reply.contracts === null) return { missing: 'Market contract terms were not recorded at this date.', sections: [] };
-  const terms = reply.contracts.find(row => String(row.request) === first && row.id === second);
+  const terms = reply.contracts.find(row => row.key === selected.row);
   if (!terms) return { missing: 'This request or contract is not on the market at this date.', sections: [] };
   const price = new Map(terms.prices.map(item => [item.variant, BigInt(item.amountRaw)]));
   const level = new Map(terms.levels.map(item => [item.variant, item.level]));

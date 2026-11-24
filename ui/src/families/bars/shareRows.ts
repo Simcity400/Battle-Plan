@@ -1,7 +1,8 @@
+import type { ActiveRegions } from '../../generated/dashboard';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 import { REGION_ADD_KEY, type RegionRowRef, type RegionRowsField } from '../regions/regionRows.ts';
 import type { Value } from '../value.ts';
-import { formatShare, type ValueFormat } from '../valueFormat.ts';
+import type { ValueFormat } from '../valueFormat.ts';
 import type { BarsDataRow, BarsLegendItem, BarsModel, BarsRow, BarsRowMedia, BarsSegment } from './model.ts';
 
 export interface ShareRowEntry {
@@ -37,6 +38,7 @@ export interface ShareRowsInput {
   readonly notes?: readonly string[];
   readonly warnings?: readonly string[];
   readonly nextChangeAt?: number;
+  readonly active?: ActiveRegions;
 }
 
 function toShareDataRow(entry: ShareRowEntry, group?: 'picked' | 'auto'): BarsDataRow {
@@ -88,6 +90,7 @@ export function buildShareRowsModel(input: ShareRowsInput): BarsModel {
     ...(input.notes ? { notes: input.notes } : {}),
     ...(input.warnings ? { warnings: input.warnings } : {}),
     ...(input.nextChangeAt !== undefined ? { nextChangeAt: input.nextChangeAt } : {}),
+    ...(input.active ? { regionsActive: input.active } : {}),
   };
 }
 
@@ -99,7 +102,6 @@ export function barsRegionRows(model: BarsModel, layout: { readonly bodyTop: num
     const height = layout.rowHeights[index]!;
     if (row.kind === 'add-region') add = { top, height };
     if (row.kind !== 'data' || row.region === undefined) return;
-    const lead = row.segments?.reduce<BarsSegment | null>((best, segment) => (segment.share > (best?.share ?? 0) ? segment : best), null);
     rows.push({
       key: row.key,
       id: row.region,
@@ -107,8 +109,8 @@ export function barsRegionRows(model: BarsModel, layout: { readonly bodyTop: num
       picked: row.group === 'picked',
       top,
       height,
-      ...(lead ? { activity: { color: lead.color, text: `${formatShare(lead.share)} ${lead.label}` } } : {}),
+      active: row.group !== 'picked' || (row.segments ?? []).some(segment => segment.share > 0),
     });
   });
-  return rows.length || add ? { rows, add, nameLeft: layout.nameX } : null;
+  return rows.length || add || model.regionsActive ? { rows, add, nameLeft: layout.nameX, ...(model.regionsActive ? { active: model.regionsActive } : {}) } : null;
 }
