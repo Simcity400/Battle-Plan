@@ -997,6 +997,7 @@ fromHour?: number, hour: number, metric: MilitaryAirMetric, top?: number,
  * Only these countries' rows, a recorded zero included.
  */
 countries?: Array<CountryRef>, };
+export type MilitaryAirCauseTotal = { cause: number, taken: string, };
 export type MilitaryAirAtRow = { tag: string, identity: string,
 /**
  * The first hour of the holder's unbroken presence that holds the hour.
@@ -1005,7 +1006,11 @@ segmentFirstHour: number, dealt: string, taken: string,
 /**
  * False where events since the totals' start may be missing: the totals are at least these.
  */
-complete: boolean, };
+complete: boolean,
+/**
+ * Air losses: own losses by recorded cause since the totals' start, most first; empty for bombing.
+ */
+causes: Array<MilitaryAirCauseTotal>, };
 export type MilitaryAirAtReply = { family: MilitaryAirFamily, hour: number, countedFrom: number | null,
 /**
  * The last hour this answer holds for.
