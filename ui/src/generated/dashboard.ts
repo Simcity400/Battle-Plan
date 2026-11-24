@@ -3924,22 +3924,18 @@ measure: string,
 /**
  * `controlled` or `owned`.
  */
-rule: string, };
-export type TerritoryRegion = { id: number, name: string | null,
+rule: string,
 /**
- * Why it has no name.
+ * The countries whose territory is shown, by tag or `slot:N`; every country when none.
  */
-missing: string | null, };
-export type TerritoryRegionRow = { key: string, tag: string | null, slot: number | null, region: number | null, };
-export type TerritoryBreakdownReply = { measure: string, rule: string, regions: Array<TerritoryRegion>, rows: Array<TerritoryRegionRow>,
+tags?: Array<string>, };
+export type TerritoryBreakdownReply = { hour: number,
 /**
- * Why the rows are not known at this hour.
+ * Countries (key: the tag held at the hour, or `slot:N` for a slot no tag names, or `~unheld` for
+ * land no country holds), each split by strategic region (`~region` where the region is not
+ * recorded). States are counted to two decimals: a state split between holders counts by its share.
  */
-missing: string | null,
-/**
- * Why area by region is not known: the recording's facts hold no province areas.
- */
-areaReason: string | null, warnings: Array<string>, };
+breakdown: Breakdown, warnings: Array<string>, };
 export type TerritoryBreakdownParamsAtHour = TerritoryBreakdownParams & { hour: number };
 export type FactionRostersParams = { branchId: string, };
 export type FactionRoster = {
@@ -6727,7 +6723,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "technology-artwork": { "recorded": "node", "recorded.*": "node", "recorded.*[]": "leaf", "tokens": "node", "tokens[]": "leaf" },
   "technology-effects": { "branchId": "leaf", "country": "any", "databaseIndex": "leaf", "hour": "leaf", "token": "leaf" },
   "template-roster": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "territory-breakdown": { "branchId": "leaf", "hour": "leaf", "measure": "leaf", "rule": "leaf" },
+  "territory-breakdown": { "branchId": "leaf", "hour": "leaf", "measure": "leaf", "rule": "leaf", "tags": "node", "tags[]": "leaf" },
   "territory-share": { "branchId": "leaf", "hour": "leaf", "measure": "leaf" },
   "territory-transfers": { "branchId": "leaf", "through": "leaf" },
   "trade-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "limit": "leaf", "resource": "leaf", "subject": "any", "table": "leaf" },
