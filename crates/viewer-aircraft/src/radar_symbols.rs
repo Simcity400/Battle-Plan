@@ -350,7 +350,7 @@ impl Pass {
         turn(&mut self.angles, self.step, self.label == "Air ranges", elapsed);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the arena, encoder and targets, plus the native inputs, planes, time and visibility of one draw")]
     pub fn draw(
         &self,
         arena: &shader_pipeline::gpu::Arena,

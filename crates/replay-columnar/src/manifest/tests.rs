@@ -94,7 +94,7 @@ fn unknown_flags_and_columns_past_a_table_are_refused() {
     column.sections[0].columns = vec![1 << 4];
     assert!(column.write(&COLUMNS).is_err(), "table 0 has 4 columns");
     let bytes = manifest().write(&COLUMNS).unwrap();
-    let mut patched = bytes.clone();
+    let mut patched = bytes;
     let flags_at = 1 + 4;
     assert_eq!(patched[flags_at], AFTER_GAP | AFTER_LOAD);
     patched[flags_at] |= 0x80;

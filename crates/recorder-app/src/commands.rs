@@ -687,7 +687,6 @@ mod tests {
         let receipt = exit.admit(What::Change).unwrap();
         let (started, waiting) = std::sync::mpsc::channel();
         let writer = {
-            let path = path.clone();
             std::thread::spawn(move || {
                 receipt.carry(|| {
                     started.send(()).unwrap();

@@ -82,7 +82,7 @@ impl<'a> Sources<'a> {
         self.definitions.as_ref().map_err(Clone::clone)
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "the native call's side, key, prefix and output are separate operands"
     )]
@@ -185,7 +185,7 @@ fn ensure_newline(text: &mut String) {
     }
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "Render recorded modifier trees with explicit scaling, label policy and text resources"
 )]

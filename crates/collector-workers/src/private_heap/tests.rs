@@ -429,7 +429,7 @@ fn the_hold_path_takes_no_lock_while_other_threads_hammer_the_heap() {
 fn region(pointer: *const u8) -> MEMORY_BASIC_INFORMATION {
     let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
     let size = size_of::<MEMORY_BASIC_INFORMATION>();
-    assert_ne!(unsafe { VirtualQuery(pointer.cast(), &mut info, size) }, 0);
+    assert_ne!(unsafe { VirtualQuery(pointer.cast(), &raw mut info, size) }, 0);
     info
 }
 

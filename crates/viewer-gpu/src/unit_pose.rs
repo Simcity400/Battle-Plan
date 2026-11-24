@@ -194,7 +194,7 @@ pub struct UnitPose {
 }
 
 impl UnitTrack {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the arrow's controls and kind, the heights and defines, and the raid's fixed-point progress")]
     pub fn new(
         controls: &[Point],
         kind: RaidArrowKind,

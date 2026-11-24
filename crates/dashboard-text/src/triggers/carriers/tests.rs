@@ -856,7 +856,7 @@ fn a_completed_project_is_known_only_from_the_countrys_accepted_project_rows() {
         rows: rows.into_iter().map(|row| ((row.owner, row.local_id), row)).collect(),
         slots: slots.iter().copied().collect(),
     };
-    with_world_accepted(&f, accepted(vec![completed.clone()], &[1]), |world| {
+    with_world_accepted(&f, accepted(vec![completed], &[1]), |world| {
         assert_eq!(limit(world), Eval::True, "the accepted completed row proves the if branch");
     });
     with_world_accepted(&f, accepted(Vec::new(), &[1]), |world| {

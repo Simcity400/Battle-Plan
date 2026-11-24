@@ -3240,7 +3240,10 @@ impl Plans {
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "the serial plans and each stitched split are returned together for comparison"
+)]
 fn serial_and_stitched_plans(
     image: &MemoryImage,
 ) -> (Plans, Vec<(Vec<std::ops::Range<usize>>, Plans)>) {

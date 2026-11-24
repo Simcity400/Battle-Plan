@@ -49,7 +49,10 @@ pub(crate) struct Read {
     pub wanted: usize,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the conveyor, country, ordinal and row pointer identify one row, and the custom name buffer is caller-owned"
+)]
 pub(crate) fn read_row_buffer(
     memory: &impl Memory,
     base: usize,

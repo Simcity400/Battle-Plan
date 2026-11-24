@@ -959,6 +959,7 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
     state
         .stream
         .bind_texture(0, Stage::Pixel, Some(third.clone()), None);
+    #[expect(clippy::redundant_clone, reason = "the test keeps its own buffer handle, so the buffer's lifetime never depends on the state under test")]
     state.bind_vertex(1, 48, big.clone());
     for _ in 0..2 {
         let errors = state.stream.refused.clone();
@@ -989,6 +990,7 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
             "failed third page is not published and warm A/B survive"
         );
     }
+    #[expect(clippy::redundant_clone, reason = "the test keeps its own buffer handle, so the buffer's lifetime never depends on the state under test")]
     state.bind_vertex(1, 48, small.clone());
     for view in [&views[0], &third, &views[1], &third] {
         state

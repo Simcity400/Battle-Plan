@@ -91,7 +91,7 @@ fn a_run_directory_round_trips_and_refuses_what_does_not_cover_it() {
     let bytes = directory.write(0).unwrap();
     let extent = Extent { kind: Kind::RunDirectory, run: 0, stream: 0, first: 0, hours: 0, offset: 70, stored: 9, raw: bytes.len() as u64, digest: [0; 16] };
     assert_eq!(RunDirectory::read(&bytes, &extent, 0).unwrap(), directory);
-    let short = RunDirectory { open: vec![page(16, UNIT_ORDINALS)], ..directory.clone() };
+    let short = RunDirectory { open: vec![page(16, UNIT_ORDINALS)], ..directory };
     assert!(short.write(0).is_err());
     assert!(RunDirectory::read(&bytes, &Extent { run: 1, ..extent }, 1).is_err());
 }

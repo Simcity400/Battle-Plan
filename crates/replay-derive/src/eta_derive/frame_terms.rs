@@ -1040,7 +1040,6 @@ impl<'a> FrameTerms<'a> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn with_route_terms<T>(
         &self,
         division: &DivisionRow,
@@ -1055,7 +1054,6 @@ impl<'a> FrameTerms<'a> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn with_route_terms_inner<T>(
         &self,
         division: &DivisionRow,

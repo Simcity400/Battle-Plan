@@ -526,7 +526,10 @@ impl Captured {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the roster, fingerprints and change source"
+    )]
     pub fn capture_selected(
         &mut self,
         memory: &impl Memory,
@@ -543,7 +546,10 @@ impl Captured {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the roster, fingerprints and change source"
+    )]
     pub fn acquire_selected(
         &mut self,
         memory: &impl Memory,
@@ -590,7 +596,10 @@ impl Captured {
         self.project_runtime.decode();
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the roster, fingerprints, change source, deferral and dispatch"
+    )]
     fn capture_selected_impl(
         &mut self,
         memory: &impl Memory,
@@ -1170,7 +1179,10 @@ fn elapsed(begin: i64) -> u64 {
 }
 
 impl Captured {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the store, change source, deferral and dispatch"
+    )]
     fn capture_project_family(
         &mut self,
         memory: &impl Memory,

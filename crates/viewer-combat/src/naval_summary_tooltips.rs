@@ -95,7 +95,7 @@ fn damage_ratio(value: i64, denominator: i64) -> i64 {
     super::fixed::fraction(value, denominator).unwrap_or(super::fixed::EXCEPTIONAL)
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the correction branch's census, side and text resources are separate operands"
 )]
@@ -553,7 +553,7 @@ fn header(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the bindings, the text resources, both sides' details and the defines")]
 fn side_hovers(
     out: &mut Bindings,
     icons: &dyn TextIcons,
@@ -639,7 +639,7 @@ fn screening_inputs<'a>(
     Ok((census, screening, defines))
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the hover's fresh terms, both sides, trees and text resources are separate operands"
 )]

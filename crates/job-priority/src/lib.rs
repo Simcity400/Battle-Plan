@@ -185,7 +185,7 @@ impl Processors {
                 Threading::{GetCurrentThread, GetThreadGroupAffinity},
             };
             let mut affinity: GROUP_AFFINITY = std::mem::zeroed();
-            (GetThreadGroupAffinity(GetCurrentThread(), &mut affinity) != 0).then_some(Self {
+            (GetThreadGroupAffinity(GetCurrentThread(), &raw mut affinity) != 0).then_some(Self {
                 mask: affinity.Mask,
                 group: affinity.Group,
             })
@@ -208,7 +208,7 @@ impl Processors {
         unsafe {
             use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
             let (mut process, mut system) = (0, 0);
-            (GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) != 0)
+            (GetProcessAffinityMask(GetCurrentProcess(), &raw mut process, &raw mut system) != 0)
                 .then_some(Self {
                     mask: process,
                     group: 0,
@@ -242,7 +242,7 @@ impl Processors {
                 Group: self.group,
                 Reserved: [0; 3],
             };
-            SetThreadGroupAffinity(GetCurrentThread(), &affinity, std::ptr::null_mut());
+            SetThreadGroupAffinity(GetCurrentThread(), &raw const affinity, std::ptr::null_mut());
         }
     }
 
@@ -282,12 +282,12 @@ fn cores(group: u16) -> Vec<usize> {
         };
         type Record = SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX;
         let mut length = 0;
-        GetLogicalProcessorInformationEx(RelationProcessorCore, std::ptr::null_mut(), &mut length);
+        GetLogicalProcessorInformationEx(RelationProcessorCore, std::ptr::null_mut(), &raw mut length);
         let mut buffer = vec![0u64; (length as usize).div_ceil(8)];
         if GetLogicalProcessorInformationEx(
             RelationProcessorCore,
             buffer.as_mut_ptr().cast(),
-            &mut length,
+            &raw mut length,
         ) == 0
         {
             return Vec::new();
@@ -325,6 +325,7 @@ fn cores(group: u16) -> Vec<usize> {
                     if offset + size_of::<GROUP_AFFINITY>() > size {
                         break;
                     }
+                    #[expect(clippy::cast_ptr_alignment, reason = "the pointer is only read through read_unaligned")]
                     let mask = bytes[at + offset..].as_ptr().cast::<GROUP_AFFINITY>();
                     let mask = mask.read_unaligned();
                     if mask.Group == group {

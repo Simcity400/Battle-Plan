@@ -113,8 +113,7 @@ impl Assets {
                     )
                 } else {
                     library
-                        .load(&definition.effect, &shader_defines)
-                        .map_err(|error| error.to_string())?
+                        .load(&definition.effect, &shader_defines)?
                 };
                 let mut images = Vec::with_capacity(4);
                 for path in [
@@ -442,7 +441,7 @@ impl Player {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the arena, encoder and targets, plus the caller's state, matrix, planes and visibility of one draw")]
     pub fn draw(
         &mut self,
         arena: &gpu::Arena,

@@ -955,6 +955,7 @@ impl Context {
         self.localise(key)
     }
 
+    #[expect(clippy::result_large_err, reason = "the error is the dashboard's shared finding, which the caller records as it is")]
     fn selected_icon(
         &self,
         token: &str,
@@ -1627,7 +1628,7 @@ impl Context {
 
     fn cached_icon(&self, drawing: &Catalogue, name: &str) -> io::Result<Option<String>> {
         let key = (
-            !std::ptr::eq(drawing, &*self.catalogue),
+            !std::ptr::eq(drawing, &raw const *self.catalogue),
             content_reader_layers::content::artwork_mode(),
             name.to_owned(),
         );
@@ -2045,7 +2046,7 @@ mod tests {
         let (art, reason) = titles(&mut national, "shared");
         assert_eq!((art.name, reason), (national_title.clone(), None));
         let (art, reason) = titles(&mut continuous, "shared");
-        assert_eq!((art.name, reason), (continuous_title.clone(), None));
+        assert_eq!((art.name, reason), (continuous_title, None));
         let (art, reason) = titles(&mut continuous, "national_only");
         assert_eq!(art.name, None);
         assert_eq!(

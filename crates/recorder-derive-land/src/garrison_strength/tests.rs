@@ -84,7 +84,7 @@ fn garrison_strengths_follow_their_inputs_and_say_why_one_is_not_known() {
     let mut edits = Edits::default();
     edits.put(TableId::StateAssignedManpower, assigned(11, 1, 1, 20, -10));
     run.hour(&edits);
-    let mut second = first.clone();
+    let mut second = first;
     second[0] = known(10, 1, 75_000);
     assert_eq!(strengths(&run), second, "half manned: the state's garrison written again, the others as they were");
 

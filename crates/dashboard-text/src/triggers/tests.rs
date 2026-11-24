@@ -253,7 +253,6 @@ fn with_world_traits<T>(
     run(&world)
 }
 
-#[allow(clippy::field_reassign_with_default)]
 fn names() -> KeyNames {
     let folded = |names: &[&str]| {
         names

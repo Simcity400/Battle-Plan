@@ -939,7 +939,6 @@ fn load_scene_scoped(
 }
 
 impl Viewer {
-    #[allow(clippy::too_many_arguments, reason = "the frame's inputs the gate lays an hour out and draws with")]
     fn check_overlay(
         &mut self,
         what: &str,
@@ -2007,7 +2006,7 @@ impl Viewer {
             .push(format!("the overlay is withheld: {why}"));
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the frame's camera and what the placing reads")]
+    #[expect(clippy::too_many_arguments, reason = "the frame's camera and what the placing reads")]
     fn place_overlay(
         &mut self,
         now: &crate::document::Hour<'_>,
@@ -2106,7 +2105,7 @@ impl Viewer {
         Ok(PaintingPlaced::Placed)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the frame's camera, view, head, clock state and repaint hook")]
+    #[expect(clippy::too_many_arguments, reason = "the frame's camera, view, head, clock state and repaint hook")]
     fn finish_painting(
         &mut self,
         camera: Camera,
@@ -5739,7 +5738,7 @@ impl Viewer {
                         }
                         if modifiers.ctrl
                             && self.map_hit(point).is_none()
-                            && let Some(province) = pick(&camera, point.map(|value| value * ui_scale), pixels, &document.map, document.assets.heightmap_texels()).map_err(|error| error.to_string())?
+                            && let Some(province) = pick(&camera, point.map(|value| value * ui_scale), pixels, &document.map, document.assets.heightmap_texels())?
                             && self.ctrl_click(document, frame, ours, province, modifiers.shift, ui.ctx())
                         {
                             ui.ctx().request_repaint();
@@ -5756,7 +5755,7 @@ impl Viewer {
                                 pixels,
                                 &document.map,
                                 document.assets.heightmap_texels(),
-                            ).map_err(|error| error.to_string())?
+                            )?
                             && let Some(country) = self.counter_report.perspective.province_controller(province)
                             && self.diplomatic_selected != Some(country)
                         {
@@ -5846,8 +5845,7 @@ impl Viewer {
                                     pixels,
                                     &document.map,
                                     document.assets.heightmap_texels(),
-                                )
-                                .map_err(|e| e.to_string())?
+                                )?
                                 else {
                                     continue;
                                 };

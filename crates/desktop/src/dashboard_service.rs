@@ -447,7 +447,6 @@ pub async fn dashboard_history_choice(
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn dashboard_map_settings(
     window: WebviewWindow,
     host: State<'_, NativeHost>,
@@ -526,7 +525,7 @@ mod tests {
         let refusal = requests.begin("late").unwrap_err();
         assert!(
             refusal
-                .to_string()
+                
                 .starts_with(dashboard_core::transport::CAPACITY_REACHED)
         );
         assert!(dashboard_core::transport::transient_error(&refusal));

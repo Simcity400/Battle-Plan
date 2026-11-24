@@ -426,10 +426,6 @@ enum Reached {
 }
 
 impl Campaign {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one campaign's whole context, passed once"
-    )]
     fn advance(
         &mut self,
         session_dir: &Path,

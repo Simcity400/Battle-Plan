@@ -265,7 +265,10 @@ fn walk_timed_buffer(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the combat and sides identify the members, and the output, counts and group buffer are caller-owned"
+)]
 fn members(
     memory: &impl Memory,
     base: usize,

@@ -177,7 +177,7 @@ fn parallel_focus_files_isolate_variables_and_share_complete_mod_names() -> io::
             workers,
             |path| path.read(&layers),
             |bytes, database, shared_names| {
-                assert!(std::ptr::eq(shared_names, &names.names));
+                assert!(std::ptr::eq(shared_names, &raw const names.names));
                 parse(bytes, database, shared_names)
             },
         )?;

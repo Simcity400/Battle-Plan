@@ -57,7 +57,7 @@ impl Confirmation {
         self.root.as_ref().is_some_and(gui::Retained::pointing)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the window's texts, extent, clock and pointer, each from another owner")]
+    #[expect(clippy::too_many_arguments, reason = "the window's texts, extent, clock and pointer, each from another owner")]
     pub fn draw(
         &mut self,
         content: &super::content::Content,

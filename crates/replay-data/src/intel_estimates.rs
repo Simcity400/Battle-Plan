@@ -202,7 +202,7 @@ mod tests {
                 p,
                 &ClockRow {
                     seed: 999,
-                    ..clock.clone()
+                    ..clock
                 },
                 1
             )
@@ -216,7 +216,7 @@ mod tests {
                 p,
                 &ClockRow {
                     hour: clock.hour + 31 * 24,
-                    ..clock.clone()
+                    ..clock
                 },
                 1
             )
@@ -230,7 +230,7 @@ mod tests {
                 p,
                 &ClockRow {
                     hour: clock.hour + 24,
-                    ..clock.clone()
+                    ..clock
                 },
                 1
             )

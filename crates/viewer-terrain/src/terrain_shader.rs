@@ -1468,7 +1468,7 @@ impl Terrain {
     }
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "every input of the pass, which is what the key is"
 )]
@@ -1558,7 +1558,7 @@ fn read_key(
     }
 }
 
-#[allow(clippy::too_many_arguments, reason = "the draws, their blocks and the buffers they sit in")]
+#[expect(clippy::too_many_arguments, reason = "the draws, their blocks and the buffers they sit in")]
 fn bind_retained(
     arena: &gpu::Arena,
     pipeline: &Arc<gpu::Pipeline>,
@@ -1976,6 +1976,7 @@ mod tests {
     }
 
     impl Pass {
+        #[expect(clippy::single_range_in_vec_init, reason = "each buffer's reads are a list of byte ranges, here one")]
         fn new() -> Self {
             let drawn = |origin| Drawn {
                 patch: Patch { origin, step: 1 },

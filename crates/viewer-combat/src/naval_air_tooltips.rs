@@ -96,7 +96,7 @@ fn category_key(mask: u64) -> &'static str {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the plane, its names, the hour's penalty and the text resources")]
 pub(super) fn plane_hover(
     plane: &NavalCombatPlane,
     name: &str,
@@ -230,7 +230,7 @@ pub(super) fn plane_hover(
     displayable(icons, text)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the planes, their presentations, the hour's penalty and the text resources")]
 pub(super) fn group_hover(
     planes: &[&NavalCombatPlane],
     presentations: &[(String, String)],
@@ -507,7 +507,7 @@ mod tests {
             hover.contains("\nDamage:\nDestroyer: 0.25 killed"),
             "{hover}"
         );
-        let mut no_stored_hits = row.clone();
+        let mut no_stored_hits = row;
         no_stored_hits.naval_hits.clear();
         let german = plane_hover(
             &no_stored_hits,

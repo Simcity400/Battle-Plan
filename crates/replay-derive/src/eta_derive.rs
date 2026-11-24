@@ -549,7 +549,6 @@ pub fn base_speed(terms: &SpeedTerms<'_>) -> Result<i64, String> {
         .ok_or_else(|| "the division's base speed is not recorded".into())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn walk(
     movement: &DivisionMovementRow,
     location: u32,

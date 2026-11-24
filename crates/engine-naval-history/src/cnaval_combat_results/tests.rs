@@ -394,7 +394,7 @@ fn ordinal_fixture(count: usize, provinces: usize) -> (Vec<u8>, Vec<Row>, Vec<Re
 
 #[test]
 fn province_ordinals_refuse_a_missing_misfiled_or_repeated_result() {
-    let (bytes, rows, slots) = ordinal_fixture(4, 2);
+    let (bytes, mut rows, mut slots) = ordinal_fixture(4, 2);
     let memory = SliceMemory {
         base: 0,
         bytes: &bytes,
@@ -426,7 +426,7 @@ fn province_ordinals_refuse_a_missing_misfiled_or_repeated_result() {
         bytes: &short,
     };
     assert_eq!(
-        province_ordinals(&memory, 0x1000, &mut rows.clone(), &mut slots.clone()),
+        province_ordinals(&memory, 0x1000, &mut rows, &mut slots),
         Err("naval result province list shorter than its size")
     );
 }

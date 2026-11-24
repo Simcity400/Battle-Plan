@@ -955,7 +955,7 @@ fn uninitialized_copies_expose_only_complete_copies() {
     let boundary = pages.0 as usize + 4096;
     let mut old = 0;
     assert_ne!(
-        unsafe { VirtualProtect(boundary as *mut c_void, 4096, 1, &mut old) },
+        unsafe { VirtualProtect(boundary as *mut c_void, 4096, 1, &raw mut old) },
         0
     );
     let first = unsafe { std::slice::from_raw_parts_mut(pages.0.cast::<u8>(), 4096) };
@@ -1046,7 +1046,7 @@ fn native_copy_widths_stop_at_exact_page_boundaries_and_keep_field_prefixes() {
     let boundary = pages.0 as usize + 4096;
     let mut old = 0;
     assert_ne!(
-        unsafe { VirtualProtect(boundary as *mut c_void, 4096, 1, &mut old) },
+        unsafe { VirtualProtect(boundary as *mut c_void, 4096, 1, &raw mut old) },
         0
     );
     unsafe { std::ptr::write_bytes(pages.0.cast::<u8>(), 0x6d, 4096) };
@@ -1130,7 +1130,7 @@ fn native_copy_widths_stop_at_exact_page_boundaries_and_keep_field_prefixes() {
         assert!(records[width * 2..].iter().all(|&byte| byte == 0xa5));
     }
     assert_ne!(
-        unsafe { VirtualProtect(boundary as *mut c_void, 4096, 0x104, &mut old) },
+        unsafe { VirtualProtect(boundary as *mut c_void, 4096, 0x104, &raw mut old) },
         0
     );
     assert_eq!(read::<u32>(&memory, boundary - 3), None);

@@ -169,7 +169,7 @@ fn each_modes_ranking_from_the_tables_equals_the_ranking_composed_from_the_rows(
         activity.push(REGIONS.iter().zip(through.iter().zip(&before)).map(|(&region, (now, was))| (region, (now - was) as i64)).collect::<HashMap<_, _>>());
         before = through;
     }
-    let tables = Tables { world: world.clone(), activity };
+    let tables = Tables { world: world, activity };
     let stretches = [Stretch { run: 0, first: 0, last: LAST, join: Join::Start }];
     let rank = |sums: &HashMap<u32, u128>| {
         let mut ranked: Vec<(u32, u128)> = REGIONS.iter().map(|region| (*region, sums.get(region).copied().unwrap_or(0))).collect();

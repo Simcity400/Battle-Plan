@@ -225,10 +225,6 @@ fn observer_comparison_uses_exact_values_across_save_decimal_spellings() {
 fn observer_comparison_retains_one_unit_numeric_differences() {
     let (frame, mut saved) = fixture();
     assert!(run(&frame, &saved).differences.is_empty());
-    #[allow(
-        clippy::type_complexity,
-        reason = "Keep each named negative control paired with its direct observer mutation."
-    )]
     let cases: &[(&str, fn(&mut Observer))] = &[
         ("air factor", |s| {
             s.side.air_factor = Some(number("0.12501"))
@@ -275,10 +271,6 @@ fn observer_comparison_retains_one_unit_numeric_differences() {
 fn observer_comparison_retains_presence_membership_and_collection_order() {
     let (frame, mut saved) = fixture();
     assert!(run(&frame, &saved).differences.is_empty());
-    #[allow(
-        clippy::type_complexity,
-        reason = "Keep each named negative control paired with its direct observer mutation."
-    )]
     let cases: &[(&str, fn(&mut Observer))] = &[
         ("manpower", |s| s.side.manpower = Some(4)),
         ("air factor presence", |s| s.side.air_factor = None),

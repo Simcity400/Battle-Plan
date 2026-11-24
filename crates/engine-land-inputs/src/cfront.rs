@@ -67,7 +67,10 @@ pub fn bound(plans: &[corder_instance::PlanRow], source: Outcome, handles: &mut 
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the plans and source come from the caller, and each output arena is caller-owned"
+)]
 pub fn walk(
     memory: &impl Memory,
     base: usize,

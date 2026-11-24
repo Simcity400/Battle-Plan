@@ -82,14 +82,14 @@ impl Names {
         let name = arrow_technique.unwrap_or("mapname");
         let selection = effect
             .select(name)
-            .map_err(|error| refuse(error.to_string()))?
+            .map_err(|error| refuse(error))?
             .ok_or_else(|| refuse(format!("{name} absent; retained program unavailable")))?;
         let compiled = effect
             .compiled(selection.index)
-            .map_err(|error| refuse(error.to_string()))?;
+            .map_err(|error| refuse(error))?;
         let technique = &effect.source.techniques[selection.index];
         let mut state = gpu::State::authored(&effect.source, technique)
-            .map_err(|error| refuse(error.to_string()))?;
+            .map_err(|error| refuse(error))?;
         state
             .samplers
             .retain(|slot, _| *slot == binding(0, Stage::Pixel));
@@ -154,8 +154,8 @@ impl Names {
         pass.depth_stencil = Some(depth);
         let pipeline = gpu::Cache::default()
             .get_pass(device, &selection, &state, &pass)
-            .map_err(|error| refuse(error.to_string()))?;
-        viewer_scene_base::shader_constants::scene(&pipeline).map_err(|error| refuse(error.to_string()))?;
+            .map_err(|error| refuse(error))?;
+        viewer_scene_base::shader_constants::scene(&pipeline).map_err(|error| refuse(error))?;
         let retained = viewer_scene_base::shader_scene::Program::new(
             &selection,
             &retained_vertices,
@@ -196,7 +196,7 @@ impl Names {
                         .map(|texture| self.pipeline.sampled_texture(key, texture))
                 },
             )
-            .map_err(|error| refuse(self.pass_name, error.to_string()))
+            .map_err(|error| refuse(self.pass_name, error))
     }
 
     pub fn retain(

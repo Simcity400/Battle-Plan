@@ -644,7 +644,7 @@ mod tests {
         assert_eq!(unsaved_recording(&folder, fresh.as_bytes()).unwrap(), None);
         assert_eq!(
             unsaved_recording(&folder, saved.as_bytes()).unwrap(),
-            Some(first.clone())
+            Some(first)
         );
         fs::write(&unnamed, b"junk").unwrap();
         let error = unsaved_recordings(&folder).unwrap_err().to_string();

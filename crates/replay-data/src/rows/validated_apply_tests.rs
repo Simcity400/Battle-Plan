@@ -193,7 +193,7 @@ fn bulk_merge_keeps_apply_before_final_validation_and_absent_delete_precedence()
     };
     for changed in [
         vec![semantic.clone()],
-        vec![semantic.clone(), malformed.clone()],
+        vec![semantic, malformed],
     ] {
         for deleted in [
             vec![key(0), key(1), key(2)],

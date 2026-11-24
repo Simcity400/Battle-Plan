@@ -811,7 +811,7 @@ mod census_tests {
         let pause = Barrier::new(2);
         let args = [
             sources[0].pointer(),
-            &pause as *const Barrier as usize,
+            &raw const pause as usize,
             23,
             1,
         ];
@@ -827,7 +827,6 @@ mod census_tests {
             sources[0].pointer() + native::DESIGN_TEAM_TRAITS,
         );
         let current = proof.is_current();
-        drop(proof);
         let admitted = census().is_some();
         let interval = drain(space.base, 7, &mut Vec::new());
         pause.wait();
@@ -868,7 +867,6 @@ mod census_tests {
             !proof.is_current(),
             "closing dispatch revokes acquired proofs too"
         );
-        drop(proof);
         let revision = DESIGN_GATE.revision();
         assert_eq!(unsafe { refresh(sources[0].pointer(), 0, 23, 0) }, 19);
         assert_eq!(world_input_changes::design_forwarder_active(), 0);
@@ -959,7 +957,6 @@ mod census_tests {
         let proof = census().unwrap();
         unobserved!();
         assert!(!proof.is_current());
-        drop(proof);
         assert!(
             census().is_none(),
             "draining MISSED must not restore the lost proof"
@@ -1138,7 +1135,7 @@ mod census_tests {
         BASE.store(space.base, Ordering::Release);
         let draft = sources[7].pointer();
         let pause = Barrier::new(2);
-        let pause_pointer = &pause as *const Barrier as usize;
+        let pause_pointer = &raw const pause as usize;
         let writer = std::thread::spawn(move || unsafe {
             around::<0>([draft, pause_pointer, 23, 0], refresh_bonus)
         });
@@ -1188,7 +1185,6 @@ mod census_tests {
             &proof.get(&sources[0]).unwrap(),
             &baseline.definitions.rows[0].design
         ));
-        drop(proof);
         collector_test_support::with_allocations_denied(|| {
             unrecorded_writer(Receiver::Roster, 0, None)
         });

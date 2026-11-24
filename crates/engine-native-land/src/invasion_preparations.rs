@@ -347,7 +347,10 @@ pub struct Walk {
     pub outcome: Outcome,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the visits, census, source, memo and country context come from earlier walks, and the output is caller-owned"
+)]
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -372,7 +375,10 @@ pub fn walk(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the visits, census, source, memo and country context come from earlier walks, and the output buffer is caller-owned"
+)]
 fn walk_buffer(
     memory: &impl Memory,
     base: usize,

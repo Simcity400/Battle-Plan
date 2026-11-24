@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(center(40), [10.0, 0.0]);
         assert_eq!(center(60), [7.5, -3.0]);
         assert_eq!(center(80), [0.0, 0.0]);
-        #[allow(clippy::excessive_precision)]
+        #[expect(clippy::excessive_precision, reason = "the samples are the reference values at full precision")]
         let samples = [
             (20, [7.5101194, 1.0000256], [7.4898806, 4.9999743]),
             (21, [7.5031724, 0.9998970], [7.9843268, 4.9708529]),

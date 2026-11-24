@@ -40,7 +40,7 @@ impl Memberships {
             .bank
             .as_ref()
             .filter(|bank| {
-                bank.as_ptr() == inputs.map as *const MapData && bank.strong_count() != 0
+                bank.as_ptr() == std::ptr::from_ref::<MapData>(inputs.map) && bank.strong_count() != 0
             })
             .cloned();
         let previous = self.state[kind].as_ref().filter(|old| {

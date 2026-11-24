@@ -884,7 +884,7 @@ impl Product for LeaderPortraits {
         };
         let keys: Vec<u128> = params.references.iter().filter_map(|reference| reference.parse::<u64>().ok()).map(u128::from).collect();
         let first = replay_lanes::at::frame(source.replay_ref().recording(), stretch.run, params.hour, &[replay_lanes::at::Read { table: TableId::UnitLeaders, columns: None, keys: replay_lanes::at::Keys::These(&{
-            let mut keys = keys.clone();
+            let mut keys = keys;
             keys.sort_unstable();
             keys.dedup();
             keys

@@ -77,7 +77,7 @@ impl View {
         self.refused
             .retain(|owner, _| live.iter().any(|(id, _)| id == owner));
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the owner and slot, the window's instance and root, the offered items, and the resources")]
     pub fn update(
         &mut self,
         owner: u32,
@@ -176,7 +176,7 @@ impl View {
         }
         Ok(())
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the owner, the drawn grid and its names, the resources, the frame's tick and layer, and the report")]
     pub fn compose(
         &mut self,
         owner: u32,
@@ -203,7 +203,7 @@ impl View {
             report,
         )
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the owner, the drawn grid and its names, the resources, the frame's tick and layer, its holder and the report")]
     pub fn compose_held(
         &mut self,
         owner: u32,

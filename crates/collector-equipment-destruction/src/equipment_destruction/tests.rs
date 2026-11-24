@@ -523,7 +523,6 @@ unsafe extern "system-unwind" fn subtract(pool: usize, design: usize, amount: us
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 unsafe extern "system-unwind" fn forwarding(
     a: usize,
@@ -540,7 +539,6 @@ unsafe extern "system-unwind" fn forwarding(
     assert!(active() != 0);
 }
 
-#[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 unsafe extern "system-unwind" fn land_removal(
     a: usize,
@@ -558,7 +556,6 @@ unsafe extern "system-unwind" fn land_removal(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 unsafe extern "system-unwind" fn land_scale_and_ceiling(
     a: usize,

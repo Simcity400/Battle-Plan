@@ -733,7 +733,7 @@ fn timed_traits_compare_saved_tokens_and_signed_days_in_vector_order() {
         commander,
         category: 2,
         skills: [1, 0, 0, 0, 0],
-        timed_traits: Recorded::Value(traits.clone()),
+        timed_traits: Recorded::Value(traits),
         ..Default::default()
     };
     let compare_naval = |actual: &replay_data::rows::NavalCommanderInputs| {
@@ -1005,7 +1005,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         &mut report,
         "fake intel",
         &row,
-        &unit(saved.clone(), Some(fake)),
+        &unit(saved, Some(fake)),
         &templates,
     );
     assert_eq!(report.differences.len(), 1);
@@ -1038,7 +1038,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     let generated = save::DivisionName {
         programmatic: Some(true),
         custom: Some(b"1. Strelkovaya".to_vec()),
-        ..named.clone()
+        ..named
     };
     naming(
         &mut report,
@@ -1159,7 +1159,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
             "programmatic",
             save::DivisionName {
                 programmatic: Some(true),
-                ..named.clone()
+                ..named
             },
         ),
     ] {
@@ -1453,7 +1453,7 @@ fn combat_members_take_their_recorded_template_from_the_division_status() {
     assert_eq!(differences, Vec::<String>::new());
     assert!(limitations.contains_key(MEMBER_TEMPLATE_ABSENT));
     assert!(!limitations.contains_key(MEMBER_TEMPLATE_NOT_IN_RECORDING));
-    *frame.tables[TableId::DivisionStatus.index()] = status(Some(deleted), Some(operands.clone()));
+    *frame.tables[TableId::DivisionStatus.index()] = status(Some(deleted), Some(operands));
     *frame.tables[TableId::DivisionTemplates.index()] =
         TableView::Complete(TableRows::DivisionTemplates(vec![
             replay_data::rows::DivisionTemplateRow {

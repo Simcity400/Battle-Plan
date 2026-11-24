@@ -420,7 +420,6 @@ impl AirBasesMemo {
         self.decode_prepared(air, fog, job, ctx, decode_ticks, prepared)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one decode's borrowed parts")]
     pub(super) fn decode_prepared(
         &mut self,
         air: &mut Captured,
@@ -722,7 +721,10 @@ fn bases_link(
     Some(slot)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the census walk writes the log, census, roster and both required counts separately"
+)]
 fn copy_air_bases_census(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native_memory::Memory,
@@ -1224,7 +1226,7 @@ fn copy_air_aces_roster(
     true
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "batched air-ace tail reuses already-copied span offsets from the required and presentation record batches"
 )]
@@ -1422,7 +1424,10 @@ struct DenseSnapshot {
     block: Option<usize>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the dense plan reads its containers and links and fills the seen index, plan and snapshot separately"
+)]
 fn copy_dense_plan(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native_memory::Memory,
@@ -1608,7 +1613,10 @@ impl CarryPass<'_> {
         log.splice(held.spans, held.bytes).then_some(carried)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one held row keeps its source, slot, handle and certificate beside the row"
+    )]
     fn hold_row(
         &mut self,
         log: &RawLog<AIR_BASES_N>,
@@ -1658,7 +1666,10 @@ fn take_slots(
     copied
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one registration walk fills the seen index, demand, carrier, slot and carry passes separately"
+)]
 fn registrations(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native_memory::Memory,
@@ -1774,7 +1785,10 @@ fn registrations(
     true
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the registration copy fills the dense snapshot, seen index, demand, carrier, slots and reach separately"
+)]
 fn copy_air_base_registrations(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native_memory::Memory,
@@ -2234,7 +2248,7 @@ fn copy_air_bases_pass_with_context(
     ticks[2] += elapsed(aces_started);
 }
 
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+#[expect(clippy::too_many_lines, reason = "one pass copies every air-base vector in order")]
 fn copy_air_bases_vectors(
     job: &mut AirBasesJob,
     memory: &impl engine_native_memory::Memory,

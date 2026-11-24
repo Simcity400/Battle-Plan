@@ -617,7 +617,10 @@ impl Captured {
         self.scratch.fill(0);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the fingerprints, navy holder and ledger skip"
+    )]
     pub fn acquire_with_navies(
         &mut self,
         memory: &impl Memory,
@@ -675,7 +678,10 @@ impl Captured {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the fingerprints and ledger skip"
+    )]
     fn capture_with_own_navies(
         &mut self,
         memory: &impl Memory,
@@ -706,7 +712,7 @@ impl Captured {
         ticks
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "shared entry point matching acquire_with_navies and split walk/finish"
     )]
@@ -783,7 +789,7 @@ impl Captured {
         }
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "completes split capture with navy holder and walk result"
     )]

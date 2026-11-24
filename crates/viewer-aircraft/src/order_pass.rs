@@ -412,7 +412,7 @@ impl OrderPass {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the arena, encoder and targets, plus the native inputs, mode, view and time of one draw")]
     fn draw(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -578,7 +578,7 @@ impl ShadowCasting<'_> {
 }
 
 impl Drawing<'_> {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the arena, encoder and targets, plus the native inputs, mode, view and time of one draw")]
     pub fn draw(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -632,7 +632,7 @@ mod tests {
     fn equal_parts_write_nothing_and_a_changed_plan_writes_its_changed_chunks_alone() {
         let (plan, raids) = (field("plan", 2, false, 1.0, 300), field("raid", 1, false, 2.0, 70));
         let held = laid_out(&[Some(&plan), Some(&raids), None, None]);
-        let (again, raids_again) = (plan.clone(), raids.clone());
+        let (again, raids_again) = (plan.clone(), raids);
         let parts = [Some(&again), Some(&raids_again), None, None];
         let (placed, _) = places(&parts);
         assert!(changed_runs(&parts, &placed, &held).is_empty(), "the same content anew writes nothing");
@@ -645,7 +645,7 @@ mod tests {
         let chunk = (placed[0].start as usize + 192) * stride..(placed[0].start as usize + 256) * stride;
         assert_eq!(changed_runs(&parts, &placed, &held), [chunk], "the changed vertex's chunk of the plan, nothing of the raids");
 
-        let mut longer = plan.clone();
+        let mut longer = plan;
         longer.native_vertices.extend((0..10).map(|_| Vertex { position: [5.0; 3], padding: 0, uv: [0.0; 4] }));
         let parts = [Some(&longer), Some(&raids_again), None, None];
         let (placed, _) = places(&parts);

@@ -295,7 +295,7 @@ impl Roster {
 
 fn qpc() -> i64 {
     let mut ticks = 0;
-    unsafe { QueryPerformanceCounter(&mut ticks) };
+    unsafe { QueryPerformanceCounter(&raw mut ticks) };
     ticks
 }
 

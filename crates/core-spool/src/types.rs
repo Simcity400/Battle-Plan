@@ -14,7 +14,7 @@ pub enum Compression {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Kind(pub(crate) u8);
-#[allow(non_upper_case_globals)]
+#[expect(non_upper_case_globals, reason = "the kinds are named as the enum variants they stand for")]
 impl Kind {
     pub const Appeared: Self = Self(0);
     pub const Changed: Self = Self(1);

@@ -656,7 +656,6 @@ fn running(popouts: &PopOuts, generation: Option<u64>) -> Result<NativeHost, Str
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub fn popout_seek(
     popouts: State<'_, PopOuts>,
     generation: u64,

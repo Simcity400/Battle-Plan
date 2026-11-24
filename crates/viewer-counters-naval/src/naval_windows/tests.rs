@@ -19,7 +19,7 @@ fn a_written_base_takes_a_new_countries_table_only_with_the_same_flags() {
     let held = Arc::new(tagged("GER"));
     let same = Arc::new(tagged("GER"));
     let other = Arc::new(tagged("ITA"));
-    let mut bases = vec![written(&held), written(&held)];
+    let mut bases = [written(&held), written(&held)];
     adopt_countries(bases.iter_mut(), Some(&other));
     assert!(bases.iter().all(|base| Arc::ptr_eq(base.countries.as_ref().unwrap(), &held)));
     assert!(!bases[0].same(7, None, 0, false, Ok(&[]), 0, Some(&other)));
@@ -2485,7 +2485,7 @@ fn a_failed_hull_selection_restores_the_remembered_unknown_sprite() {
     let why = why.expect("the unknown drawable is shown again");
     assert!(why.contains(gui_windows::HULL_AMBIGUOUS), "{why}");
     let diagnostics = CounterReport {
-        navy_counter_gaps: BTreeMap::from([(why.clone().into(), 1)]),
+        navy_counter_gaps: BTreeMap::from([(why.into(), 1)]),
         ..CounterReport::default()
     };
     assert!(

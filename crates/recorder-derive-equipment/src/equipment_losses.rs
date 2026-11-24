@@ -469,7 +469,6 @@ impl EquipmentLosses {
         self.unresolved.insert(raw);
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the totals, the three views of the log, the slots, what it gathers and the raw countries no link resolved")]
     fn combat_levels(&self, totals: &TableView<'_>, live: &TableView<'_>, dropped: &TableView<'_>, deleted: &Deleted<'_>, recount: &Recount, pending: &mut Pending, unresolved: &mut HashSet<u32>) -> io::Result<()> {
         let present = |key: u128| live.slot(key).is_some() || deleted.get(key).is_some() || dropped.slot(key).is_some();
         let mut levels: HashMap<(u32, u8, u32), Option<i128>> = HashMap::new();

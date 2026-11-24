@@ -157,7 +157,7 @@ fn current_reached_faults_fail_and_historical_fields_remain_unknown() {
             .limitations
             .contains_key("ReservedCountryNaming.original_tag not recorded")
     );
-    let mut missing = save.clone();
+    let mut missing = save;
     missing
         .countries
         .get_mut(b"RES".as_slice())

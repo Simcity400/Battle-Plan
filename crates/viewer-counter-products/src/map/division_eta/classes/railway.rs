@@ -78,8 +78,7 @@ fn target(gun: &RailwayGunCounterInputRow, ours: bool) -> Fact<u32> {
 fn fresh(gun: &RailwayGunCounterInputRow, hour: i32) -> Fact<&FreshRailwayCounterEta> {
     let fresh = gun
         .fresh
-        .require("RailwayGunCounterInputs.fresh")
-        .map_err(|error| error.to_string())?
+        .require("RailwayGunCounterInputs.fresh")?
         .as_ref()
         .ok_or("fresh railway ETA inputs were refused")?;
     if !fresh.sample_hour.fresh_at(hour) {
@@ -164,8 +163,7 @@ fn remaining(
     if route.first() == gun.ordinary_path.first() {
         let actual = gun
             .eta
-            .require("RailwayGunCounterInputs.eta")
-            .map_err(|error| error.to_string())?
+            .require("RailwayGunCounterInputs.eta")?
             .as_ref()
             .ok_or("fresh railway ETA actual first-edge inputs were refused")?;
         Ok(duration.wrapping_sub(

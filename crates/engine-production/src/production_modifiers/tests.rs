@@ -354,7 +354,10 @@ fn reader_keeps_type_classifier_variant_flags_dlc_conversion_and_virtual_refit_s
     );
 }
 
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "the outcome, context, countries, lines and requests are returned together for comparison"
+)]
 fn growing(
     fixture: &Fixture,
     slots: std::ops::Range<u32>,

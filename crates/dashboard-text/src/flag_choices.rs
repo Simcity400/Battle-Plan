@@ -141,7 +141,6 @@ fn group(
         .map_err(|_| format!("country {owner} flag ruling group is not UTF-8"))
 }
 
-#[allow(clippy::type_complexity)]
 fn ruling_rows(
     frame: HourFrame<'_>,
 ) -> io::Result<(

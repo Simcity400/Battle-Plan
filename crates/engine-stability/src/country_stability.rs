@@ -517,7 +517,10 @@ impl WalkTiming {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the country reader, country and context locate the walk, and the scratch, input row and arenas with their starts are caller-owned"
+)]
 pub fn walk_country<M: Memory>(
     memory: &M,
     base: usize,
@@ -548,7 +551,10 @@ pub fn walk_country<M: Memory>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the country reader, country and context locate the walk, and the memo, scratch, input row and arenas with their starts are caller-owned"
+)]
 #[cfg(test)]
 pub fn walk_country_memo<M: Memory>(
     memory: &M,
@@ -581,7 +587,10 @@ pub fn walk_country_memo<M: Memory>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the country reader, country and context locate the walk, and the memo, scratch, input row, arenas with their starts and timing are caller-owned"
+)]
 pub fn walk_country_memo_timed<M: Memory>(
     memory: &M,
     base: usize,
@@ -1857,7 +1866,10 @@ fn pair(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the country, context, scratch and child count describe the walk, and the line and byte buffers are passed with their starts"
+)]
 fn emit(
     memory: &Observed<'_, impl Memory>,
     country: u32,

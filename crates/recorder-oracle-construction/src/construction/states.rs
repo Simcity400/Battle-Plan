@@ -119,7 +119,6 @@ pub fn state_pools(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn resource_inputs(
     rows: &[replay_data::rows::StateResourceInputRow],
     states: &[replay_data::rows::StateRow],
@@ -195,7 +194,6 @@ pub fn resource_inputs(
 
 type OverrideEntries = Vec<(u32, Vec<(u32, i64)>)>;
 
-#[allow(clippy::too_many_arguments)]
 pub fn building_overrides(
     rows: &[replay_data::rows::CountryBuildingResourceRow],
     reads: &[replay_data::rows::SliceReadRow],
@@ -429,7 +427,6 @@ pub fn state_cores(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn state_strategic_locations(
     rows: &[replay_data::rows::StateCoreRow],
     states: &BTreeMap<u32, content_reader_save::State>,

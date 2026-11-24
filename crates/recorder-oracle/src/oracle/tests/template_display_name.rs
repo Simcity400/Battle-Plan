@@ -169,7 +169,7 @@ fn current_name_refusal_fails_saved_operand_acceptance() {
     let mut row = frame.complete::<tables::DivisionTemplateIcons>().unwrap()[0].clone();
     row.display_name = Recorded::Value(None);
     *frame.tables[TableId::DivisionTemplateIcons.index()] =
-        TableView::Complete(TableRows::DivisionTemplateIcons(vec![row.clone()]));
+        TableView::Complete(TableRows::DivisionTemplateIcons(vec![row]));
     let report = report_name(&frame, &saved);
     assert!(report.outcome().is_err());
     assert!(

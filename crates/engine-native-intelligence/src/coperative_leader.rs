@@ -280,7 +280,7 @@ pub fn walk_buffer(
     }
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "Native membership identity and caller-owned lookup state remain explicit"
 )]

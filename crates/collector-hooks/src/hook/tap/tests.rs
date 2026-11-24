@@ -76,7 +76,7 @@ fn rip_relative_store_tap_preserves_native_value_flags_and_destination() {
         Tap::new(
             site,
             observed,
-            &count as *const AtomicUsize as usize,
+            &raw const count as usize,
             sentinel,
         )
     }
@@ -201,7 +201,7 @@ fn lea_and_move_taps_refuse_stack_and_rip_operands() {
 fn unwind(context: &mut CONTEXT) -> bool {
     let mut aligned = AlignedContext(*context);
     let mut base = 0;
-    let entry = unsafe { RtlLookupFunctionEntry(aligned.0.Rip, &mut base, ptr::null_mut()) };
+    let entry = unsafe { RtlLookupFunctionEntry(aligned.0.Rip, &raw mut base, ptr::null_mut()) };
     if entry.is_null() {
         return false;
     }
@@ -213,9 +213,9 @@ fn unwind(context: &mut CONTEXT) -> bool {
             base,
             aligned.0.Rip,
             entry,
-            &mut aligned.0,
-            &mut data,
-            &mut frame,
+            &raw mut aligned.0,
+            &raw mut data,
+            &raw mut frame,
             ptr::null_mut(),
         );
     }
@@ -224,7 +224,7 @@ fn unwind(context: &mut CONTEXT) -> bool {
 }
 fn lookup(address: usize) -> bool {
     let mut base = 0;
-    !unsafe { RtlLookupFunctionEntry(address as u64, &mut base, ptr::null_mut()) }.is_null()
+    !unsafe { RtlLookupFunctionEntry(address as u64, &raw mut base, ptr::null_mut()) }.is_null()
 }
 
 unsafe extern "system-unwind" fn observer(registers: &Registers, tag: usize) {
@@ -236,7 +236,7 @@ unsafe extern "system-unwind" fn observer(registers: &Registers, tag: usize) {
     let native_pc = unsafe { ptr::read((native_rsp - 8) as *const u64) };
     let mut context = AlignedContext(unsafe { std::mem::zeroed() });
     unsafe {
-        RtlCaptureContext(&mut context.0);
+        RtlCaptureContext(&raw mut context.0);
     }
     if !unwind(&mut context.0) || !unwind(&mut context.0) {
         failure |= 2;
@@ -597,7 +597,7 @@ fn registered_ranges_are_adjacent_half_open_and_exclude_metadata_storage() {
     ] {
         let mut base = 0;
         let found = unsafe {
-            RtlLookupFunctionEntry(tap.code as u64 + offset as u64, &mut base, ptr::null_mut())
+            RtlLookupFunctionEntry(tap.code as u64 + offset as u64, &raw mut base, ptr::null_mut())
         };
         assert_eq!(base, tap.code as u64);
         assert!(!found.is_null());
@@ -765,7 +765,7 @@ fn copied_load_and_add_preserve_the_native_result_and_branch_flags() {
     let adjustment = 1;
     for bank in [2_i64, i64::MAX] {
         let mut result = 0;
-        let sign = unsafe { function([0, bank].as_ptr(), &adjustment, &mut result) };
+        let sign = unsafe { function([0, bank].as_ptr(), &raw const adjustment, &raw mut result) };
         assert_eq!(result, bank.wrapping_add(adjustment));
         assert_eq!(sign, usize::from(result < 0));
     }
@@ -794,7 +794,7 @@ fn copied_clamp_and_store_preserve_native_flags_results_and_continuation() {
         assert!(tap.set_enabled(enabled).unwrap());
         for value in [i64::MIN, -1, 0, 7, i64::MAX] {
             let mut stored = -99;
-            assert_eq!(unsafe { function(value, &mut stored) }, value.max(0));
+            assert_eq!(unsafe { function(value, &raw mut stored) }, value.max(0));
             assert_eq!(stored, value.max(0));
         }
     }
@@ -836,7 +836,7 @@ fn generic_tap_retains_the_instruction_tail_until_its_flight_returns() {
         flight: ptr::null(),
         seen: 0,
     };
-    let tag = &mut probe as *mut Probe as usize;
+    let tag = &raw mut probe as usize;
     let mut tap = unsafe { Tap::new(site, counted, tag, sentinel) }.unwrap();
     let flights = tap.hook.tap.as_ref().unwrap().in_flight;
     probe.flight = flights;
@@ -1041,7 +1041,7 @@ fn naval_management_store_and_immediate_span_executes_with_original_operands() {
         unsafe { std::mem::transmute(code.0) };
     for value in [0, u32::MAX, 37] {
         let mut object = [0; 16];
-        assert_eq!(unsafe { call(&mut object, value, 9) }, value);
+        assert_eq!(unsafe { call(&raw mut object, value, 9) }, value);
         assert_eq!(object[8], value);
     }
     assert!(tap.set_enabled(false).unwrap());
@@ -1092,7 +1092,7 @@ fn script_writer_copied_lea_register_moves_zero_and_decrement_execute_with_nativ
         object[0x538 / 4] = 0;
         object[0x28 / 4] = 7;
         let mut flags = 0;
-        let result = unsafe { function(object.as_mut_ptr(), &mut flags) };
+        let result = unsafe { function(object.as_mut_ptr(), &raw mut flags) };
         assert_eq!(flags & 1, usize::from(mode != 1));
         match mode {
             0 => assert_eq!(result, object.as_ptr() as usize + 0x118),
@@ -1130,7 +1130,7 @@ fn script_lifecycle_store_and_jump_preserve_execution_flags_and_native_unwind_co
         assert_eq!(registers.flags & 1, 1);
         let mut context = AlignedContext(unsafe { std::mem::zeroed() });
         unsafe {
-            RtlCaptureContext(&mut context.0);
+            RtlCaptureContext(&raw mut context.0);
         }
         for _ in 0..4 {
             if context.0.Rip == probe.target as u64 {
@@ -1161,18 +1161,18 @@ fn script_lifecycle_store_and_jump_preserve_execution_flags_and_native_unwind_co
         .unwrap();
     let mut probe = Probe { target, seen: 0 };
     let mut tap =
-        unsafe { Tap::new(site, observed, &mut probe as *mut Probe as usize, sentinel) }.unwrap();
+        unsafe { Tap::new(site, observed, &raw mut probe as usize, sentinel) }.unwrap();
     assert!(tap.set_enabled(true).unwrap());
     let function: unsafe extern "system" fn(*mut u32, *mut u32) -> u32 =
         unsafe { std::mem::transmute(code.0) };
     let mut object = [0_u32; 16];
     object[10] = 7;
     let mut output = 99;
-    assert_eq!(unsafe { function(object.as_mut_ptr(), &mut output) }, 0);
+    assert_eq!(unsafe { function(object.as_mut_ptr(), &raw mut output) }, 0);
     assert_eq!((object[10], output, probe.seen), (0, 0, 1));
     assert!(tap.set_enabled(false).unwrap());
     object[10] = 11;
-    assert_eq!(unsafe { function(object.as_mut_ptr(), &mut output) }, 0);
+    assert_eq!(unsafe { function(object.as_mut_ptr(), &raw mut output) }, 0);
     assert_eq!((object[10], probe.seen), (0, 1));
 }
 
@@ -1204,7 +1204,7 @@ fn post_effect_reactivation_bypasses_the_terminal_store_observer() {
         Tap::new(
             site,
             observed,
-            &count as *const AtomicUsize as usize,
+            &raw const count as usize,
             sentinel,
         )
     }
@@ -1248,7 +1248,7 @@ fn targeted_duration_store_jump_executes_once_and_preserves_native_continuation(
         Tap::new(
             site,
             observed,
-            &count as *const AtomicUsize as usize,
+            &raw const count as usize,
             sentinel,
         )
     }
@@ -1298,7 +1298,7 @@ fn taken_membership_writer_is_observed_with_empty_and_nonempty_remove_effects() 
         Tap::new(
             site,
             observed,
-            &count as *const AtomicUsize as usize,
+            &raw const count as usize,
             sentinel,
         )
     }
@@ -1368,7 +1368,7 @@ fn duration_add_operands_survive_the_tap_and_reach_the_selected_scalar_writer() 
             .unwrap();
         let mut probe = Probe { cooldown, seen: 0 };
         let mut tap =
-            unsafe { Tap::new(site, observed, &mut probe as *mut Probe as usize, sentinel) }
+            unsafe { Tap::new(site, observed, &raw mut probe as usize, sentinel) }
                 .unwrap();
         assert!(tap.set_enabled(true).unwrap());
         let mut object = [0_i32; 32];
@@ -1428,7 +1428,7 @@ fn selection_default_moves_preserve_operands_flags_and_final_native_duration() {
             Tap::new(
                 site,
                 observed,
-                &count as *const AtomicUsize as usize,
+                &raw const count as usize,
                 sentinel,
             )
         }
@@ -1438,7 +1438,7 @@ fn selection_default_moves_preserve_operands_flags_and_final_native_duration() {
             unsafe { std::mem::transmute(code.0) };
         for (operand, expected) in [(0, 1), (17, 17)] {
             let mut stored = 0;
-            assert_eq!(unsafe { invoke(operand, &mut stored) }, expected);
+            assert_eq!(unsafe { invoke(operand, &raw mut stored) }, expected);
             assert_eq!(stored, expected);
         }
         assert_eq!(count.load(Ordering::Relaxed), 2);

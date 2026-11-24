@@ -329,7 +329,6 @@ fn resolve_log_reasons(
     Ok(reasons)
 }
 
-#[allow(clippy::too_many_arguments, reason = "a log span query names its run, table, columns, keys, range and row sink")]
 pub fn log_span(
     recording: &Recording,
     run: u32,
@@ -991,7 +990,6 @@ impl Chart {
     }
 }
 
-#[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, keys and range")]
 pub fn chart(
     recording: &Recording,
     run: u32,
@@ -1020,7 +1018,6 @@ const fn ceil_multiple(hour: i64, size: i64) -> i64 {
     (hour + size - 1).div_euclid(size) * size
 }
 
-#[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, keys and range")]
 pub fn chart_at(
     recording: &Recording,
     run: u32,
@@ -1813,7 +1810,6 @@ fn bucket_last_hour(directory: &summary::Directory, bucket: u32) -> i64 {
     bucket_end.min(piece_end) - 1
 }
 
-#[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, column, view, count and order")]
 pub fn top(
     recording: &Recording,
     run: u32,
@@ -1828,7 +1824,6 @@ pub fn top(
     top_with(recording, run, table, source, from, to, width, n, by, true)
 }
 
-#[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, column, view, count and order")]
 fn top_with(
     recording: &Recording,
     run: u32,

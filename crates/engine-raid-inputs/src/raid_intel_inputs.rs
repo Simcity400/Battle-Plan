@@ -1219,6 +1219,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::single_range_in_vec_init,
+        reason = "run takes a list of unreadable byte ranges, and each case here needs one"
+    )]
     fn country_keys_need_only_the_getters_own_reads() {
         struct Holes<'a>(&'a Fixture, Vec<std::ops::Range<usize>>);
         impl Memory for Holes<'_> {

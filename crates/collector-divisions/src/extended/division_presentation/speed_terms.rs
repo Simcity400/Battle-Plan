@@ -257,7 +257,7 @@ impl Hostility {
         self.attacking_with(memory, base, game, &mut countries, &[], &[], last, logical)
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "reuses already-fetched movement provinces and country reader to avoid re-reading destination province memory"
     )]
@@ -345,12 +345,8 @@ struct Scratch {
     missing_query: Vec<u32>,
     states: Vec<usize>,
     templates: Vec<usize>,
-    #[allow(
-        clippy::type_complexity,
-        reason = "reused per-hour scratch for deduplicated state movement term keys"
-    )]
     wanted_states: Vec<(u32, u32, u32, usize, u32, bool)>,
-    #[allow(
+    #[expect(
         clippy::type_complexity,
         reason = "reused per-hour scratch for owner-controller movement relation branches"
     )]
@@ -404,9 +400,15 @@ pub struct SpeedTerms {
     provinces: Vec<(u32, Result<cprovince::MovementProvince, &'static str>)>,
     province_slot: Vec<u32>,
     province_pointers: Vec<usize>,
-    #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "reused per-hour scratch of state facts or their refusals"
+    )]
     state_facts: Vec<(usize, Result<(u32, u32), &'static str>)>,
-    #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "reused per-hour scratch of template operands or their refusals"
+    )]
     templates: Vec<(usize, Result<(usize, usize), &'static str>)>,
     keys: Vec<u32>,
     observed_entries: owned::Entries,
@@ -1638,7 +1640,7 @@ impl SpeedTerms {
         outcome
     }
 
-    #[allow(
+    #[expect(
         clippy::type_complexity,
         clippy::too_many_arguments,
         reason = "shares state-term capture between serial and parallel prepared-input slices"
@@ -2458,10 +2460,6 @@ struct EntriesParts<'a> {
     counts: &'a mut [u64; 3],
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "shares entry acquisition between serial SpeedTerms and parallel SpeedTermsEntriesWork"
-)]
 fn acquire_entries_into(
     memory: &impl Memory,
     countries: &Result<ccountry::Reader<'_, impl Memory>, &'static str>,
@@ -2603,7 +2601,7 @@ fn acquire_entries_into(
     )
 }
 
-#[allow(
+#[expect(
     clippy::type_complexity,
     reason = "holds disjoint output and scratch buffers for parallel access/river/transport worker"
 )]
@@ -2722,7 +2720,7 @@ impl SpeedTermsAuxWork {
     }
 }
 
-#[allow(
+#[expect(
     clippy::type_complexity,
     reason = "borrows disjoint access buffers for shared serial and parallel helper"
 )]
@@ -2734,7 +2732,7 @@ struct AccessParts<'a> {
     counts: &'a mut [u64; 3],
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "shares core supply access capture between serial and parallel paths"
 )]
@@ -2819,7 +2817,7 @@ fn capture_access_into<'a, M: Memory>(
     }
 }
 
-#[allow(
+#[expect(
     clippy::type_complexity,
     reason = "borrows disjoint river buffers for shared serial and parallel helper"
 )]
@@ -2832,7 +2830,7 @@ struct RiversParts<'a> {
     counts: &'a mut [u64; 3],
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "shares river relation capture between serial and parallel paths"
 )]
@@ -2909,7 +2907,7 @@ fn capture_rivers_into(
     }
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     clippy::type_complexity,
     reason = "shares crossing walk between serial and parallel river capture"
@@ -3042,7 +3040,7 @@ fn capture_rivers_with_crossings_into(
     Ok(rivers.len() + observed.len())
 }
 
-#[allow(
+#[expect(
     clippy::type_complexity,
     reason = "borrows disjoint transport buffers for shared serial and parallel helper"
 )]
@@ -3062,7 +3060,7 @@ struct TransportParts<'a> {
     counts: &'a mut [u64; 3],
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "shares transport speed capture between serial and parallel paths"
 )]

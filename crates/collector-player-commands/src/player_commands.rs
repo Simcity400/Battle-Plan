@@ -1366,9 +1366,7 @@ impl Drain {
         engine_allocation::reserve_map(&mut self.windows, staged_windows.len())?;
         engine_allocation::reserve(out, groups.len())?;
         for (world, context) in staged_contexts {
-            if !self.contexts.contains_key(&world) {
-                self.contexts.insert(world, context);
-            }
+            self.contexts.entry(world).or_insert(context);
         }
         for (world, actor) in staged_actors {
             let key = (world, actor.id);

@@ -27,7 +27,7 @@ pub fn record_join(role: usize, wall_ns: u64, profile: crate::acquisition::Profi
 
 pub(crate) fn record_readiness(ticks: i64) {
     let mut frequency = 0;
-    unsafe { windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency) };
+    unsafe { windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&raw mut frequency) };
     keep(JoinSample {
         wall_ns: (ticks.max(0) as u128 * 1_000_000_000 / frequency.max(1) as u128) as u64,
         readiness: true,
@@ -56,7 +56,7 @@ pub fn thread_cycles() -> Option<u64> {
     let ok = unsafe {
         QueryThreadCycleTime(
             windows_sys::Win32::System::Threading::GetCurrentThread(),
-            &mut cycles,
+            &raw mut cycles,
         )
     };
     (ok != 0).then_some(cycles)

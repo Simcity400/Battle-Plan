@@ -687,7 +687,7 @@ fn a_held_census_whose_certificate_moved_is_read_afresh() {
             log: &mut log,
         })
         .capture(TASK, 1);
-    let mut held = log.clone();
+    let mut held = log;
     held.sort_by_key(HeldCensus::identity);
     let before = country_census(&held);
     memory.accumulator(

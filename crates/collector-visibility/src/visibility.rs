@@ -309,7 +309,6 @@ impl Captured {
         self.capture_storage(memory, base, game_state, hour, force_full)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn capture_naval_access(
         &mut self,
         memory: &impl Memory,

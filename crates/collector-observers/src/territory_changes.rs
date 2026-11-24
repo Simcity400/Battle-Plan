@@ -32,7 +32,7 @@ pub struct Domain {
 }
 
 #[must_use]
-pub struct Marks<'a>(#[allow(dead_code)] [Option<Dirty<'a>>; 2]);
+pub struct Marks<'a>(#[expect(dead_code, reason = "held only so its drop releases the dirty sets")] [Option<Dirty<'a>>; 2]);
 
 impl Default for Domain {
     fn default() -> Self {

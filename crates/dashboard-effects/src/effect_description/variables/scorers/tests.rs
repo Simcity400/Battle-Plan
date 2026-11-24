@@ -3,7 +3,6 @@ use crate::effect_description::tests::{Fixture, fresh};
 use content_reader_politics::country_scorers::Database;
 use content_reader_script::key_names::KeyNames;
 
-#[allow(clippy::field_reassign_with_default)]
 fn make_database(body: &[u8]) -> (KeyNames, Database) {
     let mut names = KeyNames::default();
     names.countries = [b"AAA".to_vec(), b"BBB".to_vec(), b"CCC".to_vec()].into();

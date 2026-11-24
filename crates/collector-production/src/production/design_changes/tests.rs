@@ -741,7 +741,7 @@ fn variant_rejected_writer_rechecks_saved_membership_after_an_admitted_move() {
     let move_args = [
         destination,
         source,
-        &move_pause as *const Barrier as usize,
+        &raw const move_pause as usize,
         0,
     ];
     let moving = std::thread::spawn(move || {
@@ -759,7 +759,7 @@ fn variant_rejected_writer_rechecks_saved_membership_after_an_admitted_move() {
         .contains_key(&destination);
 
     let scalar_pause = Barrier::new(2);
-    let scalar_args = [destination, &scalar_pause as *const Barrier as usize, 0, 0];
+    let scalar_args = [destination, &raw const scalar_pause as usize, 0, 0];
     let scalar = std::thread::spawn(move || {
         collector_test_support::with_allocations_denied(|| unsafe {
             around::<6>(scalar_args, highlight)
@@ -1133,12 +1133,12 @@ fn membership_burst_replaces_stable_slots_without_shifting_the_remaining_census(
     let mut state = DefinitionState::new(&baseline).unwrap();
     state.insert(burst_definition(5_001, b"")).unwrap();
     let slot = state.positions[&2_500];
-    let untouched = state.get(2_501).unwrap() as *const rows::VariantDefinitionRow;
+    let untouched = std::ptr::from_ref::<rows::VariantDefinitionRow>(state.get(2_501).unwrap());
     let storage = state.rows.as_ptr();
     collector_test_support::with_allocations_denied(|| {
         for row in replacements {
             state.remove(2_500);
-            assert_eq!(state.get(2_501).unwrap() as *const _, untouched);
+            assert_eq!(std::ptr::from_ref(state.get(2_501).unwrap()), untouched);
             state.insert(row).unwrap();
             assert_eq!(state.positions[&2_500], slot);
             assert_eq!(state.rows.as_ptr(), storage);

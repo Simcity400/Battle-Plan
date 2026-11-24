@@ -749,7 +749,7 @@ fn summarize(window: &Window, all: &[Value], map: &[Value], page_flushed: Option
         .iter()
         .map(|interval| interval.speed * (interval.to - interval.from) / 1000.0)
         .sum();
-    let speed = of("tick").last().and_then(|record| number(record, "speed"));
+    let speed = of("tick").next_back().and_then(|record| number(record, "speed"));
     let lists = sorted(all.iter().filter(|record| kind(record) == "map_views"));
     let mut acks: BTreeMap<String, Vec<&Value>> = BTreeMap::new();
     for record in sorted(all.iter().filter(|record| kind(record) == "map_state")) {

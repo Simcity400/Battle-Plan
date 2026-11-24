@@ -134,7 +134,7 @@ fn hours_apply_their_sections_and_appends_and_clear_the_last_hours_changes() {
 
 #[test]
 fn a_recording_of_fewer_columns_leaves_the_later_columns_unrecorded() {
-    let older = vec![vec![Kind::U32], vec![Kind::I64]];
+    let older = [vec![Kind::U32], vec![Kind::I64]];
     let inserted = write(
         &older[0],
         &TableHour {

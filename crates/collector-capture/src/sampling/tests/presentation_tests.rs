@@ -120,7 +120,7 @@ fn presentation_readiness_never_joins_preparation_before_unrelated_dispatches() 
     let mut batch = acquisition::Batch::new(&pool);
     let request = request();
     let inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
-    let store = request.army_stats.as_deref().unwrap() as *const _;
+    let store = std::ptr::from_ref(request.army_stats.as_deref().unwrap());
     let mut presentation = PresentationPending {
         prepare: Some(unsafe {
             submit_acquisition(
@@ -184,7 +184,7 @@ fn presentation_readiness_never_joins_preparation_before_unrelated_dispatches() 
         request.inputs.as_ref().unwrap(),
         &inputs
     ));
-    assert_eq!(request.army_stats.as_deref().unwrap() as *const _, store);
+    assert_eq!(std::ptr::from_ref(request.army_stats.as_deref().unwrap()), store);
     assert_eq!(pool.calibration().executor.uncollected, 0);
     assert_eq!(pool.calibration().executor.caller_executed, 0);
 }
@@ -613,8 +613,9 @@ fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_
         )
         .unwrap();
         request.army_stats = slot.take();
-        let lent = request.army_stats.as_deref().unwrap()
-            as *const collector_division_parts::attack_stats::ArmyStatStore;
+        let lent = std::ptr::from_ref::<collector_division_parts::attack_stats::ArmyStatStore>(
+            request.army_stats.as_deref().unwrap(),
+        );
         {
             let mut batch = acquisition::Batch::new(&pool);
             let _release = ReleaseOnDrop(&children, &parent);
@@ -647,7 +648,7 @@ fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_
             );
         }
         assert_eq!(engine_allocation::SharedBox::strong_count(&inputs), 1);
-        assert_eq!(&*slot.take().unwrap() as *const _, lent);
+        assert_eq!(&raw const *slot.take().unwrap(), lent);
         let stats = pool.calibration();
         assert_eq!(
             (
@@ -1110,7 +1111,7 @@ fn final_status_worker_failure_returns_the_original_loan_without_stitch_or_retry
     });
     let mut batch = acquisition::Batch::new(&pool);
     let request = request();
-    let store = request.army_stats.as_deref().unwrap() as *const _;
+    let store = std::ptr::from_ref(request.army_stats.as_deref().unwrap());
     let inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
     let mut presentation = PresentationPending {
         prepare: Some(unsafe {
@@ -1138,7 +1139,7 @@ fn final_status_worker_failure_returns_the_original_loan_without_stitch_or_retry
         request.inputs.as_ref().unwrap(),
         &inputs
     ));
-    assert_eq!(request.army_stats.as_deref().unwrap() as *const _, store);
+    assert_eq!(std::ptr::from_ref(request.army_stats.as_deref().unwrap()), store);
     assert_eq!(stitches.load(Ordering::Relaxed), 0);
     assert_eq!(pool.calibration().executor.uncollected, 0);
 }

@@ -384,7 +384,10 @@ fn copy_goal_pages(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the country reader and pending wars come from discovery, and the output, goals, cache and counts are caller-owned"
+)]
 fn copy_wars(
     memory: &impl Memory,
     base: usize,
@@ -517,7 +520,6 @@ pub fn walk(
     walk_cached(memory, base, state, output, goals, scores, &mut cache)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn walk_cached(
     memory: &impl Memory,
     base: usize,
@@ -540,7 +542,10 @@ pub fn walk_cached(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the output, goals, scores and cache are caller-owned, and the owner and certify callbacks belong to the caller"
+)]
 pub fn walk_cached_with_owners(
     memory: &impl Memory,
     base: usize,
@@ -565,7 +570,10 @@ pub fn walk_cached_with_owners(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the output, goals, scores, cache and counts are caller-owned, and the owner and certify callbacks belong to the caller"
+)]
 fn carry_held(
     countries: &ccountry::Reader<'_, impl Memory>,
     output: &mut Buffer<'_, OwnedRow>,
@@ -632,7 +640,10 @@ fn carry_held(
     Ok(true)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the output, goals, scores and cache are caller-owned, and the owner and certify callbacks belong to the caller"
+)]
 fn walk_cached_buffer(
     memory: &impl Memory,
     base: usize,

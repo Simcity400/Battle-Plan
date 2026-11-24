@@ -1010,7 +1010,6 @@ fn passing(raw: &[u8], life: Life, to: u16, passing: &mut Vec<bool>, open: &mut 
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments, reason = "the row's place and the cursor's buffers, given apart")]
 fn finish_born(part: &mut Part, frames: &Frames, columns: &[usize], list: &[bool], slot: u32, born: u16, cells: &mut TableState, cell: &mut Vec<u8>, scratch: &mut Vec<u8>, forms: &mut [u64; 8]) -> io::Result<()> {
     for (selected, &column) in columns.iter().enumerate() {
         let Some(opened) = part.columns[selected].as_mut() else { continue };
@@ -1091,7 +1090,6 @@ enum Now {
     Stream(usize, usize),
 }
 
-#[allow(clippy::too_many_arguments, reason = "the list loop's one entry, every part given apart")]
 fn advance_lists(
     opened: &mut Opened,
     born_group: bool,
@@ -1159,14 +1157,12 @@ fn advance_lists(
     Ok(applied)
 }
 
-#[allow(clippy::too_many_arguments, reason = "a track's place and the cursor's buffers, given apart")]
 fn list_events(raw: &[u8], pool: &[(u32, u32)], at: usize, end: usize, hour: u32, to: u32, lists: &mut Lists<'_>, slot: u32, unrecorded: bool, cell: &mut Vec<u8>, scratch: &mut Vec<u8>, forms: &mut [u64; 8]) -> io::Result<(usize, Now, bool)> {
     let mut events = 0;
     let (at, _, now, unrecorded) = list_steps(raw, pool, at, end, hour, to, lists, slot, unrecorded, cell, scratch, forms, &mut events)?;
     Ok((at, now, unrecorded))
 }
 
-#[allow(clippy::too_many_arguments, reason = "a track's place and the cursor's buffers, given apart")]
 fn list_steps(
     raw: &[u8],
     pool: &[(u32, u32)],

@@ -55,7 +55,6 @@ impl Work {
     }
 }
 
-#[cfg_attr(any(test, feature = "test-support"), allow(dead_code))]
 pub fn record_work(work: &Work) {
     let values = work.bases.into_iter().chain(work.ticks).chain(work.spliced);
     for (target, value) in WORK.iter().zip(values) {
@@ -235,7 +234,6 @@ pub fn collect() {
     WATCHES.registry.collect();
 }
 
-#[cfg_attr(any(test, feature = "test-support"), allow(dead_code))]
 pub fn record(counts: &registration::Counts, bases: Option<usize>) {
     for (target, value) in READS.iter().zip([counts.carried, counts.read]) {
         target.fetch_add(value, Ordering::Relaxed);
@@ -245,7 +243,6 @@ pub fn record(counts: &registration::Counts, bases: Option<usize>) {
     }
 }
 
-#[cfg_attr(any(test, feature = "test-support"), allow(dead_code))]
 pub fn record_census(census: &registration::Census) {
     let values = census
         .arrays
@@ -412,9 +409,9 @@ mod tests {
                 .unwrap()
         };
         let handle: u64 = (9 << 32) | 0x41;
-        let mut base = vec![0_u8; 0x20];
+        let mut base = [0_u8; 0x20];
         base[8..16].copy_from_slice(&handle.to_le_bytes());
-        let manager = vec![0_u8; 0x20];
+        let manager = [0_u8; 0x20];
         let watches = Watches::enabled(16);
         for name in [
             "ensure_state_air_base",

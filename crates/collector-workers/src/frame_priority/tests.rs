@@ -286,8 +286,8 @@ fn the_owned_reconciler_starts_boost_disabled_and_joins_without_targets() {
     let mut disabled = 0;
     let valid = unsafe {
         windows_sys::Win32::System::Threading::GetThreadPriorityBoost(
-            worker.thread.as_ref().unwrap().as_raw_handle() as _,
-            &mut disabled,
+            worker.thread.as_ref().unwrap().as_raw_handle().cast(),
+            &raw mut disabled,
         )
     };
     assert_ne!(valid, 0);

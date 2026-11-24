@@ -253,7 +253,7 @@ fn older_recordings_keep_their_inline_lists_and_refuse_only_the_parts() {
     old.hour = FuelDemandHour::Historical(1000);
     let inline = row(old);
     let view = TableView::Unavailable {
-        reason: reason.clone(),
+        reason: reason,
     };
     assert_eq!(
         with_demand_parts(std::slice::from_ref(&inline), &view, previous).unwrap(),

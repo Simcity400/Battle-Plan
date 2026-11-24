@@ -120,7 +120,7 @@ impl Gate {
             unsafe {
                 WaitOnAddress(
                     self.ticking.as_ptr().cast(),
-                    (&busy as *const u32).cast(),
+                    (&raw const busy).cast(),
                     size_of::<u32>(),
                     left.as_millis().clamp(1, u128::from(u32::MAX)) as u32,
                 )

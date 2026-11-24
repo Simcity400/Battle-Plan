@@ -95,7 +95,7 @@ impl Window {
                 lpszClassName: class.as_ptr(),
                 ..std::mem::zeroed()
             };
-            RegisterClassExW(&description);
+            RegisterClassExW(&raw const description);
             let (style, ex_style, width, height) = match parent {
                 Some(_) => (WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 1, 1),
                 None => (WS_OVERLAPPEDWINDOW | WS_VISIBLE, WS_EX_APPWINDOW, size[0] as i32, size[1] as i32),
@@ -124,7 +124,7 @@ impl Window {
             }
             if parent.is_none() {
                 let mut outer = RECT { left: 0, top: 0, right: size[0] as i32, bottom: size[1] as i32 };
-                AdjustWindowRectEx(&mut outer, style, 0, ex_style);
+                AdjustWindowRectEx(&raw mut outer, style, 0, ex_style);
                 SetWindowPos(hwnd, ptr::null_mut(), 0, 0, outer.right - outer.left, outer.bottom - outer.top, SWP_NOMOVE | SWP_NOZORDER);
             }
             Ok((Self { hwnd: hwnd as usize, link }, Inputs { received }))
@@ -146,7 +146,7 @@ impl Window {
     pub(crate) fn metrics(&self) -> ([u32; 2], f32) {
         let mut client = RECT::default();
         let dpi = unsafe {
-            GetClientRect(self.hwnd as HWND, &mut client);
+            GetClientRect(self.hwnd as HWND, &raw mut client);
             GetDpiForWindow(self.hwnd as HWND)
         };
         let size = [(client.right - client.left).max(0) as u32, (client.bottom - client.top).max(0) as u32];
@@ -322,9 +322,9 @@ fn button(message: u32, wparam: WPARAM) -> Option<(egui::PointerButton, bool)> {
 /// `hwnd` is the live window whose procedure is running on this thread.
 unsafe fn center(hwnd: HWND) -> POINT {
     let mut client = RECT::default();
-    unsafe { GetClientRect(hwnd, &mut client) };
+    unsafe { GetClientRect(hwnd, &raw mut client) };
     let mut point = POINT { x: client.right / 2, y: client.bottom / 2 };
-    unsafe { ClientToScreen(hwnd, &mut point) };
+    unsafe { ClientToScreen(hwnd, &raw mut point) };
     point
 }
 
@@ -354,7 +354,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 if link.captured.load(Ordering::Acquire) {
                     let middle = center(hwnd);
                     let mut at = POINT { x: (lparam & 0xffff) as i16 as i32, y: ((lparam >> 16) & 0xffff) as i16 as i32 };
-                    ClientToScreen(hwnd, &mut at);
+                    ClientToScreen(hwnd, &raw mut at);
                     let delta = egui::vec2((at.x - middle.x) as f32, (at.y - middle.y) as f32);
                     if delta != egui::Vec2::ZERO {
                         link.send(Input::Event(egui::Event::MouseMoved(delta)));
@@ -364,7 +364,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 }
                 if !link.tracking.swap(true, Ordering::AcqRel) {
                     let mut track = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
-                    TrackMouseEvent(&mut track);
+                    TrackMouseEvent(&raw mut track);
                 }
                 link.send(Input::Event(egui::Event::PointerMoved(points(hwnd, lparam))));
                 0
@@ -464,11 +464,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             WM_APPLY_CAPTURE => {
                 if link.captured.load(Ordering::Acquire) {
                     let mut client = RECT::default();
-                    GetClientRect(hwnd, &mut client);
+                    GetClientRect(hwnd, &raw mut client);
                     let mut corner = POINT { x: 0, y: 0 };
-                    ClientToScreen(hwnd, &mut corner);
+                    ClientToScreen(hwnd, &raw mut corner);
                     let area = RECT { left: corner.x, top: corner.y, right: corner.x + client.right, bottom: corner.y + client.bottom };
-                    ClipCursor(&area);
+                    ClipCursor(&raw const area);
                     let middle = center(hwnd);
                     SetCursorPos(middle.x, middle.y);
                     SetCursor(ptr::null_mut());
@@ -507,9 +507,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
 pub fn pump() {
     let mut message = MSG::default();
     unsafe {
-        while GetMessageW(&mut message, ptr::null_mut(), 0, 0) > 0 {
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
+        while GetMessageW(&raw mut message, ptr::null_mut(), 0, 0) > 0 {
+            TranslateMessage(&raw const message);
+            DispatchMessageW(&raw const message);
         }
     }
 }
@@ -521,8 +521,8 @@ mod tests {
     fn dispatch_posted() {
         let mut message = MSG::default();
         unsafe {
-            while PeekMessageW(&mut message, ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
-                DispatchMessageW(&message);
+            while PeekMessageW(&raw mut message, ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                DispatchMessageW(&raw const message);
             }
         }
     }

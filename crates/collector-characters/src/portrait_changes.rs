@@ -282,7 +282,7 @@ impl PreImages {
             unsafe {
                 WaitOnAddress(
                     self.state.as_ptr().cast(),
-                    (&state as *const u32).cast(),
+                    (&raw const state).cast(),
                     size_of::<u32>(),
                     timeout,
                 )
@@ -503,7 +503,7 @@ impl engine_native_politics::portrait_cache::PreImages for PreImages {
             } => {
                 let storage = unsafe { &*self.storage.get() };
                 let entries: *const [UnsafeCell<EntryImage>] =
-                    &storage.entries[first..first + count];
+                    &raw const storage.entries[first..first + count];
                 let entries = unsafe { &*(entries as *const [EntryImage]) };
                 // SAFETY: the record's writer filled each of its entries' text ranges before
                 // publishing it, and they stay unchanged until the next capture begins.

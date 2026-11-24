@@ -915,7 +915,7 @@ fn peace_conference_hides_units(countries: &[replay_data::rows::CountryRow], our
         .any(|country| country.canonical_slot == ours && country.peace_conference_participant != 0)
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the hourly inputs come from different owners"
 )]
@@ -1134,10 +1134,6 @@ impl Need {
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the derivation's inputs, each from another owner"
-)]
 pub fn naval_dominance_sources(
     frame: &DecodedFrame,
     map: &MapData,
@@ -1989,10 +1985,6 @@ impl PreparedCounters {
         })
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "separate mutable state for the host's composed icon views"
-    )]
     pub fn draw(
         &mut self,
         inputs: &CounterInputs<'_>,
@@ -2134,7 +2126,7 @@ impl PreparedCounters {
         Ok(())
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "separate mutable state for the host's composed icon views"
     )]
@@ -2295,7 +2287,7 @@ impl PreparedCounters {
         Ok(sample)
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "separate mutable state for the host's composed icon views"
     )]

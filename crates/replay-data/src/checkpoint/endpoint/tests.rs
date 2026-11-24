@@ -88,7 +88,7 @@ fn endpoint_assignment_is_absolute_preserves_recorded_absence_and_held_rows() {
         tag: vec![255, 0, 3],
         command_power_raw: i64::MIN,
         border_land_doctrine_level: Recorded::NotRecorded,
-        ..old.clone()
+        ..old
     };
     let mask = (1 << 1) | (1 << 3) | (1 << 9);
     let current = TableRows::Countries(vec![next.clone()]);

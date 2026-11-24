@@ -1,8 +1,14 @@
-#![allow(dead_code)]
+#![expect(
+    dead_code,
+    reason = "the reference stability walk keeps entry points that only some comparison tests call"
+)]
 
 use super::super::*;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the reference keeps the same inputs as the stability walk it checks"
+)]
 pub fn walk_country<M: Memory>(
     memory: &M,
     base: usize,
@@ -29,7 +35,10 @@ pub fn walk_country<M: Memory>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the reference keeps the same inputs as the stability walk it checks"
+)]
 pub fn walk_country_growing<M: Memory>(
     memory: &M,
     base: usize,
@@ -58,7 +67,10 @@ pub fn walk_country_growing<M: Memory>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the reference keeps the same inputs as the stability walk it checks"
+)]
 fn walk_country_buffers<M: Memory>(
     memory: &M,
     base: usize,
@@ -1020,7 +1032,10 @@ fn pair(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the reference keeps the same inputs as the stability emit it checks"
+)]
 fn emit(
     memory: &impl Memory,
     country: u32,

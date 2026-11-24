@@ -742,6 +742,7 @@ fn concurrent_resolves_bake_each_plane_once_and_equal_single_worker_claims() {
     assert_eq!(lazy(&claimed), lazy(&serial));
     let baked = |assets: &AircraftAssets| {
         let library = assets.library();
+        #[expect(clippy::mutable_key_type, reason = "asset keys cache display data outside equality and ordering")]
         let meshes: BTreeMap<_, _> = library
             .meshes
             .iter()
@@ -751,6 +752,7 @@ fn concurrent_resolves_bake_each_plane_once_and_equal_single_worker_claims() {
         for (name, slot) in &library.index {
             assert_eq!(name, &library.meshes[*slot].name);
         }
+        #[expect(clippy::mutable_key_type, reason = "asset keys cache display data outside equality and ordering")]
         let counterparts: BTreeMap<_, _> = library
             .alternatives
             .iter()
@@ -2011,7 +2013,6 @@ fn strategic_threshold_conversion_uses_native_f32_rounding() {
 }
 
 #[test]
-#[allow(clippy::field_reassign_with_default)]
 fn scenario_tracks_bind_native_source_ordinals_without_animation_name_aliases() {
     use viewer_models::mesh_pose::Source;
     let source = Source {

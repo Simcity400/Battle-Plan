@@ -364,14 +364,14 @@ pub(super) fn batch<const TRACK_BUSY: bool>(
     let key = (
         hooks
             .first()
-            .map_or(ptr::null(), |hook| &**hook as *const Hook),
+            .map_or(ptr::null(), |hook| &raw const **hook),
         hooks.len(),
     );
     match MODE.get() {
         Some(Mode::Collect) => collect(enabled, None, TRACK_BUSY, || {
             let mut pointers = Vec::new();
             pointers.try_reserve_exact(hooks.len()).map_err(|_| ())?;
-            pointers.extend(hooks.iter_mut().map(|hook| &mut **hook as *mut Hook));
+            pointers.extend(hooks.iter_mut().map(|hook| &raw mut **hook));
             Ok(RecordedHooks::Pointers(pointers))
         }),
         Some(Mode::Report) => answer(Some(key), enabled)
@@ -614,7 +614,7 @@ impl<'a> Group<'a> {
                     hook.site as *const c_void,
                     hook.sentinel_len,
                     PAGE_EXECUTE_READWRITE,
-                    &mut prior,
+                    &raw mut prior,
                 )
             } == 0
             {
@@ -734,7 +734,7 @@ impl<'a> Group<'a> {
                     hook.site as *const c_void,
                     hook.sentinel_len,
                     hook.page_protection,
-                    &mut ignored,
+                    &raw mut ignored,
                 )
             } != 0;
             hook.diagnostic_failure |= !restored;
@@ -769,7 +769,7 @@ impl<'a> Group<'a> {
                     hook.site as *const c_void,
                     hook.sentinel_len,
                     PAGE_EXECUTE_READWRITE,
-                    &mut ignored,
+                    &raw mut ignored,
                 )
             } == 0
             {

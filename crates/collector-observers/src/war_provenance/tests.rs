@@ -183,7 +183,7 @@ fn entry_shims_unwind_to_the_native_return_with_the_original_stack() {
         assert_eq!(first, &[0x49, 0x89, 0xe2, 0x48, 0x83, 0xec, 0x58]);
         let pc = entry as u64 + 7;
         let mut image_base = 0;
-        let function = unsafe { RtlLookupFunctionEntry(pc, &mut image_base, ptr::null_mut()) };
+        let function = unsafe { RtlLookupFunctionEntry(pc, &raw mut image_base, ptr::null_mut()) };
         assert!(!function.is_null());
         assert_eq!(
             image_base + unsafe { (*function).BeginAddress } as u64,
@@ -206,9 +206,9 @@ fn entry_shims_unwind_to_the_native_return_with_the_original_stack() {
                 image_base,
                 pc,
                 function,
-                &mut context,
-                &mut handler_data,
-                &mut establisher,
+                &raw mut context,
+                &raw mut handler_data,
+                &raw mut establisher,
                 ptr::null_mut(),
             );
         }

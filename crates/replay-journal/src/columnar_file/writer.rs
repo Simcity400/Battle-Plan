@@ -319,7 +319,6 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         Ok(extent)
     }
 
-    #[allow(clippy::type_complexity, reason = "the block's head and its span's pieces, returned together")]
     pub fn end_block(&mut self, end: BlockEnd<'_>) -> io::Result<(BlockHead, Vec<(u32, u8, Extent)>)> {
         self.usable()?;
         let result = self.write_block(end);
@@ -344,7 +343,6 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         Ok(out)
     }
 
-    #[allow(clippy::type_complexity, reason = "the block's head and its span's pieces, returned together")]
     fn write_block(&mut self, end: BlockEnd<'_>) -> io::Result<(BlockHead, Vec<(u32, u8, Extent)>)> {
         let page = self.page.take().ok_or_else(|| invalid("A block ends once its encoder gave its page"))?;
         let run = self.run.as_ref().ok_or_else(|| invalid("A block needs a run under way"))?;

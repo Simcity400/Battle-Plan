@@ -9,7 +9,7 @@ import type { LogRow } from '../../charts/log/logData';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 
 import { placeKey } from '../../dashboard/placeNamesData.ts';
-import type { BattleRow, BattleValue, BattleWarning, BattleWindow, PlaceNamesReply } from '../../generated/dashboard';
+import type { BattleRow, BattleSide, BattleValue, BattleWarning, BattleWindow, PlaceNamesReply } from '../../generated/dashboard';
 export type { BattleRow, BattleSide, BattleValue, BattleWindow, BattleWarning } from '../../generated/dashboard';
 
 export function heldAtHour<T>(read: (hour: number) => T): (hour: number) => T {
@@ -50,6 +50,7 @@ export interface BattleSideSummary {
   separator: string;
   unknown: string;
   formatCount: (value: BattleValue, compact: boolean) => string;
+  formatSide?: (side: BattleSide, compact: boolean) => string;
 }
 
 export function battleFlagCount(count: number, width: number, flagWidth: number, gap: number, moreWidth: number): number {

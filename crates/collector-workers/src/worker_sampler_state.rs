@@ -195,7 +195,7 @@ pub fn creation(handle: HANDLE) -> Option<u64> {
         dwLowDateTime: 0,
         dwHighDateTime: 0,
     }; 4];
-    if unsafe { GetThreadTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
+    if unsafe { GetThreadTimes(handle, &raw mut created, &raw mut exited, &raw mut kernel, &raw mut user) } == 0 {
         return None;
     }
     Some((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))

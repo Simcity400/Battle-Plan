@@ -2438,7 +2438,6 @@ unsafe extern "system-unwind" {
     fn destruction_land_entry();
 }
 
-#[allow(clippy::too_many_arguments)]
 unsafe extern "system-unwind" fn land(
     a: usize,
     b: usize,
