@@ -16,7 +16,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'faction-pooled-strength', load: () => import('./faction-pooled-strength') },
   { kind: 'faction-strength', view: 'lines', label: 'Lines', load: () => import('./faction-strength') },
   { kind: 'fuel-branches', load: () => import('./fuel-branches') },
-  { kind: 'game-score', view: 'lines', label: 'Lines over time', playsBackDated: true, load: () => import('./game-score') },
   { kind: 'general-career', view: 'timeline', label: 'Timeline', load: () => import('./general-career') },
   { kind: 'land-battles', load: () => import('./land-battles') },
   { kind: 'map', load: () => import('./map') },
