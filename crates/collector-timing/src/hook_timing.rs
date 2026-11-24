@@ -798,7 +798,7 @@ pub fn start() {
 
 pub fn tsc_hz() -> Option<u64> {
     let mut frequency = 0;
-    if unsafe { windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency) }
+    if unsafe { windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&raw mut frequency) }
         == 0
     {
         return None;

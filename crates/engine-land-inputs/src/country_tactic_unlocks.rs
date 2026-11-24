@@ -199,7 +199,6 @@ fn registry(
     Ok(true)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn count(memory: &impl Memory, base: usize, game: usize) -> Capture {
     capture_buffer(
         memory,

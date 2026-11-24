@@ -5771,7 +5771,7 @@ mod tests {
             )
             .unwrap();
             assert!(ended.errors.is_empty(), "{:?}", ended.errors);
-            assert_eq!(ended.unsaved, [unsaved.clone()]);
+            assert_eq!(ended.unsaved, std::slice::from_ref(&unsaved));
             assert_eq!(recording(), None, "nothing is saved");
         }
         assert_ne!(branches[0], branches[1]);

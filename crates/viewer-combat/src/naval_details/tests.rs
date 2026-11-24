@@ -249,7 +249,7 @@ fn forward_land_and_carrier_air_share_the_native_group_rule() {
     let mut retired = carrier.clone();
     retired.carrier_state = 4;
     assert!(!display_air_plane(&retired));
-    let mut paired = carrier.clone();
+    let mut paired = carrier;
     paired.group_index = u32::MAX;
     assert!(!display_air_plane(&paired));
 }

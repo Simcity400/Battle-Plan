@@ -82,7 +82,6 @@ unsafe extern "system-unwind" {
         h: usize,
     );
 }
-#[allow(clippy::too_many_arguments)]
 unsafe extern "system" fn land_damage(
     a: usize,
     b: usize,
@@ -135,7 +134,7 @@ unsafe extern "system" fn credit(reserves: usize, pool: usize) {
 }
 fn registered(address: usize) -> bool {
     let mut image = 0;
-    !unsafe { RtlLookupFunctionEntry(address as u64, &mut image, ptr::null_mut()) }.is_null()
+    !unsafe { RtlLookupFunctionEntry(address as u64, &raw mut image, ptr::null_mut()) }.is_null()
 }
 
 #[test]

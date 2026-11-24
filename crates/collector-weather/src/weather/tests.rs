@@ -374,7 +374,7 @@ fn raw_copy_matches_the_whole_typed_walk_from_any_frame_capacity_and_under_fault
         put(&mut bytes, address, &value);
         cases.push(bytes);
     }
-    let mut absent = clean.clone();
+    let mut absent = clean;
     put(
         &mut absent,
         0x1000 + cgame_state::WEATHER_MANAGER,

@@ -75,7 +75,10 @@ pub fn count(memory: &impl Memory, base: usize, country: usize, country_id: u32)
     walk_into(memory, base, country, country_id, engine_native_memory::walk::Buffer::Count, 0, engine_native_memory::walk::Buffer::Count, 0, engine_native_memory::walk::Buffer::Count, 0)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each output arena is passed with the start the caller appends from"
+)]
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -102,7 +105,10 @@ pub fn walk(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each output buffer is passed with the start the caller appends from"
+)]
 fn walk_into(
     memory: &impl Memory,
     base: usize,

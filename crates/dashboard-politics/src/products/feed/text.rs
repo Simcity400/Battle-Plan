@@ -516,7 +516,6 @@ fn presentation(notices: &mut Notices, catalogue: &Catalogue, kind: EventFeedKin
             );
         }
     }
-    drop(localise);
     item.gaps = scripted.first().cloned();
     for reason in scripted {
         notices.unavailable("scriptEventText", "Scripted event text", reason, Some(1));

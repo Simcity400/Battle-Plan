@@ -311,7 +311,7 @@ fn line_output_country_uses_saved_producer_and_resolved_raw_reference() {
     );
     let (result, report) = run(vec![ProductionLineOutputRow {
         country: 6,
-        ..row.clone()
+        ..row
     }]);
     result.unwrap();
     assert_eq!(report.differences.len(), 1);
@@ -320,7 +320,7 @@ fn line_output_country_uses_saved_producer_and_resolved_raw_reference() {
         row.clone(),
         ProductionLineOutputRow {
             line: line + (1 << 32),
-            ..row.clone()
+            ..row
         },
     ]);
     result.unwrap();
@@ -329,7 +329,7 @@ fn line_output_country_uses_saved_producer_and_resolved_raw_reference() {
     assert!(
         run(vec![ProductionLineOutputRow {
             country: 9999,
-            ..row.clone()
+            ..row
         }])
         .0
         .is_err()

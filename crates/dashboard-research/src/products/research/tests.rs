@@ -165,7 +165,7 @@ fn slots_at_an_hour_join_the_active_assignment_and_say_why_they_are_unknown() {
     assert_eq!(slots[1].definition.as_ref().map(|text| (text.database_index, text.name.as_deref())), Some((10, Some("radar #10"))), "its text is looked up by its own template");
     assert_eq!(slots[0].definition, None, "a joined read takes its text from its assignment");
     assert!(slots::slots(&frame(130, 120, rows.clone(), Vec::new()), owner, 130, &none, &Cells::default()).unwrap().2.unavailable.is_some());
-    let mut uncovered = frame(130, 120, rows.clone(), Vec::new());
+    let mut uncovered = frame(130, 120, rows, Vec::new());
     *uncovered.tables[TableId::ResearchCoverage.index()] = TableView::Complete(TableRows::ResearchCoverage(Vec::new()));
     assert_eq!(slots::slots(&uncovered, owner, 130, &none, &Cells::default()).unwrap_err(), "No research read covers this hour");
     assert!(slots::slots(&frame(130, 120, vec![input(1, 31, 9, b"radio", 0)], Vec::new()), owner, 130, &none, &Cells::default()).is_err());

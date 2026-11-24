@@ -68,7 +68,7 @@ const WATCHED: [TableId; 2] = [TableId::Countries, TableId::WorldTension];
 fn frames_read_on_are_the_writer_s_tables_at_every_hour_of_every_run() {
     let (bytes, expected) = fixtures::churned(recorder_derive::writers(), &CHURNED);
     let disk = Saved::new(&bytes);
-    for file in [opened(bytes.clone()), disk.open()] {
+    for file in [opened(bytes), disk.open()] {
         assert_eq!(file.run_count(), 5);
         assert_eq!(file.segments().len(), 5);
         assert_eq!(file.hours(), expected.len() as u64);

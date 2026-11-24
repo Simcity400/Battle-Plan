@@ -96,6 +96,7 @@ fn visit_named_processes(
             break;
         }
         // SAFETY: offset < header_end <= bytes_len, so base.add(offset) stays within listing.
+        #[expect(clippy::cast_ptr_alignment, reason = "is_aligned is checked before the pointer is dereferenced")]
         let header_ptr = unsafe { base.add(offset) }.cast::<SYSTEM_PROCESS_INFORMATION>();
         if !header_ptr.is_aligned() {
             break;
@@ -128,6 +129,7 @@ fn visit_named_processes(
                 }
                 // SAFETY: header_end <= threads_end <= bytes_len, derived directly from base so
                 // provenance spans the full listing buffer rather than narrowing through entry.
+                #[expect(clippy::cast_ptr_alignment, reason = "is_aligned is checked before the pointer is dereferenced")]
                 let threads_ptr =
                     unsafe { base.add(header_end) }.cast::<SYSTEM_THREAD_INFORMATION>();
                 if !threads_ptr.is_aligned() {
@@ -173,7 +175,7 @@ fn system_processes() -> Result<Vec<u64>, String> {
                 SystemProcessInformation,
                 buffer.as_mut_ptr().cast(),
                 bytes,
-                &mut needed,
+                &raw mut needed,
             )
         };
         match status {
@@ -230,8 +232,8 @@ pub fn local_clock(filetime: u64) -> Option<(u16, u16)> {
     };
     let mut utc = SYSTEMTIME::default();
     let mut local = SYSTEMTIME::default();
-    (unsafe { FileTimeToSystemTime(&universal, &mut utc) } != 0
-        && unsafe { SystemTimeToTzSpecificLocalTime(ptr::null(), &utc, &mut local) } != 0)
+    (unsafe { FileTimeToSystemTime(&raw const universal, &raw mut utc) } != 0
+        && unsafe { SystemTimeToTzSpecificLocalTime(ptr::null(), &raw const utc, &raw mut local) } != 0)
         .then_some((local.wHour, local.wMinute))
 }
 
@@ -289,14 +291,14 @@ pub fn modules_until(pid: u32, deadline: Instant) -> Result<Vec<Module>, String>
     .map_err(|error| error.to_string())?;
     let mut entry: MODULEENTRY32W = unsafe { std::mem::zeroed() };
     entry.dwSize = size_of::<MODULEENTRY32W>() as u32;
-    let mut found = unsafe { Module32FirstW(snapshot.0, &mut entry) };
+    let mut found = unsafe { Module32FirstW(snapshot.0, &raw mut entry) };
     let mut result = Vec::new();
     while found != 0 {
         result.push(Module {
             base: entry.modBaseAddr as usize,
             path: PathBuf::from(text(&entry.szExePath)),
         });
-        found = unsafe { Module32NextW(snapshot.0, &mut entry) };
+        found = unsafe { Module32NextW(snapshot.0, &raw mut entry) };
     }
     if unsafe { GetLastError() } != ERROR_NO_MORE_FILES {
         return Err(io::Error::last_os_error().to_string());
@@ -326,7 +328,7 @@ impl Process {
         let handle = Handle::new(unsafe { OpenProcess(rights, 0, pid) })?;
         let mut buffer = vec![0; 32768];
         let mut len = buffer.len() as u32;
-        if unsafe { QueryFullProcessImageNameW(handle.0, 0, buffer.as_mut_ptr(), &mut len) } == 0 {
+        if unsafe { QueryFullProcessImageNameW(handle.0, 0, buffer.as_mut_ptr(), &raw mut len) } == 0 {
             return Err(io::Error::last_os_error().to_string());
         }
         let path = PathBuf::from(OsString::from_wide(&buffer[..len as usize]));
@@ -334,10 +336,10 @@ impl Process {
         if unsafe {
             GetProcessTimes(
                 handle.0,
-                &mut times[0],
-                &mut times[1],
-                &mut times[2],
-                &mut times[3],
+                &raw mut times[0],
+                &raw mut times[1],
+                &raw mut times[2],
+                &raw mut times[3],
             )
         } == 0
         {
@@ -400,7 +402,7 @@ impl Process {
                     remote,
                     path.as_ptr().cast(),
                     bytes,
-                    &mut written,
+                    &raw mut written,
                 )
             } == 0
                 || written != bytes
@@ -416,7 +418,7 @@ impl Process {
                     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
                         | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                     loader as *const u16,
-                    &mut owner,
+                    &raw mut owner,
                 )
             } == 0
             {
@@ -501,7 +503,7 @@ impl engine_native_memory::Memory for ProcessMemory<'_> {
                 address as *const c_void,
                 destination.as_mut_ptr().cast(),
                 destination.len(),
-                &mut read,
+                &raw mut read,
             )
         }) != 0
             && read == destination.len()

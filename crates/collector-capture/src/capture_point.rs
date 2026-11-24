@@ -349,7 +349,7 @@ impl Thread {
             .spawn(run)?;
         let raw = handle.as_raw_handle();
         THREAD.store(raw as isize, Ordering::Release);
-        let id = unsafe { GetThreadId(raw as _) };
+        let id = unsafe { GetThreadId(raw.cast()) };
         // SAFETY: This updates the designated role of this runtime's owned worker.
         unsafe {
             collector_workers::thread_cpu::register_id(
@@ -457,7 +457,7 @@ fn run() {
                 unsafe {
                     WaitOnAddress(
                         WORK.as_ptr().cast(),
-                        (&idle as *const u32).cast(),
+                        (&raw const idle).cast(),
                         size_of::<u32>(),
                         u32::MAX,
                     )

@@ -1309,7 +1309,7 @@ mod tests {
             reply_within(
                 &params,
                 "synthetic",
-                reply.warnings.clone(),
+                reply.warnings,
                 items(),
                 &cancelled,
                 size - 1

@@ -211,7 +211,7 @@ fn a_hooked_write_rereads_only_its_wing() {
     watches.boundary(false);
     let hour = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((hour.counts.read, hour.counts.reused), (1, 2));
-    let mut expected = first.rows.clone();
+    let mut expected = first.rows;
     expected[2].amount_raw = 5;
     assert_eq!(hour.rows, expected);
     watches.boundary(false);

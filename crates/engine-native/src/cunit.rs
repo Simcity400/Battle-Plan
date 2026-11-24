@@ -297,7 +297,6 @@ impl MapMotion {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn read_map_motion(
     memory: &impl Memory,
     base: usize,
@@ -312,7 +311,10 @@ pub fn read_map_motion(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the provinces, unit and owner identify one motion, and the combat memo and count cache are caller-owned"
+)]
 pub(crate) fn read_map_motion_with_combat_count(
     memory: &impl Memory,
     base: usize,
@@ -336,7 +338,10 @@ pub(crate) fn read_map_motion_with_combat_count(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the provinces, unit and owner identify one motion, and the combat memo, registry and references are caller-owned"
+)]
 pub fn read_map_motion_observed(
     memory: &impl Memory,
     base: usize,
@@ -361,7 +366,10 @@ pub fn read_map_motion_observed(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the provinces, unit and owner identify one motion, and the combat memo, optional references and count cache are caller-owned"
+)]
 fn read_map_motion_impl(
     memory: &impl Memory,
     base: usize,

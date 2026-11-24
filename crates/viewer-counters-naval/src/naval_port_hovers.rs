@@ -51,7 +51,7 @@ fn control(window: &native::Element, element: &native::Element) -> Option<Contro
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the window, its layout and holder, its placement, the resources and the port's members")]
 pub fn presented(
     window: &native::Element,
     layout: &native_gui::Layout,

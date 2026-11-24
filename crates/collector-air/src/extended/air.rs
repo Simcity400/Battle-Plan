@@ -177,7 +177,10 @@ impl ScorePart {
         self.rows.allocated_bytes()
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the capacity and held raid scores"
+    )]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -1190,7 +1193,6 @@ fn merge_supply(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 #[cfg(any(test, feature = "test-support"))]
 pub fn capture_references(
     memory: &impl Memory,

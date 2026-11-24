@@ -821,13 +821,13 @@ pub fn desktops() -> io::Result<Vec<Result<Desktop, String>>> {
         };
         // SAFETY: `info.szDevice` is NUL-terminated by `GetMonitorInfoW` and `mode.dmSize` is set.
         let has_mode = unsafe {
-            EnumDisplaySettingsW(info.szDevice.as_ptr(), ENUM_CURRENT_SETTINGS, &mut mode)
+            EnumDisplaySettingsW(info.szDevice.as_ptr(), ENUM_CURRENT_SETTINGS, &raw mut mode)
         } != 0;
         let desktop = if has_mode && mode.dmPelsWidth > 0 && mode.dmPelsHeight > 0 {
             let (mut dpi, mut unused) = (0u32, 0u32);
             // SAFETY: `monitor` is a live `HMONITOR` from `EnumDisplayMonitors` and outputs are writable.
             let read =
-                unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi, &mut unused) };
+                unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &raw mut dpi, &raw mut unused) };
             let dpi = if read != 0 || dpi == 0 {
                 Err(format!(
                     "Could not read the display scale of monitor {} (0x{read:08x})",
@@ -911,7 +911,7 @@ pub fn display_refresh_hz(window: Option<usize>) -> Option<u32> {
         ..Default::default()
     };
     let name = device.as_ref().map_or(std::ptr::null(), |device| device.as_ptr());
-    let found = unsafe { EnumDisplaySettingsW(name, ENUM_CURRENT_SETTINGS, &mut mode) } != 0;
+    let found = unsafe { EnumDisplaySettingsW(name, ENUM_CURRENT_SETTINGS, &raw mut mode) } != 0;
     (found && mode.dmDisplayFrequency > 1).then_some(mode.dmDisplayFrequency)
 }
 
@@ -1414,7 +1414,7 @@ template_counter=-");
             "Could not read the display scale of monitor \\\\.\\DISPLAY2 (0x80070057)".to_owned();
         let dpi_failed_tv = Desktop {
             physical: [3840, 2160],
-            dpi: Err(dpi_err_msg.clone()),
+            dpi: Err(dpi_err_msg),
         };
         let monitors = [
             Monitor {
@@ -1453,7 +1453,7 @@ template_counter=-");
         assert_eq!(at_index(0).screen_scale(&desktops), Some(1.25));
         assert_eq!(
             at_index(1).window(&desktops),
-            Some((dpi_failed_tv.clone(), Window::Borderless))
+            Some((dpi_failed_tv, Window::Borderless))
         );
         assert!(
             at_index(1)
@@ -1476,14 +1476,14 @@ template_counter=-");
         assert_eq!(at_index(2).screen_scale(&desktops), Some(2.0));
         assert_eq!(
             at_index(3).window(&desktops),
-            Some((primary.clone(), Window::Plain))
+            Some((primary, Window::Plain))
         );
 
         let missing_primary = [Err("primary DPI failed".into()), Ok(tv.clone())];
         assert_eq!(at_index(0).window(&missing_primary), None);
         assert_eq!(
             at_index(1).window(&missing_primary),
-            Some((tv.clone(), Window::Borderless))
+            Some((tv, Window::Borderless))
         );
         assert_eq!(at_index(1).frame(&missing_primary), Some([1920, 1080]));
         assert_eq!(at_index(1).stretch(&missing_primary), Some(2.0));

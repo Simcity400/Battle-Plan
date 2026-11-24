@@ -72,10 +72,6 @@ impl Renderer<'_, '_, '_> {
         self.project_output_body(&output, item, scopes, owner, id, scientist, facility)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Keep project identity and independently refused assignments explicit."
-    )]
     pub(in crate::effect_description) fn project_output_body(
         &mut self,
         output: &content_reader_military::special_projects::Output,

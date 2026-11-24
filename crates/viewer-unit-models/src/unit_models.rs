@@ -486,7 +486,7 @@ enum LoadStack {
 pub const LAYER_OFF: &str = "model layer: unit models";
 
 impl UnitModelAssets {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the layers and decoder, the defines, the map and default map, and the warnings and refusals")]
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
@@ -515,7 +515,6 @@ impl UnitModelAssets {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn load_with(
         layers: &ResolvedLayers,
         defines: &Defines,

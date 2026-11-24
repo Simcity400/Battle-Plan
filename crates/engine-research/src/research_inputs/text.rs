@@ -4,10 +4,6 @@ use crate::allocation;
 const INLINE: usize = 64;
 
 #[derive(Debug, PartialEq, Eq)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "Short text stays inline so the common row allocates nothing."
-)]
 pub enum Text {
     Inline(msvc_string::Text<INLINE>),
     Owned(Vec<u8>),

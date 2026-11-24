@@ -1,10 +1,72 @@
 import { Lane, type LaneHost, type LaneView } from './lane.ts';
 import type { FromLane, FromPull, ToLane, ToPull } from './laneMessages';
 
+export interface WakeChannel {
+  readonly port1: { onmessage: ((ev: MessageEvent) => unknown) | null };
+  readonly port2: { postMessage(message: unknown): void };
+}
+
+export function macrotaskSchedule(
+  createChannel: (() => WakeChannel) | null = typeof MessageChannel === 'function' ? () => new MessageChannel() : null,
+): ((run: () => void) => void) | undefined {
+  if (!createChannel) return undefined;
+  const wake = createChannel();
+  let current: { token: number; run: () => void } | null = null;
+  let nextToken = 1;
+  wake.port1.onmessage = (event: MessageEvent) => {
+    const active = current;
+    if (!active || event.data !== active.token) return;
+    current = null;
+    active.run();
+  };
+  return run => {
+    const token = nextToken++;
+    current = { token, run };
+    wake.port2.postMessage(token);
+  };
+}
+
+export function cropAll<S, B extends { close(): void }>(sources: readonly S[], make: (source: S) => Promise<B>): Promise<B[]> {
+  if (!sources.length) return Promise.resolve([]);
+  return new Promise<B[]>((resolve, reject) => {
+    const out = new Array<B | undefined>(sources.length);
+    let remaining = sources.length;
+    let failed = false;
+    const failWith = (error: unknown) => {
+      if (failed) return;
+      failed = true;
+      for (let i = 0; i < out.length; i++) {
+        out[i]?.close();
+        out[i] = undefined;
+      }
+      reject(error);
+    };
+    sources.forEach((source, index) => {
+      if (failed) return;
+      let pending: Promise<B>;
+      try { pending = make(source); }
+      catch (error) { failWith(error); return; }
+      pending.then(
+        bitmap => {
+          if (failed) {
+            bitmap.close();
+            return;
+          }
+          out[index] = bitmap;
+          if (--remaining === 0) resolve(out as B[]);
+        },
+        failWith,
+      );
+    });
+  });
+}
+
 export interface LaneSide {
   views(kind: string, wake: (widget: number) => void): LaneView;
   crop: LaneHost<ImageBitmap>['crop'];
   later(run: () => void): void;
+  schedule?: LaneHost<ImageBitmap>['schedule'];
+  clock?: LaneHost<ImageBitmap>['clock'];
   stretch?(ms: number, rate: number): void;
 }
 
@@ -19,6 +81,8 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
   const start = (index: number, lanes: number, port: MessagePort) => {
     const made = new Lane<ImageBitmap>({
       lane: index, lanes, views: viewOf, crop: side.crop, later: side.later,
+      ...side.schedule ? { schedule: side.schedule } : {},
+      ...side.clock ? { clock: side.clock } : {},
       present: (presentation, transfer) => post({ type: 'presentation', ...presentation }, transfer),
       release: bytes => port.postMessage({ release: bytes } satisfies ToPull),
       hit: (widget, key) => post({ type: 'hit', widget, key }),

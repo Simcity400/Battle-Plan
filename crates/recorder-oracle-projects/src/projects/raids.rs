@@ -114,7 +114,6 @@ fn raid_census(
     Ok((raids, expected))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn census_member<'a>(
     report: &mut Report,
     table: &str,

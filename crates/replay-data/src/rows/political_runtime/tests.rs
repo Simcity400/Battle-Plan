@@ -148,7 +148,7 @@ fn province_attack_operands_of_format_101_decode_and_current_rows_store_none() {
             controller_area: Recorded::NotRecorded,
             owner_area: Recorded::NotRecorded,
             area_node: Recorded::NotRecorded,
-            ..row.clone()
+            ..row
         }
     );
     assert_eq!(historical.not_recorded_fields(), 0b1_1111_1000_0000);

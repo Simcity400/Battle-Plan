@@ -151,7 +151,7 @@ fn cached_task_force_name_refuses_changed_identity_before_touching_string_fields
     let mut bad = fixture(b"This requires heap storage");
     bad[NAME..NAME + 8].fill(0);
     assert_eq!(acquire(&bad, 64).0, Err(ERRORS[1]));
-    bad = bytes.clone();
+    bad = bytes;
     bad[NAME + 24..NAME + 32].copy_from_slice(&1_u64.to_le_bytes());
     assert_eq!(acquire(&bad, 64).0, Err(ERRORS[0]));
 }

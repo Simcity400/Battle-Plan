@@ -94,7 +94,7 @@ impl ReferenceIndex {
 }
 
 struct Store {
-    #[allow(
+    #[expect(
         clippy::vec_box,
         reason = "Published lane pointers must remain stable when the retention vector grows."
     )]
@@ -107,7 +107,7 @@ struct Store {
     network_refresh: bool,
     network_seen: bool,
     index: Option<Box<ReferenceIndex>>,
-    #[allow(
+    #[expect(
         clippy::vec_box,
         reason = "Retired indexes retain their published addresses until native callbacks quiesce."
     )]
@@ -160,7 +160,7 @@ impl Store {
             .map_err(|_| "intel source lane owner allocation failed")?;
         self.lanes.push(lane);
         CURRENT.store(
-            self.lanes.last().unwrap().as_ref() as *const _ as *mut _,
+            std::ptr::from_ref(self.lanes.last().unwrap().as_ref()) as *mut _,
             Ordering::SeqCst,
         );
         Ok(())
@@ -193,7 +193,7 @@ impl Store {
         let index = Box::new(ReferenceIndex {
             addresses: std::mem::take(&mut self.index_scratch),
         });
-        let pointer = index.as_ref() as *const _ as *mut _;
+        let pointer = std::ptr::from_ref(index.as_ref()) as *mut _;
         allocation::reserve(&mut self.retired, 1)
             .map_err(|_| "intel retired reference index allocation failed")?;
         if let Some(old) = self.index.replace(index) {
@@ -413,7 +413,7 @@ impl Drop for Store {
     fn drop(&mut self) {
         if let Some(lane) = self.lanes.last() {
             let _ = CURRENT.compare_exchange(
-                lane.as_ref() as *const _ as *mut _,
+                std::ptr::from_ref(lane.as_ref()) as *mut _,
                 ptr::null_mut(),
                 Ordering::SeqCst,
                 Ordering::SeqCst,
@@ -421,7 +421,7 @@ impl Drop for Store {
         }
         if let Some(index) = &self.index {
             let _ = REFERENCES.compare_exchange(
-                index.as_ref() as *const _ as *mut _,
+                std::ptr::from_ref(index.as_ref()) as *mut _,
                 ptr::null_mut(),
                 Ordering::SeqCst,
                 Ordering::SeqCst,
@@ -913,7 +913,7 @@ mod tests {
         assert!(store.lanes.last().unwrap().len() >= burst as usize);
         assert_eq!(store.rejected, 0);
         let lane = store.lanes.last().unwrap();
-        assert!(ptr::eq(CURRENT.load(Ordering::SeqCst), &**lane));
+        assert!(ptr::eq(CURRENT.load(Ordering::SeqCst), &raw const **lane));
         for _ in 0..lane.len() {
             lane.try_reserve().unwrap().publish(Event {
                 object: 5,

@@ -407,7 +407,7 @@ fn build(app: &AppHandle, instance: u64) -> tauri::Result<()> {
         _ => {}
     });
     let handle = app.clone();
-    let opened = window.clone();
+    let opened = window;
     let placed = app.run_on_main_thread(move || {
         let Some(height) = state(&handle).opening_height(instance) else { return };
         if let Err(error) = reveal(false, || place(&handle, &opened, height), || show(&handle, &opened, instance)) {

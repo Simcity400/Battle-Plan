@@ -376,8 +376,8 @@ pub fn groups(source: &Source, query: &Query<'_>, branch_id: &str, context: &Loa
     let mut resolved: HashMap<(u32, u32), Result<String, String>> = HashMap::new();
     for stretch in &timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        if !read.contains_key(&stretch.run) {
-            read.insert(stretch.run, crate::products::groups::cached_groups(source, stretch.run)?);
+        if let std::collections::hash_map::Entry::Vacant(slot) = read.entry(stretch.run) {
+            slot.insert(crate::products::groups::cached_groups(source, stretch.run)?);
         }
         let run = &read[&stretch.run];
         for &(kind, group, value, first, last) in &run.spans {
@@ -407,9 +407,9 @@ pub fn groups(source: &Source, query: &Query<'_>, branch_id: &str, context: &Loa
                                 .entry((stretch.run, value))
                                 .or_insert_with(|| {
                                     let mut lexical = |literal: &[u8]| -> Result<Option<u32>, String> {
-                                        if !lexicons.contains_key(&stretch.run) {
+                                        if let std::collections::hash_map::Entry::Vacant(vacant) = lexicons.entry(stretch.run) {
                                             let read = lexicon(recording, stretch.run).map_err(|error| error.to_string())?;
-                                            lexicons.insert(stretch.run, read);
+                                            vacant.insert(read);
                                         }
                                         Ok(lexicons[&stretch.run].get(literal).copied())
                                     };

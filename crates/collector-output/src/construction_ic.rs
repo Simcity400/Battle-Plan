@@ -142,7 +142,7 @@ pub unsafe fn install_offered() {
         return;
     };
     let capacity = next.slots.len();
-    let pointer = &mut *next as *mut Storage;
+    let pointer = &raw mut *next;
     swap.retired = swap.current.replace(next);
     LOG.store(pointer, Ordering::SeqCst);
     OBSERVATION.capacity.store(capacity, Ordering::Release);
@@ -737,7 +737,7 @@ pub(crate) fn observe_for_test(enabled: bool, base: usize) {
 pub unsafe fn reset_log_for_test(capacity: usize) {
     assert_eq!(active(), 0);
     let mut current = Storage::new(capacity).unwrap();
-    let pointer = &mut *current as *mut Storage;
+    let pointer = &raw mut *current;
     *LOG_SWAP.lock().unwrap() = LogSwap {
         current: Some(current),
         ..Default::default()

@@ -162,6 +162,10 @@ fn next(block: *mut u8) -> *mut *mut u8 {
     block.cast()
 }
 
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "small-class blocks are 16-byte multiples from a 64 KiB-aligned slab, so their second word is pointer-aligned"
+)]
 fn parked_next(block: *mut u8) -> *mut *mut u8 {
     block.cast::<*mut u8>().wrapping_add(1)
 }
@@ -789,6 +793,10 @@ impl PrivateHeap {
         }
         let start = unsafe { raw.add(HEADER) };
         let aligned = unsafe { start.add(start.align_offset(align)) };
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "HeapAlloc blocks are 16-byte aligned, so `aligned`, HEADER past one and rounded up to `align`, is pointer-aligned and so is the word below it"
+        )]
         unsafe { aligned.cast::<*mut u8>().sub(1).write(raw) };
         aligned
     }
@@ -921,10 +929,18 @@ impl PrivateHeap {
     ) -> *mut u8 {
         let bytes = slab_bytes(class);
         let (reused, from_cold) = if bytes == GRANULARITY {
+            #[expect(
+                clippy::cast_ptr_alignment,
+                reason = "reservations and slabs start on 64 KiB allocation-granularity boundaries"
+            )]
             let warm = self.pages.free[0].pop().cast::<Record>();
             if !warm.is_null() {
                 (warm, false)
             } else {
+                #[expect(
+                    clippy::cast_ptr_alignment,
+                    reason = "reservations and slabs start on 64 KiB allocation-granularity boundaries"
+                )]
                 let cold = self.pages.cold[0].pop().cast::<Record>();
                 (cold, !cold.is_null())
             }
@@ -959,6 +975,10 @@ impl PrivateHeap {
             }
             (base, false, committed)
         };
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "reservations and slabs start on 64 KiB allocation-granularity boundaries"
+        )]
         let record = base.cast::<Record>();
         unsafe {
             (*record).reserved = bytes;
@@ -991,8 +1011,16 @@ impl PrivateHeap {
         let list_index = reservation_list(reserved);
         let warm = &self.pages.free[list_index];
         let cold = &self.pages.cold[list_index];
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "reservations and slabs start on 64 KiB allocation-granularity boundaries"
+        )]
         let mut record = warm.pop().cast::<Record>();
         let mut from_cold = false;
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "reservations and slabs start on 64 KiB allocation-granularity boundaries"
+        )]
         if record.is_null() {
             record = cold.pop().cast::<Record>();
             from_cold = !record.is_null();
@@ -1060,11 +1088,19 @@ impl PrivateHeap {
         if zeroed && committed > offset {
             unsafe { body.write_bytes(0, size.min(committed - offset)) };
         }
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "`body` is RECORD_BYTES past a 64 KiB-aligned reservation, rounded up to `align`, so the word below it is pointer-aligned"
+        )]
         unsafe { body.cast::<*mut u8>().sub(1).write(base) };
         body
     }
 
     fn record(body: *mut u8) -> *mut Record {
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "large bodies are pointer-aligned as allocate_large places them, so the word below is too"
+        )]
         unsafe { body.cast::<*mut Record>().sub(1).read() }
     }
 
@@ -1281,6 +1317,10 @@ impl PrivateHeap {
                 let mut freed = false;
                 if run_len == total && !oom {
                     let base = slab as *mut u8;
+                    #[expect(
+                        clippy::cast_ptr_alignment,
+                        reason = "reservations and slabs start on 64 KiB allocation-granularity boundaries"
+                    )]
                     let record = base.cast::<Record>();
                     // SAFETY: every block in this 64 KiB slab has been exclusively popped out of
                     // the depot, so no live allocation or thread cache references this slab.
@@ -1434,6 +1474,10 @@ impl PrivateHeap {
                 if base.is_null() {
                     break;
                 }
+                #[expect(
+                    clippy::cast_ptr_alignment,
+                    reason = "reservations and slabs start on 64 KiB allocation-granularity boundaries"
+                )]
                 let record = base.cast::<Record>();
                 // SAFETY: `base` was exclusively popped from `pages.free[list]`.
                 let committed = unsafe { (*record).committed.load(Ordering::Relaxed) };
@@ -1501,6 +1545,10 @@ impl PrivateHeap {
                 if base.is_null() {
                     break;
                 }
+                #[expect(
+                    clippy::cast_ptr_alignment,
+                    reason = "reservations and slabs start on 64 KiB allocation-granularity boundaries"
+                )]
                 let record = base.cast::<Record>();
                 // SAFETY: `base` was exclusively popped from `pages.free[list]`.
                 let committed = unsafe { (*record).committed.load(Ordering::Relaxed) };
@@ -1630,6 +1678,10 @@ unsafe impl GlobalAlloc for PrivateHeap {
         }
         let domain = self.domain();
         let heap = domain.handle.load(Ordering::Relaxed) as HANDLE;
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "blocks from the HeapAlloc path are pointer-aligned as allocate places them, so the word below is too"
+        )]
         let raw = unsafe { pointer.cast::<*mut u8>().sub(1).read() };
         self.heap_call(|| unsafe { HeapFree(heap, 0, raw.cast()) });
     }

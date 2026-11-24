@@ -105,7 +105,7 @@ fn retained() -> Retained {
 fn registered(pc: usize) {
     let mut image_base = 0;
     assert!(
-        !unsafe { RtlLookupFunctionEntry(pc as u64, &mut image_base, std::ptr::null_mut()) }
+        !unsafe { RtlLookupFunctionEntry(pc as u64, &raw mut image_base, std::ptr::null_mut()) }
             .is_null()
     );
 }
@@ -158,7 +158,7 @@ fn naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks() {
                 hooked: true,
                 ..Default::default()
             });
-            let argument = &mut *call as *mut NativeCall as usize;
+            let argument = &raw mut *call as usize;
             CURRENT.store(argument, Ordering::Release);
             let target = if site_index == 2 {
                 naval_foreign_original as *const () as usize

@@ -1,6 +1,9 @@
 use super::*;
 
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "work moves through the executor by value so dispatch never allocates"
+)]
 pub enum StatusWork {
     Preparation {
         store: Option<Arc<collector_division_parts::attack_stats::ArmyStatStore>>,

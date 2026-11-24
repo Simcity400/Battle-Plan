@@ -256,7 +256,7 @@ mod tests {
         let mut retained = shader_scene::State::default();
         retained
             .stream
-            .bind_program(Some(previous.clone()), declaration.clone());
+            .bind_program(Some(previous), declaration.clone());
         let textures = std::array::from_fn(|_| Ok(None));
         let arrow = Arrow::new(
             &missing,

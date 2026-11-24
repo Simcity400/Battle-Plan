@@ -141,7 +141,7 @@ fn recorded_operands_give_hand_computed_counts() {
     };
     let host_container = AirSortieBaseCountryRow {
         base: 6,
-        ..container.clone()
+        ..container
     };
     let mut sources = SortieSources {
         missions: BTreeMap::new(),

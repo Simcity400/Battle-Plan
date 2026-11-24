@@ -217,7 +217,7 @@ impl Preparation {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the counter inputs, the frame, the owner lookup, the naval tables and the frame it fills")]
     pub(super) fn ports(
         &mut self,
         inputs: &CounterInputs<'_>,

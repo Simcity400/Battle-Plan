@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { encode } from '@msgpack/msgpack';
 import { Lane, type LaneHost, type LaneView, type Painted, type Presented } from './lane.ts';
+import { cropAll, macrotaskSchedule, type WakeChannel } from './laneDispatch.ts';
+import { startLaneWorker } from './lane.worker.ts';
+import type { FromLane, FromPull, ToLane } from './laneMessages';
 import { fieldsView } from './views/fields.ts';
 import { Page, type Bitmap, type FrameRequest, type PageMessage } from '../dashboard/follow/page.ts';
 import { message } from '../dashboard/follow/messages.fixture.ts';
@@ -1547,4 +1550,1748 @@ test('F9: releasing and reopening the last subscription retires old page routes 
   await step(10, { playing: false });
   assert.ok(presented.length >= 1);
   assert.deepEqual(presented.at(-1)!.resets, [[129, 0]], 'retired page routes must not accumulate in presentation reset pairs');
+});
+
+test('post-serve deferred frame whose seek was superseded by stream before run never paints or prunes the new generation, still applies acks and emits served', async () => {
+  const scheduled: (() => void)[] = [];
+  const presented: Presented<Fake>[] = [];
+  const served: { seek: number; target: number; exact: boolean; changed: number; ms: number }[] = [];
+  const released: number[] = [];
+  let cropCall = 0;
+  let resolveSecondCrop!: () => void;
+  const view: LaneView = {
+    paint: (input): Painted => {
+      const pic = input.pictures[0]!;
+      const val = pic.parts[0]!.value;
+      const body = val.kind === 'answer' ? val.body : undefined;
+      return {
+        surfaces: [{ source: { width: 8, height: 8, content: `h:${pic.h}` } as never, content: `h:${pic.h}` }],
+        fields: body ? { 'answer:5': { value: body, content: `a:${pic.h}` } } : {},
+        motion: false,
+      };
+    },
+  };
+  const lane = new Lane<Fake>({
+    lane: 0,
+    lanes: 1,
+    views: () => view,
+    crop: sources => {
+      cropCall++;
+      const make = () => sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: source.width, close() { this.closed = true; } }));
+      if (cropCall === 2) return new Promise<Fake[]>(resolve => { resolveSecondCrop = () => resolve(make()); });
+      return Promise.resolve(make());
+    },
+    schedule: run => { scheduled.push(run); },
+    clock: () => 0,
+    present: presentation => { presented.push(presentation); },
+    release: bytes => { released.push(bytes); },
+    fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); },
+    later: () => {},
+    served: frame => { served.push(frame); },
+  });
+  lane.follow(5, 'followed');
+  lane.mount(1, [5], 'view');
+  lane.bind(1, { generation: 1, surfaces: [{ width: 8, height: 8, dpr: 1 }], offset: 0, pin: null });
+  lane.bindRoute(5, ROUTE, NATIVE, 0);
+
+  lane.receive('follow', message(990, [{ id: 5, hour: 990, answer: rows([1n], [990n]) }], false, NATIVE, 0));
+  lane.frame({ type: 'frame', serial: 1, now: 990, target: 990, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+  await flush();
+  assert.equal(presented.length, 1);
+  assert.equal(scheduled.length, 0, 'idle lane uses microtask, not host.schedule');
+  const firstEntryId = presented[0]!.entries[0]!.id;
+
+  lane.receive('follow', message(995, [{ id: 5, hour: 995, answer: rows([1n], [995n]) }], false, NATIVE, 0));
+  lane.frame({ type: 'frame', serial: 2, now: 995, target: 995, exact: false, seek: 0, speed: 1440, installed: [], refused: [], inspect: [] });
+  await flush();
+  assert.equal(cropCall, 2, 'second serve suspended in crop');
+
+  lane.frame({
+    type: 'frame', serial: 3, now: 1000, target: 1024, exact: false, seek: 0, speed: 1440,
+    installed: [{ widget: 1, binding: 1, id: firstEntryId }], refused: [], inspect: [],
+  });
+  resolveSecondCrop();
+  await flush();
+  assert.equal(scheduled.length, 1, 'queued seek-0 playing frame is deferred via post-serve host.schedule');
+
+  lane.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE, 1));
+  lane.receive('follow', message(11, [{ id: 5, hour: 11, answer: rows([1n], [11n]) }], false, NATIVE, 1));
+  lane.receive('follow', message(12, [{ id: 5, hour: 12, answer: rows([1n], [12n]) }], false, NATIVE, 1));
+  lane.stream(ROUTE, 1, 10);
+
+  const presentedBefore = presented.length;
+  const servedBefore = served.length;
+  const releasedBefore = released.reduce((sum, b) => sum + b, 0);
+  scheduled.shift()!();
+  await flush();
+
+  assert.equal(presented.length, presentedBefore, 'superseded seek-0 request must not paint under seek 1');
+  assert.equal(served.length, servedBefore + 1, 'superseded seek-0 request still emits served');
+  assert.deepEqual([served.at(-1)!.seek, served.at(-1)!.changed], [0, 0]);
+  assert.equal(lane.facts.select(5, 10)?.h, 10, 'superseded seek-0 request must not prune hour 10 from seek 1');
+
+  lane.frame({ type: 'frame', serial: 4, now: 10, target: 10, exact: true, seek: 1, speed: 0, installed: [], refused: [], inspect: [] });
+  await flush();
+  while (scheduled.length) { scheduled.shift()!(); await flush(); }
+  assert.equal(presented.length, presentedBefore + 1, 'following exact seek-1 request for hour 10 paints hour 10');
+  const seek1Entry = presented.at(-1)!.entries[0]!;
+  assert.deepEqual([seek1Entry.gen.seek, seek1Entry.h], [1, 10]);
+  const answer = parseAnswer(seek1Entry.fields['answer:5'] as Uint8Array);
+  assert.ok(answer.kind === 'rows' && cellValue(answer, 0) === 10n);
+  lane.frame({
+    type: 'frame', serial: 5, now: 10, target: 10, exact: true, seek: 1, speed: 0,
+    installed: [{ widget: 1, binding: 1, id: seek1Entry.id }], refused: [], inspect: [],
+  });
+  await flush();
+  while (scheduled.length) { scheduled.shift()!(); await flush(); }
+  assert.ok(released.reduce((sum, b) => sum + b, 0) > releasedBefore, 'acknowledged seek-0 fact is released once replaced');
+});
+
+test('startLaneWorker with macrotaskSchedule keeps Page-installed picture age within two paint intervals at every tick, while microtask fallback falls linearly behind', async () => {
+  assert.equal(macrotaskSchedule(null), undefined, 'macrotaskSchedule returns undefined when MessageChannel is unavailable');
+
+  const closed: number[] = [];
+  await assert.rejects(
+    cropAll([1, 2, 3], async id => {
+      if (id === 2) throw new Error('crop boom');
+      return { close() { closed.push(id); } };
+    }),
+    /crop boom/,
+  );
+  assert.deepEqual(closed, [1, 3], 'cropAll closes all fulfilled sibling bitmaps when any item rejects');
+
+  const simulate = async (withMessageChannel: boolean) => {
+    const frameMs = 16;
+    const paintMs = 7;
+    const stretchFactor = 5;
+    const totalServeMs = paintMs * (1 + stretchFactor);
+    const stepHours = 24;
+    const ticks = 80;
+    let clockMs = 0;
+    let paints = 0;
+    let pushed = -stepHours;
+    let seq = 0;
+    const mailbox: { at: number; seq: number; run: () => void }[] = [];
+    const pendingOffers: { at: number; msg: Presented<ImageBitmap> }[] = [];
+    const tickAges: number[] = [];
+    const port = { onmessage: null as ((event: MessageEvent<FromPull>) => void) | null, postMessage() {} } as unknown as MessagePort;
+    const enqueue = (at: number, run: () => void) => { mailbox.push({ at, seq: seq++, run }); };
+
+    const pushFactsThrough = (at: number, limit: number) => {
+      while (pushed + stepHours <= limit) {
+        pushed += stepHours;
+        const h = pushed;
+        const pkt = message(h + stepHours - 1, [{ id: 5, hour: h, answer: rows([1n], [BigInt(h)]) }], false, NATIVE);
+        enqueue(at, () => { port.onmessage?.({ data: { kind: 'follow', bytes: pkt } } as MessageEvent<FromPull>); });
+      }
+    };
+
+    let publishAt = 0;
+    let dispatch!: (message: ToLane) => void;
+    const page = new Page<ImageBitmap>({
+      lanes: 1,
+      post: (_lane, m: PageMessage) => {
+        const at = publishAt;
+        if (m.type === 'frame') enqueue(at, () => { dispatch(m); });
+        else if (m.type === 'stream') enqueue(at, () => { dispatch({ type: 'stream', route: m.route, seek: m.seek, target: m.target }); });
+      },
+    });
+    page.mount(1, { route: ROUTE, lane: 0, surfaces: [{ install() {}, clear() {} }] });
+
+    class FakeMessageChannel implements WakeChannel {
+      readonly port1: WakeChannel['port1'] = { onmessage: null };
+      readonly port2: WakeChannel['port2'] = {
+        postMessage: (data: unknown) => {
+          enqueue(clockMs, () => { this.port1.onmessage?.({ data } as MessageEvent); });
+        },
+      };
+    }
+
+    const view: LaneView = {
+      paint: (input): Painted => {
+        paints++;
+        clockMs += paintMs;
+        const h = input.pictures[0]!.h;
+        return {
+          surfaces: [{ source: { width: 10, height: 10 } as never, content: `h:${h}` }],
+          fields: { h: { value: h, content: `h:${h}` } },
+          motion: false,
+        };
+      },
+    };
+
+    const originalChannel = globalThis.MessageChannel;
+    try {
+      (globalThis as { MessageChannel?: unknown }).MessageChannel = withMessageChannel ? FakeMessageChannel : undefined;
+      dispatch = startLaneWorker((msg: FromLane) => {
+        if (msg.type === 'presentation') pendingOffers.push({ at: clockMs, msg });
+      }, {
+        views: () => view,
+        crop: async sources => sources.map(source => ({ width: source.width, height: source.height, close() {} }) as unknown as ImageBitmap),
+        later: () => {},
+        clock: () => clockMs,
+        stretch: ms => { clockMs += ms * stretchFactor; },
+      });
+    } finally {
+      (globalThis as { MessageChannel?: unknown }).MessageChannel = originalChannel;
+    }
+
+    const drainMicrotasks = async () => {
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+    };
+    const popDue = (limitMs: number) => {
+      let best = -1;
+      for (let i = 0; i < mailbox.length; i++) {
+        const item = mailbox[i]!;
+        if (item.at > limitMs) continue;
+        if (best < 0 || item.at < mailbox[best]!.at || (item.at === mailbox[best]!.at && item.seq < mailbox[best]!.seq)) best = i;
+      }
+      return best < 0 ? null : mailbox.splice(best, 1)[0]!;
+    };
+
+    dispatch({ type: 'init', lane: 0, lanes: 1, port, rate: 1 });
+    dispatch({ type: 'follow', sub: 5, channel: 'followed' });
+    dispatch({ type: 'mount', widget: 1, subs: [5], view: 'slow' });
+    dispatch({ type: 'bind', widget: 1, binding: { generation: 1, surfaces: [{ width: 10, height: 10, dpr: 1 }], offset: 0, pin: null } });
+    dispatch({ type: 'route', sub: 5, route: ROUTE, native: NATIVE, seek: 0, offset: 0 });
+    await drainMicrotasks();
+
+    publishAt = 0;
+    pushFactsThrough(0, 4 * stepHours);
+    page.publish(0, { playing: false, step: stepHours, speed: 0 });
+    while (mailbox.length) {
+      mailbox.shift()!.run();
+      await drainMicrotasks();
+    }
+    while (pendingOffers.length) page.offer(pendingOffers.shift()!.msg);
+    const warmupTicks = 20;
+    for (let sampleTick = 1; sampleTick <= warmupTicks + ticks; sampleTick++) {
+      const targetMs = sampleTick * frameMs;
+      const nowHour = sampleTick * stepHours;
+      for (let i = 0; i < pendingOffers.length; ) {
+        if (pendingOffers[i]!.at <= targetMs) {
+          page.offer(pendingOffers.splice(i, 1)[0]!.msg);
+        } else i++;
+      }
+      publishAt = targetMs;
+      pushFactsThrough(targetMs, nowHour + 4 * stepHours);
+      page.publish(nowHour, { playing: true, step: stepHours, speed: 1440 });
+      if (sampleTick === warmupTicks + 1) paints = 0;
+      if (sampleTick > warmupTicks) {
+        const installedHour = page.view(1).h;
+        tickAges.push(typeof installedHour === 'number' ? nowHour - installedHour : Infinity);
+      }
+      while (clockMs <= targetMs) {
+        const task = popDue(targetMs);
+        if (!task) break;
+        if (clockMs < task.at) clockMs = task.at;
+        task.run();
+        await drainMicrotasks();
+      }
+    }
+
+    const finalHour = (warmupTicks + ticks) * stepHours;
+    const paintBudgetHours = Math.ceil((totalServeMs / frameMs) * stepHours);
+    return {
+      paints,
+      maxAge: Math.max(...tickAges),
+      endAge: tickAges.at(-1)!,
+      installedHour: page.view(1).h ?? 0,
+      finalHour,
+      paintBudgetHours,
+    };
+  };
+
+  const macro = await simulate(true);
+  assert.ok(macro.maxAge <= macro.paintBudgetHours * 2,
+    `worker macrotask schedule must keep Page-installed age bounded (${macro.paintBudgetHours * 2}h) at every tick, got max=${macro.maxAge}h end=${macro.endAge}h paints=${macro.paints} installed=${macro.installedHour}`);
+  assert.ok(macro.installedHour >= macro.finalHour - macro.paintBudgetHours * 2,
+    `worker macrotask schedule must progress Page-installed picture through the final hour (${macro.finalHour}h), got installed=${macro.installedHour}h`);
+  assert.ok(macro.paints < 40 && macro.paints >= 15, `worker macrotask schedule must drop intermediate frames without stalling, painted ${macro.paints} of 80 ticks`);
+
+  const micro = await simulate(false);
+  assert.ok(micro.endAge > 1000,
+    `regression proof: without MessageChannel microtask schedule must fall linearly behind (> 1000h), got endAge=${micro.endAge}h`);
+});
+
+test('idle lane runs frame before subsequent messages: pointer after ack, refusal then install, and exact then speculative', async () => {
+  const drainMicrotasks = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  const makeIdleHarness = (view: LaneView) => {
+    const mailbox: (() => void)[] = [];
+    const hits: (string | null)[] = [];
+    const presented: Presented<Fake>[] = [];
+    const lane = new Lane<Fake>({
+      lane: 0,
+      lanes: 1,
+      views: () => view,
+      crop: async () => [],
+      schedule: run => { mailbox.push(run); },
+      present: presentation => { presented.push(presentation); },
+      release: () => {},
+      fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); },
+      later: () => {},
+      hit: (_widget, key) => { hits.push(key); },
+    });
+    const runMailbox = async () => {
+      while (mailbox.length) {
+        mailbox.shift()!();
+        await drainMicrotasks();
+      }
+    };
+    return { lane, mailbox, hits, presented, runMailbox };
+  };
+
+  {
+    const view: LaneView = {
+      paint: (input): Painted => ({
+        surfaces: [],
+        fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+        motion: false,
+        hit: () => `row:${input.pictures[0]!.h}`,
+      }),
+    };
+    const { lane, mailbox, hits, presented, runMailbox } = makeIdleHarness(view);
+    lane.follow(3, 'panel');
+    lane.mount(1, [3], 'view');
+    lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+    lane.bindRoute(3, ROUTE, NATIVE);
+    lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }]));
+    mailbox.push(() => lane.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] }));
+    await runMailbox();
+    const id10 = presented.at(-1)!.entries[0]!.id;
+    mailbox.push(() => lane.frame({ type: 'frame', serial: 2, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [{ widget: 1, binding: 1, id: id10 }], refused: [], inspect: [] }));
+    await runMailbox();
+
+    lane.receive('panels', panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: {} }]));
+    mailbox.push(() => lane.frame({ type: 'frame', serial: 3, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] }));
+    await runMailbox();
+    const id20 = presented.at(-1)!.entries[0]!.id;
+
+    mailbox.push(() => lane.frame({ type: 'frame', serial: 4, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [{ widget: 1, binding: 1, id: id20 }], refused: [], inspect: [] }));
+    mailbox.push(() => lane.pointer(1, 0, [1, 1]));
+    await runMailbox();
+    assert.deepEqual(hits, ['row:20'], 'pointer after an acknowledging frame on an idle lane hits the newly acknowledged picture');
+  }
+
+  {
+    const view: LaneView = {
+      paint: (input): Painted => ({
+        surfaces: [],
+        fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+        motion: false,
+        hit: () => `row:${input.pictures[0]!.h}`,
+      }),
+    };
+    const { lane, mailbox, hits, presented, runMailbox } = makeIdleHarness(view);
+    lane.follow(3, 'panel');
+    lane.mount(1, [3], 'view');
+    lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+    lane.bindRoute(3, ROUTE, NATIVE);
+    lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }]));
+    mailbox.push(() => lane.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] }));
+    await runMailbox();
+    const id10 = presented.at(-1)!.entries[0]!.id;
+
+    lane.receive('panels', panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: {} }]));
+    mailbox.push(() => lane.frame({ type: 'frame', serial: 2, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] }));
+    await runMailbox();
+    const id20 = presented.at(-1)!.entries[0]!.id;
+
+    mailbox.push(() => lane.frame({ type: 'frame', serial: 3, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [], refused: [{ widget: 1, id: id10, reason: 'kept content' }], inspect: [] }));
+    mailbox.push(() => lane.frame({ type: 'frame', serial: 4, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [{ widget: 1, binding: 1, id: id20 }], refused: [], inspect: [] }));
+    mailbox.push(() => lane.pointer(1, 0, [1, 1]));
+    await runMailbox();
+    assert.deepEqual(hits, ['row:20'], 'refusal frame then install frame on an idle lane run as separate serves so hit-test returns row:20');
+  }
+
+  {
+    const view: LaneView = {
+      paint: (input): Painted => ({
+        surfaces: [],
+        fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+        motion: false,
+      }),
+    };
+    const { lane, mailbox, presented, runMailbox } = makeIdleHarness(view);
+    lane.follow(5, 'followed');
+    lane.mount(1, [5], 'view');
+    lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+    lane.bindRoute(5, ROUTE, NATIVE);
+    lane.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE));
+    lane.receive('follow', message(12, [{ id: 5, hour: 12, answer: rows([1n], [12n]) }], false, NATIVE));
+
+    mailbox.push(() => lane.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 1, installed: [], refused: [], inspect: [] }));
+    mailbox.push(() => lane.frame({ type: 'frame', serial: 2, now: 10, target: 12, exact: false, seek: 0, speed: 1, installed: [], refused: [], inspect: [] }));
+    await runMailbox();
+    assert.deepEqual(presented.map(p => p.entries[0]?.h), [10, 12], 'exact frame then speculative frame on an idle lane both serve so hour 10 is offered before hour 12');
+  }
+});
+
+test('held crop superseded by a rewind stream never prunes the new seek generation and closes its bitmaps', async () => {
+  let resolveCrop!: (bitmaps: Fake[]) => void;
+  let cropCall = 0;
+  const createdBitmaps: Fake[] = [];
+  const presented: Presented<Fake>[] = [];
+  const served: { seek: number; target: number; exact: boolean; changed: number; cancelled?: boolean }[] = [];
+  const mailbox: (() => void)[] = [];
+  const view: LaneView = {
+    paint: (input): Painted => ({
+      surfaces: [{ source: { width: 10, height: 10, content: `h:${input.pictures[0]!.h}` } as never, content: `h:${input.pictures[0]!.h}` }],
+      fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+      motion: false,
+    }),
+  };
+  const lane = new Lane<Fake>({
+    lane: 0,
+    lanes: 1,
+    views: () => view,
+    crop: sources => {
+      cropCall++;
+      const make = () => sources.map((source): Fake => {
+        const bm: Fake = { content: (source as unknown as { content: string }).content, closed: false, width: source.width, close() { this.closed = true; } };
+        createdBitmaps.push(bm);
+        return bm;
+      });
+      if (cropCall === 1) return new Promise<Fake[]>(resolve => { resolveCrop = () => resolve(make()); });
+      return Promise.resolve(make());
+    },
+    schedule: run => { mailbox.push(run); },
+    present: presentation => { presented.push(presentation); },
+    release: () => {},
+    fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); },
+    later: () => {},
+    served: frame => { served.push(frame); },
+  });
+  lane.follow(5, 'followed');
+  lane.mount(1, [5], 'view');
+  lane.bind(1, { generation: 1, surfaces: [{ width: 10, height: 10, dpr: 1 }], offset: 0, pin: null });
+  lane.bindRoute(5, ROUTE, NATIVE, 0);
+
+  lane.receive('follow', message(1000, [{ id: 5, hour: 1000, answer: rows([1n], [1000n]) }], false, NATIVE, 0));
+  lane.frame({ type: 'frame', serial: 1, now: 1000, target: 1000, exact: false, seek: 0, speed: 1440, installed: [], refused: [], inspect: [] });
+  await flush();
+  while (mailbox.length) { mailbox.shift()!(); await flush(); }
+  assert.equal(cropCall, 1, 'seek-0 frame started painting and suspended in crop');
+
+  lane.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE, 1));
+  lane.receive('follow', message(11, [{ id: 5, hour: 11, answer: rows([1n], [11n]) }], false, NATIVE, 1));
+  lane.receive('follow', message(12, [{ id: 5, hour: 12, answer: rows([1n], [12n]) }], false, NATIVE, 1));
+  lane.stream(ROUTE, 1, 10);
+  lane.frame({ type: 'frame', serial: 2, now: 10, target: 10, exact: true, seek: 1, speed: 0, installed: [], refused: [], inspect: [] });
+
+  resolveCrop([]);
+  await flush();
+  while (mailbox.length) { mailbox.shift()!(); await flush(); }
+
+  assert.equal(createdBitmaps[0]!.closed, true, 'dropped superseded crop bitmap must be closed with no leak');
+  assert.equal(presented.filter(p => p.entries.some(e => e.gen.seek === 0)).length, 0, 'superseded seek-0 presentation must not be emitted');
+  assert.equal(lane.facts.select(5, 10)?.h, 10, 'superseded seek-0 crop resolution must not prune hour 10 from seek 1');
+  const seek1 = presented.find(p => p.entries.some(e => e.gen.seek === 1));
+  assert.ok(seek1, 'exact seek-1 request for hour 10 must produce an entry');
+  assert.equal(seek1!.entries[0]!.h, 10);
+  assert.equal(seek1!.entries[0]!.surfaces[0] !== 'same', true, 'seek-1 entry must carry a real bitmap, never SAME against the dropped seek-0 crop');
+  assert.equal(served.some(s => s.seek === 0 && s.changed === 0 && s.cancelled === true), true, 'cancelled post-crop paint must report cancelled: true with changed: 0');
+});
+
+test('hand-over after a slow serve preserves pointer-after-ack, refusal-then-install, exact-then-speculative, and arms motion at serve completion', async () => {
+  const drainMicrotasks = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  const makeSlowHarness = (view: LaneView, paintCostMs: () => number) => {
+    let clockMs = 0;
+    const wakes: (() => void)[] = [];
+    const laters: (() => void)[] = [];
+    const hits: (string | null)[] = [];
+    const presented: Presented<Fake>[] = [];
+    const served: { seek: number; target: number; exact: boolean; changed: number }[] = [];
+    const wrappedView: LaneView = {
+      paint: (input, state, content) => {
+        clockMs += paintCostMs();
+        return view.paint(input, state, content);
+      },
+    };
+    const lane = new Lane<Fake>({
+      lane: 0,
+      lanes: 1,
+      views: () => wrappedView,
+      crop: async () => [],
+      clock: () => clockMs,
+      schedule: run => { wakes.push(run); },
+      present: presentation => { presented.push(presentation); },
+      release: () => {},
+      fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); },
+      later: run => { laters.push(run); },
+      hit: (_widget, key) => { hits.push(key); },
+      served: frame => { served.push(frame); },
+    });
+    const drainAll = async () => {
+      await drainMicrotasks();
+      while (wakes.length) {
+        wakes.shift()!();
+        await drainMicrotasks();
+      }
+    };
+    return { lane, wakes, laters, hits, presented, served, drainMicrotasks, drainAll };
+  };
+
+  {
+    let cost = 1;
+    const view: LaneView = {
+      paint: (input): Painted => ({
+        surfaces: [],
+        fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+        motion: false,
+        hit: () => `row:${input.pictures[0]!.h}`,
+      }),
+    };
+    const { lane, wakes, hits, presented, drainMicrotasks, drainAll } = makeSlowHarness(view, () => cost);
+    lane.follow(3, 'panel');
+    lane.mount(1, [3], 'view');
+    lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+    lane.bindRoute(3, ROUTE, NATIVE);
+    lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }]));
+    lane.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    await drainAll();
+    const id10 = presented.at(-1)!.entries[0]!.id;
+    lane.frame({ type: 'frame', serial: 2, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [{ widget: 1, binding: 1, id: id10 }], refused: [], inspect: [] });
+    await drainAll();
+
+    cost = 30;
+    lane.receive('panels', panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: {} }]));
+    lane.frame({ type: 'frame', serial: 3, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    await drainMicrotasks();
+    assert.equal(wakes.length, 1, '30 ms serve opens hand-over wake');
+    const id20 = presented.at(-1)!.entries[0]!.id;
+
+    lane.frame({ type: 'frame', serial: 4, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [{ widget: 1, binding: 1, id: id20 }], refused: [], inspect: [] });
+    lane.pointer(1, 0, [1, 1]);
+    assert.deepEqual(hits, ['row:20'], 'pointer after ack during hand-over before wake hits row:20');
+  }
+
+  {
+    let cost = 1;
+    const view: LaneView = {
+      paint: (input): Painted => ({
+        surfaces: [],
+        fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+        motion: false,
+        hit: () => `row:${input.pictures[0]!.h}`,
+      }),
+    };
+    const { lane, wakes, hits, presented, drainMicrotasks, drainAll } = makeSlowHarness(view, () => cost);
+    lane.follow(3, 'panel');
+    lane.mount(1, [3], 'view');
+    lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+    lane.bindRoute(3, ROUTE, NATIVE);
+    lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }]));
+    lane.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    await drainAll();
+    const id10 = presented.at(-1)!.entries[0]!.id;
+
+    cost = 30;
+    lane.receive('panels', panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: {} }]));
+    lane.frame({ type: 'frame', serial: 2, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    await drainMicrotasks();
+    assert.equal(wakes.length, 1, '30 ms serve opens hand-over wake');
+    const id20 = presented.at(-1)!.entries[0]!.id;
+
+    cost = 1;
+    lane.frame({ type: 'frame', serial: 3, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [], refused: [{ widget: 1, id: id10, reason: 'kept content' }], inspect: [] });
+    lane.frame({ type: 'frame', serial: 4, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [{ widget: 1, binding: 1, id: id20 }], refused: [], inspect: [] });
+    await drainAll();
+    lane.pointer(1, 0, [1, 1]);
+    assert.deepEqual(hits, ['row:20'], 'kept content refusal then install during hand-over leaves row:20 installed');
+  }
+
+  {
+    let cost = 30;
+    const view: LaneView = {
+      paint: (input): Painted => ({
+        surfaces: [],
+        fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+        motion: false,
+      }),
+    };
+    const { lane, wakes, presented, served, drainMicrotasks, drainAll } = makeSlowHarness(view, () => cost);
+    lane.follow(5, 'followed');
+    lane.mount(1, [5], 'view');
+    lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+    lane.bindRoute(5, ROUTE, NATIVE);
+    lane.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE));
+    lane.receive('follow', message(30, [{ id: 5, hour: 30, answer: rows([1n], [30n]) }], false, NATIVE));
+    lane.receive('follow', message(40, [{ id: 5, hour: 40, answer: rows([1n], [40n]) }], false, NATIVE));
+
+    lane.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: false, seek: 0, speed: 1440, installed: [], refused: [], inspect: [] });
+    await drainMicrotasks();
+    assert.equal(wakes.length, 1, '30 ms serve opens hand-over wake');
+
+    cost = 1;
+    const presentedBefore = presented.length;
+    const servedBefore = served.length;
+    lane.frame({ type: 'frame', serial: 2, now: 30, target: 30, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    await drainMicrotasks();
+    assert.deepEqual(presented.slice(presentedBefore).map(p => p.entries[0]?.h), [30], 'exact 30 arriving during hand-over serves immediately without waiting for the wake');
+    const lateWake = wakes.shift()!;
+    lateWake();
+    await drainMicrotasks();
+    assert.equal(served.length, servedBefore + 1, 'late hand-over wake after exact frame is a no-op');
+
+    lane.frame({ type: 'frame', serial: 3, now: 30, target: 40, exact: false, seek: 0, speed: 1440, installed: [], refused: [], inspect: [] });
+    await drainAll();
+    assert.deepEqual(presented.slice(presentedBefore).map(p => p.entries[0]?.h), [30, 40], 'exact 30 then speculative 40 during hand-over both present');
+    assert.deepEqual(served.slice(servedBefore).map(s => [s.target, s.exact]), [[30, true], [40, false]], 'both exact 30 and speculative 40 emit served');
+  }
+
+  {
+    let resolveCrop!: () => void;
+    let cropCall = 0;
+    const wakes: (() => void)[] = [];
+    const presented: Presented<Fake>[] = [];
+    const view: LaneView = {
+      paint: (input): Painted => ({
+        surfaces: [{ source: { width: 4, height: 4, content: `h:${input.pictures[0]!.h}` } as never, content: `h:${input.pictures[0]!.h}` }],
+        fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+        motion: false,
+      }),
+    };
+    const lane = new Lane<Fake>({
+      lane: 0, lanes: 1, views: () => view, clock: () => 0,
+      crop: sources => {
+        cropCall++;
+        const make = () => sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: source.width, close() { this.closed = true; } }));
+        if (cropCall === 1) return new Promise<Fake[]>(resolve => { resolveCrop = () => resolve(make()); });
+        return Promise.resolve(make());
+      },
+      schedule: run => { wakes.push(run); },
+      present: presentation => { presented.push(presentation); },
+      release: () => {}, fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); }, later: () => {},
+    });
+    lane.follow(5, 'followed');
+    lane.mount(1, [5], 'view');
+    lane.bind(1, { generation: 1, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: null });
+    lane.bindRoute(5, ROUTE, NATIVE);
+    lane.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE));
+    lane.receive('follow', message(20, [{ id: 5, hour: 20, answer: rows([1n], [20n]) }], false, NATIVE));
+
+    lane.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: false, seek: 0, speed: 1440, installed: [], refused: [], inspect: [] });
+    await drainMicrotasks();
+    assert.equal(cropCall, 1);
+    lane.frame({ type: 'frame', serial: 2, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    resolveCrop();
+    await drainMicrotasks();
+    assert.equal(wakes.length, 0, 'exact request pending at serve completion starts from a microtask without a hand-over wake');
+    assert.deepEqual(presented.map(p => p.entries[0]?.h), [10, 20]);
+  }
+
+  {
+    const view: LaneView = {
+      paint: (input): Painted => ({
+        surfaces: [],
+        fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+        motion: true,
+      }),
+    };
+    const { lane, wakes, laters, drainMicrotasks } = makeSlowHarness(view, () => 30);
+    lane.follow(5, 'followed');
+    lane.mount(1, [5], 'view');
+    lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+    lane.bindRoute(5, ROUTE, NATIVE);
+    lane.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE));
+
+    lane.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    await drainMicrotasks();
+    assert.equal(wakes.length, 1, '30 ms motion serve opens hand-over wake');
+    assert.equal(laters.length, 1, 'motion callback is armed at serve completion before the hand-over wake runs');
+  }
+});
+
+test('mid-serve ack FIFO flushes at serve completion before wake, and mid-serve exact replaced by speculative installs hour 20 on Page', async () => {
+  const drainMicrotasks = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+
+  {
+    let resolveHeldCrop!: () => void;
+    let cropCall = 0;
+    const wakes: (() => void)[] = [];
+    const hits: (string | null)[] = [];
+    const presented: Presented<Fake>[] = [];
+    const view: LaneView = {
+      paint: (input): Painted => ({
+        surfaces: [{ source: { width: 4, height: 4, content: `h:${input.pictures[0]!.h}` } as never, content: `h:${input.pictures[0]!.h}` }],
+        fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+        motion: false,
+        hit: () => `row:${input.pictures[0]!.h}`,
+      }),
+    };
+    const lane = new Lane<Fake>({
+      lane: 0, lanes: 1, views: () => view, clock: () => 0,
+      crop: sources => {
+        cropCall++;
+        const make = () => sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: source.width, close() { this.closed = true; } }));
+        if (cropCall === 4) return new Promise<Fake[]>(resolve => { resolveHeldCrop = () => resolve(make()); });
+        return Promise.resolve(make());
+      },
+      schedule: run => { wakes.push(run); },
+      present: presentation => { presented.push(presentation); },
+      release: () => {}, fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); }, later: () => {},
+      hit: (_widget, key) => { hits.push(key); },
+    });
+    lane.follow(3, 'panel');
+    lane.mount(1, [3], 'view');
+    lane.bind(1, { generation: 1, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: null });
+    lane.bindRoute(3, ROUTE, NATIVE);
+
+    lane.receive('panels', panels([{ id: 3, hour: 5, kind: 'data', stepped: true, data: {} }]));
+    lane.frame({ type: 'frame', serial: 1, now: 5, target: 5, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    await drainMicrotasks();
+    const idBase = presented.at(-1)!.entries[0]!.id;
+    lane.frame({ type: 'frame', serial: 2, now: 5, target: 5, exact: true, seek: 0, speed: 0, installed: [{ widget: 1, binding: 1, id: idBase }], refused: [], inspect: [] });
+    await drainMicrotasks();
+
+    lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }]));
+    lane.frame({ type: 'frame', serial: 3, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    await drainMicrotasks();
+    const id10 = presented.at(-1)!.entries[0]!.id;
+
+    lane.receive('panels', panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: {} }]));
+    lane.frame({ type: 'frame', serial: 4, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    await drainMicrotasks();
+    const id20 = presented.at(-1)!.entries[0]!.id;
+
+    lane.receive('panels', panels([{ id: 3, hour: 30, kind: 'data', stepped: true, data: {} }]));
+    lane.frame({ type: 'frame', serial: 5, now: 30, target: 30, exact: false, seek: 0, speed: 1440, installed: [], refused: [], inspect: [] });
+    await drainMicrotasks();
+    assert.equal(cropCall, 4, 'fourth serve is suspended in crop while both id10 and id20 remain outstanding');
+
+    lane.frame({ type: 'frame', serial: 6, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [], refused: [{ widget: 1, id: id10, reason: 'kept content' }], inspect: [] });
+    lane.frame({ type: 'frame', serial: 7, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [{ widget: 1, binding: 1, id: id20 }], refused: [], inspect: [] });
+
+    lane.pointer(1, 0, [1, 1]);
+    assert.deepEqual(hits, ['row:5'], 'neither queued ack batch applies while crop is still held');
+
+    resolveHeldCrop();
+    await drainMicrotasks();
+    assert.equal(wakes.length, 1, 'speculative hand-over wake is held');
+    lane.pointer(1, 0, [1, 1]);
+    assert.deepEqual(hits, ['row:5', 'row:20'], 'outstanding id10 refusal flushes before id20 install at serve completion before wake fires');
+    assert.equal(lane.stats.refused['kept content'], 1, 'id10 was still outstanding when refused so reversed order would have cleared id20');
+  }
+
+  {
+    let resolveHeldCrop!: () => void;
+    let cropCall = 0;
+    const view: LaneView = {
+      paint: (input): Painted => {
+        const val = input.pictures[0]!.parts[0]!.value;
+        const num = val.kind === 'answer' && val.answer.kind === 'rows' ? cellValue(val.answer, 0) : 0n;
+        const key = `content:${num}`;
+        return {
+          surfaces: [{ source: { width: 8, height: 8, content: key } as never, content: key }],
+          fields: { v: { value: num, content: key } },
+          motion: false,
+        };
+      },
+    };
+    const { page, lane, mount } = rig({ view }, {
+      crop: sources => {
+        cropCall++;
+        const make = () => sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: source.width, close() { this.closed = true; } }));
+        if (cropCall === 1) return new Promise<Fake[]>(resolve => { resolveHeldCrop = () => resolve(make()); });
+        return Promise.resolve(make());
+      },
+    });
+    mount(1, [{ id: 5, channel: 'followed' }], 'view', 1);
+    lane.bindRoute(5, ROUTE, NATIVE, 0);
+
+    lane.receive('follow', message(5, [{ id: 5, hour: 5, answer: rows([1n], [50n]) }], false, NATIVE, 0));
+    page.publish(5, { playing: false, seek: 0 });
+    await flush();
+    assert.equal(cropCall, 1, 'hour-5 crop is held');
+
+    lane.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [100n]) }], false, NATIVE, 0));
+    lane.receive('follow', message(21, [{ id: 5, hour: 20, answer: rows([1n], [100n]) }], false, NATIVE, 0));
+    page.publish(10, { playing: true, step: 1, speed: 24, seek: 0 });
+    page.publish(20, { playing: true, step: 1, speed: 24, seek: 0 });
+
+    resolveHeldCrop();
+    await flush();
+    await flush();
+    page.frame();
+    assert.equal(page.view(1).mode, 'picture', 'Page installs hour 20 instead of rejecting SAME against a superseded exact hour 10');
+    assert.equal(page.view(1).h, 20);
+  }
+});
+
+test('same-content rewind after held crop ignores queued stream refusal and Page installs hour 10 on the first attempt', async () => {
+  let resolveHeldCrop!: () => void;
+  let cropCall = 0;
+  let delayNextPresentation = false;
+  const delayedPresentations: Presented<Fake>[] = [];
+  const view: LaneView = {
+    paint: (input): Painted => {
+      const val = input.pictures[0]!.parts[0]!.value;
+      const num = val.kind === 'answer' && val.answer.kind === 'rows' ? cellValue(val.answer, 0) : 0n;
+      const key = `content:${num}`;
+      return {
+        surfaces: [{ source: { width: 8, height: 8, content: key } as never, content: key }],
+        fields: { v: { value: num, content: key } },
+        motion: false,
+      };
+    },
+  };
+  let page!: Page<Fake>;
+  let lane!: Lane<Fake>;
+  page = new Page<Fake>({
+    lanes: 1,
+    post: (_lane, m: PageMessage) => {
+      if (m.type === 'frame') lane.frame(m);
+      else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target);
+    },
+  });
+  lane = new Lane<Fake>({
+    lane: 0, lanes: 1, views: () => view,
+    crop: sources => {
+      cropCall++;
+      const make = () => sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: source.width, close() { this.closed = true; } }));
+      if (cropCall === 3) return new Promise<Fake[]>(resolve => { resolveHeldCrop = () => resolve(make()); });
+      return Promise.resolve(make());
+    },
+    present: presentation => {
+      if (delayNextPresentation) { delayNextPresentation = false; delayedPresentations.push(presentation); return; }
+      page.offer(presentation);
+    },
+    release: () => {}, fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); }, later: () => {},
+  });
+  lane.follow(5, 'followed');
+  lane.mount(1, [5], 'view');
+  lane.bind(1, { generation: 1, surfaces: [{ width: 8, height: 8, dpr: 1 }], offset: 0, pin: null });
+  page.mount(1, { route: ROUTE, lane: 0, surfaces: [{ install() {}, clear() {} }] });
+  lane.bindRoute(5, ROUTE, NATIVE, 0);
+
+  lane.receive('follow', message(100, [{ id: 5, hour: 100, answer: rows([1n], [111n]) }], false, NATIVE, 0));
+  page.publish(100, { playing: false, seek: 0 });
+  await flush();
+  page.frame();
+  assert.deepEqual([page.view(1).mode, page.view(1).h], ['picture', 100], 'hour 100 installs content A');
+
+  delayNextPresentation = true;
+  lane.receive('follow', message(105, [{ id: 5, hour: 105, answer: rows([1n], [155n]) }], false, NATIVE, 0));
+  page.publish(105, { playing: false, seek: 0 });
+  await flush();
+  assert.equal(delayedPresentations.length, 1, 'hour-105 presentation is delayed in flight');
+
+  lane.receive('follow', message(110, [{ id: 5, hour: 110, answer: rows([1n], [222n]) }], false, NATIVE, 0));
+  page.publish(110, { playing: false, seek: 0 });
+  await flush();
+  assert.equal(cropCall, 3, 'hour-110 content B is suspended in crop');
+
+  lane.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [111n]) }], false, NATIVE, 1));
+  page.publish(10, { playing: false, seek: 1 });
+  page.offer(delayedPresentations.shift()!);
+  page.frame();
+  page.publish(10, { playing: false, seek: 1 });
+  assert.equal(page.view(1).mode, 'reading', 'Page cleared hour 100 on rewind and queued a stream refusal for delayed hour 105');
+
+  resolveHeldCrop();
+  await flush();
+  await flush();
+  page.frame();
+
+  assert.equal(page.view(1).mode, 'picture', 'Page installs hour 10 on the first attempt even after a queued stream refusal flushes');
+  assert.equal(page.view(1).h, 10);
+  assert.equal(lane.stats.refused['kept content'] ?? 0, 0, 'must send full content A instead of SAME');
+});
+
+test('on-receipt acknowledgement time is charged once to the next serve budget, stretch, and served.ms', async () => {
+  let clockMs = 0;
+  let paintCostMs = 0;
+  const presented: Presented<Fake>[] = [];
+  const stretched: number[] = [];
+  const served: { ms: number; changed: number }[] = [];
+  const view: LaneView = {
+    paint: (input): Painted => {
+      clockMs += paintCostMs;
+      return {
+        surfaces: [],
+        fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+        motion: false,
+      };
+    },
+  };
+  const lane = new Lane<Fake>({
+    lane: 0, lanes: 1, views: () => view, crop: async () => [],
+    clock: () => clockMs, budget: 10,
+    present: presentation => { presented.push(presentation); },
+    release: () => {},
+    stretch: ms => { stretched.push(ms); },
+    served: frame => { served.push({ ms: frame.ms, changed: frame.changed }); },
+    fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); },
+    later: () => {},
+  });
+  for (const [wid, sub] of [[1, 3], [2, 5], [3, 7]] as const) {
+    lane.follow(sub, 'followed');
+    lane.mount(wid, [sub], 'view');
+    lane.bind(wid, { generation: 1, surfaces: [], offset: 0, pin: null });
+    lane.bindRoute(sub, ROUTE, NATIVE, 0);
+  }
+  lane.receive('follow', message(10, [{ id: 3, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE, 0));
+  lane.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+  await flush();
+  const id10 = presented.at(-1)!.entries[0]!.id;
+
+  lane.receive('follow', message(30, [
+    { id: 5, hour: 30, answer: rows([1n], [30n]) },
+    { id: 7, hour: 30, answer: rows([1n], [30n]) },
+  ], false, NATIVE, 0));
+  presented.length = 0;
+  stretched.length = 0;
+  served.length = 0;
+  paintCostMs = 5;
+  let ackTimed = false;
+  const timedAck = {
+    widget: 1,
+    binding: 1,
+    get id() {
+      if (!ackTimed) { ackTimed = true; clockMs += 6; }
+      return id10;
+    },
+  };
+  lane.frame({
+    type: 'frame', serial: 2, now: 30, target: 30, exact: true, seek: 0, speed: 0,
+    installed: [timedAck], refused: [], inspect: [],
+  });
+  await flush();
+
+  assert.equal(ackTimed, true, 'acknowledgement ran on receipt');
+  assert.equal(presented.at(-1)!.entries.length, 1, '6 ms ack batch plus one 5 ms paint exhausts the 10 ms budget, deferring the second 5 ms widget');
+  assert.equal(served.at(-1)!.ms, 11, 'served.ms includes the 6 ms ack work plus 5 ms paint');
+  assert.equal(stretched.at(-1)!, 11, 'stretch receives the full 11 ms including on-receipt ack work');
+
+  {
+    let clock = 0;
+    let paintMs = 30;
+    const wakes: (() => void)[] = [];
+    const preStretched: number[] = [];
+    const preServed: { ms: number; cancelled?: boolean }[] = [];
+    const prePresented: Presented<Fake>[] = [];
+    const slowView: LaneView = {
+      paint: (input): Painted => {
+        clock += paintMs;
+        return {
+          surfaces: [],
+          fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+          motion: false,
+        };
+      },
+    };
+    const l = new Lane<Fake>({
+      lane: 0, lanes: 1, views: () => slowView, crop: async () => [],
+      clock: () => clock, budget: 10,
+      schedule: run => { wakes.push(run); },
+      present: presentation => { prePresented.push(presentation); },
+      release: () => {},
+      stretch: ms => { preStretched.push(ms); },
+      served: frame => { preServed.push({ ms: frame.ms, cancelled: frame.cancelled }); },
+      fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); },
+      later: () => {},
+    });
+    l.follow(5, 'followed');
+    l.mount(1, [5], 'view');
+    l.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+    l.bindRoute(5, ROUTE, NATIVE, 0);
+    l.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE, 0));
+    l.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    await flush();
+    const id1 = prePresented.at(-1)!.entries[0]!.id;
+    assert.equal(wakes.length, 1, '30 ms serve opens hand-over');
+
+    preStretched.length = 0;
+    preServed.length = 0;
+    paintMs = 0;
+    let ticked = false;
+    const slowAck = { widget: 1, binding: 1, get id() { if (!ticked) { ticked = true; clock += 6; } return id1; } };
+    l.frame({ type: 'frame', serial: 2, now: 10, target: 10, exact: false, seek: 0, speed: 24, installed: [slowAck], refused: [], inspect: [] });
+    l.stream(ROUTE, 1, 10);
+    wakes.shift()!();
+    await flush();
+    assert.equal(preServed.at(-1)!.cancelled, true, 'pre-serve cancellation exit ran');
+    assert.equal(preStretched.at(-1), 6, 'pre-serve cancellation exit stretches the 6 ms ack work');
+
+    preStretched.length = 0;
+    l.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE, 1));
+    l.frame({ type: 'frame', serial: 3, now: 10, target: 10, exact: true, seek: 1, speed: 0, installed: [], refused: [], inspect: [] });
+    await flush();
+    assert.equal(preStretched.at(-1), 0, 'following ack-free serve receives no second charge');
+  }
+
+  {
+    let clock = 0;
+    let paintMs = 0;
+    let resolveCrop!: () => void;
+    let cropCall = 0;
+    const postStretched: number[] = [];
+    const postServed: { ms: number; cancelled?: boolean }[] = [];
+    const postPresented: Presented<Fake>[] = [];
+    const cropView: LaneView = {
+      paint: (input): Painted => {
+        clock += paintMs;
+        return {
+          surfaces: [{ source: { width: 4, height: 4, content: `h:${input.pictures[0]!.h}` } as never, content: `h:${input.pictures[0]!.h}` }],
+          fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+          motion: false,
+        };
+      },
+    };
+    const l = new Lane<Fake>({
+      lane: 0, lanes: 1, views: () => cropView,
+      clock: () => clock, budget: 10,
+      crop: sources => {
+        cropCall++;
+        const make = () => sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: source.width, close() { this.closed = true; } }));
+        if (cropCall === 2) return new Promise<Fake[]>(resolve => { resolveCrop = () => resolve(make()); });
+        return Promise.resolve(make());
+      },
+      present: presentation => { postPresented.push(presentation); },
+      release: () => {},
+      stretch: ms => { postStretched.push(ms); },
+      served: frame => { postServed.push({ ms: frame.ms, cancelled: frame.cancelled }); },
+      fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); },
+      later: () => {},
+    });
+    l.follow(5, 'followed');
+    l.mount(1, [5], 'view');
+    l.bind(1, { generation: 1, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: null });
+    l.bindRoute(5, ROUTE, NATIVE, 0);
+    l.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE, 0));
+    l.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    await flush();
+    const id1 = postPresented.at(-1)!.entries[0]!.id;
+
+    postStretched.length = 0;
+    postServed.length = 0;
+    paintMs = 4;
+    let ticked = false;
+    const slowAck = { widget: 1, binding: 1, get id() { if (!ticked) { ticked = true; clock += 6; } return id1; } };
+    l.receive('follow', message(20, [{ id: 5, hour: 20, answer: rows([1n], [20n]) }], false, NATIVE, 0));
+    l.frame({ type: 'frame', serial: 2, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [slowAck], refused: [], inspect: [] });
+    await flush();
+    assert.equal(cropCall, 2, 'second serve is suspended in crop');
+
+    l.stream(ROUTE, 1, 20);
+    resolveCrop();
+    await flush();
+    assert.equal(postServed.at(-1)!.cancelled, true, 'post-crop cancellation exit ran');
+    assert.equal(postStretched.at(-1), 10, 'post-crop cancellation exit stretches the 6 ms ack plus 4 ms paint work');
+
+    postStretched.length = 0;
+    paintMs = 0;
+    l.receive('follow', message(20, [{ id: 5, hour: 20, answer: rows([1n], [20n]) }], false, NATIVE, 1));
+    l.frame({ type: 'frame', serial: 3, now: 20, target: 20, exact: true, seek: 1, speed: 0, installed: [], refused: [], inspect: [] });
+    await flush();
+    assert.equal(postStretched.at(-1), 0, 'following ack-free serve receives no second charge after post-crop abort');
+  }
+});
+
+test('pinned widget repaints after post-crop abort triggered by another route seek', async () => {
+  const ROUTE_B = 2, NATIVE_B = 10;
+  let epoch = 1;
+  let resolveCrop!: () => void;
+  let cropCall = 0;
+  const view: LaneView = {
+    paint: (input): Painted => {
+      const tag = `h:${input.pictures[0]!.h}:v${epoch}`;
+      return {
+        surfaces: [{ source: { width: 4, height: 4, content: tag } as never, content: tag }],
+        fields: { v: { value: tag, content: tag } },
+        motion: false,
+      };
+    },
+  };
+  let lane!: Lane<Fake>;
+  const page = new Page<Fake>({
+    lanes: 1,
+    post: (_lane, m: PageMessage) => {
+      if (m.type === 'frame') lane.frame(m);
+      else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target);
+    },
+  });
+  lane = new Lane<Fake>({
+    lane: 0, lanes: 1, views: () => view,
+    crop: sources => {
+      cropCall++;
+      const make = () => sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: source.width, close() { this.closed = true; } }));
+      if (cropCall === 2) return new Promise<Fake[]>(resolve => { resolveCrop = () => resolve(make()); });
+      return Promise.resolve(make());
+    },
+    present: presentation => { page.offer(presentation); },
+    release: () => {}, fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); }, later: () => {},
+  });
+  lane.follow(5, 'pinned');
+  lane.follow(6, 'followed');
+  lane.mount(1, [5], 'view');
+  lane.mount(2, [6], 'view');
+  lane.bind(1, { generation: 1, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: 10 });
+  lane.bind(2, { generation: 1, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: null });
+  page.mount(1, { route: ROUTE, lane: 0, pin: 10, surfaces: [{ install() {}, clear() {} }] });
+  page.mount(2, { route: ROUTE_B, lane: 0, surfaces: [{ install() {}, clear() {} }] });
+  lane.bindRoute(6, ROUTE_B, NATIVE_B, 0);
+
+  lane.exact(5, 10, { val: 10 }, null);
+  lane.receive('follow', message(10, [{ id: 6, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE_B, 0));
+  page.publish(10, { playing: false, seek: 0 });
+  await flush();
+  page.frame();
+  assert.equal(page.view(1).fields?.v, 'h:10:v1', 'pinned widget installs picture A');
+
+  epoch = 2;
+  lane.touch(1);
+  await flush();
+  assert.equal(cropCall, 2, 'picture B crop is suspended');
+
+  lane.stream(ROUTE_B, 1, 20);
+  lane.receive('follow', message(20, [{ id: 6, hour: 20, answer: rows([1n], [20n]) }], false, NATIVE_B, 1));
+  resolveCrop();
+  await flush();
+
+  page.publish(20, { playing: false, seek: 1 });
+  await flush();
+  page.frame();
+  assert.equal(page.view(1).fields?.v, 'h:10:v2', 'pinned widget repaints and installs picture B instead of staying on A');
+});
+
+test('data wake during hand-over ends hand-over immediately so a following speculative frame cannot drop the exact correction', async () => {
+  const drainMicrotasks = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  let clockMs = 0;
+  let paintMs = 30;
+  const wakes: (() => void)[] = [];
+  const presented: Presented<Fake>[] = [];
+  const view: LaneView = {
+    paint: (input): Painted => {
+      clockMs += paintMs;
+      const val = input.pictures[0]!.parts[0]!.value;
+      const num = val.kind === 'answer' && val.answer.kind === 'rows' ? Number(cellValue(val.answer, 0)) : 0;
+      const key = `h:${input.pictures[0]!.h}:v:${num}`;
+      return { surfaces: [], fields: { tag: { value: key, content: key } }, motion: false };
+    },
+  };
+  const lane = new Lane<Fake>({
+    lane: 0, lanes: 1, views: () => view, crop: async () => [],
+    clock: () => clockMs, budget: 10,
+    schedule: run => { wakes.push(run); },
+    present: presentation => { presented.push(presentation); },
+    release: () => {}, fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); }, later: () => {},
+  });
+  lane.follow(5, 'followed');
+  lane.mount(1, [5], 'view');
+  lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+  lane.bindRoute(5, ROUTE, NATIVE, 0);
+
+  lane.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [100n]) }], false, NATIVE, 0));
+  lane.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+  await drainMicrotasks();
+  assert.equal(wakes.length, 1, '30 ms exact paint opens hand-over');
+  assert.deepEqual(presented.map(p => p.entries[0]?.fields.tag), ['h:10:v:100']);
+
+  paintMs = 2;
+  lane.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [101n]) }], false, NATIVE, 0));
+  await drainMicrotasks();
+  lane.receive('follow', message(20, [{ id: 5, hour: 20, answer: rows([1n], [200n]) }], false, NATIVE, 0));
+  lane.frame({ type: 'frame', serial: 2, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [], refused: [], inspect: [] });
+  await drainMicrotasks();
+  while (wakes.length) { wakes.shift()!(); await drainMicrotasks(); }
+
+  assert.deepEqual(
+    presented.map(p => p.entries[0]?.fields.tag),
+    ['h:10:v:100', 'h:10:v:101', 'h:20:v:200'],
+    'corrected hour-10 exact repaint from wake() must run before the later speculative hour-20 frame',
+  );
+});
+
+test('invalidated MessageChannel wake from an interrupted hand-over cannot fire a later hand-over serve', async () => {
+  const drainMicrotasks = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  let clockMs = 0;
+  const portQueue: unknown[] = [];
+  const fakeChannel: WakeChannel = {
+    port1: { onmessage: null },
+    port2: { postMessage: data => { portQueue.push(data); } },
+  };
+  const schedule = macrotaskSchedule(() => fakeChannel)!;
+  const presented: Presented<Fake>[] = [];
+  const view: LaneView = {
+    paint: (input): Painted => {
+      clockMs += 30;
+      return {
+        surfaces: [],
+        fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+        motion: false,
+      };
+    },
+  };
+  const lane = new Lane<Fake>({
+    lane: 0, lanes: 1, views: () => view, crop: async () => [],
+    clock: () => clockMs, budget: 10, schedule,
+    present: presentation => { presented.push(presentation); },
+    release: () => {}, fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); }, later: () => {},
+  });
+  lane.follow(5, 'followed');
+  lane.mount(1, [5], 'view');
+  lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+  lane.bindRoute(5, ROUTE, NATIVE, 0);
+  lane.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE, 0));
+  lane.receive('follow', message(20, [{ id: 5, hour: 20, answer: rows([1n], [20n]) }], false, NATIVE, 0));
+  lane.receive('follow', message(30, [{ id: 5, hour: 30, answer: rows([1n], [30n]) }], false, NATIVE, 0));
+
+  lane.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+  await drainMicrotasks();
+  assert.equal(portQueue.length, 1, 'wake A posted');
+
+  lane.frame({ type: 'frame', serial: 2, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+  await drainMicrotasks();
+  assert.equal(portQueue.length, 2, 'exact hour 20 interrupted wake A and posted wake B');
+
+  lane.frame({ type: 'frame', serial: 3, now: 30, target: 30, exact: false, seek: 0, speed: 1440, installed: [], refused: [], inspect: [] });
+  await drainMicrotasks();
+  assert.deepEqual(presented.map(p => p.entries[0]?.h), [10, 20], 'speculative hour 30 waits for wake B');
+
+  const wakeA = portQueue.shift();
+  fakeChannel.port1.onmessage?.({ data: wakeA } as MessageEvent);
+  await drainMicrotasks();
+  assert.deepEqual(presented.map(p => p.entries[0]?.h), [10, 20], 'delivering stale wake A must not serve hour 30 before wake B arrives');
+
+  const wakeB = portQueue.shift();
+  fakeChannel.port1.onmessage?.({ data: wakeB } as MessageEvent);
+  await drainMicrotasks();
+  assert.deepEqual(presented.map(p => p.entries[0]?.h), [10, 20, 30], 'delivering wake B serves hour 30');
+});
+
+test('cropAll rejects on first failure while a sibling crop is held, serves exact hour 20 immediately, and closes the late sibling bitmap', async () => {
+  const drainMicrotasks = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  interface Tracked extends Fake { closeCount: number }
+  let rejectFirst!: (err: Error) => void;
+  let resolveSecond!: () => void;
+  let lateBitmap: Tracked | null = null;
+  let cropIndex = 0;
+  const failedWidgets: [number, string][] = [];
+  const view: LaneView = {
+    paint: (input): Painted => {
+      const h = input.pictures[0]!.h;
+      const tag = `w${input.widget}:h${h}`;
+      return {
+        surfaces: [{ source: { width: 4, height: 4, content: tag } as never, content: tag }],
+        fields: { tag: { value: tag, content: tag } },
+        motion: false,
+      };
+    },
+  };
+  let lane!: Lane<Tracked>;
+  const page = new Page<Tracked>({
+    lanes: 1,
+    post: (_lane, m: PageMessage) => {
+      if (m.type === 'frame') lane.frame(m);
+      else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target);
+    },
+  });
+  lane = new Lane<Tracked>({
+    lane: 0, lanes: 1, views: () => view,
+    crop: sources => cropAll(sources, source => {
+      const idx = ++cropIndex;
+      const content = (source as unknown as { content: string }).content;
+      const makeBitmap = (): Tracked => ({
+        content, width: source.width, closed: false, closeCount: 0,
+        close() { this.closeCount++; this.closed = true; },
+      });
+      if (idx === 1) return new Promise<Tracked>((_res, rej) => { rejectFirst = rej; });
+      if (idx === 2) return new Promise<Tracked>(res => {
+        resolveSecond = () => {
+          lateBitmap = makeBitmap();
+          res(lateBitmap);
+        };
+      });
+      return Promise.resolve(makeBitmap());
+    }),
+    present: presentation => { page.offer(presentation); },
+    release: () => {},
+    fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); },
+    failWidget: (widget, reason) => { failedWidgets.push([widget, reason]); page.name(widget, 'failed', reason); },
+    later: () => {},
+  });
+
+  for (const [wid, sub] of [[1, 3], [2, 5], [3, 7]] as const) {
+    lane.follow(sub, 'followed');
+    lane.mount(wid, [sub], 'view');
+    lane.bind(wid, { generation: 1, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: null });
+    page.mount(wid, { route: ROUTE, lane: 0, surfaces: [{ install() {}, clear() {} }] });
+    lane.bindRoute(sub, ROUTE, NATIVE, 0);
+  }
+
+  lane.receive('follow', message(10, [
+    { id: 3, hour: 10, answer: rows([1n], [10n]) },
+    { id: 5, hour: 10, answer: rows([1n], [10n]) },
+  ], false, NATIVE, 0));
+  page.publish(10, { playing: false, seek: 0 });
+  await drainMicrotasks();
+  assert.equal(cropIndex, 2, 'widgets 1 and 2 both started cropping at hour 10');
+
+  lane.receive('follow', message(20, [
+    { id: 7, hour: 20, answer: rows([1n], [20n]) },
+  ], false, NATIVE, 0));
+  page.publish(20, { playing: false, seek: 0 });
+  rejectFirst(new Error('first crop failed'));
+  await drainMicrotasks();
+  page.frame();
+
+  assert.deepEqual(failedWidgets.map(([w]) => w), [1, 2], 'failure is reported immediately on first rejection without waiting for sibling crop');
+  assert.equal(page.view(3).mode, 'picture', 'third widget installs hour 20 immediately instead of waiting in reading');
+  assert.equal(page.view(3).h, 20);
+
+  resolveSecond();
+  await drainMicrotasks();
+  assert.ok(lateBitmap !== null, 'late sibling crop resolved');
+  assert.equal((lateBitmap as Tracked).closeCount, 1, 'late-fulfilling sibling bitmap is closed exactly once');
+});
+
+test('seeded differential search: hand-over lane matches main at quiescence across 600 deterministic interleavings', async () => {
+  const drainMicrotasks = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  const ROUTE_A = 1, ROUTE_B = 2, NATIVE_B = 10;
+
+  interface TrackedBitmap extends Fake { closeCount: number }
+  interface PendingCrop { resolve: () => void; reject: (error: Error) => void }
+  interface QueuedWake { data: unknown; stale: boolean }
+
+  const makeRng = (seed: number) => {
+    let s = seed >>> 0;
+    return () => {
+      s = (s + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  };
+
+  const makeSurface = () => {
+    let held: TrackedBitmap | null = null;
+    return {
+      install(bitmap: TrackedBitmap) {
+        if (held && held !== bitmap) held.close();
+        held = bitmap;
+      },
+      clear() {
+        if (held) { held.close(); held = null; }
+      },
+    };
+  };
+
+  const runSeed = async (seed: number) => {
+    const rng = makeRng(seed);
+    const randInt = (n: number) => Math.floor(rng() * n);
+    const log: string[] = [];
+    const failWith = (msg: string): never => {
+      assert.fail(`seed=${seed} ${msg}\nevents:\n${log.join('\n')}`);
+    };
+
+    let visualEpoch = 1;
+    let paintDurationMs = 12;
+    let holdNextCrop = false;
+
+    const createSide = (withHandover: boolean) => {
+      let clockMs = 0;
+      let inCrop = false;
+      let concurrentViolation = false;
+      let serveCount = 0;
+      let exactServeCount = 0;
+      let cropCount = 0;
+      let offerCount = 0;
+      let lastExactSeek: number | null = null;
+      let pendingSpeculative = false;
+      let lastHit1: string | null = null;
+      let lastHit2: string | null = null;
+      const bitmaps: TrackedBitmap[] = [];
+      const crops: PendingCrop[] = [];
+      const bufferedOffers: Presented<TrackedBitmap>[] = [];
+      const wakes: QueuedWake[] = [];
+      const laters: (() => void)[] = [];
+      let delayOffers = false;
+      const surfaces = [makeSurface(), makeSurface()];
+      const fakeChannel: WakeChannel = {
+        port1: { onmessage: null },
+        port2: {
+          postMessage: data => {
+            for (const queued of wakes) queued.stale = true;
+            wakes.push({ data, stale: false });
+          },
+        },
+      };
+      const schedule = withHandover ? macrotaskSchedule(() => fakeChannel) : undefined;
+      let lane!: Lane<TrackedBitmap>;
+      const page = new Page<TrackedBitmap>({
+        lanes: 1,
+        post: (_lane, m: PageMessage) => {
+          if (m.type === 'frame') {
+            if (m.exact) { lastExactSeek = m.seek; pendingSpeculative = false; }
+            else { lastExactSeek = null; pendingSpeculative = true; }
+            lane.frame(m);
+          } else if (m.type === 'stream') {
+            if (lastExactSeek !== null && lastExactSeek < m.seek) lastExactSeek = null;
+            lane.stream(m.route, m.seek, m.target);
+          }
+        },
+      });
+      const view: LaneView = {
+        paint: (input): Painted => {
+          if (inCrop) {
+            concurrentViolation = true;
+            failWith(`${withHandover ? 'handover' : 'main'} started paint while a crop was still in progress`);
+          }
+          clockMs += paintDurationMs;
+          const val = input.pictures[0]!.parts[0]!.value;
+          const num = val.kind === 'answer' && val.answer.kind === 'rows'
+            ? Number(cellValue(val.answer, 0))
+            : val.kind === 'panel' && val.data && typeof val.data === 'object' && 'val' in val.data
+              ? Number((val.data as { val: number }).val)
+              : 0;
+          const tag = input.widget === 1 ? `w1:${input.pictures[0]!.h}:val:${num}:v${visualEpoch}` : `w2:${input.pictures[0]!.h}:val:${num}`;
+          return {
+            surfaces: [{ source: { width: 4, height: 4, content: tag } as never, content: tag }],
+            fields: { tag: { value: tag, content: tag } },
+            motion: false,
+            hit: () => tag,
+          };
+        },
+      };
+      lane = new Lane<TrackedBitmap>({
+        lane: 0, lanes: 1, views: () => view,
+        clock: () => clockMs, budget: 10,
+        ...schedule ? { schedule } : {},
+        crop: sources => {
+          if (inCrop) {
+            concurrentViolation = true;
+            failWith(`${withHandover ? 'handover' : 'main'} started a second crop while one was still in progress`);
+          }
+          cropCount++;
+          const makeBitmaps = () => sources.map(source => {
+            const bm: TrackedBitmap = {
+              content: (source as unknown as { content: string }).content,
+              width: source.width,
+              closed: false,
+              closeCount: 0,
+              close() {
+                this.closeCount++;
+                this.closed = true;
+                if (this.closeCount > 1) failWith(`${withHandover ? 'handover' : 'main'} closed bitmap ${this.content} ${this.closeCount} times`);
+              },
+            };
+            bitmaps.push(bm);
+            return bm;
+          });
+          if (holdNextCrop) {
+            inCrop = true;
+            return new Promise<TrackedBitmap[]>((resolve, reject) => {
+              crops.push({
+                resolve: () => { inCrop = false; resolve(makeBitmaps()); },
+                reject: err => { inCrop = false; reject(err); },
+              });
+            });
+          }
+          return Promise.resolve(makeBitmaps());
+        },
+        present: presentation => {
+          offerCount++;
+          if (delayOffers) bufferedOffers.push(presentation);
+          else page.offer(presentation);
+        },
+        release: () => {},
+        served: frame => {
+          serveCount++;
+          if (!frame.exact) pendingSpeculative = false;
+          if (frame.exact && !frame.cancelled) exactServeCount++;
+        },
+        hit: (widget, key) => {
+          if (widget === 1) lastHit1 = key;
+          else if (widget === 2) lastHit2 = key;
+        },
+        fail: reason => { failWith(`${withHandover ? 'handover' : 'main'} lane failure: ${reason}`); },
+        failWidget: () => {},
+        later: fn => { laters.push(fn); },
+      });
+      lane.follow(5, 'pinned');
+      lane.follow(6, 'followed');
+      lane.mount(1, [5], 'view');
+      lane.mount(2, [6], 'view');
+      lane.bind(1, { generation: 1, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: 10 });
+      lane.bind(2, { generation: 1, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: null });
+      page.mount(1, { route: ROUTE_A, lane: 0, pin: 10, surfaces: [surfaces[0]!] });
+      page.mount(2, { route: ROUTE_B, lane: 0, surfaces: [surfaces[1]!] });
+      lane.bindRoute(6, ROUTE_B, NATIVE_B, 0);
+
+      return {
+        lane, page, crops, bufferedOffers, wakes, laters, fakeChannel, bitmaps, surfaces,
+        onStream(seek: number) { if (lastExactSeek !== null && lastExactSeek < seek) lastExactSeek = null; },
+        get hasEligibleExactWake() { return lastExactSeek !== null && !pendingSpeculative; },
+        get delayOffers() { return delayOffers; },
+        set delayOffers(v: boolean) { delayOffers = v; },
+        get inCrop() { return inCrop; },
+        get concurrentViolation() { return concurrentViolation; },
+        get serveCount() { return serveCount; },
+        get exactServeCount() { return exactServeCount; },
+        get cropCount() { return cropCount; },
+        get offerCount() { return offerCount; },
+        get lastHit1() { return lastHit1; },
+        get lastHit2() { return lastHit2; },
+      };
+    };
+
+    const main = createSide(false);
+    const over = createSide(true);
+    const sides = [main, over] as const;
+
+    let seekB = 0;
+    let currentHour = 10;
+    let fact5Val = 100;
+    const fact6BySeekHour = new Map<string, number>();
+    const setFact6 = (seek: number, hour: number, val: number) => {
+      fact6BySeekHour.set(`${seek}:${hour}`, val);
+    };
+    const pushFact5 = (val: number) => {
+      fact5Val = val;
+      for (const s of sides) s.lane.exact(5, 10, { val }, null);
+    };
+    const pushFact6 = (seek: number, hour: number, val: number) => {
+      setFact6(seek, hour, val);
+      const bytes = message(hour, [{ id: 6, hour, answer: rows([1n], [BigInt(val)]) }], false, NATIVE_B, seek);
+      for (const s of sides) s.lane.receive('follow', bytes);
+    };
+
+    pushFact5(100);
+    pushFact6(0, 10, 200);
+    for (const s of sides) s.page.publish(10, { playing: false, seek: 0 });
+    await drainMicrotasks();
+    for (const s of sides) s.page.frame();
+    await drainMicrotasks();
+    while (over.wakes.length) {
+      const w = over.wakes.shift()!;
+      over.fakeChannel.port1.onmessage?.({ data: w.data } as MessageEvent);
+      await drainMicrotasks();
+    }
+
+    const steps = 22;
+    for (let step = 0; step < steps; step++) {
+      paintDurationMs = rng() < 0.6 ? 14 : 3;
+      holdNextCrop = rng() < 0.35;
+      const delay = rng() < 0.35;
+      main.delayOffers = delay;
+      over.delayOffers = delay;
+
+      const choice = randInt(10);
+      if (choice === 0) {
+        currentHour += 10;
+        const val = 200 + step * 10 + randInt(5);
+        pushFact6(seekB, currentHour, val);
+        log.push(`${step}: spec(h=${currentHour},val=${val},ms=${paintDurationMs},hold=${holdNextCrop})`);
+        for (const s of sides) s.page.publish(currentHour, { playing: true, step: 10, speed: 240 });
+        await drainMicrotasks();
+      } else if (choice === 1) {
+        const hour = rng() < 0.5 ? currentHour : (currentHour = 10 + randInt(5) * 10);
+        const val = 300 + step * 10;
+        const overWasInHandover = !over.inCrop && over.wakes.some(w => !w.stale);
+        const overBefore = over.exactServeCount;
+        pushFact6(seekB, hour, val);
+        log.push(`${step}: exact(h=${hour},val=${val},ms=${paintDurationMs},hold=${holdNextCrop})`);
+        for (const s of sides) s.page.publish(hour, { playing: false, seek: seekB });
+        await drainMicrotasks();
+        if (overWasInHandover && !over.inCrop && !holdNextCrop && over.exactServeCount === overBefore) {
+          failWith(`incoming exact frame at step ${step} was held in handover instead of serving immediately`);
+        }
+      } else if (choice === 2) {
+        const val = 500 + step * 10;
+        const mainBefore = main.exactServeCount;
+        const overBefore = over.exactServeCount;
+        const neitherInCrop = !main.inCrop && !over.inCrop;
+        const overEligibleExact = over.hasEligibleExactWake;
+        const targetSub = rng() < 0.5 ? 5 : 6;
+        if (targetSub === 5) {
+          log.push(`${step}: facts5(val=${val},ms=${paintDurationMs},hold=${holdNextCrop})`);
+          pushFact5(val);
+        } else {
+          log.push(`${step}: facts6(seek=${seekB},h=${currentHour},val=${val},ms=${paintDurationMs},hold=${holdNextCrop})`);
+          pushFact6(seekB, currentHour, val);
+        }
+        await drainMicrotasks();
+        if (overEligibleExact && neitherInCrop && !holdNextCrop && main.exactServeCount > mainBefore && over.exactServeCount === overBefore) {
+          failWith(`exact data wake at step ${step} ran on main but was held/lost in handover`);
+        }
+      } else if (choice === 3) {
+        visualEpoch++;
+        log.push(`${step}: touchPinned(v=${visualEpoch},ms=${paintDurationMs},hold=${holdNextCrop})`);
+        for (const s of sides) s.lane.touch(1);
+        await drainMicrotasks();
+      } else if (choice === 4) {
+        seekB++;
+        currentHour = 10 + randInt(3) * 10;
+        const val = 700 + seekB * 10;
+        const pageSeek = rng() < 0.5;
+        log.push(`${step}: seekB(seek=${seekB},pageSeek=${pageSeek},h=${currentHour},val=${val},ms=${paintDurationMs},hold=${holdNextCrop})`);
+        if (pageSeek) {
+          for (const s of sides) s.page.publish(currentHour, { playing: false, seek: seekB });
+          pushFact6(seekB, currentHour, val);
+        } else {
+          for (const s of sides) { s.onStream(seekB); s.lane.stream(ROUTE_B, seekB, currentHour); }
+          pushFact6(seekB, currentHour, val);
+        }
+        await drainMicrotasks();
+      } else if (choice === 5) {
+        log.push(`${step}: deliverOffers(m=${main.bufferedOffers.length},o=${over.bufferedOffers.length})`);
+        for (const s of sides) {
+          if (s.bufferedOffers.length) s.page.offer(s.bufferedOffers.shift()!);
+          s.page.frame();
+        }
+        await drainMicrotasks();
+      } else if (choice === 6) {
+        log.push(`${step}: ackFrame`);
+        for (const s of sides) s.page.frame();
+        await drainMicrotasks();
+      } else if (choice === 7) {
+        const reject = rng() < 0.15;
+        log.push(`${step}: crop(${reject ? 'reject' : 'resolve'},m=${main.crops.length},o=${over.crops.length})`);
+        for (const s of sides) {
+          if (!s.crops.length) continue;
+          const pending = s.crops.shift()!;
+          if (reject) pending.reject(new Error('injected crop failure'));
+          else pending.resolve();
+        }
+        await drainMicrotasks();
+        if (reject) {
+          for (const s of sides) {
+            for (const wid of [1, 2]) {
+              s.page.rebind(wid, { subscription: true });
+              const binding = s.page.widgets.get(wid)!.binding;
+              s.lane.bind(wid, { generation: binding, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: wid === 1 ? 10 : null }, undefined, true);
+            }
+          }
+          await drainMicrotasks();
+        }
+      } else if (choice === 8) {
+        if (over.wakes.length) {
+          const w = over.wakes.shift()!;
+          const servedBefore = over.serveCount;
+          const cropsBefore = over.cropCount;
+          log.push(`${step}: deliverWake(stale=${w.stale},remaining=${over.wakes.length})`);
+          over.fakeChannel.port1.onmessage?.({ data: w.data } as MessageEvent);
+          await drainMicrotasks();
+          if (w.stale && (over.serveCount !== servedBefore || over.cropCount !== cropsBefore)) {
+            failWith(`stale wake fired a serve at step ${step} (served ${servedBefore}->${over.serveCount}, crops ${cropsBefore}->${over.cropCount})`);
+          }
+        }
+      } else {
+        log.push(`${step}: pointer`);
+        for (const s of sides) {
+          s.lane.pointer(1, 0, [1, 1]);
+          s.lane.pointer(2, 0, [1, 1]);
+        }
+      }
+    }
+
+    holdNextCrop = false;
+    paintDurationMs = 2;
+    main.delayOffers = false;
+    over.delayOffers = false;
+
+    const drainBoth = async () => {
+      for (let round = 0; round < 30; round++) {
+        let progressed = false;
+        const beforeOffers = main.offerCount + over.offerCount;
+        const beforeServes = main.serveCount + over.serveCount;
+        for (const s of sides) {
+          while (s.crops.length) { s.crops.shift()!.resolve(); progressed = true; }
+          while (s.bufferedOffers.length) { s.page.offer(s.bufferedOffers.shift()!); progressed = true; }
+          while (s.laters.length) { s.laters.shift()!(); progressed = true; }
+        }
+        while (over.wakes.length) {
+          const w = over.wakes.shift()!;
+          over.fakeChannel.port1.onmessage?.({ data: w.data } as MessageEvent);
+          progressed = true;
+        }
+        await drainMicrotasks();
+        for (const s of sides) s.page.frame();
+        await drainMicrotasks();
+        const afterOffers = main.offerCount + over.offerCount;
+        const afterServes = main.serveCount + over.serveCount;
+        if (afterOffers > beforeOffers || afterServes > beforeServes) progressed = true;
+        if (!progressed && !main.crops.length && !over.crops.length && !over.wakes.length && !main.laters.length && !over.laters.length && !main.bufferedOffers.length && !over.bufferedOffers.length) break;
+      }
+    };
+
+    await drainBoth();
+    const mainServesBeforeSpecProbe = main.serveCount;
+    const overServesBeforeSpecProbe = over.serveCount;
+    for (const s of sides) {
+      s.lane.frame({
+        type: 'frame', serial: 900000 + seed, now: currentHour, target: currentHour,
+        exact: false, seek: seekB, speed: 240, installed: [], refused: [], inspect: [],
+      });
+    }
+    await drainMicrotasks();
+    if (main.serveCount <= mainServesBeforeSpecProbe || over.serveCount <= overServesBeforeSpecProbe) {
+      failWith(`lane stranded working with nothing scheduled after first drain (main ${mainServesBeforeSpecProbe}->${main.serveCount}, over ${overServesBeforeSpecProbe}->${over.serveCount})`);
+    }
+    await drainBoth();
+
+    const finalHour = currentHour + 10;
+    const finalVal6 = 9000 + seed;
+    pushFact6(seekB, finalHour, finalVal6);
+    for (const s of sides) {
+      s.page.publish(finalHour, { playing: false, seek: seekB });
+    }
+    await drainBoth();
+
+    const expected1 = `w1:10:val:${fact5Val}:v${visualEpoch}`;
+    const expected2 = `w2:${finalHour}:val:${finalVal6}`;
+
+    for (const wid of [1, 2]) {
+      const vm = main.page.view(wid);
+      const vo = over.page.view(wid);
+      if (vm.mode !== 'picture' || vo.mode !== 'picture') {
+        failWith(`quiescence widget ${wid} not picture: main=${vm.mode} over=${vo.mode}`);
+      }
+      if (vm.h !== vo.h || vm.fields?.tag !== vo.fields?.tag) {
+        failWith(`quiescence widget ${wid} mismatch: main=(h:${vm.h},tag:${vm.fields?.tag}) over=(h:${vo.h},tag:${vo.fields?.tag})`);
+      }
+      const expected = wid === 1 ? expected1 : expected2;
+      if (vo.fields?.tag !== expected || vm.fields?.tag !== expected) {
+        failWith(`quiescence widget ${wid} stale vs oracle: expected=${expected} main=${vm.fields?.tag} over=${vo.fields?.tag}`);
+      }
+    }
+
+    for (const s of sides) {
+      s.lane.pointer(1, 0, [1, 1]);
+      s.lane.pointer(2, 0, [1, 1]);
+    }
+    if (main.lastHit1 !== over.lastHit1 || main.lastHit2 !== over.lastHit2 || over.lastHit1 !== expected1 || over.lastHit2 !== expected2) {
+      failWith(`quiescence pointer mismatch: main=(${main.lastHit1},${main.lastHit2}) over=(${over.lastHit1},${over.lastHit2}) expected=(${expected1},${expected2})`);
+    }
+
+    const servesBeforeProbe = over.serveCount;
+    visualEpoch++;
+    over.lane.touch(1);
+    await drainMicrotasks();
+    if (over.serveCount <= servesBeforeProbe) {
+      failWith(`handover lane stuck working with nothing scheduled at quiescence`);
+    }
+    await drainBoth();
+
+    if (main.concurrentViolation || over.concurrentViolation) {
+      failWith(`concurrent serve detected`);
+    }
+
+    for (const s of sides) {
+      s.page.unmount(1);
+      s.page.unmount(2);
+      for (const surface of s.surfaces) surface.clear();
+      for (const bm of s.bitmaps) {
+        if (bm.closeCount !== 1) {
+          failWith(`bitmap ${bm.content} closeCount=${bm.closeCount} (expected 1)`);
+        }
+      }
+    }
+  };
+
+  for (let seed = 1; seed <= 600; seed++) {
+    await runSeed(seed);
+  }
 });

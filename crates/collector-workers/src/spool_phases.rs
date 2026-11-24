@@ -196,7 +196,7 @@ pub fn thread_cycles() -> Option<u64> {
     let ok = unsafe {
         QueryThreadCycleTime(
             windows_sys::Win32::System::Threading::GetCurrentThread(),
-            &mut cycles,
+            &raw mut cycles,
         )
     };
     (ok != 0).then_some(cycles)

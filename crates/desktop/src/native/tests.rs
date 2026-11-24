@@ -495,8 +495,8 @@ fn dashboard_snapshot_envelope_gates_empty_clears_and_filters_state_replies_by_o
     let view_a = make_view("map-1", "page-A", 80, 100, true);
     let view_b = make_view("map-1", "page-B", 0, 260, false);
 
-    assert!(inner.apply_dashboard_views("page-A", &[view_a.clone()]).unwrap());
-    assert!(inner.apply_dashboard_views("page-B", &[view_b.clone()]).unwrap());
+    assert!(inner.apply_dashboard_views("page-A", std::slice::from_ref(&view_a)).unwrap());
+    assert!(inner.apply_dashboard_views("page-B", &[view_b]).unwrap());
     assert!(!inner.apply_dashboard_views("page-A", &[]).unwrap());
     assert!(inner.status.visible, "late empty clear from A must not hide B's widgets");
     let kept = inner.dashboard_views.as_ref().expect("B's snapshot survives");
@@ -514,7 +514,7 @@ fn dashboard_snapshot_envelope_gates_empty_clears_and_filters_state_replies_by_o
         inner.filter_map_states(vec![reply_a.clone()]).is_empty(),
         "A/80 arriving before B/0 must be filtered out before sequence comparison"
     );
-    let kept_b = inner.filter_map_states(vec![reply_b.clone()]);
+    let kept_b = inner.filter_map_states(vec![reply_b]);
     assert_eq!(kept_b.len(), 1);
     assert_eq!(kept_b[0].clock_id, "page-B");
     assert_eq!(kept_b[0].hour, Some(260));

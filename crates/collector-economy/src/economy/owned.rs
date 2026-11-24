@@ -536,7 +536,10 @@ fn copy_economy_string(log: &mut RawLog<N>, memory: &impl Memory, string: usize,
     let _ = espan(log, memory, source.checked_add(len), 1, mask);
 }
 
-#[allow(clippy::collapsible_if)]
+#[expect(
+    clippy::collapsible_if,
+    reason = "the fuel-status pointer, its pool value and its bulk copy stay separate steps"
+)]
 fn copy_economy_rest_pass(
     memory: &impl Memory,
     base: usize,

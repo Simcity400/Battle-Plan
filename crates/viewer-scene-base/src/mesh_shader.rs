@@ -117,7 +117,7 @@ impl Order {
 }
 
 impl Pass {
-    #[allow(clippy::too_many_arguments, reason = "the technique, its geometry and its target")]
+    #[expect(clippy::too_many_arguments, reason = "the technique, its geometry and its target")]
     pub fn new(
         cache: &mut gpu::Cache,
         device: &wgpu::Device,
@@ -147,7 +147,7 @@ impl Pass {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the cache and device, the selection and geometry, and the pass's formats, samples and modes")]
     fn with_mode(
         cache: &mut gpu::Cache,
         device: &wgpu::Device,
@@ -166,7 +166,7 @@ impl Pass {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the cache and device, the selection and geometry, and the pass's formats, samples and modes")]
     fn build(
         cache: &mut gpu::Cache,
         device: &wgpu::Device,

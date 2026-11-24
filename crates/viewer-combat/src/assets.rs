@@ -701,7 +701,7 @@ impl CombatContent {
 }
 
 impl Assets {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the layers, regions, defines, interface and client the assets load from, and the images they fill")]
     pub fn load(
         shared: &Arc<ResolvedLayers>,
         regions: &BTreeMap<u32, content_reader_regions::regions::StrategicRegion>,

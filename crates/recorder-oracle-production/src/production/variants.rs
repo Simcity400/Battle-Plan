@@ -495,10 +495,6 @@ fn compare_variant_stats(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Compare the independent recorded version, saved design and marker with their existing join context."
-)]
 fn compare_design_state(
     frame: &DecodedFrame,
     actual: &replay_data::rows::VariantDesignState,

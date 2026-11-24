@@ -511,7 +511,7 @@ mod tests {
             ACTIVE.0.fetch_add(1, Ordering::SeqCst);
             ACQUIRED_EVENTS.fetch_add(1, Ordering::SeqCst);
             let refusals = refusals();
-            assert_eq!(unsafe { returned(&mut context) }, 1);
+            assert_eq!(unsafe { returned(&raw mut context) }, 1);
             assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
             assert_eq!(ACQUIRED_EVENTS.load(Ordering::SeqCst), 0);
             assert_eq!(self::refusals(), refusals + usize::from(context.kind == 2));
@@ -531,10 +531,10 @@ mod tests {
         line.set_converting(true);
         let caller = BASE.load(Ordering::Relaxed) + CREDIT.callers[MILITARY].0;
         let mut context = Context::default();
-        unsafe { before(&mut context, line.address(), 7, 0, caller, 0) };
+        unsafe { before(&raw mut context, line.address(), 7, 0, caller, 0) };
         line.set_converting(false);
         line.replace(0x6_0000_0046, 0x8_0000_004f);
-        assert_eq!(unsafe { returned(&mut context) }, 1);
+        assert_eq!(unsafe { returned(&raw mut context) }, 1);
         let mut entries = vec![Entry::default(); 2];
         assert_eq!(super::super::drain(&mut entries).unwrap().copied, 1);
         assert_eq!(
@@ -577,9 +577,9 @@ mod tests {
         ] {
             let prior = refusals();
             let mut context = Context::default();
-            unsafe { before(&mut context, 0, 0, 0, caller, kind) };
+            unsafe { before(&raw mut context, 0, 0, 0, caller, kind) };
             assert!(context.refused && !context.acquired);
-            assert_eq!(unsafe { returned(&mut context) }, 1);
+            assert_eq!(unsafe { returned(&raw mut context) }, 1);
             assert_eq!(refusals(), prior + usize::from(rocket));
             assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
             assert_eq!(ACQUIRED_EVENTS.load(Ordering::SeqCst), 0);
@@ -630,9 +630,9 @@ mod tests {
             super::super::observe_for_test(enabled_at_entry);
             let caller = BASE.load(Ordering::Relaxed) + CREDIT.callers[super::super::tests::MILITARY].0;
             let mut context = Context::default();
-            unsafe { before(&mut context, line.address(), 17, 9, caller, 0) };
+            unsafe { before(&raw mut context, line.address(), 17, 9, caller, 0) };
             super::super::observe_for_test(!enabled_at_entry);
-            assert_eq!(unsafe { returned(&mut context) }, 1);
+            assert_eq!(unsafe { returned(&raw mut context) }, 1);
         }
         super::super::observe_for_test(false);
         assert_eq!(CALLS.load(Ordering::Relaxed), 6);
@@ -653,9 +653,9 @@ mod tests {
         super::super::observe_for_test(true);
         let before_refusals = super::super::DELIVERY_REFUSALS.load(Ordering::Relaxed);
         let mut context = Context::default();
-        unsafe { before(&mut context, 0, 0, 123, 0xfeed, 1) };
+        unsafe { before(&raw mut context, 0, 0, 123, 0xfeed, 1) };
         assert!(context.acquired && context.unknown_delivery && context.active);
-        assert_eq!(unsafe { returned(&mut context) }, 1);
+        assert_eq!(unsafe { returned(&raw mut context) }, 1);
         assert_eq!(ACQUIRED_EVENTS.load(Ordering::SeqCst), 0);
         assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
         let mut entries = vec![Entry::default(); 1];

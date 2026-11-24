@@ -145,7 +145,7 @@ impl Hook {
                     ptr::copy_nonoverlapping(code.as_ptr(), relay.cast(), code.len());
                 }
                 let mut previous = 0;
-                if unsafe { VirtualProtect(relay, 4096, PAGE_EXECUTE_READ, &mut previous) } == 0
+                if unsafe { VirtualProtect(relay, 4096, PAGE_EXECUTE_READ, &raw mut previous) } == 0
                     || unsafe { FlushInstructionCache(GetCurrentProcess(), relay, code.len()) } == 0
                 {
                     return Err(io::Error::last_os_error().to_string());
@@ -159,7 +159,7 @@ impl Hook {
                 if unsafe {
                     VirtualQuery(
                         site as *const c_void,
-                        &mut region,
+                        &raw mut region,
                         size_of::<MEMORY_BASIC_INFORMATION>(),
                     )
                 } == 0
@@ -224,7 +224,7 @@ impl Hook {
             let mut hook = unsafe { Self::new(site, callback, original) }?;
             let code = hook.relay.cast::<u8>();
             let mut previous = 0;
-            if unsafe { VirtualProtect(hook.relay, 4096, PAGE_READWRITE, &mut previous) } == 0 {
+            if unsafe { VirtualProtect(hook.relay, 4096, PAGE_READWRITE, &raw mut previous) } == 0 {
                 return Err(io::Error::last_os_error().to_string());
             }
             let mut continuation = [0_u8; 20];
@@ -266,7 +266,7 @@ impl Hook {
                 );
                 ptr::write(code.add(PUSH_FRAME_TABLE).cast(), entry);
             }
-            if unsafe { VirtualProtect(hook.relay, 4096, PAGE_EXECUTE_READ, &mut previous) } == 0
+            if unsafe { VirtualProtect(hook.relay, 4096, PAGE_EXECUTE_READ, &raw mut previous) } == 0
                 || unsafe { FlushInstructionCache(GetCurrentProcess(), hook.relay, 4096) } == 0
             {
                 return Err(io::Error::last_os_error().to_string());
@@ -327,7 +327,7 @@ impl Hook {
         if self.push_frame {
             self.relay as usize + PUSH_FRAME_CODE
         } else {
-            self.relocation.trampoline() as *const () as usize
+            std::ptr::from_ref::<()>(self.relocation.trampoline()) as usize
         }
     }
 
@@ -675,7 +675,7 @@ impl Hook {
                     hook.site as *const c_void,
                     hook.sentinel_len,
                     PAGE_EXECUTE_READWRITE,
-                    &mut previous,
+                    &raw mut previous,
                 )
             } != 0;
             let error = if ok { 0 } else { unsafe { GetLastError() } };
@@ -786,7 +786,7 @@ impl Hook {
                     hook.site as *const c_void,
                     hook.sentinel_len,
                     hook.page_protection,
-                    &mut ignored,
+                    &raw mut ignored,
                 )
             } != 0;
             hook.diagnostic_failure |= !restored;
@@ -878,7 +878,7 @@ fn visit_threads(
     let result = (|| {
         let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
         entry.dwSize = size_of::<THREADENTRY32>() as u32;
-        let mut found = unsafe { Thread32First(snapshot, &mut entry) };
+        let mut found = unsafe { Thread32First(snapshot, &raw mut entry) };
         while found != 0 {
             if entry.th32OwnerProcessID == unsafe { GetCurrentProcessId() }
                 && entry.th32ThreadID != unsafe { GetCurrentThreadId() }
@@ -886,7 +886,7 @@ fn visit_threads(
             {
                 visit(entry.th32ThreadID)?;
             }
-            found = unsafe { Thread32Next(snapshot, &mut entry) };
+            found = unsafe { Thread32Next(snapshot, &raw mut entry) };
         }
         let error = unsafe { GetLastError() };
         if error == ERROR_NO_MORE_FILES {
@@ -1034,7 +1034,7 @@ fn acquire_context(handle: HANDLE, context: &mut AlignedContext) -> Result<(), u
     if let Some(result) = snapshot_tests::acquire(handle, context) {
         return result;
     }
-    if unsafe { GetThreadContext(handle, &mut context.0) } == 0 {
+    if unsafe { GetThreadContext(handle, &raw mut context.0) } == 0 {
         Err(unsafe { GetLastError() })
     } else {
         Ok(())
@@ -1086,7 +1086,7 @@ fn live_stack_holds(sp: usize, mut holds: impl FnMut(&[usize]) -> bool) -> Optio
         if unsafe {
             VirtualQuery(
                 at as *const c_void,
-                &mut region,
+                &raw mut region,
                 size_of::<MEMORY_BASIC_INFORMATION>(),
             )
         } == 0
@@ -1118,7 +1118,7 @@ fn live_stack_holds(sp: usize, mut holds: impl FnMut(&[usize]) -> bool) -> Optio
                     at as *const c_void,
                     copied.as_mut_ptr().cast(),
                     copied.len(),
-                    &mut read,
+                    &raw mut read,
                 )
             };
             if ok == 0 || read != copied.len() {
@@ -1815,7 +1815,7 @@ mod safety_tests {
         #[inline(never)]
         fn deeper() -> Option<bool> {
             let sp = std::hint::black_box(0_usize);
-            live_stack_holds(&sp as *const usize as usize, |words| {
+            live_stack_holds(&raw const sp as usize, |words| {
                 may_be_inside(0, words, &FUNCTION)
             })
         }

@@ -137,6 +137,7 @@ fn stable_identity_distinguishes_content_contract_and_counterpart_roles() {
             force_pow2_textures: true,
         },
     );
+    #[expect(clippy::mutable_key_type, reason = "asset keys cache display data outside equality and ordering")]
     let all = BTreeSet::from([original, retry, counterpart, padded]);
     assert_eq!(all.len(), 4);
 }

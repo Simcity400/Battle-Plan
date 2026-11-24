@@ -2214,7 +2214,7 @@ mod tests {
             compare_fuel_consumers(&frame, &saved, &links, &mut report).unwrap();
             assert_eq!(report.differences.len(), 1, "consumer field {field}");
         }
-        let mut rows = consumers.clone();
+        let mut rows = consumers;
         rows[2].index = 3;
         *frame.tables[TableId::CountryFuelConsumers.index()] =
             TableView::Complete(TableRows::CountryFuelConsumers(rows));

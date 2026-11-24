@@ -60,7 +60,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         (*probe).active += 1;
     }
     let _active = Active(probe);
-    let native_rsp = registers as *const Registers as usize + 208;
+    let native_rsp = std::ptr::from_ref::<Registers>(registers) as usize + 208;
     unsafe {
         (*probe).seen_rsp = native_rsp;
         if registers.rcx != tag
@@ -141,6 +141,10 @@ impl Native {
         }
         code.push(0xc3);
         assert!(code.len() <= UNWIND && UNWIND + unwind.len() <= TABLE);
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "the page is a VirtualAlloc block and TABLE is a multiple of 4"
+        )]
         let table = unsafe {
             page.cast::<u8>()
                 .add(TABLE)
@@ -159,7 +163,7 @@ impl Native {
             ptr::write(table, entry);
             let mut previous = 0;
             assert_ne!(
-                VirtualProtect(page, PAGE, PAGE_EXECUTE_READ, &mut previous),
+                VirtualProtect(page, PAGE, PAGE_EXECUTE_READ, &raw mut previous),
                 0
             );
             assert_ne!(
@@ -187,7 +191,7 @@ impl Drop for Native {
 }
 fn lookup(address: usize) -> bool {
     let mut base = 0;
-    !unsafe { RtlLookupFunctionEntry(address as u64, &mut base, ptr::null_mut()) }.is_null()
+    !unsafe { RtlLookupFunctionEntry(address as u64, &raw mut base, ptr::null_mut()) }.is_null()
 }
 
 fn main() {

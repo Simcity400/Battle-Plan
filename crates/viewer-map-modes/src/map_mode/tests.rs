@@ -602,7 +602,7 @@ fn operatives_colour_the_selected_countrys_network_states_its_targets_control() 
         [Source::Country, Source::Empty]
     );
     assert_eq!(refused.warnings.len(), 1);
-    let mut unavailable = frame.clone();
+    let mut unavailable = frame;
     unavailable.tables[TableId::IntelNetworks.index()] = TableView::Unavailable {
         reason: "not recorded".into(),
     }

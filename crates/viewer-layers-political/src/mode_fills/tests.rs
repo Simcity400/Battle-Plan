@@ -180,7 +180,7 @@ fn a_mode_fill_shows_its_own_modes_picture_from_its_first_product_and_nothing_at
         side.frame(hour).unwrap();
         std::thread::yield_now();
     }
-    assert_eq!(shown_mode(&side), Some(resources.map_mode.clone()), "the first picture after the change is the new mode's, never the old one's");
+    assert_eq!(shown_mode(&side), Some(resources.map_mode), "the first picture after the change is the new mode's, never the old one's");
 
     side.set_view(View::default()).unwrap();
     side.frame(hour).unwrap();

@@ -1109,7 +1109,7 @@ fn static_relation_and_province_descriptions_preserve_indentation() {
         &content_reader_parser::parser::parse(b"attack=1").unwrap().items,
     );
     let static_modifiers = content_reader_politics::static_modifiers::Descriptions::from_blocks([
-        ("SYN_RELATION".to_owned(), modifiers.clone()),
+        ("SYN_RELATION".to_owned(), modifiers),
         ("SECOND_IDEA".to_owned(), Modifiers::default()),
     ]);
     let content = Content {

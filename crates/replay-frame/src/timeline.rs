@@ -142,10 +142,10 @@ fn since_creation() -> Option<Duration> {
     let read = unsafe {
         GetProcessTimes(
             GetCurrentProcess(),
-            &mut created,
-            &mut exited,
-            &mut kernel,
-            &mut user,
+            &raw mut created,
+            &raw mut exited,
+            &raw mut kernel,
+            &raw mut user,
         )
     };
     if read == 0 {

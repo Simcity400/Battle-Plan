@@ -76,7 +76,10 @@ impl Store {
             && self.lifetime_epoch == self.boundary.lifetime_epoch
             && self.boundary.availability.is_some()
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "settling takes the seeds, selection, preparation and both read sets separately"
+    )]
     pub fn settle_owned<'a>(
         &mut self,
         base: usize,

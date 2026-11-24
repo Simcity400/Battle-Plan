@@ -120,7 +120,7 @@ impl World {
             root: Box::new(0),
             base: 0,
         };
-        world.base = (&*world.root as *const u64 as usize) - cgame_state::SINGLETON_RVA.0;
+        world.base = (&raw const *world.root as usize) - cgame_state::SINGLETON_RVA.0;
         *world.root = world.at(GAME) as u64;
         world.u32(GAME + cgame_state::CURRENT_HOUR, 60_827_795);
         world.vtable(NUKE, cnuke::VTABLE_RVA.0);

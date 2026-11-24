@@ -37,7 +37,7 @@ pub struct DetailsRow {
     pub custom_sea_error: Option<&'static str>,
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the traversal uses caller-owned output and scratch buffers and a timing callback"
 )]
@@ -408,7 +408,7 @@ fn commander_input(
     Ok([index, 1])
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the side and its roots select traversal independently of the group and plane buffers"
 )]
@@ -507,7 +507,7 @@ enum PlaneOwner<'a> {
     Side(&'a GroupSet),
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the plane array address, owner, source and group index describe separate inputs"
 )]

@@ -967,7 +967,6 @@ impl<W: Write + Seek> ContainerWriter<W> {
         Self::with(file, root.identity, root.revision, root.sections, (level, recorded), state, root.state, saved)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one private constructor of two public ones")]
     fn with(
         file: W,
         identity: Identity,

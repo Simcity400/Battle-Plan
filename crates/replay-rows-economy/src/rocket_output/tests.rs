@@ -53,7 +53,7 @@ fn complete_empty_world_and_local_failure_scopes_are_distinct() {
         ticks: 1,
         inexact_ticks: 1,
         unknown_design_ticks: 1,
-        ..empty.clone()
+        ..empty
     };
     world.check_key_fields().unwrap();
     let local = RocketProductionOutputRow {
@@ -116,7 +116,7 @@ fn coverage_amounts_and_impossible_counts_refuse_by_name() {
         RocketProductionOutputRow {
             country: 0,
             variant: 0x99_0000_0046,
-            ..row.clone()
+            ..row
         },
     ] {
         assert_eq!(
@@ -136,11 +136,11 @@ fn full_country_design_key_and_truncated_payload_are_preserved() {
     };
     let second = RocketProductionOutputRow {
         variant: 0x12_0000_0046,
-        ..first.clone()
+        ..first
     };
     let other = RocketProductionOutputRow {
         country: 5002,
-        ..first.clone()
+        ..first
     };
     assert_ne!(first.key(), second.key());
     assert_ne!(first.key(), other.key());
@@ -169,7 +169,7 @@ fn unknown_owner_design_deliveries_cannot_claim_exact_or_unaccounted_units() {
         },
         RocketProductionOutputRow {
             inexact_deliveries: 0,
-            ..unknown.clone()
+            ..unknown
         },
     ] {
         assert_eq!(

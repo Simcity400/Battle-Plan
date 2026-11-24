@@ -127,9 +127,9 @@ pub(super) fn close(
         std::ptr::eq(
             layer,
             if side == "top" {
-                &mode.top
+                &raw const mode.top
             } else {
-                &mode.bottom
+                &raw const mode.bottom
             },
         )
     });

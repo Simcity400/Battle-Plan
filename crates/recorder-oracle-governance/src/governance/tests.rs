@@ -792,7 +792,7 @@ fn sharing_complete_names_preserve_order_exact_bonuses_and_empty_groups() {
         id: 12,
         canonical_slot: 8,
         tag: b"BBB".to_vec(),
-        ..country.clone()
+        ..country
     };
     let links = BTreeMap::from([(11, &country), (12, &second)]);
     let document = content_reader_parser::parser::parse(

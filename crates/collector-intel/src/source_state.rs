@@ -239,7 +239,7 @@ impl Owner {
                 pool.next_id = event.source;
                 true
             }
-            #[allow(
+            #[expect(
                 clippy::unnecessary_fold,
                 reason = "Every static pool must be pruned; short-circuiting would skip later mutations."
             )]

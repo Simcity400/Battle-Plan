@@ -209,7 +209,7 @@ impl Store {
         self.charge_storage();
         Ok(())
     }
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "Keep the certified owner, native row and publication boundary separate from the borrowed world."
     )]
@@ -256,7 +256,7 @@ impl Store {
         };
         self.script_known(memory, base, generation, hour, fact)
     }
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "Retirement forwards the native iteration facts with the existing world and publication certificate."
     )]
@@ -323,7 +323,7 @@ impl Store {
         }
         self.script_known(memory, base, generation, world.hour()?, fact)
     }
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "The refused owner, its census slot and the reason travel with the publication operands."
     )]
@@ -454,7 +454,7 @@ impl Store {
             super::recovery_needed();
         }
     }
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "The census owner's identity is read once by its visit."
     )]

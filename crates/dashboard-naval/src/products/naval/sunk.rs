@@ -270,7 +270,7 @@ fn class_info(token: u32, literal: Option<String>, content: &Content, refused: &
                     Err(reason) => refused.note(reason.to_string(), &sprite),
                 },
                 Ok(None) => {}
-                Err(reason) => refused.note(reason.to_string(), &sprite),
+                Err(reason) => refused.note(reason, &sprite),
             }
             info.key = Some(spelling);
         }

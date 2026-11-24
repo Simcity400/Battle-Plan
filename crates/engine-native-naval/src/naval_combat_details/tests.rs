@@ -796,7 +796,6 @@ fn a_registry_past_4096_combats_is_walked_whole_from_any_starting_storage() {
     assert_eq!(short.participants, Outcome::Rows { len: 2 * naval });
 }
 
-#[allow(clippy::type_complexity)]
 fn walk_whole(
     world: &World,
     plane_capacity: usize,

@@ -770,7 +770,7 @@ mod tests {
         std::thread_local! {
             static TAG: u8 = const { 0 };
         }
-        TAG.with(|tag| tag as *const u8 as usize)
+        TAG.with(|tag| std::ptr::from_ref::<u8>(tag) as usize)
     }
 
     struct TestScope<'a> {

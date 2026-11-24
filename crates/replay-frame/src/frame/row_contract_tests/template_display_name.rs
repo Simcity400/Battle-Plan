@@ -159,7 +159,7 @@ fn fresh_same_frame_certificate_has_no_guessed_daily_origin() {
     assert!(row.display_name_inputs(77, None).is_err());
     let foreign = DivisionTemplateRow {
         template: 52,
-        ..dictionary.clone()
+        ..dictionary
     };
     assert!(row.display_name_inputs(77, Some(&foreign)).is_err());
     let changed = icon(TemplateNameValue::Changed {

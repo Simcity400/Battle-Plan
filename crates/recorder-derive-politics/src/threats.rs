@@ -220,11 +220,11 @@ mod tests {
         let b = source(2, 200, 1, 5, hour.into());
         let c = source(1, 300, 1, 7, hour.into());
         match hour {
-            0 => vec![a(50), b.clone()],
-            1 => vec![a(60), b.clone(), c.clone()],
-            2 | 3 => vec![b.clone(), c.clone()],
-            4 => vec![b.clone(), c.clone(), a(60)],
-            _ => vec![b.clone(), c.clone(), a(60), b.clone()],
+            0 => vec![a(50), b],
+            1 => vec![a(60), b, c],
+            2 | 3 => vec![b, c],
+            4 => vec![b, c, a(60)],
+            _ => vec![b.clone(), c, a(60), b],
         }
     }
 

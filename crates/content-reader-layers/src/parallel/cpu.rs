@@ -138,10 +138,10 @@ fn current() -> Option<u64> {
     let ok = unsafe {
         GetThreadTimes(
             GetCurrentThread(),
-            &mut created,
-            &mut exited,
-            &mut kernel,
-            &mut user,
+            &raw mut created,
+            &raw mut exited,
+            &raw mut kernel,
+            &raw mut user,
         )
     };
     (ok != 0).then(|| {

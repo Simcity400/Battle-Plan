@@ -706,7 +706,7 @@ pub fn prepare<'a>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the region, the window's root and layout, its placement, the resources, the layer and the report")]
 pub fn control_hovers(
     region: u32,
     data: Option<&Region>,

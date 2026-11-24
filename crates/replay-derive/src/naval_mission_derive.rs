@@ -153,7 +153,6 @@ pub fn underway_bonus(numerator: i32, denominator: i32, modifier: i64, define: i
         .wrapping_div(SCALE)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn mission_range(
     base: i64,
     additive: i64,
@@ -444,7 +443,7 @@ mod tests {
         let gated = ModifierDefinitionRow {
             feature_selector: 2,
             eligibility: 1,
-            ..plain.clone()
+            ..plain
         };
         assert!(effective(&gated, None, Some(9)).is_err());
         assert_eq!(effective(&gated, Some(4), Some(9)), Ok(0));

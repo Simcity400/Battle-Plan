@@ -805,7 +805,7 @@ fn market_groups_native_state_endpoints_across_country_keys_and_keeps_the_first_
                 (layer, keys[3], false, false),
             ]
         );
-        assert!(std::ptr::eq(grouped[0].route, &routes[0]));
+        assert!(std::ptr::eq(grouped[0].route, &raw const routes[0]));
         let corridor = Stops {
             provinces: vec![7, 8],
             regions: vec![],

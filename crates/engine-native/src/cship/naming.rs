@@ -115,7 +115,7 @@ fn naming_from_member(
     }))
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "Decodes one pre-fetched ship naming member header with per-walk equipment memo."
 )]
@@ -195,7 +195,7 @@ pub fn naming(
     naming_from_member(memory, base, &header, bytes, len, required, None)
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "Combines ship cached name, naming operands, and crew reads into one scatter and member fetch."
 )]

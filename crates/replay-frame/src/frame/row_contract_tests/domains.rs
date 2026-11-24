@@ -21,7 +21,7 @@ fn land_casualty_hourly_deltas_keep_unchanged_pools_and_clear_empty_ones() {
     assert_eq!(manpower.mask, 1 << 4);
     assert_eq!(
         manpower
-            .apply::<LandCombatProgressRow>(Some(first.clone()))
+            .apply::<LandCombatProgressRow>(Some(first))
             .unwrap(),
         next
     );

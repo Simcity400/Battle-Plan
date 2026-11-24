@@ -259,6 +259,7 @@ fn follow(name: &'static str, tables: &'static [Output; 2], reads: &'static [Rea
 }
 
 #[test]
+#[expect(clippy::single_range_in_vec_init, reason = "a handing lists the forgotten ordinal ranges, and this one forgets one")]
 fn a_writer_reading_a_log_is_handed_its_appended_and_forgotten_rows() {
     let events = Handings::default();
     let mut store = log_store();
@@ -311,6 +312,7 @@ fn a_writer_reading_a_log_is_handed_its_appended_and_forgotten_rows() {
 }
 
 #[test]
+#[expect(clippy::single_range_in_vec_init, reason = "a handing lists the forgotten ordinal ranges, and this one forgets one")]
 fn an_update_in_place_is_a_forget_and_an_append_of_the_same_key_in_one_hour() {
     let handed = Handings::default();
     let mut store = log_store();

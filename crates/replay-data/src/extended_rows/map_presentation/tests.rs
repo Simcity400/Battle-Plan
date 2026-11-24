@@ -10,7 +10,7 @@ fn weather_suspension_none_is_distinct_from_zero_and_opaque_tags_are_strict() {
     };
     let after = SimulationFeatureRow {
         weather_suspend: crate::rows::Recorded::Value(Some([0, 0])),
-        ..before.clone()
+        ..before
     };
     let delta = after.delta(Some(&before)).unwrap().unwrap();
     assert_eq!(delta.mask, 1 << 2);

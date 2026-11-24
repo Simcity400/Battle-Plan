@@ -1222,7 +1222,7 @@ struct CursorConstruction<'a> {
 }
 
 impl<'a> CursorConstruction<'a> {
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "each argument is an independent verified role from the PE layout"
     )]

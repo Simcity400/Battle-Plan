@@ -898,7 +898,10 @@ pub fn fresh_acclimatization(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each thermal term reads its own weather, country, acclimatization and keys, and fills the shared source table and memo"
+)]
 fn thermal(
     memory: &impl Memory,
     base: usize,

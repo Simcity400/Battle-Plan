@@ -44,7 +44,7 @@ fn field<T: engine_native_memory::memory::Raw>(
     read(memory, at(pointer, offset)?).ok_or("naval tree field unreadable")
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the request census consumes separately owned native input slices"
 )]

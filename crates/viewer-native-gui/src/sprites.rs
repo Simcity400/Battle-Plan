@@ -1312,7 +1312,7 @@ impl SpritePass {
         self.uploads = Some(uploads);
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "the upload's own inputs, which the rebuild is made with"
     )]
@@ -1380,7 +1380,7 @@ impl SpritePass {
         Some(stands)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the upload's inputs and what it keeps")]
+    #[expect(clippy::too_many_arguments, reason = "the upload's inputs and what it keeps")]
     fn upload_changed(
         &mut self,
         device: &wgpu::Device,
@@ -1672,7 +1672,7 @@ impl SpritePass {
         }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one quad's own inputs and what it may keep")]
+    #[expect(clippy::too_many_arguments, reason = "one quad's own inputs and what it may keep")]
     fn emit(
         &mut self,
         (device, queue, arena): (&wgpu::Device, &wgpu::Queue, &shader_pipeline::gpu::Arena),
@@ -2083,7 +2083,6 @@ impl SpritePass {
         self.written
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn prepare_native(
         &mut self,
         device: &wgpu::Device,
@@ -2479,7 +2478,6 @@ fn unflattenable(blend: Option<wgpu::BlendState>, mask: wgpu::ColorWrites) -> Op
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn bind_draw(
     native: &mut shader_pipeline::stream::Stream,
     packets: &mut packets::Cache,

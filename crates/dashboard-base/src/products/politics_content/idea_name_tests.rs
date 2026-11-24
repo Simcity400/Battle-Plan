@@ -423,7 +423,7 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
         rows[1].cosmetic_tag = b"SOV_red".to_vec();
     }
     assert_eq!(name(&cosmetic, "MOD_nameless"), key("MOD_nameless"));
-    let mut stateless = own.clone();
+    let mut stateless = own;
     *stateless.tables[TableId::CountryCounterInputs.index()] =
         TableView::Complete(TableRows::CountryCounterInputs(vec![
             CountryCounterInputRow {
@@ -454,7 +454,7 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
         vec![war(1)],
     );
     assert_eq!(name(&read, "MOD_spirit"), key("MOD_spirit"));
-    let mut unread = calm.clone();
+    let mut unread = calm;
     *unread.tables[TableId::CountryCivilWars.index()] = TableView::Unavailable {
         reason: "not sampled".into(),
     };

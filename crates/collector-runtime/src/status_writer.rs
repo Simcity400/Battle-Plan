@@ -323,7 +323,6 @@ mod tests {
         }
     }
 
-    #[allow(clippy::type_complexity)]
     fn stalling(
         entered: mpsc::Sender<()>,
         released: mpsc::Receiver<()>,

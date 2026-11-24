@@ -24,7 +24,7 @@ fn a_finalized_combat_is_its_log_rows_observers_and_losses_and_a_cell_not_record
     let width = columns.iter().max().unwrap() + 1;
     let row = number_row(40, 3, &[(columns[0], log::Cell::Number(9)), (columns[1], log::Cell::List(observed)), (columns[2], log::Cell::List(lost))], width);
     assert_eq!(finalized(&row, &columns), Some(Finalized { combat: 9, observers, losses }));
-    let mut unrecorded = row.clone();
+    let mut unrecorded = row;
     unrecorded.cells[columns[2]] = log::Cell::Unrecorded;
     assert_eq!(finalized(&unrecorded, &columns), None, "losses not recorded are never read as none");
 }

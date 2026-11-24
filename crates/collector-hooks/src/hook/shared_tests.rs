@@ -70,7 +70,7 @@ impl Held {
             assert_ne!(unsafe { SuspendThread(handle) }, u32::MAX);
             let mut context = AlignedContext(unsafe { std::mem::zeroed() });
             context.0.ContextFlags = CONTEXT_CONTROL_AMD64;
-            assert_ne!(unsafe { GetThreadContext(handle, &mut context.0) }, 0);
+            assert_ne!(unsafe { GetThreadContext(handle, &raw mut context.0) }, 0);
             assert_ne!(unsafe { ResumeThread(handle) }, u32::MAX);
             if (site..site + 16).contains(&(context.0.Rip as usize)) {
                 break;
@@ -280,7 +280,7 @@ fn protection_at(site: usize) -> u32 {
         unsafe {
             VirtualQuery(
                 site as *const c_void,
-                &mut region,
+                &raw mut region,
                 size_of::<MEMORY_BASIC_INFORMATION>(),
             )
         },
@@ -297,7 +297,7 @@ fn a_detach_round_restores_a_shared_page_when_one_familys_restore_fails() {
     let (later, later_bytes) = code.stub(64, original as *const () as usize);
     let mut prior = 0;
     assert_ne!(
-        unsafe { VirtualProtect(code.0, 4096, PAGE_EXECUTE_READ, &mut prior) },
+        unsafe { VirtualProtect(code.0, 4096, PAGE_EXECUTE_READ, &raw mut prior) },
         0
     );
     let hook = |site, bytes| unsafe { Hook::new(site, callback as *const () as usize, bytes) };
@@ -818,7 +818,7 @@ fn attach_protection_refusal_stops_before_a_later_write_on_a_shared_page() {
     let (later_site, later_bytes) = code.stub(128, original as *const () as usize);
     let mut prior = 0;
     assert_ne!(
-        unsafe { VirtualProtect(code.0, 4096, PAGE_EXECUTE_READ, &mut prior) },
+        unsafe { VirtualProtect(code.0, 4096, PAGE_EXECUTE_READ, &raw mut prior) },
         0
     );
     let make = |site, bytes| {
@@ -941,7 +941,7 @@ fn attach_rollback_reopen_failure_keeps_executable_owners_for_detach() {
     let (second_site, second_bytes) = code.stub(64, original as *const () as usize);
     let mut prior = 0;
     assert_ne!(
-        unsafe { VirtualProtect(code.0, 4096, PAGE_EXECUTE_READ, &mut prior) },
+        unsafe { VirtualProtect(code.0, 4096, PAGE_EXECUTE_READ, &raw mut prior) },
         0
     );
     let make = |site, bytes| {
