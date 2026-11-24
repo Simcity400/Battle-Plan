@@ -63,7 +63,7 @@ impl Request {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "the country rows, links, appearance and naming store are separate outputs of one take"
+        reason = "the country rows, links, appearance and naming store are independently owned inputs moved into one request"
     )]
     pub(crate) fn take_with_naming(
         countries: &engine_allocation::SharedBox<Cache>,

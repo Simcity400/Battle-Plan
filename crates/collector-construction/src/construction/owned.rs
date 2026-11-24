@@ -753,7 +753,7 @@ fn copy_construction_target(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the occupation walk raises four separate demand counters"
+    reason = "the occupation walk raises three separate demand counts and an overflow flag"
 )]
 fn copy_occupation_walk(
     log: &mut RawLog<10>,
@@ -967,7 +967,7 @@ fn copy_pdx_visit(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the occupation entries raise four separate demand counters"
+    reason = "the occupation entries raise three separate demand counts and an overflow flag"
 )]
 fn copy_occupation_entries(
     log: &mut RawLog<10>,

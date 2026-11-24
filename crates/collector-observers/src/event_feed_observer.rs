@@ -1176,8 +1176,8 @@ impl Hooks {
             .map_err(|_| "Event feed decision certificate allocation failed")?;
         script_capacities(&store);
         let owner = Owner::new(base, store);
-        let range = std::ptr::from_ref::<u8>(unsafe { &event_stub_start }) as usize
-            ..std::ptr::from_ref::<u8>(unsafe { &event_stub_end }) as usize;
+        let range = (&raw const event_stub_start) as usize
+            ..(&raw const event_stub_end) as usize;
         let make = |site: native::CallSite, callback| {
             let code = engine_sites::hook(base, site.rva)?;
             unsafe {
@@ -1265,8 +1265,8 @@ impl Hooks {
             .flat_map(Hook::executable_ranges)
             .chain(held.taps.iter().flat_map(Tap::executable_ranges))
             .chain(std::iter::once(
-                std::ptr::from_ref::<u8>(unsafe { &event_stub_start }) as usize
-                    ..std::ptr::from_ref::<u8>(unsafe { &event_stub_end }) as usize,
+                (&raw const event_stub_start) as usize
+                    ..(&raw const event_stub_end) as usize,
             ))
             .collect()
     }
