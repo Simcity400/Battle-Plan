@@ -49,6 +49,9 @@ test('a day with no score on either side is the empty lane, not contested', () =
   const model = projectSupremacyTimeline(view(60, quiet), { viewer: null, surface: SURFACE });
   assert.equal(model.rows[0]!.runs[0]!.cell.kind, 'clear');
   assert.deepEqual(model.rows[0]!.readout, { kind: 'clear', label: 'No activity' });
+  const shares = projectSupremacyShares(view(60, quiet), { viewer: null, surface: SURFACE }).rows.find(item => item.kind === 'data');
+  assert.ok(shares && shares.kind === 'data');
+  assert.deepEqual(shares.segments ?? [], [], 'the same zero scores are no activity in Shares too, never 100% enemy');
 });
 
 test('the timeline hatches an unknown day with its reason and ends at the displayed hour', () => {

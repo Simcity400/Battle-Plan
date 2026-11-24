@@ -2,7 +2,6 @@ import type { LegacyWidgetEntry } from '../families/manifest.ts';
 
 export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'air-force-size', view: 'mix', label: 'Mix', load: () => import('./air-force-size') },
-  { kind: 'air-kills-losses', view: 'breakdown', label: 'Loss causes', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
   { kind: 'air-kills-losses', view: 'lines', label: 'Lines', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
   { kind: 'air-statistics', load: () => import('./air-statistics') },
   { kind: 'army-size', view: 'breakdown', label: 'Army breakdown', slots: ['render', 'countryChip'], load: () => import('./army-size') },
@@ -55,6 +54,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'special-projects', view: 'history', label: 'History', playsBackDated: true, load: () => import('./special-projects') },
   { kind: 'territory', load: () => import('./territory') },
   { kind: 'territory-breakdown', load: () => import('./territory-breakdown') },
-  { kind: 'war-contribution', load: () => import('./war-contribution') },
+  { kind: 'war-contribution', view: 'measure', label: 'By measure', load: () => import('./war-contribution') },
   { kind: 'wars', load: () => import('./wars') },
 ];

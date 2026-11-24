@@ -116,6 +116,48 @@ pub struct AirDaySides {
     pub no_air_object: Vec<u32>,
     #[doc = " Only the chosen sides are compared."]
     pub filtered: bool,
+    #[doc = " Who leads the day, compared in exact integers."]
+    pub lead: AirLead,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AirLead {
+    Leading { side: u32, share_bp: i32 },
+    Contested,
+    NoActivity,
+    Unknown,
+}
+
+impl AirDaySides {
+    pub fn new(parts: Vec<AirDayPart>, viewpoints: Vec<(u32, String)>, unknown: Vec<u32>, no_air_object: Vec<u32>, filtered: bool) -> Self {
+        let lead = if unknown.is_empty() { lead_of(&parts) } else { AirLead::Unknown };
+        Self { parts, viewpoints, unknown, no_air_object, filtered, lead }
+    }
+}
+
+fn lead_of(parts: &[AirDayPart]) -> AirLead {
+    let mut total: i128 = 0;
+    let mut best: Option<(u32, i128)> = None;
+    for part in parts {
+        let score = part.friendly.parse::<i128>().unwrap_or(0).max(0);
+        total += score;
+        if best.is_none_or(|(_, top)| score > top) {
+            best = Some((part.side, score));
+        }
+    }
+    match best {
+        Some((side, score)) if total > 0 && score * 2 > total => AirLead::Leading { side, share_bp: ((score * 10_000 + total / 2) / total) as i32 },
+        _ if total > 0 => AirLead::Contested,
+        _ => AirLead::NoActivity,
+    }
+}
+
+fn view_share(friendly: &str, enemy: &str) -> Option<i32> {
+    let f = friendly.parse::<i128>().unwrap_or(0).max(0);
+    let total = f + enemy.parse::<i128>().unwrap_or(0).max(0);
+    (total > 0).then(|| ((f * 10_000 + total / 2) / total) as i32)
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -124,7 +166,14 @@ pub struct AirDaySides {
 pub enum AirDayCell {
     Reason { reason: String },
     Sides(AirDaySides),
-    View { side: Option<u32>, leader: Option<String>, friendly: String, enemy: String },
+    View {
+        side: Option<u32>,
+        leader: Option<String>,
+        friendly: String,
+        enemy: String,
+        #[doc = " The friendly share in basis points, from exact integers; none without activity."]
+        share_bp: Option<i32>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -416,40 +465,16 @@ pub(crate) fn readout_of(cell: Option<&AirDayCell>, hour: Option<i32>) -> AirRea
     };
     match cell {
         AirDayCell::Reason { reason } => AirReadout::NotRecorded { reason: reason.clone() },
-        AirDayCell::Sides(sides) if !sides.unknown.is_empty() => AirReadout::NotRecorded { reason: "A side's air score was not recorded".into() },
-        AirDayCell::Sides(sides) => {
-            let mut total: i128 = 0;
-            let mut best: Option<(u32, i128)> = None;
-            for part in &sides.parts {
-                let score = part.friendly.parse::<i128>().unwrap_or(0).max(0);
-                total += score;
-                if best.is_none_or(|(_, top)| score > top) {
-                    best = Some((part.side, score));
-                }
-            }
-            if total == 0 {
-                return AirReadout::NoActivity { as_of_hour };
-            }
-            let Some((side, score)) = best else {
-                return AirReadout::NoActivity { as_of_hour };
-            };
-            if score * 2 > total {
-                let share_bp = ((score * 10_000 + total / 2) / total) as i32;
-                AirReadout::Leading { side, share_bp, as_of_hour }
-            } else {
-                AirReadout::Contested { as_of_hour }
-            }
-        }
-        AirDayCell::View { side, friendly, enemy, .. } => {
-            let f = friendly.parse::<i128>().unwrap_or(0).max(0);
-            let e = enemy.parse::<i128>().unwrap_or(0).max(0);
-            let total = f + e;
-            if total == 0 {
-                return AirReadout::NoActivity { as_of_hour };
-            }
-            let share_bp = ((f * 10_000 + total / 2) / total) as i32;
-            AirReadout::Viewpoint { side: *side, share_bp, as_of_hour }
-        }
+        AirDayCell::Sides(sides) => match sides.lead {
+            AirLead::Unknown => AirReadout::NotRecorded { reason: "A side's air score was not recorded".into() },
+            AirLead::NoActivity => AirReadout::NoActivity { as_of_hour },
+            AirLead::Contested => AirReadout::Contested { as_of_hour },
+            AirLead::Leading { side, share_bp } => AirReadout::Leading { side, share_bp, as_of_hour },
+        },
+        AirDayCell::View { side, share_bp, .. } => match share_bp {
+            Some(share_bp) => AirReadout::Viewpoint { side: *side, share_bp: *share_bp, as_of_hour },
+            None => AirReadout::NoActivity { as_of_hour },
+        },
     }
 }
 
@@ -495,26 +520,21 @@ fn day_cell(cell: Cell, composed: &Composed<'_>, region: u32, keep: Option<&Hash
     let kept = |position: u32| keep.is_none_or(|keys| keys.contains(composed.sides[position as usize].key.as_str()));
     match cell {
         Cell::Reason(reason) => AirDayCell::Reason { reason: reason.to_owned() },
-        Cell::Sides(cell) => AirDayCell::Sides(AirDaySides {
-            parts: cell
-                .parts
+        Cell::Sides(cell) => AirDayCell::Sides(AirDaySides::new(
+            cell.parts
                 .iter()
                 .filter(|(position, ..)| kept(*position))
                 .map(|(position, tag, _)| AirDayPart { side: place(*position), tag: tag.clone(), friendly: find(pairs, tag).map_or(0, |pair| pair.friendly).to_string() })
                 .collect(),
-            viewpoints: cell.viewpoints.iter().filter(|(position, _)| kept(*position)).map(|(position, tag)| (place(*position), tag.clone())).collect(),
-            unknown: cell.unknown.iter().filter(|position| kept(**position)).map(|position| place(*position)).collect(),
-            no_air_object: cell.no_air_object.iter().filter(|position| kept(**position)).map(|position| place(*position)).collect(),
-            filtered: keep.is_some(),
-        }),
+            cell.viewpoints.iter().filter(|(position, _)| kept(*position)).map(|(position, tag)| (place(*position), tag.clone())).collect(),
+            cell.unknown.iter().filter(|position| kept(**position)).map(|position| place(*position)).collect(),
+            cell.no_air_object.iter().filter(|position| kept(**position)).map(|position| place(*position)).collect(),
+            keep.is_some(),
+        )),
         Cell::View { side, leader, row } => {
             let read = row.and(leader.as_deref()).and_then(|tag| find(pairs, tag));
-            AirDayCell::View {
-                side: side.map(&mut *place),
-                friendly: read.map_or(0, |pair| pair.friendly).to_string(),
-                enemy: read.map_or(0, |pair| pair.enemy).to_string(),
-                leader,
-            }
+            let (friendly, enemy) = (read.map_or(0, |pair| pair.friendly).to_string(), read.map_or(0, |pair| pair.enemy).to_string());
+            AirDayCell::View { side: side.map(&mut *place), share_bp: view_share(&friendly, &enemy), friendly, enemy, leader }
         }
     }
 }
@@ -968,7 +988,7 @@ impl Product for AirSuperiorityTimeline {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![AirTimelineParams::decl(), AirTimelineReply::decl(), AirTimelineRow::decl(), AirDayCell::decl(), AirDaySides::decl(), AirDayPart::decl(), AirReadout::decl(), HourSpan::decl()]
+        vec![AirTimelineParams::decl(), AirTimelineReply::decl(), AirTimelineRow::decl(), AirDayCell::decl(), AirDaySides::decl(), AirLead::decl(), AirDayPart::decl(), AirReadout::decl(), HourSpan::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

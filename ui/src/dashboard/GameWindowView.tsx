@@ -13,11 +13,13 @@ import {
   gameWindowSubjectKey,
   hitTestClick,
   hitTestHover,
+  hitTestScroll,
   isActivatableClose,
   normalizeGameWindowRequest,
   normalizeScale,
   planGameWindowRender,
   regionTooltipContent,
+  wheelScrollPosition,
 } from './gameWindowLogic';
 import type { ShownWindow } from './gameWindows';
 import './gameWindow.css';
@@ -133,18 +135,22 @@ export default function GameWindowView({
   const [failed, setFailed] = useState<FailedRender | null>(null);
   const [loading, setLoading] = useState(false);
   const [hoveredClose, setHoveredClose] = useState(false);
+  const [scrolled, setScrolled] = useState<{ subject: string; positions: Readonly<Record<string, number>> } | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const flight = useRef<Flight | null>(null);
   const completedRef = useRef<CompletedRender | null>(null);
   completedRef.current = completed;
 
+  const subjectKey = gameWindowSubjectKey({ ...request, scale: dpr }, contentRev);
+  const positions = scrolled?.subject === subjectKey ? scrolled.positions : undefined;
   const normalized = normalizeGameWindowRequest({
     ...request,
     scale: dpr,
+    scroll: positions,
   });
   const requestKey = gameWindowRequestKey(normalized, contentRev);
-  const subjectKey = gameWindowSubjectKey(normalized, contentRev);
   const stableRequestRef = useRef<{ key: string; value: GameWindowRequest } | null>(null);
   if (!stableRequestRef.current || stableRequestRef.current.key !== requestKey) {
     stableRequestRef.current = { key: requestKey, value: normalized };
@@ -289,6 +295,28 @@ export default function GameWindowView({
     hideTooltip(ownerId);
   }, [ownerId]);
 
+  const wheelState = useRef({ render, logicalPoint, subjectKey, positions });
+  wheelState.current = { render, logicalPoint, subjectKey, positions };
+  const shown = render !== null;
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onWheel = (event: WheelEvent) => {
+      const now = wheelState.current;
+      if (!now.render) return;
+      const point = now.logicalPoint(event.clientX, event.clientY);
+      const list = point ? hitTestScroll(now.render.regions, point[0], point[1]) : null;
+      if (!list?.scroll) return;
+      event.preventDefault();
+      const next = wheelScrollPosition(list.scroll, now.positions?.[list.path], event.deltaY);
+      if (next === (now.positions?.[list.path] ?? list.scroll.position)) return;
+      hideTooltip(ownerId);
+      setScrolled({ subject: now.subjectKey, positions: { ...now.positions, [list.path]: next } });
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }, [shown, ownerId]);
+
   const handlePointerDown = useCallback(() => {
     hostRef.current?.focus({ preventScroll: true });
   }, []);
@@ -363,6 +391,7 @@ export default function GameWindowView({
   return shell(<>
     <div className="game-window-stage">
       <div
+        ref={canvasRef}
         className={`game-window-canvas${hoveredClose ? ' is-close-hover' : ''}`}
         onPointerDown={handlePointerDown}
         onMouseEnter={handleMove}

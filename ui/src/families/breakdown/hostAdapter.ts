@@ -23,7 +23,6 @@ export const breakdownHostAdapter: FamilyHostAdapter<BreakdownModel, BreakdownVi
   mirror: 'listbox',
   auditOwnerId: -4,
   parseHit: parseBreakdownHit,
-  inspectToken: key => `row:${key}`,
   exclusiveExpansion: fields => (fields.meta as { readonly view?: string } | undefined)?.view === 'ring',
   getScrollExtent: fields => {
     const meta = fields.meta as { readonly contentHeight?: number } | undefined;
@@ -31,22 +30,5 @@ export const breakdownHostAdapter: FamilyHostAdapter<BreakdownModel, BreakdownVi
   },
   deriveAuditRows: model => deriveBreakdownAudit(model),
   auditOrdered: true,
-  buildBinding: ctx => {
-    if (!ctx.theme) return null;
-    return {
-      options: ctx.options,
-      sources: ctx.sources,
-      ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-      ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
-      width: ctx.viewport.width,
-      height: ctx.viewport.height,
-      scrollTop: ctx.viewport.scrollTop,
-      theme: ctx.theme,
-      ...(ctx.identitySnapshot ? { identitySnapshot: ctx.identitySnapshot } : {}),
-      expanded: ctx.expanded,
-      selectedKey: ctx.selectedKey,
-      focusedKey: ctx.focusedKey,
-      ...(ctx.audit ? { audit: true, auditId: ctx.auditId } : {}),
-    };
-  },
+  buildBinding: ctx => ({ expanded: ctx.expanded }),
 };

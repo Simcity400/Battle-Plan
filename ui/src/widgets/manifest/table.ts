@@ -32,6 +32,19 @@ const GAME_SCORE_TABLE_OPTIONS = GAME_SCORE_OPTIONS.filter(field => GAME_SCORE_T
 
 export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
   {
+    kind: 'war-contribution',
+    view: 'sides',
+    label: 'Sides',
+    family: 'table',
+    viewOption: 'view',
+    loadSpec: tableSpec(
+      'war-contribution',
+      'sides',
+      () => import('../war-contribution/sidesProjection.ts'),
+      mod => ({ projection: mod.warContributionSidesProjection, declaration: mod.warContributionSidesDeclaration }),
+    ),
+  },
+  {
     kind: 'campaign-clock',
     view: DEFAULT_VIEW,
     family: 'table',
