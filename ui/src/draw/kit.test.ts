@@ -39,6 +39,10 @@ import {
   drawTwoWayBar,
   drawWinRateCell,
   resolveKitTokens,
+  TIMELINE_LABEL_MIN_WIDTH,
+  computeTimeAxisTicks,
+  drawTimeAxis,
+  drawTimelineBar,
   winRateColor,
 } from './kit.ts';
 
@@ -90,6 +94,8 @@ function makeFakeCtx() {
       if (prev) Object.assign(this, prev);
     },
     beginPath() {},
+    closePath() {},
+    quadraticCurveTo() {},
     clip() {},
     moveTo(x: number, y: number) { ops.push({ op: 'moveTo', args: [x, y], alpha: this.globalAlpha, fillStyle: this.fillStyle, strokeStyle: this.strokeStyle }); },
     lineTo(x: number, y: number) { ops.push({ op: 'lineTo', args: [x, y], alpha: this.globalAlpha, fillStyle: this.fillStyle, strokeStyle: this.strokeStyle }); },
@@ -256,6 +262,40 @@ test('name slots report truncation, status marks use dots/rings, and date/missin
   assert.equal(tokens.shortage, '#ff6b6f');
   assert.equal(tokens.dateTabBg, THEME.raised);
   assert.equal(tokens.hoverTabBg, THEME.text);
+});
+
+test('timeline bars hide icon and name under the minimum width, mix ended items toward the surface, and the axis labels years or months', () => {
+  const bitmap = { width: 32, height: 32 } as unknown as CanvasImageSource;
+  const icon = { kind: 'ready', bitmap, width: 32, height: 32 } as const;
+  const narrow = makeFakeCtx();
+  const narrowRes = drawTimelineBar(narrow.ctx, { x: 10, y: 10, width: TIMELINE_LABEL_MIN_WIDTH - 1, height: 18, fill: '#3987e5', theme: THEME, open: true, icon, label: 'Free Trade' });
+  assert.deepEqual([narrowRes.showedIcon, narrowRes.label], [false, null]);
+
+  const wide = makeFakeCtx();
+  const wideRes = drawTimelineBar(wide.ctx, { x: 10, y: 10, width: 140, height: 18, fill: '#3987e5', theme: THEME, heldBefore: true, open: true, icon, label: 'Free Trade' });
+  assert.equal(wideRes.showedIcon, true);
+  assert.equal(wideRes.label?.text, 'Free Trade');
+  assert.ok(wide.ops.some(op => op.op === 'drawImage'));
+
+  const open = makeFakeCtx();
+  drawTimelineBar(open.ctx, { x: 0, y: 0, width: 40, height: 14, fill: '#3987e5', theme: THEME, open: true });
+  const ended = makeFakeCtx();
+  drawTimelineBar(ended.ctx, { x: 0, y: 0, width: 40, height: 14, fill: '#3987e5', theme: THEME, open: false });
+  const fillOf = (ops: ReturnType<typeof makeFakeCtx>['ops']) => ops.find(op => op.op === 'fill')?.fillStyle;
+  assert.notEqual(fillOf(open.ops), fillOf(ended.ops), 'an ended item is mixed toward the surface');
+
+  const h1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
+  const h1941 = engineHour({ year: 1941, month: 9, day: 15, hour: 1 })!;
+  const years = computeTimeAxisTicks(h1936, h1941, 600);
+  assert.deepEqual(years.map(tick => tick.label), ['1937', '1938', '1939', '1940', '1941']);
+  const h1937 = engineHour({ year: 1937, month: 1, day: 1, hour: 1 })!;
+  assert.ok(computeTimeAxisTicks(h1936, h1937, 600).some(tick => tick.label === 'Jul'), 'under two years the axis shows months');
+
+  const axis = makeFakeCtx();
+  drawTimeAxis(axis.ctx, years, { plotLeft: 100, plotRight: 700, axisTop: 200, startHour: h1936, endHour: h1941, playhead: h1941, playheadLabel: '15 Sep 1941', theme: THEME });
+  const texts = axis.ops.filter(op => op.op === 'fillText').map(op => op.args[0]);
+  assert.ok(texts.includes('15 Sep 1941'));
+  assert.ok(!texts.includes('1941'), 'a year label under the playhead tab is dropped');
 });
 
 test('table cell kit primitives handle minimum bar width, win rate tinting, icon strips, actions, stockpile bars and clock summary', () => {
