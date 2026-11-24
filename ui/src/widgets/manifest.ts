@@ -34,9 +34,11 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'game-score': { load: () => import('./game-score') },
   'idea-timeline': { load: () => import('./idea-timeline') },
   'industrial-organisations': { load: () => import('./industrial-organisations') },
+  'international-market': { load: () => import('./international-market') },
   'minefields': { load: () => import('./minefields') },
   'occupied-states': { load: () => import('./occupied-states') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
+  'production-lines': { load: () => import('./production-lines') },
   'scoreboard': { load: () => import('./scoreboard') },
 };
 

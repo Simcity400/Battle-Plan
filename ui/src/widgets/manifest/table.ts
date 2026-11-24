@@ -4,6 +4,7 @@ import { familyTableLaneView } from '../../families/table/laneView.ts';
 import type { TableProjection } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
+import { MARKET_TABS, VIEWS, marketTableOptions } from '../international-market/definition.ts';
 
 function tableSpec<TModule>(
   kind: string,
@@ -134,6 +135,31 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.rosterProjection, declaration: mod.rosterDeclaration }),
     ),
   },
+  {
+    kind: 'production-lines',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'production-lines',
+      DEFAULT_VIEW,
+      () => import('../production-lines/productionLinesProjection.ts'),
+      mod => ({ projection: mod.productionLinesProjection, declaration: mod.productionLinesDeclaration }),
+    ),
+  },
+  ...MARKET_TABS.map((view): FamilyViewEntry => ({
+    kind: 'international-market',
+    view,
+    label: VIEWS.find(choice => choice.value === view)!.label,
+    family: 'table',
+    viewOption: 'view',
+    options: marketTableOptions(view),
+    loadSpec: tableSpec(
+      'international-market',
+      view,
+      () => import('../international-market/internationalMarketProjection.ts'),
+      mod => ({ projection: mod.internationalMarketProjection, declaration: mod.MARKET_DECLARATIONS[view] }),
+    ),
+  })),
   {
     kind: 'industrial-organisations',
     view: DEFAULT_VIEW,
