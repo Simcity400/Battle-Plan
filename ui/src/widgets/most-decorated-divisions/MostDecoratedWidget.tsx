@@ -29,7 +29,7 @@ import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const EMPTY: readonly CareerRow[] = [];
 const experienceValue = (row: CareerRow) => row.facts.experienceRaw === null ? null : BigInt(row.facts.experienceRaw);
-const killsValue = (row: CareerRow) => row.facts.kills;
+const killsValue = (row: CareerRow) => row.facts.casualtiesTaken;
 const RECORD_LOG = logSettings({});
 
 export default function MostDecoratedWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
@@ -80,7 +80,7 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
       render: row => { const ratio = experienceRatio(row.facts);
         return <CellBar value={options.cellBars === true && ratio !== null ? ratio : null} maximum={1}>{row.facts.levelName ?? '—'}</CellBar>; } },
     { key: 'kills', header: 'Enemy soldiers killed', label: 'Enemy soldiers killed', numeric: true, width: 'max-content', priority: 1, value: killsValue, renderMissing: true,
-      render: row => row.facts.kills === null ? <span className="decorated-missing" data-tooltip="Not recorded">—</span> : row.facts.kills.toLocaleString('en-US') },
+      render: row => row.facts.casualtiesTaken === null ? <span className="decorated-missing" data-tooltip="Not recorded">—</span> : row.facts.casualtiesTaken.toLocaleString('en-US') },
   ], [templates, country, data, options.cellBars]);
   const tooltip = useCallback((row: CareerRow) => data && dataHour !== null ? fitTooltip([{ ...careerTooltip(row, data, dataHour, country(row).name, templates.get(row.template)?.name ?? null), ...countryNameDetails(country(row)) }], viewportHeight)
     : { title: divisionName(row.name), rows: [] }, [data, country, templates, viewportHeight]);
