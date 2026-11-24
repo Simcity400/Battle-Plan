@@ -90,6 +90,50 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.gameScoreProjection, declaration: mod.gameScoreDeclaration }),
     ),
   },
+  {
+    kind: 'governments-in-exile',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'governments-in-exile',
+      DEFAULT_VIEW,
+      () => import('../governments-in-exile/exilesProjection.ts'),
+      mod => ({ projection: mod.exilesProjection, declaration: mod.exilesDeclaration }),
+    ),
+  },
+  {
+    kind: 'lend-lease-agreements',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'lend-lease-agreements',
+      DEFAULT_VIEW,
+      () => import('../lend-lease-agreements/agreementsProjection.ts'),
+      mod => ({ projection: mod.agreementsProjection, declaration: mod.agreementsDeclaration }),
+    ),
+  },
+  {
+    kind: 'territory-transfers',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'territory-transfers',
+      DEFAULT_VIEW,
+      () => import('../territory-transfers/transfersProjection.ts'),
+      mod => ({ projection: mod.transfersProjection, declaration: mod.transfersDeclaration }),
+    ),
+  },
+  {
+    kind: 'operatives-roster',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'operatives-roster',
+      DEFAULT_VIEW,
+      () => import('../operatives-roster/rosterProjection.ts'),
+      mod => ({ projection: mod.rosterProjection, declaration: mod.rosterDeclaration }),
+    ),
+  },
 ];
 
 export const tableFamilyManifest: FamilyManifestModule = {
