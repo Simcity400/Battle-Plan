@@ -224,6 +224,33 @@ test('R3-S2: a finite static proof is never left open to a later confirmation, o
   assert.equal(panel.page.view(1).through, 28, 'nor does a panel confirmation');
 });
 
+test('R4-S6: an open picture closes when a finite static bound is supplied later, on the followed or the panel channel', async () => {
+  const followed = rig();
+  followed.mount(1, [{ id: 5, channel: 'followed' }]);
+  followed.lane.bindRoute(5, ROUTE, NATIVE);
+  followed.lane.receive('follow', message(28, [{ id: 5, hour: 28, answer: rows([1n], [1n]) }], false, NATIVE));
+  await followed.step(28, { playing: false });
+  assert.deepEqual([followed.page.view(1).mode, followed.page.view(1).through], ['picture', 28], 'an open followed picture confirmed at 28');
+  followed.lane.supply(1, { dated: { h: 28, c: 28 } });
+  await followed.step(28, { playing: false });
+  followed.lane.receive('follow', message(30, [], false, NATIVE));
+  await followed.step(30, { playing: false });
+  assert.equal(followed.page.view(1).through, 28, 'a route confirmation of 30 does not extend it once the static read proves only 28');
+  assert.equal(followed.page.view(1).dim, true);
+
+  const panel = rig();
+  panel.mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  panel.lane.bindRoute(3, ROUTE, NATIVE);
+  panel.lane.receive('panels', panels([{ id: 3, hour: 28, kind: 'data', stepped: true, data: { shape: 'A' } }, { id: 0, hour: 28, kind: 'completed' }]));
+  await panel.step(28, { playing: false });
+  assert.deepEqual([panel.page.view(1).mode, panel.page.view(1).through], ['picture', 28]);
+  panel.lane.supply(1, { dated: { h: 28, c: 28 } });
+  await panel.step(28, { playing: false });
+  panel.lane.receive('panels', panels([{ id: 0, hour: 30, kind: 'completed' }]));
+  await panel.step(30, { playing: false });
+  assert.equal(panel.page.view(1).through, 28, 'nor does a panel confirmation');
+});
+
 const at: LaneView = {
   next: (_scene, hour) => (Math.floor(hour / 24) + 1) * 24,
   paint: (input): Painted => ({ surfaces: [], fields: { at: { value: input.hour, content: `at:${input.hour}` } }, motion: false }),
@@ -3422,4 +3449,31 @@ test('a date-only supply for a stamp the lane does not hold is dropped, and a ne
   lane.bind(1, { generation: 3, owner: 'b', surfaces: [], offset: 0, pin: null, dated: { h: 0, c: 100 } });
   await step(26, { playing: false });
   assert.equal(seen.at(-1)?.panels, null, 'the previous owner’s panels are gone');
+});
+
+test('a view that is waiting presents nothing and is not painted again until it wakes the widget; a family switch disposes the outgoing view', async () => {
+  let paints = 0, ready = false;
+  const unmounted: string[] = [];
+  const states: Map<string, unknown>[] = [];
+  const others: Map<string, unknown>[] = [];
+  const loading: LaneView = {
+    paint: (_input, state): Painted => { paints++; states.push(state); return ready ? { surfaces: [], fields: { at: { value: 1, content: 'one' } }, motion: false } : { surfaces: [], fields: {}, motion: false, waiting: true }; },
+    unmount: () => { unmounted.push('loading'); },
+  };
+  const other: LaneView = { paint: (_input, state) => { others.push(state); return { surfaces: [], fields: {}, motion: false }; } };
+  const { page, lane, mount, step } = rig({ loading, other });
+  mount(1, [], 'loading', 0, { dated: { h: 0, c: 100 } });
+  for (let hour = 10; hour < 15; hour++) await step(hour, { playing: false });
+  assert.equal(paints, 1, 'one paint while the view waits, not one per frame');
+  assert.notEqual(page.view(1).mode, 'picture');
+  ready = true;
+  lane.touch(1);
+  await step(15, { playing: false });
+  assert.equal(paints, 2, 'its own wake paints it again');
+  lane.mount(1, [], 'other');
+  lane.bind(1, { generation: 2, surfaces: [], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+  await step(16, { playing: false });
+  assert.deepEqual(unmounted, ['loading'], 'the outgoing view is disposed');
+  assert.ok(others.length > 0, 'the new view paints');
+  assert.ok(others.every(state => !states.includes(state)), 'the new view starts with its own state');
 });

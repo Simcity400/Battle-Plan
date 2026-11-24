@@ -15,7 +15,7 @@ import { decryptionProjection } from '../../widgets/decryption/decryptionProject
 import { whoReadsWhomProjection } from '../../widgets/decryption/whoReadsWhomProjection.ts';
 import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
 import { registerFamilyProjection } from '../registry.ts';
-import { familyMeterLaneView } from './laneView.ts';
+import { meterLane } from './laneView.ts';
 import { deriveMeterAudit, deriveMeterMirror, deriveMeterNav, findMeterTooltip } from './model.ts';
 import { hitMeterModel, layoutMeterModel } from './painter.ts';
 import type { DecryptionReply, DoctrineMasteryReply, ResearchSlotsReply } from '../../generated/dashboard';
@@ -23,6 +23,7 @@ import type { ResearchData } from '../../widgets/research/types';
 import { matrixCellAt } from '../heat/matrixModel.ts';
 import { autonomyLevelsProjection } from '../../widgets/autonomy/autonomyLevelsProjection.ts';
 import type { AutonomyLevelsReply } from '../../generated/dashboard';
+import { createLaneView } from '../laneRuntime.ts';
 
 const THEME: FamilyTheme = {
   surface: '#14171d',
@@ -388,8 +389,8 @@ test('doctrineMasteryProjection builds threshold meters, missing mastery, empty 
   const held = lane(reply);
   const renamed = { ...reply, folders: reply.folders.map(folder => (folder.id === 'land_doctrine' ? { ...folder, name: 'Land Doctrine' } : folder)) };
   const surface = { width: 640, height: 320, dpr: 1 };
-  assertQuietFrames(() => familyMeterLaneView(() => {}), { label: 'mastery', binding: held, hour }, 24, surface);
-  assertFreshPaint(() => familyMeterLaneView(() => {}), [
+  assertQuietFrames(() => createLaneView(meterLane, () => {}), { label: 'mastery', binding: held, hour }, 24, surface);
+  assertFreshPaint(() => createLaneView(meterLane, () => {}), [
     { label: 'held', binding: held, hour, check: true },
     { label: 'later', binding: held, hour: hour + 48, speed: 24 },
     { label: 'seek back', binding: held, hour, check: true },

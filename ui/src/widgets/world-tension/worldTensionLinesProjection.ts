@@ -6,6 +6,7 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
+import { groupSelection } from '../../families/groupSelection.ts';
 import {
   type TimeChartProjection,
   type TimeChartWidgetDeclaration,
@@ -66,6 +67,19 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
         extent: options.extent,
         yAxis: { format: 'percent', fixed: null, min: 0 },
         series: [],
+      };
+    }
+    if (reply.refused) {
+      return {
+        kind: 'world-tension',
+        measureTitle: 'Contribution to world tension',
+        mode: 'lines',
+        hour,
+        extent: options.extent,
+        yAxis: { format: 'percent', fixed: null, min: 0 },
+        series: [],
+        warnings: reply.warnings,
+        empty: { message: reply.refused, kind: 'unavailable' },
       };
     }
     const gaps: ChartGap[] = [
@@ -211,12 +225,15 @@ export const worldTensionLinesDeclaration: TimeChartWidgetDeclaration<WorldTensi
   icon: 'chart-line',
   countries: { mode: 'multi', labels: true, colours: true, allTagsForLabels: true, everyOnTop: true },
   sources(ctx: FamilyPlanContext, view): SourcePlan {
-    const layers = ctx.countries.top != null
-      ? Math.max(1, Math.min(1500, ctx.countries.top))
-      : ctx.countries.all
+    const top = ctx.countries.top ?? null;
+    const keyed = !ctx.countries.all && top == null;
+    const group = keyed ? groupSelection(ctx.widget.countries) : null;
+    const layers = top != null
+      ? Math.max(1, Math.min(1500, top))
+      : ctx.countries.all || group
         ? 1500
         : Math.max(1, Math.min(1500, ctx.countries.tags.length));
-    const countries = ctx.countries.all || ctx.countries.top != null ? null : [...ctx.countries.tags];
+    const countries = keyed && !group ? [...ctx.countries.tags] : null;
     const width = Math.max(240, Math.min(2400, Math.ceil(view.width ?? 1024)));
     return {
       owner: `world-tension-lines:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
@@ -236,7 +253,11 @@ export const worldTensionLinesDeclaration: TimeChartWidgetDeclaration<WorldTensi
               layers,
               values: 'recorded',
               countries,
+              top,
+              group,
               width,
+              includeStack: true,
+              includeEvents: false,
             },
             dynamicKeys: ['firstHour', 'lastHour', 'width'],
             validate: validateWorldTensionStack,

@@ -54,7 +54,7 @@ pub struct CountryFlagChoice {
     #[doc = " Why each atlas has no key, or what was refused on the way to its key; null when nothing."]
     pub reasons: [Option<String>; 3],
     #[doc = " True where the atlas has no key because a completed search of every candidate found no file."]
-    #[serde(default, skip_serializing_if = "no_search")]
+    #[serde(default, skip_serializing_if = "no_search", deserialize_with = "dashboard_base::products::artwork::relayed_searches")]
     #[cfg_attr(any(test, feature = "export-types"), ts(as = "Option<[Option<bool>; 3]>", optional))]
     pub searched: [Option<Searched>; 3],
 }
@@ -463,6 +463,7 @@ pub enum FlagSearch {
         origin: dashboard_base::products::artwork::ArtOrigin,
     },
     Unresolvable,
+    Refused(String),
     Absent(Searched),
 }
 
@@ -481,7 +482,7 @@ pub fn flag_cells(layers: &content_reader_layers::ResolvedLayers) -> io::Result<
 #[derive(Clone)]
 enum FlagFile {
     Missing(Searched),
-    Unmounted(String),
+    Unresolvable(String),
     Refused(content_reader_gui::flags::DecodeFailure),
     Image {
         image: Arc<Rgba8Image>,
@@ -589,10 +590,11 @@ fn flag_file(
     }
     let (file, noted) = content_reader_layers::content::diagnostics::observe(|| {
         io::Result::Ok(match art_file(layers, asset.as_bytes())? {
-            ArtFile::Unmounted { layer, reason, .. } => {
+            ArtFile::Unaddressable => FlagFile::Unresolvable(format!("flag {asset} is not a path inside the content")),
+            ArtFile::Unmounted { layer, reason } => {
                 let origin =
                     dashboard_base::products::artwork::ArtOrigin::from_layer(&layers.layers[layer]);
-                FlagFile::Unmounted(format!(
+                FlagFile::Unresolvable(format!(
                     "{} is not mounted ({reason}); flag {asset} cannot be resolved without risking a substitute",
                     origin.display_name()
                 ))
@@ -729,6 +731,7 @@ fn ladder(
     use dashboard_core::findings::{Finding, Kind};
     let mut findings = Vec::new();
     let mut searched = None;
+    let mut decoder_refused = None;
     for &set in sets {
         let set_index = match set {
             FlagSet::Normal => 0,
@@ -775,13 +778,24 @@ fn ladder(
             }
             match read.map_err(|error| unreadable(&asset, error))? {
                 FlagFile::Missing(miss) => searched = Some(miss),
-                FlagFile::Unmounted(why) => {
+                FlagFile::Unresolvable(why) => {
                     let mut finding = Finding::new(Kind::Refused, key, why);
                     finding.file = Some(asset);
                     findings.push(finding);
                     return Ok(Ok((FlagSearch::Unresolvable, findings)));
                 }
                 FlagFile::Refused(reason) => {
+                    let message = match reason {
+                        content_reader_gui::flags::DecodeFailure::EngineRefused => format!(
+                            "flag decoder refused {asset} at cell {}x{}; this file was skipped",
+                            cell[0], cell[1]
+                        ),
+                        content_reader_gui::flags::DecodeFailure::Truncated => format!(
+                            "flag decoder cannot safely read {asset} at cell {}x{}; this reader refuses this input but the game does not check read status",
+                            cell[0], cell[1]
+                        ),
+                    };
+                    decoder_refused.get_or_insert_with(|| message.clone());
                     if !reported.refused.insert((stack, set_index, asset.clone())) {
                         continue;
                     }
@@ -791,16 +805,7 @@ fn ladder(
                             content_reader_gui::flags::DecodeFailure::Truncated => Kind::Refused,
                         },
                         key,
-                        match reason {
-                            content_reader_gui::flags::DecodeFailure::EngineRefused => format!(
-                                "flag decoder refused {asset} at cell {}x{}; this file was skipped",
-                                cell[0], cell[1]
-                            ),
-                            content_reader_gui::flags::DecodeFailure::Truncated => format!(
-                                "flag decoder cannot safely read {asset} at cell {}x{}; this reader refuses this input but the game does not check read status",
-                                cell[0], cell[1]
-                            ),
-                        },
+                        message,
                     );
                     finding.file = Some(asset.clone());
                     findings.push(finding);
@@ -830,7 +835,12 @@ fn ladder(
         candidates.first().cloned().unwrap_or_default(),
         "no decodable flag in the requested sets; flag artwork is unavailable",
     ));
-    Ok(Ok((searched.map_or(FlagSearch::Unresolvable, FlagSearch::Absent), findings)))
+    let search = match (decoder_refused, searched) {
+        (Some(refused), _) => FlagSearch::Refused(refused),
+        (None, Some(searched)) => FlagSearch::Absent(searched),
+        (None, None) => FlagSearch::Unresolvable,
+    };
+    Ok(Ok((search, findings)))
 }
 
 pub(crate) fn flag_key(asset: &str, pixels: &[u8]) -> String {
@@ -1019,6 +1029,13 @@ impl FlagFolders {
                             .unwrap_or_else(|| UNAVAILABLE.into()),
                     );
                 }
+                FlagSearch::Refused(decoder) => {
+                    choice.reasons[at] = Some(match refused {
+                        Some(named) if named.contains(&decoder) => named,
+                        Some(named) => format!("{named}; {decoder}"),
+                        None => decoder,
+                    });
+                }
                 FlagSearch::Absent(searched) => {
                     if chain.refusal.is_none() && refused.is_none() {
                         choice.searched[at] = Some(searched);
@@ -1163,6 +1180,13 @@ impl FlagContext {
                         break;
                     }
                     FlagSearch::Absent(miss) => searched = searched.map(|_| Some(miss)),
+                    FlagSearch::Refused(decoder) => {
+                        if !reasons.contains(&decoder) {
+                            reasons.push(decoder);
+                        }
+                        refused = true;
+                        searched = None;
+                    }
                     FlagSearch::Unresolvable => searched = None,
                 }
             }
@@ -1405,8 +1429,44 @@ mod tests {
                         "{:?}",
                         reply.unavailable
                     );
+
                 }
                 None => assert!(reply.unavailable.is_empty(), "{:?}", reply.unavailable),
+            }
+        }
+    }
+
+    #[test]
+    fn a_flag_file_the_decoder_refused_is_a_refusal_never_a_confirmed_miss() {
+        let image = vec![
+            0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 32, 0x28, 30, 20, 10, 255,
+        ];
+        let mut skipped = image;
+        skipped[2] = 10;
+        let (_, folder) = dashboard_base::catalogue::tests::localisation_catalogue(&[]);
+        let file = folder.0.join("gfx/flags/medium/mod_skipped.tga");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, skipped).unwrap();
+        let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+        let content = Arc::new(ResolvedContent { layers: layers.clone(), stats: Default::default(), changed: Vec::new(), notes: Vec::new() });
+        let folders = FlagFolders::of(layers, [[1, 1]; 3]);
+        for (candidates, searched_every_layer) in [(vec!["mod_skipped", "mod_absent"], false), (vec!["mod_skipped"], false), (vec!["mod_absent"], true)] {
+            let choice = folders.choose(&chain(&candidates)).unwrap();
+            assert_eq!(choice.keys[1], None, "{candidates:?}");
+            assert_eq!(choice.searched[1].is_some(), searched_every_layer, "{candidates:?}: a file found and refused is not a miss");
+            assert_eq!(
+                choice.reasons[1].as_deref().is_some_and(|reason| reason.contains("flag decoder refused gfx/flags/medium/mod_skipped.tga")),
+                !searched_every_layer,
+                "{candidates:?}: {:?}",
+                choice.reasons
+            );
+            let request = CountryFlagParams { flags: vec![choice], size: CountryFlagSize::Medium };
+            let reply = context(&content, [[1, 1]; 3], Vec::new()).reply(&request, None, &AtomicBool::new(false)).unwrap();
+            let [unavailable] = &reply.unavailable[..] else { panic!("{candidates:?}: {:?}", reply.unavailable) };
+            match (&unavailable.resolution, searched_every_layer) {
+                (ArtResolution::ConfirmedMissing { .. }, true) => {}
+                (ArtResolution::Refused { reason, .. }, false) => assert!(reason.contains("flag decoder refused"), "{reason}"),
+                (other, _) => panic!("{candidates:?}: {other:?}"),
             }
         }
     }
@@ -2122,6 +2182,12 @@ mod tests {
         let params: CountryFlagParams = serde_json::from_value(value).unwrap();
         assert_eq!(params.size, CountryFlagSize::Full);
         assert!(CountryFlags::validate(&params).is_ok());
+        let relayed: CountryFlagChoice = serde_json::from_value(serde_json::json!({
+            "keys": [null, null, null], "reasons": ["absent", "absent", "absent"], "searched": [false, null, true],
+        }))
+        .unwrap();
+        assert_eq!(relayed.searched.clone().map(|searched| searched.is_some()), [false, false, true], "only an affirmative relay is evidence of a search");
+        assert_eq!(serde_json::to_value(&relayed).unwrap()["searched"], serde_json::json!([null, null, true]));
         let mut params = CountryFlagParams {
             flags: vec![every("variants/red"), every("mod country tag")],
             size: CountryFlagSize::Full,

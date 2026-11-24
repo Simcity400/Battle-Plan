@@ -162,6 +162,14 @@ inputs = ["ui/src/widgets/**", "ui/src/families/**", "ui/src/dashboard/definitio
 command = ["{node}", "tools/check-widget-manifest.mjs"]
 
 [[job]]
+name = "future-reads"
+group = "linux"
+tier = "check"
+toolchain = "node"
+inputs = ["ui/src/widgets/**", "ui/src/families/**", "ui/src/dashboard/**", "tools/check-future-reads.mjs", "tools/future-reads-ratchet.json"]
+command = ["{node}", "tools/check-future-reads.mjs"]
+
+[[job]]
 name = "dead-code"
 group = "linux"
 tier = "check"

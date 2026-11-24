@@ -1,9 +1,9 @@
-import { CHART_MEASURE_COLOURS, readableColour, authoredHex, reservedGrey } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, authoredHex } from '../../charts/palette.ts';
 import { airChoiceKey } from '../../dashboard/airOptions.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
-import type { BranchToHourSourceRead, SourceEntry } from '../../families/plan.ts';
+import { dayHistoryNames, dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
 import {
   spanIndexAt,
@@ -14,7 +14,7 @@ import {
   type HeatLanesModel,
   type HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
-import { countryColourAt, regionLabel, type DatedColour } from '../../families/heat/scale.ts';
+import { contestedGrey, countryColourAt, readableOn, regionLabel, type DatedColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { readRegionChoice, regionParams, type RegionChoice } from '../../families/regions/regionChoice.ts';
@@ -82,8 +82,18 @@ const REASONS: Readonly<Record<string, string>> = {
   'side-not-present': 'This side was not present',
 };
 
-function sideColour(side: AirSide | undefined, surface: string, fallback: string): string {
-  return side?.color ? readableColour(authoredHex(side.color), surface) : fallback;
+const palettes = new WeakMap<AirTimelineReply, { readonly surface: string; readonly colours: readonly (string | null)[] }>();
+
+function sidePalette(reply: AirTimelineReply, surface: string): readonly (string | null)[] {
+  const held = palettes.get(reply);
+  if (held && held.surface === surface) return held.colours;
+  const colours = reply.sides.map(({ color }) => (color ? readableOn(authoredHex(color), surface) : null));
+  palettes.set(reply, { surface, colours });
+  return colours;
+}
+
+function sideColour(reply: AirTimelineReply, side: number, surface: string, fallback: string): string {
+  return sidePalette(reply, surface)[side] ?? fallback;
 }
 
 function sideName(side: AirSide | undefined): string {
@@ -110,7 +120,7 @@ interface Made {
 
 function viewerColour(side: number | null, reply: AirTimelineReply, look: Look, surface: string, hour: number): DatedColour {
   if (look.viewer) return look.viewer(hour);
-  return { colour: sideColour(side === null ? undefined : reply.sides[side], surface, look.noViewer), through: Infinity };
+  return { colour: side === null ? look.noViewer : sideColour(reply, side, surface, look.noViewer), through: Infinity };
 }
 
 function cellOf(cell: AirDayCell | null, reply: AirTimelineReply, look: Look, surface: string, viewer: string): Made {
@@ -144,10 +154,10 @@ function cellOf(cell: AirDayCell | null, reply: AirTimelineReply, look: Look, su
     const score = Math.max(0, Number(part.friendly));
     if (score <= 0) continue;
     const side = reply.sides[part.side];
-    items.push({ label: sideName(side), value: formatShare(score / total), swatch: sideColour(side, surface, look.unknownSide) });
+    items.push({ label: sideName(side), value: formatShare(score / total), swatch: sideColour(reply, part.side, surface, look.unknownSide) });
   }
   if (lead.kind === 'contested') return { cell: { kind: 'solid', color: look.contested }, tip: { items: [{ label: 'Contested' }, ...items] } };
-  const color = depth(look.track, sideColour(reply.sides[lead.side], surface, look.unknownSide), lead.share_bp / 10_000);
+  const color = depth(look.track, sideColour(reply, lead.side, surface, look.unknownSide), lead.share_bp / 10_000);
   return { cell: { kind: 'solid', color }, tip: { items } };
 }
 
@@ -163,7 +173,7 @@ function readoutOf(readout: AirReadout | undefined, reply: AirTimelineReply, loo
     case 'leading': {
       const side = reply.sides[readout.side];
       const pct = formatShare(readout.share_bp / 10_000);
-      return { kind: 'value', form: 'value', primary: pct, secondary: sideName(side), swatch: sideColour(side, surface, look.unknownSide) };
+      return { kind: 'value', form: 'value', primary: pct, secondary: sideName(side), swatch: sideColour(reply, readout.side, surface, look.unknownSide) };
     }
     case 'viewpoint': {
       const pct = formatShare(readout.share_bp / 10_000);
@@ -266,7 +276,7 @@ function datedSignature(look: Look, first: number, last: number): string {
   const out: string[] = [];
   for (let at = first; at <= last;) {
     const dated = look.viewer(at);
-    out.push(dated.colour);
+    out.push(`${at}:${dated.colour}`);
     if (dated.through >= last) break;
     at = dated.through + 1;
   }
@@ -275,25 +285,25 @@ function datedSignature(look: Look, first: number, last: number): string {
 
 export function projectAirTimeline(readView: BoundedReadView, options: AirTimelineProjectionOptions): HeatLanesModel {
   const hour: number = readView.hour;
-  const refused = readView.refused('now') ?? Array.from({ length: options.tiles }, (_, k) => readView.refused(`tile:${k}`)).find(Boolean);
+  const refused = readView.refused('now') ?? dayHistoryNames(options.tiles).map(name => readView.refused(name)).find(Boolean);
   if (refused) return emptyModel(hour, { refused });
   const now = readView.panel<AirTimelineReply>('now');
   if (!now || !options.surface || now.lastHour > hour) return emptyModel(hour, {});
   const tiles: AirTimelineReply[] = [];
-  for (let k = 0; k < options.tiles; k++) {
-    const tile = readView.panel<AirTimelineReply>(`tile:${k}`);
+  for (const name of dayHistoryNames(options.tiles)) {
+    const tile = readView.panel<AirTimelineReply>(name);
     if (tile && tile.lastHour < now.firstHour) tiles.push(tile);
   }
   const through = now.lastHour;
   const surface = options.surface;
-  const noViewer = readableColour(CHART_MEASURE_COLOURS.bopRight, surface);
+  const noViewer = readableOn(CHART_MEASURE_COLOURS.bopRight, surface);
   const viewpointCountry = options.viewpointCountry;
   const sideColours = new Set<string>();
-  for (const reply of [...tiles, now]) for (const side of reply.sides) if (side.color) sideColours.add(readableColour(authoredHex(side.color), surface));
+  for (const reply of [...tiles, now]) for (const colour of sidePalette(reply, surface)) if (colour) sideColours.add(colour);
   const look: Look = {
     track: surfaceMix(surface, 0.04),
-    contested: reservedGrey(surface, [...sideColours]),
-    enemy: readableColour(CHART_MEASURE_COLOURS.short, surface),
+    contested: contestedGrey(surface, [...sideColours].sort()),
+    enemy: readableOn(CHART_MEASURE_COLOURS.short, surface),
     unknownSide: surfaceMix(surface, 0.45),
     viewer: viewpointCountry ? at => countryColourAt(readView, viewpointCountry, at, surface, noViewer) : null,
     noViewer,
@@ -351,53 +361,22 @@ export const airTimelineProjection: HeatLanesProjection<AirTimelineProjectionOpt
   project: projectAirTimeline,
 };
 
-export const AIR_TILE_HOURS = 64 * 24;
-
-function dayStartOf(hour: number): number {
-  return Math.floor(hour / 24) * 24;
-}
-
-export function airTileCount(branch: { readonly firstHour: number; readonly lastHour: number }): number {
-  return Math.max(1, Math.ceil((branch.lastHour - dayStartOf(branch.firstHour) + 1) / AIR_TILE_HOURS));
-}
-
 function airEntries(ctx: FamilyPlanContext, params: Record<string, unknown>): SourcePlan['entries'] {
   const { top, pinnedRegions: _pinned, ...unranked } = params;
-  const origin = dayStartOf(ctx.branch.firstHour);
-  const entry = (name: string, read: Omit<BranchToHourSourceRead, 'shape' | 'product' | 'followQuery'>): SourceEntry => ({
-    name,
-    source: ctx.track.source,
-    branch: ctx.branch.id,
-    offset: ctx.track.axisOffset,
-    read: { shape: 'branch-to-hour' as const, product: 'air-superiority-timeline' as const, followQuery: null, ...read },
-  });
-  const now = entry('now', {
-    coverage: { mode: 'population', form: 'top', limit: Number(top) },
-    params,
-    buildSpanParams: (base, span) => {
-      const today = Math.max(span.firstHour, dayStartOf(span.lastHour));
-      return { ...base, firstHour: today, lastHour: span.lastHour, rankFrom: span.firstHour };
+  return dayTileEntries(ctx, {
+    product: 'air-superiority-timeline',
+    now: {
+      params,
+      coverage: { mode: 'population', form: 'top', limit: Number(top) },
+      span: (base, first, last, rankFrom) => ({ ...base, firstHour: first, lastHour: last, rankFrom }),
+      validThrough: () => null,
+    },
+    tile: {
+      params: { ...unranked, every: true },
+      coverage: { mode: 'population', form: 'all' },
+      span: (base, first, last) => ({ ...base, firstHour: first, lastHour: last }),
     },
   });
-  const tiles = Array.from({ length: airTileCount(ctx.branch) }, (_, k) => {
-    const tileFirst = origin + k * AIR_TILE_HOURS;
-    const tileLast = tileFirst + AIR_TILE_HOURS - 1;
-    return entry(`tile:${k}`, {
-      coverage: { mode: 'population', form: 'all' },
-      params: { ...unranked, every: true },
-      buildSpanParams: (base, span) => {
-        const first = Math.max(tileFirst, span.firstHour);
-        const last = Math.min(tileLast, dayStartOf(span.lastHour) - 1);
-        return first <= last ? { ...base, firstHour: first, lastHour: last } : null;
-      },
-      provenInterval: (data, _requested, at) => {
-        const reply = data as AirTimelineReply | undefined;
-        if (!reply) return null;
-        return reply.lastHour >= tileLast ? [at, Infinity] : [at, reply.lastHour + 24];
-      },
-    });
-  });
-  return [now, ...tiles];
 }
 
 export const airTimelineDeclaration: HeatLanesWidgetDeclaration<AirTimelineProjectionOptions> = {
@@ -423,7 +402,7 @@ export const airTimelineDeclaration: HeatLanesWidgetDeclaration<AirTimelineProje
   projection: airTimelineProjection,
   projectionOptions: (ctx, extra) => {
     const viewpoint = airTimelineMode(ctx).viewpoint;
-    return { viewpointCountry: viewpoint.startsWith('country:') ? viewpoint.slice(8) : null, tiles: airTileCount(ctx.branch), surface: extra.surface };
+    return { viewpointCountry: viewpoint.startsWith('country:') ? viewpoint.slice(8) : null, tiles: dayTileCount(ctx.branch), surface: extra.surface };
   },
   jumpToDate: true,
 };
