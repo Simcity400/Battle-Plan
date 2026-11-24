@@ -4,6 +4,7 @@ pub use product::*;
 
 pub mod artwork;
 pub mod battles;
+pub mod breakdown;
 pub mod built;
 pub mod character_portraits;
 pub mod equipment_icon;

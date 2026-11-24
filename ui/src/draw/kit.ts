@@ -381,9 +381,11 @@ export function drawArtSlot(
 }
 
 export type FlagSlotState =
+  | { readonly kind: 'none' }
   | { readonly kind: 'pending' }
   | { readonly kind: 'ready'; readonly bitmap: CanvasImageSource; readonly width: number; readonly height: number }
   | { readonly kind: 'missing'; readonly tag?: string }
+  | { readonly kind: 'refused'; readonly reason?: string }
   | { readonly kind: 'failed' };
 
 export interface FlagSlotResult {
@@ -407,7 +409,7 @@ export function drawFlagSlot(
   const height = options?.height ?? FLAG_SLOT_HEIGHT;
   const radius = options?.radius ?? 2;
   const alpha = options?.dimmed ? FLAG_LOSER_ALPHA : 1;
-  if (width <= 0 || height <= 0 || state.kind === 'pending') {
+  if (width <= 0 || height <= 0 || state.kind === 'pending' || state.kind === 'none') {
     return { x, y, width, height, drawn: state.kind };
   }
   if (state.kind === 'ready') {
@@ -460,7 +462,7 @@ export function drawFlagSlot(
   ctx.roundRect(x + 0.5, y + 0.5, Math.max(0, width - 1), Math.max(0, height - 1), radius);
   ctx.stroke();
   ctx.restore();
-  return { x, y, width, height, drawn: 'failed' };
+  return { x, y, width, height, drawn: state.kind };
 }
 
 export function drawNameSlot(

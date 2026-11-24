@@ -75,6 +75,7 @@ export function buildLineSubpaths(
   until: number,
 ): { readonly subpaths: readonly (readonly [number, number][])[]; readonly end: readonly [number, number] | null } {
   const step = series.step === true;
+  const scale = series.valueScale ?? 1;
   const subpaths: [number, number][][] = [];
   let end: readonly [number, number] | null = null;
   const bounded = series.bounded;
@@ -90,7 +91,7 @@ export function buildLineSubpaths(
         }
         const x0 = layout.toX(Math.max(run.firstHour, layout.xDomain[0]));
         const x1 = layout.toX(Math.min(run.lastHour, layout.xDomain[1]));
-        const y = layout.toY(run.value);
+        const y = layout.toY(run.value * scale);
         if (!cur.length) {
           cur.push([x0, y]);
           if (step && x1 > x0) cur.push([x1, y]);
@@ -108,7 +109,7 @@ export function buildLineSubpaths(
       let prevLastHour = -Infinity;
       const pushPoint = (h: number, v: number) => {
         const x = layout.toX(Math.max(layout.xDomain[0], Math.min(layout.xDomain[1], h)));
-        const y = layout.toY(v);
+        const y = layout.toY(v * scale);
         if (!cur.length) {
           cur.push([x, y]);
         } else {
@@ -436,7 +437,8 @@ export function drawTimeChart(
           ctx.lineWidth = lineWidth;
           ctx.lineJoin = 'round';
           ctx.lineCap = 'round';
-          if (s.dash?.length) ctx.setLineDash([...s.dash]);
+          const dash = s.dash?.length ? s.dash : s.role === 'ceiling' ? [5, 4] : null;
+          if (dash) ctx.setLineDash([...dash]);
           tracePolyline(ctx, pts);
           ctx.stroke();
           ctx.restore();
@@ -511,14 +513,14 @@ export function drawTimeChart(
     }
     if (label.name) {
       ctx.font = labelNameFont;
-      ctx.fillStyle = textSecondary;
+      ctx.fillStyle = label.valueMuted ? theme.muted : textSecondary;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText(label.name, cursorX, label.y + 0.5);
       cursorX += ctx.measureText(label.name).width + 6;
     }
     ctx.font = labelValueFont;
-    ctx.fillStyle = label.valueColor ?? theme.text;
+    ctx.fillStyle = label.valueMuted ? theme.muted : (label.valueColor ?? theme.text);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText(label.value, cursorX, label.y + 0.5);

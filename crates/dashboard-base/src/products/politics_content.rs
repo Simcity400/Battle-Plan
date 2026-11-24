@@ -788,6 +788,7 @@ impl PoliticsContent {
                     description: None,
                     base_duration_days: None,
                     icon: None,
+                    sprite: None,
                 };
                 return (art, Some(format!("{token}: {reason}")));
             }
@@ -807,7 +808,7 @@ impl PoliticsContent {
         &self,
         token: &str,
         icon: &IdeaIcon,
-    ) -> Result<Option<String>, Box<Finding>> {
+    ) -> Result<Option<(String, String)>, Box<Finding>> {
         let recorded = match self.catalogue.recorded() {
             Some(recorded) if !content_reader_layers::content::is_strict() => recorded,
             _ => return idea_icon(&self.catalogue, token, icon),
@@ -816,13 +817,13 @@ impl PoliticsContent {
             || format!("idea {token} icon"),
             &self.catalogue,
             |catalogue| match idea_icon(catalogue, token, icon) {
-                Ok(Some(png)) => Ok(png),
+                Ok(Some(drawn)) => Ok(drawn),
                 Ok(None) => Err(format!("{token}: no artwork")),
                 Err(finding) => Err(finding.message),
             },
         );
         match drawn.get() {
-            Ok(png) => Ok(Some(png.clone())),
+            Ok(drawn) => Ok(Some(drawn.clone())),
             Err(_) => idea_icon(recorded, token, icon),
         }
     }
@@ -864,8 +865,8 @@ impl PoliticsContent {
                 }
             },
         };
-        let (icon, problem) = match icon {
-            Ok(Some(icon)) => (Some(icon), None),
+        let (drawn, problem) = match icon {
+            Ok(Some(drawn)) => (Some(drawn), None),
             Ok(None) => {
                 let reason =
                     format!("{token}: no artwork in the recorded content; a placeholder is shown");
@@ -883,12 +884,14 @@ impl PoliticsContent {
                 (None, Some(reason))
             }
         };
+        let (sprite, icon) = drawn.unzip();
         let art = Artwork {
             token: token.to_owned(),
             name,
             description,
             base_duration_days: None,
             icon,
+            sprite,
         };
         (art, problem)
     }
@@ -934,11 +937,12 @@ fn idea_icon(
     catalogue: &Catalogue,
     token: &str,
     icon: &IdeaIcon,
-) -> Result<Option<String>, Box<Finding>> {
+) -> Result<Option<(String, String)>, Box<Finding>> {
     let refused = |message: String| Box::new(Finding::new(Kind::Refused, token, message));
     let (names, recorded_tag) = match icon {
         IdeaIcon::Sprite(name) => {
             return sprite_png_in(catalogue, name, ICON_EDGE)
+                .map(|png| png.map(|png| (name.clone(), png)))
                 .map_err(|why| refused(why.to_string()));
         }
         IdeaIcon::Candidates {
@@ -950,7 +954,7 @@ fn idea_icon(
         if catalogue.sprites.find(name).map_err(&refused)?.is_some() {
             return sprite_png_in(catalogue, name, ICON_EDGE)
                 .map_err(|why| refused(why.to_string()))?
-                .map(Some)
+                .map(|png| Some((name.clone(), png)))
                 .ok_or_else(|| refused(format!("sprite {name} has no readable texture")));
         }
     }
