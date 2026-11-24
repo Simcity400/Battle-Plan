@@ -6,7 +6,7 @@ import { useProduct } from './products.ts';
 import { contentTitle } from './contentTitles.ts';
 import { drawableIcon } from './artwork.ts';
 import { compareTags } from './tagOrder.ts';
-import { isOrderedSpans, runAt } from '../charts/series.ts';
+import { isOrderedSpans } from '../charts/series.ts';
 import type { Span } from '../charts/series';
 import type { RaidEndAt, RaidEpisode, RaidLogReply, RaidPhaseRun, RaidPreparationRun, RaidTypeInfo, RaidVictimAt, RaidVictimSource } from '../generated/dashboard';
 import { productRequest } from './request.ts';
@@ -398,4 +398,3 @@ export function eventsThrough(hours: readonly number[], hour: number): number {
   return lo;
 }
 
-export const tallyRunAt = (series: RaidTallySeries | undefined, hour: number) => runAt(series?.runs ?? [], Math.floor(hour));

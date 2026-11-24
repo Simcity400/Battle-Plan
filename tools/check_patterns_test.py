@@ -404,30 +404,38 @@ class FamilyKitPatterns(unittest.TestCase):
 
     def test_family_colour_literals_are_refused_in_families_and_projections(self):
         code, out = check({}, {
-            "ui/src/families/table/cellPainters.ts": "const c = '#e5484d';\nconst g = `rgba(${r}, 0, 0, 0.5)`;\n",
+            "ui/src/families/table/cellPainters.ts": "ctx.fillStyle = '#e5484d';\nconst g = `rgba(${r}, 0, 0, 0.5)`;\nconst c = '#112233';\nctx.strokeStyle = c;\n",
             "ui/src/widgets/foo/fooProjection.ts": "const s = 'hsl(200, 50%, 50%)';\n",
+            "ui/src/families/table/tableFamily.css": ".tf-th {\n  color: #e2e2e2;\n}\n#header {\n  display: flex;\n}\n",
         })
         self.assertEqual(code, 1)
         self.assertIn("family-colour-literal", out)
+        self.assertIn("ui/src/families/table/cellPainters.ts: family-colour-literal: 0 at the base, 3 now; new at line 1, 2, 3", out)
+        self.assertIn("ui/src/families/table/tableFamily.css: family-colour-literal: 0 at the base, 1 now; new at line 2", out)
         self.assertIn("ui/src/charts/palette.ts", out)
         self.assertEqual(check({}, {
             "ui/src/charts/palette.ts": "export const RED = '#e5484d';\n",
             "ui/src/shell/appearance/color.ts": "export const f = () => `rgba(0, 0, 0, 1)`;\n",
-            "ui/src/draw/kit.ts": "const c = '#111111';\n",
-            "ui/src/families/table/tableFamily.test.ts": "const c = '#e5484d';\n",
+            "ui/src/draw/kit.ts": "const color = '#111111';\n",
+            "ui/src/families/table/tableFamily.test.ts": "const color = '#e5484d';\n",
+            "ui/src/families/table/selector.ts": "const selector = '#abc';\nconst el = root.querySelector(selector);\n",
+            "ui/src/families/table/clean.css": "#abc {\n  color: var(--text);\n}\n",
         })[0], 0)
 
     def test_family_locale_string_is_refused_in_families_and_projections(self):
         code, out = check({}, {
             "ui/src/families/table/cellPainters.ts": "const s = count.toLocaleString('en-US');\nconst d = x.toFixed(1);\n",
             "ui/src/widgets/foo/fooProjection.ts": "import { usNumber } from '../../charts/numberFormat.ts';\nconst f = new Intl.NumberFormat('en-US');\n",
+            "ui/src/widgets/decryption/decryptionData.ts": "export const weekChangeText = (tenths: number) => `${(Math.abs(tenths) / 10).toFixed(1)} points`;\n",
         })
         self.assertEqual(code, 1)
         self.assertIn("family-locale-string", out)
+        self.assertIn("ui/src/widgets/decryption/decryptionData.ts: family-locale-string: 0 at the base, 1 now; new at line 1", out)
         self.assertIn("ui/src/families/valueFormat.ts", out)
         self.assertEqual(check({}, {
             "ui/src/families/valueFormat.ts": "const s = count.toLocaleString('en-US');\n",
             "ui/src/families/table/tableFamily.test.ts": "const s = count.toLocaleString('en-US');\n",
+            "ui/src/widgets/foo/plain.ts": "const msg = `do not use .toFixed(1) in plain template text`;\n",
         })[0], 0)
 
     def test_family_measure_text_loop_is_refused_in_families_and_projections(self):
@@ -463,14 +471,14 @@ class FamilyKitPatterns(unittest.TestCase):
     def test_family_at_least_wording_is_refused_in_families_and_widgets(self):
         code, out = check({}, {
             "ui/src/families/valueFormat.ts": "const lead = value.atLeast ? `at least ${exact}` : exact;\n",
-            "ui/src/widgets/foo/fooData.ts": "const note = '+ means this many';\nconst pre = '\\u2265';\n",
-            "ui/src/widgets/foo/FooWidget.tsx": "export const x = () => <span>≥{count}</span>;\n",
+            "ui/src/widgets/foo/fooData.ts": "const note = '+ means this many';\nconst pre = '\\u2265';\nconst bound = `${n}+`;\n",
+            "ui/src/widgets/foo/FooWidget.tsx": "export const x = () => <><span>≥{count}</span><span>at least {count}</span><span>{count}+</span></>;\n",
         })
         self.assertEqual(code, 1)
         self.assertIn("family-at-least-wording", out)
         self.assertIn("ui/src/families/valueFormat.ts", out)
-        self.assertIn("ui/src/widgets/foo/fooData.ts", out)
-        self.assertIn("ui/src/widgets/foo/FooWidget.tsx", out)
+        self.assertIn("ui/src/widgets/foo/fooData.ts: family-at-least-wording: 0 at the base, 3 now; new at line 1, 2, 3", out)
+        self.assertIn("ui/src/widgets/foo/FooWidget.tsx: family-at-least-wording: 0 at the base, 3 now", out)
         self.assertEqual(check({}, {
             "ui/src/families/value.ts": "export const p = (atLeast: boolean) => ({ atLeast });\n",
             "ui/src/widgets/foo/foo.test.ts": "const s = 'at least 1';\n",
@@ -511,7 +519,7 @@ class FamilyKitPatterns(unittest.TestCase):
     def test_widget_helpers_and_jsx_are_checked_and_false_positives_pass(self):
         code, out = check({}, {
             "ui/src/widgets/air-statistics/airStatisticsData.ts": "export const fmt = (n: number) => n.toLocaleString('en-US');\n",
-            "ui/src/widgets/foo/FooWidget.tsx": "const inkOnFill = (f: string) => f;\nconst computeAxisTicks = () => [];\nconst c = '#e5484d';\nfor (const r of rows) { w = ctx.measureText(r).width; }\n",
+            "ui/src/widgets/foo/FooWidget.tsx": "const inkOnFill = (f: string) => f;\nconst computeAxisTicks = () => [];\nconst color = '#e5484d';\nfor (const r of rows) { w = ctx.measureText(r).width; }\n",
         })
         self.assertEqual(code, 1)
         self.assertIn("ui/src/widgets/air-statistics/airStatisticsData.ts: family-locale-string", out)
@@ -523,6 +531,7 @@ class FamilyKitPatterns(unittest.TestCase):
             "ui/src/widgets/foo/FooWidget.tsx": (
                 "const contrastInk = contrastInkForFill(fill, theme);\n"
                 "const computedTicks = linearTicks(0, 100);\n"
+                "const selector = '#abc';\n"
                 "const el = root.querySelector('#abc');\n"
                 "const msg = 'do not use .toLocaleString( here';\n"
                 "for (const r of rows) { h = ctx.measureText(r).actualBoundingBoxAscent; }\n"

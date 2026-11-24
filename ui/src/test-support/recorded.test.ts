@@ -4,7 +4,7 @@ import test from 'node:test';
 import { RECORDED_KIND, RECORDED_VERSION, RecordedClient, recordedRefusal, remapMessage } from './recorded.ts';
 import type { RecordedEntry, RecordedFormat } from './recorded.ts';
 import { datedPanel, message } from '../dashboard/follow/messages.fixture.ts';
-import { parseFollowed, parseDatedPanels } from '../dashboard/follow/message.ts';
+import { parseFollowed, parseDatedPanels } from './followMessage.ts';
 import { RefusedError } from '../dashboard/queryError.ts';
 import { CELLS } from '../dashboard/follow/liveCells.ts';
 import type { ProductRequest } from '../dashboard/client';

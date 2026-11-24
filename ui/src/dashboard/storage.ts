@@ -213,11 +213,6 @@ function draftUnsaved({ library, template }: PageDraft, merge: Merge): boolean {
   return !active || stableJson(merge(template)) !== stableJson(merge(active));
 }
 
-export function layoutsUnsaved(pages: Iterable<PageDraft>, merge: Merge = template => template): boolean {
-  for (const page of pages) if (draftUnsaved(page, merge)) return true;
-  return false;
-}
-
 export function unsavedLayoutPages<K>(pages: Iterable<readonly [K, PageDraft]>, merge: Merge = template => template): K[] {
   return [...pages].filter(([, page]) => draftUnsaved(page, merge)).map(([id]) => id);
 }

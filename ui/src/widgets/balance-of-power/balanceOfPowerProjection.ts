@@ -1,7 +1,7 @@
 import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { POLITICS_HISTORY, readAt, unknownHours } from '../../dashboard/politicsHistory.ts';
+import { POLITICS_HISTORY, readAt, unknownHours, valueAt } from '../../dashboard/politicsHistory.ts';
 import {
   FutureDataError,
   type BoundedReadView,
@@ -20,14 +20,14 @@ import type {
   ChartHoverDetail,
   ChartInlinePoint,
   ChartOverlayLabel,
+  TimeChartModel,
   TimeChartSeriesModel,
 } from '../../families/time-chart/model.ts';
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
+import { formatDateOnly } from '../../families/valueFormat.ts';
 import type {
   BalanceHistory,
   BalanceRecord,
-  BalanceSide,
-  HolderBalances,
   HourSpan,
   PoliticsHistoryReply,
   PoliticsStateReply,
@@ -35,72 +35,57 @@ import type {
 import {
   BALANCE_UNAVAILABLE,
   RANGE_UNAVAILABLE,
-  SIDE_UNAVAILABLE,
-  balanceAbsence,
-  balanceAt,
   balanceAxis,
+  balanceHistoryProof,
   balanceName,
   changeText,
-  chooseBalance,
-  countryHolder,
   exactValue,
-  holderRecord,
   plotValue,
-  rangeName,
-  sideName,
-  sumWeeklyDrift,
+  recordAt,
+  selectedBalance,
+  sideLabel,
   validateBalanceList,
   validateCountryBalances,
   valueText,
 } from './balanceOfPowerData.ts';
 
 interface BalanceOfPowerOptions {
-  readonly tag: string | null;
+  readonly subject: string | null;
   readonly extent: readonly [number, number];
   readonly branchFirstHour: number;
   readonly branchGaps: readonly HourSpan[];
   readonly gaps: readonly ChartGap[];
 }
 
-function resolveSideLabel(
-  liveSide: BalanceSide | null | undefined,
-  historySide: BalanceSide | null | undefined,
-  balance: BalanceHistory,
-  names: PoliticsHistoryReply['names'],
-): { readonly label: string; readonly reason: string | null } {
-  if (liveSide) {
-    if (liveSide.name !== null && liveSide.name.length > 0) {
-      return { label: liveSide.name, reason: null };
-    }
-    return { label: SIDE_UNAVAILABLE, reason: liveSide.reason ?? null };
-  }
-  if (historySide) {
-    const plain = sideName(balance, historySide.token, names);
-    if (plain !== null && plain.length > 0) {
-      return { label: plain, reason: null };
-    }
-    return { label: SIDE_UNAVAILABLE, reason: historySide.reason ?? null };
-  }
-  return { label: SIDE_UNAVAILABLE, reason: null };
+const STANDARD_AXIS = { format: 'signed1', fixed: [-1, 1], ticks: [-1, -0.5, 0, 0.5, 1] } as const;
+
+function throughHour(spans: readonly HourSpan[], answered: number, hour: number): HourSpan[] {
+  return spans.map(span => (span.lastHour === answered && hour > answered ? { firstHour: span.firstHour, lastHour: hour } : span));
 }
 
-function buildStepPoints(balance: BalanceHistory, hour: number): ChartInlinePoint[] {
+const pointCache = new WeakMap<BalanceHistory, ChartInlinePoint[]>();
+
+function answeredPoints(balance: BalanceHistory): ChartInlinePoint[] {
+  const held = pointCache.get(balance);
+  if (held) return held;
   const points: ChartInlinePoint[] = [];
   let prevLast: number | null = null;
   for (const run of balance.values) {
-    if (run.firstHour > hour) break;
-    const last = Math.min(run.lastHour, hour);
-    if (prevLast !== null && run.firstHour > prevLast + 1) {
-      points.push({ hour: prevLast + 1, value: null });
-    }
-    const v = plotValue(run.value);
-    points.push({ hour: run.firstHour, value: v });
-    if (last > run.firstHour) {
-      points.push({ hour: last, value: v });
-    }
-    prevLast = last;
+    if (prevLast !== null && run.firstHour > prevLast + 1) points.push({ hour: prevLast + 1, value: null });
+    const value = plotValue(run.value);
+    points.push({ hour: run.firstHour, value });
+    if (run.lastHour > run.firstHour) points.push({ hour: run.lastHour, value });
+    prevLast = run.lastHour;
   }
+  pointCache.set(balance, points);
   return points;
+}
+
+function stepPoints(balance: BalanceHistory, answered: number, hour: number): ChartInlinePoint[] {
+  const points = answeredPoints(balance);
+  const last = balance.values.at(-1);
+  if (!last || last.lastHour !== answered || hour <= answered) return points;
+  return [...points, { hour, value: plotValue(last.value) }];
 }
 
 function mergeGaps(
@@ -134,9 +119,7 @@ function mergeGaps(
   for (const g of out) {
     const prev = merged[merged.length - 1];
     if (prev && g.firstHour <= prev.lastHour + 1) {
-      if (g.lastHour > prev.lastHour) {
-        merged[merged.length - 1] = { firstHour: prev.firstHour, lastHour: g.lastHour, reason: prev.reason };
-      }
+      if (g.lastHour > prev.lastHour) merged[merged.length - 1] = { firstHour: prev.firstHour, lastHour: g.lastHour, reason: prev.reason };
     } else {
       merged.push(g);
     }
@@ -144,24 +127,23 @@ function mergeGaps(
   return merged;
 }
 
-function findRecord(
-  reply: PoliticsStateReply | null | undefined,
-  hour: number,
-  subject: HolderBalances,
-  token: string,
-): BalanceRecord | null {
-  if (!reply) return null;
-  return holderRecord({ ...reply, hour }, subject, token)
-    ?? reply.balances.find(item => item.token === token)
-    ?? null;
+function rangeOf(record: BalanceRecord | null): { readonly name: string; readonly reason: string | null; readonly token: string } | null {
+  const range = record?.range;
+  if (!range) return null;
+  return range.name ? { name: range.name, reason: null, token: range.token } : { name: RANGE_UNAVAILABLE, reason: range.reason ?? null, token: range.token };
+}
+
+function changeItem(record: BalanceRecord): TooltipListItem {
+  const change = record.change;
+  if (!change) return { label: 'Change', missingReason: 'This balance lists no member, so it has no drift' };
+  return { label: change.shown === 'daily' ? 'Daily change' : 'Weekly change', value: changeText(change.rate) };
 }
 
 function buildHoverDetail(
   readView: BoundedReadView,
-  subject: HolderBalances,
   balance: BalanceHistory,
   history: PoliticsHistoryReply,
-  playheadRecord: BalanceRecord | null,
+  known: readonly HourSpan[],
 ): ChartHoverDetail | null {
   let hover;
   try {
@@ -172,64 +154,40 @@ function buildHoverDetail(
   }
   if (!hover) return null;
   const hoverHour = hover.hour;
-  const record = findRecord(hover.data, hoverHour, subject, balance.token)
-    ?? (hoverHour === readView.hour ? playheadRecord : null);
-  const at = balanceAt(balance, hoverHour);
-  const items: TooltipListItem[] = [];
+  const answered = Math.min(hoverHour, history.hour ?? hoverHour);
+  const record = recordAt(hover.data, balance, answered);
+  const value = valueAt(balance.values, answered);
   const title = record?.name ?? balanceName(balance, history.names) ?? BALANCE_UNAVAILABLE;
-  if (at.value === null && !record) {
-    items.push({ label: title, value: 'Not active', tone: 'muted' });
+  if (!readAt(known, hoverHour)) {
+    return { hour: hoverHour, items: [{ label: title, missingReason: 'The balance of power was not recorded at this hour' }], replacesSeries: true };
+  }
+  if (value === null && !record) {
+    return { hour: hoverHour, items: [{ label: title, value: 'Not active', tone: 'muted' }], replacesSeries: true };
+  }
+  const items: TooltipListItem[] = [
+    value !== null
+      ? { label: title, value: exactValue(value), swatch: CHART_MEASURE_COLOURS.bopRight, strong: true }
+      : { label: title, strong: true },
+  ];
+  if (record?.name === null && record.nameReason) items.push({ label: record.nameReason, tone: 'muted' });
+  if (!record) {
+    items.push({ label: 'Range', missingReason: 'The balance record was not read at this hour' });
     return { hour: hoverHour, items, replacesSeries: true };
   }
-  if (at.value !== null) {
-    items.push({
-      label: title,
-      value: exactValue(at.value),
-      swatch: CHART_MEASURE_COLOURS.bopRight,
-      strong: true,
-    });
-  } else {
-    items.push({ label: title, strong: true });
-  }
-  if (record?.name === null && record.nameReason) {
-    items.push({ label: record.nameReason, tone: 'muted' });
-  }
-  const activeRangeToken = record?.range?.token ?? at.range;
-  if (activeRangeToken) {
-    const resolvedRange = record?.range?.name
-      ?? rangeName(balance, activeRangeToken, history.names)
-      ?? RANGE_UNAVAILABLE;
-    items.push({ label: 'Range', value: resolvedRange });
-    if (record?.range?.name === null && record.range.reason) {
-      items.push({ label: record.range.reason, tone: 'muted' });
-    }
-  }
-  const trendingSide = record?.trending ?? null;
-  const trendingToken = trendingSide?.token ?? at.trending;
-  if (trendingToken) {
-    const resolvedTrending = trendingSide
-      ? (trendingSide.name && trendingSide.name.length > 0 ? trendingSide.name : SIDE_UNAVAILABLE)
-      : (sideName(balance, trendingToken, history.names) ?? SIDE_UNAVAILABLE);
-    items.push({ label: 'Leaning toward', value: resolvedTrending });
-    if (trendingSide && (trendingSide.name === null || trendingSide.name.length === 0) && trendingSide.reason) {
-      items.push({ label: trendingSide.reason, tone: 'muted' });
-    }
-  }
-  if (record) {
-    const weekly = sumWeeklyDrift(record);
-    if (weekly !== null) {
-      items.push({ label: 'Weekly change', value: changeText(weekly) });
-    }
-    const rightInfo = resolveSideLabel(record.right, balance.right, balance, history.names);
-    const leftInfo = resolveSideLabel(record.left, balance.left, balance, history.names);
-    if (rightInfo.reason) {
-      items.push({ label: `Right (${SIDE_UNAVAILABLE})`, value: rightInfo.reason, tone: 'muted', divider: true });
-    }
-    if (leftInfo.reason) {
-      items.push({ label: `Left (${SIDE_UNAVAILABLE})`, value: leftInfo.reason, tone: 'muted', divider: !rightInfo.reason });
-    }
+  const range = rangeOf(record);
+  if (range) items.push(range.reason ? { label: 'Range', missingReason: `${range.reason} (key ${range.token})` } : { label: 'Range', value: range.name });
+  const trending = sideLabel(record.trending);
+  if (trending) items.push(trending.reason ? { label: 'Leaning toward', missingReason: `${trending.reason} (key ${trending.label})` } : { label: 'Leaning toward', value: trending.label });
+  items.push(changeItem(record));
+  for (const [label, side] of [['Right', record.right], ['Left', record.left]] as const) {
+    const named = sideLabel(side);
+    if (named?.reason) items.push({ label, missingReason: `${named.reason} (key ${named.label})` });
   }
   return { hour: hoverHour, items, replacesSeries: true };
+}
+
+function emptyModel(hour: number, extent: readonly [number, number], extra: Partial<TimeChartModel> = {}): TimeChartModel {
+  return { kind: 'balance-of-power', measureTitle: 'Balance of power', mode: 'lines', hour, extent, yAxis: STANDARD_AXIS, series: [], ...extra } as TimeChartModel;
 }
 
 export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions> = registerFamilyProjection({
@@ -240,68 +198,38 @@ export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions
   measureTitle: 'Balance of power',
   project(readView: BoundedReadView, options: BalanceOfPowerOptions) {
     const hour = readView.hour;
-    const tag = options.tag;
-    if (!tag) {
-      return {
-        kind: 'balance-of-power',
-        measureTitle: 'Balance of power',
-        mode: 'lines',
-        hour,
-        extent: options.extent,
-        yAxis: { format: 'signed1', fixed: [-1, 1], ticks: [-1, -0.5, 0, 0.5, 1] },
-        series: [],
-        empty: { message: 'Choose a country in widget settings.', kind: 'empty' },
-      };
+    if (!options.subject) {
+      return emptyModel(hour, options.extent, { empty: { message: 'Choose a country in widget settings.', kind: 'empty' } });
     }
     const history = readView.panel<PoliticsHistoryReply>('history');
     const state = readView.panel<PoliticsStateReply>('state');
-    if (!history) {
-      return {
-        kind: 'balance-of-power',
-        measureTitle: 'Balance of power',
-        mode: 'lines',
-        hour,
-        extent: options.extent,
-        yAxis: { format: 'signed1', fixed: [-1, 1], ticks: [-1, -0.5, 0, 0.5, 1] },
-        series: [],
-      };
-    }
-    const unknown = unknownHours(options.branchGaps, history.known, options.branchFirstHour, history.lastHour);
-    const subject = countryHolder(history, tag, hour);
-    const choice = subject ? chooseBalance(subject, '', hour, hour) : null;
-    const balance = choice?.balance ?? null;
-    const countryWho = readView.who('country', tag, hour);
-    const countryName = countryWho.name.status === 'ready' ? countryWho.name.value : tag;
-    if (!subject || !balance) {
-      const absence = balanceAbsence(history.known, hour, hour, unknown);
-      const empty = absence.kind === 'unread'
+    if (!history || history.hour === null) return emptyModel(hour, options.extent);
+    const warnings = [...history.warnings, ...(state?.warnings ?? [])];
+    const known = throughHour(history.known, history.hour, hour);
+    const balance = selectedBalance(history);
+    if (!balance) {
+      const countryWho = readView.who('country', options.subject, hour);
+      const countryName = countryWho.name.status === 'ready' ? countryWho.name.value : null;
+      const empty = !readAt(known, hour)
         ? { message: 'The balance of power was not recorded at this date.', kind: 'unavailable' as const }
-        : { message: `${countryName} has no balance of power in this campaign.`, kind: 'empty' as const };
-      return {
-        kind: 'balance-of-power',
-        measureTitle: 'Balance of power',
-        mode: 'lines',
-        hour,
-        extent: options.extent,
-        yAxis: { format: 'signed1', fixed: [-1, 1], ticks: [-1, -0.5, 0, 0.5, 1] },
-        series: [],
-        warnings: [...history.warnings, ...(state?.warnings ?? [])],
-        empty,
-      };
+        : history.unread
+          ? { message: `${history.unread}.`, kind: 'unavailable' as const }
+          : { message: `${countryName ?? 'This country'} has no balance of power by ${formatDateOnly(hour)}.`, kind: 'empty' as const };
+      return emptyModel(hour, options.extent, { warnings, empty });
     }
 
-    const record = findRecord(state, hour, subject, balance.token);
-    const points = buildStepPoints(balance, hour);
+    const unknown = unknownHours(options.branchGaps, known, options.branchFirstHour, hour);
+    const record = recordAt(state, balance, Math.min(hour, history.hour));
+    const points = stepPoints(balance, history.hour, hour);
     const firstReadingHour = balance.values[0]?.firstHour ?? null;
-    const gaps = mergeGaps(options.extent, hour, options.gaps, unknown, firstReadingHour, history.known);
-    const at = balanceAt(balance, hour);
-    const headRaw = at.value;
+    const gaps = mergeGaps(options.extent, hour, options.gaps, unknown, firstReadingHour, known);
+    const headRaw = valueAt(balance.values, Math.min(hour, history.hour));
     const headValue = headRaw !== null ? plotValue(headRaw) : null;
     const icon = { art: readView.art(measureArtHandle('balanceOfPower')), label: 'Balance of power' };
     const title = record?.name ?? balanceName(balance, history.names) ?? 'Balance of power';
-    const activeRangeName = record
-      ? (record.range?.name && record.range.name.length > 0 ? record.range.name : null)
-      : (at.range ? rangeName(balance, at.range, history.names) : null);
+    const range = rangeOf(record);
+    const right = sideLabel(record?.right ?? balance.right);
+    const left = sideLabel(record?.left ?? balance.left);
 
     const series: TimeChartSeriesModel[] = [{
       id: balance.token,
@@ -320,50 +248,36 @@ export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions
         ? null
         : {
           icon,
-          name: activeRangeName,
-          shortName: activeRangeName,
-          fullName: activeRangeName ?? title,
+          name: range?.name ?? null,
+          shortName: range?.name ?? null,
+          fullName: range?.name ?? title,
           value: valueText(headRaw),
           exactValue: exactValue(headRaw),
         },
     }];
 
-    const rightSide = resolveSideLabel(record?.right, balance.right, balance, history.names);
-    const leftSide = resolveSideLabel(record?.left, balance.left, balance, history.names);
     const overlays: ChartOverlayLabel[] = [
-      {
-        position: 'top-right',
-        text: rightSide.label,
-        arrow: 'right',
-        color: CHART_MEASURE_COLOURS.bopRight,
-      },
-      {
-        position: 'bottom-right',
-        text: leftSide.label,
-        arrow: 'left',
-        color: CHART_MEASURE_COLOURS.bopLeft,
-      },
+      ...(right ? [{ position: 'top-right' as const, text: right.label, arrow: 'right' as const, color: CHART_MEASURE_COLOURS.bopRight }] : []),
+      ...(left ? [{ position: 'bottom-right' as const, text: left.label, arrow: 'left' as const, color: CHART_MEASURE_COLOURS.bopLeft }] : []),
     ];
 
-    const axis = balanceAxis(balance);
+    const axis = balanceAxis(record ?? balance);
     const standardBounds = axis.min === -1 && axis.max === 1;
-    const warnings = [...history.warnings, ...(state?.warnings ?? [])];
-
     return {
       kind: 'balance-of-power',
       measureTitle: title,
       mode: 'lines',
       hour,
       extent: options.extent,
-      yAxis: standardBounds
-        ? { format: 'signed1', fixed: [-1, 1], ticks: [-1, -0.5, 0, 0.5, 1] }
-        : { format: 'signed1', fixed: [axis.min, axis.max] },
+      yAxis: standardBounds ? STANDARD_AXIS : { format: 'signed1', fixed: [axis.min, axis.max] },
       series,
       gaps: gaps.length > 0 ? gaps : undefined,
       overlays,
-      hoverDetail: buildHoverDetail(readView, subject, balance, history, record),
+      hoverDetail: buildHoverDetail(readView, balance, history, known),
       warnings: warnings.length > 0 ? warnings : undefined,
-      auditRows: headRaw === null ? [] : [auditRow(balance.token, valueText(headRaw))],
+      auditRows: headRaw === null ? [] : [
+        auditRow(balance.token, `${exactValue(headRaw)}|${range?.name ?? ''}|${range?.token ?? ''}|${right?.label ?? ''}|${left?.label ?? ''}`),
+      ],
     };
   },
 });
@@ -377,37 +291,35 @@ export const balanceOfPowerDeclaration: TimeChartWidgetDeclaration<BalanceOfPowe
   icon: 'chart-line',
   countries: { mode: 'single', choose: 'Choose a country to see its balance of power.' },
   sources(ctx: FamilyPlanContext): SourcePlan {
-    const tag = ctx.countryTag;
-    if (!tag) return { owner: `balance-of-power:${ctx.track.source.id}:${ctx.branch.id}:`, entries: [] };
-    const country = countryFromKey(tag);
+    const subject = ctx.countrySubject;
+    if (!subject) return { owner: `balance-of-power:${ctx.track.source.id}:${ctx.branch.id}:`, entries: [] };
+    const country = countryFromKey(subject);
+    const common = { source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
     return {
-      owner: `balance-of-power:${ctx.track.source.id}:${ctx.branch.id}:${tag}`,
+      owner: `balance-of-power:${ctx.track.source.id}:${ctx.branch.id}:${subject}`,
       entries: [
         {
+          ...common,
           name: 'history',
-          source: ctx.track.source,
-          branch: ctx.branch.id,
-          offset: ctx.track.axisOffset,
           read: {
             shape: 'branch-to-hour',
-            coverage: { mode: 'keyed', keys: [tag] },
+            coverage: { mode: 'keyed', keys: [subject] },
             product: POLITICS_HISTORY,
             followQuery: null,
             params: { branchId: ctx.branch.id, mode: 'country', country },
-            buildSpanParams: params => params,
-            provenInterval: (_data, _asked, endHour) => [-Infinity, endHour] as const,
+            buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
+            provenInterval: balanceHistoryProof,
+            dynamicKeys: ['hour'],
             validate: validateCountryBalances,
           },
         },
         {
+          ...common,
           name: 'state',
-          source: ctx.track.source,
-          branch: ctx.branch.id,
-          offset: ctx.track.axisOffset,
           read: {
             shape: 'point',
             channel: 'panel',
-            coverage: { mode: 'keyed', keys: [tag] },
+            coverage: { mode: 'keyed', keys: [subject] },
             product: 'politics-state',
             followQuery: { panel: 'politics-state', branchId: ctx.branch.id, view: 'balances', country },
             params: { branchId: ctx.branch.id, view: 'balances', country },
@@ -415,10 +327,8 @@ export const balanceOfPowerDeclaration: TimeChartWidgetDeclaration<BalanceOfPowe
           },
         },
         {
+          ...common,
           name: 'hover',
-          source: ctx.track.source,
-          branch: ctx.branch.id,
-          offset: ctx.track.axisOffset,
           read: {
             shape: 'exact-hover',
             product: 'politics-state',
@@ -432,7 +342,7 @@ export const balanceOfPowerDeclaration: TimeChartWidgetDeclaration<BalanceOfPowe
   projection: balanceOfPowerProjection,
   projectionOptions(ctx, { extent }) {
     return {
-      tag: ctx.countryTag,
+      subject: ctx.countrySubject,
       extent,
       branchFirstHour: ctx.branch.firstHour,
       branchGaps: ctx.branch.gaps,

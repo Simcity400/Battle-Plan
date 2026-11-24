@@ -101,16 +101,6 @@ export function timelineFailure(client: DashboardClient, source: FactSource): Fa
   return entry?.content === (source.content ?? null) ? entry.error : undefined;
 }
 
-export function retryTimelines(client: DashboardClient, sourceId: string): void {
-  const entries = held.get(client);
-  if (!entries) return;
-  for (const [key, entry] of entries) {
-    if ((JSON.parse(key) as string[])[0] === sourceId && entry.error) {
-      setEntry(client, entries, key, { ...entry, error: undefined, askAt: undefined });
-    }
-  }
-}
-
 function spanAt(known: readonly (readonly number[])[], hour: number): readonly number[] | undefined {
   let low = 0, high = known.length;
   while (low < high) { const middle = (low + high) >> 1; if (known[middle][1] < hour) low = middle + 1; else high = middle; }
@@ -130,24 +120,10 @@ export function identitySince(facts: CountryTimeline, hour: number, tags: readon
   return since;
 }
 
-export function lookStarts(timeline: CountryTimeline | undefined, tag: string, first: number, at: number): [number, boolean][] {
-  const runs = timeline?.runs.get(tag);
-  if (!timeline || !runs) return [[at, true], [at + 1, false]];
-  const known = timeline.reply.known, hours = new Set([first, ...runs.map(run => run[0]).filter(hour => hour > first)]);
-  for (const [from, to] of known) for (const edge of [from, to + 1]) if (edge > first) hours.add(edge);
-  return [...hours].sort((a, b) => a - b).map(hour => [hour, holds(known, hour)]);
-}
-
 function runAt(runs: readonly Run[], hour: number): Run | undefined {
   let low = 0, high = runs.length;
   while (low < high) { const middle = (low + high) >> 1; if (runs[middle][0] <= hour) low = middle + 1; else high = middle; }
   return runs[low - 1];
-}
-
-export function heldStyles(client: DashboardClient, source: FactSource, recording: DashboardSource | undefined, hour: number,
-  tags: readonly string[]): ReadonlyMap<string, HeldStyle> | undefined {
-  const facts = recording && askTimeline(client, source, recording, hour);
-  return facts && stylesIn(facts, hour, tags);
 }
 
 export function stylesIn(facts: CountryTimeline, hour: number, tags: readonly string[]): ReadonlyMap<string, HeldStyle> | undefined {
@@ -161,17 +137,6 @@ export function stylesIn(facts: CountryTimeline, hour: number, tags: readonly st
       color: colour >= 0 ? [(colour >> 16) & 255, (colour >> 8) & 255, colour & 255] as [number, number, number] : null,
       warnings: reason === null ? warnings : [...warnings, reason] }] as const;
   }));
-}
-
-export function coloursIn(facts: CountryTimeline, hour: number, tags: readonly string[]): ReadonlyMap<string, number> | undefined {
-  if (!holds(facts.reply.known, hour)) return undefined;
-  return new Map(tags.map(tag => [tag, runAt(facts.runs.get(tag) ?? [], hour)?.[2] ?? -1] as const));
-}
-
-export function colourOf(facts: CountryTimeline, packed: number): { color: [number, number, number] } {
-  let colour = facts.colours.get(packed);
-  if (!colour) facts.colours.set(packed, colour = { color: [(packed >> 16) & 255, (packed >> 8) & 255, packed & 255] });
-  return colour;
 }
 
 export function flagIn(facts: CountryTimeline, hour: number, tag: string): { choice: CountryFlagChoice } | { reason: string } | undefined {
