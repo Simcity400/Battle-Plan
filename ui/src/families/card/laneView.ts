@@ -1,7 +1,7 @@
 import type { LaneView } from '../../draw/lane.ts';
 import { createLaneView, type LaneBinding, type LaneFamily, type LaneRuntimeOptions } from '../laneRuntime.ts';
 import { layoutCards, type CardLayout } from './layout.ts';
-import { assertCardModelValid, deriveCardAudit, deriveCardMirror, deriveCardTooltip, type CardModel } from './model.ts';
+import { assertCardModelValid, cardRowHours, deriveCardAudit, deriveCardMirror, deriveCardTooltip, type CardModel } from './model.ts';
 import { drawCards, hitCards, visibleCardIcons } from './painter.ts';
 
 export interface FamilyCardBinding<TOptions = unknown> extends LaneBinding<TOptions> {
@@ -58,6 +58,7 @@ const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
         notes: model.notes ?? [],
         warnings: model.warnings ?? [],
       },
+      rowHours: cardRowHours(model),
       nav: model.rows.flatMap((row, index) => (row.kind === 'section' ? [] : [[row.key, row.kind === 'hero' || row.title.kind !== 'known' ? row.key : String(row.title.value), index, -1, '', row.subject ?? null] as const])),
     };
   },

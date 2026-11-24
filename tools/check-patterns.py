@@ -38,13 +38,15 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal")
+RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string")
 RULE_HINTS = {
     "local-contrast-ink": "use contrastInkForFill from ui/src/draw/kit.ts",
     "local-tick-engine": "use computeTimeAxisTicks from ui/src/draw/kit.ts or linearTicks from ui/src/charts/valueAxis.ts",
     "family-colour-literal": "use ui/src/charts/palette.ts, ui/src/shell/appearance/color.ts, or resolveKitTokens in ui/src/draw/kit.ts",
+    "family-locale-string": "use formatScalar, formatCompactScalar, or formatValueState from ui/src/families/valueFormat.ts",
 }
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
+TS_FIXTURE = re.compile(r"\.fixture\.tsx?$")
 FAMILY_TS = re.compile(r"^ui/src/families/.+\.tsx?$")
 PROJECTION_TS = re.compile(r"^ui/src/widgets/.+Projection\.ts$")
 TS_TOKEN = re.compile(r"""//|/\*|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`""", re.DOTALL)
@@ -55,6 +57,9 @@ LOCAL_TICK_ENGINE = re.compile(
     r"\b(?:function\s+(?:compute\w*Ticks|nice\w*Ticks|linearTicks|timeAxisTicks|axisTicks|ticksForStep)\w*|(?:const|let)\s+(?:compute\w*Ticks|nice\w*Ticks|linearTicks|timeAxisTicks|axisTicks|ticksForStep)\w*\s*=)"
 )
 FAMILY_COLOUR_LITERAL = re.compile(r"""['"`]#[0-9a-fA-F]{3,8}(?=['"`])|\b(?:rgba?|hsla?)\s*\(""")
+FAMILY_LOCALE_STRING = re.compile(
+    r"""\.toLocaleString\s*\(|from\s+['"][^'"]*charts/numberFormat(?:\.ts)?['"]|\bnew\s+Intl\.NumberFormat\s*\("""
+)
 PS_TEST = re.compile(r"\.tests\.ps1$", re.IGNORECASE)
 JS_CLOCK = re.compile(r"\bset(?:Timeout|Interval)\s*\(")
 PS_CLOCK = re.compile(r"\bStart-Sleep\b|::Sleep\s*\(", re.IGNORECASE)
@@ -581,7 +586,7 @@ def rust_matches(name, revision):
 
 
 def is_family_or_projection(name):
-    if JS_TEST.search(name):
+    if JS_TEST.search(name) or TS_FIXTURE.search(name):
         return False
     return bool(FAMILY_TS.match(name) or PROJECTION_TS.match(name))
 
@@ -620,6 +625,10 @@ def family_ts_matches(name, text):
     colour_lines = [line_of(text, m.start()) for m in FAMILY_COLOUR_LITERAL.finditer(code)]
     if colour_lines:
         found["family-colour-literal"] = colour_lines
+    if name != "ui/src/families/valueFormat.ts":
+        locale_lines = [line_of(text, m.start()) for m in FAMILY_LOCALE_STRING.finditer(code)]
+        if locale_lines:
+            found["family-locale-string"] = locale_lines
     return found
 
 

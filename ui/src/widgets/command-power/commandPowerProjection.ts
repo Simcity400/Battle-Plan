@@ -38,9 +38,7 @@ export interface CommandPowerOptions {
 
 
 function formatEndAmount(value: number): string {
-  if (Math.abs(value) >= 10_000) return formatChartAxisValue(value, 'power');
-  const sign = value < 0 ? '\u2212' : '';
-  return `${sign}${Math.round(Math.abs(value)).toLocaleString('en-US')}`;
+  return formatChartAxisValue(value, 'power');
 }
 
 export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerTimeChart({

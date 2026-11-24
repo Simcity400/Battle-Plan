@@ -5,7 +5,7 @@ import { linearTicks } from '../../charts/valueAxis.ts';
 import { monthNames } from '../../dashboard/calendar.ts';
 import { computeTimeAxisTicks } from '../../draw/kit.ts';
 import type { BoundedSeries } from '../plan.ts';
-import { formatCompactScalar, formatDateOnly } from '../valueFormat.ts';
+import { formatCompactScalar, formatDateOnly, formatScalar } from '../valueFormat.ts';
 import type {
   ChartColumnModel,
   ChartGap,
@@ -25,21 +25,17 @@ export function formatChartAxisValue(value: number, format: ChartValueFormat): s
   if (format === 'percent') return `${Math.round(value)}%`;
   if (format === 'signed1') {
     if (Math.abs(value) < 1e-9) return '0';
-    const text = Math.abs(value).toFixed(1).replace(/\.0$/, '');
-    return `${value < 0 ? '\u2212' : '+'}${text}`;
+    return formatScalar(value, { decimals: 0, maxDecimals: 1, signed: true });
   }
   if (format === 'compact') {
     if (value === 0) return '0';
     return formatCompactScalar(Math.round(value), 'integer').text;
   }
   if (format === 'power') {
-    const abs = Math.abs(value);
-    if (abs >= 1e4) return formatCompactScalar(Math.round(value), 'integer').text;
-    const sign = value < 0 ? '\u2212' : '';
-    return `${sign}${Math.round(abs).toLocaleString('en-US')}`;
+    if (Math.abs(value) >= 1e4) return formatCompactScalar(Math.round(value), 'integer').text;
+    return formatScalar(value, { decimals: 0, maxDecimals: 0 });
   }
-  const sign = value < 0 ? '\u2212' : '';
-  return `${sign}${Math.round(Math.abs(value)).toLocaleString('en-US')}`;
+  return formatScalar(value, { decimals: 0, maxDecimals: 0 });
 }
 
 export interface PlacedEndLabel {

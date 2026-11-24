@@ -1,7 +1,7 @@
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { FamilyTooltipEntry, TooltipListItem } from '../host/tooltips.ts';
 import type { BoundedSeries } from '../plan.ts';
-import { formatDateOnly, notRecordedLabel } from '../valueFormat.ts';
+import { formatDateOnly, formatScalar, notRecordedLabel } from '../valueFormat.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import type { TimeChartModel, TimeChartSeriesModel } from './model.ts';
 
@@ -208,15 +208,13 @@ function formatExactFigure(value: number, model: TimeChartModel): string {
   }
   if (model.yAxis.format === 'signed1') {
     if (Math.abs(value) < 1e-9) return '0';
-    return `${value < 0 ? '\u2212' : '+'}${Math.abs(value).toFixed(2).replace(/\.?0+$/, '')}`;
+    return formatScalar(value, { decimals: 0, maxDecimals: 2, signed: true });
   }
   const decimals = model.yAxis.decimals ?? 0;
-  const sign = value < 0 ? '\u2212' : '';
-  const abs = Math.abs(value);
-  if (decimals > 0 && abs < 1000) {
-    return `${sign}${abs.toLocaleString('en-US', { maximumFractionDigits: decimals })}`;
+  if (decimals > 0 && Math.abs(value) < 1000) {
+    return formatScalar(value, { decimals: 0, maxDecimals: decimals });
   }
-  return `${sign}${Math.round(abs).toLocaleString('en-US')}`;
+  return formatScalar(value, { decimals: 0, maxDecimals: 0 });
 }
 
 function artUrlOf(slot: { readonly art: { readonly status: string; readonly url?: string } } | undefined): string | undefined {

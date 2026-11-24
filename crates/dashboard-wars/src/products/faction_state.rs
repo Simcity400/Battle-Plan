@@ -4,7 +4,6 @@ pub mod country_goals;
 pub mod details;
 mod goals;
 pub mod history;
-pub mod rewards;
 #[cfg(test)]
 mod tests;
 

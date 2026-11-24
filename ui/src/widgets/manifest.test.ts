@@ -12,7 +12,9 @@ import {
   type FamilyViewEntry,
   type LegacyWidgetEntry,
 } from '../families/manifest.ts';
-import { bindFamilyManifest, ensureFamilyProjection, familyProjection } from '../families/registry.ts';
+import { bindFamilyManifest, ensureBoundProjection, ensureFamilyProjection, familyProjection, registeredFamilyProjections } from '../families/registry.ts';
+import { familyBinding, type FamilyBindingContext, type FamilyBindingIdentity } from '../families/host/adapter.ts';
+import type { FamilyTheme } from '../families/contract.ts';
 import {
   BARS_BEHIND_CHOICES,
   ROW_HEIGHT_CHOICES,
@@ -53,6 +55,37 @@ test('manifest accounts for every widget kind once across family views and legac
   for (const kind of ['factories', 'air-superiority-region', 'minefields', 'active-research', 'doctrine-mastery', 'decryption']) {
     assert.ok(familyKinds.has(kind), `${kind} must appear in FAMILY_VIEWS`);
   }
+});
+
+test('every manifest view reaches its own projection through the binding the host builds, and nothing registers under an undeclared view', async () => {
+  const declared = new Set(FAMILY_VIEWS.map(entry => `${entry.family}\u0000${entry.kind}\u0000${normalizeView(entry.view)}`));
+  for (const manifest of FAMILY_MANIFESTS) {
+    assert.ok(manifest.hostAdapter, `${manifest.family} has a host adapter`);
+    for (const entry of manifest.views) {
+      const view = normalizeView(entry.view);
+      const spec = await entry.loadSpec();
+      const declaration = spec.declaration as { readonly kind?: string } | undefined;
+      assert.equal(declaration?.kind ?? entry.kind, entry.kind, `${entry.kind}/${view}: the declaration is for its own kind`);
+      const ctx: FamilyBindingContext<unknown, unknown> = {
+        kind: declaration?.kind ?? entry.kind, view, options: {}, settings: {}, window: null, sources: {}, extent: [0, 100], plan: null,
+        viewport: { width: 400, height: 300, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null }, theme: {} as FamilyTheme, reducedMotion: false,
+        identitySnapshot: null, selectedKey: null, focusedKey: null, expanded: {}, audit: false, auditId: undefined, pauseFlush: 0,
+      };
+      const binding: FamilyBindingIdentity | null = familyBinding(manifest.hostAdapter!, ctx);
+      assert.ok(binding, `${entry.kind}/${view}: the ${manifest.family} adapter builds a binding`);
+      const lookup = (onReady: () => void): ReturnType<typeof ensureBoundProjection> => ensureBoundProjection(binding, onReady);
+      const found = await new Promise<ReturnType<typeof ensureBoundProjection>>(resolve => {
+        const first = lookup(() => resolve(lookup(() => {})));
+        if (first !== 'loading') resolve(first);
+      });
+      assert.equal(found, spec.projection, `${entry.kind}/${view}: the worker finds this view's projection`);
+    }
+  }
+  const kinds = new Set(FAMILY_VIEWS.map(entry => entry.kind));
+  const stray = registeredFamilyProjections()
+    .filter(entry => kinds.has(entry.kind) && !declared.has(`${entry.family}\u0000${entry.kind}\u0000${entry.view}`))
+    .map(entry => `${entry.family}/${entry.kind}/${entry.view}`);
+  assert.deepEqual(stray, [], 'every registered projection is under a view the manifest declares');
 });
 
 test('multi-view widget routes each (kind, view) to its own family or legacy entry with scoped options', () => {
@@ -213,7 +246,7 @@ test('worker projection registry loads table and bars projections lazily on dema
   const lanesWakes: number[] = [];
   const lanesView = drawnViews('heat-lanes', wid => lanesWakes.push(wid))!;
   const lanesBinding = { family: 'heat-lanes', kind: 'synthetic-heat-lanes', options: {}, sources: {}, width: 100, height: 100, scrollTop: 0 };
-  assert.equal(lanesView.next!({ widget: 9, subs: [], pictures: [], model: lanesBinding }, 50), 51);
+  assert.equal(lanesView.next!({ widget: 9, subs: [], pictures: [], model: lanesBinding }, 50), Infinity, 'a loading projection answers no boundary, so the lane walks no history');
   for (let i = 0; i < 16 && !lanesWakes.length; i++) await Promise.resolve();
   assert.equal(heatLanesLoads, 1);
   assert.deepEqual(lanesWakes, [9]);

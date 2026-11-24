@@ -1,14 +1,16 @@
 import { liveKey } from '../../charts/live.ts';
 import { authoredHex, CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
-import { airMode, airParams, airPercent, airScore, regionLabel, validateAirSuperiority } from '../../dashboard/airSuperiority.ts';
+import { airMode, airParams, airPercent, airScore, validateAirSuperiority } from '../../dashboard/airSuperiority.ts';
 import { defaultCountryKey, selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection, BarsSegment } from '../../families/bars/model.ts';
+import { regionLabel } from '../../families/heat/scale.ts';
 import { registerBarsProjection } from '../../families/bars/registry.ts';
 import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/shareRows.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { AirRegion, AirSide, AirSuperiorityReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition.ts';
 
@@ -18,8 +20,6 @@ export interface AirSuperiorityProjectionOptions {
   readonly mode: 'sides' | 'viewpoint';
   readonly filteredSides: boolean;
   readonly order: AirRegionOrderOption;
-  readonly factionColours: Readonly<Record<string, string>>;
-  readonly factionNames: Readonly<Record<string, string>>;
   readonly enemyColor: string;
   readonly mutedColor: string;
 }
@@ -33,20 +33,11 @@ const AIR_REASONS: Readonly<Record<string, string>> = {
   'theatres-not-recorded': 'Air groups unavailable.',
 };
 
-function resolveSideName(
-  side: AirSide,
-  readView: BoundedReadView,
-  options: AirSuperiorityProjectionOptions,
-): string {
+function resolveSideName(side: AirSide, readView: BoundedReadView): string {
   if (side.factions.length) {
     const names: string[] = [];
     let resolvedAll = true;
     for (const id of side.factions) {
-      const override = options.factionNames[id];
-      if (override) {
-        names.push(override);
-        continue;
-      }
       const identity = readView.who('faction', id);
       if (identity.name.status === 'ready') {
         names.push(identity.name.value);
@@ -57,7 +48,7 @@ function resolveSideName(
     }
     if (resolvedAll && names.length) return names.join(' / ');
     if (side.name) return side.name;
-    return side.factions.map(id => options.factionNames[id] ?? `Faction ${id}`).join(' / ');
+    return side.factions.map(id => `Faction ${id}`).join(' / ');
   }
   const tag = side.tag ?? side.leader;
   if (tag) {
@@ -77,8 +68,6 @@ function resolveSideColor(
   options: AirSuperiorityProjectionOptions,
 ): string {
   if (side.colourFaction) {
-    const override = options.factionColours[side.colourFaction];
-    if (override) return override;
     const factionIdentity = readView.who('faction', side.colourFaction);
     if (factionIdentity.colour?.status === 'ready') return factionIdentity.colour.value;
   }
@@ -97,7 +86,7 @@ function wingsText(region: AirRegion, live: ReturnType<BoundedReadView['live']>)
   const raw = live?.get(liveKey(String(region.id), 'wings'));
   if (raw === undefined) return { text: 'Wings not recorded', count: null };
   const count = Math.trunc(Number(raw));
-  return { text: `${count.toLocaleString('en-US')} air ${count === 1 ? 'wing' : 'wings'}`, count };
+  return { text: `${formatScalar(count, 'integer')} air ${count === 1 ? 'wing' : 'wings'}`, count };
 }
 
 function superiorityState(friendly: number, total: number, scale: number, badBelow: number, goodAbove: number): string {
@@ -115,8 +104,9 @@ function projectRegion(
   options: AirSuperiorityProjectionOptions,
 ): ShareRowEntry | null {
   const live = readView.live('main');
-  const name = regionLabel(region);
-  const labelMissing = region.name === null;
+  const named = regionLabel(readView, region.id, region.name);
+  const name = named.label;
+  const labelMissing = named.nameMissing !== undefined;
   const wings = wingsText(region, live);
   const cell = region.cell;
   const baseTooltip: TooltipListItem[] = [];
@@ -145,7 +135,7 @@ function projectRegion(
   if (cell.kind === 'view') {
     const side = cell.side === null ? undefined : reply.sides[cell.side];
     const vpName = side
-      ? resolveSideName(side, readView, options)
+      ? resolveSideName(side, readView)
       : cell.leader
         ? (() => {
             const id = readView.who('country', cell.leader);
@@ -284,7 +274,7 @@ function projectRegion(
         hour: readView.hour,
         missingReason: reason,
         items: [
-          ...cell.unknown.map(idx => ({ label: resolveSideName(reply.sides[idx]!, readView, options), missingReason: 'Score unknown' })),
+          ...cell.unknown.map(idx => ({ label: resolveSideName(reply.sides[idx]!, readView), missingReason: 'Score unknown' })),
           { label: 'Air wings', value: wings.text },
         ],
       },
@@ -356,7 +346,7 @@ function projectRegion(
     const score = Number(scoreRaw);
     if (score <= 0) continue;
     const side = reply.sides[part.side]!;
-    const sideName = resolveSideName(side, readView, options);
+    const sideName = resolveSideName(side, readView);
     const sideColor = resolveSideColor(side, readView, options);
     const share = total > 0 ? score / total : 0;
     segments.push({
@@ -434,8 +424,6 @@ export const airSuperiorityRegionProjection: BarsProjection<AirSuperiorityProjec
 });
 
 export interface AirSuperiorityAux {
-  readonly factionColours: Readonly<Record<string, string>>;
-  readonly factionNames: Readonly<Record<string, string>>;
   readonly enemyColor: string;
   readonly mutedColor: string;
 }
@@ -494,8 +482,6 @@ export const airSuperiorityRegionDeclaration: BarsWidgetDeclaration<AirSuperiori
       mode: mode.mode,
       filteredSides: mode.sides.length > 0,
       order,
-      factionColours: ctx.aux?.factionColours ?? {},
-      factionNames: ctx.aux?.factionNames ?? {},
       enemyColor: ctx.aux?.enemyColor ?? CHART_MEASURE_COLOURS.short,
       mutedColor: ctx.aux?.mutedColor ?? CHART_MEASURE_COLOURS.mutedFallback,
     };
