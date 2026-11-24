@@ -32,15 +32,20 @@ import type { TooltipContent } from './tooltip';
 import { EMPTY_VIEW, reduceView, shownUntil } from './view';
 import type { AxisSettings, PlaybackMode, Range, ViewAction, ViewState } from './view';
 import type { Live } from './live';
-import { canvasMeasureText } from './textWidth';
+import { canvasMeasureText, scratchMeasureText } from './textWidth';
+import { attachTimeChartWorker, supportsTimeChartWorker } from './timeChartWorkerClient';
 import {
   TIME_CHART_MIN_SPAN,
   drawTimeChartScene,
   fitTimeChartFrame,
+  resolveDeclarativeEndLabels,
   resolveTimeChartPadding,
   resolveTimeChartTargetX,
   resolveTimeChartTargetY,
+  type AxisValueFormatter,
+  type ChartAxisFormatterId,
   type ChartLayer as PureChartLayer,
+  type DeclarativeEndLabels,
 } from './renderTimeChart';
 import './charts.css';
 
@@ -67,8 +72,9 @@ export interface TimeChartProps {
   layers: readonly ChartLayer[];
   gaps?: readonly LostSpan[];
   strip?: ChartStrip;
-  formatValue?: (value: number, ticks: readonly number[]) => string;
+  formatValue?: ChartAxisFormatterId | AxisValueFormatter;
   valueTicks?: readonly number[];
+  endLabels?: DeclarativeEndLabels;
   badges?: readonly EventBadge[];
   markSummary?: MarkSummary;
   markSummaries?: readonly MarkSummary[] | (() => readonly MarkSummary[]);
@@ -117,6 +123,33 @@ function withLiveHead(props: TimeChartProps): TimeChartProps {
   return head === props.playhead ? props : { ...props, playhead: head };
 }
 
+function canDrawInWorker(p: TimeChartProps): boolean {
+  return p.layers.length > 0
+    && p.layers.every(layer => typeof layer.describe === 'function')
+    && !p.strip
+    && !p.overlay
+    && typeof p.formatValue !== 'function';
+}
+
+function sampleWorkerHeads(p: TimeChartProps, frame: PlotFrame, until: number | null): {
+  headValues: (number | null)[];
+  endHeadValues?: (number | null)[];
+} {
+  const drawUntil = until ?? frame.x[1];
+  const endMax = p.endLabels?.extentMax ?? frame.x[1];
+  const endAt = Math.min(until ?? endMax, frame.x[1], endMax);
+  const separateEnd = p.endLabels !== undefined && endAt !== drawUntil;
+  const headValues: (number | null)[] = [];
+  const endHeadValues: (number | null)[] | undefined = separateEnd ? [] : undefined;
+  for (const layer of p.layers) {
+    const desc = layer.describe?.();
+    const tiled = desc?.kind === 'line-summary' ? desc.summary?.tiles : undefined;
+    headValues.push(tiled ? tiled.valueAt(drawUntil) : null);
+    if (endHeadValues) endHeadValues.push(tiled ? tiled.valueAt(endAt) : null);
+  }
+  return endHeadValues ? { headValues, endHeadValues } : { headValues };
+}
+
 export default function TimeChart(props: TimeChartProps) {
   const owner = useId();
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -125,6 +158,14 @@ export default function TimeChart(props: TimeChartProps) {
   latest.current = props;
   const motionNow = useMotionNow();
   const [zoomed, setZoomed] = useState(false);
+  const [workerFailed, setWorkerFailed] = useState(false);
+  const useWorker = canDrawInWorker(props) && !workerFailed && supportsTimeChartWorker();
+  const canvasMode = useRef(useWorker);
+  const canvasGen = useRef(0);
+  if (canvasMode.current !== useWorker) {
+    canvasMode.current = useWorker;
+    canvasGen.current += 1;
+  }
   const eventsText = useRef<HTMLParagraphElement>(null);
   type Point = { x: number; y: number; clientX: number; clientY: number };
   const hover = useRef<HoverState<Point>>(NO_HOVER);
@@ -147,8 +188,15 @@ export default function TimeChart(props: TimeChartProps) {
 
   useEffect(() => {
     const element = canvas.current!;
-    const drawing = drawingSurface(element), context = drawing.context!;
-    const measure = canvasMeasureText(context);
+    const triggerFallback = () => { setWorkerFailed(true); };
+    const worker = useWorker ? attachTimeChartWorker(element, triggerFallback) : null;
+    if (useWorker && !worker) {
+      setWorkerFailed(true);
+      return;
+    }
+    const drawing = worker ? null : drawingSurface(element);
+    const context = drawing?.context ?? null;
+    const measure = worker ? (scratchMeasureText() ?? (() => 0)) : canvasMeasureText(context!);
     const sheet = overlay.current ? drawingSurface(overlay.current) : null, overlayContext = sheet?.context ?? null;
     let tokens = readTokens();
     let view: ViewState = EMPTY_VIEW;
@@ -190,9 +238,10 @@ export default function TimeChart(props: TimeChartProps) {
 
     const draw = (info: FrameInfo): boolean => {
       const p = withLiveHead(latest.current);
+      if (worker && !canDrawInWorker(p)) return false;
       const { layoutWidth, layoutHeight, backing: size } = surface.read();
       if (!layoutWidth || !layoutHeight) return false;
-      sizeCanvas(drawing.canvas, size.width, size.height);
+      if (drawing) sizeCanvas(drawing.canvas, size.width, size.height);
       if (sheet && sizeCanvas(sheet.canvas, size.width, size.height)) overlaid = false;
 
       const strip = p.strip ? Math.max(0, Math.round(p.strip.height(layoutHeight))) : 0;
@@ -257,36 +306,69 @@ export default function TimeChart(props: TimeChartProps) {
 
       const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
       const summaries = marks.filter(summary => markSummaryMatches(summary, frame!, until));
-      const baseKey = [size.width, size.height, frame.plotLeft, frame.plotTop, frame.plotWidth, frame.plotHeight, frame.x[0], frame.x[1], frame.y[0], frame.y[1],
-        frame.log, tokens, p.layers, p.revision, until, p.strip, p.playhead, p.playback, p.badges, p.overlay, p.rows, p.formatValue, p.valueTicks, p.gaps,
+      const heads = worker ? sampleWorkerHeads(p, frame, until) : null;
+      const baseKey = [size.width, size.height, size.scaleX, size.scaleY, frame.plotLeft, frame.plotTop, frame.plotWidth, frame.plotHeight, frame.x[0], frame.x[1], frame.y[0], frame.y[1],
+        frame.log, tokens, p.layers, p.revision, until, p.strip, p.playhead, p.playback, p.badges, p.overlay, p.rows, p.formatValue, p.valueTicks, p.gaps, p.endLabels,
+        ...(heads ? heads.headValues : []), ...(heads?.endHeadValues ?? []),
         ...(p.data?.revision() ?? []), ...summaries];
       pickFrame.current = { ...picks.drawn({ frame, until }, p.onPick), props: p };
       if (!painted || painted.length !== baseKey.length || !painted.every((value, index) => Object.is(value, baseKey[index]))) {
-        drawTimeChartScene(
-          context,
-          frame,
-          tokens,
-          {
+        if (worker) {
+          const posted = worker.draw({
+            backingWidth: size.width,
+            backingHeight: size.height,
             layoutWidth,
             layoutHeight,
             scaleX: size.scaleX,
             scaleY: size.scaleY,
+            frame,
             layers: p.layers,
             gaps: p.gaps,
-            strip: p.strip,
             playhead: p.playhead,
             playback: p.playback,
             afterPlayhead: p.afterPlayhead,
             until,
             markSummaries: summaries,
-            markSummariesMatched: true,
             badges: p.badges,
             rowLabels: p.rows?.labels,
-            formatValue: p.formatValue,
-            overlay: p.overlay,
-          },
-          measure,
-        );
+            formatValue: typeof p.formatValue === 'string' ? p.formatValue : undefined,
+            endLabels: p.endLabels,
+            headValues: heads!.headValues,
+            endHeadValues: heads!.endHeadValues,
+          });
+          if (!posted) {
+            setWorkerFailed(true);
+            return false;
+          }
+        } else {
+          drawTimeChartScene(
+            context!,
+            frame,
+            tokens,
+            {
+              layoutWidth,
+              layoutHeight,
+              scaleX: size.scaleX,
+              scaleY: size.scaleY,
+              layers: p.layers,
+              gaps: p.gaps,
+              strip: p.strip,
+              playhead: p.playhead,
+              playback: p.playback,
+              afterPlayhead: p.afterPlayhead,
+              until,
+              markSummaries: summaries,
+              markSummariesMatched: true,
+              badges: p.badges,
+              rowLabels: p.rows?.labels,
+              formatValue: p.formatValue,
+              overlay: p.overlay,
+              endLabels: p.endLabels ? resolveDeclarativeEndLabels(frame, p.layers, p.endLabels, until) : undefined,
+              endLabelGap: p.endLabels?.gap,
+            },
+            measure,
+          );
+        }
         painted = baseKey;
       }
       if (overlayContext && overlaid) {
@@ -529,7 +611,7 @@ export default function TimeChart(props: TimeChartProps) {
     return () => {
       if (summaryTimer) clearTimeout(summaryTimer);
       if (pendingHover) clearTimeout(pendingHover.timer);
-      remove(); unsubscribe(); surface.disconnect(); hideTooltip(owner);
+      remove(); unsubscribe(); surface.disconnect(); worker?.detach(); hideTooltip(owner);
       element.removeEventListener('pointerdown', down);
       element.removeEventListener('pointermove', move);
       element.removeEventListener('pointerup', up);
@@ -541,7 +623,7 @@ export default function TimeChart(props: TimeChartProps) {
       task.current = null;
       controls.current = null;
     };
-  }, [owner, picks]);
+  }, [owner, picks, useWorker]);
 
   useEffect(() => {
     const { pickOwner, branchStart } = props;
@@ -561,7 +643,7 @@ export default function TimeChart(props: TimeChartProps) {
   useEffect(() => {
     if (task.current) scheduler.setVisible(task.current, props.active);
     if (!props.active) hideTooltip(owner);
-  }, [props.active, owner]);
+  }, [props.active, owner, useWorker]);
   useEffect(() => { if (task.current) scheduler.wake(task.current); });
   useEffect(() => props.liveHead?.subscribe(() => { if (task.current) scheduler.wake(task.current); }), [props.liveHead]);
   useEffect(() => props.data?.subscribe(() => { if (task.current) scheduler.wake(task.current); }), [props.data]);
@@ -641,7 +723,7 @@ export default function TimeChart(props: TimeChartProps) {
     }
   };
   return <div className="time-chart" data-detail={props.badges?.flatMap(badge => badge.failure ? [badge.failure.message] : []).join("\n") || undefined}>
-    <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={`${owner}-events`}
+    <canvas key={canvasGen.current} ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={`${owner}-events`}
       aria-keyshortcuts={props.rows ? 'ArrowUp ArrowDown ArrowLeft ArrowRight Home End' : props.tooltip ? 'ArrowLeft ArrowRight Home End' : undefined} onKeyDown={keyDown} onBlur={clearKeyed} />
     <p ref={eventsText} id={`${owner}-events`} className="sr-only" />
     <p className="sr-only" aria-live="polite">{keySpoken}</p>

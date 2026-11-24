@@ -10,7 +10,7 @@ import HeatMatrix from '../../charts/heat/HeatMatrix';
 import type { MatrixAxisItem, MatrixCell } from '../../charts/heat/HeatMatrix';
 import { signedColor } from '../../charts/heat/matrix';
 import { dayLabel } from '../../charts/draw';
-import { drawLineSummary } from '../../charts/chartSummary';
+import { lineSummaryLayer } from '../../charts/renderTimeChart';
 import { jumpItem } from '../../charts/jump';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer, ChartData } from '../../charts/TimeChart';
@@ -70,11 +70,12 @@ function PairHistory({ runtime, gate, track, pair: chosen, hour, active, followi
   const looks = useHolderLooks(runtime.client, track, useMemo(() => pairHolders(chosen), [chosen]), active, useChartTokens());
   const label = (index: number) => looks.name(index ? 'second' : 'first');
   const colour = (index: number) => looks.colour(index ? 'second' : 'first');
-  const layers = useMemo<ChartLayer[]>(() => keys.map((key, index) => ({
-    draw: (ctx, frame, tokens, state) => {
-      const summary = series.summaryOf(keyId(key));
-      if (summary) drawLineSummary(ctx, frame, tokens, summary, looks.colour(index ? 'second' : 'first'), true, state.playhead ?? null, index ? { dash: SECONDARY_DASH } : {});
-    },
+  const layers = useMemo<ChartLayer[]>(() => keys.map((key, index) => lineSummaryLayer({
+    summary: () => series.summaryOf(keyId(key)),
+    color: looks.colour(index ? 'second' : 'first'),
+    held: true,
+    options: index ? { dash: SECONDARY_DASH } : {},
+    withExtent: false,
   })), [keys, series.summaryOf, looks]);
   const chartData = useMemo<ChartData>(() => ({ revision: () => [series.revision()], subscribe: series.subscribe }), [series.revision, series.subscribe]);
   const valueAt = (index: number, at: number) => {

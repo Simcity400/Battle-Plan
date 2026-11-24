@@ -85,3 +85,17 @@ export function canvasMeasureText(context: Measuring): MeasureText {
   }
   return adapter;
 }
+
+let scratchContext: Measuring | null | undefined;
+export function scratchMeasureText(): MeasureText | null {
+  if (scratchContext === undefined) {
+    scratchContext = null;
+    if (typeof OffscreenCanvas === 'function') {
+      try { scratchContext = new OffscreenCanvas(1, 1).getContext('2d'); } catch { scratchContext = null; }
+    }
+    if (!scratchContext && typeof document !== 'undefined') {
+      try { scratchContext = document.createElement('canvas').getContext('2d'); } catch { scratchContext = null; }
+    }
+  }
+  return scratchContext ? canvasMeasureText(scratchContext) : null;
+}

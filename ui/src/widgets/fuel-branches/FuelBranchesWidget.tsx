@@ -9,6 +9,7 @@ import { useDrill } from '../../charts/drill/useDrill';
 import { useContextMenu } from '../../components/ContextMenu';
 import { dayLabel, drawEndLabels } from '../../charts/draw';
 import { drawLineSummary, summaryExtent } from '../../charts/chartSummary';
+import { lineSummaryLayer } from '../../charts/renderTimeChart';
 import { jumpItem } from '../../charts/jump';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
@@ -224,13 +225,18 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
   const axis = useMemo(() => ratioAxis(most), [most]);
   const ends = options.endLabels !== false;
   const reachedByKey = useMemo(() => new Map(series.lines.map(line => [keyId(line.key), line])), [series.lines]);
-  const layers = useMemo<ChartLayer[]>(() => [{
+  const layers = useMemo<ChartLayer[]>(() => !ends ? lines.map(line => lineSummaryLayer({
+    summary: () => series.summaryByKey.get(keyId(line.key))?.summary,
+    color: line.color,
+    held: true,
+    withExtent: false,
+  })) : [{
     draw: (ctx, frame, chartTokens, state) => {
       const labels = lines.flatMap(line => {
         const shown = series.summaryByKey.get(keyId(line.key))?.summary;
         const end = shown ? drawLineSummary(ctx, frame, chartTokens, shown, line.color, true, state.playhead) : null;
         const run = state.playhead === null ? null : runAt(reachedByKey.get(keyId(line.key))?.runs ?? [], Math.floor(state.playhead));
-        return ends && end && run ? [{ text: percentText(Number(run.valueRaw) / 10 ** SHARE_PLACES), y: end.y, from: end.y, color: line.color }] : [];
+        return end && run ? [{ text: percentText(Number(run.valueRaw) / 10 ** SHARE_PLACES), y: end.y, from: end.y, color: line.color }] : [];
       });
       drawEndLabels(ctx, frame, chartTokens, labels);
     },
@@ -262,7 +268,7 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: 0, yMax: axis.top, log: false }} valueTicks={axis.ticks}
-        formatValue={value => `${value}%`} padding={ends ? { right: 64 } : undefined}
+        formatValue="percentRaw" padding={ends ? { right: 64 } : undefined}
         layers={layers} active={active} pickOwner={series.owner} notRecorded={series.unrecorded}
         onSummaryView={series.onSummaryView} onNavigateHour={series.onNavigateHour}
         keyboardHour={series.keyboardHour} keyboardRevision={series.keyboardRevision} onHover={setHoverHour}

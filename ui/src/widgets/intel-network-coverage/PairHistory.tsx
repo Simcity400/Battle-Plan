@@ -2,7 +2,7 @@ import type { Gate } from '../../dashboard/regionGate';
 import { useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
-import { drawLineSummary } from '../../charts/chartSummary';
+import { lineSummaryLayer } from '../../charts/renderTimeChart';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import TimeChart from '../../charts/TimeChart';
@@ -29,11 +29,11 @@ export default function PairHistory({ widget, runtime, active, pair, gate, hour 
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const series = useKeyedSeries(runtime.client, runtime.clock, gate, track && keys.length ? { source: track.source, branch: track.branch, family, keys, partBits: 32,
     lastHour: track.branch.lastHour } : null, gate.recorded(hour), gate.recorded(hoverHour), false, active, root);
-  const layers = useMemo<ChartLayer[]>(() => keys.map(key => ({
-    draw: (ctx, frame, chartTokens, state) => {
-      const summary = series.summaryOf(keyId(key));
-      if (summary) drawLineSummary(ctx, frame, chartTokens, summary, tokens.accent, true, state.playhead ?? null);
-    },
+  const layers = useMemo<ChartLayer[]>(() => keys.map(key => lineSummaryLayer({
+    summary: () => series.summaryOf(keyId(key)),
+    color: tokens.accent,
+    held: true,
+    withExtent: false,
   })), [keys, series.summaryOf, tokens.accent]);
   const chartData = useMemo<ChartData>(() => ({ revision: () => [series.revision()], subscribe: series.subscribe }), [series.revision, series.subscribe]);
   if (!track) return <WidgetState kind="empty" icon="eye" message="Load a campaign to see intel networks." />;

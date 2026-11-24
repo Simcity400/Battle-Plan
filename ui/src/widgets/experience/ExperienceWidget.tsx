@@ -2,14 +2,14 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
-import { dayLabel, placeEndLabels } from '../../charts/draw';
+import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
 import LineSwatch from '../../charts/LineSwatch';
 import { lineDashes } from '../../charts/palette';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartData, ChartLayer } from '../../charts/TimeChart';
-import { drawLineSummary, summaryExtent } from '../../charts/chartSummary';
+import { lineSummaryLayer, type DeclarativeEndLabels } from '../../charts/renderTimeChart';
 import type { ChartSummary } from '../../charts/chartSummary';
 import { CHART_LAYOUT } from '../../charts/tokens';
 import { useChartTokens } from '../../charts/useChartTokens';
@@ -33,10 +33,9 @@ import { followStore } from '../../dashboard/follow/store.ts';
 import { followFailure, followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { definition, OPTIONS } from './definition';
-import { BRANCHES, BRANCH_LABELS, MEASURE_LABELS, SCALE, experienceBranches, experienceCard, experienceFamily, experienceLines, experienceMeasure, followExperienceHeads,
-  experienceStructure, formatExperience, pointsSummary, validateExperienceReply } from './experienceData';
+import { BRANCHES, BRANCH_LABELS, MEASURE_LABELS, experienceBranches, experienceCard, experienceFamily, experienceLines, experienceMeasure, followExperienceHeads,
+  experienceStructure, pointsSummary, validateExperienceReply } from './experienceData';
 import type { ExperienceBranch } from './experienceData';
-import { summaryEnd } from '../country-measure/measureData';
 import './experience.css';
 import { SPEC, at as pickAt, recordedHour } from '../../dashboard/regionTime.ts';
 
@@ -114,13 +113,25 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
     };
   }, [tiles.army.read, tiles.navy.read, tiles.air.read]);
   const until = shownUntil(playhead, options.playback as PlaybackMode, options.afterPlayhead === true);
-  const layers = useMemo<ChartLayer[]>(() => lines.map(line => ({
-    draw: (ctx, frame, chartTokens, state) => {
-      const summary = summaryOf(line.branch, line.tag);
-      if (summary) drawLineSummary(ctx, frame, chartTokens, summary, line.color, false, state.playhead, { dash: single ? lineDashes(0).primary : branchDash(line.branch) });
-    },
-    extent: x => { const summary = summaryOf(line.branch, line.tag); return summary ? summaryExtent(summary, x, until) : null; },
+  const layers = useMemo<ChartLayer[]>(() => lines.map(line => lineSummaryLayer({
+    summary: () => summaryOf(line.branch, line.tag),
+    color: line.color,
+    options: { dash: single ? lineDashes(0).primary : branchDash(line.branch) },
+    until,
   })), [lines, summaryOf, until, single]);
+  const endLabels = useMemo<DeclarativeEndLabels | undefined>(() => {
+    if (!options.endLabels) return undefined;
+    return {
+      extentMax: extent[1],
+      items: lines.map((line, layerIndex) => ({
+        id: `${line.tag}|${line.branch}`,
+        layerIndex,
+        color: line.color,
+        label: single ? BRANCH_LABELS[line.branch] : `${labels.labelAt(styleAt)(line.tag).name} · ${BRANCH_LABELS[line.branch]}`,
+        format: { kind: 'experience', rate: measure !== 'banked' },
+      })),
+    };
+  }, [options.endLabels, extent[1], lines, single, labels, styleAt, measure]);
   const data = useMemo<ChartData>(() => ({ revision: () => BRANCHES.map(branch => tiles[branch].read()),
     subscribe: listener => { const stops = BRANCHES.map(branch => tiles[branch].subscribe(listener)); return () => stops.forEach(stop => stop()); } }),
   [tiles.army.subscribe, tiles.navy.subscribe, tiles.air.subscribe]);
@@ -154,22 +165,12 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
         revision={`${track.branch.id}:${lines.length}:${measure}`}
         onSummaryView={view => BRANCHES.forEach(branch => tiles[branch].onView(view))}
         onHover={hour => setHover(hour === null ? null : Math.floor(hour))}
-        formatValue={value => formatExperience(value * SCALE, measure !== 'banked')}
+        formatValue={measure === 'banked' ? 'experienceBanked' : 'experienceRate'}
+        endLabels={endLabels}
         tooltip={hour => ({ title: dayLabel(hour), subtitle: first ? `${labels.labelAt(Math.floor(hour))(first).name}: ${title}` : title,
           rows: recordedHour(track, hour) === null ? [{ label: 'Outside the recording', tone: 'muted' as const }]
             : head && card.at === Math.floor(hour) ? branches.flatMap(branch => experienceCard(head, branch).rows.filter(row => row.label === MEASURE_LABELS[measure])
             .map(row => ({ ...row, label: BRANCH_LABELS[branch] }))) : [{ label: 'Loading…', tone: 'muted' as const }] })}
-        overlay={(ctx, frame, chartTokens) => {
-          if (!options.endLabels) return;
-          const at = Math.min(until ?? extent[1], frame.x[1], extent[1]);
-          placeEndLabels(ctx, frame, chartTokens, lines.flatMap(line => {
-            const value = summaryEnd(summaryOf(line.branch, line.tag), at);
-            if (value === null) return [];
-            return [{ id: `${line.tag}|${line.branch}`, y: frame.toY(value), color: line.color,
-              text: single ? BRANCH_LABELS[line.branch] : `${labels.labelAt(styleAt)(line.tag).name} · ${BRANCH_LABELS[line.branch]}`,
-              suffix: formatExperience(value * SCALE, measure !== 'banked') }];
-          }));
-        }}
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
     </div>
     {menu.menu}

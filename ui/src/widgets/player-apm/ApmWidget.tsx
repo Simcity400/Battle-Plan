@@ -10,6 +10,7 @@ import Legend from '../../charts/Legend';
 import { dayLabel, drawLine, font } from '../../charts/draw';
 import { extentOfAll } from '../../charts/series';
 import { binsLabel, drawLineSummary, summaryExtent } from '../../charts/chartSummary';
+import { lineSummaryLayer } from '../../charts/renderTimeChart';
 import type { ChartBucket, ChartSummary } from '../../charts/chartSummary';
 import { lineStyles, SECONDARY_DASH } from '../../charts/palette';
 import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
@@ -105,13 +106,13 @@ export function ApmWidget(props: WidgetProps & { graph?: boolean }) {
     color: players ? styles.get(row.id)!.color : looks.colour(row.id),
     primary: players ? styles.get(row.id)!.primary : [], secondary: players ? styles.get(row.id)!.secondary : SECONDARY_DASH })), [rows, looks, players, styles]);
   const readRates = rates.read, readPaused = pausedRates.read;
-  const layers = useMemo<ChartLayer[]>(() => lines.map(line => tiled ? {
-    draw: (ctx, frame, chartTokens, state) => {
-      const summary = readRates()?.get(line.row.id)?.summary;
-      if (summary) drawLineSummary(ctx, frame, chartTokens, summary, line.color, true, state.playhead, { dash: line.primary, endDot: true });
-    },
-    extent: x => { const summary = readRates()?.get(line.row.id)?.summary; return summary ? summaryExtent(summary, x, null) : null; },
-  } : {
+  const layers = useMemo<ChartLayer[]>(() => lines.map(line => tiled ? lineSummaryLayer({
+    summary: () => readRates()?.get(line.row.id)?.summary,
+    color: line.color,
+    held: true,
+    options: { dash: line.primary, endDot: true },
+    until: null,
+  }) : {
     draw: (ctx, frame, chartTokens, state) => { drawLine(ctx, frame, chartTokens, line.runs, line.color, { held: true, dash: line.primary, endDot: true, until: state.playhead ?? undefined }); },
     extent: x => extentOfAll([line.runs], x[0], x[1]),
   }), [lines, tiled, readRates]);
@@ -191,7 +192,7 @@ export function ApmWidget(props: WidgetProps & { graph?: boolean }) {
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: false }}
         layers={layers} strip={strip} active={active} notRecorded={tiled && rates.unrecorded && (!paused || pausedRates.unrecorded) ? rates.unrecorded : null}
         revision={[data, branchSeries.data, looks.revision, paused]} data={chartData} hoursPerSecond={motion} onSummaryView={onView}
-        formatValue={value => `${apmText(value)} eAPM`}
+        formatValue="apm"
         tooltip={at => {
           if (tiled) {
             const [ratesNow, pausedOrders] = [readRates(), readPaused()];

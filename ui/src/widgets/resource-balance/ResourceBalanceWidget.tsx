@@ -12,7 +12,8 @@ import DrillHost from '../../charts/drill/DrillHost';
 import {  pinnedBreakdown } from '../../charts/drill/drillState';
 import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
-import { drawGapSummary, drawLineSummary, pickSummaryLines } from '../../charts/chartSummary';
+import { pickSummaryLines } from '../../charts/chartSummary';
+import { gapSummaryLayer, lineSummaryLayer } from '../../charts/renderTimeChart';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
 import type { Live, LiveValues } from '../../charts/live';
@@ -383,21 +384,26 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
   const until = shownUntil(playhead, playback, options.afterPlayhead === true);
   const shade = lines.length === 1 && options.gap !== false;
   const layers = useMemo<ChartLayer[]>(() => [
-    ...shade ? [{ draw: (ctx, frame, chartTokens, state) => {
-      const id = keyId(lines[0].key), high = supply.summaryOf(id), low = demand.summaryOf(id);
-      if (high && low) drawGapSummary(ctx, frame, chartTokens, high, low, chartTokens.positive, chartTokens.error, state.playhead);
-    } } satisfies ChartLayer] : [],
+    ...shade ? [gapSummaryLayer({
+      first: () => supply.summaryOf(keyId(lines[0].key)),
+      second: () => demand.summaryOf(keyId(lines[0].key)),
+      aboveColor: tokens.positive,
+      belowColor: tokens.error,
+    })] : [],
     ...lines.flatMap(line => [
-      { draw: (ctx, frame, chartTokens, state) => {
-        const drawn = supply.summaryOf(keyId(line.key));
-        if (drawn) drawLineSummary(ctx, frame, chartTokens, drawn, line.color, false, state.playhead);
-      } },
-      { draw: (ctx, frame, chartTokens, state) => {
-        const drawn = demand.summaryOf(keyId(line.key));
-        if (drawn) drawLineSummary(ctx, frame, chartTokens, drawn, line.color, false, state.playhead, { dash: SECONDARY_DASH, endDot: false });
-      } },
-    ] satisfies ChartLayer[]),
-  ], [lines, shade, supply.summaryOf, demand.summaryOf]);
+      lineSummaryLayer({
+        summary: () => supply.summaryOf(keyId(line.key)),
+        color: line.color,
+        withExtent: false,
+      }),
+      lineSummaryLayer({
+        summary: () => demand.summaryOf(keyId(line.key)),
+        color: line.color,
+        options: { dash: SECONDARY_DASH, endDot: false },
+        withExtent: false,
+      }),
+    ]),
+  ], [lines, shade, supply.summaryOf, demand.summaryOf, tokens.positive, tokens.error]);
   const [selection, setSelection] = useState<{ hour: number; ids: readonly string[] } | null>(null);
   useEffect(() => setSelection(null), [chosen, extent[0], extent[1]]);
   const chipValues = useRef(new Map<number, HTMLElement>());

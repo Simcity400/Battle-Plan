@@ -1,9 +1,12 @@
 import { BADGE_STRIP, drawBadges, type EventBadge } from './badges.ts';
+import { drawGapSummary, drawLineSummary, summaryExtent, summaryFits, type ChartSummary, type SummaryLineOptions } from './chartSummary.ts';
 import {
+  END_LABEL_HEIGHT,
   VALUE_LABEL_GAP,
   clipToPlot,
   drawAxes,
   drawPlayhead,
+  drawValueRule,
   placeEndLabels,
   valueLabelWidth,
   type LineEnd,
@@ -14,20 +17,52 @@ import { drawMarkSummary, markSummaryMatches, type MarkSummary } from './markSum
 import type { ChartStrip } from './strip.ts';
 import { canvasMeasureText, type Canvas2D, type MeasureText } from './textWidth.ts';
 import { CHART_LAYOUT, type ChartTokens } from './tokens.ts';
-import { formatAxisPercent, formatAxisValue } from './valueAxis.ts';
+import { formatAmount, formatAxisPercent, formatAxisValue, formatFixed, rescale } from './valueAxis.ts';
 import { playbackDomain, resolveX, resolveY, shownUntil, type AxisSettings, type PlaybackMode, type Range, type ViewState } from './view.ts';
 
 export const TIME_CHART_DEFAULT_PADDING: Padding = { left: 44, right: CHART_LAYOUT.right, top: 12, bottom: 24 };
 export const TIME_CHART_LABEL_MARGIN = 4;
 export const TIME_CHART_MIN_SPAN = 14 * 24;
 
-export type ChartAxisFormatterId = 'axisValue' | 'powerAxis' | 'percent';
+export type ChartAxisFormatterId =
+  | 'axisValue'
+  | 'powerAxis'
+  | 'percent'
+  | 'stabilityPercent'
+  | 'percentRaw'
+  | 'apm'
+  | 'fuel'
+  | 'experienceBanked'
+  | 'experienceRate';
 export type ChartFitId = 'none' | 'stabilityZoom';
 export type AxisValueFormatter = (value: number, ticks: readonly number[]) => string;
 export type ValueFit = (shown: Range | null) => Range | null;
 
+const FUEL_QUANTITY_SCALE = 32768;
+
 export const powerAxisFormat: AxisValueFormatter = value =>
   Math.abs(value) >= 1000 ? `${Math.round(value / 100) / 10}k` : String(Math.round(value));
+
+export const stabilityPercentAxisFormat: AxisValueFormatter = value => {
+  const percent = value * 100;
+  return `${Number.isInteger(Math.round(percent * 10) / 10) ? Math.round(percent) : percent.toFixed(1)}%`;
+};
+
+export const percentRawAxisFormat: AxisValueFormatter = value => `${value}%`;
+
+export const apmAxisFormat: AxisValueFormatter = value =>
+  `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} eAPM`;
+
+export const fuelAxisFormat: AxisValueFormatter = value =>
+  formatAmount(rescale(BigInt(Math.round(value * FUEL_QUANTITY_SCALE)), BigInt(FUEL_QUANTITY_SCALE), 0), 0, 0);
+
+export const experienceBankedAxisFormat: AxisValueFormatter = value =>
+  value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+
+export const experienceRateAxisFormat: AxisValueFormatter = value => {
+  const text = value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  return value > 0 ? `+${text}` : text;
+};
 
 export const stabilityZoomFit: ValueFit = shown => {
   if (!shown) return null;
@@ -45,6 +80,12 @@ const FORMATTERS: Record<ChartAxisFormatterId, AxisValueFormatter> = {
   axisValue: formatAxisValue,
   powerAxis: powerAxisFormat,
   percent: formatAxisPercent,
+  stabilityPercent: stabilityPercentAxisFormat,
+  percentRaw: percentRawAxisFormat,
+  apm: apmAxisFormat,
+  fuel: fuelAxisFormat,
+  experienceBanked: experienceBankedAxisFormat,
+  experienceRate: experienceRateAxisFormat,
 };
 
 const FITS: Record<ChartFitId, ValueFit | undefined> = {
@@ -62,10 +103,225 @@ export function resolveChartFit(fit?: ChartFitId | ValueFit): ValueFit | undefin
   return fit ? FITS[fit] : undefined;
 }
 
+export type DeclarativeLayer =
+  | {
+      readonly kind: 'line-summary';
+      readonly summary: ChartSummary | undefined;
+      readonly color: string;
+      readonly held?: boolean;
+      readonly options?: SummaryLineOptions;
+      readonly yScale?: number;
+      readonly gaps?: readonly LostSpan[];
+    }
+  | {
+      readonly kind: 'gap-summary';
+      readonly first: ChartSummary | undefined;
+      readonly second: ChartSummary | undefined;
+      readonly aboveColor: string;
+      readonly belowColor: string;
+      readonly alpha?: number;
+      readonly gaps?: readonly LostSpan[];
+    }
+  | {
+      readonly kind: 'value-rule';
+      readonly value: number;
+      readonly gaps?: readonly LostSpan[];
+    };
+
+export type EndLabelFormat =
+  | { readonly kind: 'fixed'; readonly decimals: number; readonly digits: number; readonly unit?: string; readonly single?: boolean }
+  | { readonly kind: 'percent'; readonly decimals: number }
+  | { readonly kind: 'fuel'; readonly scale: number; readonly digits: number }
+  | { readonly kind: 'experience'; readonly rate: boolean }
+  | { readonly kind: 'static'; readonly requireFit?: boolean };
+
+export interface EndLabelItem {
+  readonly id: string;
+  readonly layerIndex: number;
+  readonly color: string;
+  readonly muted?: boolean;
+  readonly label: string;
+  readonly format: EndLabelFormat;
+  readonly fallbackKeep?: boolean;
+}
+
+export interface DeclarativeEndLabels {
+  readonly gap?: number;
+  readonly extentMax?: number;
+  readonly overflow?: 'place' | 'filter-then-hide';
+  readonly items: readonly EndLabelItem[];
+}
+
 export interface ChartLayer<C extends Canvas2D = Canvas2D> {
   draw(ctx: C, frame: PlotFrame, tokens: ChartTokens, state: { playhead: number | null }): void;
   extent?(x: Range): Range | null;
   gaps?: readonly LostSpan[];
+  describe?(): DeclarativeLayer;
+}
+
+export function scalePlotFrameY(frame: PlotFrame, scale: number): PlotFrame {
+  if (scale === 1) return frame;
+  return {
+    ...frame,
+    y: [frame.y[0] * scale, frame.y[1] * scale],
+    toY: value => frame.toY(value / scale),
+    valueAt: py => frame.valueAt(py) * scale,
+  };
+}
+
+export interface LineSummaryLayerSpec {
+  readonly summary: () => ChartSummary | undefined;
+  readonly color: string;
+  readonly held?: boolean;
+  readonly options?: SummaryLineOptions;
+  readonly until?: number | null;
+  readonly yScale?: number;
+  readonly gaps?: readonly LostSpan[];
+  readonly withExtent?: boolean;
+  readonly extent?: (x: Range) => Range | null;
+}
+
+export function lineSummaryLayer<C extends Canvas2D = Canvas2D>(spec: LineSummaryLayerSpec): ChartLayer<C> {
+  const held = spec.held === true;
+  const scale = spec.yScale ?? 1;
+  const layer: ChartLayer<C> = {
+    gaps: spec.gaps,
+    draw(ctx, frame, tokens, state) {
+      const summary = spec.summary();
+      if (!summary) return;
+      drawLineSummary(ctx, scale === 1 ? frame : scalePlotFrameY(frame, scale), tokens, summary, spec.color, held, state.playhead, spec.options);
+    },
+    describe: () => ({
+      kind: 'line-summary',
+      summary: spec.summary(),
+      color: spec.color,
+      held,
+      options: spec.options,
+      yScale: scale === 1 ? undefined : scale,
+      gaps: spec.gaps,
+    }),
+  };
+  if (spec.extent) {
+    layer.extent = spec.extent;
+  } else if (spec.withExtent !== false) {
+    layer.extent = x => {
+      const summary = spec.summary();
+      if (!summary) return null;
+      const range = summaryExtent(summary, x, spec.until ?? null);
+      return range && scale !== 1 ? [range[0] / scale, range[1] / scale] : range;
+    };
+  }
+  return layer;
+}
+
+export interface GapSummaryLayerSpec {
+  readonly first: () => ChartSummary | undefined;
+  readonly second: () => ChartSummary | undefined;
+  readonly aboveColor: string;
+  readonly belowColor: string;
+  readonly alpha?: number;
+  readonly gaps?: readonly LostSpan[];
+}
+
+export function gapSummaryLayer<C extends Canvas2D = Canvas2D>(spec: GapSummaryLayerSpec): ChartLayer<C> {
+  return {
+    gaps: spec.gaps,
+    draw(ctx, frame, tokens, state) {
+      const first = spec.first();
+      const second = spec.second();
+      if (first && second) drawGapSummary(ctx, frame, tokens, first, second, spec.aboveColor, spec.belowColor, state.playhead, spec.alpha === undefined ? undefined : { alpha: spec.alpha });
+    },
+    describe: () => ({
+      kind: 'gap-summary',
+      first: spec.first(),
+      second: spec.second(),
+      aboveColor: spec.aboveColor,
+      belowColor: spec.belowColor,
+      alpha: spec.alpha,
+      gaps: spec.gaps,
+    }),
+  };
+}
+
+export function valueRuleLayer<C extends Canvas2D = Canvas2D>(value: number, gaps?: readonly LostSpan[]): ChartLayer<C> {
+  return {
+    gaps,
+    draw(ctx, frame, tokens) {
+      drawValueRule(ctx, frame, tokens, value);
+    },
+    describe: () => ({ kind: 'value-rule', value, gaps }),
+  };
+}
+
+export function summaryEndValue(summary: ChartSummary | undefined, at: number): number | null {
+  if (!summary) return null;
+  for (let index = summary.buckets.length - 1; index >= 0; index--) {
+    const bucket = summary.buckets[index];
+    if (!bucket || bucket.firstHour > at) continue;
+    return bucket.lastHour >= at && summary.tiles && !summary.runs ? summary.tiles.valueAt(at) : bucket.lastValue;
+  }
+  return null;
+}
+
+export function formatEndLabel(item: EndLabelItem, value: number, yScale = 1): { yValue: number; text: string; suffix?: string } {
+  const format = item.format;
+  switch (format.kind) {
+    case 'fixed': {
+      const raw = BigInt(Math.round(value * 10 ** format.decimals)).toString();
+      const amount = formatAmount(raw, format.decimals, format.digits);
+      if (format.single) return { yValue: value / yScale, text: format.unit ? `${amount} ${format.unit}` : amount };
+      return { yValue: value / yScale, text: item.label, suffix: amount };
+    }
+    case 'percent': {
+      const raw = BigInt(Math.round(value * 10 ** format.decimals));
+      const text = formatFixed(raw * 100n, format.decimals, 1);
+      return { yValue: value / yScale, text: `${item.label}${text}%` };
+    }
+    case 'fuel': {
+      const amount = formatAmount(rescale(BigInt(Math.round(value)), BigInt(format.scale), format.digits), format.digits, format.digits);
+      return { yValue: value / yScale, text: item.label, suffix: amount };
+    }
+    case 'experience': {
+      const text = value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+      return { yValue: value / yScale, text: item.label, suffix: format.rate && value > 0 ? `+${text}` : text };
+    }
+    case 'static':
+      return { yValue: value / yScale, text: item.label };
+  }
+}
+
+export function filterEndLabelsByRoom(ends: readonly LineEnd[], items: readonly EndLabelItem[], plotHeight: number, gap: number, overflow?: 'place' | 'filter-then-hide'): LineEnd[] {
+  if (overflow !== 'filter-then-hide') return [...ends];
+  const labelHeight = END_LABEL_HEIGHT ?? 14;
+  const room = Math.floor((plotHeight + gap) / (labelHeight + gap));
+  if (ends.length <= room) return [...ends];
+  const keepIds = new Set(items.filter(item => item.fallbackKeep).map(item => item.id));
+  const fitted = ends.filter(end => keepIds.has(end.id));
+  return fitted.length <= room ? fitted : [];
+}
+
+export function resolveDeclarativeEndLabels(
+  frame: PlotFrame,
+  layers: readonly ChartLayer[],
+  spec: DeclarativeEndLabels,
+  until: number | null,
+): LineEnd[] {
+  const maxHour = spec.extentMax ?? frame.x[1];
+  const end = Math.min(until ?? maxHour, frame.x[1], maxHour);
+  if (spec.overflow === 'filter-then-hide' && end < frame.x[0]) return [];
+  const ends: LineEnd[] = [];
+  for (const item of spec.items) {
+    const desc = layers[item.layerIndex]?.describe?.();
+    if (!desc || desc.kind !== 'line-summary') continue;
+    if (item.format.kind === 'static' && item.format.requireFit && (!desc.summary || !summaryFits(frame, desc.summary, until))) continue;
+    const value = summaryEndValue(desc.summary, end);
+    if (value == null) continue;
+    const formatted = formatEndLabel(item, value, desc.yScale ?? 1);
+    const y = frame.toY(formatted.yValue);
+    if (!Number.isFinite(y)) continue;
+    ends.push({ id: item.id, y, text: formatted.text, suffix: formatted.suffix, color: item.color, muted: item.muted });
+  }
+  return filterEndLabelsByRoom(ends, spec.items, frame.plotHeight, spec.gap ?? 2, spec.overflow);
 }
 
 export interface TimeChartPaddingInput {

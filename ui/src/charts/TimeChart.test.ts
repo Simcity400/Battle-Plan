@@ -252,3 +252,131 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     }
   }
 });
+
+test('TimeChart falls back to synchronous drawing on a fresh canvas when the worker fails', async () => {
+  const slots = new Map<number, unknown>(), effects = new Map<number, Effect>(), pending = new Map<number, Effect>();
+  let cursor = 0, task: FrameTask | undefined, workerDraws = 0, workerDetaches = 0, syncDraws = 0;
+  let triggerFallback: ((reason: string) => void) | null = null;
+  let workerSupported = true;
+  const fixture = {
+    useId: () => 'time-chart-fallback',
+    useRef(initial: unknown) {
+      const index = cursor++;
+      if (!slots.has(index)) slots.set(index, { current: initial });
+      return slots.get(index);
+    },
+    useState(initial: unknown) {
+      const index = cursor++;
+      if (!slots.has(index)) slots.set(index, initial);
+      return [slots.get(index), (next: unknown) => slots.set(index, typeof next === 'function' ? next(slots.get(index)) : next)];
+    },
+    useEffect(run: Effect['run'], deps?: readonly unknown[]) {
+      const index = cursor++, before = effects.get(index);
+      if (!deps || !before?.deps || before.deps.length !== deps.length || before.deps.some((value, i) => !Object.is(value, deps[i])))
+        pending.set(index, { run, deps });
+    },
+    commit() {
+      for (const [index, effect] of pending) {
+        effects.get(index)?.cleanup?.();
+        const cleanup = effect.run();
+        effect.cleanup = typeof cleanup === 'function' ? cleanup : undefined;
+        effects.set(index, effect);
+      }
+      pending.clear();
+    },
+    unmount() { for (const effect of effects.values()) effect.cleanup?.(); effects.clear(); slots.clear(); pending.clear(); },
+    scheduler: { add(next: FrameTask) { task = next; return () => { task = undefined; }; }, wake() {}, setVisible() {} },
+    supportsTimeChartWorker: () => workerSupported,
+    attachTimeChartWorker(_element: unknown, onFallback: (reason: string) => void) {
+      triggerFallback = onFallback;
+      return {
+        id: 1,
+        draw() { workerDraws++; return true; },
+        detach() { workerDetaches++; },
+      };
+    },
+  };
+  const context = { setTransform() {}, clearRect() {}, save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {},
+    closePath() {}, fill() {}, stroke() {}, arc() {}, fillText() {}, setLineDash() {}, drawImage() {}, measureText: () => ({ width: 10 }) };
+  const makeElement = () => ({
+    clientWidth: 400, clientHeight: 200, width: 400, height: 200, style: styleOf(), focus() {}, setPointerCapture() {},
+    getContext: () => context, getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 200 }),
+    addEventListener() {}, removeEventListener() {},
+  });
+  const host = globalThis as typeof globalThis & { __timeChartFallback?: typeof fixture };
+  host.__timeChartFallback = fixture;
+  const globals = new Map(['window', 'ResizeObserver'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const replacements: Record<string, string> = {
+    '/charts/scheduler.ts': 'export const scheduler = globalThis.__timeChartFallback.scheduler;',
+    '/charts/liveMotion.ts': 'export const useMotionNow = () => given => given;',
+    '/charts/tokens.ts': `export const CHART_LAYOUT = { right: 14 };
+      export const readTokens = () => ({ fontSize: { small: 11 }, motion: 'snappy', reducedMotion: true });
+      export const subscribeTokens = () => () => {};`,
+    '/charts/draw.ts': `export const clipToPlot = () => {}; export const dayLabel = String;
+      export const drawAxes = () => {}; export const drawCrosshair = () => {}; export const drawPlayhead = () => {};
+      export const drawSelection = () => {}; export const VALUE_LABEL_GAP = 6; export const valueLabelWidth = () => 0;`,
+    '/charts/tooltip.ts': `export const hideTooltip = () => {}; export const showTooltip = () => {};
+      export const tooltipStore = { get: () => null, revision: () => 0 }; export const tooltipText = () => '';`,
+    '/charts/timeChartWorkerClient.ts': `export const supportsTimeChartWorker = () => globalThis.__timeChartFallback.supportsTimeChartWorker();
+      export const attachTimeChartWorker = (el, cb) => globalThis.__timeChartFallback.attachTimeChartWorker(el, cb);`,
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'time-chart-fallback-fixture', enforce: 'pre',
+      transform(source, id) {
+        const path = id.replaceAll('\\', '/');
+        const key = Object.keys(replacements).find(key => path.endsWith(key));
+        if (key) return replacements[key];
+        if (path.endsWith('/charts/TimeChart.tsx')) return source.replace("import { useEffect, useId, useRef, useState } from 'react';",
+          'const { useEffect, useId, useRef, useState } = globalThis.__timeChartFallback;');
+      },
+    }] });
+  try {
+    const { default: Chart } = await vite.ssrLoadModule('/ui/src/charts/TimeChart.tsx') as typeof import('./TimeChart.tsx');
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: { devicePixelRatio: 1 } });
+    Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: class { observe() {} disconnect() {} } });
+    const props: TimeChartProps = {
+      label: 'Worker fallback test',
+      extent: [0, 100],
+      branchStart: 0,
+      playhead: 90,
+      playback: 'draw-in',
+      axes: { xFrom: null, xTo: null, yMin: 0, yMax: 100, log: false },
+      layers: [{
+        draw() { syncDraws++; },
+        describe: () => ({ kind: 'line-summary', summary: undefined, color: '#ff0000' }),
+      }],
+      formatValue: 'powerAxis',
+      active: true,
+      revision: 1,
+    };
+    const render = () => {
+      cursor = 0;
+      const tree = Chart(props) as ReactElement<{ children: ReactElement<{ ref: { current: unknown } }>[] }>;
+      const canvasNode = tree.props.children[0];
+      canvasNode.props.ref.current = makeElement();
+      fixture.commit();
+      return canvasNode.key;
+    };
+    const firstKey = render();
+    task!.frame({ now: 0, dt: 16 });
+    assert.equal(workerDraws, 1);
+    assert.equal(syncDraws, 0);
+
+    task!.frame({ now: 16, dt: 16 });
+    assert.equal(workerDraws, 1);
+
+    workerSupported = false;
+    triggerFallback!('worker crashed');
+    const secondKey = render();
+    assert.notEqual(secondKey, firstKey);
+    assert.equal(workerDetaches, 1);
+
+    task!.frame({ now: 32, dt: 16 });
+    assert.equal(syncDraws, 1);
+  } finally {
+    fixture.unmount(); await vite.close(); delete host.__timeChartFallback;
+    for (const [key, descriptor] of globals) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key);
+    }
+  }
+});

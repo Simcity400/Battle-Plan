@@ -5,14 +5,13 @@ import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
 import CountryPicker from '../../components/CountryPicker';
 import { useContextMenu } from '../../components/ContextMenu';
-import { drawLineSummary, summaryExtent } from '../../charts/chartSummary';
 import type { ChartSummary } from '../../charts/chartSummary';
-import { dayLabel, font, placeEndLabels } from '../../charts/draw';
+import { dayLabel, font } from '../../charts/draw';
+import { lineSummaryLayer, type DeclarativeEndLabels } from '../../charts/renderTimeChart';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, pinnedBreakdown } from '../../charts/drill/drillState';
 import { useDrill } from '../../charts/drill/useDrill';
 import { motionOf } from '../../charts/easing.ts';
-import type { PlotFrame } from '../../charts/frame';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
 import { SECONDARY_DASH } from '../../charts/palette';
@@ -49,7 +48,6 @@ import { useCountryLineStyles } from '../../dashboard/useCountryLineStyles';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { useMeasureSeries } from '../country-measure/measureSeries';
-import { summaryEnd } from '../country-measure/measureData';
 import { BREAKDOWNS, OPTIONS } from './definition';
 import FuelBreakdown from './FuelBreakdown';
 import FuelConsumptionBreakdown from './FuelConsumptionBreakdown';
@@ -71,10 +69,6 @@ const DAY_HOURS = 24;
 const DETAIL_HOURS = 720;
 const NO_PAINT = () => {};
 const HOLDERS = { holders: true };
-
-function rawFrame(frame: PlotFrame, scale: number): PlotFrame {
-  return { ...frame, y: [frame.y[0] * scale, frame.y[1] * scale], toY: value => frame.toY(value / scale), valueAt: py => frame.valueAt(py) * scale };
-}
 
 export default function FuelWidget({ widget, runtime, active, countrySlot, onDiagnostics }: WidgetProps) {
   const savedShow = BREAKDOWNS.find(item => item.id === widget.options?.show)?.id ?? null;
@@ -150,22 +144,46 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   }, [fuelEntry, capacityEntry, tags, fuel.head, capacity.head]);
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
   const until = shownUntil(playhead, playback, options.afterPlayhead === true);
-  const layers = useMemo<ChartLayer[]>(() => {
-    const line = (summary: () => ChartSummary | undefined, color: string, dash: boolean, area: boolean): ChartLayer => ({
-      draw: (ctx, frame, chartTokens, state) => {
-        const drawn = summary();
-        if (drawn) drawLineSummary(ctx, rawFrame(frame, QUANTITY_SCALE), chartTokens, drawn, color, false, state.playhead === null ? null : state.playhead,
-          dash ? { dash: SECONDARY_DASH } : { area });
-      },
-      extent: x => {
-        const drawn = summary();
-        const range = drawn ? summaryExtent(drawn, x, until) : null;
-        return range && [range[0] / QUANTITY_SCALE, range[1] / QUANTITY_SCALE];
-      },
-    });
-    return tags.flatMap(tag => [...showCapacity ? [line(() => capacity.lineOf(tag), colourOf(tag, 'capacity'), true, false)] : [],
-      line(() => fuel.lineOf(tag), colourOf(tag, 'fuel'), false, single && options.areaFill !== false)]);
-  }, [tags, showCapacity, capacity.lineOf, fuel.lineOf, colourOf, single, options.areaFill, until]);
+  const layers = useMemo<ChartLayer[]>(() => tags.flatMap(tag => [
+    ...showCapacity ? [lineSummaryLayer({
+      summary: () => capacity.lineOf(tag),
+      color: colourOf(tag, 'capacity'),
+      options: { dash: SECONDARY_DASH },
+      until,
+      yScale: QUANTITY_SCALE,
+    })] : [],
+    lineSummaryLayer({
+      summary: () => fuel.lineOf(tag),
+      color: colourOf(tag, 'fuel'),
+      options: { area: single && options.areaFill !== false },
+      until,
+      yScale: QUANTITY_SCALE,
+    }),
+  ]), [tags, showCapacity, capacity.lineOf, fuel.lineOf, colourOf, single, options.areaFill, until]);
+  const endLabels = useMemo<DeclarativeEndLabels | undefined>(() => {
+    if (options.endLabels === false) return undefined;
+    const stride = showCapacity ? 2 : 1;
+    return {
+      extentMax: extent[1],
+      items: tags.flatMap((tag, tagIndex) => {
+        const fuelItem = {
+          id: `${tag}:fuel`,
+          layerIndex: tagIndex * stride + (showCapacity ? 1 : 0),
+          color: colourOf(tag, 'fuel'),
+          label: single ? 'Fuel' : `${nameOf(tag)} · Fuel`,
+          format: { kind: 'fuel' as const, scale: QUANTITY_SCALE, digits },
+        };
+        if (!showCapacity) return [fuelItem];
+        return [fuelItem, {
+          id: `${tag}:capacity`,
+          layerIndex: tagIndex * stride,
+          color: colourOf(tag, 'capacity'),
+          label: single ? 'Capacity' : `${nameOf(tag)} · Capacity`,
+          format: { kind: 'fuel' as const, scale: QUANTITY_SCALE, digits },
+        }];
+      }),
+    };
+  }, [options.endLabels, showCapacity, extent[1], tags, colourOf, single, nameOf, digits]);
   const gainFailure = gain.error?.message ?? null, burnFailure = burn.error?.message ?? null;
   const strip = useMemo<ChartStrip | undefined>(() => {
     if (!withStrip || !tags[0]) return undefined;
@@ -315,20 +333,9 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
         revision={`${track!.branch.id}:${tags.length}:${viewport}:${digits}:${showCapacity}:${hovered.data ? 'hover' : ''}`} data={chartData}
         pickOwner={fuel.owner} onSummaryView={view => { fuel.onSummaryView(view); if (showCapacity) capacity.onSummaryView(view); if (withStrip) { gain.onSummaryView(view); burn.onSummaryView(view); } }}
         onNavigateHour={fuel.onNavigateHour} keyboardHour={fuel.keyboardHour} keyboardRevision={fuel.keyboardRevision} onHover={setHoverHour}
-        formatValue={value => formatFuel(BigInt(Math.round(value * QUANTITY_SCALE)), QUANTITY_SCALE, 0)}
+        formatValue="fuel"
+        endLabels={endLabels}
         tooltip={hour => tooltip(hour)} onPick={hour => open(hour, single ? tags[0] : undefined, tags.filter(tag => isMember(membership?.get(tag), Math.floor(hour))))}
-        overlay={(ctx, frame, chartTokens) => {
-          if (options.endLabels === false) return;
-          const end = Math.min(until ?? extent[1], frame.x[1], extent[1]);
-          const ends = tags.flatMap(tag => (['fuel', ...showCapacity ? ['capacity'] as const : []] as const).flatMap(of => {
-            const value = summaryEnd(of === 'fuel' ? fuel.lineOf(tag) : capacity.lineOf(tag), end);
-            if (value == null) return [];
-            const what = of === 'fuel' ? 'Fuel' : 'Capacity';
-            return [{ id: `${tag}:${of}`, y: frame.toY(value / QUANTITY_SCALE), color: colourOf(tag, of),
-              text: single ? what : `${nameOf(tag)} · ${what}`, suffix: formatFuel(BigInt(Math.round(value)), QUANTITY_SCALE, digits) }];
-          }));
-          placeEndLabels(ctx, frame, chartTokens, ends);
-        }}
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track!.id, hour)])} />
     </div>
   </div></div>;

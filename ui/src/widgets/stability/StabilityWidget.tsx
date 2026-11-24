@@ -14,7 +14,7 @@ import { CountryFlagUrl } from '../../components/CountryFlag';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { badgeRows } from '../../charts/badges';
-import { dayLabel, END_LABEL_HEIGHT, placeEndLabels } from '../../charts/draw';
+import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
 import type { LegendItem } from '../../charts/Legend';
@@ -22,14 +22,14 @@ import { SECONDARY_DASH } from '../../charts/palette';
 import { runAt } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartData, ChartLayer, ChartPick } from '../../charts/TimeChart';
-import { stabilityZoomFit } from '../../charts/renderTimeChart';
+import { lineSummaryLayer, stabilityZoomFit, type DeclarativeEndLabels } from '../../charts/renderTimeChart';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { CHART_LAYOUT } from '../../charts/tokens';
 import { fitTooltip } from '../../charts/tooltip';
 import type { TooltipRow } from '../../charts/tooltip';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
-import { drawLineSummary, pickSummaryLines, summaryExtent } from '../../charts/chartSummary';
+import { pickSummaryLines } from '../../charts/chartSummary';
 import { motionOf } from '../../charts/easing.ts';
 import LiveText, { liveTexts } from '../../charts/LiveText';
 import { useCampaignSettings } from '../../dashboard/campaignSettings';
@@ -71,7 +71,7 @@ import { useMeasureSeries } from '../country-measure/measureSeries';
 import { STABILITY_BREAKDOWNS, STABILITY_OPTIONS } from './definition';
 import { historyMarks, stabilityMarkers } from './markers';
 import type { FocusMarks, MarkerKind } from './markers';
-import { breakdownRows, formatPercent, linesPerMeasure, readHourOf, stabilityEnd, validateStabilityReads } from './stabilityData';
+import { breakdownRows, formatPercent, linesPerMeasure, readHourOf, validateStabilityReads } from './stabilityData';
 import type { Measure } from './stabilityData';
 import { chooseStabilityActor, pinStabilityDrill, stabilityPickAction } from './stabilityDrillData';
 import type { StabilityPick } from './stabilityDrillData';
@@ -337,16 +337,29 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const menu = useContextMenu('Chart actions');
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
   const until = shownUntil(playhead, playback, options.afterPlayhead === true);
-  const layers = useMemo<ChartLayer[]>(() => lines.flatMap(item => shown.map(measure => ({
-    draw: (ctx, frame, chartTokens, state) => {
-      const summary = series[measure.key].lineOf(item.tag);
-      if (summary) drawLineSummary(ctx, frame, chartTokens, summary, item.hex, false, state.playhead, { dash: measure.dash });
-    },
-    extent: (x: readonly [number, number]) => {
-      const summary = series[measure.key].lineOf(item.tag);
-      return summary ? summaryExtent(summary, x, until) : null;
-    },
+  const layers = useMemo<ChartLayer[]>(() => lines.flatMap(item => shown.map(measure => lineSummaryLayer({
+    summary: () => series[measure.key].lineOf(item.tag),
+    color: item.hex,
+    options: { dash: measure.dash },
+    until,
   }))), [lines, shown, until, stability.lineOf, warSupport.lineOf]);
+  const endLabels = useMemo<DeclarativeEndLabels | undefined>(() => {
+    if (!options.endLabels) return undefined;
+    const endAt = Math.floor(until ?? extent[1]);
+    return {
+      gap: END_LABEL_GAP,
+      extentMax: extent[1],
+      overflow: 'filter-then-hide',
+      items: lines.flatMap((item, itemIndex) => shown.map((measure, measureIndex) => ({
+        id: `${item.tag}:${measure.key}`,
+        layerIndex: itemIndex * shown.length + measureIndex,
+        color: item.hex,
+        label: `${lines.length > 1 ? `${labelAt(endAt)(item.tag).name}: ` : ''}${measure.label} `,
+        format: { kind: 'percent' as const, decimals },
+        fallbackKeep: measure.key === 'stability',
+      }))),
+    };
+  }, [options.endLabels, until, extent[1], lines, shown, labelAt, decimals]);
   const error = stability.error ?? warSupport.error;
   const retry = () => { stability.retry(); warSupport.retry(); };
 
@@ -414,7 +427,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
         padding={{ right: options.endLabels ? CHART_LAYOUT.countryEndLabels : CHART_LAYOUT.right }} layers={layers} active={active && !(drillOpen && options.drill !== 'popout')}
         notRecorded={stability.notRecorded && warSupport.notRecorded ? stability.notRecorded : null}
         pickOwner={pickOwner} revision={`${track.branch.id}:${lines.length}:${shown.length}:${viewport}:${hoveredFor ? 'breakdown' : hovered.error ? 'failed' : 'none'}:${stability.states ? 'states' : ''}`}
-        formatValue={value => { const percent = value * 100; return `${Number.isInteger(Math.round(percent * 10) / 10) ? Math.round(percent) : percent.toFixed(1)}%`; }}
+        formatValue="stabilityPercent"
+        endLabels={endLabels}
         onHover={hour => setHoverHour(hour === null ? null : Math.floor(hour))}
         badges={badges.length ? badges : undefined}
         tooltip={(hour, _frame, hoveredBadges) => {
@@ -455,21 +469,6 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
           const note = [`${shown.map(measure => `${measure.dash ? 'WS' : 'S'}: ${measure.label.toLowerCase()}`).join(', ')}.`,
             ...(carried && read !== null ? [`† As of ${formatDateTime(read)}.`] : [])];
           return fitTooltip([{ title: dayLabel(hour), rows, note: note.join(' ') }], viewport);
-        }}
-        overlay={(ctx, frame, chartTokens) => {
-          if (!options.endLabels) return;
-          const end = Math.min(until ?? extent[1], frame.x[1], extent[1]);
-          if (end < frame.x[0]) return;
-          const ends = lines.flatMap(item => shown.flatMap(measure => {
-            const at = stabilityEnd(series[measure.key].lineOf(item.tag), end, decimals);
-            if (!at) return [];
-            const text = `${lines.length > 1 ? `${labelAt(end)(item.tag).name}: ` : ''}${measure.label} ${formatPercent(at.raw, decimals)}`;
-            return [{ id: `${item.tag}:${measure.key}`, y: frame.toY(at.value), text, color: item.hex }];
-          }));
-          const room = Math.floor((frame.plotHeight + END_LABEL_GAP) / (END_LABEL_HEIGHT + END_LABEL_GAP));
-          const fitted = ends.length <= room ? ends : ends.filter(item => item.id.endsWith(':stability'));
-          if (fitted.length > room) return;
-          placeEndLabels(ctx, frame, chartTokens, fitted, END_LABEL_GAP);
         }}
         onPick={(hour, context?: ChartPick) => {
           const known = new Set(lines.flatMap(item => shown.flatMap(measure => item.valueAt(measure.key, Math.floor(hour)) != null ? [JSON.stringify([item.tag, measure.key])] : [])));

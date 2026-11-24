@@ -8,7 +8,7 @@ import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { badgeRows } from '../../charts/badges';
 import type { EventBadge } from '../../charts/badges';
-import { dayLabel, placeEndLabels } from '../../charts/draw';
+import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
 import type { LegendItem } from '../../charts/Legend';
@@ -45,10 +45,9 @@ import { MAX_NAME_HOURS } from '../../dashboard/countryFacts.ts';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { OptionField } from '../../dashboard/options';
-import { drawLineSummary, summaryExtent } from '../../charts/chartSummary';
-import type { ChartSummary } from '../../charts/chartSummary';
+import { lineSummaryLayer, type DeclarativeEndLabels } from '../../charts/renderTimeChart';
 import type { MarkCluster, MarkSummary } from '../../charts/markSummary';
-import { changesRange, formatBalance, netSpend, rawOf, summaryEnd } from './measureData';
+import { changesRange, formatBalance, netSpend } from './measureData';
 import { MEASURE_OPTIONS } from './options';
 import { useMeasureSeries } from './measureSeries';
 import BalanceChanges from './BalanceChanges';
@@ -231,20 +230,39 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
 
   const layers = useMemo<ChartLayer[]>(() => {
     const single = series.length === 1;
-    const line = (summary: () => ChartSummary | undefined, hex: string, dash?: readonly number[], area = false): ChartLayer => ({
-      draw: (ctx, frame, chartTokens, state) => {
-        const shown = summary();
-        if (shown) drawLineSummary(ctx, frame, chartTokens, shown, hex, false, state.playhead, dash ? { dash } : { area });
-      },
-      extent: (x: readonly [number, number]) => {
-        const shown = summary();
-        return shown ? summaryExtent(shown, x, until) : null;
-      },
-    });
-    const list: ChartLayer[] = series.map(item => line(() => balances.lineOf(item.tag), item.hex, undefined, single && options.areaFill === true));
-    if (showCeiling) for (const item of series) list.push(line(() => ceiling.lineOf(item.tag), item.hex, SECONDARY_DASH));
+    const list: ChartLayer[] = series.map(item => lineSummaryLayer({
+      summary: () => balances.lineOf(item.tag),
+      color: item.hex,
+      options: { area: single && options.areaFill === true },
+      until,
+    }));
+    if (showCeiling) {
+      for (const item of series) {
+        list.push(lineSummaryLayer({
+          summary: () => ceiling.lineOf(item.tag),
+          color: item.hex,
+          options: { dash: SECONDARY_DASH },
+          until,
+        }));
+      }
+    }
     return list;
   }, [series, options.areaFill, until, balances.lineOf, ceiling.lineOf, showCeiling]);
+
+  const endLabels = useMemo<DeclarativeEndLabels | undefined>(() => {
+    if (!options.endLabels || decimals === null) return undefined;
+    const single = series.length === 1;
+    return {
+      extentMax: extent[1],
+      items: series.map((item, layerIndex) => ({
+        id: item.tag,
+        layerIndex,
+        color: item.hex,
+        label: single ? '' : labelAt(shownAt)(item.tag).name,
+        format: { kind: 'fixed', decimals, digits, unit: config.unit, single },
+      })),
+    };
+  }, [options.endLabels, decimals, digits, config.unit, series, extent[1], labelAt, shownAt]);
 
   if (!track) return <WidgetState kind="empty" icon="sparkle" message={`Load a campaign to see ${config.noun}.`} />;
   if (refused) return <WidgetState kind="unavailable" technical={refused} />;
@@ -283,7 +301,8 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
               ...(drop ? [{ label: 'Balance fell', value: netSpend(drop, decimals!, digits) }] : [])],
             note: 'Open Balance changes from the chart menu to reach each event.' };
         }}
-        formatValue={value => Math.abs(value) >= 1000 ? `${Math.round(value / 100) / 10}k` : String(Math.round(value))}
+        formatValue="powerAxis"
+        endLabels={endLabels}
         badges={badges.length ? badges : undefined}
         tooltip={(hour, _frame, hovered) => {
           const rows: TooltipRow[] = series.flatMap(item => {
@@ -303,19 +322,6 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
           }
           rows.push(...badgeRows(hovered));
           return fitTooltip([{ title: dayLabel(hour), rows }], viewport);
-        }}
-        overlay={(ctx, frame, chartTokens) => {
-          if (!options.endLabels) return;
-          const at = Math.min(until ?? extent[1], frame.x[1], extent[1]);
-          const ends = decimals === null ? [] : series.flatMap(item => {
-            const value = summaryEnd(balances.lineOf(item.tag), at);
-            if (value == null) return [];
-            const raw = rawOf(value, decimals);
-            const text = series.length === 1 ? { text: `${formatBalance(raw, decimals, digits)} ${config.unit}` }
-              : { text: labelAt(shownAt)(item.tag).name, suffix: formatBalance(raw, decimals, digits) };
-            return [{ id: item.tag, y: frame.toY(value), ...text, color: item.hex }];
-          });
-          placeEndLabels(ctx, frame, chartTokens, ends);
         }}
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour), ...(series.length ? [{ label: 'Balance changes', run: () => {
           const cluster = hoverCluster?.owner === balances.owner ? hoverCluster.cluster : null;

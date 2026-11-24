@@ -7,8 +7,9 @@ import { createPortal } from 'react-dom';
 import ContentSetPicker from '../../components/ContentSetPicker';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
-import { dayLabel, drawValueRule, placeEndLabels } from '../../charts/draw';
-import { drawLineSummary, extentOfSummary, pickSummaryLines, summaryGeometry } from '../../charts/chartSummary';
+import { dayLabel } from '../../charts/draw';
+import { extentOfSummary, pickSummaryLines } from '../../charts/chartSummary';
+import { lineSummaryLayer, valueRuleLayer, type DeclarativeEndLabels } from '../../charts/renderTimeChart';
 import { jumpItem } from '../../charts/jump';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED } from '../../charts/drill/drillState';
@@ -21,7 +22,7 @@ import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
 import type { ChartTokens } from '../../charts/tokens';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import { formatAmount, formatAxisPercent } from '../../charts/valueAxis';
+import { formatAmount } from '../../charts/valueAxis';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
 import { chosenShown, storedChoices, toggleChosen } from '../../dashboard/chosen';
@@ -258,12 +259,37 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
   const [selection, setSelection] = useState<{ owner: object; hour: number; keys: readonly string[] } | null>(null);
   const pending = selection?.owner === choiceOwner ? selection : null;
   const layers = useMemo<ChartLayer[]>(() => [
-    { draw: (ctx, frame, chartTokens) => drawValueRule(ctx, frame, chartTokens, 0) },
-    ...lines.flatMap((line): ChartLayer[] => line.summary ? [{
-      draw: (ctx, frame, chartTokens, state) => drawLineSummary(ctx, frame, chartTokens, line.summary!, line.color, false, state.playhead, { dash: line.dash.length ? line.dash : undefined }),
+    valueRuleLayer(0),
+    ...lines.flatMap((line): ChartLayer[] => line.summary ? [lineSummaryLayer({
+      summary: () => line.summary,
+      color: line.color,
+      options: { dash: line.dash.length ? line.dash : undefined },
       extent: x => extentOfSummary(line.summary!, x[0], Math.min(x[1], until ?? x[1])),
-    }] : []),
+    })] : []),
   ], [lines, until]);
+  const endLabels = options.endLabels !== false;
+  const endLabelsSpec = useMemo<DeclarativeEndLabels | undefined>(() => {
+    if (!endLabels) return undefined;
+    const items: DeclarativeEndLabels['items'][number][] = [];
+    let layerIndex = 1;
+    for (const line of lines) {
+      if (!line.summary) continue;
+      const last = line.summary.buckets.filter(bucket => bucket !== null).at(-1)?.lastHour
+        ?? lineEndHour(line.summary.runs ?? [], extent[0], Math.min(until ?? extent[1], extent[1]));
+      if (last != null) {
+        items.push({
+          id: line.group.key,
+          layerIndex,
+          color: line.color,
+          muted: false,
+          label: labelAt(line.group, grouping, last),
+          format: { kind: 'static', requireFit: true },
+        });
+      }
+      layerIndex++;
+    }
+    return { extentMax: extent[1], items };
+  }, [endLabels, lines, extent[0], extent[1], until, grouping]);
   const actions = new Map(groups.map(group => {
     const choice = choiceKey(group, head, chosenTokens.map(contentKey));
     if (choice == null) return [group.key, { reason: SAVED_DESIGN_UNAVAILABLE }];
@@ -275,7 +301,6 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
     const action = actions.get(key);
     if (action && 'value' in action && setOption) setOption(chosenKey, action.value);
   };
-  const endLabels = options.endLabels !== false;
   const caption = shareMode ? 'Surplus / shortage (% of need)' : 'In stock';
   return <>
     {incoming.error && <WidgetState kind="error" failure={incoming.error} onRetry={incoming.retry} />}
@@ -305,7 +330,8 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
-        formatValue={shareMode ? formatAxisPercent : undefined}
+        formatValue={shareMode ? 'percent' : undefined}
+        endLabels={endLabelsSpec}
         padding={endLabels ? { right: END_LABEL_ROOM } : undefined} layers={layers} active={active}
         revision={`${data.branchId}:${chosen.join(' ')}:${grouping}:${viewport}:${endLabels}:${shareMode}`}
         keyHours={shareMode ? navigation?.logisticsReads ?? data.logisticsReads : navigation?.reads ?? data.reads}
@@ -328,17 +354,6 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
             stock: stockAt(reached, group, hour), daily: dailyAt(reached, group, hour),
             ...(shareMode ? { logistics: balanceAt(reached, group, hour) } : {}) }); }),
           data.decimals, ai ? AI_NOTE : undefined, viewport);
-        }}
-        overlay={(ctx, frame, chartTokens) => {
-          if (!endLabels) return;
-          const ends = lines.flatMap(line => {
-            if (!line.summary) return [];
-            const end = summaryGeometry(frame, line.summary, false, until).end;
-            const last = line.summary.buckets.filter(bucket => bucket !== null).at(-1)?.lastHour
-              ?? lineEndHour(line.summary.runs ?? [], frame.x[0], Math.min(until ?? extent[1], frame.x[1], extent[1]));
-            return end && last != null ? [{ id: line.group.key, color: line.color, muted: false, y: end.y, text: labelAt(line.group, grouping, last) }] : [];
-          });
-          placeEndLabels(ctx, frame, chartTokens, ends);
         }}
         onSummaryView={incoming.onSummaryView} onHover={incoming.onHover}
         onContextMenu={(hour, x, y) => onMenu(hour, x, y)} />
