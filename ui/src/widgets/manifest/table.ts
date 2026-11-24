@@ -412,6 +412,17 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.eventFeedProjection, declaration: mod.eventFeedDeclaration }),
     ),
   },
+  {
+    kind: 'raid-log',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'raid-log',
+      DEFAULT_VIEW,
+      () => import('../raid-log/raidLogProjection.ts'),
+      mod => ({ projection: mod.raidLogProjection, declaration: mod.raidLogDeclaration }),
+    ),
+  },
 ];
 
 export const tableFamilyManifest: FamilyManifestModule = {
