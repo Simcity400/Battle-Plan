@@ -1,4 +1,3 @@
-import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { MeterWidgetDeclaration } from '../../families/meter/declaration.ts';
 import type {
   MeterChip,
@@ -17,6 +16,7 @@ import {
   decryptionFilterOptions,
   decryptionNextChange,
   decryptionSources,
+  brokenText,
   pairTooltipItems,
   readCipherNumbers,
   readDecryption,
@@ -108,17 +108,17 @@ export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = re
           || country(a.target).name.localeCompare(country(b.target).name),
         );
         const chips: MeterChip[] = sortedItems.map(pair => {
-          const target = country(pair.target);
+          const target = country(pair.target, pair.brokenAt?.hour);
           const numbers = readCipherNumbers(frame.live, pair);
           const percent = percentOf(pair, numbers);
-          const dateText = pair.brokenAt ? formatDateOnly(pair.brokenAt.hour) : null;
+          const dateText = brokenText(pair.brokenAt);
           const title = `${group.owner.name} \u2192 ${target.name}`;
           return {
             key: `broken:${pairKey(pair)}`,
             targetFlag: flagOf(target),
             targetName: target.name,
             dateText,
-            spoken: `${group.owner.name} broke ${target.name} cipher${dateText ? ` on ${dateText}` : ', date not recorded'}`,
+            spoken: `${group.owner.name} broke ${target.name} cipher${!pair.brokenAt ? ', date not recorded' : pair.brokenAt.upperBound ? ` ${dateText}` : ` on ${dateText}`}`,
             audit: `${group.owner.tag}>${target.tag}|broken|${dateText ?? 'not-recorded'}`,
             tooltip: {
               title,

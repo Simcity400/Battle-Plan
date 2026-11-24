@@ -390,7 +390,7 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
         broken: true,
         status: 'broken',
         started: { hour: 61310000, upperBound: false },
-        brokenAt: { hour: 61319000, upperBound: false },
+        brokenAt: { hour: 61319000, upperBound: true },
         weekChangeTenths: 0,
         weekChangeUnknown: null,
       },
@@ -464,6 +464,10 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
   assert.equal(ciphers.sections![2]!.chipLines![0]!.ownerName, 'United Kingdom');
   assert.equal(ciphers.sections![2]!.chipLines![0]!.chips[0]!.targetName, 'German Reich');
   assert.ok(!ciphers.sections![2]!.chipLines![0]!.chips[0]!.dateText?.includes(':'), 'broken date omits hour');
+  const chip = ciphers.sections![2]!.chipLines![0]!.chips[0]!;
+  assert.ok(chip.dateText?.startsWith('By '), 'a break first witnessed after a gap keeps its upper bound on the chip');
+  assert.match(chip.spoken, / By /);
+  assert.match(chip.audit, /\|broken\|By /);
 
   const matrix = whoReadsWhomProjection.project(view, { filter: allFilter, filterAll: true, side: 'decryptor' });
   assert.equal(matrix.corner, 'Reads');
@@ -475,6 +479,7 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
   assert.deepEqual(matrix.columns.map(c => c.label), ['German Reich', 'Soviet Union']);
   const engGer = matrix.cell(0, 0);
   assert.equal(engGer.kind === 'value' && engGer.mark, 'square');
+  assert.ok(engGer.kind === 'value' && engGer.audit?.includes('|broken|By '), 'the matrix audit keeps the upper bound');
   assert.equal(matrix.cell(0, 1).kind, 'missing');
   assert.equal(matrix.cell(1, 0).kind, 'diagonal');
   const gerSov = matrix.cell(1, 1);

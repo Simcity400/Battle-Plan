@@ -1,7 +1,6 @@
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import type { HeatMatrixModel, HeatMatrixProjection, MatrixAxisEntity, MatrixCell } from '../../families/heat/matrixModel.ts';
 import { registerHeatMatrixProjection } from '../../families/heat/matrixRegistry.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { CipherCounts, CipherPair } from '../../generated/dashboard';
 import { OPTIONS } from './definition.ts';
 import { pairKey, percentOf } from './decryptionData.ts';
@@ -9,6 +8,7 @@ import {
   decryptionFilterOptions,
   decryptionNextChange,
   decryptionSources,
+  brokenText,
   pairTooltipItems,
   readCipherNumbers,
   readDecryption,
@@ -117,7 +117,7 @@ export const whoReadsWhomProjection: HeatMatrixProjection<DecryptionFilterOption
         };
         const color = owner.colour ?? '';
         if (pair.status === 'broken') {
-          const date = pair.brokenAt ? formatDateOnly(pair.brokenAt.hour) : 'Date not recorded';
+          const date = brokenText(pair.brokenAt) ?? 'Date not recorded';
           cells.push({ kind: 'value', mark: 'square', color, tooltip, audit: `${pairKey(pair)}|broken|${date}`, selectable: true });
         } else if (percent === null) {
           const reason = pair.thresholdUnknown ?? (numbers.missing || 'Progress not recorded');

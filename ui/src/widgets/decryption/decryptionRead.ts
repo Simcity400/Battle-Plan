@@ -5,7 +5,7 @@ import type { ArtHandle, ArtResult } from '../../families/contract.ts';
 import type { HourRanges } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import type { BoundedReadView, DeclaredCountryFilter, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
-import { formatDateHover } from '../../families/valueFormat.ts';
+import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
 import type { CipherCounts, CipherPair, CipherStatus, Country, DecryptionReply, Observation } from '../../generated/dashboard';
 import {
   activeBonusDays,
@@ -52,7 +52,7 @@ export type DecryptionFrame =
       readonly byStatus: Readonly<Record<CipherStatus, readonly CipherPair[]>>;
       readonly summaryText: string;
       readonly notes: readonly string[];
-      readonly country: (country: Country) => ResolvedCountry;
+      readonly country: (country: Country, hour?: number) => ResolvedCountry;
     };
 
 const within = (ranges: HourRanges | undefined, hour: number) =>
@@ -68,7 +68,7 @@ export function decryptionNextChange(filter: DeclaredCountryFilter, hour: number
   return filter.bounds[low] ?? Infinity;
 }
 
-function resolveCountry(readView: BoundedReadView, country: Country): ResolvedCountry {
+function resolveCountry(readView: BoundedReadView, country: Country, hour: number): ResolvedCountry {
   const tag = country.tag;
   if (!tag) {
     return {
@@ -79,7 +79,7 @@ function resolveCountry(readView: BoundedReadView, country: Country): ResolvedCo
       flag: missingArt('Country tag not recorded'),
     };
   }
-  const who = readView.who('country', tag, readView.hour);
+  const who = readView.who('country', tag, hour);
   const name = who.name.status === 'ready' ? who.name.value : tag;
   const colour = who.colour?.status === 'ready' ? who.colour.value : undefined;
   let flagHandle: ArtHandle | null = null;
@@ -148,6 +148,11 @@ export function pairTooltipItems(
   ];
 }
 
+export function brokenText(observation: Observation | null): string | null {
+  if (!observation) return null;
+  return `${observation.upperBound ? 'By ' : ''}${formatDateOnly(observation.hour)}`;
+}
+
 export function countsText(counts: CipherCounts): string {
   return [
     `${counts.broken} broken`,
@@ -194,12 +199,14 @@ export function readDecryption(readView: BoundedReadView, options: DecryptionFil
       warnings: reply.warnings,
     };
   }
-  const cache = new Map<number, ResolvedCountry>();
-  const country = (c: Country): ResolvedCountry => {
-    let held = cache.get(c.id);
+  const cache = new Map<string, ResolvedCountry>();
+  const country = (c: Country, hour: number = readView.hour): ResolvedCountry => {
+    const at = Math.min(hour, readView.hour);
+    const key = `${c.id}@${at}`;
+    let held = cache.get(key);
     if (!held) {
-      held = resolveCountry(readView, c);
-      cache.set(c.id, held);
+      held = resolveCountry(readView, c, at);
+      cache.set(key, held);
     }
     return held;
   };
