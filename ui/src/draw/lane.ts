@@ -1245,11 +1245,6 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const bare: FrameRequest = { ...request, installed: [], refused: [] };
     this.request = bare;
     this.lastExact = request.exact ? bare : null;
-    if (request.exact && this.inHandover) {
-      this.inHandover = false;
-      this.handoverToken++;
-      this.working = false;
-    }
     this.schedule();
   }
 
@@ -1259,7 +1254,13 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private schedule() {
-    if (this.working || !this.request) return;
+    if (!this.request) return;
+    if (this.request.exact && this.inHandover) {
+      this.inHandover = false;
+      this.handoverToken++;
+      this.working = false;
+    }
+    if (this.working) return;
     this.working = true;
     queueMicrotask(() => { void this.run(); });
   }
@@ -1442,6 +1443,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const bytes = this.freed + this.releasedFacts();
       this.freed = 0;
       if (bytes) this.host.release(bytes);
+      this.host.stretch?.(this.time() - began);
       this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: 0, ms: this.time() - began, cancelled: true });
       return;
     }
@@ -1524,12 +1526,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const shown = this.matches(widget.installed, selected, target, widget.binding.generation, key, route);
       if (this.matches(widget.parked, selected, target, widget.binding.generation, key, route)) continue;
       const pending = widget.inflight && this.requests - widget.inflight.request <= STALE && this.matches(widget.inflight, selected, target, widget.binding.generation, key, route);
-      if (pending || shown && !widget.motion) {
+      if (pending || shown && !widget.motion && !widget.forceFull) {
         widget.inspect = key;
         if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
         continue;
       }
-      due.push({ widget, selected, motion: shown, target });
+      due.push({ widget, selected, motion: shown && !widget.forceFull, target });
       widget.inspect = key;
       if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
     }
@@ -1715,6 +1717,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const bytes = this.freed + this.releasedFacts();
       this.freed = 0;
       if (bytes) this.host.release(bytes);
+      this.host.stretch?.(this.time() - began);
       this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: 0, ms: this.time() - began, cancelled: true });
       return;
     }

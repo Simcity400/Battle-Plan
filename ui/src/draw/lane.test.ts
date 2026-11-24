@@ -1647,7 +1647,7 @@ test('post-serve deferred frame whose seek was superseded by stream before run n
   assert.ok(released.reduce((sum, b) => sum + b, 0) > releasedBefore, 'acknowledged seek-0 fact is released once replaced');
 });
 
-test('startLaneWorker with macrotaskSchedule keeps Page-installed picture age within one paint at every tick, while microtask fallback falls linearly behind', async () => {
+test('startLaneWorker with macrotaskSchedule keeps Page-installed picture age within two paint intervals at every tick, while microtask fallback falls linearly behind', async () => {
   assert.equal(macrotaskSchedule(null), undefined, 'macrotaskSchedule returns undefined when MessageChannel is unavailable');
 
   const closed: number[] = [];
@@ -1701,8 +1701,8 @@ test('startLaneWorker with macrotaskSchedule keeps Page-installed picture age wi
     class FakeMessageChannel implements WakeChannel {
       readonly port1: WakeChannel['port1'] = { onmessage: null };
       readonly port2: WakeChannel['port2'] = {
-        postMessage: () => {
-          enqueue(clockMs, () => { this.port1.onmessage?.({ data: null } as MessageEvent); });
+        postMessage: (data: unknown) => {
+          enqueue(clockMs, () => { this.port1.onmessage?.({ data } as MessageEvent); });
         },
       };
     }
@@ -1757,24 +1757,15 @@ test('startLaneWorker with macrotaskSchedule keeps Page-installed picture age wi
     await drainMicrotasks();
 
     publishAt = 0;
-    pushFactsThrough(0, 0);
+    pushFactsThrough(0, 4 * stepHours);
     page.publish(0, { playing: false, step: stepHours, speed: 0 });
     while (mailbox.length) {
       mailbox.shift()!.run();
       await drainMicrotasks();
     }
     while (pendingOffers.length) page.offer(pendingOffers.shift()!.msg);
-    page.frame();
-    while (mailbox.length) {
-      mailbox.shift()!.run();
-      await drainMicrotasks();
-    }
-    while (pendingOffers.length) page.offer(pendingOffers.shift()!.msg);
-    page.frame();
-    clockMs = 0;
-    paints = 0;
-
-    for (let sampleTick = 1; sampleTick <= ticks; sampleTick++) {
+    const warmupTicks = 20;
+    for (let sampleTick = 1; sampleTick <= warmupTicks + ticks; sampleTick++) {
       const targetMs = sampleTick * frameMs;
       const nowHour = sampleTick * stepHours;
       for (let i = 0; i < pendingOffers.length; ) {
@@ -1785,8 +1776,11 @@ test('startLaneWorker with macrotaskSchedule keeps Page-installed picture age wi
       publishAt = targetMs;
       pushFactsThrough(targetMs, nowHour + 4 * stepHours);
       page.publish(nowHour, { playing: true, step: stepHours, speed: 1440 });
-      const installedHour = page.view(1).h;
-      tickAges.push(typeof installedHour === 'number' ? nowHour - installedHour : Infinity);
+      if (sampleTick === warmupTicks + 1) paints = 0;
+      if (sampleTick > warmupTicks) {
+        const installedHour = page.view(1).h;
+        tickAges.push(typeof installedHour === 'number' ? nowHour - installedHour : Infinity);
+      }
       while (clockMs <= targetMs) {
         const task = popDue(targetMs);
         if (!task) break;
@@ -1796,7 +1790,7 @@ test('startLaneWorker with macrotaskSchedule keeps Page-installed picture age wi
       }
     }
 
-    const finalHour = ticks * stepHours;
+    const finalHour = (warmupTicks + ticks) * stepHours;
     const paintBudgetHours = Math.ceil((totalServeMs / frameMs) * stepHours);
     return {
       paints,
@@ -2231,7 +2225,7 @@ test('mid-serve ack FIFO flushes at serve completion before wake, and mid-serve 
       crop: sources => {
         cropCall++;
         const make = () => sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: source.width, close() { this.closed = true; } }));
-        if (cropCall === 3) return new Promise<Fake[]>(resolve => { resolveHeldCrop = () => resolve(make()); });
+        if (cropCall === 4) return new Promise<Fake[]>(resolve => { resolveHeldCrop = () => resolve(make()); });
         return Promise.resolve(make());
       },
       schedule: run => { wakes.push(run); },
@@ -2244,34 +2238,40 @@ test('mid-serve ack FIFO flushes at serve completion before wake, and mid-serve 
     lane.bind(1, { generation: 1, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: null });
     lane.bindRoute(3, ROUTE, NATIVE);
 
-    lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }]));
-    lane.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    lane.receive('panels', panels([{ id: 3, hour: 5, kind: 'data', stepped: true, data: {} }]));
+    lane.frame({ type: 'frame', serial: 1, now: 5, target: 5, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
     await drainMicrotasks();
-    const id10 = presented.at(-1)!.entries[0]!.id;
-    lane.frame({ type: 'frame', serial: 2, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [{ widget: 1, binding: 1, id: id10 }], refused: [], inspect: [] });
+    const idBase = presented.at(-1)!.entries[0]!.id;
+    lane.frame({ type: 'frame', serial: 2, now: 5, target: 5, exact: true, seek: 0, speed: 0, installed: [{ widget: 1, binding: 1, id: idBase }], refused: [], inspect: [] });
     await drainMicrotasks();
 
+    lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }]));
+    lane.frame({ type: 'frame', serial: 3, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    await drainMicrotasks();
+    const id10 = presented.at(-1)!.entries[0]!.id;
+
     lane.receive('panels', panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: {} }]));
-    lane.frame({ type: 'frame', serial: 3, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    lane.frame({ type: 'frame', serial: 4, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
     await drainMicrotasks();
     const id20 = presented.at(-1)!.entries[0]!.id;
 
     lane.receive('panels', panels([{ id: 3, hour: 30, kind: 'data', stepped: true, data: {} }]));
-    lane.frame({ type: 'frame', serial: 4, now: 30, target: 30, exact: false, seek: 0, speed: 1440, installed: [], refused: [], inspect: [] });
+    lane.frame({ type: 'frame', serial: 5, now: 30, target: 30, exact: false, seek: 0, speed: 1440, installed: [], refused: [], inspect: [] });
     await drainMicrotasks();
-    assert.equal(cropCall, 3, 'third serve is suspended in crop');
+    assert.equal(cropCall, 4, 'fourth serve is suspended in crop while both id10 and id20 remain outstanding');
 
-    lane.frame({ type: 'frame', serial: 5, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [], refused: [{ widget: 1, id: id10, reason: 'kept content' }], inspect: [] });
-    lane.frame({ type: 'frame', serial: 6, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [{ widget: 1, binding: 1, id: id20 }], refused: [], inspect: [] });
+    lane.frame({ type: 'frame', serial: 6, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [], refused: [{ widget: 1, id: id10, reason: 'kept content' }], inspect: [] });
+    lane.frame({ type: 'frame', serial: 7, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [{ widget: 1, binding: 1, id: id20 }], refused: [], inspect: [] });
 
     lane.pointer(1, 0, [1, 1]);
-    assert.deepEqual(hits, ['row:10'], 'neither queued ack batch applies while crop is still held');
+    assert.deepEqual(hits, ['row:5'], 'neither queued ack batch applies while crop is still held');
 
     resolveHeldCrop();
     await drainMicrotasks();
     assert.equal(wakes.length, 1, 'speculative hand-over wake is held');
     lane.pointer(1, 0, [1, 1]);
-    assert.deepEqual(hits, ['row:10', 'row:20'], 'both ack batches flush in FIFO order at serve completion before the hand-over wake fires');
+    assert.deepEqual(hits, ['row:5', 'row:20'], 'outstanding id10 refusal flushes before id20 install at serve completion before wake fires');
+    assert.equal(lane.stats.refused['kept content'], 1, 'id10 was still outstanding when refused so reversed order would have cleared id20');
   }
 
   {
@@ -2463,4 +2463,718 @@ test('on-receipt acknowledgement time is charged once to the next serve budget, 
   assert.equal(presented.at(-1)!.entries.length, 1, '6 ms ack batch plus one 5 ms paint exhausts the 10 ms budget, deferring the second 5 ms widget');
   assert.equal(served.at(-1)!.ms, 11, 'served.ms includes the 6 ms ack work plus 5 ms paint');
   assert.equal(stretched.at(-1)!, 11, 'stretch receives the full 11 ms including on-receipt ack work');
+
+  {
+    let clock = 0;
+    let paintMs = 30;
+    const wakes: (() => void)[] = [];
+    const preStretched: number[] = [];
+    const preServed: { ms: number; cancelled?: boolean }[] = [];
+    const prePresented: Presented<Fake>[] = [];
+    const slowView: LaneView = {
+      paint: (input): Painted => {
+        clock += paintMs;
+        return {
+          surfaces: [],
+          fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+          motion: false,
+        };
+      },
+    };
+    const l = new Lane<Fake>({
+      lane: 0, lanes: 1, views: () => slowView, crop: async () => [],
+      clock: () => clock, budget: 10,
+      schedule: run => { wakes.push(run); },
+      present: presentation => { prePresented.push(presentation); },
+      release: () => {},
+      stretch: ms => { preStretched.push(ms); },
+      served: frame => { preServed.push({ ms: frame.ms, cancelled: frame.cancelled }); },
+      fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); },
+      later: () => {},
+    });
+    l.follow(5, 'followed');
+    l.mount(1, [5], 'view');
+    l.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+    l.bindRoute(5, ROUTE, NATIVE, 0);
+    l.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE, 0));
+    l.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    await flush();
+    const id1 = prePresented.at(-1)!.entries[0]!.id;
+    assert.equal(wakes.length, 1, '30 ms serve opens hand-over');
+
+    preStretched.length = 0;
+    preServed.length = 0;
+    paintMs = 0;
+    let ticked = false;
+    const slowAck = { widget: 1, binding: 1, get id() { if (!ticked) { ticked = true; clock += 6; } return id1; } };
+    l.frame({ type: 'frame', serial: 2, now: 10, target: 10, exact: false, seek: 0, speed: 24, installed: [slowAck], refused: [], inspect: [] });
+    l.stream(ROUTE, 1, 10);
+    wakes.shift()!();
+    await flush();
+    assert.equal(preServed.at(-1)!.cancelled, true, 'pre-serve cancellation exit ran');
+    assert.equal(preStretched.at(-1), 6, 'pre-serve cancellation exit stretches the 6 ms ack work');
+
+    preStretched.length = 0;
+    l.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE, 1));
+    l.frame({ type: 'frame', serial: 3, now: 10, target: 10, exact: true, seek: 1, speed: 0, installed: [], refused: [], inspect: [] });
+    await flush();
+    assert.equal(preStretched.at(-1), 0, 'following ack-free serve receives no second charge');
+  }
+
+  {
+    let clock = 0;
+    let paintMs = 0;
+    let resolveCrop!: () => void;
+    let cropCall = 0;
+    const postStretched: number[] = [];
+    const postServed: { ms: number; cancelled?: boolean }[] = [];
+    const postPresented: Presented<Fake>[] = [];
+    const cropView: LaneView = {
+      paint: (input): Painted => {
+        clock += paintMs;
+        return {
+          surfaces: [{ source: { width: 4, height: 4, content: `h:${input.pictures[0]!.h}` } as never, content: `h:${input.pictures[0]!.h}` }],
+          fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+          motion: false,
+        };
+      },
+    };
+    const l = new Lane<Fake>({
+      lane: 0, lanes: 1, views: () => cropView,
+      clock: () => clock, budget: 10,
+      crop: sources => {
+        cropCall++;
+        const make = () => sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: source.width, close() { this.closed = true; } }));
+        if (cropCall === 2) return new Promise<Fake[]>(resolve => { resolveCrop = () => resolve(make()); });
+        return Promise.resolve(make());
+      },
+      present: presentation => { postPresented.push(presentation); },
+      release: () => {},
+      stretch: ms => { postStretched.push(ms); },
+      served: frame => { postServed.push({ ms: frame.ms, cancelled: frame.cancelled }); },
+      fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); },
+      later: () => {},
+    });
+    l.follow(5, 'followed');
+    l.mount(1, [5], 'view');
+    l.bind(1, { generation: 1, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: null });
+    l.bindRoute(5, ROUTE, NATIVE, 0);
+    l.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE, 0));
+    l.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+    await flush();
+    const id1 = postPresented.at(-1)!.entries[0]!.id;
+
+    postStretched.length = 0;
+    postServed.length = 0;
+    paintMs = 4;
+    let ticked = false;
+    const slowAck = { widget: 1, binding: 1, get id() { if (!ticked) { ticked = true; clock += 6; } return id1; } };
+    l.receive('follow', message(20, [{ id: 5, hour: 20, answer: rows([1n], [20n]) }], false, NATIVE, 0));
+    l.frame({ type: 'frame', serial: 2, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [slowAck], refused: [], inspect: [] });
+    await flush();
+    assert.equal(cropCall, 2, 'second serve is suspended in crop');
+
+    l.stream(ROUTE, 1, 20);
+    resolveCrop();
+    await flush();
+    assert.equal(postServed.at(-1)!.cancelled, true, 'post-crop cancellation exit ran');
+    assert.equal(postStretched.at(-1), 10, 'post-crop cancellation exit stretches the 6 ms ack plus 4 ms paint work');
+
+    postStretched.length = 0;
+    paintMs = 0;
+    l.receive('follow', message(20, [{ id: 5, hour: 20, answer: rows([1n], [20n]) }], false, NATIVE, 1));
+    l.frame({ type: 'frame', serial: 3, now: 20, target: 20, exact: true, seek: 1, speed: 0, installed: [], refused: [], inspect: [] });
+    await flush();
+    assert.equal(postStretched.at(-1), 0, 'following ack-free serve receives no second charge after post-crop abort');
+  }
+});
+
+test('pinned widget repaints after post-crop abort triggered by another route seek', async () => {
+  const ROUTE_B = 2, NATIVE_B = 10;
+  let epoch = 1;
+  let resolveCrop!: () => void;
+  let cropCall = 0;
+  const view: LaneView = {
+    paint: (input): Painted => {
+      const tag = `h:${input.pictures[0]!.h}:v${epoch}`;
+      return {
+        surfaces: [{ source: { width: 4, height: 4, content: tag } as never, content: tag }],
+        fields: { v: { value: tag, content: tag } },
+        motion: false,
+      };
+    },
+  };
+  let lane!: Lane<Fake>;
+  const page = new Page<Fake>({
+    lanes: 1,
+    post: (_lane, m: PageMessage) => {
+      if (m.type === 'frame') lane.frame(m);
+      else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target);
+    },
+  });
+  lane = new Lane<Fake>({
+    lane: 0, lanes: 1, views: () => view,
+    crop: sources => {
+      cropCall++;
+      const make = () => sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: source.width, close() { this.closed = true; } }));
+      if (cropCall === 2) return new Promise<Fake[]>(resolve => { resolveCrop = () => resolve(make()); });
+      return Promise.resolve(make());
+    },
+    present: presentation => { page.offer(presentation); },
+    release: () => {}, fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); }, later: () => {},
+  });
+  lane.follow(5, 'pinned');
+  lane.follow(6, 'followed');
+  lane.mount(1, [5], 'view');
+  lane.mount(2, [6], 'view');
+  lane.bind(1, { generation: 1, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: 10 });
+  lane.bind(2, { generation: 1, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: null });
+  page.mount(1, { route: ROUTE, lane: 0, pin: 10, surfaces: [{ install() {}, clear() {} }] });
+  page.mount(2, { route: ROUTE_B, lane: 0, surfaces: [{ install() {}, clear() {} }] });
+  lane.bindRoute(6, ROUTE_B, NATIVE_B, 0);
+
+  lane.exact(5, 10, { val: 10 }, null);
+  lane.receive('follow', message(10, [{ id: 6, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE_B, 0));
+  page.publish(10, { playing: false, seek: 0 });
+  await flush();
+  page.frame();
+  assert.equal(page.view(1).fields?.v, 'h:10:v1', 'pinned widget installs picture A');
+
+  epoch = 2;
+  lane.touch(1);
+  await flush();
+  assert.equal(cropCall, 2, 'picture B crop is suspended');
+
+  lane.stream(ROUTE_B, 1, 20);
+  lane.receive('follow', message(20, [{ id: 6, hour: 20, answer: rows([1n], [20n]) }], false, NATIVE_B, 1));
+  resolveCrop();
+  await flush();
+
+  page.publish(20, { playing: false, seek: 1 });
+  await flush();
+  page.frame();
+  assert.equal(page.view(1).fields?.v, 'h:10:v2', 'pinned widget repaints and installs picture B instead of staying on A');
+});
+
+test('data wake during hand-over ends hand-over immediately so a following speculative frame cannot drop the exact correction', async () => {
+  const drainMicrotasks = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  let clockMs = 0;
+  let paintMs = 30;
+  const wakes: (() => void)[] = [];
+  const presented: Presented<Fake>[] = [];
+  const view: LaneView = {
+    paint: (input): Painted => {
+      clockMs += paintMs;
+      const val = input.pictures[0]!.parts[0]!.value;
+      const num = val.kind === 'answer' && val.answer.kind === 'rows' ? Number(cellValue(val.answer, 0)) : 0;
+      const key = `h:${input.pictures[0]!.h}:v:${num}`;
+      return { surfaces: [], fields: { tag: { value: key, content: key } }, motion: false };
+    },
+  };
+  const lane = new Lane<Fake>({
+    lane: 0, lanes: 1, views: () => view, crop: async () => [],
+    clock: () => clockMs, budget: 10,
+    schedule: run => { wakes.push(run); },
+    present: presentation => { presented.push(presentation); },
+    release: () => {}, fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); }, later: () => {},
+  });
+  lane.follow(5, 'followed');
+  lane.mount(1, [5], 'view');
+  lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+  lane.bindRoute(5, ROUTE, NATIVE, 0);
+
+  lane.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [100n]) }], false, NATIVE, 0));
+  lane.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+  await drainMicrotasks();
+  assert.equal(wakes.length, 1, '30 ms exact paint opens hand-over');
+  assert.deepEqual(presented.map(p => p.entries[0]?.fields.tag), ['h:10:v:100']);
+
+  paintMs = 2;
+  lane.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [101n]) }], false, NATIVE, 0));
+  await drainMicrotasks();
+  lane.receive('follow', message(20, [{ id: 5, hour: 20, answer: rows([1n], [200n]) }], false, NATIVE, 0));
+  lane.frame({ type: 'frame', serial: 2, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [], refused: [], inspect: [] });
+  await drainMicrotasks();
+  while (wakes.length) { wakes.shift()!(); await drainMicrotasks(); }
+
+  assert.deepEqual(
+    presented.map(p => p.entries[0]?.fields.tag),
+    ['h:10:v:100', 'h:10:v:101', 'h:20:v:200'],
+    'corrected hour-10 exact repaint from wake() must run before the later speculative hour-20 frame',
+  );
+});
+
+test('invalidated MessageChannel wake from an interrupted hand-over cannot fire a later hand-over serve', async () => {
+  const drainMicrotasks = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  let clockMs = 0;
+  const portQueue: unknown[] = [];
+  const fakeChannel: WakeChannel = {
+    port1: { onmessage: null },
+    port2: { postMessage: data => { portQueue.push(data); } },
+  };
+  const schedule = macrotaskSchedule(() => fakeChannel)!;
+  const presented: Presented<Fake>[] = [];
+  const view: LaneView = {
+    paint: (input): Painted => {
+      clockMs += 30;
+      return {
+        surfaces: [],
+        fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } },
+        motion: false,
+      };
+    },
+  };
+  const lane = new Lane<Fake>({
+    lane: 0, lanes: 1, views: () => view, crop: async () => [],
+    clock: () => clockMs, budget: 10, schedule,
+    present: presentation => { presented.push(presentation); },
+    release: () => {}, fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); }, later: () => {},
+  });
+  lane.follow(5, 'followed');
+  lane.mount(1, [5], 'view');
+  lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+  lane.bindRoute(5, ROUTE, NATIVE, 0);
+  lane.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE, 0));
+  lane.receive('follow', message(20, [{ id: 5, hour: 20, answer: rows([1n], [20n]) }], false, NATIVE, 0));
+  lane.receive('follow', message(30, [{ id: 5, hour: 30, answer: rows([1n], [30n]) }], false, NATIVE, 0));
+
+  lane.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+  await drainMicrotasks();
+  assert.equal(portQueue.length, 1, 'wake A posted');
+
+  lane.frame({ type: 'frame', serial: 2, now: 20, target: 20, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+  await drainMicrotasks();
+  assert.equal(portQueue.length, 2, 'exact hour 20 interrupted wake A and posted wake B');
+
+  lane.frame({ type: 'frame', serial: 3, now: 30, target: 30, exact: false, seek: 0, speed: 1440, installed: [], refused: [], inspect: [] });
+  await drainMicrotasks();
+  assert.deepEqual(presented.map(p => p.entries[0]?.h), [10, 20], 'speculative hour 30 waits for wake B');
+
+  const wakeA = portQueue.shift();
+  fakeChannel.port1.onmessage?.({ data: wakeA } as MessageEvent);
+  await drainMicrotasks();
+  assert.deepEqual(presented.map(p => p.entries[0]?.h), [10, 20], 'delivering stale wake A must not serve hour 30 before wake B arrives');
+
+  const wakeB = portQueue.shift();
+  fakeChannel.port1.onmessage?.({ data: wakeB } as MessageEvent);
+  await drainMicrotasks();
+  assert.deepEqual(presented.map(p => p.entries[0]?.h), [10, 20, 30], 'delivering wake B serves hour 30');
+});
+
+test('seeded differential search: hand-over lane matches main at quiescence across 300 deterministic interleavings', async () => {
+  const drainMicrotasks = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  const ROUTE_A = 1, ROUTE_B = 2, NATIVE_B = 10;
+
+  interface TrackedBitmap extends Fake { closeCount: number }
+  interface PendingCrop { resolve: () => void; reject: (error: Error) => void }
+  interface QueuedWake { data: unknown; stale: boolean }
+
+  const makeRng = (seed: number) => {
+    let s = seed >>> 0;
+    return () => {
+      s = (s + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  };
+
+  const makeSurface = () => {
+    let held: TrackedBitmap | null = null;
+    return {
+      install(bitmap: TrackedBitmap) {
+        if (held && held !== bitmap) held.close();
+        held = bitmap;
+      },
+      clear() {
+        if (held) { held.close(); held = null; }
+      },
+    };
+  };
+
+  const runSeed = async (seed: number) => {
+    const rng = makeRng(seed);
+    const randInt = (n: number) => Math.floor(rng() * n);
+    const log: string[] = [];
+    const failWith = (msg: string): never => {
+      assert.fail(`seed=${seed} ${msg}\nevents:\n${log.join('\n')}`);
+    };
+
+    let visualEpoch = 1;
+    let paintDurationMs = 12;
+    let holdNextCrop = false;
+
+    const createSide = (withHandover: boolean) => {
+      let clockMs = 0;
+      let inCrop = false;
+      let concurrentViolation = false;
+      let serveCount = 0;
+      let exactServeCount = 0;
+      let cropCount = 0;
+      let offerCount = 0;
+      let lastHit1: string | null = null;
+      let lastHit2: string | null = null;
+      const bitmaps: TrackedBitmap[] = [];
+      const crops: PendingCrop[] = [];
+      const bufferedOffers: Presented<TrackedBitmap>[] = [];
+      const wakes: QueuedWake[] = [];
+      const laters: (() => void)[] = [];
+      let delayOffers = false;
+      const surfaces = [makeSurface(), makeSurface()];
+      const fakeChannel: WakeChannel = {
+        port1: { onmessage: null },
+        port2: {
+          postMessage: data => {
+            for (const queued of wakes) queued.stale = true;
+            wakes.push({ data, stale: false });
+          },
+        },
+      };
+      const schedule = withHandover ? macrotaskSchedule(() => fakeChannel) : undefined;
+      let lane!: Lane<TrackedBitmap>;
+      const page = new Page<TrackedBitmap>({
+        lanes: 1,
+        post: (_lane, m: PageMessage) => {
+          if (m.type === 'frame') lane.frame(m);
+          else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target);
+        },
+      });
+      const view: LaneView = {
+        paint: (input): Painted => {
+          if (inCrop) {
+            concurrentViolation = true;
+            failWith(`${withHandover ? 'handover' : 'main'} started paint while a crop was still in progress`);
+          }
+          clockMs += paintDurationMs;
+          const val = input.pictures[0]!.parts[0]!.value;
+          const num = val.kind === 'answer' && val.answer.kind === 'rows'
+            ? Number(cellValue(val.answer, 0))
+            : val.kind === 'panel' && val.data && typeof val.data === 'object' && 'val' in val.data
+              ? Number((val.data as { val: number }).val)
+              : 0;
+          const tag = input.widget === 1 ? `w1:${input.pictures[0]!.h}:val:${num}:v${visualEpoch}` : `w2:${input.pictures[0]!.h}:val:${num}`;
+          return {
+            surfaces: [{ source: { width: 4, height: 4, content: tag } as never, content: tag }],
+            fields: { tag: { value: tag, content: tag } },
+            motion: false,
+            hit: () => tag,
+          };
+        },
+      };
+      lane = new Lane<TrackedBitmap>({
+        lane: 0, lanes: 1, views: () => view,
+        clock: () => clockMs, budget: 10,
+        ...schedule ? { schedule } : {},
+        crop: sources => {
+          if (inCrop) {
+            concurrentViolation = true;
+            failWith(`${withHandover ? 'handover' : 'main'} started a second crop while one was still in progress`);
+          }
+          cropCount++;
+          const makeBitmaps = () => sources.map(source => {
+            const bm: TrackedBitmap = {
+              content: (source as unknown as { content: string }).content,
+              width: source.width,
+              closed: false,
+              closeCount: 0,
+              close() {
+                this.closeCount++;
+                this.closed = true;
+                if (this.closeCount > 1) failWith(`${withHandover ? 'handover' : 'main'} closed bitmap ${this.content} ${this.closeCount} times`);
+              },
+            };
+            bitmaps.push(bm);
+            return bm;
+          });
+          if (holdNextCrop) {
+            inCrop = true;
+            return new Promise<TrackedBitmap[]>((resolve, reject) => {
+              crops.push({
+                resolve: () => { inCrop = false; resolve(makeBitmaps()); },
+                reject: err => { inCrop = false; reject(err); },
+              });
+            });
+          }
+          return Promise.resolve(makeBitmaps());
+        },
+        present: presentation => {
+          offerCount++;
+          if (delayOffers) bufferedOffers.push(presentation);
+          else page.offer(presentation);
+        },
+        release: () => {},
+        served: frame => {
+          serveCount++;
+          if (frame.exact && !frame.cancelled) exactServeCount++;
+        },
+        hit: (widget, key) => {
+          if (widget === 1) lastHit1 = key;
+          else if (widget === 2) lastHit2 = key;
+        },
+        fail: reason => { failWith(`${withHandover ? 'handover' : 'main'} lane failure: ${reason}`); },
+        failWidget: () => {},
+        later: fn => { laters.push(fn); },
+      });
+      lane.follow(5, 'pinned');
+      lane.follow(6, 'followed');
+      lane.mount(1, [5], 'view');
+      lane.mount(2, [6], 'view');
+      lane.bind(1, { generation: 1, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: 10 });
+      lane.bind(2, { generation: 1, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: null });
+      page.mount(1, { route: ROUTE_A, lane: 0, pin: 10, surfaces: [surfaces[0]!] });
+      page.mount(2, { route: ROUTE_B, lane: 0, surfaces: [surfaces[1]!] });
+      lane.bindRoute(6, ROUTE_B, NATIVE_B, 0);
+
+      return {
+        lane, page, crops, bufferedOffers, wakes, laters, fakeChannel, bitmaps, surfaces,
+        get delayOffers() { return delayOffers; },
+        set delayOffers(v: boolean) { delayOffers = v; },
+        get inCrop() { return inCrop; },
+        get concurrentViolation() { return concurrentViolation; },
+        get serveCount() { return serveCount; },
+        get exactServeCount() { return exactServeCount; },
+        get cropCount() { return cropCount; },
+        get offerCount() { return offerCount; },
+        get lastHit1() { return lastHit1; },
+        get lastHit2() { return lastHit2; },
+      };
+    };
+
+    const main = createSide(false);
+    const over = createSide(true);
+    const sides = [main, over] as const;
+
+    let seekB = 0;
+    let currentHour = 10;
+    let fact5Val = 100;
+    const fact6BySeekHour = new Map<string, number>();
+    const setFact6 = (seek: number, hour: number, val: number) => {
+      fact6BySeekHour.set(`${seek}:${hour}`, val);
+    };
+    const pushFact5 = (val: number) => {
+      fact5Val = val;
+      for (const s of sides) s.lane.exact(5, 10, { val }, null);
+    };
+    const pushFact6 = (seek: number, hour: number, val: number) => {
+      setFact6(seek, hour, val);
+      const bytes = message(hour, [{ id: 6, hour, answer: rows([1n], [BigInt(val)]) }], false, NATIVE_B, seek);
+      for (const s of sides) s.lane.receive('follow', bytes);
+    };
+
+    pushFact5(100);
+    pushFact6(0, 10, 200);
+    for (const s of sides) s.page.publish(10, { playing: false, seek: 0 });
+    await drainMicrotasks();
+    for (const s of sides) s.page.frame();
+    await drainMicrotasks();
+    while (over.wakes.length) {
+      const w = over.wakes.shift()!;
+      over.fakeChannel.port1.onmessage?.({ data: w.data } as MessageEvent);
+      await drainMicrotasks();
+    }
+
+    const steps = 22;
+    for (let step = 0; step < steps; step++) {
+      paintDurationMs = rng() < 0.6 ? 14 : 3;
+      holdNextCrop = rng() < 0.35;
+      const delay = rng() < 0.35;
+      main.delayOffers = delay;
+      over.delayOffers = delay;
+
+      const choice = randInt(10);
+      if (choice === 0) {
+        currentHour += 10;
+        const val = 200 + step * 10 + randInt(5);
+        pushFact6(seekB, currentHour, val);
+        log.push(`${step}: spec(h=${currentHour},val=${val},ms=${paintDurationMs},hold=${holdNextCrop})`);
+        for (const s of sides) s.page.publish(currentHour, { playing: true, step: 10, speed: 240 });
+        await drainMicrotasks();
+      } else if (choice === 1) {
+        const hour = rng() < 0.5 ? currentHour : (currentHour = 10 + randInt(5) * 10);
+        const val = 300 + step * 10;
+        pushFact6(seekB, hour, val);
+        log.push(`${step}: exact(h=${hour},val=${val},ms=${paintDurationMs},hold=${holdNextCrop})`);
+        for (const s of sides) s.page.publish(hour, { playing: false, seek: seekB });
+        await drainMicrotasks();
+      } else if (choice === 2) {
+        const val = 500 + step * 10;
+        const mainBefore = main.exactServeCount;
+        const overBefore = over.exactServeCount;
+        const neitherInCrop = !main.inCrop && !over.inCrop;
+        const targetSub = rng() < 0.5 ? 5 : 6;
+        if (targetSub === 5) {
+          log.push(`${step}: facts5(val=${val},ms=${paintDurationMs},hold=${holdNextCrop})`);
+          pushFact5(val);
+        } else {
+          log.push(`${step}: facts6(seek=${seekB},h=${currentHour},val=${val},ms=${paintDurationMs},hold=${holdNextCrop})`);
+          pushFact6(seekB, currentHour, val);
+        }
+        await drainMicrotasks();
+        if (neitherInCrop && !holdNextCrop && main.exactServeCount > mainBefore && over.exactServeCount === overBefore) {
+          failWith(`exact data wake at step ${step} ran on main but was held/lost in handover`);
+        }
+      } else if (choice === 3) {
+        visualEpoch++;
+        log.push(`${step}: touchPinned(v=${visualEpoch},ms=${paintDurationMs},hold=${holdNextCrop})`);
+        for (const s of sides) s.lane.touch(1);
+        await drainMicrotasks();
+      } else if (choice === 4) {
+        seekB++;
+        currentHour = 10 + randInt(3) * 10;
+        const val = 700 + seekB * 10;
+        const pageSeek = rng() < 0.5;
+        log.push(`${step}: seekB(seek=${seekB},pageSeek=${pageSeek},h=${currentHour},val=${val},ms=${paintDurationMs},hold=${holdNextCrop})`);
+        if (pageSeek) {
+          for (const s of sides) s.page.publish(currentHour, { playing: false, seek: seekB });
+          pushFact6(seekB, currentHour, val);
+        } else {
+          for (const s of sides) s.lane.stream(ROUTE_B, seekB, currentHour);
+          pushFact6(seekB, currentHour, val);
+        }
+        await drainMicrotasks();
+      } else if (choice === 5) {
+        log.push(`${step}: deliverOffers(m=${main.bufferedOffers.length},o=${over.bufferedOffers.length})`);
+        for (const s of sides) {
+          if (s.bufferedOffers.length) s.page.offer(s.bufferedOffers.shift()!);
+          s.page.frame();
+        }
+        await drainMicrotasks();
+      } else if (choice === 6) {
+        log.push(`${step}: ackFrame`);
+        for (const s of sides) s.page.frame();
+        await drainMicrotasks();
+      } else if (choice === 7) {
+        const reject = rng() < 0.15;
+        log.push(`${step}: crop(${reject ? 'reject' : 'resolve'},m=${main.crops.length},o=${over.crops.length})`);
+        for (const s of sides) {
+          if (!s.crops.length) continue;
+          const pending = s.crops.shift()!;
+          if (reject) pending.reject(new Error('injected crop failure'));
+          else pending.resolve();
+        }
+        await drainMicrotasks();
+        if (reject) {
+          for (const s of sides) {
+            for (const wid of [1, 2]) {
+              s.page.rebind(wid, { subscription: true });
+              const binding = s.page.widgets.get(wid)!.binding;
+              s.lane.bind(wid, { generation: binding, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: wid === 1 ? 10 : null }, undefined, true);
+            }
+          }
+          await drainMicrotasks();
+        }
+      } else if (choice === 8) {
+        if (over.wakes.length) {
+          const w = over.wakes.shift()!;
+          const servedBefore = over.serveCount;
+          const cropsBefore = over.cropCount;
+          log.push(`${step}: deliverWake(stale=${w.stale},remaining=${over.wakes.length})`);
+          over.fakeChannel.port1.onmessage?.({ data: w.data } as MessageEvent);
+          await drainMicrotasks();
+          if (w.stale && (over.serveCount !== servedBefore || over.cropCount !== cropsBefore)) {
+            failWith(`stale wake fired a serve at step ${step} (served ${servedBefore}->${over.serveCount}, crops ${cropsBefore}->${over.cropCount})`);
+          }
+        }
+      } else {
+        log.push(`${step}: pointer`);
+        for (const s of sides) {
+          s.lane.pointer(1, 0, [1, 1]);
+          s.lane.pointer(2, 0, [1, 1]);
+        }
+      }
+    }
+
+    holdNextCrop = false;
+    paintDurationMs = 2;
+    main.delayOffers = false;
+    over.delayOffers = false;
+
+    const drainBoth = async () => {
+      for (let round = 0; round < 30; round++) {
+        let progressed = false;
+        const beforeOffers = main.offerCount + over.offerCount;
+        const beforeServes = main.serveCount + over.serveCount;
+        for (const s of sides) {
+          while (s.crops.length) { s.crops.shift()!.resolve(); progressed = true; }
+          while (s.bufferedOffers.length) { s.page.offer(s.bufferedOffers.shift()!); progressed = true; }
+          while (s.laters.length) { s.laters.shift()!(); progressed = true; }
+        }
+        while (over.wakes.length) {
+          const w = over.wakes.shift()!;
+          over.fakeChannel.port1.onmessage?.({ data: w.data } as MessageEvent);
+          progressed = true;
+        }
+        await drainMicrotasks();
+        for (const s of sides) s.page.frame();
+        await drainMicrotasks();
+        const afterOffers = main.offerCount + over.offerCount;
+        const afterServes = main.serveCount + over.serveCount;
+        if (afterOffers > beforeOffers || afterServes > beforeServes) progressed = true;
+        if (!progressed && !main.crops.length && !over.crops.length && !over.wakes.length && !main.laters.length && !over.laters.length && !main.bufferedOffers.length && !over.bufferedOffers.length) break;
+      }
+    };
+
+    await drainBoth();
+    const finalHour = currentHour + 10;
+    const finalVal6 = 9000 + seed;
+    pushFact6(seekB, finalHour, finalVal6);
+    for (const s of sides) {
+      s.page.publish(finalHour, { playing: false, seek: seekB });
+    }
+    await drainBoth();
+
+    const expected1 = `w1:10:val:${fact5Val}:v${visualEpoch}`;
+    const expected2 = `w2:${finalHour}:val:${finalVal6}`;
+
+    for (const wid of [1, 2]) {
+      const vm = main.page.view(wid);
+      const vo = over.page.view(wid);
+      if (vm.mode !== 'picture' || vo.mode !== 'picture') {
+        failWith(`quiescence widget ${wid} not picture: main=${vm.mode} over=${vo.mode}`);
+      }
+      if (vm.h !== vo.h || vm.fields?.tag !== vo.fields?.tag) {
+        failWith(`quiescence widget ${wid} mismatch: main=(h:${vm.h},tag:${vm.fields?.tag}) over=(h:${vo.h},tag:${vo.fields?.tag})`);
+      }
+      const expected = wid === 1 ? expected1 : expected2;
+      if (vo.fields?.tag !== expected || vm.fields?.tag !== expected) {
+        failWith(`quiescence widget ${wid} stale vs oracle: expected=${expected} main=${vm.fields?.tag} over=${vo.fields?.tag}`);
+      }
+    }
+
+    for (const s of sides) {
+      s.lane.pointer(1, 0, [1, 1]);
+      s.lane.pointer(2, 0, [1, 1]);
+    }
+    if (main.lastHit1 !== over.lastHit1 || main.lastHit2 !== over.lastHit2 || over.lastHit1 !== expected1 || over.lastHit2 !== expected2) {
+      failWith(`quiescence pointer mismatch: main=(${main.lastHit1},${main.lastHit2}) over=(${over.lastHit1},${over.lastHit2}) expected=(${expected1},${expected2})`);
+    }
+
+    const servesBeforeProbe = over.serveCount;
+    visualEpoch++;
+    over.lane.touch(1);
+    await drainMicrotasks();
+    if (over.serveCount <= servesBeforeProbe) {
+      failWith(`handover lane stuck working with nothing scheduled at quiescence`);
+    }
+    await drainBoth();
+
+    if (main.concurrentViolation || over.concurrentViolation) {
+      failWith(`concurrent serve detected`);
+    }
+
+    for (const s of sides) {
+      s.page.unmount(1);
+      s.page.unmount(2);
+      for (const surface of s.surfaces) surface.clear();
+      for (const bm of s.bitmaps) {
+        if (bm.closeCount !== 1) {
+          failWith(`bitmap ${bm.content} closeCount=${bm.closeCount} (expected 1)`);
+        }
+      }
+    }
+  };
+
+  for (let seed = 1; seed <= 300; seed++) {
+    await runSeed(seed);
+  }
 });

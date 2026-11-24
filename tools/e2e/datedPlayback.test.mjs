@@ -926,13 +926,14 @@ test('S20: per-picture audit coverage checks every painted picture including own
   assert.equal(costWrongGen.widgets[0].exact, 'fail', 'S20: widget-cost verdict isolates generations in audit keys');
 });
 
-test('cancelled workerFrame with changed 0 is excluded from emptyMs', () => {
+test('cancelled workerFrame is excluded from worker presentation rate, workerGapP95, and emptyMs', () => {
   const presented = Array.from({ length: 61 }, (_, i) => Math.round(i * 1000 / 60));
+  const cancelledIndices = new Set([10, 20, 30, 40]);
   const records = [
     { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
     { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
     ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0 })),
-    ...presented.map((at, i) => i === 5
+    ...presented.map((at, i) => cancelledIndices.has(i)
       ? { t: 'workerFrame', at, playing: true, changed: 0, cancelled: true, workMs: 80 }
       : { t: 'workerFrame', at, playing: true, changed: 0, workMs: 0.2 }),
     ...presented.map(at => ({
@@ -946,8 +947,9 @@ test('cancelled workerFrame with changed 0 is excluded from emptyMs', () => {
     audit: presented.map(at => ({ widget: 'w1', surface: 'main', placement: 1, owner: 0, at, error: null })),
   };
   const verdict = datedPlaybackVerdict([window], records, { legacy: true });
-  assert.equal(verdict.metrics[0].presents, 59, 'cancelled frame is excluded from worker presentation rate (59/s exposes the missed frame)');
-  assert.equal(verdict.pass, false, 'missed worker presentation fails the 60/s gate');
-  assert.equal(verdict.metrics[0].emptyFrames, presented.length - 1, 'cancelled frame is excluded from emptyFrames');
-  assert.ok(Math.abs(verdict.metrics[0].emptyMs - 0.2) < 1e-6, `cancelled 80ms frame must not pollute emptyMs, got ${verdict.metrics[0].emptyMs}`);
+  assert.equal(verdict.metrics[0].presents, 56, 'cancelled frames are excluded from worker presentation rate (56/s exposes the missed frames)');
+  assert.equal(verdict.pass, false, 'missed worker presentations fail the 60/s gate');
+  assert.ok(verdict.metrics[0].workerGapP95 >= 32, `cancelled frames must not mask worker gaps in workerGapP95, got ${verdict.metrics[0].workerGapP95}`);
+  assert.equal(verdict.metrics[0].emptyFrames, presented.length - cancelledIndices.size, 'cancelled frames are excluded from emptyFrames');
+  assert.ok(Math.abs(verdict.metrics[0].emptyMs - 0.2) < 1e-6, `cancelled 80ms frames must not pollute emptyMs, got ${verdict.metrics[0].emptyMs}`);
 });

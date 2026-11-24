@@ -11,15 +11,20 @@ export function macrotaskSchedule(
 ): ((run: () => void) => void) | undefined {
   if (!createChannel) return undefined;
   const wake = createChannel();
-  let pending: (() => void) | null = null;
-  wake.port1.onmessage = () => {
-    const run = pending;
-    pending = null;
-    run?.();
+  const callbacks = new Map<number, () => void>();
+  let nextToken = 1;
+  wake.port1.onmessage = (event: MessageEvent) => {
+    const token = event.data as number;
+    const run = callbacks.get(token);
+    if (run) {
+      callbacks.delete(token);
+      run();
+    }
   };
   return run => {
-    pending = run;
-    wake.port2.postMessage(null);
+    const token = nextToken++;
+    callbacks.set(token, run);
+    wake.port2.postMessage(token);
   };
 }
 
