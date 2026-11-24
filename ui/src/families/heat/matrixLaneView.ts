@@ -129,11 +129,11 @@ export function widestNames(
 }
 
 export function matrixExtentSignature(
-  layout: { readonly totalWidth: number; readonly totalHeight: number; readonly cellSize: number; readonly gridLeft: number; readonly gridTop: number },
+  layout: { readonly totalWidth: number; readonly totalHeight: number; readonly cellSize: number; readonly cellWidth?: number; readonly gridLeft: number; readonly gridTop: number },
   model: Pick<HeatMatrixModel, 'rows' | 'columns'>,
 ): string {
   return JSON.stringify([
-    layout.totalWidth, layout.totalHeight, layout.cellSize, layout.gridLeft, layout.gridTop,
+    layout.totalWidth, layout.totalHeight, layout.cellSize, layout.cellWidth ?? layout.cellSize, layout.gridLeft, layout.gridTop,
     model.rows.map(row => row.id), model.columns.map(column => column.id),
   ]);
 }
@@ -321,6 +321,8 @@ export function familyHeatMatrixLaneView(
         legend: model.legend,
         widestRowName: widestRowName > 0 ? widestRowName : undefined,
         widestTrailing: widestTrailing > 0 ? widestTrailing : undefined,
+        shape: model.shape,
+        margin: model.margin !== undefined,
       });
       held.cachedLayout = layout;
 
@@ -385,6 +387,7 @@ export function familyHeatMatrixLaneView(
             totalWidth: layout.totalWidth,
             totalHeight: layout.totalHeight,
             cellSize: layout.cellSize,
+            cellWidth: layout.cellWidth,
             gridLeft: layout.gridLeft,
             gridTop: layout.gridTop,
             rows: model.rows,
@@ -469,6 +472,7 @@ export function familyHeatMatrixLaneView(
           const h = hitHeatMatrix(point[0], point[1], scrollLeft, scrollTop, layout, rowCount, colCount);
           if (!h) return null;
           if (h.kind === 'cell') return `cell:${h.row}:${h.column}`;
+          if (h.kind === 'margin') return `cell:${h.row}:${colCount}`;
           return null;
         },
       };

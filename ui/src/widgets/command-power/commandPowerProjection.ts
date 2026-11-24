@@ -17,7 +17,9 @@ import {
   exactHoverReadings,
   memberAt,
   missingSpansOf,
-  seriesHeadValue,
+  rankEntry,
+  rankedOrder,
+  seriesHeadAt,
   spendMarkersOf,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
@@ -43,7 +45,7 @@ function formatEndAmount(value: number): string {
 
 export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerTimeChart({
   kind: 'command-power',
-  family: 'series',
+  family: 'time-chart',
   variant: 'rate-with-ceiling',
   joinMode: 'join',
   measureTitle: 'Command power',
@@ -51,8 +53,6 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
     const hour = readView.hour;
     const mainMap = readView.series('main');
     const ceilingMap = options.showCeiling ? readView.series('ceiling') : undefined;
-    const mainAnswer = readView.answer('main');
-    const ceilingAnswer = options.showCeiling ? readView.answer('ceiling') : undefined;
     const tags = options.tags;
     const single = tags.length === 1;
 
@@ -61,15 +61,17 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
     for (let i = 0; i < tags.length; i++) {
       const tag = tags[i]!;
       const member = memberAt(options.membership, tag, hour);
-      headByTag.set(tag, member ? seriesHeadValue(mainMap?.get(tag), mainAnswer, i, 5) : null);
+      headByTag.set(tag, member ? seriesHeadAt(readView, 'main', tag, i, 5) : null);
       if (options.showCeiling) {
-        ceilingByTag.set(tag, member ? seriesHeadValue(ceilingMap?.get(tag), ceilingAnswer, i, 5) : null);
+        ceilingByTag.set(tag, member ? seriesHeadAt(readView, 'ceiling', tag, i, 5) : null);
       }
     }
 
     const exact = exactHoverReadings(readView, 'hover', mainMap?.get(tags[0] ?? '')?.decimals ?? 5);
     const rowOf = new Map(tags.map((tag, row) => [tag, row]));
-    const ordered = [...tags].sort((a, b) => (headByTag.get(b) ?? -Infinity) - (headByTag.get(a) ?? -Infinity));
+    const present = tags.filter(tag => memberAt(options.membership, tag, hour));
+    const presentSet = new Set(present);
+    const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
     const colourMap = assignCountrySeriesColours(
       ordered,
       options.holders,
@@ -171,7 +173,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
 });
 
 export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOptions> = {
-  family: 'series',
+  family: 'time-chart',
   kind: 'command-power',
   label: 'Command power',
   subject: 'command power',
@@ -245,8 +247,10 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
         },
       });
     }
+    const rank = rankEntry(ctx, mainFamily, tags);
+    if (rank) entries.push(rank);
     return {
-      owner: `command-power:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showCeiling ? 1 : 0}`,
+      owner: `command-power:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showCeiling ? 1 : 0}:${ctx.following ? 1 : 0}`,
       entries,
     };
   },

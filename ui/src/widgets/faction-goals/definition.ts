@@ -3,7 +3,8 @@ import type { OptionField } from '../../dashboard/options';
 import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../families/table/settings.ts';
 
 export const COLUMNS: readonly TableColumnDefaults[] = [
-  { key: 'goal', label: 'Goal', as: 'icon', offered: ['icon', 'plain'] },
+  { key: 'icon', label: 'Icon', as: 'plain', offered: ['plain'] },
+  { key: 'goal', label: 'Goal', as: 'plain', offered: OFFERED.text },
   { key: 'progress', label: 'Progress', as: 'meterBefore', tone: 'blue', offered: OFFERED.number },
   { key: 'state', label: 'State', as: 'dot', offered: ['dot'] },
 ];

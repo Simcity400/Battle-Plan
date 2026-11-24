@@ -1,11 +1,13 @@
 import { colour, nudgeApart, readableColour } from '../../charts/palette.ts';
-import type { FollowedAnswer } from '../../dashboard/follow/message';
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
+import { rowName, type FollowedAnswer } from '../../dashboard/follow/message.ts';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { flagArtHandle } from '../art/provider.ts';
 import { failedArt, missingArt, PENDING_ART } from '../art/types.ts';
-import { FutureDataError, type BoundedReadView, type BoundedSeries } from '../contract.ts';
+import { FutureDataError, type BoundedReadView, type BoundedSeries, type FamilyPlanContext, type SourceEntry } from '../contract.ts';
 import { holderTagAt, type HolderRun, type HourRanges } from '../holders.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
+import type { TooltipListItem } from '../host/tooltips.ts';
 import type { ChartArtSlot, ChartGap, ChartMarker, ChartMissingSpan } from './model.ts';
 
 export function seriesHeadValue(
@@ -190,4 +192,110 @@ export function missingSpansOf(bounded: BoundedSeries | null | undefined): reado
     lastHour: sp.lastHour,
     reason: sp.reason ?? 'Not recorded',
   }));
+}
+
+export interface CardRow {
+  readonly label: string;
+  readonly value?: string;
+  readonly tone?: TooltipListItem['tone'];
+  readonly strong?: boolean;
+  readonly swatch?: string;
+  readonly divider?: boolean;
+}
+
+export function cardItems(rows: readonly CardRow[], heading: boolean): TooltipListItem[] {
+  return rows.map((row, index) => ({
+    label: row.label,
+    ...(row.value !== undefined ? { value: row.value } : {}),
+    ...(row.tone ? { tone: row.tone } : {}),
+    ...(row.strong ? { strong: true } : {}),
+    ...(row.swatch ? { swatch: row.swatch } : {}),
+    ...(row.divider ? { divider: true } : {}),
+    ...(heading && index > 0 && !row.strong ? { indent: true } : {}),
+  }));
+}
+
+interface StatesReply {
+  readonly states?: readonly { readonly country: string | number; readonly run: { readonly valueRaw: string } | null; readonly missing: string | null }[];
+}
+
+export function seriesHeadAt(
+  readView: BoundedReadView,
+  name: string,
+  tag: string,
+  row: number,
+  defaultDecimals: number,
+  scale = 1,
+): number | null {
+  const bounded = readView.series(name)?.get(tag) ?? null;
+  const answer = readView.answer(name);
+  if (answer || bounded) return seriesHeadValue(bounded, answer, row, defaultDecimals, scale);
+  const reply = readView.panel<StatesReply>(name);
+  const state = reply?.states?.find(item => countryKey(item.country) === tag);
+  if (!state?.run) return null;
+  const value = Number(state.run.valueRaw) / 10 ** defaultDecimals;
+  return Number.isFinite(value) ? value * scale : null;
+}
+
+export function rankEntry(
+  ctx: Pick<FamilyPlanContext, 'track' | 'branch' | 'following'>,
+  family: Readonly<Record<string, unknown>>,
+  tags: readonly string[],
+  name = 'rank',
+): SourceEntry | null {
+  if (tags.length < 2) return null;
+  const coverage = { mode: 'population', form: 'top', limit: tags.length } as const;
+  const base = { branchId: ctx.branch.id, family, top: tags.length };
+  const common = { name, source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
+  if (ctx.following) {
+    return {
+      ...common,
+      read: {
+        shape: 'point',
+        channel: 'followed',
+        coverage,
+        product: 'series-state',
+        followQuery: { product: 'series-state', params: { ...base, reads: tags.map(tag => ({ country: countryFromKey(tag) })) } },
+        params: null,
+      },
+    };
+  }
+  return {
+    ...common,
+    read: {
+      shape: 'point',
+      channel: 'panel',
+      coverage,
+      product: 'series-state',
+      exactProduct: 'series-state',
+      followQuery: null,
+      params: base,
+      buildExactParams: (params, hour) => ({ ...params, reads: tags.map(tag => ({ country: countryFromKey(tag), hour })) }),
+    },
+  };
+}
+
+export function rankedOrder(readView: BoundedReadView, tags: readonly string[], name = 'rank'): readonly string[] {
+  const ranked: string[] = [];
+  const answer = readView.answer(name);
+  if (answer && answer.kind !== 'notRecorded') {
+    for (let row = 0; row < answer.rows; row++) {
+      const key = rowName(answer, row);
+      if (key) ranked.push(key);
+    }
+  } else {
+    for (const state of readView.panel<StatesReply>(name)?.states ?? []) ranked.push(countryKey(state.country));
+  }
+  if (ranked.length === 0) return tags;
+  const selected = new Set(tags);
+  const seen = new Set<string>();
+  const order: string[] = [];
+  for (const key of ranked) {
+    if (selected.has(key) && !seen.has(key)) {
+      seen.add(key);
+      order.push(key);
+    }
+  }
+  for (const tag of tags) if (!seen.has(tag)) order.push(tag);
+  return order;
 }

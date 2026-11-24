@@ -1,5 +1,5 @@
 use dashboard_base::products::Country;
-use dashboard_query::{Query, identity::Holder};
+use dashboard_query::{Query, identity::{Holder, Holders}};
 use std::collections::{BTreeSet, HashMap};
 
 pub type Identity = (u32, u32);
@@ -18,8 +18,12 @@ pub struct HolderTags {
 
 impl HolderTags {
     pub fn new(query: &Query<'_>) -> Self {
+        Self::from_holders(&query.holders)
+    }
+
+    pub fn from_holders(holders: &Holders) -> Self {
         let mut by: HashMap<Identity, Vec<(String, i32, i32)>> = HashMap::new();
-        for (tag, runs) in &query.holders.tags {
+        for (tag, runs) in &holders.tags {
             for run in runs {
                 if let Holder::Found { slot, id } = run.holder {
                     by.entry((slot, id)).or_default().push((tag.clone(), run.first, run.last));
@@ -40,6 +44,12 @@ impl HolderTags {
         let runs = self.by.get(&identity)?;
         let at = runs.partition_point(|run| run.2 < hour);
         runs.get(at).filter(|run| run.1 <= hour).map(|run| run.0.as_str())
+    }
+
+    pub fn latest_at(&self, identity: Identity, hour: i32) -> Option<&str> {
+        let runs = self.by.get(&identity)?;
+        let at = runs.partition_point(|run| run.1 <= hour);
+        at.checked_sub(1).and_then(|at| runs.get(at)).map(|run| run.0.as_str())
     }
 
     pub fn names_in(&self, identity: Identity, first: i32, last: i32) -> BTreeSet<&str> {

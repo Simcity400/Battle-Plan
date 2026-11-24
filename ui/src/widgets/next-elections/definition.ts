@@ -1,13 +1,16 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
+import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../families/table/settings.ts';
 
-export const COLUMNS = [
-  { key: 'country', label: 'Country' }, { key: 'term', label: 'Term' },
-  { key: 'days', label: 'Days left' }, { key: 'next', label: 'Next election' },
-] as const;
+export const COLUMNS: readonly TableColumnDefaults[] = [
+  { key: 'country', label: 'Country', as: 'flagName', offered: OFFERED.country, showNamesDefault: true, hideable: false },
+  { key: 'term', label: 'Term served', as: 'track', tone: 'grey', offered: OFFERED.number },
+  { key: 'days', label: 'Days left', as: 'plain', offered: OFFERED.number },
+  { key: 'election', label: 'Election', as: 'plain', offered: OFFERED.number },
+];
 export const DEFAULT_SORT = { column: 'days', direction: 'ascending' } as const;
-export const OPTIONS: readonly OptionField[] = [...TABLE_OPTIONS, ...tableSortOptions(COLUMNS, DEFAULT_SORT)];
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: DEFAULT_SORT };
+export const OPTIONS: readonly OptionField[] = tableFamilyOptions(COLUMNS, TABLE_BASE);
 export const definition = {
   kind: 'next-elections', version: 1, title: 'Next elections', category: 'Politics', icon: 'ballot',
   description: 'Countries that hold elections: how far through the term each is, and when it votes next.',

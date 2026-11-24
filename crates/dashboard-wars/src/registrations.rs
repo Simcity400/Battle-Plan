@@ -18,6 +18,7 @@ dashboard_base::register_products! {
 dashboard_base::register_hourly_products! {
     FACTIONS_FACTIONROSTERS => crate::products::factions::FactionRosters,
     DIPLOMACY_DIPLOMATICRELATIONS => crate::products::diplomacy::DiplomaticRelations,
+    CASUALTY_MATRIX_CASUALTYMATRIX => crate::products::casualty_matrix::CasualtyMatrix,
     WARGOALS_WARGOALS => crate::products::wargoals::Wargoals,
     OCCUPATION_RESERVE_OCCUPATIONRESERVE => crate::products::occupation_reserve::OccupationReserve,
     OCCUPATION_STATES_OCCUPIEDSTATES => crate::products::occupation::states::OccupiedStates,
