@@ -148,12 +148,12 @@ function makeRow(readView: BoundedReadView, rankRow: SeriesRankRow, decimals: nu
       ? { label: config.valueLabel, value: '—' }
       : { label: config.valueLabel, value: formatted.exact ?? formatted.text };
   const identity = readView.who('country', key);
-  const tag = identity.tag?.status === 'ready' ? identity.tag.value : countryKey(rankRow.country);
+  const tag = identity.tag?.status === 'ready' ? identity.tag.value : typeof rankRow.country === 'string' ? rankRow.country : null;
   return {
     kind: 'data',
     key,
     subject: key,
-    label: pres.label,
+    label: identity.name.status === 'ready' || tag === null ? pres.label : tag,
     labelMissing: pres.labelMissing,
     media: pres.media,
     ...(pres.color ? { color: pres.color } : {}),
@@ -165,7 +165,7 @@ function makeRow(readView: BoundedReadView, rankRow: SeriesRankRow, decimals: nu
       items: [item],
       ...(config.note ? { note: config.note } : {}),
     },
-    meta: { tag, key },
+    meta: { tag: tag ?? key, key },
   };
 }
 
