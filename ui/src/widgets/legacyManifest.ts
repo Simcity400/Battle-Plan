@@ -63,7 +63,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'production-licences', load: () => import('./production-licences') },
   { kind: 'industrial-organisations', load: () => import('./industrial-organisations') },
   { kind: 'equipment-designs', load: () => import('./equipment-designs') },
-  { kind: 'convoy-health', load: () => import('./convoy-health') },
   { kind: 'peace-deals', load: () => import('./peace-deals') },
   { kind: 'territory-transfers', load: () => import('./territory-transfers') },
   { kind: 'wars', load: () => import('./wars') },

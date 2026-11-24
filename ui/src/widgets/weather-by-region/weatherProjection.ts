@@ -255,6 +255,7 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
     const show = weatherShow(ctx.options);
     const modifier = show === 'modifiers' && ctx.options.modifier ? contentKey(String(ctx.options.modifier)) : null;
     const pinned = regionIds(ctx.options.regions);
+    const firstHour = ctx.branch.firstHour;
     const width = Math.ceil(Math.max(1, view.width ?? WIDTH_STEP) / WIDTH_STEP) * WIDTH_STEP;
     const params = {
       branchId: ctx.branch.id,
@@ -273,12 +274,14 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
         branch: ctx.branch.id,
         offset: ctx.track.axisOffset,
         read: {
-          shape: 'trailing-window',
+          shape: 'point',
+          channel: 'followed',
           coverage: { mode: 'population', form: 'top', limit: WEATHER_TOP },
           product: 'regional-weather',
-          windowHours: WEATHER_WINDOW_HOURS,
           followQuery: null,
           params,
+          dynamicKeys: ['firstHour', 'lastHour'],
+          buildExactParams: (base, hour) => ({ ...base, firstHour: Math.max(firstHour, hour - WEATHER_WINDOW_HOURS + 1), lastHour: hour }),
         },
       }],
     };

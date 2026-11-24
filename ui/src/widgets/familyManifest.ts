@@ -149,6 +149,17 @@ export const FAMILY_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.airTimelineProjection, declaration: mod.airTimelineDeclaration }),
     ),
   },
+  {
+    kind: 'convoy-health',
+    view: DEFAULT_VIEW,
+    family: 'heat-lanes',
+    loadSpec: heatLanesSpec(
+      'convoy-health',
+      DEFAULT_VIEW,
+      () => import('./convoy-health/convoyHealthProjection.ts'),
+      mod => ({ projection: mod.convoyHealthProjection, declaration: mod.convoyHealthDeclaration }),
+    ),
+  },
 ];
 
 bindFamilyManifest(FAMILY_VIEWS);

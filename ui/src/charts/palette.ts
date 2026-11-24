@@ -31,6 +31,14 @@ export const CHART_MEASURE_COLOURS = {
   weatherModifier: '#9085e9',
 } as const;
 
+export const CONVOY_EFFICIENCY_STOPS: readonly (readonly [number, string])[] = [
+  [1, '#22364f'],
+  [0.86, '#a8790f'],
+  [0.62, '#d4661c'],
+  [0.36, '#e2464e'],
+  [0, '#ff6b74'],
+];
+
 const GOLDEN_ANGLE = 137.50776405003785;
 const LIGHTNESS_STEP = 0.7548776662466927;
 const CHROMA_STEP = 0.5698402909980532;

@@ -244,7 +244,7 @@ function drawRowReadout(
   if (readout.secondary) {
     const after = cursor + slot + READOUT_GAP;
     const rest = x + width - after;
-    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+    ctx.font = `400 ${theme.fontSize.body}px ${theme.font}`;
     ctx.fillStyle = secondaryColor;
     if (rest > 12) ctx.fillText(ellipsise(readout.secondary, rest, s => textWidth(ctx, s)), after, middleY);
   }
@@ -264,7 +264,7 @@ function drawInRunLabel(
 ): void {
   if (!text || width < 28 || height < 14) return;
   ctx.save();
-  ctx.font = `${LABEL_WEIGHT} 10.5px ${theme.font}`;
+  ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
   const needed = textWidth(ctx, text) + 16;
   if (width < needed) {
     ctx.restore();
@@ -272,9 +272,9 @@ function drawInRunLabel(
   }
   const rgb = parseColor(bgColor);
   ctx.fillStyle = explicitTextColor ?? (rgb ? readableText(rgb) : theme.text);
-  ctx.textAlign = 'center';
+  ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text, x + width / 2, y + height / 2 + 0.5);
+  ctx.fillText(text, x + 8, y + height / 2 + 0.5);
   ctx.restore();
 }
 
@@ -351,6 +351,7 @@ export function drawHeatLanes(
     const nameMaxW = Math.max(16, layout.nameWidth - nameX);
     drawNameSlot(ctx, row.label, nameX, y, nameMaxW, layout.rowHeight, theme, {
       fontSize: theme.fontSize.body,
+      weight: 400,
       maxLines: 1,
       color: row.nameMissing ? theme.muted : anyPinned && !row.pinned ? autoNameColor : theme.text,
     });

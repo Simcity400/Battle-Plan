@@ -1,4 +1,5 @@
-import { formatDateOnly } from '../valueFormat.ts';
+import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
+import { formatDateOnly, formatDateParts } from '../valueFormat.ts';
 import type { HeatLaneCell, HeatLaneLegend, HeatLaneRow, HeatLaneRun } from './lanesModel.ts';
 
 export const LANE_NAME_WIDTH = 168;
@@ -75,9 +76,10 @@ export function layoutHeatLanes(input: LayoutHeatLanesInput): HeatLanesLayout {
   const plotTop = legendHeight + 4;
   const plotHeight = Math.max(1, height - plotTop - axisHeight);
 
+  const shared = input.rows.length > 0 ? Math.floor((plotHeight - 8 + LANE_ROW_GAP) / input.rows.length) - LANE_ROW_GAP : LANE_ROW_DEFAULT;
   const rowHeight = Math.max(
     LANE_ROW_MIN,
-    Math.min(LANE_ROW_MAX, Math.round(input.requestedRowHeight ?? LANE_ROW_DEFAULT)),
+    Math.min(LANE_ROW_MAX, Math.round(input.requestedRowHeight ?? shared)),
   );
   const rowStride = rowHeight + LANE_ROW_GAP;
   const contentHeight = input.rows.length > 0 ? input.rows.length * rowStride - LANE_ROW_GAP + 8 : 0;
@@ -272,6 +274,14 @@ export interface AxisTick {
   readonly label: string;
 }
 
+const YEAR_DAYS = 365;
+const MONTH_STARTS = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334] as const;
+const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
+
+function dayOf(hour: number, dayHours: number): number {
+  return Math.floor((hour - HOUR_EPOCH) / dayHours);
+}
+
 export function computeAxisTicks(
   firstHour: number,
   lastHour: number,
@@ -281,20 +291,42 @@ export function computeAxisTicks(
   minSpacingPx = 88,
 ): readonly AxisTick[] {
   if (plotWidth < 40 || lastHour < firstHour) return [];
-  const maxTicks = Math.max(2, Math.floor(plotWidth / minSpacingPx));
-  const totalHours = Math.max(1, lastHour - firstHour + 1);
-  const stepDaysCandidates = [1, 2, 7, 14, 30, 60, 90, 180, 365, 730];
   const hoursPerDay = Math.max(1, dayHours);
-  const rawStepDays = totalHours / hoursPerDay / maxTicks;
-  const stepDays = stepDaysCandidates.find(c => c >= rawStepDays) ?? Math.ceil(rawStepDays / 365) * 365;
-  const stepHours = stepDays * hoursPerDay;
-
-  const firstTick = Math.ceil(firstHour / stepHours) * stepHours;
+  const maxTicks = Math.max(2, Math.floor(plotWidth / minSpacingPx));
+  const spanDays = Math.max(1, (lastHour - firstHour + 1) / hoursPerDay);
+  const rawStepDays = spanDays / maxTicks;
   const ticks: AxisTick[] = [];
-  for (let h = firstTick; h <= lastHour; h += stepHours) {
-    const x = hourToLaneX(h, firstHour, lastHour, plotLeft, plotWidth);
-    if (x < plotLeft + 24 || x > plotLeft + plotWidth - 24) continue;
-    ticks.push({ hour: h, x, label: formatDateOnly(h) });
+  const push = (hour: number, label: string) => {
+    if (hour < firstHour || hour > lastHour) return;
+    const x = hourToLaneX(hour, firstHour, lastHour, plotLeft, plotWidth);
+    if (x < plotLeft + 24 || x > plotLeft + plotWidth - 24) return;
+    ticks.push({ hour, x, label });
+  };
+  const firstDay = dayOf(firstHour, hoursPerDay);
+  const lastDay = dayOf(lastHour, hoursPerDay);
+  if (rawStepDays > 120) {
+    const step = Math.max(1, Math.ceil(rawStepDays / YEAR_DAYS));
+    for (let year = Math.ceil(firstDay / YEAR_DAYS); year * YEAR_DAYS <= lastDay; year++) {
+      if (year % step === 0) push(HOUR_EPOCH + year * YEAR_DAYS * hoursPerDay, String(year));
+    }
+    return ticks;
+  }
+  if (rawStepDays > 10) {
+    const step = [1, 2, 3, 6].find(months => months * 30 >= rawStepDays) ?? 6;
+    for (let year = Math.floor(firstDay / YEAR_DAYS); year * YEAR_DAYS <= lastDay; year++) {
+      for (let month = 0; month < 12; month += step) {
+        const day = year * YEAR_DAYS + MONTH_STARTS[month]!;
+        push(HOUR_EPOCH + day * hoursPerDay, `${MONTH_SHORT[month]} ${year}`);
+      }
+    }
+    return ticks;
+  }
+  const step = [1, 2, 7].find(days => days >= rawStepDays) ?? 7;
+  for (let day = firstDay; day <= lastDay; day++) {
+    if (day % step !== 0) continue;
+    const hour = HOUR_EPOCH + day * hoursPerDay;
+    const parts = formatDateParts(hour);
+    push(hour, parts?.dayMonth ?? formatDateOnly(hour));
   }
   return ticks;
 }

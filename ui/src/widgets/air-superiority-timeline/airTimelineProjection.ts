@@ -16,6 +16,7 @@ import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { regionIds } from '../../families/regionTokens.ts';
 import type { AirDayCell, AirReadout, AirSide, AirTimelineReply, AirTimelineRow } from '../../generated/dashboard';
+import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
 import { mix } from '../../shell/appearance/color.ts';
 import { OPTIONS } from './definition.ts';
 
@@ -229,6 +230,7 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
     playhead: through,
     gaps: reply.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' })),
     rows,
+    readoutWidth: LANE_READOUT_MAX_WIDTH,
     ...(rows.length ? {} : { empty: 'No air activity at this date.' }),
     warnings: reply.warnings,
   };
@@ -267,11 +269,14 @@ export const airTimelineDeclaration: HeatLanesWidgetDeclaration<AirTimelineProje
         branch: ctx.branch.id,
         offset: ctx.track.axisOffset,
         read: {
-          shape: 'branch-to-hour',
+          shape: 'point',
+          channel: 'followed',
           coverage: { mode: 'population', form: 'top', limit: Number(params.top) },
           product: 'air-superiority-timeline',
           followQuery: null,
           params,
+          dynamicKeys: ['lastHour'],
+          buildExactParams: (base, hour) => ({ ...base, firstHour: ctx.branch.firstHour, lastHour: hour }),
         },
       }],
     };
