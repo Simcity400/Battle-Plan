@@ -106,7 +106,7 @@ pub fn at_each_with_status(
     table: TableId,
     columns: Option<&[usize]>,
     asks: &[(i32, u128)],
-    each: &mut dyn FnMut(i32, u128, Status, Option<(TableView<'_>, u32)>) -> io::Result<()>,
+    each: &mut dyn FnMut(i32, u128, Status, Option<&str>, Option<(TableView<'_>, u32)>) -> io::Result<()>,
 ) -> io::Result<()> {
     let mut asks = asks.to_vec();
     asks.sort_unstable();
@@ -124,9 +124,13 @@ pub fn at_each_with_status(
         let hour = hour_asks[0].0;
         reader.go_to(recording, ordinal_of(recording, run, hour)?)?;
         let (status, view, read, available) = (reader.status(), reader.view(), reader.read_rows(), reader.available());
+        let unavailable_reason = match status {
+            Status::Unavailable { reason } => view.string(reason).and_then(|text| std::str::from_utf8(text).ok()),
+            _ => None,
+        };
         for &(_, key) in hour_asks {
             let row = view.slot(key).filter(|&slot| available && read.is_none_or(|read| read.binary_search(&slot).is_ok()));
-            each(hour, key, status, row.map(|slot| (view, slot)))?;
+            each(hour, key, status, unavailable_reason, row.map(|slot| (view, slot)))?;
         }
     }
     Ok(())
@@ -140,7 +144,7 @@ pub fn at_each(
     asks: &[(i32, u128)],
     each: &mut dyn FnMut(i32, u128, Option<(TableView<'_>, u32)>) -> io::Result<()>,
 ) -> io::Result<()> {
-    at_each_with_status(recording, run, table, columns, asks, &mut |hour, key, _, row| each(hour, key, row))
+    at_each_with_status(recording, run, table, columns, asks, &mut |hour, key, _, _, row| each(hour, key, row))
 }
 
 pub type Runs = Vec<(i32, i32, Option<i64>)>;
@@ -690,6 +694,54 @@ pub fn statuses(recording: &Recording, run: u32, table: TableId, from: i32, to: 
         }
     }
     Ok(out)
+}
+
+pub fn status_reasons(recording: &Recording, run: u32, table: TableId, runs: &[StatusRun]) -> io::Result<HashMap<u32, String>> {
+    let mut unavailable: Vec<(i32, i32, u32)> = Vec::new();
+    for item in runs {
+        if let Status::Unavailable { reason } = item.status {
+            unavailable.push((item.first, item.last, reason));
+        }
+    }
+    if unavailable.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let held = recording.run(run)?;
+    let index = table.index();
+    let kinds = replay_recording::schema::schema()?.swap_remove(index);
+    let recorded = recording.columns()[index].min(kinds.len());
+    let mut min_block = u32::MAX;
+    let mut max_block = 0u32;
+    let mut max_to = i32::MIN;
+    let mut block_reasons: Vec<(u32, u32, u32)> = Vec::new();
+    for (first, last, reason) in unavailable {
+        let (Some(a), Some(b)) = (held.ordinal(first), held.ordinal(last)) else { continue };
+        let (ba, bb) = (held.place(a).0, held.place(b).0);
+        min_block = min_block.min(ba);
+        max_block = max_block.max(bb);
+        max_to = max_to.max(last);
+        block_reasons.push((ba, bb, reason));
+    }
+    if block_reasons.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let pages = recording.table_pages(run, index, min_block.saturating_sub(1), max_block + 1)?;
+    let mut needed: Vec<(usize, Vec<u32>)> = Vec::new();
+    for (page_idx, page) in pages.iter().enumerate() {
+        if page.block < min_block {
+            continue;
+        }
+        let mut ids = Vec::new();
+        for &(ba, bb, reason) in &block_reasons {
+            if ba <= page.block && page.block <= bb && !ids.contains(&reason) {
+                ids.push(reason);
+            }
+        }
+        if !ids.is_empty() {
+            needed.push((page_idx, ids));
+        }
+    }
+    resolve_log_reasons(recording, held, &pages, &kinds[..recorded], index, max_to, &needed)
 }
 
 pub fn logged_hours(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<(i32, i32)>> {

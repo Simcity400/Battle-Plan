@@ -480,7 +480,7 @@ pub struct Line<'q, 'a> {
 
 #[derive(Default)]
 struct Unread {
-    statuses: HashMap<(u32, i32, i32), Arc<Vec<replay_lanes::lanes::StatusRun>>>,
+    statuses: HashMap<(u32, i32, i32), Arc<(Vec<replay_lanes::lanes::StatusRun>, HashMap<u32, String>)>>,
     lives: HashMap<u32, Arc<Vec<(u128, i64, i64)>>>,
 }
 
@@ -902,7 +902,11 @@ impl<'q, 'a> Line<'q, 'a> {
         let recording = self.query.replay.recording();
         let columns = read::columns_of(&self.source);
         let snapshot = crate::cost::storage(|| replay_lanes::lanes::at_keys(recording, run, self.series.table, hour, Some(&columns), read::Keys::Range(lo, hi)))?;
-        if let Some(reason) = status_reason(self.series.table, &snapshot.status) {
+        let unavailable_reason = match snapshot.status {
+            Status::Unavailable { reason } => snapshot.strings.get(reason).and_then(|text| std::str::from_utf8(text).ok()),
+            _ => None,
+        };
+        if let Some(reason) = crate::coverage::row_coverage(self.series.table, snapshot.status, unavailable_reason, false).into_missing() {
             return Ok(Err(reason));
         }
         let Some(n) = top else {
@@ -1057,7 +1061,7 @@ impl<'q, 'a> Line<'q, 'a> {
                 asks.dedup();
                 let mut resolved: HashMap<(i32, u128), Resolved> = HashMap::new();
                 crate::cost::storage(|| {
-                    replay_lanes::lanes::at_each_with_status(recording, run, self.series.table, Some(&columns), &asks, &mut |hour, key, status, row| {
+                    replay_lanes::lanes::at_each_with_status(recording, run, self.series.table, Some(&columns), &asks, &mut |hour, key, status, _, row| {
                         if matches!(status, Status::Complete) {
                             let state = match row {
                                 Some((view, slot)) => match self.source.read(&view, slot) {
@@ -1600,21 +1604,29 @@ impl<'q, 'a> Line<'q, 'a> {
                 return Ok(complete);
             }
         }
-        for held in self.statuses(part.run, first, last)?.iter().filter(|held| held.last >= first && held.first <= last) {
+        let statuses = self.statuses(part.run, first, last)?;
+        for held in statuses.0.iter().filter(|held| held.last >= first && held.first <= last) {
             let (a, b) = (held.first.max(first), held.last.min(last));
-            match status_reason(self.series.table, &held.status) {
-                Some(reason) => out.push(MissingSpan { first_hour: a, last_hour: b, reason }),
-                None => complete.push((i64::from(a), i64::from(b))),
+            let reason = match held.status {
+                Status::Unavailable { reason } => statuses.1.get(&reason).map(String::as_str),
+                _ => None,
+            };
+            match crate::coverage::row_coverage(self.series.table, held.status, reason, false) {
+                crate::coverage::Coverage::NotRecorded(reason) => out.push(MissingSpan { first_hour: a, last_hour: b, reason }),
+                crate::coverage::Coverage::Recorded => complete.push((i64::from(a), i64::from(b))),
             }
         }
         Ok(complete)
     }
 
-    fn statuses(&self, run: u32, from: i32, to: i32) -> io::Result<Arc<Vec<replay_lanes::lanes::StatusRun>>> {
+    fn statuses(&self, run: u32, from: i32, to: i32) -> io::Result<Arc<(Vec<replay_lanes::lanes::StatusRun>, HashMap<u32, String>)>> {
         if let Some(held) = self.unread.lock().unwrap_or_else(PoisonError::into_inner).statuses.get(&(run, from, to)) {
             return Ok(held.clone());
         }
-        let read = Arc::new(read::statuses(self.query.replay.recording(), run, self.series.table, from, to)?);
+        let recording = self.query.replay.recording();
+        let runs = read::statuses(recording, run, self.series.table, from, to)?;
+        let reasons = read::status_reasons(recording, run, self.series.table, &runs)?;
+        let read = Arc::new((runs, reasons));
         self.unread.lock().unwrap_or_else(PoisonError::into_inner).statuses.insert((run, from, to), read.clone());
         Ok(read)
     }
@@ -2071,14 +2083,4 @@ fn zero_absent(held: &read::Runs, zero: &[(i32, i32)], from: i32, to: i32) -> re
         }
     }
     out
-}
-
-fn status_reason(table: replay_data::rows::TableId, status: &Status) -> Option<String> {
-    let what = table.words();
-    match status {
-        Status::Complete => None,
-        Status::NotRecorded => Some(format!("{what}: not recorded at this hour")),
-        Status::Truncated { missing } => Some(format!("{what}: read only in part at this hour ({missing} rows not read)")),
-        Status::Unavailable { .. } => Some(format!("{what}: not available at this hour")),
-    }
 }

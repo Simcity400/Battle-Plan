@@ -1,6 +1,7 @@
 
 pub mod chart;
 pub mod cost;
+pub mod coverage;
 pub mod fields;
 #[cfg(test)]
 mod fixture;

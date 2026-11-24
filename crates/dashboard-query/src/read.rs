@@ -78,6 +78,10 @@ pub fn statuses(recording: &Recording, run: u32, table: TableId, from: i32, to: 
     crate::cost::storage(|| replay_lanes::lanes::statuses(recording, run, table, from, to))
 }
 
+pub fn status_reasons(recording: &Recording, run: u32, table: TableId, runs: &[replay_lanes::lanes::StatusRun]) -> io::Result<HashMap<u32, String>> {
+    crate::cost::storage(|| replay_lanes::lanes::status_reasons(recording, run, table, runs))
+}
+
 pub fn columns_of(source: &summary::Source) -> Vec<usize> {
     match *source {
         summary::Source::Cell(column) => vec![column],

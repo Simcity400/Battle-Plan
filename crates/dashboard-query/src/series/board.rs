@@ -39,18 +39,7 @@ pub struct Board {
 }
 
 pub fn table_unrecorded(table: replay_data::rows::TableId, status: Status, reason: Option<&str>) -> Option<String> {
-    let words = table.words();
-    let mut chars = words.chars();
-    let name: String = chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default();
-    match status {
-        Status::Complete => None,
-        Status::NotRecorded => Some(format!("{name} not recorded at this hour")),
-        Status::Truncated { missing } => Some(format!("{name} read only in part at this hour ({missing} rows not read), and which rows were read is not held at the head")),
-        Status::Unavailable { .. } => Some(match reason.filter(|reason| !reason.is_empty()) {
-            Some(reason) => format!("{name} not available at this hour: {reason}"),
-            None => format!("{name} not available at this hour"),
-        }),
-    }
+    crate::coverage::row_coverage(table, status, reason, false).into_missing()
 }
 
 pub fn measure_unrecorded(tag: &str, measure: &str) -> String {
