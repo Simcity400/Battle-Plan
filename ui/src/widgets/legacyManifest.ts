@@ -13,7 +13,7 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'dockyard-spending', view: 'circle', label: 'Breakdown', load: () => import('./dockyard-spending') },
   { kind: 'equipment-losses', slots: ['render', 'countryChip'], load: () => import('./equipment-losses') },
   { kind: 'equipment-produced', view: 'lines', label: 'Lines', slots: ['render', 'countryChip'], load: () => import('./equipment-produced') },
-  { kind: 'equipment-stockpile', slots: ['render', 'countryChip'], load: () => import('./equipment-stockpile') },
+  { kind: 'equipment-stockpile', view: 'bars', label: 'Table', slots: ['render', 'countryChip'], load: () => import('./equipment-stockpile') },
   { kind: 'espionage-log', load: () => import('./espionage-log') },
   { kind: 'faction-pooled-strength', load: () => import('./faction-pooled-strength') },
   { kind: 'faction-strength', view: 'lines', label: 'Lines', load: () => import('./faction-strength') },
@@ -36,5 +36,4 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'ships-sunk', load: () => import('./ships-sunk') },
   { kind: 'territory', view: 'lines', label: 'Lines', load: () => import('./territory') },
   { kind: 'territory', view: 'share', label: 'Share', load: () => import('./territory') },
-  { kind: 'wars', load: () => import('./wars') },
 ];

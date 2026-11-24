@@ -24,7 +24,7 @@ export type WidgetStateProps = (
   | { kind: 'no-members'; scope?: keyof typeof NO_MEMBERS; message?: string; onChoose?: () => void }
   | { kind: 'empty'; message?: string; detail?: ReactNode; icon?: IconName; partial?: boolean; action?: ReactNode }
   | { kind: 'error'; what?: string; failure?: Failure; onRetry?: () => void }
-  | { kind: 'unavailable'; message?: string; detail?: ReactNode; reason?: string; cause?: NotInRecordingCause; technical?: string }
+  | { kind: 'unavailable'; message?: string; detail?: ReactNode; reason?: string; cause?: NotInRecordingCause; technical?: string; action?: ReactNode }
 ) & { scale?: WidgetStateScale };
 
 function DetailsAction({ technical }: { technical: string }) {
@@ -187,7 +187,7 @@ export default function WidgetState(props: WidgetStateProps) {
         : props.detail ?? (technical ? UNKNOWN_REASON_FALLBACK : undefined);
       return <StateBox scale={scale} state="unavailable" icon="info" title={title} secondLine={secondLine}
         detailAttr={technical}
-        actions={technical ? <DetailsAction technical={technical} /> : undefined} />;
+        actions={technical || props.action ? <>{props.action}{technical && <DetailsAction technical={technical} />}</> : undefined} />;
     }
   }
 }

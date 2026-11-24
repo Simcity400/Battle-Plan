@@ -4,7 +4,7 @@ import { FutureDataError, type BoundedReadView } from '../../families/contract.t
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { createCountryLinesView, type CountryLine, type CountryLinesOptions } from '../../families/time-chart/countryLines.ts';
 import type { ChartHoverDetail } from '../../families/time-chart/model.ts';
-import { countrySeriesIdentity } from '../../families/time-chart/seriesHelpers.ts';
+import { countryNameAt } from '../../families/time-chart/seriesHelpers.ts';
 import type { LiveValues } from '../../charts/live';
 import type { OccupationDetailReply } from '../../generated/dashboard';
 import { formatAmount } from '../../charts/valueAxis.ts';
@@ -75,7 +75,7 @@ function occupationHoverDetail(readView: BoundedReadView, lines: readonly Countr
   if (!hover) return null;
   const at = hover.hour;
   const settings = { shown: shownOf(options.options), rank: rankOf(options.options), collaboration: options.options.collaboration === true, digits: options.digits ?? 5 };
-  const items = occupationHoverItems(hover.data, repliedCells(hover.data).read(), lines, settings, tag => countrySeriesIdentity(tag, null, readView, at, true).name);
+  const items = occupationHoverItems(hover.data, repliedCells(hover.data).read(), lines, settings, tag => countryNameAt(readView, tag, at));
   return { hour: at, items, replacesSeries: true };
 }
 

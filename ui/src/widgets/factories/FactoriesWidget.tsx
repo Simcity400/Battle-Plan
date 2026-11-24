@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import { contentSet } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
@@ -16,7 +16,7 @@ import type { FactoryPartsReply } from '../../generated/dashboard';
 import { countMode, partRows, validateFactoryParts } from './factoriesData.ts';
 import type { FactoriesRowMeta } from './factoriesProjection.ts';
 
-function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
+function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pick<FamilyViewProps, 'widget' | 'runtime' | 'active'> & {
   tag: string; hour: GatedHour; types: readonly string[]; mode: ReturnType<typeof countMode>;
 }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -43,12 +43,12 @@ function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pic
   );
 }
 
-export default function FactoriesWidget(props: WidgetProps) {
-  const { widget, runtime, active, manifestDeclaration } = props;
-  const rawView = String(props.view ?? widget.options?.view ?? 'race');
+export default function FactoriesWidget(props: FamilyViewProps) {
+  const { widget, runtime, active, manifestDeclaration, options } = props;
+  const rawView = String(props.view ?? options.view ?? 'race');
   const view = rawView === 'lines' ? 'lines' : rawView === 'mix' ? 'mix' : 'race';
-  const mode = countMode(widget.options?.count);
-  const types = useMemo(() => contentSet(widget.options?.types ?? ''), [widget.options?.types]);
+  const mode = countMode(options.count);
+  const types = useMemo(() => contentSet(options.types), [options.types]);
   const isLines = manifestDeclaration?.family === 'time-chart' || view === 'lines';
 
   const anchorRef = useRef<HTMLDivElement>(null);

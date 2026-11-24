@@ -1,6 +1,6 @@
 import type { BoundFacetFilter } from '../../charts/log/logSource';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { FIXED5, fixedText } from '../../dashboard/market.ts';
+import { FIXED5 } from '../../dashboard/market.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
@@ -20,6 +20,7 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
+import { formatFixed5Amount } from '../../families/valueFormat.ts';
 import type { MarketContractEvent, MarketContractItem, MarketContractRow, MarketContractStatus } from '../../generated/dashboard';
 import { MARKET_LEDGER_COLUMNS } from './definition.ts';
 
@@ -41,12 +42,12 @@ const CONTRACT_STATUS_TEXT: Record<MarketContractStatus, { readonly label: strin
 
 function formatUnits(raw: string): string {
   const n = BigInt(raw);
-  return fixedText(n);
+  return formatFixed5Amount(n < 0n ? -n : n);
 }
 
 function formatCic(raw: string, sign: -1 | 0 | 1): string {
   const abs = BigInt(raw);
-  const mag = fixedText(abs < 0n ? -abs : abs);
+  const mag = formatFixed5Amount(abs < 0n ? -abs : abs);
   if (sign < 0) return `\u2212${mag}`;
   if (sign > 0) return `+${mag}`;
   return mag;
@@ -117,10 +118,10 @@ function deliveredCell(items: readonly MarketContractItem[]): TableCell {
     if (item.contractedRaw === null) allContracted = false;
     else contractedSum += BigInt(item.contractedRaw);
   }
-  const deliveredText = fixedText(deliveredSum);
+  const deliveredText = formatFixed5Amount(deliveredSum);
   if (allContracted && contractedSum > 0n) {
     return {
-      value: knownValue(`${deliveredText} / ${fixedText(contractedSum)}`),
+      value: knownValue(`${deliveredText} / ${formatFixed5Amount(contractedSum)}`),
       unitSuffix: contractedSum === FIXED5 ? 'unit' : 'units',
     };
   }
@@ -160,6 +161,7 @@ function buildChildEventRow(event: MarketContractEvent, sign: -1 | 0 | 1): Table
         delivered: qtyCell,
         paid: blank,
         status: logStatusCell(sign < 0 ? 'Bought' : sign > 0 ? 'Sold' : 'Delivered', 'finished'),
+        action: blank,
       },
     };
   }
@@ -178,6 +180,7 @@ function buildChildEventRow(event: MarketContractEvent, sign: -1 | 0 | 1): Table
         delivered: { value: notRecorded(event.reason ?? 'Delivery amount unavailable') },
         paid: blank,
         status: logStatusCell('Unavailable', 'ended', 'muted'),
+        action: blank,
       },
     };
   }
@@ -197,6 +200,7 @@ function buildChildEventRow(event: MarketContractEvent, sign: -1 | 0 | 1): Table
         delivered: blank,
         paid: cicCell,
         status: logStatusCell(sign < 0 ? 'Paid' : sign > 0 ? 'Received' : 'Payment', 'finished'),
+        action: blank,
       },
     };
   }
@@ -219,6 +223,7 @@ function buildChildEventRow(event: MarketContractEvent, sign: -1 | 0 | 1): Table
       delivered: blank,
       paid: blank,
       status: logStatusCell(lifecycleLabel, mark, event.kind === 'contractEnded' ? 'muted' : undefined),
+      action: blank,
     },
   };
 }
@@ -248,7 +253,7 @@ function buildContractRow(
     ];
     if (contract.startedHour !== null) out.push({ label: 'Started', value: knownValue(formatDateTime(contract.startedHour)) });
     if (contract.endedHour !== null) out.push({ label: 'Ended', value: knownValue(formatDateTime(contract.endedHour)) });
-    if (contract.agreedPriceRaw !== null) out.push({ label: 'Agreed price', value: knownValue(`${fixedText(BigInt(contract.agreedPriceRaw))} CIC`) });
+    if (contract.agreedPriceRaw !== null) out.push({ label: 'Agreed price', value: knownValue(`${formatFixed5Amount(BigInt(contract.agreedPriceRaw))} CIC`) });
     for (const item of contract.items) {
       const itemLabel = item.name ?? `Design ${item.variant}`;
       const progress = item.deliveryUnavailable
@@ -283,6 +288,7 @@ function buildContractRow(
       delivered: deliveredCell(contract.items),
       paid: paidCell(contract, sign),
       status: logStatusCell(statusInfo.label, statusInfo.mark, statusInfo.muted ? 'muted' : undefined),
+      action: { value: notApplicable('Expand contract'), blank: true },
     },
     ...(children.length > 0 ? { children } : {}),
     tooltipTitle: title,

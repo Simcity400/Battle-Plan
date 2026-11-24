@@ -1,4 +1,4 @@
-import type { WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewRenderer } from '../../dashboard/definitions';
 import ActiveResearchView from './ActiveResearchView';
 
-export default { render: ActiveResearchView } satisfies WidgetRenderer;
+export default { render: ActiveResearchView } satisfies FamilyViewRenderer;

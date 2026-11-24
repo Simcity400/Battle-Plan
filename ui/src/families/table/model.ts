@@ -1447,7 +1447,7 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
   return {
     kind: spec.kind,
     family: 'table',
-    nextChange: spec.nextChange,
+    nextChange: (readView, options) => Math.min(nextLookChange(optionsLabels(options), readView.hour), spec.nextChange ? spec.nextChange(readView, options) : Infinity),
     project(readView, options): TableModel {
       const hour = readView.hour;
       const answer = readView.answer(panelKey);
@@ -1474,7 +1474,7 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
             if (changed.size === 0) {
               return { ...prevInc.model, hour, changedKeys: changed, changedRows: new Map() };
             }
-            if (changed.size * 2 < prevInc.rawRows.length) {
+            {
               const colSpecs = prevInc.colSpecs;
               const buildRow = (row: TRow): TableRow => buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, labels, row);
               const nextRows = prevInc.model.rows.slice();

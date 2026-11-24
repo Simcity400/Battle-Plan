@@ -134,7 +134,8 @@ test('identity and statics are supplied apart from the binding: one snapshot per
     const other = pipeline.acquire('other|0', { offset: 0, pin: null });
     for (const id of [slow, other]) {
       pipeline.present(id, 'drawn');
-      pipeline.bind(id, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }], dated: { h: 0, c: 100 } }, {}, { family: 'test', kind: 'test' });
+      pipeline.bind(id, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }] }, {}, { family: 'test', kind: 'test' });
+      pipeline.supply(id, { dated: { h: 0, c: 100 } });
     }
     clock.seek(10);
     assert.ok(await settle(() => pipeline.view(slow)?.mode === 'picture' && pipeline.view(other)?.mode === 'picture'));
@@ -1007,4 +1008,4 @@ test('F7: releasing one of two tokens sharing a subscription on the same widget 
     env.close();
   }
 });
-
+

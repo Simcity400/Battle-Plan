@@ -19,7 +19,7 @@ export const armySizeMixProjection: BarsProjection<ArmySizeMixOptions> = registe
   kind: 'army-size',
   family: 'bars',
   nextChange(readView, options) {
-    return nextSeriesRaceChange(readView.hour, { ...options, candidates: [] });
+    return nextSeriesRaceChange(readView.hour, options);
   },
   project(readView: BoundedReadView, options: ArmySizeMixOptions): BarsModel {
     const hour = readView.hour;

@@ -1,3 +1,4 @@
+use super::occurrences::OccurrenceCount;
 use dashboard_follow::panel::{ExactReader, Panel, ProductRead, ProductReader};
 use dashboard_query::{Query, log::{self, BucketCache, FacetFilter}, series::{MissingSpan, PAGE_LIMIT, hour_of}};
 use replay_columnar::manifest::Status;
@@ -98,14 +99,6 @@ pub struct LogFacetCountAsk {
     pub facets: Vec<FacetFilter>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct LogFacetTotal {
-    pub key: String,
-    pub total: String,
-}
-
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -141,7 +134,7 @@ pub struct LogTailReply {
     pub offset: String,
     pub total: String,
     pub rows: Vec<LogPageRow>,
-    pub facet_totals: Vec<LogFacetTotal>,
+    pub counts: Vec<OccurrenceCount>,
     pub missing: Vec<MissingSpan>,
     pub warnings: Vec<String>,
 }
@@ -385,7 +378,7 @@ pub fn tail<R>(
     limit: u32,
     count_facets: &[LogFacetCountAsk],
     map: impl FnMut(&log::Paged, Option<&dashboard_query::identity::Country>) -> R,
-) -> io::Result<(log::NewestPage, Vec<R>, Vec<LogFacetTotal>, Vec<MissingSpan>)> {
+) -> io::Result<(log::NewestPage, Vec<R>, Vec<OccurrenceCount>, Vec<MissingSpan>)> {
     tail_with(query, log_name, facets, from, to, offset, limit, count_facets, None, map)
 }
 
@@ -400,7 +393,7 @@ pub fn tail_with<R>(
     count_facets: &[LogFacetCountAsk],
     caches: Option<&LogCaches>,
     mut map: impl FnMut(&log::Paged, Option<&dashboard_query::identity::Country>) -> R,
-) -> io::Result<(log::NewestPage, Vec<R>, Vec<LogFacetTotal>, Vec<MissingSpan>)> {
+) -> io::Result<(log::NewestPage, Vec<R>, Vec<OccurrenceCount>, Vec<MissingSpan>)> {
     let log = declared(log_name)?;
     let reader = reader_for(query, log, caches)?;
     let from = from.map(|from| hour_of(Some(from), "from")).transpose()?.unwrap_or(query.timeline.first);
@@ -408,7 +401,7 @@ pub fn tail_with<R>(
         return Err(invalid("Invalid tail limit"));
     }
     if from > to {
-        let totals = count_facets.iter().map(|ask| LogFacetTotal { key: ask.key.clone(), total: "0".into() }).collect();
+        let totals = count_facets.iter().map(|ask| OccurrenceCount { key: ask.key.clone(), total: "0".into() }).collect();
         return Ok((log::NewestPage { base: 0, offset: 0, total: 0, rows: Vec::new() }, Vec::new(), totals, Vec::new()));
     }
     let selection = reader.select(facets, query.timeline.first, to)?;
@@ -418,7 +411,7 @@ pub fn tail_with<R>(
     for ask in count_facets {
         let count_selection = reader.select(&ask.facets, from, to)?;
         let count = reader.total_with(&count_selection.patterns, from, to, count_selection.overlap)?;
-        totals.push(LogFacetTotal { key: ask.key.clone(), total: count.to_string() });
+        totals.push(OccurrenceCount { key: ask.key.clone(), total: count.to_string() });
     }
     let mut gaps = missing_with(query, log, from, to, caches.map(|c| c.coverage.as_ref()))?;
     append_unobserved(&mut gaps, facets, from, to);

@@ -12,14 +12,14 @@ import {
   drawTimeAxis,
   resolveKitTokens,
 } from '../../draw/kit.ts';
-import { rgbaColor } from '../../shell/appearance/color.ts';
+import { parseColor, rgbaRgb } from '../../shell/appearance/color.ts';
 import { toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
 import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import { parseChartInspect, sampleSeriesValueAt } from './hitTest.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
-import type { TimeChartModel, TimeChartSeriesModel } from './model.ts';
+import { seriesLookAt, type TimeChartModel, type TimeChartSeriesModel } from './model.ts';
 
 export function collectVisibleChartArt(model: TimeChartModel, layout: TimeChartLayout): string[] {
   const items: ArtUrlInput[] = [];
@@ -185,6 +185,25 @@ export function buildLineSubpaths(
     if (cur.length) subpaths.push(cur);
   }
   return { subpaths, end };
+}
+
+function colourStretches(s: TimeChartSeriesModel, layout: TimeChartLayout, hour: number): readonly { readonly color: string; readonly x0: number; readonly x1: number }[] | null {
+  const runs = s.identities;
+  if (!runs || runs.length < 2) return null;
+  const out: { color: string; x0: number; x1: number }[] = [];
+  const pad = 4;
+  for (const run of runs) {
+    if (run.lastHour < layout.xDomain[0] || run.firstHour > Math.min(hour, layout.xDomain[1])) continue;
+    const x0 = layout.toX(Math.max(run.firstHour, layout.xDomain[0]));
+    const x1 = layout.toX(Math.min(run.lastHour + 1, layout.xDomain[1]));
+    const prev = out[out.length - 1];
+    if (prev && prev.color === run.color) prev.x1 = x1;
+    else out.push({ color: run.color, x0, x1 });
+  }
+  if (out.length < 2) return null;
+  out[0]!.x0 -= pad;
+  out[out.length - 1]!.x1 += pad;
+  return out;
 }
 
 function tracePolyline(ctx: Canvas2D, pts: readonly (readonly [number, number])[]): void {
@@ -579,6 +598,9 @@ export function drawTimeChart(
 
       if (s.area && subpaths.length > 0) {
         const baselineY = layout.toY(Math.max(layout.yDomain[0], 0));
+        const areaRgb = parseColor(s.color);
+        const topStop = areaRgb ? rgbaRgb(areaRgb, 0.26 * opacity) : '';
+        const botStop = areaRgb ? rgbaRgb(areaRgb, 0.02 * opacity) : s.color;
         for (const pts of subpaths) {
           if (pts.length < 2) continue;
           ctx.save();
@@ -590,10 +612,9 @@ export function drawTimeChart(
           ctx.lineTo(pts[0]![0], baselineY);
           ctx.closePath();
           const grad = ctx.createLinearGradient(0, layout.top, 0, baselineY);
-          const topStop = rgbaColor(s.color, 0.26 * opacity, '');
           if (topStop) {
             grad.addColorStop(0, topStop);
-            grad.addColorStop(1, rgbaColor(s.color, 0.02 * opacity, s.color));
+            grad.addColorStop(1, botStop);
             ctx.globalAlpha = 1;
           } else {
             grad.addColorStop(0, s.color);
@@ -621,13 +642,18 @@ export function drawTimeChart(
         }
       }
 
+      const stretches = colourStretches(s, layout, model.hour);
       for (const pts of subpaths) {
         if (pts.length < 1) continue;
-        const strokeSegment = (strokeColor: string, clipTop: number, clipHeight: number) => {
+        const strokeSegment = (strokeColor: string, clipTop: number, clipHeight: number, x0?: number, x1?: number) => {
           ctx.save();
           if (clipHeight > 0) {
             ctx.beginPath();
             ctx.rect(layout.left, clipTop, layout.plotWidth + 1, clipHeight);
+            ctx.clip();
+          } else if (x0 !== undefined && x1 !== undefined) {
+            ctx.beginPath();
+            ctx.rect(x0, layout.top - 2, x1 - x0, layout.plotHeight + 4);
             ctx.clip();
           }
           ctx.globalAlpha = opacity;
@@ -644,6 +670,8 @@ export function drawTimeChart(
         if (s.negRed && layout.yDomain[0] < 0) {
           strokeSegment(s.color, layout.top - 2, Math.max(0, clipZeroY - (layout.top - 2)));
           strokeSegment(tokens.shortage, clipZeroY, Math.max(0, layout.baseY + 4 - clipZeroY));
+        } else if (stretches) {
+          for (const stretch of stretches) strokeSegment(stretch.color, 0, 0, stretch.x0, stretch.x1);
         } else {
           strokeSegment(s.color, 0, 0);
         }
@@ -858,7 +886,7 @@ export function drawTimeChart(
       for (const s of model.series) {
         const sampled = sampleSeriesValueAt(s, hoverHour, model.hour);
         if (!sampled) continue;
-        const dotColor = s.negRed && sampled.value < 0 ? tokens.shortage : s.color;
+        const dotColor = s.negRed && sampled.value < 0 ? tokens.shortage : seriesLookAt(s, hoverHour).color;
         ctx.save();
         ctx.beginPath();
         ctx.arc(xh, layout.toY(sampled.value), 3.4, 0, Math.PI * 2);

@@ -38,7 +38,7 @@ fn a_threat_source_is_one_event_from_its_listing_to_its_drop_across_a_stretch() 
 fn unread_threat_source_snapshot_keeps_open_events_and_dates_removals() {
     let a = source(1, "annexed", 0);
     let (events, unmatched) = join([
-        Step::Stretch { first: 10, last: 19, listed: Some(vec![(a.clone(), 500, Some(1001))]) },
+        Step::Stretch { first: 10, last: 19, listed: Some(vec![(a, 500, Some(1001))]) },
         Step::Stretch { first: 20, last: 29, listed: None },
     ]);
     assert!(unmatched.is_empty());
@@ -307,7 +307,7 @@ fn world_tension_stack_computes_exact_shares_folds_other_and_clips_future() {
         _ => None,
     };
     let no_change = |_: u32, _: i32| None;
-    let out = compute_stack(&input, 10, 25, 2, TensionValueMode::Share, None, 200, tag_of, no_change);
+    let out = compute_stack(&input, 10, 25, 2, TensionValueMode::Share, None, None, None, 200, tag_of, no_change);
     assert_eq!(out.end_hour, Some(25));
     assert_eq!(out.capped_end_tension, Some(100.0));
     assert!(!out.downsampled);
@@ -323,7 +323,7 @@ fn world_tension_stack_computes_exact_shares_folds_other_and_clips_future() {
     assert!((other.end_value.unwrap() - 100.0 / 6.0).abs() < 1e-9);
     assert_eq!(out.next_change_hour, Some(30));
 
-    let rec = compute_stack(&input, 10, 25, 2, TensionValueMode::Recorded, None, 200, tag_of, no_change);
+    let rec = compute_stack(&input, 10, 25, 2, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(rec.total, [Some(25.0), Some(120.0)]);
     assert_eq!(rec.bands[0].end_value, Some(60.0));
     assert_eq!(rec.bands[1].end_value, Some(40.0));
@@ -353,7 +353,7 @@ fn world_tension_stack_preserves_negative_contributions_independent_coverage_and
     };
 
     let no_change = |_: u32, _: i32| None;
-    let out = compute_stack(&input, 10, 19, 5, TensionValueMode::Recorded, None, 200, tag_of, no_change);
+    let out = compute_stack(&input, 10, 19, 5, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(out.total, [Some(6.5)]);
     assert_eq!(out.bands.len(), 3);
     assert_eq!(out.bands[0].end_value, Some(4.0));
@@ -362,20 +362,20 @@ fn world_tension_stack_preserves_negative_contributions_independent_coverage_and
     assert_eq!(out.bands[2].end_raw.as_deref(), Some("-50000"));
     assert!(out.other.is_none());
 
-    let out2 = compute_stack(&input, 10, 19, 2, TensionValueMode::Recorded, None, 200, tag_of, no_change);
+    let out2 = compute_stack(&input, 10, 19, 2, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(out2.total, [Some(6.5)]);
     assert_eq!(out2.bands.len(), 2);
     let other2 = out2.other.unwrap();
     assert_eq!(other2.count, 1);
     assert_eq!(other2.end_value, Some(-0.5));
 
-    let share = compute_stack(&input, 10, 19, 2, TensionValueMode::Share, None, 200, tag_of, no_change);
+    let share = compute_stack(&input, 10, 19, 2, TensionValueMode::Share, None, None, None, 200, tag_of, no_change);
     assert_eq!(share.total, [Some(6.5)]);
     assert!((share.bands[0].end_value.unwrap() - 4.0).abs() < 1e-9);
     assert!((share.bands[1].end_value.unwrap() - 3.0).abs() < 1e-9);
     assert!((share.other.unwrap().end_value.unwrap() - (-0.5)).abs() < 1e-9);
 
-    let rec_25 = compute_stack(&input, 10, 25, 5, TensionValueMode::Recorded, None, 200, tag_of, no_change);
+    let rec_25 = compute_stack(&input, 10, 25, 5, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(rec_25.end_hour, Some(25));
     assert_eq!(rec_25.capped_end_tension, None);
     assert_eq!(rec_25.total.last().copied().flatten(), None);
@@ -384,7 +384,7 @@ fn world_tension_stack_preserves_negative_contributions_independent_coverage_and
     assert_eq!(rec_25.bands[1].end_raw, None);
     assert_eq!(rec_25.bands[2].end_value, None);
 
-    let gap = compute_stack(&input, 10, 32, 2, TensionValueMode::Recorded, None, 200, tag_of, no_change);
+    let gap = compute_stack(&input, 10, 32, 2, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(gap.end_hour, None);
     assert_eq!(gap.capped_end_tension, None);
     assert_eq!(gap.total.last().copied().flatten(), None);
@@ -415,6 +415,8 @@ fn downsampled_world_tension_stack_preserves_band_min_max_bounds() {
         5,
         TensionValueMode::Recorded,
         None,
+        None,
+        None,
         4,
         |slot, _| (slot == 1).then(|| ("GER".to_owned(), false)),
         |_, _| None,
@@ -424,7 +426,7 @@ fn downsampled_world_tension_stack_preserves_band_min_max_bounds() {
     assert_eq!(band.min_values.len(), band.values.len());
     assert_eq!(band.max_values.len(), band.values.len());
     assert!(
-        band.max_values.iter().any(|&v| v == Some(40.0)),
+        band.max_values.contains(&Some(40.0)),
         "intermediate 40% spike must survive in max_values when bucketed: {:?}",
         (&out.hours, &band.values, &band.min_values, &band.max_values),
     );
@@ -462,6 +464,8 @@ fn world_tension_stack_resolves_slot_identity_at_drawn_hour_and_bounds_holder_tr
         5,
         TensionValueMode::Recorded,
         None,
+        None,
+        None,
         200,
         |slot, hour| named_20.slot(slot, hour).map(|(tag, rem)| (tag.to_owned(), rem)),
         |slot, hour| named_20.next_change(slot, hour),
@@ -477,11 +481,78 @@ fn world_tension_stack_resolves_slot_identity_at_drawn_hour_and_bounds_holder_tr
         5,
         TensionValueMode::Recorded,
         None,
+        None,
+        None,
         200,
         |slot, hour| named_30.slot(slot, hour).map(|(tag, rem)| (tag.to_owned(), rem)),
         |slot, hour| named_30.next_change(slot, hour),
     );
     assert_eq!(out_30.bands[0].tag.as_deref(), Some("D01"), "slot identity resolves at drawn hour 30, not rank_hour 19");
+}
+
+#[test]
+fn world_tension_stack_applies_dated_group_membership_and_top_limit() {
+    use crate::products::groups::{CountryGroupReply, FactionGroup, MembershipRun, UnobservedHours};
+    use dashboard_query::series::ranked::{GroupKind, GroupMembership, GroupSelection};
+    use std::collections::BTreeMap;
+    use world_tension_stack::{DatedGroupFilter, StackInput, TensionValueMode, compute_stack};
+
+    let groups_reply = CountryGroupReply {
+        branch_id: "1".into(),
+        humans: Vec::new(),
+        factions: vec![FactionGroup {
+            id: "42".into(),
+            name: Some("Axis".into()),
+            name_reason: None,
+            names: Vec::new(),
+            recorded_name: "Axis".into(),
+            first_hour: 10,
+            last_hour: 40,
+            members: vec![
+                MembershipRun { tag: "GER".into(), first_hour: 10, last_hour: 40 },
+                MembershipRun { tag: "ITA".into(), first_hour: 25, last_hour: 40 },
+            ],
+            leaders: Vec::new(),
+            incomplete: Vec::new(),
+        }],
+        wars: Vec::new(),
+        war_starts: Vec::new(),
+        capitulations: Vec::new(),
+        identity_changes: Vec::new(),
+        country_identities: Vec::new(),
+        unobserved: UnobservedHours::default(),
+        warnings: Vec::new(),
+    };
+    let mut slots = BTreeMap::new();
+    slots.insert(1, vec![(10, 40, Some(500_000))]);
+    slots.insert(2, vec![(10, 40, Some(300_000))]);
+    slots.insert(3, vec![(10, 40, Some(200_000))]);
+    let complete = [(10, 40)];
+    let input = StackInput {
+        tension: &[],
+        sum: &[(10, 40, 1_000_000)],
+        slots: &slots,
+        aggregates_complete: &complete,
+        missing: &[],
+    };
+    let tag_of = |slot: u32, _: i32| match slot {
+        1 => Some(("GER".to_owned(), false)),
+        2 => Some(("ITA".to_owned(), false)),
+        3 => Some(("JAP".to_owned(), false)),
+        _ => None,
+    };
+    let sel = GroupSelection { kind: GroupKind::Faction, id: Some("42".into()), tag: None, membership: GroupMembership::Hour };
+    let gf = DatedGroupFilter::from_reply(&groups_reply, &sel, vec!["GER".into(), "ITA".into()], 30);
+    let out = compute_stack(&input, 10, 30, 5, TensionValueMode::Recorded, None, Some(&gf), None, 200, tag_of, |_, _| None);
+    assert_eq!(out.bands.len(), 2);
+    assert_eq!(out.hours, [10, 25], "ITA joining at hour 25 introduces a step change");
+    let ita = out.bands.iter().find(|b| b.tag.as_deref() == Some("ITA")).unwrap();
+    assert_eq!(ita.values, [None, Some(3.0)], "ITA has no contribution before joining Axis at hour 25");
+    assert_eq!(out.total, [Some(5.0), Some(8.0)], "group total sums only current members at each hour");
+
+    let top_out = compute_stack(&input, 10, 30, 5, TensionValueMode::Recorded, None, None, Some(2), 200, tag_of, |_, _| None);
+    assert_eq!(top_out.bands.len(), 2);
+    assert!(top_out.other.is_none(), "Top-N selection omits Other band");
 }
 
 #[test]

@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { WidgetProps, WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/definitions';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
@@ -21,7 +21,7 @@ function validateProducedAt(data: unknown): ProducedAtReply {
   return reply as ProducedAtReply;
 }
 
-function ProducedDetails({ widget, runtime, active, tag, hour, count, measure, refits }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
+function ProducedDetails({ widget, runtime, active, tag, hour, count, measure, refits }: Pick<FamilyViewProps, 'widget' | 'runtime' | 'active'> & {
   readonly tag: string;
   readonly hour: GatedHour;
   readonly count: ProducedCount;
@@ -66,12 +66,12 @@ function ProducedDetails({ widget, runtime, active, tag, hour, count, measure, r
   );
 }
 
-function EquipmentProducedFamilyWidget(props: WidgetProps) {
-  const { widget, runtime, active, manifestDeclaration } = props;
-  const count: ProducedCount = widget.options?.count === 'ic' ? 'ic' : 'units';
-  const measure: ProducedMeasure = widget.options?.measure === 'total' || widget.options?.measure === 'month' || widget.options?.measure === 'week'
-    ? widget.options.measure : 'day';
-  const refits = widget.options?.refits === true;
+function EquipmentProducedFamilyWidget(props: FamilyViewProps) {
+  const { widget, runtime, active, manifestDeclaration, options } = props;
+  const count: ProducedCount = options.count === 'ic' ? 'ic' : 'units';
+  const measure: ProducedMeasure = options.measure === 'total' || options.measure === 'month' || options.measure === 'week'
+    ? options.measure : 'day';
+  const refits = options.refits === true;
   const anchorRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
   const gate = useGate(runtime, widget, SPEC, active);
@@ -121,4 +121,4 @@ function EquipmentProducedFamilyWidget(props: WidgetProps) {
   );
 }
 
-export default { render: EquipmentProducedFamilyWidget } satisfies WidgetRenderer;
+export default { render: EquipmentProducedFamilyWidget } satisfies FamilyViewRenderer;

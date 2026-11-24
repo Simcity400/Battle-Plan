@@ -86,14 +86,17 @@ test('territoryRaceProjection sends group to series-rank, keys by slot, preserve
     rows: [
       {
         country: 7,
+        slot: 7,
         readings: [{ country: 7, hour: 300, run: { firstHour: 1, lastHour: 400, valueRaw: '42', slot: 7, countryId: 1, startsSegment: true, segmentFirstHour: 1, firstExact: true, lastExact: true }, drop: null, missing: null }],
       },
       {
         country: 9,
+        slot: 9,
         readings: [{ country: 9, hour: 300, run: { firstHour: 1, lastHour: 400, valueRaw: '0', slot: 9, countryId: 2, startsSegment: true, segmentFirstHour: 1, firstExact: true, lastExact: true }, drop: null, missing: null }],
       },
       {
         country: 14,
+        slot: 14,
         readings: [{ country: 14, hour: 300, run: null, drop: null, missing: 'Not recorded at this hour' }],
       },
     ],

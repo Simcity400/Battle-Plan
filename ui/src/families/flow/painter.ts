@@ -213,7 +213,7 @@ export function hitFlow(layout: FlowLayout, x: number, y: number): string | null
   }
   for (let i = layout.ribbons.length - 1; i >= 0; i--) {
     const box = layout.ribbons[i]!;
-    if (x < box.x0 || x > box.x1) continue;
+    if (x < box.x0 || x > box.x1 || (box.a1 <= box.a0 && box.b1 <= box.b0)) continue;
     const u = (x - box.x0) / Math.max(1, box.x1 - box.x0);
     const s = ease(u);
     const top = box.a0 + (box.b0 - box.a0) * s;

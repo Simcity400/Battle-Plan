@@ -82,7 +82,7 @@ function projectTerritoryCountries(readView: BoundedReadView, options: Territory
 
   const rows: BarsDataRow[] = [];
   for (const item of reply.rows) {
-    const key = countryKey(item.country);
+    const key = item.slot != null ? countryKey(item.slot) : countryKey(item.country);
     const pres = countryRowPresentation(readView, key);
     const who = readView.who('country', key);
     const subjectTag = who.tag?.status === 'ready' ? who.tag.value : (typeof item.country === 'string' ? item.country : key);

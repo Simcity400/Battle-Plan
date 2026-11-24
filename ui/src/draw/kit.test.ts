@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { paletteCache, readableColour } from '../charts/palette.ts';
+import { clearTextWidthCache, measureCanvasText, textWidthCacheStats, type Canvas2D } from '../charts/textWidth.ts';
+import { colorCache, mix } from '../shell/appearance/color.ts';
 import { engineHour } from '../dashboard/calendar.ts';
 import type { FamilyTheme } from '../families/contract.ts';
 import {
@@ -23,6 +26,7 @@ import {
   drawGapBand,
   drawGradientLegend,
   drawIconStrip,
+  iconStripSlotWidth,
   drawLegendStrip,
   drawMissingMark,
   drawNameSlot,
@@ -392,6 +396,9 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
   assert.equal(res.drawnCount + res.overflowCount, 4);
   assert.ok(res.overflowCount > 0);
   assert.ok(!strip.ops.some(op => op.op === 'fillText' && String(op.args[0]).startsWith('+')), 'a strip that does not fit draws what fits, never a +N mark');
+  const tall = { kind: 'ready', bitmap: {} as CanvasImageSource, width: 18, height: 36 } as const;
+  assert.deepEqual([iconStripSlotWidth(tall, 28), iconStripSlotWidth({ ...tall, width: 72 }, 28), iconStripSlotWidth({ kind: 'pending' }, 28)], [14, 28, 28],
+    'a tall medal takes its own width at the strip height, so the gap between medals is the strip gap');
 
   const act = makeFakeCtx();
   const restBox = drawActionButton(act.ctx, 100, 18, 'View', false, THEME);
@@ -486,4 +493,59 @@ test('K6 & K8: legend strip draws whole entries with +N more overflow, keeps mis
   const lazyTexts = lazy.ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
   assert.ok(lazyTexts.includes('Not recorded'), 'trailing missing key kept in lazy source');
   assert.ok(lazyTexts.some(t => /^\+\d+ more$/.test(t)), 'lazy overflow reports exact +N more count');
+});
+
+test('K8 & K9: kit tokens cache per theme, 1,000 cells of 5 colours convert 5 colours, and text measurer stays bounded without native font reads on hits', () => {
+  const first = resolveKitTokens(THEME);
+  const second = resolveKitTokens(THEME);
+  assert.equal(first, second, 'K8: resolveKitTokens caches tokens per theme');
+  const lightTheme: FamilyTheme = { ...THEME, surface: '#f5f6f8', raised: '#ffffff', text: '#111111', dark: false };
+  assert.notEqual(resolveKitTokens(lightTheme), first, 'theme change yields fresh tokens');
+
+  const five = ['#2a4b8c', '#8c3b2a', '#2a7c4b', '#7c6b2a', '#6b2a7c'];
+  const freshTheme: FamilyTheme = { ...THEME };
+  resolveKitTokens(freshTheme);
+  colorCache.clear();
+  paletteCache.clear();
+  let afterFirstFiveParses = 0;
+  let afterFirstFiveOklch = 0;
+  for (let i = 0; i < 1000; i++) {
+    const raw = five[i % five.length]!;
+    const lifted = readableColour(raw, freshTheme.surface);
+    const mixed = mix(freshTheme.surface, lifted, 0.5);
+    contrastInkForFill(mixed, freshTheme);
+    if (i === 4) {
+      afterFirstFiveParses = colorCache.parses;
+      afterFirstFiveOklch = colorCache.oklchToRgb;
+    }
+  }
+  assert.equal(paletteCache.readableSolves, 5, 'K8: 1,000 cells of 5 colours solve readableColour 5 times');
+  assert.equal(colorCache.mixes, 5, 'K8: 1,000 cells of 5 colours compute mix 5 times');
+  assert.equal(colorCache.parses, afterFirstFiveParses, 'K8: cells 6..1000 parse 0 colour strings');
+  assert.equal(colorCache.oklchToRgb, afterFirstFiveOklch, 'K8: cells 6..1000 run 0 oklchToRgb conversions');
+  resolveKitTokens(lightTheme);
+  assert.equal(paletteCache.readableSolves, 0, 'K8: theme surface change clears colour and palette caches');
+
+  clearTextWidthCache();
+  let fontReads = 0;
+  let measureCalls = 0;
+  let currentFont = '400 12px Inter, sans-serif';
+  const ctx = {
+    get font() { fontReads++; return currentFont; },
+    set font(v: string) { currentFont = v; },
+    measureText(text: string) { measureCalls++; return { width: text.length * 6 }; },
+  } as unknown as Canvas2D;
+  measureCanvasText(ctx, 'German Reich', '500 12px Inter, sans-serif');
+  const readsAfterWarm = fontReads;
+  const callsAfterWarm = measureCalls;
+  for (let i = 0; i < 100; i++) {
+    measureCanvasText(ctx, 'German Reich', '500 12px Inter, sans-serif');
+  }
+  assert.equal(measureCalls, callsAfterWarm, 'cache hit never calls measureText');
+  assert.equal(fontReads, readsAfterWarm, 'K9: cache hit never reads native ctx.font');
+
+  for (let i = 0; i < 100; i++) {
+    measureCanvasText(ctx, 'x', `400 ${10 + i}px Font${i}, sans-serif`);
+  }
+  assert.ok(textWidthCacheStats().fonts <= 64, `K9: outer font map stays bounded (got ${textWidthCacheStats().fonts})`);
 });

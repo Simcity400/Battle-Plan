@@ -1,4 +1,3 @@
-import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import {
@@ -21,18 +20,21 @@ import type {
   ChartMarkerItem,
   TimeChartSeriesModel,
 } from '../../families/time-chart/model.ts';
-import { formatRecordedPercent, notRecordedLabel } from '../../families/valueFormat.ts';
+import { formatRational, formatRecordedPercent, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { StabilityBreakdownReply, StabilityMarker, StabilityMarkersReply } from '../../generated/dashboard';
 import {
-  assignCountrySeriesColours,
   branchGapsOf,
   cardItems,
-  countrySeriesIdentity,
+  countrySeriesLooks,
   memberAt,
   missingSpansOf,
   rankEntry,
   rankedOrder,
-  seriesHeadAt,
+  auditReading,
+  headReading,
+  headValueOf,
+  type HeadReading,
+  type KnownHeadReading,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 import { breakdownRows, linesPerMeasure, type Measure } from './stabilityData.ts';
@@ -49,6 +51,15 @@ export interface StabilityOptions {
   readonly zoom: boolean;
 }
 
+
+const PERCENT_SCALE = { numerator: 100n } as const;
+
+function formatStabilityReading(reading: KnownHeadReading): string {
+  if (reading.raw !== undefined && reading.denominator !== undefined) {
+    return formatRational(reading.raw, reading.denominator, { maxDecimals: 5, percent: true });
+  }
+  return formatRecordedPercent(reading.value);
+}
 
 const FACTION_VERBS = { founded: 'Founded', joined: 'Joined', left: 'Left' } as const;
 
@@ -137,22 +148,37 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
     const warMap = options.showWarSupport ? readView.series('warSupport') : undefined;
 
     const rowOf = new Map(tags.map((tag, row) => [tag, row]));
-    const stabByTag = new Map<string, number | null>();
-    const warByTag = new Map<string, number | null>();
+    const stabByTag = new Map<string, HeadReading | null>();
+    const warByTag = new Map<string, HeadReading | null>();
+    const readings: [string, HeadReading | null][] = [];
     for (let i = 0; i < tags.length; i++) {
       const tag = tags[i]!;
       const member = memberAt(options.membership, tag, hour);
-      if (options.showStability) stabByTag.set(tag, member ? seriesHeadAt(readView, 'stability', tag, i, 5, 100) : null);
-      if (options.showWarSupport) warByTag.set(tag, member ? seriesHeadAt(readView, 'warSupport', tag, i, 5, 100) : null);
+      if (!member) continue;
+      if (options.showStability) {
+        const reading = headReading(readView, 'stability', { tag }, 5, PERCENT_SCALE);
+        readings.push([single ? 'stability' : `${tag}:stability`, reading]);
+        stabByTag.set(tag, reading);
+      }
+      if (options.showWarSupport) {
+        const reading = headReading(readView, 'warSupport', { tag }, 5, PERCENT_SCALE);
+        readings.push([single ? 'warSupport' : `${tag}:warSupport`, reading]);
+        warByTag.set(tag, reading);
+      }
     }
 
     const present = tags.filter(tag => memberAt(options.membership, tag, hour));
     const presentSet = new Set(present);
     const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
 
-    const colourMap = single
-      ? new Map<string, string>()
-      : assignCountrySeriesColours(ordered, options.holders, readView, hour, options.surface, undefined, tag => rowOf.get(tag) ?? 0);
+    const looks = countrySeriesLooks(ordered, readView, {
+      holders: options.holders,
+      from: options.extent[0],
+      surface: options.surface,
+      withFlag: !single,
+      recordedOrdinal: tag => rowOf.get(tag) ?? 0,
+      singleColor: CHART_MEASURE_COLOURS.stability,
+    });
 
     const stabIcon: ChartArtSlot | undefined = single && options.showStability
       ? { art: readView.art(measureArtHandle('stability')), label: 'Stability' }
@@ -165,12 +191,13 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
     for (let rank = 0; rank < ordered.length; rank++) {
       const tag = ordered[rank]!;
       const isTail = !single && rank >= 8;
-      const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, !single);
-      const countryColor = isTail ? CHART_MEASURE_COLOURS.tailLine : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.stability);
+      const { name, flag, color: countryColor, identities } = looks.get(tag)!;
+      const named = (suffix: string) => (single ? {} : { identities: identities.map(run => ({ ...run, name: `${run.name} · ${suffix}` })) });
 
       if (options.showStability) {
         const bounded = stabMap?.get(tag) ?? null;
-        const headValue = stabByTag.get(tag) ?? null;
+        const stabReading = stabByTag.get(tag) ?? null;
+        const headValue = headValueOf(stabReading);
         series.push({
           id: single ? 'stability' : `${tag}:stability`,
           key: single ? 'stability' : `${tag}:stability`,
@@ -184,23 +211,25 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
           headValue,
           headHour: hour,
           flag,
+          ...named('Stability'),
           icon: single ? stabIcon : undefined,
           missingSpans: missingSpansOf(bounded),
           rank,
-          endLabel: isTail || headValue === null
+          endLabel: isTail || !stabReading || !('value' in stabReading)
             ? null
             : {
                 ...(single ? { icon: stabIcon } : { flag }),
                 name: single ? 'Stability' : `${name} · Stability`,
                 fullName: single ? 'Stability' : `${name} Stability`,
-                value: formatRecordedPercent(headValue),
+                value: formatStabilityReading(stabReading),
               },
         });
       }
 
       if (options.showWarSupport) {
         const bounded = warMap?.get(tag) ?? null;
-        const headValue = warByTag.get(tag) ?? null;
+        const warReading = warByTag.get(tag) ?? null;
+        const headValue = headValueOf(warReading);
         series.push({
           id: single ? 'warSupport' : `${tag}:warSupport`,
           key: single ? 'warSupport' : `${tag}:warSupport`,
@@ -215,16 +244,17 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
           headValue,
           headHour: hour,
           flag,
+          ...named('War support'),
           icon: single ? warIcon : undefined,
           missingSpans: missingSpansOf(bounded),
           rank,
-          endLabel: isTail || headValue === null
+          endLabel: isTail || !warReading || !('value' in warReading)
             ? null
             : {
                 ...(single ? { icon: warIcon } : { flag }),
                 name: single ? 'War support' : `${name} · War support`,
                 fullName: single ? 'War support' : `${name} War support`,
-                value: formatRecordedPercent(headValue),
+                value: formatStabilityReading(warReading),
               },
         });
       }
@@ -277,9 +307,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
       empty: !options.showStability && !options.showWarSupport
         ? { message: 'Both lines are switched off in the settings.' }
         : null,
-      auditRows: series.slice(0, 8).flatMap(s =>
-        s.endLabel ? [auditRow(s.id, s.endLabel.value)] : [],
-      ),
+      auditRows: readings.map(([row, reading]) => auditReading(row, reading, formatStabilityReading)),
     };
   },
 });

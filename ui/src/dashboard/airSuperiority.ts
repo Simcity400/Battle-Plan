@@ -4,6 +4,7 @@ import { countryFromKey } from './countryKey.ts';
 import { contentKey, contentSet, type OptionValue } from './options.ts';
 import { int, object } from './validation.ts';
 import { readRegionChoice, regionParams } from '../families/regions/regionChoice.ts';
+import { validNoRegions } from '../families/regions/regionRows.ts';
 import type { AirChoicesReply, AirSide, AirSuperiorityReply } from '../generated/dashboard';
 
 export function airMode(options: Readonly<Record<string, OptionValue>>, campaign: string, currentCountry: string | null) {
@@ -61,7 +62,7 @@ export function validateAirSuperiority(value: unknown): AirSuperiorityReply {
     || !Array.isArray(value.warnings) || !value.warnings.every(text) || !natural(value.scale) || value.scale === 0 || !natural(value.badBelow) || !natural(value.goodAbove)
     || value.badBelow > value.goodAbove || value.goodAbove > value.scale) return invalid();
   const sides = value.sides.length;
-  if (!(value.viewpoint === null || natural(value.viewpoint) && value.viewpoint < sides) || !validCell(value.fallback, sides)) return invalid();
+  if (!(value.viewpoint === null || natural(value.viewpoint) && value.viewpoint < sides) || !validCell(value.fallback, sides) || !validNoRegions(value.empty)) return invalid();
   for (const region of value.regions) {
     if (!object(region) || !natural(region.id) || !optionalText(region.name) || !optionalText(region.nameMissing) || typeof region.active !== 'boolean' || typeof region.pinned !== 'boolean'
       || !['live', 'none', 'unknown'].includes(region.wings as string) || !validCell(region.cell, sides)) return invalid();

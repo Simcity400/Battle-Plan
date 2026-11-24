@@ -71,7 +71,7 @@ export const firstWithMore = (list: readonly unknown[]) => list.length > 1 ? `+$
 
 export const collectedText = (value: number) => cicLabel(BigInt(Math.trunc(value)));
 
-export interface MarketDetailLine { readonly label: string; readonly value: string; readonly marked?: boolean }
+export interface MarketDetailLine { readonly label: string; readonly value: string; readonly marked?: boolean; readonly country?: string }
 export interface MarketDetailSection { readonly title: string; readonly lines: readonly MarketDetailLine[]; readonly empty: string }
 export interface MarketDetail { readonly missing: string | null; readonly sections: readonly MarketDetailSection[] }
 
@@ -107,8 +107,8 @@ export function marketDetail(reply: MarketLendLeaseReply, selected: string): Mar
   const level = new Map(terms.levels.map(item => [item.variant, item.level]));
   return { missing: null, sections: [
     { title: 'Terms', empty: '', lines: [
-      { label: 'Seller', value: terms.seller ?? 'Country not recorded' },
-      { label: 'Buyer', value: terms.buyer ?? 'Country not recorded' },
+      { label: 'Seller', value: terms.seller ?? 'Country not recorded', ...(terms.seller !== null ? { country: terms.seller } : {}) },
+      { label: 'Buyer', value: terms.buyer ?? 'Country not recorded', ...(terms.buyer !== null ? { country: terms.buyer } : {}) },
       { label: 'Kind', value: terms.request ? 'Request' : 'Contract' },
       { label: 'Factory assignment', value: String(terms.speed) },
     ] },

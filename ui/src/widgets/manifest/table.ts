@@ -1,7 +1,6 @@
 import { tableHostAdapter } from '../../families/table/hostAdapter.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type FamilyViewModule } from '../../families/manifest.ts';
 import type { AnyTableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { familyTableLaneView } from '../../families/table/laneView.ts';
 import type { TableProjection } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
@@ -417,7 +416,7 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
 
 export const tableFamilyManifest: FamilyManifestModule = {
   family: 'table',
-  laneView: familyTableLaneView,
+  lane: () => import('../../families/table/laneView.ts').then(m => m.tableLane),
   views: TABLE_VIEWS,
   hostAdapter: tableHostAdapter,
 };

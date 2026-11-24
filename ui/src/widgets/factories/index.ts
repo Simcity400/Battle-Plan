@@ -1,4 +1,4 @@
-import type { OptionChoices, WidgetRenderer, WidgetRuntime } from '../../dashboard/definitions';
+import type { FamilyViewRenderer, OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products';
 import FactoriesWidget from './FactoriesWidget';
@@ -12,4 +12,4 @@ function useFactoryTypes(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoi
   return { types: typeChoices(data) };
 }
 
-export default { render: FactoriesWidget, useOptionChoices: useFactoryTypes } satisfies WidgetRenderer;
+export default { render: FactoriesWidget, useOptionChoices: useFactoryTypes } satisfies FamilyViewRenderer;

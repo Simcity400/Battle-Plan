@@ -24,7 +24,7 @@ for (const mod of FAMILY_MANIFESTS) {
   }
   if (registeredFamilies.has(mod.family)) errors.push(`duplicate FAMILY_MANIFESTS family: ${mod.family}`);
   registeredFamilies.add(mod.family);
-  if (typeof mod.laneView !== 'function') errors.push(`FAMILY_MANIFESTS(${mod.family}) missing laneView factory`);
+  if (typeof mod.lane !== 'function') errors.push(`FAMILY_MANIFESTS(${mod.family}) missing its lane loader`);
   if (typeof mod.hostAdapter?.deriveAuditRows !== 'function') errors.push(`FAMILY_MANIFESTS(${mod.family}) host adapter has no deriveAuditRows, so its audit checks nothing`);
   for (const entry of mod.views) {
     if (entry.family !== mod.family) {
@@ -111,6 +111,9 @@ for (const meta of widgetMetas) {
     if (legacyEntries.some(entry => normalizeView(entry.view) === DEFAULT_VIEW)) {
       errors.push(`multi-view kind "${meta.kind}" cannot use default view in LEGACY_WIDGETS`);
     }
+  }
+  const named = [...familyEntries, ...legacyEntries].some(entry => normalizeView(entry.view) !== DEFAULT_VIEW);
+  if (named) {
     const viewOptionKey = familyEntries.find(entry => entry.viewOption)?.viewOption ?? meta.viewSwitch?.option ?? 'view';
     const viewField = meta.options?.find(field => field.key === viewOptionKey);
     if (viewField?.kind === 'choice') {
