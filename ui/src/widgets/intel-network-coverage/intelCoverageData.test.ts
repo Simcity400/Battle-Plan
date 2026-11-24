@@ -7,7 +7,7 @@ import type { IntelCoverageReply } from '../../generated/dashboard';
 const ids: Record<string, number> = { GER: 1, ENG: 2, SOV: 3, FRA: 4, ITA: 5 };
 const network = (owner: string, target: string) => ({ owner: { id: ids[owner], tag: owner }, target: { id: ids[target], tag: target } });
 const reply = (networks: [string, string][], missing: string | null = null): IntelCoverageReply => ({
-  countries: Object.keys(ids).sort().map(tag => ({ id: ids[tag], tag })), networks: networks.map(([owner, target]) => network(owner, target)), readHour: 100, missing, warnings: [],
+  countries: Object.keys(ids).sort().map(tag => ({ id: ids[tag], tag })), networks: networks.map(([owner, target]) => network(owner, target)), displayed: [], cells: [], maxValue: 0n, scale: 1n, readHour: 100, missing, warnings: [],
 });
 const cells = (entries: Record<string, number>) => valuesOf(new Map(Object.entries(entries)), 'Not read yet');
 
