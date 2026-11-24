@@ -41,7 +41,7 @@ export default function CurrentProjectsView(props: WidgetProps) {
   const data = reply.data;
   const card = shown && data ? shownCard(data, shown.hour, shown.id) : null;
   return <div ref={hostRef} className="fh-detail-anchor">
-    <DeclaredFamilyWidget {...props} adapter={cardHostAdapter} declaration={specialProjectsDeclaration} onActivate={onActivate} />
+    <DeclaredFamilyWidget {...props} view="live" adapter={cardHostAdapter} declaration={specialProjectsDeclaration} onActivate={onActivate} />
     <DetailWindowHost
       open={Boolean(shown && tag)}
       subject={shown ? `${tag}:${shown.id}` : null}
