@@ -236,22 +236,27 @@ export function useIdentityAtHead(
 
   const held = useRef<{ readonly key: string; readonly hour: number | null }>({ key: '', hour: null });
 
+  const hasKeys = keys.length > 0;
   const subscribe = useCallback((changed: () => void) => {
-    if (!active || !follow) return NO_SUBSCRIBE();
+    if (!active || !follow || !scope || !hasKeys) return NO_SUBSCRIBE();
     const stopClock = clock.subscribeFrame(changed);
     const stopAnchor = clock.subscribe(changed);
-    const stopBroker = scope ? broker.subscribe(scope, changed, recording ?? undefined, bounds) : NO_SUBSCRIBE();
+    const stopBroker = broker.subscribe(scope, changed, recording ?? undefined, bounds);
     return () => { stopClock(); stopAnchor(); stopBroker(); };
-  }, [active, follow, clock, broker, scope, recording, bounds]);
+  }, [active, follow, scope, hasKeys, clock, broker, recording, bounds]);
 
   const readHour = (): number | null => {
+    if (!active || !scope || !keysRef.current.length) {
+      if (held.current.key === 'idle') return held.current.hour;
+      held.current = { key: 'idle', hour: null };
+      return null;
+    }
     const raw = trackHourRef.current(clock.getHour());
     const at = raw !== null && Number.isFinite(raw) ? Math.floor(raw) : null;
-    if (at === null || !scope || !keysRef.current.length) {
-      const nextKey = `null:${at}`;
-      if (held.current.key === nextKey) return held.current.hour;
-      held.current = { key: nextKey, hour: at };
-      return at;
+    if (at === null) {
+      if (held.current.key === 'null') return held.current.hour;
+      held.current = { key: 'null', hour: null };
+      return null;
     }
     const index = broker.indexOf(scope, recording ?? undefined, bounds);
     let intervalFirst = -Infinity;
