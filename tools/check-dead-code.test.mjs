@@ -227,3 +227,107 @@ test('classifies inherited vs branch-added failures and names added legacy pairs
   assert.match(addedReport, /newOrphan\.ts \[new on this branch\]/);
   assert.match(addedReport, /added: c:lines\) \[new on this branch\]/);
 });
+
+test('flags converted views that reach old charts or legacy-only dashboard hooks by rule, while allowing family-shared kit', async () => {
+  await withRepo(baseFiles({
+    'ui/src/main.tsx': `
+      import './styles.css';
+      import type { SharedType } from './types.ts';
+      import { REQUEST_PATHS } from './generated/dashboard.ts';
+      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
+      import { FAMILY_VIEWS } from './widgets/familyManifest.ts';
+      import { FAMILY_VIEW_UI } from './widgets/manifest.ts';
+      export const loadLazy = () => import('./lazy.ts');
+      export const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      export type Ref = import('./inlineType.ts').Inline;
+      export const used: SharedType = { product: 'live-product', head: 'live-head' };
+      export const refs = [REQUEST_PATHS, LEGACY_WIDGETS, FAMILY_VIEWS, FAMILY_VIEW_UI];
+    `,
+    'ui/src/charts/sharedKit.ts': 'export const kitHelper = () => 1;',
+    'ui/src/charts/oldChart.ts': 'export const oldRender = () => 2;',
+    'ui/src/dashboard/legacyHook.tsx': 'export const useOld = () => null;',
+    'ui/src/dashboard/sharedData.ts': 'export const parseRow = () => 3;',
+    'ui/src/families/table/painter.ts': "import { kitHelper } from '../../charts/sharedKit.ts'; export const paint = () => kitHelper();",
+    'ui/src/widgets/old-widget/index.ts': "import { oldRender } from '../../charts/oldChart.ts'; import { useOld } from '../../dashboard/legacyHook.tsx'; import { parseRow } from '../../dashboard/sharedData.ts'; export default () => [oldRender(), useOld(), parseRow()];",
+    'ui/src/widgets/clean-widget/cleanProjection.ts': "import { kitHelper } from '../../charts/sharedKit.ts'; import { parseRow } from '../../dashboard/sharedData.ts'; export const proj = () => [kitHelper(), parseRow()];",
+    'ui/src/widgets/dirty-chart/dirtyProjection.ts': "import { oldRender } from '../../charts/oldChart.ts'; export const proj = () => oldRender();",
+    'ui/src/widgets/dirty-dash/cleanProj.ts': 'export const proj = () => 1;',
+    'ui/src/widgets/dirty-dash/index.ts': "import { useOld } from '../../dashboard/legacyHook.tsx'; export default () => useOld();",
+    'ui/src/widgets/legacyManifest.ts': 'export const LEGACY_WIDGETS = [{ kind: "old-widget", load: () => import("./old-widget/index.ts") }];',
+    'ui/src/widgets/manifest/table.ts': `
+      import { paint } from '../../families/table/painter.ts';
+      export const TABLE_VIEWS = [
+        { kind: 'clean-widget', view: 'default', family: 'table', loadSpec: () => import('../clean-widget/cleanProjection.ts').then(m => ({ projection: m.proj, paint })) },
+        { kind: 'dirty-chart', view: 'default', family: 'table', loadSpec: () => import('../dirty-chart/dirtyProjection.ts').then(m => ({ projection: m.proj })) },
+        { kind: 'dirty-dash', view: 'default', family: 'table', loadSpec: () => import('../dirty-dash/cleanProj.ts').then(m => ({ projection: m.proj })) },
+      ];
+    `,
+    'ui/src/widgets/familyManifest.ts': "import { TABLE_VIEWS } from './manifest/table.ts'; export const FAMILY_VIEWS = [...TABLE_VIEWS];",
+    'ui/src/widgets/manifest.ts': "export const FAMILY_VIEW_UI = { 'dirty-dash': { load: () => import('./dirty-dash/index.ts') } };",
+    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 1}',
+  }), async root => {
+    const result = await runDeadCodeCheck(root);
+    assert.deepEqual(
+      result.convertedLegacy.violations.map(v => v.pair),
+      ['dirty-chart:default', 'dirty-dash:default'],
+    );
+    assert.deepEqual(
+      result.convertedLegacy.violations[0].chain,
+      ['ui/src/widgets/dirty-chart/dirtyProjection.ts', 'ui/src/charts/oldChart.ts'],
+    );
+    assert.deepEqual(
+      result.convertedLegacy.violations[1].chain,
+      ['ui/src/widgets/dirty-dash/index.ts', 'ui/src/dashboard/legacyHook.tsx'],
+    );
+    assert.equal(result.convertedLegacy.errors.length, 1);
+    assert.match(result.convertedLegacy.errors[0], /2 converted view\(s\) reach old-renderer modules, above ratchet 1/);
+  });
+});
+
+test('flags unused exports and dead re-exports while keeping locally used helpers, dynamic imports, and awaited imports', async () => {
+  await withRepo(baseFiles({
+    'ui/src/main.tsx': `
+      import './styles.css';
+      import type { SharedType } from './types.ts';
+      import { REQUEST_PATHS } from './generated/dashboard.ts';
+      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
+      import { usedFn } from './mod.ts';
+      export const loadLazy = () => import('./lazy.ts');
+      export const loadAwait = async () => (await import('./awaited.ts')).awaitedFn();
+      export const loadDestruct = async () => { const { destructured } = await import('./awaited.ts'); return destructured; };
+      export const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      export type Ref = import('./inlineType.ts').Inline;
+      export const used: SharedType = { product: 'live-product', head: 'live-head' };
+      export const refs = [REQUEST_PATHS, LEGACY_WIDGETS, usedFn()];
+    `,
+    'ui/src/lazy.ts': 'export default function Lazy() { return 1; } export const deadOnLazy = 2;',
+    'ui/src/awaited.ts': 'export const awaitedFn = () => 1; export const destructured = 2; export const deadAwaited = 3;',
+    'ui/src/mod.ts': `
+      export const localHelper = () => 1;
+      export const usedFn = () => localHelper();
+      export const deadDirect = () => 2;
+      export const deadTransitive = () => deadHelper();
+      export const deadHelper = () => 3;
+      export { unusedReexport } from './retarget.ts';
+    `,
+    'ui/src/retarget.ts': 'export const unusedReexport = 4;',
+    'ui/src/mod.test.ts': "import { deadDirect, localHelper } from './mod.ts'; export const run = () => [deadDirect(), localHelper()];",
+    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxUnusedExports": 0}',
+  }), async root => {
+    const result = await runDeadCodeCheck(root);
+    assert.deepEqual(
+      result.exports.unusedExports.map(item => item.key),
+      [
+        'ui/src/awaited.ts:deadAwaited',
+        'ui/src/lazy.ts:deadOnLazy',
+        'ui/src/mod.ts:deadDirect',
+        'ui/src/mod.ts:deadHelper',
+        'ui/src/mod.ts:deadTransitive',
+        'ui/src/mod.ts:unusedReexport',
+        'ui/src/retarget.ts:unusedReexport',
+      ],
+    );
+    assert.equal(result.exports.errors.length, 1);
+    assert.match(result.exports.errors[0], /7 unused export\(s\) in ui\/src, above ratchet 0/);
+  });
+});
