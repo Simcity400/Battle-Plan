@@ -6,8 +6,6 @@ import { formatDateHover } from '../valueFormat.ts';
 import { centerWindowPosition, clampWindowPosition } from './windowPlacement.ts';
 import './detailWindow.css';
 
-export { centerWindowPosition, clampWindowPosition, DETAIL_WINDOW_MARGIN } from './windowPlacement.ts';
-
 export interface DetailWindowClock {
   readonly isPlaying?: () => boolean;
   readonly pause?: () => void;

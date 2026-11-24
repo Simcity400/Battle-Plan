@@ -1,3 +1,4 @@
+import { readyArt, type ArtResult } from '../art/types.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
@@ -77,8 +78,8 @@ test('an item that ended is not open, an item with no art is a named missing ico
   const model = project(H(1940));
   const [civilian, war] = lane(model, 'economy').spans;
   assert.deepEqual([civilian!.open, civilian!.lastHour], [false, H(1937, 6) - 1]);
-  assert.equal(civilian!.iconMissing, true);
-  assert.deepEqual([war!.open, war!.lastHour, war!.icon], [true, H(1940), { kind: 'url', url: 'asset://icons/war.png' }]);
+  assert.equal(civilian!.icon?.status, 'unavailable', 'no art is a named reason, not a bare missing flag');
+  assert.deepEqual([war!.open, war!.lastHour, war!.icon?.status], [true, H(1940), 'pending']);
 });
 
 test('a slot read during an unrecorded stretch says so, and an end inside the stretch is not a guessed edge', () => {
@@ -278,7 +279,6 @@ test('timeline legend reserves bodyTop, shifts hit testing, and paints legend en
   drawTimeline(ctx as never, {
     model,
     layout,
-    readView: createBoundedReadView({ hour: H(1940), panels: new Map() }),
     theme: LANE_THEME,
     scrollTop: 0,
     expanded: {},
@@ -291,4 +291,27 @@ test('timeline legend reserves bodyTop, shifts hit testing, and paints legend en
   assert.ok(drawnText.includes('In progress'));
   assert.ok(drawnText.includes('Idle'));
   assert.ok(drawnText.includes('opened'));
+});
+
+test('a paused timeline draws a flag that arrives after its projection, through the frame’s art, without projecting again', () => {
+  const flag = readyArt('art://flag-aaa');
+  const model: TimelineModel = { hour: H(1940) as TimelineModel['hour'], firstHour: FIRST, iconsOnBars: false, labelWidth: 200, warnings: [], nextChangeAt: Infinity, unobserved: [],
+    lanes: [{ key: 'a', kind: 'item', label: 'A', flag, flagTag: 'AAA', auditValue: 'A', spans: [{ id: 's', firstHour: FIRST, lastHour: H(1940), color: '#fff', open: true }] }] };
+  const layout = frameTimeline(placeTimeline(model, 600, 200, {}), H(1940));
+  const resolution = resolutionFor(null, model, layout);
+  let images = 0;
+  const ctx = new Proxy({}, { get: (_target, prop) => {
+    if (prop === 'measureText') return (text: string) => ({ width: text.length * 6 });
+    if (prop === 'createLinearGradient') return () => ({ addColorStop() {} });
+    if (prop === 'drawImage') return () => { images++; };
+    return () => {};
+  }, set: () => true });
+  const paint = (status: 'pending' | 'ready') => drawTimeline(ctx as never, {
+    model, layout, theme: LANE_THEME, scrollTop: 0, expanded: {}, inspectedKey: null, selectedKey: null, focusedKey: null, resolution,
+    artCache: { resolve: (art: ArtResult) => (status === 'ready' ? { ...art, bitmap: { width: 20, height: 13 } } : art) } as never,
+  });
+  paint('pending');
+  assert.equal(images, 0);
+  paint('ready');
+  assert.ok(images > 0, 'the same model paints the flag once the frame’s art has it');
 });

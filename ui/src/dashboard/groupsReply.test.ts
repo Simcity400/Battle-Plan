@@ -5,11 +5,11 @@ import type { CountryGroupReply } from '../generated/dashboard';
 
 const good: CountryGroupReply = {
   branchId: '1', warnings: [], humans: [{ tag: 'GER', firstHour: 0, lastHour: 9 }],
-  factions: [{ id: '3', name: null, recordedName: '', firstHour: 0, lastHour: 9, nameReason: 'Faction template not recorded', names: [{ firstHour: 0, lastHour: 9, name: null, reason: 'Faction template not recorded' }], members: [{ tag: 'GER', firstHour: 0, lastHour: 9 }], leaders: [], incomplete: [] }],
+  factions: [{ id: '3', name: null, recordedName: '', firstHour: 0, lastHour: 9, nameReason: 'Faction template not recorded', names: [{ firstHour: 0, lastHour: 9, name: null, reason: 'Faction template not recorded', token: null }], members: [{ tag: 'GER', firstHour: 0, lastHour: 9 }], leaders: [], incomplete: [] }],
   wars: [{ first: 'GER', second: 'POL', firstHour: 5, lastHour: 9 }],
   warStarts: [{ hour: 5, attacking: 'GER', defending: 'POL' }], capitulations: [{ hour: 8, tag: 'POL' }], identityChanges: [{ hour: 7, from: 'AAA', to: 'BBB' }],
   countryIdentities: ['GER', 'POL'].map((tag, slot) => ({ tag, identities: [{ firstHour: 0, lastHour: 9, slot, countryId: slot + 1 }] })),
-  unobserved: { humans: [], factions: [{ firstHour: 2, lastHour: 3 }], wars: [] },
+  unobserved: { humans: [], factions: [{ firstHour: 2, lastHour: 3 }], wars: [], unattributed: [] },
 };
 
 
@@ -29,8 +29,8 @@ test('a reply missing a list, or with a malformed entry, is refused', () => {
 
 test('dated faction names must be ordered, disjoint and say why a name is unavailable', () => {
   const faction = { ...good.factions[0], nameReason: 'Template missing', names: [
-    { firstHour: 0, lastHour: 3, name: 'Opening pact', reason: null },
-    { firstHour: 5, lastHour: 9, name: null, reason: 'Template missing' },
+    { firstHour: 0, lastHour: 3, name: 'Opening pact', reason: null, token: null },
+    { firstHour: 5, lastHour: 9, name: null, reason: 'Template missing', token: null },
   ] };
   const check = (patch: Record<string, unknown>) => validateCountryGroupReply({ ...good, factions: [{ ...faction, ...patch }] });
   assert.equal(check({}).factions[0].names.length, 2);

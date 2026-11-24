@@ -11,7 +11,7 @@ export type ToLane =
   | { type: 'unfollow'; sub: number }
   | { type: 'mount'; widget: number; subs: number[]; view: string; model?: unknown }
   | { type: 'unmount'; widget: number }
-  | { type: 'bind'; widget: number; binding: Binding; model?: unknown; retry?: boolean }
+  | { type: 'bind'; widget: number; binding: Binding; model?: unknown; retry?: boolean; remounted?: boolean }
   | ({ type: 'supply'; widget: number } & Supply)
   | PayloadsMessage
   | { type: 'exact'; sub: number; hour: number; data: unknown; refused: string | null }
@@ -24,7 +24,7 @@ export type FromLane =
   | ({ type: 'presentation' } & Presented<ImageBitmap>)
   | { type: 'failure'; lane: number; reason: string }
   | { type: 'sub-failed'; lane: number; sub: number; reason: string }
-  | { type: 'widget-failed'; lane: number; widget: number; reason: string }
+  | { type: 'widget-failed'; lane: number; widget: number; reason: string; stamp?: number }
   | { type: 'hit'; widget: number; key: string | null; installedId?: number; owner?: string }
   | { type: 'served'; seek: number; target: number; exact: boolean; changed: number; ms: number; cancelled?: boolean; costs?: [widget: number, cost: number][] };
 

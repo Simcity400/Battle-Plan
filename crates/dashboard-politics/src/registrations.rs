@@ -16,6 +16,7 @@ dashboard_base::register_products! {
     FEED_EVENTFEEDACTIVITY => crate::products::feed::EventFeedActivity,
     FEED_EVENTFEEDKINDS => crate::products::feed::EventFeedKinds,
     POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN => crate::products::power_ledger::breakdown::PowerSpendingBreakdown,
+    POWER_LEDGER_MARKERS_POWERSPENDMARKERS => crate::products::power_ledger::markers::PowerSpendMarkers,
 }
 
 dashboard_base::register_hourly_products! {

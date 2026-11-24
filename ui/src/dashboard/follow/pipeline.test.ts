@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { inProcess, managedInProcess, NATIVE } from './inProcess.fixture.ts';
-import { datedReading, datedStore, heldFor, joinReadings, onInstalled, readingOf } from './useFollowed.ts';
+import { datedReading, datedStore, heldFor, onInstalled } from './useFollowed.ts';
 import { message } from './messages.fixture.ts';
 import { cellValue, parseAnswer } from './message.ts';
 import type { PageSurface } from './page.ts';
@@ -243,16 +243,6 @@ test('review 6 C: a route nobody follows is sent no clock, so a widget scrolled 
     send(message(11, [{ id: back, answer: { keys: [1n], columns: 1, values: [3n] } }], false, NATIVE, clock.getSnapshot().seekSequence));
     assert.ok(await settle(() => pipeline.view(again)?.mode === 'picture'), JSON.stringify(pipeline.view(again)));
   } finally { close(); }
-});
-
-test('review 6 B: widgets read one reading state from the installed entries, and a refused one is never read as empty', () => {
-  const covered = readingOf({ mode: 'picture', h: 10, through: 12, target: 12, dim: false, tooltip: null });
-  const refused = readingOf({ mode: 'failed', reason: 'Casualties dealt are not recorded', target: 12, dim: false, tooltip: null });
-  const pending = readingOf({ mode: 'reading', target: 12, dim: false, tooltip: null });
-  assert.deepEqual(joinReadings([covered, refused, pending]), { state: 'refused', reason: 'Casualties dealt are not recorded' });
-  assert.deepEqual(joinReadings([covered, pending]), { state: 'pending' });
-  assert.deepEqual(joinReadings([covered, readingOf({ mode: 'picture', h: 11, through: 11, target: 12, dim: true, tooltip: null }), null]),
-    { state: 'covered', hour: 11, dim: true }, 'the joined picture is dated at its latest hour and dimmed if any part is');
 });
 
 test('review 7 A: a component joining a shown widget keeps its picture, dimmed, until the joined picture installs', async () => {
@@ -1006,6 +996,46 @@ test('F7: releasing one of two tokens sharing a subscription on the same widget 
     assert.match(p.view(w)?.reason ?? '', /does not hold/);
   } finally {
     env.close();
+  }
+});
+
+test('replacing a mounted PageSurface with a new equal-size PageSurface installs cleanly on the first frame', async () => {
+  const drawn: LaneView = {
+    paint: input => ({
+      surfaces: input.binding.surfaces.map(() => ({ source: { width: 80, height: 40 }, content: `h:${input.hour}` })),
+      fields: {},
+      motion: false,
+    }),
+  };
+  const { pipeline, clock, send, source, settle, close } = inProcess({ views: kind => kind === 'drawn' ? drawn : undefined });
+  try {
+    const id = pipeline.acquire('remount-eq|0', { offset: 0, pin: null });
+    const sub = pipeline.subscribe(id, {}, source, '1', 0, { product: 'series-state' }, 'followed')!;
+    pipeline.present(id, 'drawn');
+    const first = { installs: 0, install() { this.installs++; }, clear() {} };
+    pipeline.bind(id, [first], { surfaces: [{ width: 80, height: 40, dpr: 1 }] });
+    clock.seek(10);
+    await settle(() => pipeline.status(sub).status === 'followed');
+    send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [42n] } }], false, NATIVE, clock.getSnapshot().seekSequence));
+    assert.ok(await settle(() => pipeline.view(id)?.mode === 'picture' && first.installs === 1));
+
+    const second = { installs: 0, install() { this.installs++; }, clear() {} };
+    const laneChannel = (pipeline as unknown as { host: { lanes: { postMessage: (m: unknown) => void }[] } }).host.lanes[0]!;
+    const origPost = laneChannel.postMessage.bind(laneChannel);
+    const refusedReasons: string[] = [];
+    laneChannel.postMessage = (m: unknown) => {
+      const msg = m as { type?: string; refused?: { reason?: string }[] };
+      if (msg.type === 'frame' && msg.refused?.length) {
+        for (const r of msg.refused) if (r.reason) refusedReasons.push(r.reason);
+      }
+      origPost(m);
+    };
+    pipeline.bind(id, [second], { surfaces: [{ width: 80, height: 40, dpr: 1 }] });
+    pipeline.bind(id, [second], { surfaces: [{ width: 80, height: 40, dpr: 1 }] });
+    assert.ok(await settle(() => pipeline.view(id)?.mode === 'picture' && second.installs === 1), 'back-to-back binds on an equal-size replacement surface install a fresh bitmap');
+    assert.ok(!refusedReasons.includes('kept content'), `must never refuse kept content after remount, got ${JSON.stringify(refusedReasons)}`);
+  } finally {
+    close();
   }
 });
 

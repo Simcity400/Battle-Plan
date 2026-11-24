@@ -22,8 +22,6 @@ export interface IdentityScope {
   readonly language?: string;
 }
 
-export type IdentityKind = 'country' | 'faction' | 'leader' | 'design' | 'state' | 'province' | 'region';
-
 export type CountryIdentityKey =
   | { readonly kind: 'country'; readonly by: 'tag'; readonly tag: string }
   | { readonly kind: 'country'; readonly by: 'slot'; readonly slot: number }

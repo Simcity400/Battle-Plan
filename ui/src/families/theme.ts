@@ -3,8 +3,6 @@ import { resolveKitTokens } from '../draw/kit.ts';
 import type { FamilyTheme } from './contract.ts';
 import type { CountryLooksMap } from './looks.ts';
 
-export type { FamilyTheme };
-
 export function readFamilyTheme(
   countryColours?: ReadonlyMap<string, string>,
   countryLooks?: CountryLooksMap,

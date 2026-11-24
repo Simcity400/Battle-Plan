@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ChartSummary } from '../chartSummary';
-import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
+import { CELL } from '../../dashboard/follow/message.ts';
+import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import type { CountryGroupReply, FactionRostersReply } from '../../generated/dashboard';
 import type { FactionLines } from '../../dashboard/territoryReplies';
-import { answerValues, factionEntries, factionNote, factionSummaries, factionMembersAt, factionMemberSpans, fixedRosters, GROUP_ID, groupTotal, rosterRows, rosterTags } from './factionTotalsData.ts';
+import { answerValues, everRosters, factionEntries, factionNote, factionSummaries, factionMembersAt, factionMemberSpans, GROUP_ID, groupTotal, rosterRows, rosterTags } from './factionTotalsData.ts';
 
 const incomplete = 'Its roster was not read whole at this hour';
 const rosters: FactionRostersReply = { missing: null, warnings: [], factions: [
@@ -46,18 +47,16 @@ test('the faction lines drawn are the greatest at the end of the view', () => {
   assert.match(factionNote(undefined, '1', true)!, /bounds/);
 });
 
-test('a roster fixed at the view’s end, or of anyone ever a member, is read from the recorded memberships', () => {
+test('a roster of anyone ever a member within the view is read from the recorded memberships', () => {
   const run = (tag: string, firstHour: number, lastHour: number) => ({ tag, firstHour, lastHour });
   const faction = (id: string, members: ReturnType<typeof run>[], incomplete: { firstHour: number; lastHour: number }[] = []) =>
     ({ id, firstHour: 0, lastHour: 500, members, incomplete }) as unknown as CountryGroupReply['factions'][number];
   const groups = { factions: [faction('1', [run('GER', 0, 500), run('ITA', 20, 40), run('ITA', 60, 90), run('HUN', 150, 300)]),
     faction('2', [run('ENG', 0, 500)], [{ firstHour: 30, lastHour: 35 }])], unobserved: { factions: [] } } as unknown as CountryGroupReply;
-  const end = fixedRosters(groups, 'end', 10, 100);
-  assert.deepEqual(end.factions.map(item => [item.id, item.members, item.missing]), [['1', ['GER'], null], ['2', ['ENG'], null]]);
-  const ever = fixedRosters(groups, 'ever', 10, 100);
+  const ever = everRosters(groups, 10, 100);
   assert.deepEqual(ever.factions.map(item => [item.id, item.members]), [['1', ['GER', 'ITA']], ['2', ['ENG']]]);
   assert.match(ever.factions[1].missing!, /not read whole/, 'a roster incomplete within the view is not known, never smaller');
-  const unread = fixedRosters({ ...groups, unobserved: { factions: [{ firstHour: 100, lastHour: 120 }] } } as unknown as CountryGroupReply, 'end', 10, 100);
+  const unread = everRosters({ ...groups, unobserved: { factions: [{ firstHour: 100, lastHour: 120 }] } } as unknown as CountryGroupReply, 10, 100);
   assert.deepEqual([unread.factions, typeof unread.missing], [[], 'string']);
 });
 test('a group shown as one total sums its members at each hour they are members, and is not known where they were not read', () => {

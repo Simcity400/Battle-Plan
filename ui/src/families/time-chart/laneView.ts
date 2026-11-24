@@ -6,7 +6,8 @@ import type { TimeChartBinding } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart, parseChartInspect } from './hitTest.ts';
 import { hoverTimeChartLayout, layoutTimeChart, type TimeChartLayout } from './layout.ts';
 import type { TimeChartModel } from './model.ts';
-import { collectVisibleChartArt, drawTimeChart } from './painter.ts';
+import { collectVisibleChartArt, drawTimeChart, fitTimeChartLegend } from './painter.ts';
+import type { LegendFit } from '../../draw/kit.ts';
 
 interface ChartLayout {
   readonly model: TimeChartModel;
@@ -15,6 +16,7 @@ interface ChartLayout {
   readonly height: number;
   readonly font: string;
   readonly measure: MeasureText;
+  readonly legend: LegendFit | null;
 }
 
 type ChartFrame = LaneFrame<TimeChartBinding, TimeChartModel, ChartLayout>;
@@ -34,7 +36,7 @@ export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): r
     });
   }
   const stops: { readonly hour: number; readonly key: string; readonly name: string }[] = [];
-  for (const tick of layout.axisTicks) {
+  for (const tick of layout.rawAxisTicks) {
     if (tick.hour <= model.hour) stops.push({ hour: tick.hour, key: `plot:${tick.hour}`, name: formatDateOnly(tick.hour) });
   }
   for (const placed of layout.markers) {
@@ -44,6 +46,8 @@ export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): r
   stops.sort((a, b) => a.hour - b.hour);
   return stops.map((stop, index) => [stop.key, stop.name, index, 0, ''] as const);
 }
+
+export const LOG_REFUSED = 'Log scale needs every value shown above zero, so the value axis is linear.';
 
 const hovered = new WeakMap<ChartLayout, { readonly inspect: string; readonly layout: TimeChartLayout }>();
 
@@ -55,7 +59,7 @@ function shownLayout(layout: ChartLayout, inspect: string | null): TimeChartLayo
   if (!inspect || (hoverHour === null && seriesId === null)) return layout.base;
   const held = hovered.get(layout);
   if (held && held.inspect === inspect) return held.layout;
-  const shown = hoverTimeChartLayout(layout.base, layout.model.hour, layout.font, layout.measure, hoverHour, seriesId);
+  const shown = hoverTimeChartLayout(layout.base, seriesId);
   hovered.set(layout, { inspect, layout: shown });
   return shown;
 }
@@ -74,7 +78,8 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
     const font = theme.font ?? "'Segoe UI', system-ui, sans-serif";
     const measureText = canvasMeasureText(measure);
     const base = model.empty ? null : layoutTimeChart(model, surface.width, surface.height, font, measureText);
-    return { model, base, width: surface.width, height: surface.height, font, measure: measureText };
+    const legend = base ? fitTimeChartLegend(model, base, theme, measureText) : null;
+    return { model, base, width: surface.width, height: surface.height, font, measure: measureText, legend };
   },
   paint(ctx, frame) {
     const shown = shownOf(frame);
@@ -82,7 +87,7 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
       ctx.clearRect(0, 0, frame.surface.width, frame.surface.height);
       return false;
     }
-    drawTimeChart(ctx, frame.layout.model, shown, frame.theme, frame.inspect, frame.surface.dpr > 0 ? frame.surface.dpr : 1);
+    drawTimeChart(ctx, frame.layout.model, shown, frame.theme, frame.inspect, frame.surface.dpr > 0 ? frame.surface.dpr : 1, frame.layout.legend, frame.art);
     return false;
   },
   hit(frame, point) {
@@ -112,7 +117,7 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
         emptyDetail: null,
         emptyKind: 'empty',
         ...(model.subject ? { subject: model.subject } : {}),
-        notes: model.note ? [model.note] : [],
+        notes: [...(model.note ? [model.note] : []), ...(base.logRefused ? [LOG_REFUSED] : [])],
         warnings: model.warnings ?? [],
         transform: {
           xFrom: base.xDomain[0],
@@ -121,14 +126,14 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
           axisTo: model.hour,
           yMin: base.yDomain[0],
           yMax: base.yDomain[1],
-          log: model.yAxis.log === true,
+          log: base.logShown,
         },
         plotRect: { left: base.left, top: base.top, width: base.plotWidth, height: base.plotHeight },
       },
       nav: chartNavStops(model, base),
     };
   },
-  mirror: () => null,
+  mirror: null,
   audit: frame => frame.layout.model.auditRows ?? [],
-  visibleArt: frame => (frame.layout.base ? collectVisibleChartArt(frame.layout.model, frame.layout.base) : []),
+  visibleArt: frame => (frame.layout.base ? collectVisibleChartArt(frame.layout.model, frame.layout.base, frame.layout.legend) : []),
 };

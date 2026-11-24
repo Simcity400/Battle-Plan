@@ -130,14 +130,6 @@ export function componentReading(view: WidgetView | null | undefined, sub: numbe
   return typeof refused === 'string' ? { state: 'refused', reason: refused } : readingOf(view);
 }
 
-export function joinReadings(readings: readonly (Reading | null)[]): Reading {
-  const held = readings.filter((reading): reading is Reading => reading !== null);
-  return held.find(reading => reading.state === 'refused') ?? held.find(reading => reading.state === 'outside') ?? held.find(reading => reading.state === 'pending')
-    ?? held.reduce<Reading>((joined, reading) => joined.state !== 'covered' || reading.state !== 'covered' ? reading
-      : { state: 'covered', hour: Math.max(joined.hour, reading.hour), dim: joined.dim || reading.dim },
-    held[0] ?? { state: 'pending' });
-}
-
 export const branchBounds = (source: DashboardSource, branch: unknown): readonly [number, number] | undefined => {
   const held = source.metadata.branches?.find(each => String(each.id) === String(branch));
   return held ? [held.firstHour, held.lastHour] : undefined;

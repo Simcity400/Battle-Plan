@@ -185,7 +185,7 @@ function projectMineRegion(
 export const minefieldsProjection: BarsProjection<MinefieldsProjectionOptions> = registerFamilyProjection({
   kind: 'minefields',
   family: 'bars',
-  project(readView: BoundedReadView): BarsModel {
+  project(readView: BoundedReadView, options: MinefieldsProjectionOptions): BarsModel {
     const hour = readView.hour;
     const refused = readView.refused('main');
     if (refused) {
@@ -207,9 +207,10 @@ export const minefieldsProjection: BarsProjection<MinefieldsProjectionOptions> =
       picked,
       automatic,
       pickedHeading: PICKED_REGIONS_HEADING,
-      automaticHeading: mostActiveHeading(null),
+      automaticHeading: options.order === 'name' ? 'Mined regions' : mostActiveHeading(null),
       addRegionLabel: ADD_REGION_LABEL,
       ...(empty ?? {}),
+      active: reply.activeUnlisted,
       warnings: reply.warnings,
     });
   },

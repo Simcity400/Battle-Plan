@@ -4,11 +4,12 @@ import type { Picture } from '../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../dashboard/follow/message';
 import type { Scene, Value as LaneValue } from '../draw/lane.ts';
 import { sectionLiveValues } from '../draw/views/fields.ts';
-import { artUrlForHandle, laneArtDemand, type ArtResolutions } from './art/provider.ts';
+import { artUrlForHandle, laneArtDemand, needsArtResolution, type ArtResolutions } from './art/provider.ts';
+import { artHandleKey } from './art/types.ts';
 import { createBoundedReadView } from './boundedView.ts';
 import type { ArtHandle, ArtProvider, ArtResult, BoundedReadView, BoundedSeries, DisplayedHour, EntityKind, FieldStatus, IdentityProvider, IdentityResult } from './contract.ts';
 import type { IdentityIndex } from './identity/index.ts';
-import { buildRowSourceFromHead, type DatedLogRow, type PagedRowsSnapshot, type RowWindow, type TableRowSource } from './table/rowSource.ts';
+import { buildRowSourceFromHead, type DatedLogRow, type PagedRows, type RowWindow, type TableRowSource } from './table/rowSource.ts';
 
 export interface SceneSources {
   readonly sources: Readonly<Record<string, number>>;
@@ -18,7 +19,7 @@ export interface SceneSources {
   readonly series?: ReadonlyMap<string, ReadonlyMap<string, BoundedSeries>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly kind?: string;
-  readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
+  readonly pagedRows?: PagedRows;
   readonly window?: RowWindow;
 }
 
@@ -44,7 +45,7 @@ export interface SceneProjection<TModel> {
 export interface SceneReads {
   readonly identity: number;
   readonly art: number;
-  readonly rows: boolean;
+  readonly window: boolean;
   unchanged(readers: SceneReaders): boolean;
 }
 
@@ -56,7 +57,7 @@ function readScene(
   hour: number,
   readers: SceneReaders | undefined,
   demands: { readonly identity: Map<string, SceneIdentityDemand>; readonly urls: Set<string>; readonly asks: Map<string, ArtHandle> } | null,
-  noteRows?: () => void,
+  noteWindow?: () => void,
 ): BoundedReadView {
   let byName: Map<string, Picture<LaneValue>> | null = null;
   const pictureOf = (name: string): Picture<LaneValue> | undefined => {
@@ -83,6 +84,7 @@ function readScene(
     ...(sources.series ? { series: sources.series } : {}),
     ...(sources.hovers ? { hovers: new Map(Object.entries(sources.hovers)) } : {}),
     ...(sources.window ? { rowWindow: sources.window } : {}),
+    ...(noteWindow ? { onRowWindow: noteWindow } : {}),
     ...(readers?.identity ? { identity: readers.identity } : {}),
     ...(readers?.art ? { art: readers.art } : {}),
     ...(demands
@@ -127,10 +129,9 @@ function readScene(
       return live;
     },
     resolveRows: name => {
-      noteRows?.();
       if (rowsCache.has(name)) return rowsCache.get(name);
       const snapshot = sources.pagedRows?.[name];
-      const identity = snapshot?.identity ?? `${sources.kind ?? ''}:${name}`;
+      const identity = `${sources.kind ?? ''}:${name}`;
       let rows: TableRowSource<DatedLogRow> | undefined;
       if (sources.staticPanels && Object.hasOwn(sources.staticPanels, name)) {
         rows = buildRowSourceFromHead(identity, sources.staticPanels[name], undefined, hour, snapshot) ?? undefined;
@@ -188,10 +189,11 @@ export function projectScene<TModel>(
         }
       : {}),
   };
-  let rowsRead = false;
-  const view = readScene(scene, sources, hour, recorded, demands, () => { rowsRead = true; });
+  let windowRead = false;
+  const view = readScene(scene, sources, hour, recorded, demands, () => { windowRead = true; });
   const model = project(view);
   recording = false;
+  for (const [handle] of artReads) if (needsArtResolution(handle)) demands.asks.set(artHandleKey(handle), handle);
   let boundary = Infinity;
   for (const read of whoReads) if (read[2] === view.hour && read[3].nextChangeAt < boundary) boundary = read[3].nextChangeAt;
   return {
@@ -204,7 +206,7 @@ export function projectScene<TModel>(
     reads: {
       identity: whoReads.length,
       art: artReads.length,
-      rows: rowsRead,
+      window: windowRead,
       unchanged: next => {
         if (!next.identity !== !inner || !next.art !== !innerArt) return false;
         for (const [kind, key, atHour, was] of whoReads) {

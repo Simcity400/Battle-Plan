@@ -1,3 +1,5 @@
+import { productIconArt } from '../../families/art/provider.ts';
+import { unavailableArt, type ArtResult } from '../../families/art/types.ts';
 import { countryRowPresentation } from '../../families/bars/model.ts';
 import { nextChangeAfter } from '../../families/holders.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
@@ -8,7 +10,6 @@ import { CELL_INSET, ROW_HEIGHT, TABLE_SETTINGS_KEY, tableSettingsOf, type Table
 import { ICON_STRIP_GAP, MEDAL_ICON_SIZE } from '../../draw/kit.ts';
 import { knownValue, textValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import type { CareerMedal, CareerRow, CareerTemplate, CountryHours, DecoratedDivisionsReply, DecoratedRank } from '../../generated/dashboard';
-import { artState } from '../../families/table/identityCell.ts';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
 export interface DecoratedOptions {
@@ -16,19 +17,17 @@ export interface DecoratedOptions {
   readonly descending: boolean;
 }
 
-interface Media { readonly icon: string | undefined; readonly pending: boolean }
 
 interface DecoratedRow {
   readonly row: CareerRow;
   readonly position: number;
   readonly template: CareerTemplate | undefined;
-  readonly kind: Media;
-  readonly flag: Media;
+  readonly kind: ArtResult;
+  readonly flag: ArtResult;
   readonly country: Value<string>;
   readonly strip: readonly TableCellIconItem[];
 }
 
-const NONE: Media = { icon: undefined, pending: false };
 const UNIDENTIFIED = 'Medal not identified';
 const PREMEASURE_ROWS = 32;
 
@@ -56,17 +55,11 @@ export function validateDecoratedDivisions(value: unknown): DecoratedDivisionsRe
   return reply;
 }
 
-function urlMedia(url: string | null | undefined, readView: BoundedReadView): Media {
-  if (!url) return NONE;
-  const art = readView.art({ kind: 'url', url });
-  return art.status === 'ready' ? { icon: art.url, pending: false } : { icon: undefined, pending: art.status === 'pending' };
-}
-
-function countryOf(tag: string | null, readView: BoundedReadView): { readonly flag: Media; readonly country: Value<string> } {
-  if (tag === null) return { flag: NONE, country: notRecorded('Country not recorded') };
+function countryOf(tag: string | null, readView: BoundedReadView): { readonly flag: ArtResult; readonly country: Value<string> } {
+  if (tag === null) return { flag: unavailableArt('Country not recorded'), country: notRecorded('Country not recorded') };
   const shown = countryRowPresentation(readView, tag);
   return {
-    flag: { icon: shown.media.kind === 'flag' ? shown.media.iconUrl : undefined, pending: shown.media.kind === 'flag' && shown.media.art.status === 'pending' },
+    flag: shown.media.art,
     country: shown.labelMissing ? notRecorded('Country name not recorded') : textValue(shown.label, 'Country name not recorded'),
   };
 }
@@ -90,16 +83,14 @@ function awards(row: CareerRow, reply: DecoratedDivisionsReply): TooltipExtraRow
   });
 }
 
-function medalArt(medal: CareerMedal | undefined, readView: BoundedReadView): Pick<TableCellIconItem, 'url' | 'pending'> {
-  if (!medal?.icon) return {};
-  const art = artState(readView, { kind: 'sprite', key: medal.icon.key, frame: medal.icon.frame });
-  return { ...(art.icon ? { url: art.icon } : {}), ...(art.iconPending ? { pending: true } : {}) };
+function medalArt(medal: CareerMedal | undefined, readView: BoundedReadView): ArtResult {
+  return medal?.icon ? readView.art({ kind: 'sprite', key: medal.icon.key, frame: medal.icon.frame }) : unavailableArt('The recording names no icon for this medal');
 }
 
-function medalStrip(row: CareerRow, reply: DecoratedDivisionsReply, art: readonly Pick<TableCellIconItem, 'url' | 'pending'>[]): TableCellIconItem[] {
+function medalStrip(row: CareerRow, reply: DecoratedDivisionsReply, art: readonly ArtResult[]): TableCellIconItem[] {
   return row.facts.awards.map(award => ({
     name: medalName(award.medal === null ? undefined : reply.medals[award.medal], award.medal),
-    ...(award.medal === null ? {} : art[award.medal]),
+    art: award.medal === null ? unavailableArt('The medal is not identified') : art[award.medal]!,
     ...(award.count > 1 ? { count: award.count } : {}),
   }));
 }
@@ -113,9 +104,9 @@ const MEDALS_SHOWN = 4;
 const inProductOrder = (item: DecoratedRow, options: DecoratedOptions): Value<number> => knownValue(options.descending ? -item.position : item.position);
 
 const DECORATED_COLUMNS: readonly DeclarativeColumnSpec<DecoratedRow, DecoratedOptions>[] = [
-  { ...KIND!, priority: 5, sortable: false, cellKind: 'kind', extra: () => ({ artShape: 'counter' }), iconSlot: true, icon: item => item.kind.icon, iconPending: item => item.kind.pending,
+  { ...KIND!, priority: 5, sortable: false, cellKind: 'kind', extra: () => ({ artShape: 'counter' }), iconSlot: true, art: item => item.kind,
     value: item => textValue(item.template?.name ?? null, 'Template name unavailable'), sortValue: (item, _live, _hour, options) => inProductOrder(item, options) },
-  { ...COUNTRY!, priority: 1, iconSlot: true, icon: item => item.flag.icon, iconPending: item => item.flag.pending, country: item => item.row.tag, value: item => item.country,
+  { ...COUNTRY!, priority: 1, iconSlot: true, art: item => item.flag, country: item => item.row.tag, value: item => item.country,
     sortValue: (item, _live, _hour, options) => inProductOrder(item, options) },
   { ...DIVISION!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['175 Guangxi Juntuán'],
     value: item => textValue(item.row.name, item.row.nameMissing ?? 'Division name unavailable'), sortValue: (item, _live, _hour, options) => inProductOrder(item, options) },
@@ -141,11 +132,11 @@ export const mostDecoratedProjection: TableProjection<DecoratedOptions> = regist
       if (options.filter.passing && unrecorded !== null) return { rows: [], empty: unrecorded, emptyKind: 'unavailable', warnings };
       const templates = new Map(reply.templates.map(template => [template.template, template]));
       const medalPictures = reply.medals.map(medal => medalArt(medal, readView));
-      const kinds = new Map<string, Media>();
+      const kinds = new Map<string, ArtResult>();
       const rows = reply.divisions.map((row, position): DecoratedRow => {
         const template = templates.get(row.template);
         let kind = kinds.get(row.template);
-        if (!kind) kinds.set(row.template, kind = urlMedia(template?.icon, readView));
+        if (!kind) kinds.set(row.template, kind = productIconArt(readView, template?.icon, 'The product drew no counter for this template'));
         return { row, position, template, kind, ...countryOf(row.tag, readView), strip: medalStrip(row, reply, medalPictures) };
       });
       return { rows, ...(!rows.length ? { empty: 'No divisions at this date', emptyKind: 'empty' as const } : {}), warnings };

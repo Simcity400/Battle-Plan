@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildStack, stackedSegments, stackEdges, stackExtent } from './stack.ts';
-import { clipToSpans, curveSegments, segments, stretchAt, stretchStarts } from './series.ts';
+import { clipToSpans, curveSegments, segments, stretchStarts } from './series.ts';
 
 const highs = (segment: { bands: { high: number[] }[] }) => segment.bands.map(band => band.high);
 
@@ -100,9 +100,6 @@ test('an unbroken stretch starts at its first run; a gap or a new line starts an
   ];
   const starts = stretchStarts(runs);
   assert.deepEqual(starts, [10, 10, 17, 19, 19]);
-  assert.equal(stretchAt(runs, starts, 14), 10);
-  assert.equal(stretchAt(runs, starts, 16), null);
-  assert.equal(stretchAt(runs, starts, 22.5), 19);
 });
 
 test('thinning keeps a peak or dip narrower than the samples merged, and nothing that stays inside its neighbours', () => {

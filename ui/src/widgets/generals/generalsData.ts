@@ -80,6 +80,8 @@ export function topLeader(rows: readonly LeaderRow[]): LeaderRow | null {
 
 export const recordedSince = (firstSeen: number | null, recordingStart: number) => `Battles since ${formatDateTime(firstSeen ?? recordingStart)}`;
 
+export const BATTLE_COUNTS_PARTIAL = 'Battle counts are incomplete: some battles were not recorded.';
+
 export function traitDateText(date: TraitDate | null): string {
   return date ? `${DATES[date[1]] ?? 'Held by'} ${formatDateTime(date[0])}` : 'Date not recorded';
 }

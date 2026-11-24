@@ -3,7 +3,7 @@ import type { OptionField } from '../../dashboard/options';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
-import { artState } from '../../families/table/identityCell.ts';
+import { cellArt } from '../../families/table/identityCell.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY, tableFamilyOptions, type TableBase } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
@@ -48,7 +48,7 @@ function amountOf(part: Pick<BreakdownPart, 'raw' | 'state' | 'reason'>, what: s
 }
 
 function picture(readView: BoundedReadView, part: BreakdownPart): TableCell {
-  return { value: knownValue(part.name), artShape: 'square', artName: part.name, ...(part.art ? { iconSlot: true, ...artState(readView, { kind: 'sprite', ...part.art }) } : {}) };
+  return { value: knownValue(part.name), artShape: 'square', artName: part.name, ...(part.art ? { iconSlot: true, ...cellArt(readView, { kind: 'sprite', ...part.art }, '') } : {}) };
 }
 
 function row(readView: BoundedReadView, part: BreakdownPart, decimals: number, top: boolean, keyPrefix: string): TableRow {
@@ -81,6 +81,7 @@ function summary(reply: PowerSpendingBreakdownReply, currency: SpendCurrency): {
   const reasons = [
     ...(total.state !== 'known' && total.reason ? [total.reason] : []),
     ...(reply.gainedReason ? [reply.gainedReason] : reply.gainedRaw === null ? ['Gains were not recorded'] : []),
+    ...(currency === 'Command' && reply.lostAtCapReason && reply.lostAtCapReason !== reply.gainedReason ? [reply.lostAtCapReason] : []),
   ];
   return { text: parts.join(' · '), partial: reasons.length ? reasons.join('; ') : null };
 }

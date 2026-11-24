@@ -389,6 +389,15 @@ fn next_change(prepared: &Prepared, answer: &Answer, windows: bool, hour: i32) -
     [answer.next_change, read, reason].into_iter().flatten().min()
 }
 
+fn feed_next_change(feed: &Feed, categories: &[EventFeedCategory], hour: i32) -> Option<i32> {
+    let warning = feed.warnings.iter().map(|(at, _)| *at).filter(|at| *at > hour).min();
+    let left_out = categories.contains(&EventFeedCategory::WarsPeace).then(|| feed.unattributed.get(feed.unattributed.partition_point(|&at| at <= hour)).copied()).flatten();
+    let projects = categories.contains(&EventFeedCategory::Milestones).then(|| {
+        feed.projects_unrecorded.iter().filter_map(|&(first, last)| if first <= hour && hour < last { Some(hour + 1) } else { (first > hour).then_some(first) }).min()
+    }).flatten();
+    [warning, left_out, projects].into_iter().flatten().min()
+}
+
 fn notices_for(prepared: &Prepared, answer: &Answer, windows: bool, from: i32, hour: i32, notices: &mut Notices) {
     families::incomplete_notices(&prepared.scanned.incomplete, &prepared.losses, from, hour, notices);
     if windows {
@@ -465,6 +474,17 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
             notices.unavailable(kind, label, reason.clone(), *count);
         }
     }
+    if params.categories.contains(&EventFeedCategory::WarsPeace) {
+        let left_out = feed.unattributed.partition_point(|&at| at <= hour) - feed.unattributed.partition_point(|&at| at < from);
+        if left_out > 0 {
+            notices.unavailable(
+                "warUnattributed",
+                "War starts and capitulations",
+                "These war starts or capitulations name a country no link resolved at their date, so they are left out.",
+                Some(u32::try_from(left_out).unwrap_or(u32::MAX)),
+            );
+        }
+    }
     if params.categories.contains(&EventFeedCategory::Milestones) {
         let hours: i64 = feed.projects_unrecorded.iter().map(|&(first, last)| (i64::from(last.min(hour)) - i64::from(first.max(from)) + 1).max(0)).sum();
         if hours > 0 {
@@ -478,14 +498,26 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         live: answer.live.to_string(),
         counts: Vec::new(),
         rows,
-        next_change: next_change(prepared, &answer, true, hour),
+        next_change: [next_change(prepared, &answer, true, hour), feed_next_change(feed, &params.categories, hour)].into_iter().flatten().min(),
         missing: answer.gaps,
         unavailable: notices.into_list(),
-        warnings: feed.warnings.clone(),
+        warnings: feed.warnings.iter().filter(|(at, _)| *at <= hour).map(|(_, text)| text.clone()).collect(),
     };
     dashboard_base::products::check_reply_budget(&reply)?;
     Ok(reply)
 }
+
+const STATUSES_LISTED: [ScriptStatus; 9] = [
+    ScriptStatus::Active,
+    ScriptStatus::Taken,
+    ScriptStatus::Completed,
+    ScriptStatus::Failed,
+    ScriptStatus::Cancelled,
+    ScriptStatus::TimedOut,
+    ScriptStatus::Removed,
+    ScriptStatus::Unsupported,
+    ScriptStatus::NotRecorded,
+];
 
 fn chips(list: List) -> (Vec<Chip>, &'static [&'static str]) {
     match list {
@@ -504,7 +536,11 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         codes.push(kind_code(EventFeedKind::EventOptionSelected));
         codes
     });
-    let states: Option<Vec<u8>> = params.statuses.as_ref().map(|statuses| statuses.iter().map(|status| status.code()).collect());
+    let states: Option<Vec<u8>> = match (&params.statuses, list) {
+        (Some(statuses), _) => Some(statuses.iter().map(|status| status.code()).collect()),
+        (None, List::Decisions) => Some(STATUSES_LISTED.iter().map(|status| status.code()).collect()),
+        (None, List::EventChoices) => None,
+    };
     let (chips, keys) = chips(list);
     let window = Window { from: params.from, to: params.to, selection: prepared.selection.as_ref(), search: params.search.as_deref(), sort: params.sort.as_ref(), offset: params.offset.as_deref(), limit: params.limit };
     let answer = answer(&prepared.index, query, &window, hour, kinds.as_deref(), states.as_deref(), true, &chips)?;

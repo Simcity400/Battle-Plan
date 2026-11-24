@@ -20,9 +20,6 @@ export interface PartsRaceReply {
   parts: { key: string; name: string | null; unresolved: boolean }[];
   series: PartsRaceSeries[]; warnings: string[];
 }
-export function partsRaceNumbers(reply: PartsRaceReply): PartsRaceReply {
-  return { ...reply, warnings: [], parts: reply.parts.map(part => ({ key: part.key, name: null, unresolved: false })) };
-}
 
 const count = (value: unknown) => value === null || (int(value) && value >= 0);
 
@@ -62,10 +59,6 @@ export function partsRaceModel(reply: PartsRaceReply): PartsRaceModel {
     starts: stretchStarts(series.runs.map((run, index) => ({ ...run,
       breakBefore: run.total === null || series.runs[index - 1]?.total === null }))) }])),
     tags: reply.series.map(series => series.tag) };
-}
-
-export function hasPartsRaceValues(model: PartsRaceModel): boolean {
-  return model.reply.series.some(series => series.runs.some(run => run.total !== null));
 }
 
 export interface PartsRaceAt { total: number | null; values: readonly (number | null)[]; run: PartsRaceRun; stretch: number }

@@ -19,11 +19,12 @@ import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
-import { careerEmptyEntry, careerLanes, leaderName, recordedSince, runAt, traitDateText, validateCareer, validateLeaderHour } from '../generals/generalsData';
+import { BATTLE_COUNTS_PARTIAL, careerEmptyEntry, careerLanes, leaderName, recordedSince, runAt, traitDateText, validateCareer, validateLeaderHour } from '../generals/generalsData';
+import { ValueState } from '../../components/ValueState';
 import { LeaderIdentity, leaderIdentityProps, leaderPortraitProps } from '../generals/LeaderIdentity.tsx';
 import { useLeaderPortraits } from '../generals/portraits';
 import type { PortraitAt } from '../generals/portraits';
-import { experienceFactorText, experienceText } from '../generals/experience';
+import { experienceFactorText, experienceText } from './experience.ts';
 import { LiveText } from './LiveText';
 import '../generals/generals.css';
 import type { LeaderCareerReply } from '../../generated/dashboard';
@@ -92,7 +93,7 @@ export default function CareerView({ reference, onPick, caption, widget, runtime
     {now && role && !now.missing ? <div className="career-top"><LeaderIdentity {...leaderIdentityProps({ name: leaderName(now), role, skill: now.skill }, country)}
       {...leaderPortraitProps(portraitAt[0] ? portraits.at(portraitAt[0]) : undefined)} showCountry />
       <div className="career-stats">
-        <span title={partial ? 'Battle counts are incomplete: some battles were not recorded.' : undefined}><strong>{now.fought}</strong>fought</span>
+        <span><strong>{partial ? <ValueState kind="partial" text={String(now.fought)} reason={BATTLE_COUNTS_PARTIAL} narrow /> : now.fought}</strong>fought</span>
         <span><strong>{now.won}</strong>won</span><span><strong>{now.lost}</strong>lost</span>
         <span><strong>{decided ? `${Math.round(now.won * 100 / decided)}%` : '—'}</strong>win rate</span>
         <span><strong>{now.fought - decided}</strong>unresolved</span>

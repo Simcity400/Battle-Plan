@@ -73,5 +73,3 @@ export function installedEntry(pipeline: Pipeline, widget: number, sub: number):
   };
 }
 
-export const shownThrough = (entry: FollowEntry): number | null => entry.answer === undefined && entry.panel === undefined ? null : entry.through;
-

@@ -93,7 +93,6 @@ export const { projection: occupationLinesProjection, declaration: occupationLin
     return { measure: otherMeasure(rank), legend: [measureName(rank), measureName(otherMeasure(rank))] };
   },
   digits: options => Number(options.digits ?? 2),
-  endLabels: options => options.endLabels !== false,
   hover: {
     entry: ctx => ({
       name: 'detail',

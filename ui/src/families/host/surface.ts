@@ -11,16 +11,8 @@ import { AuditSnapshotStore, auditRowsOf, isFamilyAuditing, subscribeFamilyAudit
 import type { FamilySourceSubscription } from '../contract.ts';
 import { createBoundAuditReader, type BoundAuditEntry, type FamilyAuditVerifier } from './auditBinding.ts';
 import { FamilyTooltipController } from './tooltips.ts';
-export {
-  createBoundAuditReader,
-  createPlanAuditVerifier,
-  type BoundAuditEntry,
-  type FamilyAuditVerifier,
-  type PlanAuditSnapshot,
-} from './auditBinding.ts';
 
 const subscribeAuditing = (listener: () => void) => subscribeFamilyAuditing(() => { listener(); });
-export { reportFamilyShownHour } from './shownHour.ts';
 
 const STATIC_HOLD = {};
 let nextInstanceSeq = 1;

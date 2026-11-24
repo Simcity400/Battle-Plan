@@ -1,5 +1,6 @@
-import type { NoRegions } from '../../generated/dashboard';
+import type { ActiveRegions, NoRegions } from '../../generated/dashboard';
 import type { BoundedReadView } from '../contract.ts';
+import type { RegionList } from './useRegionList.ts';
 import { formatScalar } from '../valueFormat.ts';
 import type { RegionChoice } from './regionChoice.ts';
 import { moveRegion } from './regionChoice.ts';
@@ -8,11 +9,6 @@ export const REGION_ADD_KEY = '__add-region';
 
 export type RegionHitPart = 'add' | 'remove' | 'grip';
 
-export interface RegionActivity {
-  readonly color?: string;
-  readonly text: string;
-}
-
 export interface RegionRowRef {
   readonly key: string;
   readonly id: number;
@@ -20,13 +16,15 @@ export interface RegionRowRef {
   readonly picked: boolean;
   readonly top: number;
   readonly height: number;
-  readonly activity?: RegionActivity;
+  readonly active: boolean;
 }
 
 export interface RegionRowsField {
   readonly rows: readonly RegionRowRef[];
   readonly add: { readonly top: number; readonly height: number } | null;
   readonly nameLeft: number;
+  readonly nameRight: number;
+  readonly active?: ActiveRegions;
 }
 
 export function regionHitKey(part: RegionHitPart, rowKey: string): string {
@@ -72,7 +70,7 @@ export function regionDropAt(field: RegionRowsField, dragged: RegionRowRef, y: n
 }
 
 export type RegionCommand =
-  | { readonly op: 'open'; readonly x: number; readonly y: number; readonly rows: readonly RegionRowRef[] }
+  | { readonly op: 'open'; readonly x: number; readonly y: number; readonly aside?: number; readonly rows: readonly RegionRowRef[]; readonly active?: ActiveRegions }
   | { readonly op: 'remove'; readonly row: RegionRowRef }
   | { readonly op: 'step'; readonly row: RegionRowRef; readonly delta: -1 | 1 }
   | { readonly op: 'drop'; readonly row: RegionRowRef; readonly to: number };
@@ -109,6 +107,13 @@ export function validNoRegions(value: unknown): value is NoRegions | null {
     || (empty.kind === 'filtered' && count(empty.hidden) && count(empty.outside));
 }
 
+export function validActiveRegions(value: unknown): value is ActiveRegions {
+  if (!value || typeof value !== 'object') return false;
+  const active = value as Record<string, unknown>;
+  return Array.isArray(active.ids) && active.ids.every(id => Number.isSafeInteger(id) && (id as number) >= 0)
+    && (active.missing === null || typeof active.missing === 'string');
+}
+
 export function noRegionsBody(empty: NoRegions, nouns: RegionNouns): { readonly empty: string; readonly emptyKind: 'empty' | 'unavailable' } {
   if (empty.kind === 'unread') return { empty: /[.!?]$/u.test(empty.reason) ? empty.reason : `${empty.reason}.`, emptyKind: 'unavailable' };
   if (empty.kind === 'none') return { empty: nouns.none, emptyKind: 'empty' };
@@ -118,4 +123,60 @@ export function noRegionsBody(empty: NoRegions, nouns: RegionNouns): { readonly 
     : empty.hidden === 0 ? 'outside the selected air theatres'
       : `removed from this chart (${formatScalar(empty.hidden, 'integer')}) or outside the selected air theatres (${formatScalar(empty.outside, 'integer')})`;
   return { empty: `${lead} ${where}.`, emptyKind: 'empty' };
+}
+
+export interface RegionInChart {
+  readonly id: number;
+  readonly label: string;
+  readonly active?: boolean;
+}
+
+interface ChooserRow {
+  readonly id: number;
+  readonly label: string;
+  readonly inChart: boolean;
+}
+
+interface ChooserGroup {
+  readonly title: string;
+  readonly rows: readonly ChooserRow[];
+  readonly note?: string;
+}
+
+export function regionChooserGroups(list: RegionList, inChart: readonly RegionInChart[], active: ActiveRegions | null, seaOnly: boolean, query: string): readonly ChooserGroup[] {
+  const needle = query.trim().toLocaleLowerCase();
+  const matches = (label: string) => !needle || label.toLocaleLowerCase().includes(needle);
+  const charted = new Set(inChart.map(row => row.id));
+  const names = new Map(list.kind === 'ready' ? list.regions.map(region => [region.id, region.label] as const) : []);
+  const activeRows: ChooserRow[] = inChart.filter(row => row.active).map(row => ({ id: row.id, label: row.label, inChart: true }));
+  for (const id of active?.ids ?? []) {
+    if (!charted.has(id)) activeRows.push({ id, label: names.get(id) ?? `Region ${id}`, inChart: false });
+  }
+  const regions = list.kind === 'ready' ? list.regions.filter(region => matches(region.label)) : [];
+  const listed = (sea: boolean) => regions.filter(region => region.sea === sea).map(region => ({ id: region.id, label: region.label, inChart: charted.has(region.id) }));
+  const groups: ChooserGroup[] = [{
+    title: active ? 'Active now' : 'Active in this chart',
+    rows: activeRows.filter(row => matches(row.label)),
+    ...(active?.missing && !needle ? { note: active.missing } : {}),
+  }];
+  if (!seaOnly) groups.push({ title: 'Land regions', rows: listed(false) });
+  groups.push({ title: 'Sea regions', rows: listed(true) });
+  return groups.filter(group => group.rows.length > 0 || group.note);
+}
+
+export function savedRegionName(list: RegionList, id: number): string {
+  if (list.kind === 'loading') return `Region ${id} · loading its name…`;
+  if (list.kind === 'failed') return `Region ${id} · its name could not be loaded`;
+  return list.regions.find(region => region.id === id)?.label ?? `Region ${id} · not in this recording`;
+}
+
+export interface ChooserOpening {
+  readonly owner: string;
+  readonly hour: number;
+  readonly rows: readonly RegionInChart[];
+  readonly active: ActiveRegions | null;
+}
+
+export function chooserFor(opening: ChooserOpening | null, owner: string): ChooserOpening | null {
+  return opening && opening.owner === owner ? opening : null;
 }

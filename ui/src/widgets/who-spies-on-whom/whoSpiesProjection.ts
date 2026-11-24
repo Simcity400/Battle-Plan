@@ -78,8 +78,7 @@ export function projectOperativeMatrix(readView: BoundedReadView): HeatMatrixMod
       tag: country.tag,
       ...(shown.nameMissing ? { nameMissing: shown.nameMissing } : {}),
       ...(shown.color ? { color: shown.color } : {}),
-      flag: shown.flag ?? null,
-      flagPending: shown.pending === true,
+      ...(shown.flag ? { flag: shown.flag } : {}),
     };
   };
   const rows = reply.rows.map(row => entity(row.country));

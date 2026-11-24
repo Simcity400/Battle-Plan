@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { binAt, binsLabel, chartSummaryFrom, mergeSummaries, drawApproximateSpans, drawGapSummary, drawLineSummary, pickSummaryLines, scaleSummary, summaryExtent, summaryGeometry } from './chartSummary.ts';
+import { binAt, binsLabel, chartSummaryFrom, drawApproximateSpans, drawLineSummary, pickSummaryLines, scaleSummary, summaryExtent, summaryGeometry } from './chartSummary.ts';
 import { wireSummary } from './chartSummary.fixture.ts';
-import { dayLabel, drawBands, drawGapFill, drawLine, spanLabel } from './draw.ts';
+import { dayLabel, drawBands, drawLine, spanLabel } from './draw.ts';
 import { pickLines } from './linePick.ts';
 import { extentOf } from './series.ts';
 import type { Run } from './series.ts';
@@ -237,47 +237,6 @@ test('stack summaries carry the union of part and total approximate spans withou
   assert.deepEqual(spans,[{ firstHour: 8, lastHour: 12 }, { firstHour: 2, lastHour: 5 }], 'a summary owned by another chart is not mutated');
   assert.deepEqual(exact.approximate,[]);
 });
-
-test('exact gap summaries paint the identical legacy stream at fractional cutoffs and gaps', () => {
-  const other = exactSource.map(run => ({ ...run, value: 5 - run.value }));
-  for (const until of [null, 5.5, 9.25, 10, 18.5]) {
-    const frame = plotFrame(360, 200, { left: 10, right: 10, top: 10, bottom: 10 }, [1.25, 20.5], [-25, 30], false);
-    const end = until ?? frame.x[1], width = Math.ceil(frame.plotWidth);
-    const a = hourlySummary(exactSource, frame.x[0], end, width), b = hourlySummary(other, frame.x[0], end, width);
-    const legacy = recordingCanvas(), prepared = recordingCanvas();
-    drawGapFill(legacy.context, frame, exactSource, other, '#positive', '#negative', { until: until ?? undefined, alpha: 0.2 });
-    drawGapSummary(prepared.context, frame, tokens, a, b, '#positive', '#negative', until, { alpha: 0.2 });
-    assert.deepEqual(prepared.commands, legacy.commands);
-  }
-});
-
-
-test('dated alias summary joins retain later extrema, chronology and real gaps', () => {
-  const earlier = { ...summary, buckets: [{ ...bucket, firstHour: 0, lastHour: 9, firstValue: 1, lastValue: 1, lastValueHour: 0, minValue: 1, minHour: 0, maxValue: 1, maxHour: 0 }, null] };
-  const later = { ...summary, buckets: [{ ...bucket, firstHour: 10, lastHour: 19, firstValue: 1, lastValue: 7, lastValueHour: 15, minValue: -4, minHour: 11, maxValue: 9, maxHour: 14 }, null] };
-  const merged = mergeSummaries([later, earlier]);
-  assert.equal(merged.buckets[0]!.firstHour, 0); assert.equal(merged.buckets[0]!.lastHour, 19);
-  assert.equal(merged.buckets[0]!.maxValue, 9); assert.equal(merged.buckets[0]!.minValue, -4);
-  assert.equal(merged.buckets[0]!.hasBreak, false); assert.equal(merged.buckets[1], null);
-  const gap = mergeSummaries([earlier, { ...later, buckets: [{ ...later.buckets[0]!, firstHour: 12 }, null] }]);
-  assert.equal(gap.buckets[0]!.hasBreak, true);
-  const exact = mergeSummaries([{ ...earlier, runs: [{ firstHour: 0, lastHour: 9, value: 1 }] }, { ...later, runs: [{ firstHour: 10, lastHour: 19, value: 7, breakBefore: true }] }]);
-  assert.equal(exact.runs!.length, 2); assert.equal(exact.runs![1].value, 7);
-  assert.equal(mergeSummaries([earlier, { ...later, runs: [] }]).runs, undefined);
-});
-
-test('dated aliases preserve approximate provenance from every alias and clip it to the viewport', () => {
-  const earlier = { ...summary, buckets: [{ ...bucket, firstHour: 0, lastHour: 9 }],
-    approximate: [{ firstHour: -20, lastHour: 4 }] };
-  const later = { ...summary, buckets: [{ ...bucket, firstHour: 10, lastHour: 19 }],
-    approximate: [{ firstHour: 13, lastHour: 17 }, { firstHour: 16, lastHour: 60_000 }] };
-  assert.deepEqual(mergeSummaries([later, earlier]).approximate, [
-    { firstHour: 0, lastHour: 4 }, { firstHour: 13, lastHour: 50_000 },
-  ]);
-  assert.equal(mergeSummaries([{ ...earlier, approximate: [] }, { ...later, approximate: [] }]).approximate, undefined);
-  assert.deepEqual(earlier.approximate, [{ firstHour: -20, lastHour: 4 }]);
-});
-
 
 test('a summary decodes from its bucket columns, gaps and totals in place, and refuses columns that disagree', () => {
   const later = { ...bucket, firstHour: 60_000, lastHour: 60_009, lastValueHour: 60_004, minHour: 60_001, maxHour: 60_009, firstBreak: true, hasBreak: true, absoluteTotal: '123456789012345678901234567890' };

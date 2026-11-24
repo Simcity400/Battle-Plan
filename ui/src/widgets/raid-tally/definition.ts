@@ -1,14 +1,14 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { RAIDS_AVAILABILITY } from '../../dashboard/raids.ts';
-import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
+import { RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
+
+const RAIDS_AVAILABILITY = { product: 'raid-log', params: { catalogue: true } } as const;
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'race',
     choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines' }] },
   { key: 'metric', section: 'options', label: 'Count', kind: 'choice', default: 'both',
     choices: [{ value: 'both', label: 'Both' }, { value: 'launched', label: 'Launched' }, { value: 'succeeded', label: 'Succeeded' }] },
-  DATE_OVERLAY_OPTION,
   { key: 'endLabels', section: 'options', label: 'Names at line ends', kind: 'toggle', default: true, visibleWhen: options => options.view === 'lines' },
   ...RACE_TIME_OPTIONS, ...RACE_AXIS_OPTIONS,
 ];

@@ -26,32 +26,6 @@ export type Breakable = Span & { breakBefore?: boolean; startsSegment?: boolean 
 
 export const breaksBefore = (run: Breakable) => run.breakBefore === true || run.startsSegment === true;
 
-export function overlayRuns<T extends Breakable>(before: readonly T[], incoming: readonly T[], equal: (a:T,b:T)=>boolean, within: readonly Span[] = incoming): T[] {
-  const cuts = clipToSpans([{firstHour:-2147483648,lastHour:2147483647}],within);
-  const retained: T[] = [];
-  let index = 0;
-  for (const run of before) {
-    while (index < cuts.length && cuts[index].lastHour < run.firstHour) index++;
-    let first = run.firstHour;
-    for (let at = index; at < cuts.length && cuts[at].firstHour <= run.lastHour; at++) {
-      if (first < cuts[at].firstHour) retained.push({...run,firstHour:first,lastHour:cuts[at].firstHour-1,
-        ...('startsSegment' in run ? {startsSegment:first===run.firstHour && run.startsSegment} : {}),
-        ...('breakBefore' in run ? {breakBefore:first===run.firstHour && run.breakBefore} : {})});
-      first = Math.max(first,cuts[at].lastHour+1);
-    }
-    if (first <= run.lastHour) retained.push({...run,firstHour:first,
-      ...('startsSegment' in run ? {startsSegment:first===run.firstHour && run.startsSegment} : {}),
-      ...('breakBefore' in run ? {breakBefore:first===run.firstHour && run.breakBefore} : {})});
-  }
-  const joined:T[]=[];
-  for (const run of [...retained,...incoming.map(run=>({...run}))].sort((a,b)=>a.firstHour-b.firstHour)) {
-    const previous=joined.at(-1);
-    if(previous && previous.lastHour+1===run.firstHour && !breaksBefore(run) && equal(previous,run)) previous.lastHour=run.lastHour;
-    else joined.push(run);
-  }
-  return joined;
-}
-
 export function runIndexAt(runs: readonly Span[], hour: number): number {
   let low = 0;
   let high = runs.length - 1;
@@ -93,15 +67,6 @@ export function stretchStarts(runs: readonly Breakable[]): number[] {
     starts.push(continues ? starts[index - 1] : run.firstHour);
   });
   return starts;
-}
-
-export function stretchAt(runs: readonly Span[], starts: readonly number[], hour: number): number | null {
-  const index = runIndexAt(runs, Math.floor(hour));
-  return index < 0 ? null : starts[index];
-}
-
-export function valueAt(runs: readonly Run[], hour: number): number | null {
-  return runAt(runs, Math.floor(hour))?.value ?? null;
 }
 
 export function rangeBounds(runs: readonly Span[], from: number, to: number): [number, number] {
@@ -231,40 +196,6 @@ export function heldSegments(runs: readonly Run[], from: number, to: number, toX
     previous = run;
   }
   return result;
-}
-
-export interface GapRegion { clip: PathCommand[]; fill: PathCommand[] }
-export function gapRegions(first: readonly { points: Point[]; path: PathCommand[] }[], second: readonly { points: Point[]; path: PathCommand[] }[],
-  top: number, bottom: number): { above: GapRegion[]; below: GapRegion[] } {
-  const toEdge = (curve: { points: Point[]; path: PathCommand[] }, edge: number): PathCommand[] => {
-    const start = curve.points[0];
-    const end = curve.points.at(-1)!;
-    return [...curve.path, ['L', end.x, edge], ['L', start.x, edge], ['L', start.x, start.y]];
-  };
-  const above: GapRegion[] = [];
-  const below: GapRegion[] = [];
-  for (let index = 0; index < Math.min(first.length, second.length); index++) {
-    const a = first[index];
-    const b = second[index];
-    if (a.points.length < 2 || b.points.length < 2) continue;
-    above.push({ clip: toEdge(a, bottom), fill: toEdge(b, top) });
-    below.push({ clip: toEdge(b, bottom), fill: toEdge(a, top) });
-  }
-  return { above, below };
-}
-
-export function stack(layers: readonly (readonly (number | null)[])[]): (number | null)[][] {
-  const tops: (number | null)[][] = [];
-  let base: (number | null)[] = layers[0]?.map(() => 0) ?? [];
-  for (const layer of layers) {
-    const top = layer.map((value, index) => {
-      const below = base[index];
-      return value == null || below == null ? null : below + value;
-    });
-    tops.push(top);
-    base = top;
-  }
-  return tops;
 }
 
 export function extentOf(runs: readonly Run[], from: number, to: number): [number, number] | null {

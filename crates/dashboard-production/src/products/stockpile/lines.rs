@@ -481,7 +481,7 @@ impl Product for EquipmentStockpileLines {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![StockpileTileFamily::decl(), StockpileLinesParams::decl(), StockpileLineAt::decl(), StockpileTop::decl(), StockpileLinesReply::decl()]
+        vec![StockpileMeasure::decl(), StockpileTileFamily::decl(), StockpileLinesParams::decl(), StockpileLineAt::decl(), StockpileTop::decl(), StockpileLinesReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

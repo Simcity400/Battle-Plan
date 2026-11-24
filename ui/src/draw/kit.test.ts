@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { paletteCache, readableColour } from '../charts/palette.ts';
 import { clearTextWidthCache, measureCanvasText, textWidthCacheStats, type Canvas2D } from '../charts/textWidth.ts';
-import { colorCache, mix } from '../shell/appearance/color.ts';
-import { engineHour } from '../dashboard/calendar.ts';
+import { colorCache, mix, parseColorAlpha } from '../shell/appearance/color.ts';
+import { engineHour, gameDate } from '../dashboard/calendar.ts';
 import type { FamilyTheme } from '../families/contract.ts';
 import {
   BEHIND_BAR_HEIGHT,
@@ -40,7 +40,7 @@ import {
   drawSkillFigure,
   drawSplitBar,
   drawStatusMark,
-  drawStockpileSumCell,
+  drawNetBar,
   drawThresholdMeter,
   drawTrackBar,
   drawTwoWayBar,
@@ -49,6 +49,9 @@ import {
   TIMELINE_LABEL_MIN_WIDTH,
   computeTimeAxisTicks,
   contrastInkForFill,
+  fitLegendStrip,
+  type LegendFit,
+  type LegendMeasure,
   drawTimeAxis,
   drawTimelineBar,
   winRateColor,
@@ -124,39 +127,43 @@ function makeFakeCtx() {
   return { ctx: ctx as unknown as CanvasRenderingContext2D, ops };
 }
 
-test('art and flag slots keep fixed geometry across every state and never hatch pending slots', () => {
+export function slotForm(ops: readonly RecordedOp[]): 'empty' | 'image' | 'missing' | 'unrecorded' | 'refused' | 'failed' {
+  if (!ops.length) return 'empty';
+  if (ops.some(op => op.op === 'drawImage')) return 'image';
+  const filled = ops.some(op => op.op === 'fill');
+  if (filled && ops.some(op => op.op === 'arc')) return 'failed';
+  if (filled && ops.some(op => op.op === 'lineTo')) return 'refused';
+  return ops.some(op => op.op === 'fillText') ? 'missing' : 'unrecorded';
+}
+
+test('art and flag slots keep fixed geometry and draw one distinct form per status', () => {
   const bitmap = { width: 64, height: 32 } as unknown as CanvasImageSource;
   const states = [
-    { kind: 'none' as const },
-    { kind: 'pending' as const },
-    { kind: 'ready' as const, bitmap, width: 64, height: 32 },
-    { kind: 'missing' as const, resolvedName: 'Heavy Tank' },
-    { kind: 'refused' as const, reason: 'Unsupported format' },
-    { kind: 'failed' as const, reason: 'Decode failed' },
-  ];
+    { state: { kind: 'none' as const }, form: 'empty' },
+    { state: { kind: 'pending' as const }, form: 'empty' },
+    { state: { kind: 'ready' as const, bitmap, width: 64, height: 32 }, form: 'image' },
+    { state: { kind: 'missing' as const, reason: 'no layer holds it', label: 'Heavy Tank' }, form: 'missing' },
+    { state: { kind: 'unrecorded' as const, reason: 'Portrait hour not recorded' }, form: 'unrecorded' },
+    { state: { kind: 'refused' as const, reason: 'Unsupported format' }, form: 'refused' },
+    { state: { kind: 'failed' as const, reason: 'Decode failed', retryable: true }, form: 'failed' },
+  ] as const;
 
-  for (const state of states) {
-    const { ctx, ops } = makeFakeCtx();
-    const res = drawArtSlot(ctx, 10, 20, 32, 32, state, THEME);
-    assert.deepEqual({ x: res.x, y: res.y, width: res.width, height: res.height }, { x: 10, y: 20, width: 32, height: 32 });
-    assert.equal(res.drawn, state.kind);
-    if (state.kind === 'none' || state.kind === 'pending') {
-      assert.equal(ops.length, 0, `${state.kind} slot must draw nothing`);
-    }
-    if (state.kind === 'missing') {
-      assert.equal(res.initials, 'HT');
-      assert.ok(ops.some(op => op.op === 'fillText' && op.args[0] === 'HT'));
-    }
-    if (state.kind === 'refused' || state.kind === 'failed') {
-      assert.ok(ops.some(op => op.op === 'arc'));
-      assert.equal(ops.some(op => op.op === 'fillText'), false);
+  for (const { state, form } of states) {
+    for (const [name, draw] of [
+      ['art', (ctx: CanvasRenderingContext2D) => drawArtSlot(ctx, 10, 20, 32, 32, state, THEME)],
+      ['flag', (ctx: CanvasRenderingContext2D) => drawFlagSlot(ctx, 10, 20, state, THEME)],
+    ] as const) {
+      const { ctx, ops } = makeFakeCtx();
+      const res = draw(ctx);
+      assert.equal(res.drawn, state.kind, `${name} ${state.kind}`);
+      assert.equal(slotForm(ops), form, `${name} ${state.kind} draws its own form`);
     }
   }
 
-  const smallMissing = makeFakeCtx();
-  const smallRes = drawArtSlot(smallMissing.ctx, 0, 0, 24, 24, { kind: 'missing', resolvedName: 'Heavy Tank' }, THEME);
-  assert.equal(smallRes.initials, undefined);
-  assert.equal(smallMissing.ops.some(op => op.op === 'fillText'), false);
+  const art = makeFakeCtx();
+  assert.equal(drawArtSlot(art.ctx, 0, 0, 32, 32, { kind: 'missing', reason: 'no layer holds it', label: 'Heavy Tank' }, THEME).label, 'HT');
+  const small = makeFakeCtx();
+  assert.equal(drawArtSlot(small.ctx, 0, 0, 16, 16, { kind: 'missing', reason: 'no layer holds it' }, THEME).label, '?', 'a confirmed miss keeps its mark at small sizes');
 
   assert.equal(artInitials('Medium Tank Chassis'), 'MTC');
   assert.equal(artInitials(undefined), '');
@@ -167,8 +174,8 @@ test('art and flag slots keep fixed geometry across every state and never hatch 
   assert.equal(flagPending.ops.length, 0);
 
   const flagMissing = makeFakeCtx();
-  const missingFlag = drawFlagSlot(flagMissing.ctx, 4, 8, { kind: 'missing', tag: 'ger' }, THEME, { dimmed: true });
-  assert.equal(missingFlag.tag, 'GER');
+  const missingFlag = drawFlagSlot(flagMissing.ctx, 4, 8, { kind: 'missing', reason: 'no layer holds it', label: 'ger' }, THEME, { dimmed: true });
+  assert.equal(missingFlag.label, 'GER');
   assert.ok(flagMissing.ops.some(op => op.op === 'fillText' && op.args[0] === 'GER' && op.alpha === FLAG_LOSER_ALPHA));
 });
 
@@ -349,6 +356,21 @@ test('timeline bars hide icon and name under the minimum width, mix ended items 
   const dayTicks = computeTimeAxisTicks(h1936, hWeek, 600);
   assert.ok(dayTicks.some(tick => tick.label === '4 Jan'), 'short windows show days');
   assert.ok(computeTimeAxisTicks(0, 167, 600, 24).length >= 2, 'non-calendar short windows still yield day ticks');
+  const hJan10 = engineHour({ year: 1937, month: 1, day: 10, hour: 1 })!;
+  const hJun37 = engineHour({ year: 1937, month: 6, day: 1, hour: 1 })!;
+  const fromTenth = computeTimeAxisTicks(hJan10, hJun37, 600);
+  assert.equal(fromTenth[0]!.hour, engineHour({ year: 1937, month: 2, day: 1, hour: 1 }), 'R2-K9: a mark sits at a calendar boundary, never moved to the window start');
+  assert.deepEqual(fromTenth.filter(tick => tick.label).map(tick => tick.label), ['Apr 1937']);
+  const oneDay = computeTimeAxisTicks(h1936, h1936 + 24, 600);
+  assert.deepEqual([oneDay[0]?.hour, oneDay[0]?.label, oneDay[0]?.major], [h1936, '1936', true], 'R2-K9: a one-day window starting on 1 January keeps its tick');
+  const hJan3 = engineHour({ year: 1936, month: 1, day: 3, hour: 1 })!;
+  const week = computeTimeAxisTicks(hJan3, hJan3 + 7 * 24, 600);
+  assert.equal(week.find(tick => tick.label)?.label, '3 Jan 1936', 'R2-K9: the first labelled day carries its year');
+  const h1946 = engineHour({ year: 1946, month: 6, day: 1, hour: 1 })!;
+  const decade = computeTimeAxisTicks(h1936, h1946, 200);
+  assert.equal(decade.length, 11, 'R2-K9: every 1 January is marked in a narrow decade');
+  assert.ok(decade.every(tick => tick.major && gameDate(tick.hour)?.month === 1 && gameDate(tick.hour)?.day === 1));
+  assert.deepEqual(decade.filter(tick => tick.label).map(tick => tick.label), ['1940', '1945'], 'labels are thinned apart from the marks');
   const hugeNonCalendar = computeTimeAxisTicks(0, 43_800_000, 600, 24);
   assert.ok(hugeNonCalendar.length >= 2 && hugeNonCalendar.length <= 20, 'K10: huge non-calendar span stays bounded');
 
@@ -383,15 +405,15 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
   assert.ok(outOf.ops.some(op => op.op === 'fillText' && op.args[0] === ' / 15'));
 
   const skill = makeFakeCtx();
-  drawSkillFigure(skill.ctx, 0, 80, 18, '5', { kind: 'missing', resolvedName: 'Attack' }, THEME);
+  drawSkillFigure(skill.ctx, 0, 80, 18, '5', { kind: 'missing', reason: 'no layer holds it', label: 'Attack' }, THEME);
   assert.ok(skill.ops.some(op => op.op === 'fillText' && op.args[0] === '5'));
 
   const strip = makeFakeCtx();
   const res = drawIconStrip(strip.ctx, 0, 90, 18, [
-    { state: { kind: 'missing', resolvedName: 'A' }, name: 'A' },
-    { state: { kind: 'missing', resolvedName: 'B' }, name: 'B' },
-    { state: { kind: 'missing', resolvedName: 'C' }, name: 'C' },
-    { state: { kind: 'missing', resolvedName: 'D' }, name: 'D' },
+    { state: { kind: 'missing', reason: 'no layer holds it', label: 'A' }, name: 'A' },
+    { state: { kind: 'missing', reason: 'no layer holds it', label: 'B' }, name: 'B' },
+    { state: { kind: 'missing', reason: 'no layer holds it', label: 'C' }, name: 'C' },
+    { state: { kind: 'missing', reason: 'no layer holds it', label: 'D' }, name: 'D' },
   ], THEME, { kind: 'traits' });
   assert.equal(res.drawnCount + res.overflowCount, 4);
   assert.ok(res.overflowCount > 0);
@@ -407,8 +429,15 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
   assert.ok(act.ops.some(op => op.op === 'fillText' && op.args[0] === 'View'));
 
   const stock = makeFakeCtx();
-  drawStockpileSumCell(stock.ctx, 0, 200, 0, 48, -120, 400, '-120', THEME);
-  assert.ok(stock.ops.some(op => op.op === 'fillText' && op.args[0] === '-120'));
+  drawNetBar(stock.ctx, 0, 200, 0, 48, -0.25, THEME);
+  const short = stock.ops.find(op => op.op === 'roundRect');
+  assert.deepEqual(short?.args.slice(0, 4), [100.5 - 25, 18, 25, 12], 'a quarter short of need draws a quarter of the half width, left of the centre, 12 px tall');
+  const over = makeFakeCtx();
+  drawNetBar(over.ctx, 0, 200, 0, 48, 3, THEME);
+  assert.equal(over.ops.find(op => op.op === 'roundRect')?.args[2], 98, 'a surplus is capped at the whole half width');
+  const none = makeFakeCtx();
+  drawNetBar(none.ctx, 0, 200, 0, 48, null, THEME);
+  assert.equal(none.ops.some(op => op.op === 'roundRect'), false, 'no share, no bar; the centre line stays');
 
   const clock = makeFakeCtx();
   drawClockSummary(clock.ctx, 320, 180, {
@@ -427,6 +456,7 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
 
   assert.equal(contrastInkForFill('#f4f6f9', THEME), 'rgba(17, 17, 17, 0.88)');
   assert.equal(contrastInkForFill('#888888', THEME), 'rgba(17, 17, 17, 0.88)');
+  assert.equal(contrastInkForFill('#7a7a7a', THEME), 'rgba(255, 255, 255, 0.96)', 'R2-K8: the inks are compared as painted, translucent over the fill (light 4.10 to 1, dark 3.90 to 1)');
   assert.equal(contrastInkForFill('#1e4fa3', THEME), 'rgba(255, 255, 255, 0.96)');
   assert.equal(contrastInkForFill('#16181d', THEME), 'rgba(255, 255, 255, 0.96)');
   assert.equal(contrastInkForFill('not-a-colour', THEME), THEME.text);
@@ -493,6 +523,21 @@ test('K6 & K8: legend strip draws whole entries with +N more overflow, keeps mis
   const lazyTexts = lazy.ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
   assert.ok(lazyTexts.includes('Not recorded'), 'trailing missing key kept in lazy source');
   assert.ok(lazyTexts.some(t => /^\+\d+ more$/.test(t)), 'lazy overflow reports exact +N more count');
+
+  const chars: LegendMeasure = text => text.length * 6;
+  const summary = (fit: LegendFit) => [fit.shown.map(entry => entry.label), fit.hidden, fit.missing.map(entry => entry.label)];
+  const long = { label: 'The Union of Soviet Socialist Republics', color: '#4f86f7' };
+  assert.deepEqual(summary(fitLegendStrip(0, 120, { entries: [long] }, THEME, chars)), [[], 1, []], 'R2-K11: a sole entry that does not fit whole is counted, never ellipsised or dropped');
+  assert.deepEqual(summary(fitLegendStrip(0, 400, { entries: [long] }, THEME, chars)), [[long.label], 0, []]);
+  const oversizedMissing = { label: 'Not recorded for most of this recording', hatch: true };
+  assert.deepEqual(summary(fitLegendStrip(0, 120, { entries: [oversizedMissing] }, THEME, chars)), [[], 1, []], 'R2-K11: a lone oversized missing key is counted');
+  const gradient = { lowLabel: 'Low', highLabel: 'High', stops: ['#000000', '#ffffff'] };
+  const withGradient = fitLegendStrip(0, 345, { gradient, entries: [{ label: 'Germany', color: '#4f86f7' }, { label: 'Italy', color: '#64a86e' }, { label: 'Not recorded', hatch: true }] }, THEME, chars);
+  assert.equal(withGradient.entriesLeft, 3 * 6 + 6 + 64 + 6 + 4 * 6 + 14, 'the gradient is deducted once');
+  assert.deepEqual(summary(withGradient), [['Germany'], 1, ['Not recorded']], 'R2-K11: one fit from the actual cursor keeps the count and the missing key');
+  const one = [{ label: 'Germany', color: '#4f86f7' }, { label: 'Italy', color: '#64a86e' }];
+  const tight = fitLegendStrip(0, 15 + 7 * 6 + 12 + 15 + 5 * 6, { entries: one }, THEME, chars);
+  assert.deepEqual(summary(tight), [['Germany', 'Italy'], 0, []], '"+1 more" is never shown where the entry itself fits');
 });
 
 test('K8 & K9: kit tokens cache per theme, 1,000 cells of 5 colours convert 5 colours, and text measurer stays bounded without native font reads on hits', () => {
@@ -548,4 +593,14 @@ test('K8 & K9: kit tokens cache per theme, 1,000 cells of 5 colours convert 5 co
     measureCanvasText(ctx, 'x', `400 ${10 + i}px Font${i}, sans-serif`);
   }
   assert.ok(textWidthCacheStats().fonts <= 64, `K9: outer font map stays bounded (got ${textWidthCacheStats().fonts})`);
+
+  resolveKitTokens(lightTheme);
+  readableColour('#2a4b8c', lightTheme.surface);
+  for (let i = 0; i < 20; i++) parseColorAlpha(`#1${String(i).padStart(5, '0')}`);
+  const parsesBefore = colorCache.parses;
+  assert.ok(textWidthCacheStats().fonts > 0 && paletteCache.readableSolves > 0);
+  resolveKitTokens({ ...lightTheme, text: '#222222', font: 'Other Sans' });
+  assert.deepEqual([textWidthCacheStats().fonts, paletteCache.readableSolves], [0, 0],
+    'R2-K13: a theme change on the same surface clears the bounded text and palette tables');
+  assert.ok(colorCache.parses < parsesBefore, 'and the colour tables, which only the new theme refills');
 });

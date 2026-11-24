@@ -692,6 +692,7 @@ pub static SERIES: &[Series] = &[
             resource_value("exportReserve", 7, resource_export_reserve),
             resource_value("other", 8, resource_other),
             resource_value("barLength", 9, resource_bar_length),
+            resource_value("net", 10, resource_net),
         ],
         drops: false,
         absent_none: false,
@@ -1158,6 +1159,10 @@ fn resource_supply(cells: &dyn Cells, slot: u32) -> Computed {
 
 fn resource_demand(cells: &dyn Cells, slot: u32) -> Computed {
     Computed::of(balance(cells, slot).and_then(|held| narrow(held.demand)))
+}
+
+fn resource_net(cells: &dyn Cells, slot: u32) -> Computed {
+    Computed::of(balance(cells, slot).and_then(|held| narrow(held.supply - held.demand)))
 }
 
 fn resource_from_subjects(cells: &dyn Cells, slot: u32) -> Computed {

@@ -11,7 +11,3 @@ export function countryLineColours(tags: readonly string[], styles: ReadonlyMap<
   return new Map(tags.map((tag, index) => [tag, toHex(colours[index]!)]));
 }
 
-export function uncolouredWarning(tags: readonly string[], styles: ReadonlyMap<string, CountryStyle>, answered: boolean): string | null {
-  const uncoloured = answered ? tags.filter(tag => !styles.get(tag)?.color) : [];
-  return uncoloured.length ? `No map colour was recorded for ${uncoloured.join(', ')}; shown in a palette colour.` : null;
-}

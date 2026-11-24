@@ -1,13 +1,15 @@
+import { unavailableArt } from '../../families/art/types.ts';
 import { CHART_MEASURE_COLOURS, colour, readableColour } from '../../charts/palette.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { Lineage } from '../../dashboard/identity.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { countryLook, inHourSpans, nextBoundaryAfter, timelineModel, spanStart, clipSpansToHour, wholeBranchProof } from '../../families/timeline/helpers.ts';
+import { countryLook, inHourSpans, nextBoundaryAfter, timelineModel, spanStart, clipSpansToHour } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection, type TimelineSpan } from '../../families/timeline/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { groupCountsRead, rankedCounts } from '../../dashboard/groupCounts.ts';
-import type { CountryGroupReply, GroupCountsReply, SubjectLevel, SubjectReply } from '../../generated/dashboard';
+import { groupsAt, historyAtRead, subjectsAt } from '../../dashboard/historyAt.ts';
+import type { CountryGroupReply, GroupCountsReply, SubjectsAtReply, SubjectLevel, SubjectReply } from '../../generated/dashboard';
 import {
   changeHours,
   laneCountries,
@@ -48,19 +50,22 @@ export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerF
   kind: 'subjects',
 
   nextChange(readView) {
-    const reply = readView.panel<SubjectReply>('main');
+    const main = subjectsAt(readView, 'main');
+    const groups = groupsAt(readView, 'groups');
     const counts = readView.panel<GroupCountsReply>('counts')?.nextChange ?? Infinity;
-    return reply ? Math.min(counts, nextBoundaryAfter(boundaries(reply, readView.panel<CountryGroupReply>('groups')), readView.hour)) : Infinity;
+    return main ? Math.min(counts, main.nextChange, groups?.nextChange ?? Infinity, nextBoundaryAfter(boundaries(main.subjects, groups?.groups), readView.hour)) : Infinity;
   },
 
   project(readView, opt) {
     const hour = readView.hour;
-    const reply = readView.panel<SubjectReply>('main');
-    const groups = readView.panel<CountryGroupReply>('groups');
+    const main = subjectsAt(readView, 'main');
+    const groupsRead = groupsAt(readView, 'groups');
+    const reply = main?.subjects;
+    const groups = groupsRead?.groups;
     const base = { hour, firstHour: opt.firstHour, labelWidth: 230 };
     if (!reply || !groups) return timelineModel(base);
     const counts = rankedCounts(readView.panel<GroupCountsReply>('counts'));
-    const nextChangeAt = Math.min(counts?.nextChange ?? Infinity, nextBoundaryAfter(boundaries(reply, groups), hour));
+    const nextChangeAt = Math.min(counts?.nextChange ?? Infinity, main!.nextChange, groupsRead!.nextChange, nextBoundaryAfter(boundaries(reply, groups), hour));
     const warnings = [...reply.warnings, ...groups.warnings];
     if (!reply.runs.length) return timelineModel({ ...base, empty: 'No subjects recorded', warnings, nextChangeAt });
     const overlords = viewsOf(reply, groups);
@@ -113,7 +118,7 @@ export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerF
         ...(heading ? {} : { depth: 1, parentKey: headerKey }),
         label: name,
         subtitle: source.label,
-        ...(look ? { flag: look.flag, flagTag: look.tag } : { flagTag: '?' }),
+        ...(look ? { flag: look.flag, flagTag: look.tag } : { flag: unavailableArt('The country is not recorded at this hour'), flagTag: '?' }),
         ...(heading && look?.colour ? { ruleColor: look.colour } : {}),
         spans,
         auditValue: `${name}|${source.label}`,
@@ -142,6 +147,15 @@ export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerF
   },
 });
 
+function subjectsRead(branchId: string) {
+  const read = historyAtRead('subjects-at', branchId);
+  return { ...read, validate: (data: unknown) => {
+    const reply = read.validate!(data) as SubjectsAtReply;
+    validateSubjectReply(reply.subjects);
+    return reply;
+  } };
+}
+
 export const subjectsDeclaration: TimelineWidgetDeclaration<SubjectsOptions> = {
   family: 'timeline',
   kind: 'subjects',
@@ -153,21 +167,11 @@ export const subjectsDeclaration: TimelineWidgetDeclaration<SubjectsOptions> = {
   jumpToDate: true,
   keyByBranch: true,
   sources: ctx => {
-    const read = (product: 'subjects' | 'country-groups', validate?: (data: unknown) => unknown) => ({
-      shape: 'branch-to-hour' as const,
-      coverage: { mode: 'population' as const, form: 'all' as const },
-      product,
-      followQuery: null,
-      params: { branchId: ctx.branch.id },
-      buildSpanParams: (params: Readonly<Record<string, unknown>>) => params,
-      provenInterval: wholeBranchProof,
-      ...(validate ? { validate } : {}),
-    });
     return {
       owner: `subjects:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
       entries: [
-        { name: 'main', source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset, read: read('subjects', validateSubjectReply) },
-        { name: 'groups', source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset, read: read('country-groups') },
+        { name: 'main', source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset, read: subjectsRead(ctx.branch.id) },
+        { name: 'groups', source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset, read: historyAtRead('country-groups-at', ctx.branch.id) },
         { name: 'counts', source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset, read: groupCountsRead(ctx.branch.id, 'overlords') },
       ],
     };

@@ -18,6 +18,7 @@ const REPLY: AirSuperiorityReply = {
   missing: null,
   unlisted: null,
   empty: null,
+  activeUnlisted: { ids: [], missing: null },
   sides: [
     { key: 'f:7', faction: '7', colourFaction: '7', factions: ['7'], tag: null, leader: 'ENG', coBelligerents: 1, anchor: { tag: 'ENG', hour: 0 }, name: 'Allies', color: [34, 197, 94] },
     { key: 'f:10', faction: '10', colourFaction: '10', factions: ['10'], tag: null, leader: 'GER', coBelligerents: 0, anchor: { tag: 'GER', hour: 0 }, name: 'Axis', color: [239, 68, 68] },
@@ -150,4 +151,13 @@ test('an empty comparison says whether the chart left every active region out, w
   assert.deepEqual(body({ kind: 'filtered', hidden: 2, outside: 3 }), ['All 5 active regions at this date are removed from this chart (2) or outside the selected air theatres (3).', 'empty']);
   assert.deepEqual(body({ kind: 'unread', reason: 'Air region wings read only in part at this hour' }), ['Air region wings read only in part at this hour.', 'unavailable']);
   assert.deepEqual(body({ kind: 'none' }), ['No air activity at this date.', 'empty']);
+});
+
+test('the automatic heading names the order shown: only an Active sort is "Most active"', () => {
+  const heading = (order: AirSuperiorityProjectionOptions['order']) => {
+    const view = createBoundedReadView({ hour: displayedHour(400), panels: new Map([['main', REPLY]]) });
+    const model = airSuperiorityRegionProjection.project(view, { ...OPTS, order });
+    return model.rows.find(row => row.key === '__section:auto')?.label;
+  };
+  assert.deepEqual([heading('active'), heading('contested'), heading('name')], ['Most active', 'Most contested', 'Active regions']);
 });

@@ -66,8 +66,6 @@ export function decisionAt(row: LogRow<DecisionCard | null>, hour: number, break
   const hasLifecycle = (state: ScriptEdge['row']['decisionState']) => state !== undefined && state.kind !== 'notApplicable';
   const latestState = edges.filter(edge => hasLifecycle(edge.row.decisionState)).at(-1)?.row.decisionState ?? null;
   const state = (end && hasLifecycle(end.row.decisionState) ? end.row.decisionState : null) ?? latestState;
-  const selected = edges.some(edge => edge.row.kind === 'decisionSelected');
-  if (!end && !timer && !selected && state?.kind === 'available') return null;
   let failedAt: number | null = null;
   let unsupportedState: number | null = null;
   let failureMissing: string | null = null;
@@ -123,12 +121,15 @@ export function lifecycleLine(at: DecisionAt): string {
     case 'failed': {
       if (at.end?.row.kind === 'decisionTimedOut') return `Failed · ${after('Timed out')}`;
       if (at.end?.row.kind === 'decisionCancelled') return `Failed · ${after('Cancelled')}`;
-      return at.start ? `${started} → failed ${dayOf(at.failedAt!)}` : `Failed ${dayOf(at.failedAt!)}`;
+      if (at.failedAt !== null) return at.start ? `${started} → failed ${dayOf(at.failedAt)}` : `Failed ${dayOf(at.failedAt)}`;
+      return at.start ? `${started} → failed` : 'Failed';
     }
     case 'cancelled': return `${at.end ? after('Cancelled') : (started ? `${started} → aborted` : 'Aborted')}${missing}`;
     case 'timedOut': return `${after('Timed out')}${missing}`;
     case 'removed': return `Removed by the game${missing}`;
     case 'unsupported': return `Unsupported native state ${at.unsupportedState}`;
-    case 'unknown': return `${started ?? 'Running'} · no end recorded by ${dayOf(beforeBreak(at.pause!, at.edges.at(-1)!.row.readHour))}`;
+    case 'unknown': return at.pause
+      ? `${started ?? 'Running'} · no end recorded by ${dayOf(beforeBreak(at.pause, at.edges.at(-1)!.row.readHour))}`
+      : `${started ?? 'Running'} · status not recorded`;
   }
 }

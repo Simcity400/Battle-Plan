@@ -111,11 +111,6 @@ test('a mission with a recorded Failed native state shows Failed with its observ
   assert.equal(abortedLifecycle.status, 'cancelled');
   assert.match(lifecycleLine(abortedLifecycle), /aborted/);
 
-  const availablePool = at([
-    edge('decisionActivated', start, { days: 0, row: { ...edge('decisionActivated', start).row, decisionState: { kind: 'available' } } }),
-  ], day(4, 1));
-  assert.equal(availablePool, null, 'non-timed targeted pool availability is never labeled Running');
-
   const selfTargeted = decisionCard(card([edge('decisionSelected', start, {}, ['GER', 'GER'])]));
   assert.equal(selfTargeted?.country, 'GER');
   assert.equal(selfTargeted?.target, null, 'same holder and target produces one flag, never two');
@@ -165,7 +160,7 @@ test('decisions projection formats unsigned costs with PP icon, keeps unknown ch
   const chargedRow = byKey.get(chargedOcc.id)!;
   assert.deepEqual(chargedRow.cells.cost?.value, { kind: 'known', value: '50' });
   assert.equal(chargedRow.cells.cost?.unitSuffix, 'PP');
-  assert.equal(chargedRow.cells.cost?.unitIcon, 'art://pp');
+  assert.equal(chargedRow.cells.cost?.unitArt?.status === 'ready' ? chargedRow.cells.cost.unitArt.url : null, 'art://pp');
   assert.ok(chargedRow.meta, 'decision row carries detail subject');
   const mixedRow = byKey.get(mixedUnknownOcc.id)!;
   assert.equal(mixedRow.cells.cost?.value.kind, 'notRecorded', 'unknown selection cost never collapses to No cost');
@@ -185,4 +180,21 @@ test('decisions projection formats unsigned costs with PP icon, keeps unknown ch
   );
   assert.equal(untimedModel.rows[0]?.cells.timer?.value.kind, 'notRecorded', 'active row without duration shows Duration not recorded, never blank');
   assert.equal(untimedModel.rows[0]?.cells.timer?.missingFigure, 'Duration');
+
+  const productStatusSource = buildRowSourceFromHead('test:decisions-status', {
+    ...head,
+    total: '2',
+    counts: [{ key: 'running', total: '1' }],
+    rows: [
+      { hour: start, key: 'k-live', ordinal: '0', live: true, status: 'active', occurrence: chargedOcc },
+      { hour: start, key: 'k-nr', ordinal: '1', live: false, status: 'notRecorded', occurrence: missionOcc },
+    ],
+  }, undefined, hour)!;
+  const productStatusModel = decisionsProjection.project(
+    createBoundedReadView({ hour, rows: new Map([['main', productStatusSource]]) }),
+    { artwork: false, breaks: [] },
+  );
+  assert.equal(productStatusModel.rows[0]?.live, true);
+  assert.equal(productStatusModel.rows[1]?.live, false);
+  assert.deepEqual(productStatusModel.rows[1]?.cells.status?.value, { kind: 'known', value: 'Not recorded' });
 });

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { liveKey, valuesOf } from '../../charts/live.ts';
+import { liveKey } from '../../charts/live.ts';
 import { countryMatch, membershipUnrecordedAt } from '../../dashboard/groups.ts';
 import type { CountryGroupReply } from '../../generated/dashboard';
-import { emptyReason, garrisonBar, garrisonCell, garrisonText, liveRaw, occupiedRows, percentCell, strengthBar, validateOccupiedStates } from './occupiedStatesData.ts';
+import { emptyReason, garrisonCell, occupiedRows, validateOccupiedStates } from './occupiedStatesData.ts';
 import type { OccupiedState, OccupiedStatesReply } from './occupiedStatesData';
 
 const state = (id: number, occupier: string | null, occupied: string | null, extra: Partial<OccupiedState> = {}): OccupiedState => ({
@@ -36,30 +36,18 @@ test('a filter matches the occupier or the occupied country, and a state no coun
   assert.deepEqual([byOccupied.rows.map(row => row.state), byOccupied.selectionUnknown], [[2], false]);
 });
 
-test('cells round half away from zero and clamp; the bar narrows the strength as the game does', () => {
-  assert.equal(percentCell('9950000'), '100%');
-  assert.equal(percentCell('12000000'), '100%');
-  assert.equal(percentCell('-1'), '0%');
-  assert.equal(percentCell('4449999'), '44%');
-  assert.equal(strengthBar('50000'), 50000n);
-  assert.equal(strengthBar('-50000'), -50000n);
+test('garrison cell state reflects required sign without guessing', () => {
   assert.deepEqual(garrisonCell(state(1, 'GER', 'POL', { garrisonRequiredSign: -1 })), { bar: 0n, red: true });
   assert.deepEqual(garrisonCell(state(1, 'GER', 'POL', { garrisonRequiredSign: 0 })), { bar: null, red: false });
   assert.deepEqual(garrisonCell(state(1, 'GER', 'POL', { garrisonRequiredSign: null })), { bar: null, red: false });
   assert.deepEqual(garrisonCell(state(1, 'GER', 'POL')), { bar: 'cell', red: false });
-  assert.equal(garrisonBar(50000), 50000n);
-  assert.equal(garrisonBar(-50000), -50000n);
-  assert.deepEqual([garrisonText(-1), garrisonText(0), garrisonText(250000), garrisonText(123456)], ['!', '-', '2.50', '1.23']);
-  const values = valuesOf(new Map([[liveKey('1', 'resistance'), 2500000]]), 'Not recorded at this hour');
-  assert.equal(liveRaw(values, '1', 'resistance'), '2500000');
-  assert.equal(liveRaw(values, '1', 'resistanceSpeed'), null);
 });
 
 const humans = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } as const;
 const gapGroups = (tags: readonly string[], gap = { firstHour: 110, lastHour: 120 }): CountryGroupReply => ({ branchId: '1', warnings: [],
   humans: tags.map(tag => ({ tag, firstHour: 0, lastHour: 200 })), factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
   countryIdentities: tags.map((tag, slot) => ({ tag, identities: [{ firstHour: 0, lastHour: 200, slot, countryId: slot + 1 }] })),
-  unobserved: { humans: [gap], factions: [], wars: [] } });
+  unobserved: { humans: [gap], factions: [], wars: [], unattributed: [] } });
 const GAP = 'Group membership is unavailable at this time.';
 
 test('a state left out where the chosen group’s membership was not recorded makes the hour unknown, never no occupied states', () => {
@@ -112,13 +100,13 @@ test('missing garrison and unresolved manpower report notRecorded with source re
   assert.deepEqual(s1.cells.garrison!.value, { kind: 'notRecorded', reason: 'No state garrisons row at this hour' });
   const settings = tableSettingsOf(undefined, COLUMNS, TABLE_BASE);
   const flat = resolveTableRows(model, settings);
-  const tip1 = deriveTableTooltip(flat, '1', model.columns, 50)!;
+  const tip1 = deriveTableTooltip(flat, '1', model.columns)!;
   assert.equal(tip1.rows.find(r => r.label === 'Required manpower')?.valueState?.kind, 'missing');
   assert.equal(tip1.rows.find(r => r.label === 'Required manpower')?.detail, 'No state garrisons row at this hour');
   assert.equal(tip1.rows.find(r => r.label === 'Assigned manpower')?.valueState?.kind, 'missing');
   assert.equal(tip1.rows.find(r => r.label === 'Assigned manpower')?.detail, 'No state garrisons row at this hour');
 
-  const tip2 = deriveTableTooltip(flat, '2', model.columns, 50)!;
+  const tip2 = deriveTableTooltip(flat, '2', model.columns)!;
   assert.equal(tip2.rows.find(r => r.label === 'Required manpower')?.valueState?.text, '9,007,199,254,740,993');
   assert.equal(tip2.rows.find(r => r.label === 'Assigned manpower')?.valueState?.text, '9,007,199,254,740,993');
 });

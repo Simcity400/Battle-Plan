@@ -101,6 +101,15 @@ fn read(catalogue: &Catalogue) -> io::Result<FactoryGroupsReply> {
     Ok(FactoryGroupsReply { groups, missing: None, warnings })
 }
 
+pub(super) fn load_groups(source: &Source, load: &LoadContext) -> FactoryGroupsReply {
+    let named = load.content().and_then(|content| catalogue::catalogue(source, content)).and_then(|catalogue| read(&catalogue));
+    named.unwrap_or_else(|error| FactoryGroupsReply {
+        groups: Vec::new(),
+        missing: Some(format!("Factory group names are unavailable: {error}")),
+        warnings: Vec::new(),
+    })
+}
+
 impl Product for FactoryGroups {
     const KEY: &'static str = "factory-groups";
     const CONTENT_DEPENDENT: bool = true;
@@ -118,11 +127,6 @@ impl Product for FactoryGroups {
     }
 
     fn load(source: &Source, _params: &Self::Params, load: &LoadContext, _cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let named = load.content().and_then(|content| catalogue::catalogue(source, content)).and_then(|catalogue| read(&catalogue));
-        Ok(named.unwrap_or_else(|error| FactoryGroupsReply {
-            groups: Vec::new(),
-            missing: Some(format!("Factory group names are unavailable: {error}")),
-            warnings: Vec::new(),
-        }))
+        Ok(load_groups(source, load))
     }
 }

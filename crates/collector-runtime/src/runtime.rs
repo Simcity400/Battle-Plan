@@ -2981,6 +2981,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "supply_truck_demand_witness": collector_supply_trains::supply_trains::truck_demand_witness_status(),
         "raid_completion": collector_projects::projects::raid_completion_data(),
         "event_windows": collector_observers::event_window_observer::status(),
+        "land_combat_edges_withheld": collector_land_events::land_events::edges_withheld(),
         "certificate_registries": collector_certificates::watch_registry::status(collector_division_parts::army_stat_changes::registries()),
     });
     #[cfg(feature = "order_membership_oracle")]

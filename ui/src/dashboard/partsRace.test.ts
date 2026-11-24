@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildStack } from '../charts/stack.ts';
 import { partsRaceAt, partsRaceLineRuns, partsRaceMixBands, partsRaceModel, partsRacePartName, partsRaceEntries, partsRaceSegmentAt,
-  partsRaceTooltips, partsRaceNumbers, hasPartsRaceValues, partsRaceAllZero, rankPartsRace, validatePartsRaceReply } from './partsRace.ts';
+  partsRaceTooltips, partsRaceAllZero, rankPartsRace, validatePartsRaceReply } from './partsRace.ts';
 import type { PartsRaceReply } from './partsRace';
 
 const reply = (): PartsRaceReply => ({ branchId: 'branch',
@@ -46,17 +46,6 @@ test('parts race bars ease adjacent known counts and restart after unknown total
   assert.equal(entries(12).length, 0);
   assert.notEqual(entries(11)[0].stretch, entries(13)[0].stretch);
   assert.equal(entries(13)[0].stretch, 13);
-});
-
-test('parts race availability distinguishes unknown-only recordings from a recorded zero', () => {
-  const data = reply();
-  data.series[0].runs = [{ firstHour: 10, lastHour: 20, startsSegment: true, total: null, values: [null, null] }];
-  assert.equal(hasPartsRaceValues(partsRaceModel(data)), false);
-  data.series[0].runs[0].total = 0;
-  data.series[0].runs[0].values = [0, 0];
-  assert.equal(hasPartsRaceValues(partsRaceModel(data)), true);
-  data.series = [];
-  assert.equal(hasPartsRaceValues(partsRaceModel(data)), false);
 });
 
 test('unresolved content keeps its visible count; unknown breakdown hatches the exact total', () => {
@@ -133,23 +122,6 @@ test('parts race payload validation refuses malformed catalogues, counts, spans 
     const data = reply(); mutation(data);
     assert.throws(() => validatePartsRaceReply(data), /malformed/);
   }
-});
-
-test('force numeric ownership strips only content decorations and preserves native context', () => {
-  const native = reply();
-  native.warnings = ['Content refusal'];
-  native.series[0].membership = [{ firstHour: 11, lastHour: 19 }];
-  native.series[0].runs[0].referenceTotal = 17;
-  const projected = partsRaceNumbers(native);
-  assert.equal(projected.series, native.series, 'do not copy the full native history for display decoration changes');
-  assert.equal(projected.branchId, native.branchId);
-  assert.deepEqual(projected.parts, native.parts.map(part => ({ key: part.key, name: null, unresolved: false })));
-  assert.deepEqual(projected.warnings, []);
-  const renamed = { ...native, warnings: [], parts: native.parts.map(part => ({ ...part, name: 'Renamed', unresolved: !part.unresolved })) };
-  assert.deepEqual(partsRaceNumbers(renamed), projected);
-  const changed = structuredClone(native);
-  changed.series[0].runs[0].referenceTotal = 18;
-  assert.notDeepEqual(partsRaceNumbers(changed), projected);
 });
 
 test('a tally ranked positive holds no country at zero, and all zero is told from unknown', () => {

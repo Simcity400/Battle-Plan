@@ -42,11 +42,11 @@ function view(data: UnitLeadersReply, names: Record<string, [string, number]> = 
 test('skill cells draw the product’s icons for each leader’s own window; an icon the interface lacks is no icon', () => {
   const model = generalsProjection.project(view(reply([leader('1', land), leader('2', navy)])), OPTIONS);
   const [general, admiral] = [model.rows.find(row => row.key === '1')!, model.rows.find(row => row.key === '2')!];
-  assert.equal(general.cells.skill!.icon, `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_skill', frame: 0 })}`);
-  assert.equal(general.cells.attack!.icon, `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_attack', frame: 0 })}`);
-  assert.equal(general.cells.defense!.icon, undefined);
-  assert.equal(admiral.cells.attack!.icon, `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_naval_attack', frame: 0 })}`);
-  assert.equal(admiral.cells.fourth!.icon, undefined);
+  assert.equal(general.cells.skill!.art?.status === 'ready' ? general.cells.skill!.art.url : undefined, `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_skill', frame: 0 })}`);
+  assert.equal(general.cells.attack!.art?.status === 'ready' ? general.cells.attack!.art.url : undefined, `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_attack', frame: 0 })}`);
+  assert.equal(general.cells.defense!.art, undefined);
+  assert.equal(admiral.cells.attack!.art?.status === 'ready' ? admiral.cells.attack!.art.url : undefined, `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_naval_attack', frame: 0 })}`);
+  assert.equal(admiral.cells.fourth!.art, undefined);
   assert.deepEqual(model.columns.filter(column => column.key === 'third' || column.key === 'fourth').map(column => column.label), ['Planning / Maneuvering', 'Logistics / Coordination']);
 });
 
@@ -56,7 +56,7 @@ test('a commander is named as at the hour, the portrait is the art cache’s, an
   const row = model.rows[0]!;
   assert.deepEqual(row.cells.commander!.value, { kind: 'known', value: 'Erwin Rommel' });
   assert.equal(row.cells.commander!.subtext, 'General');
-  assert.equal(row.cells.portrait!.icon, `art:${artHandleKey({ kind: 'portrait', leader: '1', hour: 10 })}`);
+  assert.equal(row.cells.portrait!.art?.status === 'ready' ? row.cells.portrait!.art.url : undefined, `art:${artHandleKey({ kind: 'portrait', leader: '1', hour: 10 })}`);
   assert.equal(generalsProjection.nextChange!(readView, OPTIONS), 250);
 });
 

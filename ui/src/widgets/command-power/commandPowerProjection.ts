@@ -3,9 +3,9 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
+import { chartAxis, chartWindow, DEFAULT_POWER_SETTINGS, powerChartSettings, type PowerChartSettings } from '../../families/time-chart/settings.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { formatCompactScalar, formatScalar } from '../../families/valueFormat.ts';
 import type { ChartArtSlot, ChartGap, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import {
   branchGapsOf,
@@ -14,13 +14,16 @@ import {
   memberAt,
   missingSpansOf,
   rankEntry,
-  rankedOrder,
+  rankedOrder, unnamedLooks,
+  spendMarkerEntry,
   spendMarkersOf,
   withinMapOf,
   auditReading,
+  formatPowerAmount,
   headReading,
   headValueOf,
   type HeadReading,
+  type KnownHeadReading,
 } from '../../families/time-chart/seriesHelpers.ts';
 
 export interface CommandPowerOptions {
@@ -30,15 +33,11 @@ export interface CommandPowerOptions {
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
   readonly surface: string;
+  readonly settings?: PowerChartSettings;
   readonly showCeiling: boolean;
-  readonly showSpendTicks: boolean;
 }
 
 
-function formatEndAmount(value: number): string {
-  if (!Number.isFinite(value)) return '';
-  return Math.abs(value) >= 1e4 ? formatCompactScalar(Math.trunc(value), 'integer').text : formatScalar(value, 'integer');
-}
 
 export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerFamilyProjection({
   kind: 'command-power',
@@ -52,9 +51,12 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
     const ceilingMap = options.showCeiling ? readView.series('ceiling') : undefined;
     const tags = options.tags;
     const single = tags.length === 1;
+    const settings = options.settings ?? DEFAULT_POWER_SETTINGS;
+    const format = (reading: KnownHeadReading) => formatPowerAmount(reading, settings.decimals);
+    const view = chartWindow(settings, hour, options.extent[0]);
 
-    const headByTag = new Map<string, number | null>();
-    const ceilingByTag = new Map<string, number | null>();
+    const headByTag = new Map<string, HeadReading | null>();
+    const ceilingByTag = new Map<string, HeadReading | null>();
     const readings: [string, HeadReading | null][] = [];
     for (const tag of tags) {
       if (!memberAt(options.membership, tag, hour)) {
@@ -63,11 +65,11 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       }
       const main = headReading(readView, 'main', { tag }, 5);
       readings.push([tag, main]);
-      headByTag.set(tag, headValueOf(main));
+      headByTag.set(tag, main);
       if (options.showCeiling) {
         const ceiling = headReading(readView, 'ceiling', { tag }, 5);
         readings.push([`${tag}:ceiling`, ceiling]);
-        ceilingByTag.set(tag, headValueOf(ceiling));
+        ceilingByTag.set(tag, ceiling);
       }
     }
 
@@ -75,15 +77,16 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
     const rowOf = new Map(tags.map((tag, row) => [tag, row]));
     const present = tags.filter(tag => memberAt(options.membership, tag, hour));
     const presentSet = new Set(present);
-    const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
-    const looks = countrySeriesLooks(ordered, readView, {
+    const ranking = rankedOrder(readView, present);
+    const ordered = [...ranking.order, ...tags.filter(tag => !presentSet.has(tag))];
+    const looks = unnamedLooks(countrySeriesLooks(ordered, readView, {
       holders: options.holders,
       from: options.extent[0],
       surface: options.surface,
       withFlag: !single,
       recordedOrdinal: tag => rowOf.get(tag) ?? 0,
       singleColor: CHART_MEASURE_COLOURS.commandPower,
-    });
+    }), ranking.unnamed, hour);
 
     const measureIcon: ChartArtSlot | undefined = single
       ? { art: readView.art(measureArtHandle('commandPower')), label: 'Command power' }
@@ -95,9 +98,11 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       const isTail = !single && rank >= 8;
       const bounded = mainMap?.get(tag) ?? null;
       const { name, flag, color, identities } = looks.get(tag)!;
-      const headValue = headByTag.get(tag) ?? null;
+      const mainReading = headByTag.get(tag) ?? null;
+      const headValue = headValueOf(mainReading);
       const ceilingBounded = options.showCeiling && !isTail ? (ceilingMap?.get(tag) ?? null) : null;
-      const ceilingHead = options.showCeiling && !isTail ? (ceilingByTag.get(tag) ?? null) : null;
+      const ceilingReading = options.showCeiling && !isTail ? (ceilingByTag.get(tag) ?? null) : null;
+      const ceilingHead = headValueOf(ceilingReading);
 
       series.push({
         id: tag,
@@ -106,7 +111,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
         color,
         role: isTail ? 'tail' : 'primary',
         step: false,
-        area: single,
+        area: single && settings.area,
         bounded,
         headValue,
         headHour: hour,
@@ -115,14 +120,13 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
         ...(single ? {} : { identities }),
         icon: single ? measureIcon : undefined,
         missingSpans: missingSpansOf(bounded),
-        rank,
-        endLabel: isTail || headValue === null
+        endLabel: isTail || !settings.endLabels || !mainReading || !('value' in mainReading)
           ? null
           : {
               ...(single ? { icon: measureIcon } : { flag }),
               name: single ? (options.showCeiling ? 'Command power' : null) : name,
               fullName: single ? 'Command power' : name,
-              value: formatEndAmount(headValue),
+              value: formatPowerAmount(mainReading, settings.decimals),
             },
       });
 
@@ -141,22 +145,19 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
           bounded: ceilingBounded,
           headValue: ceilingHead,
           headHour: hour,
-          rank,
-          endLabel: ceilingHead === null
+          endLabel: !settings.endLabels || !ceilingReading || !('value' in ceilingReading)
             ? null
             : {
                 name: single ? 'Maximum' : `${name} max`,
                 fullName: single ? 'Maximum command power' : `${name} maximum`,
-                value: formatEndAmount(ceilingHead),
+                value: formatPowerAmount(ceilingReading, settings.decimals),
                 valueMuted: true,
               },
         });
       }
     }
 
-    const markers = single && options.showSpendTicks
-      ? spendMarkersOf(mainMap?.get(tags[0]!), 'Command power spent')
-      : [];
+    const spent = spendMarkersOf(readView, 'Command power spent', options.extent[0]);
 
     return {
       kind: 'command-power',
@@ -164,11 +165,13 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       mode: 'lines',
       hour,
       extent: options.extent,
-      yAxis: { format: 'power', decimals: 0 },
+      ...(view ? { view } : {}),
+      yAxis: { format: 'power', decimals: settings.decimals, ...chartAxis(settings) },
       series,
-      markers: markers.length > 0 ? markers : undefined,
+      markers: spent.markers.length > 0 ? spent.markers : undefined,
+      ...(ranking.warnings.length + spent.warnings.length > 0 ? { warnings: [...ranking.warnings, ...spent.warnings] } : {}),
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
-      auditRows: readings.map(([row, reading]) => auditReading(row, reading, formatEndAmount)),
+      auditRows: readings.map(([row, reading]) => auditReading(row, reading, format)),
     };
   },
 });
@@ -200,10 +203,10 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
           family: mainFamily,
           tags,
           ...(within ? { within } : {}),
-          marks: tags.length === 1 && ctx.options.spendTicks !== false,
           headQuery: tags.length
             ? {
                 product: 'series-state',
+                coverage: 'row',
                 params: { branchId: ctx.branch.id, family: mainFamily, reads: countries.map(country => ({ country })) },
               }
             : null,
@@ -223,10 +226,10 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
           family: ceilingFamily,
           tags,
           ...(within ? { within } : {}),
-          marks: false,
           headQuery: tags.length
             ? {
                 product: 'series-state',
+                coverage: 'row',
                 params: { branchId: ctx.branch.id, family: ceilingFamily, reads: countries.map(country => ({ country })) },
               }
             : null,
@@ -249,8 +252,10 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
     }
     const rank = rankEntry(ctx, mainFamily, tags);
     if (rank) entries.push(rank);
+    const spending = spendMarkerEntry(ctx, 'Command');
+    if (spending) entries.push(spending);
     return {
-      owner: `command-power:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showCeiling ? 1 : 0}:${ctx.following ? 1 : 0}`,
+      owner: `command-power:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showCeiling ? 1 : 0}:${ctx.options.spendTicks !== false ? 1 : 0}`,
       entries,
     };
   },
@@ -263,8 +268,8 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
       extent,
       gaps: branchGapsOf(ctx.branch),
       surface,
+      settings: powerChartSettings(ctx.options),
       showCeiling: ctx.options.ceiling !== false,
-      showSpendTicks: ctx.options.spendTicks !== false,
     };
   },
 };

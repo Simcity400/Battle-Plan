@@ -15,12 +15,11 @@ import {
   type HourRanges,
   type TableWidgetDeclaration,
 } from '../../families/table/declaration.ts';
-import { lookAt, nextLookChange, type CountryLooksMap } from '../../families/looks.ts';
+import { identityCell, newIdentityBoundary, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { encodeTableSettings, OFFERED, TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
 import {
-  knownValue,
   notRecorded,
   partialValue,
   valueFromNamedAnswer,
@@ -54,7 +53,6 @@ export interface ScoreboardProjectionOptions {
   readonly unobserved?: HourRanges;
   readonly top: number | null;
   readonly rankMarkers: boolean;
-  readonly looks: CountryLooksMap;
 }
 
 const columnFormat = (column: ScoreboardColumn): ValueFormat =>
@@ -95,12 +93,6 @@ export function scoreboardColumnsSpec(shown: readonly ScoreboardColumn[], top: n
   ];
 }
 
-function countryNameValue(tag: string, looks: CountryLooksMap, hour: number) {
-  const runs = looks[tag];
-  const look = lookAt(runs, hour);
-  if (look && look.name && look.name.trim()) return { value: knownValue(look.name), name: look.name, runs };
-  return { value: notRecorded(look?.status ?? 'Country name unavailable'), name: tag, runs };
-}
 
 interface ScoreboardIncCache {
   readonly validFrom: number;
@@ -109,22 +101,32 @@ interface ScoreboardIncCache {
   readonly answers: readonly (FollowedAnswer | undefined)[];
   readonly partials: readonly (FollowedAnswer | undefined)[];
   readonly entries: readonly { readonly key: string; readonly displayTag: string; readonly wireName: string }[];
+  readonly identity: string;
   readonly wireToIndices: ReadonlyMap<string, readonly number[]>;
   readonly model: TableModel;
 }
 
 const scoreboardIncCache = new WeakMap<ScoreboardProjectionOptions, ScoreboardIncCache>();
 
+const nameOf = (cell: TableCell, tag: string): string => (cell.value.kind === 'known' ? String(cell.value.value) : tag);
+
+function identityStamp(readView: BoundedReadView, entries: readonly { readonly displayTag: string }[], hour: number): string {
+  return entries.map(entry => {
+    const cell = identityCell(readView, 'country', entry.displayTag, { atHour: hour });
+    return JSON.stringify([entry.displayTag, cell.value, cell.countryColor ?? null, cell.art?.status ?? null, cell.art?.status === 'ready' ? cell.art.url : null]);
+  }).join(',');
+}
+
 function buildScoreboardRow(
   entry: { readonly key: string; readonly displayTag: string; readonly wireName: string },
   readView: BoundedReadView,
   hour: number,
   options: ScoreboardProjectionOptions,
+  boundary: IdentityBoundary,
 ): TableRow {
   const { key, displayTag, wireName } = entry;
-  const identity = countryNameValue(displayTag, options.looks, hour);
   const cells: Record<string, TableCell> = {
-    country: { value: identity.value, iconSlot: true, country: displayTag, ...(identity.runs ? { looks: identity.runs } : {}) },
+    country: identityCell(readView, 'country', displayTag, { atHour: hour, boundary }),
   };
   let hasPartial = false;
   for (let i = 0; i < options.shown.length; i++) {
@@ -151,7 +153,7 @@ function buildScoreboardRow(
   }
   return {
     key,
-    name: identity.name,
+    name: nameOf(cells.country!, displayTag),
     cells,
     ...(hasPartial ? { tooltipNote: 'Partial values omit unrecorded inputs at this hour.' } : {}),
   };
@@ -169,7 +171,7 @@ function sameRow(before: TableRow, after: TableRow): boolean {
   for (const key in after.cells) {
     const a = before.cells[key];
     const b = after.cells[key]!;
-    if (!a || a.country !== b.country || a.looks !== b.looks || !sameValue(a.value, b.value)) return false;
+    if (!a || a.country !== b.country || a.art !== b.art || a.countryColor !== b.countryColor || !sameValue(a.value, b.value)) return false;
   }
   return true;
 }
@@ -193,7 +195,6 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
   nextChange(readView, options) {
     const hour = readView.hour;
     return Math.min(
-      nextLookChange(options.looks, hour),
       nextHoldersChange(options.holders, hour),
       nextRangesChange(options.unobserved, hour),
       nextMembershipChange(options.membership, hour),
@@ -214,9 +215,8 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       }
       const rows: TableRow[] = reply.rows.map(row => {
         const key = countryKey(row.country);
-        const identity = countryNameValue(row.tag, options.looks, reply.hour);
         const cells: Record<string, TableCell> = {
-          country: { value: identity.value, iconSlot: true, country: row.tag, ...(identity.runs ? { looks: identity.runs } : {}) },
+          country: identityCell(readView, 'country', row.tag, { atHour: reply.hour }),
         };
         let hasPartial = false;
         options.shown.forEach((column, at) => {
@@ -234,7 +234,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
         });
         return {
           key,
-          name: identity.name,
+          name: nameOf(cells.country!, row.tag),
           cells,
           ...(hasPartial ? { tooltipNote: 'Partial values omit unrecorded inputs at this hour.' } : {}),
         };
@@ -258,6 +258,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       && hour >= prevInc.validFrom
       && hour < prevInc.validUntil
       && prevInc.entries.length > 0
+      && prevInc.identity === identityStamp(readView, prevInc.entries, hour)
       && (
         options.top == null
         || prevInc.rankAnswer === rankAnswer
@@ -308,7 +309,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
           const changedKeys = new Set<string>();
           const changedRows = new Map<string, TableRow>();
           for (const idx of touchedIndices) {
-            const built = buildScoreboardRow(prevInc.entries[idx]!, readView, hour, options);
+            const built = buildScoreboardRow(prevInc.entries[idx]!, readView, hour, options, newIdentityBoundary());
             nextRows[idx] = built;
             changedKeys.add(built.key);
             changedRows.set(built.key, built);
@@ -363,8 +364,9 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
     }
 
     const held = prevInc ? new Map(prevInc.model.rows.map(row => [row.key, row])) : null;
+    const boundary = newIdentityBoundary();
     const rows: TableRow[] = activeEntries.map(entry => {
-      const built = buildScoreboardRow(entry, readView, hour, options);
+      const built = buildScoreboardRow(entry, readView, hour, options, boundary);
       const before = held?.get(built.key);
       return before && sameRow(before, built) ? before : built;
     });
@@ -386,7 +388,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
         else list.push(i);
       }
       const validUntil = Math.min(
-        nextLookChange(options.looks, hour),
+        boundary.next,
         nextHoldersChange(options.holders, hour),
         nextRangesChange(options.unobserved, hour),
         nextMembershipChange(options.membership, hour),
@@ -398,6 +400,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
         answers: options.shown.map(col => (col.available && col.family ? readView.answer(col.key) : undefined)),
         partials: options.shown.map(col => (col.available && col.family && col.partial ? readView.answer(partialSource(col.key)) : undefined)),
         entries: activeEntries,
+        identity: identityStamp(readView, activeEntries, hour),
         wireToIndices,
         model,
       });
@@ -608,7 +611,6 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
       unobserved: top == null ? ctx.countries.unobserved : [],
       top,
       rankMarkers: ctx.options.rankMarkers === true,
-      looks: ctx.countries.labels,
     };
   },
   unavailable: ctx => {

@@ -84,10 +84,7 @@ export function factionNote(rosters: FactionRostersReply | undefined, id: string
   return bounds ? 'Over a bin, a faction’s least and greatest are its members’ summed: bounds, not exact.' : null;
 }
 
-export type RosterMembership = 'hour' | 'end' | 'ever';
-
-export function fixedRosters(groups: CountryGroupReply, membership: Exclude<RosterMembership, 'hour'>, from: number, to: number): FactionRostersReply {
-  const [first, last] = membership === 'end' ? [to, to] : [from, to];
+export function everRosters(groups: CountryGroupReply, first: number, last: number): FactionRostersReply {
   const meets = (spans: readonly { firstHour: number; lastHour: number }[]) => spans.some(span => span.firstHour <= last && first <= span.lastHour);
   if (meets(groups.unobserved.factions)) return { factions: [], missing: 'Faction memberships were not read over these hours.', warnings: [] };
   const factions = groups.factions.filter(faction => faction.firstHour <= last && first <= faction.lastHour).map(faction => ({

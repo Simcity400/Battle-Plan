@@ -1,6 +1,5 @@
 import { useRef, useState } from 'react';
 import {
-  HEADER_CARET_LANE,
   CELL_INSET,
   endAligned,
   ROW_MARGIN_X,
@@ -152,11 +151,15 @@ export function FamilyTableHeader({
       </span>;
     }
     if (item.headerGroup?.kind === 'parts') {
-      return <span className="tf-th-parts">
-        {item.headerGroup.parts.map((part, idx) => <span key={idx} className="tf-th-part" title={part.notRecordedReason}>
-          {part.notRecordedReason && <span className="tf-th-hatch" aria-hidden="true" />}
-          <span>{part.label}</span>
-        </span>)}
+      return <span className="tf-th-text-block tf-th-parts-block">
+        <span className="tf-th-main tf-th-parts">
+          {item.headerGroup.parts.map((part, idx, parts) => <span key={idx} className="tf-th-part" title={part.notRecordedReason}>
+            <span>{part.label}</span>
+            {part.notRecordedReason && <span className="tf-th-hatch" aria-hidden="true" />}
+            {parts[idx + 1]?.operator && <span className="tf-th-operator" aria-hidden="true">{parts[idx + 1]!.operator}</span>}
+          </span>)}
+        </span>
+        {item.unit && <span className="tf-th-unit">{item.unit}</span>}
       </span>;
     }
     const textBlock = <span className="tf-th-text-block">
@@ -243,7 +246,7 @@ export function FamilyTableHeader({
           >
             {canDrag && GRIP_DOTS}
             {renderLabel(item, active, end, index)}
-          </button> : <span className="tf-th-static" title={title}>{renderLabel(item, false, end, index)}</span>}
+          </button> : <span className={`tf-th-static${item.headerGroup ? ' tf-th-static-fill' : ''}`} title={title}>{renderLabel(item, false, end, index)}</span>}
           {editableColumns && <span
             className="tf-resize"
             title="Drag to resize. Double-click to fit."
@@ -286,25 +289,3 @@ export function FamilyTableHeader({
     </div>
   </div>;
 }
-
-export function buildHeaderColumns(
-  layoutColumns: readonly TableHeaderColumn[],
-  specs: ReadonlyMap<string, TableColumnSpec>,
-): TableHeaderColumn[] {
-  return layoutColumns.map(col => {
-    const spec = specs.get(col.key);
-    return {
-      ...col,
-      unit: spec?.unit,
-      text: spec?.text,
-      hideable: spec?.hideable,
-      sortable: spec?.sortable,
-      hint: spec?.hint,
-      notRecordedReason: spec?.notRecordedReason,
-      headerGroup: spec?.headerGroup,
-      displays: spec && spec.offered.length > 1 ? spec.offered.map(display => [display, DISPLAY_LABELS[display]] as const) : [],
-    };
-  });
-}
-
-export { HEADER_CARET_LANE };

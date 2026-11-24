@@ -2,7 +2,7 @@ import { colour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { holdingSince, holdingSpanFlags, holdingUntil, ideaHistoryProof, ideaNameMissing, lookOf, unobservedThrough, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { urlArtHandle } from '../../families/art/provider.ts';
+import { artworkArt } from '../../families/art/provider.ts';
 import { inHourSpans, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -42,8 +42,7 @@ export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = r
         firstHour: span.holding.firstHour,
         color: fill,
         label: span.label,
-        icon: urlArtHandle(span.icon),
-        iconMissing: !span.icon,
+        icon: artworkArt(readView, span.artwork),
         ...holdingSpanFlags(span.holding, hour),
         meta: { holding: span.holding },
       }));
@@ -54,7 +53,7 @@ export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = r
         kind: 'item' as const,
         label: group.label,
         subtitle,
-        ...(current ? { icon: current.icon, iconMissing: current.iconMissing } : {}),
+        ...(current ? { icon: current.icon } : {}),
         spans,
         auditValue: `${group.label}|${subtitle}`,
       };

@@ -63,14 +63,14 @@ test('a late recorded name outside the window reorders both overlords and subjec
 test('end membership keeps the human subject’s overlord visible before its change of tag', () => {
   const groups: CountryGroupReply = { branchId: '1', warnings: [], factions: [], wars: [], warStarts: [], capitulations: [],
     countryIdentities: [holder('AAA', 1, 0, 9), holder('BBB', 1, 10, 20), holder('OVR', 2)],
-    identityChanges: [{ hour: 10, from: 'AAA', to: 'BBB' }], unobserved: { humans: [], factions: [], wars: [] },
+    identityChanges: [{ hour: 10, from: 'AAA', to: 'BBB' }], unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
     humans: [{ tag: 'AAA', firstHour: 0, lastHour: 9 }, { tag: 'BBB', firstHour: 10, lastHour: 20 }],
   };
   const views = overlordViews({ ...reply, unobserved: [], runs: [
     { overlord: 'OVR', subject: 'AAA', startHour: 0, firstHour: 0, lastHour: 9, steps: [step(0, 9, null)] },
     { overlord: 'OVR', subject: 'BBB', startHour: 0, firstHour: 10, lastHour: 20, steps: [step(10, 20, null)] },
   ] }, new Lineage(groups.identityChanges), countryIdentityIndex(groups.countryIdentities));
-  const filter = worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [], groups, 5, 20);
+  const filter = worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [], groups, 5);
   const lanes = subjectLanes(views, byToken, new Map(), 5, { ...options, countries: filter.tags, countryIds: filter.countryIds }, text, []).lanes;
   assert.deepEqual(lanes.map(lane => lane.identity?.label), ['OVR', 'AAA']);
 });

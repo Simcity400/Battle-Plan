@@ -1,7 +1,8 @@
+import { unavailableArt } from '../../families/art/types.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { flowEndpointKey, flowSideNotes, presentFlowEndpoint, projectCountryFlow, scaledAmount, UNKNOWN_COUNTRY } from '../../families/flow/countryFlow.ts';
-import { countryFlowPlan, flowPerSide, flowUnavailable } from '../../families/flow/countryFlowPlan.ts';
+import { countryFlowPlan, flowPerSide } from '../../families/flow/countryFlowPlan.ts';
 import type { FlowWidgetDeclaration } from '../../families/flow/declaration.ts';
 import type { FlowProjection } from '../../families/flow/model.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
@@ -49,7 +50,6 @@ export const tradeFlowDeclaration: FlowWidgetDeclaration = {
   sources: (ctx, view) => countryFlowPlan(ctx, 'trade-flow', { limit: flowPerSide(view) }),
   projection: tradeFlowProjection,
   projectionOptions: () => EMPTY_OPTIONS,
-  unavailable: flowUnavailable,
   jumpToDate: true,
 };
 
@@ -94,8 +94,7 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
   const rows: TableRow[] = reply.table.map(row => {
     const partner = presentFlowEndpoint(readView, reply.endpoints[row.partner]!);
     const name: Value = partner.labelMissing ? notRecorded(partner.unknown ?? 'Country name not recorded at this date') : knownValue(partner.label);
-    const icon = partner.flag?.status === 'ready' ? partner.flag.url : undefined;
-    const flags = partner.unknown ? {} : { flags: [{ tag: partner.tag ?? partner.label, ...(icon ? { icon } : {}), ...(partner.flag?.status === 'pending' ? { pending: true } : {}) }] };
+    const flags = partner.unknown || !partner.flag ? {} : { flags: [{ tag: partner.tag ?? partner.label, art: partner.flag }] };
     const cells: Record<string, TableRow['cells'][string]> = {
       partner: { value: name, ...flags },
       net: { value: signed(row.net, 'An amount with this partner was not recorded'), format: signedCellFormat },
@@ -158,7 +157,7 @@ export function projectTradeMatrix(readView: BoundedReadView): HeatMatrixModel {
   const entity = (index: number): MatrixAxisEntity => {
     const endpoint = reply.endpoints[index]!;
     const id = flowEndpointKey(endpoint);
-    if (endpoint.slot === null) return { id, label: UNKNOWN_COUNTRY, shortLabel: '?', nameMissing: endpoint.unknown ?? UNKNOWN_COUNTRY, flag: null, flagPending: false };
+    if (endpoint.slot === null) return { id, label: UNKNOWN_COUNTRY, shortLabel: '?', nameMissing: endpoint.unknown ?? UNKNOWN_COUNTRY, flag: unavailableArt(endpoint.unknown ?? UNKNOWN_COUNTRY) };
     const shown = resolveEntityFromReadView(readView, 'country', countryKey(endpoint.slot), hour, endpoint.tag ?? UNKNOWN_COUNTRY, endpoint.unknown);
     return {
       id,
@@ -167,8 +166,7 @@ export function projectTradeMatrix(readView: BoundedReadView): HeatMatrixModel {
       ...(endpoint.tag ? { tag: endpoint.tag } : {}),
       ...(shown.nameMissing ? { nameMissing: shown.nameMissing } : {}),
       ...(shown.color ? { color: shown.color } : {}),
-      flag: shown.flag ?? null,
-      flagPending: shown.pending === true,
+      ...(shown.flag ? { flag: shown.flag } : {}),
     };
   };
   const rowOf = new Map<number, number>();
@@ -245,6 +243,5 @@ export const tradeMatrixDeclaration: HeatMatrixWidgetDeclaration = {
   sources: ctx => countryFlowPlan(ctx, 'trade-flow', {}, null),
   projection: tradeMatrixProjection,
   projectionOptions: () => EMPTY_OPTIONS,
-  unavailable: flowUnavailable,
   jumpToDate: true,
 };

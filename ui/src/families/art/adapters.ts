@@ -1,7 +1,9 @@
 import type { Canvas2D } from '../../charts/textWidth.ts';
-import { drawArtSlot, drawFlagSlot, type ArtSlotState, type FlagSlotState } from '../../draw/kit.ts';
+import { drawArtSlot, drawFlagSlot, type ArtSlotState } from '../../draw/kit.ts';
+import { classifyFailure } from '../../dashboard/queryError.ts';
 import type { SpriteImage } from '../../generated/dashboard';
 import type { FamilyTheme } from '../contract.ts';
+import type { TooltipListItem } from '../host/tooltips.ts';
 import type { DrawnFlagEntry } from '../identity/types.ts';
 import type { LaneArtCache } from './laneCache.ts';
 import {
@@ -14,6 +16,7 @@ import {
   productArt,
   readyArt,
   unavailableArt,
+  refusedArt,
   type ArtOrigin,
   type ArtProvenance,
   type ArtResolution,
@@ -22,7 +25,10 @@ import {
 
 export function flagEntryToArt(entry: DrawnFlagEntry | undefined): ArtResolution {
   if (!entry) return PENDING_ART;
-  if (entry.failed) return failedArt(entry.failed.message, true);
+  if (entry.failed) {
+    const failure = classifyFailure(entry.failed);
+    return failure?.kind === 'refused' ? refusedArt(failure.reason, 'flag-read') : failedArt(entry.failed.message, true);
+  }
   if (entry.resolution) return entry.resolution;
   if (entry.image?.resolution) return productArt(entry.image.resolution);
   if (entry.url) {
@@ -66,7 +72,7 @@ export function urlToArt(
     });
   }
   if (options.pending) return PENDING_ART;
-  return failedArt(options.reason ?? 'No artwork address was given', false);
+  return unavailableArt(options.reason ?? 'The product gave no artwork address');
 }
 
 function bitmapDimensions(bitmap: CanvasImageSource, frameWidth: number, frameHeight: number): { readonly width: number; readonly height: number } {
@@ -80,7 +86,7 @@ function bitmapDimensions(bitmap: CanvasImageSource, frameWidth: number, frameHe
 
 export function toArtSlotState<TBitmap extends CanvasImageSource>(
   state: ArtResult<TBitmap>,
-  resolvedName?: string,
+  label?: string,
 ): ArtSlotState {
   switch (state.status) {
     case 'noArtExpected':
@@ -93,72 +99,57 @@ export function toArtSlotState<TBitmap extends CanvasImageSource>(
       return { kind: 'ready', bitmap: state.bitmap, width, height };
     }
     case 'confirmedMissing':
+      return { kind: 'missing', reason: state.reason, ...(label ? { label } : {}) };
     case 'unavailable':
-      return { kind: 'missing', ...(resolvedName ? { resolvedName } : {}) };
+      return { kind: 'unrecorded', reason: state.reason };
     case 'refused':
       return { kind: 'refused', reason: state.reason };
     case 'failed':
-      return { kind: 'failed', reason: state.reason };
+      return { kind: 'failed', reason: state.reason, retryable: state.retryable };
   }
 }
 
-export function toFlagSlotState<TBitmap extends CanvasImageSource>(
-  state: ArtResult<TBitmap>,
-  tag?: string,
-): FlagSlotState {
+export function artTooltipItem(label: string, art: ArtResult | undefined): TooltipListItem | null {
+  const text = art ? artHoverText(art) : null;
+  return text ? { label, missingReason: text } : null;
+}
+
+export const ART_MISSING_FROM_INSTALL = 'art missing from the current installation';
+
+export function artHoverText(state: ArtResult): string | null {
   switch (state.status) {
-    case 'pending':
-      return { kind: 'pending' };
-    case 'ready': {
-      if (!state.bitmap) return { kind: 'pending' };
-      const { width, height } = bitmapDimensions(state.bitmap, state.frame.outputWidth, state.frame.outputHeight);
-      return { kind: 'ready', bitmap: state.bitmap, width, height };
-    }
-    case 'failed':
-      return { kind: 'failed' };
     case 'noArtExpected':
-      return { kind: 'none' };
-    case 'refused':
-      return { kind: 'refused', reason: state.reason };
+    case 'ready':
+      return null;
+    case 'pending':
+      return 'Loading';
     case 'confirmedMissing':
+      return `${state.reason}; ${ART_MISSING_FROM_INSTALL}`;
     case 'unavailable':
-      return { kind: 'missing', ...(tag ? { tag } : {}) };
+      return state.reason;
+    case 'refused':
+      return `Refused: ${state.reason}`;
+    case 'failed':
+      return `Failed: ${state.reason}${state.retryable ? '; will retry' : ''}`;
   }
 }
 
 export interface MediaSlotSpec {
   readonly kind: 'flag' | 'art' | 'none';
   readonly art: ArtResult;
-  readonly iconUrl?: string | null;
   readonly tag?: string;
   readonly name?: string;
   readonly resolvedName?: string;
   readonly dimmed?: boolean;
 }
 
-export interface ArtIconLookup {
-  get(url: string): ImageBitmap | null | undefined;
-}
-
 export interface MediaSlotDrawOptions {
   readonly artCache?: LaneArtCache;
-  readonly icons?: ArtIconLookup;
   readonly radius?: number;
 }
 
-export function resolveCachedArt(
-  art: ArtResult,
-  options?: { readonly artCache?: LaneArtCache; readonly icons?: ArtIconLookup; readonly iconUrl?: string | null },
-): ArtResult {
-  if (art.status === 'ready' && !art.bitmap) {
-    const cached = options?.artCache?.resolve(art);
-    if (cached) return cached;
-    const url = options?.iconUrl ?? art.url;
-    const bmp = options?.icons?.get(url);
-    if (bmp) return { ...art, bitmap: bmp };
-    if (bmp === null) return unavailableArt('Artwork unavailable');
-  }
-  return art;
+export function resolveCachedArt(art: ArtResult, artCache: LaneArtCache | undefined): ArtResult {
+  return art.status === 'ready' && !art.bitmap && artCache ? artCache.resolve(art) : art;
 }
 
 export function drawMediaSlot(
@@ -173,13 +164,9 @@ export function drawMediaSlot(
 ): void {
   if (!media || media.kind === 'none' || width <= 0 || height <= 0) return;
   const y = Math.round(middleY - height / 2);
-  const resolved = resolveCachedArt(media.art, {
-    artCache: options.artCache,
-    icons: options.icons,
-    iconUrl: media.iconUrl,
-  });
+  const resolved = resolveCachedArt(media.art, options.artCache);
   if (media.kind === 'flag') {
-    drawFlagSlot(ctx, x, y, toFlagSlotState(resolved, media.tag), theme, {
+    drawFlagSlot(ctx, x, y, toArtSlotState(resolved, media.tag), theme, {
       width,
       height,
       ...(media.dimmed ? { dimmed: true } : {}),

@@ -674,24 +674,13 @@ impl PoliticsContent {
         } else {
             &self.portrait_thumbnails
         };
-        if let Some(cached) = store
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(&key)
-        {
-            return super::artwork::sprites::settled_art(cached);
-        }
-        let drawn = super::artwork::sprites::drawn_art(
-            || format!("portrait {text}"),
-            &self.catalogue,
-            |catalogue| super::artwork::resolve_portrait_entry(catalogue, kind, text, edge),
-        );
-        let loaded = super::artwork::sprites::settled_art(&drawn);
-        store
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(key, drawn);
-        loaded
+        super::artwork::sprites::keep_settled(store, key, || {
+            super::artwork::sprites::drawn_art(
+                || format!("portrait {text}"),
+                &self.catalogue,
+                |catalogue| super::artwork::resolve_portrait_entry(catalogue, kind, text, edge),
+            )
+        })
     }
 
     pub fn idea_artwork(

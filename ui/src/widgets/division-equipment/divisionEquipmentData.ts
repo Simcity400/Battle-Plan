@@ -5,7 +5,7 @@ export function validateDivisionEquipment(value: unknown): DivisionEquipmentRepl
   const reply = value as DivisionEquipmentReply;
   if (!reply || typeof reply.tag !== 'string' || (reply.missing !== null && typeof reply.missing !== 'string')
     || !isArray(reply.types) || !isArray(reply.templates) || !isArray(reply.warnings)
-    || reply.types.some(row => (row.archetype !== null && typeof row.archetype !== 'string') || (row.heldRaw !== null && typeof row.heldRaw !== 'string') || !isArray(row.variants)))
+    || reply.types.some(row => (row.archetype !== null && typeof row.archetype !== 'string') || (row.heldRaw !== null && typeof row.heldRaw !== 'string') || !isArray(row.variants) || (row.variantsMissing !== null && typeof row.variantsMissing !== 'string')))
     throw new Error('Invalid division equipment reply');
   return reply;
 }

@@ -5,9 +5,9 @@ import type { CountryGroupReply, LandBattlesManifestReply } from '../../generate
 import type { CountrySelection } from '../../dashboard/model';
 import type { LandBattle, LandBattleRow, LandBattlesWindow } from './landBattlesData.ts';
 import type { BattleValue } from '../battles/battleRows.ts';
-import { battleChangeHours, battleState, battleStateRows } from '../battles/battleRows.ts';
-import { battleWarnings, battleWindowIndex, battleWindows, rankedLandBattleRows, landBattleChanges, landBattleRow, landBattleRows, landBattlePlaceRequests, landWindowPlaces, namedLandBattles,
-  shownCensusHour, validateLandBattlesReply, validateLandBattlesManifest, validateLandBattlesRanking } from './landBattlesData.ts';
+import { battleChangeHours, battlePlaceRequests as landBattlePlaceRequests, battleState, battleStateRows, battleWarnings, battleWindowIndex, battleWindows, namedBattles as namedLandBattles, shownBattleCensusHour as shownCensusHour } from '../battles/battleRows.ts';
+import { rankedLandBattleRows, landBattleChanges, landBattleRow, landBattleRows, landWindowPlaces,
+  validateLandBattlesReply, validateLandBattlesManifest, validateLandBattlesRanking } from './landBattlesData.ts';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import { casualtyRankingNote, landCasualtyText, landLossText } from './landBattlesData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
@@ -22,7 +22,7 @@ const wire = (rows: unknown[] = [history()], labels: string[] = []) => ({ ...rep
 const read = (h = history(), at = 20, all = true, matches = (_tag: string, _hour: number) => true) => landBattleRows(new Map([[0, reply([h])]]), at, matches, all);
 const countryGroups = (): CountryGroupReply => ({ branchId: '1', warnings: [], identityChanges: [], factions: [], wars: [],
   warStarts: [], capitulations: [], humans: [{ tag: 'other', firstHour: 10, lastHour: 40 }],
-  unobserved: { humans: [{ firstHour: 19, lastHour: 20 }], factions: [], wars: [] },
+  unobserved: { humans: [{ firstHour: 19, lastHour: 20 }], factions: [], wars: [], unattributed: [] },
   countryIdentities: [
     { tag: 'mod/tag', identities: [{ firstHour: 10, lastHour: 40, slot: 1, countryId: 11 }] },
     { tag: 'other', identities: [{ firstHour: 10, lastHour: 40, slot: 2, countryId: 22 }] },

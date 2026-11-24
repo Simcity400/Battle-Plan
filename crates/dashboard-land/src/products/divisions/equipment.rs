@@ -37,7 +37,7 @@ impl DivisionEquipmentView {
 
     fn withheld_by(self) -> &'static [TableId] {
         match self {
-            Self::Types => &[TableId::DivisionEquipmentCounts, TableId::DivisionEquipmentByType, TableId::DivisionEquipmentByDesign],
+            Self::Types => &[TableId::DivisionEquipmentCounts, TableId::DivisionEquipmentByType],
             Self::Templates => &[TableId::DivisionEquipmentCounts, TableId::DivisionEquipmentByTemplate],
         }
     }
@@ -93,6 +93,8 @@ pub struct EquipmentType {
     pub stockpile_raw: Option<String>,
     pub stockpile_hour: Option<i32>,
     pub variants: Vec<EquipmentVariant>,
+    #[doc = " Why the type's designs are not known at this hour; `variants` is then empty."]
+    pub variants_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -353,7 +355,14 @@ fn overview(frame: &DecodedFrame, params: &DivisionEquipmentParams, tag: String,
         templates(frame, &mine, content, refusals, &mut reply)?;
         return Ok(reply);
     }
-    let designs: Vec<&DivisionEquipmentDesignRow> = frame.complete::<tables::DivisionEquipmentByDesign>()?.iter().filter(|row| mine(row.slot, row.side)).collect();
+    let (designs, variants_missing): (Vec<&DivisionEquipmentDesignRow>, _) = match frame.complete::<tables::DivisionEquipmentByDesign>() {
+        Ok(rows) => (rows.iter().filter(|row| mine(row.slot, row.side)).collect(), None),
+        Err(why) => {
+            let why = format!("Designs held were not recorded at this hour: {why}");
+            refusals.note(why.clone());
+            (Vec::new(), Some(why))
+        }
+    };
     for row in frame.complete::<tables::DivisionEquipmentByType>()?.iter().filter(|row: &&DivisionEquipmentTypeRow| mine(row.slot, row.side)) {
         let (key, name, name_missing) = archetype(frame, content, row.archetype, refusals);
         let variants = designs
@@ -377,6 +386,7 @@ fn overview(frame: &DecodedFrame, params: &DivisionEquipmentParams, tag: String,
             stockpile_hour: stock.as_ref().and(counts.stock_hour),
             stockpile_raw: stock,
             variants,
+            variants_missing: variants_missing.clone(),
         });
     }
     Ok(reply)

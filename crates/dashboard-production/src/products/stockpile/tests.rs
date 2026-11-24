@@ -1,5 +1,5 @@
 use super::{
-    catalogue::{Drawn, Group, Kind, Lines, Member, Piece, Record, drawn, groups, logistics_lines, stock_lines, summary, variant_line},
+    catalogue::{Drawn, Group, Kind, Lines, Member, Piece, Record, groups, logistics_lines, stock_lines, variant_line},
     daily_units_raw,
     history::{Logistics, Replay, Stock, carried, split_logistics},
     lines::{AI_BALANCE, BALANCE_UNREAD, NEED_UNKNOWN, NO_NEED, NOT_HELD, STOCK_UNKNOWN, STOCK_UNREAD, Shown, bucketed, main_types, missing, next_change, value_at},
@@ -12,7 +12,7 @@ fn span(first_hour: i32, last_hour: i32) -> HourSpan {
 }
 
 fn member(token: &str, archetype: Option<&str>, domain: Option<super::Domain>) -> Member {
-    Member { token: token.into(), archetype: archetype.map(str::to_owned), domain, names: Vec::new() }
+    Member { token: token.into(), archetype: archetype.map(str::to_owned), domain }
 }
 
 #[test]
@@ -61,46 +61,15 @@ fn a_need_comes_from_the_available_operand_and_an_unresolved_type_decides_an_arm
     tokens.insert(":mystery".into(), (vec![12], true));
     let notes: BTreeMap<&str, Option<&str>> = [("infantry_equipment", None), ("convoy", Some("needs the operand")), (":mystery", Some("Need unavailable."))].into_iter().collect();
     let record = Record { logistics: &tokens, notes, unresolved: vec![":mystery"] };
-    let rifles = Group { wire: String::new(), kind: Kind::Type, key: "infantry_equipment".into(), variants: Vec::new(), types: vec!["infantry_equipment".into()] };
-    let convoys = Group { wire: String::new(), kind: Kind::Type, key: "convoy".into(), variants: Vec::new(), types: vec!["convoy".into()] };
-    let land = Group { wire: String::new(), kind: Kind::Domain, key: "land".into(), variants: Vec::new(), types: vec!["infantry_equipment".into()] };
+    let rifles = Group { kind: Kind::Type, key: "infantry_equipment".into(), variants: Vec::new(), types: vec!["infantry_equipment".into()] };
+    let convoys = Group { kind: Kind::Type, key: "convoy".into(), variants: Vec::new(), types: vec!["convoy".into()] };
+    let land = Group { kind: Kind::Domain, key: "land".into(), variants: Vec::new(), types: vec!["infantry_equipment".into()] };
     let summed = [(0, &rifles), (1, &convoys), (2, &land)];
     let lines = logistics_lines(&replay, &summed, &record, &AtomicBool::new(false)).unwrap();
     let values = |line: &Vec<Piece<(i128, Option<i128>)>>| line.iter().map(|piece| (piece.first, piece.value)).collect::<Vec<_>>();
     assert_eq!(values(&lines[0]), vec![(0, Some((-50, Some(170)))), (20, Some((-50, Some(150))))]);
     assert_eq!(values(&lines[1]), vec![(0, Some((30, None)))]);
     assert_eq!(values(&lines[2]), vec![(0, Some((-50, None))), (30, None)]);
-}
-
-#[test]
-fn a_chart_folds_exact_pieces_into_the_views_bins_and_breaks_after_unknown_hours() {
-    let pieces = vec![
-        Piece { first: 0, last: 9, value: Some(10_i128), starts: true },
-        Piece { first: 10, last: 19, value: None, starts: false },
-        Piece { first: 20, last: 39, value: Some(30), starts: false },
-    ];
-    let mut lines: Vec<Drawn> = Vec::new();
-    drawn(&pieces, |raw| Some((raw as f64, raw.unsigned_abs())), (0, 39), None, &mut lines);
-    assert_eq!(lines.iter().map(|line| (line.first, line.break_before)).collect::<Vec<_>>(), vec![(0, true), (20, true)]);
-    let hourly = summary(std::mem::take(&mut lines), 0, 39, 40);
-    assert_eq!(hourly.runs.as_ref().map(Vec::len), Some(2));
-    assert_eq!(hourly.buckets.iter().filter(|bucket| bucket.is_some()).count(), 30);
-    let mut lines: Vec<Drawn> = Vec::new();
-    drawn(&pieces, |raw| Some((raw as f64, raw.unsigned_abs())), (0, 39), None, &mut lines);
-    let binned = summary(lines, 0, 39, 2);
-    assert!(binned.runs.is_none());
-    let held: Vec<_> = binned.buckets.iter().flatten().collect();
-    assert!(held.iter().any(|bucket| bucket.min_value == 10.0 && bucket.max_value == 30.0 || bucket.first_value == 10.0));
-    assert!(held.iter().all(|bucket| bucket.max_value <= 30.0 && bucket.min_value >= 10.0));
-    let mut lines: Vec<Drawn> = Vec::new();
-    drawn(&pieces, |raw| Some((raw as f64, raw.unsigned_abs())), (5, 39), None, &mut lines);
-    let cut = summary(lines, 5, 39, 40);
-    let runs: Vec<(i32, i32)> = cut.runs.unwrap().iter().map(|run| (run.first_hour, run.last_hour)).collect();
-    assert_eq!(runs, vec![(5, 9), (20, 39)]);
-    let mut lines: Vec<Drawn> = Vec::new();
-    drawn(&pieces, |raw| Some((raw as f64, raw.unsigned_abs())), (5, 39), None, &mut lines);
-    let binned = summary(lines, 5, 39, 2);
-    assert_eq!(binned.buckets.iter().flatten().next().map(|bucket| bucket.first_hour), Some(5));
 }
 
 #[test]

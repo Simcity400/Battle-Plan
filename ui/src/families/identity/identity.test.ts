@@ -13,8 +13,8 @@ import type {
 } from '../../generated/dashboard';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
-import { artUrlForHandle, createLaneArtProvider, flagArtHandle, laneArtDemand, mergeArtDemands, requestDemandedFlags } from '../art/provider.ts';
-import { toFlagSlotState } from '../art/adapters.ts';
+import { artUrlForHandle, createLaneArtProvider, flagArtHandle, laneArtDemand, readArtDemands, requestDemandedFlags } from '../art/provider.ts';
+import { toArtSlotState } from '../art/adapters.ts';
 import { NO_ART, artHandleKey, productArt, refusedArt } from '../art/types.ts';
 import { RefusedError } from '../../dashboard/queryError.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
@@ -103,8 +103,8 @@ function sampleGroups(): CountryGroupReply {
         name: 'Axis Pact',
         nameReason: null,
         names: [
-          { firstHour: 50, lastHour: 149, name: 'Berlin Pact', reason: null },
-          { firstHour: 150, lastHour: 300, name: 'Axis Pact', reason: null },
+          { firstHour: 50, lastHour: 149, name: 'Berlin Pact', reason: null, token: null },
+          { firstHour: 150, lastHour: 300, name: 'Axis Pact', reason: null, token: null },
         ],
         recordedName: 'AXIS',
         firstHour: 50,
@@ -119,7 +119,7 @@ function sampleGroups(): CountryGroupReply {
     capitulations: [],
     identityChanges: [],
     countryIdentities: [],
-    unobserved: { humans: [], factions: [{ firstHour: 350, lastHour: 360 }], wars: [] },
+    unobserved: { humans: [], factions: [{ firstHour: 350, lastHour: 360 }], wars: [], unattributed: [] },
     warnings: [],
   };
 }
@@ -744,7 +744,7 @@ test('an identity key and an art handle keep their whole identity from demand to
   const asText: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, text: true };
   const asRecorded: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, recorded: 'GFX_y' };
   assert.equal(artHandleKey({ kind: 'sprite', key: 'GFX_x' }), artHandleKey(plain));
-  assert.deepEqual(mergeArtDemands([], [plain, asText, asRecorded, plain]), [plain, asText, asRecorded]);
+  assert.deepEqual(readArtDemands([], [plain, asText, asRecorded, plain]), [plain, asText, asRecorded]);
   assert.equal(new Set([plain, asText, asRecorded].map(artHandleKey)).size, 3);
 });
 
@@ -973,9 +973,9 @@ test('a status is carried, not rebuilt: unresolved holders, failures across the 
   assert.equal(broker.flagFor(SCOPE, 'panel', FLAG_A)?.url, 'flag://GER_a');
   broker.dispose();
 
-  assert.deepEqual(toFlagSlotState(refusedArt('Unsupported flag format')), { kind: 'refused', reason: 'Unsupported flag format' });
-  assert.deepEqual(toFlagSlotState(NO_ART), { kind: 'none' });
-  assert.deepEqual(toFlagSlotState(productArt({ status: 'confirmedMissing', reason: 'No flag file' }), 'GER'), { kind: 'missing', tag: 'GER' });
+  assert.deepEqual(toArtSlotState(refusedArt('Unsupported flag format')), { kind: 'refused', reason: 'Unsupported flag format' });
+  assert.deepEqual(toArtSlotState(NO_ART), { kind: 'none' });
+  assert.deepEqual(toArtSlotState(productArt({ status: 'confirmedMissing', reason: 'No flag file' }), 'GER'), { kind: 'missing', reason: 'No flag file', label: 'GER' });
 });
 
 test('an entity failure belongs to its window and a retryable one is asked again after its backoff', async () => {
@@ -1066,6 +1066,52 @@ test('visiting 40 windows keeps at most the window bound of names, the demanded 
   broker.setDemand(owner, SCOPE, { asks: [{ key: stateKey(7), hour: 5 }] }, undefined, [0, 40 * 720]);
   for (let i = 0; i < 20; i++) await Promise.resolve();
   assert.equal(asked.filter(from => from === 0).length, 2, 'a revisited window is read again');
+  broker.dispose();
+});
+
+test('a permanent failure for one state holds back only that state: another state in the same window is still read', async () => {
+  const asked: number[][] = [];
+  const transport = {
+    loadPlaceNameRuns: async (_scope: unknown, from: number, to: number, states: readonly number[]) => {
+      asked.push([...states]);
+      if (states.includes(7)) throw new RefusedError('state 7 is refused by name');
+      return { from, to, unknown: [], states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: `State ${id}`, missing: null, presence: 'present' }] })), provinces: [], warnings: [] };
+    },
+  } as unknown as IdentityTransport;
+  const broker = new IdentityBroker({ transport, clock: { now: () => 0, after: () => () => {} } });
+  const owner = {};
+  broker.setDemand(owner, SCOPE, { asks: [{ key: stateKey(7), hour: 10 }] }, undefined, [0, 2000]);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(broker.resolve(SCOPE, stateKey(7), 10).kind, 'failed');
+  broker.setDemand(owner, SCOPE, { asks: [{ key: stateKey(7), hour: 10 }, { key: stateKey(8), hour: 10 }] }, undefined, [0, 2000]);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.deepEqual(asked, [[7], [8]], 'the refused state is not asked again; the new state in its window is');
+  const shown = broker.resolve(SCOPE, stateKey(8), 10);
+  assert.equal(shown.kind === 'known' && shown.name.kind === 'known' ? shown.name.value : null, 'State 8');
+  broker.dispose();
+});
+
+test('releasing a demand trims the held windows without another load, and an evicted window takes its failures and gaps with it', async () => {
+  const transport = {
+    loadPlaceNameRuns: async (_scope: unknown, from: number, to: number, states: readonly number[]) => {
+      if (from === 0) throw new RefusedError('this window is refused');
+      return { from, to, unknown: [{ firstHour: from, lastHour: from + 5, reason: 'Not in this recording: gap' }], states: states.map(id => ({ id, runs: [{ firstHour: from + 6, lastHour: to, name: `State ${id}`, missing: null, presence: 'present' }] })), provinces: [], warnings: [] };
+    },
+  } as unknown as IdentityTransport;
+  const broker = new IdentityBroker({ transport, clock: { now: () => 0, after: () => () => {} } });
+  const owner = {};
+  const windows = MAX_ENTITY_WINDOWS + 2;
+  broker.setDemand(owner, SCOPE, { asks: Array.from({ length: windows }, (_, window) => ({ key: stateKey(7), hour: window * 720 + 10 })) }, undefined, [0, windows * 720]);
+  for (let i = 0; i < 600; i++) await Promise.resolve();
+  const before = broker.snapshotOf(SCOPE);
+  assert.equal(before.failures?.entities?.[identityKeyString(stateKey(7))]?.length, 1, 'the failed window is held');
+  broker.setDemand(owner, SCOPE, null);
+  const after = broker.snapshotOf(SCOPE);
+  const runs = after.entities?.[identityKeyString(stateKey(7))] ?? [];
+  assert.ok(runs.length <= MAX_ENTITY_WINDOWS, `released windows are trimmed at once (${runs.length} held)`);
+  assert.equal(after.failures?.entities?.[identityKeyString(stateKey(7))], undefined, 'the oldest windows, the failed one among them, leave with their failures');
+  assert.ok(!(after.entityUnknown?.state ?? []).some(gap => gap.firstHour === 720), 'an evicted window leaves no gap behind');
+  assert.ok((after.entityUnknown?.state ?? []).some(gap => gap.firstHour === 2 * 720), 'a retained window keeps its gap');
   broker.dispose();
 });
 

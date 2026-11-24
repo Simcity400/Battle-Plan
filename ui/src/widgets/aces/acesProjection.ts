@@ -1,3 +1,5 @@
+import { productIconArt } from '../../families/art/provider.ts';
+import { unavailableArt, type ArtResult } from '../../families/art/types.ts';
 import { countryRowPresentation } from '../../families/bars/model.ts';
 import { inHourRanges, nextChangeAfter } from '../../families/holders.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
@@ -13,29 +15,25 @@ import { COLUMNS, TABLE_BASE } from './definition.ts';
 
 export interface AcesOptions { readonly filter: DeclaredCountryFilter }
 
-interface Media { readonly icon: string | undefined; readonly pending: boolean }
-
 interface AceRow {
   readonly ace: AirAce;
-  readonly portrait: Media;
-  readonly flag: Media;
+  readonly portrait: ArtResult;
+  readonly flag: ArtResult;
   readonly country: Value<string>;
   readonly killerCountry: Value<string> | null;
 }
 
 const NO_COUNTRY: Value<string> = notRecorded('Country not recorded');
 
-function portraitMedia(ace: AirAce, readView: BoundedReadView): Media {
-  if (ace.portrait === null) return { icon: undefined, pending: false };
-  const art = readView.art({ kind: 'url', url: ace.portrait });
-  return art.status === 'ready' ? { icon: art.url, pending: false } : { icon: undefined, pending: art.status === 'pending' };
+function portraitMedia(ace: AirAce, readView: BoundedReadView): ArtResult {
+  return productIconArt(readView, ace.portrait, ace.portraitMissing ?? 'Portrait not recorded');
 }
 
-function countryOf(tag: string | null, readView: BoundedReadView, atHour?: number): { readonly flag: Media; readonly country: Value<string> } {
-  if (tag === null) return { flag: { icon: undefined, pending: false }, country: NO_COUNTRY };
+function countryOf(tag: string | null, readView: BoundedReadView, atHour?: number): { readonly flag: ArtResult; readonly country: Value<string> } {
+  if (tag === null) return { flag: unavailableArt('Country not recorded'), country: NO_COUNTRY };
   const shown = countryRowPresentation(readView, tag, undefined, undefined, atHour);
   return {
-    flag: { icon: shown.media.kind === 'flag' ? shown.media.iconUrl : undefined, pending: shown.media.kind === 'flag' && shown.media.art.status === 'pending' },
+    flag: shown.media.art,
     country: shown.labelMissing ? notRecorded('Country name not recorded') : textValue(shown.label, 'Country name not recorded'),
   };
 }
@@ -61,10 +59,10 @@ function aircraftLine(ace: AirAce): string | undefined {
 }
 
 const ACE_COLUMNS: readonly DeclarativeColumnSpec<AceRow, AcesOptions>[] = [
-  { ...PORTRAIT!, priority: 4, sortable: false, cellKind: 'kind', iconSlot: true, icon: row => row.portrait.icon, iconPending: row => row.portrait.pending,
+  { ...PORTRAIT!, priority: 4, sortable: false, cellKind: 'kind', iconSlot: true, art: row => row.portrait,
     extra: row => ({ artShape: 'portrait', ...(row.ace.name ? { artName: row.ace.name } : {}) }),
     value: row => row.ace.portrait === null ? notRecorded(row.ace.portraitMissing ?? 'Portrait not recorded') : textValue(row.ace.name, 'Ace name not recorded') },
-  { ...COUNTRY!, priority: 1, iconSlot: true, icon: row => row.flag.icon, iconPending: row => row.flag.pending, country: row => row.ace.tag, value: row => row.country },
+  { ...COUNTRY!, priority: 1, iconSlot: true, art: row => row.flag, country: row => row.ace.tag, value: row => row.country },
   { ...ACE!, priority: 0, text: true, hideable: false, cellKind: 'item', widest: ['The Blond Knight of Germany'],
     extra: row => (nickname(row.ace) ? { subtext: nickname(row.ace) } : {}),
     value: row => textValue(row.ace.name, 'Ace name not recorded') },

@@ -6,7 +6,7 @@ import type { AirSide, AirTimelineReply } from '../../generated/dashboard';
 import { askUnits } from '../../families/readUnits.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import type { FrozenGate } from '../../families/sources.ts';
-import { DAY_PIECE_HOURS, DAY_TILE_HOURS } from '../../families/heat/dayTiles.ts';
+import { DAY_TILE_HOURS } from '../../families/heat/dayTiles.ts';
 import { airTimelineDeclaration, projectAirTimeline } from './airTimelineProjection.ts';
 
 const SURFACE = '#161616';
@@ -46,6 +46,9 @@ function reply(lastHour: number, extra: Partial<AirTimelineReply> = {}): AirTime
     badBelow: 0,
     goodAbove: 0,
     warnings: [],
+    rankMissing: null,
+    empty: null,
+    activeUnlisted: { ids: [], missing: null },
     ...extra,
   };
 }
@@ -137,17 +140,18 @@ test('a hundred played hours ask each completed tile once, the current tile once
       if (unit.key !== null && unit.key !== keys.get(unit.name)) {
         if (unit.name === 'now') {
           nowAsks++;
-          const asked = (unit.spec!.request as unknown as { params: { firstHour: number; lastHour: number } }).params;
+          const asked = (unit.spec!.request as unknown as { params: { firstHour: number; lastHour: number; rankFrom?: unknown } }).params;
           widest = Math.max(widest, asked.lastHour - asked.firstHour + 1);
+          assert.equal(asked.rankFrom, undefined, 'the automatic regions are ranked at the displayed hour, never over the branch');
         } else tileAsks++;
       }
       keys.set(unit.name, unit.key);
     }
   }
   const completedTiles = Math.ceil(24 * 1000 / DAY_TILE_HOURS);
-  assert.equal(tileAsks, Math.floor(1000 / 64) + Math.floor((1000 % 64) / 8), 'every complete tile and every complete eight-day piece of the current tile once');
+  assert.equal(tileAsks, Math.floor(1000 / 64) + Math.floor((1000 % 64) / 8) + 4, 'every complete tile and every complete eight-day piece of the current tile and every complete day of the current piece once (four midnights)');
   assert.equal(nowAsks, 100);
-  assert.ok(widest <= DAY_PIECE_HOURS, 'the hourly ask covers the current eight-day piece only');
+  assert.ok(widest <= 24, 'the hourly ask covers today only');
 
   const visits = { cells: 0 };
   const counted = <T>(items: T[]): T[] => new Proxy(items, {
@@ -230,4 +234,16 @@ test('a correction that moves a viewer colour change by a day redraws the tile a
   };
   assert.deepEqual(project(48), [0, 48, 96]);
   assert.deepEqual(project(72), [0, 72, 96], 'the old boundary is not kept');
+});
+
+test('an empty timeline says why: the chart left its active regions out, the hour was read in part, or nothing was active', () => {
+  const body = (empty: AirTimelineReply['empty'], rankMissing: string | null = null) => {
+    const model = projectAirTimeline(view(50, reply(50, { rows: [], empty, rankMissing })), OPTIONS);
+    return [model.empty, model.emptyKind ?? 'empty'];
+  };
+  assert.deepEqual(body({ kind: 'filtered', hidden: 1, outside: 0 }), ['The only active region at this date is removed from this chart.', 'empty']);
+  assert.deepEqual(body({ kind: 'unread', reason: 'Air scores were read only in part at this hour, so the most active regions are not known' }), ['Air scores were read only in part at this hour, so the most active regions are not known.', 'unavailable']);
+  assert.deepEqual(body({ kind: 'none' }), ['No air activity at this date.', 'empty']);
+  const pinnedOnly = projectAirTimeline(view(50, reply(50, { rankMissing: 'Air scores were read only in part at this hour, so the most active regions are not known' })), OPTIONS);
+  assert.ok(pinnedOnly.warnings?.includes('Air scores were read only in part at this hour, so the most active regions are not known'), 'beside the picks, an unranked hour is said, not hidden');
 });

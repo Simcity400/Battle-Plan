@@ -1,11 +1,12 @@
 import { dayLabel } from '../../charts/draw.ts';
 import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
-import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
+import { forceAtSources, GROUP_EMPTY } from '../../families/bars/forceAtRace.ts';
+import { seriesRaceSelection, seriesRaceUnavailable, seriesRaceWarnings, type SeriesRaceBaseOptions } from '../../families/bars/seriesRace.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
-import { inHourRanges, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
+import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, zeroValue } from '../../families/value.ts';
 import type { Country, OccupationReserveReply, ReserveHolder } from '../../generated/dashboard';
@@ -13,13 +14,7 @@ import { persons, validateOccupationReserve } from './occupationReserveData.ts';
 
 const FALLBACK_SOURCE_COLOUR = colour(DEFAULT_CARD_SURFACE, 0);
 
-export interface OccupationReserveRaceOptions {
-  readonly top: number | null;
-  readonly all: boolean;
-  readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
-  readonly membership?: Readonly<Record<string, HourRanges>> | null;
-  readonly unobserved?: HourRanges;
-}
+export type OccupationReserveRaceOptions = SeriesRaceBaseOptions;
 
 export interface OccupationReserveRowMeta {
   readonly tag: string;
@@ -42,7 +37,10 @@ function sourcePresentation(readView: BoundedReadView, source: Country): { reado
 function makeHolderRow(readView: BoundedReadView, holder: ReserveHolder, readHour: number | null): BarsDataRow | null {
   const tag = holder.country.tag;
   if (tag === null) return null;
-  const pres = countryRowPresentation(readView, tag);
+  const key = holder.slot === null ? tag : countryKey(holder.slot);
+  const identity = readView.who('country', key);
+  const shown = countryRowPresentation(readView, key);
+  const pres = identity.name.status === 'ready' ? shown : { ...shown, label: tag };
   const total = holder.total;
   const value = total === 0 ? zeroValue() : knownValue(total);
 
@@ -83,11 +81,11 @@ function makeHolderRow(readView: BoundedReadView, holder: ReserveHolder, readHou
     ...(readHour !== null ? [{ label: 'As of', value: dayLabel(readHour) }] : []),
   ];
 
-  const meta: OccupationReserveRowMeta = { tag, id: holder.country.id, key: tag };
+  const meta: OccupationReserveRowMeta = { tag, id: holder.country.id, key };
   return {
     kind: 'data',
-    key: tag,
-    subject: tag,
+    key,
+    subject: key,
     label: pres.label,
     labelMissing: pres.labelMissing,
     media: pres.media,
@@ -107,17 +105,9 @@ function makeHolderRow(readView: BoundedReadView, holder: ReserveHolder, readHou
 export const occupationReserveRaceProjection: BarsProjection<OccupationReserveRaceOptions> = registerFamilyProjection({
   kind: 'occupation-reserve-manpower',
   family: 'bars',
-  nextChange(readView, options) {
-    const hour = readView.hour;
-    return Math.min(
-      nextHoldersChange(options.holders, hour),
-      nextRangesChange(options.unobserved, hour),
-      nextMembershipChange(options.membership, hour),
-    );
-  },
+  nextChange: () => Infinity,
   project(readView: BoundedReadView, options: OccupationReserveRaceOptions): BarsModel {
     const hour = readView.hour;
-    const ranked = options.top != null || options.all;
     const baseModel = {
       form: 'ordered' as const,
       hour,
@@ -126,10 +116,6 @@ export const occupationReserveRaceProjection: BarsProjection<OccupationReserveRa
       scaleUnit: 'Manpower',
       scaleFormat: { decimals: 0 },
     };
-
-    if (!ranked && options.unobserved?.some(([first, last]) => first <= hour && hour <= last)) {
-      return { ...baseModel, rows: [], empty: 'Group membership is unavailable at this time.', emptyKind: 'unavailable' };
-    }
 
     const refused = readView.refused('main');
     if (refused) {
@@ -147,9 +133,6 @@ export const occupationReserveRaceProjection: BarsProjection<OccupationReserveRa
 
     const rows: BarsDataRow[] = [];
     for (const holder of reply.holders) {
-      if (!ranked && options.membership && holder.country.tag !== null) {
-        if (!inHourRanges(options.membership[holder.country.tag], hour)) continue;
-      }
       const row = makeHolderRow(readView, holder, reply.readHour);
       if (row) rows.push(row);
     }
@@ -163,44 +146,16 @@ export const occupationReserveRaceProjection: BarsProjection<OccupationReserveRa
       ...baseModel,
       rows,
       warnings,
-      ...(!rows.length ? { empty: 'No reserve manpower is held at this date.', emptyKind: 'empty' as const } : {}),
+      ...(rows.length ? {} : reply.noneMissing !== null
+        ? { empty: reply.noneMissing, emptyKind: 'unavailable' as const }
+        : { empty: options.group ? GROUP_EMPTY : 'No reserve manpower is held at this date.', emptyKind: 'empty' as const }),
     };
   },
 }, 'main');
 
 function occupationReserveSources(ctx: FamilyPlanContext): SourcePlan {
-  const top = ctx.countries.top;
-  const all = ctx.countries.all;
-  const countries = top == null && !all ? ctx.countries.tags.map(countryFromKey) : [];
-  const coverage: SourceCoverage = top != null
-    ? { mode: 'population', form: 'top', limit: top }
-    : all
-      ? { mode: 'population', form: 'all' }
-      : { mode: 'keyed', keys: ctx.countries.tags };
-  const params = {
-    branchId: ctx.branch.id,
-    countries,
-    ...(top != null ? { top } : {}),
-  };
-  return {
-    owner: `occupation-reserve:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${top ?? (all ? 'all' : 'keyed')}`,
-    entries: top == null && !all && !countries.length ? [] : [{
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'panel',
-        coverage,
-        product: 'occupation-reserve-manpower',
-        followQuery: { panel: 'occupation-reserve-manpower', ...params },
-        params,
-        validate: validateOccupationReserve,
-      },
-    }],
-    allowEmptyFollow: top == null && !all && !countries.length,
-  };
+  const owner = `occupation-reserve:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`;
+  return forceAtSources(ctx, owner, 'occupation-reserve-manpower', {}, validateOccupationReserve);
 }
 
 export const occupationReserveRaceDeclaration: BarsWidgetDeclaration<OccupationReserveRaceOptions> = {
@@ -220,23 +175,9 @@ export const occupationReserveRaceDeclaration: BarsWidgetDeclaration<OccupationR
   },
   sources: occupationReserveSources,
   projection: occupationReserveRaceProjection,
-  projectionOptions: ctx => {
-    const ranked = ctx.countries.top != null || ctx.countries.all;
-    return {
-      top: ctx.countries.top,
-      all: ctx.countries.all,
-      holders: ranked ? null : ctx.countries.holders,
-      membership: ranked ? null : ctx.countries.membership,
-      unobserved: ranked ? [] : ctx.countries.unobserved,
-    };
-  },
-  unavailable: ctx => {
-    if (!ctx.countries.all && ctx.countries.top == null && ctx.following && !ctx.countries.tags.length && ctx.countries.membership === null) {
-      return 'No countries available for this selection.';
-    }
-    return null;
-  },
-  warnings: (_ctx, followRefused) => (followRefused ? [`Values are not followed here: ${followRefused}.`] : []),
+  projectionOptions: seriesRaceSelection,
+  unavailable: seriesRaceUnavailable,
+  warnings: (_ctx, followRefused) => seriesRaceWarnings(followRefused),
   jumpToDate: true,
   keyByBranch: true,
 };

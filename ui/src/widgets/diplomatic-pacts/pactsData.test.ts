@@ -1,3 +1,4 @@
+import { PENDING_ART } from '../../families/art/types.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { agreementKinds, agreementLanes, agreementsOf, pactSince, pactState, pactsProof, validatePacts } from './pactsData.ts';
@@ -42,7 +43,7 @@ test('lanes are a section per kind, split by side, with ended agreements shown o
   const pacts = [pact('1', 'embargo', 10, 50, { first: 'B', second: 'A', goneBy: 100 }), pact('2', 'embargo', 10, 100, { held: true }),
     pact('3', 'non_aggression_pact', 10, 100, { held: true, startHour: 5, endHour: 900 }), pact('4', 'mod_pact', 10, 100, { held: true })];
   const agreements = agreementsOf(pacts, 'A', null);
-  const text = { name: 'Alpha', country: (tag: string) => ({ name: `Country ${tag}`, flag: null }), kindName: (kind: string) => kind === 'mod_pact' ? 'Mod pact' : kind,
+  const text = { name: 'Alpha', country: (tag: string) => ({ name: `Country ${tag}`, flag: PENDING_ART }), kindName: (kind: string) => kind === 'mod_pact' ? 'Mod pact' : kind,
     colour: () => '#112233' };
   const lanes = agreementLanes(agreements, true, 110, text);
   assert.deepEqual(lanes.map(lane => lane.subtitle ? `${lane.label} · ${lane.subtitle}` : lane.label), ['Non-aggression pacts · 1 in force', 'Country B', 'Trade embargoes · 1 in force',

@@ -1,9 +1,8 @@
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import { collectArtUrls } from '../art/provider.ts';
-import type { ArtHandle, BoundedReadView, FamilyTheme, MirrorModel } from '../contract.ts';
+import type { ArtResult, BoundedReadView, FamilyTheme, MirrorModel } from '../contract.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
-import type { IdentityIndex } from '../identity/index.ts';
 import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import { AXIS_HEIGHT, frameTimeline, placeTimeline, visibleRange, type TimelineLayout, type TimelinePlacement } from './layout.ts';
 import { resolutionFor, type TimelineResolution } from './resolution.ts';
@@ -79,15 +78,22 @@ function tooltipFor(
   return defaultTimelineTooltip(model, lane, hit);
 }
 
-function collectArt(model: TimelineModel, layout: TimelinePlacement, scrollTop: number, index: IdentityIndex | null): string[] {
-  const handles: (ArtHandle | null | undefined)[] = [];
+function collectArt(model: TimelineModel, layout: TimelinePlacement, scrollTop: number): string[] {
+  const handles: (ArtResult | undefined)[] = [];
   const [first, end] = visibleRange(layout, scrollTop);
   for (let i = first; i < end; i++) {
     const lane = layout.lanes[i]!.lane;
-    handles.push(lane.flag, lane.icon);
-    if (model.iconsOnBars) for (const span of lane.spans) handles.push(span.icon);
+    handles.push(lane.flag, lane.icon, lane.outcome?.flag);
+    for (const side of lane.sides ?? []) {
+      handles.push(side.flag);
+      for (const member of side.strip) handles.push(member.flag);
+    }
+    for (const span of lane.spans) {
+      if (model.iconsOnBars) handles.push(span.icon);
+      for (const mark of span.marks ?? []) handles.push(mark.art);
+    }
   }
-  return collectArtUrls(handles, index);
+  return collectArtUrls(handles);
 }
 
 const lastEvents = new WeakMap<TimelineModel, number>();
@@ -139,7 +145,7 @@ export const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, Time
     drawTimeline(ctx, {
       model: frame.model,
       layout: frame.layout.frame,
-      readView: frame.projected,
+      artCache: frame.art,
       theme: frame.theme,
       scrollTop: frame.binding.scrollTop,
       expanded: frame.binding.expanded,
@@ -155,7 +161,7 @@ export const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, Time
     const hit = focus ? focusHit(frame.model, key, frame.hour) : decodeTimelineHit(key);
     if (!hit) return null;
     const payload = tooltipFor(frame.projection as TimelineProjection<unknown>, frame.model, hit, frame.readNow(), frame.binding.options);
-    return payload ? { hour: hit.hour ?? frame.hour, rowKey: hit.laneKey, payload } : null;
+    return payload ? { ...(!focus && hit.hour !== undefined ? { hour: hit.hour } : {}), rowKey: hit.laneKey, payload } : null;
   },
   structure({ model, layout }) {
     return {
@@ -164,6 +170,7 @@ export const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, Time
         emptyDetail: null,
         emptyKind: model.emptyKind ?? 'empty',
         summaryText: model.summaryText ?? null,
+        summaryPartial: model.summaryPartial ?? null,
         notes: model.notes ?? [],
         warnings: model.warnings,
       },
@@ -173,5 +180,5 @@ export const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, Time
   },
   mirror: frame => mirrorOf(frame.layout.frame),
   audit: frame => deriveTimelineAudit(frame.model),
-  visibleArt: frame => collectArt(frame.model, frame.layout.frame, frame.binding.scrollTop, frame.index),
+  visibleArt: frame => collectArt(frame.model, frame.layout.frame, frame.binding.scrollTop),
 };

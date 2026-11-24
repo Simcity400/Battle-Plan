@@ -4,7 +4,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { urlArtHandle } from '../../families/art/provider.ts';
-import { artState } from '../../families/table/identityCell.ts';
+import { cellArt } from '../../families/table/identityCell.ts';
 import {
   type TableCell,
   type TableModel,
@@ -54,6 +54,9 @@ function producedValue(line: ProductionLinesAtReply['lines'][number], outputMiss
   if (!line.output.wholeLife) return partialValue(units, `Counted since ${formatDateOnly(line.output.sinceHour)}; earlier output was not recorded`);
   return units === 0 ? zeroValue(0) : knownValue(units);
 }
+
+const producedCell = (value: Value): TableCell =>
+  value.kind === 'partial' ? { value, sortValue: notRecorded(value.reason) } : { value };
 
 function readLiveWhole(live: ReturnType<BoundedReadView['live']>, handle: string, field: string): bigint | null {
   if (!live) return null;
@@ -107,10 +110,10 @@ export const productionLinesProjection: TableProjection<ProductionLinesProjectio
       const name = variantName(variant, line.variant);
       const subtitle = variant?.typeName && variant.typeName !== name ? variant.typeName : undefined;
       const artUrl = iconImage(reply.icons, variant?.icon ?? null);
-      const art = artState(readView, urlArtHandle(artUrl));
+      const art = cellArt(readView, urlArtHandle(artUrl), 'The product drew no icon for this equipment');
       const org = organisationOf(reply.organisations, line.mio);
       const orgArtUrl = iconImage(reply.icons, org?.icon ?? null);
-      const orgArt = artState(readView, urlArtHandle(orgArtUrl));
+      const orgArt = cellArt(readView, urlArtHandle(orgArtUrl), 'The product drew no picture for this organisation');
 
       const active = readLiveNum(live, line.handle, 'active');
       const requested = readLiveNum(live, line.handle, 'requested');
@@ -152,7 +155,7 @@ export const productionLinesProjection: TableProjection<ProductionLinesProjectio
               : knownValue(weekly),
           format: { decimals: reply.decimals, maxDecimals: 1 },
         },
-        total: { value: producedValue(line, reply.outputMissing, outputUnits) },
+        total: producedCell(producedValue(line, reply.outputMissing, outputUnits)),
         priority: { value: knownValue(line.priority + 1) },
         cost: {
           value: costRaw === null ? notRecorded('IC cost not recorded') : knownValue(formatAmount(costRaw, reply.decimals)),

@@ -65,6 +65,7 @@ pub struct TensionStackBand {
     pub tag: Option<String>,
     pub remembered: bool,
     pub values: Vec<Option<f64>>,
+    pub values_raw: Vec<Option<String>>,
     pub min_values: Vec<Option<f64>>,
     pub max_values: Vec<Option<f64>>,
     pub end_value: Option<f64>,
@@ -77,7 +78,9 @@ pub struct TensionStackBand {
 pub struct TensionStackOther {
     pub count: u32,
     pub values: Vec<Option<f64>>,
+    pub values_raw: Vec<Option<String>>,
     pub end_value: Option<f64>,
+    pub end_raw: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -106,10 +109,15 @@ pub struct WorldTensionStackReply {
     pub ceiling_raw: String,
     pub end_hour: Option<i32>,
     pub capped_end_tension: Option<f64>,
+    pub capped_end_tension_raw: Option<String>,
+    pub end_total_raw: Option<String>,
+    pub end_sum_raw: Option<String>,
     pub downsampled: bool,
     pub refused: Option<String>,
     pub hours: Vec<i32>,
     pub total: Vec<Option<f64>>,
+    pub total_raw: Vec<Option<String>>,
+    pub sum_raw: Vec<Option<String>>,
     pub bands: Vec<TensionStackBand>,
     pub other: Option<TensionStackOther>,
     pub events: Vec<TensionStackEvent>,
@@ -757,9 +765,14 @@ impl DatedGroupFilter {
 pub(super) struct StackOutput {
     pub end_hour: Option<i32>,
     pub capped_end_tension: Option<f64>,
+    pub capped_end_tension_raw: Option<String>,
+    pub end_total_raw: Option<String>,
+    pub end_sum_raw: Option<String>,
     pub downsampled: bool,
     pub hours: Vec<i32>,
     pub total: Vec<Option<f64>>,
+    pub total_raw: Vec<Option<String>>,
+    pub sum_raw: Vec<Option<String>>,
     pub bands: Vec<TensionStackBand>,
     pub other: Option<TensionStackOther>,
     pub next_change_hour: Option<i32>,
@@ -827,7 +840,9 @@ pub(super) fn compute_stack(
         latest.unwrap_or(last)
     };
     let rank_complete = is_complete(input.aggregates_complete, rank_hour);
-    let capped_end_tension = lookup_run(input.tension, last).map(|raw| raw as f64 / tension_scale);
+    let capped_end_raw_val = lookup_run(input.tension, last);
+    let capped_end_tension = capped_end_raw_val.map(|raw| raw as f64 / tension_scale);
+    let capped_end_tension_raw = capped_end_raw_val.map(|raw| raw.to_string());
     struct RankedSlot {
         slot: u32,
         end_abs: u64,
@@ -905,18 +920,33 @@ pub(super) fn compute_stack(
     struct Sample {
         hour: i32,
         total: Option<f64>,
+        total_raw: Option<i128>,
+        sum_raw: Option<i64>,
         bands: Vec<Option<f64>>,
+        band_raws: Vec<Option<i64>>,
         band_min: Vec<Option<f64>>,
         band_max: Vec<Option<f64>>,
         other: Option<f64>,
+        other_raw: Option<i128>,
     }
-    let make_sample = |hour: i32, total: Option<f64>, bands: Vec<Option<f64>>, other: Option<f64>| Sample {
+    let make_sample = |hour: i32,
+                       total: Option<f64>,
+                       total_raw: Option<i128>,
+                       sum_raw: Option<i64>,
+                       bands: Vec<Option<f64>>,
+                       band_raws: Vec<Option<i64>>,
+                       other: Option<f64>,
+                       other_raw: Option<i128>| Sample {
         hour,
         total,
+        total_raw,
+        sum_raw,
         band_min: bands.clone(),
         band_max: bands.clone(),
         bands,
+        band_raws,
         other,
+        other_raw,
     };
     let evaluate = |hour: i32| -> Sample {
         let tension_raw = lookup_run(input.tension, hour);
@@ -949,8 +979,9 @@ pub(super) fn compute_stack(
         match mode {
             TensionValueMode::Share => {
                 let total_pct = tension_raw.map(|raw| raw as f64 / tension_scale);
+                let total_raw = tension_raw.map(i128::from);
                 let (Some(t_raw), Some(s_val)) = (tension_raw, sum_raw) else {
-                    return make_sample(hour, total_pct, vec![None; top.len()], None);
+                    return make_sample(hour, total_pct, total_raw, sum_raw, vec![None; top.len()], vec![None; top.len()], None, None);
                 };
                 if s_val > 0 {
                     let denom = s_val as f64 * tension_scale;
@@ -958,25 +989,19 @@ pub(super) fn compute_stack(
                         .iter()
                         .map(|raw| raw.map(|v| ((i128::from(v) * i128::from(t_raw)) as f64) / denom))
                         .collect();
-                    let other_val = if has_other {
-                        top_sum_raw.map(|top_sum| (((i128::from(s_val) - top_sum) * i128::from(t_raw)) as f64) / denom)
-                    } else {
-                        None
-                    };
-                    make_sample(hour, total_pct, band_vals, other_val)
+                    let other_raw = has_other.then(|| top_sum_raw.map(|top_sum| i128::from(s_val) - top_sum)).flatten();
+                    let other_val = other_raw.map(|rem| ((rem * i128::from(t_raw)) as f64) / denom);
+                    make_sample(hour, total_pct, total_raw, Some(s_val), band_vals, top_raws, other_val, other_raw)
                 } else if t_raw == 0 && s_val == 0 {
-                    let band_vals: Vec<Option<f64>> = top_raws
+                    let band_raws: Vec<Option<i64>> = top_raws
                         .iter()
-                        .map(|raw| raw.and_then(|v| (v == 0).then_some(0.0)))
+                        .map(|raw| raw.and_then(|v| (v == 0).then_some(0)))
                         .collect();
-                    let other_val = if has_other {
-                        (all_top_known && top_raws.iter().all(|v| *v == Some(0))).then_some(0.0)
-                    } else {
-                        None
-                    };
-                    make_sample(hour, total_pct, band_vals, other_val)
+                    let band_vals: Vec<Option<f64>> = band_raws.iter().map(|raw| raw.map(|_| 0.0)).collect();
+                    let other_zero = has_other && all_top_known && top_raws.iter().all(|v| *v == Some(0));
+                    make_sample(hour, total_pct, total_raw, Some(0), band_vals, band_raws, other_zero.then_some(0.0), other_zero.then_some(0))
                 } else {
-                    make_sample(hour, total_pct, vec![None; top.len()], None)
+                    make_sample(hour, total_pct, total_raw, Some(s_val), vec![None; top.len()], vec![None; top.len()], None, None)
                 }
             }
             TensionValueMode::Recorded => {
@@ -985,18 +1010,17 @@ pub(super) fn compute_stack(
                     .map(|raw| raw.map(|v| v as f64 / contribution_scale))
                     .collect();
                 if !restricted {
+                    let total_raw = sum_raw.map(i128::from);
                     let total_val = sum_raw.map(|s| s as f64 / contribution_scale);
-                    let other_val = if has_other {
-                        sum_raw
-                            .zip(top_sum_raw)
-                            .map(|(s, top_sum)| (i128::from(s) - top_sum) as f64 / contribution_scale)
-                    } else {
-                        None
-                    };
-                    make_sample(hour, total_val, band_vals, other_val)
+                    let other_raw = has_other
+                        .then(|| sum_raw.zip(top_sum_raw).map(|(s, top_sum)| i128::from(s) - top_sum))
+                        .flatten();
+                    let other_val = other_raw.map(|rem| rem as f64 / contribution_scale);
+                    make_sample(hour, total_val, total_raw, sum_raw, band_vals, top_raws, other_val, other_raw)
                 } else {
-                    let total_val = (!any_member_missing && any_member_known).then(|| member_sum as f64 / contribution_scale);
-                    make_sample(hour, total_val, band_vals, None)
+                    let total_raw = (!any_member_missing && any_member_known).then_some(member_sum);
+                    let total_val = total_raw.map(|s| s as f64 / contribution_scale);
+                    make_sample(hour, total_val, total_raw, sum_raw, band_vals, top_raws, None, None)
                 }
             }
         }
@@ -1005,7 +1029,13 @@ pub(super) fn compute_stack(
     for hour in raw_hours {
         let sample = evaluate(hour);
         let same = samples.last().is_some_and(|prev| {
-            prev.total == sample.total && prev.other == sample.other && prev.bands == sample.bands
+            prev.total == sample.total
+                && prev.total_raw == sample.total_raw
+                && prev.sum_raw == sample.sum_raw
+                && prev.other == sample.other
+                && prev.other_raw == sample.other_raw
+                && prev.bands == sample.bands
+                && prev.band_raws == sample.band_raws
         });
         if !same {
             samples.push(sample);
@@ -1032,10 +1062,14 @@ pub(super) fn compute_stack(
                 last_bucket = bucket;
             } else if let Some(last_kept) = reduced.last_mut() {
                 last_kept.total = sample.total;
+                last_kept.total_raw = sample.total_raw;
+                last_kept.sum_raw = sample.sum_raw;
                 last_kept.other = sample.other;
+                last_kept.other_raw = sample.other_raw;
                 for i in 0..last_kept.bands.len() {
                     let val = sample.bands[i];
                     last_kept.bands[i] = val;
+                    last_kept.band_raws[i] = sample.band_raws[i];
                     if let Some(v) = val {
                         last_kept.band_min[i] = Some(last_kept.band_min[i].map_or(v, |m| m.min(v)));
                         last_kept.band_max[i] = Some(last_kept.band_max[i].map_or(v, |m| m.max(v)));
@@ -1053,15 +1087,24 @@ pub(super) fn compute_stack(
         .then_some(last);
     let mut hours = Vec::with_capacity(samples.len());
     let mut total = Vec::with_capacity(samples.len());
+    let mut total_raw = Vec::with_capacity(samples.len());
+    let mut sum_raw = Vec::with_capacity(samples.len());
     let mut band_series: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(samples.len()); top.len()];
+    let mut band_raw_series: Vec<Vec<Option<String>>> = vec![Vec::with_capacity(samples.len()); top.len()];
     let mut band_mins: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(if downsampled { samples.len() } else { 0 }); top.len()];
     let mut band_maxs: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(if downsampled { samples.len() } else { 0 }); top.len()];
     let mut other_series: Vec<Option<f64>> = Vec::with_capacity(if has_other { samples.len() } else { 0 });
+    let mut other_raw_series: Vec<Option<String>> = Vec::with_capacity(if has_other { samples.len() } else { 0 });
     for sample in samples {
         hours.push(sample.hour);
         total.push(sample.total);
+        total_raw.push(sample.total_raw.map(|v| v.to_string()));
+        sum_raw.push(sample.sum_raw.map(|v| v.to_string()));
         for (i, val) in sample.bands.into_iter().enumerate() {
             band_series[i].push(val);
+        }
+        for (i, raw) in sample.band_raws.into_iter().enumerate() {
+            band_raw_series[i].push(raw.map(|v| v.to_string()));
         }
         if downsampled {
             for (i, val) in sample.band_min.into_iter().enumerate() {
@@ -1073,19 +1116,25 @@ pub(super) fn compute_stack(
         }
         if has_other {
             other_series.push(sample.other);
+            other_raw_series.push(sample.other_raw.map(|v| v.to_string()));
         }
     }
     let bands = top
         .iter()
         .enumerate()
         .map(|(i, entry)| {
-            let end_raw = lookup_slot(input.slots.get(&entry.slot).map(Vec::as_slice), last_complete, last)
+            let end_raw = end_sample
+                .band_raws
+                .get(i)
+                .copied()
+                .flatten()
                 .map(|v| v.to_string());
             TensionStackBand {
                 slot: entry.slot,
                 tag: entry.resolved.as_ref().map(|(tag, _)| tag.clone()),
                 remembered: entry.resolved.as_ref().is_some_and(|(_, remembered)| *remembered),
                 values: std::mem::take(&mut band_series[i]),
+                values_raw: std::mem::take(&mut band_raw_series[i]),
                 min_values: std::mem::take(&mut band_mins[i]),
                 max_values: std::mem::take(&mut band_maxs[i]),
                 end_value: end_sample.bands.get(i).copied().flatten(),
@@ -1096,14 +1145,21 @@ pub(super) fn compute_stack(
     let other = has_other.then(|| TensionStackOther {
         count: other_count,
         values: other_series,
+        values_raw: other_raw_series,
         end_value: end_sample.other,
+        end_raw: end_sample.other_raw.map(|v| v.to_string()),
     });
     StackOutput {
         end_hour,
         capped_end_tension,
+        capped_end_tension_raw,
+        end_total_raw: end_sample.total_raw.map(|v| v.to_string()),
+        end_sum_raw: end_sample.sum_raw.map(|v| v.to_string()),
         downsampled,
         hours,
         total,
+        total_raw,
+        sum_raw,
         bands,
         other,
         next_change_hour: next_change,
@@ -1227,10 +1283,15 @@ impl Product for WorldTensionStack {
                 ceiling_raw,
                 end_hour: None,
                 capped_end_tension: None,
+                capped_end_tension_raw: None,
+                end_total_raw: None,
+                end_sum_raw: None,
                 downsampled: false,
                 refused: None,
                 hours: Vec::new(),
                 total: Vec::new(),
+                total_raw: Vec::new(),
+                sum_raw: Vec::new(),
                 bands: Vec::new(),
                 other: None,
                 events: Vec::new(),
@@ -1262,10 +1323,15 @@ impl Product for WorldTensionStack {
                     ceiling_raw,
                     end_hour: None,
                     capped_end_tension: None,
+                    capped_end_tension_raw: None,
+                    end_total_raw: None,
+                    end_sum_raw: None,
                     downsampled: false,
                     refused: Some(reason),
                     hours: Vec::new(),
                     total: Vec::new(),
+                    total_raw: Vec::new(),
+                    sum_raw: Vec::new(),
                     bands: Vec::new(),
                     other: None,
                     events: Vec::new(),
@@ -1411,10 +1477,15 @@ impl Product for WorldTensionStack {
             ceiling_raw,
             end_hour: computed.as_ref().and_then(|c| c.end_hour),
             capped_end_tension: computed.as_ref().and_then(|c| c.capped_end_tension),
+            capped_end_tension_raw: computed.as_ref().and_then(|c| c.capped_end_tension_raw.clone()),
+            end_total_raw: computed.as_ref().and_then(|c| c.end_total_raw.clone()),
+            end_sum_raw: computed.as_ref().and_then(|c| c.end_sum_raw.clone()),
             downsampled: computed.as_ref().is_some_and(|c| c.downsampled),
             refused: None,
             hours: computed.as_ref().map_or_else(Vec::new, |c| c.hours.clone()),
             total: computed.as_ref().map_or_else(Vec::new, |c| c.total.clone()),
+            total_raw: computed.as_ref().map_or_else(Vec::new, |c| c.total_raw.clone()),
+            sum_raw: computed.as_ref().map_or_else(Vec::new, |c| c.sum_raw.clone()),
             bands: computed.as_ref().map_or_else(Vec::new, |c| c.bands.clone()),
             other: computed.and_then(|c| c.other),
             events,

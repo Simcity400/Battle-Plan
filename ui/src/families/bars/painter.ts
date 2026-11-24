@@ -6,7 +6,7 @@ import { linearTicks } from '../../charts/valueAxis.ts';
 import {
   barCornerRadius,
   contrastInkForFill,
-  drawArtSlot,
+  drawShareBar,
   drawBar,
   drawLegendStrip,
   drawMissingMark,
@@ -27,10 +27,9 @@ import {
   rowGripBox,
   rowRemoveBox,
 } from '../../draw/kit.ts';
-import { drawMediaSlot, toArtSlotState, urlToArt } from '../art/adapters.ts';
+import { drawMediaSlot } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
-import type { ArtResult } from '../art/types.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import { formatCompactScalar, formatShare, formatValueState, notRecordedLabel } from '../valueFormat.ts';
 import { mix } from '../../shell/appearance/color.ts';
@@ -45,7 +44,6 @@ import {
   formatBarsValueField,
   type BarsDataRow,
   type BarsModel,
-  type BarsSegment,
   type BarsValueField,
 } from './model.ts';
 import { drawCaptionSides, drawPickList } from './pickList.ts';
@@ -55,9 +53,6 @@ export interface BarsGlideOffset {
   readonly startedAt: number;
 }
 
-export interface BarsIconLookup {
-  get(url: string): ImageBitmap | null | undefined;
-}
 
 export interface DrawFamilyBarsInput {
   readonly model: BarsModel;
@@ -67,7 +62,6 @@ export interface DrawFamilyBarsInput {
   readonly now: number;
   readonly glideDuration: number;
   readonly glide?: ReadonlyMap<string, BarsGlideOffset>;
-  readonly icons?: BarsIconLookup;
   readonly artCache?: LaneArtCache;
   readonly inspectedKey?: string | null;
   readonly selectedKey?: string | null;
@@ -104,65 +98,6 @@ function paintedRowY(
   const progress = (now - entry.startedAt) / glideDuration;
   if (progress >= 1) return baseY;
   return entry.fromY + (baseY - entry.fromY) * easeOutCubic(progress);
-}
-
-function drawShareSegments(
-  ctx: Canvas2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  segments: readonly BarsSegment[],
-  theme: FamilyTheme,
-  radius = 2.5,
-): void {
-  if (width <= 0 || height <= 0) return;
-  const tokens = resolveKitTokens(theme);
-  ctx.save();
-  ctx.fillStyle = tokens.barTrack;
-  ctx.beginPath();
-  ctx.roundRect(x, y, width, height, radius);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.roundRect(x, y, width, height, radius);
-  ctx.clip();
-
-  const active = segments.filter(seg => seg.share > 0);
-  const gap = active.length > 1 ? 1 : 0;
-  const usable = Math.max(0, width - gap * Math.max(0, active.length - 1));
-  let cursor = x;
-  let total = 0;
-  for (let i = 0; i < active.length; i++) total += active[i]!.share;
-  const complete = total >= 0.999;
-  for (let i = 0; i < active.length; i++) {
-    const seg = active[i]!;
-    const segW = complete && i === active.length - 1 ? Math.max(0, x + width - cursor) : usable * seg.share;
-    if (segW <= 0) continue;
-    if (seg.hatched) {
-      drawHatchRect(ctx, cursor, y, segW, height, 0, theme);
-    } else {
-      ctx.fillStyle = readableColour(seg.color, theme.surface);
-      ctx.fillRect(cursor, y, segW, height);
-    }
-    if (!seg.hatched && segW >= 34) {
-      const pctText = formatShare(seg.share);
-      const fullText = seg.inlineLabel ?? `${seg.label} ${pctText}`;
-      ctx.font = `600 11px ${theme.font}`;
-      ctx.fillStyle = contrastInkForFill(readableColour(seg.color, theme.surface), theme);
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      const pad = 6;
-      const room = segW - pad * 2;
-      if (textWidth(ctx, fullText) <= room) {
-        ctx.fillText(fullText, cursor + pad, y + height / 2);
-      } else if (textWidth(ctx, pctText) <= room) {
-        ctx.fillText(pctText, cursor + pad, y + height / 2);
-      }
-    }
-    cursor += segW + gap;
-  }
-  if (!complete && cursor < x + width) drawHatchRect(ctx, cursor, y, x + width - cursor, height, 0, theme);
-  ctx.restore();
 }
 
 function drawStackedPair(ctx: Canvas2D, row: BarsDataRow, layout: BarsLayout, theme: FamilyTheme, fill: string, middleY: number): void {
@@ -305,13 +240,13 @@ function drawAxis(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: Fa
 }
 
 export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsPaintStats {
-  const { model, layout, theme, scrollTop, now, glideDuration, glide, icons, artCache, inspectedKey, selectedKey, focusedKey } = input;
+  const { model, layout, theme, scrollTop, now, glideDuration, glide, artCache, inspectedKey, selectedKey, focusedKey } = input;
   const tokens = resolveKitTokens(theme);
   ctx.clearRect(0, 0, layout.width, layout.height);
 
   drawHeader(ctx, model, layout, theme);
   if (model.captionSides?.length && layout.headerHeight > 0) {
-    drawCaptionSides(ctx, model.captionSides, layout.width - BARS_PAD_X, layout.headerTop + layout.headerHeight / 2, theme, { ...(icons ? { icons } : {}), ...(artCache ? { artCache } : {}) });
+    drawCaptionSides(ctx, model.captionSides, layout.width - BARS_PAD_X, layout.headerTop + layout.headerHeight / 2, theme, artCache);
   }
   if (layout.showAxis) drawAxis(ctx, model, layout, theme);
 
@@ -369,7 +304,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
       drawRowHairline(ctx, layout.bodyLeft + BARS_PAD_X, layout.width - BARS_PAD_X, y + rowH - 1, theme, 'normal');
     }
 
-    drawMediaSlot(ctx, layout.bodyLeft + BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, { icons, artCache, radius: 2 });
+    drawMediaSlot(ctx, layout.bodyLeft + BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, { artCache, radius: 2 });
 
     if (layout.nameWidth > 0) {
       const regionTools = row.region !== undefined && (isHovered || isFocused);
@@ -430,11 +365,14 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
             : (row.numeric ?? 0) === 0
               ? theme.muted
               : theme.text;
-          ctx.fillText(ellipsise(formatted.text, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, middleY - 7);
-          const sub = row.value?.caption ?? ((row.numeric ?? 0) < 0 ? 'Short a day' : (row.numeric ?? 0) > 0 ? 'Surplus a day' : 'Balanced');
-          ctx.font = `${LABEL_WEIGHT} 11px ${theme.font}`;
-          ctx.fillStyle = theme.muted;
-          ctx.fillText(ellipsise(sub, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, middleY + 8);
+          const captioned = layout.showPair;
+          ctx.fillText(ellipsise(formatted.text, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, captioned ? middleY - 7 : middleY);
+          if (captioned) {
+            const sub = row.value?.caption ?? ((row.numeric ?? 0) < 0 ? 'Short a day' : (row.numeric ?? 0) > 0 ? 'Surplus a day' : 'Balanced');
+            ctx.font = `${LABEL_WEIGHT} 11px ${theme.font}`;
+            ctx.fillStyle = theme.muted;
+            ctx.fillText(ellipsise(sub, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, middleY + 8);
+          }
           ctx.restore();
         }
       }
@@ -475,7 +413,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         ctx.fillText(ellipsise(msg, Math.max(0, layout.plotWidth - 8), s => textWidth(ctx, s)), layout.plotLeft + layout.plotWidth / 2, middleY);
         ctx.restore();
       } else if (row.segments?.length) {
-        drawShareSegments(ctx, layout.plotLeft, barY, layout.plotWidth, layout.barHeight, row.segments, theme, 2.5);
+        drawShareBar(ctx, layout.plotLeft, barY, layout.plotWidth, layout.barHeight, row.segments.map(seg => ({ share: seg.share, color: seg.color, hatched: seg.hatched, label: seg.inlineLabel ?? `${seg.label} ${formatShare(seg.share)}`, shortLabel: formatShare(seg.share) })), theme, 2.5);
       } else {
         ctx.save();
         ctx.fillStyle = tokens.barTrack;
@@ -551,7 +489,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           { align: 'right', color: right.labelMissing ? theme.muted : theme.text },
         );
         if (rightName.truncated) truncatedKeys.push(right.key);
-        drawMediaSlot(ctx, layout.width - BARS_PAD_X - layout.mediaWidth, middleY, layout.mediaWidth, layout.mediaHeight, right.media, theme, { icons, artCache, radius: 2 });
+        drawMediaSlot(ctx, layout.width - BARS_PAD_X - layout.mediaWidth, middleY, layout.mediaWidth, layout.mediaHeight, right.media, theme, { artCache, radius: 2 });
       }
       continue;
     }
@@ -696,23 +634,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
       }
       ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
       ctx.fillStyle = row.readout.tone === 'shortage' ? tokens.shortage : theme.text;
-      const primaryW = textWidth(ctx, row.readout.primary);
       ctx.fillText(ellipsise(row.readout.primary, Math.max(12, cursorRight - layout.readoutX), s => textWidth(ctx, s)), cursorRight, middleY);
-      if (row.readout.iconUrl || row.readout.iconMissing) {
-        const iconSize = 16;
-        const iconX = cursorRight - primaryW - iconSize - 5;
-        if (iconX >= layout.readoutX) {
-          const res = urlToArt(row.readout.iconUrl, { pending: !row.readout.iconMissing && !row.readout.iconUrl });
-          const resolvedArt: ArtResult = artCache && res.status === 'ready' ? artCache.resolve(res) : res;
-          const fallbackBmp = row.readout.iconUrl ? icons?.get(row.readout.iconUrl) : undefined;
-          const artState = toArtSlotState(
-            resolvedArt.status === 'ready' && !resolvedArt.bitmap && fallbackBmp
-              ? { ...resolvedArt, bitmap: fallbackBmp }
-              : resolvedArt,
-          );
-          drawArtSlot(ctx, iconX, Math.round(middleY - iconSize / 2), iconSize, iconSize, artState, theme, { radius: 2 });
-        }
-      }
       ctx.restore();
     } else if (formatted) {
       ctx.save();
@@ -855,7 +777,7 @@ export function collectVisibleBarsIcons(model: BarsModel, layout: BarsLayout, sc
   for (let i = first; i < last; i++) {
     const item = model.rows[i]!;
     if (item.kind !== 'data') continue;
-    items.push(item.media, item.rightSide?.media, item.readout?.iconUrl, item.target?.iconUrl);
+    items.push(item.media, item.rightSide?.media);
   }
   for (const side of model.captionSides ?? []) items.push(side.media);
   return collectArtUrls(items);
