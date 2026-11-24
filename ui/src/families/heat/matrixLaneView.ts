@@ -108,6 +108,16 @@ export interface FamilyHeatMatrixLaneOptions {
   readonly artMaxEntries?: number;
 }
 
+export function matrixExtentSignature(
+  layout: { readonly totalWidth: number; readonly totalHeight: number; readonly cellSize: number; readonly gridLeft: number; readonly gridTop: number },
+  model: Pick<HeatMatrixModel, 'rows' | 'columns'>,
+): string {
+  return JSON.stringify([
+    layout.totalWidth, layout.totalHeight, layout.cellSize, layout.gridLeft, layout.gridTop,
+    model.rows.map(row => row.id), model.columns.map(column => column.id),
+  ]);
+}
+
 export function familyHeatMatrixLaneView(
   wake: (widget: number) => void,
   laneOptions?: FamilyHeatMatrixLaneOptions,
@@ -347,15 +357,7 @@ export function familyHeatMatrixLaneView(
       }
       fields.meta = held.metaField;
 
-      const eSig = JSON.stringify([
-        layout.totalWidth,
-        layout.totalHeight,
-        layout.cellSize,
-        layout.gridLeft,
-        layout.gridTop,
-        model.rows.length,
-        model.columns.length,
-      ]);
+      const eSig = matrixExtentSignature(layout, model);
       if (eSig !== held.extentSig || !held.extentField) {
         held.extentSig = eSig;
         held.extentField = {

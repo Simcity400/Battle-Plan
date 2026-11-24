@@ -179,7 +179,8 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
 
   const mirror = deriveMatrixMirror(model, 0, 2, 0, 3);
   assert.equal(mirror.total, 2);
-  assert.equal(mirror.rows[1]!.cells[1]!.spoken, 'Not recorded (Opinions not recorded)');
+  assert.equal(mirror.rows[1]!.cells[0]!.spoken, mirror.rows[1]!.name, 'the row is named for a screen reader');
+  assert.match(mirror.rows[1]!.cells[2]!.spoken, /^.+: Not recorded \(Opinions not recorded\)$/, 'each cell says which column it is');
 
   const fake = makeFakeCtx();
   const picture = createMatrixPicture();
@@ -341,6 +342,7 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   const mirror = deriveLanesMirror(model, 0, 2);
   assert.equal(mirror.total, 2);
   assert.equal(mirror.rows[0]!.name, 'English Channel');
+  assert.equal(mirror.rows[0]!.cells[0]!.spoken, 'English Channel');
 
   const ticks = computeAxisTicks(0, 167, 24, layout.plotLeft, layout.plotWidth);
   assert.ok(ticks.length >= 2);
@@ -419,4 +421,22 @@ test('stripes draw the fractions they are given and leave an unknown remainder u
     { color: '#4f86f7', top: 10, height: 5 },
     { color: '#e55353', top: 15, height: 7 },
   ]);
+});
+
+test('a stable row id is never read as a row position, and a reorder refreshes the published rows', async () => {
+  const { heatLanesHostAdapter } = await import('./hostAdapter.ts');
+  const { lanesExtentSignature, laneIdentities } = await import('./lanesModel.ts');
+  const { matrixExtentSignature } = await import('./matrixLaneView.ts');
+  const rows = [{ id: '1', label: 'One', runs: [] }, { id: '0', label: 'Zero', runs: [] }];
+  const installed = { id: 7, owner: 'w', hour: 50 } as unknown as Parameters<NonNullable<typeof heatLanesHostAdapter.resolveHitAction>>[1];
+  const fields = { extent: { totalHeight: 100, rowStride: 30, plotTop: 0, plotHeight: 100, rows: laneIdentities(rows) } };
+  const byId = heatLanesHostAdapter.resolveHitAction!({ key: '1' } as never, installed, fields as never);
+  assert.equal(byId?.subject, '1', 'Enter on stable id "1" activates "1", not the row at position 1');
+  const byPointer = heatLanesHostAdapter.resolveHitAction!({ key: '#1@40' } as never, installed, fields as never);
+  assert.equal(byPointer?.subject, '0', 'a pointer token names a position');
+  const layout = { totalHeight: 100, rowStride: 30, plotTop: 0, plotHeight: 100 };
+  assert.notEqual(lanesExtentSignature(layout, rows), lanesExtentSignature(layout, [rows[1]!, rows[0]!]));
+  const grid = { totalWidth: 100, totalHeight: 100, cellSize: 20, gridLeft: 10, gridTop: 10 };
+  const a = { id: 'A', label: 'A' }, b = { id: 'B', label: 'B' };
+  assert.notEqual(matrixExtentSignature(grid, { rows: [a, b], columns: [a, b] }), matrixExtentSignature(grid, { rows: [b, a], columns: [b, a] }));
 });

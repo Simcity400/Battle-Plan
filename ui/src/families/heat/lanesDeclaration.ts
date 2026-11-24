@@ -8,10 +8,10 @@ import type {
   FamilyViewportRequest,
   SourcePlan,
 } from '../plan.ts';
-import type { HeatLaneRow, HeatLanesProjection } from './lanesModel.ts';
+import type { HeatLaneIdentity, HeatLanesProjection } from './lanesModel.ts';
 
 export interface LaneActivation {
-  readonly row: HeatLaneRow;
+  readonly row: HeatLaneIdentity;
   readonly rowIndex: number;
   readonly hour: number;
 }
