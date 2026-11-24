@@ -7,7 +7,7 @@ import type {
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyleReply,
-  PlaceNamesReply,
+  PlaceNameRunsReply,
   StrategicRegionsReply,
   UnitLeadersReply,
 } from '../../generated/dashboard';
@@ -123,9 +123,9 @@ function sampleGroups(): CountryGroupReply {
   };
 }
 
-const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadPlaceNames' | 'loadLeaders'> = {
+const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadPlaceNameRuns' | 'loadLeaders'> = {
   loadRegions: () => deferred<StrategicRegionsReply>().promise,
-  loadPlaceNames: () => deferred<PlaceNamesReply>().promise,
+  loadPlaceNameRuns: () => deferred<PlaceNameRunsReply>().promise,
   loadLeaders: () => deferred<UnitLeadersReply>().promise,
 };
 
@@ -735,11 +735,14 @@ test('leader, state, province and region asks each start their product read and 
       calls.push('regions');
       return { regions: [{ id: 3, name: 'Coral Reach', nameMissing: null, land: false, sea: true }], warnings: [] };
     },
-    loadPlaceNames: async (_scope, hour, states, provinces) => {
-      calls.push(`places ${hour} ${states.join(',')} ${provinces.join(',')}`);
+    loadPlaceNameRuns: async (_scope, from, to, states, provinces) => {
+      calls.push(`places ${from}-${to} ${states.join(',')} ${provinces.join(',')}`);
       return {
-        states: states.map(stateId => ({ stateId, hour, name: `State ${stateId}`, missing: null })),
-        places: provinces.map(provinceId => ({ provinceId, hour, name: null, missing: 'Province unnamed in this map' })),
+        from,
+        to,
+        unknown: [{ firstHour: 100, lastHour: 120, reason: 'Not in this recording: the game was paused' }],
+        states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: 199, name: `State ${id}`, missing: null }, { firstHour: 200, lastHour: to, name: `Renamed ${id}`, missing: null }] })),
+        provinces: provinces.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: null, missing: 'Province unnamed in this map' }] })),
         warnings: [],
       };
     },
@@ -762,14 +765,19 @@ test('leader, state, province and region asks each start their product read and 
   for (let i = 0; i < 20; i++) await Promise.resolve();
   ask();
   for (let i = 0; i < 20; i++) await Promise.resolve();
-  assert.deepEqual([...calls].sort(), ['leaders ALP 150', 'places 150 64 7', 'regions']);
+  assert.deepEqual([...calls].sort(), ['leaders ALP 150', 'places 0-500 64 7', 'regions']);
 
   const [region, unknownRegion, state, province, leader, otherLeader] = ask();
   assert.deepEqual(region!.name, { status: 'ready', value: 'Coral Reach' });
   assert.deepEqual(region!.validInterval, [0, 500]);
   assert.equal(unknownRegion!.name.status, 'absent');
   assert.deepEqual(state!.name, { status: 'ready', value: 'State 64' });
-  assert.deepEqual(state!.validInterval, [150, 150]);
+  assert.deepEqual(state!.validInterval, [121, 199], 'a run is valid up to its rename and never across an unknown span');
+  assert.deepEqual(view.who('state', '64', 110).name, { status: 'absent', reason: 'Not in this recording: the game was paused' });
+  assert.deepEqual(view.who('state', '64', 90).validInterval, [0, 99]);
+  assert.deepEqual(view.who('state', '64', 200).name, { status: 'ready', value: 'Renamed 64' });
+  const worker = createSnapshotIdentityProvider(IdentityIndex.fromSnapshot(structuredClone(broker.snapshotOf(SCOPE))));
+  assert.deepEqual(worker.resolve('state', '64', 110 as DisplayedHour).name, { status: 'absent', reason: 'Not in this recording: the game was paused' }, 'unknown spans cross to the worker');
   assert.deepEqual(province!.name, { status: 'absent', reason: 'Province unnamed in this map' });
   assert.deepEqual(leader!.name, { status: 'ready', value: 'Ada Vance' });
   assert.equal(otherLeader!.holder.status, 'absent');

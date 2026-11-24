@@ -41,3 +41,16 @@ test('by template: shares of the product’s own figures; a figure it does not h
   const missing = project('equipment', reply({ missing: 'Division equipment is not recorded at this hour', types: [], templates: [] }));
   assert.deepEqual([missing.emptyKind, missing.empty], ['unavailable', 'Division equipment is not recorded at this hour']);
 });
+
+test('a type’s picture is the one the stockpile artwork product answers for its archetype; no answer leaves the slot without art', () => {
+  const pictures = { tag: 'GER', entries: [{ key: 'type:Infantry_Equipment', variant: '9', name: null, icon: 'asset://infantry.png', reason: null }], warnings: [] };
+  const model = divisionEquipmentProjection.project(
+    createBoundedReadView({ hour: 48, panels: new Map<string, unknown>([['main', reply()], ['pictures', pictures]]) }),
+    { view: 'equipment' },
+  );
+  const [infantry, unclassified] = model.rows;
+  const picture = infantry!.cells.picture!;
+  assert.ok(picture.icon === 'asset://infantry.png' || picture.iconPending === true, JSON.stringify(picture));
+  assert.equal(picture.artShape, 'equipment');
+  assert.deepEqual([unclassified!.cells.picture!.icon, unclassified!.cells.picture!.iconPending], [undefined, undefined]);
+});
