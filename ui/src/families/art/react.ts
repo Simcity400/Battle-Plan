@@ -36,11 +36,11 @@ export function useArtResolutions(
   const scope = track ? artCacheScope(track, revision) : '';
   const held = cachesOf(runtime.client);
   const resolutions = held.resolutions(scope);
-  const errors = held.errors(scope);
+  const failures = held.failures(scope);
   const [landed, setLanded] = useState(0);
   const asked = handles.filter(handle => {
     const id = artHandleKey(handle);
-    return !resolutions.has(id) && !errors.has(id);
+    return !resolutions.has(id) && failures.get(id)?.retryable !== false;
   });
   const askedKey = asked.map(artHandleKey).join('\0');
   const wantedIds = useMemo(() => new Set(asked.map(artHandleKey)), [askedKey]);
@@ -50,11 +50,11 @@ export function useArtResolutions(
   useEffect(() => {
     const release = held.hold(scope);
     let scheduled = false;
-    const stop = held.watch(scope, (nextResolutions, nextErrors) => {
+    const stop = held.watch(scope, (nextResolutions, nextFailures) => {
       if (scheduled) return;
       let relevant = false;
       for (const id of wantedRef.current) {
-        if (nextResolutions.has(id) || nextErrors.has(id)) { relevant = true; break; }
+        if (nextResolutions.has(id) || nextFailures.has(id)) { relevant = true; break; }
       }
       if (!relevant && wantedRef.current.size > 0) return;
       scheduled = true;
@@ -75,10 +75,10 @@ export function useArtResolutions(
 
   return useMemo(() => (handle: ArtHandle): ArtResolution => {
     const id = artHandleKey(handle);
-    const err = errors.get(id);
-    if (err !== undefined) return failedArt(err, true);
+    const failed = failures.get(id);
+    if (failed !== undefined) return failedArt(failed.reason, failed.retryable);
     return resolutions.get(id) ?? PENDING_ART;
-  }, [resolutions, errors, landed]);
+  }, [resolutions, failures, landed]);
 }
 
 export function useArtHandleResolutions(

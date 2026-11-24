@@ -18,7 +18,7 @@ const SIDES: BattleSideSummary = { label: 'Sides', countLabel: 'Divisions (incl.
 const MEASURES: readonly BattleMeasure<LandBattleRow>[] = [
   { label: 'Casualties', title: 'Casualties', value: row => row.casualties,
     format: (value, row) => landCasualtyText(value, row), tooltipFormat: (value, row) => landCasualtyText(value, row, true) },
-  { label: 'Peak size', title: 'Peak divisions', hint: 'Most divisions at once, including reserves. ≥ means at least.',
+  { label: 'Peak size', title: 'Peak divisions', hint: 'Most divisions at once, including reserves.',
     value: row => row.peakUnknown ? { label: 'Peak size', value: null, unknown: 'Roster not recorded' }
       : { label: 'Peak size', value: row.peak.value, atLeast: row.start?.bound === 'by' || row.end !== null && 'unknown' in row.end },
     format: value => battleValueText(value), tooltipFormat: (value, row) => value.value === null ? value.unknown : `${battleValueText(value)} at ${formatDateTime(row.peak.hour)}` },

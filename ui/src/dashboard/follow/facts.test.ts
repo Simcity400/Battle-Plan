@@ -444,6 +444,8 @@ test('addendum 1: a window also breaks at the product change hours, and the pain
   const nextReveal = (hour: number) => reveals.find(at => at > hour) ?? Infinity;
   assert.deepEqual(changeWindow(window, 124, nextReveal), [110, 124], 'rows revealed by 124 and none later');
   assert.throws(() => changeWindow(window, 124, () => 50), /does not follow/);
+  assert.deepEqual(changeWindow([96, 200], 124, () => null), [124, 200], 'a view that cannot locate its next change paints at the target, bounded by the facts');
+  assert.deepEqual(changeWindow([96, 200], 124, hour => (hour < 110 ? 110 : null)), [124, 200], 'and so does one whose proof ends before the target');
 });
 
 test('addendum 3: a widget over several subscriptions joins with the latest hour, the earliest confirmation and the common window', () => {

@@ -426,6 +426,8 @@ fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
             sites.extend(
                 engine_events::script_event_sites::TAPS
                     .iter()
+                    .chain(&engine_events::event_window_sites::VERDICT_TAPS)
+                    .chain(&engine_events::event_window_sites::PRESENTATION_TAPS)
                     .map(|s| s.rva),
             );
             sites.extend(
