@@ -858,8 +858,23 @@ mod tests {
         fs::write(&path, b"not json").unwrap();
         let before = store.generation();
         store.reload_from(Ok(path.clone()));
-        assert!(store.check().is_err());
+        assert!(store.check().unwrap_err().contains(&path.display().to_string()));
         assert_ne!(store.generation(), before);
+        let loud = CampaignMapSettings {
+            audio: MapAudioOverrides {
+                voice: Some(500.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        fs::write(
+            &path,
+            serde_json::to_vec(&BTreeMap::from([("campaign-loud".to_owned(), loud)])).unwrap(),
+        )
+        .unwrap();
+        store.reload_from(Ok(path.clone()));
+        let error = store.check().unwrap_err();
+        assert!(error.contains("campaign-loud") && error.contains(&path.display().to_string()), "{error}");
         let before = store.generation();
         store.configure_game(&path);
         assert_ne!(

@@ -428,3 +428,33 @@ impl std::fmt::Debug for Admitted {
         self.identity().fmt(formatter)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_mount_is_still_a_refusal_when_read_back() {
+        let mut admitted = Admitted::default();
+        admitted.set_mount(&Err(crate::refused("Synthetic visual mods are refused")));
+        let Some(Err(error)) = admitted.clone().mount() else {
+            panic!("the failed mount is kept");
+        };
+        assert_eq!(crate::refusal(&error), Some("Synthetic visual mods are refused"));
+        assert_eq!(error.to_string(), "Synthetic visual mods are refused");
+    }
+
+    #[test]
+    fn an_update_that_panics_still_retires_older_snapshots() {
+        let config = Config::new(0);
+        let (_, generation) = config.snapshot().unwrap();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            config.update(|value| {
+                *value = 1;
+                panic!("synthetic panic part way through an update");
+            })
+        }));
+        assert!(panicked.is_err());
+        assert!(!config.install_if(generation, |_| {}), "a result derived before the update is stale");
+    }
+}

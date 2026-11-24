@@ -458,8 +458,7 @@ mod tests {
         });
     }
 
-    #[test]
-    fn blocks_arrive_in_their_given_order_and_a_scan_may_stop_early() {
+    fn twelve_blocks() -> Replay {
         let initial = records(1, vec![source(1, 1, None)]);
         let context = initial[..2].to_vec();
         let mut replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[initial]).unwrap();
@@ -470,6 +469,43 @@ mod tests {
             replay = replay.append(recorder_derive::writers(), &[segment]).unwrap();
         }
         assert_eq!(replay.index.len(), 12);
+        replay
+    }
+
+    #[test]
+    fn a_block_read_after_the_scan_moved_past_it_is_not_a_clean_end() {
+        let replay = twelve_blocks();
+        let passed_over = scan_blocks(
+            &replay,
+            replay.index.iter(),
+            &[TableId::Campaign],
+            &AtomicBool::new(false),
+            |reads| {
+                let mut first = reads.next().unwrap().1?;
+                reads.next();
+                Ok(first.next().is_some())
+            },
+        );
+        assert!(passed_over.unwrap(), "hours skipped by the scan must not read as a finished block");
+    }
+
+    #[test]
+    fn a_block_kept_past_its_scan_lets_the_scan_finish() {
+        let replay = crate::test_fixtures::replay((1..=200).map(|hour| source(1, hour, None)).collect());
+        let mut kept = scan_blocks(
+            &replay,
+            replay.index.iter(),
+            &[TableId::Campaign],
+            &AtomicBool::new(false),
+            |reads| reads.next().unwrap().1,
+        )
+        .unwrap();
+        assert!(kept.next().is_some(), "a block read after its scan ended must not read as a finished block");
+    }
+
+    #[test]
+    fn blocks_arrive_in_their_given_order_and_a_scan_may_stop_early() {
+        let replay = twelve_blocks();
         let blocks: Vec<_> = replay.index.iter().rev().collect();
         let tables = [TableId::Campaign];
         let cancelled = AtomicBool::new(false);

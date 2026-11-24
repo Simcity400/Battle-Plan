@@ -123,6 +123,9 @@ mod tests {
             assert_eq!(saved.game_dir, Path::new(&format!("G{round}")));
             assert_eq!(saved.user_dir, Path::new(&format!("U{round}")));
         }
+        std::fs::write(&path, b"not json").unwrap();
+        let damaged = Config::load_from(&path).unwrap_err().to_string();
+        assert!(damaged.contains(&path.display().to_string()), "{damaged}");
         std::fs::remove_dir_all(&folder).unwrap();
     }
 
