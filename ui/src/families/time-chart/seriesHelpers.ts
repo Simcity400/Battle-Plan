@@ -1,4 +1,4 @@
-import { colour, nudgeApart, readableColour } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, colour, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { rowName, rowReason } from '../../dashboard/follow/message.ts';
@@ -7,10 +7,10 @@ import { followedRow, keyId } from '../../dashboard/keyedSeriesData.ts';
 import { answerRowOf } from '../sceneTiles.ts';
 import { flagChoiceArt } from '../art/provider.ts';
 import { FutureDataError, type BoundedReadView, type BoundedSeries, type FamilyPlanContext, type SourceEntry } from '../contract.ts';
-import { holderTagAt, type HolderRun, type HourRanges } from '../holders.ts';
+import { holderRunAt, type HolderRun, type HourRanges } from '../holders.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
-import type { ChartArtSlot, ChartEndLabel, ChartGap, ChartMarker, ChartMissingSpan, ChartStackBand, ChartStackModel } from './model.ts';
+import type { ChartArtSlot, ChartEndLabel, ChartGap, ChartIdentityRun, ChartMarker, ChartMissingSpan, ChartSeriesLook, ChartStackBand, ChartStackModel } from './model.ts';
 
 export type HeadReading = { readonly value: number } | { readonly missing: string };
 
@@ -157,49 +157,142 @@ export function exactHoverByCountry(
   return out;
 }
 
-export function assignCountrySeriesColours(
-  orderedTags: readonly string[],
-  holders: Readonly<Record<string, readonly HolderRun[]>> | null | undefined,
-  readView: BoundedReadView,
-  hour: number,
-  surface: string,
-  singleColor?: string,
-  recordedOrdinal: (tag: string) => number = tag => orderedTags.indexOf(tag),
-): ReadonlyMap<string, string> {
-  const map = new Map<string, string>();
-  if (orderedTags.length === 1 && singleColor) {
-    map.set(orderedTags[0]!, singleColor);
-    return map;
-  }
-  const top = orderedTags.slice(0, 8);
-  const bg = parseColor(surface) ?? { r: 17, g: 17, b: 17 };
-  const rawRgbs = top.map(tag => {
-    const identityTag = holderTagAt(holders?.[tag], hour) ?? tag;
-    const who = readView.who('country', identityTag);
-    const hex = who.colour?.status === 'ready'
-      ? readableColour(who.colour.value, surface)
-      : colour(surface, recordedOrdinal(tag));
-    return parseColor(hex) ?? { r: 120, g: 160, b: 220 };
-  });
-  const distinct = nudgeApart(rawRgbs, bg);
-  top.forEach((tag, idx) => map.set(tag, toHex(distinct[idx]!)));
-  return map;
+export interface CountrySeriesLook extends ChartSeriesLook {
+  readonly identities: readonly ChartIdentityRun[];
 }
 
-export function countrySeriesIdentity(
-  tag: string,
-  holders: Readonly<Record<string, readonly HolderRun[]>> | null | undefined,
+export interface CountrySeriesLooksInput {
+  readonly holders: Readonly<Record<string, readonly HolderRun[]>> | null | undefined;
+  readonly from: number;
+  readonly surface: string;
+  readonly withFlag: boolean;
+  readonly recordedOrdinal: (tag: string) => number;
+  readonly singleColor?: string;
+  readonly tailColor?: string;
+}
+
+interface IdentityStretch {
+  readonly firstHour: number;
+  lastHour: number;
+  readonly identityTag: string;
+  readonly name: string;
+  readonly mapColour: string | null;
+  readonly flagChoice: string | null;
+  readonly flag?: ChartArtSlot;
+}
+
+const COLOURED_SERIES = 8;
+const FALLBACK_RGB = { r: 120, g: 160, b: 220 };
+
+function identityStretches(
+  key: string,
+  holders: readonly HolderRun[] | undefined,
   readView: BoundedReadView,
+  from: number,
   hour: number,
   withFlag: boolean,
-): { readonly identityTag: string; readonly name: string; readonly flag?: ChartArtSlot } {
-  const identityTag = holderTagAt(holders?.[tag], hour) ?? tag;
-  const who = readView.who('country', identityTag);
-  const name = who.name.status === 'ready' ? who.name.value : identityTag;
-  const flag: ChartArtSlot | undefined = !withFlag
-    ? undefined
-    : { art: flagChoiceArt(readView, who.flagChoice), tag: identityTag };
-  return { identityTag, name, ...(flag ? { flag } : {}) };
+): IdentityStretch[] {
+  const out: IdentityStretch[] = [];
+  let at = Math.min(from, hour);
+  while (at <= hour) {
+    const run = holderRunAt(holders, at);
+    const identityTag = run?.tag ?? key;
+    const who = readView.who('country', identityTag, at);
+    let last = who.validInterval[1] > at && who.name.status !== 'pending' ? Math.min(hour, who.validInterval[1]) : hour;
+    if (run) last = Math.min(last, run.lastHour);
+    else if (holders) {
+      for (const next of holders) {
+        if (next.firstHour > at) {
+          last = Math.min(last, next.firstHour - 1);
+          break;
+        }
+      }
+    }
+    const name = who.name.status === 'ready' ? who.name.value : identityTag;
+    const mapColour = who.colour?.status === 'ready' ? who.colour.value : null;
+    const flagChoice = who.flagChoice?.status === 'ready' ? who.flagChoice.value : null;
+    const prev = out[out.length - 1];
+    if (prev && prev.identityTag === identityTag && prev.name === name && prev.mapColour === mapColour && prev.flagChoice === flagChoice) {
+      prev.lastHour = last;
+    } else {
+      out.push({
+        firstHour: at,
+        lastHour: last,
+        identityTag,
+        name,
+        mapColour,
+        flagChoice,
+        ...(withFlag ? { flag: { art: flagChoiceArt(readView, who.flagChoice), tag: identityTag } } : {}),
+      });
+    }
+    at = last + 1;
+  }
+  return out;
+}
+
+export function countrySeriesLooks(
+  ordered: readonly string[],
+  readView: BoundedReadView,
+  input: CountrySeriesLooksInput,
+): ReadonlyMap<string, CountrySeriesLook> {
+  const hour = readView.hour;
+  const stretches = ordered.map(tag => identityStretches(tag, input.holders?.[tag], readView, input.from, hour, input.withFlag));
+  const single = ordered.length === 1 && input.singleColor !== undefined;
+  const bg = parseColor(input.surface) ?? { r: 17, g: 17, b: 17 };
+  const coloured = Math.min(ordered.length, COLOURED_SERIES);
+  const asked: { r: number; g: number; b: number }[] = [];
+  const slotOf = new Map<string, number>();
+  const ask = (tag: string, stretch: IdentityStretch) => {
+    const hex = stretch.mapColour !== null ? readableColour(stretch.mapColour, input.surface) : colour(input.surface, input.recordedOrdinal(tag));
+    asked.push(parseColor(hex) ?? FALLBACK_RGB);
+  };
+  const currentOf = (index: number) => stretches[index]![stretches[index]!.length - 1];
+  if (!single) {
+    for (let index = 0; index < coloured; index++) {
+      const current = currentOf(index);
+      if (current) ask(ordered[index]!, current);
+    }
+    for (let index = 0; index < coloured; index++) {
+      const current = currentOf(index);
+      for (const stretch of stretches[index]!) {
+        if (stretch === current || stretch.mapColour === current?.mapColour) continue;
+        const key = `${index}\u0000${stretch.mapColour}`;
+        if (slotOf.has(key)) continue;
+        slotOf.set(key, asked.length);
+        ask(ordered[index]!, stretch);
+      }
+    }
+  }
+  const distinct = single ? [] : nudgeApart(asked, bg);
+  const tailColor = input.tailColor ?? CHART_MEASURE_COLOURS.tailLine;
+  const out = new Map<string, CountrySeriesLook>();
+  let currentSlot = 0;
+  ordered.forEach((tag, index) => {
+    const current = currentOf(index);
+    const currentColour = single
+      ? input.singleColor!
+      : index < coloured
+        ? (current ? toHex(distinct[currentSlot++]!) : tailColor)
+        : tailColor;
+    const identities: ChartIdentityRun[] = stretches[index]!.map(stretch => {
+      const historical = !single && index < coloured && stretch !== current && stretch.mapColour !== current?.mapColour;
+      const color = historical ? toHex(distinct[slotOf.get(`${index}\u0000${stretch.mapColour}`)!]!) : currentColour;
+      return { firstHour: stretch.firstHour, lastHour: stretch.lastHour, name: stretch.name, color, ...(stretch.flag ? { flag: stretch.flag } : {}) };
+    });
+    const now = identities[identities.length - 1];
+    out.set(tag, {
+      name: now?.name ?? tag,
+      color: currentColour,
+      ...(now?.flag ? { flag: now.flag } : {}),
+      identities,
+    });
+  });
+  return out;
+}
+
+export function countryNameAt(readView: BoundedReadView, key: string, hour: number): string {
+  const who = readView.who('country', key, hour);
+  return who.name.status === 'ready' ? who.name.value : key;
 }
 
 export function memberAt(

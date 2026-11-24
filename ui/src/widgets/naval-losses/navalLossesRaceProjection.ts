@@ -10,7 +10,6 @@ import {
   nextSeriesRaceChange,
   seriesRaceUnavailable,
   seriesRaceWarnings,
-  type SeriesRaceBaseOptions,
 } from '../../families/bars/seriesRace.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourceEntry, SourcePlan } from '../../families/contract.ts';
 import { holderTagAt, inHourRanges, type HourRanges } from '../../families/holders.ts';
@@ -22,7 +21,8 @@ import { navalAttribution, navalKind, navalMeasure, navalPeriod } from './navalL
 
 const NOTE = 'Counted when the game lists a sinking; a country is named as it was when the sinking was read.';
 
-export interface NavalLossesRaceOptions extends SeriesRaceBaseOptions, ForceAtRaceBaseOptions {
+export interface NavalLossesRaceOptions extends ForceAtRaceBaseOptions {
+  readonly candidates: readonly string[];
   readonly kind: NavalKind;
   readonly attribution: NavalAttribution;
   readonly period: NavalPeriod;
