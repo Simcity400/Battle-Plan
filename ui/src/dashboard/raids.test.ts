@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { eventsThrough, raidAt, raidChangeHours, raidPreparationAt, raidPreparationText, raidStatus, raidTally, recordedSpans, validateRaidLog } from './raids.ts';
+import { eventsThrough, raidAt, raidChangeHours, raidPreparationAt, raidPreparationText, raidStatus, raidTally, recordedSpans, unattributedAt, validateRaidLog } from './raids.ts';
 import { observedEnd, phaseRun, syntheticEpisode, syntheticRaidLog } from './raids.fixtures.ts';
 import { countryKey } from './countryKey.ts';
 
@@ -24,7 +24,7 @@ test('a tally counts each raider over time: launches as they happen, wins as the
   assert.deepEqual(raidTally(episodes, SPAN, [], [], null).series, [], 'no country chosen, none counted');
   assert.deepEqual([at(tally, 'ENG', 19), at(tally, 'ENG', 20), at(tally, 'ENG', 30), at(tally, 'ENG', 45)], [[0, 0], [1, 0], [1, 1], [2, 1]]);
   assert.deepEqual([at(tally, 'PRC', 26), at(tally, 'PRC', 58), at(tally, 'PRC', 60)], [[1, 0], [2, 0], [2, 1]]);
-  assert.equal(tally.unattributed, 1);
+  assert.deepEqual([unattributedAt(tally, 54), unattributedAt(tally, 55)], [0, 1], 'the unnamed raider is unattributed from its launch');
   assert.deepEqual(tally.hours, [20, 25, 30, 45, 54, 60]);
 });
 
@@ -59,7 +59,14 @@ test('a chosen slot keeps its raid when no tag names it, and a tag tally never b
   const slot = countryKey(3);
   assert.deepEqual(at(raidTally([untagged], SPAN, [], [slot], null), slot, 100), [1, 1], 'the selected slot counts first');
   const byTag = raidTally([untagged], SPAN, [], ['GER'], null);
-  assert.deepEqual([at(byTag, 'GER', 100), byTag.unattributed], [[0, 0], 1], 'no tag at the launch or the end is unattributed');
+  assert.deepEqual([at(byTag, 'GER', 100), unattributedAt(byTag, 100)], [[0, 0], 1], 'no tag at the launch or the end is unattributed');
+});
+
+test('a raid is unattributed only while no tag is known for an event it counts: an end tag read later attributes it from that hour', () => {
+  const late = syntheticEpisode('9', 10, null, null, 10, true, { ends: [observedEnd(10, null), { hour: 20, endedHour: 5, exact: true, source: 'nativeEndDate', raider: 'GER' }] });
+  const tally = raidTally([late], SPAN, [], ['GER'], null);
+  assert.deepEqual([unattributedAt(tally, 9), unattributedAt(tally, 10), unattributedAt(tally, 19), unattributedAt(tally, 20)], [0, 1, 1, 0]);
+  assert.deepEqual([at(tally, 'GER', 19), at(tally, 'GER', 20)], [[0, 0], [0, 1]]);
 });
 
 test('a success counts for the end tag known at each hour: a native end date read later moves it, from the hour it was read', () => {
