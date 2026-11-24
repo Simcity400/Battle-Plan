@@ -287,6 +287,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const singleCountry = isSingle ? gate.country! : null;
   const countryTag = isSingle && gate.open ? singleCountry!.tag : null;
+  const countrySubject = isSingle && gate.open ? singleCountry!.history?.key ?? null : null;
   const countryLabel = useCountryNameAt(
     runtime.client,
     isSingle ? track : undefined,
@@ -315,8 +316,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const auxEnabled = !!auxSpec && (!auxSpec.when || auxSpec.when(options));
   const auxParams = useMemo(
-    () => (auxSpec && auxEnabled && track ? auxSpec.params(track, options, countryTag) : null),
-    [auxSpec, auxEnabled, track, options, countryTag],
+    () => (auxSpec && auxEnabled && track ? auxSpec.params(track, options, countryTag, countrySubject) : null),
+    [auxSpec, auxEnabled, track, options, countryTag, countrySubject],
   );
   const auxReq = useMemo(
     () => (auxSpec && auxParams && track
@@ -589,12 +590,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       following,
       aux: auxResult.data,
       countryTag,
+      countrySubject,
       countryName,
       countries: countriesState,
       gateSpan: gate.span,
       staticSpan: null,
     };
-  }, [track, lastRecorded, widget, options, following, auxResult.data, countryTag, countryName, countriesState, gate.span]);
+  }, [track, lastRecorded, widget, options, following, auxResult.data, countryTag, countrySubject, countryName, countriesState, gate.span]);
 
   const inputsReady = !!ctx
     && (!isSingle || (gate.open && countryTag !== null))

@@ -147,7 +147,7 @@ export default function StabilityWidget(props: WidgetProps) {
 
     const partyReply = parties.data && answersKey(parties.data.asked, tag) ? parties.data : undefined;
     if (wantGov && partyReply) {
-      for (const badge of partyBadges(partyReply, tok => contentTitle(partyReply.ideologies.find(i => i.token === tok)?.name, tok, 'Ideology name unavailable'))) {
+      for (const badge of partyBadges(partyReply, tok => contentTitle(partyReply.ideologies.find(i => i.token === tok)?.name, tok, 'Ideology name unavailable'), Number.POSITIVE_INFINITY)) {
         if (badge.glyph !== '✓') {
           out.push({
             id: `party:${badge.hour}:${badge.label}`,
