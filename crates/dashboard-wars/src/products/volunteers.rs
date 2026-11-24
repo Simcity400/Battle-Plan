@@ -1,20 +1,21 @@
 use dashboard_base::products::{
     Country, LoadContext,
     at_hour::{At, AtHour},
-    flows::{CountryFlowReply, FlowEdge, FlowPart, FlowShape, build_flows},
+    flows::{CountryFlowReply, FlowEdge, FlowEndpoint, FlowPart, FlowShape, build_flows},
     validate_country,
 };
 use dashboard_base::Source;
+use dashboard_query::series::ranked::GroupSelection;
+use dashboard_world::products::group_members::GroupsAt;
 use replay_data::rows::{MilitaryAidRow, Recorded, TableId, TagHolderRow, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, io};
+use std::io;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 const NOT_RECORDED: &str = "A sender's divisions were not recorded at this hour";
-const LIST_UNKNOWN: &str = "Some senders' lists of hosts were not recorded at this hour; their forces are left out";
-const WORLD_UNKNOWN: &str = "Military aid was not recorded for every sender at this hour";
+const UNLINKED: &str = "Which country these forces serve with, or come from, was not recorded at this hour";
 
 pub struct VolunteerFlow;
 
@@ -31,6 +32,10 @@ pub struct VolunteerFlowParams {
     pub countries: Vec<Country>,
     #[serde(default)]
     pub between: bool,
+    #[doc = " A group: its members at the hour (or every member so far), resolved in Rust; replaces `countries`."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub limit: Option<u32>,
@@ -44,38 +49,21 @@ fn parts() -> Vec<FlowPart> {
         .collect()
 }
 
-pub struct Aid {
-    pub edges: Vec<FlowEdge>,
-    pub unknown_lists: bool,
-    pub world_unknown: bool,
-}
-
-pub fn aid(rows: &[MilitaryAidRow], tag: impl Fn(u32) -> Option<String>) -> Aid {
-    let mut out = Aid { edges: Vec::with_capacity(rows.len()), unknown_lists: false, world_unknown: false };
+pub fn aid(rows: &[MilitaryAidRow]) -> Vec<FlowEdge> {
+    let slot = |slot: u32| (slot != TagHolderRow::NONE).then_some(slot);
+    let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let part = match row.channel {
             MilitaryAidRow::VOLUNTEERS => 0,
             MilitaryAidRow::EXPEDITIONARIES => 1,
             _ => continue,
         };
-        if row.sender == TagHolderRow::NONE {
-            out.world_unknown = true;
-            continue;
-        }
-        if row.host == TagHolderRow::NONE {
-            out.unknown_lists = true;
-            continue;
-        }
-        let (Some(from), Some(to)) = (tag(row.sender), tag(row.host)) else {
-            out.unknown_lists = true;
-            continue;
-        };
         let amount = match row.divisions {
             Recorded::Value(value) if value <= 0 => continue,
             Recorded::Value(value) => Some(i128::from(value)),
             Recorded::NotRecorded => None,
         };
-        out.edges.push(FlowEdge { from, to, part, amount });
+        out.push(FlowEdge { from: slot(row.sender), to: slot(row.host), part, amount });
     }
     out
 }
@@ -84,11 +72,11 @@ impl AtHour for VolunteerFlow {
     const KEY: &'static str = "volunteer-flow";
     const TITLE: &'static str = "Volunteers & expeditionaries";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = VolunteerFlowParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, limit];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit];
     type Reply = CountryFlowReply;
-    type Context = ();
+    type Context = GroupsAt;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
@@ -106,7 +94,15 @@ impl AtHour for VolunteerFlow {
     }
 
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(())
+        Ok(GroupsAt::default())
+    }
+
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())
+    }
+
+    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        if params.subject.is_some() { i32::MAX } else { at.context.valid_through(params.group.as_ref(), at.hour) }
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -118,27 +114,26 @@ impl AtHour for VolunteerFlow {
             Ok(rows) => rows,
             Err(error) => return Ok(empty(error.to_string())),
         };
-        let aid = aid(rows, |slot| at.holders.tag_at(&Country::Slot(slot), at.hour).map(str::to_owned));
-        if aid.world_unknown {
-            return Ok(empty(WORLD_UNKNOWN.to_owned()));
-        }
-        let resolve = |country: &Country| at.holders.tag_at(country, at.hour).map(str::to_owned).or_else(|| country.tag().map(str::to_owned));
-        let subject = params.subject.as_ref().and_then(resolve);
-        if params.subject.is_some() && subject.is_none() {
+        let resolve = |country: &Country| at.holders.slot_at(country, at.hour);
+        let subject = params.subject.as_ref().map(resolve);
+        if let Some(None) = subject {
             return Ok(empty("The chosen country holds no tag at this hour".to_owned()));
         }
-        let chosen: Option<HashSet<String>> = (!params.countries.is_empty()).then(|| params.countries.iter().filter_map(resolve).collect());
+        let chosen = match at.context.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour)? {
+            Ok(chosen) => chosen,
+            Err(refused) => return Ok(empty(refused)),
+        };
         let shape = FlowShape {
-            subject: subject.as_deref(),
+            subject: subject.flatten(),
             chosen: chosen.as_ref(),
             between: params.between,
             limit: params.limit.map(|limit| limit.max(1) as usize),
             table: false,
             not_recorded: NOT_RECORDED,
+            unlinked: UNLINKED,
+            incomplete: None,
         };
-        let mut reply = build_flows(&aid.edges, parts(), 0, &shape);
-        reply.partial = aid.unknown_lists.then(|| LIST_UNKNOWN.to_owned());
-        Ok(reply)
+        Ok(build_flows(&aid(rows), parts(), 0, &shape, &|slot| FlowEndpoint::at(at.holders, slot, at.hour, UNLINKED)))
     }
 }
 
@@ -150,31 +145,33 @@ mod tests {
         MilitaryAidRow { sender, host, channel, divisions }
     }
 
-    fn tag(slot: u32) -> Option<String> {
-        Some(match slot {
-            1 => "SOV",
-            2 => "SPR",
-            3 => "ITA",
-            _ => return None,
-        }.to_owned())
-    }
-
     #[test]
-    fn channels_become_parts_tallies_are_not_forces_and_unknown_lists_are_said() {
+    fn channels_become_parts_tallies_are_not_forces_and_unknown_senders_or_hosts_keep_their_forces() {
         let none = TagHolderRow::NONE;
         let rows = [
             row(1, 2, MilitaryAidRow::VOLUNTEERS, Recorded::Value(3)),
             row(3, 2, MilitaryAidRow::EXPEDITIONARIES, Recorded::NotRecorded),
             row(1, 2, MilitaryAidRow::TALLIES, Recorded::Value(1)),
             row(3, 2, MilitaryAidRow::VOLUNTEERS, Recorded::Value(0)),
-            row(3, none, MilitaryAidRow::VOLUNTEERS, Recorded::Value(1)),
+            row(3, none, MilitaryAidRow::VOLUNTEERS, Recorded::NotRecorded),
+            row(none, none, MilitaryAidRow::VOLUNTEERS, Recorded::NotRecorded),
         ];
-        let out = aid(&rows, tag);
-        assert_eq!(out.edges, [
-            FlowEdge { from: "SOV".into(), to: "SPR".into(), part: 0, amount: Some(3) },
-            FlowEdge { from: "ITA".into(), to: "SPR".into(), part: 1, amount: None },
+        assert_eq!(aid(&rows), [
+            FlowEdge { from: Some(1), to: Some(2), part: 0, amount: Some(3) },
+            FlowEdge { from: Some(3), to: Some(2), part: 1, amount: None },
+            FlowEdge { from: Some(3), to: None, part: 0, amount: None },
+            FlowEdge { from: None, to: None, part: 0, amount: None },
         ]);
-        assert!(out.unknown_lists && !out.world_unknown);
-        assert!(aid(&[row(none, none, MilitaryAidRow::VOLUNTEERS, Recorded::Value(0))], tag).world_unknown);
+    }
+
+    #[test]
+    fn a_sender_whose_hosts_were_not_recorded_leaves_the_host_side_unproven_and_keeps_witnessed_forces() {
+        let none = TagHolderRow::NONE;
+        let rows = [row(1, 2, MilitaryAidRow::VOLUNTEERS, Recorded::Value(3)), row(3, none, MilitaryAidRow::VOLUNTEERS, Recorded::NotRecorded)];
+        let shape = FlowShape { subject: Some(2), chosen: None, between: false, limit: None, table: false, not_recorded: NOT_RECORDED, unlinked: UNLINKED, incomplete: None };
+        let describe = |slot: Option<u32>| FlowEndpoint { slot, tag: None, unknown: None };
+        let reply = build_flows(&aid(&rows), parts(), 0, &shape, &describe);
+        assert_eq!(reply.incoming.links.iter().map(|link| link.total.as_deref()).collect::<Vec<_>>(), [Some("3")]);
+        assert_eq!((reply.incoming.total.as_deref(), reply.incoming.missing.as_deref()), (None, Some(UNLINKED)));
     }
 }

@@ -128,7 +128,7 @@ const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, TimelineFra
   boundary: model => model.nextChangeAt,
   redraw: (_model, hour) => nextDayStart(hour),
   status: () => 'scene',
-  view: binding => [binding.expanded],
+  view: ['expanded'],
   layout(model, binding, surface, _theme, _measure, hour) {
     const placement = placementOf(model, surface.width, surface.height, binding.expanded);
     const frame = frameTimeline(placement, Math.max(nextDayStart(hour) - 24, lastEvent(model)));
@@ -168,7 +168,7 @@ const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, TimelineFra
         notes: model.notes ?? [],
         warnings: model.warnings,
       },
-      extent: { height: layout.frame.contentHeight + AXIS_HEIGHT } satisfies TimelineExtentField,
+      extent: { height: layout.frame.bodyTop + layout.frame.contentHeight + AXIS_HEIGHT } satisfies TimelineExtentField,
       nav: navOf(layout.frame),
     };
   },

@@ -13,6 +13,7 @@ import {
   notRecorded,
   partialValue,
   valueFromLive,
+  answerRowIndex,
   valueFromNamedAnswer,
   valueFromNullable,
   valueFromRawBigInt,
@@ -99,6 +100,23 @@ test('wire and exact adapters map every wire state and nullable meaning into the
   assert.deepEqual(valueFromNamedAnswer(rows, 'JAP'), { kind: 'known', value: big });
   assert.deepEqual(valueFromNamedAnswer(rows, 'USA'), { kind: 'notRecorded', reason: 'Not in the answer' });
 
+  const nextHour = answer({
+    keys: [1n, 2n, 3n, 4n, 5n, 6n],
+    columns: 1,
+    names: ['GER', 'ENG', 'FRA', 'SOV', 'ITA', 'JAP'],
+    values: [43n, 1n, 0n, 0n, 0n, big],
+    states: [CELL.value, CELL.value, CELL.value, CELL.unrecorded, CELL.noRow, CELL.value],
+    reasons: [null, 'A reason that moves every text offset', null, null, 'Not held', null],
+  });
+  assert.equal(nextHour.kind === 'rows' && rows.kind === 'rows' && answerRowIndex(nextHour) === answerRowIndex(rows), true,
+    'the next hour\'s answer with the same names reuses the row index: none is rebuilt');
+  assert.deepEqual(valueFromNamedAnswer(nextHour, 'GER'), { kind: 'known', value: 43 });
+  const renamed = answer({ keys: [1n, 2n], columns: 1, names: ['GER', 'ITA'], values: [1n, 2n], states: [CELL.value, CELL.value], reasons: [null, null] });
+  const sameSize = answer({ keys: [1n, 2n], columns: 1, names: ['GER', 'ENG'], values: [1n, 2n], states: [CELL.value, CELL.value], reasons: [null, null] });
+  assert.equal(renamed.kind === 'rows' && sameSize.kind === 'rows' && answerRowIndex(renamed) !== answerRowIndex(sameSize), true, 'different names build their own index');
+  assert.deepEqual(valueFromNamedAnswer(sameSize, 'ENG'), { kind: 'known', value: 2 });
+  assert.deepEqual(valueFromNamedAnswer(renamed, 'ENG'), { kind: 'notRecorded', reason: 'Not in the answer' });
+
   const refused = answer({ notRecorded: 'Table not recorded' });
   assert.deepEqual(valueFromNamedAnswer(refused, 'GER'), { kind: 'notRecorded', reason: 'Table not recorded' });
   assert.deepEqual(valueFromNamedAnswer(undefined, 'GER'), { kind: 'notRecorded', reason: 'Not read yet' });
@@ -184,7 +202,7 @@ test('formatting and spoken forms render zero as 0, never None or dash, and carr
 test('bigint formatting preserves exact precision beyond 2^53 in clockSeconds, decimal1, percent2, and maxDecimals', () => {
   const big = (1n << 60n) + 7n;
   assert.equal(spokenValue(knownValue(big), 'decimal1'), '1,152,921,504,606,846,983');
-  assert.equal(spokenValue(knownValue(big), 'percent2'), '1152921504606846983.00%');
+  assert.equal(spokenValue(knownValue(big), 'percent2'), '1,152,921,504,606,846,983.00%');
   assert.equal(spokenValue(knownValue(big), { decimals: 0, maxDecimals: 2 }), '1,152,921,504,606,846,983');
   const bigSeconds = 3600n * 100000000000000000n + 61n;
   assert.equal(spokenValue(knownValue(bigSeconds), 'clockSeconds'), '100000000000000000:01:01');
@@ -264,11 +282,11 @@ test('M1: every value format avoids exponent notation for 1e21, 1e-7, and MAX_SA
   assert.equal(formatScalar(1e21, { decimals: 2, percent: true }), '1,000,000,000,000,000,000,000%');
   assert.equal(formatScalar(1e21, { decimals: 0, maxDecimals: 2 }), '1,000,000,000,000,000,000,000');
   assert.equal(formatScalar(1e-7, { decimals: 2 }), '0');
-  assert.equal(formatScalar(1e-7, 'decimal1'), '0');
-  assert.deepEqual([47484000n, 40950000n, 140000n, -149999n].map(raw => formatScalar(raw, { decimals: 5, maxDecimals: 0 })), ['475', '410', '1', '\u22121'], 'a scaled amount shown to fewer places rounds half up, as the game does');
+  assert.equal(formatScalar(1e-7, 'decimal1'), '<0.1');
+  assert.deepEqual([47484000n, 40950000n, 140000n, -149999n].map(raw => formatScalar(raw, { decimals: 5, maxDecimals: 0 })), ['474', '409', '1', '\u22121'], 'a scaled amount shown to fewer places truncates toward zero');
   assert.deepEqual([420000000n, 248975000n, 400000n, 170000n].map(raw => formatScalar(raw, 'fixed5Amount')), ['4,200', '2,489.75', '4', '1.7'], 'fixed5 amounts group thousands and show decimals only where they exist');
-  assert.equal(formatScalar(1e-7, 'percent2'), '0.00%');
-  assert.equal(formatScalar(1e-7, { decimals: 0, maxDecimals: 2 }), '0');
+  assert.equal(formatScalar(1e-7, 'percent2'), '<0.01%');
+  assert.equal(formatScalar(1e-7, { decimals: 0, maxDecimals: 2 }), '<0.01');
   assert.equal(formatScalar(Number.MAX_SAFE_INTEGER + 2, 'integer'), '9,007,199,254,740,992');
   assert.equal(formatScalar(Number.MAX_SAFE_INTEGER + 2, { decimals: 2 }), '90,071,992,547,409.92');
   assert.equal(formatScalar(1e21, 'clockSeconds'), '277777777777777777:46:40');
@@ -353,8 +371,8 @@ test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and sig
   assert.equal(formatScalar(15.5, { decimals: 0, maxDecimals: 1, percent: true, signed: true }), '+15.5%');
   assert.equal(formatScalar(-10.2, { decimals: 0, maxDecimals: 1, percent: true, signed: true }), '−10.2%');
   assert.equal(formatScalar(0, { decimals: 0, maxDecimals: 1, percent: true, signed: true }), '0%');
-  assert.equal(formatScalar(0.4, { decimals: 0, signed: true }), '0');
-  assert.equal(formatScalar(-0.4, { decimals: 0, signed: true }), '0');
+  assert.equal(formatScalar(0.4, { decimals: 0, signed: true }), '+<1');
+  assert.equal(formatScalar(-0.4, { decimals: 0, signed: true }), '−<1');
   assert.equal(formatScalar(120.7, { decimals: 0, signed: true }), '+120');
   assert.equal(formatScalar(-120.7, { decimals: 0, signed: true }), '−120');
   assert.equal(formatScalar(-5, 'percent2'), '−5.00%');
@@ -363,15 +381,46 @@ test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and sig
   assert.equal(formatShare(0.0001), '<0.1%');
   assert.equal(formatShare(0.0009), '<0.1%');
   assert.equal(formatShare(0.001), '0.1%');
+  assert.equal(formatShare(0.03), '3.0%');
+  assert.equal(formatShare(0.04), '4.0%');
   assert.equal(formatShare(0.042), '4.2%');
-  assert.equal(formatShare(0.07), '7%');
+  assert.equal(formatShare(0.07), '7.0%');
   assert.equal(formatShare(0.073), '7.3%');
+  assert.equal(formatShare(0.0999), '9.9%');
+  assert.equal(formatShare(0.15), '15%');
   assert.equal(formatShare(0.334), '33%');
   assert.equal(formatShare(0.6667), '67%');
   assert.equal(formatShare(0.996), '99%');
   assert.equal(formatShare(0.9999), '99%');
   assert.equal(formatShare(1), '100%');
-  assert.equal(formatShare(null), '');
+  assert.throws(() => formatShare(null as unknown as number), InvalidFamilyValueError);
+  assert.throws(() => formatShare(Number.NaN), InvalidFamilyValueError);
+  assert.throws(() => formatShare(-0.1), InvalidFamilyValueError);
+  assert.throws(() => formatProgress(null as unknown as number), InvalidFamilyValueError);
+  assert.throws(() => formatProgress(Number.NaN), InvalidFamilyValueError);
+  assert.throws(() => formatRecordedPercent(Number.NaN), InvalidFamilyValueError);
+  assert.throws(() => formatScalar(Number.NaN, 'integer'), InvalidFamilyValueError);
+  assert.throws(() => formatScalar(null as unknown as number, 'integer'), InvalidFamilyValueError);
+  assert.throws(() => formatCompactScalar(Number.NaN, 'integer'), InvalidFamilyValueError);
+  assert.equal(formatValueState(notRecorded('Missing share'), 'share').kind, 'notRecorded');
+  assert.equal(formatValueState(knownValue(0.0004), 'share').kind, 'known');
+  const tinyShare = formatValueState(knownValue(0.0004), 'share');
+  assert.equal(tinyShare.kind === 'known' ? tinyShare.text : '', '<0.1%');
+
+  assert.equal(formatScalar(255_000n, { decimals: 5, maxDecimals: 1, fixedDecimals: true, unit: '°C' }), '2.5 °C');
+  assert.equal(formatScalar(260_000n, { decimals: 5, maxDecimals: 1, fixedDecimals: true, unit: '°C' }), '2.6 °C');
+  assert.equal(formatScalar(101_999n, { decimals: 5, maxDecimals: 2 }), '1.01');
+  assert.equal(formatScalar(4_000n, { decimals: 5, maxDecimals: 1 }), '<0.1');
+  assert.equal(formatScalar(-4_000n, { decimals: 5, maxDecimals: 1, fixedDecimals: true, unit: '°C' }), '−<0.1 °C');
+  assert.equal(formatScalar(4_000n, { decimals: 5, maxDecimals: 1, signed: true }), '+<0.1');
+  assert.equal(formatScalar(0.04, 'decimal1'), '<0.1');
+  assert.equal(formatScalar(-0.04, { decimals: 0, maxDecimals: 1, unit: '°C' }), '−<0.1 °C');
+  assert.equal(formatScalar(-1.5, { decimals: 0, signed: true }), '−1');
+  assert.equal(formatScalar(1000, { decimals: 0, unit: 'days' }), '1,000 days');
+  assert.equal(formatScalar(1000, 'percent2'), '1,000.00%');
+  assert.deepEqual(formatCompactScalar(7_139, 'integer'), { text: '7.13K', exact: '7,139', compacted: true });
+  assert.deepEqual(formatCompactScalar(999_999, 'integer'), { text: '999K', exact: '999,999', compacted: true });
+  assert.deepEqual(formatCompactScalar(1_439, 'integer'), { text: '1.43K', exact: '1,439', compacted: true });
 
   assert.equal(formatProgress(0), '0%');
   assert.equal(formatProgress(0.009), '0%');
@@ -382,7 +431,6 @@ test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and sig
   assert.equal(formatProgress(0.996), '99%');
   assert.equal(formatProgress(0.999999999), '99%');
   assert.equal(formatProgress(1), '100%');
-  assert.equal(formatProgress(null), '');
   assert.equal(formatScalar(99.6, 'progress'), '99%');
   assert.equal(formatScalar(100, 'progress'), '100%');
 

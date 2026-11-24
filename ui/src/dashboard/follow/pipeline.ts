@@ -5,7 +5,8 @@ import type { PlaybackController, PlaybackSnapshot } from '../playback';
 import { canonical } from './canonical.ts';
 import { Page, type PageMessage, type PageSurface, type RebindChange, type WidgetView } from './page.ts';
 import type { Channel } from './facts';
-import type { Binding, Dated } from '../../draw/lane';
+import type { Binding, Dated, Supply } from '../../draw/lane';
+import { PayloadSender } from './payloads.ts';
 import type { FromLane, ToLane } from '../../draw/laneMessages';
 import { auditing, noteFrame, recordPicture } from '../pulled.ts';
 import { perfLog } from '../../shell/perf.ts';
@@ -42,10 +43,13 @@ interface RouteState {
 interface WidgetState {
   id: number; lane: number; kind?: string; cost: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
   installListeners: Set<() => void>; dateListeners: Set<() => void>; binding: Binding; surfaces: readonly PageSurface<ImageBitmap>[];
-  held: Map<string, unknown>; error?: Failure; identity: number | null;
+  held: Map<string, unknown>; error?: Failure; wire?: unknown; stamp: number | undefined; payloads: { own: ReadonlySet<number>; statics: ReadonlySet<number>; identity: ReadonlySet<number> };
 }
 
+const NO_PAYLOADS: ReadonlySet<number> = new Set();
+
 export interface SupplyChange {
+  readonly stamp?: number;
   readonly statics?: { readonly staticPanels?: unknown; readonly staticAnswers?: unknown; readonly staticShifts?: unknown } | null;
   readonly identity?: object | null;
   readonly dated?: Dated | null;
@@ -78,8 +82,7 @@ export class Pipeline {
   private readonly costLoads: number[];
   private readonly kindCost = new Map<string, number>();
   private readonly placed = new Map<string, number>();
-  private readonly identities: Map<object, { readonly id: number; users: number }>[];
-  private nextIdentity = 1;
+  private readonly payloads: PayloadSender[];
   private readonly nextSub: number[];
   private nextWidget = 1;
   private nextRoute = 1;
@@ -102,7 +105,7 @@ export class Pipeline {
     this.loads = Array.from({ length: count }, () => 0);
     this.costLoads = Array.from({ length: count }, () => 0);
     this.nextSub = Array.from({ length: count }, () => 1);
-    this.identities = Array.from({ length: count }, () => new Map());
+    this.payloads = host.lanes.map(lane => new PayloadSender(message => lane.postMessage(message)));
     this.page = new Page<ImageBitmap>({ lanes: count, seek: clock.getSnapshot().seekSequence, post: (lane, message) => this.post(lane, message) });
     host.lanes.forEach((lane, index) => { lane.onmessage = ({ data }) => this.receive(index, data); });
     const channels = host.lanes.map(() => host.channel());
@@ -130,7 +133,6 @@ export class Pipeline {
     perfLog?.dropGeneration(this.generation);
     this.widgets.clear(); this.shared.clear(); this.subs.clear(); this.byId.clear(); this.routes.clear();
     this.dateWatchers.clear(); this.placed.clear(); this.kindCost.clear();
-    for (const held of this.identities) held.clear();
     this.audits.clear(); this.answered.clear(); this.hits.clear(); this.changed.clear(); this.redated.clear();
   }
 
@@ -363,7 +365,9 @@ export class Pipeline {
     this.loads[lane]!++;
     this.costLoads[lane]! += cost;
     const widget: WidgetState = { id, lane, kind, cost, subs: new Map(), view: options.view ?? 'fields', model: options.model, mounted: false, route: null,
-      installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, ...(options.owner !== undefined ? { owner: options.owner } : {}), surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map(), identity: null };
+      installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, ...(options.owner !== undefined ? { owner: options.owner } : {}), surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map(), stamp: undefined,
+      payloads: { own: NO_PAYLOADS, statics: NO_PAYLOADS, identity: NO_PAYLOADS } };
+    if (options.model !== undefined) this.own(widget, options.model);
     this.widgets.set(id, widget);
     this.page.mount(id, { route: 0, lane, ...(options.owner !== undefined ? { owner: options.owner } : {}), offset: options.offset, pin: options.pin, bounds: options.bounds, surfaces: [], changed: () => this.changed.add(widget),
       dated: () => this.redated.add(widget) });
@@ -395,7 +399,8 @@ export class Pipeline {
     this.hits.delete(id);
     this.dateWatchers.delete(widget);
     for (const sub of widget.subs.values()) this.release(sub, id);
-    this.releaseIdentity(widget);
+    const sender = this.payloads[widget.lane]!;
+    for (const ids of Object.values(widget.payloads)) sender.release(ids);
     this.widgets.delete(id);
     this.loads[widget.lane]!--;
     this.costLoads[widget.lane] = Math.max(0, this.costLoads[widget.lane]! - widget.cost);
@@ -433,7 +438,7 @@ export class Pipeline {
     widget.error = undefined;
     this.page.retryLocal(id);
     widget.binding = this.timed(widget, widget.binding);
-    this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding, retry: true, ...widget.model !== undefined ? { model: widget.model } : {} });
+    this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding, retry: true, ...widget.wire !== undefined ? { model: widget.wire } : {} });
     this.flush();
   }
 
@@ -516,7 +521,7 @@ export class Pipeline {
 
   private remount(widget: WidgetState) {
     const subs = [...new Set(widget.subs.values())];
-    this.host.lanes[widget.lane]!.postMessage({ type: 'mount', widget: widget.id, subs, view: widget.view, model: widget.model });
+    this.host.lanes[widget.lane]!.postMessage({ type: 'mount', widget: widget.id, subs, view: widget.view, model: widget.wire });
     this.page.rebind(widget.id, { subscription: true });
     const followed = subs.map(id => this.byId.get(id)).find(sub => sub?.status === 'followed');
     if (followed) this.page.mountRoute(widget.id, followed.route.page);
@@ -534,7 +539,12 @@ export class Pipeline {
 
   private timed(widget: WidgetState, binding: Omit<Binding, 'generation' | 'offset' | 'pin'>): Binding {
     const shown = this.page.widgets.get(widget.id);
-    return { ...binding, generation: shown?.binding ?? 1, ...(shown?.owner !== undefined ? { owner: shown.owner } : {}), offset: shown?.offset ?? 0, pin: shown?.pin ?? null };
+    const { dated: _, ...own } = binding;
+    const was = widget.binding;
+    const owner = shown?.owner;
+    const kept = was.owner === undefined || owner === undefined || was.owner === owner;
+    if (!kept) widget.stamp = undefined;
+    return { ...own, ...kept && was.dated ? { dated: was.dated } : {}, generation: shown?.binding ?? 1, ...(shown?.owner !== undefined ? { owner: shown.owner } : {}), offset: shown?.offset ?? 0, pin: shown?.pin ?? null };
   }
 
   bind(id: number, surfaces: readonly PageSurface<ImageBitmap>[], binding: Omit<Binding, 'generation' | 'offset' | 'pin'>, change: RebindChange = {}, model?: unknown) {
@@ -552,9 +562,10 @@ export class Pipeline {
       else if (failed) this.page.name(id, 'failed', failed.reason, 'stream');
       else if (widget.error) this.page.name(id, 'failed', widget.error.message, 'local');
     }
-    if (model !== undefined) widget.model = model;
+    const release = model !== undefined ? this.own(widget, model) : NO_PAYLOADS;
     widget.binding = this.timed(widget, binding);
-    this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding, ...model !== undefined ? { model } : {} });
+    this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding, ...model !== undefined ? { model: widget.wire } : {} });
+    this.payloads[widget.lane]!.release(release);
     this.flush();
   }
 
@@ -563,63 +574,67 @@ export class Pipeline {
     const widget = this.widgets.get(id);
     if (!widget || widget.view === view && model === undefined) return;
     widget.view = view;
-    if (model !== undefined) widget.model = model;
-    this.host.lanes[widget.lane]!.postMessage({ type: 'mount', widget: id, subs: [...new Set(widget.subs.values())], view, model: widget.model });
+    const release = model !== undefined ? this.own(widget, model) : NO_PAYLOADS;
+    this.host.lanes[widget.lane]!.postMessage({ type: 'mount', widget: id, subs: [...new Set(widget.subs.values())], view, model: widget.wire });
+    this.payloads[widget.lane]!.release(release);
     this.page.rebind(id);
     widget.binding = this.timed(widget, widget.binding);
     this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding });
     this.flush();
   }
 
+  private own(widget: WidgetState, model: unknown): ReadonlySet<number> {
+    const was = widget.payloads.own;
+    const encoded = this.payloads[widget.lane]!.acquire(model);
+    widget.model = model;
+    widget.wire = encoded.wire;
+    widget.payloads = { ...widget.payloads, own: encoded.ids };
+    return was;
+  }
+
   supply(id: number, change: SupplyChange) {
     if (this.closed) return;
     const widget = this.widgets.get(id);
     if (!widget) return;
+    const sender = this.payloads[widget.lane]!;
+    const released: ReadonlySet<number>[] = [];
+    let statics: unknown;
+    if (change.statics !== undefined) {
+      const encoded = sender.acquire(change.statics);
+      released.push(widget.payloads.statics);
+      widget.payloads = { ...widget.payloads, statics: encoded.ids };
+      statics = encoded.wire;
+    }
     let identity: number | null | undefined;
     if (change.identity !== undefined) {
-      const snapshot = change.identity;
-      const lane = this.identities[widget.lane]!;
-      let held = snapshot === null ? undefined : lane.get(snapshot);
-      if (held && held.id === widget.identity) return this.supplyRest(widget, change, undefined);
-      if (snapshot !== null && !held) {
-        lane.set(snapshot, held = { id: this.nextIdentity++, users: 0 });
-        this.host.lanes[widget.lane]!.postMessage({ type: 'identity', id: held.id, snapshot });
+      const encoded = sender.acquire(change.identity === null ? {} : { identitySnapshot: change.identity });
+      const [next] = encoded.ids;
+      const [held] = widget.payloads.identity;
+      if (next === held) sender.release(encoded.ids);
+      else {
+        released.push(widget.payloads.identity);
+        widget.payloads = { ...widget.payloads, identity: encoded.ids };
+        identity = next ?? null;
       }
-      if (held) held.users++;
-      this.releaseIdentity(widget);
-      widget.identity = identity = held?.id ?? null;
     }
-    this.supplyRest(widget, change, identity);
-  }
-
-  private supplyRest(widget: WidgetState, change: SupplyChange, identity: number | null | undefined) {
-    if (change.dated !== undefined) {
+    if (statics !== undefined) widget.stamp = change.stamp;
+    const dated = change.dated !== undefined && (statics !== undefined || change.stamp === widget.stamp) ? change.dated : undefined;
+    if (dated !== undefined) {
       const { dated: _, ...rest } = widget.binding;
-      widget.binding = change.dated ? { ...rest, dated: change.dated } : rest;
+      widget.binding = dated ? { ...rest, dated } : rest;
     }
-    if (change.statics === undefined && identity === undefined && change.dated === undefined) return;
-    this.host.lanes[widget.lane]!.postMessage({
-      type: 'supply',
-      widget: widget.id,
-      ...change.statics !== undefined ? { statics: change.statics } : {},
-      ...identity !== undefined ? { identity } : {},
-      ...change.dated !== undefined ? { dated: change.dated } : {},
-    });
-  }
-
-  private releaseIdentity(widget: WidgetState) {
-    const id = widget.identity;
-    if (id === null) return;
-    widget.identity = null;
-    const lane = this.identities[widget.lane]!;
-    for (const [snapshot, held] of lane) {
-      if (held.id !== id) continue;
-      if (--held.users <= 0) {
-        lane.delete(snapshot);
-        if (!this.closed) this.host.lanes[widget.lane]!.postMessage({ type: 'identity', id, snapshot: null });
-      }
-      return;
+    if (statics !== undefined || identity !== undefined || dated !== undefined) {
+      this.host.lanes[widget.lane]!.postMessage({
+        type: 'supply',
+        widget: widget.id,
+        ...widget.stamp !== undefined && (statics !== undefined || dated !== undefined) ? { stamp: widget.stamp } : {},
+        ...statics !== undefined ? { statics: statics as Supply['statics'] } : {},
+        ...identity !== undefined ? { identity } : {},
+        ...dated !== undefined ? { dated } : {},
+      });
     }
+    for (const ids of released) sender.release(ids);
+    if (statics !== undefined && widget.error) this.retryWidget(id);
   }
 
   held<T>(id: number, kind: string, make: () => T): T | null {

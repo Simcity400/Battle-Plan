@@ -162,12 +162,20 @@ inputs = ["ui/src/widgets/**", "ui/src/families/**", "ui/src/dashboard/definitio
 command = ["{node}", "tools/check-widget-manifest.mjs"]
 
 [[job]]
+name = "future-reads"
+group = "linux"
+tier = "check"
+toolchain = "node"
+inputs = ["ui/src/widgets/**", "ui/src/families/**", "ui/src/dashboard/**", "tools/check-future-reads.mjs", "tools/future-reads-ratchet.json"]
+command = ["{node}", "tools/check-future-reads.mjs"]
+
+[[job]]
 name = "dead-code"
 group = "linux"
 tier = "check"
 toolchain = "node"
 base = true
-inputs = ["ui/**", "crates/**", "tools/check-dead-code.mjs", "tools/ui-import-graph.mjs", "tools/legacy-widgets-ratchet.json"]
+inputs = ["ui/**", "crates/**", "tools/**/*.mjs", "tools/**/*.ts", "tools/**/*.js", "tools/**/*.cjs", "tools/**/*.py", "tools/**/*.ps1", "tools/**/*.json", "tools/**/*.toml"]
 command = ["{node}", "tools/check-dead-code.mjs", "--against", "{base}"]
 
 [[job]]

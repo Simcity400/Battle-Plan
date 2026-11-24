@@ -1,15 +1,17 @@
 use dashboard_world::products::equipment_names::{self as names, EquipmentIcon, Named, VariantName};
 
-use dashboard_base::products::{Country, validate_country, flows::{CountryFlowReply, FlowEdge, FlowPart, FlowShape, build_flows}};
+use dashboard_base::products::{Country, validate_country, flows::{CountryFlowReply, FlowEdge, FlowEndpoint, FlowPart, FlowShape, build_flows}};
 use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour::{At, AtHour, Owner, Read}}};
 use dashboard_follow::live::Source as Cell;
+use dashboard_query::series::ranked::GroupSelection;
+use dashboard_world::products::group_members::GroupsAt;
 use dashboard_query::coverage::{Witness, witnessed};
 use dashboard_text::{metadata::link_slot, variant_names::Texts};
-use replay_data::rows::{CountryLinkRow, CountryRow, TableId, tables};
+use replay_data::rows::{CountryLinkRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::BTreeSet,
     io,
 };
 #[cfg(any(test, feature = "export-types"))]
@@ -38,6 +40,10 @@ pub struct ProductionLicencesParams {
     pub countries: Vec<Country>,
     #[serde(default)]
     pub between: bool,
+    #[doc = " A group: its members at the hour (or every member so far), resolved in Rust; replaces `countries`."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub limit: Option<u32>,
@@ -123,24 +129,11 @@ pub struct EquipmentDesignsReply {
 
 dashboard_base::reply_warnings!(IndustrialOrganisationsReply, EquipmentDesignsReply);
 
-fn slot_tags(countries: &[CountryRow]) -> BTreeMap<u32, String> {
-    countries.iter().filter_map(|row| Some((row.canonical_slot, std::str::from_utf8(&row.tag).ok()?.to_owned()))).collect()
-}
-
 const LICENCES_NOT_RECORDED: &str = "A licence was not recorded at this hour";
-const LICENCE_UNLINKED: &str = "Some licences name a country the recording cannot link at this hour; they are left out";
+const LICENCE_UNLINKED: &str = "The licence names a country the recording cannot link at this hour";
 
-pub fn licence_edges(records: &[replay_data::rows::ProductionLicenseRecordRow], links: &[CountryLinkRow], tags: &BTreeMap<u32, String>) -> (Vec<FlowEdge>, bool) {
-    let tag = |raw: u32| link_slot(links, raw).and_then(|slot| tags.get(&slot).cloned());
-    let mut out = Vec::with_capacity(records.len());
-    let mut unlinked = false;
-    for row in records {
-        match (tag(row.giver), tag(row.owner)) {
-            (Some(from), Some(to)) => out.push(FlowEdge { from, to, part: 0, amount: Some(1) }),
-            _ => unlinked = true,
-        }
-    }
-    (out, unlinked)
+pub fn licence_edges(records: &[replay_data::rows::ProductionLicenseRecordRow], links: &[CountryLinkRow]) -> Vec<FlowEdge> {
+    records.iter().map(|row| FlowEdge { from: link_slot(links, row.giver), to: link_slot(links, row.owner), part: 0, amount: Some(1) }).collect()
 }
 
 fn licence_parts() -> Vec<FlowPart> {
@@ -151,11 +144,11 @@ impl AtHour for ProductionLicences {
     const KEY: &'static str = "production-licences";
     const TITLE: &'static str = "Production licences";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = ProductionLicencesParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, limit];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit];
     type Reply = CountryFlowReply;
-    type Context = ();
+    type Context = GroupsAt;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
@@ -169,40 +162,50 @@ impl AtHour for ProductionLicences {
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
-        vec![TableId::ProductionLicenseRecords, TableId::Countries, TableId::CountryLinks]
+        vec![TableId::ProductionLicenseRecords, TableId::CountryLinks]
     }
 
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(())
+        Ok(GroupsAt::default())
+    }
+
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())
+    }
+
+    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        if params.subject.is_some() { i32::MAX } else { at.context.valid_through(params.group.as_ref(), at.hour) }
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let empty = |missing: String| CountryFlowReply::not_recorded(missing, 0, Vec::new());
-        let tables = (frame.complete::<tables::ProductionLicenseRecords>(), frame.complete::<tables::CountryLinks>(), frame.complete::<tables::Countries>());
-        let (records, links, countries) = match tables {
-            (Ok(records), Ok(links), Ok(countries)) => (records, links, countries),
-            (records, links, countries) => {
-                let why = [records.err(), links.err(), countries.err()].into_iter().flatten().map(|error| error.to_string()).collect::<Vec<_>>().join("; ");
+        let (records, links) = match (frame.complete::<tables::ProductionLicenseRecords>(), frame.complete::<tables::CountryLinks>()) {
+            (Ok(records), Ok(links)) => (records, links),
+            (records, links) => {
+                let why = [records.err(), links.err()].into_iter().flatten().map(|error| error.to_string()).collect::<Vec<_>>().join("; ");
                 return Ok(empty(format!("Licences are not recorded at this hour: {why}")));
             }
         };
-        let (edges, unlinked) = licence_edges(records, links, &slot_tags(countries));
-        let resolve = |country: &Country| at.holders.tag_at(country, at.hour).map(str::to_owned).or_else(|| country.tag().map(str::to_owned));
-        let subject = params.subject.as_ref().and_then(resolve);
-        if params.subject.is_some() && subject.is_none() {
+        let resolve = |country: &Country| at.holders.slot_at(country, at.hour);
+        let subject = params.subject.as_ref().map(resolve);
+        if let Some(None) = subject {
             return Ok(empty("The chosen country holds no tag at this hour".to_owned()));
         }
-        let chosen: Option<HashSet<String>> = (!params.countries.is_empty()).then(|| params.countries.iter().filter_map(resolve).collect());
+        let chosen = match at.context.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour)? {
+            Ok(chosen) => chosen,
+            Err(refused) => return Ok(empty(refused)),
+        };
         let shape = FlowShape {
-            subject: subject.as_deref(),
+            subject: subject.flatten(),
             chosen: chosen.as_ref(),
             between: params.between,
             limit: params.limit.map(|limit| limit.max(1) as usize),
             table: false,
             not_recorded: LICENCES_NOT_RECORDED,
+            unlinked: LICENCE_UNLINKED,
+            incomplete: None,
         };
-        let mut reply = build_flows(&edges, licence_parts(), 0, &shape);
-        reply.partial = unlinked.then(|| LICENCE_UNLINKED.to_owned());
+        let reply = build_flows(&licence_edges(records, links), licence_parts(), 0, &shape, &|slot| FlowEndpoint::at(at.holders, slot, at.hour, LICENCE_UNLINKED));
         check_reply_budget(&reply)?;
         Ok(reply)
     }

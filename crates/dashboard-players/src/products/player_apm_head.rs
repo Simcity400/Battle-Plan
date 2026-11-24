@@ -1,5 +1,5 @@
 
-use super::{Amount, ApmBucket, ApmGroup, ApmMembership, ApmParams, ApmValue, Coverage, index, merge_intervals, player_id, player_name, query, tag};
+use super::{Amount, ApmGroup, ApmMembership, ApmValue, Coverage, hourly_amounts, index, merge_intervals, player_id, player_name, tag};
 use dashboard_base::Source;
 use crate::products::campaign_clock;
 use dashboard_follow::head::{Head, HeadRows, HeadValue};
@@ -8,12 +8,12 @@ use dashboard_query::{
     series::MissingSpan,
     tile::{self, SeriesTileReply, TileLine},
 };
-use replay_capture_spool::commands::Index;
+use replay_capture_spool::commands::{Counts, Index};
 use replay_data::Hour;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -62,7 +62,19 @@ struct Piece {
     parts: Vec<Part>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
+struct HourSlice {
+    counts: Counts,
+    minutes: f64,
+    incomplete: bool,
+    paused_incomplete: bool,
+    shown: Option<(u64, u64)>,
+    tag: String,
+    name: Option<String>,
+    name_missing: Option<String>,
+}
+
+#[derive(Clone, Default)]
 struct Played {
     amount: Amount,
     shown: Option<(u64, u64)>,
@@ -98,6 +110,10 @@ pub struct ApmHead {
     last: i32,
     window: i32,
     visits: u64,
+    cached_window: Option<(i32, i32)>,
+    cached_whole: bool,
+    window_hours: BTreeMap<usize, VecDeque<(i32, HourSlice)>>,
+    cached_entries: Vec<(usize, Played, ApmValue)>,
 }
 
 impl ApmHead {
@@ -164,13 +180,29 @@ impl ApmHead {
             by_tag
         });
         let coverage = Coverage::new(&index, params.first_hour, params.last_hour)?;
-        Ok(Self { index, ids, pieces, reach, memberships, coverage, first: params.first_hour, last: params.last_hour, window: params.window_hours, visits: 0 })
+        Ok(Self {
+            index,
+            ids,
+            pieces,
+            reach,
+            memberships,
+            coverage,
+            first: params.first_hour,
+            last: params.last_hour,
+            window: params.window_hours,
+            visits: 0,
+            cached_window: None,
+            cached_whole: true,
+            window_hours: BTreeMap::new(),
+            cached_entries: Vec::new(),
+        })
     }
 
     pub fn visits(&self) -> u64 {
         self.visits
     }
 
+    #[cfg(test)]
     fn amounts(&mut self, first: i32, last: i32) -> BTreeMap<usize, Played> {
         let mut out: BTreeMap<usize, Played> = BTreeMap::new();
         let upper = self.pieces.partition_point(|piece| piece.hours.0 <= last);
@@ -253,26 +285,102 @@ impl ApmHead {
         let first = self.first.max(hour.saturating_sub(self.window - 1));
         (first <= last).then_some((first, last))
     }
-}
 
-impl HeadValue for ApmHead {
-    fn columns(&self) -> usize {
-        APM_COLUMNS.len()
+    fn member_at(&self, tag: &str, hour: i32) -> bool {
+        match &self.memberships {
+            None => true,
+            Some(members) => members.get(tag).is_some_and(|runs| {
+                let at = runs.partition_point(|&(_, end)| end < hour);
+                runs.get(at).is_some_and(|&(start, end)| start <= hour && hour <= end)
+            }),
+        }
     }
 
-    fn answer(&mut self, hour: Hour, _reset: bool, rows: &mut HeadRows<'_>) -> Result<(), String> {
-        if !self.index.analysis.recorded {
-            return Err("Player orders were not recorded in this campaign.".into());
+    fn hour_slices(&mut self, hour: i32) -> BTreeMap<usize, HourSlice> {
+        let mut out: BTreeMap<usize, HourSlice> = BTreeMap::new();
+        let upper = self.pieces.partition_point(|piece| piece.hours.0 <= hour);
+        let lower = self.reach.partition_point(|&reach| reach < hour);
+        let mut visits = 0;
+        for piece in &self.pieces[lower.min(upper)..upper] {
+            if hour < piece.hours.0 || hour > piece.hours.1 {
+                continue;
+            }
+            let timeline = &self.index.timelines[piece.timeline];
+            visits += 1;
+            if timeline.bounds(hour, hour).is_none() {
+                continue;
+            }
+            for part in &piece.parts {
+                if !self.member_at(&part.tag, hour) {
+                    continue;
+                }
+                let mut present = Vec::new();
+                for version in &part.versions {
+                    visits += 1;
+                    if timeline.measure(hour, hour, version.from, version.to).is_some() {
+                        present.push(version);
+                    }
+                }
+                if present.is_empty() {
+                    continue;
+                }
+                let latest = present.iter().max_by_key(|v| v.from).expect("present is non-empty");
+                let display_at = (timeline.session, latest.from);
+                let slice = out.entry(part.series).or_default();
+                if slice.shown.is_none_or(|shown| shown <= display_at) {
+                    slice.shown = Some(display_at);
+                    slice.tag.clone_from(&part.tag);
+                    slice.name.clone_from(&latest.name);
+                    slice.name_missing.clone_from(&latest.name_missing);
+                }
+                for &(from, to) in &part.ranges {
+                    visits += 1;
+                    if let Some(measured) = timeline.measure(hour, hour, from, to) {
+                        slice.minutes += measured.minutes;
+                        slice.incomplete |= !measured.complete;
+                        slice.paused_incomplete |= timeline.paused_unknown_hours.range(hour..=hour).next().is_some();
+                    }
+                }
+                for version in present {
+                    let Some(counts) = timeline.counts.get(&(version.actor, version.version)) else { continue };
+                    visits += 1;
+                    let (count, incomplete) = counts.range(hour, hour);
+                    slice.counts.add(count);
+                    slice.incomplete |= incomplete;
+                }
+            }
         }
-        let (first, last) = self.window_at(hour).ok_or("This time is outside the recording.")?;
-        let mut entries: Vec<_> = self
-            .amounts(first, last)
-            .into_iter()
-            .map(|(series, played)| {
-                let value: ApmValue = played.amount.value();
-                (series, played, value)
-            })
-            .collect();
+        self.visits += visits;
+        out
+    }
+
+    fn rebuild_cached_from_window(&mut self) {
+        let gaps = !self.cached_whole;
+        let mut entries: Vec<(usize, Played, ApmValue)> = Vec::with_capacity(self.window_hours.len());
+        for (&series, deque) in &self.window_hours {
+            let mut played = Played::default();
+            for &(h, ref slice) in deque {
+                played.amount.counts.add(slice.counts);
+                played.amount.minutes += slice.minutes;
+                played.amount.incomplete |= slice.incomplete;
+                played.amount.paused_incomplete |= slice.paused_incomplete;
+                played.amount.first_hour = Some(played.amount.first_hour.map_or(h, |f| f.min(h)));
+                played.amount.last_hour = Some(played.amount.last_hour.map_or(h, |l| l.max(h)));
+                if let Some(at) = slice.shown
+                    && played.shown.is_none_or(|shown| shown <= at)
+                {
+                    played.shown = Some(at);
+                    played.tag.clone_from(&slice.tag);
+                    played.name.clone_from(&slice.name);
+                    played.name_missing.clone_from(&slice.name_missing);
+                }
+            }
+            if played.amount.first_hour.is_some() {
+                played.amount.gaps = gaps;
+                let value = played.amount.value();
+                entries.push((series, played, value));
+            }
+        }
         entries.sort_by(|(a_series, _, a), (b_series, _, b)| {
             match (a.apm, b.apm) {
                 (Some(x), Some(y)) => y.total_cmp(&x),
@@ -282,16 +390,100 @@ impl HeadValue for ApmHead {
             }
             .then_with(|| self.ids[*a_series].cmp(&self.ids[*b_series]))
         });
-        for (series, Played { amount, tag, name, name_missing, .. }, value) in entries {
-            rows.row(series as u128, &self.ids[series]);
+        self.cached_entries = entries;
+    }
+
+    fn seed_window(&mut self, first: i32, last: i32) {
+        self.window_hours.clear();
+        let upper = self.pieces.partition_point(|piece| piece.hours.0 <= last);
+        let lower = self.reach.partition_point(|&reach| reach < first);
+        let mut hours_to_visit: Vec<i32> = Vec::new();
+        for piece in &self.pieces[lower.min(upper)..upper] {
+            let (lo, hi) = (first.max(piece.hours.0), last.min(piece.hours.1));
+            if lo > hi {
+                continue;
+            }
+            let timeline = &self.index.timelines[piece.timeline];
+            let s_from = timeline.spans.partition_point(|s| s.hour < lo);
+            let s_to = timeline.spans.partition_point(|s| s.hour <= hi);
+            hours_to_visit.extend(timeline.spans[s_from..s_to].iter().map(|s| s.hour));
+        }
+        hours_to_visit.sort_unstable();
+        hours_to_visit.dedup();
+        for h in hours_to_visit {
+            let slices = self.hour_slices(h);
+            for (series, slice) in slices {
+                self.window_hours.entry(series).or_default().push_back((h, slice));
+            }
+        }
+        self.cached_window = Some((first, last));
+        self.cached_whole = self.coverage.observed(first, last);
+        self.visits += 1;
+        self.rebuild_cached_from_window();
+    }
+}
+
+impl HeadValue for ApmHead {
+    fn columns(&self) -> usize {
+        APM_COLUMNS.len()
+    }
+
+    fn answer(&mut self, hour: Hour, reset: bool, rows: &mut HeadRows<'_>) -> Result<(), String> {
+        if !self.index.analysis.recorded {
+            return Err("Player orders were not recorded in this campaign.".into());
+        }
+        let (first, last) = self.window_at(hour).ok_or("This time is outside the recording.")?;
+        if !reset && self.cached_window == Some((first, last)) {
+        } else if !reset
+            && let Some((p_first, p_last)) = self.cached_window
+            && first >= p_first
+            && last >= p_last
+            && i64::from(first - p_first) + i64::from(last - p_last) <= 8
+        {
+            let mut dirty = false;
+            self.window_hours.retain(|_, deque| {
+                while deque.front().is_some_and(|&(h, _)| h < first) {
+                    deque.pop_front();
+                    dirty = true;
+                }
+                !deque.is_empty()
+            });
+            for h in (p_last + 1)..=last {
+                let slices = self.hour_slices(h);
+                if !slices.is_empty() {
+                    dirty = true;
+                    for (series, slice) in slices {
+                        self.window_hours.entry(series).or_default().push_back((h, slice));
+                    }
+                }
+            }
+            let whole = self.coverage.observed(first, last);
+            self.visits += 1;
+            let gaps_changed = whole != self.cached_whole;
+            self.cached_window = Some((first, last));
+            self.cached_whole = whole;
+            if dirty {
+                self.rebuild_cached_from_window();
+            } else if gaps_changed {
+                let gaps = !whole;
+                for (_, played, value) in &mut self.cached_entries {
+                    played.amount.gaps = gaps;
+                    value.gaps = gaps;
+                }
+            }
+        } else {
+            self.seed_window(first, last);
+        }
+        for (series, Played { amount, tag, name, name_missing, .. }, value) in &self.cached_entries {
+            rows.row(*series as u128, &self.ids[*series]);
             rows.float(value.apm);
             rows.float(value.confirmed_apm);
-            rows.number(value.orders.and_then(|orders| orders.parse().ok()));
-            rows.number(value.paused_orders.and_then(|orders| orders.parse().ok()));
+            rows.number(value.orders.as_deref().and_then(|orders| orders.parse().ok()));
+            rows.number(value.paused_orders.as_deref().and_then(|orders| orders.parse().ok()));
             rows.float(value.unpaused_minutes);
             rows.flag(value.complete);
             rows.flag(value.gaps);
-            rows.text(Some(&tag));
+            rows.text(Some(tag));
             rows.number(amount.last_hour.map(i64::from));
             rows.text(name.as_deref());
             rows.text(name_missing.as_deref());
@@ -415,6 +607,27 @@ pub fn tile(source: &Source, branch: u64, timeline_last: i32, params: &Value) ->
     tile_from_index(&held, branch, timeline_last, &family, &ask, first, last)
 }
 
+const GAP_REASON: &str = "Part of this period was not recorded; its orders and minutes are both left out.";
+
+fn merge_missing_spans(mut spans: Vec<MissingSpan>) -> Vec<MissingSpan> {
+    spans.sort_by_key(|s| (s.first_hour, s.last_hour));
+    let mut merged: Vec<MissingSpan> = Vec::with_capacity(spans.len());
+    for span in spans {
+        if span.first_hour > span.last_hour {
+            continue;
+        }
+        if let Some(prev) = merged.last_mut()
+            && i64::from(span.first_hour) <= i64::from(prev.last_hour) + 1
+            && prev.reason == span.reason
+        {
+            prev.last_hour = prev.last_hour.max(span.last_hour);
+        } else {
+            merged.push(span);
+        }
+    }
+    merged
+}
+
 fn tile_from_index(
     held: &Index,
     branch: u64,
@@ -442,40 +655,107 @@ fn tile_from_index(
         return Ok(SeriesTileReply { branch_id: branch.to_string(), measure: family.value.clone(), decimals: 0, bin_hours: ask.bin_hours, index: ask.index, first_hour: first,
             immutable, filled, raw_values, hour_bytes, lines, bins: tile::base64(&bins), ranking: None });
     }
-    let reply = query(held, &ApmParams {
-        branch_id: branch.to_string(),
-        group: family.group,
-        registry: false,
-        first_hour: Some(first),
-        last_hour: Some(last),
-        tags: family.tags.clone(),
-        membership: family.membership.clone(),
-        players: family.players.clone(),
-        buckets: tile::BINS as u32,
-    }, &AtomicBool::new(false))?;
+    let clipped_end = last.min(timeline_last);
+    let wanted_ids: BTreeSet<&str> = ask.countries.iter().map(String::as_str).collect();
+    let per_series = if first <= clipped_end {
+        hourly_amounts(
+            held,
+            family.group,
+            first,
+            clipped_end,
+            family.tags.as_deref(),
+            family.membership.as_deref(),
+            &family.players,
+            &wanted_ids,
+        )?
+    } else {
+        BTreeMap::new()
+    };
+    let coverage = Coverage::new(held, first, clipped_end.max(first))?;
     let mut buckets: Vec<Option<ChartBucket>> = vec![None; ask.countries.len() * tile::BINS];
     let mut lines = Vec::with_capacity(ask.countries.len());
     for (at, id) in ask.countries.iter().enumerate() {
         let mut missing = Vec::new();
-        if let Some(series) = reply.series.iter().find(|series| &series.id == id) {
+        if let Some(hours_map) = per_series.get(id) {
             let mut before = false;
-            for ApmBucket { first_hour, last_hour, value } in &series.points {
-                let bin = ((i64::from(*first_hour) - i64::from(first)) / ask.bin_hours) as usize;
-                if bin >= tile::BINS {
-                    continue;
+            for bin in 0..tile::BINS {
+                let bin_first = (i64::from(first) + bin as i64 * ask.bin_hours) as i32;
+                if bin_first > clipped_end {
+                    break;
                 }
-                let shown = if family.value == "apm" { value.apm } else { value.paused_orders.as_deref().and_then(|orders| orders.parse::<f64>().ok()) };
-                let Some(shown) = shown else {
-                    missing.push(MissingSpan { first_hour: *first_hour, last_hour: *last_hour, reason: unknown_rate(value) });
+                let bin_last = (i64::from(first) + (bin as i64 + 1) * ask.bin_hours - 1).min(i64::from(clipped_end)) as i32;
+                let mut agg: Option<(i32, f64, i32, f64, i32, f64, i32, f64)> = None;
+                let mut paused_span: Option<(i32, i32)> = None;
+                let mut any_error_missing = false;
+                let mut has_break = false;
+                let mut prev_hour: Option<i32> = None;
+                for (&h, amount) in hours_map.range(bin_first..=bin_last) {
+                    if prev_hour.is_some_and(|p| i64::from(h) > i64::from(p) + 1 && !coverage.observed(p + 1, h - 1)) {
+                        has_break = true;
+                    }
+                    prev_hour = Some(h);
+                    let val = amount.value();
+                    let shown = if family.value == "apm" {
+                        val.apm
+                    } else {
+                        val.paused_orders.as_deref().and_then(|orders| orders.parse::<f64>().ok())
+                    };
+                    if let Some(rate) = shown {
+                        agg = Some(match agg {
+                            None => (h, rate, h, rate, h, rate, h, rate),
+                            Some((fh, fv, _, _, minh, minv, maxh, maxv)) => {
+                                let (minh, minv) = if rate < minv { (h, rate) } else { (minh, minv) };
+                                let (maxh, maxv) = if rate > maxv { (h, rate) } else { (maxh, maxv) };
+                                (fh, fv, h, rate, minh, minv, maxh, maxv)
+                            }
+                        });
+                    } else if val.complete && val.unpaused_minutes == Some(0.0) {
+                        paused_span = Some(match paused_span {
+                            None => (h, h),
+                            Some((lo, hi)) => (lo.min(h), hi.max(h)),
+                        });
+                    } else {
+                        any_error_missing = true;
+                        has_break = true;
+                        missing.push(MissingSpan { first_hour: h, last_hour: h, reason: unknown_rate(&val) });
+                    }
+                }
+                let gap_spans = coverage.missing_spans(bin_first, bin_last);
+                if let Some((fh, fv, lh, lv, minh, minv, maxh, maxv)) = agg {
+                    if !gap_spans.is_empty() {
+                        has_break = true;
+                        for (g_lo, g_hi) in gap_spans {
+                            missing.push(MissingSpan { first_hour: g_lo, last_hour: g_hi, reason: GAP_REASON.into() });
+                        }
+                    }
+                    buckets[at * tile::BINS + bin] = Some(ChartBucket {
+                        absolute_total: 0,
+                        first_hour: fh,
+                        last_hour: lh,
+                        first_value: fv,
+                        last_value: lv,
+                        last_value_hour: lh,
+                        min_hour: minh,
+                        min_value: minv,
+                        max_hour: maxh,
+                        max_value: maxv,
+                        first_break: !before,
+                        has_break,
+                    });
+                    before = true;
+                } else {
+                    if !any_error_missing && let Some((p_lo, p_hi)) = paused_span {
+                        missing.push(MissingSpan {
+                            first_hour: p_lo,
+                            last_hour: p_hi,
+                            reason: "No unpaused time was observed in this period.".into(),
+                        });
+                    }
                     before = false;
-                    continue;
-                };
-                buckets[at * tile::BINS + bin] = Some(ChartBucket { absolute_total: 0, first_hour: *first_hour, last_hour: *last_hour, first_value: shown, last_value: shown,
-                    last_value_hour: *last_hour, min_hour: *first_hour, min_value: shown, max_hour: *first_hour, max_value: shown, first_break: !before, has_break: false });
-                before = true;
+                }
             }
         }
-        lines.push(TileLine { country: id.clone().into(), part: None, missing, parts: Vec::new(), marks: None });
+        lines.push(TileLine { country: id.clone().into(), part: None, missing: merge_missing_spans(missing), parts: Vec::new(), marks: None });
     }
     let (immutable, filled) = tile::closure(first, last, timeline_last);
     let (bins, raw_values, hour_bytes) = tile::encode(&buckets, first, ask.bin_hours, 1.0);

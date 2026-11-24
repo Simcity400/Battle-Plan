@@ -15,7 +15,7 @@ use ts_rs::TS;
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub enum GroupKind {
+pub enum CountedGroup {
     #[doc = " Factions, keyed by recorded faction id, counted by member."]
     Factions,
     #[doc = " Overlords, keyed by their tag at the hour, counted by subject."]
@@ -27,7 +27,7 @@ pub enum GroupKind {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GroupCountsParams {
     pub branch_id: String,
-    pub of: GroupKind,
+    pub of: CountedGroup,
     #[doc = " The hour counted: nothing recorded after it is read into the reply."]
     pub hour: i32,
 }
@@ -48,7 +48,7 @@ pub struct GroupCount {
 #[serde(rename_all = "camelCase")]
 pub struct GroupCountsReply {
     pub branch_id: String,
-    pub of: GroupKind,
+    pub of: CountedGroup,
     pub hour: i32,
     #[doc = " The first hour after `hour` at which a count, a group or a reason changes; null when none does."]
     pub next_change: Option<i32>,
@@ -146,13 +146,13 @@ impl Index {
         Self { groups, unread, boundaries }
     }
 
-    fn answer(&self, of: GroupKind, hour: i32) -> (Option<String>, Vec<GroupCount>) {
+    fn answer(&self, of: CountedGroup, hour: i32) -> (Option<String>, Vec<GroupCount>) {
         let (whole, own) = match of {
-            GroupKind::Factions => (FACTIONS_UNREAD, ROSTER_UNREAD),
-            GroupKind::Overlords => (SUBJECTS_UNREAD, SUBJECTS_UNREAD),
+            CountedGroup::Factions => (FACTIONS_UNREAD, ROSTER_UNREAD),
+            CountedGroup::Overlords => (SUBJECTS_UNREAD, SUBJECTS_UNREAD),
         };
         let unread = within(&self.unread, hour);
-        if unread && of == GroupKind::Overlords {
+        if unread && of == CountedGroup::Overlords {
             return (Some(whole.to_owned()), Vec::new());
         }
         let mut known: Vec<(Reverse<u32>, i32, &str)> = Vec::new();
@@ -163,7 +163,7 @@ impl Index {
                 continue;
             }
             let count = group.steps.partition_point(|step| step.0 <= hour).checked_sub(1).map_or(0, |at| group.steps[at].1);
-            if count > 0 || of == GroupKind::Factions {
+            if count > 0 || of == CountedGroup::Factions {
                 known.push((Reverse(count), group.first, &group.key));
             }
         }
@@ -224,17 +224,17 @@ fn overlords(source: &Source, query: &Query<'_>) -> io::Result<Index> {
 const KEPT: usize = 4;
 
 #[derive(Default)]
-struct Kept(Vec<((u64, GroupKind), Arc<Index>)>);
+struct Kept(Vec<((u64, CountedGroup), Arc<Index>)>);
 
-fn index(source: &Source, branch: u64, of: GroupKind) -> io::Result<Arc<Index>> {
+fn index(source: &Source, branch: u64, of: CountedGroup) -> io::Result<Arc<Index>> {
     let state = source.state::<Kept>();
     if let Some((_, held)) = state.lock().unwrap_or_else(PoisonError::into_inner).0.iter().find(|(key, _)| *key == (branch, of)) {
         return Ok(Arc::clone(held));
     }
     let query = dashboard_base::queries::query(source, branch)?;
     let built = Arc::new(match of {
-        GroupKind::Factions => factions(source, &query)?,
-        GroupKind::Overlords => overlords(source, &query)?,
+        CountedGroup::Factions => factions(source, &query)?,
+        CountedGroup::Overlords => overlords(source, &query)?,
     });
     let mut kept = state.lock().unwrap_or_else(PoisonError::into_inner);
     kept.0.push(((branch, of), Arc::clone(&built)));
@@ -255,7 +255,7 @@ impl Product for GroupCounts {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![GroupKind::decl(), GroupCountsParams::decl(), GroupCount::decl(), GroupCountsReply::decl()]
+        vec![CountedGroup::decl(), GroupCountsParams::decl(), GroupCount::decl(), GroupCountsReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

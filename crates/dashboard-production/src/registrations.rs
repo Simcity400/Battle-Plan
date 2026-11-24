@@ -1,5 +1,4 @@
 dashboard_base::register_products! {
-    PRODUCTION_PRODUCTIONLINES => crate::products::production::ProductionLines,
     PRODUCTION_PRODUCTIONLINEBREAKDOWN => crate::products::production::ProductionLineBreakdown,
     PRODUCTION_SPENDING_PRODUCTIONSPENDING => crate::products::production_spending::ProductionSpending,
     PRODUCTION_SPENDING_MONTHS_PRODUCTIONSPENDINGMONTHS => crate::products::production_spending_months::ProductionSpendingMonths,
@@ -8,6 +7,7 @@ dashboard_base::register_products! {
     CONSTRUCTION_BREAKDOWN_CONSTRUCTIONBREAKDOWN => crate::products::construction::breakdown::ConstructionBreakdown,
     STOCKPILE_EQUIPMENTSTOCKPILECATALOGUE => crate::products::stockpile::EquipmentStockpileCatalogue,
     STOCKPILE_EQUIPMENTSTOCKPILECHART => crate::products::stockpile::EquipmentStockpileChart,
+    STOCKPILE_EQUIPMENTSTOCKPILELINES => crate::products::stockpile::EquipmentStockpileLines,
     EQUIPMENT_LOSSES_EQUIPMENTLOSSES => crate::products::equipment_losses::EquipmentLosses,
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCED => crate::products::equipment_produced::EquipmentProduced,
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDTYPES => crate::products::equipment_produced::EquipmentProducedTypes,

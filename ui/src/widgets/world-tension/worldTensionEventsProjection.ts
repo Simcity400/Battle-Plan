@@ -1,4 +1,5 @@
 import type { FamilyPlanContext } from '../../families/contract.ts';
+import { groupSelection } from '../../families/groupSelection.ts';
 import type { CountryLooksMap } from '../../families/looks.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import {
@@ -7,9 +8,9 @@ import {
   type TableColumnSpec,
   type TableProjection,
 } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue } from '../../families/value.ts';
+import { knownValue, notRecorded, type Value } from '../../families/value.ts';
 import { formatDateOnly, formatRecordedPercent } from '../../families/valueFormat.ts';
 import type { TensionStackEvent, WorldTensionStackReply } from '../../generated/dashboard';
 import { EVENTS_TABLE_BASE } from './definition.ts';
@@ -23,6 +24,7 @@ export interface WorldTensionEventsOptions {
 interface ParsedEvents {
   readonly events: readonly TensionStackEvent[];
   readonly scale: number;
+  readonly refused: string | null;
   readonly nextChangeHour: number | null;
   readonly warnings: readonly string[];
 }
@@ -32,15 +34,30 @@ function parseEvents(raw: unknown): ParsedEvents {
   return {
     events: reply.events,
     scale: reply.contributionScale,
+    refused: reply.refused,
     nextChangeHour: reply.nextChangeHour,
     warnings: reply.warnings,
   };
 }
 
-function formatAddedPercent(raw: string, scale: number): string {
+function scaleDecimals(scale: number): number | null {
+  if (!Number.isInteger(scale) || scale <= 0) return null;
+  let d = 0;
+  let v = scale;
+  while (v > 1 && v % 10 === 0) {
+    v /= 10;
+    d++;
+  }
+  return v === 1 ? d : null;
+}
+
+function formatAddedPercent(raw: string, scale: number): Value<string> {
+  if (!/^-?\d+$/.test(raw) || scale <= 0) return notRecorded('Tension amount not recorded');
+  const decimals = scaleDecimals(scale);
+  if (decimals !== null) return knownValue(formatRecordedPercent(BigInt(raw), { decimals, signed: true }));
   const num = Number(raw);
-  if (!Number.isFinite(num) || scale <= 0) return '0%';
-  return formatRecordedPercent(num / scale, { signed: true });
+  if (!Number.isFinite(num)) return notRecorded('Tension amount not recorded');
+  return knownValue(formatRecordedPercent(num / scale, { signed: true }));
 }
 
 export function worldTensionEventsColumns(): readonly TableColumnSpec[] {
@@ -53,7 +70,7 @@ export function worldTensionEventsColumns(): readonly TableColumnSpec[] {
   ];
 }
 
-export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOptions> = registerTableProjection(
+export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOptions> = registerFamilyProjection(
   declareTableProjection<ParsedEvents, TensionStackEvent, WorldTensionEventsOptions>({
     kind: 'world-tension',
     validate: parseEvents,
@@ -83,8 +100,11 @@ export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOpt
             ...spec,
             country: 'tag',
             lookHour: (row, hour) => Math.min(row.firstRead, hour),
-            value: row => knownValue(formatAddedPercent(row.addedRaw, parsed.scale)),
-            sortValue: row => knownValue(Number(row.addedRaw) / Math.max(1, parsed.scale)),
+            value: row => formatAddedPercent(row.addedRaw, parsed.scale),
+            sortValue: row => {
+              const num = Number(row.addedRaw);
+              return Number.isFinite(num) && parsed.scale > 0 ? knownValue(num / parsed.scale) : notRecorded('Tension amount not recorded');
+            },
           };
         }
         return {
@@ -95,13 +115,16 @@ export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOpt
       });
     },
     rows: (parsed, _live, hour) => {
+      if (parsed.refused) {
+        return { rows: [], empty: parsed.refused, emptyKind: 'unavailable', warnings: parsed.warnings };
+      }
       const shown = parsed.events.filter(ev => ev.firstRead <= hour && ev.hour <= hour);
       if (!shown.length) {
         return { rows: [], empty: `No threat event recorded by ${formatDateOnly(hour)}.`, emptyKind: 'empty', warnings: parsed.warnings };
       }
       return { rows: shown, warnings: parsed.warnings };
     },
-    rowKey: row => `${row.hour}:${row.firstRead}:${row.reason}:${row.tag ?? ''}`,
+    rowKey: row => `${row.hour}:${row.firstRead}:${row.slot ?? ''}:${row.secondCountry}:${row.place}:${row.reason}`,
     rowName: row => row.reason,
     tooltipTitle: row => row.reason,
     tooltipNote: row => (row.remembered ? 'Country tag last held this slot before disappearing.' : undefined),
@@ -117,34 +140,44 @@ export const worldTensionEventsDeclaration: TableWidgetDeclaration<WorldTensionE
   emptyCampaign: 'Load a campaign to see threat events.',
   icon: 'alert',
   countries: { mode: 'multi', labels: true, colours: true, allTagsForLabels: true },
-  sources: (ctx: FamilyPlanContext) => ({
-    owner: `world-tension-events:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
-    entries: [{
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'branch-to-hour',
-        coverage: { mode: 'population', form: 'all' },
-        product: 'world-tension-stack',
-        followQuery: null,
-        params: {
-          branchId: ctx.branch.id,
-          layers: 1,
-          values: 'share',
-          countries: ctx.countries.all ? null : [...ctx.countries.tags],
-          width: 120,
+  sources: (ctx: FamilyPlanContext) => {
+    const top = ctx.countries.top ?? null;
+    const keyed = !ctx.countries.all && top == null;
+    const group = keyed ? groupSelection(ctx.widget.countries) : null;
+    const countries = keyed && !group ? [...ctx.countries.tags] : null;
+    return {
+      owner: `world-tension-events:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
+      entries: [{
+        name: 'main',
+        source: ctx.track.source,
+        branch: ctx.branch.id,
+        offset: ctx.track.axisOffset,
+        read: {
+          shape: 'branch-to-hour',
+          coverage: { mode: 'population', form: 'all' },
+          product: 'world-tension-stack',
+          followQuery: null,
+          params: {
+            branchId: ctx.branch.id,
+            layers: 1,
+            values: 'share',
+            countries,
+            top,
+            group,
+            width: 120,
+            includeStack: false,
+            includeEvents: true,
+          },
+          dynamicKeys: ['firstHour', 'lastHour'],
+          validate: validateWorldTensionStack,
+          provenInterval: (data, _requested, hour) => {
+            const reply = data as WorldTensionStackReply;
+            return reply.nextChangeHour !== null ? [hour, reply.nextChangeHour - 1] : [hour, Infinity];
+          },
         },
-        dynamicKeys: ['firstHour', 'lastHour'],
-        validate: validateWorldTensionStack,
-        provenInterval: (data, _requested, hour) => {
-          const reply = data as WorldTensionStackReply;
-          return reply.nextChangeHour !== null ? [hour, reply.nextChangeHour - 1] : [hour, Infinity];
-        },
-      },
-    }],
-  }),
+      }],
+    };
+  },
   projection: worldTensionEventsProjection,
   columns: () => [...worldTensionEventsColumns()],
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: EVENTS_TABLE_BASE },

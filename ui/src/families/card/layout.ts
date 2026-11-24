@@ -15,6 +15,8 @@ export const CARD_FLAG_HEIGHT = 13;
 export const CARD_GAP = 14;
 export const CARD_COMPACT_BELOW = 520;
 export const CARD_FADE = 24;
+export const CARD_LIST_GAP = 28;
+export const CARD_LIST_MIN = 300;
 const MIN_TITLE = 120;
 
 export interface CardLayout {
@@ -22,6 +24,9 @@ export interface CardLayout {
   readonly height: number;
   readonly rowTops: readonly number[];
   readonly rowHeights: readonly number[];
+  readonly rowLefts: readonly number[];
+  readonly rowWidth: number;
+  readonly listRanges: readonly (readonly [number, number])[];
   readonly totalHeight: number;
   readonly compact: boolean;
   readonly dateX: number;
@@ -48,17 +53,40 @@ function rowHeight(row: CardRow, model: CardModel): number {
   return model.rowHeight;
 }
 
-export function layoutCards(model: CardModel, width: number, height: number): CardLayout {
+function listCount(model: CardModel, width: number): number {
+  if (!model.columns.lists) return 1;
+  const sections = model.rows.reduce((n, row) => (row.kind === 'section' ? n + 1 : n), 0);
+  const fit = Math.floor((width + CARD_LIST_GAP) / (CARD_LIST_MIN + CARD_LIST_GAP));
+  return Math.max(1, Math.min(sections, fit));
+}
+
+export function layoutCards(model: CardModel, fullWidth: number, height: number): CardLayout {
+  const lists = listCount(model, fullWidth);
+  const width = lists > 1 ? Math.floor((fullWidth - CARD_LIST_GAP * (lists - 1)) / lists) : fullWidth;
   const rowTops: number[] = [];
   const rowHeights: number[] = [];
+  const rowLefts: number[] = [];
+  const listRanges: (readonly [number, number])[] = [];
   let y = CARD_PAD_TOP;
-  for (const row of model.rows) {
+  let list = -1;
+  let listStart = 0;
+  let deepest = 0;
+  model.rows.forEach((row, index) => {
+    if (lists > 1 && row.kind === 'section' && list < lists - 1) {
+      if (list >= 0) listRanges.push([listStart, index]);
+      list++;
+      listStart = index;
+      deepest = Math.max(deepest, y);
+      y = CARD_PAD_TOP;
+    }
     const h = rowHeight(row, model);
     rowTops.push(y);
     rowHeights.push(h);
+    rowLefts.push(lists > 1 ? Math.max(0, list) * (width + CARD_LIST_GAP) : 0);
     y += h;
-  }
-  const totalHeight = y + CARD_PAD_BOTTOM;
+  });
+  listRanges.push([listStart, model.rows.length]);
+  const totalHeight = Math.max(deepest, y) + CARD_PAD_BOTTOM;
   const columns = model.columns;
   const compact = width < CARD_COMPACT_BELOW && !!columns.place;
   let left = CARD_PAD_X;
@@ -93,10 +121,13 @@ export function layoutCards(model: CardModel, width: number, height: number): Ca
     placeWidth = Math.max(0, right - placeX);
   }
   return {
-    width,
+    width: fullWidth,
     height,
     rowTops,
     rowHeights,
+    rowLefts,
+    rowWidth: width,
+    listRanges,
     totalHeight,
     compact,
     dateX,
@@ -118,31 +149,32 @@ export function layoutCards(model: CardModel, width: number, height: number): Ca
   };
 }
 
-export function visibleCardRange(layout: CardLayout, scrollTop: number): { readonly first: number; readonly last: number } {
-  const top = scrollTop;
-  const bottom = scrollTop + layout.height;
-  let first = 0;
-  let lo = 0;
-  let hi = layout.rowTops.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (layout.rowTops[mid]! + layout.rowHeights[mid]! <= top) lo = mid + 1;
-    else hi = mid;
+export function visibleCardRows(layout: CardLayout, scrollTop: number): number[] {
+  const out: number[] = [];
+  for (const [start, end] of layout.listRanges) {
+    let lo = start;
+    let hi = end;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (layout.rowTops[mid]! + layout.rowHeights[mid]! <= scrollTop) lo = mid + 1;
+      else hi = mid;
+    }
+    for (let i = lo; i < end && layout.rowTops[i]! < scrollTop + layout.height; i++) out.push(i);
   }
-  first = lo;
-  let last = first;
-  while (last < layout.rowTops.length && layout.rowTops[last]! < bottom) last++;
-  return { first, last };
+  return out;
 }
 
-export function cardRowAt(layout: CardLayout, y: number, scrollTop: number): number {
+export function cardRowAt(layout: CardLayout, x: number, y: number, scrollTop: number): number {
   const at = y + scrollTop;
-  let lo = 0;
-  let hi = layout.rowTops.length;
+  const range = layout.listRanges.find(([start]) => x >= (layout.rowLefts[start] ?? 0) && x < (layout.rowLefts[start] ?? 0) + layout.rowWidth);
+  if (!range) return -1;
+  const [start, end] = range;
+  let lo = start;
+  let hi = end;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
     if (layout.rowTops[mid]! + layout.rowHeights[mid]! <= at) lo = mid + 1;
     else hi = mid;
   }
-  return lo < layout.rowTops.length && layout.rowTops[lo]! <= at ? lo : -1;
+  return lo < end && layout.rowTops[lo]! <= at ? lo : -1;
 }

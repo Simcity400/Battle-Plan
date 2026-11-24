@@ -44,11 +44,32 @@ fn a_months_witness_reads_its_own_arrays_run_of_the_hours_rows() {
 fn a_view_is_read_from_the_request_as_manpower_equipment_ledgers_or_one_month() {
     use super::{ArmyLossesParams, LossView};
     let equipment = LossView::Equipment { ledgers: vec![1, 2, 3] };
-    let month = LossView::Month { month: 5 };
+    let month = LossView::Month { month: 5, ledgers: None };
+    let month_eq = LossView::Month { month: 5, ledgers: Some(vec![1, 2, 3]) };
     let asked = |json: serde_json::Value| serde_json::from_value::<ArmyLossesParams>(json).unwrap().view;
     assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER" })), LossView::Manpower);
     assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER", "view": { "kind": "equipment", "ledgers": [1, 2, 3] } })), equipment);
     assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER", "view": { "kind": "month", "month": 5 } })), month);
+    assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER", "view": { "kind": "month", "month": 5, "ledgers": [1, 2, 3] } })), month_eq);
+}
+
+#[test]
+fn month_detail_sums_selected_ledgers_and_reports_table_unavailability_in_rust() {
+    let cells = dashboard_follow::live::Cells::default();
+    let mut ledgers = BTreeMap::new();
+    ledgers.insert(1, MonthLedgerAcc { kept: true, missing: None, total: 100_000, cells: Vec::new(), designs: Vec::new() });
+    ledgers.insert(2, MonthLedgerAcc { kept: true, missing: None, total: 250_000, cells: Vec::new(), designs: Vec::new() });
+    ledgers.insert(3, MonthLedgerAcc { kept: true, missing: Some(NO_READ_YET.into()), total: 0, cells: Vec::new(), designs: Vec::new() });
+    let (sum_ok, _, miss_ok) = summarize_selected_ledgers("army1", Some(&[1, 2]), None, &ledgers, &cells);
+    assert_eq!(sum_ok.as_deref(), Some("350000"));
+    assert_eq!(miss_ok, None);
+    let (sum_bad, _, miss_bad) = summarize_selected_ledgers("army1", Some(&[1, 2, 3]), None, &ledgers, &cells);
+    assert_eq!(sum_bad, None);
+    assert_eq!(miss_bad.as_deref(), Some(NO_READ_YET));
+    let avail = ArmyLossesAvailability { own_equipment: Some("incomplete read".into()), ..ArmyLossesAvailability::default() };
+    assert_eq!(month_detail_missing(&avail, Some(&[0])).as_deref(), Some("incomplete read"));
+    assert_eq!(month_detail_missing(&avail, Some(&[ENEMY_LEDGER])), None);
+    assert_eq!(month_detail_missing(&avail, None), None);
 }
 
 #[test]
@@ -81,4 +102,65 @@ fn rollup_ranks_parts_folds_other_preserves_recorded_zero_and_marks_unknown_mont
     assert_eq!(rollup.months[1].values, ["0", "0", "0"]);
     assert_eq!(rollup.months[2].missing.as_deref(), Some(NO_READ_YET));
     assert!(rollup.months[2].values.is_empty());
+}
+
+#[test]
+fn army_losses_advance_keeps_cached_rollup_on_other_country_and_live_value_edits() {
+    use dashboard_base::products::at_hour::{Edits, field_mask};
+    use dashboard_query::identity::{Holder, HolderRun, Holders};
+    use replay_data::rows::{CombatLogManpowerRow, CountryLinkRow, TableRows};
+    use replay_frame::frame::{Metrics, not_selected};
+
+    let holders = Holders::new(
+        BTreeMap::from([(
+            "GER".to_owned(),
+            vec![HolderRun { first: 0, last: 200, holder: Holder::Found { slot: 1, id: 1 }, starts_segment: true }],
+        )]),
+        Vec::new(),
+    );
+    let ger_row = CombatLogManpowerRow { country: 1, group: 10, date: 100, losses_0: 500, losses_1: 10, losses_2: 0, ..CombatLogManpowerRow::default() };
+    let other_row = CombatLogManpowerRow { country: 2, group: 20, date: 100, losses_0: 900, losses_1: 0, losses_2: 0, ..CombatLogManpowerRow::default() };
+    let ger_key = ger_row.key();
+    let other_key = other_row.key();
+    let mut mp_rows = vec![ger_row, other_row];
+    mp_rows.sort_by_key(|r| r.key());
+    let links = vec![
+        CountryLinkRow { id: 1, canonical_slot: 1 },
+        CountryLinkRow { id: 2, canonical_slot: 2 },
+    ];
+    let mut tables = std::array::from_fn(|_| not_selected());
+    tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links)).into();
+    tables[TableId::CombatLogManpower.index()] = TableView::Complete(TableRows::CombatLogManpower(mp_rows)).into();
+    let frame = DecodedFrame { branch: 1, hour: 100, tables, metrics: Metrics::default() };
+
+    let col_g = dashboard_declare::field(TableId::CombatLogManpower, "losses_0").unwrap();
+    let cells = dashboard_follow::live::Cells::default();
+    cells.value("r:1", "p0", Cell { table: TableId::CombatLogManpower, column: col_g, key: ger_key }, 1.0);
+    let live = cells.finish();
+
+    let params = ArmyLossesParams {
+        branch_id: "1".into(),
+        country: Country::Tag("GER".into()),
+        view: LossView::Manpower,
+        stack: Some(LossStack::Channel),
+        limit: Some(8),
+    };
+    let mask = field_mask(TableId::CombatLogManpower, &["losses_0"]);
+    let other_edit = Edits {
+        tables: BTreeMap::from([(TableId::CombatLogManpower, BTreeMap::from([(other_key, mask)]))]),
+        ..Edits::default()
+    };
+    assert!(advance_keeps(&frame, &params, &holders, 100, &other_edit, &live, Some(3)).unwrap(), "other country edits never rebuild GER rollup");
+
+    let live_edit = Edits {
+        tables: BTreeMap::from([(TableId::CombatLogManpower, BTreeMap::from([(ger_key, mask)]))]),
+        ..Edits::default()
+    };
+    assert!(advance_keeps(&frame, &params, &holders, 100, &live_edit, &live, Some(3)).unwrap(), "in-place live channel edit keeps cached rollup");
+
+    let structural_edit = Edits {
+        tables: BTreeMap::from([(TableId::CombatLogGroups, BTreeMap::from([(1u128, 1u64)]))]),
+        ..Edits::default()
+    };
+    assert!(!advance_keeps(&frame, &params, &holders, 100, &structural_edit, &live, Some(3)).unwrap(), "structural table edits rebuild");
 }

@@ -3,7 +3,7 @@ import { textWidth } from '../../charts/textWidth.ts';
 import type { LaneView } from '../../draw/lane.ts';
 import { createLaneView, type LaneBinding, type LaneFamily, type LaneFrame, type LaneRuntimeOptions } from '../laneRuntime.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
-import { layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
+import { barsAuditWindow, barsScrollHeight, layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
 import { assertBarsModelValid, deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip, type BarsModel } from './model.ts';
 import { collectVisibleBarsIcons, drawFamilyBars, hitFamilyBars, type BarsGlideOffset } from './painter.ts';
 import { hitPickList, pickAudit, pickedKey, pickNav, pickTooltip } from './pickList.ts';
@@ -64,7 +64,7 @@ const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
   },
   redraw: () => Infinity,
   status: model => (model.rows.length > 0 || model.empty !== undefined ? 'picture' : 'scene'),
-  view: () => [],
+  view: [],
   layout(model, _binding, surface, theme, measure) {
     const font = `${LABEL_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
     return layoutFamilyBars(model, surface.width, surface.height, theme, text => {
@@ -128,6 +128,8 @@ const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
         form: model.form,
         count: model.rows.length,
         totalHeight: layout.totalHeight,
+        scrollHeight: barsScrollHeight(layout),
+        rowViewport: { top: layout.bodyTop, height: layout.bodyHeight },
         bodyHeight: layout.bodyHeight,
         rowHeight: layout.dataRowHeight,
         bodyTop: layout.bodyTop,
@@ -148,7 +150,7 @@ const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
     const shown = visibleBarsRange(frame.layout, frame.binding.scrollTop);
     return deriveBarsMirror(frame.model, { first: shown.first, count: Math.max(0, shown.last - shown.first) }, frame.binding.focusedKey);
   },
-  audit: frame => [...(frame.model.pickList ? pickAudit(frame.model.pickList) : []), ...deriveBarsAudit(frame.model)],
+  audit: frame => [...(frame.model.pickList ? pickAudit(frame.model.pickList) : []), ...deriveBarsAudit(frame.model, { window: barsAuditWindow(frame.layout, frame.binding.scrollTop) })],
   visibleArt: frame => collectVisibleBarsIcons(frame.model, frame.layout, frame.binding.scrollTop),
 };
 

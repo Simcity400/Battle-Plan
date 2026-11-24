@@ -2,20 +2,20 @@ import { liveKey } from '../../charts/live.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
-import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
+import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, valueFromLive, zeroValue } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { AirMissionChoice, AirMissionRegion, AirMissionsReply } from '../../generated/dashboard';
 import { validateAirMissions } from './airMissionsData.ts';
-import { COLUMNS, TABLE_BASE, WINGS_COLUMN } from './definition.ts';
+import { REGION_COLUMN as REGION, SETTINGS_COLUMNS, TABLE_BASE, WINGS_COLUMN, missionDefaults, missionKey } from './definition.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
 
 type MissionRow = { readonly region: AirMissionRegion; readonly flown: ReadonlySet<string> };
 
 const REGION_COLUMN: DeclarativeColumnSpec<MissionRow, Record<string, never>> = {
-  ...COLUMNS[0]!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Eastern Poland'],
+  ...REGION, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Eastern Poland'],
   value: row => textValue(row.region.name, row.region.missing ?? 'Region name unavailable'),
 };
 
@@ -24,13 +24,9 @@ const WINGS: DeclarativeColumnSpec<MissionRow, Record<string, never>> = {
 };
 
 function missionColumn(mission: AirMissionChoice, at: number): DeclarativeColumnSpec<MissionRow, Record<string, never>> {
-  const field = `m${mission.id}`;
+  const field = missionKey(mission.id);
   return {
-    key: field,
-    label: mission.name,
-    as: 'faint',
-    tone: 'grey',
-    offered: OFFERED.number,
+    ...missionDefaults(mission.id, mission.name),
     priority: at + 2,
     numeric: true,
     format: 'integer',
@@ -51,7 +47,7 @@ function missionColumns(reply: AirMissionsReply): readonly DeclarativeColumnSpec
   return held;
 }
 
-export const airMissionsProjection: TableProjection<Record<string, never>> = registerTableProjection(
+export const airMissionsProjection: TableProjection<Record<string, never>> = registerFamilyProjection(
   declareTableProjection<AirMissionsReply, MissionRow, Record<string, never>>({
     kind: 'air-missions',
     validate: validateAirMissions,
@@ -103,7 +99,7 @@ export const airMissionsDeclaration: TableWidgetDeclaration<Record<string, never
     };
   },
   projection: airMissionsProjection,
-  columns: [REGION_COLUMN],
+  columns: SETTINGS_COLUMNS.map((column, at) => ({ ...column, priority: column.key === 'region' ? 0 : column.key === 'wings' ? 1 : at + 1 })),
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },
   projectionOptions: () => NO_OPTIONS,
   jumpToDate: true,

@@ -38,7 +38,7 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string", "family-measure-text-loop", "family-hand-percent", "family-at-least-wording")
+RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string", "family-measure-text-loop", "family-hand-percent", "family-at-least-wording", "family-private-art-cache")
 RULE_HINTS = {
     "local-contrast-ink": "use contrastInkForFill from ui/src/draw/kit.ts",
     "local-tick-engine": "use computeTimeAxisTicks from ui/src/draw/kit.ts or linearTicks from ui/src/charts/valueAxis.ts",
@@ -47,30 +47,34 @@ RULE_HINTS = {
     "family-measure-text-loop": "use textWidth or measureCanvasText from ui/src/charts/textWidth.ts, or fitLabelWidth / fitLabel from ui/src/charts/labels.ts",
     "family-hand-percent": "use formatShare, formatProgress, or formatRecordedPercent from ui/src/families/valueFormat.ts",
     "family-at-least-wording": "show the figure with the partial mark and a plain missing reason; never print 'at least', '≥', or '+ means'",
+    "family-private-art-cache": "use resolveCachedArt, toArtSlotState, and toFlagSlotState from ui/src/families/art/adapters.ts, and collectArtUrls from ui/src/families/art/provider.ts",
 }
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
-TS_FIXTURE = re.compile(r"\.fixture\.tsx?$")
-FAMILY_TS = re.compile(r"^ui/src/families/.+\.tsx?$")
-PROJECTION_TS = re.compile(r"^ui/src/widgets/.+Projection\.ts$")
-WIDGET_TS = re.compile(r"^ui/src/widgets/.+\.tsx?$")
+TS_FIXTURE = re.compile(r"\.fixtures?\.tsx?$")
+FAMILY_OR_WIDGET_TS = re.compile(r"^ui/src/(?:families|widgets)/.+\.tsx?$")
 TS_TOKEN = re.compile(r"""//|/\*|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`""", re.DOTALL)
+TS_FN_RHS = r"(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$]\w*\s*=>)"
 AT_LEAST_STRING = re.compile(r"\bat\s+least\b|\u2265|\\u2265|\+\s*means\b", re.IGNORECASE)
 AT_LEAST_JSX = re.compile(r"\u2265|\+\s*means\b", re.IGNORECASE)
 LOCAL_CONTRAST_INK = re.compile(
-    r"\b(?:function\s+(?:inkOn|contrastInk|relativeLuminance|readableText)\w*|(?:const|let)\s+(?:inkOn|contrastInk|relativeLuminance|readableText)\w*\s*=|\breadableText\s*\()"
+    rf"\b(?:function\s+(?:inkOn|contrastInk|relativeLuminance|readableText)\w*|(?:const|let)\s+(?:inkOn|contrastInk|relativeLuminance|readableText)\w*\s*=\s*{TS_FN_RHS}|\breadableText\s*\()"
 )
 LOCAL_TICK_ENGINE = re.compile(
-    r"\b(?:function\s+(?:compute\w*Ticks|nice\w*Ticks|linearTicks|timeAxisTicks|axisTicks|ticksForStep)\w*|(?:const|let)\s+(?:compute\w*Ticks|nice\w*Ticks|linearTicks|timeAxisTicks|axisTicks|ticksForStep)\w*\s*=)"
+    rf"\b(?:function\s+(?:compute\w*Ticks|nice\w*Ticks|linearTicks|timeAxisTicks|axisTicks|ticksForStep)\w*|(?:const|let)\s+(?:compute\w*Ticks|nice\w*Ticks|linearTicks|timeAxisTicks|axisTicks|ticksForStep)\w*\s*=\s*{TS_FN_RHS})"
 )
 FAMILY_COLOUR_LITERAL = re.compile(r"""['"`]#[0-9a-fA-F]{3,8}(?=['"`])|\b(?:rgba?|hsla?)\s*\(""")
-FAMILY_LOCALE_STRING = re.compile(
-    r"""\.toLocaleString\s*\(|from\s+['"][^'"]*charts/numberFormat(?:\.ts)?['"]|\bnew\s+Intl\.NumberFormat\s*\("""
-)
+SELECTOR_CALL_PREFIX = re.compile(r"\b(?:querySelector(?:All)?|closest|matches)\s*\(\s*$")
+FAMILY_LOCALE_CODE = re.compile(r"""\.toLocaleString\s*\(|\.toFixed\s*\(|\bnew\s+Intl\.NumberFormat\s*\(""")
+FAMILY_LOCALE_IMPORT = re.compile(r"""from\s+['"][^'"]*charts/numberFormat(?:\.ts)?['"]""")
 FAMILY_HAND_PERCENT = re.compile(
     r"""\$\{[^}\n]*(?:\bMath\.(?:round|floor|trunc|ceil)\s*\(|\.toFixed\s*\()[^}\n]*\}\s*%|(?:\bMath\.(?:round|floor|trunc|ceil)\s*\(|\.toFixed\s*\()[^;\n]*\+\s*['"`]%"""
 )
+FAMILY_PRIVATE_ART_CACHE = re.compile(
+    rf"\.stateOfUrl\s*\(|\b(?:function\s+(?:resolve(?:Art|Flag)State|collect(?:Visible)?(?:Cell)?Icons)\b|(?:const|let)\s+(?:resolve(?:Art|Flag)State|collect(?:Visible)?(?:Cell)?Icons)\s*=\s*{TS_FN_RHS})"
+)
 TS_LOOP_HEAD = re.compile(r"\b(?:for|while)\s*\(|\bdo\s*\{|\.(?:forEach|map|reduce|flatMap|filter|some|every)\s*\(")
 TS_MEASURE_TEXT = re.compile(r"\.measureText\s*\(")
+TS_MEASURE_BOX_METRIC = re.compile(r"\s*\.\s*(?:actual|font)BoundingBox(?:Ascent|Descent)\b")
 PS_TEST = re.compile(r"\.tests\.ps1$", re.IGNORECASE)
 JS_CLOCK = re.compile(r"\bset(?:Timeout|Interval)\s*\(")
 PS_CLOCK = re.compile(r"\bStart-Sleep\b|::Sleep\s*\(", re.IGNORECASE)
@@ -596,16 +600,10 @@ def rust_matches(name, revision):
     return found
 
 
-def is_family_or_projection(name):
-    if JS_TEST.search(name) or TS_FIXTURE.search(name):
-        return False
-    return bool(FAMILY_TS.match(name) or PROJECTION_TS.match(name))
-
-
 def is_family_or_widget(name):
     if JS_TEST.search(name) or TS_FIXTURE.search(name):
         return False
-    return bool(FAMILY_TS.match(name) or WIDGET_TS.match(name))
+    return bool(FAMILY_OR_WIDGET_TS.match(name))
 
 
 def at_least_wording_lines(text):
@@ -654,7 +652,7 @@ def at_least_wording_lines(text):
     return sorted(lines)
 
 
-def mask_ts_comments(text):
+def mask_ts_comments(text, *, blank_strings=False):
     out, at, length = [], 0, len(text)
     blank = lambda start, end: re.sub(r"[^\n]", " ", text[start:end])
     while (found := TS_TOKEN.search(text, at)) is not None:
@@ -670,7 +668,10 @@ def mask_ts_comments(text):
             out.append(blank(start, end))
         else:
             end = found.end()
-            out.append(token)
+            if blank_strings and len(token) >= 2:
+                out.append(token[0] + blank(start + 1, end - 1) + token[-1])
+            else:
+                out.append(token)
         at = end
     out.append(text[at:])
     return "".join(out)
@@ -699,7 +700,8 @@ def ts_loop_spans(code):
 
 
 def family_ts_matches(name, text):
-    code = mask_ts_comments(text)
+    code_with_strings = mask_ts_comments(text, blank_strings=False)
+    code = mask_ts_comments(text, blank_strings=True)
     found = {}
     contrast_lines = [line_of(text, m.start()) for m in LOCAL_CONTRAST_INK.finditer(code)]
     if contrast_lines:
@@ -707,24 +709,37 @@ def family_ts_matches(name, text):
     tick_lines = [line_of(text, m.start()) for m in LOCAL_TICK_ENGINE.finditer(code)]
     if tick_lines:
         found["local-tick-engine"] = tick_lines
-    colour_lines = [line_of(text, m.start()) for m in FAMILY_COLOUR_LITERAL.finditer(code)]
+    colour_lines = [
+        line_of(text, m.start())
+        for m in FAMILY_COLOUR_LITERAL.finditer(code_with_strings)
+        if not (m.group().startswith(("'", '"', "`")) and SELECTOR_CALL_PREFIX.search(code_with_strings, max(0, m.start() - 40), m.start()))
+    ]
     if colour_lines:
         found["family-colour-literal"] = colour_lines
     if name != "ui/src/families/valueFormat.ts":
-        locale_lines = [line_of(text, m.start()) for m in FAMILY_LOCALE_STRING.finditer(code)]
+        locale_offsets = [m.start() for m in FAMILY_LOCALE_CODE.finditer(code)] + [m.start() for m in FAMILY_LOCALE_IMPORT.finditer(code_with_strings)]
+        locale_lines = [line_of(text, offset) for offset in sorted(locale_offsets)]
         if locale_lines:
             found["family-locale-string"] = locale_lines
-        percent_lines = [line_of(text, m.start()) for m in FAMILY_HAND_PERCENT.finditer(code)]
+        percent_lines = [line_of(text, m.start()) for m in FAMILY_HAND_PERCENT.finditer(code_with_strings)]
         if percent_lines:
             found["family-hand-percent"] = percent_lines
     if ".measureText" in code:
         loops = ts_loop_spans(code)
-        measure_lines = [line_of(text, m.start()) for m in TS_MEASURE_TEXT.finditer(code) if within(loops, m.start())]
+        measure_lines = [
+            line_of(text, m.start())
+            for m in TS_MEASURE_TEXT.finditer(code)
+            if within(loops, m.start()) and not TS_MEASURE_BOX_METRIC.match(code, closing(code, m.end() - 1, "(", ")"))
+        ]
         if measure_lines:
             found["family-measure-text-loop"] = measure_lines
     at_least_lines = at_least_wording_lines(text)
     if at_least_lines:
         found["family-at-least-wording"] = at_least_lines
+    if not name.startswith("ui/src/families/art/"):
+        art_lines = [line_of(text, m.start()) for m in FAMILY_PRIVATE_ART_CACHE.finditer(code)]
+        if art_lines:
+            found["family-private-art-cache"] = art_lines
     return found
 
 
@@ -735,11 +750,8 @@ def matches(name, revision):
         return {}
     if name.endswith(".rs"):
         return rust_matches(name, revision)
-    if is_family_or_projection(name):
-        return family_ts_matches(name, text)
     if is_family_or_widget(name):
-        at_least_lines = at_least_wording_lines(text)
-        return {"family-at-least-wording": at_least_lines} if at_least_lines else {}
+        return family_ts_matches(name, text)
     pattern = JS_CLOCK if JS_TEST.search(name) else PS_CLOCK if PS_TEST.search(name) else None
     if pattern is None:
         return {}

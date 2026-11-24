@@ -16,7 +16,7 @@ function validAce(v: unknown): boolean {
     && (plane.name === null) !== (plane.missing === null)))) return false;
   if (v.alive) return v.death === null;
   const d = v.death;
-  return object(d) && nullableHour(d.lastAlive) && nullableHour(d.byHour)
+  return object(d) && nullableHour(d.lastAlive) && nullableHour(d.byHour) && nullableHour(d.seenDead)
     && ((d.lastAlive === null && d.byHour === null) || (int(d.lastAlive) && int(d.byHour) && d.lastAlive < d.byHour))
     && (d.killerAce === null || handle(d.killerAce)) && text(d.killerName) && text(d.killerTag);
 }

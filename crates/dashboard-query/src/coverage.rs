@@ -101,6 +101,27 @@ pub fn witnessed<T: TableSchema>(frame: &DecodedFrame, key: u128) -> Witness<'_,
     }
 }
 
+pub struct WitnessedRows<'a, R> {
+    pub rows: &'a [R],
+    pub missing: Option<String>,
+}
+
+pub fn witnessed_rows<T: TableSchema>(frame: &DecodedFrame) -> WitnessedRows<'_, T::Row> {
+    let shared = &frame.tables[T::ID.index()];
+    let view: &TableView = shared;
+    let (rows, complete) = match view {
+        TableView::Complete(rows) => (rows, shared.keys() == &Keys::All),
+        TableView::Truncated { rows, .. } => (rows, false),
+        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => return WitnessedRows { rows: &[], missing: Some(refusal(T::ID, view)) },
+    };
+    match typed::<T>(rows) {
+        Ok(rows) if complete => WitnessedRows { rows, missing: None },
+        Ok(rows) if matches!(view, TableView::Complete(_)) => WitnessedRows { rows, missing: Some(format!("{} read only for chosen rows at this hour", table_title(T::ID))) },
+        Ok(rows) => WitnessedRows { rows, missing: Some(refusal(T::ID, view)) },
+        Err(reason) => WitnessedRows { rows: &[], missing: Some(reason) },
+    }
+}
+
 pub fn population<'f, T: TableSchema>(frame: &'f DecodedFrame, asked: &Keys) -> Result<&'f [T::Row], String> {
     let shared = &frame.tables[T::ID.index()];
     let view: &TableView = shared;
@@ -158,9 +179,12 @@ mod tests {
         assert_eq!(witnessed::<Countries>(&frame, key(7)).row().map(|row| row.id), Some(7), "a witnessed row is its own value");
         assert_eq!(witnessed::<Countries>(&frame, key(9)), Witness::NotRecorded("Countries read only in part at this hour (2 rows not read)".into()));
         assert_eq!(population::<Countries>(&frame, &Keys::All), Err("Countries read only in part at this hour (2 rows not read)".into()));
+        let seen = |frame: &DecodedFrame| { let got = witnessed_rows::<Countries>(frame); (got.rows.iter().map(|row| row.id).collect::<Vec<_>>(), got.missing) };
+        assert_eq!(seen(&frame), (vec![7], Some("Countries read only in part at this hour (2 rows not read)".into())), "witnessed rows are kept, with why the list is not whole");
         *frame.tables[table] = TableView::Complete(TableRows::Countries(vec![row(7)]));
         assert_eq!(witnessed::<Countries>(&frame, key(9)), Witness::Absent, "a complete table proves the key absent");
         assert_eq!(population::<Countries>(&frame, &Keys::All).map(<[_]>::len), Ok(1));
+        assert_eq!(seen(&frame), (vec![7], None), "a whole read is the whole list");
         let chosen = Keys::These(vec![key(7), key(8)]);
         frame.tables[table] = frame.tables[table].clone().with_keys(Some(std::sync::Arc::new(chosen.clone())));
         assert_eq!(witnessed::<Countries>(&frame, key(7)).row().map(|row| row.id), Some(7));
@@ -168,7 +192,9 @@ mod tests {
         assert_eq!(witnessed::<Countries>(&frame, key(9)), Witness::NotRecorded("Countries not read for this row at this hour".into()), "a key the read did not choose was never looked for");
         assert_eq!(population::<Countries>(&frame, &Keys::All), Err("Countries read only for chosen rows at this hour".into()), "chosen rows are not the whole table");
         assert_eq!(population::<Countries>(&frame, &chosen).map(<[_]>::len), Ok(1), "the chosen rows are the population of what was chosen");
+        assert_eq!(seen(&frame), (vec![7], Some("Countries read only for chosen rows at this hour".into())));
         *frame.tables[table] = TableView::Unavailable { reason: "reader fault".into() };
         assert_eq!(witnessed::<Countries>(&frame, key(7)), Witness::NotRecorded("Countries not available at this hour: reader fault".into()));
+        assert_eq!(seen(&frame), (Vec::new(), Some("Countries not available at this hour: reader fault".into())), "an unread list is empty and says why, never a known zero");
     }
 }

@@ -39,6 +39,7 @@ import {
   planSignature,
   readPlanExact,
   stabilizeCanvasDimension,
+  tailPageOffsets,
 } from '../broker.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
@@ -73,6 +74,7 @@ import type {
 import {
   ReadTarget,
   showBundle,
+  shownView,
   unitEntries,
   type PinnedAsk,
   type ShownBundle,
@@ -130,7 +132,7 @@ function buildFilterTimeline(
 }
 
 const NO_ENTRIES: readonly SourceEntry[] = [];
-const NO_VIEW: TargetView = { kind: 'none', failure: null, bundle: null, held: false };
+const NO_VIEW: TargetView = { inputs: '', kind: 'none', failure: null, bundle: null, held: false };
 const NO_PIN: PinnedAsk = {
   timeMode: 'pin',
   branch: { firstHour: 0, lastHour: 0 },
@@ -140,8 +142,10 @@ const NO_PIN: PinnedAsk = {
 };
 
 export interface StaticBundle {
+  readonly stamp: object;
   readonly hour: number;
   readonly span: readonly [number, number] | null;
+  readonly proof: readonly [number, number] | null;
   readonly follows?: boolean;
   readonly panels: Readonly<Record<string, unknown>>;
   readonly shifts?: Readonly<Record<string, number>>;
@@ -197,7 +201,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly onSeriesViewport: (viewport: TileViewport) => void;
   readonly retryTiles: () => void;
   readonly hovers: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
-  readonly exactReadView: ((hour: number) => Promise<BoundedReadView | null>) | undefined;
+  readonly exactReadView: ((hour: number, rowWindow: FamilyRowWindow | null) => Promise<BoundedReadView | null>) | undefined;
   readonly bodyStatus: FamilyBodyStatus;
   readonly bannerFailure: BannerFailureInfo | null;
   readonly nameFailureDetail: string | undefined;
@@ -287,6 +291,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const singleCountry = isSingle ? gate.country! : null;
   const countryTag = isSingle && gate.open ? singleCountry!.tag : null;
+  const countrySubject = isSingle && gate.open ? singleCountry!.history?.key ?? null : null;
   const countryLabel = useCountryNameAt(
     runtime.client,
     isSingle ? track : undefined,
@@ -315,8 +320,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const auxEnabled = !!auxSpec && (!auxSpec.when || auxSpec.when(options));
   const auxParams = useMemo(
-    () => (auxSpec && auxEnabled && track ? auxSpec.params(track, options, countryTag) : null),
-    [auxSpec, auxEnabled, track, options, countryTag],
+    () => (auxSpec && auxEnabled && track ? auxSpec.params(track, options, countryTag, countrySubject) : null),
+    [auxSpec, auxEnabled, track, options, countryTag, countrySubject],
   );
   const auxReq = useMemo(
     () => (auxSpec && auxParams && track
@@ -482,7 +487,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     flagSize: 'panel',
     branchBounds,
   });
-  const identityRevision = identityState.index?.resolveRevision() ?? -1;
+  const countryRevision = identityState.index?.countryRevision() ?? -1;
   useEffect(() => {
     if (!active || !wantsLabels || !identityScope || !track || !identityState.index?.hasFacts()) return;
     const seen = new Set<string>();
@@ -506,7 +511,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       }
     }
     if (choices.length) identityBrokerFor(runtime.client).requestFlagChoices(identityScope, 'panel', choices, track.source);
-  }, [active, wantsLabels, identityScope, runtime.client, track, identityState.index, identityRevision, labelTags, firstHour, lastHour]);
+  }, [active, wantsLabels, identityScope, runtime.client, track, identityState.index, countryRevision, labelTags, firstHour, lastHour]);
 
   const builtLooks = useMemo(
     () => (wantsLabels ? buildCountryLooksFromIdentity(identityState.index, labelTags, firstHour, lastHour, identityState.flagFor, wantsColours) : NO_LOOKS),
@@ -590,12 +595,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       following,
       aux: auxResult.data,
       countryTag,
+      countrySubject,
       countryName,
       countries: countriesState,
       gateSpan: gate.span,
       staticSpan: null,
     };
-  }, [track, lastRecorded, widget, options, following, auxResult.data, countryTag, countryName, countriesState, gate.span]);
+  }, [track, lastRecorded, widget, options, following, auxResult.data, countryTag, countrySubject, countryName, countriesState, gate.span]);
 
   const inputsReady = !!ctx
     && (!isSingle || (gate.open && countryTag !== null))
@@ -768,7 +774,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const hoverBrokerRef = useRef<FamilySourceBroker | null>(null);
   const [heldHovers, setHeldHovers] = useState<Readonly<Record<string, HeldHover>>>({});
-  const asks = useMemo(() => (active && plan ? hoverAsks(plan, hoverHour) : []), [active, plan, hoverHour]);
+  const displayedSeries = tiledState.key === pixelBinnedKey ? tiledState.series : undefined;
+  const asks = useMemo(
+    () => (active && plan ? hoverAsks(plan, hoverHour, name => { const shown = displayedSeries?.[name]; return shown ? [...shown.keys()] : undefined; }) : []),
+    [active, plan, hoverHour, displayedSeries],
+  );
   const hovers = useMemo(() => currentHovers(asks, heldHovers), [asks, heldHovers]);
   const hoverSlotsRef = useRef<ReadonlySet<string>>(new Set());
 
@@ -905,10 +915,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         changed = true;
       }
       const frozenHour = state.frozenHour;
-      const startPage = Math.max(0, Math.floor((Math.max(first, headLimit) - headLimit) / pageSize));
-      const endPage = Math.floor((end - 1 - headLimit) / pageSize);
-      const wanted = new Set<number>();
-      for (let p = startPage; p <= endPage; p++) wanted.add(headLimit + p * pageSize);
+      const wanted = new Set(tailPageOffsets({ first, count }, headLimit, pageSize));
 
       for (const offset of [...state.inFlight]) {
         if (!wanted.has(offset)) {
@@ -1067,15 +1074,17 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     () => (branch ? { timeMode: widget.time.mode, branch, window, pinHour, gate: frozenGate, countriesKnown: countriesState.known } : null),
     [branch, widget.time.mode, window, pinHour, frozenGate, countriesState.known],
   );
+  const inputs = useMemo(() => JSON.stringify([owner, following ? null : displayHour, sig, content]), [owner, following, displayHour, sig, content]);
   useLayoutEffect(() => {
-    const common = { entries: branch ? entries : NO_ENTRIES, active, content, trackOffset };
+    const common = { inputs, entries: branch ? entries : NO_ENTRIES, active, content, trackOffset };
     if (following && playback) readTarget().configure({ ...common, following: true, subscribed, playback });
-    else if (!following && pinned) readTarget().configure({ ...common, following: false, displayHour, pinned });
+    else if (!following && pinned) readTarget().configure({ ...common, following: false, displayHour, pinned, ...(playback ? { track: playback } : {}) });
     else readTarget().configure({ ...common, entries: NO_ENTRIES, following: false, displayHour, pinned: NO_PIN });
-  }, [readTarget, branch, entries, active, content, trackOffset, following, subscribed, playback, pinned, displayHour]);
+  }, [readTarget, inputs, branch, entries, active, content, trackOffset, following, subscribed, playback, pinned, displayHour]);
   const subscribeView = useCallback((changed: () => void) => readTarget().subscribe(() => inFrame(changed)), [readTarget]);
   const readView = useCallback(() => targetRef.current?.view() ?? NO_VIEW, []);
-  const view = useSyncExternalStore(subscribeView, readView, readView);
+  const targetView = useSyncExternalStore(subscribeView, readView, readView);
+  const view = shownView(targetView, inputs, !!branch && entries.length > 0);
   const retryUnits = useCallback(() => { targetRef.current?.retry(); }, []);
   const staticProof = useMemo<StaticProof>(() => ({
     read: () => targetRef.current?.proof() ?? null,
@@ -1111,11 +1120,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   );
 
   const viewBundle = view.bundle;
+  const viewPanels = viewBundle?.panels;
+  const panelRecord = useMemo(() => (viewPanels ? Object.fromEntries(viewPanels) : null), [viewPanels]);
   const viewedBundle = useMemo<StaticBundle | null>(
-    () => (viewBundle
-      ? { hour: viewBundle.hour, span: viewBundle.span, ...(viewBundle.follows ? { follows: true } : {}), panels: Object.fromEntries(viewBundle.panels), ...(viewBundle.shifts ? { shifts: viewBundle.shifts } : {}) }
+    () => (viewBundle && panelRecord
+      ? { stamp: viewBundle, hour: viewBundle.hour, span: viewBundle.span, proof: viewBundle.proof, ...(viewBundle.follows ? { follows: true } : {}), panels: panelRecord, ...(viewBundle.shifts ? { shifts: viewBundle.shifts } : {}) }
       : null),
-    [viewBundle],
+    [viewBundle, panelRecord],
   );
 
   const shownRef = useRef<ShownBundle<StaticBundle, FrozenView> | null>(null);
@@ -1140,7 +1151,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     const frozenFollowing = following;
     const frozenWindow = window;
     const g = displayedGate;
-    return (wantedHour: number) => readPlanExact(frozenPlan, wantedHour, {
+    return (wantedHour: number, rowWindow: FamilyRowWindow | null) => readPlanExact(frozenPlan, wantedHour, {
       client: frozenClient,
       following: frozenFollowing,
       timeMode: frozenTimeMode,
@@ -1151,6 +1162,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       exactOnce: (key, load) => perfLog!.exactOnce(key, load),
       identity: identityProvider,
       art: artProvider,
+      rowWindow,
     });
   }, [displayedCtx, displayedPlan, displayedGate, runtime.client, following, widget.time.mode, window, identityProvider, artProvider]);
 

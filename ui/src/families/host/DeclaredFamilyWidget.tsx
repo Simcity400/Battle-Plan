@@ -24,7 +24,6 @@ import type {
   FamilyContextHit,
   FamilyHostAdapter,
   FamilyStaticSources,
-  FamilyRowWindow,
   FamilyViewportChange,
 } from './adapter.ts';
 import { familyViewOptionFields } from '../../widgets/manifest.ts';
@@ -79,7 +78,6 @@ export interface DeclaredFamilyWidgetProps<
 > extends WidgetProps {
   readonly adapter: FamilyHostAdapter<TModel, TProjectionOptions, TBinding, TSettings>;
   readonly chrome?: ComponentType<FamilyChromeProps<TSettings>>;
-  readonly onWindowChange?: (window: FamilyRowWindow, hour: number | null) => void;
   readonly declaration: DeclaredFamilyWidgetDeclaration<TModel, TProjectionOptions, TAux>;
   readonly view?: string;
   readonly selectedKey?: string | null;
@@ -101,7 +99,6 @@ export default function DeclaredFamilyWidget<
 >({
   adapter,
   chrome,
-  onWindowChange,
   declaration,
   view = DEFAULT_VIEW,
   widget,
@@ -294,18 +291,14 @@ export default function DeclaredFamilyWidget<
   const staticSources = useMemo<FamilyStaticSources | null>(() => {
     if (!plan.staticBundle) return null;
     return {
+      stamp: plan.staticBundle.stamp,
+      proof: plan.staticBundle.proof,
       panels: plan.staticBundle.panels,
       ...(plan.staticBundle.shifts ? { shifts: plan.staticBundle.shifts } : {}),
       hour: plan.staticBundle.hour,
       ...(plan.staticBundle.follows ? { follows: true } : {}),
     };
   }, [plan.staticBundle]);
-
-  const onRowWindow = plan.onRowWindow;
-  const handleWindowChange = useCallback((win: FamilyRowWindow, hour: number | null) => {
-    onRowWindow(win, hour);
-    onWindowChange?.(win, hour);
-  }, [onRowWindow, onWindowChange]);
 
   const host = (
     <FamilyHost
@@ -315,7 +308,7 @@ export default function DeclaredFamilyWidget<
       {...(editableSettings ? { onSettings } : {})}
       editableSettings={editableSettings}
       {...(chrome ? { chrome } : {})}
-      onWindowChange={handleWindowChange}
+      onWindowChange={plan.onRowWindow}
       declaration={declaration.projection}
       view={view}
       options={projectionOptions}

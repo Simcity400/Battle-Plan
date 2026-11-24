@@ -18,7 +18,7 @@ import { drawHeatMatrix } from './matrixPainter.ts';
 import { deriveLanesAudit, deriveLanesMirror, deriveLanesTooltip, findRunAtHour, type HeatLanesModel } from './lanesModel.ts';
 import { hitHeatLanes, layoutHeatLanes, projectLaneRunsToPixels } from './lanesLayout.ts';
 import { drawHeatLanes } from './lanesPainter.ts';
-import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, assertScrollKeepsStructure } from '../laneRuntime.fixture.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { familyHeatLanesLaneView } from './lanesLaneView.ts';
 import { familyHeatMatrixLaneView } from './matrixLaneView.ts';
@@ -201,6 +201,9 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
     { label: 'reorder', binding: lane(reordered), hour: model.hour, check: true },
     { label: 'scrolled', binding: lane(reordered, 4, 6), hour: model.hour, check: true },
   ], surface);
+  const still = lane(model);
+  assertScrollKeepsStructure(() => familyHeatMatrixLaneView(() => {}), { label: 'matrix', binding: still, hour: model.hour },
+    { label: 'matrix scrolled', binding: { ...still, scrollLeft: 4, scrollTop: 6 }, hour: model.hour }, surface);
 
   const marked: HeatMatrixModel = {
     hour: 1,
@@ -428,6 +431,8 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
     { label: 'reorder', binding: lane(reordered), hour: 119, check: true },
     { label: 'scrolled', binding: lane(reordered, 12), hour: 119, check: true },
   ], surface);
+  assertScrollKeepsStructure(() => familyHeatLanesLaneView(() => {}), { label: 'lanes', binding: held, hour: 119 },
+    { label: 'lanes scrolled', binding: { ...held, scrollTop: 12 }, hour: 119 }, surface);
 
   const regions = { pickedHeading: 'Your regions', automaticHeading: 'Most active for Germany', addLabel: 'Add region' };
   const regionRows = [{ ...model.rows[0]!, pinned: true, region: 10 }, { ...model.rows[1]!, region: 11 }];
@@ -517,4 +522,40 @@ test('a stable row id is never read as a row position, and a reorder refreshes t
   assert.equal(byId?.subject, '1', 'Enter on stable id "1" activates "1", not the row at position 1');
   const byPointer = heatLanesHostAdapter.resolveHitAction!({ key: '#1@40' } as never, installed, fields as never);
   assert.equal(byPointer?.subject, '0', 'a pointer token names a position');
+});
+
+test('K5: heat lanes crosshair line and hover date tab share one hour-to-pixel transform', () => {
+  const model: HeatLanesModel = {
+    hour: 23,
+    firstHour: 0,
+    lastHour: 23,
+    dayHours: 24,
+    playhead: null,
+    rows: [{ id: 'r', label: 'Region', runs: [{ firstHour: 0, lastHour: 23, readHour: 23, cell: { kind: 'solid', color: '#4f86f7' } }] }],
+  };
+  const layout = layoutHeatLanes({
+    width: 340,
+    height: 120,
+    scrollTop: 0,
+    firstHour: 0,
+    lastHour: 23,
+    displayedHour: 23,
+    rows: model.rows,
+  });
+  const fake = makeFakeCtx();
+  drawHeatLanes(fake.ctx, {
+    model,
+    layout,
+    theme: THEME,
+    scrollTop: 0,
+    hoveredRow: 0,
+    hoveredHour: 12,
+    selectedRowId: null,
+    focusedRowId: null,
+  });
+  const expectedX = layout.plotLeft + (12 / 24) * layout.plotWidth;
+  const crosshairMove = fake.ops.find(op => op.op === 'moveTo' && op.args[1] === layout.plotTop && Math.abs(Number(op.args[0]) - (Math.floor(expectedX) + 0.5)) < 0.01);
+  assert.ok(crosshairMove, 'crosshair line is drawn at hourToLaneX(12)');
+  const tabText = fake.ops.find(op => op.op === 'fillText' && Number(op.args[2]) > layout.plotTop + layout.plotHeight && Math.abs(Number(op.args[1]) - expectedX) < 1);
+  assert.ok(tabText, `hover date tab should centre at ${expectedX}px to match the crosshair`);
 });

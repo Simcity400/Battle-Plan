@@ -4,10 +4,11 @@ import type { Picture } from '../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../dashboard/follow/message';
 import type { Scene, Value as LaneValue } from '../draw/lane.ts';
 import { sectionLiveValues } from '../draw/views/fields.ts';
-import { laneArtDemand, type ArtResolutions } from './art/provider.ts';
+import { artUrlForHandle, laneArtDemand, type ArtResolutions } from './art/provider.ts';
 import { createBoundedReadView } from './boundedView.ts';
 import type { ArtHandle, ArtProvider, ArtResult, BoundedReadView, BoundedSeries, DisplayedHour, EntityKind, FieldStatus, IdentityProvider, IdentityResult } from './contract.ts';
 import type { IdentityIndex } from './identity/index.ts';
+import { buildRowSourceFromHead, type DatedLogRow, type PagedRowsSnapshot, type RowWindow, type TableRowSource } from './table/rowSource.ts';
 
 export interface SceneSources {
   readonly sources: Readonly<Record<string, number>>;
@@ -16,6 +17,9 @@ export interface SceneSources {
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly series?: ReadonlyMap<string, ReadonlyMap<string, BoundedSeries>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
+  readonly kind?: string;
+  readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
+  readonly window?: RowWindow;
 }
 
 export interface SceneReaders {
@@ -40,6 +44,7 @@ export interface SceneProjection<TModel> {
 export interface SceneReads {
   readonly identity: number;
   readonly art: number;
+  readonly rows: boolean;
   unchanged(readers: SceneReaders): boolean;
 }
 
@@ -51,6 +56,7 @@ function readScene(
   hour: number,
   readers: SceneReaders | undefined,
   demands: { readonly identity: Map<string, SceneIdentityDemand>; readonly urls: Set<string>; readonly asks: Map<string, ArtHandle> } | null,
+  noteRows?: () => void,
 ): BoundedReadView {
   let byName: Map<string, Picture<LaneValue>> | null = null;
   const pictureOf = (name: string): Picture<LaneValue> | undefined => {
@@ -70,11 +76,13 @@ function readScene(
     if (rev !== undefined) revisions[name] = rev;
   }
   const liveCache = new Map<string, Live | null>();
+  const rowsCache = new Map<string, TableRowSource<DatedLogRow> | undefined>();
   return createBoundedReadView({
     hour,
     revisions,
     ...(sources.series ? { series: sources.series } : {}),
     ...(sources.hovers ? { hovers: new Map(Object.entries(sources.hovers)) } : {}),
+    ...(sources.window ? { rowWindow: sources.window } : {}),
     ...(readers?.identity ? { identity: readers.identity } : {}),
     ...(readers?.art ? { art: readers.art } : {}),
     ...(demands
@@ -118,6 +126,21 @@ function readScene(
       liveCache.set(name, live);
       return live;
     },
+    resolveRows: name => {
+      noteRows?.();
+      if (rowsCache.has(name)) return rowsCache.get(name);
+      const snapshot = sources.pagedRows?.[name];
+      const identity = snapshot?.identity ?? `${sources.kind ?? ''}:${name}`;
+      let rows: TableRowSource<DatedLogRow> | undefined;
+      if (sources.staticPanels && Object.hasOwn(sources.staticPanels, name)) {
+        rows = buildRowSourceFromHead(identity, sources.staticPanels[name], undefined, hour, snapshot) ?? undefined;
+      } else if (Object.hasOwn(sources.sources, name)) {
+        const head = pictureOf(name)?.parts[0]?.value;
+        if (head?.kind === 'panel') rows = buildRowSourceFromHead(identity, head.refused === null ? head.data : undefined, head.refused ?? undefined, hour, snapshot) ?? undefined;
+      }
+      rowsCache.set(name, rows);
+      return rows;
+    },
   });
 }
 
@@ -134,7 +157,7 @@ export function projectScene<TModel>(
 ): SceneProjection<TModel> {
   const demands = { identity: new Map<string, SceneIdentityDemand>(), urls: new Set<string>(), asks: new Map<string, ArtHandle>() };
   const whoReads: [EntityKind, string, DisplayedHour, IdentityResult][] = [];
-  const artReads: [ArtHandle, ArtResult][] = [];
+  const artReads: [ArtHandle, ArtResult, string | null][] = [];
   let recording = true;
   const inner = readers.identity;
   const innerArt = readers.art;
@@ -158,14 +181,15 @@ export function projectScene<TModel>(
             ...(innerArt.demandOwner ? { demandOwner: innerArt.demandOwner } : {}),
             resolve: handle => {
               const result = innerArt.resolve(handle);
-              if (recording) artReads.push([handle, result]);
+              if (recording) artReads.push([handle, result, artUrlForHandle(handle, readers.index, readers.artResolutions)]);
               return result;
             },
           } satisfies ArtProvider,
         }
       : {}),
   };
-  const view = readScene(scene, sources, hour, recorded, demands);
+  let rowsRead = false;
+  const view = readScene(scene, sources, hour, recorded, demands, () => { rowsRead = true; });
   const model = project(view);
   recording = false;
   let boundary = Infinity;
@@ -180,13 +204,14 @@ export function projectScene<TModel>(
     reads: {
       identity: whoReads.length,
       art: artReads.length,
+      rows: rowsRead,
       unchanged: next => {
         if (!next.identity !== !inner || !next.art !== !innerArt) return false;
         for (const [kind, key, atHour, was] of whoReads) {
           if (!sameIdentity(was, next.identity!.resolve(kind, key, atHour))) return false;
         }
-        for (const [handle, was] of artReads) {
-          if (!sameArt(was, next.art!.resolve(handle))) return false;
+        for (const [handle, was, url] of artReads) {
+          if (!sameArt(was, next.art!.resolve(handle)) || url !== artUrlForHandle(handle, next.index, next.artResolutions)) return false;
         }
         return true;
       },
@@ -198,12 +223,15 @@ function sameField<T>(a: FieldStatus<T> | undefined, b: FieldStatus<T> | undefin
   if (a === b) return true;
   if (!a || !b || a.status !== b.status) return false;
   if (a.status === 'ready') return a.value === (b as typeof a).value;
-  if (a.status === 'absent' || a.status === 'failed') return a.reason === (b as typeof a).reason;
+  if (a.status === 'absent') return a.reason === (b as typeof a).reason;
+  if (a.status === 'failed') return a.reason === (b as typeof a).reason && a.retryable === (b as typeof a).retryable;
   return true;
 }
 
 function sameIdentity(a: IdentityResult, b: IdentityResult): boolean {
   return a.nextChangeAt === b.nextChangeAt
+    && a.validInterval[0] === b.validInterval[0]
+    && a.validInterval[1] === b.validInterval[1]
     && sameField(a.holder, b.holder)
     && sameField(a.tag, b.tag)
     && sameField(a.name, b.name)
@@ -213,9 +241,21 @@ function sameIdentity(a: IdentityResult, b: IdentityResult): boolean {
 
 function sameArt(a: ArtResult, b: ArtResult): boolean {
   if (a === b) return true;
-  if (a.status !== b.status) return false;
-  if (a.status === 'ready' && b.status === 'ready') return a.url === b.url && a.bitmap === b.bitmap;
+  const left = a as unknown as Readonly<Record<string, unknown>>;
+  const right = b as unknown as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(left).filter(key => key !== 'retry');
+  if (keys.length !== Object.keys(right).filter(key => key !== 'retry').length) return false;
+  for (const key of keys) if (!sameShallow(left[key], right[key])) return false;
   return true;
+}
+
+function sameShallow(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  const left = a as Readonly<Record<string, unknown>>;
+  const right = b as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every(key => left[key] === right[key]);
 }
 
 export function samePictures(prev: readonly (readonly unknown[])[], pictures: readonly Picture<LaneValue>[]): boolean {

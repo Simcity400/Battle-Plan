@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
-import type { Breakdown, BreakdownPart as WirePart, ConstructionBreakdownReply, PowerSpendingBreakdownReply } from '../../generated/dashboard';
+import type { Breakdown, BreakdownPart as WirePart, ConstructionBreakdownReply, PowerSpendingBreakdownReply, TerritoryBreakdownReply } from '../../generated/dashboard';
 import { constructionProjection } from '../../widgets/construction-spending/constructionProjection.ts';
-import { ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
+import { ppSpendingBreakdown, ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
+import { territoryBreakdownProjection } from '../../widgets/territory-breakdown/territoryBreakdownProjection.ts';
+import type { IdentityProvider } from '../plan.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
+import { resolvePlaybackProvenInterval } from '../broker.ts';
 import type { FamilyTheme } from '../contract.ts';
-import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas } from '../laneRuntime.fixture.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { parseBreakdownHit } from './hostAdapter.ts';
 import { familyBreakdownLaneView } from './laneView.ts';
@@ -46,6 +49,7 @@ function wire(key: string, ordinal: number, raw: string | null, extra: Partial<W
   return {
     key,
     name: key,
+    nameMissing: null,
     ordinal,
     other: false,
     raw,
@@ -55,6 +59,7 @@ function wire(key: string, ordinal: number, raw: string | null, extra: Partial<W
     parentShare: null,
     count: null,
     last: null,
+    art: null,
     children: [],
     ...extra,
   };
@@ -337,4 +342,85 @@ test('a lone item under a category is still a row', () => {
     ] })] };
   const parts = layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(model(single)), view: 'parts', userExpanded: { Decisions: true } }) as PartsViewLayout;
   assert.ok(parts.rows.some(row => row.depth === 2 && row.part.name === 'Only decision'));
+});
+
+test('territory names each country by its identity at the hour, with its flag and colour, and leaves unnamed land as the product gave it', () => {
+  const identity: IdentityProvider = {
+    resolve(kind, key, atHour) {
+      return {
+        kind, key, atHour,
+        holder: { status: 'ready', value: key },
+        tag: { status: 'ready', value: key },
+        name: { status: 'ready', value: `${key} land` },
+        colour: { status: 'ready', value: '#4f86f7' },
+        flagChoice: { status: 'absent', reason: 'Flag not recorded' },
+        validInterval: [0, 1000],
+        nextChangeAt: Infinity,
+      };
+    },
+  };
+  const territory: TerritoryBreakdownReply = { hour: 10, warnings: [], breakdown: {
+    decimals: 2, unrecordedHours: 0, total: { raw: '583', state: 'known', reason: null },
+    parts: [wire('AAA', 1, '433', { share: 0.74 }), wire('slot:2', 2, '100', { other: true, name: 'Country not named at this hour' }), wire('~unheld', 9, '50', { other: true, name: 'Held by no country' })],
+  } };
+  const project = (reply: TerritoryBreakdownReply, chosen = false) => territoryBreakdownProjection.project(
+    createBoundedReadView({ hour: 10, panels: new Map([['main', reply]]), identity }), { measure: 'states', rule: 'controlled', chosen });
+  const read = project(territory);
+  assert.deepEqual(read.parts.map(part => part.name), ['AAA land', 'Country not named at this hour', 'Held by no country']);
+  assert.equal(read.parts[0]!.color, '#4f86f7');
+  assert.equal(read.parts[0]!.flag, 'AAA');
+  assert.equal(read.parts[1]!.flag, undefined, 'a slot no tag names has no flag');
+  assert.equal(read.total.text, '5.83');
+  assert.equal(read.total.unit, 'states');
+  assert.equal(read.periodLabel, 'Controlled by every country');
+  assert.equal(project(territory, true).periodLabel, 'Controlled by the chosen countries');
+  const unread = project({ ...territory, breakdown: { decimals: 0, unrecordedHours: 0, total: { raw: null, state: 'notRecorded', reason: 'territory by strategic region is not known at this hour' }, parts: [] } });
+  assert.equal(unread.empty, 'Not recorded at this time.');
+  assert.equal(unread.emptyDetail, 'Territory by strategic region is not known at this hour');
+});
+
+test('a breakdown reply proves the stretch it stands through, so a quiet hundred played hours asks once', () => {
+  const ctx = {
+    countryTag: 'AAA',
+    track: { source: { id: 'source', revision: '1' }, axisOffset: 0 },
+    branch: { id: '1', firstHour: START },
+  } as unknown as Parameters<typeof ppSpendingBreakdown.sources>[0];
+  const entry = ppSpendingBreakdown.sources(ctx, { width: 800, height: 300 } as Parameters<typeof ppSpendingBreakdown.sources>[1]).entries[0]!;
+  const quiet = reply(spent(), { hour: START + 10, through: START + 110 });
+  const proof = resolvePlaybackProvenInterval(entry.read, quiet, { anchorHour: START + 10, span: null }, START + 10_000);
+  assert.deepEqual(proof, [START + 10, START + 110], 'one reply stands for every hour up to its next change');
+  let asks = 1;
+  for (let hour = START + 11; hour <= START + 110; hour++) if (hour > proof[1]) asks++;
+  assert.equal(asks, 1);
+});
+
+test('the art asked for is the flags the laid-out rows draw, found once per layout, never a collapsed child and never again for a hover', async () => {
+  const ready = (url: string) => ({ status: 'ready', assetId: url, url, origin: 'game', file: url, frame: { index: 0, count: 1, width: 18, height: 12 }, provenance: 'current' }) as never;
+  const flagged = model(spent());
+  const parts = flagged.parts.map(part => ({ ...part, flagArt: ready(`asset://${part.key}.png`), children: part.children?.map(child => ({ ...child, flagArt: ready(`asset://${child.key}.png`) })) }));
+  registerFamilyProjection({ kind: 'test-breakdown-art', family: 'breakdown', project: () => ({ ...flagged, parts }) });
+  const fetched: string[] = [];
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(familyBreakdownLaneView(() => {}, { fetchBitmap: async url => { fetched.push(url); return { width: 18, height: 12, close() {} } as never; } }), recording.canvases, { width: 600, height: 300, dpr: 1 });
+    const binding = { family: 'breakdown', kind: 'test-breakdown-art', options: { view: 'parts', namesInRing: true, digits: 0 }, sources: {}, scrollTop: 0, theme: THEME, width: 600, height: 300, expanded: { Decisions: false } };
+    lane.paint({ label: 'closed', binding, hour: START + 10 });
+    for (let i = 0; i < 8; i++) await null;
+    assert.ok(fetched.length > 0 && fetched.every(url => !url.includes('Plan')), `a collapsed part's children are not asked for: ${fetched.join(', ')}`);
+    const asked = fetched.length;
+    lane.paint({ label: 'hovered', binding, hour: START + 10, inspect: 'row:Decisions' });
+    for (let i = 0; i < 8; i++) await null;
+    assert.equal(fetched.length, asked, 'a hover asks for nothing more');
+  } finally {
+    recording.restore();
+  }
+});
+
+test('a name the recording does not hold is the key with its reason, never passed off as a name', () => {
+  const unnamed: Breakdown = { decimals: 0, unrecordedHours: 0, total: { raw: '5', state: 'known', reason: null },
+    parts: [wire('group_a_cat', 0, '5', { share: 1, parentShare: 1, nameMissing: 'the recorded localisation holds no name for group_a_cat' })] };
+  const read = model(unnamed);
+  assert.equal(read.parts[0]!.name, 'group_a_cat');
+  assert.equal(read.parts[0]!.nameMissing, 'The recorded localisation holds no name for group_a_cat');
+  assert.ok(JSON.stringify(buildBreakdownTooltip(read, breakdownLevel(read), 'group_a_cat', THEME)).includes('The recorded localisation holds no name'));
 });

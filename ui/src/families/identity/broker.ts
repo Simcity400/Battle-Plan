@@ -214,7 +214,16 @@ interface DemandWants {
   readonly styles: readonly (readonly [number, string])[];
   readonly flags: readonly (readonly [CountryFlagSize, string, CountryFlagChoice])[];
   readonly entities: readonly (readonly [EntityRequest, string, EntityIdentityKey])[];
+  readonly windows: ReadonlySet<string>;
 }
+
+interface LoadedWindow {
+  readonly request: Extract<EntityRequest, { readonly from: number }>;
+  readonly keys: Map<string, EntityIdentityKey>;
+  used: number;
+}
+
+export const MAX_ENTITY_WINDOWS = 16;
 
 interface BranchReadState {
   controller: AbortController | null;
@@ -268,11 +277,15 @@ interface ScopeState {
   readonly flagInflightKeys: Set<string>;
   readonly flagFailures: Map<string, FlagFailure>;
   readonly flagRequests: Map<CountryFlagSize, Map<string, CountryFlagChoice>>;
+  readonly flagOutstanding: Map<CountryFlagSize, Map<string, CountryFlagChoice>>;
+  flagWantsStamp: readonly DemandWants[];
   flagRetryTimer: (() => void) | null;
 
   readonly entityRunning: Map<string, EntityTask>;
   readonly entityRetryAt: Map<string, { readonly count: number; readonly at: number }>;
   readonly entityLoaded: Set<string>;
+  readonly entityWindows: Map<string, LoadedWindow>;
+  windowUse: number;
   entityRetryTimer: (() => void) | null;
 
   nextTaskId: number;
@@ -329,10 +342,14 @@ export class IdentityBroker {
         flagInflightKeys: new Set(),
         flagFailures: new Map(),
         flagRequests: new Map(),
+        flagOutstanding: new Map(),
+        flagWantsStamp: [],
         flagRetryTimer: null,
         entityRunning: new Map(),
         entityRetryAt: new Map(),
         entityLoaded: new Set(),
+        entityWindows: new Map(),
+        windowUse: 0,
         entityRetryTimer: null,
         nextTaskId: 1,
         version: 0,
@@ -408,12 +425,15 @@ export class IdentityBroker {
     const state = this.getState(scope, recording);
     let requested = state.flagRequests.get(size);
     if (!requested) state.flagRequests.set(size, requested = new Map());
+    let outstanding = state.flagOutstanding.get(size);
+    if (!outstanding) state.flagOutstanding.set(size, outstanding = new Map());
     let added = false;
     for (const choice of choices) {
       if (drawn(state.index.getDrawnFlag(size, choice))) continue;
       const key = drawnFlagKey(size, choice);
       if (requested.has(key)) continue;
       requested.set(key, choice);
+      outstanding.set(key, choice);
       added = true;
     }
     if (added) this.reconcile(state);
@@ -505,11 +525,28 @@ export class IdentityBroker {
     let wantGroups = false;
     const neededStylesByHour = new Map<number, Set<string>>();
     const wantedStyleKeys = new Set<string>();
-    const wantedFlagsBySize = new Map<CountryFlagSize, Map<string, CountryFlagChoice>>();
     const wantedEntities = new Map<string, WantedEntities>();
+    const allWants = [...state.demands.values()].map(demand => this.wantsOf(state, demand));
+    const flagsMoved = allWants.length !== state.flagWantsStamp.length || allWants.some((wants, at) => wants !== state.flagWantsStamp[at]);
+    if (flagsMoved) {
+      state.flagWantsStamp = allWants;
+      state.flagOutstanding.clear();
+      const add = (size: CountryFlagSize, key: string, choice: CountryFlagChoice) => {
+        if (drawn(state.index.getDrawnFlag(size, choice))) return;
+        let map = state.flagOutstanding.get(size);
+        if (!map) state.flagOutstanding.set(size, map = new Map());
+        map.set(key, choice);
+      };
+      for (const wants of allWants) for (const [size, flagKey, choice] of wants.flags) add(size, flagKey, choice);
+      for (const [size, requested] of state.flagRequests) {
+        for (const [key, choice] of requested) {
+          if (drawn(state.index.getDrawnFlag(size, choice))) requested.delete(key);
+          else add(size, key, choice);
+        }
+      }
+    }
 
-    for (const demand of state.demands.values()) {
-      const wants = this.wantsOf(state, demand);
+    for (const wants of allWants) {
       if (wants.facts) wantFacts = true;
       if (wants.identities) wantIdentities = true;
       if (wants.groups) wantGroups = true;
@@ -518,12 +555,6 @@ export class IdentityBroker {
         let set = neededStylesByHour.get(at);
         if (!set) neededStylesByHour.set(at, set = new Set());
         set.add(tag);
-      }
-      for (const [size, flagKey, choice] of wants.flags) {
-        if (drawn(state.index.getDrawnFlag(size, choice)) || state.flagInflightKeys.has(flagKey)) continue;
-        let map = wantedFlagsBySize.get(size);
-        if (!map) wantedFlagsBySize.set(size, map = new Map());
-        map.set(flagKey, choice);
       }
       for (const [request, id, key] of wants.entities) {
         let wanted = wantedEntities.get(request.id);
@@ -549,21 +580,8 @@ export class IdentityBroker {
       this.pumpStyles(state, neededStylesByHour);
     }
 
-    for (const [size, requested] of state.flagRequests) {
-      let map = wantedFlagsBySize.get(size);
-      for (const [key, choice] of requested) {
-        if (drawn(state.index.getDrawnFlag(size, choice))) {
-          requested.delete(key);
-          continue;
-        }
-        if (state.flagInflightKeys.has(key)) continue;
-        if (!map) wantedFlagsBySize.set(size, map = new Map());
-        map.set(key, choice);
-      }
-    }
-
-    for (const [size, wanted] of wantedFlagsBySize) {
-      this.pumpFlags(state, size, wanted);
+    for (const [size, outstanding] of state.flagOutstanding) {
+      if (outstanding.size) this.pumpFlags(state, size, outstanding);
     }
 
     this.pumpEntities(state, wantedEntities);
@@ -682,6 +700,7 @@ export class IdentityBroker {
         state.entityRunning.delete(request.id);
         state.entityRetryAt.delete(request.id);
         if (request.kind === 'regions') state.entityLoaded.add(request.id);
+        else this.keepWindow(state, request, keys);
         this.settleUnanswered(state, request, keys.values());
         this.notify(state);
         this.reconcile(state);
@@ -692,11 +711,28 @@ export class IdentityBroker {
         const failure = asFailure(error);
         const count = (state.entityRetryAt.get(request.id)?.count ?? 0) + 1;
         state.entityRetryAt.set(request.id, { count, at: transientError(error) ? this.clock.now() + retryDelay(count) : Infinity });
-        for (const key of keys.values()) state.index.setEntityFailure(key, failure);
+        const [from, to] = request.kind === 'regions' ? state.index.bounds() : [request.from, request.to];
+        for (const key of keys.values()) state.index.setEntityFailure(key, from, to, failure);
         this.notify(state);
         this.reconcile(state);
       },
     );
+  }
+
+  private keepWindow(state: ScopeState, request: Extract<EntityRequest, { readonly from: number }>, keys: ReadonlyMap<string, EntityIdentityKey>): void {
+    let held = state.entityWindows.get(request.id);
+    if (!held) state.entityWindows.set(request.id, held = { request, keys: new Map(), used: 0 });
+    for (const [id, key] of keys) held.keys.set(id, key);
+    held.used = ++state.windowUse;
+    if (state.entityWindows.size <= MAX_ENTITY_WINDOWS) return;
+    const pinned = new Set<string>();
+    for (const demand of state.demands.values()) for (const id of this.wantsOf(state, demand).windows) pinned.add(id);
+    const oldest = [...state.entityWindows.values()].filter(window => !pinned.has(window.request.id)).sort((a, b) => a.used - b.used);
+    for (const window of oldest) {
+      if (state.entityWindows.size <= MAX_ENTITY_WINDOWS) break;
+      state.entityWindows.delete(window.request.id);
+      state.index.dropEntityRuns(window.keys.values(), window.request.from, window.request.to);
+    }
   }
 
   private wantsOf(state: ScopeState, demand: DemandEntry): DemandWants {
@@ -709,6 +745,7 @@ export class IdentityBroker {
     const styles: [number, string][] = [];
     const flags: [CountryFlagSize, string, CountryFlagChoice][] = [];
     const entities: [EntityRequest, string, EntityIdentityKey][] = [];
+    const windows = new Set<string>();
     const size: CountryFlagSize = demand.flagSize ?? 'panel';
     for (const ask of demand.asks) {
       const at = Math.floor(ask.hour);
@@ -726,12 +763,15 @@ export class IdentityBroker {
       } else if (ask.key.kind === 'faction') {
         groups = true;
         facts = true;
-      } else if (state.index.resolve(ask.key, at).kind === 'pending') {
+      } else {
         const request = entityRequestOf(ask.key, at, state.index.bounds());
-        if (request) entities.push([request, identityKeyString(ask.key), ask.key]);
+        if (!request) continue;
+        windows.add(request.id);
+        const answered = state.index.resolve(ask.key, at).kind;
+        if (answered === 'pending' || answered === 'failed') entities.push([request, identityKeyString(ask.key), ask.key]);
       }
     }
-    const wants: DemandWants = { revision, facts, identities, groups, styles, flags, entities };
+    const wants: DemandWants = { revision, facts, identities, groups, styles, flags, entities, windows };
     state.wants.set(demand, wants);
     return wants;
   }
@@ -860,12 +900,14 @@ export class IdentityBroker {
     );
   }
 
-  private pumpFlags(state: ScopeState, size: CountryFlagSize, wanted: Map<string, CountryFlagChoice>): void {
+  private pumpFlags(state: ScopeState, size: CountryFlagSize, outstanding: Map<string, CountryFlagChoice>): void {
     const now = this.clock.now();
     let soonestRetry = Infinity;
+    const room = (FLAG_MAX_CONCURRENT - state.flagRunning.size) * FLAG_BATCH_MAX;
     const ready: [string, CountryFlagChoice][] = [];
-    for (const [key, choice] of wanted) {
-      if (drawn(state.index.getDrawnFlag(size, choice)) || state.flagInflightKeys.has(key)) continue;
+    for (const [key, choice] of outstanding) {
+      if (ready.length >= room) break;
+      if (state.flagInflightKeys.has(key)) continue;
       const failed = state.flagFailures.get(key);
       if (failed && failed.at > now) {
         soonestRetry = Math.min(soonestRetry, failed.at);
@@ -900,9 +942,12 @@ export class IdentityBroker {
         state.flagRunning.delete(id);
         const images = new Map(reply.flags.map(image => [image.flag, image]));
         const unavailable = new Map(reply.unavailable.map(item => [item.flag, item.resolution]));
+        const outstanding = state.flagOutstanding.get(size);
         batch.forEach(([key, choice], index) => {
           state.flagInflightKeys.delete(key);
           state.flagFailures.delete(key);
+          outstanding?.delete(key);
+          state.flagRequests.get(size)?.delete(key);
           const image = images.get(index);
           const resolution = unavailable.get(index);
           const entry: DrawnFlagEntry = image

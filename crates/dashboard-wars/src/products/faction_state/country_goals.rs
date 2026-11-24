@@ -1,11 +1,12 @@
 use super::details::{self, DetailContent, FactionDetailParams, FactionDetailReply, FactionDetails};
+use super::goals::FactionGoalDefinition;
 use dashboard_base::products::Country;
 use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Owner, Read, ReadsAt}}};
 use dashboard_text::metadata::link_slot;
 use replay_data::rows::{CountryLinkRow, FactionMemberRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
-use std::io;
+use std::{collections::BTreeMap, io};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -17,22 +18,119 @@ pub struct CountryFactionGoals;
 pub struct CountryFactionGoalsParams {
     pub branch_id: String,
     pub country: Country,
+    pub goals: GoalFilter,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum GoalFilter {
+    All,
+    InProgress,
+    Completed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum GoalState {
+    InProgress,
+    Completing,
+    Cancelling,
+    Completed,
+    Cancelled,
+    #[doc = " A native state this version does not know; shown as such, never as in progress."]
+    Unrecognised,
+}
+
+impl GoalState {
+    fn of(status: i32) -> Self {
+        match status {
+            0 => Self::InProgress,
+            1 => Self::Completed,
+            2 => Self::Cancelled,
+            3 => Self::Completing,
+            4 => Self::Cancelling,
+            _ => Self::Unrecognised,
+        }
+    }
+
+    fn shown(self, filter: GoalFilter) -> bool {
+        match filter {
+            GoalFilter::All => true,
+            GoalFilter::InProgress => matches!(self, Self::InProgress | Self::Completing | Self::Cancelling),
+            GoalFilter::Completed => self == Self::Completed,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct CountryGoal {
+    pub key: String,
+    #[doc = " An index into the reply's `definitions`."]
+    pub definition: u32,
+    pub state: GoalState,
+    #[doc = " The held goal's ordinal, the row of its live progress cell `goal:<ordinal>`; none for a goal in the completed or cancelled lists."]
+    pub ordinal: Option<u32>,
+    #[doc = " The native state, where it is `unrecognised`."]
+    pub unrecognised_status: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFactionGoalsReply {
-    #[doc = " The faction the country belongs to at the hour, as `faction-details` answers it; none when it"]
-    #[doc = " belongs to none, or when `membership_missing` says membership is not known."]
-    pub faction: Option<FactionDetailReply>,
+    #[doc = " The faction the country belongs to at the hour; none when it belongs to none, or when"]
+    #[doc = " `membership_missing` says membership is not known."]
+    pub faction: Option<String>,
+    #[doc = " The goals the filter shows, held goals first in the game's order, then completed, then cancelled."]
+    pub goals: Vec<CountryGoal>,
+    #[doc = " The definitions the goals name, once each."]
+    pub definitions: Vec<FactionGoalDefinition>,
+    #[doc = " Why the faction's goal lists are not known at the hour; the goals are then empty."]
+    pub goal_reason: Option<String>,
     pub membership_missing: Option<String>,
     pub warnings: Vec<String>,
+}
+
+pub(super) fn shown_goals(detail: FactionDetailReply, filter: GoalFilter) -> (Vec<CountryGoal>, Vec<FactionGoalDefinition>, Vec<String>) {
+    let held = detail.goals.iter().map(|goal| {
+        let state = GoalState::of(goal.status);
+        (format!("goal:{}", goal.ordinal), goal.definition, state, Some(goal.ordinal), (state == GoalState::Unrecognised).then_some(goal.status))
+    });
+    let completed = detail.completed.iter().enumerate().map(|(at, &definition)| (format!("completed:{at}"), definition, GoalState::Completed, None, None));
+    let cancelled = detail.cancelled.iter().enumerate().map(|(at, &definition)| (format!("cancelled:{at}"), definition, GoalState::Cancelled, None, None));
+    let mut warnings = detail.warnings;
+    let mut left_out = 0usize;
+    let mut kept = BTreeMap::<u32, u32>::new();
+    let mut definitions = Vec::new();
+    let mut goals = Vec::new();
+    for (key, definition, state, ordinal, unrecognised_status) in held.chain(completed).chain(cancelled) {
+        if !state.shown(filter) {
+            left_out += usize::from(state == GoalState::Unrecognised);
+            continue;
+        }
+        let at = *kept.entry(definition).or_insert_with(|| {
+            definitions.push(detail.definitions[definition as usize].clone());
+            definitions.len() as u32 - 1
+        });
+        goals.push(CountryGoal { key, definition: at, state, ordinal, unrecognised_status });
+    }
+    if left_out > 0 {
+        warnings.push(format!("{left_out} faction goals are in a state this version does not recognise; only All shows them"));
+    }
+    (goals, definitions, warnings)
 }
 
 dashboard_base::reply_warnings!(CountryFactionGoalsReply);
 
 const MEMBERSHIP: [TableId; 2] = [TableId::FactionMembers, TableId::CountryLinks];
+
+fn blank(missing: Option<String>) -> CountryFactionGoalsReply {
+    CountryFactionGoalsReply { faction: None, goals: Vec::new(), definitions: Vec::new(), goal_reason: None, membership_missing: missing, warnings: Vec::new() }
+}
 
 pub(super) fn faction_of(members: &[FactionMemberRow], links: &[CountryLinkRow], slot: u32) -> Option<u64> {
     members.iter().find(|member| member.faction != 0 && link_slot(links, member.country) == Some(slot)).map(|member| member.faction)
@@ -54,7 +152,7 @@ impl AtHour for CountryFactionGoals {
     const CONTENT_DEPENDENT: bool = true;
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = CountryFactionGoalsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, goals];
     type Reply = CountryFactionGoalsReply;
     type Context = DetailContent;
 
@@ -65,7 +163,7 @@ impl AtHour for CountryFactionGoals {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![CountryFactionGoalsParams::decl(), CountryFactionGoalsReply::decl()]
+        vec![CountryFactionGoalsParams::decl(), CountryFactionGoalsReply::decl(), GoalFilter::decl(), GoalState::decl(), CountryGoal::decl()]
     }
 
     fn owner(params: &Self::Params) -> Option<&Country> {
@@ -73,7 +171,7 @@ impl AtHour for CountryFactionGoals {
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
-        let mut tables: Vec<TableId> = details::faction_reads(0).into_iter().map(|read| read.table).chain(super::goals::text_tables()).chain(MEMBERSHIP).collect();
+        let mut tables: Vec<TableId> = details::goal_reads(0).into_iter().map(|read| read.table).chain(super::goals::text_tables()).chain(MEMBERSHIP).collect();
         tables.sort_unstable();
         tables.dedup();
         tables
@@ -82,7 +180,7 @@ impl AtHour for CountryFactionGoals {
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         match (step, owner) {
             (0, Some(_)) => MEMBERSHIP.map(Read::all).into(),
-            (1, Some(owner)) => membership(held, owner).ok().flatten().map(details::faction_reads).unwrap_or_default(),
+            (1, Some(owner)) => membership(held, owner).ok().flatten().map(details::goal_reads).unwrap_or_default(),
             _ => Vec::new(),
         }
     }
@@ -93,7 +191,7 @@ impl AtHour for CountryFactionGoals {
         }
         let (Some(owner), Ok(cat)) = (owner, at.context.catalogue()) else { return Vec::new() };
         let Ok(Some(faction)) = membership(held, owner) else { return Vec::new() };
-        details::text_reads(held, faction, cat)
+        details::text_reads(held, faction, cat, &details::goal_reads(faction))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -103,11 +201,13 @@ impl AtHour for CountryFactionGoals {
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Faction goals country is unavailable at this hour"))?;
         let reply = match membership(frame, owner) {
-            Err(why) => CountryFactionGoalsReply { faction: None, membership_missing: Some(why), warnings: Vec::new() },
-            Ok(None) => CountryFactionGoalsReply { faction: None, membership_missing: None, warnings: Vec::new() },
+            Err(why) => blank(Some(why)),
+            Ok(None) => blank(None),
             Ok(Some(faction)) => {
-                let detail = details::reply(frame, &detail_params(params, faction), faction, at)?;
-                CountryFactionGoalsReply { faction: Some(detail), membership_missing: None, warnings: Vec::new() }
+                let detail = details::goals_only(frame, &detail_params(params, faction), faction, at)?;
+                let goal_reason = detail.goal_reason.clone();
+                let (goals, definitions, warnings) = shown_goals(detail, params.goals);
+                CountryFactionGoalsReply { faction: Some(faction.to_string()), goals, definitions, goal_reason, membership_missing: None, warnings }
             }
         };
         dashboard_base::products::check_reply_budget(&reply)?;

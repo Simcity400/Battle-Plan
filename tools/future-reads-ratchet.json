@@ -1,0 +1,7 @@
+{
+  "balance-of-power/default/history": "time-chart: a branch-to-hour read that asks the same history at every hour",
+  "factions/default/main": "timeline: a branch-to-hour read that asks the same history at every hour",
+  "research/default/main": "timeline: a branch-to-hour read that asks the same history at every hour",
+  "subjects/default/groups": "timeline: a branch-to-hour read that asks the same history at every hour",
+  "subjects/default/main": "timeline: a branch-to-hour read that asks the same history at every hour"
+}

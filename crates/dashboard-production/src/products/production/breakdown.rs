@@ -2,8 +2,8 @@ use dashboard_world::products::equipment_names::{self as names, Named};
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
-    DETAIL_HOURS, appearances, lines::index_of,
-    parse_key, window_hours,
+    DETAIL_HOURS, appearances, index_of,
+    window_hours,
 };
 use dashboard_base::{Source, products::{LoadContext, Product, check_reply_budget}};
 use engine_executable::modifier_keys as keys;
@@ -764,8 +764,8 @@ pub struct ProductionLineBreakdown;
 pub struct ProductionBreakdownParams {
     pub branch_id: String,
     pub country: Country,
-    #[doc = " The line's key in `production-lines`."]
-    pub key: String,
+    #[doc = " The line's handle in `production-lines-at`: the line it names at `hour`."]
+    pub handle: String,
     #[doc = " The factor shown in full; the others carry only their totals."]
     pub group: String,
     pub hour: i32,
@@ -808,7 +808,7 @@ impl Product for ProductionLineBreakdown {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = ProductionBreakdownParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, key, group, hour: Bucket, "within[].firstHour": Start, "within[].lastHour": End];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, handle, group, hour: Bucket, "within[].firstHour": Start, "within[].lastHour": End];
     type Reply = ProductionLineBreakdownReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -828,8 +828,8 @@ impl Product for ProductionLineBreakdown {
             return Err("Invalid branch");
         }
         validate_country(&params.country)?;
-        if parse_key(&params.key).is_none() {
-            return Err("Invalid production line key");
+        if params.handle.parse::<u64>().is_err() {
+            return Err("Invalid production line");
         }
         if !FACTORS.iter().any(|(id, _)| *id == params.group) {
             return Err("Unknown production factor");
@@ -844,10 +844,11 @@ impl Product for ProductionLineBreakdown {
         let (first, last) = window_hours(params.hour.div_euclid(DETAIL_HOURS)).ok_or_else(|| dashboard_core::invalid("Invalid production hour"))?;
         let index = index_of(source);
         let found = appearances(&query, &params.country, params.within.as_deref(), query.timeline.first, query.timeline.last, &index)?;
+        let handle = params.handle.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid production line"))?;
         let appearance = found
             .into_iter()
-            .find(|appearance| appearance.key == params.key)
-            .ok_or_else(|| dashboard_core::refused("This production line is not the country's in this branch"))?;
+            .find(|appearance| appearance.handle == handle && appearance.pieces.iter().any(|piece| piece.first <= params.hour && params.hour <= piece.last))
+            .ok_or_else(|| dashboard_core::refused("This production line is not the country's at this hour"))?;
         let recording = query.replay.recording();
         let format = recording.format();
         let handle = u128::from(appearance.handle);
@@ -938,7 +939,7 @@ impl Product for ProductionLineBreakdown {
         let reply = ProductionLineBreakdownReply {
             branch_id: params.branch_id.clone(),
             tag: query.holders.name(&params.country, params.hour),
-            key: params.key.clone(),
+            key: appearance.key,
             first_hour: first,
             last_hour: last,
             groups: FACTORS.iter().map(|(id, label)| ProductionModifierChoice { id: (*id).into(), label: (*label).into() }).collect(),
