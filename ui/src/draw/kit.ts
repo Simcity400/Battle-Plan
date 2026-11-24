@@ -2,10 +2,12 @@ import { LABEL_WEIGHT, VALUE_WEIGHT } from '../charts/draw.ts';
 import {
   drawFittedLabel,
   ellipsise,
+  fitLine,
   graphemes,
   labelFitsTwoLines,
   labelLineHeight,
   type FittedLabel,
+  type FittedLine,
 } from '../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../charts/textWidth.ts';
 import type { FamilyTheme } from '../families/contract';
@@ -22,7 +24,8 @@ import {
   NOT_APPLICABLE_LABEL,
   notRecordedLabel,
 } from '../families/valueFormat.ts';
-import { parseColor } from '../shell/appearance/color.ts';
+import { isDark, mix, parseColor } from '../shell/appearance/color.ts';
+import { engineHour, gameDate, monthNames } from '../dashboard/calendar.ts';
 import type { KitRaster, PathBuilder, PathPaint } from './path';
 
 export type Align = 'left' | 'right' | 'center';
@@ -1066,6 +1069,12 @@ export function drawDateTab(
   return { x, y, width, height };
 }
 
+export function contrastInkForFill(fill: string, theme: FamilyTheme): string {
+  const rgb = parseColor(fill);
+  if (!rgb) return theme.text;
+  return isDark(rgb) ? '#f4f6f9' : '#0f141c';
+}
+
 export function drawChevron(
   ctx: Canvas2D,
   x: number,
@@ -1092,6 +1101,219 @@ export function drawChevron(
   }
   ctx.stroke();
   ctx.restore();
+}
+
+export const TIMELINE_NOTCH_WIDTH = 9;
+export const TIMELINE_FADE_WIDTH = 12;
+export const TIMELINE_BAR_RADIUS = 2.5;
+export const TIMELINE_LABEL_MIN_WIDTH = 22;
+
+export interface TimelineBarOptions {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly fill: string;
+  readonly theme: FamilyTheme;
+  readonly open?: boolean;
+  readonly heldBefore?: boolean;
+  readonly startBy?: boolean;
+  readonly endUnseen?: boolean;
+  readonly icon?: ArtSlotState;
+  readonly label?: string;
+}
+
+export interface TimelineBarResult {
+  readonly showedIcon: boolean;
+  readonly label: FittedLine | null;
+}
+
+function fadeFill(ctx: Canvas2D, x: number, width: number, fill: string, fadeStart: boolean, fadeEnd: boolean): CanvasGradient | string {
+  if ((!fadeStart && !fadeEnd) || width <= 2) return fill;
+  const grad = ctx.createLinearGradient(x, 0, x + width, 0);
+  const stop = Math.min(0.45, TIMELINE_FADE_WIDTH / width);
+  const clear = rgba(fill, 0, 'rgba(0,0,0,0)');
+  grad.addColorStop(0, fadeStart ? clear : fill);
+  if (fadeStart) grad.addColorStop(stop, fill);
+  if (fadeEnd) grad.addColorStop(1 - stop, fill);
+  grad.addColorStop(1, fadeEnd ? clear : fill);
+  return grad;
+}
+
+export function drawTimelineBar(ctx: Canvas2D, options: TimelineBarOptions): TimelineBarResult {
+  const { x, y, width, height, theme } = options;
+  if (width <= 0 || height <= 0) return { showedIcon: false, label: null };
+  const fill = options.open ? options.fill : mix(options.fill, theme.surface, 0.5);
+  const notch = options.heldBefore && width > TIMELINE_NOTCH_WIDTH + 4 ? TIMELINE_NOTCH_WIDTH : 0;
+  const radius = Math.min(TIMELINE_BAR_RADIUS, width / 2, height / 2);
+  const left = notch > 0 || options.startBy ? 0 : radius;
+  const right = options.open || options.endUnseen ? 0 : radius;
+  ctx.save();
+  ctx.fillStyle = fadeFill(ctx, x, width, fill, !!options.startBy && notch === 0, !!options.endUnseen);
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, [left, right, right, left]);
+  ctx.fill();
+  if (notch > 0) {
+    const cy = y + height / 2;
+    const arm = Math.min(3.5, height * 0.22);
+    ctx.strokeStyle = contrastInkForFill(fill, theme);
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x + 3 + arm * 0.8, cy - arm);
+    ctx.lineTo(x + 3, cy);
+    ctx.lineTo(x + 3 + arm * 0.8, cy + arm);
+    ctx.stroke();
+  }
+  let showedIcon = false;
+  let label: FittedLine | null = null;
+  if (width >= TIMELINE_LABEL_MIN_WIDTH) {
+    let cursor = x + (notch > 0 ? notch + 2 : 4);
+    const limit = x + width - 4;
+    if (options.icon && options.icon.kind !== 'none') {
+      const size = options.icon.kind === 'missing' ? Math.min(14, height) : height;
+      if (cursor + size <= limit) {
+        drawArtSlot(ctx, cursor, y + (height - size) / 2, size, size, options.icon, theme, { radius: 2 });
+        cursor += size + 6;
+        showedIcon = true;
+      }
+    }
+    if (options.label && limit - cursor >= 12) {
+      ctx.font = `500 11.5px ${theme.font}`;
+      const fitted = fitLine(options.label, limit - cursor, s => textWidth(ctx, s));
+      if (fitted.text) {
+        ctx.fillStyle = contrastInkForFill(fill, theme);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(fitted.text, cursor, y + height / 2 + 0.5);
+        label = fitted;
+      }
+    }
+  }
+  ctx.restore();
+  return { showedIcon, label };
+}
+
+export interface TimeAxisTick {
+  readonly hour: number;
+  readonly label: string;
+}
+
+export function computeTimeAxisTicks(startHour: number, endHour: number, plotWidth: number): TimeAxisTick[] {
+  const start = gameDate(Math.floor(startHour));
+  const end = gameDate(Math.floor(endHour));
+  if (!start || !end || plotWidth <= 20 || endHour <= startHour) return [];
+  const ticks: TimeAxisTick[] = [];
+  if (endHour - startHour < 2 * 365 * 24) {
+    const months = (end.year - start.year) * 12 + (end.month - start.month) + 1;
+    const fit = Math.max(2, Math.floor(plotWidth / 56));
+    const step = [1, 2, 3, 6, 12].find(candidate => Math.ceil(months / candidate) <= fit) ?? 12;
+    let year = start.year;
+    let month = start.month + 1;
+    if (month > 12) { month = 1; year++; }
+    while (year < end.year || (year === end.year && month <= end.month)) {
+      if ((month - 1) % step === 0) {
+        const hour = engineHour({ year, month, day: 1, hour: 1 });
+        if (hour !== null && hour > startHour && hour <= endHour) {
+          ticks.push({ hour, label: month === 1 ? String(year) : monthNames[month - 1]!.slice(0, 3) });
+        }
+      }
+      month++;
+      if (month > 12) { month = 1; year++; }
+    }
+    return ticks;
+  }
+  const years = end.year - start.year + 1;
+  const fit = Math.max(2, Math.floor(plotWidth / 48));
+  const step = [1, 2, 5, 10, 20, 50].find(candidate => Math.ceil(years / candidate) <= fit) ?? 100;
+  for (let year = start.year + 1; year <= end.year; year++) {
+    if (year % step !== 0) continue;
+    const hour = engineHour({ year, month: 1, day: 1, hour: 1 });
+    if (hour !== null && hour > startHour && hour <= endHour) ticks.push({ hour, label: String(year) });
+  }
+  return ticks;
+}
+
+export interface TimeAxisFrame {
+  readonly plotLeft: number;
+  readonly plotRight: number;
+  readonly startHour: number;
+  readonly endHour: number;
+}
+
+export function timeAxisX(frame: TimeAxisFrame, hour: number): number {
+  const span = Math.max(1, frame.endHour - frame.startHour);
+  return frame.plotLeft + ((hour - frame.startHour) / span) * (frame.plotRight - frame.plotLeft);
+}
+
+export function drawTimeAxisGrid(
+  ctx: Canvas2D,
+  ticks: readonly TimeAxisTick[],
+  frame: TimeAxisFrame,
+  top: number,
+  bottom: number,
+  theme: FamilyTheme,
+): void {
+  const tokens = resolveKitTokens(theme);
+  ctx.save();
+  ctx.strokeStyle = tokens.hairline;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (const tick of ticks) {
+    const x = Math.floor(timeAxisX(frame, tick.hour)) + 0.5;
+    if (x <= frame.plotLeft + 1 || x >= frame.plotRight - 1) continue;
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, bottom);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+export interface TimeAxisOptions extends TimeAxisFrame {
+  readonly axisTop: number;
+  readonly playhead: number | null;
+  readonly playheadLabel: string;
+  readonly theme: FamilyTheme;
+}
+
+export function drawTimeAxis(ctx: Canvas2D, ticks: readonly TimeAxisTick[], options: TimeAxisOptions): void {
+  const { plotLeft, plotRight, axisTop, theme } = options;
+  const tokens = resolveKitTokens(theme);
+  drawRowHairline(ctx, plotLeft, plotRight, axisTop, theme, 'band');
+  ctx.save();
+  ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+  let tabLeft = Infinity;
+  let tabRight = -Infinity;
+  let px: number | null = null;
+  if (options.playhead !== null) {
+    px = timeAxisX(options, options.playhead);
+    const tabW = textWidth(ctx, options.playheadLabel) + 14;
+    const left = Math.max(plotLeft, Math.min(plotRight - tabW, Math.round(px - tabW / 2)));
+    tabLeft = left - 6;
+    tabRight = left + tabW + 6;
+  }
+  ctx.fillStyle = theme.muted;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.strokeStyle = tokens.hairlineStrong;
+  ctx.lineWidth = 1;
+  for (const tick of ticks) {
+    const x = timeAxisX(options, tick.hour);
+    const half = textWidth(ctx, tick.label) / 2;
+    ctx.beginPath();
+    ctx.moveTo(Math.floor(x) + 0.5, axisTop);
+    ctx.lineTo(Math.floor(x) + 0.5, axisTop + 4);
+    ctx.stroke();
+    if (x - half < plotLeft - 4 || x + half > plotRight + 4) continue;
+    if (x + half > tabLeft && x - half < tabRight) continue;
+    ctx.fillText(tick.label, x, axisTop + 14);
+  }
+  ctx.restore();
+  if (px !== null) {
+    drawPlayheadLine(ctx, px, 0, axisTop, theme);
+    drawDateTab(ctx, options.playheadLabel, px, axisTop + 4, theme, 'playhead', { left: plotLeft, right: plotRight });
+  }
 }
 
 export function winRateColor(rate: number, theme?: FamilyTheme): string {

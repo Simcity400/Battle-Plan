@@ -7,6 +7,7 @@ import { heatMatrixFamilyManifest } from './manifest/heat-matrix.ts';
 import { metersFamilyManifest } from './manifest/meters.ts';
 import { tableFamilyManifest } from './manifest/table.ts';
 import { timeChartFamilyManifest } from './manifest/time-chart.ts';
+import { timelineFamilyManifest } from './manifest/timeline.ts';
 
 export const FAMILY_MANIFESTS: readonly FamilyManifestModule[] = [
   barsFamilyManifest,
@@ -15,6 +16,7 @@ export const FAMILY_MANIFESTS: readonly FamilyManifestModule[] = [
   metersFamilyManifest,
   tableFamilyManifest,
   timeChartFamilyManifest,
+  timelineFamilyManifest,
 ];
 
 export const FAMILY_VIEWS: readonly FamilyViewEntry[] = FAMILY_MANIFESTS.flatMap(entry => entry.views);
