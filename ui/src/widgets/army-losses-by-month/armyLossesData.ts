@@ -79,7 +79,7 @@ export interface MonthPart { key: string; value: number; raw: bigint }
 export interface MonthPeriod extends ColumnPeriod { key: string; parts: MonthPart[]; noRows?: boolean }
 export interface MonthBars { periods: MonthPeriod[]; parts: Part[]; first: number; last: number }
 
-const ARMY_BAR_STYLE = { spacing: 'proportional', thinBands: true } as const;
+const ARMY_BAR_STYLE = { spacing: 'proportional', thinBands: true, fullHeightUnknown: true } as const;
 const MIN_TERMINAL_BAR_WIDTH = 2;
 
 const plotted = (raw: bigint, measure: Measure) => measure === 'manpower' ? Number(raw) : fixedNumber(String(raw), 5);
@@ -144,7 +144,7 @@ export function armyColumnsLayer(periods: readonly ColumnPeriod[], colours: read
         ...frame,
         toX: hour => hour <= terminal.firstHour ? left : left + width,
       };
-      columnsLayer([terminal], colours, { spacing: 'pixel', thinBands: true }).draw(ctx, terminalFrame, tokens, state);
+      columnsLayer([terminal], colours, { spacing: 'pixel', thinBands: true, fullHeightUnknown: true }).draw(ctx, terminalFrame, tokens, state);
     },
     extent: range => columnsExtent(periods, range),
   };

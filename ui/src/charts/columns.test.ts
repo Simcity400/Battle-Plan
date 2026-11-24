@@ -3,7 +3,9 @@ import test from 'node:test';
 import { CAP_HEADROOM, columnAt, columnEdges, columnsExtent, columnsLayer, columnStops } from './columns.ts';
 import type { ColumnPeriod } from './columns';
 import { plotFrame } from './frame.ts';
-import type { ChartTokens } from './tokens';
+import { tokensFromValues } from './tokens.ts';
+
+const TEST_TOKENS = tokensFromValues(() => '#888888', 'sans-serif');
 
 const periods: ColumnPeriod[] = [
   { firstHour: 0, lastHour: 743, values: [2, 3, 1] },
@@ -32,15 +34,9 @@ test('the value axis fits the columns in view, with zero', () => {
   assert.deepEqual(columnsExtent([{ firstHour: 0, lastHour: 9, values: [3, -7, null] }], [0, 9]), [-7, 3 + 10 * CAP_HEADROOM]);
   assert.deepEqual(columnsExtent(periods, [1416, 2159]), [-2, 5 + 7 * CAP_HEADROOM]);
   assert.deepEqual(columnsExtent([{ firstHour: 0, lastHour: 9, values: [4, 0, 0] }], [0, 9]), [0, 4]);
-  assert.deepEqual(columnsExtent([{ firstHour: 0, lastHour: 9, values: [null] }], [0, 9]), [0, 1]);
+  assert.equal(columnsExtent([{ firstHour: 0, lastHour: 9, values: [null] }], [0, 9]), null, 'an all-unknown period has no value extent');
   assert.equal(columnsExtent(periods, [5000, 6000]), null);
 });
-
-
-
-
-
-
 
 const months: ColumnPeriod[] = [
   { firstHour: 0, lastHour: 9, values: [3, 4] },
@@ -59,57 +55,55 @@ test('a period not known at all has no extent, never zero, and stops stay at eve
   assert.equal(columnAt(many, 12_345), 1234);
 });
 
-const fakeTokens = { muted: '#888', hatchSpacing: 4, lineWidth: { grid: 1, series: 2, emphasis: 3 } } as unknown as ChartTokens;
-
-function recordingCanvas() {
-  const rects: { x: number; y: number; width: number; height: number; fillStyle: string; globalAlpha: number }[] = [];
-  const ctx = {
-    fillStyle: '',
-    strokeStyle: '',
-    globalAlpha: 1,
-    lineWidth: 1,
-    save() {},
-    restore() {},
-    beginPath() {},
-    rect() {},
-    clip() {},
-    moveTo() {},
-    lineTo() {},
-    stroke() {},
-    fillRect(x: number, y: number, width: number, height: number) {
-      rects.push({ x, y, width, height, fillStyle: this.fillStyle, globalAlpha: this.globalAlpha });
-    },
+test('an unread month keeps main hatch heights by default and draws full plot height only with fullHeightUnknown', () => {
+  const measure = (y: [number, number], style: { fullHeightUnknown?: boolean } = {}) => {
+    const periodsWithUnknown: ColumnPeriod[] = [
+      { firstHour: 0, lastHour: 9, values: [y[0]] },
+      { firstHour: 10, lastHour: 19, values: [], unknown: true },
+    ];
+    const frame = plotFrame(200, 120, { left: 40, right: 10, top: 10, bottom: 20 }, [0, 20], y, false);
+    let clippedHeight = 0;
+    const fakeCtx = {
+      fillStyle: '', strokeStyle: '', lineWidth: 0,
+      save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fillRect() {},
+      rect(_x: number, _y: number, _w: number, h: number) { clippedHeight = Math.max(clippedHeight, h); },
+      clip() {},
+    } as unknown as CanvasRenderingContext2D;
+    columnsLayer(periodsWithUnknown, ['#888'], style).draw(fakeCtx, frame, TEST_TOKENS, { playhead: null });
+    return { clippedHeight, plotHeight: frame.plotHeight };
   };
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, rects };
-}
-
-test('spending all-null months keep main hatched cap and axis headroom; explicit unknown draws full height', () => {
-  const spendingNull: ColumnPeriod = { firstHour: 0, lastHour: 743, values: [null, null, null] };
-  assert.deepEqual(columnsExtent([spendingNull], [0, 743]), [0, 1]);
-  const frame = plotFrame(400, 200, { left: 40, right: 20, top: 20, bottom: 20 }, [0, 744], [-50, 100], false);
-  const spendingCanvas = recordingCanvas();
-  columnsLayer([spendingNull], ['#111', '#222', '#333']).draw(spendingCanvas.ctx, frame, fakeTokens, { playhead: null });
-  const expectedCapHeight = fakeTokens.hatchSpacing * 3;
-  assert.equal(spendingCanvas.rects.length, 1);
-  assert.deepEqual(spendingCanvas.rects[0], {
-    x: frame.plotLeft + 1,
-    y: frame.toY(0) - expectedCapHeight,
-    width: frame.plotWidth - 2,
-    height: expectedCapHeight,
-    fillStyle: fakeTokens.muted,
-    globalAlpha: 0.25,
-  });
-
-  const explicitUnknown: ColumnPeriod = { firstHour: 0, lastHour: 743, values: [], unknown: true };
-  assert.equal(columnsExtent([explicitUnknown], [0, 743]), null);
-  const unknownCanvas = recordingCanvas();
-  columnsLayer([explicitUnknown], ['#111'], { spacing: 'proportional', thinBands: true }).draw(unknownCanvas.ctx, frame, fakeTokens, { playhead: null });
-  assert.equal(unknownCanvas.rects.length, 1);
-  assert.equal(unknownCanvas.rects[0].y, frame.plotTop);
-  assert.equal(unknownCanvas.rects[0].height, frame.plotHeight);
-  assert.ok(unknownCanvas.rects[0].height > frame.toY(0) - frame.plotTop);
+  const positive = measure([0, 10]);
+  assert.equal(positive.clippedHeight, positive.plotHeight);
+  const signed = measure([-10, 10]);
+  assert.equal(signed.clippedHeight, signed.plotHeight / 2);
+  const negative = measure([-10, 0]);
+  assert.equal(negative.clippedHeight, 0);
+  const fullNegative = measure([-10, 0], { fullHeightUnknown: true });
+  assert.equal(fullNegative.clippedHeight, fullNegative.plotHeight);
+  const fullSigned = measure([-10, 10], { fullHeightUnknown: true });
+  assert.equal(fullSigned.clippedHeight, fullSigned.plotHeight);
 });
 
-
-
-
+test('a fresh columnsLayer per call reads zero offscreen column values during both extent and draw', () => {
+  let offscreenReads = 0;
+  const all: ColumnPeriod[] = Array.from({ length: 120 }, (_, index) => {
+    const base: ColumnPeriod = { firstHour: index * 720, lastHour: (index + 1) * 720 - 1, values: [1, 2, 3] };
+    return index < 119 ? new Proxy(base, {
+      get(target, prop, receiver) {
+        if (prop === 'values') offscreenReads++;
+        return Reflect.get(target, prop, receiver);
+      },
+    }) : base;
+  });
+  const visible: [number, number] = [119 * 720, 120 * 720 - 1];
+  const ext = columnsLayer(all, ['#111', '#222', '#333']).extent!(visible)!;
+  assert.deepEqual(ext, [0, 6]);
+  assert.equal(offscreenReads, 0, 'extent on a fresh layer reads zero offscreen column values');
+  const frame = plotFrame(200, 120, { left: 40, right: 10, top: 10, bottom: 20 }, visible, ext, false);
+  const fakeCtx = {
+    fillStyle: '', strokeStyle: '', lineWidth: 0,
+    save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fillRect() {}, rect() {}, clip() {},
+  } as unknown as CanvasRenderingContext2D;
+  columnsLayer(all, ['#111', '#222', '#333']).draw(fakeCtx, frame, TEST_TOKENS, { playhead: null });
+  assert.equal(offscreenReads, 0, 'draw on a fresh layer reads zero offscreen column values');
+});

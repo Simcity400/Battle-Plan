@@ -116,6 +116,19 @@ test('a recorded bar at the first hour of a month stays drawable when draw-in en
   assert.ok(terminalBars[0].height > 0);
   const firstMonthBars = rects.filter(rect => rect.globalAlpha === 1 && rect.x < frame.plotLeft + 50);
   assert.equal(firstMonthBars.length, 3, 'interior months still draw all bands normally');
+
+  const signedFrame = plotFrame(600, 200, { left: 40, right: 20, top: 20, bottom: 20 }, [span[0], span[1]], [-50, 120], false);
+  const signedRects: { y: number; height: number; globalAlpha: number }[] = [];
+  const signedCtx = {
+    fillStyle: '', strokeStyle: '', globalAlpha: 1, lineWidth: 1,
+    save() {}, restore() {}, beginPath() {}, rect() {}, clip() {}, moveTo() {}, lineTo() {}, stroke() {},
+    fillRect(_x: number, y: number, _w: number, height: number) { signedRects.push({ y, height, globalAlpha: this.globalAlpha }); },
+  };
+  armyColumnsLayer(bars.periods, ['#111', '#222', '#333']).draw(signedCtx as unknown as CanvasRenderingContext2D, signedFrame, tokens, { playhead: null });
+  const unknownHatches = signedRects.filter(rect => rect.globalAlpha === 0.25);
+  assert.ok(unknownHatches.length >= 1, 'unknown months hatch');
+  assert.equal(unknownHatches[0].y, signedFrame.plotTop);
+  assert.equal(unknownHatches[0].height, signedFrame.plotHeight, 'army layer opts into fullHeightUnknown on signed axes');
 });
 
 test('army-group stacks use the current parent, an independent bucket and an explicit unresolved one', () => {
