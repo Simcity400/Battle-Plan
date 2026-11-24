@@ -33,7 +33,7 @@ export const flowLane: LaneFamily<FamilyFlowBinding, FlowModel, FlowLayout> = {
   tooltip(frame, key, focus) {
     const item = focus ? key : inspectedItem(key);
     const payload = item ? findFlowTooltip(frame.model, item) : null;
-    return payload && item ? { hour: frame.model.hour, rowKey: item, payload } : null;
+    return payload && item ? { rowKey: item, payload } : null;
   },
   structure({ model, layout }) {
     return {
