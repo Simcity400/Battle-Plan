@@ -19,7 +19,7 @@ import { type TimeChartBinding } from './declaration.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
 import { createTimeChartGestures, parseTimeChartHit, timeChartHostAdapter } from './hostAdapter.ts';
-import { timeChartLaneView } from './laneView.ts';
+import { timeChartLane } from './laneView.ts';
 import { assertFreshPaint, assertQuietFrames, LANE_THEME, LaneTransport } from '../laneRuntime.fixture.ts';
 import { SceneTiles } from '../sceneTiles.ts';
 import { formatChartAxisValue, hoverTimeChartLayout, layoutTimeChart } from './layout.ts';
@@ -34,6 +34,7 @@ import { navyLinesProjection } from '../../widgets/navy-size/navyLinesProjection
 import { armyLinesProjection } from '../../widgets/army-size/armyLinesProjection.ts';
 import { supplyHealthProjection } from '../../widgets/supply-health/supplyHealthProjection.ts';
 import { rulingPartyProjection } from '../../widgets/ruling-party/rulingPartyProjection.ts';
+import { createLaneView } from '../laneRuntime.ts';
 import { drawTimeChart } from './painter.ts';
 
 const measure: MeasureText = (text: string) => text.length * 6.5;
@@ -117,7 +118,7 @@ function laneOn(created: { readonly ctx: Canvas2D }) {
     constructor(width: number, height: number) { this.width = width; this.height = height; }
     getContext() { return created.ctx; }
   };
-  return timeChartLaneView(() => {});
+  return createLaneView(timeChartLane, () => {});
 }
 
 describe('time-chart BoundedSeries & Foundation C integration', () => {
@@ -864,9 +865,9 @@ describe('time-chart picture authority', () => {
       tiledBySource: { main: { GER: tiled(first, last) } },
     } satisfies TimeChartBinding);
     const surface = { width: 600, height: 240, dpr: 1 };
-    assert.equal(assertQuietFrames(() => timeChartLaneView(() => {}), { label: 'chart', binding: bound(10, 30), hour, speed: 24 }, 24, surface), hour + 1, 'a playing chart changes every hour');
+    assert.equal(assertQuietFrames(() => createLaneView(timeChartLane, () => {}), { label: 'chart', binding: bound(10, 30), hour, speed: 24 }, 24, surface), hour + 1, 'a playing chart changes every hour');
     const held = bound(10, 30);
-    assertFreshPaint(() => timeChartLaneView(() => {}), [
+    assertFreshPaint(() => createLaneView(timeChartLane, () => {}), [
       { label: 'held', binding: held, hour, check: true },
       { label: 'earlier', binding: held, hour: hour - 20, speed: 24, check: true },
       { label: 'back to the head', binding: held, hour, check: true },

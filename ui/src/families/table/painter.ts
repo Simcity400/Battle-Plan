@@ -10,6 +10,7 @@ import {
   drawRowHairline,
   drawRowHover,
   drawRowSelected,
+  drawScrollFade,
   resolveKitTokens,
   type ClockSummaryData,
 } from '../../draw/kit.ts';
@@ -22,6 +23,7 @@ import { formatValueState } from '../valueFormat.ts';
 import { drawApprovedCell, treeLevelsOf, treeTextStart, type CellRenderContext } from './cellPainters.ts';
 import { LIVE_END_GAP, treeColumnOf, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
 import { computeColumnMaxima, resolveCellPaintModel, type FlatTableRow, type TableCell, type TableRow } from './model.ts';
+import { PANE_FADE_WIDTH, PANE_INDICATOR_HEIGHT, type PaneGeometry, type PaneScroll, type ResolvedPane } from './panes.ts';
 import {
   CELL_INSET,
   MEDIA_ROW_HEIGHT,
@@ -1027,4 +1029,65 @@ export function hitFamilyTable(
 
 export function hasNonZeroMeasured(value: Value): boolean {
   return hasMeasuredValue(value) && value.kind !== 'zero';
+}
+
+export function hitPanes(
+  layout: FamilyTableLayout,
+  panes: readonly ResolvedPane[],
+  geometry: PaneGeometry,
+  point: { readonly x: number; readonly y: number },
+  rowHeight: number,
+  scroll: PaneScroll,
+  scrollTop: number,
+): string | null {
+  for (let p = 0; p < panes.length; p++) {
+    const x0 = geometry.xs[p]!;
+    if (point.x < x0 || point.x >= x0 + geometry.width) continue;
+    const pane = panes[p]!;
+    const at = hitFamilyTable(layout, pane.rows, { x: point.x - x0, y: point.y }, rowHeight, scroll.left, scrollTop, false, 0, undefined, undefined, undefined, pane.geom, pane.rowIndex);
+    if (at.kind !== 'row' || !at.rowKey) return null;
+    return at.toggle ? `toggle:${at.rowKey}` : `row:${at.rowKey}`;
+  }
+  return null;
+}
+
+export function drawPaneFrame(
+  ctx: TableCanvasContext,
+  geometry: PaneGeometry,
+  layout: FamilyTableLayout,
+  scroll: PaneScroll,
+  height: number,
+  theme: TableTheme,
+): void {
+  const tokens = resolveKitTokens(theme);
+  for (let p = 1; p < geometry.xs.length; p++) {
+    const gutterLeft = geometry.xs[p - 1]! + geometry.width;
+    ctx.fillStyle = theme.surface;
+    ctx.fillRect(gutterLeft, 0, geometry.gutter, height);
+    ctx.fillStyle = theme.hairlineStrong ?? theme.line;
+    ctx.fillRect(Math.round(gutterLeft + geometry.gutter / 2), 0, 1, height);
+  }
+  const usedRight = geometry.xs[geometry.xs.length - 1]! + geometry.width;
+  if (geometry.view > usedRight) {
+    ctx.fillStyle = theme.surface;
+    ctx.fillRect(usedRight, 0, geometry.view - usedRight, height);
+  }
+  if (scroll.overflow <= 0) return;
+  const bodyWidth = Math.max(1, geometry.width - layout.pinnedWidth);
+  const thumbWidth = Math.max(16, Math.round(bodyWidth * (geometry.width - layout.pinnedWidth) / Math.max(1, layout.totalWidth - layout.pinnedWidth)));
+  const thumbX = Math.round((bodyWidth - thumbWidth) * (scroll.left / scroll.overflow));
+  const y = height - PANE_INDICATOR_HEIGHT - 2;
+  for (const x0 of geometry.xs) {
+    const fadeRight = x0 + geometry.width;
+    if (scroll.left < scroll.overflow - 0.5) drawScrollFade(ctx, fadeRight - PANE_FADE_WIDTH, 0, PANE_FADE_WIDTH, height, theme, 'right');
+    const trackX = x0 + layout.pinnedWidth;
+    ctx.fillStyle = tokens.barTrack;
+    ctx.beginPath();
+    ctx.roundRect(trackX, y, bodyWidth, PANE_INDICATOR_HEIGHT, PANE_INDICATOR_HEIGHT / 2);
+    ctx.fill();
+    ctx.fillStyle = theme.muted;
+    ctx.beginPath();
+    ctx.roundRect(trackX + thumbX, y, thumbWidth, PANE_INDICATOR_HEIGHT, PANE_INDICATOR_HEIGHT / 2);
+    ctx.fill();
+  }
 }
