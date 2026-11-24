@@ -123,6 +123,7 @@ function typeTooltip(row: EquipmentType): TooltipExtraRow[] {
   if (row.unknownDivisions === null || row.unknownDivisions > 0) {
     rows.push({ label: 'Divisions not recorded', value: count(row.unknownDivisions, 'Divisions not recorded'), divider: true });
   }
+  if (row.variantsMissing !== null) rows.push({ label: 'Designs', value: notRecorded(row.variantsMissing), divider: true });
   row.variants.forEach((variant, at) => rows.push({
     label: variant.name ?? 'Design name unavailable', value: amount(variant.heldRaw, 'Holdings not recorded'), format: 'integer', lookupKey: variant.variant,
     indent: true, ...(at === 0 ? { divider: true } : {}),

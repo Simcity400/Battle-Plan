@@ -6,7 +6,7 @@ use dashboard_text::metadata::link_slot;
 use replay_data::rows::{CountryLinkRow, FactionMemberRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io};
+use std::io;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -44,7 +44,7 @@ pub enum GoalState {
 }
 
 impl GoalState {
-    fn of(status: i32) -> Self {
+    pub(super) fn of(status: i32) -> Self {
         match status {
             0 => Self::InProgress,
             1 => Self::Completed,
@@ -55,7 +55,7 @@ impl GoalState {
         }
     }
 
-    fn shown(self, filter: GoalFilter) -> bool {
+    pub(super) fn shown(self, filter: GoalFilter) -> bool {
         match filter {
             GoalFilter::All => true,
             GoalFilter::InProgress => matches!(self, Self::InProgress | Self::Completing | Self::Cancelling),
@@ -95,33 +95,16 @@ pub struct CountryFactionGoalsReply {
     pub warnings: Vec<String>,
 }
 
-pub(super) fn shown_goals(detail: FactionDetailReply, filter: GoalFilter) -> (Vec<CountryGoal>, Vec<FactionGoalDefinition>, Vec<String>) {
+pub(super) fn shown_goals(detail: FactionDetailReply) -> (Vec<CountryGoal>, Vec<FactionGoalDefinition>, Vec<String>) {
     let held = detail.goals.iter().map(|goal| {
         let state = GoalState::of(goal.status);
-        (format!("goal:{}", goal.ordinal), goal.definition, state, Some(goal.ordinal), (state == GoalState::Unrecognised).then_some(goal.status))
+        CountryGoal { key: format!("goal:{}", goal.ordinal), definition: goal.definition, state, ordinal: Some(goal.ordinal), unrecognised_status: (state == GoalState::Unrecognised).then_some(goal.status) }
     });
-    let completed = detail.completed.iter().enumerate().map(|(at, &definition)| (format!("completed:{at}"), definition, GoalState::Completed, None, None));
-    let cancelled = detail.cancelled.iter().enumerate().map(|(at, &definition)| (format!("cancelled:{at}"), definition, GoalState::Cancelled, None, None));
-    let mut warnings = detail.warnings;
-    let mut left_out = 0usize;
-    let mut kept = BTreeMap::<u32, u32>::new();
-    let mut definitions = Vec::new();
-    let mut goals = Vec::new();
-    for (key, definition, state, ordinal, unrecognised_status) in held.chain(completed).chain(cancelled) {
-        if !state.shown(filter) {
-            left_out += usize::from(state == GoalState::Unrecognised);
-            continue;
-        }
-        let at = *kept.entry(definition).or_insert_with(|| {
-            definitions.push(detail.definitions[definition as usize].clone());
-            definitions.len() as u32 - 1
-        });
-        goals.push(CountryGoal { key, definition: at, state, ordinal, unrecognised_status });
-    }
-    if left_out > 0 {
-        warnings.push(format!("{left_out} faction goals are in a state this version does not recognise; only All shows them"));
-    }
-    (goals, definitions, warnings)
+    let listed = |list: &[u32], name: &'static str, state: GoalState| {
+        list.iter().enumerate().map(move |(at, &definition)| CountryGoal { key: format!("{name}:{at}"), definition, state, ordinal: None, unrecognised_status: None }).collect::<Vec<_>>()
+    };
+    let goals = held.chain(listed(&detail.completed, "completed", GoalState::Completed)).chain(listed(&detail.cancelled, "cancelled", GoalState::Cancelled)).collect();
+    (goals, detail.definitions, detail.warnings)
 }
 
 dashboard_base::reply_warnings!(CountryFactionGoalsReply);
@@ -204,9 +187,9 @@ impl AtHour for CountryFactionGoals {
             Err(why) => blank(Some(why)),
             Ok(None) => blank(None),
             Ok(Some(faction)) => {
-                let detail = details::goals_only(frame, &detail_params(params, faction), faction, at)?;
+                let detail = details::goals_only(frame, &detail_params(params, faction), faction, params.goals, at)?;
                 let goal_reason = detail.goal_reason.clone();
-                let (goals, definitions, warnings) = shown_goals(detail, params.goals);
+                let (goals, definitions, warnings) = shown_goals(detail);
                 CountryFactionGoalsReply { faction: Some(faction.to_string()), goals, definitions, goal_reason, membership_missing: None, warnings }
             }
         };
