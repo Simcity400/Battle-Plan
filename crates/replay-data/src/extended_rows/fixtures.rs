@@ -1769,7 +1769,7 @@ fixture!(ProjectHistoryRow, |key| {owner: (key >> 64) as u32, project: (key >> 3
 fixture!(ProjectBreakthroughRow, |key| {owner: (key >> 32) as u32, specialization: key as u32}, {points: i32});
 fixture!(NukeRow, |key| {country: (key >> 32) as u32, nuke_type: key as u32}, {amount_raw: i64, ready: i32});
 fixture!(RaidCountryRow, |key| {canonical_slot: key as u32}, {country: i32, eligible_types: Vec<u32>, used_types: Vec<u32>});
-fixture!(RaidRow, |key| {id: (key >> 32) as u32, reference_type: key as u32}, {parent_slot: u32, ordinal: u32, phase: i32, outcome: i32, source: RaidSource, show_for: Vec<u32>, unit: u64, air_wing: u64, travelled: Option<i64>, preparation_hours: i32});
+fixture!(RaidRow, |key| {id: (key >> 32) as u32, reference_type: key as u32}, {parent_slot: u32, ordinal: u32, phase: i32, outcome: i32, source: RaidSource, show_for: Vec<u32>, unit: u64, air_wing: u64, travelled: Option<i64>, preparation_hours: i32, end_hour: Option<i32>, completion_country: Option<u32>, completion_recorded: u8});
 fixture!(RaidTargetRow, |key| {id: (key >> 32) as u32, reference_type: key as u32}, {scope: RaidScope, raid_type: u32, detected: u8});
 fixture!(NavalBaseRow, |key| {province: key as u32}, {country: u32, level: i32, healthy_level: i32, countries: Vec<u32>, countries_unreadable: bool, country_tags: Recorded<Option<Vec<Vec<u8>>>>});
 fixture!(BattleSoundRow, |key| {ordinal: key as u32}, {center_x: u32, center_z: u32, radius: u32, provinces: Vec<u32>, sounding: bool, object: u64});
