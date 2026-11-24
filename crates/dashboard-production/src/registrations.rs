@@ -1,6 +1,7 @@
 dashboard_base::register_products! {
     PRODUCTION_PRODUCTIONLINEBREAKDOWN => crate::products::production::ProductionLineBreakdown,
     PRODUCTION_SPENDING_PRODUCTIONSPENDING => crate::products::production_spending::ProductionSpending,
+    PRODUCTION_SPENDING_MONTHS_PRODUCTIONSPENDINGMONTHS => crate::products::production_spending_months::ProductionSpendingMonths,
     CONSTRUCTION_LOG_CONSTRUCTIONLOGMANIFEST => crate::products::construction::log::ConstructionLogManifest,
     CONSTRUCTION_LOG_CONSTRUCTIONLOG => crate::products::construction::log::ConstructionLog,
     CONSTRUCTION_BREAKDOWN_CONSTRUCTIONBREAKDOWN => crate::products::construction::breakdown::ConstructionBreakdown,
