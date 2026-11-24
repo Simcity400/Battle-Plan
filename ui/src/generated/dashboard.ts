@@ -5901,11 +5901,11 @@ traits: Array<number> | null,
 traitDates: Array<[number, number] | null>, firstSeenHour: number | null, fought: number, won: number, lost: number, };
 export type LeaderSkillIcons = {
 /**
- * Skill, attack, defense, planning and logistics: the army leader window's sort buttons; none where the installed interface draws none.
+ * Skill, attack, defense, planning and logistics from the installed leader interface; none where it draws none.
  */
 land: Array<SpriteFrame | null>,
 /**
- * Skill, attack, defense, maneuvering and coordination: the navy leader window's sort buttons.
+ * Skill, attack, defense, maneuvering and coordination from the installed leader interface.
  */
 navy: Array<SpriteFrame | null>, };
 export type UnitLeadersReply = { leaders: Array<LeaderRow>, traits: Array<LeaderTrait>, withheld: Array<LeaderWithheld>,

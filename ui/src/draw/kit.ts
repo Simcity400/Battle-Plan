@@ -1642,9 +1642,9 @@ export function drawSkillFigure(
   theme: FamilyTheme,
   options?: { readonly badge?: boolean; readonly muted?: boolean },
 ): void {
-  const iconW = options?.badge ? 16 : 18;
-  const iconH = options?.badge ? 23 : 18;
-  const gap = 7;
+  const iconW = options?.badge ? 18 : 24;
+  const iconH = options?.badge ? 26 : 22;
+  const gap = 6;
   const font = `${options?.badge ? 600 : 500} 13.5px ${theme.font}`;
   ctx.save();
   ctx.font = font;
@@ -1655,7 +1655,7 @@ export function drawSkillFigure(
   ctx.fillText(valueText, right, middleY);
   const iconX = right - numW - gap - iconW;
   if (iconX >= left) {
-    drawArtSlot(ctx, iconX, Math.round(middleY - iconH / 2), iconW, iconH, iconState, theme, { radius: 2 });
+    drawArtSlot(ctx, iconX, Math.round(middleY - iconH / 2), iconW, iconH, iconState, theme, { radius: 0 });
   }
   ctx.restore();
 }
@@ -1683,25 +1683,47 @@ export function drawIconStrip(
   const size = options?.kind === 'medals' ? MEDAL_ICON_SIZE : TRAIT_ICON_SIZE;
   const gap = ICON_STRIP_GAP;
   const y = Math.round(middleY - size / 2);
-  let cursor = left;
-  let drawnCount = 0;
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i]!;
+  const countFont = `600 11px ${theme.font}`;
+  const moreFont = `500 11.5px ${theme.font}`;
+  const measured = items.map(item => {
     const countText = item.count && item.count > 1 ? `\u00d7${item.count}` : '';
     let countW = 0;
     if (countText) {
       ctx.save();
-      ctx.font = `600 11px ${theme.font}`;
+      ctx.font = countFont;
       countW = textWidth(ctx, countText) + 3;
       ctx.restore();
     }
     const width = iconStripSlotWidth(item.state, size);
-    if (cursor + width + countW > right) break;
+    return { item, width, countText, countW, total: width + countW };
+  });
+  const available = Math.max(0, right - left);
+  let fitAll = 0;
+  for (let i = 0; i < measured.length; i++) fitAll += (i > 0 ? gap : 0) + measured[i]!.total;
+  let drawnCount = measured.length;
+  if (fitAll > available) {
+    ctx.save();
+    ctx.font = moreFont;
+    drawnCount = 0;
+    let used = 0;
+    for (let i = 0; i < measured.length; i++) {
+      const nextUsed = used + (i > 0 ? gap : 0) + measured[i]!.total;
+      const remaining = measured.length - (i + 1);
+      const moreW = remaining > 0 ? gap + textWidth(ctx, `+${remaining}`) : 0;
+      if (nextUsed + moreW > available) break;
+      used = nextUsed;
+      drawnCount = i + 1;
+    }
+    ctx.restore();
+  }
+  let cursor = left;
+  for (let i = 0; i < drawnCount; i++) {
+    const { item, width, countText, countW } = measured[i]!;
     drawArtSlot(ctx, cursor, y, width, size, item.state, theme, { radius: 3 });
     cursor += width;
     if (countText) {
       ctx.save();
-      ctx.font = `600 11px ${theme.font}`;
+      ctx.font = countFont;
       ctx.fillStyle = theme.text;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
@@ -1710,9 +1732,18 @@ export function drawIconStrip(
       cursor += countW;
     }
     cursor += gap;
-    drawnCount++;
   }
-  return { drawnCount, overflowCount: items.length - drawnCount };
+  const overflowCount = items.length - drawnCount;
+  if (overflowCount > 0 && cursor <= right) {
+    ctx.save();
+    ctx.font = moreFont;
+    ctx.fillStyle = theme.muted;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`+${overflowCount}`, cursor, middleY);
+    ctx.restore();
+  }
+  return { drawnCount, overflowCount };
 }
 
 export function drawActionButton(
@@ -1794,7 +1825,7 @@ export function drawNetBar(
   const half = Math.max(0, width / 2 - 2);
   const barW = Math.max(BEHIND_BAR_MIN_WIDTH, Math.round(half * Math.min(1, Math.abs(share))));
   const barY = Math.round(middleY - NET_BAR_HEIGHT / 2);
-  if (share < 0) drawBar(ctx, centerX - barW, barY, barW, NET_BAR_HEIGHT, tokens.shortage, 'left', 1);
+  if (share < 0) drawBar(ctx, centerX - barW, barY, barW, NET_BAR_HEIGHT, CHART_MEASURE_COLOURS.short, 'left', 1);
   else drawBar(ctx, centerX, barY, barW, NET_BAR_HEIGHT, tokens.dark ? 'rgba(255, 255, 255, 0.76)' : 'rgba(15, 23, 42, 0.36)', 'right', 1);
 }
 

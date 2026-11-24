@@ -20,7 +20,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'unresolved', label: 'Unresolved', as: 'faint', tone: 'grey', offered: OFFERED.number, defaultHidden: true },
 ];
 export const DEFAULT_SORT = { column: 'skill', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'comfortable', barsBehind: 'all', showRank: false, sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', showRank: false, sort: DEFAULT_SORT };
 export const OPTIONS: readonly OptionField[] = [
   { key: 'leaders', section: 'options', label: 'Leaders', kind: 'choice', default: 'all', choices: [
     { value: 'all', label: 'All' }, { value: 'land', label: 'Land' }, { value: 'navy', label: 'Navy' },

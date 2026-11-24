@@ -13,7 +13,7 @@ mod spill;
 pub mod sprites;
 mod windows;
 
-pub use windows::{kept_container_window, window_button_sprite, window_button_tooltip, window_texts};
+pub use windows::{kept_container_window, window_button_sprite, window_button_tooltip, window_icon_sprite, window_texts};
 
 use content_reader_script::native::Token;
 pub use reader::{

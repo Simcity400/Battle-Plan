@@ -417,7 +417,19 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
   ], THEME, { kind: 'traits' });
   assert.equal(res.drawnCount + res.overflowCount, 4);
   assert.ok(res.overflowCount > 0);
-  assert.ok(!strip.ops.some(op => op.op === 'fillText' && String(op.args[0]).startsWith('+')), 'a strip that does not fit draws what fits, never a +N mark');
+  assert.ok(strip.ops.some(op => op.op === 'fillText' && op.args[0] === `+${res.overflowCount}`), 'a strip that overflows shows +N in the last slot');
+
+  const fitStrip = makeFakeCtx();
+  const fitRes = drawIconStrip(fitStrip.ctx, 0, 200, 18, [
+    { state: { kind: 'missing', reason: 'no layer holds it', label: 'A' }, name: 'A' },
+    { state: { kind: 'missing', reason: 'no layer holds it', label: 'B' }, name: 'B' },
+  ], THEME, { kind: 'traits' });
+  assert.deepEqual(fitRes, { drawnCount: 2, overflowCount: 0 });
+  assert.ok(!fitStrip.ops.some(op => op.op === 'fillText' && String(op.args[0]).startsWith('+')));
+
+  const netShort = makeFakeCtx();
+  drawNetBar(netShort.ctx, 0, 120, 0, 36, -0.5, THEME);
+  assert.equal(netShort.ops.find(op => op.op === 'fill')?.fillStyle, '#e5484d', 'shortage net bar uses CHART_MEASURE_COLOURS.short');
   const tall = { kind: 'ready', bitmap: {} as CanvasImageSource, width: 18, height: 36 } as const;
   assert.deepEqual([iconStripSlotWidth(tall, 28), iconStripSlotWidth({ ...tall, width: 72 }, 28), iconStripSlotWidth({ kind: 'pending' }, 28)], [14, 28, 28],
     'a tall medal takes its own width at the strip height, so the gap between medals is the strip gap');

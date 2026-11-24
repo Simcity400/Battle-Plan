@@ -63,6 +63,41 @@ pub fn window_button_sprite(
     Ok(name.to_owned())
 }
 
+pub fn window_icon_sprite(
+    guis: &native::Guis,
+    window: &str,
+    icon: &str,
+    warnings: &mut Vec<String>,
+) -> io::Result<String> {
+    let (_, element) = kept_container_window(guis, window, warnings)?;
+    let child = element
+        .find_recursive(native::Kind::Icon, icon)
+        .ok_or_else(|| invalid(format!("{window} has no {icon} icon")))?;
+    let refusals: Vec<_> = element
+        .refusals()
+        .iter()
+        .chain(child.refusals())
+        .map(ToString::to_string)
+        .collect();
+    if !refusals.is_empty() {
+        return Err(invalid(format!(
+            "{window}.{icon}: {} GUI refusals: {}",
+            refusals.len(),
+            refusals.join("; ")
+        )));
+    }
+    let bytes = &child
+        .icon()
+        .ok_or_else(|| invalid(format!("{window}.{icon}: icon fields unavailable")))?
+        .sprite;
+    let name = content_reader_parser::parser::text(bytes)
+        .map_err(|why| invalid(format!("{window}.{icon}: sprite is {why}")))?;
+    if name.is_empty() {
+        return Err(invalid(format!("{icon} in {window} names no sprite")));
+    }
+    Ok(name.to_owned())
+}
+
 pub fn kept_container_window<'a>(
     guis: &'a native::Guis,
     window: &str,
