@@ -1,6 +1,6 @@
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { formatDate, gameDate } from '../../dashboard/calendar.ts';
-import { formatProgress } from '../../families/valueFormat.ts';
+import { formatProgress, formatScalar } from '../../families/valueFormat.ts';
 import type { CipherPair, DecryptionReply, Observation } from '../../generated/dashboard';
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -29,7 +29,7 @@ export function validateDecryption(value: unknown): DecryptionReply {
 
 export const pairKey = (pair: CipherPair) => `${pair.owner.id}:${pair.target.id}`;
 
-export const weekChangeText = (tenths: number) => `${tenths > 0 ? '+' : tenths < 0 ? '−' : ''}${(Math.abs(tenths) / 10).toFixed(1)} points`;
+export const weekChangeText = (tenths: number) => formatScalar(BigInt(tenths), { decimals: 1, maxDecimals: 1, fixedDecimals: true, signed: true, unit: 'points' });
 
 export function progressPercent(amount: bigint, active: number, threshold: bigint): number | null {
   let ratio: bigint;

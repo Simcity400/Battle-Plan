@@ -9,7 +9,7 @@
 .region-chooser-search:focus { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 2px var(--accent-soft); }
 .region-chooser-list {
   max-height: 336px; overflow-y: auto; padding-bottom: 28px; scrollbar-width: none;
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to bottom, currentColor calc(100% - 28px), transparent);
 }
 .region-chooser-list::-webkit-scrollbar { display: none; }
 .region-chooser-group { padding: 8px 8px 2px; color: var(--muted); font-size: 0.6875rem; }

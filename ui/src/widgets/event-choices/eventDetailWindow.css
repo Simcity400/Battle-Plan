@@ -15,7 +15,7 @@
   padding: 14px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--surface-raised, rgba(255, 255, 255, 0.025));
+  background: var(--surface-raised, var(--control-fill));
 }
 
 .evd-meta {
@@ -54,7 +54,7 @@
   max-height: 220px;
   overflow: hidden;
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.28);
+  background: color-mix(in srgb, var(--canvas) 75%, transparent);
 }
 
 .evd-art img {
@@ -88,7 +88,7 @@
   padding: 9px 12px;
   border-radius: 6px;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--control-fill);
   font-size: 13px;
   color: var(--text);
 }
@@ -96,7 +96,7 @@
 .evd-option.is-chosen {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
-  background: rgba(59, 130, 246, 0.08);
+  background: var(--accent-softer);
 }
 
 .evd-option-letter {
@@ -116,11 +116,11 @@
   vertical-align: -1px;
   margin: 0 3px;
   border-radius: 3px;
-  border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.2));
+  border: 1px solid var(--border-strong, var(--line-strong));
   background: repeating-linear-gradient(
     -45deg,
-    rgba(255, 255, 255, 0.14),
-    rgba(255, 255, 255, 0.14) 2px,
+    var(--hatch-edge),
+    var(--hatch-edge) 2px,
     transparent 2px,
     transparent 6px
   );

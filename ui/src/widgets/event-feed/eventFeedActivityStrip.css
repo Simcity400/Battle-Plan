@@ -30,15 +30,15 @@
   display: block;
   border-radius: 1px;
   min-height: 1px;
-  background: #b29b72;
+  background: oklch(0.703 0.068 82.8);
 }
 
 .efs-seg.is-politics {
-  background: #b29b72;
+  background: oklch(0.703 0.068 82.8);
 }
 
 .efs-seg.is-warsPeace {
-  background: #cfcfcf;
+  background: var(--muted-strong);
 }
 
 .efs-seg.is-diplomacy {
@@ -54,7 +54,7 @@
   height: 100%;
   background: repeating-linear-gradient(
     135deg,
-    rgba(245, 245, 245, 0.34) 0 1px,
+    var(--hatch) 0 1px,
     transparent 1px 3.4px
   );
 }
@@ -92,7 +92,7 @@
   top: 1px;
   height: 30px;
   border-radius: 4px;
-  box-shadow: inset 0 0 0 1px rgba(245, 245, 245, 0.38);
-  background: rgba(245, 245, 245, 0.05);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 38%, transparent);
+  background: var(--hover);
   pointer-events: none;
 }

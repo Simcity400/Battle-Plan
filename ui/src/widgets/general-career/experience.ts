@@ -1,3 +1,5 @@
+import { formatScalar } from '../../families/valueFormat.ts';
+
 export function experienceText(raw: string, required: string | null): string {
   const points = (text: string) => {
     const value = BigInt(text); const magnitude = value < 0n ? -value : value;
@@ -7,7 +9,7 @@ export function experienceText(raw: string, required: string | null): string {
 }
 
 export function experienceWhole(raw: string, required: string | null): string {
-  const whole = (text: string) => (BigInt(text) / 100000n).toLocaleString('en-US');
+  const whole = (text: string) => formatScalar(BigInt(text) / 100000n, 'integer');
   return required === null ? whole(raw) : `${whole(raw)} / ${whole(required)}`;
 }
 
