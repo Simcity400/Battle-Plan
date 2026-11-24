@@ -274,6 +274,21 @@ test('scoreboard projection matches followed and exact audits with missing, part
     assert.ok(followedAudit.find(r => r.key === 'FRA:casualties')?.value?.includes(canonicalAuditValue(zeroValue(0))), 'known zero renders zero state');
     assert.ok(followedAudit.find(r => r.key === 'ITA:casualties')?.value?.includes(canonicalAuditValue(partialValue(500n, 'Some inputs were not recorded at this hour'))));
   }
+
+  const hourly = { shown: columns, candidates: ['GER', 'FRA', 'ITA', 'ENG'], top: null, rankMarkers: false, looks };
+  const at = (hour: number, gerFactories: bigint) => scoreboardProjection.project(createBoundedReadView({
+    hour,
+    answers: new Map([
+      ['factories', answer({ keys: [1n, 2n, 3n, 4n], columns: 1, names: ['ITA', 'FRA', 'GER', 'ENG'], values: [10n, 10n, gerFactories, 0n], states: [CELL.value, CELL.value, CELL.value, CELL.missing], reasons: [null, null, null, 'Factories not recorded'] })],
+      ['casualties', answer({ keys: [1n, 2n, 3n, 4n], columns: 1, names: ['ITA', 'FRA', 'GER', 'ENG'], values: [500n, 0n, 200n, 0n], states: [CELL.value, CELL.value, CELL.value, CELL.value] })],
+      ['casualties:partial', answer({ keys: [1n, 2n, 3n, 4n], columns: 1, names: ['ITA', 'FRA', 'GER', 'ENG'], values: [1n, 0n, 0n, 0n], states: [CELL.value, CELL.value, CELL.value, CELL.value] })],
+    ]),
+  }), hourly);
+  const first = at(40, 0n);
+  const quiet = at(41, 0n);
+  assert.deepEqual(quiet.rows.map((row, index) => row === first.rows[index]), [true, true, true, true], 'a quiet hour\'s fresh answers rebuild no row');
+  const moved = at(42, 7n);
+  assert.deepEqual(moved.rows.map(row => row === quiet.rows.find(held => held.key === row.key)), moved.rows.map(row => row.key !== 'GER'), 'only the row whose answer changed is rebuilt');
 });
 
 test('apm-table projection matches followed wire answers and exact replies, including partial gaps and notApplicable zero minutes', () => {

@@ -49,6 +49,7 @@ function wire(key: string, ordinal: number, raw: string | null, extra: Partial<W
   return {
     key,
     name: key,
+    nameMissing: null,
     ordinal,
     other: false,
     raw,
@@ -413,4 +414,13 @@ test('the art asked for is the flags the laid-out rows draw, found once per layo
   } finally {
     recording.restore();
   }
+});
+
+test('a name the recording does not hold is the key with its reason, never passed off as a name', () => {
+  const unnamed: Breakdown = { decimals: 0, unrecordedHours: 0, total: { raw: '5', state: 'known', reason: null },
+    parts: [wire('group_a_cat', 0, '5', { share: 1, parentShare: 1, nameMissing: 'the recorded localisation holds no name for group_a_cat' })] };
+  const read = model(unnamed);
+  assert.equal(read.parts[0]!.name, 'group_a_cat');
+  assert.equal(read.parts[0]!.nameMissing, 'The recorded localisation holds no name for group_a_cat');
+  assert.ok(JSON.stringify(buildBreakdownTooltip(read, breakdownLevel(read), 'group_a_cat', THEME)).includes('The recorded localisation holds no name'));
 });
