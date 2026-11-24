@@ -315,8 +315,17 @@ test('restoration drops non-string tag entries and counts notes across layouts',
 
 test('an uninstalled widget retains faction selections beyond thirty without a private default limit', () => {
   const template = defaultTemplate(); template.widgets[0].kind = 'uninstalled-faction-widget';
-  template.widgets[0].countries = { kind: 'factions', count: 5000, membership: 'end' };
+  template.widgets[0].countries = { kind: 'factions', count: 5000, membership: 'hour' };
   assert.deepEqual(parseTemplate(template)?.widgets[0].countries, template.widgets[0].countries);
+});
+
+test('members at the end of the recording are not a stored choice any more', () => {
+  for (const countries of [{ kind: 'factions', count: 5, membership: 'end' }, { kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }]) {
+    const template = defaultTemplate();
+    (template.widgets[0] as { countries: unknown }).countries = countries;
+    const parsed = parseTemplate(template);
+    assert.ok(!parsed?.widgets.some(widget => 'membership' in widget.countries && (widget.countries.membership as string) === 'end'), JSON.stringify(countries));
+  }
 });
 
 test('stored faction-total counts survive an installed widget choice maximum', () => {

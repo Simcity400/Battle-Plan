@@ -1,11 +1,12 @@
 import { CHART_MEASURE_COLOURS, readableColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
+import { groupSelection } from '../../families/groupSelection.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
 import { labelsAtReadings, resolveEntityFromReadView, sequentialRampColour } from '../../families/heat/scale.ts';
 import { formatRecordedPercent, formatScalar } from '../../families/valueFormat.ts';
-import type { IntelCoverageBasis, IntelCoverageCell, IntelCoverageMeasure, IntelCoverageReply } from '../../generated/dashboard';
+import type { IntelCoverageBasis, IntelCoverageMeasure, IntelCoverageReply, IntelPair } from '../../generated/dashboard';
 import { surfaceMix } from '../../shell/appearance/color.ts';
 
 export const INTEL_TOP_DEFAULT = 12;
@@ -29,10 +30,6 @@ function emptyModel(hour: number, extra: Partial<HeatMatrixModel>): HeatMatrixMo
   return { hour, rows: [], columns: [], cells: NO_CELLS, ...extra };
 }
 
-function presentCell(cell: IntelCoverageCell | undefined): Extract<IntelCoverageCell, { kind: 'present' }> | null {
-  return cell && cell.kind === 'present' ? cell : null;
-}
-
 export function projectIntelCoverage(readView: BoundedReadView, options: IntelCoverageProjectionOptions): HeatMatrixModel {
   const hour: number = readView.hour;
   const refused = readView.refused('coverage');
@@ -40,6 +37,7 @@ export function projectIntelCoverage(readView: BoundedReadView, options: IntelCo
   const reply = readView.panel<IntelCoverageReply>('coverage');
   if (!reply || !options.surface) return emptyModel(hour, {});
   if (reply.missing) return emptyModel(hour, { empty: 'Intel networks were not recorded at this date.', emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings });
+  if (reply.chosenMissing) return emptyModel(hour, { empty: 'The countries to show are not known at this date.', emptyDetail: reply.chosenMissing, emptyKind: 'unavailable', warnings: reply.warnings });
   const displayed = reply.displayed;
   if (displayed.length < 2) {
     return emptyModel(hour, { empty: displayed.length === 1 ? 'No intel networks of or in this country at this date.' : 'Fewer than two countries are shown at this date.', warnings: reply.warnings });
@@ -66,44 +64,40 @@ export function projectIntelCoverage(readView: BoundedReadView, options: IntelCo
     };
   });
   const n = displayed.length;
-  const cells = reply.cells;
   const highest = Math.max(1, Number(reply.maxValue));
-  const hasMissing = cells.some(cell => cell.kind === 'missing');
   const present = new Map<number, MatrixCell>();
-  cells.forEach((raw, at) => {
-    if (raw.kind === 'diagonal' || raw.kind === 'noNetwork' || Math.floor(at / n) === at % n) return;
-    present.set(at, raw.kind === 'missing'
-      ? { kind: 'missing', reason: raw.reason }
-      : { kind: 'value', color: sequentialRampColour(Number(raw.value), highest, grey, accent), text: coverageText(raw.value, reply.scale, options.measure), value: raw.value });
-  });
+  const networks = new Map<number, IntelPair>();
+  for (const pair of reply.pairs) {
+    const at = pair.row * n + pair.column;
+    networks.set(at, pair);
+    present.set(at, { kind: 'value', color: sequentialRampColour(Number(pair.value), highest, grey, accent), text: coverageText(pair.value, reply.scale, options.measure), value: pair.value });
+  }
+  const unlisted = reply.unlisted;
   return {
     hour,
     rows: entities,
     columns: entities,
-    cells: { present, absent: { kind: 'empty', label: 'No network', selectable: false } },
+    cells: { present, absent: unlisted ? { kind: 'missing', reason: unlisted } : { kind: 'empty', label: 'No network', selectable: false } },
     legend: {
       gradient: { lowLabel: '0', highLabel: coverageText(reply.maxValue, reply.scale, options.measure), stops: [grey, accent] },
-      entries: [
-        { id: 'empty', label: 'No network', color: grey },
-        ...(hasMissing ? [{ id: 'missing', label: 'Not recorded', color: grey, hatched: true }] : []),
-      ],
+      entries: unlisted ? [{ id: 'missing', label: 'Not recorded', color: grey, hatched: true }] : [{ id: 'empty', label: 'No network', color: grey }],
     },
     tooltip: (_row, _column, item, rowIndex, columnIndex) => {
       if (item.kind === 'diagonal') return null;
       const title = `${labelAt(rowIndex, readHour)}’s network in ${labelAt(columnIndex, readHour)}`;
       if (item.kind === 'missing') return { title, hour: readHour, missingReason: item.reason };
       if (item.kind === 'empty') return { title, hour: readHour, items: [{ label: 'No intel network' }] };
-      const raw = presentCell(cells[rowIndex * n + columnIndex]);
+      const raw = networks.get(rowIndex * n + columnIndex);
       return {
         title,
         hour: readHour,
         items: raw
           ? [
-              { label: 'Controlled states covered', value: String(raw.covered_controlled) },
-              { label: 'Core states covered', value: String(raw.covered_core) },
-              { label: 'Strength in controlled states', value: strengthText(raw.controlled_strength) },
-              { label: 'Strength in core states', value: strengthText(raw.core_strength) },
-              { label: 'Strongest state', value: strengthText(raw.max_strength) },
+              { label: 'Controlled states covered', value: String(raw.coveredControlled) },
+              { label: 'Core states covered', value: String(raw.coveredCore) },
+              { label: 'Strength in controlled states', value: strengthText(raw.controlledStrength) },
+              { label: 'Strength in core states', value: strengthText(raw.coreStrength) },
+              { label: 'Strongest state', value: strengthText(raw.maxStrength) },
             ]
           : [],
       };
@@ -133,11 +127,12 @@ export const intelCoverageDeclaration: HeatMatrixWidgetDeclaration<IntelCoverage
     const measure = measureOf(ctx.options.measure);
     const basis = basisOf(ctx.options.basis);
     const shown = typeof ctx.options.mostCountries === 'number' ? Math.max(2, ctx.options.mostCountries) : INTEL_TOP_DEFAULT;
-    const tags = ctx.countries.all || ctx.countries.top !== null ? [] : ctx.countries.tags;
-    const top = tags.length ? undefined : ctx.countries.top ?? shown;
+    const group = ctx.countries.all || ctx.countries.top !== null ? null : groupSelection(ctx.widget.countries);
+    const tags = group || ctx.countries.all || ctx.countries.top !== null ? [] : ctx.countries.tags;
+    const top = tags.length || group ? undefined : ctx.countries.top ?? shown;
     const params = {
       branchId: ctx.branch.id,
-      ...(tags.length ? { countries: tags.map(countryFromKey) } : {}),
+      ...(group ? { group } : tags.length ? { countries: tags.map(countryFromKey) } : {}),
       ...(top !== undefined ? { top } : {}),
       touching: tags.length === 1,
       measure,
@@ -153,7 +148,7 @@ export const intelCoverageDeclaration: HeatMatrixWidgetDeclaration<IntelCoverage
         read: {
           shape: 'point',
           channel: 'followed',
-          coverage: tags.length ? { mode: 'keyed', keys: tags } : { mode: 'population', form: 'top', limit: top ?? shown },
+          coverage: group ? { mode: 'population', form: 'all' } : tags.length ? { mode: 'keyed', keys: tags } : { mode: 'population', form: 'top', limit: top ?? shown },
           product: 'intel-network-coverage',
           followQuery: null,
           params,

@@ -1,7 +1,6 @@
 import { canvasMeasureText, type MeasureText } from '../../charts/textWidth.ts';
-import type { LaneView } from '../../draw/lane.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
-import { createLaneView, type LaneFamily, type LaneFrame, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneFamily, LaneFrame } from '../laneRuntime.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import type { TimeChartBinding } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart, parseChartInspect } from './hitTest.ts';
@@ -46,6 +45,8 @@ export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): r
   return stops.map((stop, index) => [stop.key, stop.name, index, 0, ''] as const);
 }
 
+export const LOG_REFUSED = 'Log scale needs every value shown above zero, so the value axis is linear.';
+
 const hovered = new WeakMap<ChartLayout, { readonly inspect: string; readonly layout: TimeChartLayout }>();
 
 function shownLayout(layout: ChartLayout, inspect: string | null): TimeChartLayout | null {
@@ -63,7 +64,7 @@ function shownLayout(layout: ChartLayout, inspect: string | null): TimeChartLayo
 
 const shownOf = (frame: ChartFrame) => shownLayout(frame.layout, frame.inspect);
 
-const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> = {
+export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> = {
   family: 'time-chart',
   boundary: (_model, hour) => hour + 1,
   redraw: () => Infinity,
@@ -113,7 +114,7 @@ const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> =
         emptyDetail: null,
         emptyKind: 'empty',
         ...(model.subject ? { subject: model.subject } : {}),
-        notes: model.note ? [model.note] : [],
+        notes: [...(model.note ? [model.note] : []), ...(base.logRefused ? [LOG_REFUSED] : [])],
         warnings: model.warnings ?? [],
         transform: {
           xFrom: base.xDomain[0],
@@ -122,18 +123,14 @@ const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> =
           axisTo: model.hour,
           yMin: base.yDomain[0],
           yMax: base.yDomain[1],
-          log: model.yAxis.log === true,
+          log: base.logShown,
         },
         plotRect: { left: base.left, top: base.top, width: base.plotWidth, height: base.plotHeight },
       },
       nav: chartNavStops(model, base),
     };
   },
-  mirror: () => null,
+  mirror: null,
   audit: frame => frame.layout.model.auditRows ?? [],
   visibleArt: frame => (frame.layout.base ? collectVisibleChartArt(frame.layout.model, frame.layout.base) : []),
 };
-
-export function timeChartLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(timeChartLane, wake, options);
-}

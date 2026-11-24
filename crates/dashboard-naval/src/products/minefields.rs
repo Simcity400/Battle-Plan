@@ -1,5 +1,5 @@
 
-use dashboard_base::products::Country;
+use dashboard_base::products::{Country, regions::{ActiveRegions, NoRegions}};
 use dashboard_base::{products::{LoadContext, at_hour::{At, AtHour}}, queries::country_ids::Names};
 use dashboard_world::products::{place_names, sea_regions::{self, SeaContent}};
 use dashboard_base::{Source, catalogue::Refusals};
@@ -20,6 +20,8 @@ mod tests;
 
 const SCALE: i32 = 100_000;
 const UNREAD: &str = "Some countries' minefields were not read at this hour";
+const BEYOND: &str = "Some countries' minefields were not recorded in every sea region at this hour";
+const NO_SEA: &str = "Sea regions were not read from the game files, so regions past a country's recorded minefields are not known";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -55,6 +57,15 @@ struct Fold {
     unknown: Vec<UnknownRegion>,
     cells: Vec<(u32, String, u128)>,
     proven: BTreeSet<u32>,
+    unnamed: u32,
+    extents: Vec<Option<u32>>,
+    hidden: Vec<u32>,
+}
+
+impl Fold {
+    fn unlisted_unknown(&self, region: u32) -> u32 {
+        self.unnamed + self.extents.iter().filter(|extent| extent.is_none_or(|extent| extent <= region)).count() as u32
+    }
 }
 
 struct Vector<'a> {
@@ -112,7 +123,8 @@ fn fold<'a>(rows: &[NavalRegionalMineRow], name: impl Fn(u32) -> Option<&'a str>
         .filter(|region| !mined.iter().any(|mined| mined.region == *region))
         .filter_map(|region| Some(UnknownRegion { region, unknown_owners: Some(unknown_at(region)).filter(|&count| count > 0 || lost)? }))
         .collect();
-    Fold { mined, unknown, cells, proven }
+    let extents = shown.iter().map(|(_, vector)| vector.extent).collect();
+    Fold { mined, unknown, cells, proven, unnamed, extents, hidden: Vec::new() }
 }
 
 fn register_live(fold: &Fold, live: &dashboard_follow::live::Cells) -> io::Result<()> {
@@ -168,6 +180,9 @@ pub struct MinefieldsParams {
 pub struct MinefieldsReply {
     pub regions: Vec<MinedRegion>,
     pub unknown: Vec<UnknownRegion>,
+    #[doc = " Why no region is listed; set only when `regions` is empty."]
+    pub empty: Option<NoRegions>,
+    pub active_unlisted: ActiveRegions,
     pub scale: i32,
     pub warnings: Vec<String>,
 }
@@ -202,25 +217,38 @@ fn choose(fold: &mut Fold, pinned: &[u32], hidden: &[u32], lost: bool) -> HashMa
         rank.entry(id).or_insert(next);
     }
     let hidden: BTreeSet<u32> = hidden.iter().copied().filter(|id| !rank.contains_key(id)).collect();
+    fold.hidden = fold.mined.iter().map(|region| region.region).filter(|region| hidden.contains(region)).collect();
     fold.mined.retain(|region| !hidden.contains(&region.region));
     fold.cells.retain(|(region, ..)| !hidden.contains(region));
     fold.unknown.retain(|region| !hidden.contains(&region.region));
     for region in &mut fold.mined {
         region.pinned = rank.contains_key(&region.region);
     }
-    for unknown in &fold.unknown {
-        if rank.contains_key(&unknown.region) && !fold.mined.iter().any(|region| region.region == unknown.region) {
-            fold.mined.push(MinedRegion { region: unknown.region, owners: Vec::new(), unknown_owners: unknown.unknown_owners, pinned: true, missing: lost.then(|| UNREAD.to_owned()) });
-        }
-    }
     fold.unknown.retain(|region| !rank.contains_key(&region.region));
     for &id in pinned {
         if !fold.mined.iter().any(|region| region.region == id) {
             let missing = lost.then(|| UNREAD.to_owned());
-            fold.mined.push(MinedRegion { region: id, owners: Vec::new(), unknown_owners: 0, pinned: true, missing });
+            let unknown_owners = fold.unlisted_unknown(id);
+            fold.mined.push(MinedRegion { region: id, owners: Vec::new(), unknown_owners, pinned: true, missing });
         }
     }
     rank
+}
+
+fn no_regions(fold: &Fold, lost: bool, sea_known: bool) -> Option<NoRegions> {
+    if !fold.mined.is_empty() {
+        return None;
+    }
+    if lost {
+        return Some(NoRegions::Unread { reason: UNREAD.into() });
+    }
+    if !fold.unknown.is_empty() {
+        return Some(NoRegions::Unread { reason: BEYOND.into() });
+    }
+    if !sea_known && (fold.unnamed > 0 || !fold.extents.is_empty()) {
+        return Some(NoRegions::Unread { reason: NO_SEA.into() });
+    }
+    Some(if fold.hidden.is_empty() { NoRegions::None } else { NoRegions::Filtered { hidden: fold.hidden.len() as u32, outside: 0 } })
 }
 
 impl AtHour for Minefields {
@@ -242,7 +270,7 @@ impl AtHour for Minefields {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![MinefieldOrder::decl(), MinefieldsParams::decl(), MineOwner::decl(), MinedRegion::decl(), UnknownRegion::decl(), MinefieldsReply::decl()]
+        vec![MinefieldOrder::decl(), MinefieldsParams::decl(), MineOwner::decl(), MinedRegion::decl(), UnknownRegion::decl(), NoRegions::decl(), ActiveRegions::decl(), MinefieldsReply::decl()]
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -263,13 +291,14 @@ impl AtHour for Minefields {
         let links = links(frame);
         let names = Names::new(at.holders);
         let wanted: Option<BTreeSet<&str>> = params.countries.as_ref().map(|countries| countries.iter().filter_map(|country| at.holders.tag_at(country, frame.hour)).collect());
+        let sea_known = at.context.sea.sea.is_ok();
         let sea = at.context.sea.sea.clone().unwrap_or_default();
         let mut fold = fold(rows, |raw| tag_of(&links, &names, raw, frame.hour), |tag| wanted.as_ref().is_none_or(|wanted| wanted.contains(tag)), lost, &sea);
         let pinned = choose(&mut fold, params.pinned_regions.as_deref().unwrap_or_default(), params.hidden_regions.as_deref().unwrap_or_default(), lost);
         register_live(&fold, at.live)?;
         let mut notes = Refusals::default();
-        let choices = sea_regions::choices(&at.context.places, &at.context.sea, fold.mined.iter().map(|region| region.region), &mut notes);
         if params.order == Some(MinefieldOrder::Name) {
+            let choices = sea_regions::choices(&at.context.places, &at.context.sea, fold.mined.iter().map(|region| region.region), &mut notes);
             let names_by_id: HashMap<u32, &str> = choices.iter().filter_map(|choice| Some((choice.id.parse::<u32>().ok()?, choice.name.as_str()))).collect();
             fold.mined.sort_by(|a, b| {
                 let an = names_by_id.get(&a.region).copied().unwrap_or("Region name unavailable");
@@ -284,7 +313,9 @@ impl AtHour for Minefields {
         if lost {
             warnings.push(UNREAD.into());
         }
-        let reply = MinefieldsReply { regions: fold.mined, unknown: fold.unknown, scale: SCALE, warnings };
+        let empty = no_regions(&fold, lost, sea_known);
+        let active_unlisted = ActiveRegions { ids: std::mem::take(&mut fold.hidden), missing: lost.then(|| UNREAD.to_owned()) };
+        let reply = MinefieldsReply { regions: fold.mined, unknown: fold.unknown, empty, active_unlisted, scale: SCALE, warnings };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }

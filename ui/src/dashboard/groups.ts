@@ -28,12 +28,11 @@ export function groupUnobserved(reply: CountryGroupReply, group: CountryGroup): 
   }
 }
 
-export function groupMembers(runs: readonly MembershipRun[], membership: GroupMembership, hour: number, lastHour: number,
+export function groupMembers(runs: readonly MembershipRun[], membership: GroupMembership, hour: number,
   max = Infinity, unobserved: readonly HourSpan[] = []): string[] | null {
-  const at = membership === 'hour' ? hour : lastHour;
-  if (membership !== 'ever' && unobserved.some(span => span.firstHour <= at && at <= span.lastHour)) return null;
+  if (membership === 'hour' && unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour)) return null;
   const ordered = [...runs].sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag));
-  const tags = ordered.filter(run => membership === 'ever' || (run.firstHour <= at && at <= run.lastHour)).map(run => run.tag);
+  const tags = ordered.filter(run => membership === 'ever' || (run.firstHour <= hour && hour <= run.lastHour)).map(run => run.tag);
   if (membership === 'ever' && !tags.length && unobserved.length) return null;
   return [...new Set(tags)].slice(0, max);
 }
@@ -75,7 +74,6 @@ export function isMember(membership: readonly HourSpan[] | undefined, hour: numb
 function unrecorded(membership: GroupMembership): string {
   switch (membership) {
     case 'hour': return 'Group membership is unavailable at this time.';
-    case 'end': return 'Group membership is unavailable at this time.';
     case 'ever': return 'Group membership is incomplete for this campaign.';
   }
 }
@@ -99,9 +97,9 @@ function identitiesFor(groups: CountryGroupReply | undefined, index: CountryIden
 }
 
 function readWorldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
-  hour: number, lastHour: number, index?: CountryIdentityIndex | null): WorldFilter {
+  hour: number, index?: CountryIdentityIndex | null): WorldFilter {
   const identities = identitiesFor(groups, index);
-  const filter = settledWorldFilter(selection, fallback, groups, hour, lastHour, identities);
+  const filter = settledWorldFilter(selection, fallback, groups, hour, identities);
   if (selection.kind === 'all' || filter.reason === CHOOSE) return { ...filter, known: true };
   const known = !!identities && choiceLoaded(selection, groups);
   return known ? { ...filter, known } : { ...filter, reason: null, known };
@@ -137,12 +135,12 @@ export function selectionChangeHours(selection: CountrySelection, fallback: read
 }
 
 export function worldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
-  hour: number, lastHour: number, index?: CountryIdentityIndex | null): WorldFilter {
-  return worldFilterQuery(selection, fallback, groups, lastHour, index).at(hour);
+  hour: number, index?: CountryIdentityIndex | null): WorldFilter {
+  return worldFilterQuery(selection, fallback, groups, index).at(hour);
 }
 
 export function worldFilterQuery(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
-  lastHour: number, index?: CountryIdentityIndex | null): PlaybackIntervals<WorldFilter> {
+  index?: CountryIdentityIndex | null): PlaybackIntervals<WorldFilter> {
   const identities = identitiesFor(groups, index);
   let queries: FilterQueries;
   if (groups) {
@@ -154,7 +152,7 @@ export function worldFilterQuery(selection: CountrySelection, fallback: readonly
     queries = identityFilters.get(identities) ?? new Map();
     identityFilters.set(identities, queries);
   } else queries = unrecordedFilters;
-  const key = JSON.stringify([selection, fallback, lastHour]);
+  const key = JSON.stringify([selection, fallback]);
   let intervals = queries.get(key);
   if (!intervals) {
     const sets = new Map<string, ReadonlySet<string>>();
@@ -166,7 +164,7 @@ export function worldFilterQuery(selection: CountrySelection, fallback: readonly
       sets.set(key, set); return set;
     };
     intervals = new PlaybackIntervals<WorldFilter>([...(groups ? worldFilterHours(groups) : []), ...identities?.changeHours ?? []], at => {
-      const filter = readWorldFilter(selection, fallback, groups, at, lastHour, identities);
+      const filter = readWorldFilter(selection, fallback, groups, at, identities);
       return { ...filter, tags: intern(filter.tags) ?? null, ...(filter.countryIds === undefined ? {} : { countryIds: intern(filter.countryIds) }) };
     });
     queries.set(key, intervals);
@@ -175,7 +173,7 @@ export function worldFilterQuery(selection: CountrySelection, fallback: readonly
 }
 
 function settledWorldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
-  hour: number, lastHour: number, identities: CountryIdentityIndex | null): Omit<WorldFilter, 'known'> {
+  hour: number, identities: CountryIdentityIndex | null): Omit<WorldFilter, 'known'> {
   if (selection.kind === 'all') return { tags: null, reason: null };
   const empty = (reason: string | null) => ({ tags: new Set<string>(), countryIds: new Set<string>(), reason });
   if (selection.kind !== 'group') {
@@ -189,14 +187,13 @@ function settledWorldFilter(selection: CountrySelection, fallback: readonly stri
   if (!groups || !identities) return empty(null);
   const runs = groupRuns(groups, selection.group);
   if (!runs) return empty(UNAVAILABLE);
-  const members = groupMembers(runs, selection.membership, hour, lastHour, Infinity, groupUnobserved(groups, selection.group));
+  const members = groupMembers(runs, selection.membership, hour, Infinity, groupUnobserved(groups, selection.group));
   if (!members) return empty(unrecorded(selection.membership));
-  const at = selection.membership === 'hour' ? hour : lastHour;
   const countryIds = selection.membership === 'ever' ? identities.keysDuring(runs)
-    : identities.keysDuring(members.map(tag => ({ tag, firstHour: at, lastHour: at })));
+    : identities.keysDuring(members.map(tag => ({ tag, firstHour: hour, lastHour: hour })));
   return { tags: new Set(identities.aliasesAt(countryIds, hour)), countryIds, reason: members.length
     ? countryIds.size ? null : 'Group members are unavailable at this time.'
-    : selection.membership === 'ever' ? NO_MEMBERS.ever : selection.membership === 'end' ? NO_MEMBERS.end : NO_MEMBERS.hour };
+    : selection.membership === 'ever' ? NO_MEMBERS.ever : NO_MEMBERS.hour };
 }
 
 export interface CountryMatch { ready: boolean; matches: (tag: string, hour: number) => boolean; known: MembershipKnown; reason: string | null }
@@ -237,7 +234,7 @@ function readCountryMatch(selection: CountrySelection, fallback: readonly string
     return { ready: true, matches: (tag, hour) => identities.keyAt(tag, hour) !== null && !hidden(hour)
       && (byTag.get(tag) ?? []).some(run => run.firstHour <= hour && hour <= run.lastHour), known: ALWAYS, reason: null };
   }
-  const { countryIds, reason } = worldFilter(selection, fallback, groups, lastHour, lastHour, identities);
+  const { countryIds, reason } = worldFilter(selection, fallback, groups, lastHour, identities);
   return { ready: true, matches: (tag, hour) => {
     const key = identities.keyAt(tag, hour);
     return key !== null && countryIds?.has(key) === true;
@@ -277,8 +274,8 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
   const runs = groupRuns(groups, selection.group);
   if (!runs) return { ...none, reason: UNAVAILABLE, known };
   const unobserved = groupUnobserved(groups, selection.group);
-  const members = groupMembers(runs, selection.membership === 'end' ? 'end' : 'ever', lastHour, lastHour, Infinity, unobserved);
-  if (!members) return { ...none, unobserved, reason: unrecorded(selection.membership === 'end' ? 'end' : 'ever'), known };
+  const members = groupMembers(runs, 'ever', lastHour, Infinity, unobserved);
+  if (!members) return { ...none, unobserved, reason: unrecorded('ever'), known };
   const tags = members.slice(0, max);
   const membership = selection.membership === 'hour' ? new Map(tags.map(tag => [tag, [] as MembershipRun[]])) : null;
   if (membership) for (const run of runs) membership.get(run.tag)?.push(run);
@@ -287,9 +284,9 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
 }
 
 export function noMembersAt(selection: CountrySelection, resolved: ResolvedCountries, groups: CountryGroupReply | undefined,
-  hour: number, lastHour: number): { reason: string } | null {
+  hour: number): { reason: string } | null {
   if (selection.kind !== 'group' || resolved.top != null || resolved.factionId != null || resolved.tags.length || resolved.reason || !groups) return null;
-  const { reason } = worldFilter(selection, [], groups, hour, lastHour);
+  const { reason } = worldFilter(selection, [], groups, hour);
   return reason === null ? null : { reason };
 }
 
@@ -316,7 +313,7 @@ export function worldRequestTags(selection: CountrySelection, fallback: string[]
   if (!identities || selection.kind === 'group' && !groups) return { tags: [], ready: false, reason: null };
   const resolved = resolveCountries(selection, fallback, groups, lastHour, Number.MAX_SAFE_INTEGER);
   const counted = selection.kind === 'group' && selection.membership === 'hour' ? { ...selection, membership: 'ever' as const } : selection;
-  const reason = resolved.reason ?? worldFilter(counted, fallback, groups, lastHour, lastHour, identities).reason;
+  const reason = resolved.reason ?? worldFilter(counted, fallback, groups, lastHour, identities).reason;
   return { tags: resolved.tags, ready: reason === null && resolved.tags.length > 0, reason };
 }
 
@@ -331,6 +328,6 @@ export function countryMatchFilter(selection: CountrySelection, fallback: readon
     return { tags: null, membership: groups ? identities.membershipRuns(groupRuns(groups, selection.group) ?? [], firstHour, lastHour) : [],
       unobserved: groups ? groupUnobserved(groups, selection.group) : [] };
   }
-  const { countryIds } = worldFilter(selection, fallback, groups, lastHour, lastHour, identities);
+  const { countryIds } = worldFilter(selection, fallback, groups, lastHour, identities);
   return { tags: null, membership: identities.aliasRuns(countryIds ?? new Set(), firstHour, lastHour), unobserved: [] };
 }

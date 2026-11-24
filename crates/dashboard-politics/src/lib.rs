@@ -6,5 +6,5 @@ pub mod products;
 pub mod registrations;
 
 pub fn forget(source: &dashboard_base::Source) {
-    products::feed::scope::forget(source);
+    products::feed::index::forget(source);
 }

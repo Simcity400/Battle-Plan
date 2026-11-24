@@ -1,6 +1,5 @@
 import { breakdownDeclaration, type BreakdownWidgetSpec } from '../../families/breakdown/declaration.ts';
 import { breakdownHostAdapter } from '../../families/breakdown/hostAdapter.ts';
-import { familyBreakdownLaneView } from '../../families/breakdown/laneView.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '../../families/manifest.ts';
 
 function breakdownView(kind: string, load: () => Promise<BreakdownWidgetSpec<any>>): FamilyViewEntry {
@@ -26,7 +25,7 @@ export const BREAKDOWN_FAMILY_VIEWS: readonly FamilyViewEntry[] = [
 
 export const breakdownFamilyManifest: FamilyManifestModule = {
   family: 'breakdown',
-  laneView: familyBreakdownLaneView,
+  lane: () => import('../../families/breakdown/laneView.ts').then(m => m.breakdownLane),
   views: BREAKDOWN_FAMILY_VIEWS,
   hostAdapter: breakdownHostAdapter,
 };

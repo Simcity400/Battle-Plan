@@ -1,43 +1,38 @@
 import { useCallback, useMemo } from 'react';
 import { dayLabel } from '../../charts/draw';
 import { CountryFlag } from '../../components/CountryFlag';
-import type { WidgetCountryChipProps, WidgetProps, WidgetRenderer, WidgetSubjectMenuProps } from '../../dashboard/definitions';
+import type { FamilyViewCountryChipProps, FamilyViewProps, FamilyViewRenderer, FamilyViewSubjectMenuProps, ResolvedViewOptions } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
-import { scopedOptionKey, setToken } from '../../dashboard/options';
-import type { WidgetSpec } from '../../dashboard/model';
-import { resolveWidgetActiveView } from '../manifest';
+import { setToken } from '../../dashboard/options';
 import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry';
 import { useIdentity, useIdentityScope } from '../../families/identity/react.ts';
 import { countryTagKey } from '../../families/identity/types.ts';
 import { useHeadHour } from '../army-size/headHour';
 import { labelObservationAt } from '../wars/warsData';
-import { MEASURE_VIEW, warContributionMeasureDeclaration } from './measureProjection.ts';
-import { warContributionSidesDeclaration } from './sidesProjection.ts';
+import { MEASURE_VIEW } from './measureProjection.ts';
 import { chosenWar } from './warContributionData.ts';
 import { savedWar } from './warContributionPlan.ts';
 
-const warKey = (widget: WidgetSpec) => scopedOptionKey('war', resolveWidgetActiveView(widget.kind, widget.options));
-const storedWar = (widget: WidgetSpec) => savedWar({ war: widget.options?.[warKey(widget)] });
+const storedWar = (options: ResolvedViewOptions) => savedWar({ war: options.war });
 import { useWarChoices, useWars } from './useWarChoices';
 import './warContribution.css';
 
-function WarContributionView(props: WidgetProps) {
-  const { setOption } = props;
+function WarContributionView(props: FamilyViewProps) {
+  const { setOption, manifestDeclaration } = props;
   const onActivate = useCallback((action: InstalledAction) => {
     const pick = (action.meta as { readonly pick?: string } | undefined)?.pick;
     if (pick) setOption?.('measure', pick);
   }, [setOption]);
-  return props.view === MEASURE_VIEW
-    ? <FamilyWidget {...props} family="bars" view={MEASURE_VIEW} declaration={warContributionMeasureDeclaration} onActivate={onActivate} />
-    : <FamilyWidget {...props} family="table" view="sides" declaration={warContributionSidesDeclaration} />;
+  if (!manifestDeclaration) return null;
+  return <FamilyWidget {...props} family={manifestDeclaration.family} declaration={manifestDeclaration} {...(props.view === MEASURE_VIEW ? { onActivate } : {})} />;
 }
 
-function useChosenWar(props: Pick<WidgetProps, 'widget' | 'runtime' | 'active'>) {
-  const { widget, runtime, active } = props;
+function useChosenWar(props: Pick<FamilyViewProps, 'widget' | 'runtime' | 'active' | 'options'>) {
+  const { widget, runtime, active, options } = props;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const wars = useWars(widget, runtime, active);
-  const saved = storedWar(widget);
+  const saved = storedWar(options);
   const shownHour = useCallback((clockHour: number) => (track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null), [track, widget, runtime.tracks]);
   const hour = useHeadHour(runtime.clock, active && widget.time.mode === 'follow', clockHour => {
     const at = shownHour(clockHour);
@@ -49,7 +44,7 @@ function useChosenWar(props: Pick<WidgetProps, 'widget' | 'runtime' | 'active'>)
   return { track, war, observation, at };
 }
 
-function useLeader(props: Pick<WidgetProps, 'runtime' | 'active'>, track: ReturnType<typeof useChosenWar>['track'], tag: string | undefined, hour: number | null) {
+function useLeader(props: Pick<FamilyViewProps, 'runtime' | 'active'>, track: ReturnType<typeof useChosenWar>['track'], tag: string | undefined, hour: number | null) {
   const scope = useIdentityScope(props.runtime.client, track?.source, track?.branch.id ?? null, props.active && !!tag);
   const key = useMemo(() => (tag ? countryTagKey(tag) : null), [tag]);
   const { result, flag, flagArt } = useIdentity(props.runtime.client, track?.source, scope, key, hour, { active: props.active && !!tag, needFlag: true, flagSize: 'small' });
@@ -57,7 +52,7 @@ function useLeader(props: Pick<WidgetProps, 'runtime' | 'active'>, track: Return
   return { name, flag, pending: flagArt.status === 'pending' };
 }
 
-function WarChip(props: WidgetCountryChipProps) {
+function WarChip(props: FamilyViewCountryChipProps) {
   const { track, observation, at } = useChosenWar(props);
   const shown = observation && at !== null ? Math.min(at, observation.lastHour) : null;
   const first = useLeader(props, track, observation?.viewpointSide[0], shown);
@@ -72,13 +67,10 @@ function WarChip(props: WidgetCountryChipProps) {
   </span>;
 }
 
-function WarMenu({ widget, runtime, onApply }: WidgetSubjectMenuProps) {
+function WarMenu({ widget, runtime, options, setOption }: FamilyViewSubjectMenuProps) {
   const wars = useWars(widget, runtime, true);
-  const saved = storedWar(widget);
-  const choose = (id: string | null) => {
-    const { [warKey(widget)]: _held, ...rest } = widget.options ?? {};
-    onApply({ ...widget, options: id === null ? rest : { ...rest, [warKey(widget)]: setToken(id) } });
-  };
+  const saved = storedWar(options);
+  const choose = (id: string | null) => setOption('war', id === null ? '' : setToken(id));
   return <div className="war-menu" role="group" aria-label="War">
     <div className="war-menu-heading">War</div>
     <button type="button" className={`war-menu-row${saved === null ? ' is-chosen' : ''}`} onClick={() => choose(null)}>The country’s main war at the date</button>
@@ -92,4 +84,4 @@ function WarMenu({ widget, runtime, onApply }: WidgetSubjectMenuProps) {
   </div>;
 }
 
-export default { render: WarContributionView, countryChip: WarChip, subjectMenu: WarMenu, useOptionChoices: useWarChoices } satisfies WidgetRenderer;
+export default { render: WarContributionView, countryChip: WarChip, subjectMenu: WarMenu, useOptionChoices: useWarChoices } satisfies FamilyViewRenderer;

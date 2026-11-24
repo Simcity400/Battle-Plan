@@ -7,13 +7,14 @@ dashboard_base::register_products! {
     OCCUPATION_RESERVE_RESERVEHISTORY => crate::products::occupation_reserve::ReserveHistory,
     FACTION_STATE_HISTORY_FACTIONSTATE => crate::products::faction_state::history::FactionState,
     WARS_WARS => crate::products::wars::Wars,
-    WARS_WARLOSSES => crate::products::wars::WarLosses,
+    WARS_WARTIMELINEAT => crate::products::wars::WarTimelineAt,
     SCOREBOARD_SCOREBOARDCOLUMNS => crate::products::scoreboard::ScoreboardColumns,
     SCOREBOARD_SCOREBOARD => crate::products::scoreboard::Scoreboard,
 }
 
 dashboard_base::register_hourly_products! {
     FACTIONS_FACTIONROSTERS => crate::products::factions::FactionRosters,
+    FACTIONS_FACTIONTOTALSAT => crate::products::factions::FactionTotalsAt,
     DIPLOMACY_DIPLOMATICRELATIONS => crate::products::diplomacy::DiplomaticRelations,
     VOLUNTEERS_VOLUNTEERFLOW => crate::products::volunteers::VolunteerFlow,
     CASUALTY_MATRIX_CASUALTYMATRIX => crate::products::casualty_matrix::CasualtyMatrix,
@@ -35,3 +36,4 @@ type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, St
 
 pub const EXACT_OCCUPATIONRESERVE: ExactPanel = exact_panel::<crate::products::occupation_reserve::OccupationReserve>;
 pub const EXACT_OCCUPIEDSTATES: ExactPanel = exact_panel::<crate::products::occupation::states::OccupiedStates>;
+pub const EXACT_FACTIONTOTALSAT: ExactPanel = exact_panel::<crate::products::factions::FactionTotalsAt>;

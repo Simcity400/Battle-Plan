@@ -1,17 +1,18 @@
 import { CHART_MEASURE_COLOURS, SECONDARY_DASH } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { OptionValue } from '../../dashboard/options';
-import type { AuxProductSpec, BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../contract.ts';
+import { FutureDataError, type AuxProductSpec, type BoundedReadView, type FamilyPlanContext, type SourceEntry, type SourcePlan } from '../contract.ts';
 import type { HolderRun, HourRanges } from '../holders.ts';
-import { formatScalar, formatShare } from '../valueFormat.ts';
+import { formatCompactRational, formatRational, formatRecordedPercent, formatScalar } from '../valueFormat.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { formatChartAxisValue } from './layout.ts';
+import { chartAxis, chartWindow, DEFAULT_LINE_SETTINGS, lineChartSettings, type LineChartSettings } from './settings.ts';
 import type { ChartGap, ChartHoverDetail, ChartLegendEntry, ChartValueFormat, TimeChartSeriesModel } from './model.ts';
+import { seriesLookAt } from './model.ts';
 import {
-  assignCountrySeriesColours,
   branchGapsOf,
-  countrySeriesIdentity,
+  countrySeriesLooks,
   auditReading,
   exactHoverByCountry,
   headReading,
@@ -23,6 +24,7 @@ import {
   rankedPanelKeys,
   withinMapOf,
   type HeadReading,
+  type KnownHeadReading,
 } from './seriesHelpers.ts';
 
 export interface CountryLinesMeasure {
@@ -30,6 +32,13 @@ export interface CountryLinesMeasure {
   readonly measure: string;
   readonly decimals: number;
 }
+
+export interface CountryLinesUnavailable {
+  readonly unavailable: string;
+}
+
+const measureOf = (chosen: CountryLinesMeasure | CountryLinesUnavailable | null): CountryLinesMeasure | null =>
+  chosen && 'measure' in chosen ? chosen : null;
 
 export interface CountryLinesSecond {
   readonly measure: string;
@@ -48,6 +57,7 @@ export interface CountryLinesOptions {
   readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly membership?: Readonly<Record<string, HourRanges>> | null;
   readonly decimals: number;
+  readonly unavailable: string | null;
   readonly digits: number | null;
   readonly endLabels: boolean;
   readonly second: CountryLinesSecond | null;
@@ -55,6 +65,7 @@ export interface CountryLinesOptions {
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
   readonly surface: string;
+  readonly settings?: LineChartSettings;
 }
 
 export interface CountryLinesHover {
@@ -70,14 +81,22 @@ export interface CountryLinesSpec<TAux = unknown> {
   readonly format: Extract<ChartValueFormat, 'compact' | 'number' | 'percent'>;
   readonly step?: boolean;
   readonly aux?: AuxProductSpec<TAux>;
-  readonly measure: (options: Readonly<Record<string, OptionValue>>, aux: TAux | undefined) => CountryLinesMeasure | null;
+  readonly measure: (options: Readonly<Record<string, OptionValue>>, aux: TAux | undefined) => CountryLinesMeasure | CountryLinesUnavailable | null;
   readonly second?: (options: Readonly<Record<string, OptionValue>>) => CountryLinesSecond | null;
   readonly digits?: (options: Readonly<Record<string, OptionValue>>) => number;
-  readonly endLabels?: (options: Readonly<Record<string, OptionValue>>) => boolean;
   readonly hover?: CountryLinesHover;
 }
 
 const TAIL_COLOUR = CHART_MEASURE_COLOURS.tailLine;
+
+function hoverHourOf(readView: BoundedReadView, name: string): number | null {
+  try {
+    return readView.hover(name)?.hour ?? null;
+  } catch (error) {
+    if (error instanceof FutureDataError) return null;
+    throw error;
+  }
+}
 const COLOURED = 8;
 
 function topOf(countries: FamilyPlanContext['countries']): number | null {
@@ -89,10 +108,21 @@ export function formatCountryValue(value: number, format: CountryLinesSpec['form
   if (format === 'compact') return formatChartAxisValue(value, 'compact');
   if (format === 'percent') {
     return digits === null
-      ? formatShare(value / 100)
-      : formatScalar(value, { decimals: digits, maxDecimals: digits, fixedDecimals: true, percent: true });
+      ? formatRecordedPercent(value)
+      : formatScalar(value, { decimals: 0, maxDecimals: digits, fixedDecimals: true, percent: true });
   }
   return formatScalar(value, { decimals: 0, maxDecimals: digits ?? 2 });
+}
+
+function formatCountryReading(reading: KnownHeadReading, format: CountryLinesSpec['format'], digits: number | null = null): string {
+  if (reading.raw !== undefined && reading.denominator !== undefined) {
+    if (format === 'compact') return formatCompactRational(reading.raw, reading.denominator, { maxDecimals: 0 }).text;
+    if (format === 'percent') {
+      return formatRational(reading.raw, reading.denominator, { maxDecimals: digits ?? 5, fixedDecimals: digits !== null, percent: true });
+    }
+    return formatRational(reading.raw, reading.denominator, { maxDecimals: digits ?? 2 });
+  }
+  return formatCountryValue(reading.value, format, digits);
 }
 
 export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAux>): {
@@ -107,19 +137,42 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
     measureTitle: spec.title,
     project(readView: BoundedReadView, options: CountryLinesOptions) {
       const hour = readView.hour;
+      if (options.unavailable !== null) {
+        return {
+          kind: spec.kind,
+          measureTitle: spec.title,
+          mode: 'lines',
+          hour,
+          extent: options.extent,
+          yAxis: { format: spec.format },
+          series: [],
+          empty: { message: options.unavailable, kind: 'unavailable' },
+          auditRows: [],
+        };
+      }
       const top = options.top !== null;
+      const settings = options.settings ?? DEFAULT_LINE_SETTINGS;
+      const view = chartWindow(settings, hour, options.extent[0]);
       const drawn = readView.series('main');
       const tags = top ? (drawn ? [...drawn.keys()] : rankedPanelKeys(readView, 'main')) : options.tags;
       const rowOf = new Map(tags.map((tag, row) => [tag, row]));
       const present = tags.filter(tag => memberAt(options.membership, tag, hour));
       const presentSet = new Set(present);
       const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
-      const colours = assignCountrySeriesColours(ordered, options.holders, readView, hour, options.surface, undefined, tag => rowOf.get(tag) ?? 0);
+      const looks = countrySeriesLooks(ordered, readView, {
+        holders: options.holders,
+        from: options.extent[0],
+        surface: options.surface,
+        withFlag: true,
+        recordedOrdinal: tag => rowOf.get(tag) ?? 0,
+        tailColor: TAIL_COLOUR,
+      });
       const exactByCountry = exactHoverByCountry(readView, 'hover', options.decimals);
       const secondLines = options.second ? readView.series('second') : undefined;
+      const detailHour = spec.hover ? hoverHourOf(readView, 'detail') : null;
       const lines: CountryLine[] = [];
       const readings: [string, HeadReading | null][] = [];
-      const format = (value: number) => formatCountryValue(value, spec.format, options.digits);
+      const format = (reading: KnownHeadReading) => formatCountryReading(reading, spec.format, options.digits);
       const series: TimeChartSeriesModel[] = ordered.flatMap((tag, rank) => {
         const isTail = rank >= COLOURED;
         const bounded = drawn?.get(tag) ?? null;
@@ -127,9 +180,10 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
         if (reading !== undefined) readings.push([tag, reading]);
         const headValue = headValueOf(reading);
         const exact = exactByCountry?.get(tag) ?? null;
-        const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, true);
-        const color = isTail ? TAIL_COLOUR : (colours.get(tag) ?? TAIL_COLOUR);
-        lines.push({ tag, name, color });
+        const look = looks.get(tag)!;
+        const { name, flag, color, identities } = look;
+        const atDetail = detailHour === null ? look : seriesLookAt(look, detailHour);
+        lines.push({ tag, name: atDetail.name, color: atDetail.color });
         const main: TimeChartSeriesModel = {
           id: tag,
           key: tag,
@@ -142,21 +196,25 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
           headHour: hour,
           exact: exact && memberAt(options.membership, tag, exact.hour) ? exact : null,
           flag,
+          identities,
           missingSpans: missingSpansOf(bounded),
           rank,
-          endLabel: isTail || headValue === null || !options.endLabels
+          endLabel: isTail || !reading || !('value' in reading) || !options.endLabels
             ? null
-            : { flag, name, fullName: name, value: format(headValue) },
+            : { flag, name, fullName: name, value: format(reading) },
         };
-        const secondBounded = secondLines?.get(tag);
-        if (!options.second || !secondBounded) return [main];
-        const secondReading = presentSet.has(tag) ? headReading(readView, 'second', { tag }, options.decimals) : undefined;
+        if (!options.second) return [main];
+        const secondBounded = secondLines?.get(tag) ?? null;
+        const secondReading = presentSet.has(tag)
+          ? headReading(readView, 'second', { tag }, options.decimals) ?? (top ? headReading(readView, 'main', { tag, reading: 1 }, options.decimals) : null)
+          : undefined;
         if (secondReading !== undefined) readings.push([`${tag}${SECOND_SUFFIX}`, secondReading]);
         return [main, {
           id: `${tag}${SECOND_SUFFIX}`,
           key: `${tag}${SECOND_SUFFIX}`,
           name: `${name} · ${options.second.legend[1]}`,
           color,
+          identities: identities.map(run => ({ ...run, name: `${run.name} · ${options.second!.legend[1]}` })),
           role: isTail ? 'tail' : 'secondary',
           step: spec.step === true,
           dash: SECONDARY_DASH,
@@ -177,7 +235,8 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
         mode: 'lines',
         hour,
         extent: options.extent,
-        yAxis: { format: spec.format, decimals: options.digits ?? options.decimals },
+        ...(view ? { view } : {}),
+        yAxis: { format: spec.format, decimals: options.digits ?? options.decimals, ...chartAxis(settings) },
         series,
         ...(legend ? { legend } : {}),
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
@@ -199,7 +258,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
     sources(ctx: FamilyPlanContext<TAux>): SourcePlan {
       const top = topOf(ctx.countries);
       const tags = top === null ? ctx.countries.tags : [];
-      const measure = spec.measure(ctx.options, ctx.aux);
+      const measure = measureOf(spec.measure(ctx.options, ctx.aux));
       const second = spec.second?.(ctx.options) ?? null;
       const owner = `${spec.kind}:${spec.view}:${ctx.track.source.id}:${ctx.branch.id}:${top === null ? tags.join(',') : `top${top}`}:${measure?.measure ?? ''}:${second?.measure ?? ''}:${ctx.following ? 1 : 0}`;
       if (!measure || (top === null && tags.length === 0)) return { owner, entries: [] };
@@ -220,7 +279,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
               tags: [],
               top: { n: top },
               headQuery: { product: 'series-state', params },
-              params,
+              params: second ? { ...params, measures: [second.measure] } : params,
               exactProduct: 'series-rank',
             },
           },
@@ -271,6 +330,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
                 tags,
                 ...(within ? { within } : {}),
                 headQuery: { product: 'series-state' as const, params: { branchId: ctx.branch.id, family: secondFamily, reads } },
+                exactProduct: 'series-state' as const,
               },
             }]
           : []),
@@ -292,14 +352,19 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
         top: topOf(ctx.countries),
         holders: ctx.countries.holders,
         membership: topOf(ctx.countries) === null ? ctx.countries.membership : null,
-        decimals: spec.measure(ctx.options, ctx.aux)?.decimals ?? 0,
+        decimals: measureOf(spec.measure(ctx.options, ctx.aux))?.decimals ?? 0,
+        unavailable: (() => {
+          const chosen = spec.measure(ctx.options, ctx.aux);
+          return chosen && 'unavailable' in chosen ? chosen.unavailable : null;
+        })(),
         digits: spec.digits?.(ctx.options) ?? null,
-        endLabels: spec.endLabels?.(ctx.options) ?? true,
+        endLabels: ctx.options.endLabels !== false,
         second: spec.second?.(ctx.options) ?? null,
         options: ctx.options,
         extent,
         gaps: branchGapsOf(ctx.branch),
         surface,
+        settings: lineChartSettings(ctx.options),
       };
     },
   };

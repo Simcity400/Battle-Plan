@@ -12,7 +12,7 @@ const leaf = (extra: Partial<Leaf> = {}): Leaf => ({ tag: 'mod country', identit
   points: [[9, 10, '300000'], [8, 11, '200000']], ...extra });
 const part = (item: Leaf): MilitaryAirPart => ({ tag: item.tag, identity: item.identity, dealt: item.dealt, cause: item.cause,
   opponentKnown: item.opponent !== null, buildingToken: null, buildingId: null, state: null, points: item.points });
-const reply = ({ leaves = [leaf()], ...extra }: Partial<MilitaryAirLedger> & { leaves?: Leaf[] } = {}): MilitaryAirLedger => ({ family: 'airLosses', firstHour: 10, lastHour: 14,
+const reply = ({ leaves = [leaf()], ...extra }: Partial<MilitaryAirLedger> & { leaves?: Leaf[] } = {}): MilitaryAirLedger => ({ family: 'airLosses', firstHour: 10, lastHour: 14, causes: [{ cause: 1, name: 'Aircraft combat', missing: null }, { cause: 3, name: 'Air accidents', missing: null }], 
   available: true, observed: [span(10, 11), span(13, 14)], incomplete: [],
   countries: [{ tag: 'mod country', identity: '3:9', present: [span(10, 11), span(13, 14)], membership: null }],
   parts: leaves.map(part), regions: [{ id: '40001', name: null, missing: 'The recorded mod did not define this region.' }], buildings: [], warnings: [], ...extra });
@@ -104,7 +104,7 @@ test('country aliases share their holder total and top memberships clip only the
   assert.equal(ledgerPinnedIdentity(pinned, 'campaign', '2', 'mod country'), undefined);
   assert.equal(ledgerPinnedIdentity(pinned, 'campaign', '1', 'another tag'), undefined);
   assert.equal(ledgerPinnedIdentity('malformed', 'campaign', '1', 'mod country'), undefined);
-  assert.deepEqual(ledgerCountries(rows, { kind: 'group', group: { type: 'top', count: 1 }, membership: 'hour', aggregate: false }, [], undefined, 13, 14, 'taken', data.countries).rows.map(row => row.tag), ['renamed']);
+  assert.deepEqual(ledgerCountries(rows, { kind: 'group', group: { type: 'top', count: 1 }, membership: 'hour', aggregate: false }, [], undefined, 13, 'taken', data.countries).rows.map(row => row.tag), ['renamed']);
   assert.deepEqual(ledgerRuns(index.series[1], 10, 14, false, 100000, index.series[1].country.membership).map(run => [run.firstHour, run.lastHour, run.value]), [[13, 13, 3]]);
   assert.equal(ledgerCountryAt(index, 'mod country', 10, 9), null);
   assert.equal(ledgerHeaderTag(index, null, 'mod country', 9, undefined, null), 'mod country');
@@ -126,20 +126,20 @@ test('manual ledger roots include all their native holders without recursively s
     leaf({ tag: 'B', identity: '4:10', points: [[9, 10, '200000']] })] });
   const index = militaryAirIndex(data);
   const select = (hour: number) => ledgerCountries(militaryAirAt(index, 10, hour), { kind: 'tags', tags: ['X'] }, [], undefined,
-    hour, 14, 'taken', data.countries);
+    hour, 'taken', data.countries);
   assert.deepEqual(new Set(select(10).rows.map(row => row.identity)), new Set(['3:9', '4:10']));
   assert.equal(select(10).rows.some(row => row.identity === '8:99'), false);
   assert.deepEqual(select(12).rows.map(row => [row.tag, row.identity, row.taken]), [['B', '4:10', 200000n], ['Y', '3:9', -300000n]]);
   assert.deepEqual(select(13).rows.map(row => row.identity), ['4:10'], 'the original holder has no value in its native presence gap');
   assert.deepEqual(new Set(ledgerCountries(militaryAirAt(index, 10, 12), { kind: 'selected' }, ['X'], undefined,
-    12, 14, 'taken', data.countries).rows.map(row => row.identity)), new Set(['3:9', '4:10']));
+    12, 'taken', data.countries).rows.map(row => row.identity)), new Set(['3:9', '4:10']));
   assert.deepEqual(new Set(ledgerCountries(militaryAirAt(index, 10, 12), { kind: 'selected' }, [countryKey(3)], undefined,
-    12, 14, 'taken', data.countries).rows.map(row => row.identity)), new Set(['3:9']), 'the dashboard’s slot is its holders under any tag, never another holder of one');
-  const missing = ledgerCountries(militaryAirAt(index, 10, 12), { kind: 'tags', tags: ['unknown'] }, [], undefined, 12, 14, 'taken', data.countries);
+    12, 'taken', data.countries).rows.map(row => row.identity)), new Set(['3:9']), 'the dashboard’s slot is its holders under any tag, never another holder of one');
+  const missing = ledgerCountries(militaryAirAt(index, 10, 12), { kind: 'tags', tags: ['unknown'] }, [], undefined, 12, 'taken', data.countries);
   assert.deepEqual(missing.rows, []); assert.equal(missing.reason, 'Selected countries are unavailable in this campaign.');
-  assert.deepEqual(ledgerCountries(militaryAirAt(index, 10, 12), { kind: 'tags', tags: ['X'] }, [], undefined, 12, 14).rows, [],
+  assert.deepEqual(ledgerCountries(militaryAirAt(index, 10, 12), { kind: 'tags', tags: ['X'] }, [], undefined, 12).rows, [],
     'missing native metadata never falls back to literal tags');
-  assert.equal(ledgerCountries(militaryAirAt(index, 10, 10), { kind: 'all' }, [], undefined, 10, 14, 'taken', data.countries).rows.length, 3);
+  assert.equal(ledgerCountries(militaryAirAt(index, 10, 10), { kind: 'all' }, [], undefined, 10, 'taken', data.countries).rows.length, 3);
 });
 
 test('line hover uses exact wide signed values, native/read dates, dated labels and unknown coverage', () => {

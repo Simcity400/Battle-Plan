@@ -105,10 +105,27 @@ export interface GameWindowAlphaMask {
   readonly bitsBase64: string;
 }
 
+export type GameWindowScrollControl =
+  | { readonly kind: 'list' }
+  | { readonly kind: 'step'; readonly direction: number }
+  | { readonly kind: 'track' }
+  | { readonly kind: 'thumb'; readonly travel: number; readonly thumb: number };
+
 export interface GameWindowScroll {
+  readonly list: string;
+  readonly vertical: boolean;
   readonly position: number;
   readonly range: number;
-  readonly wheel: number;
+  readonly step: number;
+  readonly page: number;
+  readonly control: GameWindowScrollControl;
+}
+
+export interface GameWindowText {
+  readonly path: string;
+  readonly label: string;
+  readonly value: string | null;
+  readonly missing: string | null;
 }
 
 export interface GameWindowRegion {
@@ -135,6 +152,7 @@ export interface GameWindowRender {
   artLabel: string | null;
   regions: readonly GameWindowRegion[];
   warnings: readonly string[];
+  text: readonly GameWindowText[];
 }
 
 export interface DashboardClient {

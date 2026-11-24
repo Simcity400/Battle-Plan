@@ -1,7 +1,9 @@
-use super::groups::{CountryGroupReply, MembershipRun};
+use super::groups::{self, CountryGroupReply, MembershipRun};
 use dashboard_base::{Source, products::LoadContext, span::HourSpan};
 use dashboard_query::{
+    Query,
     identity::{Country, Holders},
+    log::{CountrySpan, UnobservedSpan, occurrence::Selection},
     series::ranked::{GroupKind, GroupMembership, GroupSelection, Members},
 };
 use std::{
@@ -16,22 +18,24 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-pub fn members_at(reply: &CountryGroupReply, group: &GroupSelection, hour: i32, first: i32) -> io::Result<Members> {
-    let war_runs: Vec<MembershipRun>;
-    let faction_unknown: Vec<HourSpan>;
-    let (runs, unknown): (&[MembershipRun], &[HourSpan]) = match group.kind {
-        GroupKind::Humans => (&reply.humans, &reply.unobserved.humans),
+pub struct Runs {
+    pub members: Vec<MembershipRun>,
+    pub unknown: Vec<HourSpan>,
+}
+
+pub fn runs(reply: &CountryGroupReply, group: &GroupSelection) -> io::Result<Result<Runs, String>> {
+    match group.kind {
+        GroupKind::Humans => Ok(Ok(Runs { members: reply.humans.clone(), unknown: reply.unobserved.humans.clone() })),
         GroupKind::Faction => {
             let id = group.id.as_deref().ok_or_else(|| invalid("A faction group names its id"))?;
             let Some(faction) = reply.factions.iter().find(|faction| faction.id == id) else {
-                return Ok(Members { tags: Vec::new(), refused: Some(format!("No faction {id} in this history")), from: hour, until: hour });
+                return Ok(Err(format!("No faction {id} in this history")));
             };
-            faction_unknown = reply.unobserved.factions.iter().chain(&faction.incomplete).cloned().collect();
-            (&faction.members, &faction_unknown)
+            Ok(Ok(Runs { members: faction.members.clone(), unknown: reply.unobserved.factions.iter().chain(&faction.incomplete).cloned().collect() }))
         }
         GroupKind::War => {
             let tag = group.tag.as_deref().ok_or_else(|| invalid("A war group names its country"))?;
-            war_runs = reply
+            let members = reply
                 .wars
                 .iter()
                 .filter_map(|pair| {
@@ -39,9 +43,41 @@ pub fn members_at(reply: &CountryGroupReply, group: &GroupSelection, hour: i32, 
                     Some(MembershipRun { tag: enemy.clone(), first_hour: pair.first_hour, last_hour: pair.last_hour })
                 })
                 .collect();
-            (&war_runs, &reply.unobserved.wars)
+            Ok(Ok(Runs { members, unknown: reply.unobserved.wars.clone() }))
         }
+    }
+}
+
+pub fn dated(source: &Source, query: &Query<'_>, context: &LoadContext, countries: Option<&[Country]>, group: Option<&GroupSelection>, cancelled: &AtomicBool) -> io::Result<Option<Selection>> {
+    let (first, last) = (query.timeline.first, query.timeline.last);
+    match (countries, group) {
+        (Some(_), Some(_)) => Err(invalid("Ask a group or countries, never both")),
+        (None, None) => Ok(None),
+        (Some(countries), None) => Ok(Some(Selection {
+            membership: countries.iter().map(|country| CountrySpan { country: country.clone(), first_hour: first, last_hour: last }).collect(),
+            unobserved: Vec::new(),
+        })),
+        (None, Some(group)) => {
+            let reply = groups::shared(source, query, context, cancelled)?;
+            let found = runs(&reply, group)?.map_err(dashboard_core::refused)?;
+            let end = |run: &MembershipRun| match group.membership {
+                GroupMembership::Hour => run.last_hour,
+                GroupMembership::Ever => last,
+            };
+            Ok(Some(Selection {
+                membership: found.members.iter().map(|run| CountrySpan { country: Country::Tag(run.tag.clone()), first_hour: run.first_hour, last_hour: end(run) }).collect(),
+                unobserved: found.unknown.iter().map(|span| UnobservedSpan { first_hour: span.first_hour, last_hour: span.last_hour }).collect(),
+            }))
+        }
+    }
+}
+
+pub fn members_at(reply: &CountryGroupReply, group: &GroupSelection, hour: i32, first: i32) -> io::Result<Members> {
+    let found = match runs(reply, group)? {
+        Ok(found) => found,
+        Err(refused) => return Ok(Members { tags: Vec::new(), refused: Some(refused), from: hour, until: hour }),
     };
+    let (runs, unknown) = (found.members.as_slice(), found.unknown.as_slice());
     let counted = |span: &HourSpan| match group.membership {
         GroupMembership::Hour => span.first_hour <= hour && hour <= span.last_hour,
         GroupMembership::Ever => span.first_hour <= hour && span.last_hour >= first,
@@ -92,10 +128,14 @@ pub struct GroupsAt {
 }
 
 impl GroupsAt {
+    pub fn new(reply: Arc<CountryGroupReply>, first: i32) -> Self {
+        Self { reply: Some(reply), first }
+    }
+
     pub fn load(source: &Source, load: &LoadContext, branch_id: &str, group: Option<&GroupSelection>) -> io::Result<Self> {
         let (Some(_), Ok(branch)) = (group, branch_id.parse::<u64>()) else { return Ok(Self::default()) };
         let query = dashboard_base::queries::query(source, branch)?;
-        let reply = super::groups::shared(source, &query, load, &AtomicBool::new(false))?;
+        let reply = groups::shared(source, &query, load, &AtomicBool::new(false))?;
         Ok(Self { reply: Some(reply), first: query.timeline.first })
     }
 

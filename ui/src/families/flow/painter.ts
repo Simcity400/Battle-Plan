@@ -19,6 +19,7 @@ export const FLOW_NODE_GAP = 6;
 export const FLOW_LABEL_MIN = 14;
 export const FLOW_MISSING_HEIGHT = 6;
 const SAMPLES = 20;
+const FLOW_OTHERS_ALPHA = 0.45;
 const FLAG_GAP = 6;
 
 export interface FlowNodeBox {
@@ -94,11 +95,11 @@ function solveScale(sides: readonly (readonly FlowNode[])[], available: number, 
   return Number.isFinite(best) ? best : 0;
 }
 
-function stack(nodes: readonly FlowNode[], x: number, top: number, scale: number): FlowNodeBox[] {
+function stack(nodes: readonly FlowNode[], x: number, top: number, scale: number, need: ReadonlyMap<string, number>): FlowNodeBox[] {
   const out: FlowNodeBox[] = [];
   let cursor = top;
   for (const node of nodes) {
-    const height = heightOf(node.numeric, scale);
+    const height = node.numeric === null ? Math.max(FLOW_MISSING_HEIGHT, need.get(node.key) ?? 0) : heightOf(node.numeric, scale);
     const slotHeight = Math.max(height, FLOW_LABEL_MIN);
     out.push({ node, x, y: cursor + (slotHeight - height) / 2, height, slotTop: cursor, slotHeight });
     cursor += slotHeight + FLOW_NODE_GAP;
@@ -123,8 +124,16 @@ export function layoutFlow(model: FlowModel, width: number, height: number): Flo
   const sumOf = (nodes: readonly FlowNode[]) => nodes.reduce((sum, node) => sum + Math.max(0, node.numeric ?? 0), 0);
   const centreExtra = centred ? Math.max(sumOf(model.left), sumOf(model.right)) : 0;
   const scale = solveScale([model.left, model.right], available, centreExtra);
-  const left = stack(model.left, leftBarX, bodyTop, scale);
-  const right = stack(model.right, rightBarX, bodyTop, scale);
+  const need = new Map<string, number>();
+  if (!centred) {
+    for (const ribbon of model.ribbons) {
+      const width = heightOf(ribbon.numeric, scale);
+      need.set(ribbon.from, (need.get(ribbon.from) ?? 0) + width);
+      need.set(ribbon.to, (need.get(ribbon.to) ?? 0) + width);
+    }
+  }
+  const left = stack(model.left, leftBarX, bodyTop, scale, need);
+  const right = stack(model.right, rightBarX, bodyTop, scale, need);
   const nodes: FlowNodeBox[] = [...left, ...right];
   const ribbons: FlowRibbonBox[] = [];
   const widthOf = (ribbon: FlowRibbon) => heightOf(ribbon.numeric, scale);
@@ -213,7 +222,7 @@ export function hitFlow(layout: FlowLayout, x: number, y: number): string | null
   }
   for (let i = layout.ribbons.length - 1; i >= 0; i--) {
     const box = layout.ribbons[i]!;
-    if (x < box.x0 || x > box.x1) continue;
+    if (x < box.x0 || x > box.x1 || (box.a1 <= box.a0 && box.b1 <= box.b0)) continue;
     const u = (x - box.x0) / Math.max(1, box.x1 - box.x0);
     const s = ease(u);
     const top = box.a0 + (box.b0 - box.a0) * s;
@@ -304,7 +313,7 @@ export function drawFlow(ctx: Canvas2D, input: DrawFlowInput): void {
           length: partCount,
           at: i => {
             const part = model.parts[i]!;
-            return { label: part.label, color: colour(theme.surface, part.ordinal) };
+            return { label: part.label, color: colour(theme.surface, part.ordinal), swatch: 'square' as const };
           },
           ...(trailing ? { trailing } : {}),
         },
@@ -331,8 +340,9 @@ export function drawFlow(ctx: Canvas2D, input: DrawFlowInput): void {
     ctx.fillText(model.rightHeader, layout.width - FLOW_PAD, headerMiddle);
   }
 
-  const hoveredRibbon = inspected?.startsWith('ribbon:') ? inspected.slice(7) : null;
-  const hoveredNode = inspected?.startsWith('node:') ? inspected.slice(5) : null;
+  const lens = inspected ?? focused;
+  const hoveredRibbon = lens?.startsWith('ribbon:') ? lens.slice(7) : null;
+  const hoveredNode = lens?.startsWith('node:') ? lens.slice(5) : null;
   const lit = (ribbon: FlowRibbon) => hoveredRibbon ? ribbon.key === hoveredRibbon : hoveredNode ? ribbon.from === hoveredNode || ribbon.to === hoveredNode : null;
   for (const box of layout.ribbons) {
     const ribbon = box.ribbon;
@@ -349,8 +359,16 @@ export function drawFlow(ctx: Canvas2D, input: DrawFlowInput): void {
     }
     const total = ribbon.bands.reduce((sum, band) => sum + Math.max(0, band.numeric), 0);
     if (total <= 0) continue;
-    let from = 0;
     ctx.globalAlpha = alpha;
+    if (ribbon.others) {
+      ctx.globalAlpha = alpha * FLOW_OTHERS_ALPHA;
+      ctx.fillStyle = tokens.barNeutral;
+      ribbonPath(ctx, box, 0, 1);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      continue;
+    }
+    let from = 0;
     for (const band of ribbon.bands) {
       const share = Math.max(0, band.numeric) / total;
       if (share <= 0) continue;

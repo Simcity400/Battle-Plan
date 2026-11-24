@@ -1,4 +1,4 @@
-import { lastRecordedBranchHour, resolveWindow, type BoundTrack, type HourWindow, type WidgetSpec } from './model.ts';
+import { lastRecordedBranchHour, resolveWindow, type BoundTrack, type HourWindow, type WidgetBase, type WidgetSpec } from './model.ts';
 import { formatDateTime, gameDate } from './calendar.ts';
 
 import type { AnyRequestParams, HourRole, RecordingGap, RequestParams } from '../generated/dashboard';
@@ -131,7 +131,7 @@ export function refusedHours(product: string, params: unknown, branch: CoveredBr
 }
 
 export type RegionAction = { kind: 'spec' } | { kind: 'follow' } | { kind: 'at'; hour: number };
-export interface Region { widget: WidgetSpec; action: RegionAction }
+export interface Region { widget: WidgetBase; action: RegionAction }
 export interface Outside {
   kind?: 'outside' | 'not-recorded';
   message: string;
@@ -225,7 +225,7 @@ export function regionFollows(region: Region): boolean {
   return region.action.kind === 'follow' || region.action.kind === 'spec' && region.widget.time.mode === 'follow';
 }
 
-const followed = (widget: WidgetSpec): WidgetSpec => widget.time.mode === 'follow' ? widget : { ...widget, time: { mode: 'follow' } };
+const followed = (widget: WidgetBase): WidgetBase => widget.time.mode === 'follow' ? widget : { ...widget, time: { mode: 'follow' } };
 
 export function regionWindow(region: Region, track: BoundTrack | undefined, tracks: readonly BoundTrack[], axis: AxisHour): HourWindow | null {
   if (!track) return null;

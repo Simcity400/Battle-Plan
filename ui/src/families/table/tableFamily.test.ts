@@ -3,14 +3,14 @@ import test from 'node:test';
 import { CELL, parseAnswer } from '../../dashboard/follow/message.ts';
 import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
-import { assertFreshPaint, assertQuietFrames, LaneTransport } from '../laneRuntime.fixture.ts';
+import { assertContinuity, assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas, LaneTransport } from '../laneRuntime.fixture.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { ROW_HEIGHT, tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
 import { nextLookChange } from '../looks.ts';
 import { resolveHeadSpan } from './declaration.ts';
 import { tableHostAdapter } from './hostAdapter.ts';
-import { familyTableLaneView } from './laneView.ts';
+import { tableLane } from './laneView.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import type { ApmReply, CampaignClockReply, DivisionTemplatesReply, EventFeedPageRow, MarketLedgerTailReply, ScoreboardColumn, ScoreboardReply, ScriptPageRow } from '../../generated/dashboard';
 import { pictureError } from '../../shell/perf.ts';
@@ -41,11 +41,16 @@ import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partia
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { computeColumnMaxima, declareTableProjection, tableRank, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
 import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
+import { LaneArtCache } from '../art/laneCache.ts';
 import { treeLevelsOf, treeTextStart } from './cellPainters.ts';
 import { TREE_CHEVRON_LANE } from './layout.ts';
 import { computeRowLayout, TABLE_WINDOW_OVERSCAN, tableRowWindow } from './layout.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
+import { createLaneView } from '../laneRuntime.ts';
+import { PayloadSender } from '../../dashboard/follow/payloads.ts';
 
+const NO_OPTIONS = {};
+const NO_SOURCES = {};
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
 
 const floatBits = (value: number): bigint => {
@@ -285,6 +290,13 @@ test('scoreboard projection matches followed and exact audits with missing, part
       ['casualties:partial', answer({ keys: [1n, 2n, 3n, 4n], columns: 1, names: ['ITA', 'FRA', 'GER', 'ENG'], values: [1n, 0n, 0n, 0n], states: [CELL.value, CELL.value, CELL.value, CELL.value] })],
     ]),
   }), hourly);
+  const renamedLooks = { ...looks, GER: [{ from: 0, name: 'Germany' }, { from: 50, name: 'German Reich' }] };
+  const constant = { ...hourly, looks: renamedLooks };
+  const before = createBoundedReadView({ hour: 40, answers: new Map([['factories', answer({ keys: [1n], columns: 1, names: ['GER'], values: [1n], states: [CELL.value] })]]) });
+  assert.equal(scoreboardProjection.nextChange!(before, constant), 50, 'a dated name change is the next change even while the values stay constant');
+  assert.equal(scoreboardProjection.project(createBoundedReadView({ hour: 50, answers: new Map([['factories', answer({ keys: [1n], columns: 1, names: ['GER'], values: [1n], states: [CELL.value] })]]) }), constant)
+    .rows.find(row => row.key === 'GER')?.name, 'German Reich');
+
   const first = at(40, 0n);
   const quiet = at(41, 0n);
   assert.deepEqual(quiet.rows.map((row, index) => row === first.rows[index]), [true, true, true, true], 'a quiet hour\'s fresh answers rebuild no row');
@@ -386,6 +398,11 @@ test('occupied-states, game-score (with faction groups), and division-template (
   const gsCols = gameScoreColumns(undefined);
   const gsFlat = resolveTableRows(gsModel, tableSettingsOf(undefined, gsCols, { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }));
   assert.deepEqual(gsFlat.filter(r => r.kind === 'group-header').map(r => r.label), ['Allies', 'Axis']);
+
+  const gsRenamed = { all: true, holders: null, membership: null, top: null, by: 'total' as const, factions: false, factionRuns: null, rankMarkers: false,
+    labels: { GER: [{ from: 0, name: 'Germany' }, { from: 70, name: 'German Reich' }], ENG: [{ from: 0, name: 'United Kingdom' }] } };
+  assert.equal(gameScoreProjection.nextChange!(createBoundedReadView({ hour: 50, panels: new Map([['main', gsReply]]) }), gsRenamed), 70,
+    'a declarative table names its dated name changes as its next change');
 
   const gsTopOptions = { all: false, holders: null, membership: null, top: 1, by: 'army' as const, factions: false, factionRuns: null, rankMarkers: false, labels: {} };
   const gsTopAt = (top: unknown, live: (key: string) => number) => gameScoreProjection.project(createBoundedReadView({
@@ -625,7 +642,7 @@ test('lane view skips projection on next(), caches unchanged sources across serv
   }
   (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
   try {
-    const view = familyTableLaneView(() => {});
+    const view = createLaneView(tableLane, () => {});
     const settings = tableSettingsOf(undefined, [
       { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
       { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
@@ -693,7 +710,8 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
   (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
   let wakes = 0;
   try {
-    const view = familyTableLaneView(() => { wakes++; });
+    const view = createLaneView(tableLane, () => { wakes++; });
+    const transport = new LaneTransport();
     const settings = tableSettingsOf(undefined, [
       { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
       { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
@@ -701,9 +719,9 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
     const makeModel = (rows: { id: string; v: number }[], focusedKey: string | null = null, extra: Record<string, unknown> = {}) => ({
       family: 'table' as const, theme: TEST_THEME,
       kind: 'test-lane-cache',
-      options: {},
+      options: NO_OPTIONS,
       settings,
-      sources: {},
+      sources: NO_SOURCES,
       staticPanels: { main: { rows } },
       width: 320,
       height: 200,
@@ -721,7 +739,7 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
         widget: 1,
         subs: [],
         pictures: [],
-        model: makeModel(rows, focusedKey, extra),
+        model: transport.carry(makeModel(rows, focusedKey, extra)),
         hour: 10,
         seek: 0,
         speed,
@@ -849,7 +867,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
   assert.throws(() => store.require(undefined), /Not auditable/);
   assert.throws(() => store.require(999), /Not auditable/);
 
-  assert.deepEqual(effectiveCountryUnobserved({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), []);
+  assert.deepEqual(effectiveCountryUnobserved({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), []);
   assert.deepEqual(effectiveCountryUnobserved({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), [[10, 20]]);
 
   const gate = new CadenceGate(20);
@@ -952,28 +970,29 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
   }
   (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
   try {
-    const laneView = familyTableLaneView(() => {});
+    const laneView = createLaneView(tableLane, () => {});
     const laneState = new Map<string, unknown>();
+    const transport = new LaneTransport();
     let seq = 1;
     const mk = (designer: string, priority: number) => laneView.paint({
       widget: 1,
       subs: [],
       pictures: [],
-      model: {
+      model: transport.carry({
         family: 'table', theme: TEST_THEME,
         kind: 'test-meta-priority-inv',
-        options: {},
+        options: NO_OPTIONS,
         settings: tableSettingsOf(undefined, [
           { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
           { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
         ], { density: 'comfortable', sort: { column: 'name', direction: 'ascending' } }),
-        sources: {},
+        sources: NO_SOURCES,
         staticPanels: { main: { designer, priority } },
         width: 320,
         height: 200,
         scrollLeft: 0,
         scrollTop: 0,
-      },
+      }),
       hour: 10,
       seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
@@ -982,7 +1001,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
     }, laneState, () => `c${seq++}`);
     const firstPaint = mk('ordinary', 1);
     const secondPaint = mk('headquarters', 4);
-    assert.equal(firstPaint.mode, 'picture', 'N4: familyTableLaneView returns explicit mode picture');
+    assert.equal(firstPaint.mode, 'picture', 'N4: tableLane returns explicit mode picture');
     assert.notEqual(firstPaint.fields.nav!.content, secondPaint.fields.nav!.content, 'row.meta change invalidates nav field');
     assert.notEqual(firstPaint.fields.meta!.content, secondPaint.fields.meta!.content, 'column priority change invalidates meta field');
   } finally {
@@ -1061,7 +1080,6 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
     'M4: membership ever refuses when unobserved gaps make campaign membership incomplete',
   );
   assert.equal(selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), null);
-  assert.equal(selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), null);
 
   const ctxA = { tag: 'A', role: 'occupier', settings: 'sA', looks: 'lA' };
   const ctxB = { tag: 'B', role: 'occupied', settings: 'sB', looks: 'lB' };
@@ -1157,14 +1175,15 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
   }
   (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
   try {
-    const laneView = familyTableLaneView(() => {});
+    const laneView = createLaneView(tableLane, () => {});
     const laneState = new Map<string, unknown>();
+    const transport = new LaneTransport();
     let seq = 1;
     const refusedPaint = laneView.paint({
       widget: 1,
       subs: [{ id: 7, channel: 'panel' }],
       pictures: [{ parts: [{ value: { kind: 'panel', data: null, refused: 'Game score panel refused by recording' } }] }],
-      model: {
+      model: transport.carry({
         family: 'table', theme: TEST_THEME,
         kind: 'game-score',
         view: 'table',
@@ -1175,7 +1194,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         height: 200,
         scrollLeft: 0,
         scrollTop: 0,
-      },
+      }),
       hour: 10,
       seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
@@ -1190,19 +1209,19 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       widget: 2,
       subs: [],
       pictures: [],
-      model: {
+      model: transport.carry({
         family: 'table', theme: TEST_THEME,
         kind: 'game-score',
         view: 'table',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
-        sources: {},
+        sources: NO_SOURCES,
         staticPanels: { main: { missing: null, warnings: [], hints: {}, multipliers: [], rows: [{ tag: 'GER', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } }] } },
         width: 320,
         height: 200,
         scrollLeft: 0,
         scrollTop: 0,
-      },
+      }),
       hour: 10,
       seek: 0,
       speed: 24,
@@ -1231,13 +1250,13 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       widget: 2,
       subs: [],
       pictures: [],
-      model: {
+      model: transport.carry({
         family: 'table', theme: TEST_THEME,
         kind: 'game-score',
         view: 'table',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
-        sources: {},
+        sources: NO_SOURCES,
         staticPanels: { main: { missing: null, warnings: [], hints: {}, multipliers: [], rows: [{ tag: 'GER', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } }] } },
         width: 320,
         height: 200,
@@ -1245,7 +1264,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         scrollTop: 0,
         audit: true,
         auditId: 42,
-      },
+      }),
       hour: 10,
       seek: 0,
       speed: 24,
@@ -1402,7 +1421,7 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
     const closedArt: string[] = [];
     const artResolvers = new Map<string, (bmp: ImageBitmap) => void>();
 
-    const tableView = familyTableLaneView(() => {}, {
+    const tableView = createLaneView(tableLane, () => {}, {
       artMaxEntries: 40,
       fetchBitmap: (url, signal) => new Promise<ImageBitmap>((resolve, reject) => {
         requestedArt.push(url);
@@ -1435,11 +1454,13 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
 
     const flushTicks = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 
+    const sender = new PayloadSender(message => lane.payloads(structuredClone(message)));
+    const wired = (model: unknown) => structuredClone(sender.acquire(model).wire);
     page.mount(1, { route: 0, lane: 0, surfaces: [{ install() {}, clear() {} }] });
     lane.mount(1, [], 'table');
-    lane.bind(1, { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 10, c: 100 } }, {
-      family: 'table', theme: TEST_THEME, kind: 'test-r5-reveal', options: {}, settings, sources: {}, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
-    });
+    lane.bind(1, { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 10, c: 100 } }, wired({
+      family: 'table', theme: TEST_THEME, kind: 'test-r5-reveal', options: NO_OPTIONS, settings, sources: NO_SOURCES, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
+    }));
     page.publish(10, { playing: false });
     await flushTicks();
     assert.equal((page.view(1).fields?.nav as readonly unknown[]).length, 1, 'F5: at hour 10 only parent is visible');
@@ -1453,9 +1474,9 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
     page.mount(2, { route: 0, lane: 0, surfaces: [{ install() {}, clear() {} }] });
     lane.mount(2, [], 'table');
     const viewportHeight20Rows = 20 * ROW_HEIGHT[settings.density];
-    lane.bind(2, { generation: 1, surfaces: [{ width: 320, height: viewportHeight20Rows, dpr: 1 }], offset: 0, pin: null, dated: { h: 120, c: 120 } }, {
-      family: 'table', theme: TEST_THEME, kind: 'test-r5-art-1500', options: {}, settings, sources: {}, width: 320, height: viewportHeight20Rows, scrollLeft: 0, scrollTop: 0,
-    });
+    lane.bind(2, { generation: 1, surfaces: [{ width: 320, height: viewportHeight20Rows, dpr: 1 }], offset: 0, pin: null, dated: { h: 120, c: 120 } }, wired({
+      family: 'table', theme: TEST_THEME, kind: 'test-r5-art-1500', options: NO_OPTIONS, settings, sources: NO_SOURCES, width: 320, height: viewportHeight20Rows, scrollLeft: 0, scrollTop: 0,
+    }));
     page.publish(120, { playing: false });
     await flushTicks();
     assert.equal(requestedArt.length, 6, `F6: 1500-country model starts bounded maxConcurrent=6 visible flags (got ${requestedArt.length})`);
@@ -1516,7 +1537,6 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   const extraRow = tipAtLeast.rows.find(r => r.label === 'Strength')!;
   assert.equal(extraRow.value, undefined, 'F8: tooltip row keeps typed ValueState instead of flattened string');
   assert.equal(extraRow.valueState?.kind, 'partial');
-  assert.equal(extraRow.valueState?.atLeast, true, 'F8: tooltip row preserves atLeast on partial values');
   assert.ok(tooltipText(tipAtLeast).includes('1, partial: Missing corps'), 'F8: tooltipText speaks via valueStateText without at least wording');
   assert.ok(!tooltipText(tipAtLeast).includes('at least'), 'F8: tooltipText omits at least wording');
 
@@ -1672,68 +1692,57 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
   assert.equal(visRes.paintedCells, 1, 'scrollable grouped single-cell change repaints only 1 dirty cell');
   assert.ok(counts().fillTextCalls - fillsAfterFull < fillsAfterFull, `scrollable grouped single-cell change draws fewer texts (${counts().fillTextCalls - fillsAfterFull} vs full ${fillsAfterFull})`);
 
-  const prevOffscreen = globalThis.OffscreenCanvas;
-  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = class {
-    width: number;
-    height: number;
-    constructor(w: number, h: number) { this.width = w; this.height = h; }
-    getContext() {
-      const c = instrumentedContext().ctx as unknown as Record<string, unknown>;
-      c.setTransform = () => {};
-      return c;
-    }
-    transferToImageBitmap() { return { close() {} }; }
-  };
-  let wakes = 0;
-  let scheduledMs: number | null = null;
-  let timerCb: (() => void) | null = null;
+  registerFamilyProjection(declareTableProjection<{ rows: { id: string; v: number }[] }, { id: string; v: number }, Record<string, never>>({
+    kind: 'test-rank-marker-timer',
+    rank: true,
+    rankMarkers: true,
+    columns: [
+      { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, field: 'id', text: true },
+      { key: 'v', label: 'Val', as: 'plain', offered: ['plain'], priority: 1, field: 'v', numeric: true },
+    ],
+    rows: reply => ({ rows: reply.rows }),
+    rowKey: r => r.id,
+    rowName: r => r.id,
+  }));
+  const recording = installRecordingCanvas();
   try {
-    registerFamilyProjection(declareTableProjection<{ rows: { id: string; v: number }[] }, { id: string; v: number }, Record<string, never>>({
-      kind: 'test-rank-marker-timer',
-      rank: true,
-      rankMarkers: true,
-      columns: [
-        { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, field: 'id', text: true },
-        { key: 'v', label: 'Val', as: 'plain', offered: ['plain'], priority: 1, field: 'v', numeric: true },
-      ],
-      rows: reply => ({ rows: reply.rows }),
-      rowKey: r => r.id,
-      rowName: r => r.id,
-    }));
-    let clockNow = 1000;
-    const laneView = familyTableLaneView(() => { wakes++; }, {
+    const armed: number[] = [];
+    let due: (() => void) | null = null;
+    let wakes = 0;
+    const view = createLaneView(tableLane, () => { wakes++; }, {
       timers: {
-        set: (fn, ms) => { timerCb = fn; scheduledMs = ms; return 1 as unknown as ReturnType<typeof setTimeout>; },
-        clear: () => { timerCb = null; },
+        set: (fn, ms) => { due = fn; armed.push(ms); return armed.length as unknown as ReturnType<typeof setTimeout>; },
+        clear: () => { due = null; },
       },
     });
+    const lane = driveLane(view, recording.canvases, { width: 320, height: 180, dpr: 1 });
     const rmSettings = tableSettingsOf(undefined, [
       { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
       { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
-    ], { density: 'compact', sort: { column: 'v', direction: 'descending' } });
-    const state = new Map<string, unknown>();
-    let seq = 1;
-    const paintRows = (list: { id: string; v: number }[], hour: number) => laneView.paint({
-      widget: 1,
-      subs: [],
-      pictures: [],
-      model: { family: 'table' as const, kind: 'test-rank-marker-timer', options: {}, settings: rmSettings, sources: {}, staticPanels: { main: { rows: list } }, width: 320, height: 180, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
-      hour,
-      seek: 0, speed: 24,
-      binding: { generation: 1, surfaces: [{ width: 320, height: 180, dpr: 1 }], offset: 0, pin: null },
-      inspect: null,
-      now: clockNow,
-    }, state, () => `c${seq++}`);
-    paintRows([{ id: 'A', v: 20 }, { id: 'B', v: 10 }], 1);
-    clockNow = 1050;
-    const swapped = paintRows([{ id: 'A', v: 5 }, { id: 'B', v: 30 }], 2);
-    assert.equal(swapped.motion, false, 'rank marker expiry does not hold 60 FPS motion loop');
-    assert.ok(scheduledMs !== null && scheduledMs > 0, 'schedules one-shot wake timer for marker expiry');
-    (timerCb as (() => void) | null)?.();
-    assert.ok(wakes >= 1, 'one-shot timer wakes widget when markers expire');
-    laneView.unmount?.(1, state);
+    ], { density: 'compact', sort: { column: 'v', direction: 'descending' }, showRank: true });
+    const options = {};
+    const sources = {};
+    const bound = (rows: { id: string; v: number }[]) => ({ family: 'table' as const, kind: 'test-rank-marker-timer', options, settings: rmSettings, sources, staticPanels: { main: { rows } }, width: 320, height: 180, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true });
+    const arrow = () => lane.picture().some(mark => mark.includes('▲'));
+    const swappedRows = bound([{ id: 'A', v: 5 }, { id: 'B', v: 30 }]);
+    lane.paint({ label: 'before', binding: bound([{ id: 'A', v: 20 }, { id: 'B', v: 10 }]), hour: 1, speed: 24, seek: 1, now: 1000 });
+    const swapped = lane.paint({ label: 'swapped', binding: swappedRows, hour: 2, speed: 24, seek: 1, now: 1050 });
+    assert.ok(arrow(), 'the forward swap draws the rank arrow');
+    assert.equal(swapped.motion, false, 'rank marker expiry does not hold the 60 FPS motion loop');
+    assert.equal(swapped.fields.mirror, undefined, 'the mirror is withheld until its cadence is due');
+    assert.deepEqual(armed, [950], 'one timer, for the mirror, which is due before the arrow expires');
+    (due as (() => void) | null)?.();
+    const mirrored = lane.paint({ label: 'mirror wake', binding: swappedRows, hour: 2, speed: 24, seek: 1, now: 2000 });
+    assert.ok(mirrored.fields.mirror, 'the mirror wake publishes the mirror');
+    assert.ok(arrow(), 'the arrow survives the earlier mirror wake');
+    assert.deepEqual(armed, [950, 1550], 'then one timer for the arrow’s own deadline');
+    (due as (() => void) | null)?.();
+    lane.paint({ label: 'arrow expired', binding: swappedRows, hour: 2, speed: 24, seek: 1, now: 3550 });
+    assert.equal(arrow(), false, 'the arrow disappears at its own deadline');
+    assert.deepEqual([wakes, armed.length], [2, 2], 'one wake per deadline and no timer after it');
+    view.unmount?.(1, lane.state);
   } finally {
-    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+    recording.restore();
   }
 });
 
@@ -1775,9 +1784,6 @@ function gridContext(width: number, height: number) {
   return { ctx, marks };
 }
 
-const FRESH_OPTIONS = {};
-const FRESH_SOURCES = {};
-
 test('an incremental table paint after a seek back, a same-hour correction and a reorder equals a fresh paint, cell by cell', () => {
   type Row = { id: string; v: number; flag: string };
   const columns: TableColumnSpec[] = [
@@ -1789,9 +1795,10 @@ test('an incremental table paint after a seek back, a same-hour correction and a
     kind: 'test-fresh-equals-incremental',
     family: 'table', theme: TEST_THEME,
     project: readView => {
-      const reply = readView.panel('main') as { rows: Row[] };
+      const reply = readView.panel('main') as { rows: Row[]; refused?: string };
       return {
         hour: readView.hour,
+        ...(reply.refused ? { refused: reply.refused } : {}),
         rank: true,
         defaultRankShown: true,
         rankMarkers: true,
@@ -1820,7 +1827,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
   try {
     const settingsFor = (direction: 'ascending' | 'descending') => tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'v', direction } });
     const lane = () => {
-      const view = familyTableLaneView(() => {});
+      const view = createLaneView(tableLane, () => {});
       const state = new Map<string, unknown>();
       const transport = new LaneTransport();
       let seq = 1;
@@ -1829,7 +1836,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
         widget: 1,
         subs: [],
         pictures: [],
-        model: transport.carry({ family: 'table' as const, kind: 'test-fresh-equals-incremental', options: FRESH_OPTIONS, settings, sources: FRESH_SOURCES, staticPanels: { main: { rows } }, width: 360, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true }),
+        model: transport.carry({ family: 'table' as const, kind: 'test-fresh-equals-incremental', options: NO_OPTIONS, settings, sources: NO_SOURCES, staticPanels: { main: { rows } }, width: 360, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true }),
         hour,
         seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [{ width: 360, height: 200, dpr: 1 }], offset: 0, pin: null },
@@ -1876,14 +1883,14 @@ test('an incremental table paint after a seek back, a same-hour correction and a
     }, descending);
     assert.deepEqual(grouped.map(item => item.kind), ['data'], 'a group revealed later adds no heading before its hour');
 
-    const laneBinding = (rows: Row[], settings: TableSettings, scrollTop = 0) => ({
-      family: 'table' as const, theme: TEST_THEME, kind: 'test-fresh-equals-incremental', options: FRESH_OPTIONS, settings, sources: FRESH_SOURCES, staticPanels: { main: { rows } },
-      width: 360, height: 200, scrollLeft: 0, scrollTop, reducedMotion: true,
+    const laneBinding = (rows: Row[], settings: TableSettings, scrollTop = 0, reducedMotion = true) => ({
+      family: 'table' as const, theme: TEST_THEME, kind: 'test-fresh-equals-incremental', options: NO_OPTIONS, settings, sources: NO_SOURCES, staticPanels: { main: { rows } },
+      width: 360, height: 200, scrollLeft: 0, scrollTop, reducedMotion,
     });
     const tableSurface = { width: 360, height: 200, dpr: 1 };
     const heldOne = laneBinding(atOne, descending);
-    assertQuietFrames(() => familyTableLaneView(() => {}), { label: 'table', binding: heldOne, hour: 1 }, 24, tableSurface);
-    assertFreshPaint(() => familyTableLaneView(() => {}), [
+    assertQuietFrames(() => createLaneView(tableLane, () => {}), { label: 'table', binding: heldOne, hour: 1 }, 24, tableSurface);
+    assertFreshPaint(() => createLaneView(tableLane, () => {}), [
       { label: 'at one', binding: heldOne, hour: 1, check: true },
       { label: 'at two', binding: laneBinding(atTwo, descending), hour: 2, speed: 24 },
       { label: 'seek back', binding: heldOne, hour: 1, check: true },
@@ -1891,6 +1898,14 @@ test('an incremental table paint after a seek back, a same-hour correction and a
       { label: 'reorder', binding: laneBinding(corrected, ascending), hour: 1, check: true },
       { label: 'scrolled', binding: laneBinding(corrected, ascending, 10), hour: 1, check: true },
     ], tableSurface);
+    const refusedBinding = { ...laneBinding([], descending), staticPanels: { main: { rows: [], refused: 'Scores were not recorded at this hour' } } };
+    for (const reducedMotion of [true, false]) {
+      assertContinuity(() => createLaneView(tableLane, () => {}), {
+        from: { label: `at one${reducedMotion ? '' : ', gliding'}`, binding: laneBinding(atOne, descending, 0, reducedMotion), hour: 1 },
+        refused: { label: 'a refused hour', binding: refusedBinding, hour: 2 },
+        to: { label: `rank markers at three${reducedMotion ? '' : ' with a glide'}`, binding: laneBinding(atTwo, descending, 0, reducedMotion), hour: 3 },
+      }, tableSurface);
+    }
     type Side = { key: string; lead: string; total: number; rows: Row[] };
     const shareColumns: TableColumnSpec[] = [
       { key: 'name', label: 'Country', as: 'plain', offered: ['plain'], priority: 0, text: true },
@@ -1921,15 +1936,16 @@ test('an incremental table paint after a seek back, a same-hour correction and a
       },
     });
     const paneLane = () => {
-      const view = familyTableLaneView(() => {});
+      const view = createLaneView(tableLane, () => {});
       const state = new Map<string, unknown>();
       let seq = 1;
       const before = contexts.length;
+      const transport = new LaneTransport();
       const paint = (sides: Side[], hour: number, settings: TableSettings, scrollLeft = 0) => view.paint({
         widget: 2,
         subs: [],
         pictures: [],
-        model: { family: 'table' as const, kind: 'test-panes-fresh', options: {}, settings, sources: {}, staticPanels: { main: { sides } }, width: 700, height: 240, scrollLeft, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
+        model: { family: 'table' as const, kind: 'test-panes-fresh', options: transport.carry({}), settings, sources: {}, staticPanels: { main: { sides } }, width: 700, height: 240, scrollLeft, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
         hour,
         seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [{ width: 700, height: 240, dpr: 1 }], offset: 0, pin: null },
@@ -2050,13 +2066,14 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     transferToImageBitmap() { return { close() {} }; }
   };
   try {
-    const view = familyTableLaneView(() => {});
+    const view = createLaneView(tableLane, () => {});
     const state = new Map<string, unknown>();
     let seq = 1;
     const settings = tableSettingsOf(undefined, [{ key: 'name', label: 'Country', as: 'plain', offered: ['plain'] }], { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
+    const transport = new LaneTransport();
     const paint = () => view.paint({
       widget: 1, subs: [], pictures: [],
-      model: { family: 'table' as const, kind: 'test-names-arrive', options: {}, settings, sources: {}, staticPanels: { main: { at: seq } }, width: 120, height: 80, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
+      model: { family: 'table' as const, kind: 'test-names-arrive', options: transport.carry({}), settings, sources: {}, staticPanels: { main: { at: seq } }, width: 120, height: 80, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
       hour: 1, seek: 0, speed: 0, binding: { generation: 1, surfaces: [{ width: 120, height: 80, dpr: 1 }], offset: 0, pin: null }, inspect: null, now: 1,
     }, state, () => `c${seq++}`);
     const widthOf = (painted: ReturnType<typeof paint>) => (painted.fields.widths?.value as { widths: Record<string, number> }).widths.name!;
@@ -2379,20 +2396,21 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
   };
   try {
     const createLane = () => {
-      const view = familyTableLaneView(() => {});
+      const view = createLaneView(tableLane, () => {});
       const state = new Map<string, unknown>();
       let seq = 1;
       const idx = grids.length;
+      const transport = new LaneTransport();
       const paint = (scene: LogScene, hour: number, settings: TableSettings, expanded?: Readonly<Record<string, boolean>>) => view.paint({
         widget: 1,
         subs: [],
         pictures: [],
-        model: {
+        model: transport.carry({
           family: 'table' as const,
           kind: 'test-log-fresh-equals-incremental',
-          options: {},
+          options: NO_OPTIONS,
           settings,
-          sources: {},
+          sources: NO_SOURCES,
           staticPanels: { main: scene },
           width: 640,
           height: 360,
@@ -2401,7 +2419,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
           expanded,
           theme: TEST_THEME,
           reducedMotion: true,
-        },
+        }),
         hour,
         seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [{ width: 640, height: 360, dpr: 1 }], offset: 0, pin: null },
@@ -2494,14 +2512,21 @@ test('the table host adapter stores and resolves table settings through its decl
 test('batch 1 log projections: market-ledger contract grouping, decisions running-first, event-choices awaiting-first and detail meta, and event-feed missing dated faction name', () => {
   const marketReply: MarketLedgerTailReply = {
     branchId: '1',
-    baseOrdinal: '0',
-    firstOrdinal: '0',
     offset: '0',
     total: '2',
+    live: '1',
+    counts: [{ key: 'active', total: '1' }],
+    nextChange: null,
     rows: [
       {
         key: '0000000000000012',
-        hour: 108,
+        hour: 100,
+        observed: 100,
+        exact: true,
+        ordinal: '0',
+        live: true,
+        request: false,
+        requestedHour: null,
         startedHour: 100,
         endedHour: null,
         status: 'active',
@@ -2518,9 +2543,12 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
           contractedRaw: '50000000',
           deliveryUnavailable: null,
         }],
+        deliveryMissing: null,
         paidRaw: '4800000',
-        paidNotRecorded: false,
-        agreedPriceRaw: '9600000',
+        paidMissing: null,
+        quotes: [{ variant: '6', name: 'Infantry Equipment I', nameMissing: null, priceRaw: '9600000' }],
+        termsMissing: null,
+        eventsTotal: '2',
         events: [
           { key: '3', hour: 108, kind: 'payment', variant: null, equipment: null, equipmentMissing: null, amountRaw: '4800000', amountNotRecorded: false, reason: null },
           { key: '2', hour: 105, kind: 'delivery', variant: '6', equipment: 'Infantry Equipment I', equipmentMissing: null, amountRaw: '25000000', amountNotRecorded: false, reason: null },
@@ -2528,7 +2556,13 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
       },
       {
         key: '0000000000000099',
-        hour: 102,
+        hour: 100,
+        observed: 100,
+        exact: true,
+        ordinal: '1',
+        live: false,
+        request: false,
+        requestedHour: null,
         startedHour: 100,
         endedHour: 102,
         status: 'ended',
@@ -2545,9 +2579,12 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
           contractedRaw: null,
           deliveryUnavailable: 'Delivery amount unavailable: purchase manifest not acquired before removal',
         }],
+        deliveryMissing: null,
         paidRaw: null,
-        paidNotRecorded: false,
-        agreedPriceRaw: null,
+        paidMissing: null,
+        quotes: [],
+        termsMissing: "The contract's terms were not recorded at its start",
+        eventsTotal: '0',
         events: [],
       },
     ],
@@ -2559,8 +2596,6 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
   const marketSource = buildRowSourceFromHead('mkt', marketReply, undefined, 110)!;
   const marketModel = marketLedgerProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', marketSource]]) }), {
     perspective: 'FRA',
-    showRequests: true,
-    showEnded: true,
     selectionEmpty: null,
   });
   assert.equal(marketModel.rows.length, 2);
@@ -2576,27 +2611,12 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
 
   const decRows: ScriptPageRow[] = [
     {
-      key: 'd-done',
-      hour: 108,
-      ordinal: '0',
-      cells: [],
-      occurrence: {
-        id: 'd-done',
-        opened: true,
-        edges: [{
-          row: { id: 'd-done-1', hour: 108, readHour: 108, nameHour: 108, exact: true, category: 'politics', kind: 'decisionSelected', tags: ['GER'], participants: ['GER', null], item: { token: 'dec_one', name: 'War Bonds', description: null, icon: null }, amount: null },
-          costs: [{ currency: 'politicalPower', amount: '-50000' }],
-          lifecycle: null,
-          days: null,
-          option: null,
-        }],
-      },
-    },
-    {
       key: 'd-run',
       hour: 104,
-      ordinal: '1',
-      cells: [],
+      observed: 104,
+      ordinal: '0',
+      live: true,
+      status: 'active',
       occurrence: {
         id: 'd-run',
         opened: true,
@@ -2609,16 +2629,33 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
         }],
       },
     },
+    {
+      key: 'd-done',
+      hour: 108,
+      observed: 108,
+      ordinal: '1',
+      live: false,
+      status: 'taken',
+      occurrence: {
+        id: 'd-done',
+        opened: true,
+        edges: [{
+          row: { id: 'd-done-1', hour: 108, readHour: 108, nameHour: 108, exact: true, category: 'politics', kind: 'decisionSelected', tags: ['GER'], participants: ['GER', null], item: { token: 'dec_one', name: 'War Bonds', description: null, icon: null }, amount: null },
+          costs: [{ currency: 'politicalPower', amount: '-50000' }],
+          lifecycle: null,
+          days: null,
+          option: null,
+        }],
+      },
+    },
   ];
   const decSource = buildRowSourceFromHead('dec', { baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '2', rows: decRows, missing: [] }, undefined, 110)!;
   const decModel = decisionsProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', decSource]]) }), {
-    statuses: ['active', 'taken', 'completed', 'failed', 'cancelled', 'timedOut', 'removed', 'unsupported', 'unknown'],
     artwork: true,
     breaks: [],
-    filter: { passing: null },
   });
   assert.equal(decModel.rows.length, 2);
-  assert.equal(decModel.rows[0]!.key, 'd-run', 'running decision pins above completed decision');
+  assert.equal(decModel.rows[0]!.key, 'd-run', 'the product\'s order: the running decision first');
   assert.equal(decModel.rows[0]!.live, true);
   assert.equal(decModel.rows[0]!.cells.cost.value.kind, 'notRecorded');
   assert.equal(decModel.rows[1]!.key, 'd-done');
@@ -2626,10 +2663,31 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
 
   const choiceRows: ScriptPageRow[] = [
     {
+      key: 'ev-open',
+      hour: 105,
+      observed: 105,
+      ordinal: '0',
+      live: true,
+      status: 'awaiting',
+      occurrence: {
+        id: 'ev-open',
+        opened: true,
+        edges: [{
+          row: { id: 'ev-o-1', hour: 105, readHour: 105, nameHour: 105, exact: true, category: 'politics', kind: 'newsEventFired', tags: ['FRA'], participants: [null, 'FRA'], item: { token: 'news.2', name: 'Crisis', description: null, icon: null }, amount: null },
+          costs: null,
+          lifecycle: null,
+          days: null,
+          option: null,
+        }],
+      },
+    },
+    {
       key: 'ev-chosen',
       hour: 109,
-      ordinal: '0',
-      cells: [],
+      observed: 107,
+      ordinal: '1',
+      live: false,
+      status: 'chosen',
       occurrence: {
         id: 'ev-chosen',
         opened: true,
@@ -2651,34 +2709,16 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
         ],
       },
     },
-    {
-      key: 'ev-open',
-      hour: 105,
-      ordinal: '1',
-      cells: [],
-      occurrence: {
-        id: 'ev-open',
-        opened: true,
-        edges: [{
-          row: { id: 'ev-o-1', hour: 105, readHour: 105, nameHour: 105, exact: true, category: 'politics', kind: 'newsEventFired', tags: ['FRA'], participants: [null, 'FRA'], item: { token: 'news.2', name: 'Crisis', description: null, icon: null }, amount: null },
-          costs: null,
-          lifecycle: null,
-          days: null,
-          option: null,
-        }],
-      },
-    },
   ];
   const choiceSource = buildRowSourceFromHead('evc', { baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '2', rows: choiceRows, missing: [] }, undefined, 110)!;
   const choiceModel = eventChoicesProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', choiceSource]]) }), {
-    openers: ['scriptEventFired', 'newsEventFired'],
+    events: ['country', 'news'],
     awaiting: false,
     artwork: true,
     breaks: [],
-    filter: { passing: null },
   });
   assert.equal(choiceModel.rows.length, 2);
-  assert.equal(choiceModel.rows[0]!.key, 'ev-open', 'awaiting event pins first');
+  assert.equal(choiceModel.rows[0]!.key, 'ev-open', 'the product\'s order: the awaiting event first');
   assert.equal(choiceModel.rows[0]!.cells.choice.statusKind, 'waiting');
   assert.equal(choiceModel.rows[0]!.cells.action.actionLabel, 'View');
   assert.equal(choiceModel.rows[1]!.cells.choice.inlinePrefix, 'A');
@@ -2688,8 +2728,10 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
     {
       key: 'f-1',
       hour: 106,
+      observed: 106,
       ordinal: '0',
-      cells: [],
+      live: false,
+      choice: null,
       row: {
         id: 'f-1',
         hour: 106,
@@ -2707,10 +2749,7 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
   const feedSource = buildRowSourceFromHead('feed', { baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '1', rows: feedRows, missing: [] }, undefined, 110)!;
   const feedModel = eventFeedProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', feedSource]]) }), {
     categories: ['diplomacy'],
-    excludedKinds: [],
     artwork: true,
-    from: null,
-    filter: { passing: null },
   });
   assert.equal(feedModel.rows.length, 1);
   assert.equal(feedModel.rows[0]!.cells.detail.value.kind, 'notRecorded', 'missing dated faction name stays notRecorded rather than guessing');
@@ -2733,4 +2772,127 @@ test('the audit compares which art a cell shows, never whether its bytes have ar
   assert.equal(pictureError('table', arrived, { values: new Map(arriving.map(row => [row.key, row.value!])), ordered: true }), null);
   const other = audit({ ...base, rows: base.rows.map(row => ({ ...row, cells: { ...row.cells, [column]: { ...row.cells[column]!, iconSlot: true, iconArt: JSON.stringify(['sprite', 'GFX_other', 0, null, false]), iconPending: true } } })) });
   assert.notEqual(pictureError('table', arrived, { values: new Map(other.map(row => [row.key, row.value!])), ordered: true }), null, 'a different picture is still a difference');
+});
+
+test('cold table art and flag slots waiting behind the fetch concurrency limit paint as pending, not confirmed missing', () => {
+  const artCache = new LaneArtCache({
+    maxConcurrent: 6,
+    fetchBitmap: () => new Promise<ImageBitmap>(() => {}),
+  });
+  const columns: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true, widest: ['Country 7'] },
+    { key: 'badge', label: 'Kind', as: 'plain', offered: ['plain'], priority: 1, cellKind: 'kind', widest: ['Kind'] },
+  ];
+  const settings = tableSettingsOf(undefined, columns, { density: 'compact', sort: { column: 'country', direction: 'ascending' } });
+  const baseCols = buildColumnLayouts(columns, settings);
+  const fixedWidths = measureFixedColumnWidths(baseCols, settings, TEST_THEME, text => text.length * 7);
+  const layout = layoutFamilyTable(buildColumnLayouts(columns, settings, fixedWidths), 320, { rankShown: false, rankWidth: 0 });
+
+  const flagUrls = Array.from({ length: 7 }, (_, i) => `art://flag-${i + 1}`);
+  const iconUrls = Array.from({ length: 7 }, (_, i) => `art://icon-${i + 1}`);
+  artCache.requestVisible([...flagUrls, ...iconUrls]);
+  assert.equal(artCache.stateOfUrl(flagUrls[0]!), 'pending');
+  assert.equal(artCache.stateOfUrl(flagUrls[6]!), 'unrequested');
+  assert.equal(artCache.stateOfUrl(iconUrls[6]!), 'unrequested');
+
+  const rows = resolveTableRows({
+    columns,
+    hour: 10,
+    rows: Array.from({ length: 7 }, (_, i) => ({
+      key: `R${i + 1}`,
+      name: `Country ${i + 1}`,
+      cells: {
+        country: {
+          value: knownValue(`Country ${i + 1}`),
+          country: `T0${i + 1}`,
+          iconSlot: true,
+          icon: flagUrls[i]!,
+        },
+        badge: {
+          value: knownValue(`Icon ${i + 1}`),
+          iconSlot: true,
+          icon: iconUrls[i]!,
+          artName: `Icon ${i + 1}`,
+        },
+      },
+    })),
+  }, settings);
+
+  const texts: string[] = [];
+  let roundRectCalls = 0;
+  const base = instrumentedContext().ctx;
+  const recordingCtx = {
+    ...base,
+    measureText(text: string) {
+      return { width: text.length * 5 };
+    },
+    fillText(text: string) {
+      texts.push(text);
+    },
+    roundRect() {
+      roundRectCalls++;
+    },
+  } as unknown as CanvasRenderingContext2D;
+
+  drawFamilyTable(recordingCtx, {
+    layout,
+    rows,
+    settings,
+    hour: 10,
+    width: 320,
+    height: 400,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 1,
+    glideDuration: 0,
+    glide: new Map(),
+    artCache,
+    icons: artCache.map,
+    iconVersion: artCache.version,
+    dpr: 1,
+  });
+
+  assert.equal(texts.includes('T07'), false, '7th queued flag waiting behind concurrency limit must not draw missing tag text');
+  assert.equal(roundRectCalls, 0, 'queued unrequested art and flag slots must stay pending with no hatched missing box');
+
+  const missingRows = resolveTableRows({
+    columns,
+    hour: 10,
+    rows: [{
+      key: 'M1',
+      name: 'No Art',
+      cells: {
+        country: { value: knownValue('No Art'), country: 'MIS', iconSlot: true },
+        badge: { value: knownValue('Missing'), iconSlot: true, artName: 'Missing' },
+      },
+    }],
+  }, settings);
+  texts.length = 0;
+  roundRectCalls = 0;
+  drawFamilyTable(recordingCtx, {
+    layout,
+    rows: missingRows,
+    settings,
+    hour: 10,
+    width: 320,
+    height: 120,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 2,
+    glideDuration: 0,
+    glide: new Map(),
+    artCache,
+    icons: artCache.map,
+    iconVersion: artCache.version,
+    dpr: 1,
+  });
+  assert.ok(roundRectCalls > 0, 'confirmed-unavailable table art and flag slots still paint the hatched missing box');
+  assert.ok(texts.includes('MIS'), 'confirmed-unavailable flag slot still paints the country tag');
+  artCache.dispose();
 });

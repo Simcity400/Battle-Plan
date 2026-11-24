@@ -1,17 +1,16 @@
-import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
-import { projectForceAtReply, validateForceAtReply, type ForceAtRaceBaseOptions } from '../../families/bars/forceAtRace.ts';
+import { type ForceAtRaceBaseOptions, forceAtSources, projectForceAtReply, validateForceAtReply } from '../../families/bars/forceAtRace.ts';
 import type { BarsModel, BarsProjection } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import {
-  nextSeriesRaceChange,
   projectSeriesRace,
+  seriesRaceSelection,
   seriesRaceSources,
   seriesRaceUnavailable,
   seriesRaceWarnings,
   type SeriesRaceBaseOptions,
 } from '../../families/bars/seriesRace.ts';
-import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
+import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 
 export type AirForceMeasureOption = 'planes' | 'wings';
 export type AirForceOwnershipOption = 'roster' | 'effective';
@@ -31,9 +30,7 @@ function totalsFamily(measure: AirForceMeasureOption, ownership: AirForceOwnersh
 export const airForceSizeRaceProjection: BarsProjection<AirForceSizeRaceOptions> = registerFamilyProjection({
   kind: 'air-force-size',
   family: 'bars',
-  nextChange(readView, options) {
-    return nextSeriesRaceChange(readView.hour, options);
-  },
+  nextChange: () => Infinity,
   project(readView: BoundedReadView, options: AirForceSizeRaceOptions): BarsModel {
     const scaleUnit = options.measure === 'wings' ? 'Air wings' : 'Planes';
     const valueLabel = options.measure === 'wings' ? 'Number of wings' : 'Number of planes';
@@ -42,7 +39,6 @@ export const airForceSizeRaceProjection: BarsProjection<AirForceSizeRaceOptions>
 
     if (!options.split) {
       return projectSeriesRace(readView, options, {
-        decimals: 0,
         valueFormat: { decimals: 0 },
         scaleFormat: { decimals: 0 },
         scaleUnit,
@@ -53,20 +49,6 @@ export const airForceSizeRaceProjection: BarsProjection<AirForceSizeRaceOptions>
     }
 
     const hour = readView.hour;
-    const ranked = options.top != null || options.all === true;
-    if (!ranked && options.unobserved?.some(([first, last]) => first <= hour && hour <= last)) {
-      return {
-        form: 'ordered',
-        hour,
-        animateOrder: true,
-        showAxis: true,
-        scaleUnit,
-        scaleFormat: { decimals: 0 },
-        rows: [],
-        empty: 'Group membership is unavailable at this time.',
-        emptyKind: 'unavailable',
-      };
-    }
 
     const refused = readView.refused('main');
     if (refused) {
@@ -98,40 +80,10 @@ function airForceSizeRaceSources(ctx: FamilyPlanContext): SourcePlan {
   if (!split) {
     return seriesRaceSources(ctx, { kind: 'air-force-size', family: totalsFamily(measure, ownership) });
   }
-  const top = ctx.countries.top;
-  const all = ctx.countries.all;
-  const countries = top == null && !all ? ctx.countries.tags.map(countryFromKey) : [];
-  const coverage: SourceCoverage = top != null
-    ? { mode: 'population', form: 'top', limit: top }
-    : all
-      ? { mode: 'population', form: 'all' }
-      : { mode: 'keyed', keys: ctx.countries.tags };
-  const params = {
-    branchId: ctx.branch.id,
-    countries,
-    ...(top != null ? { top } : {}),
+  return forceAtSources(ctx, `air-force-size:race:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${measure}:${ownership}:split`, 'air-force-at', {
     measure,
     ownership,
-  };
-  return {
-    owner: `air-force-size:race:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${measure}:${ownership}:split`,
-    entries: top == null && !all && !countries.length ? [] : [{
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'panel',
-        coverage,
-        product: 'air-force-at',
-        followQuery: { panel: 'air-force-at', ...params },
-        params,
-        validate: validateForceAtReply,
-      },
-    }],
-    allowEmptyFollow: top == null && !all && !countries.length,
-  };
+  });
 }
 
 export const airForceSizeRaceDeclaration: BarsWidgetDeclaration<AirForceSizeRaceOptions> = {
@@ -152,17 +104,11 @@ export const airForceSizeRaceDeclaration: BarsWidgetDeclaration<AirForceSizeRace
   sources: airForceSizeRaceSources,
   projection: airForceSizeRaceProjection,
   projectionOptions: ctx => {
-    const ranked = ctx.countries.top != null || ctx.countries.all;
     return {
+      ...seriesRaceSelection(ctx),
       measure: airMeasure(ctx.options.measure),
       ownership: airOwnership(ctx.options.ownership),
       split: ctx.options.split === true,
-      candidates: ranked ? ctx.countries.every : ctx.countries.tags,
-      holders: ranked ? null : ctx.countries.holders,
-      membership: ranked ? null : ctx.countries.membership,
-      unobserved: ranked ? [] : ctx.countries.unobserved,
-      top: ctx.countries.top,
-      all: ctx.countries.all,
     };
   },
   unavailable: seriesRaceUnavailable,

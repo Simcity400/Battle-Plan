@@ -5,8 +5,9 @@ import { createBoundedReadView, displayedHour } from '../../families/boundedView
 import type { BranchToHourSourceRead, ExactHoverSourceRead, FamilyPlanContext, IdentityProvider } from '../../families/plan.ts';
 import { deriveTimeChartTooltip } from '../../families/time-chart/hitTest.ts';
 import { hoverTimeChartLayout, layoutTimeChart } from '../../families/time-chart/layout.ts';
-import { timeChartLaneView } from '../../families/time-chart/laneView.ts';
+import { timeChartLane } from '../../families/time-chart/laneView.ts';
 import { LANE_THEME } from '../../families/laneRuntime.fixture.ts';
+import { createLaneView } from '../../families/laneRuntime.ts';
 import type { CountryIdentitiesReply, OccupationReserveReply, ReserveHistoryReply } from '../../generated/dashboard';
 import { FAMILY_VIEWS } from '../familyManifest.ts';
 import { occupationReserveBreakdownDeclaration, occupationReserveBreakdownProjection } from './occupationReserveBreakdownProjection.ts';
@@ -37,6 +38,7 @@ test('occupation-reserve-manpower race preserves Rust ranking, builds source-cou
     holders: [
       {
         country: { id: 2, tag: 'AAA' },
+        slot: null,
         admitted: true,
         total: 500,
         entries: [
@@ -47,6 +49,7 @@ test('occupation-reserve-manpower race preserves Rust ranking, builds source-cou
       },
       {
         country: { id: 3, tag: 'DDD' },
+        slot: null,
         admitted: true,
         total: 250,
         entries: [
@@ -69,7 +72,7 @@ test('occupation-reserve-manpower race preserves Rust ranking, builds source-cou
       CCC: { name: 'Gamma', color: '#f59e0b' },
     }),
   });
-  const model = occupationReserveRaceProjection.project(view, { top: 10, all: false });
+  const model = occupationReserveRaceProjection.project(view, { top: 10, all: false, group: false });
   assertBarsModelValid(model, 240);
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(rows.map(r => [r.key, r.numeric]), [['AAA', 500], ['DDD', 250]]);
@@ -80,7 +83,7 @@ test('occupation-reserve-manpower race preserves Rust ranking, builds source-cou
 
 test('occupation-reserve-manpower surfaces missing refusal as unavailable and handles unpopulated default Top cleanly', () => {
   const unpopulated = createBoundedReadView({ hour: displayedHour(240), panels: new Map() });
-  const pending = occupationReserveRaceProjection.project(unpopulated, { top: 10, all: false });
+  const pending = occupationReserveRaceProjection.project(unpopulated, { top: 10, all: false, group: false });
   assert.equal(pending.rows.length, 0);
   assert.equal(pending.empty, undefined);
 
@@ -93,7 +96,7 @@ test('occupation-reserve-manpower surfaces missing refusal as unavailable and ha
   };
   const refused = occupationReserveRaceProjection.project(
     createBoundedReadView({ hour: displayedHour(240), panels: new Map([['main', missing]]) }),
-    { top: 10, all: false },
+    { top: 10, all: false, group: false },
   );
   assert.equal(refused.emptyKind, 'unavailable');
   assert.equal(refused.empty, missing.missing);
@@ -175,6 +178,7 @@ test('occupation-reserve-manpower breakdown asks history to the hour, asks hover
   const hoverReply: OccupationReserveReply = {
     holders: [{
       country: { id: 2, tag: 'AAA' },
+      slot: null,
       admitted: true,
       total: 300,
       entries: [
@@ -234,7 +238,7 @@ test('occupation-reserve-manpower breakdown asks history to the hour, asks hover
   assert.ok(tip?.payload?.items?.some(item => item.label === 'Beta' && item.value === '−25'));
 
   const foreignHolderHover: OccupationReserveReply = {
-    holders: [{ country: { id: 99, tag: 'AAA' }, admitted: true, total: 999, entries: [{ ordinal: 0, source: { id: 8, tag: 'BBB' }, amount: 999 }] }],
+    holders: [{ country: { id: 99, tag: 'AAA' }, slot: null, admitted: true, total: 999, entries: [{ ordinal: 0, source: { id: 8, tag: 'BBB' }, amount: 999 }] }],
     readHour: 220,
     unnamed: 0,
     missing: null,
@@ -274,7 +278,7 @@ test('occupation-reserve-manpower breakdown asks history to the hour, asks hover
   assert.equal(unreadHeadModel.empty?.message, 'Occupation settings were not recorded at these hours');
   assert.deepEqual(unreadHeadModel.auditRows, []);
 
-  const lane = timeChartLaneView(() => {});
+  const lane = createLaneView(timeChartLane, () => {});
   assert.ok(lane);
   const unchosen = occupationReserveBreakdownProjection.project(view, {
     holder: null,

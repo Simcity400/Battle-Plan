@@ -1447,7 +1447,7 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
   return {
     kind: spec.kind,
     family: 'table',
-    nextChange: spec.nextChange,
+    nextChange: (readView, options) => Math.min(nextLookChange(optionsLabels(options), readView.hour), spec.nextChange ? spec.nextChange(readView, options) : Infinity),
     project(readView, options): TableModel {
       const hour = readView.hour;
       const answer = readView.answer(panelKey);

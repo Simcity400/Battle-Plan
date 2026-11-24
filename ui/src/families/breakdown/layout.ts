@@ -674,11 +674,16 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
     }
     sideList = { x: listX, top: listTop, width: listW, height: listH, rows, contentHeight: ry + 8 };
   } else {
+    const outerOf = new Map<string, (typeof outerSlices)[number][]>();
+    for (const outer of outerSlices) {
+      if (outer.key === outer.parentKey) continue;
+      const held = outerOf.get(outer.parentKey);
+      if (held) held.push(outer);
+      else outerOf.set(outer.parentKey, [outer]);
+    }
     for (const slice of innerSlices) {
       items.push({ key: slice.key, parentKey: null, depth: 0, part: slice.part, open: -1, shareText: shareOf(slice.part, level.total) });
-      for (const outer of outerSlices) {
-        if (outer.parentKey === slice.key && outer.key !== slice.key) items.push({ key: outer.key, parentKey: slice.key, depth: 1, part: outer.part, open: -1, shareText: shareOf(outer.part, level.total) });
-      }
+      for (const outer of outerOf.get(slice.key) ?? []) items.push({ key: outer.key, parentKey: slice.key, depth: 1, part: outer.part, open: -1, shareText: shareOf(outer.part, level.total) });
     }
   }
 

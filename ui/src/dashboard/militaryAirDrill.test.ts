@@ -24,7 +24,7 @@ import type { Leaf } from './militaryAirParts.fixture';
 import type { MilitaryAirLedger } from './militaryAirLedger';
 
 const span = (firstHour: number, lastHour = firstHour) => ({ firstHour, lastHour });
-const data = (): MilitaryAirLedger => ({ family: 'airLosses', firstHour: 10, lastHour: 20, available: true,
+const data = (): MilitaryAirLedger => ({ family: 'airLosses', firstHour: 10, lastHour: 20, available: true, causes: [{ cause: 1, name: 'Aircraft combat', missing: null }, { cause: 3, name: 'Air accidents', missing: null }], 
   observed: [span(10, 16), span(18, 20)], incomplete: [], countries: ['A', 'B', 'C'].map((tag, id) => ({ tag, identity: `${id}:9`,
     present: [span(10, 16), span(18, 20)], membership: tag === 'A' ? [span(10, 16), span(18, 20)] : tag === 'B' ? [span(10, 12)] : [span(13, 16), span(18, 20)] })), parts: ([
     { tag: 'B', identity: '1:9', dealt: false, opponent: null, region: 40001, cause: 1, buildingToken: null, buildingId: null, state: null,

@@ -478,6 +478,36 @@ class FamilyKitPatterns(unittest.TestCase):
             "ui/src/shell/AnalyticsNav.tsx": "const s = 'Choose at least one page';\n",
         })[0], 0)
 
+    def test_family_private_art_cache_is_refused_outside_art_module(self):
+        code, out = check({}, {
+            "ui/src/families/table/cellPainters.ts": "function resolveArtState(url: string) { return cache.stateOfUrl(url); }\n",
+            "ui/src/families/table/painter.ts": "export function collectVisibleCellIcons() { return []; }\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("family-private-art-cache", out)
+        self.assertIn("resolveCachedArt", out)
+        self.assertIn("collectArtUrls", out)
+        self.assertEqual(check({}, {
+            "ui/src/families/art/react.ts": "const s = cache.stateOfUrl(url);\n",
+            "ui/src/families/table/tableFamily.test.ts": "const s = cache.stateOfUrl(url);\n",
+        })[0], 0)
+
+    def test_widget_stored_option_reads_are_refused_outside_the_mapping(self):
+        code, out = check({}, {
+            "ui/src/widgets/foo/FooWidget.tsx": "const raw = widget.options?.countFor;\nconst view = props.widget.options?.['view'];\n",
+            "ui/src/widgets/foo/FooDetail.tsx": "const options = resolveOptions(OPTIONS, spec.options);\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("ui/src/widgets/foo/FooWidget.tsx: widget-stored-option", out)
+        self.assertIn("ui/src/widgets/foo/FooDetail.tsx: widget-stored-option", out)
+        self.assertIn("widgetViewOptions", out)
+        self.assertEqual(check({}, {
+            "ui/src/widgets/manifest.ts": "const resolved = resolveOptions(viewOptionFields(kind, view), stored);\n",
+            "ui/src/widgets/foo/FooWidget.tsx": "const { options } = props;\nconst count = options.countFor;\nconst all = widgetViewOptions(widget.kind, widget.options);\n",
+            "ui/src/widgets/foo/foo.test.ts": "const raw = widget.options?.countFor;\n",
+            "ui/src/dashboard/settings/WidgetSettings.tsx": "const values = resolveOptions(optionFields, widget.options);\n",
+        })[0], 0)
+
     def test_widget_helpers_and_jsx_are_checked_and_false_positives_pass(self):
         code, out = check({}, {
             "ui/src/widgets/air-statistics/airStatisticsData.ts": "export const fmt = (n: number) => n.toLocaleString('en-US');\n",
