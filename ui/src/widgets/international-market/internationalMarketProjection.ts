@@ -2,7 +2,8 @@ import { liveKey } from '../../charts/live.ts';
 import { MARKET, validateMarketReply } from '../../dashboard/market.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artState, resolveIdentity, urlArtHandle, type ResolvedIdentity } from '../../families/table/identityCell.ts';
+import { urlArtHandle } from '../../families/art/provider.ts';
+import { artState, resolveIdentity, type ResolvedIdentity } from '../../families/table/identityCell.ts';
 import {
   type TableCell,
   type TableModel,

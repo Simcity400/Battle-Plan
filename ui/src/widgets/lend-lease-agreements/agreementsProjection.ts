@@ -3,13 +3,14 @@ import type { LiveValues } from '../../charts/live';
 import { FIXED5, fixedText, FUEL_QUANTITY, MARKET, SHARE, validateMarketReply } from '../../dashboard/market.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artNameCell, identityFlags, identityName, newIdentityBoundary, urlArtHandle } from '../../families/table/identityCell.ts';
+import { urlArtHandle } from '../../families/art/provider.ts';
+import { artNameCell, identityFlags, identityName, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import type { LeaseTerms, MarketItem, MarketLendLeaseReply } from '../../generated/dashboard';
-import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
 
 export type Direction = 'sent' | 'received';
 
@@ -191,7 +192,6 @@ export const agreementsProjection: TableProjection<AgreementsProjectionOptions> 
 export const agreementsDeclaration: TableWidgetDeclaration<AgreementsProjectionOptions> = {
   family: 'table',
   kind: 'lend-lease-agreements',
-  optionFields: OPTIONS,
   label: 'Lend-lease agreements',
   subject: 'lend-lease agreements',
   emptyCampaign: 'Load a campaign to see lend-lease.',
