@@ -1,6 +1,4 @@
-import { createElement } from 'react';
-import type { WidgetProps, WidgetRenderer } from '../../dashboard/definitions';
 import CountryChip from '../../dashboard/CountryChip';
-import PoliticalPowerWidget from './PoliticalPowerWidget';
+import type { FamilyViewRenderer } from '../../dashboard/definitions';
 
-export default { countryChip: CountryChip, render: (props: WidgetProps) => createElement(PoliticalPowerWidget, props) } satisfies WidgetRenderer;
+export default { countryChip: CountryChip } satisfies FamilyViewRenderer;

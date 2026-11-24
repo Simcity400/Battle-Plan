@@ -23,3 +23,4 @@ pub use registry::*;
 pub mod at_hour;
 
 pub mod log_page;
+pub mod occurrences;
