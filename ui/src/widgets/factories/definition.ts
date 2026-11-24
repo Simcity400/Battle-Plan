@@ -24,4 +24,5 @@ export const definition = {
   migrate: (_from, { options = {}, ...widget }) => ({ ...widget,
     options: { ...options, view: ['race', 'lines', 'mix'].includes(String(options.view)) ? options.view : 'race' } }),
   variants: [...raceViewVariants('Factories', OPTIONS), ...breakdownVariants('Factories', OPTIONS)],
+  playsBackDated: true,
 } as const satisfies WidgetMeta;

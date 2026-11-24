@@ -1,5 +1,6 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
+import { readableColour } from '../../charts/palette.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import { linearTicks } from '../../charts/valueAxis.ts';
 import {
@@ -175,14 +176,15 @@ function drawShareSegments(
     if (seg.hatched) {
       drawHatchRect(ctx, cursor, y, segW, height, 0, theme);
     } else {
-      ctx.fillStyle = seg.color;
+      const fill = readableColour(seg.color, theme.surface);
+      ctx.fillStyle = fill;
       ctx.fillRect(cursor, y, segW, height);
     }
     if (!seg.hatched && segW >= 34) {
       const pctText = `${Math.round(seg.share * 100)}%`;
       const fullText = seg.inlineLabel ?? `${seg.label} ${pctText}`;
       ctx.font = `600 11px ${theme.font}`;
-      ctx.fillStyle = inkOnFill(seg.color);
+      ctx.fillStyle = inkOnFill(readableColour(seg.color, theme.surface));
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       const pad = 6;
@@ -395,7 +397,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
     }
 
     const barY = Math.round(middleY - layout.barHeight / 2);
-    const barColor = row.labelMissing ? theme.grey : (row.color ?? theme.accent);
+    const barColor = row.labelMissing ? theme.grey : readableColour(row.color ?? theme.accent, theme.surface);
 
     if (model.form === 'net') {
       const formatted = row.value ? formatBarsValueField(row.value) : null;

@@ -1,4 +1,5 @@
 import '../../families/table/registerAll.ts';
+import '../../families/bars/registerAll.ts';
 import { familyBarsLaneView } from '../../families/bars/laneView.ts';
 import type { LaneView, Painted, PaintInput, Scene } from '../lane.ts';
 import { panelViews, readingStructure } from '../panels/views.ts';

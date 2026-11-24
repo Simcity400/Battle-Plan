@@ -10,15 +10,19 @@ import { useWidgetSkeleton, WidgetCaption } from '../../dashboard/widgetFrame.ts
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { holdElement } from '../../draw/bitmapSurface.ts';
 import { perfLog } from '../../shell/perf.ts';
-import type { BoundedReadView, EntityKind, FamilySourceSubscription, MirrorModel } from '../contract.ts';
+import { auditIdOf } from '../audit.ts';
+import { displayedHour } from '../boundedView.ts';
+import type { BoundedReadView, EntityKind, FamilySourceSubscription, InstalledAction, InstalledActionTarget, InstalledPicture, MirrorModel } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import {
   attachAuditWatch,
   bindFamilyPointer,
+  createPlanAuditVerifier,
   handleFamilyKeyDown,
   mountFamilyCanvas,
   renderFamilyBodyState,
   reportFamilyShownHour,
+  resolveInstalledAction,
   syncListboxMirror,
   useFamilyAnnouncer,
   useFamilyAudit,
@@ -30,28 +34,16 @@ import {
   type FamilyNavTuple,
   type FamilyTooltipField,
   type MountedFamilyCanvas,
+  type PlanAuditSnapshot,
 } from '../host/index.ts';
 import type { StaticBundle } from '../host/useFamilyPlan.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import type { FamilyBarsBinding } from './laneView.ts';
-import { deriveBarsAudit, type BarsProjection } from './model.ts';
+import { deriveBarsAudit, type BarsModel, type BarsProjection } from './model.ts';
 import './barsFamily.css';
 
 const BARS_AUDIT = -2;
-
-interface BarsAuditSnapshot<TOptions> {
-  readonly declaration: BarsProjection<TOptions>;
-  readonly options: TOptions;
-  readonly exactReadView: (hour: number) => Promise<BoundedReadView | null>;
-}
-
-async function verifyBarsAuditSnapshot<TOptions>(hour: number, snap: BarsAuditSnapshot<TOptions>) {
-  const readView = await snap.exactReadView(hour);
-  if (!readView) return null;
-  const model = snap.declaration.project(readView, snap.options);
-  const rows = deriveBarsAudit(model);
-  return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
-}
+const verifyBarsPlanAudit = createPlanAuditVerifier<BarsModel, unknown>();
 
 interface BarsMetaState {
   readonly mode: string;
@@ -157,9 +149,9 @@ export default function FamilyBarsHost<TOptions>({
   heldRef.current = held;
   const dimRef = useRef(false);
   const pauseFlushRef = useRef(0);
-  const lastHourRef = useRef(staticBundle?.hour ?? 0);
   const lastMirrorKeyRef = useRef('');
   const navRef = useRef<readonly FamilyNavTuple[]>([]);
+  const installedPictureRef = useRef<InstalledPicture | null>(null);
   const typeaheadRef = useRef({ query: '', until: 0 });
   const metaSigRef = useRef('');
 
@@ -206,7 +198,7 @@ export default function FamilyBarsHost<TOptions>({
   const tooltips = useFamilyTooltip(tooltipOwner, dataContextKey);
   useFamilyHold(frameRef, held, tooltips);
 
-  const audit = useFamilyAudit<BarsAuditSnapshot<TOptions>>({
+  const audit = useFamilyAudit<PlanAuditSnapshot<BarsModel, unknown>>({
     pipeline,
     pipe,
     ownerId: BARS_AUDIT,
@@ -268,8 +260,14 @@ export default function FamilyBarsHost<TOptions>({
     let auditId: number | undefined;
     if (perfLog && latest.captureActive && latest.exactReadView) {
       auditId = audit.capture(
-        { declaration: latest.declaration, options: latest.options, exactReadView: latest.exactReadView },
-        verifyBarsAuditSnapshot,
+        {
+          projection: latest.declaration as BarsProjection<unknown>,
+          options: latest.options,
+          exactReadView: latest.exactReadView,
+          deriveRows: model => deriveBarsAudit(model),
+          ordered: true,
+        },
+        verifyBarsPlanAudit,
       );
     }
 
@@ -340,7 +338,6 @@ export default function FamilyBarsHost<TOptions>({
       const reason = shown?.reason ?? null;
       const failureOrigin: FailureOrigin = shown?.failureOrigin ?? 'local';
       const shownHour = reportFamilyShownHour(reportShownRef.current, visible, shown);
-      if (shownHour !== null) lastHourRef.current = shownHour;
 
       auditWatch.settleIfReady(visible, mode, shown?.installedBinding, shown?.fields);
 
@@ -369,7 +366,8 @@ export default function FamilyBarsHost<TOptions>({
         latestRef.current.onIdentityDemands(demandsField);
       }
 
-      if (!visible || !shown?.fields) {
+      if (!visible || !shown?.fields || shown.id === undefined) {
+        installedPictureRef.current = null;
         tooltips.hideIfUnpinned();
         return;
       }
@@ -378,6 +376,43 @@ export default function FamilyBarsHost<TOptions>({
 
       const nextNav = (shown.fields.nav as readonly FamilyNavTuple[] | undefined) ?? [];
       navRef.current = nextNav;
+      const installedHour = displayedHour(shownHour ?? shown.painted ?? shown.h ?? 0);
+      const actionKeys = new Map<string, InstalledActionTarget>();
+      for (const entry of nextNav) {
+        actionKeys.set(entry[0], {
+          subject: entry[0],
+          hour: installedHour,
+          label: entry[1],
+          meta: entry[5],
+        });
+      }
+      const installedViewport = shown.viewport ?? {
+        width: viewportRef.current.width,
+        height: viewportRef.current.height,
+        dpr: typeof devicePixelRatio === 'number' ? devicePixelRatio : 1,
+        scrollLeft: 0,
+        scrollTop: viewportRef.current.scrollTop,
+      };
+      const installedAuditId = auditIdOf(shown.fields.audit);
+      installedPictureRef.current = {
+        id: shown.id,
+        owner: shown.installedOwner ?? shown.owner ?? '',
+        generation: {
+          seek: shown.gen?.seek ?? 0,
+          reset: shown.gen?.reset ?? 0,
+          binding: shown.installedBinding ?? shown.binding ?? 0,
+        },
+        factRevisions: {},
+        validInterval: shown.validInterval ?? [installedHour, installedHour],
+        through: shown.through ?? installedHour,
+        hour: installedHour,
+        viewport: installedViewport,
+        optionsRevision: '',
+        themeRevision: '',
+        actionKeys,
+        accessibleDescription: null,
+        ...(installedAuditId !== undefined ? { auditId: installedAuditId } : {}),
+      };
 
       const nextMirror = shown.fields.mirror as MirrorModel | undefined;
       if (nextMirror && mirrorRef.current) {
@@ -429,7 +464,8 @@ export default function FamilyBarsHost<TOptions>({
       focusedKeyRef,
       focusAnchorRef,
       accessibleRef: mirrorRef,
-      isBlocked: () => heldRef.current || dimRef.current,
+      isBlocked: () => heldRef.current || dimRef.current || !installedPictureRef.current,
+      getInstalled: () => installedPictureRef.current,
       getViewportHeight: () => latestRef.current.viewportHeight,
       parseHit: hitKey => {
         if (!hitKey) return null;
@@ -439,7 +475,10 @@ export default function FamilyBarsHost<TOptions>({
         if (hitKey.startsWith('row:')) return { key: hitKey.slice(4), toggle: false };
         return null;
       },
-      onActivate: (rowKey, isToggle) => {
+      onActivate: (rowKey: string, isToggle: boolean, action?: InstalledAction) => {
+        const installed = installedPictureRef.current;
+        if (!installed) return;
+        if (action && (action.installedId !== installed.id || action.owner !== installed.owner)) return;
         if (rowKey === '__add-region') {
           latestRef.current.onAddRegion?.();
           return;
@@ -448,14 +487,16 @@ export default function FamilyBarsHost<TOptions>({
           latestRef.current.onRemoveRegion?.(rowKey);
           return;
         }
-        const entry = navRef.current.find(item => item[0] === rowKey);
-        latestRef.current.onActivate?.(rowKey, entry?.[5], lastHourRef.current);
+        const resolved = action ?? resolveInstalledAction(installed, rowKey, false);
+        if (!resolved) return;
+        latestRef.current.onActivate?.(resolved.subject, resolved.meta, resolved.hour);
       },
       onContextMenu: (key, clientX, clientY) => {
+        const installed = installedPictureRef.current;
         const builder = latestRef.current.contextMenuItems;
-        if (!builder) return false;
-        const entry = key ? navRef.current.find(item => item[0] === key) : undefined;
-        const items = builder(key, key ? (entry?.[1] ?? key) : null, lastHourRef.current);
+        if (!installed || !builder) return false;
+        const target = key ? installed.actionKeys.get(key) : undefined;
+        const items = builder(key, key ? (target?.label ?? key) : null, target?.hour ?? installed.hour);
         if (!items.length) return false;
         contextMenuRef.current.open(clientX, clientY, items);
         return true;
@@ -507,7 +548,7 @@ export default function FamilyBarsHost<TOptions>({
       nav: navRef.current,
       focusedKey: focusedKeyRef.current,
       pageStep: Math.max(1, Math.floor(viewportRef.current.height / 28)),
-      blocked: heldRef.current || dimRef.current,
+      blocked: heldRef.current || dimRef.current || !installedPictureRef.current,
       typeaheadRef,
       isPinnedTooltip: () => tooltips.isPinned(),
       onFocusKey: key => {
@@ -515,11 +556,15 @@ export default function FamilyBarsHost<TOptions>({
         bindRef.current();
       },
       onActivate: entry => {
+        const installed = installedPictureRef.current;
+        if (!installed) return;
         if (entry[0] === '__add-region') {
           latestRef.current.onAddRegion?.();
           return;
         }
-        latestRef.current.onActivate?.(entry[0], entry[5], lastHourRef.current);
+        const resolved = resolveInstalledAction(installed, entry[0], false);
+        if (!resolved) return;
+        latestRef.current.onActivate?.(resolved.subject, resolved.meta, resolved.hour);
       },
       onUnpinTooltip: () => tooltips.unpin(announce),
     });

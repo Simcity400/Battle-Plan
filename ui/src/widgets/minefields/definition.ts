@@ -14,4 +14,5 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 8 }, options: OPTIONS,
+  playsBackDated: true,
 } as const satisfies WidgetMeta;

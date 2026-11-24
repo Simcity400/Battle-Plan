@@ -11,4 +11,5 @@ export const definition = {
   description: 'Each region’s exact air scores at playback, compared per side or from one viewpoint.',
   timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, countries: { max: 1 }, history: false,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 8, h: 8 }, options: OPTIONS,
+  playsBackDated: true,
 } as const satisfies WidgetMeta;
