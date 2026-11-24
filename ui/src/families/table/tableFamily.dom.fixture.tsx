@@ -150,7 +150,7 @@ const LOOKS = {
 
 const SPECS = scoreboardColumnsSpec(SCOREBOARD_FIXTURE_COLUMNS, null);
 const SETTINGS = {
-  ...tableSettingsOf(undefined, SPECS, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'factories', direction: 'descending' } }),
+  ...tableSettingsOf(undefined, SPECS, { density: 'comfortable', overflow: 'scroll', sort: { column: 'factories', direction: 'descending' } }),
   order: SPECS.map(s => s.key),
   sort: { column: 'factories', direction: 'descending' as const },
 };
@@ -579,15 +579,9 @@ window.tableFamilyDom = {
     const liveStatus = hostNode!.querySelector('.tf-live-region')?.textContent ?? '';
 
     hostNode!.style.width = '210px';
-    const hasMore = await until(() => !!hostNode!.querySelector('.tf-more-cols'), 3000);
-    if (!hasMore) throw new Error('Narrow table did not render +N columns button');
-    const moreBtn = hostNode!.querySelector<HTMLButtonElement>('.tf-more-cols');
-    const moreText = moreBtn?.textContent ?? '';
-    moreBtn?.click();
-    const opened = await until(() => !!document.querySelector('.tf-chooser'), 2000);
-    if (!opened) throw new Error('+N columns button did not open chooser');
-    const menuOpen = !!document.querySelector('.tf-chooser');
-    return { firstKey, afterDown, activated: [...activated], liveStatus, moreText, menuOpen, totalInstallReads };
+    const scrollsSideways = await until(() => !!hostNode!.querySelector('.tf-edges[data-right]'), 3000);
+    const moreButton = !!hostNode!.querySelector('.tf-more-cols');
+    return { firstKey, afterDown, activated: [...activated], liveStatus, scrollsSideways, moreButton, totalInstallReads };
   },
 
   async testEmptySpaceContextMenuAndValueStateTooltip() {

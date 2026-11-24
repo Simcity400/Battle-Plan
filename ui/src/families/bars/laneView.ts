@@ -1,4 +1,6 @@
+import { LABEL_WEIGHT } from '../../charts/draw.ts';
 import type { LiveValues } from '../../charts/live';
+import { textWidth } from '../../charts/textWidth.ts';
 import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
 import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
@@ -413,7 +415,12 @@ export function familyBarsLaneView(
       const layoutSig = `${surface.width}:${surface.height}:${model.form}:${model.rows.length}:${model.rowHeight ?? ''}:${model.showAxis ? 1 : 0}`;
       let layoutChanged = false;
       if (!held.cachedLayout || modelChanged || held.layoutSig !== layoutSig) {
-        held.cachedLayout = layoutFamilyBars(model, surface.width, surface.height, bound.theme);
+        const measureCtx = held.ctx;
+        const labelFont = `${LABEL_WEIGHT} ${bound.theme.fontSize.body}px ${bound.theme.font}`;
+        held.cachedLayout = layoutFamilyBars(model, surface.width, surface.height, bound.theme, text => {
+          measureCtx.font = labelFont;
+          return textWidth(measureCtx, text);
+        });
         held.layoutSig = layoutSig;
         layoutChanged = true;
       }
@@ -572,6 +579,13 @@ export function familyBarsLaneView(
       return {
         ...(handledPicture ? { mode: 'picture' as const } : {}),
         ...(Number.isFinite(held.cachedModelNextAt) ? { nextChangeAt: held.cachedModelNextAt } : {}),
+        viewport: {
+          width: bound.width,
+          height: bound.height,
+          dpr: input.binding.surfaces[0]?.dpr ?? 1,
+          scrollLeft: 0,
+          scrollTop: bound.scrollTop,
+        },
         surfaces: [{ source: held.canvas, content: held.content }],
         fields,
         motion: moving,

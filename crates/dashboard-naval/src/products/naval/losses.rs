@@ -95,14 +95,6 @@ impl NavalKind {
     }
 }
 
-pub fn run_key(kind: u8) -> u128 {
-    u128::from(Row::RUN) << 48 | u128::from(Row::RUN) << 16 | u128::from(Row::LOST) << 8 | u128::from(kind)
-}
-
-pub fn row_key(owner: u128, attribution: u8, kind: u8) -> u128 {
-    owner << 16 | u128::from(attribution) << 8 | u128::from(kind)
-}
-
 type Runs = Vec<(i32, i32, Option<i64>)>;
 
 fn at(runs: Option<&Runs>, hour: i32) -> Option<i64> {
@@ -158,7 +150,7 @@ pub struct Counts {
 
 impl Counts {
     pub fn read(recording: &Recording, run: u32, kinds: &[u8], keys: &[u128], from: i32, to: i32) -> io::Result<Self> {
-        let runs: Vec<u128> = kinds.iter().map(|&kind| run_key(kind)).collect();
+        let runs: Vec<u128> = kinds.iter().map(|&kind| Row::run_key(kind)).collect();
         let column = |column: usize, keys: &[u128]| -> io::Result<HashMap<u128, Runs>> {
             if keys.is_empty() {
                 return Ok(HashMap::new());
@@ -174,7 +166,7 @@ impl Counts {
     }
 
     pub fn baseline(&self, kind: u8, hour: i32) -> Option<i32> {
-        let key = run_key(kind);
+        let key = Row::run_key(kind);
         (at(self.known.get(&key), hour)? != 0).then_some(())?;
         let from = i32::try_from(at(self.counted_from.get(&key), hour)?).ok()?;
         (from <= hour).then_some(from)
@@ -277,7 +269,7 @@ pub(super) fn score(owner: u128, attribution: u8, kinds: &[u8], bases: &[Option<
         if base.is_some_and(|base| base >= hour) {
             return sum;
         }
-        let key = row_key(owner, attribution, kind);
+        let key = Row::holder_key(owner, attribution, kind);
         let held = base.and_then(|base| before.get(&base)).map_or(0, |before| before.get(&key).copied().unwrap_or(0));
         sum.saturating_add(now.get(&key).copied().unwrap_or(0) - held)
     })
@@ -296,7 +288,7 @@ fn part_runs(part: &Part, lo: i32, hi: i32, counts: &Counts, params: &NavalLosse
     for (index, &start) in edges.iter().enumerate() {
         let end = edges.get(index + 1).map_or(hi, |next| next - 1);
         let owner = Key::Holder.of(part.slot, part.id);
-        let values: Vec<Option<i64>> = params.kind.kinds().iter().map(|&kind| counts.count(kind, row_key(owner, attribution, kind), start, params.period)).collect();
+        let values: Vec<Option<i64>> = params.kind.kinds().iter().map(|&kind| counts.count(kind, Row::holder_key(owner, attribution, kind), start, params.period)).collect();
         let total = values.iter().try_fold(0i64, |sum, value| sum.checked_add((*value)?));
         let starts = part.starts && start == part.first;
         match out.last_mut() {
@@ -363,7 +355,7 @@ pub fn reply(query: &Query<'_>, params: &NavalLossesParams, cancelled: &AtomicBo
     }
     let kinds = params.kind.kinds();
     let attribution = params.attribution.code();
-    let mut keys: Vec<u128> = held.values().flatten().flat_map(|part| kinds.iter().map(move |&kind| row_key(Key::Holder.of(part.slot, part.id), attribution, kind))).collect();
+    let mut keys: Vec<u128> = held.values().flatten().flat_map(|part| kinds.iter().map(move |&kind| Row::holder_key(Key::Holder.of(part.slot, part.id), attribution, kind))).collect();
     keys.sort_unstable();
     keys.dedup();
     let from = match params.period {
@@ -395,7 +387,7 @@ pub fn reply(query: &Query<'_>, params: &NavalLossesParams, cancelled: &AtomicBo
 }
 
 fn warn(recording: &Recording, run: u32, kinds: &[u8], keys: &[u128], first: i32, last: i32, warnings: &mut Vec<String>) -> io::Result<()> {
-    let runs: Vec<u128> = kinds.iter().map(|&kind| run_key(kind)).collect();
+    let runs: Vec<u128> = kinds.iter().map(|&kind| Row::run_key(kind)).collect();
     let lost = read::runs(recording, run, TABLE, summary::Source::Cell(LOST_FROM), Some(&runs), first, last)?;
     for (key, held) in &lost {
         if let Some(from) = held.iter().filter_map(|run| run.2).min() {
