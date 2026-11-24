@@ -112,6 +112,28 @@ fn queue_uses_the_live_count_and_refuses_a_fault_in_its_last_entry() {
     );
 }
 #[test]
+fn a_broken_unlocked_trait_map_refuses_under_its_own_name() {
+    let mut bytes = fixture();
+    put(&mut bytes, ORG + UNLOCKED + 8, &u64::MAX.to_le_bytes());
+    assert_eq!(
+        run(&bytes).unwrap_err(),
+        "organisation unlocked map header invalid"
+    );
+    let mut bytes = fixture();
+    bytes[HEAD + 0x19] = 0;
+    assert_eq!(
+        run(&bytes).unwrap_err(),
+        "organisation unlocked map sentinel invalid"
+    );
+    let mut bytes = fixture();
+    put(&mut bytes, ORG + UNLOCKED + 8, &1_u64.to_le_bytes());
+    put(&mut bytes, HEAD, &0x5800_u64.to_le_bytes());
+    assert_eq!(
+        run(&bytes).unwrap_err(),
+        "organisation unlocked map traversal invalid"
+    );
+}
+#[test]
 fn empty_task_slots_survive_and_bad_task_identity_refuses_details() {
     let mut bytes = fixture();
     array(&mut bytes, ORG + super::super::PRODUCTION_LINES, QUEUE, 2);
