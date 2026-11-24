@@ -90,10 +90,10 @@ function buildChoiceRow(
         inlinePrefix: chosenLine.letter,
       };
     } else {
-      choiceCell = { value: notRecorded('Choice not recorded') };
+      choiceCell = { value: notRecorded('Choice not recorded'), missingFigure: 'Choice' };
     }
   } else {
-    choiceCell = { value: notRecorded(at.pause ? 'Choice not recorded (recording paused)' : 'Choice not recorded') };
+    choiceCell = { value: notRecorded(at.pause ? 'Choice not recorded (recording paused)' : 'Choice not recorded'), missingFigure: 'Choice' };
   }
 
   const rawTitle = nonBlank(card.item?.name);
