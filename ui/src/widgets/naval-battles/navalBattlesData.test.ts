@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { deepFreeze } from '../../test-support/frozen.ts';
-import { navalBattleChanges, navalBattleMeasureText, navalBattleRow, navalBattleRows, navalBattleSize, navalBattleState, navalBattleWarnings, navalBattleWindows,
-  navalSideText, navalWindowPlaces, rankedNavalBattleRows, shownNavalCensusHour, validateNavalBattlesManifest, validateNavalBattlesRanking, validateNavalBattlesReply,
-  NAVAL_BATTLE_DEFAULT_MEASURE } from './navalBattlesData.ts';
-import { battleChangeHours, battleJumpHour, battlePlaceRequests, battlePlaceText, battleStateRows, battleTooltip, namedBattles, isBattleRow } from '../battles/battleRows.ts';
+import { navalBattleChanges, navalBattleMeasureText, navalBattleRow, navalBattleRows, navalBattleSize, navalBattleState,
+  navalSideText, navalWindowPlaces, rankedNavalBattleRows, validateNavalBattlesManifest, validateNavalBattlesRanking, validateNavalBattlesReply } from './navalBattlesData.ts';
+import { battleChangeHours, battleJumpHour, battlePlaceRequests, battlePlaceText, battleStateRows, battleTooltip, battleWarnings as navalBattleWarnings, battleWindows as navalBattleWindows, namedBattles, isBattleRow, shownBattleCensusHour as shownNavalCensusHour } from '../battles/battleRows.ts';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import { registerWidgets, widgetUnavailable } from '../../dashboard/definitions.ts';
 import { createWidget, resolveWindow } from '../../dashboard/model.ts';
@@ -153,7 +152,6 @@ test('result merges and prefetched windows do not backfill future countries, win
 });
 
 test('server ranking preserves label-keyed measures and order; unknown is never recomputed as zero', () => {
-  assert.equal(NAVAL_BATTLE_DEFAULT_MEASURE, 'Ships sunk');
   const data: NavalBattlesRankingReply = { rows: [history('result:800', true), history()], censusHour: 109,
     effectiveMeasure: 'Peak ships', warnings: [], contentWarnings: [] };
   assert.equal(validateNavalBattlesRanking(data), data);

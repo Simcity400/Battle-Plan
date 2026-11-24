@@ -61,5 +61,3 @@ function trim(runs: readonly GameRun[], end: RegExp): GameRun[] {
 
 export const trimLabel = (runs: readonly GameRun[]) => trim(runs, /[\s:：]+$/u);
 export const trimValue = (runs: readonly GameRun[]) => trim(runs, /\s+$/u);
-
-export const plainRuns = (runs: readonly GameRun[]) => runs.map(run => run.kind === 'text' || run.kind === 'link' ? run.text : '').join('');
