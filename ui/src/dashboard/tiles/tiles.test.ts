@@ -138,6 +138,40 @@ test('a top of tiles takes its countries from the ranked reply, keeps them while
   assert.ok(base.asked.slice(before).every(ask => ask.tags.every(tag => tag === 'SOV')), 'a country already held keeps its tiles; only the newcomer is asked');
 });
 
+test('a failing top-rank read does not re-ask the same hour when setHour runs again, retries on retry(), and asks a new hour', async () => {
+  const cache = new TileCache();
+  const asked: number[] = [];
+  let fail = true;
+  const base = lane([], LAST);
+  const top: TileLane = { ...base, top: { ask(binHours, index, hour) {
+    asked.push(hour);
+    if (fail) return Promise.reject(new Error('not recorded'));
+    return Promise.resolve({ ...reply(['GER'], binHours, index, LAST, value), ranking: { hour, from: 0, until: LAST, refused: null } });
+  } } };
+  let changes = 0;
+  let currentHour = 100;
+  const view = new TileView(cache, top, () => {
+    changes++;
+    if (changes < 5) view.setHour(currentHour);
+  });
+  view.setView({ from: 0, to: 8759, end: 8759, width: 600 });
+  view.setHour(currentHour);
+  await settle();
+  await settle();
+  assert.deepEqual(asked, [100], 'calling setHour(100) again after a failure does not loop');
+  assert.ok(view.error instanceof Error);
+  currentHour = 200;
+  view.setHour(currentHour);
+  await settle();
+  assert.deepEqual(asked, [100, 200], 'a different hour is still asked');
+  fail = false;
+  view.retry();
+  await settle();
+  assert.deepEqual(asked, [100, 200, 200], 'retry() re-asks the failed top-rank hour');
+  assert.equal(view.error, null);
+  assert.deepEqual([...view.current!.keys()], ['GER']);
+});
+
 test('an immutable tile is never asked twice, the last tile is asked again only when the history grows past it', async () => {
   const cache = new TileCache();
   const binHours = 12, span = TILE_BINS * binHours;
