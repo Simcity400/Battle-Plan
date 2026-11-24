@@ -464,7 +464,6 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
-    #[cfg_attr(not(test), expect(dead_code, reason = "only the field names are read"))]
     enum ViewKind {
         All,
         Month,

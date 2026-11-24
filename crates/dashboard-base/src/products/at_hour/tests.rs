@@ -812,9 +812,8 @@ impl AtHour for Partial {
 }
 
 #[test]
-#[expect(clippy::redundant_clone, reason = "the closure checking each hour borrows the range, so the walk needs its own copy")]
 fn a_table_read_in_part_is_the_rows_its_hour_read_on_every_path() {
-    let partly = 110..=113;
+    let mut partly = 110..=113;
     let frames = (FIRST..=LAST)
         .map(|hour| {
             let mut frame = frame(hour);
@@ -836,7 +835,7 @@ fn a_table_read_in_part_is_the_rows_its_hour_read_on_every_path() {
         (json!(keys), json!(missing))
     };
     let said = |value: &Value| (value["keys"].clone(), value["missing"].clone());
-    assert!(partly.clone().all(|hour| recorded(hour).1 == 3), "the recording reads those hours in part");
+    assert!(partly.all(|hour| recorded(hour).1 == 3), "the recording reads those hours in part");
     let panel = exact_panel::<Partial>(&source, &load(), &json!({ "branchId": "1" })).unwrap();
     let exact = panel.exact().unwrap();
     let token = AtomicBool::new(false);

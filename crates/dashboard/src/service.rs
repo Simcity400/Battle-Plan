@@ -391,7 +391,7 @@ impl Service {
                     flip,
                     options: content.options,
                 };
-                self.inner.submit(request, LoadJob::MapSettings(job));
+                self.inner.submit(request, LoadJob::MapSettings(Box::new(job)));
             }
             DataCommand::Open { id, path, revision } => {
                 let Some(request) = self.inner.begin(id) else {

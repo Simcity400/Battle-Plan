@@ -237,7 +237,8 @@ fn tracing_scopes_and_named_readers_isolate_lazy_caches_while_retained_clones_sh
     let b = traced.with_read_purpose("b");
     let cache = a.derived::<AtomicUsize>();
     cache.store(11, Ordering::Relaxed);
-    assert!(Arc::ptr_eq(&cache, &a.derived::<AtomicUsize>()));
+    let a_clone = a.clone();
+    assert!(Arc::ptr_eq(&cache, &a_clone.derived::<AtomicUsize>()));
     assert!(!Arc::ptr_eq(&cache, &b.derived::<AtomicUsize>()));
     assert!(!Arc::ptr_eq(&a.derived::<RetainedProducts>(), &b.derived::<RetainedProducts>()));
     assert_eq!(b.derived::<AtomicUsize>().load(Ordering::Relaxed), 0);
@@ -697,7 +698,8 @@ fn reported_uncovered_reads_refresh_diagnostics_after_lazy_reads() {
     let mut warnings = vec!["Another diagnostic".into()];
     reads.append_to(&mut warnings);
     assert_eq!(warnings.len(), 1);
-    layers.read("gfx/models/first.txt").unwrap();
+    let other = layers.clone();
+    other.read("gfx/models/first.txt").unwrap();
     reads.append_to(&mut warnings);
     assert!(warnings[1].starts_with("Content: 1 file(s)"));
     layers.read("gfx/models/late.txt").unwrap();

@@ -573,7 +573,7 @@ impl Inner {
             }
             LoadJob::MapSettings(job) => {
                 let request = Arc::clone(&job.request);
-                let result = self.map_settings_job(job);
+                let result = self.map_settings_job(*job);
                 self.complete(request, result.map_err(Into::into));
             }
             LoadJob::Product {
@@ -835,7 +835,6 @@ pub(super) struct OpenJob {
     pub(super) revision: String,
 }
 
-#[expect(clippy::large_enum_variant, reason = "jobs move one at a time through the loader channel, so the size is paid briefly and boxing would add an allocation per job")]
 pub(super) enum LoadJob {
     HistoryChoice {
         request: Arc<Request>,
@@ -843,7 +842,7 @@ pub(super) enum LoadJob {
         segment_id: String,
         choice: Option<String>,
     },
-    MapSettings(MapSettingsJob),
+    MapSettings(Box<MapSettingsJob>),
     Open(OpenJob),
     Product {
         request: Arc<Request>,
