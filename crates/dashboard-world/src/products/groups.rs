@@ -36,6 +36,8 @@ pub struct FactionNameRun {
     pub last_hour: i32,
     pub name: Option<String>,
     pub reason: Option<String>,
+    #[doc = " This run's recorded engine literal, unchanged; null when empty or not valid text."]
+    pub token: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -80,6 +82,9 @@ pub struct UnobservedHours {
     pub humans: Vec<HourSpan>,
     pub factions: Vec<HourSpan>,
     pub wars: Vec<HourSpan>,
+    #[doc = " The hour of each war start or capitulation read whose country no link resolved, in hour order:"]
+    #[doc = " it is left out, and who it was is not known."]
+    pub unattributed: Vec<i32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -340,11 +345,10 @@ fn naming(source: &Source, context: &LoadContext, warnings: &mut Vec<String>) ->
     };
     let (templates, localisation, generation) = match loaded {
         Some(Ok((templates, localisation, layers))) => {
-            let generation = templates.as_ref().ok().map(|templates| {
+            if let Ok(templates) = &templates {
                 warnings.extend(templates.warnings.iter().cloned());
-                Generation::Of(layers)
-            });
-            (templates, localisation, generation)
+            }
+            (templates, localisation, Some(Generation::Of(layers)))
         }
         Some(Err(error)) => (Err(format!("Faction naming content is unavailable: {error}")), stored(), None),
         None => (Err("Faction naming content is unavailable until the game folders are chosen".into()), stored(), Some(Generation::Uncontent)),
@@ -414,7 +418,6 @@ fn built(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
     let mut factions: BTreeMap<u64, Faction> = BTreeMap::new();
     let mut war_starts = BTreeSet::new();
     let mut capitulations = BTreeSet::new();
-    let mut unattributed = 0usize;
     let mut resolved: HashMap<(u32, u32), Result<String, String>> = HashMap::new();
     for stretch in &timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
@@ -465,7 +468,8 @@ fn built(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
                                     (None, Some(reason))
                                 }
                             };
-                            held.names.push((FactionNameRun { first_hour: first, last_hour: last, name, reason }, operands.literal.clone()));
+                            let token = std::str::from_utf8(&operands.literal).ok().filter(|literal| !literal.is_empty()).map(str::to_owned);
+                            held.names.push((FactionNameRun { first_hour: first, last_hour: last, name, reason, token }, operands.literal.clone()));
                         }
                         _ => {
                             let list = if kind == Span::MEMBER { &mut held.members } else { &mut held.leaders };
@@ -504,13 +508,13 @@ fn built(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
                     (Some(attacking), Some(defending)) => {
                         war_starts.insert(WarStart { hour, attacking: attacking.to_owned(), defending: defending.to_owned() });
                     }
-                    _ => unattributed += usize::from(hour >= timeline.first),
+                    _ => unobserved.unattributed.push(hour),
                 },
                 WarEventRow::CAPITULATION => match tag(first) {
                     Some(tag) => {
                         capitulations.insert(Capitulation { hour, tag: tag.to_owned() });
                     }
-                    None => unattributed += usize::from(hour >= timeline.first),
+                    None => unobserved.unattributed.push(hour),
                 },
                 _ => {}
             }
@@ -569,7 +573,7 @@ fn built(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
                 |_| 0u8,
                 |run| (run.first_hour, run.last_hour),
                 |run, last| run.last_hour = last,
-                |a, b| (&a.name, &a.reason) == (&b.name, &b.reason),
+                |a, b| (&a.name, &a.reason, &a.token) == (&b.name, &b.reason, &b.token),
             );
             let (name, name_reason) = match names.last() {
                 Some(latest) => (latest.name.clone(), latest.reason.clone()),
@@ -615,9 +619,11 @@ fn built(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
     if invalid_names > 0 {
         warnings.push(format!("{invalid_names} faction names were not valid text and are not recorded."));
     }
-    if unattributed > 0 {
+    unobserved.unattributed.sort_unstable();
+    if !unobserved.unattributed.is_empty() {
         warnings.push(format!(
-            "{unattributed} war starts or capitulations name a country no link resolved; which countries they were is not known, so they are left out."
+            "{} war starts or capitulations name a country no link resolved; which countries they were is not known, so they are left out.",
+            unobserved.unattributed.len()
         ));
     }
     warnings.extend(refused.lines("faction names are"));
@@ -929,8 +935,8 @@ mod faction_name_tests {
             name: Some("New League".into()),
             name_reason: None,
             names: vec![
-                FactionNameRun { first_hour: 0, last_hour: 71, name: None, reason: Some("Faction name was not recorded".into()) },
-                FactionNameRun { first_hour: 72, last_hour: 200, name: Some("New League".into()), reason: None },
+                FactionNameRun { first_hour: 0, last_hour: 71, name: None, reason: Some("Faction name was not recorded".into()), token: None },
+                FactionNameRun { first_hour: 72, last_hour: 200, name: Some("New League".into()), reason: None, token: None },
             ],
             recorded_name: "New League".into(),
             first_hour: 0,
@@ -947,10 +953,10 @@ mod faction_name_tests {
     fn faction_names_never_coalesce_across_observed_absence_or_unnamed_run() {
         let gaps = vec![HourSpan { first_hour: 1, last_hour: 9 }, HourSpan { first_hour: 11, last_hour: 19 }];
         let runs = vec![
-            FactionNameRun { first_hour: 0, last_hour: 0, name: Some("Axis".into()), reason: None },
-            FactionNameRun { first_hour: 20, last_hour: 20, name: Some("Axis".into()), reason: None },
-            FactionNameRun { first_hour: 21, last_hour: 25, name: None, reason: Some("Faction name was not recorded".into()) },
-            FactionNameRun { first_hour: 26, last_hour: 30, name: Some("Axis".into()), reason: None },
+            FactionNameRun { first_hour: 0, last_hour: 0, name: Some("Axis".into()), reason: None, token: None },
+            FactionNameRun { first_hour: 20, last_hour: 20, name: Some("Axis".into()), reason: None, token: None },
+            FactionNameRun { first_hour: 21, last_hour: 25, name: None, reason: Some("Faction name was not recorded".into()), token: None },
+            FactionNameRun { first_hour: 26, last_hour: 30, name: Some("Axis".into()), reason: None, token: None },
         ];
         let coalesced = joined_across(
             runs,

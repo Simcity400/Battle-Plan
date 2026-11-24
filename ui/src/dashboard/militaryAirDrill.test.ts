@@ -17,14 +17,14 @@ import type { WidgetProps } from './definitions';
 import type { WidgetSpec } from './model';
 import { persistedSpec, type PinnedSpec } from './regionTime.ts';
 import type AirLossDrill from './AirLossDrill.tsx';
-import { militaryAirIndex, validateMilitaryAirReply } from './militaryAirLedger.ts';
+import { militaryAirIndex } from './militaryAirLedger.ts';
 import { OPTIONS } from '../widgets/air-kills-losses/definition.ts';
 import { partOf } from './militaryAirParts.fixture.ts';
 import type { Leaf } from './militaryAirParts.fixture';
 import type { MilitaryAirLedger } from './militaryAirLedger';
 
 const span = (firstHour: number, lastHour = firstHour) => ({ firstHour, lastHour });
-const data = (): MilitaryAirLedger => ({ family: 'airLosses', firstHour: 10, lastHour: 20, available: true,
+const data = (): MilitaryAirLedger => ({ family: 'airLosses', firstHour: 10, lastHour: 20, available: true, causes: [{ cause: 1, name: 'Aircraft combat', missing: null }, { cause: 3, name: 'Air accidents', missing: null }], 
   observed: [span(10, 16), span(18, 20)], incomplete: [], countries: ['A', 'B', 'C'].map((tag, id) => ({ tag, identity: `${id}:9`,
     present: [span(10, 16), span(18, 20)], membership: tag === 'A' ? [span(10, 16), span(18, 20)] : tag === 'B' ? [span(10, 12)] : [span(13, 16), span(18, 20)] })), parts: ([
     { tag: 'B', identity: '1:9', dealt: false, opponent: null, region: 40001, cause: 1, buildingToken: null, buildingId: null, state: null,
@@ -52,7 +52,7 @@ const hooks = `const state = () => globalThis.__airDrill;
   export { createContext, createElement, useContext } from 'react';`;
 
 function fixture() {
-  return { hooks: [] as unknown[], cursor: 0, data: validateMilitaryAirReply(data()),
+  return { hooks: [] as unknown[], cursor: 0, data: data(),
     track: { id: 'track', axisOffset: 1000, source: { id: 'source', revision: 1, metadata: { countries: [], campaignKey: 'campaign' } },
       branch: { id: 'branch', firstHour: 10, lastHour: 20, gaps: [span(17)] } }, hour: -988, playing: false, added: [] as WidgetSpec[],
     groups: { retry() {} } as { retry(): void; data?: unknown },

@@ -1,14 +1,12 @@
-import type { BoundTrack, CountrySelection } from '../dashboard/model';
+import type { BoundTrack, CountrySelection, WidgetSpec } from '../dashboard/model';
+import { selectedCountryKeys } from '../dashboard/countrySelection.ts';
 import type { Gate } from '../dashboard/regionGate';
 import { coverageSpan, recordedHour, type BoundWindow, type GatedHour } from '../dashboard/regionTime.ts';
 import { authoredHex } from '../charts/palette.ts';
 import type { CountryFlagChoice, CountryGroupReply, HourSpan } from '../generated/dashboard';
-import { nextFactionsChange, type FamilyFactionRun, type HourRanges } from './holders.ts';
+import { type FamilyFactionRun, type HourRanges } from './holders.ts';
 import { countryTagKey, type DrawnFlagEntry, type IdentityIndex } from './identity/index.ts';
 import type { CountryLook, CountryLooksMap } from './looks.ts';
-
-export { nextFactionsChange };
-export type { FamilyFactionRun };
 
 export interface FrozenGate {
   readonly recorded: Gate['recorded'];
@@ -33,6 +31,24 @@ export function trackGate(track: Pick<BoundTrack, 'branch' | 'source'>): FrozenG
     },
     recordedRun: hour => coverageSpan(track, hour),
   };
+}
+
+export function planOwner(
+  kind: string,
+  track: BoundTrack | undefined,
+  time: WidgetSpec['time'],
+  countries: CountrySelection,
+  single: string | null | undefined,
+): string {
+  return JSON.stringify([
+    kind,
+    track?.source.id ?? '',
+    track?.source.revision ?? '',
+    track?.branch.id ?? '',
+    track?.axisOffset ?? 0,
+    time,
+    single !== undefined ? single : countries.kind === 'selected' ? { kind: 'selected', keys: selectedCountryKeys(countries, track) } : countries,
+  ]);
 }
 
 export function effectiveCountryUnobserved(

@@ -1,5 +1,5 @@
-import { widgetDefinition, type WidgetMeta, type WidgetRenderer, type WidgetViewSwitch } from '../dashboard/definitions.ts';
-import type { OptionField, WidgetOptions } from '../dashboard/options';
+import { widgetDefinition, type FamilyViewRenderer, type WidgetMeta, type WidgetRenderer, type WidgetViewSwitch } from '../dashboard/definitions.ts';
+import { resolveOptions, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
 import {
   DEFAULT_VIEW,
   manifestViewSwitch,
@@ -17,8 +17,15 @@ import { LEGACY_WIDGETS } from './legacyManifest.ts';
 
 export { DEFAULT_VIEW, FAMILY_VIEWS, LEGACY_WIDGETS };
 
+export type OptionChoicesHook = NonNullable<WidgetRenderer['useOptionChoices']>;
+
+export const OPTION_CHOICES: Readonly<Record<string, () => Promise<OptionChoicesHook>>> = {
+  'air-kills-losses': () => import('../dashboard/useMilitaryAirLedger').then(module => module.useAirLossChoices),
+  'equipment-stockpile': () => import('./equipment-stockpile/useEquipmentStockpile').then(module => module.useStockpileChoices),
+};
+
 export interface FamilyViewUiLoader {
-  readonly load: () => Promise<{ default: WidgetRenderer }>;
+  readonly load: () => Promise<{ default: FamilyViewRenderer }>;
   readonly slots?: readonly ('render' | 'countryChip' | 'subjectMenu')[];
   readonly views?: readonly string[];
 }
@@ -37,12 +44,14 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'decisions': { load: () => import('./decisions') },
   'division-template': { load: () => import('./division-template') },
   'doctrine-mastery': { load: () => import('./doctrine-mastery') },
+  'general-career': { load: () => import('./general-career/family.ts'), views: ['dossier'] },
   'equipment-designs': { load: () => import('./equipment-designs') },
+  'equipment-produced': { load: () => import('./equipment-produced/family.tsx') },
   'event-choices': { load: () => import('./event-choices') },
   'event-feed': { load: () => import('./event-feed') },
   'factions': { load: () => import('./factions') },
   'fuel': { load: () => import('./fuel') },
-  'factories': { load: () => import('./factories'), slots: ['render', 'countryChip'] },
+  'factories': { load: () => import('./factories') },
   'idea-timeline': { load: () => import('./idea-timeline') },
   'industrial-organisations': { load: () => import('./industrial-organisations') },
   'international-market': { load: () => import('./international-market') },
@@ -51,6 +60,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'occupation-reserve-manpower': { load: () => import('./occupation-reserve-manpower/family.tsx') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'production-lines': { load: () => import('./production-lines') },
+  'raid-log': { load: () => import('./raid-log') },
   'research': { load: () => import('./research') },
   'scoreboard': { load: () => import('./scoreboard') },
   'special-projects': { load: () => import('./special-projects'), views: ['live'] },
@@ -111,9 +121,47 @@ export function familyViewOptionFields(kind: string, view?: string): readonly Op
   return owned;
 }
 
-export function widgetOptionFields(kind: string, storedOptions?: WidgetOptions): readonly OptionField[] {
-  const view = resolveWidgetActiveView(kind, storedOptions);
+function viewOptionFields(kind: string, view: string): readonly OptionField[] {
   return familyByPair.has(viewKey(kind, view)) ? familyViewOptionFields(kind, view) : widgetDefinition(kind)?.options ?? [];
+}
+
+export function widgetOptionFields(kind: string, storedOptions?: WidgetOptions): readonly OptionField[] {
+  return viewOptionFields(kind, resolveWidgetActiveView(kind, storedOptions));
+}
+
+export type ResolvedWidgetOptions = Readonly<Record<string, OptionValue>>;
+
+const NO_STORED: WidgetOptions = Object.freeze({});
+const resolvedByStored = new WeakMap<WidgetOptions, Map<string, ResolvedWidgetOptions>>();
+
+export function widgetViewOptions(kind: string, storedOptions?: WidgetOptions, view = resolveWidgetActiveView(kind, storedOptions)): ResolvedWidgetOptions {
+  const stored = storedOptions ?? NO_STORED;
+  let byView = resolvedByStored.get(stored);
+  if (!byView) resolvedByStored.set(stored, byView = new Map());
+  const key = viewKey(kind, view);
+  let resolved = byView.get(key);
+  if (!resolved) byView.set(key, resolved = Object.freeze(resolveOptions(viewOptionFields(kind, view), stored)));
+  return resolved;
+}
+
+export interface PresetWidget { readonly title?: string; readonly options?: WidgetOptions }
+
+const presetWidgets = new WeakMap<PresetWidget, Map<string, PresetWidget>>();
+
+export function presetWidget(kind: string, initial: PresetWidget): PresetWidget {
+  let byKind = presetWidgets.get(initial);
+  if (!byKind) presetWidgets.set(initial, byKind = new Map());
+  let held = byKind.get(kind);
+  if (held) return held;
+  const chosen = initial.options;
+  if (chosen) {
+    const fields = viewOptionFields(kind, resolveWidgetActiveView(kind, chosen));
+    const stored: Record<string, OptionValue> = {};
+    for (const [key, value] of Object.entries(chosen)) stored[fields.find(field => field.key === key)?.storeAs ?? key] = value;
+    held = { ...initial, options: stored };
+  } else held = initial;
+  byKind.set(kind, held);
+  return held;
 }
 
 export function manifestLegacyEntry(kind: string, view?: string): LegacyWidgetEntry | undefined {

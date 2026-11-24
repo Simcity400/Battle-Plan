@@ -10,7 +10,9 @@ use dashboard_base::{
 use dashboard_query::{
     coverage::{Witness, population, witnessed},
     identity::Holder,
+    series::ranked::GroupSelection,
 };
+use dashboard_world::products::group_members::GroupsAt;
 use replay_data::rows::{CountryCounterInputRow, PoliticsRow, Recorded, TableId, tables};
 use replay_frame::frame::{DecodedFrame, Keys, TableView};
 use serde::{Deserialize, Serialize};
@@ -30,6 +32,10 @@ pub struct NextElectionsParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub countries: Option<Vec<Country>>,
+    #[doc = " The group whose members at this hour are read; never with `countries`."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -56,6 +62,8 @@ pub struct NextElectionsReply {
     pub rows: Vec<ElectionEntry>,
     #[doc = " Asked or listed countries whose schedule or eligibility was not recorded at this hour: `rows` may miss them."]
     pub unknown: u32,
+    #[doc = " Why the asked group's members are not known at this hour; `rows` is then empty."]
+    pub refused: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -70,9 +78,9 @@ impl AtHour for NextElections {
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     const REPLY_NAMES_NO_HOUR: bool = true;
     type Params = NextElectionsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, group, "countries[]"];
     type Reply = NextElectionsReply;
-    type Context = ();
+    type Context = GroupsAt;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
@@ -83,6 +91,9 @@ impl AtHour for NextElections {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid elections branch")?;
         for country in params.countries.iter().flatten() {
             validate_country(country)?;
+        }
+        if params.group.is_some() && params.countries.is_some() {
+            return Err("Next elections asks a group or countries, never both");
         }
         Ok(())
     }
@@ -95,9 +106,10 @@ impl AtHour for NextElections {
         if step != 0 {
             return Vec::new();
         }
-        match &params.countries {
-            None => vec![Read::all(TableId::Politics), Read::all(TableId::CountryCounterInputs)],
-            Some(countries) => {
+        match asked(params, at.context, at.hour) {
+            Ok(Ok(None)) => vec![Read::all(TableId::Politics), Read::all(TableId::CountryCounterInputs)],
+            Err(_) | Ok(Err(_)) => Vec::new(),
+            Ok(Ok(Some(countries))) => {
                 let keys: Vec<u128> = countries
                     .iter()
                     .filter_map(|country| match at.holders.at(country, at.hour).map(|run| run.holder) {
@@ -111,33 +123,51 @@ impl AtHour for NextElections {
     }
 
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(())
+        Ok(GroupsAt::default())
     }
 
-    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        at.holders.next_change(frame.hour).map_or(i32::MAX, |change| change - 1)
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())
+    }
+
+    fn valid_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        let holders = at.holders.next_change(frame.hour).map_or(i32::MAX, |change| change - 1);
+        holders.min(at.context.valid_through(params.group.as_ref(), at.hour))
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let reply = read(frame, params, at.holders, at.hour)?;
+        let reply = match asked(params, at.context, at.hour)? {
+            Ok(countries) => read(frame, &params.branch_id, countries.as_deref(), at.holders, at.hour)?,
+            Err(refused) => NextElectionsReply { branch_id: params.branch_id.clone(), recorded: true, rows: Vec::new(), unknown: 0, refused: Some(refused), warnings: Vec::new() },
+        };
         check_reply_budget(&reply)?;
         Ok(reply)
     }
+}
+
+fn asked(params: &NextElectionsParams, groups: &GroupsAt, hour: i32) -> io::Result<Result<Option<Vec<Country>>, String>> {
+    let Some(group) = &params.group else { return Ok(Ok(params.countries.clone())) };
+    let members = groups.members(group, hour)?;
+    Ok(match members.refused {
+        Some(refused) => Err(refused),
+        None => Ok(Some(members.tags.into_iter().map(Country::from).collect())),
+    })
 }
 
 fn recorded<T: Copy>(value: &Recorded<T>) -> Option<T> {
     value.require("election operand").ok().copied()
 }
 
-pub fn read(frame: &DecodedFrame, params: &NextElectionsParams, holders: &dashboard_query::identity::Holders, hour: i32) -> io::Result<NextElectionsReply> {
+fn read(frame: &DecodedFrame, branch_id: &str, asked: Option<&[Country]>, holders: &dashboard_query::identity::Holders, hour: i32) -> io::Result<NextElectionsReply> {
     let mut reply = NextElectionsReply {
-        branch_id: params.branch_id.clone(),
+        branch_id: branch_id.to_owned(),
         recorded: false,
         rows: Vec::new(),
         unknown: 0,
+        refused: None,
         warnings: Vec::new(),
     };
-    let politics = match &params.countries {
+    let politics = match asked {
         Some(_) => {
             let view: &TableView = &frame.tables[TableId::Politics.index()];
             match (view, witnessed::<tables::Politics>(frame, 0)) {
@@ -184,7 +214,7 @@ pub fn read(frame: &DecodedFrame, params: &NextElectionsParams, holders: &dashbo
             }
         }
     };
-    match (&params.countries, politics) {
+    match (asked, politics) {
         (Some(asked), _) => {
             let mut seen = BTreeSet::new();
             for country in asked {

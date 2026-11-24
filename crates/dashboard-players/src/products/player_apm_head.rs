@@ -1,5 +1,5 @@
 
-use super::{Amount, ApmGroup, ApmMembership, ApmValue, Coverage, hourly_amounts, index, merge_intervals, player_id, player_name, tag};
+use super::{Amount, ApmGroup, ApmMembership, ApmValue, Coverage, Minutes, compare_apm_desc, hourly_amounts, index, merge_intervals, player_id, player_name, tag};
 use dashboard_base::Source;
 use crate::products::campaign_clock;
 use dashboard_follow::head::{Head, HeadRows, HeadValue};
@@ -8,12 +8,12 @@ use dashboard_query::{
     series::MissingSpan,
     tile::{self, SeriesTileReply, TileLine},
 };
-use replay_capture_spool::commands::Index;
+use replay_capture_spool::commands::{Counts, Index};
 use replay_data::Hour;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -62,7 +62,19 @@ struct Piece {
     parts: Vec<Part>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
+struct HourSlice {
+    counts: Counts,
+    minutes: Minutes,
+    incomplete: bool,
+    paused_incomplete: bool,
+    shown: Option<(u64, u64)>,
+    tag: String,
+    name: Option<String>,
+    name_missing: Option<String>,
+}
+
+#[derive(Clone, Default)]
 struct Played {
     amount: Amount,
     shown: Option<(u64, u64)>,
@@ -73,7 +85,7 @@ struct Played {
 
 type Laid = BTreeMap<(String, String), Part>;
 
-pub const APM_COLUMNS: [&str; 11] = [
+pub const APM_COLUMNS: [&str; 14] = [
     "apm",
     "confirmedApm",
     "orders",
@@ -85,6 +97,9 @@ pub const APM_COLUMNS: [&str; 11] = [
     "hour",
     "name",
     "nameMissing",
+    "confirmedOrders",
+    "unpausedMinutesNum",
+    "unpausedMinutesDen",
 ];
 
 pub struct ApmHead {
@@ -98,6 +113,10 @@ pub struct ApmHead {
     last: i32,
     window: i32,
     visits: u64,
+    cached_window: Option<(i32, i32)>,
+    cached_whole: bool,
+    window_hours: BTreeMap<usize, VecDeque<(i32, HourSlice)>>,
+    cached_entries: Vec<(usize, Played, ApmValue)>,
 }
 
 impl ApmHead {
@@ -164,13 +183,29 @@ impl ApmHead {
             by_tag
         });
         let coverage = Coverage::new(&index, params.first_hour, params.last_hour)?;
-        Ok(Self { index, ids, pieces, reach, memberships, coverage, first: params.first_hour, last: params.last_hour, window: params.window_hours, visits: 0 })
+        Ok(Self {
+            index,
+            ids,
+            pieces,
+            reach,
+            memberships,
+            coverage,
+            first: params.first_hour,
+            last: params.last_hour,
+            window: params.window_hours,
+            visits: 0,
+            cached_window: None,
+            cached_whole: true,
+            window_hours: BTreeMap::new(),
+            cached_entries: Vec::new(),
+        })
     }
 
     pub fn visits(&self) -> u64 {
         self.visits
     }
 
+    #[cfg(test)]
     fn amounts(&mut self, first: i32, last: i32) -> BTreeMap<usize, Played> {
         let mut out: BTreeMap<usize, Played> = BTreeMap::new();
         let upper = self.pieces.partition_point(|piece| piece.hours.0 <= last);
@@ -253,6 +288,136 @@ impl ApmHead {
         let first = self.first.max(hour.saturating_sub(self.window - 1));
         (first <= last).then_some((first, last))
     }
+
+    fn member_at(&self, tag: &str, hour: i32) -> bool {
+        match &self.memberships {
+            None => true,
+            Some(members) => members.get(tag).is_some_and(|runs| {
+                let at = runs.partition_point(|&(_, end)| end < hour);
+                runs.get(at).is_some_and(|&(start, end)| start <= hour && hour <= end)
+            }),
+        }
+    }
+
+    fn hour_slices(&mut self, hour: i32) -> BTreeMap<usize, HourSlice> {
+        let mut out: BTreeMap<usize, HourSlice> = BTreeMap::new();
+        let upper = self.pieces.partition_point(|piece| piece.hours.0 <= hour);
+        let lower = self.reach.partition_point(|&reach| reach < hour);
+        let mut visits = 0;
+        for piece in &self.pieces[lower.min(upper)..upper] {
+            if hour < piece.hours.0 || hour > piece.hours.1 {
+                continue;
+            }
+            let timeline = &self.index.timelines[piece.timeline];
+            visits += 1;
+            if timeline.bounds(hour, hour).is_none() {
+                continue;
+            }
+            for part in &piece.parts {
+                if !self.member_at(&part.tag, hour) {
+                    continue;
+                }
+                let mut present = Vec::new();
+                for version in &part.versions {
+                    visits += 1;
+                    if timeline.measure(hour, hour, version.from, version.to).is_some() {
+                        present.push(version);
+                    }
+                }
+                if present.is_empty() {
+                    continue;
+                }
+                let latest = present.iter().max_by_key(|v| v.from).expect("present is non-empty");
+                let display_at = (timeline.session, latest.from);
+                let slice = out.entry(part.series).or_default();
+                if slice.shown.is_none_or(|shown| shown <= display_at) {
+                    slice.shown = Some(display_at);
+                    slice.tag.clone_from(&part.tag);
+                    slice.name.clone_from(&latest.name);
+                    slice.name_missing.clone_from(&latest.name_missing);
+                }
+                for &(from, to) in &part.ranges {
+                    visits += 1;
+                    if let Some(measured) = timeline.measure(hour, hour, from, to) {
+                        slice.minutes.add_ticks(measured.ticks, measured.frequency);
+                        slice.incomplete |= !measured.complete;
+                        slice.paused_incomplete |= timeline.paused_unknown_hours.range(hour..=hour).next().is_some();
+                    }
+                }
+                for version in present {
+                    let Some(counts) = timeline.counts.get(&(version.actor, version.version)) else { continue };
+                    visits += 1;
+                    let (count, incomplete) = counts.range(hour, hour);
+                    slice.counts.add(count);
+                    slice.incomplete |= incomplete;
+                }
+            }
+        }
+        self.visits += visits;
+        out
+    }
+
+    fn rebuild_cached_from_window(&mut self) {
+        let gaps = !self.cached_whole;
+        let mut entries: Vec<(usize, Played, ApmValue)> = Vec::with_capacity(self.window_hours.len());
+        for (&series, deque) in &self.window_hours {
+            let mut played = Played::default();
+            for &(h, ref slice) in deque {
+                played.amount.counts.add(slice.counts);
+                played.amount.minutes.add_rational(slice.minutes.num, slice.minutes.den);
+                played.amount.incomplete |= slice.incomplete;
+                played.amount.paused_incomplete |= slice.paused_incomplete;
+                played.amount.first_hour = Some(played.amount.first_hour.map_or(h, |f| f.min(h)));
+                played.amount.last_hour = Some(played.amount.last_hour.map_or(h, |l| l.max(h)));
+                if let Some(at) = slice.shown
+                    && played.shown.is_none_or(|shown| shown <= at)
+                {
+                    played.shown = Some(at);
+                    played.tag.clone_from(&slice.tag);
+                    played.name.clone_from(&slice.name);
+                    played.name_missing.clone_from(&slice.name_missing);
+                }
+            }
+            if played.amount.first_hour.is_some() {
+                played.amount.gaps = gaps;
+                let value = played.amount.value();
+                entries.push((series, played, value));
+            }
+        }
+        entries.sort_by(|(a_series, _, a), (b_series, _, b)| {
+            compare_apm_desc(a, b).then_with(|| self.ids[*a_series].cmp(&self.ids[*b_series]))
+        });
+        self.cached_entries = entries;
+    }
+
+    fn seed_window(&mut self, first: i32, last: i32) {
+        self.window_hours.clear();
+        let upper = self.pieces.partition_point(|piece| piece.hours.0 <= last);
+        let lower = self.reach.partition_point(|&reach| reach < first);
+        let mut hours_to_visit: Vec<i32> = Vec::new();
+        for piece in &self.pieces[lower.min(upper)..upper] {
+            let (lo, hi) = (first.max(piece.hours.0), last.min(piece.hours.1));
+            if lo > hi {
+                continue;
+            }
+            let timeline = &self.index.timelines[piece.timeline];
+            let s_from = timeline.spans.partition_point(|s| s.hour < lo);
+            let s_to = timeline.spans.partition_point(|s| s.hour <= hi);
+            hours_to_visit.extend(timeline.spans[s_from..s_to].iter().map(|s| s.hour));
+        }
+        hours_to_visit.sort_unstable();
+        hours_to_visit.dedup();
+        for h in hours_to_visit {
+            let slices = self.hour_slices(h);
+            for (series, slice) in slices {
+                self.window_hours.entry(series).or_default().push_back((h, slice));
+            }
+        }
+        self.cached_window = Some((first, last));
+        self.cached_whole = self.coverage.observed(first, last);
+        self.visits += 1;
+        self.rebuild_cached_from_window();
+    }
 }
 
 impl HeadValue for ApmHead {
@@ -260,41 +425,68 @@ impl HeadValue for ApmHead {
         APM_COLUMNS.len()
     }
 
-    fn answer(&mut self, hour: Hour, _reset: bool, rows: &mut HeadRows<'_>) -> Result<(), String> {
+    fn answer(&mut self, hour: Hour, reset: bool, rows: &mut HeadRows<'_>) -> Result<(), String> {
         if !self.index.analysis.recorded {
             return Err("Player orders were not recorded in this campaign.".into());
         }
         let (first, last) = self.window_at(hour).ok_or("This time is outside the recording.")?;
-        let mut entries: Vec<_> = self
-            .amounts(first, last)
-            .into_iter()
-            .map(|(series, played)| {
-                let value: ApmValue = played.amount.value();
-                (series, played, value)
-            })
-            .collect();
-        entries.sort_by(|(a_series, _, a), (b_series, _, b)| {
-            match (a.apm, b.apm) {
-                (Some(x), Some(y)) => y.total_cmp(&x),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
+        if !reset && self.cached_window == Some((first, last)) {
+        } else if !reset
+            && let Some((p_first, p_last)) = self.cached_window
+            && first >= p_first
+            && last >= p_last
+            && i64::from(first - p_first) + i64::from(last - p_last) <= 8
+        {
+            let mut dirty = false;
+            self.window_hours.retain(|_, deque| {
+                while deque.front().is_some_and(|&(h, _)| h < first) {
+                    deque.pop_front();
+                    dirty = true;
+                }
+                !deque.is_empty()
+            });
+            for h in (p_last + 1)..=last {
+                let slices = self.hour_slices(h);
+                if !slices.is_empty() {
+                    dirty = true;
+                    for (series, slice) in slices {
+                        self.window_hours.entry(series).or_default().push_back((h, slice));
+                    }
+                }
             }
-            .then_with(|| self.ids[*a_series].cmp(&self.ids[*b_series]))
-        });
-        for (series, Played { amount, tag, name, name_missing, .. }, value) in entries {
-            rows.row(series as u128, &self.ids[series]);
+            let whole = self.coverage.observed(first, last);
+            self.visits += 1;
+            let gaps_changed = whole != self.cached_whole;
+            self.cached_window = Some((first, last));
+            self.cached_whole = whole;
+            if dirty {
+                self.rebuild_cached_from_window();
+            } else if gaps_changed {
+                let gaps = !whole;
+                for (_, played, value) in &mut self.cached_entries {
+                    played.amount.gaps = gaps;
+                    value.gaps = gaps;
+                }
+            }
+        } else {
+            self.seed_window(first, last);
+        }
+        for (series, Played { amount, tag, name, name_missing, .. }, value) in &self.cached_entries {
+            rows.row(*series as u128, &self.ids[*series]);
             rows.float(value.apm);
             rows.float(value.confirmed_apm);
-            rows.number(value.orders.and_then(|orders| orders.parse().ok()));
-            rows.number(value.paused_orders.and_then(|orders| orders.parse().ok()));
+            rows.number(value.orders.as_deref().and_then(|orders| orders.parse().ok()));
+            rows.number(value.paused_orders.as_deref().and_then(|orders| orders.parse().ok()));
             rows.float(value.unpaused_minutes);
             rows.flag(value.complete);
             rows.flag(value.gaps);
-            rows.text(Some(&tag));
+            rows.text(Some(tag));
             rows.number(amount.last_hour.map(i64::from));
             rows.text(name.as_deref());
             rows.text(name_missing.as_deref());
+            rows.text(value.confirmed_orders.as_deref());
+            rows.text(value.unpaused_minutes_num.as_deref());
+            rows.text(value.unpaused_minutes_den.as_deref());
         }
         Ok(())
     }
@@ -303,7 +495,7 @@ impl HeadValue for ApmHead {
 fn unknown_rate(value: &ApmValue) -> String {
     if !value.complete {
         "Player orders or unpaused time were not fully recorded for this period; the rate is unknown.".into()
-    } else if value.unpaused_minutes == Some(0.0) {
+    } else if value.unpaused_minutes_num.as_deref() == Some("0") || value.unpaused_minutes == Some(0.0) {
         "No unpaused time was observed in this period.".into()
     } else {
         "It is unclear whether some orders count toward eAPM; the rate is unknown.".into()
@@ -517,7 +709,7 @@ fn tile_from_index(
                                 (fh, fv, h, rate, minh, minv, maxh, maxv)
                             }
                         });
-                    } else if val.complete && val.unpaused_minutes == Some(0.0) {
+                    } else if val.complete && (val.unpaused_minutes_num.as_deref() == Some("0") || val.unpaused_minutes == Some(0.0)) {
                         paused_span = Some(match paused_span {
                             None => (h, h),
                             Some((lo, hi)) => (lo.min(h), hi.max(h)),

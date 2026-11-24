@@ -1,6 +1,6 @@
 import type { ArtFrame, ArtHandle, ArtOrigin, ArtProvenance, ArtResolution, ArtResult, ProductArtResolution } from '../plan.ts';
 
-export type { ArtFrame, ArtOrigin, ArtProvenance, ArtResolution, ArtResult, ProductArtResolution };
+export type { ArtOrigin, ArtProvenance, ArtResolution, ArtResult, ProductArtResolution };
 
 export function productArt(resolution: ProductArtResolution): ArtResolution {
   return resolution as ArtResolution;

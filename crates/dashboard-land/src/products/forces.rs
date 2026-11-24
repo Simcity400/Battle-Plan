@@ -143,19 +143,17 @@ impl Named {
     }
 }
 
-fn split(total: Option<i64>, held: &[(usize, Option<i64>)], groups: usize) -> Vec<Option<i64>> {
-    let Some(total) = total else { return vec![None; groups] };
-    let mut known = 0i128;
+fn split(total: Option<i64>, held: &[(usize, Option<i64>)], groups: usize) -> (Vec<Option<i64>>, bool) {
     let mut out = vec![Some(0i64); groups];
     for &(group, value) in held {
-        let Some(value) = value else { continue };
-        known += i128::from(value);
-        out[group] = out[group].and_then(|sum| sum.checked_add(value));
+        out[group] = match (out[group], value) {
+            (Some(sum), Some(value)) => sum.checked_add(value),
+            _ => None,
+        };
     }
-    if known != i128::from(total) || out.iter().any(Option::is_none) {
-        return vec![None; groups];
-    }
-    out
+    let known: Option<i128> = out.iter().map(|value| value.map(i128::from)).sum();
+    let reconciled = total.is_some_and(|total| known == Some(i128::from(total)));
+    (out, reconciled)
 }
 
 pub fn segments(query: &Query<'_>, tag: &Country, first: i32, last: i32) -> Vec<ArmySpan> {

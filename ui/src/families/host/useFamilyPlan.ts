@@ -8,8 +8,8 @@ import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { countryMatch, countryMatchChangeHours, groupUnobserved, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
-import { resolveWindow, type WidgetSpec } from '../../dashboard/model';
-import { resolveOptions, type OptionField, type OptionValue } from '../../dashboard/options';
+import { resolveWindow, type WidgetBase } from '../../dashboard/model';
+import type { OptionValue } from '../../dashboard/options';
 import { prepareGate, preparing } from '../../dashboard/prepare.ts';
 import { loadProduct, peekProduct, productKey, useProduct } from '../../dashboard/products';
 import { asFailure, type Failure } from '../../dashboard/queryError.ts';
@@ -39,7 +39,6 @@ import {
   planSignature,
   readPlanExact,
   stabilizeCanvasDimension,
-  tailPageOffsets,
 } from '../broker.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
@@ -74,6 +73,7 @@ import type {
 import {
   ReadTarget,
   showBundle,
+  shownView,
   unitEntries,
   type PinnedAsk,
   type ShownBundle,
@@ -84,6 +84,7 @@ import {
   effectiveCountryUnobserved,
   extractFactionData,
   freezeGate,
+  planOwner,
   selectionUnobservedReason,
   trackGate,
   type FrozenGate,
@@ -91,8 +92,8 @@ import {
 import {
   DEFAULT_TAIL_PAGE_SIZE,
   validateGenericTailReply,
-  type DatedLogRow,
-  type PagedRowsSnapshot,
+  SnapshotPager,
+  type PagedRows,
 } from '../table/rowSource.ts';
 import type { FamilyRowWindow } from './adapter.ts';
 
@@ -131,7 +132,7 @@ function buildFilterTimeline(
 }
 
 const NO_ENTRIES: readonly SourceEntry[] = [];
-const NO_VIEW: TargetView = { kind: 'none', failure: null, bundle: null, held: false };
+const NO_VIEW: TargetView = { inputs: '', kind: 'none', failure: null, bundle: null, held: false };
 const NO_PIN: PinnedAsk = {
   timeMode: 'pin',
   branch: { firstHour: 0, lastHour: 0 },
@@ -141,8 +142,10 @@ const NO_PIN: PinnedAsk = {
 };
 
 export interface StaticBundle {
+  readonly stamp: object;
   readonly hour: number;
   readonly span: readonly [number, number] | null;
+  readonly proof: readonly [number, number] | null;
   readonly follows?: boolean;
   readonly panels: Readonly<Record<string, unknown>>;
   readonly shifts?: Readonly<Record<string, number>>;
@@ -160,12 +163,12 @@ export interface UseFamilyPlanInput<TAux, TExtra> {
   readonly subject: string;
   readonly emptyCampaign: string;
   readonly icon?: IconName;
-  readonly optionFields?: readonly OptionField[];
+  readonly options: Readonly<Record<string, OptionValue>>;
   readonly countries: CountryPolicy;
   readonly aux?: AuxProductSpec<TAux>;
   readonly sources: (ctx: FamilyPlanContext<TAux>, view: FamilyViewportRequest) => SourcePlan;
   readonly captureExtra?: (ctx: FamilyPlanContext<TAux>, countryLooks: CountryLooksMap | undefined) => TExtra;
-  readonly widget: WidgetSpec;
+  readonly widget: WidgetBase;
   readonly runtime: WidgetRuntime;
   readonly active: boolean;
   readonly hoverHour?: number | null;
@@ -191,7 +194,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly staticBundle: StaticBundle | null;
   readonly staticProof: StaticProof;
   readonly staticHeld: boolean;
-  readonly pagedRows: Readonly<Record<string, PagedRowsSnapshot>> | undefined;
+  readonly pagedRows: PagedRows | undefined;
   readonly onRowWindow: (window: FamilyRowWindow, hour: number | null) => void;
   readonly tiledSeries: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly tiledRevision: number;
@@ -222,7 +225,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     kind,
     subject,
     emptyCampaign,
-    optionFields,
+    options,
     countries: policy,
     aux: auxSpec,
     sources: buildSources,
@@ -269,10 +272,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const following = widget.time.mode === 'follow';
-  const options = useMemo(
-    () => resolveOptions(optionFields ?? [], widget.options),
-    [optionFields, widget.options],
-  );
   const isSingle = policy.mode === 'single';
   const isFilter = policy.mode === 'filter';
   const isMulti = policy.mode === 'multi';
@@ -282,7 +281,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     widget,
     SPEC,
     active,
-    isSingle ? { country: { stored: widget.options?.country, setOption } } : undefined,
+    isSingle ? { country: { stored: options.country, setOption } } : undefined,
   );
   const coverage = useRegionCoverage(runtime, useRegion(widget));
 
@@ -373,10 +372,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     return made;
   }, [isFilter, widget.countries, filterMatch, groups.data, track, selectedFallback, allTags, firstHour, lastHour]);
 
+  const allowsFactions = isMulti && policy.factions === true;
   const resolvedMulti = useMemo(() => {
-    if (!isMulti || widget.countries.kind === 'all') return null;
+    if (!isMulti || widget.countries.kind === 'all' || (allowsFactions && widget.countries.kind === 'factions')) return null;
     return resolveCountries(widget.countries, selectedFallback, groups.data, lastHour, Number.MAX_SAFE_INTEGER);
-  }, [isMulti, widget.countries, selectedFallback, groups.data, lastHour]);
+  }, [isMulti, allowsFactions, widget.countries, selectedFallback, groups.data, lastHour]);
 
   const singleSlotId = isMulti && policy.allowSingleSlot && widget.countries.kind === 'selected' && selectedFallback.length === 1
     ? countryFromKey(selectedFallback[0]!)
@@ -385,7 +385,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const needsSlots = isMulti && (
     typeof singleSlotId === 'number'
     || anySlot
-    || (widget.countries.kind !== 'all' && resolvedMulti?.top == null)
+    || (widget.countries.kind !== 'all' && !(allowsFactions && widget.countries.kind === 'factions') && resolvedMulti?.top == null)
   );
   const identityScope = useIdentityScope(runtime.client, track?.source, track?.branch.id, active && !!track);
   const branchBounds = useMemo(
@@ -569,16 +569,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }), [widget.countries, effectiveMulti, filterUnobserved, holders, allTags, membership, membershipRuns, unobserved, filter, labels, factionData, filterMatch?.reason]);
 
   const owner = useMemo(
-    () => JSON.stringify([
-      kind,
-      track?.source.id ?? '',
-      track?.source.revision ?? '',
-      track?.branch.id ?? '',
-      track?.axisOffset ?? 0,
-      widget.time,
-      isSingle ? countryTag : widget.countries,
-    ]),
-    [kind, track?.source.id, track?.source.revision, track?.branch.id, track?.axisOffset, widget.time, isSingle, countryTag, widget.countries],
+    () => planOwner(kind, track, widget.time, widget.countries, isSingle ? countryTag : undefined),
+    [kind, track, widget.time, isSingle, countryTag, widget.countries],
   );
 
   const ctx = useMemo<FamilyPlanContext<TAux> | null>(() => {
@@ -636,7 +628,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (!entries.length) return '';
     return JSON.stringify(entries.map(e => {
       const r = e.read as Extract<typeof e.read, { shape: 'pixel-binned' }>;
-      return [e.name, e.source.id, e.source.revision, e.branch, r.family, r.tags, r.keys ?? null, r.within ? [...r.within.entries()] : null, r.marks === true, r.top ?? null, lastHour];
+      return [e.name, e.source.id, e.source.revision, e.branch, r.family, r.tags, r.keys ?? null, r.within ? [...r.within.entries()] : null, r.top ?? null, lastHour];
     }));
   }, [plan, lastHour]);
 
@@ -707,7 +699,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
                 binHours,
                 index,
                 ...keyedTileParams(tags.map(id => byId.get(id)!), within, gateSpanRef.current),
-                ...(read.marks ? { withMarks: true } : {}),
               }
             : {
                 branchId: entry.branch,
@@ -718,7 +709,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
                 ...(within
                   ? { within: tags.map(tag => [countryFromKey(tag), (within[tag] ?? []).flatMap(span => gateSpanRef.current(span.firstHour, span.lastHour) ?? [])] as const) }
                   : {}),
-                ...(read.marks ? { withMarks: true } : {}),
               },
         });
       const ask = async (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined) => {
@@ -738,7 +728,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
                 sourceId: entry.source.id,
                 revision: entry.source.revision,
                 product: 'series-tiles',
-                params: { branchId: entry.branch, family: read.family, binHours, index, top: readTop.n, ...(readTop.least ? { least: true } : {}), ...(readTop.by ? { rankBy: readTop.by } : {}), hour: gated, ...(read.marks ? { withMarks: true } : {}) },
+                params: { branchId: entry.branch, family: read.family, binHours, index, top: readTop.n, ...(readTop.least ? { least: true } : {}), ...(readTop.by ? { rankBy: readTop.by } : {}), hour: gated },
               });
               return validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
             },
@@ -746,7 +736,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         : undefined;
       const tv = new TileView(
         tileCache(runtime.client),
-        { key: laneKey, tags: laneTags, within: read.within, lastHour, marks: read.marks === true, ask, prepared, promote, ...(top ? { top } : {}) },
+        { key: laneKey, tags: laneTags, within: read.within, lastHour, ask, prepared, promote, ...(top ? { top } : {}) },
         publish,
       );
       views.set(entry.name, tv);
@@ -812,42 +802,30 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     hoverBrokerRef.current = null;
   }, []);
 
-  interface HeldPagedEntry {
-    readonly identity: string;
-    readonly headLimit: number;
-    readonly pageSize: number;
-    frozenHour: number | null;
-    readonly pages: Map<number, readonly DatedLogRow[]>;
-    readonly refusals: Map<number, string>;
-    readonly inFlight: Set<number>;
-  }
   const pageBrokerRef = useRef<FamilySourceBroker | null>(null);
-  const pagedHeldRef = useRef<{ sig: string; entries: Map<string, HeldPagedEntry> }>({ sig: '', entries: new Map() });
-  const [pagedRowsState, setPagedRowsState] = useState<{ readonly sig: string; readonly map: Readonly<Record<string, PagedRowsSnapshot>> }>({ sig: '', map: {} });
+  const pagersRef = useRef<{ sig: string; pagers: Map<string, SnapshotPager> }>({ sig: '', pagers: new Map() });
+  const [pagedRowsState, setPagedRowsState] = useState<{ readonly sig: string; readonly map: PagedRows }>({ sig: '', map: {} });
   const pagedPlanRef = useRef<{ plan: SourcePlan | null; sig: string; active: boolean }>({ plan, sig, active });
   pagedPlanRef.current = { plan, sig, active };
 
   const publishPagedRows = useCallback((forSig: string) => {
-    const held = pagedHeldRef.current;
+    const held = pagersRef.current;
     if (held.sig !== forSig) return;
-    const map: Record<string, PagedRowsSnapshot> = {};
-    for (const [name, state] of held.entries) {
-      map[name] = {
-        identity: state.identity,
-        frozenHour: state.frozenHour,
-        headLimit: state.headLimit,
-        pageSize: state.pageSize,
-        pages: Object.fromEntries(state.pages),
-        refusals: Object.fromEntries(state.refusals),
-      };
-    }
-    setPagedRowsState({ sig: forSig, map });
+    setPagedRowsState(prev => {
+      const map: Record<string, PagedRows[string]> = {};
+      let changed = prev.sig !== forSig;
+      for (const [name, pager] of held.pagers) {
+        map[name] = pager.pages();
+        if (prev.map[name] !== map[name]) changed = true;
+      }
+      return changed ? { sig: forSig, map } : prev;
+    });
   }, []);
 
   useEffect(() => {
     pageBrokerRef.current?.dispose();
     pageBrokerRef.current = null;
-    pagedHeldRef.current = { sig, entries: new Map() };
+    pagersRef.current = { sig, pagers: new Map() };
     setPagedRowsState({ sig, map: {} });
   }, [sig]);
 
@@ -863,95 +841,41 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       (entry): entry is SourceEntry & { readonly read: Extract<SourceEntry['read'], { shape: 'paged-rows' }> } => entry.read.shape === 'paged-rows',
     );
     if (!pagedEntries.length) return;
-    if (pagedHeldRef.current.sig !== curSig) {
+    if (pagersRef.current.sig !== curSig) {
       pageBrokerRef.current?.dispose();
       pageBrokerRef.current = null;
-      pagedHeldRef.current = { sig: curSig, entries: new Map() };
+      pagersRef.current = { sig: curSig, pagers: new Map() };
     }
     if (!pageBrokerRef.current) pageBrokerRef.current = new FamilySourceBroker();
     const pageBroker = pageBrokerRef.current;
-    const first = Math.max(0, Math.floor(rowWindow.first));
-    const count = Math.max(0, Math.floor(rowWindow.count));
-    const end = first + count;
-    let changed = false;
-
+    const held = pagersRef.current;
     for (const entry of pagedEntries) {
-      const headLimit = Math.max(1, entry.read.tailQuery.limit);
-      const pageSize = Math.max(1, entry.read.pageSize ?? DEFAULT_TAIL_PAGE_SIZE);
-      const identity = `${entry.source.id}|${entry.branch}|${entry.name}`;
-      let state = pagedHeldRef.current.entries.get(entry.name);
-      if (!state) {
-        state = { identity, headLimit, pageSize, frozenHour: null, pages: new Map(), refusals: new Map(), inFlight: new Set() };
-        pagedHeldRef.current.entries.set(entry.name, state);
-      }
-
-      if (first === 0 && end <= headLimit) {
-        if (state.frozenHour !== null || state.pages.size > 0 || state.refusals.size > 0 || state.inFlight.size > 0) {
-          for (const offset of state.inFlight) pageBroker.cancelSlot(`page:${entry.name}:${offset}`);
-          state.inFlight.clear();
-          state.frozenHour = null;
-          state.pages.clear();
-          state.refusals.clear();
-          changed = true;
-        }
-        continue;
-      }
-
-      if (end <= headLimit || installedHour === null || !Number.isFinite(installedHour)) continue;
-      const hour = Math.floor(installedHour);
-      if (state.frozenHour !== null && hour < state.frozenHour) {
-        for (const offset of state.inFlight) pageBroker.cancelSlot(`page:${entry.name}:${offset}`);
-        state.inFlight.clear();
-        state.frozenHour = null;
-        state.pages.clear();
-        state.refusals.clear();
-        changed = true;
-      }
-      if (state.frozenHour === null) {
-        state.frozenHour = hour;
-        changed = true;
-      }
-      const frozenHour = state.frozenHour;
-      const wanted = new Set(tailPageOffsets({ first, count }, headLimit, pageSize));
-
-      for (const offset of [...state.inFlight]) {
-        if (!wanted.has(offset)) {
-          state.inFlight.delete(offset);
-          pageBroker.cancelSlot(`page:${entry.name}:${offset}`);
-        }
-      }
-
-      for (const offset of wanted) {
-        if (state.pages.has(offset) || state.refusals.has(offset) || state.inFlight.has(offset)) continue;
-        const req = buildTailPageRequest(entry, { offset, limit: pageSize, hour: frozenHour });
+      let pager = held.pagers.get(entry.name);
+      if (!pager) held.pagers.set(entry.name, pager = new SnapshotPager(entry.read.tailQuery.limit, entry.read.pageSize ?? DEFAULT_TAIL_PAGE_SIZE));
+      const step = pager.window(rowWindow, installedHour);
+      for (const offset of step.cancel) pageBroker.cancelSlot(`page:${entry.name}:${offset}`);
+      const validate = entry.read.validate ?? validateGenericTailReply;
+      const owner = pager;
+      for (const ask of step.fetch) {
+        const req = buildTailPageRequest(entry, ask);
         if (!req) continue;
-        state.inFlight.add(offset);
-        const heldState = state;
-        const validate = entry.read.validate ?? validateGenericTailReply;
         pageBroker.runSlot(
-          `page:${entry.name}:${offset}`,
-          `${curSig}|${entry.name}|${frozenHour}|${offset}|${pageSize}`,
+          `page:${entry.name}:${ask.offset}`,
+          `${curSig}|${entry.name}|${ask.hour}|${ask.offset}|${ask.limit}`,
           async signal => {
             const reply = validateProductReply(await runtime.client.product(req, signal), req);
-            return validate(reply.data, frozenHour);
+            return { raw: reply.data, tail: validate(reply.data, ask.hour) };
           },
-          tail => {
-            if (pagedHeldRef.current.sig !== curSig || heldState.frozenHour !== frozenHour) return;
-            heldState.inFlight.delete(offset);
-            heldState.refusals.delete(offset);
-            heldState.pages.set(offset, tail.rows);
-            publishPagedRows(curSig);
+          ({ raw, tail }) => {
+            if (pagersRef.current === held && owner.answer(ask, tail, raw)) publishPagedRows(curSig);
           },
           error => {
-            if (pagedHeldRef.current.sig !== curSig || heldState.frozenHour !== frozenHour) return;
-            heldState.inFlight.delete(offset);
-            heldState.refusals.set(offset, asFailure(error).message);
-            publishPagedRows(curSig);
+            if (pagersRef.current === held && owner.refuse(ask, asFailure(error).message)) publishPagedRows(curSig);
           },
         );
       }
     }
-    if (changed) publishPagedRows(curSig);
+    publishPagedRows(curSig);
   }, [runtime.client, publishPagedRows]);
 
   const pagedRows = useMemo(
@@ -1071,15 +995,17 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     () => (branch ? { timeMode: widget.time.mode, branch, window, pinHour, gate: frozenGate, countriesKnown: countriesState.known } : null),
     [branch, widget.time.mode, window, pinHour, frozenGate, countriesState.known],
   );
+  const inputs = useMemo(() => JSON.stringify([owner, following ? null : displayHour, sig, content]), [owner, following, displayHour, sig, content]);
   useLayoutEffect(() => {
-    const common = { entries: branch ? entries : NO_ENTRIES, active, content, trackOffset };
+    const common = { inputs, entries: branch ? entries : NO_ENTRIES, active, content, trackOffset };
     if (following && playback) readTarget().configure({ ...common, following: true, subscribed, playback });
-    else if (!following && pinned) readTarget().configure({ ...common, following: false, displayHour, pinned });
+    else if (!following && pinned) readTarget().configure({ ...common, following: false, displayHour, pinned, ...(playback ? { track: playback } : {}) });
     else readTarget().configure({ ...common, entries: NO_ENTRIES, following: false, displayHour, pinned: NO_PIN });
-  }, [readTarget, branch, entries, active, content, trackOffset, following, subscribed, playback, pinned, displayHour]);
+  }, [readTarget, inputs, branch, entries, active, content, trackOffset, following, subscribed, playback, pinned, displayHour]);
   const subscribeView = useCallback((changed: () => void) => readTarget().subscribe(() => inFrame(changed)), [readTarget]);
   const readView = useCallback(() => targetRef.current?.view() ?? NO_VIEW, []);
-  const view = useSyncExternalStore(subscribeView, readView, readView);
+  const targetView = useSyncExternalStore(subscribeView, readView, readView);
+  const view = shownView(targetView, inputs, !!branch && entries.length > 0);
   const retryUnits = useCallback(() => { targetRef.current?.retry(); }, []);
   const staticProof = useMemo<StaticProof>(() => ({
     read: () => targetRef.current?.proof() ?? null,
@@ -1087,13 +1013,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }), [readTarget]);
 
   const shownSpan = view.bundle?.span ?? null;
-  const askedSpan = shownSpan ? `${shownSpan[0]}:${shownSpan[1]}` : '';
+  const spanStart = shownSpan ? shownSpan[0] : null;
+  const spanEnd = shownSpan && !following ? shownSpan[1] : Infinity;
   const ctxWithStaticSpan = useMemo<FamilyPlanContext<TAux> | null>(() => {
     if (!ctx) return null;
-    if (!askedSpan) return ctx;
-    const [lo, hi] = askedSpan.split(':').map(Number) as [number, number];
-    return { ...ctx, staticSpan: [lo, hi] as const };
-  }, [ctx, askedSpan]);
+    if (spanStart === null) return ctx;
+    return { ...ctx, staticSpan: [spanStart, spanEnd] as const };
+  }, [ctx, spanStart, spanEnd]);
 
   const currentCountryLooks = wantsColours ? labels : undefined;
   const currentExtra = useMemo<TExtra | undefined>(
@@ -1115,11 +1041,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   );
 
   const viewBundle = view.bundle;
+  const viewPanels = viewBundle?.panels;
+  const panelRecord = useMemo(() => (viewPanels ? Object.fromEntries(viewPanels) : null), [viewPanels]);
   const viewedBundle = useMemo<StaticBundle | null>(
-    () => (viewBundle
-      ? { hour: viewBundle.hour, span: viewBundle.span, ...(viewBundle.follows ? { follows: true } : {}), panels: Object.fromEntries(viewBundle.panels), ...(viewBundle.shifts ? { shifts: viewBundle.shifts } : {}) }
+    () => (viewBundle && panelRecord
+      ? { stamp: viewBundle, hour: viewBundle.hour, span: viewBundle.span, proof: viewBundle.proof, ...(viewBundle.follows ? { follows: true } : {}), panels: panelRecord, ...(viewBundle.shifts ? { shifts: viewBundle.shifts } : {}) }
       : null),
-    [viewBundle],
+    [viewBundle, panelRecord],
   );
 
   const shownRef = useRef<ShownBundle<StaticBundle, FrozenView> | null>(null);
@@ -1153,6 +1081,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       staticSpan: frozenStaticSpan,
       gate: g,
       exactOnce: (key, load) => perfLog!.exactOnce(key, load),
+      snapshotHour: name => pagersRef.current.pagers.get(name)?.shownHour ?? null,
       identity: identityProvider,
       art: artProvider,
       rowWindow,
@@ -1215,10 +1144,10 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       }
       if (countriesState.reason) return { kind: 'empty', message: countriesState.reason };
       if (effectiveMulti && !following) {
-        const none = noMembersAt(widget.countries, effectiveMulti, groups.data, moment, lastHour);
+        const none = noMembersAt(widget.countries, effectiveMulti, groups.data, moment);
         if (none) return { kind: 'no-members', reason: none.reason };
         if (effectiveMulti.top == null && !countriesState.rankedAt(moment).length && !policy.allowSingleSlot) {
-          const why = groups.data && widget.countries.kind === 'group' ? worldFilter(widget.countries, [], groups.data, moment, lastHour).reason : null;
+          const why = groups.data && widget.countries.kind === 'group' ? worldFilter(widget.countries, [], groups.data, moment).reason : null;
           return { kind: 'refused', reason: why ?? 'No countries available for this selection.' };
         }
       }

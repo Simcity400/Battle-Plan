@@ -14,7 +14,6 @@ import {
   type TableTheme,
 } from './settings.ts';
 import { defaultWidestSamples, type ValueFormat } from '../valueFormat.ts';
-import { TWO_WAY_GAP, TWO_WAY_SLOT } from './cellPainters.ts';
 import type { FlatTableRow, TableCellKind, TableColumnSpec, TableHeaderGroup } from './model.ts';
 
 export type MeasureText = (text: string, font: string) => number;
@@ -41,6 +40,8 @@ export interface FamilyTableLayout extends Omit<TableLayout, 'columns'> {
 }
 
 export const SHARE_TRACK_WIDTH = 56;
+export const TWO_WAY_SLOT = 72;
+export const TWO_WAY_GAP = 8;
 export const SHARE_TRACK_HEIGHT = 4;
 export const SHARE_TRACK_GAP = 10;
 export const SHARE_FIGURE_SLOT = 52;

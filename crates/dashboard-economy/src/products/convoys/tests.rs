@@ -100,7 +100,7 @@ fn convoy_health_distinguishes_no_traffic_unknown_traffic_and_full_efficiency() 
         (50, 99, TrafficProof::unknown(TRAFFIC_NOT_RECORDED)),
     ];
     let eff_bad = [(20, 29, 62_000), (60, 69, 40_000)];
-    let cells_r7 = build_region_cells(7, &eff_bad, &traffic, &known, &[], &[], 0, 99);
+    let cells_r7 = build_region_cells(7, &eff_bad, &traffic, &known, &[], &[], &[], 0, 99);
     assert_eq!(
         cells_r7,
         vec![
@@ -112,7 +112,7 @@ fn convoy_health_distinguishes_no_traffic_unknown_traffic_and_full_efficiency() 
             ConvoyCellRun { first_hour: 70, last_hour: 99, state: ConvoyCellState::NotRecorded { reason: TRAFFIC_NOT_RECORDED.to_owned() } },
         ]
     );
-    let cells_r9 = build_region_cells(9, &[], &traffic, &known, &[], &[], 0, 99);
+    let cells_r9 = build_region_cells(9, &[], &traffic, &known, &[], &[], &[], 0, 99);
     assert_eq!(
         cells_r9,
         vec![
@@ -141,10 +141,10 @@ fn witnessed_naval_route_is_proven_even_when_another_client_has_no_route() {
 
     let proof = traffic_in_frame(&frame, 36);
     let known = [HourSpan { first_hour: 100, last_hour: 100 }];
-    let cells_r59 = build_region_cells(59, &[], &[(100, 100, proof.clone())], &known, &[], &[], 100, 100);
+    let cells_r59 = build_region_cells(59, &[], &[(100, 100, proof.clone())], &known, &[], &[], &[], 100, 100);
     assert_eq!(cells_r59, vec![ConvoyCellRun { first_hour: 100, last_hour: 100, state: ConvoyCellState::Efficiency { value: 100_000 } }]);
 
-    let cells_r99 = build_region_cells(99, &[], &[(100, 100, proof)], &known, &[], &[], 100, 100);
+    let cells_r99 = build_region_cells(99, &[], &[(100, 100, proof)], &known, &[], &[], &[], 100, 100);
     assert_eq!(cells_r99, vec![ConvoyCellRun { first_hour: 100, last_hour: 100, state: ConvoyCellState::NotRecorded { reason: NO_PATH.to_owned() } }]);
 }
 
@@ -168,7 +168,7 @@ fn a_recording_gap_is_taken_out_of_the_unheld_hours_and_keeps_its_own_reason() {
     let gaps = [(span(27, 39), "Hours not read")];
     assert_eq!(without(&[span(24, 45)], &gaps), vec![span(24, 26), span(40, 45)]);
     let known = [span(24, 45)];
-    let cells = build_region_cells(17, &[(24, 45, 50_000)], &[], &known, &[span(43, 45)], &gaps, 24, 45);
+    let cells = build_region_cells(17, &[(24, 45, 50_000)], &[], &known, &[], &[span(43, 45)], &gaps, 24, 45);
     assert_eq!(
         cells,
         vec![
@@ -180,64 +180,67 @@ fn a_recording_gap_is_taken_out_of_the_unheld_hours_and_keeps_its_own_reason() {
     );
 }
 
-#[test]
-fn recording_gaps_are_not_mislabelled_as_unheld_tag_hours() {
-    use dashboard_base::{Source, products::Product, test_fixtures::{CAMPAIGN, records, source}};
+fn synthetic(id: &str, hours: &[(i32, bool, Vec<(u32, i64)>)]) -> dashboard_base::Source {
+    use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
     use replay::campaign::Replay;
     use replay_data::rows::{CountryLinkRow, CountryRow, RegionalConvoyEfficiencyRow, TableSchema};
     use replay_frame::frame::TableView;
-    use std::sync::{Arc, atomic::AtomicBool};
+    use std::sync::Arc;
 
-    let make_frame = |hour: i32, has_ger: bool| {
-        let mut frame = source(1, hour, Some(1));
-        let set_complete = |f: &mut DecodedFrame, idx: usize, rows| {
-            *f.tables[idx] = TableView::Complete(rows);
-            f.metrics.table_ns[idx] = 1;
-        };
-        let countries = if has_ger {
-            vec![CountryRow { id: 10, canonical_slot: 1, tag: b"GER".to_vec(), ..Default::default() }]
-        } else {
-            vec![]
-        };
-        let links = if has_ger { vec![CountryLinkRow { id: 10, canonical_slot: 1 }] } else { vec![] };
-        set_complete(&mut frame, TableId::Countries.index(), tables::Countries::wrap(countries));
-        set_complete(&mut frame, TableId::CountryLinks.index(), tables::CountryLinks::wrap(links));
-        set_complete(&mut frame, TableId::RegionalConvoyEfficiency.index(), tables::RegionalConvoyEfficiency::wrap(vec![RegionalConvoyEfficiencyRow { country: 10, region: 17, efficiency: 50_000 }]));
-        set_complete(&mut frame, TableId::ConvoyClients.index(), tables::ConvoyClients::wrap(vec![]));
-        set_complete(&mut frame, TableId::ResourceOrigins.index(), tables::ResourceOrigins::wrap(vec![]));
-        set_complete(&mut frame, TableId::TradeRoutes.index(), tables::TradeRoutes::wrap(vec![]));
-        frame
-    };
-
-    let mut frames = Vec::new();
-    for h in 24..=26 {
-        frames.push(make_frame(h, true));
-    }
-    for h in 40..=42 {
-        frames.push(make_frame(h, true));
-    }
-    for h in 43..=45 {
-        frames.push(make_frame(h, false));
-    }
+    let frames = hours
+        .iter()
+        .map(|(hour, has_ger, efficiency)| {
+            let mut frame = source(1, *hour, Some(1));
+            let mut complete = |idx: usize, rows| {
+                *frame.tables[idx] = TableView::Complete(rows);
+                frame.metrics.table_ns[idx] = 1;
+            };
+            let countries = if *has_ger { vec![CountryRow { id: 10, canonical_slot: 1, tag: b"GER".to_vec(), ..Default::default() }] } else { vec![] };
+            let links = if *has_ger { vec![CountryLinkRow { id: 10, canonical_slot: 1 }] } else { vec![] };
+            let regional = efficiency.iter().map(|&(region, efficiency)| RegionalConvoyEfficiencyRow { country: 10, region, efficiency }).collect();
+            complete(TableId::Countries.index(), tables::Countries::wrap(countries));
+            complete(TableId::CountryLinks.index(), tables::CountryLinks::wrap(links));
+            complete(TableId::RegionalConvoyEfficiency.index(), tables::RegionalConvoyEfficiency::wrap(regional));
+            complete(TableId::ConvoyClients.index(), tables::ConvoyClients::wrap(vec![]));
+            complete(TableId::ResourceOrigins.index(), tables::ResourceOrigins::wrap(vec![]));
+            complete(TableId::TradeRoutes.index(), tables::TradeRoutes::wrap(vec![]));
+            frame
+        })
+        .collect();
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-    let src = Source::from_replay(dashboard_base::SourceKey { source_id: "convoy-gap".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-    let reply = ConvoyHealth::load(
-        &src,
-        &ConvoyHealthParams {
-            branch_id: "1".into(),
-            view: ConvoyView::Regions,
-            country: Country::Tag("GER".into()),
-            from: Some(24),
-            to: Some(45),
-            regions: Some(vec![17]),
-            pinned_regions: None,
-            hidden_regions: None,
-            top: None,
-        },
-        &LoadContext { content: None },
-        &AtomicBool::new(false),
-    )
-    .unwrap();
+    dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: id.into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
+}
+
+fn regions(from: i32, to: i32) -> ConvoyHealthParams {
+    ConvoyHealthParams {
+        branch_id: "1".into(),
+        view: ConvoyView::Regions,
+        country: Country::Tag("GER".into()),
+        from: Some(from),
+        to: Some(to),
+        regions: None,
+        pinned_regions: None,
+        hidden_regions: None,
+        top: None,
+        list_from: None,
+        every: None,
+    }
+}
+
+fn health_of(source: &dashboard_base::Source, params: &ConvoyHealthParams) -> ConvoyHealthReply {
+    ConvoyHealth::load(source, params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
+}
+
+fn gapped() -> dashboard_base::Source {
+    let held = |hour| (hour, true, vec![(17, 50_000)]);
+    let mut hours: Vec<_> = (24..=26).chain(40..=42).map(held).collect();
+    hours.extend((43..=45).map(|hour| (hour, false, vec![(17, 50_000)])));
+    synthetic("convoy-gap", &hours)
+}
+
+#[test]
+fn recording_gaps_are_not_mislabelled_as_unheld_tag_hours() {
+    let reply = health_of(&gapped(), &ConvoyHealthParams { regions: Some(vec![17]), ..regions(24, 45) });
     let region = reply.regions.iter().find(|r| r.region == 17).unwrap();
     let gap_cell = region.cells.iter().find(|c| c.first_hour <= 30 && 30 <= c.last_hour).unwrap();
     match &gap_cell.state {
@@ -249,15 +252,62 @@ fn recording_gaps_are_not_mislabelled_as_unheld_tag_hours() {
 }
 
 #[test]
-fn the_most_strained_regions_are_a_rank_only_where_every_hour_is_recorded() {
-    let cell = |first_hour: i32, last_hour: i32, state: ConvoyCellState| ConvoyCellRun { first_hour, last_hour, state };
-    let region = |region: u32, cells: Vec<ConvoyCellRun>| (region, ConvoyRegion { region, name: None, missing: None, pinned: false, cells, readout: None, efficiency: Vec::new() });
-    let efficiency = |value: i64| ConvoyCellState::Efficiency { value };
-    let recorded = BTreeMap::from([region(1, vec![cell(0, 9, efficiency(50_000))]), region(2, vec![cell(0, 9, efficiency(90_000))])]);
-    assert_eq!(most_strained(&recorded, |_| true, Some(1), true), (vec![1], None));
-    let unread = BTreeMap::from([region(1, vec![cell(0, 9, efficiency(50_000))]), region(2, vec![cell(0, 4, ConvoyCellState::NotRecorded { reason: "Regional convoy efficiency was not recorded".into() }), cell(5, 9, efficiency(90_000))])]);
-    assert_eq!(most_strained(&unread, |_| true, Some(1), true), (Vec::new(), Some("Regional convoy efficiency was not recorded".to_owned())),
-        "region 2's unknown hours could hold the worst efficiency: no top, and why");
-    let (_, missing) = most_strained(&recorded, |_| true, Some(1), false);
-    assert!(missing.is_some(), "an unrecorded stretch of the view leaves every region's strain unknown, so no convoys is never claimed");
+fn a_reply_holds_nothing_after_its_hour_and_names_the_last_hour_nothing_shown_changes() {
+    let source = gapped();
+    let reply = health_of(&source, &ConvoyHealthParams { regions: Some(vec![17]), ..regions(24, 25) });
+    assert_eq!(reply.last_hour, 25);
+    assert_eq!(reply.valid_through, 26, "the recording gap begins at 27");
+    let region = reply.regions.iter().find(|r| r.region == 17).unwrap();
+    assert!(region.cells.iter().all(|cell| cell.last_hour <= 25) && region.efficiency.iter().all(|run| run.1 <= 25));
+    assert!(reply.gaps.is_empty() && reply.unheld.is_empty() && reply.known[0].iter().all(|span| span.last_hour <= 25), "a gap or unheld stretch after the hour is not in the reply");
+    let later = health_of(&source, &ConvoyHealthParams { regions: Some(vec![17]), ..regions(40, 41) });
+    assert_eq!(later.valid_through, 42, "the tag is unheld from 43");
+}
+
+#[test]
+fn the_automatic_regions_are_ranked_at_the_asked_hour_and_every_lists_each_region_unranked() {
+    let hours: Vec<_> = (0..48).map(|hour| (hour, true, if hour < 24 { vec![(17, 40_000), (18, 90_000)] } else { vec![(17, 90_000), (18, 10_000)] })).collect();
+    let source = synthetic("convoy-rank", &hours);
+    let today = health_of(&source, &ConvoyHealthParams { top: Some(1), ..regions(24, 30) });
+    assert_eq!(today.regions.iter().map(|r| r.region).collect::<Vec<_>>(), vec![18], "at hour 30, 18 loses more, whatever the day before held");
+    assert_eq!(today.valid_through, 47, "the order and every cell hold to the end of the day");
+    assert!(today.regions[0].cells.iter().all(|cell| cell.first_hour >= 24 && cell.last_hour <= 30));
+    assert_eq!(today.rank_missing, None);
+    assert_eq!(today.active_unlisted.ids, [17], "active at the hour past the top: the chooser's Active now");
+    let removed = health_of(&source, &ConvoyHealthParams { top: Some(1), hidden_regions: Some(vec![18]), ..regions(24, 30) });
+    assert_eq!((removed.regions.iter().map(|r| r.region).collect::<Vec<_>>(), removed.active_unlisted.ids.clone()), (vec![17], vec![18]));
+    let all_removed = health_of(&source, &ConvoyHealthParams { top: Some(1), hidden_regions: Some(vec![17, 18]), ..regions(24, 30) });
+    assert_eq!(all_removed.empty, Some(NoRegions::Filtered { hidden: 2, outside: 0 }), "removing every active region is not \"No convoys\"");
+    let before = health_of(&source, &ConvoyHealthParams { top: Some(2), ..regions(0, 23) });
+    assert_eq!(before.regions.iter().map(|r| r.region).collect::<Vec<_>>(), vec![17, 18], "most loss first, a full route after it");
+    assert_eq!(before.valid_through, 23, "both readings change at hour 24");
+    let every = health_of(&source, &ConvoyHealthParams { every: Some(true), top: Some(1), ..regions(0, 23) });
+    assert_eq!(every.regions.iter().map(|r| r.region).collect::<Vec<_>>(), vec![17, 18]);
+    assert!(every.absent.as_ref().is_some_and(|cells| cells.iter().all(|cell| cell.state == ConvoyCellState::NoTraffic)));
+}
+
+#[test]
+fn an_hour_whose_convoy_state_is_not_recorded_ranks_no_automatic_region_and_says_why() {
+    let reply = health_of(&gapped(), &ConvoyHealthParams { top: Some(7), pinned_regions: Some(vec![17]), ..regions(24, 30) });
+    assert!(reply.rank_missing.is_some());
+    assert_eq!(reply.regions.iter().map(|r| (r.region, r.pinned)).collect::<Vec<_>>(), vec![(17, true)], "the pin stays");
+    assert_eq!(reply.active_unlisted.missing, reply.rank_missing);
+    let unpinned = health_of(&gapped(), &ConvoyHealthParams { top: Some(7), ..regions(24, 30) });
+    assert!(matches!(unpinned.empty, Some(NoRegions::Unread { .. })), "{:?}", unpinned.empty);
+}
+
+#[test]
+fn a_value_a_truncated_hour_reached_is_kept_and_an_unreached_hour_says_why() {
+    let known = [HourSpan { first_hour: 0, last_hour: 9 }];
+    let unread = [(10, 19, "Regional convoy efficiency was read in part at this hour".to_owned())];
+    let traffic = [(0, 19, TrafficProof::default())];
+    let cells = build_region_cells(17, &[(0, 14, 70_000)], &traffic, &known, &unread, &[], &[], 0, 19);
+    assert_eq!(
+        cells,
+        vec![
+            ConvoyCellRun { first_hour: 0, last_hour: 14, state: ConvoyCellState::Efficiency { value: 70_000 } },
+            ConvoyCellRun { first_hour: 15, last_hour: 19, state: ConvoyCellState::NotRecorded { reason: "Regional convoy efficiency was read in part at this hour".into() } },
+        ],
+        "the truncated hours that reached the region keep its value; the rest are not recorded with their reason, never the earlier value"
+    );
 }

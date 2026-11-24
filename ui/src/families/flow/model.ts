@@ -19,7 +19,6 @@ export interface FlowNode {
   readonly labelMissing?: boolean;
   readonly tag?: string;
   readonly flag?: ArtResult;
-  readonly color?: string;
   readonly numeric: number | null;
   readonly figure: string;
   readonly others?: number;
@@ -40,6 +39,7 @@ export interface FlowRibbon {
   readonly from: string;
   readonly to: string;
   readonly bands: readonly FlowBand[];
+  readonly others?: boolean;
   readonly numeric: number | null;
   readonly audit: string;
   readonly tooltip?: FamilyTooltipPayload;
@@ -53,7 +53,6 @@ export interface FlowModel {
   readonly centre?: FlowNode;
   readonly ribbons: readonly FlowRibbon[];
   readonly parts: readonly FlowPartKey[];
-  readonly scaleMax: number;
   readonly leftHeader?: string;
   readonly rightHeader?: string;
   readonly unitNote?: string;
@@ -79,7 +78,11 @@ export function flowNodes(model: FlowModel): readonly FlowNode[] {
 }
 
 export function deriveFlowNav(model: FlowModel): readonly FamilyNavTuple[] {
-  return flowNodes(model).map((node, index) => [`node:${node.key}`, node.spoken, index, -1, '', node.subject ?? null]);
+  const nodes = flowNodes(model);
+  return [
+    ...nodes.map((node, index): FamilyNavTuple => [`node:${node.key}`, node.spoken, index, -1, '', node.subject ?? null]),
+    ...model.ribbons.map((ribbon, index): FamilyNavTuple => [`ribbon:${ribbon.key}`, `${ribbon.tooltip?.title ?? ribbon.key}: ${ribbon.audit}`, nodes.length + index, -1, '', null]),
+  ];
 }
 
 export function deriveFlowMirror(model: FlowModel): MirrorModel {

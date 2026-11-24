@@ -38,7 +38,7 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string", "family-measure-text-loop", "family-hand-percent", "family-at-least-wording")
+RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string", "family-measure-text-loop", "family-hand-percent", "family-at-least-wording", "family-private-art-cache", "widget-stored-option")
 RULE_HINTS = {
     "local-contrast-ink": "use contrastInkForFill from ui/src/draw/kit.ts",
     "local-tick-engine": "use computeTimeAxisTicks from ui/src/draw/kit.ts or linearTicks from ui/src/charts/valueAxis.ts",
@@ -47,26 +47,44 @@ RULE_HINTS = {
     "family-measure-text-loop": "use textWidth or measureCanvasText from ui/src/charts/textWidth.ts, or fitLabelWidth / fitLabel from ui/src/charts/labels.ts",
     "family-hand-percent": "use formatShare, formatProgress, or formatRecordedPercent from ui/src/families/valueFormat.ts",
     "family-at-least-wording": "show the figure with the partial mark and a plain missing reason; never print 'at least', '≥', or '+ means'",
+    "family-private-art-cache": "use resolveCachedArt, toArtSlotState, and toFlagSlotState from ui/src/families/art/adapters.ts, and collectArtUrls from ui/src/families/art/provider.ts",
+    "widget-stored-option": "read the options the host hands the view (props.options), or widgetViewOptions from ui/src/widgets/manifest.ts, and write through props.setOption",
 }
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
 TS_FIXTURE = re.compile(r"\.fixtures?\.tsx?$")
 FAMILY_OR_WIDGET_TS = re.compile(r"^ui/src/(?:families|widgets)/.+\.tsx?$")
-TS_TOKEN = re.compile(r"""//|/\*|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`""", re.DOTALL)
+FAMILY_OR_WIDGET_CSS = re.compile(r"^ui/src/(?:families|widgets)/.+\.css$")
+WIDGET_TS = re.compile(r"^ui/src/widgets/.+\.tsx?$")
+OPTION_MAPPING_MODULE = "ui/src/widgets/manifest.ts"
+STORED_OPTION_READ = re.compile(r"\b(?:widget|spec)\s*\??\.\s*options\s*(?:\?\.\s*\[|\?\.\s*[A-Za-z_$]|\[|\.\s*[A-Za-z_$])|\bresolveOptions\s*\(")
 TS_FN_RHS = r"(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$]\w*\s*=>)"
 AT_LEAST_STRING = re.compile(r"\bat\s+least\b|\u2265|\\u2265|\+\s*means\b", re.IGNORECASE)
-AT_LEAST_JSX = re.compile(r"\u2265|\+\s*means\b", re.IGNORECASE)
+AT_LEAST_JSX = re.compile(r"\bat\s+least\b|\u2265|\+\s*means\b", re.IGNORECASE)
+JSX_LOWER_BOUND_PLUS = re.compile(r"\}\+(?![0-9A-Za-z_+=])")
 LOCAL_CONTRAST_INK = re.compile(
     rf"\b(?:function\s+(?:inkOn|contrastInk|relativeLuminance|readableText)\w*|(?:const|let)\s+(?:inkOn|contrastInk|relativeLuminance|readableText)\w*\s*=\s*{TS_FN_RHS}|\breadableText\s*\()"
 )
 LOCAL_TICK_ENGINE = re.compile(
     rf"\b(?:function\s+(?:compute\w*Ticks|nice\w*Ticks|linearTicks|timeAxisTicks|axisTicks|ticksForStep)\w*|(?:const|let)\s+(?:compute\w*Ticks|nice\w*Ticks|linearTicks|timeAxisTicks|axisTicks|ticksForStep)\w*\s*=\s*{TS_FN_RHS})"
 )
-FAMILY_COLOUR_LITERAL = re.compile(r"""['"`]#[0-9a-fA-F]{3,8}(?=['"`])|\b(?:rgba?|hsla?)\s*\(""")
+COLOUR_FUNC_LITERAL = re.compile(r"\b(?:rgba?|hsla?)\s*\(")
+CSS_COLOUR_LITERAL = re.compile(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\s*\(")
+HEX_STRING_LITERAL = re.compile(r"""(['"`])([^'"`\n]*?#[0-9a-fA-F]{3,8}\b[^'"`\n]*?)\1""")
+STYLE_NAME_WORD = r"(?:[A-Za-z_$]\w*(?:colou?r|fill|stroke|background|border|outline|shadow|tint|ink|accent|surface|palette|swatch|theme|gradient|stop|style)|colou?r|fill|stroke|bg|fg|ink|tint|accent|surface|palette|swatch|style)"
+STYLE_CONTEXT_PREFIX = re.compile(
+    rf"(?:\b{STYLE_NAME_WORD}\s*(?:=|:)\s*(?:\{{\s*)?(?:\[\s*(?:[^\]\n]*,\s*)?)?|\b(?:addColorStop|setProperty|contrastInkForFill|readableColour|parseHex|mixColour|mixColor)\s*\([^()\n]*)$",
+    re.IGNORECASE,
+)
+STYLE_VALUE_EMBEDDED = re.compile(r"(?:\b(?:solid|dashed|dotted|gradient|inset)\b|\d+(?:px|em|rem|%)\s+)")
+CONST_HEX_BINDING = re.compile(r"""\b(?:const|let|var)\s+([A-Za-z_$]\w*)\s*(?::[^=\n]+)?=\s*(['"`])#[0-9a-fA-F]{3,8}\2""")
 SELECTOR_CALL_PREFIX = re.compile(r"\b(?:querySelector(?:All)?|closest|matches)\s*\(\s*$")
 FAMILY_LOCALE_CODE = re.compile(r"""\.toLocaleString\s*\(|\.toFixed\s*\(|\bnew\s+Intl\.NumberFormat\s*\(""")
 FAMILY_LOCALE_IMPORT = re.compile(r"""from\s+['"][^'"]*charts/numberFormat(?:\.ts)?['"]""")
 FAMILY_HAND_PERCENT = re.compile(
     r"""\$\{[^}\n]*(?:\bMath\.(?:round|floor|trunc|ceil)\s*\(|\.toFixed\s*\()[^}\n]*\}\s*%|(?:\bMath\.(?:round|floor|trunc|ceil)\s*\(|\.toFixed\s*\()[^;\n]*\+\s*['"`]%"""
+)
+FAMILY_PRIVATE_ART_CACHE = re.compile(
+    rf"\.stateOfUrl\s*\(|\b(?:function\s+(?:resolve(?:Art|Flag)State|collect(?:Visible)?(?:Cell)?Icons)\b|(?:const|let)\s+(?:resolve(?:Art|Flag)State|collect(?:Visible)?(?:Cell)?Icons)\s*=\s*{TS_FN_RHS})"
 )
 TS_LOOP_HEAD = re.compile(r"\b(?:for|while)\s*\(|\bdo\s*\{|\.(?:forEach|map|reduce|flatMap|filter|some|every)\s*\(")
 TS_MEASURE_TEXT = re.compile(r"\.measureText\s*\(")
@@ -599,78 +617,245 @@ def rust_matches(name, revision):
 def is_family_or_widget(name):
     if JS_TEST.search(name) or TS_FIXTURE.search(name):
         return False
-    return bool(FAMILY_OR_WIDGET_TS.match(name))
+    return bool(FAMILY_OR_WIDGET_TS.match(name) or FAMILY_OR_WIDGET_CSS.match(name))
 
 
-def at_least_wording_lines(text):
+def _blank_slice(text, start, end):
+    return re.sub(r"[^\n]", " ", text[start:end])
+
+
+def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, on_plain=None, on_string=None, on_template_chunk=None):
+    out = []
+    at = start
+    brace_depth = 0
+    plain_start = start
+
+    def flush_plain(upto):
+        nonlocal plain_start
+        if upto > plain_start:
+            chunk = text[plain_start:upto]
+            out.append(chunk)
+            if on_plain is not None:
+                on_plain(plain_start, chunk)
+        plain_start = upto
+
+    while at < end:
+        ch = text[at]
+        if stop_brace:
+            if ch == "{":
+                brace_depth += 1
+                at += 1
+                continue
+            if ch == "}":
+                if brace_depth == 0:
+                    flush_plain(at)
+                    return "".join(out), at
+                brace_depth -= 1
+                at += 1
+                continue
+        if ch == "/" and at + 1 < end and text[at + 1] == "/":
+            flush_plain(at)
+            nl = text.find("\n", at + 2, end)
+            stop = end if nl < 0 else nl
+            out.append(_blank_slice(text, at, stop))
+            at = stop
+            plain_start = at
+        elif ch == "/" and at + 1 < end and text[at + 1] == "*":
+            flush_plain(at)
+            close = text.find("*/", at + 2, end)
+            stop = end if close < 0 else close + 2
+            out.append(_blank_slice(text, at, stop))
+            at = stop
+            plain_start = at
+        elif ch in ("'", '"'):
+            flush_plain(at)
+            quote = ch
+            cursor = at + 1
+            while cursor < end:
+                c = text[cursor]
+                if c == "\\":
+                    cursor += 2
+                    continue
+                if c == quote or c == "\n":
+                    if c == quote:
+                        cursor += 1
+                    break
+                cursor += 1
+            if on_string is not None and cursor >= at + 2 and text[cursor - 1] == quote:
+                on_string(at + 1, text[at + 1:cursor - 1])
+            if blank_strings and cursor >= at + 2 and text[cursor - 1] == quote:
+                out.append(quote + _blank_slice(text, at + 1, cursor - 1) + quote)
+            else:
+                out.append(text[at:cursor])
+            at = cursor
+            plain_start = at
+        elif ch == "`":
+            flush_plain(at)
+            out.append("`")
+            cursor = at + 1
+            chunk_start = cursor
+            after_interp = False
+            while cursor < end:
+                c = text[cursor]
+                if c == "\\":
+                    cursor += 2
+                    continue
+                if c == "`":
+                    if on_template_chunk is not None:
+                        on_template_chunk(chunk_start, text[chunk_start:cursor], after_interp)
+                    out.append(_blank_slice(text, chunk_start, cursor) if blank_strings else text[chunk_start:cursor])
+                    out.append("`")
+                    cursor += 1
+                    break
+                if c == "$" and cursor + 1 < end and text[cursor + 1] == "{":
+                    if on_template_chunk is not None:
+                        on_template_chunk(chunk_start, text[chunk_start:cursor], after_interp)
+                    out.append(_blank_slice(text, chunk_start, cursor) if blank_strings else text[chunk_start:cursor])
+                    out.append("${")
+                    inner_masked, close_brace = _scan_ts_range(
+                        text,
+                        cursor + 2,
+                        end,
+                        blank_strings=blank_strings,
+                        stop_brace=True,
+                        on_plain=on_plain,
+                        on_string=on_string,
+                        on_template_chunk=on_template_chunk,
+                    )
+                    out.append(inner_masked)
+                    if close_brace < end:
+                        out.append("}")
+                        cursor = close_brace + 1
+                    else:
+                        cursor = end
+                    chunk_start = cursor
+                    after_interp = True
+                    continue
+                cursor += 1
+            else:
+                if on_template_chunk is not None:
+                    on_template_chunk(chunk_start, text[chunk_start:cursor], after_interp)
+                out.append(_blank_slice(text, chunk_start, cursor) if blank_strings else text[chunk_start:cursor])
+            at = cursor
+            plain_start = at
+        else:
+            at += 1
+    flush_plain(end)
+    return "".join(out), end
+
+
+def at_least_wording_lines(text, *, is_tsx=False):
     lines = []
 
-    def scan_template(body, base_offset):
-        at, length = 0, len(body)
-        while at < length:
-            interp = body.find("${", at)
-            chunk = body[at:] if interp < 0 else body[at:interp]
-            for hit in AT_LEAST_STRING.finditer(chunk):
-                lines.append(line_of(text, base_offset + at + hit.start()))
-            if interp < 0:
-                break
-            end = closing(body, interp + 1, "{", "}")
-            lines.extend(at_least_wording_lines_in_segment(text, body[interp + 2:end - 1], base_offset + interp + 2))
-            at = end
+    def on_plain(offset, chunk):
+        for hit in AT_LEAST_JSX.finditer(chunk):
+            lines.append(line_of(text, offset + hit.start()))
+        if is_tsx:
+            for hit in JSX_LOWER_BOUND_PLUS.finditer(chunk):
+                before = chunk[:hit.start()]
+                if ">" in before and "{" in before[before.rfind(">"):]:
+                    lines.append(line_of(text, offset + hit.start() + 1))
 
-    def at_least_wording_lines_in_segment(full_text, segment, base_offset):
-        found_lines = []
-        at, length = 0, len(segment)
-        while (tok := TS_TOKEN.search(segment, at)) is not None:
-            start, token = tok.start(), tok.group()
-            plain = segment[at:start]
-            for hit in AT_LEAST_JSX.finditer(plain):
-                found_lines.append(line_of(full_text, base_offset + at + hit.start()))
-            if token == "//":
-                end = segment.find("\n", start)
-                end = length if end < 0 else end
-            elif token == "/*":
-                close = segment.find("*/", start + 2)
-                end = length if close < 0 else close + 2
-            elif token.startswith("`"):
-                end = tok.end()
-                scan_template(token[1:-1], base_offset + start + 1)
-            else:
-                end = tok.end()
-                for hit in AT_LEAST_STRING.finditer(token[1:-1]):
-                    found_lines.append(line_of(full_text, base_offset + start + 1 + hit.start()))
-            at = end
-        for hit in AT_LEAST_JSX.finditer(segment[at:]):
-            found_lines.append(line_of(full_text, base_offset + at + hit.start()))
-        return found_lines
+    def on_string(offset, body):
+        for hit in AT_LEAST_STRING.finditer(body):
+            lines.append(line_of(text, offset + hit.start()))
 
-    lines.extend(at_least_wording_lines_in_segment(text, text, 0))
+    def on_template_chunk(offset, body, after_interp):
+        for hit in AT_LEAST_STRING.finditer(body):
+            lines.append(line_of(text, offset + hit.start()))
+        if after_interp and body.startswith("+") and (len(body) == 1 or not re.match(r"[0-9A-Za-z_+=]", body[1])):
+            lines.append(line_of(text, offset))
+
+    _scan_ts_range(text, 0, len(text), blank_strings=False, on_plain=on_plain, on_string=on_string, on_template_chunk=on_template_chunk)
     return sorted(lines)
 
 
 def mask_ts_comments(text, *, blank_strings=False):
-    out, at, length = [], 0, len(text)
-    blank = lambda start, end: re.sub(r"[^\n]", " ", text[start:end])
-    while (found := TS_TOKEN.search(text, at)) is not None:
-        start, token = found.start(), found.group()
-        out.append(text[at:start])
-        if token == "//":
-            end = text.find("\n", start)
-            end = length if end < 0 else end
-            out.append(blank(start, end))
-        elif token == "/*":
-            close = text.find("*/", start + 2)
-            end = length if close < 0 else close + 2
-            out.append(blank(start, end))
-        else:
-            end = found.end()
-            if blank_strings and len(token) >= 2:
-                out.append(token[0] + blank(start + 1, end - 1) + token[-1])
-            else:
-                out.append(token)
-        at = end
-    out.append(text[at:])
-    return "".join(out)
+    masked, _ = _scan_ts_range(text, 0, len(text), blank_strings=blank_strings)
+    return masked
+
+
+def family_colour_lines(text, code_with_strings):
+    offsets = []
+    for match in COLOUR_FUNC_LITERAL.finditer(code_with_strings):
+        offsets.append(match.start())
+
+    const_hex_offsets = {}
+    for match in CONST_HEX_BINDING.finditer(code_with_strings):
+        const_hex_offsets.setdefault(match.group(1), []).append(match.start(2))
+
+    used_in_style = set()
+    for name in const_hex_offsets:
+        if re.search(rf"\b{STYLE_NAME_WORD}\s*(?:=|:)\s*\{{?\s*{re.escape(name)}\b", code_with_strings, re.IGNORECASE) or re.search(
+            rf"\b(?:addColorStop|setProperty|contrastInkForFill|readableColour|parseHex|mixColour|mixColor)\s*\([^()\n]*\b{re.escape(name)}\b",
+            code_with_strings,
+        ):
+            used_in_style.add(name)
+
+    seen_offsets = set(offsets)
+    for match in HEX_STRING_LITERAL.finditer(code_with_strings):
+        start = match.start()
+        if SELECTOR_CALL_PREFIX.search(code_with_strings, max(0, start - 40), start):
+            continue
+        before = code_with_strings[max(0, start - 120):start]
+        in_style = bool(STYLE_CONTEXT_PREFIX.search(before)) or bool(STYLE_VALUE_EMBEDDED.search(match.group(2)))
+        if in_style and start not in seen_offsets:
+            seen_offsets.add(start)
+            offsets.append(start)
+
+    for name in used_in_style:
+        for pos in const_hex_offsets[name]:
+            if pos not in seen_offsets:
+                seen_offsets.add(pos)
+                offsets.append(pos)
+
+    return [line_of(text, offset) for offset in sorted(offsets)]
+
+
+def family_css_matches(text):
+    clean = re.sub(r"/\*[\s\S]*?\*/", lambda m: re.sub(r"[^\n]", " ", m.group()), text)
+    colour_lines = []
+    depth = 0
+    in_value = False
+    value_start = 0
+    length = len(clean)
+    index = 0
+    while index < length:
+        ch = clean[index]
+        if ch in ("'", '"'):
+            quote = ch
+            index += 1
+            while index < length:
+                if clean[index] == "\\":
+                    index += 2
+                    continue
+                if clean[index] == quote:
+                    index += 1
+                    break
+                index += 1
+            continue
+        if ch == "{":
+            if in_value:
+                in_value = False
+            depth += 1
+        elif ch == "}":
+            if in_value:
+                for hit in CSS_COLOUR_LITERAL.finditer(clean, value_start, index):
+                    colour_lines.append(line_of(text, hit.start()))
+                in_value = False
+            depth = max(0, depth - 1)
+        elif ch == ":" and depth > 0 and not in_value:
+            in_value = True
+            value_start = index + 1
+        elif ch == ";" and in_value:
+            for hit in CSS_COLOUR_LITERAL.finditer(clean, value_start, index):
+                colour_lines.append(line_of(text, hit.start()))
+            in_value = False
+        index += 1
+    if in_value:
+        for hit in CSS_COLOUR_LITERAL.finditer(clean, value_start, length):
+            colour_lines.append(line_of(text, hit.start()))
+    return {"family-colour-literal": colour_lines} if colour_lines else {}
 
 
 def ts_loop_spans(code):
@@ -705,11 +890,7 @@ def family_ts_matches(name, text):
     tick_lines = [line_of(text, m.start()) for m in LOCAL_TICK_ENGINE.finditer(code)]
     if tick_lines:
         found["local-tick-engine"] = tick_lines
-    colour_lines = [
-        line_of(text, m.start())
-        for m in FAMILY_COLOUR_LITERAL.finditer(code_with_strings)
-        if not (m.group().startswith(("'", '"', "`")) and SELECTOR_CALL_PREFIX.search(code_with_strings, max(0, m.start() - 40), m.start()))
-    ]
+    colour_lines = family_colour_lines(text, code_with_strings)
     if colour_lines:
         found["family-colour-literal"] = colour_lines
     if name != "ui/src/families/valueFormat.ts":
@@ -729,9 +910,17 @@ def family_ts_matches(name, text):
         ]
         if measure_lines:
             found["family-measure-text-loop"] = measure_lines
-    at_least_lines = at_least_wording_lines(text)
+    at_least_lines = at_least_wording_lines(text, is_tsx=name.endswith(".tsx"))
     if at_least_lines:
         found["family-at-least-wording"] = at_least_lines
+    if not name.startswith("ui/src/families/art/"):
+        art_lines = [line_of(text, m.start()) for m in FAMILY_PRIVATE_ART_CACHE.finditer(code)]
+        if art_lines:
+            found["family-private-art-cache"] = art_lines
+    if WIDGET_TS.match(name) and name != OPTION_MAPPING_MODULE:
+        stored_lines = [line_of(text, m.start()) for m in STORED_OPTION_READ.finditer(code)]
+        if stored_lines:
+            found["widget-stored-option"] = stored_lines
     return found
 
 
@@ -743,6 +932,8 @@ def matches(name, revision):
     if name.endswith(".rs"):
         return rust_matches(name, revision)
     if is_family_or_widget(name):
+        if name.endswith(".css"):
+            return family_css_matches(text)
         return family_ts_matches(name, text)
     pattern = JS_CLOCK if JS_TEST.search(name) else PS_CLOCK if PS_TEST.search(name) else None
     if pattern is None:

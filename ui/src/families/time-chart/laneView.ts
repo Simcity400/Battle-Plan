@@ -1,13 +1,13 @@
 import { canvasMeasureText, type MeasureText } from '../../charts/textWidth.ts';
-import type { LaneView } from '../../draw/lane.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
-import { createLaneView, type LaneFamily, type LaneFrame, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneFamily, LaneFrame } from '../laneRuntime.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import type { TimeChartBinding } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart, parseChartInspect } from './hitTest.ts';
-import { layoutTimeChart, type TimeChartLayout } from './layout.ts';
+import { hoverTimeChartLayout, layoutTimeChart, type TimeChartLayout } from './layout.ts';
 import type { TimeChartModel } from './model.ts';
-import { collectVisibleChartArt, drawTimeChart } from './painter.ts';
+import { collectVisibleChartArt, drawTimeChart, fitTimeChartLegend } from './painter.ts';
+import type { LegendFit } from '../../draw/kit.ts';
 
 interface ChartLayout {
   readonly model: TimeChartModel;
@@ -16,6 +16,7 @@ interface ChartLayout {
   readonly height: number;
   readonly font: string;
   readonly measure: MeasureText;
+  readonly legend: LegendFit | null;
 }
 
 type ChartFrame = LaneFrame<TimeChartBinding, TimeChartModel, ChartLayout>;
@@ -35,7 +36,7 @@ export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): r
     });
   }
   const stops: { readonly hour: number; readonly key: string; readonly name: string }[] = [];
-  for (const tick of layout.axisTicks) {
+  for (const tick of layout.rawAxisTicks) {
     if (tick.hour <= model.hour) stops.push({ hour: tick.hour, key: `plot:${tick.hour}`, name: formatDateOnly(tick.hour) });
   }
   for (const placed of layout.markers) {
@@ -45,6 +46,8 @@ export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): r
   stops.sort((a, b) => a.hour - b.hour);
   return stops.map((stop, index) => [stop.key, stop.name, index, 0, ''] as const);
 }
+
+export const LOG_REFUSED = 'Log scale needs every value shown above zero, so the value axis is linear.';
 
 const hovered = new WeakMap<ChartLayout, { readonly inspect: string; readonly layout: TimeChartLayout }>();
 
@@ -56,14 +59,14 @@ function shownLayout(layout: ChartLayout, inspect: string | null): TimeChartLayo
   if (!inspect || (hoverHour === null && seriesId === null)) return layout.base;
   const held = hovered.get(layout);
   if (held && held.inspect === inspect) return held.layout;
-  const shown = layoutTimeChart(layout.model, layout.width, layout.height, layout.font, layout.measure, hoverHour, seriesId);
+  const shown = hoverTimeChartLayout(layout.base, seriesId);
   hovered.set(layout, { inspect, layout: shown });
   return shown;
 }
 
 const shownOf = (frame: ChartFrame) => shownLayout(frame.layout, frame.inspect);
 
-const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> = {
+export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> = {
   family: 'time-chart',
   boundary: (_model, hour) => hour + 1,
   redraw: () => Infinity,
@@ -74,8 +77,9 @@ const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> =
     const model = zoom && projected.view?.x !== zoom ? { ...projected, view: { ...projected.view, x: zoom } } : projected;
     const font = theme.font ?? "'Segoe UI', system-ui, sans-serif";
     const measureText = canvasMeasureText(measure);
-    const base = model.empty ? null : layoutTimeChart(model, surface.width, surface.height, font, measureText, null, null);
-    return { model, base, width: surface.width, height: surface.height, font, measure: measureText };
+    const base = model.empty ? null : layoutTimeChart(model, surface.width, surface.height, font, measureText);
+    const legend = base ? fitTimeChartLegend(model, base, theme, measureText) : null;
+    return { model, base, width: surface.width, height: surface.height, font, measure: measureText, legend };
   },
   paint(ctx, frame) {
     const shown = shownOf(frame);
@@ -83,7 +87,7 @@ const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> =
       ctx.clearRect(0, 0, frame.surface.width, frame.surface.height);
       return false;
     }
-    drawTimeChart(ctx, frame.layout.model, shown, frame.theme, frame.inspect, frame.surface.dpr > 0 ? frame.surface.dpr : 1);
+    drawTimeChart(ctx, frame.layout.model, shown, frame.theme, frame.inspect, frame.surface.dpr > 0 ? frame.surface.dpr : 1, frame.layout.legend);
     return false;
   },
   hit(frame, point) {
@@ -113,7 +117,7 @@ const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> =
         emptyDetail: null,
         emptyKind: 'empty',
         ...(model.subject ? { subject: model.subject } : {}),
-        notes: model.note ? [model.note] : [],
+        notes: [...(model.note ? [model.note] : []), ...(base.logRefused ? [LOG_REFUSED] : [])],
         warnings: model.warnings ?? [],
         transform: {
           xFrom: base.xDomain[0],
@@ -122,18 +126,14 @@ const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> =
           axisTo: model.hour,
           yMin: base.yDomain[0],
           yMax: base.yDomain[1],
-          log: model.yAxis.log === true,
+          log: base.logShown,
         },
         plotRect: { left: base.left, top: base.top, width: base.plotWidth, height: base.plotHeight },
       },
       nav: chartNavStops(model, base),
     };
   },
-  mirror: () => null,
+  mirror: null,
   audit: frame => frame.layout.model.auditRows ?? [],
-  visibleArt: frame => (frame.layout.base ? collectVisibleChartArt(frame.layout.model, frame.layout.base) : []),
+  visibleArt: frame => (frame.layout.base ? collectVisibleChartArt(frame.layout.model, frame.layout.base, frame.layout.legend) : []),
 };
-
-export function timeChartLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(timeChartLane, wake, options);
-}

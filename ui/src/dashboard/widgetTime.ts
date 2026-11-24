@@ -1,11 +1,9 @@
 import { createContext, createElement, useCallback, useContext, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ReactNode } from 'react';
-import type { BoundTrack, WidgetSpec } from './model';
+import type { BoundTrack, WidgetBase } from './model';
 import type { PlaybackController } from './playback';
 import { pageClock } from './widgetClock.ts';
 import { axisHour, coverageAt, coverageSpan, regionFollows, regionHour, regionKey, regionOutside, regionTrack, SPEC, type AxisHour, OUTSIDE_MESSAGE, type Outside, type Region, type RegionAction, type TrackHour } from './regionTime.ts';
-
-export { SETTINGS_DETAIL } from './regionTime.ts';
 
 export class ActiveHeads {
   private readonly heads = new Set<object>();
@@ -143,7 +141,7 @@ export function followSpan(track: Pick<BoundTrack, 'axisOffset' | 'branch'>, epo
 
 type Timed = { clock: PlaybackController; tracks: BoundTrack[] };
 
-export function useRegion(widget: WidgetSpec, action: RegionAction = SPEC): Region {
+export function useRegion(widget: WidgetBase, action: RegionAction = SPEC): Region {
   const hour = action.kind === 'at' ? action.hour : null;
   return useMemo(() => ({ widget, action }), [widget, action.kind, hour]);
 }

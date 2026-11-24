@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useCampaignSettings } from '../../dashboard/campaignSettings';
-import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import type { BoundTrack, WidgetBase } from '../../dashboard/model';
 import type { FactionGroup } from '../../generated/dashboard';
 import type { InstalledAction } from '../../families/contract.ts';
 import DeclaredFamilyWidget from '../../families/host/DeclaredFamilyWidget';
@@ -24,12 +24,12 @@ function recordedName(faction: FactionGroup, hour: number | undefined, own: stri
   return run ? { name: run.name, reason: run.reason } : { name: faction.name, reason: faction.nameReason };
 }
 
-function pinnedAt(widget: WidgetSpec, track: BoundTrack, hour: number): WidgetSpec {
+function pinnedAt(widget: WidgetBase, track: BoundTrack, hour: number): WidgetBase {
   const offset = Math.max(0, hour - track.branch.firstHour);
   return { ...widget, time: { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } } };
 }
 
-export default function FactionsView(props: WidgetProps) {
+export default function FactionsView(props: FamilyViewProps) {
   const { runtime, widget, active } = props;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const settings = useCampaignSettings();

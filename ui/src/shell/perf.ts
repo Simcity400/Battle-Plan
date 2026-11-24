@@ -88,7 +88,7 @@ function tileOf(product: unknown, params: unknown): { key: string; bins: unknown
 }
 
 export interface ExactRead { values: ReadonlyMap<string, string>; ranked?: boolean; ordered?: boolean }
-export type ExactPicture = (hour: number, auditId?: number) => Promise<ExactRead | null>;
+export type ExactPicture = (hour: number, auditId?: number, fields?: Readonly<Record<string, unknown>>) => Promise<ExactRead | null>;
 export type AuditSnapshotPin = (auditId: number) => (() => void) | undefined;
 interface ReaderRegistration { readonly exact: ExactPicture; readonly pin?: AuditSnapshotPin }
 type ShownRow = NonNullable<PictureSample['rows']>[number];
@@ -97,13 +97,15 @@ export function pictureError(surface: string, rows: readonly ShownRow[], exact: 
   if (!exact || (!rows.length && exact.values.size)) return 'Displayed rows or exact read missing';
   if (exact.ranked && JSON.stringify(rows.map(r => r.row + ':' + r.key)) !== JSON.stringify([...exact.values.keys()])) return 'Ranked row identities differ';
   if (exact.ordered && JSON.stringify(rows.map(r => r.key)) !== JSON.stringify([...exact.values.keys()])) return 'Displayed rows are not in the exact read\'s order';
+  const shown = new Set<string>();
   for (const row of rows) {
     const key = exact.ranked ? row.row + ':' + row.key : row.key;
+    if (shown.has(key)) return key + ' is shown twice';
+    shown.add(key);
     if (row.overflow) return key + ' exceeds its slot by ' + row.overflow.toFixed(1) + ' px';
     if (!exact.ranked && row.row !== key && !key.startsWith(row.row + ':')) return 'Wrong row identity for ' + key;
     if (!exact.values.has(key) || exact.values.get(key) !== row.value) return key + ': displayed ' + row.value + ', expected ' + exact.values.get(key);
   }
-  const shown = new Set(rows.map(row => exact.ranked ? row.row + ':' + row.key : row.key));
   for (const key of exact.values.keys()) if (!shown.has(key)) return key + ': in the exact read, not shown';
   if (surface === 'table' && shown.size !== exact.values.size)
     return 'Displayed ' + rows.length + ' rows of the ' + exact.values.size + ' the exact read holds';
@@ -266,6 +268,7 @@ export class PerfRecorder {
       for (const record of first.records) {
         const logged: PerfRecord = { ...record };
         delete logged.rows;
+        delete logged.fields;
         this.push(logged);
         if (shouldAuditPicture(record, readers)) pictures.push(record as AuditedPicture);
       }
@@ -284,6 +287,7 @@ export class PerfRecorder {
       for (const record of next.records) {
         const logged: PerfRecord = { ...record };
         delete logged.rows;
+        delete logged.fields;
         this.push(logged);
         if (shouldAuditPicture(record, work.readers)) work.pictures.push(record as AuditedPicture);
       }
@@ -299,7 +303,7 @@ export class PerfRecorder {
       let error: string | null;
       try {
         error = rows
-          ? pictureError(surface, rows, await work.readers?.get(readerKey(record.generation, placement, owner))?.exact(hour, record.auditId))
+          ? pictureError(surface, rows, await work.readers?.get(readerKey(record.generation, placement, owner))?.exact(hour, record.auditId, record.fields))
           : 'Painted picture emitted without audit rows';
       }
       catch (cause) { error = String(cause); }
@@ -659,7 +663,7 @@ export function measureWith(recorder: PerfRecorder | null): void { perfLog = rec
 export async function startPerf(): Promise<void> {
   if (!isTauri() || perfLog || !await invoke<boolean>('perf_enabled')) return;
   const recorder = new PerfRecorder();
-  perfLog = recorder;
+  measureWith(recorder);
   await listen('perf-finish', () => {
     void recorder.finish().then(complete => invoke('perf_finished', { complete }))
       .catch(error => console.error('Measurement finish failed:', error));

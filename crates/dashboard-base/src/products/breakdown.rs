@@ -280,6 +280,10 @@ fn share_of(part: &Sum, whole: Option<i128>) -> Option<f64> {
     }
 }
 
+fn exact_share_of(part: &Sum, parent: Option<i128>) -> Option<f64> {
+    (part.state() == BreakdownState::Known).then(|| share_of(part, parent)).flatten()
+}
+
 fn parts(children: Vec<Branch>, whole: Option<i128>, parent: Option<i128>) -> Vec<BreakdownPart> {
     let mut children = children;
     children.sort_by(|a, b| {
@@ -291,11 +295,11 @@ fn parts(children: Vec<Branch>, whole: Option<i128>, parent: Option<i128>) -> Ve
     children
         .into_iter()
         .map(|branch| {
-            let own_whole = branch.sum.whole().filter(|_| whole.is_some());
+            let own_whole = branch.sum.whole().filter(|_| whole.is_some() && branch.sum.state() == BreakdownState::Known);
             let children = parts(branch.children, whole, own_whole);
             BreakdownPart {
                 share: share_of(&branch.sum, whole),
-                parent_share: share_of(&branch.sum, parent),
+                parent_share: exact_share_of(&branch.sum, parent),
                 key: branch.node.key,
                 name: branch.node.name,
                 name_missing: branch.node.name_missing,
@@ -313,9 +317,10 @@ fn parts(children: Vec<Branch>, whole: Option<i128>, parent: Option<i128>) -> Ve
         .collect()
 }
 
-fn assemble(decimals: u8, mut root: Branch, unrecorded: &Unrecorded, qualified: &[String]) -> Breakdown {
+fn assemble(decimals: u8, mut root: Branch, unrecorded: &Unrecorded, qualified: &[String], unwitnessed: bool) -> Breakdown {
     root.split_rest();
-    let mut state = root.sum.state();
+    let unwitnessed = unwitnessed && root.sum.measured == 0;
+    let mut state = if unwitnessed { BreakdownState::NotRecorded } else { root.sum.state() };
     let mut reason = root.sum.reason();
     let gap = (unrecorded.hours > 0).then_some(unrecorded.reason.as_deref()).into_iter().flatten();
     for extra in gap.chain(qualified.iter().map(String::as_str)) {
@@ -331,8 +336,8 @@ fn assemble(decimals: u8, mut root: Branch, unrecorded: &Unrecorded, qualified: 
     let whole = matches!(state, BreakdownState::Known | BreakdownState::Partial).then_some(root.sum.known);
     Breakdown {
         decimals,
-        total: BreakdownTotal { raw: root.sum.raw(), state, reason },
-        parts: parts(root.children, whole, whole),
+        total: BreakdownTotal { raw: if unwitnessed { None } else { root.sum.raw() }, state, reason },
+        parts: parts(root.children, whole, whole.filter(|_| state == BreakdownState::Known)),
         unrecorded_hours: unrecorded.hours,
     }
 }
@@ -344,7 +349,7 @@ pub fn breakdown(decimals: u8, leaves: &[Leaf], unrecorded: &Unrecorded) -> Brea
         sum.add(&leaf.amount, leaf.count, leaf.last);
         root.add(&leaf.path, &sum);
     }
-    assemble(decimals, root, unrecorded, &[])
+    assemble(decimals, root, unrecorded, &[], false)
 }
 pub struct History {
     decimals: u8,
@@ -442,17 +447,25 @@ impl History {
         }
         let qualified: Vec<String> = self.qualified[..self.qualified.partition_point(|(from, _)| *from <= hour)].iter().map(|(_, reason)| reason.clone()).collect();
         let mut unrecorded = Unrecorded::default();
-        let mut inside = false;
+        let mut reasons: Vec<String> = Vec::new();
+        let (mut inside, mut counted) = (false, i64::from(self.from) - 1);
         for (first, last, reason) in &self.gaps[..self.gaps.partition_point(|gap| gap.0 <= hour)] {
-            let (first, last) = ((*first).max(self.from), (*last).min(hour));
+            let (first, last) = (i64::from((*first).max(self.from)), i64::from((*last).min(hour)));
             if first > last {
                 continue;
             }
-            inside |= last == hour;
-            unrecorded.hours = unrecorded.hours.saturating_add(u32::try_from(i64::from(last) - i64::from(first) + 1).unwrap_or(u32::MAX));
-            unrecorded.reason.get_or_insert_with(|| reason.clone());
+            inside |= last == i64::from(hour);
+            let start = first.max(counted + 1);
+            if start <= last {
+                unrecorded.hours = unrecorded.hours.saturating_add(u32::try_from(last - start + 1).unwrap_or(u32::MAX));
+            }
+            counted = counted.max(last);
+            remember(&mut reasons, reason);
         }
-        (assemble(self.decimals, root, &unrecorded, &qualified), if inside { hour } else { self.through(hour) })
+        unrecorded.reason = (!reasons.is_empty()).then(|| reasons.join("; "));
+        let period = i64::from(hour) - i64::from(self.from) + 1;
+        let unwitnessed = period > 0 && i64::from(unrecorded.hours) >= period;
+        (assemble(self.decimals, root, &unrecorded, &qualified, unwitnessed), if inside { hour } else { self.through(hour) })
     }
     pub fn through(&self, hour: i32) -> i32 {
         let next = self.changes[self.changes.partition_point(|&at| at <= hour)..].first().copied();

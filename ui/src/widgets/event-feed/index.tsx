@@ -1,25 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { validateProductReply } from '../../dashboard/client.ts';
-import type { WidgetProps, WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model.ts';
 import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import LogKindFilter, { type LogKindFilterItem } from '../../families/table/LogKindFilter.tsx';
-import type { FeedKindCode } from '../../generated/dashboard';
+import type { EventFeedKindInfo } from '../../generated/dashboard';
 import EventDetailWindow, { type EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import { CATEGORIES } from './definition.ts';
 import EventFeedActivityStrip from './EventFeedActivityStrip.tsx';
-import { EVENT_FEED_NOISE_KINDS, feedKindLabel, kindsRequest, validateSpan } from './eventFeedData.ts';
-import { eventFeedDeclaration } from './eventFeedProjection.ts';
+import { feedKindLabel, kindsRequest, validateKinds } from './eventFeedData.ts';
 
 const CATEGORY_LABEL = new Map<string, string>(CATEGORIES.map(cat => [cat.value, cat.label]));
 
-function EventFeedView(props: WidgetProps) {
+function EventFeedView(props: FamilyViewProps) {
   const anchor = useRef<HTMLDivElement>(null);
   const track = props.runtime.tracks.find(item => item.id === props.widget.trackIds[0]);
   const scope = track ? `${track.source.id}:${track.source.revision}:${track.branch.id}` : '';
   const [opened, setOpened] = useState<{ readonly scope: string; readonly subject: EventDetailSubject } | null>(null);
-  const [kinds, setKinds] = useState<{ readonly scope: string; readonly list: readonly FeedKindCode[] } | null>(null);
+  const [kinds, setKinds] = useState<{ readonly scope: string; readonly list: readonly EventFeedKindInfo[] } | null>(null);
   const shown = opened && opened.scope === scope ? opened.subject : null;
 
   useEffect(() => {
@@ -29,30 +28,28 @@ function EventFeedView(props: WidgetProps) {
     const request = kindsRequest(track);
     props.runtime.client.product(request, controller.signal).then(reply => {
       if (controller.signal.aborted) return;
-      const span = validateSpan(validateProductReply(reply, request).data);
-      setKinds({ scope, list: span.kinds });
+      setKinds({ scope, list: validateKinds(validateProductReply(reply, request).data) });
     }).catch(() => {});
     return () => controller.abort();
   }, [track, props.active, props.runtime.client, scope, kinds?.scope]);
 
-  const options = props.widget.options;
+  const { options } = props;
   const recordingKinds = kinds?.scope === scope ? kinds.list : null;
   const categories = useMemo(
-    () => CATEGORIES.filter(cat => options?.[cat.value] !== false).map(cat => cat.value),
+    () => CATEGORIES.filter(cat => options[cat.value] !== false).map(cat => cat.value),
     [options],
   );
   const excludedKinds = useMemo(() => {
-    const raw = options?.excludedKinds;
+    const raw = options.excludedKinds;
     if (typeof raw === 'string' && raw.length > 0) return raw.split(',').filter(Boolean);
     return [];
-  }, [options?.excludedKinds]);
+  }, [options.excludedKinds]);
 
   const filterItems = useMemo<LogKindFilterItem[]>(() => {
     const excludedSet = new Set(excludedKinds);
     const categorySet = new Set<string>(categories);
     if (recordingKinds && recordingKinds.length > 0) {
       return recordingKinds
-        .filter(item => !EVENT_FEED_NOISE_KINDS.has(item.kind))
         .map(item => ({
           value: `kind:${item.kind}`,
           label: feedKindLabel(item.kind),
@@ -77,7 +74,7 @@ function EventFeedView(props: WidgetProps) {
     const nextExcluded = new Set(excludedKinds);
     if (nextChecked) {
       nextExcluded.delete(kind);
-      if (entry && options?.[entry.category] === false) {
+      if (entry && options[entry.category] === false) {
         const encoded = [...nextExcluded].join(',');
         if (props.setOptions) props.setOptions({ [entry.category]: true, excludedKinds: encoded });
         else {
@@ -105,7 +102,7 @@ function EventFeedView(props: WidgetProps) {
     setOpened({ scope, subject: { ...meta, key: action.subject || meta.key, asOfHour: action.hour } });
   }, [scope]);
 
-  const showStrip = options?.activityStrip !== false;
+  const showStrip = options.activityStrip !== false;
   const following = props.widget.time.mode === 'follow';
   const win = track && !following ? resolveWindow(props.widget, track, [track], track.branch.lastHour) : null;
   const stripFrom = track && props.widget.time.mode === 'range' && win
@@ -131,21 +128,20 @@ function EventFeedView(props: WidgetProps) {
           active={props.active}
           categories={categories}
           excludedKinds={excludedKinds}
-          kinds={recordingKinds}
           from={stripFrom}
           pinnedHour={pinnedHour}
         />
       ) : null}
-      <FamilyWidget
+      {props.manifestDeclaration ? <FamilyWidget
         {...props}
-        family="table"
-        declaration={eventFeedDeclaration}
+        family={props.manifestDeclaration.family}
+        declaration={props.manifestDeclaration}
         selectedKey={shown?.key ?? null}
         onActivate={onActivate}
-      />
+      /> : null}
       <EventDetailWindow subject={shown} anchor={anchor} onClose={() => setOpened(null)} />
     </div>
   );
 }
 
-export default { render: EventFeedView } satisfies WidgetRenderer;
+export default { render: EventFeedView } satisfies FamilyViewRenderer;

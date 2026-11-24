@@ -47,6 +47,7 @@ pub fn word_demand(memory: &impl Memory, base: usize, state: usize) -> Result<us
             let result = ResultPlan::read_header(memory, base, header, verdict)?;
             add(result.words)?;
             add(result.participants().words)?;
+            add(result.exit_words())?;
             add(6)?;
             if verdict.is_some() {
                 add(8)?;
@@ -555,6 +556,9 @@ impl ResultPlan {
     }
     pub fn combat(&self) -> u64 {
         self.header[1]
+    }
+    fn exit_words(&self) -> usize {
+        (self.units[0].count as usize + self.units[1].count as usize) * crate::land_edges::EXIT_WORDS
     }
     pub fn without_candidates(mut self) -> Self {
         for units in &mut self.units {

@@ -17,7 +17,7 @@ import type { OptionValue } from '../../dashboard/options';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { FamilyPlanContext } from '../plan.ts';
 import { normalizeView } from '../manifest.ts';
-import type { PagedRowsSnapshot } from '../table/rowSource.ts';
+import type { PagedRows } from '../table/rowSource.ts';
 import type { FamilyNavTuple } from './keyboard.ts';
 import { parseDefaultRowHit } from './pointer.ts';
 
@@ -81,6 +81,8 @@ export type FamilySkeletonKind = 'table' | 'chart';
 export type FamilyArtDemand = ArtHandle;
 
 export interface FamilyStaticSources {
+  readonly stamp: object;
+  readonly proof: readonly [lo: number, hi: number] | null;
   readonly panels?: Readonly<Record<string, unknown>>;
   readonly answers?: Readonly<Record<string, FollowedAnswer>>;
   readonly shifts?: Readonly<Record<string, number>>;
@@ -89,7 +91,7 @@ export interface FamilyStaticSources {
 }
 
 export interface FamilyStaticProof {
-  read(): { readonly hour: number; readonly proof: readonly [lo: number, hi: number] } | null;
+  read(): { readonly bundle: object; readonly hour: number; readonly proof: readonly [lo: number, hi: number] } | null;
   subscribe(changed: () => void): () => void;
 }
 
@@ -160,7 +162,7 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly options: TOptions;
   readonly settings: TSettings | undefined;
   readonly sources: Readonly<Record<string, number>>;
-  readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
+  readonly pagedRows?: PagedRows;
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly artResolutions?: Readonly<Record<string, ArtResolution>>;

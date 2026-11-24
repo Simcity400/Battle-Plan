@@ -9,8 +9,6 @@ const ID = /^\d{1,20}$/;
 const HOUR = (value: unknown): value is number => Number.isInteger(value);
 const KINDS = ['military', 'naval', 'shipRefit', 'railwayGun'];
 const TEXT = (value: unknown) => value === null || typeof value === 'string';
-const ordered = <T extends { firstHour: number; lastHour: number }>(runs: readonly T[]) =>
-  runs.every((run, index) => HOUR(run.firstHour) && HOUR(run.lastHour) && run.firstHour <= run.lastHour && (index === 0 || runs[index - 1].lastHour < run.firstHour));
 const isVariant = (variant: VariantName) => object(variant) && ID.test(variant.id) && (variant.hour === undefined || HOUR(variant.hour)) && typeof variant.known === 'boolean'
   && typeof variant.token === 'string' && [variant.name, variant.typeName, variant.nameUnknown, variant.icon, variant.iconUnknown].every(TEXT);
 const isOrganisation = (organisation: OrganisationName) => object(organisation) && ID.test(organisation.id) && (organisation.hour === undefined || HOUR(organisation.hour))
@@ -35,18 +33,14 @@ export function validateAtReply(data: unknown): ProductionLinesAtReply {
   return reply;
 }
 
+const isGroup = (group: ProductionLineBreakdownReply['group']) => group === null || object(group) && typeof group.id === 'string' && TEXT(group.totalRaw)
+  && Array.isArray(group.parts) && group.parts.every(part => typeof part.id === 'string' && PART.test(part.raw) && TEXT(part.label) && TEXT(part.unknown));
+
 export function validateBreakdownReply(data: unknown): ProductionLineBreakdownReply {
   const reply = data as ProductionLineBreakdownReply;
-  if (!object(reply) || typeof reply.key !== 'string' || !HOUR(reply.firstHour) || !HOUR(reply.lastHour) || !Array.isArray(reply.groups)
-    || !Array.isArray(reply.runs) || !ordered(reply.runs) || !reply.runs.every(run => Array.isArray(run.groups) && run.groups.every(group =>
-      typeof group.id === 'string' && TEXT(group.totalRaw) && Array.isArray(group.parts) && group.parts.every(part => typeof part.id === 'string' && PART.test(part.raw))))
-    || !Array.isArray(reply.warnings)) invalid('production line breakdown');
+  if (!object(reply) || !HOUR(reply.hour) || !Array.isArray(reply.groups) || !isGroup(reply.group) || !TEXT(reply.missing)
+    || reply.group === null && reply.missing === null || !Array.isArray(reply.warnings)) invalid('production line breakdown');
   return reply;
-}
-
-export function breakdownAt(reply: ProductionLineBreakdownReply, hour: number, group: string): ProductionLineBreakdownReply['runs'][number]['groups'][number] | null {
-  const run = reply.runs.find(item => item.firstHour <= hour && hour <= item.lastHour);
-  return run?.groups.find(item => item.id === group) ?? null;
 }
 
 export const variantOf = (variants: readonly VariantName[], id: string): VariantName | null => variants.find(variant => variant.id === id && variant.known) ?? null;

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { GameRun } from '../../generated/dashboard';
-import { plainRuns, validGameRuns } from './gameRuns.ts';
+import { validGameRuns } from './gameRuns.ts';
 import { validateEntityStats } from './entityStats.ts';
 import { validateTechnologyEffects } from './technologyEffects.ts';
 
@@ -24,7 +24,6 @@ test('game text runs validate every run shape and refuse unknown ones', () => {
   assert.equal(validGameRuns([{ kind: 'link', entity: 'technology', token: 'mod_technology', databaseIndex: 0, text: 'x', tone: null }]), false);
   assert.equal(validGameRuns([{ kind: 'link', entity: 'technology', token: 'mod_technology', text: 'x', tone: null }]), false);
   assert.equal(validGameRuns([{ kind: 'bold', text: 'x' }]), false);
-  assert.equal(plainRuns(runs), 'Enables Infantry Equipment I\n   Soft:+0.17');
 });
 
 

@@ -1,4 +1,4 @@
-import type { WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewRenderer } from '../../dashboard/definitions';
 import CurrentProjectsView from './CurrentProjectsView';
 
-export default { render: CurrentProjectsView } satisfies WidgetRenderer;
+export default { render: CurrentProjectsView } satisfies FamilyViewRenderer;

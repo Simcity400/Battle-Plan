@@ -76,7 +76,5 @@ export class StyleGlides {
 
 export const barGlides = new StyleGlides(fraction => `scaleX(${fraction})`, cssEase);
 export const rowGlides = new StyleGlides(y => `translateY(${y}px)`, rowEase);
-export const progressFill = new StyleGlides(fraction => `scaleX(${fraction})`, rowEase);
-export const progressKnob = new StyleGlides(fraction => `translateX(${(fraction - 1) * 100}%)`, rowEase);
 
 export const reducedMotion = (): boolean => typeof document !== 'undefined' && document.documentElement.dataset.motion === 'reduced';

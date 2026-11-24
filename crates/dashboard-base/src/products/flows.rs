@@ -43,7 +43,7 @@ impl FlowEndpoint {
         let Some(slot) = slot else { return Self { slot: None, tag: None, unknown: Some(unlinked.to_owned()) } };
         let country = Country::Slot(slot);
         let tag = holders.tag_at(&country, hour).map(str::to_owned);
-        let unknown = tag.is_none().then(|| holders.unnamed(&country).to_owned());
+        let unknown = tag.is_none().then(|| holders.unnamed(&country, hour));
         Self { slot: Some(slot), tag, unknown }
     }
 }
@@ -127,6 +127,48 @@ pub struct FlowEdge {
     pub amount: Option<i128>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GapEnd {
+    Any,
+    Slot(u32),
+    Unidentified,
+}
+
+impl GapEnd {
+    fn covers(self, key: Key) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Slot(slot) => key == Some(slot),
+            Self::Unidentified => key.is_none(),
+        }
+    }
+
+    fn known(self) -> Option<u32> {
+        match self {
+            Self::Slot(slot) => Some(slot),
+            Self::Any | Self::Unidentified => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlowGap {
+    pub from: GapEnd,
+    pub to: GapEnd,
+    pub part: Option<u32>,
+    pub reason: String,
+}
+
+impl FlowGap {
+    pub fn everything(reason: String) -> Self {
+        Self { from: GapEnd::Any, to: GapEnd::Any, part: None, reason }
+    }
+
+    fn covers(&self, from: Key, to: Key) -> bool {
+        self.from.covers(from) && self.to.covers(to)
+    }
+}
+
 pub struct FlowShape<'a> {
     pub subject: Option<u32>,
     pub chosen: Option<&'a HashSet<u32>>,
@@ -135,7 +177,6 @@ pub struct FlowShape<'a> {
     pub table: bool,
     pub not_recorded: &'a str,
     pub unlinked: &'a str,
-    pub incomplete: Option<&'a str>,
 }
 
 type Key = Option<u32>;
@@ -145,21 +186,41 @@ struct Grouped {
     sums: Sums,
     present: Vec<bool>,
     known: i128,
+    open: bool,
+    missing: Option<String>,
 }
 
 impl Grouped {
     fn new(parts: usize) -> Self {
-        Self { sums: vec![Some(0); parts], present: vec![false; parts], known: 0 }
+        Self { sums: vec![Some(0); parts], present: vec![false; parts], known: 0, open: false, missing: None }
     }
 
-    fn add(&mut self, part: u32, amount: Option<i128>) {
+    fn add(&mut self, part: u32, amount: Option<i128>, not_recorded: &str) {
         let slot = &mut self.sums[part as usize];
         *slot = slot.zip(amount).map(|(a, b)| a + b);
         self.present[part as usize] = true;
         self.known += amount.unwrap_or(0);
+        if amount.is_none() {
+            self.missing.get_or_insert_with(|| not_recorded.to_owned());
+        }
+    }
+
+    fn withhold(&mut self, gap: &FlowGap) {
+        match gap.part {
+            Some(part) if self.present[part as usize] => return,
+            Some(part) => {
+                self.sums[part as usize] = None;
+                self.present[part as usize] = true;
+            }
+            None => self.open = true,
+        }
+        self.missing.get_or_insert_with(|| gap.reason.clone());
     }
 
     fn total(&self) -> Option<i128> {
+        if self.open {
+            return None;
+        }
         self.sums.iter().zip(&self.present).filter(|(_, here)| **here).try_fold(0i128, |held, (sum, _)| sum.map(|sum| held + sum))
     }
 
@@ -172,6 +233,18 @@ impl Grouped {
             }
         }
         self.known += other.known;
+        self.open |= other.open;
+        if self.missing.is_none() {
+            self.missing.clone_from(&other.missing);
+        }
+    }
+}
+
+fn withhold(by: &mut BTreeMap<Key, Grouped>, gaps: &[FlowGap], covers: impl Fn(&FlowGap, Key) -> bool) {
+    for (key, grouped) in by.iter_mut() {
+        for gap in gaps.iter().filter(|gap| covers(gap, *key)) {
+            grouped.withhold(gap);
+        }
     }
 }
 
@@ -202,7 +275,7 @@ fn link(from: Option<u32>, to: Option<u32>, others: Option<u32>, grouped: &Group
         .map(|(part, _)| FlowAmount { part: part as u32, amount: grouped.sums[part].map(|sum| sum.to_string()) })
         .collect();
     let total = grouped.total();
-    FlowLink { from, to, others, amounts, total: total.map(|sum| sum.to_string()), missing: total.is_none().then(|| not_recorded.to_owned()) }
+    FlowLink { from, to, others, amounts, total: total.map(|sum| sum.to_string()), missing: total.is_none().then(|| grouped.missing.clone().unwrap_or_else(|| not_recorded.to_owned())) }
 }
 
 struct Ranked {
@@ -244,9 +317,9 @@ fn rank(by: BTreeMap<Key, Grouped>, parts: usize, shape: &FlowShape<'_>, missing
         kept.insert(key);
     }
     let total = whole.total();
-    let missing = missing.or(total.is_none().then_some(shape.not_recorded));
+    let missing = missing.map(str::to_owned).or_else(|| total.is_none().then(|| whole.missing.clone().unwrap_or_else(|| shape.not_recorded.to_owned())));
     let total = if missing.is_some() { None } else { total.map(|sum| sum.to_string()) };
-    Ranked { side: FlowSide { links, total, missing: missing.map(str::to_owned) }, kept, known: whole.known }
+    Ranked { side: FlowSide { links, total, missing }, kept, known: whole.known }
 }
 
 enum Belongs {
@@ -271,6 +344,7 @@ fn belongs(edge: &FlowEdge, chosen: Option<&HashSet<u32>>, between: bool) -> Bel
 }
 
 fn table(incoming: &BTreeMap<Key, Grouped>, outgoing: &BTreeMap<Key, Grouped>, count: usize, names: &mut Endpoints<'_>) -> Vec<FlowTableRow> {
+    let open = |key: Key| [incoming, outgoing].iter().any(|held| held.get(&key).is_some_and(|grouped| grouped.open));
     let partners: BTreeSet<Key> = incoming.keys().chain(outgoing.keys()).copied().collect();
     let side = |held: &BTreeMap<Key, Grouped>, key: Key, part: usize| -> Option<Option<i128>> { held.get(&key).filter(|grouped| grouped.present[part]).map(|grouped| grouped.sums[part]) };
     let mut rows: Vec<(Key, Sums, Option<i128>)> = partners
@@ -282,7 +356,7 @@ fn table(incoming: &BTreeMap<Key, Grouped>, outgoing: &BTreeMap<Key, Grouped>, c
                     (inbound, outbound) => Some(inbound.flatten().unwrap_or(0) - outbound.flatten().unwrap_or(0)),
                 })
                 .collect();
-            let net = cells.iter().try_fold(0i128, |held, cell| cell.map(|cell| held + cell));
+            let net = if open(key) { None } else { cells.iter().try_fold(0i128, |held, cell| cell.map(|cell| held + cell)) };
             (key, cells, net)
         })
         .collect();
@@ -297,7 +371,7 @@ fn table(incoming: &BTreeMap<Key, Grouped>, outgoing: &BTreeMap<Key, Grouped>, c
         .collect()
 }
 
-pub fn build_flows(edges: &[FlowEdge], parts: Vec<FlowPart>, decimals: u8, shape: &FlowShape<'_>, describe: &dyn Fn(Key) -> FlowEndpoint) -> CountryFlowReply {
+pub fn build_flows(edges: &[FlowEdge], gaps: &[FlowGap], parts: Vec<FlowPart>, decimals: u8, shape: &FlowShape<'_>, describe: &dyn Fn(Key) -> FlowEndpoint) -> CountryFlowReply {
     let count = parts.len();
     let mut names = Endpoints { list: Vec::new(), index: HashMap::new(), describe };
     let mut reply = CountryFlowReply { decimals, largest: "0".to_owned(), largest_link: "0".to_owned(), ..CountryFlowReply::default() };
@@ -309,8 +383,8 @@ pub fn build_flows(edges: &[FlowEdge], parts: Vec<FlowPart>, decimals: u8, shape
         let (mut in_maybe, mut out_maybe) = (false, false);
         for edge in edges {
             match (edge.from == Some(subject), edge.to == Some(subject)) {
-                (true, false) => outgoing.entry(edge.to).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount),
-                (false, true) => incoming.entry(edge.from).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount),
+                (true, false) => outgoing.entry(edge.to).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount, shape.not_recorded),
+                (false, true) => incoming.entry(edge.from).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount, shape.not_recorded),
                 (true, true) => {}
                 (false, false) => {
                     in_maybe |= edge.to.is_none();
@@ -318,11 +392,15 @@ pub fn build_flows(edges: &[FlowEdge], parts: Vec<FlowPart>, decimals: u8, shape
                 }
             }
         }
+        let into = |gap: &&FlowGap| gap.to.covers(Some(subject)) && gap.from != GapEnd::Slot(subject);
+        let out_of = |gap: &&FlowGap| gap.from.covers(Some(subject)) && gap.to != GapEnd::Slot(subject);
+        withhold(&mut incoming, gaps, |gap, partner| into(&gap) && gap.from.covers(partner));
+        withhold(&mut outgoing, gaps, |gap, partner| out_of(&gap) && gap.to.covers(partner));
         if shape.table {
             reply.table = table(&incoming, &outgoing, count, &mut names);
         }
-        let in_missing = shape.incomplete.or(in_maybe.then_some(shape.unlinked));
-        let out_missing = shape.incomplete.or(out_maybe.then_some(shape.unlinked));
+        let in_missing = gaps.iter().find(into).map(|gap| gap.reason.as_str()).or(in_maybe.then_some(shape.unlinked));
+        let out_missing = gaps.iter().find(out_of).map(|gap| gap.reason.as_str()).or(out_maybe.then_some(shape.unlinked));
         let inbound = rank(incoming, count, shape, in_missing, &mut names, |partner| (partner, Some(at)));
         let outbound = rank(outgoing, count, shape, out_missing, &mut names, |partner| (Some(at), partner));
         reply.largest = inbound.known.max(outbound.known).to_string();
@@ -342,12 +420,27 @@ pub fn build_flows(edges: &[FlowEdge], parts: Vec<FlowPart>, decimals: u8, shape
                 }
                 Belongs::Yes => {}
             }
-            pairs.entry((edge.from, edge.to)).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount);
-            sent.entry(edge.from).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount);
-            received.entry(edge.to).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount);
+            pairs.entry((edge.from, edge.to)).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount, shape.not_recorded);
+            sent.entry(edge.from).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount, shape.not_recorded);
+            received.entry(edge.to).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount, shape.not_recorded);
+        }
+        let reaching: Vec<&FlowGap> = gaps
+            .iter()
+            .filter(|gap| !matches!(belongs(&FlowEdge { from: gap.from.known(), to: gap.to.known(), part: 0, amount: None }, shape.chosen, shape.between), Belongs::No))
+            .collect();
+        for ((from, to), grouped) in pairs.iter_mut() {
+            for gap in reaching.iter().filter(|gap| gap.covers(*from, *to)) {
+                grouped.withhold(gap);
+            }
+        }
+        for (node, grouped) in sent.iter_mut() {
+            reaching.iter().filter(|gap| gap.from.covers(*node)).for_each(|gap| grouped.withhold(gap));
+        }
+        for (node, grouped) in received.iter_mut() {
+            reaching.iter().filter(|gap| gap.to.covers(*node)).for_each(|gap| grouped.withhold(gap));
         }
         let largest = sent.values().chain(received.values()).map(|grouped| grouped.known).max().unwrap_or(0);
-        let missing = shape.incomplete.or(maybe.then_some(shape.unlinked));
+        let missing = reaching.first().map(|gap| gap.reason.as_str()).or(maybe.then_some(shape.unlinked));
         let senders = rank(sent, count, shape, missing, &mut names, |node| (node, None));
         let receivers = rank(received, count, shape, missing, &mut names, |node| (None, node));
         let mut folded: BTreeMap<(Option<u32>, Option<u32>), (Grouped, HashSet<(bool, Key)>)> = BTreeMap::new();
@@ -414,11 +507,15 @@ mod tests {
     }
 
     fn shape(subject: Option<u32>, limit: Option<usize>, table: bool) -> FlowShape<'static> {
-        FlowShape { subject, chosen: None, between: false, limit, table, not_recorded: "not recorded", unlinked: "unlinked", incomplete: None }
+        FlowShape { subject, chosen: None, between: false, limit, table, not_recorded: "not recorded", unlinked: "unlinked" }
     }
 
     fn build(edges: &[FlowEdge], parts: usize, shape: &FlowShape<'_>) -> CountryFlowReply {
-        build_flows(edges, (0..parts as u32).map(|at| part(&format!("p{at}"), at)).collect(), 0, shape, &describe)
+        build_gapped(edges, &[], parts, shape)
+    }
+
+    fn build_gapped(edges: &[FlowEdge], gaps: &[FlowGap], parts: usize, shape: &FlowShape<'_>) -> CountryFlowReply {
+        build_flows(edges, gaps, (0..parts as u32).map(|at| part(&format!("p{at}"), at)).collect(), 0, shape, &describe)
     }
 
     fn slot(reply: &CountryFlowReply, at: Option<u32>) -> Option<Key> {
@@ -481,9 +578,10 @@ mod tests {
         assert!(reply.incoming.links.is_empty());
         assert_eq!((reply.incoming.total.as_deref(), reply.incoming.missing.as_deref()), (None, Some("unlinked")));
         assert_eq!((reply.outgoing.total.as_deref(), reply.outgoing.missing.as_deref()), (Some("0"), None));
-        let incomplete = FlowShape { incomplete: Some("not every sender was read"), ..shape(Some(USA), None, false) };
-        let reply = build(&[edge(HOL, USA, 0, Some(4))], 1, &incomplete);
-        assert_eq!(rows(&reply, &reply.incoming, true), [(Some(Some(HOL)), Some("4".to_owned()), None)]);
+        let reply = build_gapped(&[edge(HOL, USA, 0, Some(4))], &[FlowGap::everything("not every sender was read".to_owned())], 1, &shape(Some(USA), None, false));
+        assert_eq!(rows(&reply, &reply.incoming, true), [(Some(Some(HOL)), None, None)], "a witnessed link is kept; what the unread rows may add to it is not");
+        assert_eq!(reply.incoming.links[0].amounts, [FlowAmount { part: 0, amount: Some("4".to_owned()) }]);
+        assert_eq!(reply.incoming.links[0].missing.as_deref(), Some("not every sender was read"));
         assert_eq!((reply.incoming.total.as_deref(), reply.incoming.missing.as_deref()), (None, Some("not every sender was read")));
         assert_eq!(reply.outgoing.missing.as_deref(), Some("not every sender was read"));
     }

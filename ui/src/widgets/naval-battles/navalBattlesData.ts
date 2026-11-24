@@ -6,10 +6,8 @@ import type { BattleChanges } from '../battles/battleRows';
 import { isEngineHour } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
 import type { BattleRow, BattleSide, BattleValue, BattleWindow, NavalBattleHistory, NavalBattleRun, NavalBattlesManifestReply, NavalBattlesRankingReply, NavalBattlesReply } from '../../generated/dashboard';
-export { battleWindows as navalBattleWindows } from '../battles/battleRows.ts';
 
 export const NAVAL_BATTLE_SIZE_LABELS = ['Ships sunk', 'Peak ships', 'Length'] as const;
-export const NAVAL_BATTLE_DEFAULT_MEASURE = NAVAL_BATTLE_SIZE_LABELS[0];
 export type NavalBattleMeasure = typeof NAVAL_BATTLE_SIZE_LABELS[number];
 export type NavalBattleRow = BattleRow & {
   provinceId: number | null;
@@ -225,4 +223,3 @@ export function rankedNavalBattleRows(data: NavalBattlesRankingReply | undefined
   }
   return navalBattleRows(windows, at, matchAll, true);
 }
-export { battleWarnings as navalBattleWarnings, shownBattleCensusHour as shownNavalCensusHour } from '../battles/battleRows.ts';

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withNativePage } from '../../../tools/native-page.ts';
-import type { WidgetTime } from './model';
 
 const capture = (name: string) => (code: string) => {
   if (!code.includes(`export default function ${name}(`)) throw new Error(`${name} is not declared as expected`);
@@ -48,7 +47,6 @@ const followedQuery = (ask: Ask, product: string): Record<string, unknown> | nul
   return query.product === product ? query.params as Record<string, unknown> ?? {} : null;
 };
 const follows = (asks: Ask[], product: string) => asks.flatMap(ask => { const params = followedQuery(ask, product); return params && !ask.hours.length ? [params] : []; });
-const reads = (asks: Ask[], product: string) => [...asks.filter(ask => ask.product === product).map(ask => ask.params ?? {}), ...follows(asks, product)];
 const pinAt = (hour: number) => ({ mode: 'pin', windows: { main: { firstOffset: hour - 100, lastOffset: hour - 100 } } });
 const NO_PIN = { mode: 'pin', windows: {} };
 const groupsOf = (tags: string[], members: { tag: string; firstHour: number; lastHour: number }[] = []) => ({ branchId: '1', warnings: [], warStarts: [], capitulations: [],
@@ -56,7 +54,7 @@ const groupsOf = (tags: string[], members: { tag: string; firstHour: number; las
   countryIdentities: tags.map((tag, index) => ({ tag, identities: [{ slot: index + 1, countryId: index + 101, firstHour: 100, lastHour: 109 }] })) });
 const GER = { kind: 'tags', tags: ['GER'] }, BOTH = { kind: 'tags', tags: ['GER', 'ENG'] };
 const OUTSIDE = 'This time is outside the recording.', UNRECORDED = 'Not recorded at this time.', SETTINGS = 'Change time';
-const QUEUE = '({ readHour: hour, missing: null, orders: [], warnings: [] })';
+const QUEUE = '({ tag: "GER", readHour: hour, missing: null, orders: [], inTraining: 0, warnings: [] })';
 const REASON = 'Branch 1 block 105 – 106 is unreadable: checksum';
 
 test('1. Training queue pinned inside a declared gap 105–106 saves no country, asks nothing at 105, and says the time was not recorded with the recording’s reason', () => onPage(async act => {
@@ -159,21 +157,7 @@ test('12. A missing pin reads no branch-end facts: Factories’ saved breakdown 
   assert.deepEqual(dated(gapped.asks, 105), [], `a pin in a gap sends its literal hour nowhere: ${JSON.stringify(gapped.asks)}`);
 }));
 
-const RESOURCES = `({ tag: 'GER', decimals: 3, resources: [{ id: 1, token: 'oil', ordinal: 1, name: 'Oil', icon: null }], pools: [], shown: [], poolsMissing: null,
-  dealsMissing: null, deals: [], warnings: [] })`;
-
-test('13. Hover, expansion, ranking and follow obey coverage: nothing is sent into a 105–106 gap and a paused seek past the track releases a follow', () => onPage(async act => {
-  await act(scene({ kind: 'resource-balance', time: { mode: 'follow' }, hour: 107, countries: GER, options: { view: 'time', resources: 'oil' }, gaps: GAP,
-    replies: { 'resource-balance': RESOURCES } }));
-  const extent = (await act<{ extent: [number, number] } | null>('props("TimeChart")'))?.extent;
-  assert.ok(extent && extent[0] <= 105 && 105 <= extent[1], `105 lies on the chart: ${JSON.stringify(extent)}`);
-  const hovered = await act<Read & { called: boolean }>('call("TimeChart", "onHover", 105)');
-  assert.ok(hovered.called, 'the chart takes the hover');
-  assert.deepEqual(dated(hovered.asks, 105), [], `no hover read inside the gap: ${JSON.stringify(hovered.asks)}`);
-  await act(scene({ kind: 'research', time: pinAt(105), hour: 107, countries: GER, gaps: GAP, groups: groupsOf(['GER']) }));
-  const expanded = await act<Read & { expanded: boolean }>('expand(".doctrine-panel")');
-  assert.ok(expanded.expanded, 'the doctrines expand');
-  assert.deepEqual(expanded.asks.filter(ask => ask.product === 'doctrines'), [], `no doctrines read inside the gap: ${JSON.stringify(expanded.asks)}`);
+test('13. Ranking and follow obey coverage: nothing is sent into a 105–106 gap and a paused seek past the track releases a follow', () => onPage(async act => {
   const ranked = await act<Read>(scene({ kind: 'equipment-produced', time: pinAt(105), hour: 107, countries: TOP, options: { count: 'ic' }, gaps: GAP, groups: groupsOf(['GER']) }));
   assert.deepEqual(dated(ranked.asks, 105), [], `no ranking at 105: ${JSON.stringify(ranked.asks)}`);
   const followed = await act<Read>(scene({ kind: 'casualties', time: { mode: 'follow' }, hour: 105, countries: TOP, groups: groupsOf(['GER']), accept: true }));
@@ -216,33 +200,7 @@ const RENAMED = { ...groupsOf([]), countryIdentities: [
   { tag: 'GER', identities: [{ slot: 1, countryId: 101, firstHour: 100, lastHour: 104 }, { slot: 3, countryId: 103, firstHour: 105, lastHour: 109 }] },
   { tag: 'GDR', identities: [{ slot: 1, countryId: 101, firstHour: 105, lastHour: 109 }] }] };
 
-test('19. Fuel: GER picked at 103, its drill followed to 108 where another country holds GER, pins the country it picked and restores reading its alias GDR', () => onPage(async act => {
-  await act(scene({ kind: 'fuel', time: { mode: 'follow' }, hour: 103, countries: GER, groups: RENAMED }));
-  const opened = await act<Read & { called: boolean }>('call("TimeChart", "onPick", 103)');
-  assert.ok(opened.called && opened.drillOpen, `GER’s breakdown opens at 103: ${opened.text}`);
-  await act('seek(108)');
-  const pinned = await act<Read & { pressed: boolean }>('press("Pin as widget")');
-  const saved = pinned.pins[0] as { time: WidgetTime; countries: unknown; options: Record<string, unknown> } | undefined;
-  assert.ok(pinned.pressed && saved, `the breakdown pins: ${JSON.stringify(pinned.buttons)}`);
-  const country = JSON.parse(await act<string>(`content(${JSON.stringify(saved.options.fuelCountry)})`)) as { tag: string; originOffset: number };
-  assert.deepEqual([country.tag, country.originOffset, saved.countries], ['GER', 3, GER], `the pin holds the country picked at 103, not GER at 108: ${JSON.stringify(country)}`);
-  const restored = await act<Read>(scene({ kind: 'fuel', time: saved.time, hour: 108, countries: saved.countries, options: saved.options, groups: RENAMED }));
-  const read = [...restored.asks.filter(ask => ask.hours.includes(108)).map(ask => ask.params ?? {}), ...follows(restored.asks, 'country-fuel')]
-    .flatMap(params => params.country === undefined ? [] : [params.country]);
-  assert.ok(read.includes('GDR') && !read.includes('GER'), `the restored pin reads the picked country under its tag at 108: ${JSON.stringify(restored.asks)}`);
-}));
-
 const HUMANS = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false };
-
-test('20. Exact reads are checked for coverage and membership: Resource balance’s GER, a member from 107, sends no hover read at 103', () => onPage(async act => {
-  await act(scene({ kind: 'resource-balance', time: { mode: 'follow' }, hour: 108, countries: HUMANS, options: { view: 'time', resources: 'oil' },
-    groups: groupsOf(['GER'], [{ tag: 'GER', firstHour: 107, lastHour: 109 }]), replies: { 'resource-balance': RESOURCES } }));
-  const hovered = await act<Read & { called: boolean }>('call("TimeChart", "onHover", 103)');
-  assert.ok(hovered.called, 'the chart takes the hover');
-  assert.deepEqual(hovered.asks.filter(ask => ask.product === 'resource-balance' && ask.hours.includes(103)), [], `no read before GER joins: ${JSON.stringify(hovered.asks)}`);
-  const member = await act<Read>('call("TimeChart", "onHover", 107)');
-  assert.ok(member.asks.some(ask => ask.product === 'resource-balance' && ask.hour === 107), `a member hour is read: ${JSON.stringify(member.asks)}`);
-}));
 
 test('24. Training queue saves a chosen country only once its holder is verified: nothing while country groups are pending, failed or split between holders', () => onPage(async act => {
   const base = { kind: 'training-queue', time: { mode: 'follow' }, hour: 105, countries: GER, replies: { 'training-queue': QUEUE } };
@@ -262,7 +220,7 @@ const FACTIONS = { ...groupsOf(['GER', 'ENG']), factions: [{ id: '1', name: 'Axi
 const naming = (asks: Ask[], tag: string) => asks.filter(ask => JSON.stringify(ask.params ?? {}).includes(`"${tag}"`));
 
 test('25. Faction totals following fixed rosters follow their members at playback: the follow names no hour, so it registers', () => onPage(async act => {
-  const shown = await act<Read>(scene({ kind: 'territory', time: { mode: 'follow' }, hour: 105, countries: { kind: 'factions', count: 3, membership: 'end' },
+  const shown = await act<Read>(scene({ kind: 'territory', time: { mode: 'follow' }, hour: 105, countries: { kind: 'factions', count: 3, membership: 'ever' },
     groups: FACTIONS, accept: true }));
   const members = shown.follows.filter(query => query.includes('"series-state"'));
   assert.ok(members.length > 0, `the members’ values are followed: ${JSON.stringify(shown.followLog)} ${shown.text}`);
@@ -276,51 +234,6 @@ test('26. Time settings: pinning a week-long window 3 hours into the branch pins
   await act(`settings(${JSON.stringify({ kind: 'fuel', time: { mode: 'follow' }, hour: 105, gaps: GAP })})`);
   const refused = await act<Read & { pressed: boolean }>('press("Pinned")');
   assert.ok(refused.pressed && refused.options.length === 0 && refused.text.includes('Can’t pin now'), `a refused pin is named, not silent: ${refused.text}`);
-}));
-
-test('27. Fuel on the default player selection (a slot key): a breakdown picked at 103 pins the country that slot held then, by its tag', () => onPage(async act => {
-  await act(scene({ kind: 'fuel', time: { mode: 'follow' }, hour: 103, countries: { kind: 'selected' }, groups: groupsOf(['GER']) }));
-  const opened = await act<Read & { called: boolean }>('call("TimeChart", "onPick", 103)');
-  assert.ok(opened.called && opened.drillOpen, `the breakdown opens: ${opened.text}`);
-  const pinned = await act<Read & { pressed: boolean }>('press("Pin as widget")');
-  const saved = pinned.pins[0] as { options: Record<string, unknown> } | undefined;
-  assert.ok(pinned.pressed && saved, `a slot-key pick can be pinned: ${JSON.stringify(pinned.buttons)}`);
-  const country = JSON.parse(await act<string>(`content(${JSON.stringify(saved.options.fuelCountry)})`)) as { tag: string; originOffset: number };
-  assert.deepEqual([country.tag, country.originOffset], ['GER', 3]);
-}));
-
-test('28. Resource balance: GER’s breakdown picked at 103 keeps that country through continuous playback into GDR, reading its history by identity', () => onPage(async act => {
-  await act(scene({ kind: 'resource-balance', time: { mode: 'follow' }, hour: 103, requestsWhilePlaying: true, countries: GER, groups: RENAMED,
-    replies: { 'resource-balance': RESOURCES.replace('shown: []', 'shown: [1]') } }));
-  const opened = await act<Read & { clicked: boolean }>('click(".resource-bars li")');
-  assert.ok(opened.clicked && opened.drillOpen, `the breakdown opens: ${opened.text}`);
-  const viewed = await act<Read & { called: boolean }>('call("TimeChart", "onSummaryView", { from: 100, to: 109, end: 109, width: 400 })');
-  const tiles = [...opened.asks, ...viewed.asks].filter(ask => ask.product === 'series-tiles');
-  assert.ok(tiles.length > 0 && tiles.every(ask => JSON.stringify(ask.params?.lines).includes('"country":1') && JSON.stringify(ask.params?.within ?? null).includes('[1,')),
-    `the history is read by the held identity’s slot, within its runs: ${JSON.stringify(tiles.map(ask => ask.params))}`);
-  const played = await act<Read & { hour: number; playing: boolean }>('play(1, 5, 1000)');
-  assert.ok(played.playing && played.hour >= 107, `playback runs to ${played.hour}`);
-  assert.ok(naming(played.asks, 'GDR').length > 0, `past 105 the breakdown reads GDR without a seek: ${JSON.stringify(played.asks.map(ask => [ask.product, ask.params]))}`);
-  const drilled = reads(played.asks, 'resource-balance').filter(params => !('order' in params));
-  assert.ok(drilled.some(params => params.country === 'GDR'), `the breakdown’s own read names GDR: ${JSON.stringify(played.asks)}`);
-  assert.deepEqual(played.asks.filter(ask => ask.product === 'resource-balance' && ask.params?.country === 'GER' && (ask.hour ?? 0) >= 105), [],
-    'the breakdown never reads the other country now named GER');
-  await act('pause()');
-}));
-
-test('29. Fuel: GER picked at 103 and followed by continuous playback into 108 reads GDR without a seek, and pins the country it picked', () => onPage(async act => {
-  await act(scene({ kind: 'fuel', time: { mode: 'follow' }, hour: 103, requestsWhilePlaying: true, countries: GER, groups: RENAMED }));
-  const opened = await act<Read & { called: boolean }>('call("TimeChart", "onPick", 103)');
-  assert.ok(opened.called && opened.drillOpen, `GER’s breakdown opens at 103: ${opened.text}`);
-  const played = await act<Read & { hour: number; playing: boolean }>('play(1, 5, 1000)');
-  assert.ok(played.playing && played.hour >= 107, `playback runs to ${played.hour}`);
-  assert.ok(naming(played.asks, 'GDR').length > 0, `the following drill reads GDR past 105: ${JSON.stringify(played.asks.map(ask => [ask.product, ask.params]))}`);
-  const pinned = await act<Read & { pressed: boolean }>('press("Pin as widget")');
-  const saved = pinned.pins[0] as { options: Record<string, unknown> } | undefined;
-  assert.ok(pinned.pressed && saved, `the breakdown pins: ${JSON.stringify(pinned.buttons)}`);
-  const country = JSON.parse(await act<string>(`content(${JSON.stringify(saved.options.fuelCountry)})`)) as { tag: string; originOffset: number };
-  assert.deepEqual([country.tag, country.originOffset], ['GER', 3], 'the pin holds the country picked at 103');
-  await act('pause()');
 }));
 
 test('32. A country chosen by slot whose groups fail but whose identities load re-resolves its tag at the identity change during continuous playback', () => onPage(async act => {
@@ -339,52 +252,17 @@ test('33. A saved range starting before its branch is clipped to the branch befo
   assert.ok(raids.length > 0 && raids.every(ask => ask.params?.from === 100 && ask.params?.to === 105), `the range is clipped to 100–105: ${JSON.stringify(raids)}`);
 }));
 
-test('34. Fuel’s exact series reads name the country the native reader expects, and only at hours inside each country’s membership', () => onPage(async act => {
-  const shown = await act<Read>(scene({ kind: 'fuel', time: { mode: 'follow' }, hour: 108, countries: HUMANS, groups: groupsOf(['GER'], [{ tag: 'GER', firstHour: 107, lastHour: 109 }]) }));
-  const named = reads(shown.asks, 'series-state').flatMap(params => (params.reads ?? []) as Record<string, unknown>[]);
-  assert.ok(named.length > 0 && named.every(read => 'country' in read && !('tag' in read)), `series reads name their country: ${JSON.stringify(shown.asks)}`);
-  const hovered = await act<Read & { called: boolean }>('call("TimeChart", "onHover", 103)');
-  const early = hovered.asks.filter(ask => ask.product === 'series-state').flatMap(ask => (ask.params?.reads ?? []) as { hour?: number }[]).filter(read => read.hour === 103);
-  assert.deepEqual(early, [], 'no exact read before GER joins the group');
-  assert.deepEqual(hovered.asks.filter(ask => ask.product === 'country-fuel' && ask.hour === 103), [], `the hover reads no country before it joins: ${JSON.stringify(hovered.asks)}`);
-}));
-
-test('35. Fuel’s held country is read under its alias at each request’s hour: GER picked at 103, its breakdown hovered at 108 reads GDR, never the new GER', () => onPage(async act => {
-  await act(scene({ kind: 'fuel', time: { mode: 'follow' }, hour: 103, countries: GER, groups: RENAMED }));
-  const opened = await act<Read & { called: boolean }>('call("TimeChart", "onPick", 103)');
-  assert.ok(opened.called && opened.drillOpen, `GER’s breakdown opens at 103: ${opened.text}`);
-  const gained = await act<Read & { pressed: boolean }>('press("Fuel gained")');
-  assert.ok(gained.pressed && gained.drillOpen, 'the gain breakdown is shown, held at 103');
-  const hovered = await act<Read & { called: boolean }>('call("TimeChart", "onHover", 108)');
-  const named = hovered.asks.filter(ask => ask.product === 'country-fuel' && ask.hour === 108).map(ask => ask.params?.country);
-  assert.ok(hovered.called && named.length > 0 && named.every(country => country === 'GDR'), `the hover at 108 names the held country’s alias: ${JSON.stringify(hovered.asks)}`);
-}));
-
-test('38. A breakdown’s Follow comes from its own region: Resource balance pinned at 105 with its breakdown open offers Follow playback at 108', () => onPage(async act => {
-  await act(scene({ kind: 'resource-balance', time: pinAt(105), hour: 108, countries: GER, groups: groupsOf(['GER']),
-    replies: { 'resource-balance': RESOURCES.replace('shown: []', 'shown: [1]') } }));
-  const opened = await act<Read & { clicked: boolean }>('click(".resource-bars li")');
-  assert.ok(opened.clicked && opened.drillOpen, `the breakdown opens: ${opened.text}`);
-  assert.ok(opened.buttons.includes('Follow playback'), `the pinned parent’s breakdown can follow: ${JSON.stringify(opened.buttons)}`);
-}));
-
-test('39. Resource balance’s saved breakdown on its “First resource” setting shows the first resource of the reply at its hour', () => onPage(async act => {
-  const shown = await act<Read>(scene({ kind: 'resource-balance', time: pinAt(105), hour: 107, countries: GER, options: { show: 'resource' }, groups: groupsOf(['GER']),
-    replies: { 'resource-balance': RESOURCES } }));
-  assert.ok(!/Resource unavailable/.test(shown.text), `the setting chooses the first resource: ${shown.text}`);
-}));
-
 const SUBJECTS = `({ branchId: '1', warnings: [], unobserved: [], levels: [{ token: 'puppet', name: 'Puppet', ordered: true }],
   runs: [{ firstHour: 100, lastHour: 109, overlord: 'ENG', subject: 'GER', startHour: 100, steps: [{ firstHour: 100, lastHour: 109, level: 'puppet' }] }] })`;
 
 test('43. Autonomy of the human subjects at 108: hovering 103, before GER joins the humans, reads nothing for GER', () => onPage(async act => {
-  await act(scene({ kind: 'autonomy', time: { mode: 'follow' }, hour: 108, countries: HUMANS, options: { countriesAre: 'subjects' },
+  await act(scene({ kind: 'autonomy', time: { mode: 'follow' }, hour: 108, countries: HUMANS, options: { view: 'lines', countriesAre: 'subjects' },
     groups: groupsOf(['GER', 'ENG'], [{ tag: 'GER', firstHour: 107, lastHour: 109 }]), replies: { subjects: SUBJECTS } }));
   const hovered = await act<Read & { called: boolean }>('call("Timeline", "onHover", 103)');
   assert.ok(hovered.called, 'the timeline takes the hover');
   const early = hovered.asks.flatMap(ask => (ask.params?.reads ?? []) as { country?: unknown; hour?: number }[]).filter(read => read.hour === 103);
   assert.deepEqual(early, [], `no read names GER at 103: ${JSON.stringify(hovered.asks)}`);
-  await act(scene({ kind: 'autonomy', time: { mode: 'follow' }, hour: 108, countries: HUMANS,
+  await act(scene({ kind: 'autonomy', time: { mode: 'follow' }, hour: 108, countries: HUMANS, options: { view: 'lines' },
     groups: groupsOf(['GER', 'ENG'], [{ tag: 'GER', firstHour: 100, lastHour: 109 }, { tag: 'ENG', firstHour: 107, lastHour: 109 }]), replies: { subjects: SUBJECTS } }));
   const before = await act<Read & { called: boolean }>('call("Timeline", "onHover", 103)');
   const read = (asks: Ask[], hour: number) => asks.flatMap(ask => (ask.params?.reads ?? []) as { country?: unknown; hour?: number }[]).filter(item => item.hour === hour);

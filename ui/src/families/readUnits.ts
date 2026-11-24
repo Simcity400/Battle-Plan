@@ -70,6 +70,8 @@ export interface PinnedAsk {
   readonly countriesKnown?: (first: number, last: number) => boolean;
 }
 
+export type PinnedTrack = (entry: SourceEntry) => Pick<PinnedAsk, 'branch' | 'gate'>;
+
 export type UnitAsk =
   | {
       readonly following: true;
@@ -83,6 +85,7 @@ export type UnitAsk =
       readonly trackOffset: number;
       readonly displayHour: number;
       readonly pinned: PinnedAsk;
+      readonly track?: PinnedTrack;
       readonly content: number;
     };
 
@@ -113,8 +116,9 @@ export function askUnits(entries: readonly SourceEntry[], ask: UnitAsk): readonl
         end: options.effectiveEndHour,
       };
     }
-    const pinned = ask.pinned;
-    const pinHour = pinned.pinHour === null ? null : shift === 0 ? pinned.pinHour : pinned.gate.recorded(pinned.pinHour + shift);
+    const own = ask.track?.(entry);
+    const pinned = own ? { ...ask.pinned, branch: own.branch, gate: own.gate } : ask.pinned;
+    const pinHour = pinned.pinHour === null ? null : shift === 0 && !own ? pinned.pinHour : pinned.gate.recorded(pinned.pinHour + shift);
     const window = pinned.window && shift !== 0
       ? { firstHour: pinned.window.firstHour + shift, lastHour: pinned.window.lastHour + shift }
       : pinned.window;
@@ -387,6 +391,7 @@ export interface TargetClock {
 }
 
 interface TargetCommon {
+  readonly inputs: string;
   readonly entries: readonly SourceEntry[];
   readonly active: boolean;
   readonly content: number;
@@ -395,18 +400,21 @@ interface TargetCommon {
 
 export type TargetConfig = TargetCommon & (
   | { readonly following: true; readonly subscribed: boolean; readonly playback: (entry: SourceEntry) => Omit<PlaybackBoundedOptions, 'currentHour'> }
-  | { readonly following: false; readonly displayHour: number; readonly pinned: PinnedAsk }
+  | { readonly following: false; readonly displayHour: number; readonly pinned: PinnedAsk; readonly track?: PinnedTrack }
 );
 
 export interface TargetBundle {
+  readonly inputs: string;
   readonly panels: ReadonlyMap<string, unknown>;
   readonly shifts: Readonly<Record<string, number>> | null;
   readonly span: Interval | null;
   readonly hour: number;
+  readonly proof: Interval | null;
   readonly follows: boolean;
 }
 
 export interface TargetView {
+  readonly inputs: string;
   readonly kind: Settlement['kind'];
   readonly failure: { readonly name: string; readonly failure: Failure } | null;
   readonly bundle: TargetBundle | null;
@@ -414,16 +422,23 @@ export interface TargetView {
 }
 
 export interface TargetProof {
+  readonly bundle: TargetBundle;
   readonly hour: number;
   readonly proof: Interval;
 }
 
-const NOTHING: TargetView = { kind: 'none', failure: null, bundle: null, held: false };
+const NOTHING: TargetView = { inputs: '', kind: 'none', failure: null, bundle: null, held: false };
+const WITHHELD: TargetView = { inputs: '', kind: 'hold', failure: null, bundle: null, held: false };
+
+export function shownView(view: TargetView, inputs: string, units: boolean): TargetView {
+  if (view.inputs === inputs) return view;
+  return units ? WITHHELD : NOTHING;
+}
 
 function sameConfig(a: TargetConfig, b: TargetConfig): boolean {
-  if (a.entries !== b.entries || a.active !== b.active || a.content !== b.content || a.trackOffset !== b.trackOffset) return false;
+  if (a.inputs !== b.inputs || a.entries !== b.entries || a.active !== b.active || a.content !== b.content || a.trackOffset !== b.trackOffset) return false;
   if (a.following && b.following) return a.subscribed === b.subscribed && a.playback === b.playback;
-  if (!a.following && !b.following) return a.displayHour === b.displayHour && a.pinned === b.pinned;
+  if (!a.following && !b.following) return a.displayHour === b.displayHour && a.pinned === b.pinned && a.track === b.track;
   return false;
 }
 
@@ -431,6 +446,17 @@ function sameReplies(a: ReadonlyMap<string, unknown>, b: ReadonlyMap<string, unk
   if (a.size !== b.size) return false;
   for (const [name, data] of b) if (!a.has(name) || a.get(name) !== data) return false;
   return true;
+}
+
+function sameSpan(a: Interval | null, b: Interval | null, following: boolean): boolean {
+  return a === b || (!!a && !!b && a[0] === b[0] && (following || a[1] === b[1]));
+}
+
+function sameShifts(a: Readonly<Record<string, number>> | null, b: Readonly<Record<string, number>> | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const names = Object.keys(a);
+  return names.length === Object.keys(b).length && names.every(name => a[name] === b[name]);
 }
 
 export class ReadTarget {
@@ -533,7 +559,7 @@ export class ReadTarget {
     this.hour = hour;
     if (!config.entries.length) this.units = [];
     else if (!config.following) {
-      this.units = askUnits(config.entries, { following: false, trackOffset: config.trackOffset, displayHour: config.displayHour, pinned: config.pinned, content: config.content });
+      this.units = askUnits(config.entries, { following: false, trackOffset: config.trackOffset, displayHour: config.displayHour, pinned: config.pinned, ...(config.track ? { track: config.track } : {}), content: config.content });
     } else {
       const asked = askUnits(config.entries, { following: true, trackOffset: config.trackOffset, hour, playback: config.playback, content: config.content });
       this.units = keep ? this.keepProven(asked, hour) : asked;
@@ -572,10 +598,13 @@ export class ReadTarget {
       let failure: TargetView['failure'] = null;
       if (settlement.kind === 'complete') {
         const made = settlement.bundle;
-        const kept = this.last && sameReplies(this.last.panels, made.panels) && (following || this.last.hour === made.hour) ? this.last : null;
-        bundle = kept ?? { panels: made.panels, shifts: made.shifts, span: made.span, hour: made.hour, follows: following };
+        const last = this.last;
+        const replies = last !== null && sameReplies(last.panels, made.panels);
+        const kept = replies && last.inputs === config.inputs && sameSpan(last.span, made.span, following) && sameShifts(last.shifts, made.shifts)
+          && (following || last.hour === made.hour) ? last : null;
+        bundle = kept ?? { inputs: config.inputs, panels: replies ? last.panels : made.panels, shifts: made.shifts, span: made.span, hour: made.hour, proof: made.proof, follows: following };
         this.last = bundle;
-        this.lastProof = made.proof ? { hour: made.hour, proof: made.proof } : null;
+        this.lastProof = made.proof ? { bundle, hour: made.hour, proof: made.proof } : null;
       } else if (settlement.kind === 'failed') {
         failure = this.current.failure?.name === settlement.name && this.current.failure.failure === settlement.failure
           ? this.current.failure
@@ -585,7 +614,7 @@ export class ReadTarget {
       const shown = bundle ?? holding;
       this.showProof(shown ? this.lastProof : null);
       const kind = settlement.kind !== 'failed' && shown ? 'complete' : settlement.kind;
-      this.publish({ kind, failure, bundle: shown, held: holding !== null && !moving });
+      this.publish({ inputs: config.inputs, kind, failure, bundle: shown, held: holding !== null && !moving });
       if (following && config.active) this.arm(results, now, settlement.kind === 'failed');
       else this.disarm();
     } finally {
@@ -595,14 +624,20 @@ export class ReadTarget {
 
   private held(): TargetBundle | null {
     const last = this.last;
-    if (!last) return null;
+    if (!last || last.inputs !== this.config!.inputs) return null;
     const dated = this.lastProof ? this.lastProof.hour : last.hour;
     return dated > this.hour ? null : last;
   }
 
   private arm(results: ReadonlyMap<string, UnitResult>, now: number, failed: boolean): void {
     let watch: Interval | null;
-    if (failed) watch = [this.hour, this.hour];
+    if (failed) {
+      if (this.units.some(unit => unitEvidence(unit, results.get(unit.name), true).kind === 'pending')) {
+        this.disarm();
+        return;
+      }
+      watch = [this.hour, this.hour];
+    }
     else {
       watch = jointProof(this.units, results);
       if (watch === null) {
@@ -642,14 +677,14 @@ export class ReadTarget {
 
   private showProof(proof: TargetProof | null): void {
     const was = this.shownProof;
-    if (was === proof || (was && proof && was.hour === proof.hour && was.proof[0] === proof.proof[0] && was.proof[1] === proof.proof[1])) return;
+    if (was === proof || (was && proof && was.bundle === proof.bundle && was.hour === proof.hour && was.proof[0] === proof.proof[0] && was.proof[1] === proof.proof[1])) return;
     this.shownProof = proof;
     for (const listener of [...this.proofListeners]) listener();
   }
 
   private publish(next: TargetView): void {
     const was = this.current;
-    if (was.kind === next.kind && was.failure === next.failure && was.bundle === next.bundle && was.held === next.held) return;
+    if (was.inputs === next.inputs && was.kind === next.kind && was.failure === next.failure && was.bundle === next.bundle && was.held === next.held) return;
     this.current = next;
     for (const listener of [...this.listeners]) listener();
   }

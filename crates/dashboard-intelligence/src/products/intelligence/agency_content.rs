@@ -61,6 +61,10 @@ impl AgencyContent {
         Self { catalogue, upgrades, defense, default_name, warnings }
     }
 
+    pub fn upgrades(&self) -> Result<&AgencyUpgrades, String> {
+        self.upgrades.as_ref().map_err(Clone::clone)
+    }
+
     pub fn defense_label(&self) -> Result<&str, String> {
         self.defense.as_ref().map(|template| template.label.as_str()).map_err(Clone::clone)
     }
@@ -78,6 +82,10 @@ impl AgencyContent {
         (text, value)
     }
 
+    pub fn branch_name(&self, branch: &str) -> Shown {
+        catalogue::localised_with(&self.catalogue.localisation, branch, &[], View::Plain)
+    }
+
     pub fn upgrade_name(&self, branch: &str, token: &str) -> Shown {
         let upgrades = self.upgrades.as_ref().map_err(Clone::clone)?;
         let definition = upgrades
@@ -92,6 +100,9 @@ impl AgencyContent {
         refused.extend(self.defense.as_ref().err().map(|why| (DEFENSE.to_owned(), why.clone())));
         match &self.upgrades {
             Ok(upgrades) => {
+                for (branch, _) in &upgrades.branches {
+                    refused.extend(self.branch_name(branch).err().map(|why| (format!("branch {branch}"), why)));
+                }
                 for ((branch, token), _) in &upgrades.branch_definitions {
                     refused.extend(self.upgrade_name(branch, token).err().map(|why| (format!("upgrade {branch}/{token}"), why)));
                 }

@@ -216,11 +216,6 @@ export function landManpowerSides(row: LandBattleRow): [number | null, number | 
   ];
 }
 
-export function landManpowerLost(row: LandBattleRow): [number, number] | null {
-  const [attacker, defender] = landManpowerSides(row);
-  return attacker !== null && defender !== null ? [attacker, defender] : null;
-}
-
 export function landBattleRows(windows: Windows, at: number, matches: CountryMatch, all: boolean, from: number | null = null): ReadonlyArray<LandBattleRow> {
   let byMatch = rowPlaybacks.get(windows);
   if (!byMatch) rowPlaybacks.set(windows, byMatch = new WeakMap());
@@ -360,5 +355,3 @@ export function rankedLandBattleRows(data: LandBattlesRanking | undefined, at: n
   }
   return landBattleRows(windows, at, matchAll, true);
 }
-export { battleWindowIndex, battleWindows, battleWarnings, shownBattleCensusHour as shownCensusHour,
-  battlePlaceRequests as landBattlePlaceRequests, namedBattles as namedLandBattles } from '../battles/battleRows.ts';

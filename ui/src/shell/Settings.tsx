@@ -27,8 +27,6 @@ import type { SidebarIconStyles } from './appearance/sidebarIcons';
 import type { BranchChoice } from '../dashboard/Dashboard';
 import './settings.css';
 
-export { settingsSections } from './settingsMetadata';
-export type { SettingsSection, SettingsTarget } from './settingsMetadata';
 import { settingsSections } from './settingsMetadata';
 import type { SettingsSection, SettingsTarget } from './settingsMetadata';
 

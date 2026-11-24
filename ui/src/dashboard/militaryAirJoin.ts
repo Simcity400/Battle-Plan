@@ -1,4 +1,4 @@
-import type { HourSpan, MilitaryAirCountry, MilitaryAirName, MilitaryAirPart, MilitaryAirReply } from '../generated/dashboard';
+import type { HourSpan, MilitaryAirCountry, MilitaryAirName, MilitaryAirCauseName, MilitaryAirPart, MilitaryAirReply } from '../generated/dashboard';
 import { WINDOW_HOURS, windowsOf } from './heldWindows.ts';
 import { keepLedgerTotals, ledgerTotals, openingTotals } from './militaryAirLedger.ts';
 import type { LedgerTotal, MilitaryAirLedger } from './militaryAirLedger';
@@ -49,6 +49,7 @@ export class LedgerJoin {
   private readonly parts = new Map<string, { part: MilitaryAirPart; carried: string }>();
   private readonly regions = new Map<number, MilitaryAirName>();
   private readonly buildings = new Map<string, MilitaryAirName>();
+  private readonly causes = new Map<number, MilitaryAirCauseName>();
   private readonly notes = new Map<string, number>();
   private readonly warnings: string[] = [];
   private readonly warned = new Set<string>();
@@ -111,6 +112,7 @@ export class LedgerJoin {
     }
     for (const name of window.regions) if (!this.regions.has(Number(name.id))) this.regions.set(Number(name.id), name);
     for (const name of window.buildings) if (!this.buildings.has(name.id)) this.buildings.set(name.id, name);
+    for (const cause of window.causes ?? []) if (!this.causes.has(cause.cause)) this.causes.set(cause.cause, cause);
     for (const note of window.notes) this.notes.set(note.reason, (this.notes.get(note.reason) ?? 0) + note.events);
     for (const warning of window.warnings) if (!this.warned.has(warning)) { this.warned.add(warning); this.warnings.push(warning); }
   }
@@ -126,6 +128,7 @@ export class LedgerJoin {
       parts: [...this.parts.values()].map(held => held.part).sort(comparePart),
       regions: [...this.regions].sort(([a], [b]) => a - b).map(([, name]) => name),
       buildings: [...this.buildings].sort(([a], [b]) => compareText(a, b)).map(([, name]) => name),
+      causes: [...this.causes].sort(([a], [b]) => a - b).map(([, cause]) => cause),
       warnings: [...[...this.notes].sort(([a], [b]) => compareText(a, b)).map(([reason, events]) => `${events} events: ${reason}`), ...this.warnings],
     };
     keepLedgerTotals(ledger, this.totals);
@@ -134,8 +137,3 @@ export class LedgerJoin {
   }
 }
 
-export function joinMilitaryAir(windows: readonly MilitaryAirReply[]): MilitaryAirLedger | null {
-  const join = new LedgerJoin('', windows[0]?.window ?? 0);
-  for (const window of windows) join.append(window);
-  return join.ledger();
-}

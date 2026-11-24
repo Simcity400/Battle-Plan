@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { GameWindowRegion, GameWindowRequest } from './client.ts';
+import type { GameWindowRegion, GameWindowRequest, GameWindowScroll } from './client.ts';
 import {
   accessibleRegions,
   fitGameWindowSize,
@@ -17,7 +17,9 @@ import {
   acceptRender,
   frameShown,
   regionTooltipContent,
-  wheelScrollPosition,
+  listKeyInput,
+  listPosition,
+  scrollClickInput,
 } from './gameWindowLogic.ts';
 import {
   claimGameWindowSlot,
@@ -75,28 +77,76 @@ test('deduplicates identical requests and varies when any single key field chang
   assert.equal(gameWindowSubjectKey(scrolled, 2), gameWindowSubjectKey(baseRequest(), 2));
 });
 
-test('a wheel over a list moves it one step at a time within its range, the top-most list first', () => {
+test('a wheel, the scrollbar arrows, its track and its thumb move a list through one list-position action', () => {
+  const scroll = (list: string, position: number, control: GameWindowScroll['control'] = { kind: 'list' }): GameWindowScroll => ({
+    list, vertical: true, position, range: 100, step: 30, page: 50, control,
+  });
   const list = (path: string, rect: GameWindowRegion['rect'], position: number): GameWindowRegion => ({
-    path, rect, clip: null, disabled: false, close: false, passthrough: true, tooltip: null,
-    scroll: { position, range: 100, wheel: 30 },
+    path, rect, clip: null, disabled: false, close: false, passthrough: true, tooltip: null, scroll: scroll(path, position),
+  });
+  const part = (path: string, rect: GameWindowRegion['rect'], control: GameWindowScroll['control']): GameWindowRegion => ({
+    path: `win/inner:scrollbar/${path}`, rect, clip: null, disabled: false, close: false, tooltip: null, scroll: scroll('win/inner', 90, control),
   });
   const regions: GameWindowRegion[] = [
     list('win/outer', [0, 0, 200, 200], 0),
     { path: 'win/still', rect: [0, 150, 200, 50], clip: null, disabled: false, close: false, tooltip: null,
-      scroll: { position: 0, range: 0, wheel: 30 } },
+      scroll: { ...scroll('win/still', 0), range: 0 } },
     list('win/inner', [10, 10, 50, 50], 90),
+    part('up', [60, 10, 10, 10], { kind: 'step', direction: -1 }),
+    part('track', [60, 20, 10, 30], { kind: 'track' }),
+    part('thumb', [60, 40, 10, 5], { kind: 'thumb', travel: 25, thumb: 22 }),
+    part('down', [60, 50, 10, 10], { kind: 'step', direction: 1 }),
   ];
   assert.equal(hitTestScroll(regions, 20, 20)?.path, 'win/inner');
   assert.equal(hitTestScroll(regions, 100, 100)?.path, 'win/outer');
   assert.equal(hitTestScroll(regions, 100, 170)?.path, 'win/outer');
   assert.equal(hitTestScroll(regions, 300, 300), null);
+  assert.equal(hitTestScroll(regions, 65, 30)?.scroll?.list, 'win/inner', 'a wheel over the scrollbar moves its list');
   const inner = regions[2].scroll!;
-  assert.equal(wheelScrollPosition(inner, undefined, 120), 100);
-  assert.equal(wheelScrollPosition(inner, undefined, -3), 60);
-  assert.equal(wheelScrollPosition(inner, 15, -120), 0);
-  assert.equal(wheelScrollPosition(inner, 40, 0), 40);
+  assert.equal(listPosition(inner, undefined, { kind: 'wheel', delta: 120 }), 100);
+  assert.equal(listPosition(inner, undefined, { kind: 'wheel', delta: -3 }), 60);
+  assert.equal(listPosition(inner, 15, { kind: 'wheel', delta: -120 }), 0);
+  assert.equal(listPosition(inner, 40, { kind: 'wheel', delta: 0 }), 40);
   assert.equal(hitTestHover(regions, 20, 20), null);
   assert.equal(hitTestClick(regions, 20, 20), null);
+
+  const click = (x: number, y: number) => scrollClickInput(regions, hitTestClick(regions, x, y), x, y);
+  assert.deepEqual(click(65, 12), { kind: 'step', direction: -1 });
+  assert.deepEqual(click(65, 55), { kind: 'step', direction: 1 });
+  assert.deepEqual(click(65, 25), { kind: 'page', direction: -1 }, 'a click on the track above the thumb pages up');
+  assert.equal(click(65, 42), null, 'the thumb drags; it does not page');
+  assert.equal(click(20, 20), null);
+  assert.equal(listPosition(inner, 50, { kind: 'step', direction: -1 }), 20);
+  assert.equal(listPosition(inner, 50, { kind: 'page', direction: 1 }), 100);
+  assert.equal(listPosition(inner, 50, { kind: 'page', direction: -1 }), 0);
+  assert.equal(listPosition(inner, 50, { kind: 'end', direction: 1 }), 100);
+  const thumb = regions[5].scroll!;
+  assert.equal(listPosition(thumb, undefined, { kind: 'drag', moved: 0 }), 88, 'a drag starts where the thumb is drawn');
+  assert.equal(listPosition(thumb, undefined, { kind: 'drag', moved: -11 }), 44);
+  assert.equal(listPosition(thumb, undefined, { kind: 'drag', moved: 90 }), 100);
+  assert.deepEqual(listKeyInput('PageDown'), { kind: 'page', direction: 1 });
+  assert.deepEqual(listKeyInput('ArrowUp'), { kind: 'step', direction: -1 });
+  assert.deepEqual(listKeyInput('Home'), { kind: 'end', direction: -1 });
+  assert.equal(listKeyInput('a'), null);
+});
+
+test('tabs and other view actions are buttons, lists are scrollbars, and notes keep only a tooltip', () => {
+  const base = { clip: null, disabled: false, close: false, tooltip: null } as const;
+  const listScroll = { list: 'win/list', vertical: true, position: 0, range: 5, step: 1, page: 2 } as const;
+  const regions: GameWindowRegion[] = [
+    { ...base, path: 'win/close', rect: [0, 0, 10, 10], close: true },
+    { ...base, path: 'win/tab', rect: [10, 0, 10, 10], view: 'history' },
+    { ...base, path: 'win/note', rect: [20, 0, 10, 10], tooltip: { title: 'Size', body: null, detail: null } },
+    { ...base, path: 'win/list', rect: [0, 20, 50, 50], passthrough: true, scroll: { ...listScroll, control: { kind: 'list' } } },
+    { ...base, path: 'win/list:scrollbar/up', rect: [50, 20, 5, 5], scroll: { ...listScroll, control: { kind: 'step', direction: -1 } } },
+  ];
+  const roles = accessibleRegions(regions, [100, 100]).map(entry => [entry.region.path, entry.role]);
+  assert.deepEqual(roles, [
+    ['win/close', 'close'],
+    ['win/tab', 'view'],
+    ['win/note', 'note'],
+    ['win/list', 'list'],
+  ]);
 });
 
 test('a pass-through tooltip above the close button shows its tooltip but lets the click close', () => {
@@ -187,8 +237,8 @@ test('hit-tests top-most matching region, respects clips, and blocks disabled cl
   const focusable = accessibleRegions(regions, [200, 120]);
   assert.equal(focusable.length, 3);
   assert.deepEqual(focusable[0].rect, [10, 10, 40, 40]);
-  assert.equal(focusable[1].closeable, false);
-  assert.equal(focusable[2].closeable, true);
+  assert.equal(focusable[1].role, 'note');
+  assert.equal(focusable[2].role, 'close');
 });
 
 test('hit-testing respects alpha masks so transparent pixels pass through to regions behind', () => {

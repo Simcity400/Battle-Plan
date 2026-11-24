@@ -17,9 +17,11 @@ import { startPerf } from './shell/perf';
 import { registerGameWindow } from './dashboard/gameWindows';
 import EquipmentDesignerWindow from './dashboard/EquipmentDesignerWindow';
 import IndustrialOrganisationWindow from './dashboard/IndustrialOrganisationWindow';
+import IntelligenceAgencyWindow from './dashboard/IntelligenceAgencyWindow';
 
 registerGameWindow('equipmentDesigner', EquipmentDesignerWindow);
 registerGameWindow('industrialOrganisation', IndustrialOrganisationWindow);
+registerGameWindow('intelligenceAgency', IntelligenceAgencyWindow);
 applySavedAppearance();
 void startPerf().catch(error => console.error('Measurement unavailable:', error));
 if (desktopAvailable) void shareRecordingPreferences().catch(error => console.error('Campaign flags stay on this device:', error));

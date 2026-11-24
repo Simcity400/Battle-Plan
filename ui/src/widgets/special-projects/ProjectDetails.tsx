@@ -3,7 +3,7 @@ import { createContext, useContext, useEffect, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles';
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import type { WidgetSpec } from '../../dashboard/model';
+import type { WidgetBase } from '../../dashboard/model';
 import type { GatedHour } from '../../dashboard/regionTime';
 import { useProduct } from '../../dashboard/products';
 import { productRequest } from '../../dashboard/request.ts';
@@ -29,7 +29,7 @@ function Facility({ program }: { program: ProgramDetails }) {
   </div>;
 }
 
-export interface Asked { runtime: WidgetRuntime; widget: WidgetSpec; tag: string; active: boolean; readHour: GatedHour }
+export interface Asked { runtime: WidgetRuntime; widget: WidgetBase; tag: string; active: boolean; readHour: GatedHour }
 
 export function usePinnedDetails({ runtime, widget, tag, active, readHour }: Asked) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);

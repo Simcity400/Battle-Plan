@@ -1,7 +1,6 @@
-import type { LaneView } from '../../draw/lane.ts';
-import { createLaneView, type LaneBinding, type LaneFamily, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import { layoutCards, type CardLayout } from './layout.ts';
-import { assertCardModelValid, cardRowHours, deriveCardAudit, deriveCardMirror, deriveCardTooltip, type CardModel } from './model.ts';
+import { assertCardModelValid, cardRowHours, cardRowName, deriveCardAudit, deriveCardMirror, deriveCardTooltip, type CardModel, type CardRow } from './model.ts';
 import { drawCards, hitCards, visibleCardIcons } from './painter.ts';
 
 export interface FamilyCardBinding<TOptions = unknown> extends LaneBinding<TOptions> {
@@ -11,9 +10,15 @@ export interface FamilyCardBinding<TOptions = unknown> extends LaneBinding<TOpti
   readonly pauseFlush?: number;
 }
 
+function navName(row: Exclude<CardRow, { readonly kind: 'section' }>): string {
+  if (row.kind === 'hero') return row.key;
+  if (row.kind === 'item') return row.title.kind === 'known' ? String(row.title.value) : row.key;
+  return cardRowName(row);
+}
+
 const inspectedRow = (inspect: string | null): string | null => (inspect?.startsWith('row:') ? inspect.slice(4) : null);
 
-const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
+export const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
   family: 'card',
   boundary(model, hour) {
     assertCardModelValid(model, hour);
@@ -43,7 +48,7 @@ const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
   tooltip(frame, key, focus) {
     const rowKey = focus ? key : inspectedRow(key);
     const payload = rowKey ? deriveCardTooltip(frame.model, rowKey) : null;
-    return payload && rowKey ? { hour: frame.model.hour, rowKey, payload } : null;
+    return payload && rowKey ? { rowKey, payload } : null;
   },
   structure({ model, layout }) {
     return {
@@ -59,14 +64,10 @@ const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
         warnings: model.warnings ?? [],
       },
       rowHours: cardRowHours(model),
-      nav: model.rows.flatMap((row, index) => (row.kind === 'section' ? [] : [[row.key, row.kind === 'hero' || row.title.kind !== 'known' ? row.key : String(row.title.value), index, -1, '', row.subject ?? null, layout.rowTops[index]!, layout.rowHeights[index]!] as const])),
+      nav: model.rows.flatMap((row, index) => (row.kind === 'section' ? [] : [[row.key, navName(row), index, -1, '', row.kind === 'item' || row.kind === 'hero' ? row.subject ?? null : null, layout.rowTops[index]!, layout.rowHeights[index]!] as const])),
     };
   },
   mirror: frame => deriveCardMirror(frame.model),
   audit: frame => deriveCardAudit(frame.model),
   visibleArt: frame => visibleCardIcons(frame.model, frame.layout, frame.binding.scrollTop),
 };
-
-export function familyCardLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(cardLane, wake, options);
-}

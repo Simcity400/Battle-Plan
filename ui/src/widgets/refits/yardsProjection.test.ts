@@ -47,6 +47,18 @@ test('a refit line shows the product’s progress against its cost, its dockyard
   assert.equal(project(refitsProjection, refits({ dockyards: null })).titleSummary, null, 'no total is invented when the census is incomplete');
 });
 
+test('the refit tooltip prints the same validated cost the progress and remaining cost use; the sentinel and an unread cost are not a cost', () => {
+  const tip = (cost: string | null, costRead: number | null = 40) => {
+    const model = project(refitsProjection, refits({ costRead, lines: [{ ...refits().lines[0]!, cost }] }));
+    return [cell(model.rows[0], 'progress'), tipValue(model.rows[0], 'Cost'), tipValue(model.rows[0], 'Remaining cost')];
+  };
+  assert.deepEqual(tip('1000000'), [knownValue(90.6), knownValue('10 IC'), knownValue('0.94 IC')]);
+  const unknown = [notRecorded('Refit cost not recorded'), notRecorded('Refit cost not recorded'), notRecorded('Remaining cost not recorded')];
+  assert.deepEqual(tip('9223372036854775807'), unknown, 'the maximum-integer sentinel');
+  assert.deepEqual(tip('0'), unknown);
+  assert.deepEqual(tip('1000000', null), unknown, 'a cost whose read hour is not known');
+});
+
 test('the hourly progress cell moves the share, the work done and the remaining cost together; a live cell that says missing is never covered by the held value', () => {
   const model = project(refitsProjection, refits(), new Map([[liveKey('7', 'progress'), 500000]]));
   assert.deepEqual(cell(model.rows[0], 'progress'), knownValue(50));
@@ -62,7 +74,7 @@ test('ships linked or waiting are counted only from a whole read; the ships that
   const unread = 'Naval refit ships read only in part at this hour (2 rows not read)';
   const line = refits().lines[0]!;
   const refit = project(refitsProjection, refits({ lines: [{ ...line, shipsMissing: unread }, { ...line, handle: '9', ships: [], shipsMissing: unread }] }));
-  assert.deepEqual(tipValue(refit.rows[0], 'Ships'), partialValue('1', unread, { atLeast: true }));
+  assert.deepEqual(tipValue(refit.rows[0], 'Ships'), partialValue('1', unread), 'the figure with the partial mark; the reason travels with it');
   assert.equal(refit.rows[0]!.children?.length, 1, 'the witnessed ship stays');
   assert.deepEqual(tipValue(refit.rows[1], 'Ships'), notRecorded(unread), 'none seen in an unread list is not zero');
   assert.deepEqual(tipValue(project(refitsProjection, refits()).rows[0], 'Ships'), knownValue('1'));

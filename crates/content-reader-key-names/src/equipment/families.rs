@@ -21,88 +21,30 @@ pub struct CategoryFamilies {
     plane_designer: u64,
 }
 
-const LAND: &[&str] = &[
-    "armor",
-    "motorized",
-    "mechanized",
-    "infantry",
-    "train",
-    "land_cruiser",
-];
-const AIR: &[&str] = &[
-    "fighter",
-    "interceptor",
-    "tactical_bomber",
-    "strategic_bomber",
-    "cas",
-    "naval_bomber",
-    "missile",
-    "suicide",
-    "scout_plane",
-    "air_transport",
-    "maritime_patrol_plane",
-    "heavy_fighter",
-    "emplacement_gun_ammo",
-    "ballistic_missile",
-    "nuclear_missile",
-    "sam_missile",
-];
-const NAVAL: &[&str] = &[
-    "convoy",
-    "capital_ship",
-    "submarine",
-    "screen_ship",
-    "floating_harbor",
-    "carrier",
-    "support_ship",
-];
-const SHIP_DESIGNER: &[&str] = &[
-    "capital_ship",
-    "submarine",
-    "screen_ship",
-    "carrier",
-    "support_ship",
-];
-const TANK_DESIGNER: &[&str] = &["armor"];
-const PLANE_DESIGNER: &[&str] = &[
-    "fighter",
-    "interceptor",
-    "tactical_bomber",
-    "strategic_bomber",
-    "cas",
-    "naval_bomber",
-    "suicide",
-    "scout_plane",
-    "maritime_patrol_plane",
-    "heavy_fighter",
-    "ballistic_missile",
-    "nuclear_missile",
-    "sam_missile",
-];
-
 static FAMILIES: RuntimeTable<CategoryFamilies> = RuntimeTable::new(resolve);
 
 fn resolve() -> Verified<CategoryFamilies> {
-    let names = auxiliary_part(|tables| &tables.category_names)
+    let recorded = auxiliary_part(|tables| &tables.category_families)
         .map_err(|withheld| withheld.requires("equipment category families"))?;
-    let bits = |members: &[&str]| {
-        names
-            .iter()
-            .filter(|(name, _)| members.contains(name))
-            .fold(0, |bits, (_, bit)| bits | bit)
-    };
     Ok(CategoryFamilies {
-        land: bits(LAND),
-        air: bits(AIR),
-        naval: bits(NAVAL),
-        ship_designer: bits(SHIP_DESIGNER),
-        tank_designer: bits(TANK_DESIGNER),
-        plane_designer: bits(PLANE_DESIGNER),
+        land: recorded.land,
+        air: recorded.air,
+        naval: recorded.naval,
+        ship_designer: recorded.ship_designer,
+        tank_designer: recorded.tank_designer,
+        plane_designer: recorded.plane_designer,
     })
 }
 
 pub fn category_families() -> Result<&'static CategoryFamilies, String> {
     FAMILIES.get().map_err(ToString::to_string)
+}
+
+pub fn modular_categories(dlc_mask: u32) -> Result<u64, String> {
+    if dlc_mask & (MAN_THE_GUNS | NO_STEP_BACK | BY_BLOOD_ALONE) == 0 {
+        return Ok(0);
+    }
+    Ok(category_families()?.modular_categories(dlc_mask))
 }
 
 impl CategoryFamilies {

@@ -43,12 +43,13 @@ interface RouteState {
 interface WidgetState {
   id: number; lane: number; kind?: string; cost: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
   installListeners: Set<() => void>; dateListeners: Set<() => void>; binding: Binding; surfaces: readonly PageSurface<ImageBitmap>[];
-  held: Map<string, unknown>; error?: Failure; wire?: unknown; payloads: { own: ReadonlySet<number>; statics: ReadonlySet<number>; identity: ReadonlySet<number> };
+  held: Map<string, unknown>; error?: Failure; wire?: unknown; stamp: number | undefined; payloads: { own: ReadonlySet<number>; statics: ReadonlySet<number>; identity: ReadonlySet<number> };
 }
 
 const NO_PAYLOADS: ReadonlySet<number> = new Set();
 
 export interface SupplyChange {
+  readonly stamp?: number;
   readonly statics?: { readonly staticPanels?: unknown; readonly staticAnswers?: unknown; readonly staticShifts?: unknown } | null;
   readonly identity?: object | null;
   readonly dated?: Dated | null;
@@ -234,7 +235,7 @@ export class Pipeline {
         eligibleHour: shown.installed && view.mode === 'picture' ? clock(Math.min(view.target, shown.installed.c)) : null,
         ...shown.installed ? { entry: shown.installed.id, parts: Object.values(shown.content),
           face: Object.entries(shown.content).filter(([part]) => part !== 'hour').map(([part, id]) => `${part}=${id}`).join('|') } : {},
-        drawMs: shown.installed?.ms ?? 0, ...rows ? { rows } : {}, ...auditId !== undefined ? { auditId } : {}, ...auditMissing ? { auditMissing: true } : {},
+        drawMs: shown.installed?.ms ?? 0, ...rows ? { rows } : {}, ...auditId !== undefined && view.fields ? { auditId, fields: view.fields } : {}, ...auditMissing ? { auditMissing: true } : {},
         mode: view.mode, ...view.reason !== undefined ? { reason: view.reason } : {}, dim: view.dim, reset: shown.installed?.gen.reset ?? 0, binding: shown.installed?.binding ?? shown.binding,
         inspect: shown.inspect, tooltip: view.tooltip !== null });
       }
@@ -290,11 +291,10 @@ export class Pipeline {
       return;
     }
     if (message.type === 'widget-failed') {
-      const widget = this.widgets.get(message.widget);
-      if (widget) {
+      if (this.widgets.has(message.widget)) {
         const failure = asFailure(new Error(message.reason));
-        widget.error = failure;
         this.page.name(message.widget, 'failed', failure.message, 'local');
+        this.failedLocally(message.widget, message.stamp, failure);
         this.flush();
       }
       return;
@@ -340,7 +340,7 @@ export class Pipeline {
   private commitSoon() {
     if (this.closed || this.framing) return;
     this.framing = true;
-    engine.next('commit', () => { this.framing = false; if (this.closed) return; this.page.frame(); this.flush(); if (auditing()) this.sample(this.page.seek); });
+    engine.next('commit', () => { this.framing = false; if (this.closed) return; this.page.frame(); for (const [id, stamp] of this.page.takeFailures()) this.failedLocally(id, stamp, asFailure(new Error('drawing failed'))); this.flush(); if (auditing()) this.sample(this.page.seek); });
   }
 
   private place(key: string | undefined, kind: string | undefined): { lane: number; cost: number } {
@@ -364,7 +364,7 @@ export class Pipeline {
     this.loads[lane]!++;
     this.costLoads[lane]! += cost;
     const widget: WidgetState = { id, lane, kind, cost, subs: new Map(), view: options.view ?? 'fields', model: options.model, mounted: false, route: null,
-      installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, ...(options.owner !== undefined ? { owner: options.owner } : {}), surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map(),
+      installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, ...(options.owner !== undefined ? { owner: options.owner } : {}), surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map(), stamp: undefined,
       payloads: { own: NO_PAYLOADS, statics: NO_PAYLOADS, identity: NO_PAYLOADS } };
     if (options.model !== undefined) this.own(widget, options.model);
     this.widgets.set(id, widget);
@@ -429,6 +429,13 @@ export class Pipeline {
   }
 
   binding(id: number): number { return this.page.widgets.get(id)?.binding ?? 0; }
+
+  private failedLocally(id: number, stamp: number | undefined, failure: Failure) {
+    const widget = this.widgets.get(id);
+    if (!widget) return;
+    widget.error = failure;
+    if (stamp !== widget.stamp) this.retryWidget(id);
+  }
 
   retryWidget(id: number) {
     if (this.closed) return;
@@ -538,7 +545,12 @@ export class Pipeline {
 
   private timed(widget: WidgetState, binding: Omit<Binding, 'generation' | 'offset' | 'pin'>): Binding {
     const shown = this.page.widgets.get(widget.id);
-    return { ...binding, generation: shown?.binding ?? 1, ...(shown?.owner !== undefined ? { owner: shown.owner } : {}), offset: shown?.offset ?? 0, pin: shown?.pin ?? null };
+    const { dated: _, ...own } = binding;
+    const was = widget.binding;
+    const owner = shown?.owner;
+    const kept = was.owner === undefined || owner === undefined || was.owner === owner;
+    if (!kept) widget.stamp = undefined;
+    return { ...own, ...kept && was.dated ? { dated: was.dated } : {}, generation: shown?.binding ?? 1, ...(shown?.owner !== undefined ? { owner: shown.owner } : {}), offset: shown?.offset ?? 0, pin: shown?.pin ?? null };
   }
 
   bind(id: number, surfaces: readonly PageSurface<ImageBitmap>[], binding: Omit<Binding, 'generation' | 'offset' | 'pin'>, change: RebindChange = {}, model?: unknown) {
@@ -558,7 +570,13 @@ export class Pipeline {
     }
     const release = model !== undefined ? this.own(widget, model) : NO_PAYLOADS;
     widget.binding = this.timed(widget, binding);
-    this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding, ...model !== undefined ? { model: widget.wire } : {} });
+    this.host.lanes[widget.lane]!.postMessage({
+      type: 'bind',
+      widget: id,
+      binding: widget.binding,
+      ...model !== undefined ? { model: widget.wire } : {},
+      ...!same ? { remounted: true } : {},
+    });
     this.payloads[widget.lane]!.release(release);
     this.flush();
   }
@@ -611,20 +629,24 @@ export class Pipeline {
         identity = next ?? null;
       }
     }
-    if (change.dated !== undefined) {
+    if (statics !== undefined) widget.stamp = change.stamp;
+    const dated = change.dated !== undefined && (statics !== undefined || change.stamp === widget.stamp) ? change.dated : undefined;
+    if (dated !== undefined) {
       const { dated: _, ...rest } = widget.binding;
-      widget.binding = change.dated ? { ...rest, dated: change.dated } : rest;
+      widget.binding = dated ? { ...rest, dated } : rest;
     }
-    if (statics !== undefined || identity !== undefined || change.dated !== undefined) {
+    if (statics !== undefined || identity !== undefined || dated !== undefined) {
       this.host.lanes[widget.lane]!.postMessage({
         type: 'supply',
         widget: widget.id,
+        ...widget.stamp !== undefined && (statics !== undefined || dated !== undefined) ? { stamp: widget.stamp } : {},
         ...statics !== undefined ? { statics: statics as Supply['statics'] } : {},
         ...identity !== undefined ? { identity } : {},
-        ...change.dated !== undefined ? { dated: change.dated } : {},
+        ...dated !== undefined ? { dated } : {},
       });
     }
     for (const ids of released) sender.release(ids);
+    if (statics !== undefined && widget.error) this.retryWidget(id);
   }
 
   held<T>(id: number, kind: string, make: () => T): T | null {
@@ -770,7 +792,6 @@ const clockGeneration = new WeakMap<PlaybackController, number>();
 const clockListeners = new WeakMap<PlaybackController, Set<() => void>>();
 const ownerOf = new WeakMap<Pipeline, { clock: PlaybackController; slot: PipelineSlot }>();
 
-export const pipelineOf = (clock: PlaybackController) => byClock.get(clock)?.pipeline ?? null;
 export const pipelineGeneration = (clock: PlaybackController) => clockGeneration.get(clock) ?? 1;
 
 export function pipelineFor(clock: PlaybackController, client: DashboardClient, host: () => PipelineHost): Pipeline {
@@ -788,13 +809,6 @@ export function pipelineFor(clock: PlaybackController, client: DashboardClient, 
   }
   byClock.set(clock, slot);
   return slot.pipeline;
-}
-
-export function subscribePipeline(clock: PlaybackController, client: DashboardClient, listener: () => void): () => void {
-  const slot = pipelines.get(clock)?.get(client);
-  if (!slot) return () => {};
-  slot.listeners.add(listener);
-  return () => { slot.listeners.delete(listener); };
 }
 
 export function subscribeClockPipeline(clock: PlaybackController, listener: () => void): () => void {

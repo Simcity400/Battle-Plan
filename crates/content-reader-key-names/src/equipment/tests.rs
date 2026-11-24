@@ -2,33 +2,25 @@ use content_reader_script::equipment_stats::{category_names, BUILD_COST_IC_STAT,
 use super::*;
 
 #[test]
-fn designer_families_follow_recursive_archetypes_and_each_types_own_defaults() {
-    let database = read(&[(
-        "families.txt",
-        "equipment_modules={m={add_equipment_type=cas}} equipments={root={is_archetype=yes type=armor} middle={is_archetype=yes archetype=root type=infantry} leaf={archetype=middle type=convoy default_modules={s=m}}}",
-    )]);
-    assert!(database.lost.is_none(), "{:?}", database.lost);
+fn no_modular_designer_dlc_answers_no_modular_categories_without_reading_the_families() {
+    use engine_executable::native_values::dlc_feature::{BY_BLOOD_ALONE, MAN_THE_GUNS, NO_STEP_BACK};
+    content_reader_script::test_game::with(|game| {
+        game.auxiliary(|tables| {
+            tables.category_families = Err(engine_executable::availability::Withheld::new(
+                engine_executable::executable_tables::auxiliary::CATEGORY_FAMILIES,
+                "not decoded from this build",
+            ));
+        })
+    });
+    assert_eq!(modular_categories(0), Ok(0));
+    assert_eq!(modular_categories(!(MAN_THE_GUNS | NO_STEP_BACK | BY_BLOOD_ALONE)), Ok(0));
+    let refused = modular_categories(NO_STEP_BACK).unwrap_err();
+    assert!(refused.contains("not decoded from this build"), "{refused}");
+    content_reader_script::test_game::enter();
     assert_eq!(
-        database.designer_families(database.named("leaf").unwrap()),
-        Ok([true, true, true])
+        modular_categories(NO_STEP_BACK),
+        Ok(content_reader_script::test_game::category("armor"))
     );
-    assert_eq!(
-        database.designer_families(database.named("root").unwrap()),
-        Ok([true, false, false])
-    );
-}
-
-#[test]
-fn designer_families_refuse_an_archetype_loop_the_parent_walk_misses() {
-    let database = read(&[(
-        "loop.txt",
-        "equipments={c={is_archetype=yes} a={is_archetype=yes} b={is_archetype=yes archetype=a} a={is_archetype=yes archetype=b parent=c}}",
-    )]);
-    assert!(database.lost.is_none(), "{:?}", database.lost);
-    let error = database
-        .designer_families(database.named("a").unwrap())
-        .unwrap_err();
-    assert!(error.contains("equipment a reaches archetype"), "{error}");
 }
 
 #[test]

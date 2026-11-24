@@ -57,12 +57,6 @@ export function graphemes(text: string): string[] {
   return Array.from(GRAPHEMES.segment(text), part => part.segment);
 }
 
-export function graphemeCount(text: string): number {
-  let count = 0;
-  for (const _ of GRAPHEMES.segment(text)) count++;
-  return count;
-}
-
 export interface FittedLine {
   readonly text: string;
   readonly truncated: boolean;

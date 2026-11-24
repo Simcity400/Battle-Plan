@@ -352,6 +352,37 @@ fn trait_availability_follows_the_game_order() {
 }
 
 #[test]
+fn a_window_asks_a_traits_visibility_and_availability_by_token() {
+    with_organisations(&organisations(), |world| {
+        let evaluator = Evaluator::new(world, None);
+        for organisation in [MIO, OTHER] {
+            for token in ["first_trait", "second_trait", "rival_trait", "zero_parent", "initial_trait"] {
+                let trigger = in_organisation(world, organisation, &format!("is_mio_trait_available = {token}"));
+                let asked = evaluator.trait_condition(organisation, token, OrganisationCondition::Available);
+                assert_eq!(asked.ok(), trigger.decided().ok(), "{organisation:#x} {token}");
+            }
+            let visible = in_organisation(world, organisation, "has_mio_size > 4");
+            assert_eq!(
+                evaluator
+                    .trait_condition(organisation, "second_trait", OrganisationCondition::Visible)
+                    .ok(),
+                visible.decided().ok(),
+                "{organisation:#x}"
+            );
+            assert_eq!(
+                evaluator.trait_condition(organisation, "first_trait", OrganisationCondition::Visible),
+                Ok(true)
+            );
+        }
+        assert!(evaluator.trait_condition(MIO, "loop_trait", OrganisationCondition::Available).is_err());
+        assert_eq!(
+            evaluator.trait_condition(MIO, "absent_trait", OrganisationCondition::Visible),
+            Ok(false)
+        );
+    });
+}
+
+#[test]
 fn equipment_types_and_research_categories() {
     with_organisations(&organisations(), |world| {
         assert_cases(

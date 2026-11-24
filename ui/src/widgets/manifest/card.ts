@@ -1,6 +1,6 @@
 import { cardHostAdapter } from '../../families/card/hostAdapter.ts';
-import { familyCardLaneView } from '../../families/card/laneView.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '../../families/manifest.ts';
+import { LEADER_OPTION } from '../general-career/definition.ts';
 
 export const CARD_VIEWS: readonly FamilyViewEntry[] = [
   {
@@ -10,6 +10,18 @@ export const CARD_VIEWS: readonly FamilyViewEntry[] = [
     loadSpec: () => import('../faction-upgrades/factionUpgradesProjection.ts').then(m => ({
       family: 'card', kind: 'faction-upgrades', view: DEFAULT_VIEW,
       projection: m.factionUpgradesProjection, declaration: m.factionUpgradesDeclaration,
+    })),
+  },
+  {
+    kind: 'general-career',
+    view: 'dossier',
+    label: 'Dossier',
+    family: 'card',
+    viewOption: 'view',
+    options: [LEADER_OPTION],
+    loadSpec: () => import('../general-career/dossierProjection.ts').then(m => ({
+      family: 'card', kind: 'general-career', view: 'dossier',
+      projection: m.dossierProjection, declaration: m.dossierDeclaration,
     })),
   },
   {
@@ -54,7 +66,7 @@ export const CARD_VIEWS: readonly FamilyViewEntry[] = [
 
 export const cardFamilyManifest: FamilyManifestModule = {
   family: 'card',
-  laneView: familyCardLaneView,
+  lane: () => import('../../families/card/laneView.ts').then(m => m.cardLane),
   views: CARD_VIEWS,
   hostAdapter: cardHostAdapter,
 };

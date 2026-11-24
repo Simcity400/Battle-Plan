@@ -10,16 +10,19 @@ import {
   drawRowHairline,
   drawRowHover,
   drawRowSelected,
+  drawScrollFade,
   resolveKitTokens,
   type ClockSummaryData,
 } from '../../draw/kit.ts';
+import { resolveCachedArt } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
-import { hasMeasuredValue, type Value } from '../value.ts';
+import { readyArt } from '../art/types.ts';
 import { drawHatchRect, MISSING_BOX_SIZE } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';
 import { drawApprovedCell, treeLevelsOf, treeTextStart, type CellRenderContext } from './cellPainters.ts';
 import { LIVE_END_GAP, treeColumnOf, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
-import { computeColumnMaxima, resolveCellAtHour, resolveCellPaintModel, type FlatTableRow, type TableCell, type TableRow } from './model.ts';
+import { computeColumnMaxima, resolveCellPaintModel, type FlatTableRow, type TableCell, type TableRow } from './model.ts';
+import { PANE_FADE_WIDTH, PANE_INDICATOR_HEIGHT, type PaneGeometry, type PaneScroll, type ResolvedPane } from './panes.ts';
 import {
   CELL_INSET,
   MEDIA_ROW_HEIGHT,
@@ -28,7 +31,6 @@ import {
   glideOffset,
   measuresColumn,
   scrollBounds,
-  showsIcon,
   type GlideOffset,
   type RankMarker,
   type TableCanvasContext,
@@ -104,7 +106,7 @@ export interface DrawFamilyTableInput {
   readonly theme: TableTheme;
   readonly now: number;
   readonly glideDuration: number;
-  readonly glide: ReadonlyMap<string, GlideOffset>;
+  readonly glide: TableGlide;
   readonly markers?: ReadonlyMap<string, RankMarker>;
   readonly inspectedKey?: string | null;
   readonly selectedKey?: string | null;
@@ -120,7 +122,6 @@ export interface DrawFamilyTableInput {
   readonly staticRowLooks?: boolean;
   readonly rowHeightMode?: 'standard' | 'media';
   readonly rowGeom?: RowLayoutGeometry | null;
-  readonly rowIndex?: ReadonlyMap<string, number>;
   readonly clockSummary?: ClockSummaryData;
 }
 
@@ -264,7 +265,6 @@ export function drawFamilyTable(
     dateGrouped = false,
     rowHeightMode = 'standard',
     rowGeom = null,
-    rowIndex,
     clockSummary,
   } = input;
 
@@ -282,7 +282,7 @@ export function drawFamilyTable(
   const bounds = scrollBounds(layout, width, scrollLeft);
   const rank = rankShown ? rankWidth : 0;
   const rowWidth = Math.max(width, layout.totalWidth);
-  const moving = glideDuration > 0 && glide.size > 0;
+  const moving = glideDuration > 0 && glide.offsets.size > 0;
 
   let first = 0;
   let last = rows.length;
@@ -432,9 +432,10 @@ export function drawFamilyTable(
     return marker && marker.until > now ? `${item.key}\u0002${item.rank}\u0002${marker.delta}` : `${item.key}\u0002${item.rank}`;
   };
 
-  const artStateOf = (url: string): number => (artCache
-    ? (artCache.bitmapOf(url) ? 1 : artCache.stateOfUrl(url) === 'failed' ? 2 : 3)
-    : (icons?.get(url) ? 1 : icons?.get(url) === null ? 2 : 0));
+  const artStateOf = (url: string): string => {
+    const resolved = resolveCachedArt(readyArt(url), { artCache, icons });
+    return resolved.status === 'ready' ? (resolved.bitmap ? 'r' : 'p') : resolved.status;
+  };
 
   const cellListSignature = (cell: TableCell): string => {
     let sig = '';
@@ -800,7 +801,7 @@ export function drawFamilyTable(
   const topAt = (index: number) => (variableHeights ? rowGeom.tops[index]! : index * uniformRowHeight);
   const heightAt = (index: number) => (variableHeights ? rowGeom.heights[index]! : uniformRowHeight);
   const rowY = (item: FlatTableRow, index: number) =>
-    topAt(index) - scrollTop + (moving && item.kind === 'data' ? glideOffset(glide.get(item.key), now, glideDuration) : 0);
+    topAt(index) - scrollTop + (moving && item.kind === 'data' ? glideOffset(glide.offsets.get(item.key), now, glideDuration) : 0);
 
   const visibleIndices: number[] = [];
   if (moving) {
@@ -808,7 +809,7 @@ export function drawFamilyTable(
       const y = rowY(rows[index]!, index);
       return y + heightAt(index) > 0 && y < height;
     };
-    for (const index of glidingIndices(rows, glide, rowIndex, first, last)) {
+    for (const index of glidingIndices(glide, first, last, scrollTop, scrollTop + height)) {
       if (onScreen(index)) visibleIndices.push(index);
     }
   } else {
@@ -896,24 +897,50 @@ export function drawFamilyTable(
   return { drew: true, paintedCells, measurements };
 }
 
-function glidingIndices(
-  rows: readonly FlatTableRow[],
-  glide: ReadonlyMap<string, GlideOffset>,
-  rowIndex: ReadonlyMap<string, number> | undefined,
-  first: number,
-  last: number,
-): number[] {
-  if (!rowIndex) {
-    const all: number[] = [];
-    for (let index = 0; index < rows.length; index++) all.push(index);
-    return all;
+export interface TableGlide {
+  readonly offsets: ReadonlyMap<string, GlideOffset>;
+  readonly movers: readonly { readonly index: number; readonly lo: number; readonly hi: number }[];
+  readonly reach: number;
+}
+
+export const NO_GLIDE: TableGlide = { offsets: new Map(), movers: [], reach: 0 };
+
+export function tableGlide(offsets: ReadonlyMap<string, GlideOffset>, rows: readonly FlatTableRow[], rowIndex: ReadonlyMap<string, number>, rowGeom: RowLayoutGeometry | null, rowHeight: number): TableGlide {
+  if (offsets.size === 0) return NO_GLIDE;
+  const movers: { index: number; lo: number; hi: number }[] = [];
+  let reach = 0;
+  for (const [key, offset] of offsets) {
+    const index = rowIndex.get(key);
+    if (index === undefined || rows[index]?.kind !== 'data') continue;
+    const top = rowGeom ? rowGeom.tops[index]! : index * rowHeight;
+    const lo = top + Math.min(offset.from, offset.to, 0);
+    const hi = top + Math.max(offset.from, offset.to, 0) + (rowGeom ? rowGeom.heights[index]! : rowHeight);
+    movers.push({ index, lo, hi });
+    if (hi - lo > reach) reach = hi - lo;
+  }
+  movers.sort((x, y) => x.lo - y.lo);
+  return { offsets, movers, reach };
+}
+
+export function glideCrossing(glide: TableGlide, top: number, bottom: number): number[] {
+  const { movers } = glide;
+  let lo = 0;
+  let hi = movers.length;
+  const from = top - glide.reach;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (movers[mid]!.lo < from) lo = mid + 1;
+    else hi = mid;
   }
   const out: number[] = [];
+  for (let at = lo; at < movers.length && movers[at]!.lo < bottom; at++) if (movers[at]!.hi > top) out.push(movers[at]!.index);
+  return out;
+}
+
+function glidingIndices(glide: TableGlide, first: number, last: number, top: number, bottom: number): number[] {
+  const out: number[] = [];
   for (let index = first; index < last; index++) out.push(index);
-  for (const key of glide.keys()) {
-    const index = rowIndex.get(key);
-    if (index !== undefined && (index < first || index >= last) && rows[index]?.kind === 'data' && rows[index]!.key === key) out.push(index);
-  }
+  for (const index of glideCrossing(glide, top, bottom)) if (index < first || index >= last) out.push(index);
   out.sort((a, b) => a - b);
   return out;
 }
@@ -927,32 +954,15 @@ export function hitFamilyTable(
   scrollTop: number,
   rankShown: boolean,
   rankWidth: number,
-  glide?: ReadonlyMap<string, GlideOffset>,
+  glide?: TableGlide,
   now?: number,
   glideDuration?: number,
   rowGeom?: RowLayoutGeometry | null,
-  rowIndex?: ReadonlyMap<string, number>,
-  viewportHeight?: number,
 ): { readonly kind: 'row' | 'empty'; readonly rowKey?: string; readonly column?: string; readonly toggle?: boolean; readonly action?: boolean } {
   let item: FlatTableRow | undefined;
-  const useGlide = Boolean(glide && glide.size > 0 && glideDuration && glideDuration > 0 && now !== undefined);
-  if (useGlide) {
-    const candidates = rowIndex && viewportHeight !== undefined && !rowGeom
-      ? glidingIndices(rows, glide!, rowIndex, Math.max(0, Math.floor(scrollTop / rowHeight) - 2), Math.min(rows.length, Math.ceil((scrollTop + viewportHeight) / rowHeight) + 2))
-      : glidingIndices(rows, glide!, undefined, 0, rows.length);
-    for (let c = candidates.length - 1; c >= 0; c--) {
-      const i = candidates[c]!;
-      const candidate = rows[i]!;
-      const top = rowGeom ? rowGeom.tops[i]! : i * rowHeight;
-      const h = rowGeom ? rowGeom.heights[i]! : rowHeight;
-      const y = top - scrollTop + (candidate.kind === 'data' ? glideOffset(glide!.get(candidate.key), now!, glideDuration) : 0);
-      if (point.y >= y && point.y < y + h) {
-        item = candidate;
-        break;
-      }
-    }
-  } else if (rowGeom) {
-    const absY = point.y + scrollTop;
+  const absY = point.y + scrollTop;
+  let at = -1;
+  if (rowGeom) {
     let lo = 0;
     let hi = rows.length;
     while (lo < hi) {
@@ -960,12 +970,26 @@ export function hitFamilyTable(
       if (rowGeom.tops[mid]! + rowGeom.heights[mid]! <= absY) lo = mid + 1;
       else hi = mid;
     }
-    if (lo < rows.length && absY >= rowGeom.tops[lo]! && absY < rowGeom.tops[lo]! + rowGeom.heights[lo]!) {
-      item = rows[lo];
+    if (lo < rows.length && absY >= rowGeom.tops[lo]! && absY < rowGeom.tops[lo]! + rowGeom.heights[lo]!) at = lo;
+  } else {
+    at = Math.floor(absY / rowHeight);
+  }
+  if (glide && glide.offsets.size > 0 && glideDuration && glideDuration > 0 && now !== undefined) {
+    const candidates = glideCrossing(glide, absY, absY + 1);
+    if (at >= 0 && at < rows.length) candidates.push(at);
+    candidates.sort((a, b) => b - a);
+    for (const i of candidates) {
+      const candidate = rows[i]!;
+      const top = rowGeom ? rowGeom.tops[i]! : i * rowHeight;
+      const h = rowGeom ? rowGeom.heights[i]! : rowHeight;
+      const y = top - scrollTop + (candidate.kind === 'data' ? glideOffset(glide.offsets.get(candidate.key), now, glideDuration) : 0);
+      if (point.y >= y && point.y < y + h) {
+        item = candidate;
+        break;
+      }
     }
   } else {
-    const index = Math.floor((point.y + scrollTop) / rowHeight);
-    item = rows[index];
+    item = rows[at];
   }
   if (!item) return { kind: 'empty' };
   if (item.kind === 'gap' || item.kind === 'refused') return { kind: 'row', rowKey: item.key };
@@ -992,60 +1016,63 @@ export function hitFamilyTable(
   return { kind: 'row', rowKey: item.key };
 }
 
-export function collectVisibleCellIcons(
-  rows: readonly FlatTableRow[],
-  columns: readonly Pick<FamilyColumnLayout, 'key' | 'display' | 'skillIcon'>[],
-  hour: number,
-  first: number,
-  last: number,
-): string[] {
-  const urls = new Set<string>();
-  const start = Math.max(0, first);
-  const end = Math.min(rows.length, last);
-  for (let c = 0; c < columns.length; c++) {
-    const col = columns[c]!;
-    if (col.skillIcon) urls.add(col.skillIcon);
+export function hitPanes(
+  layout: FamilyTableLayout,
+  panes: readonly ResolvedPane[],
+  geometry: PaneGeometry,
+  point: { readonly x: number; readonly y: number },
+  rowHeight: number,
+  scroll: PaneScroll,
+  scrollTop: number,
+): string | null {
+  for (let p = 0; p < panes.length; p++) {
+    const x0 = geometry.xs[p]!;
+    if (point.x < x0 || point.x >= x0 + geometry.width) continue;
+    const pane = panes[p]!;
+    const at = hitFamilyTable(layout, pane.rows, { x: point.x - x0, y: point.y }, rowHeight, scroll.left, scrollTop, false, 0, undefined, undefined, undefined, pane.geom);
+    if (at.kind !== 'row' || !at.rowKey) return null;
+    return at.toggle ? `toggle:${at.rowKey}` : `row:${at.rowKey}`;
   }
-  for (let i = start; i < end; i++) {
-    const item = rows[i]!;
-    if (item.kind !== 'data') continue;
-    for (let c = 0; c < columns.length; c++) {
-      const col = columns[c]!;
-      const cell = item.row.cells[col.key];
-      if (!cell) continue;
-      if (cell.flags) {
-        for (const fl of cell.flags) if (fl.icon) urls.add(fl.icon);
-      }
-      if (cell.icons) {
-        for (const ic of cell.icons) if (ic.url) urls.add(ic.url);
-      }
-      if (cell.icon) urls.add(cell.icon);
-      if (cell.unitIcon) urls.add(cell.unitIcon);
-      if (cell.iconSlot && showsIcon(col.display)) {
-        const resolved = resolveCellAtHour(cell, hour);
-        if (resolved.icon) urls.add(resolved.icon);
-      }
-    }
-  }
-  return [...urls];
+  return null;
 }
 
-export function collectCellIcons(rows: readonly FlatTableRow[]): string[] {
-  const urls = new Set<string>();
-  for (const item of rows) {
-    if (item.kind !== 'data') continue;
-    for (const key in item.row.cells) {
-      const cell = item.row.cells[key]!;
-      if (cell.icon) urls.add(cell.icon);
-      if (cell.unitIcon) urls.add(cell.unitIcon);
-      if (cell.flags) for (const fl of cell.flags) if (fl.icon) urls.add(fl.icon);
-      if (cell.icons) for (const ic of cell.icons) if (ic.url) urls.add(ic.url);
-      if (cell.looks) for (const look of cell.looks) if (look.flag) urls.add(look.flag);
-    }
+export function drawPaneFrame(
+  ctx: TableCanvasContext,
+  geometry: PaneGeometry,
+  layout: FamilyTableLayout,
+  scroll: PaneScroll,
+  height: number,
+  theme: TableTheme,
+): void {
+  const tokens = resolveKitTokens(theme);
+  for (let p = 1; p < geometry.xs.length; p++) {
+    const gutterLeft = geometry.xs[p - 1]! + geometry.width;
+    ctx.fillStyle = theme.surface;
+    ctx.fillRect(gutterLeft, 0, geometry.gutter, height);
+    ctx.fillStyle = theme.hairlineStrong ?? theme.line;
+    ctx.fillRect(Math.round(gutterLeft + geometry.gutter / 2), 0, 1, height);
   }
-  return [...urls];
-}
-
-export function hasNonZeroMeasured(value: Value): boolean {
-  return hasMeasuredValue(value) && value.kind !== 'zero';
+  const usedRight = geometry.xs[geometry.xs.length - 1]! + geometry.width;
+  if (geometry.view > usedRight) {
+    ctx.fillStyle = theme.surface;
+    ctx.fillRect(usedRight, 0, geometry.view - usedRight, height);
+  }
+  if (scroll.overflow <= 0) return;
+  const bodyWidth = Math.max(1, geometry.width - layout.pinnedWidth);
+  const thumbWidth = Math.max(16, Math.round(bodyWidth * (geometry.width - layout.pinnedWidth) / Math.max(1, layout.totalWidth - layout.pinnedWidth)));
+  const thumbX = Math.round((bodyWidth - thumbWidth) * (scroll.left / scroll.overflow));
+  const y = height - PANE_INDICATOR_HEIGHT - 2;
+  for (const x0 of geometry.xs) {
+    const fadeRight = x0 + geometry.width;
+    if (scroll.left < scroll.overflow - 0.5) drawScrollFade(ctx, fadeRight - PANE_FADE_WIDTH, 0, PANE_FADE_WIDTH, height, theme, 'right');
+    const trackX = x0 + layout.pinnedWidth;
+    ctx.fillStyle = tokens.barTrack;
+    ctx.beginPath();
+    ctx.roundRect(trackX, y, bodyWidth, PANE_INDICATOR_HEIGHT, PANE_INDICATOR_HEIGHT / 2);
+    ctx.fill();
+    ctx.fillStyle = theme.muted;
+    ctx.beginPath();
+    ctx.roundRect(trackX + thumbX, y, thumbWidth, PANE_INDICATOR_HEIGHT, PANE_INDICATOR_HEIGHT / 2);
+    ctx.fill();
+  }
 }

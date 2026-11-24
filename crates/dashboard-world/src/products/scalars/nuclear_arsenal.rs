@@ -1,6 +1,8 @@
 
 use super::{Named, rows};
-use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Read}}};
+use crate::products::group_members::GroupsAt;
+use dashboard_base::{Source, products::{Country, LoadContext, at_hour::{At, AtHour, Owner, Read, ReadsAt}, validate_country}};
+use dashboard_query::{identity::{Holder, Holders}, series::ranked::GroupSelection};
 use engine_native_air::raid_tooltip_operands::{
     NUCLEAR_BOMB_TOKEN,
     THERMONUCLEAR_BOMB_TOKEN,
@@ -23,6 +25,13 @@ pub struct NuclearArsenalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<u32>,
+    #[doc = " The countries whose stockpiles are the rows; never with a top or a group."]
+    #[serde(default)]
+    pub countries: Vec<Country>,
+    #[doc = " The group whose members at the hour are the rows; never with countries or a top."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -53,6 +62,8 @@ pub struct NukeCount {
 pub struct NukeCountry {
     pub tag: String,
     pub country_id: u32,
+    #[doc = " The recorded slot holding the country at the hour."]
+    pub slot: Option<u32>,
     #[doc = " The top bar's stockpile: every type's count added with signed 32-bit wrapping."]
     pub total: i32,
     pub counts: Vec<NukeCount>,
@@ -64,7 +75,7 @@ pub struct NukeCountry {
 pub struct NuclearArsenalReply {
     #[doc = " Every type the game names and every other type a country holds at the hour, by ordinal."]
     pub types: Vec<NukeType>,
-    #[doc = " Every country a tag holds with a stockpile row, greatest total first, ties by tag."]
+    #[doc = " Every country a tag holds with a stockpile row (or each chosen country, a recorded zero where it holds none), greatest total first, ties by tag."]
     pub countries: Vec<NukeCountry>,
     #[doc = " Why no stockpile is known at the hour."]
     pub missing: Option<String>,
@@ -98,7 +109,7 @@ pub(super) fn countries(rows: &[NukeRow], tag_of: impl Fn(u32) -> Option<String>
             unplaced_totals.push(total);
             continue;
         };
-        out.push(NukeCountry { tag, country_id: country, total, counts });
+        out.push(NukeCountry { tag, country_id: country, slot: None, total, counts });
     }
     out.sort_unstable_by(|a, b| b.total.cmp(&a.total).then_with(|| a.tag.cmp(&b.tag)));
     (out, unheld, unplaced_totals)
@@ -121,7 +132,45 @@ pub(super) fn top_countries(mut countries: Vec<NukeCountry>, unplaced_totals: &[
     Ok(countries)
 }
 
-pub(super) fn rerank(rank: &mut serde_json::Value, rows: &[NukeRow], country: u32, tag: &str) -> io::Result<()> {
+pub(super) fn held_at(holders: &Holders, hour: i32) -> Vec<(u32, u32, String)> {
+    let mut held: Vec<(u32, u32, String)> = holders
+        .tags
+        .iter()
+        .filter_map(|(tag, runs)| match runs.iter().find(|run| run.first <= hour && hour <= run.last).map(|run| run.holder) {
+            Some(Holder::Found { slot, id }) => Some((slot, id, tag.clone())),
+            _ => None,
+        })
+        .collect();
+    held.sort_unstable();
+    held
+}
+
+fn chosen_ids(params: &NuclearArsenalParams, groups: &GroupsAt, holders: &Holders, hour: i32) -> Option<Vec<u32>> {
+    let Ok(Ok(Some(slots))) = groups.chosen_slots(params.group.as_ref(), &params.countries, holders, hour) else { return None };
+    let mut ids: Vec<u32> = held_at(holders, hour).into_iter().filter(|(slot, ..)| slots.contains(slot)).map(|(_, id, _)| id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    Some(ids)
+}
+
+fn id_ranges(ids: &[u32]) -> Keys {
+    Keys::Ranges(ids.iter().map(|&id| (u128::from(id) << 32, (u128::from(id) << 32) | u128::from(u32::MAX))).collect())
+}
+
+pub(super) fn chosen_countries(all: Vec<NukeCountry>, chosen: &[(u32, u32, String)]) -> Vec<NukeCountry> {
+    let mut by_id: BTreeMap<u32, NukeCountry> = all.into_iter().map(|country| (country.country_id, country)).collect();
+    let mut out: Vec<NukeCountry> = chosen
+        .iter()
+        .map(|(slot, id, tag)| match by_id.remove(id) {
+            Some(country) => NukeCountry { slot: Some(*slot), ..country },
+            None => NukeCountry { tag: tag.clone(), country_id: *id, slot: Some(*slot), total: 0, counts: Vec::new() },
+        })
+        .collect();
+    out.sort_unstable_by(|a, b| b.total.cmp(&a.total).then_with(|| a.tag.cmp(&b.tag)));
+    out
+}
+
+pub(super) fn rerank(rank: &mut serde_json::Value, rows: &[NukeRow], country: u32, tag: &str, slot: Option<u32>) -> io::Result<()> {
     let rank = rank.as_array_mut().expect("an arsenal ranking");
     if let Some(old) = rank.iter().position(|c| c["countryId"].as_u64() == Some(country.into())) { rank.remove(old); }
     let first = rows.partition_point(|r| r.country < country);
@@ -133,19 +182,24 @@ pub(super) fn rerank(rank: &mut serde_json::Value, rows: &[NukeRow], country: u3
         let held = c["total"].as_i64().expect("a stockpile total");
         held > i64::from(total) || held == i64::from(total) && c["tag"].as_str().expect("a ranked tag") < tag
     });
-    rank.insert(index, serde_json::to_value(NukeCountry { country_id: country, tag: tag.into(), counts, total })?);
+    rank.insert(index, serde_json::to_value(NukeCountry { country_id: country, tag: tag.into(), slot, counts, total })?);
     Ok(())
+}
+
+pub struct NuclearContext {
+    names: Result<Arc<Localisation>, String>,
+    groups: GroupsAt,
 }
 
 impl AtHour for NuclearArsenal {
     const KEY: &'static str = "nuclear-arsenal";
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     const TITLE: &'static str = "Nuclear arsenal";
     const CONTENT_DEPENDENT: bool = true;
     type Params = NuclearArsenalParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, top];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, top, countries, group, "countries[]"];
     type Reply = NuclearArsenalReply;
-    type Context = Result<Arc<Localisation>, String>;
+    type Context = NuclearContext;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
@@ -158,11 +212,18 @@ impl AtHour for NuclearArsenal {
         if params.top == Some(0) {
             return Err("top must be at least 1");
         }
-        Ok(())
+        if [params.top.is_some(), !params.countries.is_empty(), params.group.is_some()].into_iter().filter(|&asked| asked).count() > 1 {
+            return Err("A selection names a group, a top or countries, one of them");
+        }
+        params.countries.iter().try_for_each(validate_country)
+    }
+
+    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        at.context.groups.valid_through(params.group.as_ref(), at.hour)
     }
 
     fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
-        if params.top.is_some() && (edits.tables.contains_key(&TableId::Nukes) || edits.replaced.contains(&TableId::Nukes)) {
+        if params.group.is_some() || !params.countries.is_empty() || params.top.is_some() && (edits.tables.contains_key(&TableId::Nukes) || edits.replaced.contains(&TableId::Nukes)) {
             return Ok(false);
         }
         if !edits.only_columns(TableId::Nukes, u64::MAX) { return Ok(false); }
@@ -177,10 +238,8 @@ impl AtHour for NuclearArsenal {
             let id = (key >> 32) as u32;
             if last == Some(id) { continue; }
             last = Some(id);
-            let existing = data["countries"].as_array().unwrap().iter().find(|c| c["countryId"].as_u64() == Some(id.into()));
-            let tag = existing.and_then(|c| c["tag"].as_str()).map(str::to_owned);
-            let tag = tag.or_else(|| at.holders.tags.keys().find(|tag| matches!(at.holders.at(tag, at.hour).map(|r| r.holder), Some(dashboard_query::identity::Holder::Found { id: held, .. }) if held == id)).cloned());
-            if let Some(tag) = tag { rerank(&mut data["countries"], rows, id, &tag)?; }
+            let held = held_at(at.holders, at.hour).into_iter().find(|&(_, held, _)| held == id);
+            if let Some((slot, _, tag)) = held { rerank(&mut data["countries"], rows, id, &tag, Some(slot))?; }
             else if mask == u64::MAX { return Ok(false); }
         }
         Ok(true)
@@ -190,23 +249,38 @@ impl AtHour for NuclearArsenal {
         vec![TableId::Nukes, TableId::LexicalTokens]
     }
 
-    fn reads(_params: &Self::Params, _owner: Option<dashboard_base::products::at_hour::Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
+    fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
         match step {
             0 => vec![Read::all(TableId::Nukes), Read::these(TableId::LexicalTokens, [NUCLEAR_BOMB_TOKEN, THERMONUCLEAR_BOMB_TOKEN].map(u128::from))],
             _ => Vec::new(),
         }
     }
 
+    fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        match (step, chosen_ids(params, &at.context.groups, at.holders, at.hour)) {
+            (0, Some(ids)) => vec![Read { table: TableId::Nukes, keys: id_ranges(&ids) }, Read::these(TableId::LexicalTokens, [NUCLEAR_BOMB_TOKEN, THERMONUCLEAR_BOMB_TOKEN].map(u128::from))],
+            _ => Self::reads(params, owner, step, held),
+        }
+    }
+
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(match load.content.as_ref() {
-            Some(content) => dashboard_base::content::localisation(source, content).map_err(|error| format!("Nuclear type names are unavailable: {error}")),
-            None => Err("Nuclear type names are unavailable until the game folders are chosen".into()),
+        Ok(NuclearContext {
+            names: match load.content.as_ref() {
+                Some(content) => dashboard_base::content::localisation(source, content).map_err(|error| format!("Nuclear type names are unavailable: {error}")),
+                None => Err("Nuclear type names are unavailable until the game folders are chosen".into()),
+            },
+            groups: GroupsAt::default(),
         })
+    }
+
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        Ok(NuclearContext { groups: GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())?, ..Self::context(source, load)? })
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let mut reply = NuclearArsenalReply { types: Vec::new(), countries: Vec::new(), missing: None, warnings: Vec::new() };
-        let nukes = match dashboard_query::coverage::population::<tables::Nukes>(frame, &Keys::All) {
+        let asked = chosen_ids(params, &at.context.groups, at.holders, frame.hour).map_or(Keys::All, |ids| id_ranges(&ids));
+        let nukes = match dashboard_query::coverage::population::<tables::Nukes>(frame, &asked) {
             Ok(nukes) => nukes,
             Err(reason) => {
                 reply.missing = Some(format!("Nuclear stockpiles are not known at this hour: {reason}"));
@@ -215,7 +289,20 @@ impl AtHour for NuclearArsenal {
         };
         let named = Named::new(at.holders, frame.hour);
         let (countries, unheld, unplaced_totals) = countries(nukes, |country| named.id(country).map(str::to_owned));
-        if let Some(limit) = params.top {
+        let held = held_at(at.holders, frame.hour);
+        let slots: BTreeMap<u32, u32> = held.iter().map(|&(slot, id, _)| (id, slot)).collect();
+        let countries: Vec<NukeCountry> = countries.into_iter().map(|country| NukeCountry { slot: slots.get(&country.country_id).copied(), ..country }).collect();
+        let chosen = match at.context.groups.chosen_slots(params.group.as_ref(), &params.countries, at.holders, frame.hour)? {
+            Ok(chosen) => chosen,
+            Err(refused) => {
+                reply.missing = Some(refused);
+                return Ok(reply);
+            }
+        };
+        if let Some(chosen) = chosen {
+            let picked: Vec<(u32, u32, String)> = held.into_iter().filter(|(slot, ..)| chosen.contains(slot)).collect();
+            reply.countries = chosen_countries(countries, &picked);
+        } else if let Some(limit) = params.top {
             let unresolved = super::game_score::holders_unresolved(at.holders, frame.hour);
             match top_countries(countries, &unplaced_totals, unresolved, limit) {
                 Ok(top) => reply.countries = top,
@@ -234,7 +321,7 @@ impl AtHour for NuclearArsenal {
         let mut ordinals: Vec<u32> = nukes.iter().map(|row| row.nuke_type).chain(NAMED_TYPES).collect();
         ordinals.sort_unstable();
         ordinals.dedup();
-        if let Err(reason) = &at.context {
+        if let Err(reason) = &at.context.names {
             reply.warnings.push(reason.clone());
         }
         for ordinal in ordinals {
@@ -247,7 +334,7 @@ impl AtHour for NuclearArsenal {
             if spelling.is_none() {
                 reply.warnings.push(format!("Nuclear type {ordinal}'s lexical token {token} has no recorded spelling"));
             }
-            let name = match (&spelling, &at.context) {
+            let name = match (&spelling, &at.context.names) {
                 (Some(spelling), Ok(localisation)) => dashboard_text::catalogue::localised(localisation, spelling, dashboard_text::catalogue::View::Plain)
                     .map_err(|reason| reply.warnings.push(format!("{spelling}: {reason}")))
                     .ok(),

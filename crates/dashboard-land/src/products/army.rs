@@ -25,8 +25,10 @@ use std::{
 use ts_rs::TS;
 
 mod at_hour;
+mod breakdown;
 mod template_roster;
 pub use at_hour::{ArmyAt, ArmyAtParams};
+pub use breakdown::{ArmyBreakdown, ArmyBreakdownParams, ArmyBreakdownReply};
 pub use template_roster::{TemplateRoster, TemplateRosterParams, TemplateRosterReply};
 
 pub const SERIES: &str = "army-size";
@@ -789,7 +791,7 @@ pub fn series(_source: &Source, query: &Query<'_>, product: &str, params: &Value
                         (None, NavigationKey::End) => to,
                         (None, _) => from,
                     };
-                    line.rank_at(at, top, false)?.unwrap_or_default().into_iter().map(Country::from).collect()
+                    line.rank_at(at, top, false)?.unwrap_or_default()
                 }
                 None => params.countries.clone(),
             };

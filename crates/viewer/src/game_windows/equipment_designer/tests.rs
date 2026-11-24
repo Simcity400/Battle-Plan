@@ -229,53 +229,69 @@ fn stat_columns_distinguish_recorded_values_from_not_recorded_rows() {
 }
 
 #[test]
-fn designer_classification_respects_dlc_masks_refuses_missing_features_and_falls_back_cleanly() {
+fn designer_classification_reads_the_designs_recorded_categories_and_refuses_an_undecidable_one_by_name() {
     let db = test_database();
     let ship = db.named("ship_hull_light_2").unwrap();
     let tank = db.named("light_tank_chassis_1").unwrap();
     let plane = db.named("small_plane_airframe_1").unwrap();
     let car = db.named("armored_car_equipment_1").unwrap();
+    let screen = category_mask("screen_ship").unwrap();
+    let armor = category_mask("armor").unwrap();
+    let fighter = category_mask("fighter").unwrap();
+    let convoy = category_mask("convoy").unwrap();
 
     let all_dlc = Ok(u32::MAX);
-    assert_eq!(classify_designer(&db, ship, all_dlc).unwrap(), DesignerKind::Ship);
-    assert_eq!(classify_designer(&db, tank, all_dlc).unwrap(), DesignerKind::Tank);
-    assert_eq!(classify_designer(&db, plane, all_dlc).unwrap(), DesignerKind::Plane);
+    assert_eq!(classify_designer(ship, screen, all_dlc).unwrap(), DesignerKind::Ship);
+    assert_eq!(classify_designer(tank, armor, all_dlc).unwrap(), DesignerKind::Tank);
+    assert_eq!(classify_designer(plane, fighter, all_dlc).unwrap(), DesignerKind::Plane);
     assert_eq!(
-        classify_designer(&db, car, all_dlc).unwrap(),
+        classify_designer(car, armor, all_dlc).unwrap(),
         DesignerKind::Upgrade(UpgradeDomain::Land)
+    );
+    assert_eq!(
+        classify_designer(tank, fighter, all_dlc).unwrap(),
+        DesignerKind::Plane,
+        "the design's recorded categories decide, not its script type"
     );
 
     assert_eq!(
-        classify_designer(&db, ship, Ok(0)).unwrap(),
+        classify_designer(ship, screen, Ok(0)).unwrap(),
         DesignerKind::Upgrade(UpgradeDomain::Naval)
     );
     assert_eq!(
-        classify_designer(&db, tank, Ok(0)).unwrap(),
+        classify_designer(tank, armor, Ok(0)).unwrap(),
         DesignerKind::Upgrade(UpgradeDomain::Land)
     );
     assert_eq!(
-        classify_designer(&db, plane, Ok(0)).unwrap(),
+        classify_designer(plane, fighter, Ok(0)).unwrap(),
         DesignerKind::Upgrade(UpgradeDomain::Air)
     );
 
-    let refused = classify_designer(&db, ship, Err("SimulationFeatures unavailable")).unwrap_err();
+    let refused = classify_designer(ship, screen, Err("SimulationFeatures unavailable")).unwrap_err();
     assert!(refused.contains("SimulationFeatures unavailable"));
-    assert!(classify_designer(&db, tank, Err("absent")).is_err());
-    assert!(classify_designer(&db, plane, Err("absent")).is_err());
+    assert!(classify_designer(tank, armor, Err("absent")).is_err());
+    assert!(classify_designer(plane, fighter, Err("absent")).is_err());
     assert_eq!(
-        classify_designer(&db, car, Err("absent")).unwrap(),
+        classify_designer(car, armor, Err("absent")).unwrap(),
         DesignerKind::Upgrade(UpgradeDomain::Land)
     );
 
+    let unmapped = classify_designer(ship, convoy, all_dlc).unwrap_err();
+    assert!(unmapped.contains("ship_hull_light_2"), "{unmapped}");
+    assert!(unmapped.contains("convoy"), "{unmapped}");
+    assert!(unmapped.contains("no modular designer"), "{unmapped}");
+    let uncategorised = classify_designer(car, 0, all_dlc).unwrap_err();
+    assert!(uncategorised.contains("armored_car_equipment_1"), "{uncategorised}");
+
     content_reader_script::test_game::with(|game| {
         game.auxiliary(|tables| {
-            tables.category_names = Err(engine_executable::availability::Withheld::new(
-                "equipment categories",
+            tables.category_families = Err(engine_executable::availability::Withheld::new(
+                engine_executable::executable_tables::auxiliary::CATEGORY_FAMILIES,
                 "not decoded from this build",
             ));
         })
     });
-    let withheld = classify_designer(&db, tank, all_dlc).unwrap_err();
+    let withheld = classify_designer(tank, armor, all_dlc).unwrap_err();
     assert!(withheld.contains("does not hold the game's equipment categories"), "{withheld}");
     assert!(withheld.contains("not decoded from this build"), "{withheld}");
     content_reader_script::test_game::enter();

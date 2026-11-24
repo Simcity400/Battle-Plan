@@ -56,6 +56,12 @@ pub struct SeriesRankMeasure {
 #[serde(rename_all = "camelCase")]
 pub struct SeriesRankRow {
     pub country: Country,
+    #[doc = " The recorded slot holding the country at the hour; none where its holder is not resolved."]
+    pub slot: Option<u32>,
+    #[doc = " Why the row's country is not named at the hour, for a recorded row whose holder is not resolved: it is ranked by its recorded readings."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub unnamed: Option<String>,
     #[doc = " One reading per measure of the reply, in the reply's order, each with its own missing reason."]
     pub readings: Vec<SeriesState>,
 }
@@ -158,21 +164,52 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
         (None, true) => return Err(invalid("A rank names a top or countries")),
         (Some(0), true) => return Err(invalid(format!("A ranked {} names a top of at least 1", line.series.kind))),
         (Some(n), true) => match line.rank_at(hour, n as usize, ask.least)? {
-            Ok(tags) => (tags.into_iter().map(Country::from).collect(), None, Some(n as usize)),
+            Ok(ranked) => (ranked, None, Some(n as usize)),
             Err(reason) => (Vec::new(), Some(reason), None),
         },
         (None, false) => (countries, None, None),
     };
+    let mut held_slots = std::collections::HashSet::new();
+    let asked: Vec<(Country, Option<u32>)> = asked
+        .into_iter()
+        .map(|country| {
+            let slot = line.query.holders.slot_at(&country, hour);
+            (country, slot)
+        })
+        .filter(|(_, slot)| slot.is_none_or(|slot| held_slots.insert(slot)))
+        .collect();
+    let (asked, slots): (Vec<Country>, Vec<Option<u32>>) = asked.into_iter().unzip();
     let reads: Vec<SeriesRead> = asked.iter().map(|country| SeriesRead { country: country.clone(), hour, part: None }).collect();
+    let unnamed: Vec<(usize, u32)> = match ask.top {
+        Some(_) => asked.iter().enumerate().filter_map(|(at, country)| match country {
+            Country::Slot(slot) if line.query.holders.tag_at(country, hour).is_none() => Some((at, *slot)),
+            _ => None,
+        }).collect(),
+        None => Vec::new(),
+    };
     let mut columns = vec![line.states(&reads, None)?];
     for detail in details {
         columns.push(detail.states(&reads, None)?);
+    }
+    if !unnamed.is_empty() {
+        let unnamed_slots: Vec<u32> = unnamed.iter().map(|&(_, slot)| slot).collect();
+        for (column, reader) in columns.iter_mut().zip(std::iter::once(line).chain(details)) {
+            for (&(at, _), state) in unnamed.iter().zip(reader.unnamed_states(&unnamed_slots, hour)?) {
+                column[at] = state;
+            }
+        }
+    }
+    let mut named: Vec<Option<String>> = vec![None; asked.len()];
+    let mut slots = slots;
+    for &(at, slot) in &unnamed {
+        named[at] = Some(line.query.holders.unnamed(&asked[at], hour));
+        slots[at] = Some(slot);
     }
     let mut order: Vec<usize> = (0..asked.len()).collect();
     if ask.top.is_none() {
         let value = |at: usize| columns[0][at].run.as_ref().and_then(|run| run.value_raw.parse::<i64>().ok());
         order.sort_by(|&a, &b| match (value(a), value(b)) {
-            (Some(x), Some(y)) => (if ask.least { x.cmp(&y) } else { y.cmp(&x) }).then_with(|| asked[a].to_string().cmp(&asked[b].to_string())),
+            (Some(x), Some(y)) => (if ask.least { x.cmp(&y) } else { y.cmp(&x) }).then_with(|| asked[a].cmp(&asked[b])),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => a.cmp(&b),
@@ -187,8 +224,7 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
     }
     let (from, until) = match (top, &refused) {
         (Some(n), None) => {
-            let ranked: Vec<String> = asked.iter().map(ToString::to_string).collect();
-            line.rank_holds(hour, n, ask.least, held, |at| at == ranked.as_slice())?
+            line.rank_holds(hour, n, ask.least, held, |at| at == asked.as_slice())?
         }
         (None, None) => (held.0.min(hour), held.1.max(hour)),
         _ => (hour, hour),
@@ -197,7 +233,7 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
     measures.extend(details.iter().map(|detail| SeriesRankMeasure { name: detail.measure_name().to_owned(), decimals: detail.decimals() }));
     let mut cells: Vec<std::vec::IntoIter<SeriesState>> = columns.into_iter().map(Vec::into_iter).collect();
     let mut readings: Vec<Vec<SeriesState>> = (0..asked.len()).map(|_| cells.iter_mut().map(|column| column.next().expect("one reading per asked country")).collect()).collect();
-    let rows = order.into_iter().map(|at| SeriesRankRow { country: asked[at].clone(), readings: std::mem::take(&mut readings[at]) }).collect();
+    let rows = order.into_iter().map(|at| SeriesRankRow { country: asked[at].clone(), slot: slots[at], unnamed: named[at].take(), readings: std::mem::take(&mut readings[at]) }).collect();
     Ok(SeriesRankReply { branch_id: branch_id.to_owned(), hour, measures, rows, refused, from, until })
 }
 
@@ -225,7 +261,7 @@ pub(super) fn summary(line: &Line<'_, '_>, branch_id: &str, from: Option<f64>, t
     Ok(SeriesRankedReply { branch_id: branch_id.to_owned(), measure: line.measure_name().to_owned(), decimals: line.decimals(), lines })
 }
 
-pub(super) fn stepped(line: &Line<'_, '_>, origin: Option<i32>, key: NavigationKey, bounds: (i32, i32), n: usize) -> io::Result<Vec<String>> {
+pub(super) fn stepped(line: &Line<'_, '_>, origin: Option<i32>, key: NavigationKey, bounds: (i32, i32), n: usize) -> io::Result<Vec<Country>> {
     let at = match (origin, key) {
         (Some(origin), _) => origin.clamp(bounds.0, bounds.1),
         (None, NavigationKey::End | NavigationKey::ArrowLeft) => bounds.1,

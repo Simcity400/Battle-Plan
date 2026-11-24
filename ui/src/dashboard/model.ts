@@ -15,7 +15,7 @@ export type WidgetKind = string;
 export interface HourWindow { firstHour: number; lastHour: number }
 export interface OffsetWindow { firstOffset: number; lastOffset: number }
 export type CountryGroup = { type: 'humans' } | { type: 'faction'; id: string } | { type: 'war'; tag: string } | { type: 'top'; count: number };
-export type GroupMembership = 'hour' | 'end' | 'ever';
+export type GroupMembership = 'hour' | 'ever';
 export type CountrySelection = { kind: 'selected' } | { kind: 'all' } | { kind: 'tags'; tags: string[] }
   | { kind: 'group'; group: CountryGroup; membership: GroupMembership; aggregate: boolean }
   | { kind: 'factions'; count: number; membership: GroupMembership };
@@ -42,6 +42,7 @@ export interface WidgetSpec {
   time: WidgetTime;
   options?: WidgetOptions;
 }
+export type WidgetBase = Omit<WidgetSpec, 'options'>;
 export interface GridItem { i: string; x: number; y: number; w: number; h: number; minW?: number; minH?: number }
 export type GridLayouts = Partial<Record<Breakpoint, GridItem[]>>;
 export interface DashboardTemplate {
@@ -131,7 +132,7 @@ export function clockBounds(tracks: BoundTrack[]): HourWindow | null {
   };
 }
 
-export function widgetTracks(widget: WidgetSpec, tracks: BoundTrack[]): BoundTrack[] {
+export function widgetTracks(widget: WidgetBase, tracks: BoundTrack[]): BoundTrack[] {
   return widget.trackIds.flatMap((id) => {
     const track = tracks.find((item) => item.id === id);
     return track ? [track] : [];
@@ -159,7 +160,7 @@ export function lastRecordedBranchHour(
   return null;
 }
 
-export function resolveWindow(widget: WidgetSpec, track: BoundTrack, tracks: BoundTrack[], position: number): HourWindow | null {
+export function resolveWindow(widget: WidgetBase, track: BoundTrack, tracks: BoundTrack[], position: number): HourWindow | null {
   const time = widget.time;
   if (time.mode === 'campaign') {
     const end = lastRecordedBranchHour(track.branch) ?? track.branch.lastHour;

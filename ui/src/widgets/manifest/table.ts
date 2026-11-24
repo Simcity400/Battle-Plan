@@ -1,7 +1,6 @@
 import { tableHostAdapter } from '../../families/table/hostAdapter.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type FamilyViewModule } from '../../families/manifest.ts';
 import type { AnyTableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { familyTableLaneView } from '../../families/table/laneView.ts';
 import type { TableProjection } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
@@ -430,11 +429,22 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.eventFeedProjection, declaration: mod.eventFeedDeclaration }),
     ),
   },
+  {
+    kind: 'raid-log',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'raid-log',
+      DEFAULT_VIEW,
+      () => import('../raid-log/raidLogProjection.ts'),
+      mod => ({ projection: mod.raidLogProjection, declaration: mod.raidLogDeclaration }),
+    ),
+  },
 ];
 
 export const tableFamilyManifest: FamilyManifestModule = {
   family: 'table',
-  laneView: familyTableLaneView,
+  lane: () => import('../../families/table/laneView.ts').then(m => m.tableLane),
   views: TABLE_VIEWS,
   hostAdapter: tableHostAdapter,
 };

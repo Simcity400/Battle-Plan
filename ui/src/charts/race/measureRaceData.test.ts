@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { followedRace, followedRowTags, formatRaw, liveRace, raceLookTags, rankEntries, rankProvenInterval, validateRankedLines, validateRankReply } from './measureRaceData.ts';
-import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
+import { CELL } from '../../dashboard/follow/message.ts';
+import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import type { SeriesRankReply, SeriesState } from '../../generated/dashboard';
 
@@ -9,7 +10,7 @@ const state = (tag: string, valueRaw: string | null, missing: string | null = nu
   run: valueRaw === null ? null : { firstHour: 40, lastHour: 60, valueRaw, slot: 1, countryId: 1, startsSegment: false, segmentFirstHour: 0, firstExact: true, lastExact: true } });
 
 const rank = (states: readonly SeriesState[], decimals: number, from = 50, until = 50, refused: string | null = null): SeriesRankReply => ({
-  branchId: '1', hour: 50, from, until, refused, measures: [{ name: 'free7', decimals }], rows: states.map(held => ({ country: held.country, readings: [held] })),
+  branchId: '1', hour: 50, from, until, refused, measures: [{ name: 'free7', decimals }], rows: states.map(held => ({ country: held.country, slot: null, readings: [held] })),
 });
 
 test('a race at an hour keeps the product order, drawing only rows holding a value, never a missing one as zero', () => {

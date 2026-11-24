@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { followedRow, heldParts, keyId, keyedTileParams, keyedTileReply, reachedKeyLines, validateKeyedStates, validateSeriesParts } from './keyedSeriesData.ts';
-import { parseFollowed } from './follow/message.ts';
+import { parseFollowed } from '../test-support/followMessage.ts';
 import { message } from './follow/messages.fixture.ts';
 import type { TileReply } from './tiles/tile';
 import { gatedWindow } from '../test-support/gated.ts';
@@ -84,4 +84,13 @@ test('the followed parts of an owner are found by tag and the part in the low bi
   assert.equal(followedRow(answer, { tag: 'ENG', part: '3' }, 32), -1, 'a part the head holds no row of');
   assert.equal(followedRow(answer, { tag: 'FRA', part: '0' }, 32), -1, 'an owner holding no row is never its part 0');
   assert.equal(followedRow(undefined, keys[0], 32), -1);
+
+  const many = Array.from({ length: 1500 }, (_, at) => ({ tag: `C${at}`, part: '1' }));
+  const wide = parseFollowed(message(10, [{ id: 1, answer: { keys: many.map((_, at) => key(BigInt(at + 1), 1n)), columns: 1,
+    values: many.map(() => 1n), names: many.map(item => item.tag) } }])).answers[0]!.answer as { rows: number };
+  const rows = wide.rows;
+  let read = 0;
+  Object.defineProperty(wide, 'rows', { get: () => { read++; return rows; } });
+  for (const [at, item] of many.entries()) assert.equal(followedRow(wide as never, item, 32), at);
+  assert.ok(read <= 3 * rows, `the answer is indexed once for every key, never scanned per key (${read} row reads for ${rows} rows)`);
 });

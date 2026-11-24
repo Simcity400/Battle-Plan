@@ -1,5 +1,4 @@
-import type { WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewRenderer } from '../../dashboard/definitions';
 import CountryChip from '../../dashboard/CountryChip';
-import NavalSupremacyWidget from './NavalSupremacyWidget';
 
-export default { render: NavalSupremacyWidget, countryChip: CountryChip } satisfies WidgetRenderer;
+export default { countryChip: CountryChip } satisfies FamilyViewRenderer;

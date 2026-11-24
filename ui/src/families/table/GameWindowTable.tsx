@@ -4,7 +4,7 @@ import FollowControl from '../../charts/drill/FollowControl';
 import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import GateState from '../../dashboard/GateState';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import {
   claimGameWindowSlot,
   gameWindow,
@@ -21,10 +21,11 @@ import type { BoundTrack } from '../../dashboard/model';
 import { TimeRegion, useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 import { pageClock } from '../../dashboard/widgetClock.ts';
 import { DetailWindowHost } from '../host/DetailWindowHost';
-import type { AnyTableWidgetDeclaration } from './declaration.ts';
 import type { InstalledAction } from '../contract.ts';
+import { mirrorRowSelector } from '../host/mirror.ts';
 import { FamilyWidget } from '../host/registry';
-import { gameWindowSelectionAt, openGameWindow, type OpenedGameWindow } from './gameWindowOpen.ts';
+import { gameWindowSelectionAt, openGameWindow } from './gameWindowOpen.ts';
+import { rowScope, useOpenedRow } from './rowSelection.ts';
 import './gameWindowTable.css';
 
 const NO_LINES: readonly string[] = [];
@@ -36,12 +37,11 @@ export interface GameWindowRow<S extends GameWindowSelection> {
   readonly label: string;
 }
 
-export interface GameWindowTableProps<S extends GameWindowSelection> extends WidgetProps {
-  readonly declaration: AnyTableWidgetDeclaration;
+export type GameWindowTableProps<S extends GameWindowSelection> = FamilyViewProps & {
   readonly window: GameWindowRow<S>;
-}
+};
 
-export default function GameWindowTable<S extends GameWindowSelection>({ declaration, window: row, ...props }: GameWindowTableProps<S>) {
+export default function GameWindowTable<S extends GameWindowSelection>({ window: row, ...props }: GameWindowTableProps<S>) {
   const { widget, runtime, active } = props;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const lookup = useCallback(() => gameWindow(row.kind), [row.kind]);
@@ -50,9 +50,8 @@ export default function GameWindowTable<S extends GameWindowSelection>({ declara
   const anchor = useRef<HTMLDivElement>(null);
   const drill = useDrill(runtime, useRegion(widget));
   const dispatch = drill.dispatch;
-  const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, widget.countries]);
-  const [picked, setPicked] = useState<OpenedGameWindow<S> | null>(null);
-  const opened = picked?.scope === scope ? picked : null;
+  const scope = rowScope(track, widget);
+  const [opened, pick, unpick] = useOpenedRow<S>(scope);
   const [inherited, setInherited] = useState<WindowPosition | null>(null);
   const [shownFor, setShownFor] = useState<{ readonly key: string; readonly shown: ShownWindow } | null>(null);
   const openedKey = useRef<string | null>(null);
@@ -62,11 +61,11 @@ export default function GameWindowTable<S extends GameWindowSelection>({ declara
 
   const handOver = useCallback(() => {
     dispatch({ type: 'close' });
-    setPicked(null);
+    unpick();
     setShownFor(null);
     setInherited(null);
     setLines(NO_LINES);
-  }, [dispatch]);
+  }, [dispatch, unpick]);
   const close = useCallback(() => {
     releaseGameWindowSlot(row.kind, slotOwner);
     handOver();
@@ -78,9 +77,9 @@ export default function GameWindowTable<S extends GameWindowSelection>({ declara
     if (!clicked) return;
     const { opened: next, drill: opening } = openGameWindow(scope, key, clicked, WINDOW_BREAKDOWN);
     setInherited(claimGameWindowSlot(row.kind, slotOwner, handOver));
-    setPicked(next);
+    pick(next.key, next.selection);
     dispatch(opening);
-  }, [Window, track, row, slotOwner, handOver, scope, dispatch]);
+  }, [Window, track, row, slotOwner, handOver, scope, pick, dispatch]);
 
   const open = drill.state.breakdown !== null && opened !== null && Window !== null;
   const at = useRegionHour(runtime, drill.region, active && open, undefined, true);
@@ -101,7 +100,7 @@ export default function GameWindowTable<S extends GameWindowSelection>({ declara
     <FamilyWidget
       {...props}
       family="table"
-      declaration={declaration}
+      declaration={props.manifestDeclaration}
       selectedKey={opened?.key ?? null}
       onActivate={Window ? activate : undefined}
       extraWarnings={open ? lines : NO_LINES}
@@ -114,6 +113,7 @@ export default function GameWindowTable<S extends GameWindowSelection>({ declara
       day={shut ? '' : shown ? windowDayLabel(shown) : at === null ? '' : dayLabel(at)}
       placement="center"
       anchor={anchor}
+      returnFocus={opened ? mirrorRowSelector(opened.key) : undefined}
       initialPosition={inherited}
       settled={shown !== null}
       onPositionChange={(position: WindowPosition) => updateGameWindowSlotPosition(row.kind, slotOwner, position)}

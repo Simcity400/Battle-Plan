@@ -131,4 +131,5 @@ export const definition = {
   timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false,
   minSize: { w: 5, h: 6 }, defaultSize: { w: 12, h: 14 },
   options: OPTIONS,
+  retired: { show: { efficiency: 'the efficiency breakdown', output: 'the output breakdown' } },
 } as const satisfies WidgetMeta;

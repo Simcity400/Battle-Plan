@@ -1,4 +1,4 @@
-import { lastRecordedBranchHour, resolveWindow, type BoundTrack, type HourWindow, type WidgetSpec } from './model.ts';
+import { lastRecordedBranchHour, resolveWindow, type BoundTrack, type HourWindow, type WidgetBase, type WidgetSpec } from './model.ts';
 import { formatDateTime, gameDate } from './calendar.ts';
 
 import type { AnyRequestParams, HourRole, RecordingGap, RequestParams } from '../generated/dashboard';
@@ -47,8 +47,6 @@ export function checkedTime(time: PinTime, tracks: readonly Timed[], rangeTrack?
     : { time: null, refused: 'No track recorded this moment, so there is nothing to pin.' };
 }
 
-export const validTime = (time: PinTime, tracks: readonly Timed[], rangeTrack?: string): GatedTime | null => checkedTime(time, tracks, rangeTrack).time;
-
 export type PinnedSpec = Omit<WidgetSpec, 'time'> & { readonly time: GatedTime };
 export const persistedSpec = (pinned: PinnedSpec): WidgetSpec => ({ ...pinned, time: pinned.time.value });
 
@@ -59,7 +57,6 @@ export type ParamsFor<K extends string> = Unchecked & AnyRequestParams<GatedHour
   & (K extends keyof RequestParams<GatedHour, BoundHour> ? RequestParams<GatedHour, BoundHour>[K] : unknown);
 export type GatedParams = ParamsFor<string>;
 
-export type { HourRole };
 export const exactRole = (role: HourRole): boolean => role === 'read' || role === 'bucket';
 
 export function requestFields(product: string): Readonly<Record<string, HourRole>> | null {
@@ -134,7 +131,7 @@ export function refusedHours(product: string, params: unknown, branch: CoveredBr
 }
 
 export type RegionAction = { kind: 'spec' } | { kind: 'follow' } | { kind: 'at'; hour: number };
-export interface Region { widget: WidgetSpec; action: RegionAction }
+export interface Region { widget: WidgetBase; action: RegionAction }
 export interface Outside {
   kind?: 'outside' | 'not-recorded';
   message: string;
@@ -142,11 +139,9 @@ export interface Outside {
   span?: { firstHour: number; lastHour: number };
   pinned?: boolean;
 }
-export interface RegionTime { hour: TrackHour | null; window: HourWindow | null; follows: boolean; outside: Outside | null }
 
 export const OUTSIDE_MESSAGE = 'This time is outside the recording.';
 export const UNRECORDED_MESSAGE = 'Not recorded at this time.';
-export const SETTINGS_DETAIL = 'Choose another time in widget settings.';
 export const SPEC: RegionAction = { kind: 'spec' };
 export const FOLLOW: RegionAction = { kind: 'follow' };
 
@@ -224,33 +219,13 @@ export function lastRecordedHour(track: Branch | undefined): TrackHour | null {
   return hour === null ? null : hour as TrackHour;
 }
 
-export function bucketEdges(track: Branch, size: number): readonly number[] {
-  const edges: number[] = [];
-  for (let edge = (Math.floor(track.branch.firstHour / size) + 1) * size; edge <= track.branch.lastHour; edge += size) edges.push(edge);
-  return edges;
-}
-
-export function bucketRead(track: Branch | undefined, hour: number | null, size: number, within?: readonly HourWindow[] | null): TrackHour | null {
-  if (!track || hour === null) return null;
-  const start = Math.max(track.branch.firstHour, Math.floor(hour / size) * size);
-  const last = Math.min(track.branch.lastHour, Math.floor(hour / size) * size + size - 1);
-  const pieces = (within ?? [{ firstHour: start, lastHour: last }])
-    .map(span => ({ firstHour: Math.max(start, span.firstHour), lastHour: Math.min(last, span.lastHour) }))
-    .filter(span => span.firstHour <= span.lastHour).sort((a, b) => a.firstHour - b.firstHour);
-  for (const piece of pieces) for (let at = piece.firstHour; at <= piece.lastHour; at = coverageSpan(track, at)[1] + 1) {
-    const recorded = recordedHour(track, at);
-    if (recorded !== null) return recorded;
-  }
-  return null;
-}
-
 export const at = (hour: number): RegionAction => ({ kind: 'at', hour: Math.floor(hour) });
 
 export function regionFollows(region: Region): boolean {
   return region.action.kind === 'follow' || region.action.kind === 'spec' && region.widget.time.mode === 'follow';
 }
 
-const followed = (widget: WidgetSpec): WidgetSpec => widget.time.mode === 'follow' ? widget : { ...widget, time: { mode: 'follow' } };
+const followed = (widget: WidgetBase): WidgetBase => widget.time.mode === 'follow' ? widget : { ...widget, time: { mode: 'follow' } };
 
 export function regionWindow(region: Region, track: BoundTrack | undefined, tracks: readonly BoundTrack[], axis: AxisHour): HourWindow | null {
   if (!track) return null;
@@ -272,12 +247,6 @@ export function regionOutside(region: Region, track: BoundTrack | undefined, tra
   if (covered.hour !== null) return null;
   if (!ownTime(region)) return covered.outside;
   return { ...covered.outside, pinned: true };
-}
-
-export function resolveRegion(region: Region, track: BoundTrack | undefined, tracks: readonly BoundTrack[], axis: AxisHour): RegionTime {
-  const window = regionWindow(region, track, tracks, axis);
-  const hour = recordedHour(track, window?.lastHour);
-  return { hour, window: hour === null ? null : window, follows: regionFollows(region), outside: hour === null ? regionOutside(region, track, tracks, axis) : null };
 }
 
 export function regionKey(region: Region): string {

@@ -4,7 +4,7 @@ import { useCallback, useMemo } from 'react';
 import type { CountryGroupReply, FactionGroup } from '../generated/dashboard';
 import type { BoundTrack } from './model';
 import type { OptionChoices, WidgetRuntime } from './definitions';
-import type { WidgetSpec } from './model';
+import type { WidgetBase, WidgetSpec } from './model';
 import { contentKey, setToken } from './options.ts';
 import { selectedCountryKeys } from './countrySelection.ts';
 import { factionNameAt as recordedNameAt } from './factionNames.ts';
@@ -15,8 +15,6 @@ import { useCountryGroups } from './useCountryGroups';
 import { useCampaignSettings } from './campaignSettings';
 import { useHeadHour } from '../widgets/army-size/headHour.ts';
 import { SPEC, axisAt } from './regionTime.ts';
-
-export { FACTION_OPTION } from './factionOption.ts';
 
 const covers = (run: { firstHour: number; lastHour: number }, hour: number) => run.firstHour <= hour && hour <= run.lastHour;
 
@@ -58,8 +56,6 @@ export function useFactionDisplayNames(source: { metadata: { campaignKey: string
   }, [styles]);
 }
 
-export const memberAt = (faction: FactionGroup, tag: string, hour: number) => faction.members.some(run => run.tag === tag && covers(run, hour));
-
 export function useChosenFaction(widget: WidgetSpec, runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean) {
   const groups = useCountryGroups(runtime, track, active);
   const saved = typeof widget.options?.faction === 'string' && widget.options.faction ? contentKey(widget.options.faction) : null;
@@ -77,7 +73,7 @@ export function useChosenFaction(widget: WidgetSpec, runtime: WidgetRuntime, tra
   return { groups, pick, tag, hour };
 }
 
-export function useFactionDetails(runtime: WidgetRuntime, widget: WidgetSpec, faction: string | null, active: boolean) {
+export function useFactionDetails(runtime: WidgetRuntime, widget: WidgetBase, faction: string | null, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const viewpointTag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const params = useMemo(() => faction ? { faction, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } : null, [faction, viewpointTag]);

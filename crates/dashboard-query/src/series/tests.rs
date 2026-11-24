@@ -488,9 +488,9 @@ fn a_rank_at_an_hour_of_a_computed_column_ranks_the_formula_of_each_row() {
         let present: Vec<u32> = [9001, 9002].into_iter().filter(|&id| exists(id, hour)).collect();
         let mut wanted: Vec<(i64, u32)> = present.iter().filter_map(|&id| Some((-power(id, hour)?, id))).collect();
         wanted.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        let wanted: Result<Vec<String>, String> = match present.iter().find(|&&id| power(id, hour).is_none()) {
+        let wanted: Result<Vec<Country>, String> = match present.iter().find(|&&id| power(id, hour).is_none()) {
             Some(&id) => Err(format!("{}'s negated was not recorded at this hour", tag_of(id))),
-            None => Ok(wanted.into_iter().map(|(_, id)| tag_of(id).to_owned()).collect()),
+            None => Ok(wanted.into_iter().map(|(_, id)| Country::from(tag_of(id))).collect()),
         };
         both += usize::from(wanted.as_ref().is_ok_and(|wanted| wanted.len() == 2));
         assert_eq!(line.rank_at(hour, 2, false).unwrap(), wanted, "at {hour}: an unrecorded contender refuses the rank");
@@ -1143,7 +1143,7 @@ fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() 
     assert_eq!(states[1].run.as_ref().map(|run| run.value_raw.as_str()), Some("1"));
 
     assert!(line.rank_at(last_v1, 5, false).unwrap().is_err(), "a withheld hour refuses the rank, never an empty one");
-    assert_eq!(line.rank_at(first_v2, 5, false).unwrap(), Ok(vec!["GER".to_owned()]));
+    assert_eq!(line.rank_at(first_v2, 5, false).unwrap(), Ok(vec![Country::from("GER")]));
 
     let v1_top = replay_lanes::lanes::top(replay.recording(), 0, TableId::SupplyHealth, 0, first_v1, last_v1, 2, 5, replay_lanes::lanes::By::Last).unwrap_err();
     assert!(
@@ -1892,4 +1892,71 @@ fn damaged_derived_version_marker_withholds_table_without_failing_open() {
     );
     let countries_snap = replay_lanes::lanes::at(invalid_boundary.recording(), 0, TableId::Countries, first, None).unwrap();
     assert_eq!(countries_snap.rows.len(), 1);
+}
+
+#[test]
+fn a_missing_span_is_named_at_its_own_hours_and_an_unread_holder_keeps_its_reason() {
+    use crate::identity::{Holder, HolderRun, Holders, NOT_HELD_AT_HOUR};
+    let fixture = Fixture::campaign(Data::Resources);
+    let base = fixture.query();
+    let ger = HolderRun { first: FIRST, last: FIRST + 2_999, holder: Holder::Found { slot: 7, id: 9001 }, starts_segment: true };
+    let unread = (FIRST + 3_000, FIRST + 3_099, "Countries were not read".to_owned());
+    let holders = Holders::new([("GER".to_owned(), vec![ger])].into(), vec![unread]);
+    let query = Query { replay: base.replay, timeline: Arc::clone(&base.timeline), holders: Arc::new(holders) };
+    let line = resources_line(&query, "produced");
+    let country = Country::Slot(7);
+    let parts = line.held(&Ask { country: country.clone(), part: 4 }, FIRST, FIRST + 3_199);
+    let missing = line.missing(country.clone(), FIRST, FIRST + 3_199, &parts).unwrap();
+    let reason_at = |hour: i32| missing.iter().find(|span| span.first_hour <= hour && hour <= span.last_hour).map(|span| span.reason.clone());
+    assert_eq!(reason_at(FIRST).as_deref(), Some("GER's produced was not recorded here"), "a span is named at its own hours, not where the range ends: {missing:?}");
+    assert_eq!(reason_at(FIRST + 3_050), Some(format!("Who holds {} is not known: Countries were not read", country.key())), "an unread holder keeps its reason: {missing:?}");
+    assert_eq!(reason_at(FIRST + 3_150).as_deref(), Some(NOT_HELD_AT_HOUR), "{missing:?}");
+
+    let held = |first: i32, last: i32| HolderRun { first, last, holder: Holder::Found { slot: 7, id: 9001 }, starts_segment: true };
+    let renamed = Holders::new([("GER".to_owned(), vec![held(FIRST, FIRST + 1_499)]), ("DDR".to_owned(), vec![held(FIRST + 1_500, FIRST + 2_999)])].into(), Vec::new());
+    let query = Query { replay: base.replay, timeline: Arc::clone(&base.timeline), holders: Arc::new(renamed) };
+    let line = resources_line(&query, "produced");
+    let parts = line.held(&Ask { country: country.clone(), part: 4 }, FIRST, FIRST + 2_999);
+    let missing = line.missing(country.clone(), FIRST, FIRST + 2_999, &parts).unwrap();
+    let reason_at = |hour: i32| missing.iter().find(|span| span.first_hour <= hour && hour <= span.last_hour).map(|span| span.reason.clone());
+    assert_eq!(
+        [reason_at(FIRST + 1_499).as_deref(), reason_at(FIRST + 1_500).as_deref()],
+        [Some("GER's produced was not recorded here"), Some("DDR's produced was not recorded here")],
+        "R5-S3: one country renamed under one slot is named by the tag it held at each hour: {missing:?}"
+    );
+}
+
+static SLOT_POWER: Series = Series {
+    kind: "test-slot-power",
+    table: TableId::Countries,
+    key: Key::Slot,
+    parts: None,
+    measures: &[Measure { name: "politicalPower", column: Column::Cell("political_power_raw"), decimals: 5, aggregates: 0, carry: Carry::None, rank: 0 }],
+    drops: false,
+    absent_none: false,
+};
+
+#[test]
+fn a_recorded_row_whose_holder_is_not_resolved_is_ranked_by_its_value_and_marked() {
+    let fixture = Fixture::new(Data::Power, FIRST..=ITA_FROM + 200);
+    let mut query = fixture.query();
+    let mut holders = crate::identity::Holders::default();
+    holders.tags.insert("GER".to_owned(), vec![crate::identity::HolderRun { first: FIRST, last: ITA_FROM + 200, holder: crate::identity::Holder::Found { slot: 9001, id: 9001 }, starts_segment: true }]);
+    query.holders = std::sync::Arc::new(holders);
+    let line = Line::new(&query, &SLOT_POWER, &SLOT_POWER.measures[0]).unwrap();
+    let hour = ITA_FROM + 10;
+    assert!(!unresolved(hour) && power(9002, hour) > power(9001, hour));
+    assert_eq!(line.rank_at(hour, 2, false).unwrap(), Ok(vec![Country::Slot(9002), Country::from("GER")]), "the unresolved row keeps its place by its value");
+    let reply = ranked::rank(&line, &[], "1", ranked::Ask { hour: Some(f64::from(hour)), top: Some(2), least: false, countries: &[], group: None }).unwrap();
+    assert_eq!(reply.refused, None, "a row whose value is recorded never refuses the rank");
+    assert_eq!(reply.rows.iter().map(|row| row.country.clone()).collect::<Vec<_>>(), vec![Country::Slot(9002), Country::from("GER")]);
+    let unnamed = &reply.rows[0];
+    assert_eq!(unnamed.slot, Some(9002));
+    assert!(unnamed.unnamed.is_some(), "the row says why its country is not named");
+    assert_eq!(unnamed.readings[0].missing, None);
+    assert_eq!(unnamed.readings[0].run.as_ref().map(|run| run.value_raw.clone()), power(9002, hour).map(|value| value.to_string()), "its recorded value");
+    assert_eq!(reply.rows[1].unnamed, None);
+    assert_eq!(reply.rows[1].readings[0].run.as_ref().map(|run| run.value_raw.clone()), power(9001, hour).map(|value| value.to_string()));
+    let tiles = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(hour).div_euclid(BINS as i64), "top": 2, "hour": hour })).unwrap();
+    assert!(tiles.lines.is_empty() && tiles.ranking.unwrap().refused.is_some_and(|reason| reason.ends_with("so its line cannot be drawn")), "a line of an unnamed row is refused by name");
 }

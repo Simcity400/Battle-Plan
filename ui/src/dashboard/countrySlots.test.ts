@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { answersKey, countryFromKey, countryKey, isSlotKey, metadataCountry, SLOT_MARK } from './countryKey.ts';
+import { answersKey, countryFromKey, countryKey, isSlotKey, SLOT_MARK } from './countryKey.ts';
 import { countryNameAt, countryTagAt, SlotTags } from './countrySlots.ts';
 import { defaultCountryKey, selectedCountryKeys } from './countrySelection.ts';
 import type { BoundTrack } from './model';
@@ -63,10 +63,6 @@ test('a country key names a slot by a form no tag can spell, and reads back as t
   assert.equal(countryFromKey('GER'), 'GER');
   assert.equal(countryFromKey(`${SLOT_MARK}x`), `${SLOT_MARK}x`);
   assert.ok(isSlotKey(countryKey(1499)) && !isSlotKey('1499'));
-  const countries = [{ id: '5', tag: 'GER', name: 'Germany', observedBranchId: '1', observedHour: 100 }];
-  assert.equal(metadataCountry(countries, countryKey(5))?.name, 'Germany');
-  assert.equal(metadataCountry(countries, 'GER')?.name, 'Germany');
-  assert.equal(metadataCountry(countries, '5'), undefined);
 });
 
 test('a single-country reply is taken only for the country its request named', () => {
