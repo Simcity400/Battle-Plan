@@ -710,6 +710,10 @@ impl TableReader {
             return Ok(());
         }
         if truncated {
+            if self.ordinal == Some(0) {
+                self.view.extend(self.cells.live().ones());
+                return Ok(());
+            }
             let (touched, read) = &mut self.marks;
             touched.clear();
             read.clear();

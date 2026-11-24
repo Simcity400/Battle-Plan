@@ -627,12 +627,12 @@ fn read_rows_changed_signals_swapped_truncated_witnesses_with_zero_complete_comp
     assert_eq!(lane.read_compares, 0);
 
     lane.step(4, &mut changes).unwrap();
-    assert!(changes.status().is_none());
+    assert_eq!(changes.status().map(|(status, _)| status), Some(Status::Truncated { missing: 1 }));
     assert!(!changes.read_rows_changed(), "identical truncated witness sets do not invalidate");
     assert_eq!(lane.read_compares, 1);
 
     lane.step(5, &mut changes).unwrap();
-    assert!(changes.status().is_none(), "same missing count keeps status equal");
+    assert_eq!(changes.status().map(|(status, _)| status), Some(Status::Truncated { missing: 1 }));
     assert!(changes.read_rows_changed(), "swapped truncated witness sets invalidate downstream queries");
     assert_eq!(lane.read_compares, 2);
 

@@ -884,7 +884,8 @@ impl Lane {
         self.read_status()?;
         if self.status != held {
             out.status = Some(self.status);
-        } else if matches!(self.status.0, Status::Truncated { .. }) {
+        }
+        if self.status.0 == held.0 && matches!(self.status.0, Status::Truncated { .. }) {
             #[cfg(test)]
             {
                 self.read_compares += 1;

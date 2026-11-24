@@ -714,7 +714,7 @@ pub fn status_reasons(recording: &Recording, run: u32, table: TableId, runs: &[S
     let mut max_block = 0u32;
     let mut max_to = i32::MIN;
     let mut block_reasons: Vec<(u32, u32, u32)> = Vec::new();
-    for (first, last, reason) in unavailable {
+    for &(first, last, reason) in &unavailable {
         let (Some(a), Some(b)) = (held.ordinal(first), held.ordinal(last)) else { continue };
         let (ba, bb) = (held.place(a).0, held.place(b).0);
         min_block = min_block.min(ba);
@@ -741,7 +741,27 @@ pub fn status_reasons(recording: &Recording, run: u32, table: TableId, runs: &[S
             needed.push((page_idx, ids));
         }
     }
-    resolve_log_reasons(recording, held, &pages, &kinds[..recorded], index, max_to, &needed)
+    let mut reasons = resolve_log_reasons(recording, held, &pages, &kinds[..recorded], index, max_to, &needed)?;
+    let mut unresolved: Vec<(i32, u32)> = unavailable
+        .iter()
+        .filter(|&&(_, _, reason)| !reasons.contains_key(&reason))
+        .map(|&(first, _, reason)| (first, reason))
+        .collect();
+    if !unresolved.is_empty() {
+        unresolved.sort_unstable_by_key(|&(first, _)| first);
+        let mut reader = TableReader::new(recording, run, table, Some(&[]))?;
+        for (first, reason) in unresolved {
+            if reasons.contains_key(&reason) {
+                continue;
+            }
+            let Some(ordinal) = held.ordinal(first) else { continue };
+            reader.go_to(recording, ordinal)?;
+            if let Some(bytes) = reader.view().string(reason) {
+                reasons.insert(reason, String::from_utf8_lossy(bytes).into_owned());
+            }
+        }
+    }
+    Ok(reasons)
 }
 
 pub fn logged_hours(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<(i32, i32)>> {
