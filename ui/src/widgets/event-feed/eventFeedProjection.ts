@@ -152,8 +152,8 @@ function eventItemAndSubtext(
     case 'nuclearStrike': {
       const targetState = stateLabel(event.strike?.state);
       const losses: string[] = [];
-      if (event.strike?.manpowerLost != null) losses.push(`${formatScalar(Math.round(event.strike.manpowerLost), 'integer')} casualties`);
-      if (event.strike?.buildingLevels != null) losses.push(`${event.strike.buildingLevels.toFixed(1)} building levels`);
+      if (event.strike?.manpowerLost != null) losses.push(`${formatScalar(event.strike.manpowerLost, 'integer')} casualties`);
+      if (event.strike?.buildingLevels != null) losses.push(`${formatScalar(event.strike.buildingLevels, 'decimal1')} building levels`);
       return {
         primary: 'Nuclear strike',
         secondary: targetState,
