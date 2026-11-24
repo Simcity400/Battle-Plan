@@ -50,6 +50,7 @@ export interface PointSourceRead {
     hour: GatedHour,
     mode: 'static' | 'exact',
   ) => Readonly<Record<string, unknown>> | null;
+  readonly provenInterval?: (data: unknown, hour: number) => readonly [number, number] | null;
   readonly dynamicKeys?: readonly string[];
   readonly validate?: (raw: unknown) => unknown;
 }
@@ -75,6 +76,8 @@ export interface BranchToHourSourceRead {
   readonly product: DeclaredProduct;
   readonly followQuery: Readonly<Record<string, unknown>> | null;
   readonly params: Readonly<Record<string, unknown>> | null;
+  readonly chunkHours?: number;
+  readonly provenInterval?: (data: unknown, requested: readonly [number, number], hour: number) => readonly [number, number] | null;
   readonly buildSpanParams?: (
     base: Readonly<Record<string, unknown>>,
     span: BoundWindow,
@@ -90,6 +93,8 @@ export interface TrailingWindowSourceRead {
   readonly windowHours: number;
   readonly followQuery: Readonly<Record<string, unknown>> | null;
   readonly params: Readonly<Record<string, unknown>> | null;
+  readonly chunkHours?: number;
+  readonly provenInterval?: (data: unknown, requested: readonly [number, number], hour: number) => readonly [number, number] | null;
   readonly buildSpanParams?: (
     base: Readonly<Record<string, unknown>>,
     span: BoundWindow,
@@ -195,7 +200,8 @@ export type EntityKind = 'country' | 'faction' | 'leader' | 'design' | 'state' |
 export type FieldStatus<T> =
   | { readonly status: 'ready'; readonly value: T }
   | { readonly status: 'pending' }
-  | { readonly status: 'absent'; readonly reason: string };
+  | { readonly status: 'absent'; readonly reason: string }
+  | { readonly status: 'failed'; readonly reason: string; readonly retryable: boolean };
 
 export interface IdentityResult {
   readonly kind: EntityKind;
@@ -210,14 +216,42 @@ export interface IdentityResult {
   readonly nextChangeAt: number;
 }
 
-export interface ArtHandle {
-  readonly scope: string;
-  readonly choice: string;
-  readonly sprite?: string;
-  readonly frame?: number;
-  readonly path?: string;
-  readonly scale?: number;
-}
+export type ArtFlagSize = 'panel' | 'shield' | 'normal' | 'medium' | 'small';
+
+export type ArtHandle =
+  | {
+      readonly kind: 'flag';
+      readonly choice: string;
+      readonly size: ArtFlagSize;
+      readonly maxEdge?: number;
+    }
+  | {
+      readonly kind: 'sprite';
+      readonly key: string;
+      readonly frame?: number;
+      readonly recorded?: string;
+      readonly text?: boolean;
+      readonly maxEdge?: number;
+    }
+  | {
+      readonly kind: 'portrait';
+      readonly key: string;
+      readonly owner?: string;
+      readonly recorded?: string;
+      readonly maxEdge?: number;
+    }
+  | {
+      readonly kind: 'path';
+      readonly path: string;
+      readonly frame?: number;
+      readonly frames?: number;
+      readonly maxEdge?: number;
+    }
+  | {
+      readonly kind: 'url';
+      readonly url: string;
+      readonly frame?: number;
+    };
 
 export type ArtOrigin = GeneratedArtOrigin;
 export type ArtFrame = GeneratedArtFrame;
@@ -233,11 +267,13 @@ export type IdentityDemand = (kind: EntityKind, key: string, atHour: DisplayedHo
 export type ArtDemand = (handle: ArtHandle) => void;
 
 export interface IdentityProvider {
-  resolve(kind: EntityKind, key: string, atHour: DisplayedHour, onDemand?: IdentityDemand): IdentityResult;
+  readonly demandOwner?: 'view';
+  resolve(kind: EntityKind, key: string, atHour: DisplayedHour): IdentityResult;
 }
 
 export interface ArtProvider {
-  resolve(handle: ArtHandle, onDemand?: ArtDemand): ArtResult;
+  readonly demandOwner?: 'view';
+  resolve(handle: ArtHandle): ArtResult;
 }
 
 export interface BoundedReadView {

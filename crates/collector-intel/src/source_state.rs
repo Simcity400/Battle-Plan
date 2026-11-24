@@ -47,6 +47,42 @@ pub struct Reference {
     pub value: SourceReference,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Changed {
+    pub contributions: bool,
+    pub sources: bool,
+}
+
+impl Changed {
+    pub const NONE: Self = Self {
+        contributions: false,
+        sources: false,
+    };
+    pub const BOTH: Self = Self {
+        contributions: true,
+        sources: true,
+    };
+    pub const fn contributions(changed: bool) -> Self {
+        Self {
+            contributions: changed,
+            sources: false,
+        }
+    }
+    pub const fn sources(changed: bool) -> Self {
+        Self {
+            contributions: false,
+            sources: changed,
+        }
+    }
+    pub fn merge(&mut self, other: Self) {
+        self.contributions |= other.contributions;
+        self.sources |= other.sources;
+    }
+    pub const fn any(self) -> bool {
+        self.contributions || self.sources
+    }
+}
+
 #[derive(Default)]
 pub struct Owner {
     pub seed: Seed,
@@ -176,7 +212,7 @@ impl Owner {
         Ok(())
     }
 
-    pub fn apply(&mut self, event: Event) -> Result<bool, &'static str> {
+    pub fn apply(&mut self, event: Event) -> Result<Changed, &'static str> {
         let pool = event.pool as usize;
         Ok(match event.kind {
             RESET => {
@@ -205,7 +241,7 @@ impl Owner {
                     .map_err(|_| "intel reset dirty storage allocation failed")?;
                 self.accumulators.fill(false);
                 self.dirty.fill(false);
-                true
+                Changed::BOTH
             }
             STATIC_SET | STATIC_REMOVE => {
                 let pool = self
@@ -217,13 +253,14 @@ impl Owner {
                     .iter_mut()
                     .rfind(|source| source.id == event.source)
                     .ok_or("observed intel source ID absent from retained pool")?;
-                if event.kind == STATIC_REMOVE {
+                let changed = if event.kind == STATIC_REMOVE {
                     let changed = source.removed != 1;
                     source.removed = 1;
                     changed
                 } else {
                     native::set_source(source, event.target, event.values)?
-                }
+                };
+                Changed::sources(changed)
             }
             STATIC_CREATE => {
                 let pool = self
@@ -237,34 +274,37 @@ impl Owner {
                     ..Default::default()
                 });
                 pool.next_id = event.source;
-                true
+                Changed::sources(true)
             }
             #[expect(
                 clippy::unnecessary_fold,
                 reason = "Every static pool must be pruned; short-circuiting would skip later mutations."
             )]
-            STATIC_PRUNE => self.statics.iter_mut().fold(false, |changed, pool| {
-                native::prune_sources(pool) || changed
-            }),
+            STATIC_PRUNE => Changed::sources(
+                self.statics
+                    .iter_mut()
+                    .fold(false, |changed, pool| native::prune_sources(pool) || changed),
+            ),
             STATIC_CLEAR => {
-                if let Some(pool) = self.statics.get_mut(pool) {
+                let changed = if let Some(pool) = self.statics.get_mut(pool) {
                     let changed = !pool.sources.is_empty() || pool.next_id != 0;
                     pool.sources.clear();
                     pool.next_id = 0;
                     changed
                 } else {
                     false
-                }
+                };
+                Changed::sources(changed)
             }
             DYNAMIC_ADD => {
                 let pool = self
                     .dynamics
                     .get_mut(pool)
                     .ok_or("observed intel pending pool outside retained extent")?;
-                native::add_pending(pool, event.target, event.values)?
+                Changed::contributions(native::add_pending(pool, event.target, event.values)?)
             }
             DYNAMIC_CLEAR => {
-                if let Some(state) = self.dynamics.get_mut(pool) {
+                let changed = if let Some(state) = self.dynamics.get_mut(pool) {
                     let changed = !state.values.is_empty() || !state.accumulators.is_empty();
                     state.values.clear();
                     state.accumulators.clear();
@@ -272,54 +312,57 @@ impl Owner {
                     changed
                 } else {
                     false
-                }
+                };
+                Changed::contributions(changed)
             }
             DYNAMIC_AGGREGATE => {
                 let state = self
                     .dynamics
                     .get_mut(pool)
                     .ok_or("observed intel aggregation pool outside retained extent")?;
-                if state.values.is_empty() {
+                let changed = if state.values.is_empty() {
                     false
                 } else {
                     state.values.clear();
                     self.accumulators[pool] = true;
                     true
-                }
+                };
+                Changed::contributions(changed)
             }
             DYNAMIC_DECAY => {
                 let state = self
                     .dynamics
                     .get_mut(pool)
                     .ok_or("observed intel decay pool outside retained extent")?;
-                if self.accumulators[pool] {
+                let changed = if self.accumulators[pool] {
                     false
                 } else {
                     native::decay_accumulators(state, event.values[0], event.values[1])
-                }
+                };
+                Changed::contributions(changed)
             }
             ALLIED_CLEAR => {
                 let changed = self.allied.count != 0 || !self.allied.entries.is_empty();
                 self.allied.count = 0;
                 self.allied.entries.clear();
                 self.dirty[0] = false;
-                changed
+                Changed::contributions(changed)
             }
             ALLIED_REPLACE => {
                 self.dirty[0] = true;
-                false
+                Changed::NONE
             }
             CRYPTOLOGY_REPLACE => {
                 self.dirty[1] = true;
-                false
+                Changed::NONE
             }
             CONTRIBUTIONS_REPLACE => {
                 self.dirty[2] = true;
                 self.dirty[3] = true;
-                false
+                Changed::NONE
             }
             PRIOR_ROTATE => {
-                if self.dirty[3] {
+                let changed = if self.dirty[3] {
                     self.dirty[4] = true;
                     false
                 } else {
@@ -328,21 +371,22 @@ impl Owner {
                     prior[0].clone_from(&current[1]);
                     self.dirty[4] = false;
                     changed
-                }
+                };
+                Changed::contributions(changed)
             }
             _ => return Err("unknown intel source mutation kind"),
         })
     }
 
-    pub fn acquire(&mut self, memory: &impl Memory) -> Result<bool, &'static str> {
-        let mut changed = false;
+    pub fn acquire(&mut self, memory: &impl Memory) -> Result<Changed, &'static str> {
+        let mut changed = Changed::NONE;
         if self.references_dirty {
             self.refresh_references(memory)?;
-            changed = true;
+            changed.sources = true;
         }
         if self.dirty[0] {
             native::dense(memory, self.seed.root, native::ALLIED, &mut self.allied)?;
-            changed = true;
+            changed.contributions = true;
         }
         if self.dirty[1] {
             native::dense(
@@ -351,7 +395,7 @@ impl Owner {
                 native::CRYPTOLOGY,
                 &mut self.cryptology,
             )?;
-            changed = true;
+            changed.contributions = true;
         }
         for (index, offset) in [
             native::STATIC_CONTRIBUTIONS,
@@ -368,7 +412,7 @@ impl Owner {
                     offset,
                     &mut self.contributions[index],
                 )?;
-                changed = true;
+                changed.contributions = true;
             }
         }
         if self.accumulators.iter().any(|dirty| *dirty) {
@@ -393,7 +437,7 @@ impl Owner {
                         &mut self.dynamics[index].accumulators,
                     )?;
                     *dirty = false;
-                    changed = true;
+                    changed.contributions = true;
                 }
             }
         }
@@ -401,10 +445,9 @@ impl Owner {
         Ok(changed)
     }
 
-    pub fn rows(
+    pub fn contribution_rows(
         &self,
         contributions: &mut Vec<IntelContributionRow>,
-        sources: &mut Vec<IntelSourceRow>,
     ) -> Result<(), &'static str> {
         let owner = self.seed.owner;
         let mut contribution = |kind: u8,
@@ -429,16 +472,14 @@ impl Owner {
             Ok(())
         };
         for (kind, dense) in [(0, &self.allied), (1, &self.cryptology)] {
-            contribution(kind, 0, u32::MAX, dense.count as i32, [0; 4])?;
             for entry in &dense.entries {
                 contribution(kind, 0, entry.ordinal, entry.ordinal as i32, entry.values)?;
             }
+            contribution(kind, 0, u32::MAX, dense.count as i32, [0; 4])?;
         }
         for (index, pools) in self.contributions.iter().enumerate() {
             let kind = index as u8 + 2;
-            contribution(kind, u32::MAX, u32::MAX, pools.len() as i32, [0; 4])?;
             for (pool, entries) in pools.iter().enumerate() {
-                contribution(kind, pool as u32, u32::MAX, entries.len() as i32, [0; 4])?;
                 for (ordinal, entry) in entries.iter().enumerate() {
                     contribution(
                         kind,
@@ -448,22 +489,37 @@ impl Owner {
                         entry.values,
                     )?;
                 }
+                contribution(kind, pool as u32, u32::MAX, entries.len() as i32, [0; 4])?;
             }
+            contribution(kind, u32::MAX, u32::MAX, pools.len() as i32, [0; 4])?;
         }
         for (pool, state) in self.dynamics.iter().enumerate() {
-            for (kind, entries) in [(5, &state.values), (6, &state.accumulators)] {
-                contribution(kind, pool as u32, u32::MAX, entries.len() as i32, [0; 4])?;
-                for (ordinal, entry) in entries.iter().enumerate() {
-                    contribution(
-                        kind,
-                        pool as u32,
-                        ordinal as u32,
-                        entry.target,
-                        entry.values,
-                    )?;
-                }
+            for (ordinal, entry) in state.values.iter().enumerate() {
+                contribution(5, pool as u32, ordinal as u32, entry.target, entry.values)?;
             }
+            contribution(5, pool as u32, u32::MAX, state.values.len() as i32, [0; 4])?;
         }
+        for (pool, state) in self.dynamics.iter().enumerate() {
+            for (ordinal, entry) in state.accumulators.iter().enumerate() {
+                contribution(6, pool as u32, ordinal as u32, entry.target, entry.values)?;
+            }
+            contribution(
+                6,
+                pool as u32,
+                u32::MAX,
+                state.accumulators.len() as i32,
+                [0; 4],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn source_rows(
+        &self,
+        sources: &mut Vec<IntelSourceRow>,
+        networks: &[Reference],
+    ) -> Result<(), &'static str> {
+        let owner = self.seed.owner;
         let mut source_row = |mut row: IntelSourceRow| -> Result<(), &'static str> {
             row.owner = owner;
             allocation::reserve(sources, 1)
@@ -471,35 +527,8 @@ impl Owner {
             sources.push(row);
             Ok(())
         };
-        source_row(IntelSourceRow {
-            pool: u32::MAX,
-            source: u32::MAX,
-            ordinal: u32::MAX,
-            count: self.statics.len() as u32,
-            other_count: self.dynamics.len() as u32,
-            discriminant: self.lifetime,
-            reference_country: self.raw_owner,
-            ..Default::default()
-        })?;
         for (pool, state) in self.statics.iter().enumerate() {
-            source_row(IntelSourceRow {
-                pool: pool as u32,
-                source: u32::MAX,
-                ordinal: u32::MAX,
-                count: state.sources.len() as u32,
-                next_id: state.next_id,
-                ..Default::default()
-            })?;
             for (source, state) in state.sources.iter().enumerate() {
-                source_row(IntelSourceRow {
-                    pool: pool as u32,
-                    source: source as u32,
-                    ordinal: u32::MAX,
-                    count: state.entries.len() as u32,
-                    id: state.id,
-                    removed: state.removed,
-                    ..Default::default()
-                })?;
                 for (ordinal, entry) in state.entries.iter().enumerate() {
                     source_row(IntelSourceRow {
                         pool: pool as u32,
@@ -513,11 +542,41 @@ impl Owner {
                         ..Default::default()
                     })?;
                 }
+                source_row(IntelSourceRow {
+                    pool: pool as u32,
+                    source: source as u32,
+                    ordinal: u32::MAX,
+                    count: state.entries.len() as u32,
+                    id: state.id,
+                    removed: state.removed,
+                    ..Default::default()
+                })?;
             }
+            source_row(IntelSourceRow {
+                pool: pool as u32,
+                source: u32::MAX,
+                ordinal: u32::MAX,
+                count: state.sources.len() as u32,
+                next_id: state.next_id,
+                ..Default::default()
+            })?;
         }
         for reference in &self.references {
             source_row(reference.row())?;
         }
+        for network in networks {
+            source_row(network.row())?;
+        }
+        source_row(IntelSourceRow {
+            pool: u32::MAX,
+            source: u32::MAX,
+            ordinal: u32::MAX,
+            count: self.statics.len() as u32,
+            other_count: self.dynamics.len() as u32,
+            discriminant: self.lifetime,
+            reference_country: self.raw_owner,
+            ..Default::default()
+        })?;
         Ok(())
     }
 }
@@ -565,15 +624,16 @@ mod tests {
             })
             .unwrap();
         crate::test_support::with_allocations_denied(|| {
-            assert!(
+            assert_eq!(
                 owner
                     .apply(Event {
                         kind: ALLIED_CLEAR,
                         ..Default::default()
                     })
-                    .unwrap()
+                    .unwrap(),
+                Changed::contributions(true)
             );
-            assert!(!owner.acquire(&NoRead).unwrap());
+            assert!(!owner.acquire(&NoRead).unwrap().any());
             assert!(
                 !owner
                     .apply(Event {
@@ -581,12 +641,13 @@ mod tests {
                         ..Default::default()
                     })
                     .unwrap()
+                    .any()
             );
         });
         assert_eq!(owner.allied, Dense::default());
         assert_eq!(owner.cryptology.count, 5000);
-        let (mut contributions, mut sources) = (Vec::new(), Vec::new());
-        owner.rows(&mut contributions, &mut sources).unwrap();
+        let mut contributions = Vec::new();
+        owner.contribution_rows(&mut contributions).unwrap();
         let allied: Vec<_> = contributions.iter().filter(|row| row.kind == 0).collect();
         assert_eq!(allied.len(), 1);
         assert_eq!((allied[0].ordinal, allied[0].target), (u32::MAX, 0));
@@ -644,13 +705,16 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        assert!(owner.acquire(&world.memory()).unwrap());
+        assert_eq!(
+            owner.acquire(&world.memory()).unwrap(),
+            Changed::sources(true)
+        );
         assert_eq!(owner.references[2].address, token + native::TOKEN_REFERENCE);
         assert_eq!(
             owner.references.map(|reference| reference.value.id),
             [19, 20, 21]
         );
-        assert!(!owner.acquire(&NoRead).unwrap());
+        assert!(!owner.acquire(&NoRead).unwrap().any());
     }
     #[test]
     fn intel_sources_ordered_mutations_derive_and_dirty_merge_respects_later_clear() {
@@ -665,17 +729,26 @@ mod tests {
             values,
             ..Default::default()
         };
-        owner.apply(event(STATIC_CREATE, 7, 0, [0; 4])).unwrap();
-        owner.apply(event(STATIC_SET, 7, -9, [1, 2, 3, 4])).unwrap();
-        assert!(!owner.apply(event(STATIC_SET, 7, -9, [1, 2, 3, 4])).unwrap());
+        assert_eq!(
+            owner.apply(event(STATIC_CREATE, 7, 0, [0; 4])).unwrap(),
+            Changed::sources(true)
+        );
+        assert_eq!(
+            owner.apply(event(STATIC_SET, 7, -9, [1, 2, 3, 4])).unwrap(),
+            Changed::sources(true)
+        );
+        assert!(!owner.apply(event(STATIC_SET, 7, -9, [1, 2, 3, 4])).unwrap().any());
         owner.apply(event(STATIC_CREATE, 8, 0, [0; 4])).unwrap();
         owner.apply(event(STATIC_REMOVE, 7, 0, [0; 4])).unwrap();
         owner.apply(event(STATIC_PRUNE, 0, 0, [0; 4])).unwrap();
         assert_eq!(owner.statics[0].sources.len(), 1);
         assert_eq!(owner.statics[0].sources[0].id, 8);
-        owner
-            .apply(event(DYNAMIC_ADD, 0, -3, [4, -9, 0, 1]))
-            .unwrap();
+        assert_eq!(
+            owner
+                .apply(event(DYNAMIC_ADD, 0, -3, [4, -9, 0, 1]))
+                .unwrap(),
+            Changed::contributions(true)
+        );
         assert_eq!(owner.dynamics[0].values[0].values, [4, 0, 0, 1]);
         owner.apply(event(DYNAMIC_AGGREGATE, 0, 0, [0; 4])).unwrap();
         assert!(owner.accumulators[0]);
@@ -683,16 +756,19 @@ mod tests {
             .apply(event(DYNAMIC_DECAY, 0, 0, [1, 50_000, 0, 0]))
             .unwrap();
         owner.apply(event(DYNAMIC_CLEAR, 0, 0, [0; 4])).unwrap();
-        assert!(!owner.acquire(&NoRead).unwrap());
+        assert!(!owner.acquire(&NoRead).unwrap().any());
         assert!(owner.dynamics[0].accumulators.is_empty());
-        assert!(!owner.apply(event(DYNAMIC_AGGREGATE, 0, 0, [0; 4])).unwrap());
-        assert!(!owner.acquire(&NoRead).unwrap());
+        assert!(!owner.apply(event(DYNAMIC_AGGREGATE, 0, 0, [0; 4])).unwrap().any());
+        assert!(!owner.acquire(&NoRead).unwrap().any());
         owner.contributions[1] = vec![vec![Lanes {
             target: -1,
             values: [0; 4],
         }]];
-        assert!(owner.apply(event(PRIOR_ROTATE, 0, 0, [0; 4])).unwrap());
+        assert_eq!(
+            owner.apply(event(PRIOR_ROTATE, 0, 0, [0; 4])).unwrap(),
+            Changed::contributions(true)
+        );
         assert_eq!(owner.contributions[2], owner.contributions[1]);
-        assert!(!owner.acquire(&NoRead).unwrap());
+        assert!(!owner.acquire(&NoRead).unwrap().any());
     }
 }

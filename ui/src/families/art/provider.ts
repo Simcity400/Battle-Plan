@@ -3,7 +3,7 @@ import type { CountryFlagSize } from '../../generated/dashboard';
 import type { IdentityBroker } from '../identity/broker.ts';
 import type { IdentityIndex } from '../identity/index.ts';
 import { parseFlagChoiceKey, type DrawnFlagEntry, type IdentityScope } from '../identity/types.ts';
-import type { ArtHandle, ArtProvider, ArtResult } from '../plan.ts';
+import type { ArtFlagSize, ArtHandle, ArtProvider, ArtResult } from '../plan.ts';
 import { flagEntryToArt } from './adapters.ts';
 import type { DomArtCache } from './domCache.ts';
 import type { LaneArtCache } from './laneCache.ts';
@@ -15,38 +15,33 @@ import {
   type ArtResolution,
 } from './types.ts';
 
-export function flagArtHandle(flagChoice: string, size: CountryFlagSize = 'panel'): ArtHandle {
-  return { scope: size === 'shield' ? 'flag:shield' : 'flag:panel', choice: flagChoice };
+export function flagArtHandle(flagChoice: string, size: ArtFlagSize = 'panel', maxEdge?: number): ArtHandle {
+  return { kind: 'flag', choice: flagChoice, size, ...(maxEdge !== undefined ? { maxEdge } : {}) };
 }
 
-function flagSizeFromScope(scope: string): CountryFlagSize | null {
-  if (scope === 'flag' || scope === 'flag:panel') return 'panel';
-  if (scope === 'flag:shield') return 'shield';
-  return null;
+function brokerFlagSize(size: ArtFlagSize): CountryFlagSize {
+  return size === 'shield' ? 'shield' : 'panel';
 }
 
-function directUrlOf(handle: ArtHandle): string | null {
-  const candidate = handle.scope === 'url' ? (handle.path ?? handle.choice) : handle.path;
-  if (!candidate) return null;
-  if (
-    handle.scope === 'url'
-    || candidate.startsWith('http://')
+function isDirectUrl(candidate: string): boolean {
+  return candidate.startsWith('http://')
     || candidate.startsWith('https://')
     || candidate.startsWith('asset://')
     || candidate.startsWith('data:')
     || candidate.startsWith('blob:')
-    || candidate.startsWith('/')
-  ) {
-    return candidate;
-  }
+    || candidate.startsWith('/');
+}
+
+function directUrlOf(handle: ArtHandle): string | null {
+  if (handle.kind === 'url') return handle.url || null;
+  if (handle.kind === 'path' && isDirectUrl(handle.path)) return handle.path;
   return null;
 }
 
 export function artUrlForHandle(handle: ArtHandle, index?: IdentityIndex | null): string | null {
   const direct = directUrlOf(handle);
   if (direct) return direct;
-  const flagSize = flagSizeFromScope(handle.scope);
-  if (flagSize && index) {
+  if (handle.kind === 'flag' && index) {
     const choice = parseFlagChoiceKey(handle.choice);
     if (choice) {
       const drawn = index.getDrawnFlag(choice);
@@ -65,20 +60,21 @@ function resolutionFromHandle(
 ): ArtResolution {
   if (resolveHandle) {
     const custom = resolveHandle(handle);
-    if (custom.status !== 'pending' || (!flagSizeFromScope(handle.scope) && !directUrlOf(handle))) {
+    if (custom.status !== 'pending' || (handle.kind !== 'flag' && !directUrlOf(handle))) {
       return custom;
     }
   }
   const direct = directUrlOf(handle);
   if (direct) {
+    const frameIndex = handle.kind === 'url' || handle.kind === 'path' ? handle.frame : undefined;
+    const frameCount = handle.kind === 'path' && handle.frames !== undefined ? handle.frames : 1;
     return readyArt(direct, {
-      frame: handle.frame !== undefined ? defaultArtFrame(0, 0, handle.frame, 1) : defaultArtFrame(),
+      frame: frameIndex !== undefined ? defaultArtFrame(0, 0, frameIndex, frameCount) : defaultArtFrame(),
       provenance: CURRENT_INSTALL_PROVENANCE,
     });
   }
-  const flagSize = flagSizeFromScope(handle.scope);
-  if (flagSize) {
-    return flagEntryToArt(lookupFlag(handle.choice, flagSize));
+  if (handle.kind === 'flag') {
+    return flagEntryToArt(lookupFlag(handle.choice, brokerFlagSize(handle.size)));
   }
   return PENDING_ART;
 }
@@ -98,6 +94,7 @@ export function createLaneArtProvider(
     return choice ? options.index.getDrawnFlag(choice) : undefined;
   };
   return {
+    demandOwner: 'view',
     resolve(handle: ArtHandle): ArtResult {
       return cache.resolve(resolutionFromHandle(handle, lookupFlag, options.resolveHandle));
     },
@@ -126,6 +123,7 @@ export function createDomArtProvider(
     return entry;
   };
   return {
+    demandOwner: 'view',
     resolve(handle: ArtHandle): ArtResult {
       const result = cache.resolve(resolutionFromHandle(handle, lookupFlag, options.resolveHandle));
       if (result.status === 'ready') {

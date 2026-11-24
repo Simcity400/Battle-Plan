@@ -95,7 +95,7 @@ export default function DeclaredTimeChartWidget<TProjectionOptions, TAux>({
     if (!demandedSprites.length) return undefined;
     const out: Record<string, ArtResolution> = {};
     for (const s of demandedSprites) {
-      out[spriteHandleKey({ scope: 'sprite', choice: s.key, sprite: s.key, frame: s.frame })] = resolveSprite(s);
+      out[spriteHandleKey({ kind: 'sprite', key: s.key, frame: s.frame })] = resolveSprite(s);
     }
     return out;
   }, [demandedSprites, resolveSprite]);
@@ -220,6 +220,7 @@ export default function DeclaredTimeChartWidget<TProjectionOptions, TAux>({
       blockedState={blockedState}
       extraWarnings={combinedWarnings}
       onViewportWidth={onViewportWidth}
+      onViewportSize={plan.measureViewport}
       onHoverHour={setHoverHour}
       onIdentityDemands={plan.onIdentityDemands}
       onArtDemands={onArtDemands}
