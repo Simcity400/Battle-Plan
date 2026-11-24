@@ -216,12 +216,22 @@ export const doctrineMasteryProjection: MeterProjection<DoctrineMasteryProjectio
             title: item.sub !== null ? subTitle : tName,
             hour: readView.hour,
             items: tooltipItems,
-            ...(item.sub !== null && totalSteps > 0 ? { note: 'Click to view step rewards and descriptions.' } : {}),
           },
           meta,
         });
       }
 
+      if (!folder.tracks.length && !folder.grand) {
+        rows.push({
+          key: `${folder.id}:none`,
+          name: 'No doctrine chosen',
+          muted: true,
+          bar: { kind: 'none', dash: true },
+          compactFigure: '—',
+          spoken: `${fName}, No doctrine chosen`,
+          audit: 'no-doctrine',
+        });
+      }
       sections.push({
         key: folder.id,
         title: sectionTitle,

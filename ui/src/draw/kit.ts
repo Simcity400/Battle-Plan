@@ -682,7 +682,8 @@ export function drawThresholdMeter(
     const tick = ticks[i]!;
     if (tick.at <= 0 || tick.at >= 1) continue;
     const tx = Math.round(x + width * tick.at) + 0.5;
-    ctx.strokeStyle = tick.reached ? theme.muted : theme.line;
+    ctx.strokeStyle = theme.muted;
+    ctx.globalAlpha = tick.reached ? 0.9 : 0.55;
     ctx.beginPath();
     ctx.moveTo(tx, y - 3);
     ctx.lineTo(tx, y + height + 3);

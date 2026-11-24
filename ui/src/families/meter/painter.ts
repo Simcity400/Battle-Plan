@@ -44,7 +44,13 @@ interface PlacedRowItem {
   readonly width: number;
   readonly height: number;
   readonly row: MeterRow;
+  readonly figureWidth?: number;
+  readonly secondaryWidth?: number;
 }
+
+const FIGURE_FONT = (theme: FamilyTheme) => `600 12px ${theme.font}`;
+const SECONDARY_FONT = (theme: FamilyTheme) => `400 11px ${theme.font}`;
+const SECONDARY_MAX_PX = 120;
 
 interface PlacedSectionHeader {
   readonly kind: 'header';
@@ -125,6 +131,17 @@ export function layoutMeterModel(
     const rowH = colW < 420 ? 28 : 38;
     const headH = 24;
     const sectionGap = 14;
+    let figureWidth = 0;
+    let secondaryWidth = 0;
+    for (const section of sections) {
+      for (const row of section.rows ?? []) {
+        if (!row.figure) continue;
+        figureWidth = Math.max(figureWidth, measureWithFont(ctx, FIGURE_FONT(theme), row.figure));
+        if (row.secondary) secondaryWidth = Math.max(secondaryWidth, measureWithFont(ctx, SECONDARY_FONT(theme), row.secondary));
+      }
+    }
+    figureWidth = Math.ceil(figureWidth);
+    secondaryWidth = Math.min(SECONDARY_MAX_PX, Math.ceil(secondaryWidth));
 
     for (const section of sections) {
       let colIdx = 0;
@@ -144,7 +161,7 @@ export function layoutMeterModel(
       });
       y += headH + 2;
       for (const row of section.rows ?? []) {
-        blocks.push({ kind: 'row', x, y, width: colW, height: rowH, row });
+        blocks.push({ kind: 'row', x, y, width: colW, height: rowH, row, figureWidth, secondaryWidth });
         hits.push({ key: row.key, x, y, width: colW, height: rowH });
         itemBands.set(row.key, [y, rowH]);
         y += rowH;
@@ -204,7 +221,7 @@ export function layoutMeterModel(
           blocks.push({ kind: 'row', x: PAD_X, y, width: innerW, height: rowH, row });
           hits.push({ key: row.key, x: PAD_X, y, width: innerW, height: rowH });
           itemBands.set(row.key, [y, rowH]);
-          y += rowH + 2;
+          y += rowH;
         }
       }
 
@@ -490,7 +507,8 @@ function drawColumnMeterRow(
   if (focusedKey === row.key) drawRowFocusRing(ctx, x - 4, y, width + 8, height, theme, 0);
 
   const narrow = width < 420;
-  const valW = narrow ? 44 : 136;
+  const dailyW = block.secondaryWidth ?? 58;
+  const valW = narrow ? 44 : Math.max(96, (block.figureWidth ?? 72) + (dailyW > 0 ? dailyW + 10 : 0));
   const nameW = Math.max(84, Math.min(200, Math.round(width * 0.36)));
   const barX = x + nameW + 10;
   const barW = Math.max(40, width - nameW - valW - 20);
@@ -572,11 +590,10 @@ function drawColumnMeterRow(
     drawHatchRect(ctx, rightX - lw - 16, Math.round(midY - 5), 10, 10, 2, theme);
     ctx.restore();
   } else {
-    const dailyW = 58;
-    const masteryRight = row.secondary ? rightX - dailyW - 6 : rightX;
+    const masteryRight = row.secondary && row.figure ? rightX - dailyW - 10 : rightX;
     if (row.secondary) {
       ctx.save();
-      ctx.font = `400 11px ${theme.font}`;
+      ctx.font = SECONDARY_FONT(theme);
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
@@ -585,11 +602,11 @@ function drawColumnMeterRow(
     }
     if (row.figure) {
       ctx.save();
-      ctx.font = `600 12px ${theme.font}`;
+      ctx.font = FIGURE_FONT(theme);
       ctx.fillStyle = row.muted ? theme.muted : theme.text;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(ellipsise(row.figure, valW - (row.secondary ? dailyW + 6 : 0), s => textWidth(ctx, s)), masteryRight, midY);
+      ctx.fillText(ellipsise(row.figure, valW - (row.secondary ? dailyW + 10 : 0), s => textWidth(ctx, s)), masteryRight, midY);
       ctx.restore();
     }
   }
@@ -650,7 +667,7 @@ function drawCipherMeterRow(
     cx += 26;
     const remW = Math.max(24, x + pairW - cx);
     ctx.save();
-    ctx.font = `${LABEL_WEIGHT} 12px ${theme.font}`;
+    ctx.font = `400 12px ${theme.font}`;
     ctx.fillStyle = theme.text;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';

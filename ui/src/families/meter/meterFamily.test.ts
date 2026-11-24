@@ -290,6 +290,15 @@ test('doctrineMasteryProjection builds threshold meters, missing mastery, empty 
           },
         ],
       },
+      {
+        ordinal: 2,
+        id: 'mod_cyber_doctrine',
+        name: 'Cyber Warfare',
+        icon: null,
+        grand: null,
+        completed: [],
+        tracks: [],
+      },
     ],
   };
 
@@ -310,8 +319,9 @@ test('doctrineMasteryProjection builds threshold meters, missing mastery, empty 
   const model = doctrineMasteryProjection.project(view, { folders: [], countryName: 'Germany' });
   assert.equal(model.layout, 'columns');
   assert.equal(model.summaryText, '2 tracks active');
-  assert.equal(model.sections?.length, 2);
+  assert.equal(model.sections?.length, 3);
   assert.equal(model.sections![0]!.title, 'Land \u00b7 Mobile Warfare');
+  assert.deepEqual(model.sections![2]!.rows!.map(row => [row.name, row.bar.kind]), [['No doctrine chosen', 'none']]);
   const armour = model.sections![0]!.rows![0]!;
   assert.equal(armour.name, 'Armored Spearhead');
   assert.equal(armour.subtitle, 'Step 3 of 3 \u00b7 Modern Blitzkrieg');
