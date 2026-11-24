@@ -31,6 +31,7 @@ import {
   computeAxisTicks,
   hourToLaneX,
   LANE_PAD,
+  LANE_ROW_GAP,
   projectLaneRunsToPixels,
   type HeatLanesLayout,
 } from './lanesLayout.ts';
@@ -432,7 +433,8 @@ export function drawHeatLanes(
     }
   }
 
-  if (model.gaps?.length) {
+  const rowsBottom = Math.min(bodyBottom, layout.plotTop + model.rows.length * layout.rowStride - LANE_ROW_GAP - scrollTop);
+  if (model.gaps?.length && rowsBottom > layout.plotTop) {
     for (const gap of model.gaps) {
       if (gap.firstHour > layout.displayedHour) continue;
       const gFirst = Math.max(layout.firstHour, gap.firstHour);
@@ -441,7 +443,7 @@ export function drawHeatLanes(
       const gx0 = hourToLaneX(gFirst, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth);
       const gx1 = hourToLaneX(gLast + 1, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth);
       if (gx1 > gx0) {
-        drawGapBand(ctx, gx0, layout.plotTop, Math.max(1, gx1 - gx0), bodyBottom - layout.plotTop, theme);
+        drawGapBand(ctx, gx0, layout.plotTop, Math.max(1, gx1 - gx0), rowsBottom - layout.plotTop, theme);
       }
     }
   }
