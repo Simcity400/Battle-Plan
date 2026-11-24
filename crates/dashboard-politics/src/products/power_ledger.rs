@@ -11,10 +11,11 @@ use dashboard_world::products::equipment_names::EquipmentIcon;
 use dashboard_base::products::idea_format::{self, LocalisedText, ModifierFormat};
 use dashboard_core::dto::Artwork;
 use dashboard_base::{Source, products::at_hour};
-use dashboard_query::Query;
+use dashboard_query::{Query, coverage};
+use replay_frame::frame::DecodedFrame;
 use replay_lanes::{lanes::{self, Keys}, points::Cell};
 use replay_columnar::manifest::Status;
-use replay_data::rows::{PowerCause, PowerCurrency, PowerItemRow, PowerOperation, PowerSite, PowerSpendCoverageRow, PowerSpendTotalRow, TableId, tables};
+use replay_data::rows::{PowerCause, PowerCurrency, PowerItemRow, RowCodec, PowerOperation, PowerSite, PowerSpendCoverageRow, PowerSpendTotalRow, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -1127,13 +1128,12 @@ fn balance_at(runs: &[SpendBalanceRun], hour: i32) -> (Option<i128>, Option<Stri
     }
 }
 
-fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpendingReply, allocations: &AllocationTotals) -> SpendReconciliation {
-    let (from, to) = (params.from, params.to);
-    let continuity_reason = if held.is_empty() {
+pub(super) fn continuity(from: i32, to: i32, held: &[Piece], recorded: impl Fn(i32, i32) -> bool) -> Option<String> {
+    if held.is_empty() {
         Some("Country was not held during this span".to_owned())
     } else if held[0].first > from || held.last().expect("non-empty").last < to {
         Some("Country was not held for the entire span".to_owned())
-    } else if held.windows(2).any(|pair| pair[0].last.checked_add(1) != Some(pair[1].first)) {
+    } else if held.windows(2).any(|pair| pair[0].last.checked_add(1).is_some_and(|after| after < pair[1].first && recorded(after, pair[1].first - 1))) {
         Some("Country was not held for the entire span".to_owned())
     } else if held.windows(2).any(|pair| pair[0].run != pair[1].run || pair[1].baseline != pair[1].first.checked_sub(1)) {
         Some("Continuity broke across a load or recording gap during this span".to_owned())
@@ -1141,7 +1141,12 @@ fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpending
         Some("Country holder changed during this span".to_owned())
     } else {
         None
-    };
+    }
+}
+
+fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpendingReply, allocations: &AllocationTotals, recorded: impl Fn(i32, i32) -> bool) -> SpendReconciliation {
+    let (from, to) = (params.from, params.to);
+    let continuity_reason = continuity(from, to, held, recorded);
 
     let spend_coverage_reason = full_coverage_reason(&reply.coverage, from, to, "Spending coverage was not recorded");
     let gain_coverage_reason = full_coverage_reason(&reply.gain_coverage, from, to, "Power changes were not recorded");
@@ -1259,11 +1264,76 @@ fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpending
     }
 }
 
-fn items_at(query: &Query<'_>, slot: u32, hour: i32) -> io::Result<BTreeMap<u32, PowerItemRow>> {
+fn items_at(query: &Query<'_>, slot: u32, hour: i32) -> io::Result<DecodedFrame> {
     let low = u128::from(slot) << 32;
     let reads = [at_hour::Read { table: TableId::PowerItems, keys: at_hour::Keys::Range(low, low | u128::from(u32::MAX)) }];
-    let frame = at_hour::frame(query, hour, &reads, "Politics spending")?;
-    Ok(frame.complete::<tables::PowerItems>().map(|rows| rows.iter().map(|row| (row.ordinal, row.clone())).collect()).unwrap_or_default())
+    at_hour::frame(query, hour, &reads, "Politics spending")
+}
+
+const UNRECORDED_ITEM: u32 = 1 << 31;
+
+struct UnrecordedItem {
+    slot: u32,
+    ordinal: u32,
+    read: i32,
+    recurring: bool,
+    reason: String,
+}
+
+#[derive(Default)]
+struct Items {
+    asked: Vec<(u32, PowerItemRow)>,
+    index: HashMap<(u32, u32, u32), u32>,
+    unrecorded: Vec<UnrecordedItem>,
+    unrecorded_index: HashMap<(u32, u32, u32), u32>,
+}
+
+impl Items {
+    fn at(&mut self, frame: &DecodedFrame, run: u32, slot: u32, ordinal: u32, read: i32, recurring: bool) -> (u32, bool) {
+        let key = PowerItemRow { holder: slot, ordinal, ..PowerItemRow::default() }.key();
+        let reason = match coverage::witnessed::<tables::PowerItems>(frame, key) {
+            coverage::Witness::Row(row) => {
+                let asked = &mut self.asked;
+                let at = *self.index.entry((run, slot, ordinal)).or_insert_with(|| {
+                    asked.push((run, row.clone()));
+                    (asked.len() - 1) as u32
+                });
+                return (at, true);
+            }
+            coverage::Witness::Absent => "Its item was no longer among the power items read at the end of the span".to_owned(),
+            coverage::Witness::NotRecorded(reason) => reason,
+        };
+        let unrecorded = &mut self.unrecorded;
+        let at = *self.unrecorded_index.entry((run, slot, ordinal)).or_insert_with(|| {
+            unrecorded.push(UnrecordedItem { slot, ordinal, read, recurring, reason });
+            (unrecorded.len() - 1) as u32
+        });
+        (UNRECORDED_ITEM | at, false)
+    }
+
+    fn resolved(&self, at: u32) -> u32 {
+        if at & UNRECORDED_ITEM == 0 { at } else { self.asked.len() as u32 + (at & !UNRECORDED_ITEM) }
+    }
+}
+
+fn unrecorded_item(item: &UnrecordedItem) -> SpendItem {
+    SpendItem {
+        id: format!("{}:{}:{}:unrecorded", item.slot, item.ordinal, item.read),
+        group_id: format!("unrecorded:{}:{}", item.slot, item.ordinal),
+        cause: format!("{:?}", PowerCause::NotIdentified),
+        category: "notIdentified".into(),
+        recurring: item.recurring,
+        first_hour: item.read,
+        first_read: item.read,
+        name: None,
+        action: "Spending item not recorded".into(),
+        icon: None,
+        character: None,
+        target_tag: None,
+        target_name: None,
+        unknown: Some(item.reason.clone()),
+        tooltip_token: None,
+    }
 }
 
 fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Context, cancelled: &AtomicBool) -> io::Result<PowerSpendingReply> {
@@ -1288,8 +1358,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         idea_tooltips: None,
         warnings: Vec::new(),
     };
-    let mut asked: Vec<(u32, PowerItemRow)> = Vec::new();
-    let mut index: HashMap<(u32, u32, u32), u32> = HashMap::new();
+    let mut items = Items::default();
     let mut credits: BTreeMap<u32, u32> = BTreeMap::new();
     let mut day_gap_hours: BTreeMap<String, u64> = BTreeMap::new();
     let mut gain_buckets: BTreeMap<(i32, Option<i32>), GainBucket> = BTreeMap::new();
@@ -1297,13 +1366,14 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     let mut unmatched = 0_u64;
     let has_day_log = query.replay.recording().predates(TableId::PowerSpendDays.index()).is_none();
     let held = pieces(query, &params.country, params.from, params.to)?;
+    reply.tag = query.holders.name(&params.country, held.last().map_or(params.to.min(query.timeline.last), |piece| piece.last));
     for piece in &held {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let coverage_start = reply.coverage.len();
         coverage(query, piece, currency, &mut reply.coverage)?;
         balances(query, piece, currency, &mut reply.balances)?;
         instant_gains(query, piece, currency, &mut reply.gain_coverage, &mut gain_buckets, &mut allocations)?;
-        let items = items_at(query, piece.slot, piece.last)?;
+        let frame = items_at(query, piece.slot, piece.last)?;
         let low = u128::from(piece.slot) << 40 | u128::from(currency.code()) << 32;
         let mut missing = 0_u64;
         changes(query, piece, low, low | u128::from(u32::MAX), &mut |change| {
@@ -1320,14 +1390,8 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
             if payment.is_none() && day.is_none() {
                 return;
             }
-            let Some(row) = items.get(&change.ordinal) else {
-                missing += 1;
-                return;
-            };
-            let at = *index.entry((piece.run, piece.slot, change.ordinal)).or_insert_with(|| {
-                asked.push((piece.run, row.clone()));
-                (asked.len() - 1) as u32
-            });
+            let (at, known) = items.at(&frame, piece.run, piece.slot, change.ordinal, change.hour, payment.is_none());
+            missing += u64::from(!known);
             if let Some(mut payment) = payment {
                 payment.item = at;
                 reply.payments.push(payment);
@@ -1342,14 +1406,8 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         })?;
         if has_day_log {
             let gaps = day_log(query, piece, currency, &mut |hour, ordinal, mut day| {
-                let Some(row) = items.get(&ordinal) else {
-                    missing += 1;
-                    return;
-                };
-                let at = *index.entry((piece.run, piece.slot, ordinal)).or_insert_with(|| {
-                    asked.push((piece.run, row.clone()));
-                    (asked.len() - 1) as u32
-                });
+                let (at, known) = items.at(&frame, piece.run, piece.slot, ordinal, hour, true);
+                missing += u64::from(!known);
                 day.item = at;
                 day.read = hour;
                 if day.credits > 0 {
@@ -1363,6 +1421,13 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
             reply.warnings.push(format!("Politics spending item is not recorded in power items (count: {missing})"));
         }
     }
+    for payment in &mut reply.payments {
+        payment.item = items.resolved(payment.item);
+    }
+    for day in &mut reply.days {
+        day.item = items.resolved(day.item);
+    }
+    let credits: BTreeMap<u32, u32> = credits.into_iter().map(|(at, count)| (items.resolved(at), count)).collect();
     reply.payments.sort_by_key(|payment| (payment.read, payment.hour, payment.item));
     reply.days.sort_by_key(|day| (day.read, day.day, day.item));
     reply.gains = gain_buckets
@@ -1377,7 +1442,8 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
             unmatched: bucket.unmatched,
         })
         .collect();
-    reply.reconciliation = reconcile(params, &held, &reply, &allocations);
+    reply.reconciliation = reconcile(params, &held, &reply, &allocations, |first, last| query.timeline.within(first, last).next().is_some());
+    let asked = &items.asked;
     let rows: Vec<naming::Asked<'_>> = asked.iter().map(|(run, row)| naming::Asked { run: *run, row }).collect();
     let mut icons = BTreeMap::new();
     let named = naming::name(query, &rows, naming, &mut icons, cancelled)?;
@@ -1410,6 +1476,11 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         });
         reply.items.push(naming::ledger_item(format!("{}:{}:{}", row.holder, row.ordinal, row.first_read), row, named));
     }
+    if !items.unrecorded.is_empty() {
+        let (id, name) = naming::cause_category(PowerCause::NotIdentified);
+        categories.entry(id.to_owned()).or_insert_with(|| SpendCategory { id: id.to_owned(), name: name.to_owned(), identified: false });
+    }
+    reply.items.extend(items.unrecorded.iter().map(unrecorded_item));
     for (at, count) in credits {
         let item = &reply.items[at as usize];
         reply.warnings.push(format!(
