@@ -1,6 +1,6 @@
 import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
-import { flagArtHandle } from '../art/provider.ts';
-import { failedArt, missingArt, PENDING_ART, type ArtResult } from '../art/types.ts';
+import { flagChoiceArt } from '../art/provider.ts';
+import type { ArtResult } from '../art/types.ts';
 import { canonicalAuditValue } from '../audit.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyActionPayload, FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
@@ -37,16 +37,7 @@ export function countryRowPresentation(
   const labelMissing = identity.name.status === 'absent' || identity.name.status === 'failed';
   const label = identity.name.status === 'ready' ? identity.name.value : tag;
   const color = identity.colour?.status === 'ready' ? identity.colour.value : fallbackColor;
-  let art: ArtResult;
-  if (identity.flagChoice?.status === 'ready') {
-    art = readView.art(flagArtHandle(identity.flagChoice.value));
-  } else if (identity.flagChoice?.status === 'absent') {
-    art = missingArt(identity.flagChoice.reason);
-  } else if (identity.flagChoice?.status === 'failed') {
-    art = failedArt(identity.flagChoice.reason, identity.flagChoice.retryable);
-  } else {
-    art = PENDING_ART;
-  }
+  const art: ArtResult = flagChoiceArt(readView, identity.flagChoice);
   const iconUrl = art.status === 'ready' ? art.url : undefined;
   return {
     label,
@@ -396,7 +387,7 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
   if (row.readout?.primary && !items.length && !missingReason) {
     items.push({ label: row.readout.secondary ?? 'Count', value: row.readout.primary });
   }
-  if (row.media?.art.status === 'confirmedMissing') {
+  if (row.media?.art.status === 'confirmedMissing' || row.media?.art.status === 'unavailable') {
     items.push({ label: 'Artwork', missingReason: row.media.art.reason });
   }
 

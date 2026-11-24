@@ -31,6 +31,15 @@ pub struct PlaceNameRunsParams {
     pub provinces: Vec<u32>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum Presence {
+    Present,
+    Absent,
+    Unknown,
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -39,8 +48,8 @@ pub struct NameRun {
     pub last_hour: i32,
     pub name: Option<String>,
     pub missing: Option<String>,
-    #[doc = " True when the subject is proven not to exist (for its owner) across the run."]
-    pub absent: bool,
+    #[doc = " Whether the subject exists (for its owner) across the run: proven present, proven absent, or not known because what proves it is not recorded."]
+    pub presence: Presence,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -72,12 +81,18 @@ dashboard_base::reply_warnings!(PlaceNameRunsReply);
 pub struct Answer {
     pub name: Option<String>,
     pub missing: Option<String>,
-    pub absent: bool,
+    pub presence: Presence,
+}
+
+impl Answer {
+    pub fn unknown(reason: String) -> Self {
+        Self { name: None, missing: Some(reason), presence: Presence::Unknown }
+    }
 }
 
 impl From<Name> for Answer {
     fn from(name: Name) -> Self {
-        Self { name: name.name, missing: name.missing, absent: false }
+        Self { name: name.name, missing: name.missing, presence: Presence::Present }
     }
 }
 
@@ -85,13 +100,13 @@ pub fn extend_runs(runs: &mut Vec<NameRun>, first: i32, last: i32, answer: &Answ
     if let Some(held) = runs.last_mut()
         && held.name == answer.name
         && held.missing == answer.missing
-        && held.absent == answer.absent
+        && held.presence == answer.presence
         && unknown_between(unknown, held.last_hour + 1, first - 1)
     {
         held.last_hour = held.last_hour.max(last);
         return;
     }
-    runs.push(NameRun { first_hour: first, last_hour: last, name: answer.name.clone(), missing: answer.missing.clone(), absent: answer.absent });
+    runs.push(NameRun { first_hour: first, last_hour: last, name: answer.name.clone(), missing: answer.missing.clone(), presence: answer.presence });
 }
 
 pub struct RunBook<K> {
@@ -172,7 +187,7 @@ impl Product for PlaceNameRuns {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![PlaceNameRunsParams::decl(), NameRun::decl(), PlaceRuns::decl(), PlaceNameRunsReply::decl()]
+        vec![PlaceNameRunsParams::decl(), Presence::decl(), NameRun::decl(), PlaceRuns::decl(), PlaceNameRunsReply::decl()]
     }
 
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -233,15 +248,16 @@ impl Product for PlaceNameRuns {
                     };
                 }
                 let named = read_hour(&query, &mut frames, hour, &dirty_provinces, &dirty_states);
-                let places = named.as_ref().ok().map(Places::new);
-                let answer = |name: Option<Name>| name.unwrap_or_else(|| Name { name: None, missing: named.as_ref().err().cloned() });
+                let places = named.as_ref().map(Places::new);
+                let answer = |name: &dyn Fn(&Places) -> Name| match &places {
+                    Ok(places) => Answer::from(name(places)),
+                    Err(reason) => Answer::unknown(String::clone(reason)),
+                };
                 for &id in &dirty_states {
-                    let name = answer(places.as_ref().map(|places| places.state(&content, id)));
-                    state_book.settle(id, name.into(), hour, &unknown);
+                    state_book.settle(id, answer(&|places| places.state(&content, id)), hour, &unknown);
                 }
                 for &id in &dirty_provinces {
-                    let name = answer(places.as_ref().map(|places| places.province(&content, id, params.land)));
-                    province_book.settle(id, name.into(), hour, &unknown);
+                    province_book.settle(id, answer(&|places| places.province(&content, id, params.land)), hour, &unknown);
                 }
                 Ok(())
             })?;
@@ -279,7 +295,7 @@ mod tests {
     use super::*;
 
     fn name(text: &str) -> Answer {
-        Answer { name: Some(text.to_owned()), missing: None, absent: false }
+        Answer { name: Some(text.to_owned()), missing: None, presence: Presence::Present }
     }
 
     #[test]
@@ -307,7 +323,7 @@ mod tests {
         assert_eq!(contiguous.len(), 2, "hours between that are neither recorded runs nor unknown never join");
 
         let mut missing = Vec::new();
-        extend_runs(&mut missing, 0, 9, &Answer { name: None, missing: Some("Not in this recording: state 7 at this hour".into()), absent: false }, &[]);
+        extend_runs(&mut missing, 0, 9, &Answer::unknown("Not in this recording: state 7 at this hour".into()), &[]);
         extend_runs(&mut missing, 10, 19, &name("Sample State"), &[]);
         assert_eq!(missing.len(), 2, "an absent stretch is its own run with its reason");
     }

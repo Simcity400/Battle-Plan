@@ -299,6 +299,9 @@ export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions
     const headValue = headRaw !== null ? plotValue(headRaw) : null;
     const icon = { art: readView.art(measureArtHandle('balanceOfPower')), label: 'Balance of power' };
     const title = record?.name ?? balanceName(balance, history.names) ?? 'Balance of power';
+    const activeRangeName = record
+      ? (record.range?.name && record.range.name.length > 0 ? record.range.name : null)
+      : (at.range ? rangeName(balance, at.range, history.names) : null);
 
     const series: TimeChartSeriesModel[] = [{
       id: balance.token,
@@ -317,8 +320,9 @@ export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions
         ? null
         : {
           icon,
-          name: null,
-          fullName: title,
+          name: activeRangeName,
+          shortName: activeRangeName,
+          fullName: activeRangeName ?? title,
           value: valueText(headRaw),
           exactValue: exactValue(headRaw),
         },

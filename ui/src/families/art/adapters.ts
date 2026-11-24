@@ -1,6 +1,6 @@
 import type { Canvas2D } from '../../charts/textWidth.ts';
 import { drawArtSlot, drawFlagSlot, type ArtSlotState, type FlagSlotState } from '../../draw/kit.ts';
-import type { CountryFlagImage, SpriteImage } from '../../generated/dashboard';
+import type { SpriteImage } from '../../generated/dashboard';
 import type { FamilyTheme } from '../contract.ts';
 import type { DrawnFlagEntry } from '../identity/types.ts';
 import type { LaneArtCache } from './laneCache.ts';
@@ -11,7 +11,7 @@ import {
   PENDING_ART,
   defaultArtFrame,
   failedArt,
-  missingArt,
+  productArt,
   readyArt,
   type ArtOrigin,
   type ArtProvenance,
@@ -23,7 +23,7 @@ export function flagEntryToArt(entry: DrawnFlagEntry | undefined): ArtResolution
   if (!entry) return PENDING_ART;
   if (entry.failed) return failedArt(entry.failed.message, true);
   if (entry.resolution) return entry.resolution;
-  if (entry.image?.resolution) return entry.image.resolution;
+  if (entry.image?.resolution) return productArt(entry.image.resolution);
   if (entry.url) {
     return readyArt(entry.url, {
       assetId: entry.image?.key ?? entry.url,
@@ -31,38 +31,18 @@ export function flagEntryToArt(entry: DrawnFlagEntry | undefined): ArtResolution
       frame: entry.image ? defaultArtFrame(entry.image.width, entry.image.height) : defaultArtFrame(),
     });
   }
-  return missingArt(entry.reason ?? 'Flag unavailable');
+  return failedArt('The flag entry carries neither art nor a resolution', false);
 }
 
-export function flagImageToArt(
-  image: CountryFlagImage | undefined,
-  options: { readonly pending?: boolean; readonly reason?: string | null } = {},
-): ArtResolution {
-  if (image?.resolution) return image.resolution;
-  if (image) {
-    return readyArt(image.png, {
-      assetId: image.key,
-      file: image.asset,
-      frame: defaultArtFrame(image.width, image.height),
-    });
-  }
-  if (options.pending) return PENDING_ART;
-  return missingArt(options.reason ?? 'Flag unavailable');
-}
-
-export function spriteImageToArt(
-  image: SpriteImage | undefined,
-  options: { readonly pending?: boolean; readonly reason?: string | null } = {},
-): ArtResolution {
-  if (image?.resolution) return image.resolution;
-  if (image?.icon) {
+export function spriteImageToArt(image: SpriteImage): ArtResolution {
+  if (image.resolution) return productArt(image.resolution);
+  if (image.icon) {
     return readyArt(image.icon, {
       assetId: `${image.key}#${image.frame}`,
       frame: defaultArtFrame(0, 0, image.frame, 1),
     });
   }
-  if (options.pending) return PENDING_ART;
-  return missingArt(options.reason ?? 'Sprite art unavailable');
+  return failedArt('The sprite reply carried neither art nor a resolution', false);
 }
 
 export function urlToArt(
@@ -85,7 +65,7 @@ export function urlToArt(
     });
   }
   if (options.pending) return PENDING_ART;
-  return missingArt(options.reason ?? 'Art not found in the current installation');
+  return failedArt(options.reason ?? 'No artwork address was given', false);
 }
 
 function bitmapDimensions(bitmap: CanvasImageSource, frameWidth: number, frameHeight: number): { readonly width: number; readonly height: number } {
@@ -112,6 +92,7 @@ export function toArtSlotState<TBitmap extends CanvasImageSource>(
       return { kind: 'ready', bitmap: state.bitmap, width, height };
     }
     case 'confirmedMissing':
+    case 'unavailable':
       return { kind: 'missing', ...(resolvedName ? { resolvedName } : {}) };
     case 'refused':
       return { kind: 'refused', reason: state.reason };
@@ -139,6 +120,7 @@ export function toFlagSlotState<TBitmap extends CanvasImageSource>(
     case 'refused':
       return { kind: 'refused', reason: state.reason };
     case 'confirmedMissing':
+    case 'unavailable':
       return { kind: 'missing', ...(tag ? { tag } : {}) };
   }
 }

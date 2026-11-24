@@ -219,6 +219,12 @@ impl Holders {
     pub fn named<K: Key + ?Sized>(&self, country: &K) -> bool {
         !country.runs(self).is_empty()
     }
+
+    pub fn slot_tag(&self, slot: u32, hour: i32) -> Option<&str> {
+        let held = self.slots().get(&slot)?;
+        let end = held.tags.partition_point(|(first, ..)| *first <= hour);
+        held.tags[..end].iter().rev().find(|(_, last, ..)| hour <= *last).map(|(.., tag)| tag.as_str())
+    }
 }
 
 fn slot_histories(tags: &BTreeMap<String, Vec<HolderRun>>) -> BTreeMap<u32, SlotHistory> {

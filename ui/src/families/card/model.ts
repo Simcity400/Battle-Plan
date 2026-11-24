@@ -1,6 +1,6 @@
 import type { StatusMarkKind } from '../../draw/kit.ts';
-import { flagArtHandle } from '../art/provider.ts';
-import { failedArt, missingArt, PENDING_ART, type ArtResult } from '../art/types.ts';
+import { flagChoiceArt } from '../art/provider.ts';
+import { unavailableArt, type ArtResult } from '../art/types.ts';
 import { canonicalAuditValue } from '../audit.ts';
 import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
@@ -140,7 +140,7 @@ export function cardMediaFromIcon(readView: BoundedReadView, url: string | null 
   if (url) {
     return { kind: 'art', art: readView.art({ kind: 'url', url }), iconUrl: url, ...(name ? { name } : {}) };
   }
-  return { kind: 'art', art: missingArt(missing ?? 'Art missing from the current installation'), ...(name ? { name } : {}) };
+  return { kind: 'art', art: unavailableArt(missing ?? 'The product drew no icon'), ...(name ? { name } : {}) };
 }
 
 export function cardFlag(readView: BoundedReadView, tag: string, atHour?: number): { readonly media: CardMedia; readonly name: Value<string> } {
@@ -150,11 +150,7 @@ export function cardFlag(readView: BoundedReadView, tag: string, atHour?: number
     : identity.name.status === 'pending'
       ? { kind: 'known', value: tag }
       : { kind: 'notRecorded', reason: identity.name.reason };
-  let art: ArtResult;
-  if (identity.flagChoice?.status === 'ready') art = readView.art(flagArtHandle(identity.flagChoice.value));
-  else if (identity.flagChoice?.status === 'absent') art = missingArt(identity.flagChoice.reason);
-  else if (identity.flagChoice?.status === 'failed') art = failedArt(identity.flagChoice.reason, identity.flagChoice.retryable);
-  else art = PENDING_ART;
+  const art: ArtResult = flagChoiceArt(readView, identity.flagChoice);
   return { media: { kind: 'flag', art, ...(art.status === 'ready' ? { iconUrl: art.url } : {}), tag }, name };
 }
 
@@ -196,6 +192,7 @@ export function deriveCardTooltip(model: CardModel, key: string): FamilyTooltipP
   }
   const media = row.kind === 'item' ? row.art ?? row.flag : row.art;
   if (media?.art.status === 'confirmedMissing') items.push({ label: 'Art', missingReason: `${media.art.reason}; art missing from the current installation` });
+  else if (media?.art.status === 'unavailable') items.push({ label: 'Art', missingReason: media.art.reason });
   return { title, fullText: title, hour: model.hour, ...(items.length ? { items } : {}) };
 }
 
