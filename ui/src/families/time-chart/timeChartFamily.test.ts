@@ -372,6 +372,12 @@ describe('time-chart layout & rules C1-C12', () => {
     assert.equal(formatChartAxisValue(-0.5, 'signed1'), '\u22120.5');
     assert.equal(formatChartAxisValue(0.5, 'signed1'), '+0.5');
     assert.equal(formatChartAxisValue(0, 'signed1'), '0');
+    const bopTicks = [-1, -0.5, 0, 0.5, 1];
+    assert.deepEqual(
+      bopTicks.map(v => formatChartAxisValue(v, 'signed1', bopTicks)),
+      ['\u22121.0', '\u22120.5', '0', '+0.5', '+1.0'],
+      'K4: all non-zero signed axis labels carry the same decimal count',
+    );
   });
 });
 
@@ -1067,7 +1073,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
 
     assert.equal(model.mode, 'stack');
     assert.deepEqual(model.stack?.bands.map(b => [b.id, b.color, b.endLabel?.value]), [
-      ['noSupply', CHART_MEASURE_COLOURS.supplyNone, '7%'],
+      ['noSupply', CHART_MEASURE_COLOURS.supplyNone, '7.0%'],
       ['strained', CHART_MEASURE_COLOURS.supplyStrained, '66%'],
       ['inSupply', CHART_MEASURE_COLOURS.supplyOk, '27%'],
     ]);
@@ -1079,7 +1085,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     drawTimeChart(ctx, model, layout, undefined, null, 1);
     assert.ok(ops.some(op => op === 'text:27%'));
     assert.ok(ops.some(op => op === 'text:66%'));
-    assert.ok(ops.some(op => op === 'text:7%'));
+    assert.ok(ops.some(op => op === 'text:7.0%'));
 
     const hitBand = hitTestTimeChart(model, layout, [layout.toX(base + 20), layout.toY(90)]);
     assert.ok(hitBand?.startsWith('line:inSupply@'));
@@ -1089,7 +1095,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     assert.deepEqual(hoverTip?.payload?.items?.map(i => `${i.label}:${i.value}`), [
       'In supply:27% · 27 divisions',
       'Strained:66% · 66 divisions',
-      'No supply:7% · 7 divisions',
+      'No supply:7.0% · 7 divisions',
     ]);
   });
 
