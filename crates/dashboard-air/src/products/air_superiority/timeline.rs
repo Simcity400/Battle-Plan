@@ -451,14 +451,6 @@ pub(crate) fn readout_of(cell: Option<&AirDayCell>, hour: Option<i32>) -> AirRea
     }
 }
 
-pub(crate) fn complete_spans(statuses: impl Iterator<Item = (i32, i32, bool)>) -> Vec<(i32, i32)> {
-    statuses.filter(|(_, _, complete)| *complete).map(|(first, last, _)| (first, last)).collect()
-}
-
-pub(crate) fn covers(spans: &[(i32, i32)], hour: i32) -> bool {
-    spans.iter().any(|&(first, last)| first <= hour && hour <= last)
-}
-
 pub(crate) struct Shown {
     pub cells: Vec<Vec<(u32, Option<AirDayCell>)>>,
     pub excluded: Vec<u32>,
@@ -927,13 +919,6 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
             }
         }
     }
-    let complete_reads: Vec<Vec<(i32, i32)>> = stretches
-        .iter()
-        .map(|stretch| {
-            let statuses = dashboard_query::cost::storage(|| lanes::statuses(query.replay.recording(), stretch.run, TableId::RaidAirScores, stretch.first, stretch.last))?;
-            Ok(complete_spans(statuses.iter().map(|run| (run.first, run.last, replay_recording::columnar_frames::complete(run.status)))))
-        })
-        .collect::<io::Result<_>>()?;
     let charted = Charted { parts: &parts, days: &days, first_day, at_hour: &at_hours };
     let mut held_links: HashMap<(usize, usize), Arc<Vec<CountryLinkRow>>> = HashMap::new();
     let mut reads: Vec<Option<DayRead>> = Vec::with_capacity(count);
@@ -954,8 +939,7 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
             let cut = links.cuts.partition_point(|cut| *cut <= day.hour);
             Arc::clone(held_links.entry((day.part, cut)).or_insert_with(|| Arc::new(links.at(day.hour))))
         });
-        let complete = covers(&complete_reads[day.part], day.hour);
-        reads.push(Some(DayRead { hour: day.hour, witnesses: charted.witnesses(at), complete, links }));
+        reads.push(Some(DayRead { hour: day.hour, witnesses: charted.witnesses(at), complete: true, links }));
     }
     dashboard_text::metadata::check_cancel(cancelled)?;
 

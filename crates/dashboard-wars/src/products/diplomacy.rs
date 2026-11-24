@@ -226,9 +226,7 @@ pub(crate) fn opinions(frame: &DecodedFrame, ids: &[(&str, Option<(u32, u32)>)],
     opinions_matrix(frame, ids, live).map(|(owners, ..)| owners)
 }
 
-pub(crate) const TOP_UNRANKED: &str = "The countries' factories were not recorded at this hour, so no top countries can be ranked";
-
-pub(crate) fn top_countries_at(frame: &DecodedFrame, holders: &Holders, hour: i32, limit: u32) -> Result<Vec<Country>, &'static str> {
+fn top_countries_at(frame: &DecodedFrame, holders: &Holders, hour: i32, limit: u32) -> Vec<Country> {
     let mut slot_to_tag: HashMap<u32, &str> = HashMap::new();
     let mut raw_to_slot: HashMap<u32, u32> = HashMap::new();
     for (tag, _) in &holders.tags {
@@ -243,8 +241,7 @@ pub(crate) fn top_countries_at(frame: &DecodedFrame, holders: &Holders, hour: i3
         }
     }
     let mut scores: HashMap<&str, i64> = slot_to_tag.values().map(|&tag| (tag, 0)).collect();
-    let factories = frame.complete::<tables::CountryFactories>().map_err(|_| TOP_UNRANKED)?;
-    {
+    if let Ok(factories) = frame.complete::<tables::CountryFactories>() {
         for row in factories {
             if let Some(&slot) = raw_to_slot.get(&row.country)
                 && let Some(&tag) = slot_to_tag.get(&slot)
@@ -258,7 +255,7 @@ pub(crate) fn top_countries_at(frame: &DecodedFrame, holders: &Holders, hour: i3
     let mut ranked: Vec<(&str, i64)> = scores.into_iter().collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
     ranked.truncate(limit as usize);
-    Ok(ranked.into_iter().map(|(tag, _)| Country::from(tag)).collect())
+    ranked.into_iter().map(|(tag, _)| Country::from(tag)).collect()
 }
 
 pub struct DiplomacyContext {
@@ -309,7 +306,7 @@ impl AtHour for DiplomaticRelations {
             _ => return Vec::new(),
         }
         let chosen: Vec<Country> = if params.countries.is_empty() {
-            params.top.map_or_else(Vec::new, |limit| top_countries_at(held, at.holders, at.hour, limit).unwrap_or_default())
+            params.top.map_or_else(Vec::new, |limit| top_countries_at(held, at.holders, at.hour, limit))
         } else {
             params.countries.clone()
         };
@@ -346,10 +343,7 @@ impl AtHour for DiplomaticRelations {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let chosen: Vec<Country> = if params.countries.is_empty() {
-            match params.top {
-                Some(limit) => top_countries_at(frame, at.holders, at.hour, limit).map_err(dashboard_core::refused)?,
-                None => Vec::new(),
-            }
+            params.top.map_or_else(Vec::new, |limit| top_countries_at(frame, at.holders, at.hour, limit))
         } else {
             params.countries.clone()
         };

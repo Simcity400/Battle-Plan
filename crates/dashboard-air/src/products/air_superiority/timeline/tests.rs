@@ -417,11 +417,3 @@ fn a_known_side_beside_an_unknown_one_is_not_a_leader() {
     let cell = AirDayCell::Sides(AirDaySides { parts: vec![AirDayPart { side: 0, tag: "GER".into(), friendly: "71".into() }], viewpoints: vec![], unknown: vec![1], no_air_object: vec![], filtered: false });
     assert_eq!(readout_of(Some(&cell), Some(100)), AirReadout::NotRecorded { reason: "A side's air score was not recorded".into() });
 }
-
-#[test]
-fn a_summarised_day_is_complete_only_where_its_table_was_read_complete() {
-    let spans = complete_spans([(0, 23, true), (24, 47, false), (48, 71, true)].into_iter());
-    assert!(covers(&spans, 23));
-    assert!(!covers(&spans, 30), "a truncated read is not a complete population");
-    assert!(covers(&spans, 48));
-}

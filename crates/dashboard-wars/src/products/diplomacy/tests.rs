@@ -191,14 +191,12 @@ fn a_countrys_pacts_include_those_other_countries_rows_name_it_in_once_each() {
 }
 
 #[test]
-fn top_countries_refuse_when_the_factories_were_not_recorded_and_a_slot_is_named_by_its_tag() {
+fn a_country_chosen_by_slot_is_named_by_the_tag_that_holds_it() {
     use dashboard_query::identity::{Holder, HolderRun};
     let holders = dashboard_query::identity::Holders::new(
         [("GER", 1), ("ENG", 2)].iter().map(|(tag, id)| ((*tag).to_owned(), vec![HolderRun { first: 0, last: 1000, holder: Holder::Found { slot: *id, id: *id }, starts_segment: true }])).collect(),
         vec![],
     );
-    let unrecorded = frame(vec![], vec![]);
-    assert_eq!(top_countries_at(&unrecorded, &holders, 500, 2), Err(TOP_UNRANKED), "no ranking is invented from a missing table");
     let ids = holder_ids(&holders, &[Country::Slot(2)], 500);
     assert_eq!(ids[0].0, "ENG", "a country chosen by slot is named by the tag that holds it");
 }

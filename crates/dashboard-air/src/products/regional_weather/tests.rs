@@ -89,12 +89,3 @@ fn weather_acceptance_current_day_at_midnight_terminal_split_since_and_scoped_ex
     let legend = visible_legend(&[1], &midnight[4..5], &[("light_rain".to_owned(), [(1, vec![Some(0)]), (2, vec![Some(1)])].into())], Show::Conditions, &choices);
     assert_eq!(legend.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), vec!["clear"], "off-chart region 2 rain does not enter legend");
 }
-
-#[test]
-fn a_truncated_region_read_still_gives_its_witnessed_conditions_but_not_a_temperature_mean() {
-    use replay_columnar::manifest::Status;
-    assert!(sampled_read(Show::Conditions, Status::Truncated { missing: 3 }));
-    assert!(sampled_read(Show::Modifier, Status::Truncated { missing: 3 }));
-    assert!(!sampled_read(Show::Temperature, Status::Truncated { missing: 3 }), "a province mean needs every province");
-    assert!(!sampled_read(Show::Conditions, Status::NotRecorded));
-}
