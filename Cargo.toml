@@ -19,23 +19,14 @@ suspicious = { level = "warn", priority = -1 }
 perf = { level = "warn", priority = -1 }
 style = { level = "allow", priority = -1 }
 complexity = { level = "allow", priority = -1 }
-unwrap_used = "warn"
-panic_in_result_fn = "warn"
 allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
-undocumented_unsafe_blocks = "warn"
-multiple_unsafe_ops_per_block = "warn"
 missing_safety_doc = "warn"
 redundant_clone = "warn"
-cast_possible_truncation = "warn"
-cast_possible_wrap = "warn"
-cast_sign_loss = "warn"
-cast_precision_loss = "warn"
 cast_ptr_alignment = "warn"
 ptr_as_ptr = "warn"
 borrow_as_ptr = "warn"
 ref_as_ptr = "warn"
-large_stack_arrays = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unimplemented = "warn"

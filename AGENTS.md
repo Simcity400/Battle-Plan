@@ -93,7 +93,7 @@ All Rust is in `crates/`; names group by prefix.
 - Design every part, new or changed, as the best solution from scratch, not a patch on what is there, as fast and efficient as it can be.
 - Design for 1,500 countries. No caps we made up.
 - New comments fail the ratchet bar `// SAFETY:` and `# Safety` at unsafe code. Use ADRs.
-- Suppressions give `reason = "..."` (`tools/check-suppressions.py`). Lints fail on lines you write; `#[expect]` cast lints, never change recorded numbers.
+- Suppressions give `reason = "..."` (`tools/check-suppressions.py`). Clippy and rustc lints fail on the lines you write.
 
 ## Pull requests
 

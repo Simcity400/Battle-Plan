@@ -54,10 +54,6 @@ warning[E0133]: call to deprecated safe function `std::env::set_var` is unsafe a
 error[E0133]: call to unsafe function `read` is unsafe and requires unsafe function or block
   --> crates/replay-columnar/src/lib.rs:90:5
 
-warning: used `unwrap()` on a `Result` value
-  --> crates/replay-columnar/tests/helpers.rs:13:5
-   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#unwrap_used
-
 warning: `replay-columnar` (lib test) generated 6 warnings (5 duplicates)
 """
 

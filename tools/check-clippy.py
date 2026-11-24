@@ -27,7 +27,6 @@ RUSTC_LINT = re.compile(r"requested on the command line with `-[WD] ([a-z0-9_-]+
 RUSTC_MESSAGES = {
     "unsafe_op_in_unsafe_fn": lambda level, code, message: level == "warning" and code == "E0133" and "deprecated safe" not in message,
 }
-INTEGRATION_TEST = re.compile(r"^crates/[^/]+/tests/")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
@@ -46,8 +45,6 @@ def findings(lines, rust_lints=frozenset()):
     def close():
         if current and current["lint"] is None:
             current["lint"] = next((name for name, matches in RUSTC_MESSAGES.items() if name in rust_lints and matches(current["level"], current["code"], current["message"])), None)
-        if current and current["lint"] == "unwrap_used" and current["path"] and INTEGRATION_TEST.match(current["path"]):
-            return
         if current and current["lint"] and current["path"]:
             found.append((current["path"], current["line"], current["lint"], current["level"], current["message"]))
 
