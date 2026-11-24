@@ -392,4 +392,7 @@ test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and sig
   assert.equal(formatRecordedPercent(15.5, { signed: true }), '+15.5%');
   assert.equal(formatRecordedPercent(-10.2, { signed: true }), '−10.2%');
   assert.equal(formatRecordedPercent(0, { signed: true }), '0%');
+  assert.equal(formatScalar(11 / 5975, 'share'), '0.2%');
+  assert.equal(formatScalar(0, 'share'), '0%');
+  assert.deepEqual(formatValueState(knownValue(0.24), 'share'), { kind: 'known', text: '24%', spoken: '24%', audit: '24%' });
 });

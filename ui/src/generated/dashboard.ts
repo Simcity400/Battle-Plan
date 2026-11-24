@@ -2572,15 +2572,15 @@ export type ConstructionBreakdownReply = {
  */
 from: number, hour: number,
 /**
- * The breakdown stands unchanged from `hour` through this hour.
+ * Everything in the reply stands unchanged from `hour` through this hour.
  */
 through: number, breakdown: Breakdown,
 /**
- * Projects whose output before observation began is not counted.
+ * Projects read by `hour` whose output before observation began is not counted.
  */
 beforeFirstRead: number,
 /**
- * Projects whose output no country can be given, not counted.
+ * Projects read by `hour` whose output no country can be given, not counted.
  */
 unattributed: number, warnings: Array<string>, };
 export type DivisionLogParams = { branchId: string, facets: Array<FacetFilter>, from: number | null, to: number, cursor: string | null, pageSize: number, };
@@ -3628,14 +3628,19 @@ export type PowerSpendingBreakdownParams = { branchId: string, country: CountryR
 from: number, hour: number, };
 export type PowerSpendingBreakdownReply = { from: number, hour: number,
 /**
- * The breakdown stands unchanged from `hour` through this hour.
+ * Everything in the reply stands unchanged from `hour` through this hour.
  */
 through: number, breakdown: Breakdown,
 /**
- * Gained over the same period before the cap, scaled by the breakdown's decimals; none when not
- * recorded whole.
+ * Gained over the same period before the cap, scaled by the breakdown's decimals; none when an
+ * amount gained was read without its value. With `gained_reason`, hours of the period whose gains
+ * were not read are left out: the figure is partial.
  */
-gainedRaw: string | null, lostAtCapRaw: string | null, gainedReason: string | null, warnings: Array<string>, };
+gainedRaw: string | null, lostAtCapRaw: string | null,
+/**
+ * Why the gain is not known, or (with `gained_raw`) why it is partial.
+ */
+gainedReason: string | null, warnings: Array<string>, };
 export type SpendCurrency = "Political" | "Command";
 export type Breakdown = { decimals: number, total: BreakdownTotal,
 /**
@@ -3673,13 +3678,19 @@ raw: string | null, state: BreakdownState, reason: string | null,
 /**
  * Of the whole; none where the whole is only a lower bound or the part is not positive.
  */
-share: number | null, count: bigint | null,
+share: number | null,
+/**
+ * Of the part above it (of the whole for a first-level part); none where that is only a lower
+ * bound or either is not positive.
+ */
+parentShare: number | null, count: bigint | null,
 /**
  * The latest hour one of its amounts was read; none where the product does not date them.
  */
 last: number | null,
 /**
- * In display order.
+ * In display order. Their known amounts add up to this part's: an amount given to this part
+ * itself and to none of them is the last known child, `other`.
  */
 children: Array<BreakdownPart>, };
 export type BreakdownState = "known" | "partial" | "atLeast" | "notRecorded";

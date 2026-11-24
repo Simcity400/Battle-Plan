@@ -27,7 +27,7 @@ import {
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { formatDateParts, formatScalar, formatValueState } from '../valueFormat.ts';
 import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE, PARTIAL_TAB_GAP, PARTIAL_TAB_HEIGHT, PARTIAL_TAB_WIDTH } from '../valueCanvas.ts';
-import { SHARE_FIGURE_SLOT, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, type FamilyColumnLayout } from './layout.ts';
+import { SHARE_FIGURE_SLOT, TREE_CHEVRON_LANE, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, type FamilyColumnLayout } from './layout.ts';
 import type { CellPaintModel, FlatTableRow, TableCell } from './model.ts';
 import {
   CELL_INSET,
@@ -38,7 +38,6 @@ import {
   type TableTheme,
 } from './settings.ts';
 
-export const TREE_INDENT_PX = 16;
 export const TWO_WAY_SLOT = 72;
 export const TWO_WAY_GAP = 8;
 
@@ -47,7 +46,29 @@ function signedText(text: string, signed: number): string {
   if (signed < 0) return text.replace(/^-/, '−');
   return text;
 }
-export const TREE_CHEVRON_LANE = 18;
+
+const TREE_LEVEL_LIMIT = 30;
+const treeLevelCache = new WeakMap<readonly FlatTableRow[], number>();
+
+export function treeLevelsOf(rows: readonly FlatTableRow[]): number {
+  const held = treeLevelCache.get(rows);
+  if (held !== undefined) return held;
+  let levels = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const item = rows[i]!;
+    if (item.kind === 'data' && item.isTreeGroup) levels |= 1 << Math.min(item.level, TREE_LEVEL_LIMIT);
+  }
+  treeLevelCache.set(rows, levels);
+  return levels;
+}
+
+export function treeTextStart(level: number, levels: number): number {
+  let start = 0;
+  for (let at = 1; at <= Math.min(level, TREE_LEVEL_LIMIT); at++) {
+    if (levels & (1 << at)) start += TREE_CHEVRON_LANE;
+  }
+  return start;
+}
 
 export interface CellRenderContext {
   readonly ctx: TableCanvasContext;
@@ -56,6 +77,7 @@ export interface CellRenderContext {
   readonly barsMode: TableBarsMode;
   readonly sortedColumn: string;
   readonly treeColumn: number;
+  readonly treeLevels: number;
   readonly icons?: ReadonlyMap<string, ImageBitmap | null>;
   readonly artCache?: LaneArtCache;
   readonly measure: (text: string, font: string) => number;
@@ -231,11 +253,8 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   if (column.notRecordedReason || cell?.blank) return;
 
   if (colIndex === rc.treeColumn) {
-    if (item.level > 1) left += (item.level - 1) * TREE_INDENT_PX;
-    if (item.isTreeGroup) {
-      drawChevron(ctx, left - 2, middle, item.isOpen, theme);
-      left += TREE_CHEVRON_LANE;
-    }
+    left += treeTextStart(item.level, rc.treeLevels);
+    if (item.isTreeGroup) drawChevron(ctx, left - TREE_CHEVRON_LANE - 2, middle, item.isOpen, theme);
   }
 
   const kind = column.cellKind;
