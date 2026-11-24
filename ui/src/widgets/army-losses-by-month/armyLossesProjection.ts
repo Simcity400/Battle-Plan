@@ -5,11 +5,8 @@ import { firstHourOfMonth, gameDate, monthAt, monthIndex, monthNames } from '../
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { ChartColumnSegment, ChartLegendEntry, ChartMonthSlot, TimeChartModel } from '../../families/time-chart/model.ts';
 import type { ArmyLossesReply, ArmyLossMonthBar, LossStack, LossView } from '../../generated/dashboard';
 
@@ -188,7 +185,7 @@ function resolveBar(
   };
 }
 
-export const armyLossesProjection: TimeChartProjection<ArmyLossesChartOptions> = registerTimeChart({
+export const armyLossesProjection: TimeChartProjection<ArmyLossesChartOptions> = registerFamilyProjection({
   kind: 'army-losses-by-month',
   family: 'time-chart',
   variant: 'columns',
