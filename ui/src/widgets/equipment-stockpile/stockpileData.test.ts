@@ -4,8 +4,8 @@ import type { AmountRun, EquipmentStockpileReply, StockVariant } from './types';
 import { resolveY } from '../../charts/view.ts';
 import { chosenShown, storedChoices, toggleChosen } from '../../dashboard/chosen.ts';
 import { contentKey, contentSet, setToken, storableToken } from '../../dashboard/options.ts';
-import { OPTIONS } from './definition.ts';
-import { automaticGroups, automaticLines, chartChoices, chartRuns, choiceKey, choiceRow, oneChoicePerRow, designAt, hasRecords, stockChoices, typeName, variantKey, balanceAt, typesComplete, variantsComplete, balanceMode, formatPercent, groupChoices, groupLabel, groupTooltip, labelAt, overTimeTooltip, shareOf, shareRuns, stockAt, stockGroups, stockRuns, validateStockpileReply, variantName, dailyAt } from './stockpileData.ts';
+import { TIME_OPTIONS } from './definition.ts';
+import { chartChoices, chartRuns, choiceKey, choiceRow, designAt, hasRecords, stockChoices, typeName, variantKey, balanceAt, typesComplete, variantsComplete, balanceMode, formatPercent, groupChoices, groupLabel, groupTooltip, labelAt, shareOf, shareRuns, stockAt, stockGroups, stockRuns, validateStockpileReply, variantName, dailyAt } from './stockpileData.ts';
 
 const U = 100000;
 const run = (firstHour: number, lastHour: number, amount: number): AmountRun => ({ firstHour, lastHour, amountRaw: String(Math.round(amount * U)) });
@@ -47,7 +47,7 @@ const REPLY: EquipmentStockpileReply = {
 };
 
 test('stockpile choices can exceed eight', () => {
-  const field = OPTIONS.find(field => field.key === 'chosen')!;
+  const field = TIME_OPTIONS.find(field => field.key === 'chosen')!;
   assert.equal(field.kind, 'content-set');
   if (field.kind !== 'content-set') return;
   const tokens = Array.from({ length: 12 }, (_, index) => `type_${index}`);
@@ -117,10 +117,8 @@ test('stock and daily output work for AI countries and variants', () => {
     [[100, 123, 145666, true], [124, 130, 146000, false], [140, 150, 140000, true]]);
 });
 
-test('the automatic lines are the main land and air types; chips toggle groups', () => {
+test('chips toggle groups', () => {
   const groups = stockGroups(REPLY, 'type', 110);
-  assert.deepEqual(automaticGroups(REPLY, groups, 'type'), ['infantry_equipment', 'motorized_equipment', 'light_tank_chassis', 'cas_equipment']);
-  assert.deepEqual(automaticGroups(REPLY, stockGroups(REPLY, 'domain', 110), 'domain'), ['land', 'air']);
   const source = groupChoices(groups, 'equipment type');
   assert.equal(source.lines('anti_tank_equipment'), 1);
   assert.equal(source.lines('mod_rifle'), 0);
@@ -149,10 +147,6 @@ test('tooltips give the game’s surplus for a player, the note for an AI countr
   assert.ok(short.rows.length < player.rows.length && short.rows[0].label === 'In stock' && short.spoken);
   assert.equal(groupLabel(REPLY, tanks, 110), 'Light Tank: shortage −373, −34% of need');
   assert.equal(groupLabel(REPLY, tanks, 145), 'Light Tank: 0 in stock');
-  const over = overTimeTooltip('1 Dec 1943', [{ group: tanks, color: 'red', stock: 2116n * 100000n, daily: null, logistics: balanceAt(REPLY, tanks, 110) }], 5, undefined, 1000);
-  assert.deepEqual(over.rows.map(row => [row.label, row.value]), [['Light Tank', '−373 (−34%)'], ['Needed', '1,093'], ['Output per day', 'Not recorded']]);
-  const stockOnly = overTimeTooltip('1 Dec 1943', [{ group: tanks, color: 'red', stock: 2116n * 100000n, daily: null }], 5, undefined, 1000);
-  assert.deepEqual(stockOnly.rows[0].value, '2,116');
 });
 
 test('an uncomputable daily rate is unknown, never zero or a partial sum', () => {
@@ -279,18 +273,6 @@ test('a recorded negative stock is summed as recorded, never clamped to zero', (
   assert.equal(stockAt(negative, cas, 110), -43n * 100000n);
 });
 
-test('a saved list keeps one choice per row, the first', () => {
-  const variant = (design: string) => setToken(`campaign:7:rifle#${design}`);
-  assert.deepEqual(oneChoicePerRow([variant('a'), setToken('infantry_equipment'), variant('b')]), [variant('a'), setToken('infantry_equipment')]);
-});
-
-test('the automatic lines are the top types among those that can be drawn', () => {
-  const groups = stockGroups(REPLY, 'type', 110);
-  const drawable = (group: { key: string }) => group.key !== 'motorized_equipment';
-  assert.deepEqual(automaticLines(REPLY, groups, 'type', drawable), ['infantry_equipment', 'light_tank_chassis', 'anti_tank_equipment', 'cas_equipment', 'fighter_equipment']);
-  assert.ok(!automaticLines(REPLY, groups, 'type', drawable).includes('motorized_equipment'));
-});
-
 test('the spoken tooltip lists every variant even where the eye sees eight', () => {
   const many: EquipmentStockpileReply = { ...REPLY, variants: [...REPLY.variants.filter(item => item.archetype !== 'infantry_equipment'),
     ...Array.from({ length: 10 }, (_, index) => variant(String(2000 + index), 'infantry_equipment_1', 'infantry_equipment', [run(100, 130, 100 - index)], [],
@@ -355,7 +337,6 @@ test('a modded campaign’s types, arms and default lines come from its own data
   assert.equal(typeName(modded, 'mod_walker_equipment'), 'Equipment type name unavailable');
   assert.equal(variantName(modded.variants[0], 110), 'Variant 1');
   assert.deepEqual(stockGroups(modded, 'domain', 110).map(group => [group.key, group.variants.length]), [['land', 2], ['air', 1]]);
-  assert.deepEqual(automaticGroups(modded, groups, 'type'), ['mod_walker_equipment', 'mod_hovertank_chassis', 'mod_airship_equipment']);
 });
 
 test('an arm\u2019s need is unknown while an unresolved type is listed, even at zero', () => {

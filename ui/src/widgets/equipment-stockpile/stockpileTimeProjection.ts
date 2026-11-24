@@ -12,12 +12,12 @@ import { branchGapsOf, missingSpansOf, withinMapOf } from '../../families/time-c
 import { formatCompactScalar, formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { StockpileLineAt, StockpileLinesReply, StockpileTileFamily } from '../../generated/dashboard';
 
-export const STOCKPILE_TIME_VIEW = 'time';
-export const MAIN_TYPES = 5;
+const STOCKPILE_TIME_VIEW = 'time';
+const MAIN_TYPES = 5;
 
 type Measure = 'stock' | 'share';
 
-export interface StockpileTimeOptions {
+interface StockpileTimeOptions {
   readonly chosen: readonly string[] | null;
   readonly measure: Measure;
   readonly endLabels: boolean;
