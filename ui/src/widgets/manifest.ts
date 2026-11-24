@@ -21,6 +21,7 @@ export type OptionChoicesHook = NonNullable<WidgetRenderer['useOptionChoices']>;
 
 export const OPTION_CHOICES: Readonly<Record<string, () => Promise<OptionChoicesHook>>> = {
   'air-kills-losses': () => import('../dashboard/useMilitaryAirLedger').then(module => module.useAirLossChoices),
+  'equipment-produced': () => import('./equipment-produced/useProduced').then(module => module.useProducedTypeChoices),
   'equipment-stockpile': () => import('./equipment-stockpile/useStockpileChoices').then(module => module.useStockpileChoices),
 };
 
