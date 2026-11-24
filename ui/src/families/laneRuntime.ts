@@ -75,6 +75,7 @@ export interface LaneFrame<TBinding extends LaneBinding, TModel, TLayout> {
   readonly projected: BoundedReadView;
   readonly before: LaneDrawn<TBinding, TModel, TLayout> | null;
   readonly changedAt: number;
+  readonly continuity: number;
   readNow(): BoundedReadView;
 }
 
@@ -91,7 +92,7 @@ export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   hit(frame: LaneFrame<TBinding, TModel, TLayout>, point: readonly [number, number]): string | null;
   tooltip(frame: LaneFrame<TBinding, TModel, TLayout>, key: string, focus: boolean): FamilyTooltipEntry | null;
   structure(frame: LaneFrame<TBinding, TModel, TLayout>): Readonly<Record<string, unknown>>;
-  mirror(frame: LaneFrame<TBinding, TModel, TLayout>): unknown;
+  readonly mirror: ((frame: LaneFrame<TBinding, TModel, TLayout>) => unknown) | null;
   audit(frame: LaneFrame<TBinding, TModel, TLayout>): readonly unknown[];
   visibleArt(frame: LaneFrame<TBinding, TModel, TLayout>): Iterable<string>;
 }
@@ -143,10 +144,9 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   before: LaneDrawn<TBinding, TModel, TLayout> | null;
   painting: Painting | null;
   changedAt: number;
+  continuity: number;
   demandFields: Record<string, Field>;
   layout: TLayout | null;
-  layoutModel: TModel | null;
-  layoutHour: number;
   layoutKey: readonly unknown[];
   expiry: number;
   windowKey: string;
@@ -242,18 +242,23 @@ function painting(input: PaintInput, binding: LaneBinding): Painting {
   };
 }
 
-function continues(last: Painting | null, next: Painting): boolean {
-  return last !== null
-    && next.speed > 0 && last.speed > 0
-    && next.seek === last.seek
-    && next.hour > last.hour
-    && next.pin === null && last.pin === null
+type Continuity = 'continues' | 'tick' | 'cut';
+
+function samePlacement(last: Painting, next: Painting): boolean {
+  return next.seek === last.seek
+    && next.pin === last.pin
     && next.owner === last.owner
     && next.kind === last.kind
     && next.view === last.view
     && next.revisions !== undefined && last.revisions !== undefined
     && sameRevision(next.revisions.options, last.revisions.options)
     && sameRevision(next.revisions.sources, last.revisions.sources);
+}
+
+function follows(last: Painting | null, next: Painting): Continuity {
+  if (last === null || !samePlacement(last, next)) return 'cut';
+  if (next.hour === last.hour) return 'tick';
+  return next.hour > last.hour && next.speed > 0 && last.speed > 0 && next.pin === null ? 'continues' : 'cut';
 }
 
 function viewKey(binding: LaneBinding, fields: readonly string[]): unknown[] {
@@ -376,9 +381,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       artProvider: createLaneArtProvider(art),
       projected: null, projectedArtRevision: 0,
       kind: '', viewName: undefined, owner: undefined, inputs: undefined,
-      parts: [], validFrom: Infinity, validUntil: -Infinity, drawFrom: Infinity, drawUntil: -Infinity, drawn: null, before: null, painting: null, changedAt: -Infinity,
+      parts: [], validFrom: Infinity, validUntil: -Infinity, drawFrom: Infinity, drawUntil: -Infinity, drawn: null, before: null, painting: null, changedAt: -Infinity, continuity: 0,
       demandFields: {},
-      layout: null, layoutModel: null, layoutHour: -Infinity, layoutKey: [], expiry: Infinity,
+      layout: null, layoutKey: [], expiry: Infinity,
       windowKey: '', phases: { serves: 0, projMs: 0, layoutMs: 0, paintMs: 0, fieldsMs: 0, auditMs: 0 }, phasesField: null,
       drawKey: [], content: '', motion: false, artKey: '',
       structureKey: [], structureFields: {},
@@ -386,7 +391,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       frameKey: [], frameRevision: 0,
       mirrorGate, mirrorField: null, mirrorFrame: -1, mirrorView: '',
       tipField: null, tipFrame: -1, tipKey: '', focusField: null, focusFrame: -1, focusKey: '',
-      flusher: new TrailingFlushScheduler([mirrorGate], options?.timers),
+      flusher: new TrailingFlushScheduler(family.mirror ? [mirrorGate] : [], options?.timers),
       auditKey: [], auditField: null,
       tiles: new SceneTiles(),
     };
@@ -475,8 +480,12 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const timed = binding.audit === true;
       const t0 = timed ? performance.now() : 0;
       const current = painting(input, binding);
-      const continuing = continues(keep.painting, current);
+      const continuity = follows(keep.painting, current);
       keep.painting = current;
+      if (continuity === 'cut' && keep.before !== null) {
+        keep.before = null;
+        keep.continuity++;
+      }
       const readers = readersOf(keep);
       let reuse = sameInputs(keep, binding, input, hour);
       if (reuse && (readersChanged || keep.projectedArtRevision !== keep.artRevision)) {
@@ -489,7 +498,6 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           ...(binding.staticPanels ? { staticPanels: binding.staticPanels } : {}),
           ...(binding.staticShifts ? { staticShifts: binding.staticShifts } : {}),
           ...(binding.staticAnswers ? { staticAnswers: binding.staticAnswers } : {}),
-          ...(binding.staticShifts ? { staticShifts: binding.staticShifts } : {}),
           ...(binding.hovers ? { hovers: binding.hovers } : {}),
           kind: binding.kind,
           ...(binding.pagedRows ? { pagedRows: binding.pagedRows } : {}),
@@ -517,8 +525,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         if (projected.artAsks.length) demands.artDemands = field(keep, 'artDemands', projected.artAsks, content);
         keep.demandFields = demands;
         keep.drawUntil = -Infinity;
-        keep.before = continuing ? keep.drawn : null;
+        keep.before = continuity === 'continues' ? keep.drawn : null;
         keep.changedAt = input.now;
+        keep.continuity++;
       }
       const projected = keep.projected!;
       const model = projected.model;
@@ -533,17 +542,17 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const status = family.status(model);
       if (typeof status === 'object') {
         keep.flusher.cancel();
+        keep.drawn = null;
+        keep.drawKey = [];
         return { ...EMPTY, mode: 'refused', reason: status.refused, ...nextChangeAt };
       }
 
       const layoutKey = [model, drawn, surface.width, surface.height, ...viewKey(binding, ['theme', ...family.view])];
       if (!keep.layout || !sameKey(keep.layoutKey, layoutKey)) {
-        const previous = continuing && keep.layout && keep.layoutModel !== null ? { model: keep.layoutModel, layout: keep.layout, hour: keep.layoutHour } : null;
+        const previous = continuity === 'continues' ? keep.drawn : null;
         keep.layout = family.layout(model, binding, surface, theme, keep.ctx, drawn, { previous, now: input.now, speed: input.speed });
-        keep.layoutModel = model;
         keep.layoutKey = layoutKey;
       }
-      keep.layoutHour = hour;
       const layout = keep.layout;
       const tLayout = timed ? performance.now() : 0;
       let readNow: BoundedReadView | null = null;
@@ -560,10 +569,11 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         projected: projected.view,
         before: keep.before,
         changedAt: keep.changedAt,
+        continuity: keep.continuity,
         readNow: () => readNow ??= sceneReadView(input, binding, drawn, readers),
       };
 
-      const drawKey = [layout, binding.scrollTop, binding.scrollLeft ?? 0, input.inspect, binding.selectedKey, binding.focusedKey, keep.index, keep.artProvider, keep.artRevision, width, height];
+      const drawKey = [layout, keep.continuity, binding.scrollTop, binding.scrollLeft ?? 0, input.inspect, binding.selectedKey, binding.focusedKey, keep.index, keep.artProvider, keep.artRevision, width, height];
       if (keep.motion || input.now >= keep.expiry || !sameKey(keep.drawKey, drawKey)) {
         const shown = [...family.visibleArt(frame)];
         const artKey = `${shown.join('\u0000')}\u0001${projected.artUrls.join('\u0000')}`;
@@ -594,23 +604,26 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       }
       Object.assign(fields, keep.structureFields);
       const frameKey = [model, layout, drawn];
+      const mirror = family.mirror;
       if (!sameKey(keep.frameKey, frameKey)) {
         keep.frameKey = frameKey;
         keep.frameRevision++;
-        keep.mirrorGate.invalidate();
+        if (mirror) keep.mirrorGate.invalidate();
       }
       const frameRevision = keep.frameRevision;
 
       const now = input.now;
-      const mirrorView = `${binding.focusedKey ?? ''}\u0000${binding.scrollLeft ?? 0}\u0000${binding.scrollTop}`;
-      const mirrorStale = keep.mirrorFrame !== frameRevision || keep.mirrorView !== mirrorView;
-      if (mirrorStale && (!keep.mirrorField || keep.mirrorGate.due(now, input.speed, mirrorView))) {
-        keep.mirrorField = field(keep, 'mirror', family.mirror(frame), content);
-        keep.mirrorFrame = frameRevision;
-        keep.mirrorView = mirrorView;
-        keep.mirrorGate.record(now, mirrorView);
+      if (mirror) {
+        const mirrorView = `${binding.focusedKey ?? ''}\u0000${binding.scrollLeft ?? 0}\u0000${binding.scrollTop}`;
+        const mirrorStale = keep.mirrorFrame !== frameRevision || keep.mirrorView !== mirrorView;
+        if (mirrorStale && (!keep.mirrorField || keep.mirrorGate.due(now, input.speed, mirrorView))) {
+          keep.mirrorField = field(keep, 'mirror', mirror(frame), content);
+          keep.mirrorFrame = frameRevision;
+          keep.mirrorView = mirrorView;
+          keep.mirrorGate.record(now, mirrorView);
+        }
+        if (keep.mirrorField && keep.mirrorFrame === frameRevision && keep.mirrorView === mirrorView && keep.mirrorField.value !== null) fields.mirror = keep.mirrorField;
       }
-      if (keep.mirrorField && keep.mirrorFrame === frameRevision && keep.mirrorView === mirrorView && keep.mirrorField.value !== null) fields.mirror = keep.mirrorField;
 
       if (input.inspect) {
         if (!keep.tipField || keep.tipFrame !== frameRevision || keep.tipKey !== input.inspect) {

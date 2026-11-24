@@ -89,7 +89,6 @@ function CountryChips({ widget, reference, runtime, max, inline, onChange }: {
 
 const MEMBERSHIP: readonly { value: GroupMembership; label: string; tooltip: string }[] = [
   { value: 'hour', label: 'At each hour', tooltip: 'Members as they were at each moment; joins and leaves are marked' },
-  { value: 'end', label: 'At the end', tooltip: 'Members at the end of the campaign' },
   { value: 'ever', label: 'Anyone ever', tooltip: 'Every country that was ever a member' },
 ];
 

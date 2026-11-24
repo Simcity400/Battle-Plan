@@ -8,7 +8,7 @@ export const PREPARED_THROUGH = 160;
 export const PENDING_HOUR = 170;
 export const KNOWN_HOUR = 150;
 
-export const humansBy = (membership: 'hour' | 'end' | 'ever'): CountrySelection =>
+export const humansBy = (membership: 'hour' | 'ever'): CountrySelection =>
   ({ kind: 'group', group: { type: 'humans' }, membership, aggregate: false });
 
 export function pendingGroups(options: { final?: boolean; humans?: CountryGroupReply['humans']; tags?: readonly string[] } = {}): CountryGroupReply {

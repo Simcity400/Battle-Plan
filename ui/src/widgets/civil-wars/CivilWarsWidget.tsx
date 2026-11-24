@@ -79,7 +79,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   useShownEachFrame(clock, () => data && track ? liveHead ? recordedHour(track, liveHead.read()) : at : null);
   const dashboardTag = track ? defaultCountryKey(track) : null;
   const lastHour = track?.branch.lastHour ?? 0;
-  const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], groups.data, at, lastHour, identities),
+  const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], groups.data, at, identities),
     [widget.countries, dashboardTag, groups.data, at, lastHour, identities]);
   const narrowing = widget.countries.kind !== 'all';
   const view = useMemo(() => data ? civilWarsAt(data, at, {

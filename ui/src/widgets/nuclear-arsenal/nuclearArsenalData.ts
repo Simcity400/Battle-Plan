@@ -1,5 +1,9 @@
 import type { MeasureParts } from '../../charts/race/measureParts';
-import type { NuclearArsenalReply, NukeType } from '../../generated/dashboard';
+import { countryKey } from '../../dashboard/countryKey.ts';
+import { forceAtSources } from '../../families/bars/forceAtRace.ts';
+import { countryRowPresentation, type CountryRowPresentation } from '../../families/bars/model.ts';
+import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
+import type { NuclearArsenalReply, NukeCountry, NukeType } from '../../generated/dashboard';
 
 const integer = Number.isSafeInteger;
 
@@ -9,7 +13,8 @@ export function validateNuclearArsenal(value: unknown): NuclearArsenalReply {
     && (reply.missing === null || typeof reply.missing === 'string')
     && Array.isArray(reply.types) && reply.types.every(type => type && integer(type.ordinal) && (type.token === null || typeof type.token === 'string')
       && (type.name === null || typeof type.name === 'string'))
-    && Array.isArray(reply.countries) && reply.countries.every(country => country && typeof country.tag === 'string' && integer(country.countryId) && integer(country.total)
+    && Array.isArray(reply.countries) && reply.countries.every(country => country && typeof country.tag === 'string' && integer(country.countryId)
+      && (country.slot === null || integer(country.slot)) && integer(country.total)
       && Array.isArray(country.counts) && country.counts.every(count => count && integer(count.ordinal) && integer(count.value) && integer(count.ready)));
   if (!ok) throw new Error('The nuclear arsenal reply is malformed.');
   return reply as NuclearArsenalReply;
@@ -24,3 +29,14 @@ export function partName(reply: NuclearArsenalReply | undefined, part: string): 
 
 export const nukeParts = (reply: NuclearArsenalReply | undefined): MeasureParts => ({ kind: 'keyed', label: 'Weapon types',
   family: { kind: 'country-nukes', measure: 'amount' }, partBits: 32, decimals: 0, name: part => partName(reply, part) });
+
+export function nuclearArsenalSources(ctx: FamilyPlanContext, view: 'race' | 'mix'): SourcePlan {
+  const owner = `nuclear-arsenal:${view}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`;
+  return forceAtSources(ctx, owner, 'nuclear-arsenal', {}, validateNuclearArsenal);
+}
+
+export function nukeRowIdentity(readView: BoundedReadView, row: NukeCountry): { readonly key: string; readonly pres: CountryRowPresentation } {
+  const key = row.slot === null ? row.tag : countryKey(row.slot);
+  const pres = countryRowPresentation(readView, key);
+  return { key, pres: readView.who('country', key).name.status === 'ready' ? pres : { ...pres, label: row.tag } };
+}
