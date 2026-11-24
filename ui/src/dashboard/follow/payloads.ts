@@ -60,7 +60,7 @@ export class PayloadSender {
       return id;
     };
     const refer = (value: object, depth: number): Revision => {
-      if (depth === 0 || !isRecord(value)) return leaf(value);
+      if (depth === 0 || !isRecord(value) || Object.values(value).some(inner => !inner || typeof inner !== 'object')) return leaf(value);
       const out: Record<string, Revision> = {};
       for (const [key, inner] of Object.entries(value)) if (inner && typeof inner === 'object') out[key] = refer(inner, depth - 1);
       return out;
