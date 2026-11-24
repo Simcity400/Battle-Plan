@@ -19,8 +19,8 @@ function GeneralsFamilyWidget(props: FamilyViewProps) {
   const drill = useDrill(runtime, useRegion(widget));
   const reference = drill.state.breakdown;
   const drillAt = useRegionHour(runtime, drill.region, active && reference !== null);
-  const close = drill.close;
-  useEffect(() => close(), [track?.source.id, track?.source.revision, track?.branch.id, close]);
+  const { dispatch, close } = drill;
+  useEffect(() => dispatch({ type: 'close' }), [track?.source.id, track?.source.revision, track?.branch.id, dispatch]);
 
   const onActivate = useCallback((action: InstalledAction) => drill.show(action.subject, Math.floor(action.hour)), [drill]);
   const pin = useCallback(() => {
