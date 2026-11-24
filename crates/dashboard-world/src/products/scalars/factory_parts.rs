@@ -91,6 +91,7 @@ impl AtHour for FactoryParts {
     const KEY: &'static str = "factory-parts";
     const TITLE: &'static str = "Factory parts";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("stamps frame.hour into FactoryPartsReply.hour");
     type Params = FactoryPartsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = FactoryPartsReply;

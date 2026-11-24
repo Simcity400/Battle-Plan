@@ -648,6 +648,7 @@ impl AtHour for UnitLeaders {
     const KEY: &'static str = "unit-leaders";
     const TITLE: &'static str = "Generals leaderboard";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads leader verdicts, cumulative battle tally, first-seen hours and battles_partial_from from history context at at.hour");
     type Params = UnitLeadersParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, selection, leaders, "selection.countries[]"];
     type Reply = UnitLeadersReply;

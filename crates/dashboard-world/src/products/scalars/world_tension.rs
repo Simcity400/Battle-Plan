@@ -132,6 +132,7 @@ impl AtHour for WorldTension {
     const KEY: &'static str = "world-tension";
     const TITLE: &'static str = "World tension";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = WorldTensionParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = WorldTensionReply;
