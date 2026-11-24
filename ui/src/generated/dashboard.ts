@@ -3665,6 +3665,10 @@ export type BreakdownPart = {
  */
 key: string, name: string,
 /**
+ * Why `name` is only an identifier: the recording names it nowhere.
+ */
+nameMissing: string | null,
+/**
  * Its place in the recording's own order of the parts at its level: colours follow it, so a
  * filtered or reordered breakdown keeps them.
  */

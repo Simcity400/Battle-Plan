@@ -61,7 +61,7 @@ function row(readView: BoundedReadView, part: BreakdownPart, decimals: number, t
     name: part.name,
     cells: {
       ...(top ? { picture: picture(readView, part) } : {}),
-      item: { value: knownValue(part.name) },
+      item: part.nameMissing ? { value: notRecorded(part.nameMissing), missingFigure: part.name } : { value: knownValue(part.name) },
       spent: { value: amountOf(part, part.name), format },
       share: top
         ? { value: part.share === null ? notRecorded(part.reason ?? 'No share where the whole is a lower bound') : part.share === 0 ? zeroValue(0) : knownValue(part.share) }

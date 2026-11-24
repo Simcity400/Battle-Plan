@@ -61,7 +61,7 @@ pub(super) struct NamedItem {
     pub unknown: Option<String>,
     pub group: String,
     pub idea: Option<(IdeaInfo, Option<String>)>,
-    pub kind: Option<Result<(String, String), String>>,
+    pub kind: Option<Result<Kind, String>>,
 }
 
 pub(super) struct Context {
@@ -425,12 +425,26 @@ pub(super) fn cause_category(cause: PowerCause) -> (&'static str, &'static str) 
     }
 }
 
-fn advisor_kind(content: &PoliticsContent, seat: &str) -> (String, String) {
-    let key = content.ideas.tags.categories().0.iter().find(|category| category.slots.iter().any(|slot| slot == seat)).map_or(seat, |category| category.name.as_str());
-    (format!("advisor:{key}"), content.localised(key, View::Plain).unwrap_or_else(|| key.to_owned()))
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Kind {
+    pub id: String,
+    pub name: String,
+    pub name_missing: Option<String>,
 }
 
-pub(super) fn kind_of(row: &PowerItemRow, category: &str, token: Option<&str>, content: Option<&PoliticsContent>) -> Option<Result<(String, String), String>> {
+fn named_kind(content: &PoliticsContent, id: String, key: &str) -> Kind {
+    match content.localised(key, View::Plain) {
+        Some(name) => Kind { id, name, name_missing: None },
+        None => Kind { id, name: key.to_owned(), name_missing: Some(format!("The recorded localisation holds no name for {key}")) },
+    }
+}
+
+fn advisor_kind(content: &PoliticsContent, seat: &str) -> Kind {
+    let key = content.ideas.tags.categories().0.iter().find(|category| category.slots.iter().any(|slot| slot == seat)).map_or(seat, |category| category.name.as_str());
+    named_kind(content, format!("advisor:{key}"), key)
+}
+
+pub(super) fn kind_of(row: &PowerItemRow, category: &str, token: Option<&str>, content: Option<&PoliticsContent>) -> Option<Result<Kind, String>> {
     let decision = match (row.cause, category) {
         (PowerCause::Decision | PowerCause::TargetedDecision | PowerCause::DecisionTimeout, "decisions") => true,
         (PowerCause::Advisor | PowerCause::AdvisorRemoval, "advisors") => false,
@@ -457,8 +471,7 @@ pub(super) fn kind_of(row: &PowerItemRow, category: &str, token: Option<&str>, c
             Ok(Some(idea)) => return Some(Ok(advisor_kind(content, &idea.group))),
         }
     };
-    let name = content.localised(&key, View::Plain).unwrap_or_else(|| key.clone());
-    Some(Ok((format!("decision:{key}"), name)))
+    Some(Ok(named_kind(content, format!("decision:{key}"), &key)))
 }
 
 pub(super) fn category_of(row: &PowerItemRow, token: Option<&str>, content: Option<&PoliticsContent>) -> (String, String) {
@@ -1014,7 +1027,7 @@ pub(super) fn ledger_item(id: String, row: &PowerItemRow, named: NamedItem) -> S
         unknown: named.unknown,
         tooltip_token: named.idea.map(|(info, _)| info.token),
         kind: named.kind.map(|kind| match kind {
-            Ok((id, name)) => super::SpendKind { id: Some(id), name: Some(name), unknown: None },
+            Ok(Kind { id, name, name_missing }) => super::SpendKind { id: Some(id), name: Some(name), unknown: name_missing },
             Err(reason) => super::SpendKind { id: None, name: None, unknown: Some(reason) },
         }),
     }

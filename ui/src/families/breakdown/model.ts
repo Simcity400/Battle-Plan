@@ -10,6 +10,7 @@ import type { BreakdownViewMode } from './options.ts';
 export interface BreakdownPart {
   readonly key: string;
   readonly name: string;
+  readonly nameMissing?: string;
   readonly ordinal: number;
   readonly value: number | null;
   readonly text: string;
@@ -205,6 +206,7 @@ export function buildBreakdownTooltip(
     if (!level.total.atLeast && parent && part.parentShare != null) items.push({ label: `Share of ${parent.name}`, value: formatShare(part.parentShare) });
     if (part.count !== undefined && part.count > 0) items.push({ label: part.countLabel ?? 'Count', value: formatScalar(part.count, 'integer') });
   }
+  if (part.nameMissing) items.push({ label: 'Name', missingReason: part.nameMissing });
   if (part.partial && part.partialReason) items.push({ label: 'Coverage', value: part.partialReason, tone: 'muted' });
   if (part.detailRows) items.push(...part.detailRows);
   const children = part.notRecorded ? [] : part.children ?? [];

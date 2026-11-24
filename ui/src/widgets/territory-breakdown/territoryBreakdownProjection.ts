@@ -30,7 +30,7 @@ function country(readView: BoundedReadView, part: BreakdownPart): BreakdownPart 
     ...part,
     name: identity.name.status === 'ready' ? identity.name.value : part.name,
     flag: part.key,
-    flagArt: flagChoiceArt(readView, identity.flagChoice, 'small'),
+    flagArt: flagChoiceArt(readView, identity.flagChoice),
     ...(identity.colour?.status === 'ready' ? { color: identity.colour.value } : {}),
   };
 }
