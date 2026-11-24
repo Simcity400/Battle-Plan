@@ -70,14 +70,11 @@ pub enum SubView {
 }
 
 impl SubView {
-    fn from_request(kind: &str, sub_view: Option<&str>) -> Result<Self, GameWindowError> {
-        if kind == "mioPolicyChooser" {
-            return Ok(Self::Policy);
-        }
+    fn from_request(sub_view: Option<&str>) -> Result<Self, GameWindowError> {
         match sub_view.unwrap_or("traits") {
-            "traits" | "" => Ok(Self::Traits),
+            "traits" => Ok(Self::Traits),
             "history" => Ok(Self::History),
-            "policy" | "policies" => Ok(Self::Policy),
+            "policy" => Ok(Self::Policy),
             other => Err(GameWindowError::refused(format!(
                 "Unsupported military industrial organisation sub-view '{other}'."
             ))),
@@ -611,6 +608,7 @@ fn stat_label(name: &str, localisation: &Localisation) -> String {
     }
     let upper = name.to_ascii_uppercase();
     for candidate in [
+        format!("BONUS_{upper}"),
         format!("MODIFIER_{upper}"),
         format!("STAT_COMMON_{upper}"),
         format!("STAT_ARMY_{upper}"),
@@ -849,8 +847,6 @@ fn configure_detail_main(
     let history_frame = if prepared.sub_view == SubView::History { 2 } else { 1 };
     set_frame_by_name(instance, root, "tabs/traits_tab", traits_frame);
     set_frame_by_name(instance, root, "tabs/history_tab", history_frame);
-    disable_by_name(instance, root, "tabs/traits_tab");
-    disable_by_name(instance, root, "tabs/history_tab");
 
     set_sprite_by_name(instance, root, "top_left_window/icon", &prepared.emblem_sprite);
     if let Some(icon_el) = find_direct(root, "top_left_window/icon") {
@@ -1095,7 +1091,6 @@ fn configure_detail_main(
     }
 
     disable_by_name(instance, root, "aggregated_bonuses_window/open_queue_button");
-    disable_by_name(instance, root, "open_policies_window/open_policies");
     disable_by_name(instance, root, "toggle_auto_designs");
 
     match prepared.sub_view {
@@ -1229,6 +1224,12 @@ fn compose_funds_progressbar(
     Ok(())
 }
 
+fn list_top(holder: &native_gui::Holder) -> i32 {
+    holder
+        .clip
+        .map_or(0, |[_, top, _, _]| (top as f32 - holder.origin[1]).max(0.0).round() as i32)
+}
+
 struct BonusRows<'a> {
     holder: &'a native_gui::Holder,
     resources: &'a dyn Resources,
@@ -1333,7 +1334,7 @@ fn compose_aggregated_bonuses(
         modifier: guis.template(b"industrial_organisation_detail_modifier_item"),
         bonus: guis.template(b"industrial_organisation_detail_bonus_item"),
         max_y: holder.content[1].max(0),
-        cursor_y: 0,
+        cursor_y: list_top(holder),
         row: 0,
         dropped: 0,
     };
@@ -2057,7 +2058,8 @@ fn compose_history_lists(
                         "Template 'industrial_organisation_history_item' declares no height, so its rows cannot be stacked.",
                     )
                 })?;
-            let visible = usize::try_from(max_y / step).unwrap_or(0);
+            let top = list_top(holder);
+            let visible = usize::try_from((max_y - top).max(0) / step).unwrap_or(0);
             if entries.len() > visible {
                 plan.warnings.push(format!(
                     "{} of {} history entries lie below the visible list and are not drawn: the game window scrolls, this picture does not.",
@@ -2066,7 +2068,7 @@ fn compose_history_lists(
                 ));
             }
             for (idx, entry) in entries.iter().take(visible).enumerate() {
-                let y = idx as i32 * step;
+                let y = top + idx as i32 * step;
                 let archetype_label = if entry.archetype.is_empty() {
                     String::new()
                 } else {
@@ -2077,8 +2079,14 @@ fn compose_history_lists(
                     "INDUSTRIAL_ORG_DETAIL_WINDOW_HISTORY_ENTRY_FLAVOR_UNITS_PRODUCED",
                     &[("NUMBER", &entry.units.to_string())],
                 );
+                let name = if entry.name == entry.archetype {
+                    loc_or(localisation, &entry.name)
+                } else {
+                    entry.name.clone()
+                };
                 let layout = layout_window(item_tpl, resources, viewport, |instance| {
-                    set_text_by_name(instance, item_tpl, "equipment_name", entry.name.clone());
+                    hide_by_name(instance, item_tpl, "equipment_icon");
+                    set_text_by_name(instance, item_tpl, "equipment_name", name);
                     set_text_by_name(
                         instance,
                         item_tpl,
@@ -2195,7 +2203,8 @@ fn compose_policy_list(
             {
                 tokens.insert(0, attached.clone());
             }
-            let visible = usize::try_from(max_y / step).unwrap_or(0);
+            let top = list_top(holder);
+            let visible = usize::try_from((max_y - top).max(0) / step).unwrap_or(0);
             if tokens.len() > visible {
                 plan.warnings.push(format!(
                     "{} of {} policies lie below the visible list and are not drawn: the game window scrolls, this picture does not.",
@@ -2204,7 +2213,7 @@ fn compose_policy_list(
                 ));
             }
             for (idx, token) in tokens.iter().take(visible).enumerate() {
-                let y = idx as i32 * step;
+                let y = top + idx as i32 * step;
                 let key = token.to_ascii_lowercase();
                 let policy_def = prepared
                     .org_db
@@ -2506,6 +2515,17 @@ pub fn render_data(
                     )?;
                 }
             }
+            for (path, view) in [
+                ("tabs/traits_tab", "traits"),
+                ("tabs/history_tab", "history"),
+                ("open_policies_window/open_policies", "policy"),
+            ] {
+                if prepared.sub_view != SubView::Policy
+                    && let Some(element) = find_direct(root, path)
+                {
+                    plan.view_links.insert(element.path.clone(), view.to_owned());
+                }
+            }
             plan.title = Some(resolve_org_name(
                 &prepared.data,
                 prepared.org_db.as_deref(),
@@ -2533,7 +2553,7 @@ pub fn render(
         admitted_gen,
         mut extra_warnings,
     } = ctx;
-    let sub_view = SubView::from_request(&request.kind, request.sub_view.as_deref())?;
+    let sub_view = SubView::from_request(request.sub_view.as_deref())?;
     let target: Target = serde_json::from_value(request.target.clone()).map_err(|error| {
         GameWindowError::refused(format!(
             "Invalid military industrial organisation target: {error}"

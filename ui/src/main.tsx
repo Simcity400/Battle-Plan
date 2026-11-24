@@ -20,7 +20,6 @@ import IndustrialOrganisationWindow from './dashboard/IndustrialOrganisationWind
 
 registerGameWindow('equipmentDesigner', EquipmentDesignerWindow);
 registerGameWindow('industrialOrganisation', IndustrialOrganisationWindow);
-registerGameWindow('mioPolicyChooser', IndustrialOrganisationWindow);
 applySavedAppearance();
 void startPerf().catch(error => console.error('Measurement unavailable:', error));
 if (desktopAvailable) void shareRecordingPreferences().catch(error => console.error('Campaign flags stay on this device:', error));

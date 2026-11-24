@@ -3159,6 +3159,7 @@ fn compose_unknown_auto_upgrade(
         disabled: true,
         close: false,
         passthrough: false,
+        view: None,
         tooltip: Some(tip),
         alpha_mask: None,
     });

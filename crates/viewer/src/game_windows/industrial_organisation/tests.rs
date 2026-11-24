@@ -244,7 +244,7 @@ fn mio_tree_reads_background_icon_and_header_texts_through_mod_layers() {
 
 #[test]
 fn unsupported_sub_view_is_refused_by_name() {
-    let err = SubView::from_request("industrialOrganisation", Some("unknown_tab"))
+    let err = SubView::from_request(Some("unknown_tab"))
         .expect_err("unknown sub_view must refuse");
     assert!(matches!(err, GameWindowError::Refused(msg) if msg.contains("unknown_tab")));
 }
