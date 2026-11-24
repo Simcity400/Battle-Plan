@@ -1,6 +1,7 @@
 import { CHART_MEASURE_COLOURS, authoredHex, readableColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
+import { groupSelection } from '../../families/groupSelection.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
 import { labelsAtReadings, resolveEntityFromReadView, signedRampColour } from '../../families/heat/scale.ts';
@@ -28,6 +29,7 @@ export function projectDiplomaticRelations(readView: BoundedReadView, options: D
   if (refused) return emptyModel(hour, { refused });
   const reply = readView.panel<DiplomaticRelationsReply>('relations');
   if (!reply || !options.surface) return emptyModel(hour, {});
+  if (reply.chosenMissing) return emptyModel(hour, { empty: 'The countries to show are not known at this date.', emptyDetail: reply.chosenMissing, emptyKind: 'unavailable', warnings: reply.warnings });
   const owners = reply.owners;
   if (owners.length < 2) {
     return emptyModel(hour, { empty: 'Fewer than two countries are shown at this date.', warnings: reply.warnings });
@@ -108,9 +110,11 @@ export const diplomaticRelationsDeclaration: HeatMatrixWidgetDeclaration<Diploma
   sources: (ctx): SourcePlan => {
     const order = orderOf(ctx.options.order);
     const top = ctx.countries.top;
-    const tags = top === null && !ctx.countries.all ? ctx.countries.tags : [];
+    const group = top === null && !ctx.countries.all ? groupSelection(ctx.widget.countries) : null;
+    const tags = top === null && !ctx.countries.all && !group ? ctx.countries.tags : [];
     const limit = top ?? RELATIONS_TOP_DEFAULT;
-    const params = { branchId: ctx.branch.id, countries: tags.map(countryFromKey), ...(tags.length ? {} : { top: limit }), order };
+    const chosen = group ? { group } : tags.length ? { countries: tags.map(countryFromKey) } : { top: limit };
+    const params = { branchId: ctx.branch.id, ...chosen, order };
     return {
       owner: `diplomatic-relations:${JSON.stringify(params)}`,
       entries: [{
@@ -121,7 +125,7 @@ export const diplomaticRelationsDeclaration: HeatMatrixWidgetDeclaration<Diploma
         read: {
           shape: 'point',
           channel: 'followed',
-          coverage: tags.length ? { mode: 'keyed', keys: tags } : { mode: 'population', form: 'top', limit },
+          coverage: group ? { mode: 'population', form: 'all' } : tags.length ? { mode: 'keyed', keys: tags } : { mode: 'population', form: 'top', limit },
           product: 'diplomatic-relations',
           followQuery: null,
           params,
