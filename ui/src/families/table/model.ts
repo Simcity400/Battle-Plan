@@ -889,6 +889,7 @@ export interface DeclarativeColumnSpec<TRow, TOptions = unknown> extends TableCo
   readonly looks?: (row: TRow, options: TOptions) => readonly CountryLook[] | undefined;
   readonly lookHour?: (row: TRow, hour: number, options: TOptions) => number;
   readonly status?: (row: TRow, options: TOptions) => 'dot' | 'outline' | 'fill' | undefined;
+  readonly cellTone?: (row: TRow, options: TOptions) => string | undefined;
   readonly bar?: (row: TRow, live: LiveValues<number | bigint | string> | null, options: TOptions) => TableCellBar | null | undefined;
   readonly maximum?: number;
   readonly sortValue?: (row: TRow, live: LiveValues<number | bigint | string> | null, hour: number, options: TOptions) => Value;
@@ -1189,6 +1190,7 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
         ...(cellLookHour !== undefined ? { lookHour: cellLookHour } : {}),
         ...(countryTag ? { country: countryTag } : {}),
         ...(col.status ? { status: col.status(row, options) } : {}),
+        ...(col.cellTone ? { tone: col.cellTone(row, options) } : {}),
         ...(bar !== undefined ? { bar } : {}),
         ...(col.maximum !== undefined ? { maximum: col.maximum } : {}),
         ...(sortValue ? { sortValue } : {}),
