@@ -73,9 +73,7 @@ export type FamilyNavigationKind = 'rows' | 'grid' | 'points';
 export type FamilyMirrorKind = 'listbox' | 'table' | 'none';
 export type FamilySkeletonKind = 'table' | 'chart';
 
-export type FamilyArtDemand =
-  | ArtHandle
-  | { readonly key: string; readonly frame: number };
+export type FamilyArtDemand = ArtHandle;
 
 export interface FamilyStaticSources {
   readonly panels?: Readonly<Record<string, unknown>>;

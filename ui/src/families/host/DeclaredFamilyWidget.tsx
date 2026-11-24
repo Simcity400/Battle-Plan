@@ -5,10 +5,9 @@ import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { useSpriteArtResolutions } from '../../dashboard/useSpriteArtwork.ts';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { perfLog } from '../../shell/perf.ts';
-import { spriteArtKey, type ArtResolution } from '../art/types.ts';
+import { useArtHandleResolutions } from '../art/react.ts';
 import type {
   AuxProductSpec,
   CountryPolicy,
@@ -32,15 +31,7 @@ import FamilyHost from './FamilyHost.tsx';
 import { useFamilyTheme } from './theme.ts';
 import { useFamilyPlan } from './useFamilyPlan.ts';
 
-const EMPTY_SPRITES: readonly { readonly key: string; readonly frame: number }[] = [];
 const SERIES_PLOT_INSET_PX = 60;
-
-function normalizeSpriteDemand(demand: FamilyArtDemand): { readonly key: string; readonly frame: number } | null {
-  if ('kind' in demand) {
-    return demand.kind === 'sprite' ? { key: demand.key, frame: demand.frame ?? 0 } : null;
-  }
-  return { key: demand.key, frame: demand.frame };
-}
 
 export interface DeclaredProjectionExtra {
   readonly extent: readonly [number, number];
@@ -118,8 +109,6 @@ export default function DeclaredFamilyWidget<
   useWidgetSkeleton(adapter.skeleton ?? 'chart');
 
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const [demandedSprites, setDemandedSprites] = useState<readonly { readonly key: string; readonly frame: number }[]>(EMPTY_SPRITES);
-  const demandedSigRef = useRef('');
   const lastViewportRef = useRef<FamilyViewportChange | null>(null);
 
   const handleHoverHour = useCallback((next: number | null) => {
@@ -127,31 +116,6 @@ export default function DeclaredFamilyWidget<
     externalHoverHour?.(next);
   }, [externalHoverHour]);
 
-  const handleArtDemands = useCallback((demands: readonly FamilyArtDemand[]) => {
-    externalArtDemands?.(demands);
-    const merged = new Map<string, { readonly key: string; readonly frame: number }>();
-    for (const raw of demands) {
-      const s = normalizeSpriteDemand(raw);
-      if (s) merged.set(`${s.key}#${s.frame}`, s);
-    }
-    if (!merged.size) return;
-    const list = [...merged.values()].sort((a, b) => a.key.localeCompare(b.key) || a.frame - b.frame);
-    const sig = list.map(d => `${d.key}#${d.frame}`).join(',');
-    if (sig === demandedSigRef.current) return;
-    demandedSigRef.current = sig;
-    setDemandedSprites(prev => {
-      const next = new Map(prev.map(d => [`${d.key}#${d.frame}`, d]));
-      let added = false;
-      for (const d of list) {
-        const k = `${d.key}#${d.frame}`;
-        if (!next.has(k)) {
-          next.set(k, d);
-          added = true;
-        }
-      }
-      return added ? [...next.values()] : prev;
-    });
-  }, [externalArtDemands]);
 
   const optionFields = useMemo(
     () => (declaration.optionFields ? viewOwnedFields(declaration.optionFields, view) : undefined),
@@ -175,15 +139,7 @@ export default function DeclaredFamilyWidget<
 
   const { theme } = useFamilyTheme(undefined, plan.displayedCountryLooks);
 
-  const resolveSprite = useSpriteArtResolutions(runtime, plan.track, demandedSprites, active && demandedSprites.length > 0);
-  const spriteResolutions = useMemo<Readonly<Record<string, ArtResolution>> | undefined>(() => {
-    if (!demandedSprites.length) return undefined;
-    const out: Record<string, ArtResolution> = {};
-    for (const s of demandedSprites) {
-      out[spriteArtKey(s.key, s.frame)] = resolveSprite(s);
-    }
-    return out;
-  }, [demandedSprites, resolveSprite]);
+  const { resolutions: spriteResolutions, onArtDemands: handleArtDemands } = useArtHandleResolutions(runtime, plan.track, active, externalArtDemands);
 
   const extent = useMemo<readonly [number, number]>(() => {
     const span = plan.displayedCtx?.staticSpan;

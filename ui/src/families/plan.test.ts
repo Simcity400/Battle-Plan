@@ -35,6 +35,8 @@ import {
   CoverageContractError,
   FamilySourceBroker,
   needsPlaybackBoundedRead,
+  currentHovers,
+  hoverAsks,
   planQueryKey,
   planSignature,
   playbackIdleInterval,
@@ -457,6 +459,8 @@ test('planSignature compares plans without invoking closures, and FamilySourceBr
 
   assert.equal(planSignature(makePlan(1)), planSignature(makePlan(2)));
   assert.equal(exactCalls, 0, 'planSignature never invokes buildExactParams');
+  assert.notEqual(planSignature({ ...makePlan(1), staticEntry: null }), planSignature(makePlan(1)), 'an explicit null static entry is not an omitted one');
+  assert.notEqual(planSignature({ ...makePlan(1), exactEntry: null }), planSignature(makePlan(1)), 'an explicit null exact entry is not an omitted one');
 
   const key1 = planQueryKey(src, '1', 'scoreboard', { b: 2, a: 1 });
   const key2 = planQueryKey(src, '1', 'scoreboard', { a: 1, b: 2 });
@@ -494,6 +498,34 @@ test('planSignature compares plans without invoking closures, and FamilySourceBr
   r2!('fresh');
   await done;
   assert.deepEqual(delivered, ['fresh']);
+
+  const replaced: string[] = [];
+  let resolveOld: ((v: string) => void) | null = null;
+  let resolveNew: ((v: string) => void) | null = null;
+  let newDelivered: (() => void) | null = null;
+  const newDone = new Promise<void>(res => { newDelivered = res; });
+  const oldHandle = broker.runSlot('w2', 'old', () => new Promise<string>(res => { resolveOld = res; }), v => replaced.push(v));
+  oldHandle.cancel();
+  broker.runSlot('w2', 'new', () => new Promise<string>(res => { resolveNew = res; }), v => { replaced.push(v); newDelivered!(); });
+  oldHandle.cancel();
+  resolveOld!('old');
+  resolveNew!('new');
+  await newDone;
+  assert.deepEqual(replaced, ['new'], 'cancelling an old handle twice never drops its replacement');
+
+  const src2 = fakeSource('src-2');
+  const hoverPlan = (params: Record<string, unknown>, extra: SourcePlan['entries'] = []): SourcePlan => ({
+    owner: 'hover:1',
+    entries: [{ name: 'hover', source: src2, branch: '1', offset: 0, read: { shape: 'exact-hover', product: 'series-state', params } }, ...extra],
+  });
+  const asksA = hoverAsks(hoverPlan({ countries: ['GER'] }), 40.7);
+  assert.equal(asksA.length, 1);
+  assert.equal(asksA[0]!.hour, 40);
+  const heldA = { hover: { key: asksA[0]!.key, hour: 40, data: 'GER at 40' } };
+  assert.deepEqual(currentHovers(asksA, heldA), { hover: { hour: 40, data: 'GER at 40' } });
+  assert.deepEqual(currentHovers(hoverAsks(hoverPlan({ countries: ['SOV'] }), 40), heldA), {}, 'a hover answered for another selection is not shown');
+  assert.deepEqual(currentHovers(hoverAsks(hoverPlan({ countries: ['GER'] }), 41), heldA), {}, 'a hover answered for another hour is not shown');
+  assert.deepEqual(currentHovers(hoverAsks(hoverPlan({ countries: ['GER'] }), null), heldA), {});
 
   let abortOnDispose = false;
   broker.request('k3', signal => new Promise(() => { signal.addEventListener('abort', () => { abortOnDispose = true; }); }));
@@ -565,8 +597,9 @@ function makeEntry(overrides: Partial<Entry<FakeBmp>> & { widget: number; id: nu
   };
 }
 
-test('seeking through a gap and returning to the same hour with a new owner clears installed state and rejects late entries from the old owner', () => {
-  const page = new Page<FakeBmp>({ lanes: 1 });
+test('seeking through a gap and returning to the same hour with a new owner clears installed state and inspection, and rejects late entries from the old owner', () => {
+  const posted: { readonly inspect?: readonly (readonly [number, string])[] }[] = [];
+  const page = new Page<FakeBmp>({ lanes: 1, post: (_lane, message) => { posted.push(message as { readonly inspect?: readonly (readonly [number, string])[] }); } });
   const surface = makeSurface();
   page.mount(1, { route: 1, lane: 0, owner: 'country:GER', surfaces: [surface] });
   page.publish(100, { playing: false, seek: 1 });
@@ -584,7 +617,10 @@ test('seeking through a gap and returning to the same hour with a new owner clea
   assert.equal(page.view(1).mode, 'reading');
 
   page.publish(100, { playing: false, seek: 3 });
+  page.inspect(1, 'row:GER');
+  assert.deepEqual(posted.filter(message => message.inspect).at(-1)?.inspect, [[1, 'row:GER']]);
   page.rebind(1, { owner: 'country:SOV' });
+  assert.deepEqual(posted.filter(message => message.inspect).at(-1)?.inspect, [], 'owner B never inherits owner A\'s inspected row');
   assert.equal(page.view(1).mode, 'reading');
   assert.equal(page.view(1).owner, 'country:SOV');
   assert.equal(page.view(1).installedOwner, undefined);
@@ -1102,7 +1138,7 @@ test('FieldStatus failed distinguishes retryable transport errors and non-retrya
 
 test('ArtHandle discriminated union covers flag, sprite, portrait, path, and url, and BoundedReadView fires demand callbacks once', () => {
   const handles: readonly ArtHandle[] = [
-    flagArtHandle('GER_fascism', 'shield', 64),
+    flagArtHandle('GER_fascism', 'shield'),
     { kind: 'sprite', key: 'GFX_pol_power', frame: 0, recorded: 'pol_power', text: true },
     { kind: 'portrait', key: 'GFX_portrait_ger', owner: 'GER', recorded: 'leader_1' },
     { kind: 'path', path: 'gfx/interface/icons/icon.dds', frame: 1, frames: 2 },
