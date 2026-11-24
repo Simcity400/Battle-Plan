@@ -1082,4 +1082,17 @@ test('Direction B canonical audit & PR #292 market ledger parity preserve seller
   const auditNoBadge = deriveLogAuditRows(model, layout.items, 0, layout.items.length, 0, 0, 300, 0);
   assert.notDeepEqual(auditWithBadge, auditNoBadge, 'new-row badge count is part of canonical audit');
   assert.ok(auditWithBadge.some(r => r.key === '__summary__' && r.value?.includes('newRowCount') && r.value?.includes('7')));
+
+  const restyledRow = {
+    ...row1,
+    art: row1.art ? { ...row1.art, color: '#ff00ff' } : undefined,
+    slots: row1.slots.map(slot => (
+      slot.kind === 'text' ? { ...slot, tone: 'accent' as const, weight: 'bold' as const, maxLines: 2 } : slot
+    )),
+  };
+  assert.equal(
+    canonicalLogRowAudit(restyledRow),
+    audit1,
+    'canonical log audit excludes purely presentation fields (tone, weight, maxLines, art color)',
+  );
 });

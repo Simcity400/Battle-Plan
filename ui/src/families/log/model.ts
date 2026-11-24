@@ -133,9 +133,6 @@ function bandAuditNode(band: LogBand): Record<string, unknown> {
       return {
         kind: 'text',
         text: band.text,
-        weight: band.weight ?? 'regular',
-        tone: band.tone ?? 'default',
-        maxLines: band.maxLines ?? 1,
       };
     case 'rich':
       return {
@@ -143,10 +140,7 @@ function bandAuditNode(band: LogBand): Record<string, unknown> {
         parts: band.parts.map(part => ({
           text: part.text,
           flag: lookAuditNode(part.flag),
-          weight: part.weight ?? 'regular',
-          tone: part.tone ?? 'default',
         })),
-        maxLines: band.maxLines ?? 1,
       };
     case 'value':
       return {
@@ -154,21 +148,17 @@ function bandAuditNode(band: LogBand): Record<string, unknown> {
         value: band.value,
         format: band.format ?? null,
         icon: band.icon ?? null,
-        align: band.align ?? 'start',
-        tone: band.tone ?? 'default',
       };
     case 'pill':
       return {
         kind: 'pill',
         label: band.label,
-        tone: band.tone ?? 'default',
         liveDot: band.liveDot === true,
       };
     case 'flags':
       return {
         kind: 'flags',
         looks: band.looks.map(lookAuditNode),
-        max: band.max ?? null,
         unknownReason: band.unknownReason ?? null,
       };
     case 'meter':
@@ -182,8 +172,6 @@ function bandAuditNode(band: LogBand): Record<string, unknown> {
         kind: 'bar-pair',
         left: band.left,
         right: band.right,
-        leftTone: band.leftTone,
-        rightTone: band.rightTone,
         format: band.format ?? null,
       };
     case 'chips':
@@ -192,7 +180,6 @@ function bandAuditNode(band: LogBand): Record<string, unknown> {
         items: band.items.map(item => ({
           label: item.label,
           flag: lookAuditNode(item.flag),
-          tone: item.tone ?? 'default',
         })),
       };
   }
@@ -211,7 +198,6 @@ export function canonicalLogRowAudit(row: LogRowSpec): string {
     art: row.art ? {
       icon: row.art.icon ?? null,
       glyph: row.art.glyph ?? null,
-      color: row.art.color ?? null,
       missingReason: row.art.missingReason ?? null,
     } : null,
     slots: row.slots.map(bandAuditNode),
@@ -252,7 +238,6 @@ export function canonicalLogSummaryAudit(model: LogModel, newRowCount = 0): stri
       key: pill.key,
       label: pill.label,
       count: pill.count,
-      tone: pill.tone ?? null,
     })),
   });
 }
