@@ -1,4 +1,5 @@
 
+mod at;
 pub mod contributions;
 mod inputs;
 mod measures;
@@ -9,6 +10,7 @@ mod walk;
 #[cfg(test)]
 mod tests;
 
+pub use at::WarTimelineReply;
 pub use inputs::{RunWars, run_wars};
 pub use measures::{WarMeasure, WarMeasureKey, WarMeasureMember, WarMeasureSide};
 pub use participation::{WarContributionCountry, WarContributionGroup};
@@ -39,6 +41,18 @@ use walk::{Seen, Viewed, Walk};
 
 pub struct Wars;
 pub struct WarLosses;
+pub struct WarTimelineAt;
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WarTimelineParams {
+    pub branch_id: String,
+    #[doc = " None follows the recording client's playing or observer country."]
+    pub viewpoint: Option<Country>,
+    #[doc = " The hour answered: nothing recorded after it is read into the reply."]
+    pub hour: i32,
+}
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -580,6 +594,34 @@ impl Product for Wars {
         let reply = walked(source, branch(&params.branch_id)?, params.viewpoint.as_ref(), cat, cancelled)?;
         check_reply_budget(&*reply)?;
         Ok((*reply).clone())
+    }
+}
+
+impl Product for WarTimelineAt {
+    const KEY: &'static str = "war-timeline";
+    const CONTENT_DEPENDENT: bool = true;
+    type Params = WarTimelineParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, viewpoint, hour: Read];
+    type Reply = WarTimelineReply;
+
+    #[cfg(any(test, feature = "export-types"))]
+    fn types() -> Vec<String> {
+        vec![WarTimelineParams::decl(), WarTimelineReply::decl()]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        params.branch_id.parse::<u64>().map_err(|_| "Invalid wars branch")?;
+        params.viewpoint.as_ref().map_or(Ok(()), validate_country)
+    }
+
+    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        let branch = branch(&params.branch_id)?;
+        let cat = catalogue_of(source, context)?;
+        let walked = walked(source, branch, params.viewpoint.as_ref(), cat, cancelled)?;
+        let last = dashboard_base::queries::query(source, branch)?.timeline.last;
+        let reply = at::at(&walked, params.hour.min(last));
+        check_reply_budget(&reply)?;
+        Ok(reply)
     }
 }
 
