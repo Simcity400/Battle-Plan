@@ -46,7 +46,6 @@ pub struct StockAtVariant {
     #[doc = " False where it has no definition at the hour."]
     pub known: bool,
     pub design: Option<String>,
-    pub origin: Option<String>,
     #[doc = " It has a stock row (its `stock` cell); a design not held holds none."]
     pub held: bool,
     #[doc = " The military lines making it (each its `l<line>` cells)."]
@@ -184,7 +183,6 @@ pub(super) fn reply(frame: &DecodedFrame, params: &StockpileAtParams, owner: Own
             token,
             known: name.is_some(),
             name: name.as_ref().and_then(|name| name.name.clone()),
-            origin: name.as_ref().and_then(|name| name.origin.clone()),
             design: name.and_then(|name| name.design),
             held: held.contains(&id),
             lines: made,

@@ -1,6 +1,7 @@
 import { useGate, useHeldEdges, type Gate } from '../../dashboard/regionGate';
 import { SPEC } from '../../dashboard/regionTime';
 import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
+import { narrowTableOf } from '../../charts/table/options.ts';
 import { Select } from '../../components/Select';
 import { createPortal } from 'react-dom';
 import ContentSetPicker from '../../components/ContentSetPicker';
@@ -37,18 +38,20 @@ import type { BoundTrack } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import type { EquipmentStockpileReply, StockpileCatalogueReply } from './types';
 import type { LiveHead } from '../../charts/TimeChart';
+import type { LiveValues } from '../../charts/live';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
-import DeclaredTableWidget from '../../families/table/DeclaredTableWidget.tsx';
+import { atReply } from './stockpileAt.ts';
 import { BREAKDOWN, OPTIONS } from './definition';
 import { AI_NOTE, automaticLines, CHOSEN_KEYS, hasRecords, balanceAt, balanceMode, choiceKey, choiceRow, formatPercent, oneChoicePerRow, GROUP_NOUNS, labelAt,
   SAVED_DESIGN_UNAVAILABLE, overTimeTooltip, shareModeOf, shareOf, stockAt, stockChoices, stockGroups, dailyAt, chartDrawable } from './stockpileData.ts';
 import { useStockpileChart } from './useStockpileChart';
-import { groupIn, stockpileGroupKey } from './stockpileCatalogue';
+import { groupIn, stockpileGroupKey, stockpileView } from './stockpileCatalogue';
 import type { PreparedStockpileReply } from './stockpileCatalogue';
 import type { Grouping, StockGroup } from './stockpileData';
 import { useEquipmentStockpile, useStockpileCountry } from './useEquipmentStockpile';
 import StockpileDrill from './StockpileDrill.tsx';
-import { equipmentStockpileDeclaration } from './stockpileProjection.ts';
+import StockpileTable from './StockpileTable';
+import type { StockCount } from './stockpileView';
 import { pinnedGrouping, pinStockpileDrill, stockpileDrillGroup } from './stockpileDrill';
 import type { StockpileMode } from './stockpileDrill';
 import './equipmentStockpile.css';
@@ -64,26 +67,8 @@ const END_LABEL_ROOM = 136;
 const HOLDERS = { holders: true };
 
 export default function EquipmentStockpileWidget(props: WidgetProps) {
-  const show = props.widget.options?.show;
-  const view = props.widget.options?.view;
-  if (show === BREAKDOWN.id) return <EquipmentStockpileCountry {...props} />;
-  if (view !== 'time') {
-    return <CountryComparisons {...props} component={EquipmentStockpileTableCountry} />;
-  }
-  return <CountryComparisons {...props} component={EquipmentStockpileCountry} />;
-}
-
-function EquipmentStockpileTableCountry(props: ComparisonProps) {
-  return <DeclaredTableWidget
-    declaration={equipmentStockpileDeclaration}
-    widget={props.widget}
-    runtime={props.runtime}
-    active={props.active}
-    setOption={props.setOption}
-    onDiagnostics={props.onDiagnostics}
-    headerSlot={props.headerSlot}
-    mapOptions={props.mapOptions}
-  />;
+  return props.widget.options?.show === BREAKDOWN.id ? <EquipmentStockpileCountry {...props} />
+    : <CountryComparisons {...props} component={EquipmentStockpileCountry} />;
 }
 
 function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, setOption, countrySlot, within }: ComparisonProps) {
@@ -104,6 +89,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const gate = useGate(runtime, widget, SPEC, active);
   const menu = useContextMenu('Stockpile actions');
   const grouping = pinnedGrouping(widget.options);
+  const count: StockCount = options.count === 'ic' ? 'ic' : 'units';
   const includedText = typeof options.included === 'string' ? options.included : '';
   const included = useMemo(() => contentSet(includedText).map(contentKey), [includedText]);
   const anchor = useRef<HTMLDivElement | null>(null);
@@ -184,9 +170,15 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
     act({ type: 'open', breakdown: BREAKDOWN.id, hour, follow: drillControl.followsAt(hour) });
   };
   const main = !saved && data && viewHour !== null ? <div className="equipment-stockpile">
-    <OverTime data={data} catalogue={catalogue} holders={holders} included={included} tokens={tokens} viewport={viewport} options={options} runtime={runtime} gate={gate} track={track}
-      extent={extent} playhead={playhead} liveHead={liveHead} shownHour={viewHour} active={active && (shownDrill.breakdown === null || options.drill === 'popout')} grouping={grouping} groups={groups}
-      onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} setOption={setOption} pickOwner={pickOwner} onPick={open} />
+    {options.view === 'time'
+      ? <OverTime data={data} catalogue={catalogue} holders={holders} included={included} tokens={tokens} viewport={viewport} options={options} runtime={runtime} gate={gate} track={track}
+        extent={extent} playhead={playhead} liveHead={liveHead} shownHour={viewHour} active={active && (shownDrill.breakdown === null || options.drill === 'popout')} grouping={grouping} groups={groups}
+        onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} setOption={setOption} pickOwner={pickOwner} onPick={open} />
+      : <StockpileTable data={data} hour={viewHour} widget={widget} live={stock.live} shownAt={stock.shownAt}
+        at={(values: LiveValues<number>) => catalogue && stock.data ? clipped(stockpileView(catalogue, atReply(stock.data, values, viewHour, track.branch.id), viewHour), within) : undefined}
+        included={included} count={count} narrow={narrowTableOf(options)}
+        active={active && (shownDrill.breakdown === null || options.drill === 'popout')} viewport={viewport}
+        runtime={runtime} track={track} onDiagnostics={onDiagnostics} onPick={open} />}
   </div> : null;
   const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" failure={actor.identityError} onRetry={actor.identityRetry} /> : null;
   const detail = at === null ? <WidgetState kind="outside" read={detailCoverage} />
