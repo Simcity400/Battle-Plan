@@ -4,7 +4,7 @@ import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { contentSet } from '../../dashboard/options.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import { countryRowPresentation, formatBarsValueField, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
 import { holderTagAt, inHourRanges, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
@@ -223,7 +223,7 @@ function makeRow(
   };
 }
 
-export const factoriesProjection: BarsProjection<FactoriesProjectionOptions> = registerBarsProjection({
+export const factoriesProjection: BarsProjection<FactoriesProjectionOptions> = registerFamilyProjection({
   kind: 'factories',
   family: 'bars',
   nextChange(readView, options) {

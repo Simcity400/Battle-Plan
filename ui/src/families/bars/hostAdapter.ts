@@ -27,33 +27,11 @@ export const barsHostAdapter: FamilyHostAdapter<BarsModel, unknown, FamilyBarsBi
   mirror: 'listbox',
   auditOwnerId: -2,
   parseHit: parseBarsHit,
-  inspectToken: key => `row:${key}`,
   getScrollExtent: fields => {
     const meta = fields.meta as { readonly totalHeight?: number } | undefined;
     return meta?.totalHeight !== undefined ? { height: meta.totalHeight } : null;
   },
-  getRowStride: fields => (fields.meta as { readonly rowHeight?: number } | undefined)?.rowHeight ?? 28,
-  getPageStep: (fields, viewport) => Math.max(1, Math.floor(viewport.height / ((fields.meta as { readonly rowHeight?: number } | undefined)?.rowHeight ?? 28))),
   deriveAuditRows: model => deriveBarsAudit(model),
   auditOrdered: true,
-  buildBinding: ctx => {
-    if (!ctx.theme) return null;
-    return {
-      options: ctx.options,
-      sources: ctx.sources,
-      ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-      ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
-      width: ctx.viewport.width,
-      height: ctx.viewport.height,
-      scrollTop: ctx.viewport.scrollTop,
-      theme: ctx.theme,
-      ...(ctx.identitySnapshot ? { identitySnapshot: ctx.identitySnapshot } : {}),
-      selectedKey: ctx.selectedKey,
-      focusedKey: ctx.focusedKey,
-      reducedMotion: ctx.reducedMotion,
-      audit: ctx.audit,
-      ...(ctx.auditId !== undefined ? { auditId: ctx.auditId } : {}),
-      pauseFlush: ctx.pauseFlush,
-    };
-  },
+  buildBinding: ctx => ({ reducedMotion: ctx.reducedMotion }),
 };

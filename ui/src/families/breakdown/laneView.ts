@@ -63,8 +63,14 @@ const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, Breakdow
       measure: canvasMeasureText(measure),
     });
     const contentHeight = layout.view === 'ring' ? (layout.sideList?.contentHeight ?? surface.height) : layout.contentHeight;
-    const { nav, mirror } = deriveBreakdownNavAndMirror(level, layout.expanded ?? {});
-    return { level, layout, contentHeight, nav, mirror };
+    const derived = deriveBreakdownNavAndMirror(level, layout.expanded ?? {});
+    const rows = layout.view === 'parts' ? layout.rows : layout.view === 'ring' ? layout.sideList?.rows ?? [] : [];
+    const placed = new Map(rows.map(row => [row.key, row] as const));
+    const nav = derived.nav.map((entry): FamilyNavTuple => {
+      const row = placed.get(entry[0]);
+      return row ? [entry[0], entry[1], entry[2], entry[3], entry[4], entry[5], row.y, row.height] : entry;
+    });
+    return { level, layout, contentHeight, nav, mirror: derived.mirror };
   },
   paint(ctx, frame) {
     drawBreakdown(ctx, {

@@ -2,7 +2,7 @@
 use crate::{
     Query,
     chart::{ChartBucket, ChartRun, ChartSummary, MarkCluster, MarkSummary},
-    identity::{Country, Holder, NOT_IN_HISTORY},
+    identity::{Country, Holder},
     log::{self, Pattern},
     read,
 };
@@ -199,7 +199,7 @@ pub const FIELDS: crate::fields::Fields = {
         ("key", Undated), ("measures", Undated), ("firstHour", Start), ("lastHour", End), ("top", Undated),
         ("hour", Read), ("width", Undated), ("within[].1[].firstHour", Start), ("within[].1[].lastHour", End), ("binHours", Undated), ("index", Undated),
         ("withMarks", Undated), ("least", Undated), ("countries[]", Undated), ("lines[].country", Undated), ("reads[].country", Undated), ("within[].0", Undated),
-        ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated), ("tags", Undated),
+        ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated),
     ]
 };
 
@@ -669,7 +669,7 @@ impl<'q, 'a> Line<'q, 'a> {
             match self.source.read(&view, slot) {
                 Computed::Value(value) => values.push((value, tag)),
                 Computed::NotApplicable(_) => {}
-                Computed::Unrecorded => return Ok(Err(board::measure_unrecorded(&self.query.holders.name(&Country::from(tag), hour), self.measure.name))),
+                Computed::Unrecorded => return Ok(Err(self.query.holders.say(&Country::from(tag), hour, |name| board::measure_unrecorded(name, self.measure.name)))),
             }
         }
         if self.series.absent_none {
@@ -890,7 +890,7 @@ impl<'q, 'a> Line<'q, 'a> {
         if self.series.key.unowned() {
             return country.tag().and_then(|tag| self.series.key.fixed(tag)).is_none().then(|| self.query.holders.say(country, hour, |name| format!("{name} names no row of {}", self.series.kind)));
         }
-        let Some(name) = self.query.holders.label(country, hour) else { return Some(NOT_IN_HISTORY.to_owned()) };
+        let Some(name) = self.query.holders.label(country, hour) else { return Some(self.query.holders.unnamed(country).to_owned()) };
         if let Some((_, _, reason)) = self.query.holders.unknown.iter().find(|(first, last, _)| *first <= hour && hour <= *last) {
             return Some(format!("Who holds {name} is not known: {reason}"));
         }
@@ -951,7 +951,7 @@ impl<'q, 'a> Line<'q, 'a> {
             let parts = self.series.parts.expect("a sub-keyed series");
             match self.owned_at(stretch.run, read.hour, self.series.key.of(slot, id), top)? {
                 Err(reason) => planned.push(Err(unread(read, reason))),
-                Ok(keys) if keys.is_empty() => planned.push(Err(unread(read, format!("{} holds no row of {} at this hour", self.query.holders.name(&read.country, read.hour), self.series.kind)))),
+                Ok(keys) if keys.is_empty() => planned.push(Err(unread(read, self.query.holders.say(&read.country, read.hour, |name| format!("{name} holds no row of {} at this hour", self.series.kind))))),
                 Ok(keys) => {
                     for key in keys {
                         asks.push((Ask { country: read.country.clone(), part: parts.part(key) }, read.hour));
@@ -972,7 +972,7 @@ impl<'q, 'a> Line<'q, 'a> {
 
     fn absent_reading(&self, state: &mut SeriesState, part: &Part) {
         if !self.series.absent_none {
-            state.missing = Some(board::measure_unrecorded(&self.query.holders.name(&state.country, state.hour), self.measure.name));
+            state.missing = Some(self.query.holders.say(&state.country, state.hour, |name| board::measure_unrecorded(name, self.measure.name)));
             return;
         }
         state.run = Some(SeriesRun {
@@ -1066,7 +1066,7 @@ impl<'q, 'a> Line<'q, 'a> {
                 let value = match value {
                     read::CoveredValue::Value(value) => value,
                     read::CoveredValue::Unvalued if !is_computed => {
-                        out[at].missing = Some(board::measure_unrecorded(&self.query.holders.name(&out[at].country, hour), self.measure.name));
+                        out[at].missing = Some(self.query.holders.say(&out[at].country, hour, |name| board::measure_unrecorded(name, self.measure.name)));
                         continue;
                     }
                     read::CoveredValue::Uncovered if !is_computed && complete_at(hour) => {
@@ -1142,7 +1142,7 @@ impl<'q, 'a> Line<'q, 'a> {
                             out[at].missing = Some(reason.clone());
                         }
                         Some(Resolved::CompleteUnrecorded | Resolved::Absent) | None => {
-                            out[at].missing = Some(board::measure_unrecorded(&self.query.holders.name(&out[at].country, hour), self.measure.name));
+                            out[at].missing = Some(self.query.holders.say(&out[at].country, hour, |name| board::measure_unrecorded(name, self.measure.name)));
                             if is_computed {
                                 out[at].not_applicable = Some(false);
                             }
@@ -1896,7 +1896,7 @@ impl<'q, 'a> Line<'q, 'a> {
         coverage: fn(&Self, &Part, i32, i32, &mut Vec<MissingSpan>) -> io::Result<Vec<(i64, i64)>>,
     ) -> io::Result<Vec<MissingSpan>> {
         let mut out = self.unheld(&country, from, to, parts);
-        let rowless = format!("{}'s {} was not recorded here", self.query.holders.name(&country, to), self.measure.name);
+        let rowless = self.query.holders.say(&country, to, |name| format!("{name}'s {} was not recorded here", self.measure.name));
         for part in parts {
             let complete = coverage(self, part, from, to, &mut out)?;
             if complete.is_empty() {
@@ -2225,7 +2225,7 @@ impl<'q, 'a> Line<'q, 'a> {
                 let end = (next - 1).min(last);
                 let reason = self
                     .missing_at(country, at as i32)
-                    .unwrap_or_else(|| format!("{}'s {} was not recorded here", self.query.holders.name(country, at as i32), self.measure.name));
+                    .unwrap_or_else(|| self.query.holders.say(country, at as i32, |name| format!("{name}'s {} was not recorded here", self.measure.name)));
                 match out.last_mut() {
                     Some(held) if held.reason == reason && i64::from(held.last_hour) + 1 == at => held.last_hour = end as i32,
                     _ => out.push(MissingSpan { first_hour: at as i32, last_hour: end as i32, reason }),

@@ -815,7 +815,10 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
         _ => panic!("a ranked series"),
     }
     let chosen_top = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "country-game-scores", "measure": "total" }, "reads": [{ "country": "GER", "hour": 0 }], "top": 1 } });
-    assert!(crate::parse(&chosen_top, &nobody()).is_err(), "a top of countries names no tag");
+    match crate::parse(&chosen_top, &nobody()).unwrap() {
+        Query::Series { countries, mode: SeriesMode::Top { n: 1, least: false, .. }, .. } => assert_eq!(countries, vec!["GER".into()]),
+        _ => panic!("a top of named countries ranks them"),
+    }
     let world = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "world-tension", "measure": "tension" }, "top": 3 } });
     assert!(crate::parse(&world, &nobody()).is_err(), "a singleton is never ranked");
     let tension = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "world-tension", "measure": "tension" }, "reads": [{ "country": "World", "hour": 0 }] } });

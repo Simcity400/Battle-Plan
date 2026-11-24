@@ -12,7 +12,8 @@ pub(crate) fn read<'a>(
     let [features] = features else {
         return Err("SimulationFeatures must have one complete row".into());
     };
-    let module_categories = enabled_module_categories(features.dlc_mask);
+    let module_categories = content_reader_key_names::equipment::category_families()?
+        .modular_categories(features.dlc_mask);
     let tokens = TokenNames::new(frame).map_err(|error| error.to_string())?;
     from_rows(
         content,

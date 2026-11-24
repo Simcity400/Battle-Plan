@@ -2,30 +2,47 @@ import type { MirrorModel } from '../contract.ts';
 
 export interface TableMirrorSyncOptions {
   readonly selectedKey: string | null;
-  readonly focusedKeyRef: { readonly current: string | null };
+  readonly rowsFocusable: boolean;
+  readonly focusedKeyRef: { current: string | null };
   readonly focusInsideRef: { readonly current: boolean };
   readonly restoringFocusRef: { current: boolean };
   readonly lastMirrorKeyRef: { current: string };
+}
+
+function restoreFocus(row: HTMLTableRowElement | null, key: string | null, options: TableMirrorSyncOptions): boolean {
+  if (!row) return false;
+  if (document.activeElement !== row) {
+    options.restoringFocusRef.current = true;
+    try {
+      row.focus({ preventScroll: true });
+    } finally {
+      options.restoringFocusRef.current = false;
+    }
+  }
+  if (key === options.focusedKeyRef.current) return false;
+  options.focusedKeyRef.current = key;
+  return true;
 }
 
 export function syncTableMirror(
   tbody: HTMLTableSectionElement | null,
   mirror: MirrorModel | null,
   options: TableMirrorSyncOptions,
-): void {
-  if (!tbody) return;
+): boolean {
+  if (!tbody) return false;
   if (!mirror) {
     if (options.lastMirrorKeyRef.current !== '') {
       options.lastMirrorKeyRef.current = '';
       tbody.replaceChildren();
     }
-    return;
+    return false;
   }
   const selected = options.selectedKey ?? '';
   const focusedKey = options.focusedKeyRef.current;
   const hasFocused = focusedKey !== null && mirror.rows.some(r => !r.groupHeader && r.key === focusedKey);
   const activeFocus = hasFocused ? focusedKey : (mirror.rows.find(r => !r.groupHeader)?.key ?? null);
   const key = JSON.stringify([
+    options.rowsFocusable,
     mirror.first,
     mirror.total,
     activeFocus,
@@ -40,9 +57,9 @@ export function syncTableMirror(
       r.cells.map(c => c.spoken),
     ]),
   ]);
-  if (key === options.lastMirrorKeyRef.current) return;
+  if (key === options.lastMirrorKeyRef.current) return false;
   options.lastMirrorKeyRef.current = key;
-  const wasFocused = options.focusInsideRef.current && document.activeElement instanceof HTMLElement && tbody.contains(document.activeElement);
+  const wasFocused = options.rowsFocusable && options.focusInsideRef.current && document.activeElement instanceof HTMLElement && tbody.contains(document.activeElement);
   let restore: HTMLTableRowElement | null = null;
   const canReuseInPlace = typeof tbody.children?.length === 'number' && typeof tbody.lastElementChild !== 'undefined';
 
@@ -78,8 +95,12 @@ export function syncTableMirror(
         continue;
       }
       if (tr.hasAttribute('role')) tr.removeAttribute('role');
-      const nextTab = row.key === activeFocus ? 0 : -1;
-      if (tr.tabIndex !== nextTab) tr.tabIndex = nextTab;
+      if (options.rowsFocusable) {
+        const nextTab = row.key === activeFocus ? 0 : -1;
+        if (tr.tabIndex !== nextTab) tr.tabIndex = nextTab;
+      } else if (tr.hasAttribute('tabindex')) {
+        tr.removeAttribute('tabindex');
+      }
       if (row.level !== undefined) {
         const lvl = String(row.level);
         if (tr.getAttribute('aria-level') !== lvl) tr.setAttribute('aria-level', lvl);
@@ -114,15 +135,7 @@ export function syncTableMirror(
       }
       if (wasFocused && row.key === activeFocus) restore = tr;
     }
-    if (restore && document.activeElement !== restore) {
-      options.restoringFocusRef.current = true;
-      try {
-        restore.focus({ preventScroll: true });
-      } finally {
-        options.restoringFocusRef.current = false;
-      }
-    }
-    return;
+    return restoreFocus(restore, activeFocus, options);
   }
 
   const fragment = document.createDocumentFragment();
@@ -138,7 +151,7 @@ export function syncTableMirror(
       fragment.append(tr);
       return;
     }
-    tr.tabIndex = row.key === activeFocus ? 0 : -1;
+    if (options.rowsFocusable) tr.tabIndex = row.key === activeFocus ? 0 : -1;
     if (row.level !== undefined) tr.setAttribute('aria-level', String(row.level));
     if (row.group) tr.setAttribute('aria-expanded', String(row.open === true));
     if (selected && selected === row.key) tr.setAttribute('aria-selected', 'true');
@@ -158,10 +171,10 @@ export function syncTableMirror(
   options.restoringFocusRef.current = true;
   try {
     tbody.replaceChildren(fragment);
-    if (restore) (restore as HTMLTableRowElement).focus({ preventScroll: true });
   } finally {
     options.restoringFocusRef.current = false;
   }
+  return restoreFocus(restore, activeFocus, options);
 }
 
 export interface ListboxMirrorItem {

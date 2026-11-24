@@ -122,22 +122,6 @@ export function exactHoverByCountry(
   return out;
 }
 
-const answerRows = new WeakMap<FollowedAnswer, ReadonlyMap<string, number>>();
-
-export function answerRowOf(answer: FollowedAnswer | undefined, tag: string): number {
-  if (!answer || answer.kind === 'notRecorded') return -1;
-  let rows = answerRows.get(answer);
-  if (!rows) {
-    const named = new Map<string, number>();
-    for (let row = 0; row < answer.rows; row++) {
-      const key = rowName(answer, row);
-      if (key && !named.has(key)) named.set(key, row);
-    }
-    answerRows.set(answer, rows = named);
-  }
-  return rows.get(tag) ?? -1;
-}
-
 export function assignCountrySeriesColours(
   orderedTags: readonly string[],
   holders: Readonly<Record<string, readonly HolderRun[]>> | null | undefined,

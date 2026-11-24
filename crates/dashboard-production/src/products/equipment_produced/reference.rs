@@ -342,7 +342,7 @@ pub(super) fn whole(source: &Source, query: &Query<'_>, params: &EquipmentProduc
     };
     let mut dated = Dated::default();
     let series = self::lines(query, &tags, &select, &types, &content, &mut notes, &mut dated, cancelled)?;
-    let lines: Vec<ProducedLine> = tags.into_iter().zip(series).map(|(country, series)| ProducedLine { identities: identities(query, &country), tag: query.holders.name(&country, query.timeline.last), country, series }).collect();
+    let lines: Vec<ProducedLine> = tags.into_iter().zip(series).map(|(country, series)| ProducedLine { identities: identities(query, &country), tag: query.holders.nearest_name(&country, query.timeline.last), country, series }).collect();
     for stretch in &query.timeline.stretches {
         dated.reads(query, &Span { run: stretch.run, first: stretch.first, last: stretch.last, id: 0, breaks: false })?;
     }

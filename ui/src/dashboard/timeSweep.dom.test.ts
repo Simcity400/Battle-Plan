@@ -9,7 +9,7 @@ interface Step { hour: number; states: Record<string, Read> }
 interface Asked { product: string; hour: number }
 
 const OFFSET = 900, FIRST = 1000, LAST = 1009, GAP = [1005, 1006];
-const OUTSIDE = 'This time is outside the recording.', UNRECORDED = 'This time was not recorded.';
+const OUTSIDE = 'This time is outside the recording.', UNRECORDED = 'Not recorded at this time.';
 const NOT_PLAYING = 'isn’t playing back yet';
 const RECORDED_ABSENCE = /does not exist at this date|no members|not recorded at this (date|hour|time|moment)|weren’t recorded at this time|wasn’t recorded at this time|unavailable at this time|Country unavailable|Selected country unavailable|not held at this date|not in service at this date/i;
 const recorded = (hour: number) => hour >= FIRST && hour <= LAST && !(hour >= GAP[0] && hour <= GAP[1]);
@@ -25,7 +25,7 @@ function problems(item: Case, step: Step, replies: 'pending' | 'failing', label:
   if (!read.main.length && !read.drawn && !playing) found.push('shows neither a state nor a drawn view for its main region');
   if (playing && read.main.some(state => state.includes(NOT_PLAYING))) return found.map(text => `${item.id} ${replies} ${label} (track hour ${at}): ${text}`);
   for (const [region, states] of [['main', read.main], ['drill', read.drill]] as const) for (const state of states) {
-    if (outside && RECORDED_ABSENCE.test(state)) found.push(`${region} calls an hour outside the recording recorded absence: ${state}`);
+    if (outside && RECORDED_ABSENCE.test(state.replace(UNRECORDED, ''))) found.push(`${region} calls an hour outside the recording recorded absence: ${state}`);
     if (outside && replies === 'pending' && item.scope === 'moment' && state.startsWith('loading')) found.push(`${region} waits on a read for an hour outside the recording`);
     if (!outside && (state.includes(OUTSIDE) || state.includes(UNRECORDED))) found.push(`${region} calls recorded hour ${hour} outside the recording`);
     if (!outside && replies === 'failing' && state.startsWith('loading') && !playing) found.push(`${region} is still loading after every read failed`);
