@@ -167,7 +167,7 @@ test('expanding a part is held by the host, shared by the parts list and the rin
 });
 
 function reply(breakdown: Breakdown, extra: Partial<PowerSpendingBreakdownReply> = {}): PowerSpendingBreakdownReply {
-  return { from: START, hour: START + 10, through: START + 30, breakdown, gainedRaw: '5306', lostAtCapRaw: '1', gainedReason: null, warnings: [], ...extra };
+  return { from: START, hour: START + 10, through: START + 30, breakdown, gainedRaw: '5306', lostAtCapRaw: '1', gainedReason: null, lostAtCapReason: null, warnings: [], ...extra };
 }
 
 function project(data: PowerSpendingBreakdownReply | null) {

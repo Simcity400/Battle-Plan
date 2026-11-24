@@ -1,5 +1,5 @@
 
-use dashboard_base::products::{Country, regions::NoRegions};
+use dashboard_base::products::{Country, regions::{ActiveRegions, NoRegions}};
 use dashboard_base::{products::{LoadContext, at_hour::{At, AtHour}}, queries::country_ids::Names};
 use dashboard_world::products::{place_names, sea_regions::{self, SeaContent}};
 use dashboard_base::{Source, catalogue::Refusals};
@@ -59,7 +59,7 @@ struct Fold {
     proven: BTreeSet<u32>,
     unnamed: u32,
     extents: Vec<Option<u32>>,
-    hidden: u32,
+    hidden: Vec<u32>,
 }
 
 impl Fold {
@@ -124,7 +124,7 @@ fn fold<'a>(rows: &[NavalRegionalMineRow], name: impl Fn(u32) -> Option<&'a str>
         .filter_map(|region| Some(UnknownRegion { region, unknown_owners: Some(unknown_at(region)).filter(|&count| count > 0 || lost)? }))
         .collect();
     let extents = shown.iter().map(|(_, vector)| vector.extent).collect();
-    Fold { mined, unknown, cells, proven, unnamed, extents, hidden: 0 }
+    Fold { mined, unknown, cells, proven, unnamed, extents, hidden: Vec::new() }
 }
 
 fn register_live(fold: &Fold, live: &dashboard_follow::live::Cells) -> io::Result<()> {
@@ -182,6 +182,7 @@ pub struct MinefieldsReply {
     pub unknown: Vec<UnknownRegion>,
     #[doc = " Why no region is listed; set only when `regions` is empty."]
     pub empty: Option<NoRegions>,
+    pub active_unlisted: ActiveRegions,
     pub scale: i32,
     pub warnings: Vec<String>,
 }
@@ -216,7 +217,7 @@ fn choose(fold: &mut Fold, pinned: &[u32], hidden: &[u32], lost: bool) -> HashMa
         rank.entry(id).or_insert(next);
     }
     let hidden: BTreeSet<u32> = hidden.iter().copied().filter(|id| !rank.contains_key(id)).collect();
-    fold.hidden = fold.mined.iter().filter(|region| hidden.contains(&region.region)).count() as u32;
+    fold.hidden = fold.mined.iter().map(|region| region.region).filter(|region| hidden.contains(region)).collect();
     fold.mined.retain(|region| !hidden.contains(&region.region));
     fold.cells.retain(|(region, ..)| !hidden.contains(region));
     fold.unknown.retain(|region| !hidden.contains(&region.region));
@@ -247,7 +248,7 @@ fn no_regions(fold: &Fold, lost: bool, sea_known: bool) -> Option<NoRegions> {
     if !sea_known && (fold.unnamed > 0 || !fold.extents.is_empty()) {
         return Some(NoRegions::Unread { reason: NO_SEA.into() });
     }
-    Some(if fold.hidden > 0 { NoRegions::Filtered { hidden: fold.hidden, outside: 0 } } else { NoRegions::None })
+    Some(if fold.hidden.is_empty() { NoRegions::None } else { NoRegions::Filtered { hidden: fold.hidden.len() as u32, outside: 0 } })
 }
 
 impl AtHour for Minefields {
@@ -269,7 +270,7 @@ impl AtHour for Minefields {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![MinefieldOrder::decl(), MinefieldsParams::decl(), MineOwner::decl(), MinedRegion::decl(), UnknownRegion::decl(), NoRegions::decl(), MinefieldsReply::decl()]
+        vec![MinefieldOrder::decl(), MinefieldsParams::decl(), MineOwner::decl(), MinedRegion::decl(), UnknownRegion::decl(), NoRegions::decl(), ActiveRegions::decl(), MinefieldsReply::decl()]
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -313,7 +314,8 @@ impl AtHour for Minefields {
             warnings.push(UNREAD.into());
         }
         let empty = no_regions(&fold, lost, sea_known);
-        let reply = MinefieldsReply { regions: fold.mined, unknown: fold.unknown, empty, scale: SCALE, warnings };
+        let active_unlisted = ActiveRegions { ids: std::mem::take(&mut fold.hidden), missing: lost.then(|| UNREAD.to_owned()) };
+        let reply = MinefieldsReply { regions: fold.mined, unknown: fold.unknown, empty, active_unlisted, scale: SCALE, warnings };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }

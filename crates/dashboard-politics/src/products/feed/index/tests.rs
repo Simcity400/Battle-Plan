@@ -48,7 +48,7 @@ fn a_timer_that_passes_without_a_recorded_end_is_not_recorded() {
 fn an_untargeted_pool_availability_is_not_a_running_decision() {
     let activated = brief(1, EventFeedKind::DecisionActivated, 100, None, None);
     let states = HashMap::from([(activated.at.key, DecisionLifecycleState::Available)]);
-    assert_eq!(statuses(&[activated.clone()], &states, &[120])[0], [ScriptStatus::Available]);
+    assert_eq!(statuses(&[activated], &states, &[120])[0], [ScriptStatus::Available]);
     let mission = brief(2, EventFeedKind::DecisionActivated, 110, Some(1), None);
     let selected_states = HashMap::from([(mission.at.key, DecisionLifecycleState::Available)]);
     let chosen = [brief(1, EventFeedKind::DecisionSelected, 100, None, None), mission];
