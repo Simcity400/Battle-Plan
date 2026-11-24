@@ -6623,7 +6623,6 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "special-project-effects": { "hour": "read" },
   "special-project-iteration": { "read": "read", "hour": "read" },
   "special-projects": { "hour": "read" },
-  "special-projects-history": { "hour": "read" },
   "sprite-artwork": {},
   "stability-markers": { "hour": "read" },
   "stability-part-names": { "hour": "read" },
@@ -6807,7 +6806,6 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "special-project-effects": { "branchId": "leaf", "country": "any", "hour": "leaf", "owner": "leaf", "project": "leaf" },
   "special-project-iteration": { "branchId": "leaf", "country": "any", "hour": "leaf", "ordinal": "leaf", "owner": "leaf", "project": "leaf", "read": "leaf" },
   "special-projects": { "branchId": "leaf", "country": "any", "current": "leaf", "hour": "leaf" },
-  "special-projects-history": { "branchId": "leaf", "country": "any", "current": "leaf", "hour": "leaf" },
   "sprite-artwork": { "sprites": "node", "sprites[]": "node", "sprites[].frame": "leaf", "sprites[].key": "leaf", "sprites[].recorded": "leaf", "sprites[].text": "leaf", "textures": "node", "textures[]": "node", "textures[].frame": "leaf", "textures[].frames": "leaf", "textures[].path": "leaf" },
   "stability-markers": { "branchId": "leaf", "country": "any", "factions": "leaf", "focus": "leaf", "government": "leaf", "hour": "leaf", "wars": "leaf" },
   "stability-part-names": { "branchId": "leaf", "country": "any", "hour": "leaf", "parts": "node", "parts[]": "leaf" },
@@ -6991,7 +6989,6 @@ export type RequestParams<E, B> = {
   "special-project-effects": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "special-project-iteration": { readonly [key: string]: unknown; readonly "hour"?: E | null; readonly "read"?: E | null };
   "special-projects": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "special-projects-history": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "sprite-artwork": {};
   "stability-markers": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "stability-part-names": { readonly [key: string]: unknown; readonly "hour"?: E | null };
