@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { classifyAgainstBase, formatReport, runCheckAtCommit, runDeadCodeCheck } from './check-dead-code.mjs';
+import { classifyAgainstBase, compareWithBase, formatReport, runCheckAtCommit, runDeadCodeCheck } from './check-dead-code.mjs';
 
 async function withRepo(files, fn) {
   const root = mkdtempSync(join(tmpdir(), 'bp-dead-code-'));
@@ -655,6 +655,18 @@ test('missing ratchet file at base commit is read as no ratchet instead of throw
 
     const headResult = await runDeadCodeCheck(root);
     assert.equal(headResult.ratchetMissing, false);
+    assert.equal(headResult.totalIssues, 1);
+
+    const compared = compareWithBase(headResult, baseResult, baseSha);
+    assert.equal(compared.comparison, null);
+    assert.match(compared.notice, new RegExp(baseSha.slice(0, 9)));
+
+    rmSync(join(root, 'ui/src/inheritedOrphan.ts'));
+    const cleanHead = await runDeadCodeCheck(root);
+    assert.equal(cleanHead.totalIssues, 0);
+    const cleanCompared = compareWithBase(cleanHead, baseResult, baseSha);
+    assert.equal(cleanCompared.comparison, null);
+    assert.match(cleanCompared.notice, /legacy-widgets-ratchet\.json/);
 
     const cmp = classifyAgainstBase(headResult, baseResult, baseSha);
     assert.deepEqual(cmp.ratchetRaises, []);

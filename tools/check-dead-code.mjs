@@ -2521,6 +2521,19 @@ function parseAgainstArg(argv) {
   return prefixed ? prefixed.slice('--against='.length) : null;
 }
 
+export function compareWithBase(result, baseResult, baseSha = 'base') {
+  if (baseResult.ratchetMissing) {
+    return {
+      comparison: null,
+      notice: `base ${baseSha.slice(0, 9)} has no tools/legacy-widgets-ratchet.json; checking HEAD without base comparison`,
+    };
+  }
+  return {
+    comparison: classifyAgainstBase(result, baseResult, baseSha),
+    notice: null,
+  };
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const reportOnly = process.argv.includes('--report-only');
   const noBase = process.argv.includes('--no-base');
@@ -2529,15 +2542,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const root = fileURLToPath(new URL('../', import.meta.url));
   const result = await runDeadCodeCheck(root);
   let comparison = null;
+  let baseNotice = null;
   if (!noBase) {
     const baseSha = resolveBaseCommit(root, againstArg);
     if (baseSha) {
       const baseResult = await runCheckAtCommit(root, baseSha);
-      comparison = classifyAgainstBase(result, baseResult, baseSha);
+      ({ comparison, notice: baseNotice } = compareWithBase(result, baseResult, baseSha));
     }
   }
   const body = formatReport(result, comparison, { showAllInFile: listInFile });
   if (body) console.log(body);
+  if (baseNotice) console.log(`dead-code notice: ${baseNotice}`);
   const summary = `dead-code: ${result.ui.deadProduction.length} dead UI module(s), `
     + `${result.ui.deadTests.length} dead test(s), `
     + `${result.ui.deadFixturesAndSupport.length} dead fixture/support file(s), `
