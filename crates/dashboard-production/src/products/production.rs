@@ -57,33 +57,6 @@ impl LineKind {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct OutputPart {
-    pub variant: String,
-    #[doc = r#" The organisation's reference; "0" for none."#]
-    pub mio: String,
-    #[doc = " Units delivered since `sinceHour`, as a decimal string."]
-    pub units: String,
-    #[doc = " False when a tick could not be counted: `units` then leave it out."]
-    pub exact: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct OutputRun {
-    pub first_hour: i32,
-    pub last_hour: i32,
-    #[doc = " Its parts by row ordinal; the total is their sum, exact only when every part is."]
-    pub parts: Vec<OutputPart>,
-    #[doc = " The hour the branch's observation of the line began."]
-    pub since_hour: i32,
-    #[doc = " The line was first seen after the branch's first complete census: the units are its whole life's."]
-    pub whole_life: bool,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LineLife {
     pub handle: u64,
