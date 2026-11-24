@@ -4,7 +4,7 @@ import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
 import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
-import { tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
+import { ROW_HEIGHT, tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
 import { nextLookChange } from '../looks.ts';
 import { resolveHeadSpan } from './declaration.ts';
 import { familyTableLaneView, liveAdapter } from './laneView.ts';
@@ -30,7 +30,7 @@ import { capturePictures, capturePicturesBatch } from '../../dashboard/pulled.ts
 import { isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
-import { declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, type TableColumnSpec } from './model.ts';
+import { computeColumnMaxima, declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type TableColumnSpec, type TableModel, type TableRow } from './model.ts';
 import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
 import { openGate } from '../../test-support/gated.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
@@ -1431,7 +1431,7 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
 
     page.mount(2, { route: 0, lane: 0, surfaces: [{ install() {}, clear() {} }] });
     lane.mount(2, [], 'table');
-    const viewportHeight20Rows = 20 * 28;
+    const viewportHeight20Rows = 20 * ROW_HEIGHT[settings.density];
     lane.bind(2, { generation: 1, surfaces: [{ width: 320, height: viewportHeight20Rows, dpr: 1 }], offset: 0, pin: null, dated: { h: 120, c: 120 } }, {
       family: 'table', kind: 'test-r5-art-1500', options: {}, settings, sources: {}, width: 320, height: viewportHeight20Rows, scrollLeft: 0, scrollTop: 0,
     });
@@ -1509,4 +1509,207 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
     auditC.find(r => r.key === 'GER:_tooltip')?.value,
     'F8: tooltip audit distinguishes distinct underlying numeric values that format identically',
   );
+});
+
+test('incremental row resolution, column maxima, scrollable/grouped dirty painting, and one-shot rank marker timers', () => {
+  const cols: TableColumnSpec[] = [
+    { key: 'name', label: 'Country', as: 'plain', offered: ['plain'], priority: 0, text: true },
+    { key: 'score', label: 'Score', as: 'faint', tone: 'blue', offered: ['faint'], priority: 1, numeric: true, format: 'integer' },
+    { key: 'extra', label: 'Extra', as: 'faint', tone: 'blue', offered: ['faint'], priority: 2, numeric: true, format: 'integer' },
+  ];
+  const settings = tableSettingsOf(undefined, cols, { density: 'compact', overflow: 'tooltip', sort: { column: 'score', direction: 'descending' } });
+  const layouts = buildColumnLayouts(cols, settings);
+  const N = 120;
+  let seed = 0x51a7f00d;
+  const nextRand = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed;
+  };
+  const scores = Array.from({ length: N }, (_, i) => (i * 17) % 97);
+  const extras = Array.from({ length: N }, (_, i) => (i * 13) % 83);
+  const makeRow = (i: number): TableRow => {
+    const key = `C${String(i).padStart(3, '0')}`;
+    return {
+      key,
+      name: `Country ${key}`,
+      cells: {
+        name: { value: knownValue(`Country ${key}`) },
+        score: { value: scores[i] === 0 ? zeroValue(0) : knownValue(scores[i]!), format: 'integer' },
+        extra: { value: extras[i] === 0 ? zeroValue(0) : knownValue(extras[i]!), format: 'integer' },
+      },
+    };
+  };
+  let rows = Array.from({ length: N }, (_, i) => makeRow(i));
+  let prevModel: TableModel = { columns: cols, rows, hour: 1, rowTimeBoundaries: false, rank: true };
+  let prevFlat = resolveTableRows(prevModel, settings);
+  let prevIndex = new Map<string, number>();
+  prevFlat.forEach((item, idx) => { if (item.kind === 'data') prevIndex.set(item.key, idx); });
+  let prevMaxima = computeColumnMaxima(prevFlat, layouts, 1);
+
+  for (let step = 2; step <= 65; step++) {
+    const k = step % 7 === 0 ? 0 : 1 + (nextRand() % 8);
+    const nextRows = rows.slice();
+    const changedKeys = new Set<string>();
+    const changedRows = new Map<string, TableRow>();
+    for (let j = 0; j < k; j++) {
+      const idx = nextRand() % N;
+      if (j === 0 && step % 5 === 0) {
+        const leaderKey = prevFlat[0]!.key;
+        const leaderIdx = Number(leaderKey.slice(1));
+        scores[leaderIdx] = 1;
+        extras[leaderIdx] = 1;
+        const built = makeRow(leaderIdx);
+        nextRows[leaderIdx] = built;
+        changedKeys.add(built.key);
+        changedRows.set(built.key, built);
+      } else {
+        scores[idx] = nextRand() % 120;
+        extras[idx] = nextRand() % 150;
+        const built = makeRow(idx);
+        nextRows[idx] = built;
+        changedKeys.add(built.key);
+        changedRows.set(built.key, built);
+      }
+    }
+    const nextModel: TableModel = {
+      columns: cols,
+      rows: nextRows,
+      hour: step,
+      rowTimeBoundaries: false,
+      rank: true,
+      changedKeys,
+      changedRows,
+    };
+    const inc = resolveTableRowsIncremental(prevModel, prevFlat, prevIndex, nextModel, settings);
+    assert.ok(inc !== null, `step ${step} uses incremental sort`);
+    const incRows: ReturnType<typeof resolveTableRows> = inc.flatRows;
+    const full = resolveTableRows(nextModel, settings);
+    assert.equal(incRows.length, full.length, `step ${step} length matches`);
+    for (let i = 0; i < full.length; i++) {
+      const incItem = incRows[i]!;
+      const fullItem = full[i]!;
+      assert.equal(incItem.kind, 'data');
+      assert.equal(fullItem.kind, 'data');
+      assert.equal(incItem.key, fullItem.key, `step ${step} key at ${i}`);
+      assert.equal(incItem.rank, fullItem.rank, `step ${step} rank at ${i} (${incItem.key})`);
+      assert.equal(inc.rowIndex.get(incItem.key), i, `step ${step} rowIndex for ${incItem.key}`);
+    }
+    const incMax = updateColumnMaximaIncremental(prevMaxima, prevFlat, prevIndex, incRows, inc.rowIndex, layouts, changedKeys, prevModel.hour, step);
+    const fullMax = computeColumnMaxima(full, layouts, step);
+    assert.deepEqual([...incMax.entries()].sort(), [...fullMax.entries()].sort(), `step ${step} maxima match`);
+
+    rows = nextRows;
+    prevModel = nextModel;
+    prevFlat = incRows;
+    prevIndex = inc.rowIndex;
+    prevMaxima = incMax;
+  }
+
+  const { ctx, counts } = instrumentedContext();
+  (ctx as unknown as { createLinearGradient: () => { addColorStop: () => void } }).createLinearGradient = () => ({ addColorStop() {} });
+  const scrollSettings = tableSettingsOf(undefined, cols, { density: 'compact', overflow: 'scroll', sort: { column: 'score', direction: 'descending' } });
+  const scrollLayout = layoutFamilyTable(buildColumnLayouts(cols, scrollSettings, { name: 160, score: 160, extra: 160 }), 260, 'scroll');
+  assert.equal(scrollLayout.scrollable, true);
+  const groupedRows = resolveTableRows({
+    columns: cols,
+    hour: 1,
+    rank: true,
+    rows: [
+      { key: 'A', name: 'Alpha', group: { key: 'g1', label: 'Axis', order: 0 }, cells: { name: { value: knownValue('Alpha') }, score: { value: knownValue(100), format: 'integer' }, extra: { value: knownValue(50), format: 'integer' } } },
+      { key: 'B', name: 'Bravo', group: { key: 'g1', label: 'Axis', order: 0 }, cells: { name: { value: knownValue('Bravo') }, score: { value: knownValue(80), format: 'integer' }, extra: { value: knownValue(40), format: 'integer' } } },
+      ...Array.from({ length: 20 }, (_, i) => ({
+        key: `Z${i}`,
+        name: `Z${i}`,
+        group: { key: 'g2', label: 'Other', order: 1 },
+        cells: { name: { value: knownValue(`Z${i}`) }, score: { value: knownValue(20 - i), format: 'integer' as const }, extra: { value: knownValue(10), format: 'integer' as const } },
+      })),
+    ],
+  }, scrollSettings);
+  const pic = createTablePicture();
+  drawFamilyTable(ctx, { layout: scrollLayout, rows: groupedRows, settings: scrollSettings, hour: 1, width: 260, height: 100, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 1, glideDuration: 0, glide: new Map(), markers: new Map(), icons: new Map(), dpr: 1 }, pic);
+  const fillsAfterFull = counts().fillTextCalls;
+  const offscreenMutated = groupedRows.slice();
+  const lastIdx = offscreenMutated.length - 1;
+  const lastItem = offscreenMutated[lastIdx]!;
+  if (lastItem.kind === 'data') {
+    offscreenMutated[lastIdx] = { ...lastItem, row: { ...lastItem.row, cells: { ...lastItem.row.cells, score: { value: knownValue(19), format: 'integer' } } } };
+  }
+  const offscreenRes = drawFamilyTable(ctx, { layout: scrollLayout, rows: offscreenMutated, settings: scrollSettings, hour: 2, width: 260, height: 100, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 2, glideDuration: 0, glide: new Map(), markers: new Map(), icons: new Map(), dpr: 1 }, pic);
+  assert.equal(offscreenRes.drew, false, 'off-screen row change in scrollable grouped table performs zero paint');
+  assert.equal(counts().fillTextCalls, fillsAfterFull, 'off-screen row change emits zero fillText calls');
+
+  const visibleMutated = offscreenMutated.slice();
+  const visItem = visibleMutated[2]!;
+  if (visItem.kind === 'data') {
+    visibleMutated[2] = { ...visItem, row: { ...visItem.row, cells: { ...visItem.row.cells, score: { value: knownValue(81), format: 'integer' } } } };
+  }
+  const visRes = drawFamilyTable(ctx, { layout: scrollLayout, rows: visibleMutated, settings: scrollSettings, hour: 3, width: 260, height: 100, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 3, glideDuration: 0, glide: new Map(), markers: new Map(), icons: new Map(), dpr: 1 }, pic);
+  assert.equal(visRes.drew, true);
+  assert.equal(visRes.paintedCells, 1, 'scrollable grouped single-cell change repaints only 1 dirty cell');
+  assert.ok(counts().fillTextCalls - fillsAfterFull < fillsAfterFull, `scrollable grouped single-cell change draws fewer texts (${counts().fillTextCalls - fillsAfterFull} vs full ${fillsAfterFull})`);
+
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = class {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() {
+      const c = instrumentedContext().ctx as unknown as Record<string, unknown>;
+      c.setTransform = () => {};
+      return c;
+    }
+    transferToImageBitmap() { return { close() {} }; }
+  };
+  let wakes = 0;
+  let scheduledMs: number | null = null;
+  let timerCb: (() => void) | null = null;
+  try {
+    registerTableProjection(declareTableProjection<{ rows: { id: string; v: number }[] }, { id: string; v: number }, Record<string, never>>({
+      kind: 'test-rank-marker-timer',
+      rank: true,
+      rankMarkers: true,
+      columns: [
+        { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, field: 'id', text: true },
+        { key: 'v', label: 'Val', as: 'plain', offered: ['plain'], priority: 1, field: 'v', numeric: true },
+      ],
+      rows: reply => ({ rows: reply.rows }),
+      rowKey: r => r.id,
+      rowName: r => r.id,
+    }));
+    let clockNow = 1000;
+    const laneView = familyTableLaneView(() => { wakes++; }, {
+      clock: () => clockNow,
+      cadenceTimers: {
+        set: (fn, ms) => { timerCb = fn; scheduledMs = ms; return 1 as unknown as ReturnType<typeof setTimeout>; },
+        clear: () => { timerCb = null; },
+      },
+    });
+    const rmSettings = tableSettingsOf(undefined, [
+      { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
+      { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
+    ], { density: 'compact', overflow: 'tooltip', sort: { column: 'v', direction: 'descending' } });
+    const state = new Map<string, unknown>();
+    let seq = 1;
+    const paintRows = (list: { id: string; v: number }[], hour: number) => laneView.paint({
+      widget: 1,
+      subs: [],
+      pictures: [],
+      model: { family: 'table' as const, kind: 'test-rank-marker-timer', options: {}, settings: rmSettings, sources: {}, staticPanels: { main: { rows: list } }, width: 320, height: 180, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
+      hour,
+      speed: 24,
+      binding: { generation: 1, surfaces: [{ width: 320, height: 180, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: clockNow,
+    }, state, () => `c${seq++}`);
+    paintRows([{ id: 'A', v: 20 }, { id: 'B', v: 10 }], 1);
+    clockNow = 1050;
+    const swapped = paintRows([{ id: 'A', v: 5 }, { id: 'B', v: 30 }], 2);
+    assert.equal(swapped.motion, false, 'rank marker expiry does not hold 60 FPS motion loop');
+    assert.ok(scheduledMs !== null && scheduledMs > 0, 'schedules one-shot wake timer for marker expiry');
+    (timerCb as (() => void) | null)?.();
+    assert.ok(wakes >= 1, 'one-shot timer wakes widget when markers expire');
+    laneView.unmount?.(1, state);
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
 });

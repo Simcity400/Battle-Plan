@@ -959,17 +959,17 @@ impl Projection<'_> {
                 + next.fixed.capacity() * size_of::<Option<C>>()
                 + next.ends.capacity() * size_of::<usize>()
                 + next.bytes.capacity()
-                > 65_536
+                > 4 * 1024 * 1024
             {
                 *next = Ledger::default();
             }
-            if seen.capacity() > 4096 {
+            if seen.capacity() > 16_384 {
                 *seen = Vec::new();
             }
-            if edits.capacity() > 1024 {
+            if edits.capacity() > 8_192 {
                 *edits = Vec::new();
             }
-            if index.capacity() > 1024 {
+            if index.capacity() > 16_384 {
                 *index = std::collections::HashMap::with_hasher(foldhash::fast::FixedState::default());
             }
             let mut order = self.scratch.table(S::ID);

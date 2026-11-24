@@ -14,7 +14,14 @@ import type { CountryHolder } from '../dashboard/reachedCountry';
 import type { BoundWindow, GatedHour, Outside } from '../dashboard/regionTime';
 import type { DeclaredProduct } from '../dashboard/request';
 import type { AuditRow } from '../draw/notifications';
-import type { HourSpan, MissingSpan } from '../generated/dashboard';
+import type {
+  ArtFrame as GeneratedArtFrame,
+  ArtOrigin as GeneratedArtOrigin,
+  ArtProvenance as GeneratedArtProvenance,
+  ArtResolution as GeneratedArtResolution,
+  HourSpan,
+  MissingSpan,
+} from '../generated/dashboard';
 import type { FamilyFactionRun, HolderRun, HourRanges } from './holders.ts';
 import type { CountryLooksMap } from './looks.ts';
 import type { DatedLogRow, LogTailQuery, TableRowSource } from './table/rowSource.ts';
@@ -43,6 +50,7 @@ export interface PointSourceRead {
     hour: GatedHour,
     mode: 'static' | 'exact',
   ) => Readonly<Record<string, unknown>> | null;
+  readonly provenInterval?: (data: unknown, hour: number) => readonly [number, number] | null;
   readonly dynamicKeys?: readonly string[];
   readonly validate?: (raw: unknown) => unknown;
 }
@@ -68,6 +76,8 @@ export interface BranchToHourSourceRead {
   readonly product: DeclaredProduct;
   readonly followQuery: Readonly<Record<string, unknown>> | null;
   readonly params: Readonly<Record<string, unknown>> | null;
+  readonly chunkHours?: number;
+  readonly provenInterval?: (data: unknown, requested: readonly [number, number], hour: number) => readonly [number, number] | null;
   readonly buildSpanParams?: (
     base: Readonly<Record<string, unknown>>,
     span: BoundWindow,
@@ -83,6 +93,8 @@ export interface TrailingWindowSourceRead {
   readonly windowHours: number;
   readonly followQuery: Readonly<Record<string, unknown>> | null;
   readonly params: Readonly<Record<string, unknown>> | null;
+  readonly chunkHours?: number;
+  readonly provenInterval?: (data: unknown, requested: readonly [number, number], hour: number) => readonly [number, number] | null;
   readonly buildSpanParams?: (
     base: Readonly<Record<string, unknown>>,
     span: BoundWindow,
@@ -188,7 +200,8 @@ export type EntityKind = 'country' | 'faction' | 'leader' | 'design' | 'state' |
 export type FieldStatus<T> =
   | { readonly status: 'ready'; readonly value: T }
   | { readonly status: 'pending' }
-  | { readonly status: 'absent'; readonly reason: string };
+  | { readonly status: 'absent'; readonly reason: string }
+  | { readonly status: 'failed'; readonly reason: string; readonly retryable: boolean };
 
 export interface IdentityResult {
   readonly kind: EntityKind;
@@ -203,103 +216,64 @@ export interface IdentityResult {
   readonly nextChangeAt: number;
 }
 
-export interface ArtHandle {
-  readonly scope: string;
-  readonly choice: string;
-  readonly sprite?: string;
-  readonly frame?: number;
-  readonly path?: string;
-  readonly scale?: number;
-}
+export type ArtFlagSize = 'panel' | 'shield' | 'normal' | 'medium' | 'small';
 
-export type ArtOrigin =
-  | { readonly kind: 'baseGame' }
-  | { readonly kind: 'dlc'; readonly id: string; readonly name: string }
-  | { readonly kind: 'mod'; readonly id: string; readonly name: string }
-  | { readonly kind: 'visualMod'; readonly id: string; readonly name: string }
-  | { readonly kind: 'builtin'; readonly id: string };
-
-export interface ArtFrame {
-  readonly frameIndex: number;
-  readonly frameCount: number;
-  readonly frameWidth: number;
-  readonly frameHeight: number;
-  readonly textureWidth: number;
-  readonly textureHeight: number;
-  readonly outputWidth: number;
-  readonly outputHeight: number;
-}
-
-export interface ArtProvenance {
-  readonly fromCurrentInstall: boolean;
-  readonly label: string;
-  readonly scopeKey: string;
-}
-
-export type ArtResolution =
-  | { readonly status: 'noArtExpected' }
-  | { readonly status: 'pending' }
+export type ArtHandle =
   | {
-      readonly status: 'ready';
-      readonly assetId: string;
+      readonly kind: 'flag';
+      readonly choice: string;
+      readonly size: ArtFlagSize;
+      readonly maxEdge?: number;
+    }
+  | {
+      readonly kind: 'sprite';
+      readonly key: string;
+      readonly frame?: number;
+      readonly recorded?: string;
+      readonly text?: boolean;
+      readonly maxEdge?: number;
+    }
+  | {
+      readonly kind: 'portrait';
+      readonly key: string;
+      readonly owner?: string;
+      readonly recorded?: string;
+      readonly maxEdge?: number;
+    }
+  | {
+      readonly kind: 'path';
+      readonly path: string;
+      readonly frame?: number;
+      readonly frames?: number;
+      readonly maxEdge?: number;
+    }
+  | {
+      readonly kind: 'url';
       readonly url: string;
-      readonly origin: ArtOrigin;
-      readonly file: string;
-      readonly frame: ArtFrame;
-      readonly provenance: ArtProvenance;
-    }
-  | {
-      readonly status: 'confirmedMissing';
-      readonly reason: string;
-      readonly origin?: ArtOrigin | null;
-      readonly file?: string | null;
-    }
-  | {
-      readonly status: 'refused';
-      readonly reason: string;
-      readonly construct: string;
-      readonly origin?: ArtOrigin | null;
-      readonly file?: string | null;
-    }
-  | { readonly status: 'failed'; readonly reason: string; readonly retryable: boolean };
+      readonly frame?: number;
+    };
+
+export type ArtOrigin = GeneratedArtOrigin;
+export type ArtFrame = GeneratedArtFrame;
+export type ArtProvenance = GeneratedArtProvenance;
+export type ArtResolution = GeneratedArtResolution;
 
 export type ArtResult<TBitmap = ImageBitmap> =
-  | { readonly status: 'noArtExpected' }
-  | { readonly status: 'pending' }
-  | {
-      readonly status: 'ready';
-      readonly assetId: string;
-      readonly url: string;
-      readonly origin: ArtOrigin;
-      readonly file: string;
-      readonly frame: ArtFrame;
-      readonly provenance: ArtProvenance;
-      readonly bitmap?: TBitmap;
-    }
-  | {
-      readonly status: 'confirmedMissing';
-      readonly reason: string;
-      readonly origin?: ArtOrigin | null;
-      readonly file?: string | null;
-    }
-  | {
-      readonly status: 'refused';
-      readonly reason: string;
-      readonly construct: string;
-      readonly origin?: ArtOrigin | null;
-      readonly file?: string | null;
-    }
-  | { readonly status: 'failed'; readonly reason: string; readonly retryable: boolean; readonly retry?: () => void };
+  | Extract<ArtResolution, { readonly status: 'noArtExpected' | 'pending' | 'confirmedMissing' | 'refused' }>
+  | (Extract<ArtResolution, { readonly status: 'ready' }> & { readonly bitmap?: TBitmap })
+  | (Extract<ArtResolution, { readonly status: 'failed' }> & { readonly retry?: () => void });
 
 export type IdentityDemand = (kind: EntityKind, key: string, atHour: DisplayedHour) => void;
 export type ArtDemand = (handle: ArtHandle) => void;
 
 export interface IdentityProvider {
-  resolve(kind: EntityKind, key: string, atHour: DisplayedHour, onDemand?: IdentityDemand): IdentityResult;
+  readonly demandOwner?: 'view';
+  resolve(kind: EntityKind, key: string, atHour: DisplayedHour): IdentityResult;
 }
 
 export interface ArtProvider {
-  resolve(handle: ArtHandle, onDemand?: ArtDemand): ArtResult;
+  readonly demandOwner?: 'view';
+  resolve(handle: ArtHandle): ArtResult;
 }
 
 export interface BoundedReadView {

@@ -28,9 +28,10 @@ const FILL_MINIMUM: usize = 16;
 
 const NEW: u32 = u32::MAX;
 const EMPTY: u32 = u32::MAX;
-const INSERT_SCRATCH_LIMIT: usize = 0;
-const HOUR_SCRATCH_LIMIT: usize = 2 * 1024;
-const SECTION_SCRATCH_LIMIT: usize = 0;
+const INSERT_SCRATCH_LIMIT: usize = 16 * 1024;
+const HOUR_SCRATCH_LIMIT: usize = 32 * 1024;
+const SECTION_SCRATCH_LIMIT: usize = 16 * 1024;
+const BATCH_SCRATCH_LIMIT: usize = 256 * 1024;
 
 fn drop_over<T>(values: &mut Vec<T>, limit_bytes: usize) {
     values.clear();
@@ -347,9 +348,9 @@ impl Batch {
     }
 
     pub fn release_scratch(&mut self) {
-        drop_over(&mut self.keys, SECTION_SCRATCH_LIMIT);
+        drop_over(&mut self.keys, BATCH_SCRATCH_LIMIT);
         for cells in &mut self.columns {
-            cells.release_scratch(SECTION_SCRATCH_LIMIT);
+            cells.release_scratch(BATCH_SCRATCH_LIMIT);
         }
         self.sparse = false;
         self.uniform_optional_i32 = None;
@@ -1350,6 +1351,20 @@ impl Pending {
         extend(into, items)
     }
 
+    fn extend_scalar_words(&mut self, words: &[u64]) -> io::Result<()> {
+        let base = u32::try_from(self.at.len())
+            .ok()
+            .filter(|&base| base.checked_add(u32::try_from(words.len()).unwrap_or(u32::MAX)).is_some())
+            .ok_or_else(|| invalid_static("An hour inserts more than 2^32 rows"))?;
+        reserve(&mut self.at, words.len())?;
+        reserve(&mut self.words, words.len())?;
+        reserve(&mut self.present, words.len())?;
+        self.at.extend(base..base + words.len() as u32);
+        self.words.extend_from_slice(words);
+        self.present.resize(self.present.len() + words.len(), true);
+        Ok(())
+    }
+
     fn push(&mut self, at: u32, cell: Cell<'_>) -> io::Result<()> {
         match cell {
             Cell::U32List(items) => Self::items(&mut self.spans, &mut self.u32s, items)?,
@@ -1525,8 +1540,57 @@ impl Out {
 
     fn fill(&mut self, kind: Kind, pending: &Pending, order: &[u32]) -> io::Result<()> {
         self.clear();
-        for &at in order {
-            self.push(kind, pending, &pending.words, at as usize)?;
+        let count = order.len();
+        if count == 0 {
+            return Ok(());
+        }
+        let words = &pending.words;
+        match kind {
+            Kind::U8 | Kind::Bool => {
+                reserve(&mut self.u8s, count)?;
+                self.u8s.extend(order.iter().map(|&at| words[at as usize] as u8));
+                self.count = count;
+            }
+            Kind::I8 => {
+                reserve(&mut self.i8s, count)?;
+                self.i8s.extend(order.iter().map(|&at| words[at as usize] as i8));
+                self.count = count;
+            }
+            Kind::U16 => {
+                reserve(&mut self.u16s, count)?;
+                self.u16s.extend(order.iter().map(|&at| words[at as usize] as u16));
+                self.count = count;
+            }
+            Kind::I16 => {
+                reserve(&mut self.i16s, count)?;
+                self.i16s.extend(order.iter().map(|&at| words[at as usize] as i16));
+                self.count = count;
+            }
+            Kind::U32 | Kind::Bytes => {
+                reserve(&mut self.u32s, count)?;
+                self.u32s.extend(order.iter().map(|&at| words[at as usize] as u32));
+                self.count = count;
+            }
+            Kind::I32 => {
+                reserve(&mut self.i32s, count)?;
+                self.i32s.extend(order.iter().map(|&at| words[at as usize] as i32));
+                self.count = count;
+            }
+            Kind::U64 => {
+                reserve(&mut self.u64s, count)?;
+                self.u64s.extend(order.iter().map(|&at| words[at as usize]));
+                self.count = count;
+            }
+            Kind::I64 => {
+                reserve(&mut self.i64s, count)?;
+                self.i64s.extend(order.iter().map(|&at| words[at as usize] as i64));
+                self.count = count;
+            }
+            _ => {
+                for &at in order {
+                    self.push(kind, pending, words, at as usize)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1989,6 +2053,10 @@ impl TableWriter {
 
     pub fn table(&self) -> &Table {
         &self.table
+    }
+
+    pub fn has_texts(&self) -> bool {
+        !self.texts.is_empty()
     }
 
     pub fn status(&self) -> Status {
@@ -2696,6 +2764,20 @@ impl Hour<'_> {
                 extend(slots, &order.slots)?;
             }
             self.ordered = true;
+        } else if table.slots() == 0 && new_keys.is_empty() {
+            if !removed.is_empty() {
+                for &key in &batch.keys {
+                    if removed.binary_search(&key).is_ok() {
+                        return Err(invalid_static("A row key is both changed and removed"));
+                    }
+                }
+            }
+            extend(new_keys, &batch.keys)?;
+            reserve(insert_rows, rows)?;
+            insert_rows.extend(0..rows as u32);
+            reserve(slots, rows)?;
+            slots.resize(rows, NEW);
+            self.inserted = insert_rows.len() as u32;
         } else {
             reserve(slots, rows)?;
             for (row, &key) in (0u32..).zip(&batch.keys) {
@@ -2856,8 +2938,46 @@ impl Hour<'_> {
             }
             return Ok(());
         }
+        let all_new = insert_rows.len() == rows;
         for (column, (&kind, cells)) in kinds.iter().zip(columns).enumerate() {
             if kind == Kind::Bytes || (!has_new && cells.kept.len() == rows) {
+                continue;
+            }
+            if all_new {
+                if !cells.kept.is_empty() {
+                    return Err(kept_insert());
+                }
+                if cells.unrecorded.is_empty()
+                    && matches!(
+                        kind,
+                        Kind::U8
+                            | Kind::I8
+                            | Kind::U16
+                            | Kind::I16
+                            | Kind::U32
+                            | Kind::I32
+                            | Kind::U64
+                            | Kind::I64
+                            | Kind::Bool
+                    )
+                {
+                    inserts[column].extend_scalar_words(&cells.words)?;
+                    continue;
+                }
+                let mut next_unrecorded = 0usize;
+                for row in 0..rows as u32 {
+                    let recorded = cells.unrecorded.get(next_unrecorded) != Some(&row);
+                    if !recorded {
+                        next_unrecorded += 1;
+                    }
+                    let cell = if recorded {
+                        cells.cell(kind, row).unwrap_or_else(|| placeholder(kind))
+                    } else {
+                        push(&mut insert_unrecorded[column], row)?;
+                        placeholder(kind)
+                    };
+                    inserts[column].push(row, cell)?;
+                }
                 continue;
             }
             let held = table
@@ -3072,73 +3192,106 @@ impl Hour<'_> {
             extend(read, &writer.visited)?;
             read.sort_unstable();
         }
-        sorted_keys.clear();
-        reserve(sorted_keys, writer.new_keys.len())?;
-        sorted_keys.extend(
-            writer
-                .new_keys
-                .iter()
-                .enumerate()
-                .map(|(index, &key)| (key, index as u32)),
-        );
-        sorted_keys.sort_unstable();
-        if sorted_keys.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-            return Err(invalid_static("An hour inserts a row key twice"));
-        }
         let extent = u32::try_from(writer.table.slots())
             .map_err(|_| invalid_static("Row slots exceed 32 bits"))?;
-        let fresh = sorted_keys.len().saturating_sub(writer.free.len() + deleted.len());
-        if extent.checked_add(u32::try_from(fresh).unwrap_or(u32::MAX)).is_none() {
-            return Err(invalid_static("Row slots exceed 32 bits"));
-        }
-        by_index.clear();
-        reserve(by_index, inserted as usize)?;
-        by_index.resize(inserted as usize, 0);
-        by_slot.clear();
-        reserve(by_slot, sorted_keys.len())?;
-        popped.clear();
-        reserve(popped, sorted_keys.len())?;
+        let new_len = writer.new_keys.len();
+        let ascending_new = writer.new_keys.windows(2).all(|pair| pair[0] < pair[1]);
+        if ascending_new
+            && new_len == inserted as usize
+            && writer.free.is_empty()
+            && deleted.is_empty()
         {
-            let mut reused = deleted.iter().copied().peekable();
-            let mut next = extent;
-            for &(key, index) in sorted_keys.iter() {
-                let freed = writer.free.peek().map(|lowest| lowest.0);
-                let slot = match (freed, reused.peek().copied()) {
-                    (Some(a), Some(b)) if a > b => {
-                        reused.next();
-                        b
-                    }
-                    (Some(a), _) => {
-                        writer.free.pop();
-                        popped.push(a);
-                        a
-                    }
-                    (None, Some(b)) => {
-                        reused.next();
-                        b
-                    }
-                    (None, None) => {
-                        next += 1;
-                        next - 1
-                    }
-                };
-                by_index[index as usize] = slot;
-                by_slot.push((slot, key, index));
+            if extent
+                .checked_add(u32::try_from(new_len).unwrap_or(u32::MAX))
+                .is_none()
+            {
+                return Err(invalid_static("Row slots exceed 32 bits"));
             }
-            for &slot in popped.iter() {
-                writer.free.push(Reverse(slot));
+            by_index.clear();
+            reserve(by_index, new_len)?;
+            by_index.extend(extent..extent + new_len as u32);
+            inserted_slots.clear();
+            reserve(inserted_slots, new_len)?;
+            inserted_slots.extend(extent..extent + new_len as u32);
+            keys.clear();
+            extend(keys, &writer.new_keys)?;
+            insert_order.clear();
+            reserve(insert_order, new_len)?;
+            insert_order.extend(0..new_len as u32);
+        } else {
+            sorted_keys.clear();
+            reserve(sorted_keys, new_len)?;
+            sorted_keys.extend(
+                writer
+                    .new_keys
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &key)| (key, index as u32)),
+            );
+            if !ascending_new {
+                sorted_keys.sort_unstable();
+                if sorted_keys.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                    return Err(invalid_static("An hour inserts a row key twice"));
+                }
             }
+            let fresh = sorted_keys
+                .len()
+                .saturating_sub(writer.free.len() + deleted.len());
+            if extent
+                .checked_add(u32::try_from(fresh).unwrap_or(u32::MAX))
+                .is_none()
+            {
+                return Err(invalid_static("Row slots exceed 32 bits"));
+            }
+            by_index.clear();
+            reserve(by_index, inserted as usize)?;
+            by_index.resize(inserted as usize, 0);
+            by_slot.clear();
+            reserve(by_slot, sorted_keys.len())?;
+            popped.clear();
+            reserve(popped, sorted_keys.len())?;
+            {
+                let mut reused = deleted.iter().copied().peekable();
+                let mut next = extent;
+                for &(key, index) in sorted_keys.iter() {
+                    let freed = writer.free.peek().map(|lowest| lowest.0);
+                    let slot = match (freed, reused.peek().copied()) {
+                        (Some(a), Some(b)) if a > b => {
+                            reused.next();
+                            b
+                        }
+                        (Some(a), _) => {
+                            writer.free.pop();
+                            popped.push(a);
+                            a
+                        }
+                        (None, Some(b)) => {
+                            reused.next();
+                            b
+                        }
+                        (None, None) => {
+                            next += 1;
+                            next - 1
+                        }
+                    };
+                    by_index[index as usize] = slot;
+                    by_slot.push((slot, key, index));
+                }
+                for &slot in popped.iter() {
+                    writer.free.push(Reverse(slot));
+                }
+            }
+            by_slot.sort_unstable_by_key(|entry| entry.0);
+            inserted_slots.clear();
+            reserve(inserted_slots, by_slot.len())?;
+            inserted_slots.extend(by_slot.iter().map(|entry| entry.0));
+            keys.clear();
+            reserve(keys, by_slot.len())?;
+            keys.extend(by_slot.iter().map(|entry| entry.1));
+            insert_order.clear();
+            reserve(insert_order, by_slot.len())?;
+            insert_order.extend(by_slot.iter().map(|entry| entry.2));
         }
-        by_slot.sort_unstable_by_key(|entry| entry.0);
-        inserted_slots.clear();
-        reserve(inserted_slots, by_slot.len())?;
-        inserted_slots.extend(by_slot.iter().map(|entry| entry.0));
-        keys.clear();
-        reserve(keys, by_slot.len())?;
-        keys.extend(by_slot.iter().map(|entry| entry.1));
-        insert_order.clear();
-        reserve(insert_order, by_slot.len())?;
-        insert_order.extend(by_slot.iter().map(|entry| entry.2));
         let mut live_after = None;
         let mut direct_fill = None;
         if let Some((col, value)) = writer.uniform_optional_i32 {

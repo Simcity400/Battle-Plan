@@ -1,9 +1,9 @@
 import type { DashboardSource } from '../../dashboard/client';
+import { classifyFailure, type Failure } from '../../dashboard/queryError.ts';
 import type {
   DisplayedHour,
   EntityKind,
   FieldStatus,
-  IdentityDemand,
   IdentityProvider,
   IdentityResult as PlanIdentityResult,
 } from '../plan.ts';
@@ -33,6 +33,14 @@ function rgbCss(rgb: readonly [number, number, number]): string {
   return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
 }
 
+function failedFieldStatus(failure: Failure): FieldStatus<never> {
+  return {
+    status: 'failed',
+    reason: failure.message,
+    retryable: classifyFailure(failure)?.kind !== 'refused',
+  };
+}
+
 function toFieldStatus<T, U = T>(field: IdentityField<T>, map?: (value: T) => U): FieldStatus<U> {
   switch (field.kind) {
     case 'known':
@@ -42,7 +50,7 @@ function toFieldStatus<T, U = T>(field: IdentityField<T>, map?: (value: T) => U)
     case 'missing':
       return { status: 'absent', reason: field.reason };
     case 'failed':
-      return { status: 'absent', reason: field.failure.message };
+      return failedFieldStatus(field.failure);
   }
 }
 
@@ -116,7 +124,7 @@ export function identityResultFromIndex(
       };
     }
     if (res.kind === 'failed') {
-      const failed: FieldStatus<string> = { status: 'absent', reason: res.failure.message };
+      const failed: FieldStatus<string> = failedFieldStatus(res.failure);
       return {
         kind,
         key,
@@ -177,7 +185,7 @@ export function identityResultFromIndex(
       };
     }
     if (res.kind === 'failed') {
-      const failed: FieldStatus<string> = { status: 'absent', reason: res.failure.message };
+      const failed: FieldStatus<string> = failedFieldStatus(res.failure);
       return {
         kind,
         key,
@@ -226,7 +234,7 @@ export function identityResultFromIndex(
     };
   }
   if (res.kind === 'failed') {
-    const failed: FieldStatus<string> = { status: 'absent', reason: res.failure.message };
+    const failed: FieldStatus<string> = failedFieldStatus(res.failure);
     return {
       kind,
       key,
@@ -258,6 +266,7 @@ function hasPendingField(result: PlanIdentityResult): boolean {
 
 export function createSnapshotIdentityProvider(index: IdentityIndex): IdentityProvider {
   return {
+    demandOwner: 'view',
     resolve(kind: EntityKind, key: string, atHour: DisplayedHour): PlanIdentityResult {
       return identityResultFromIndex(index, kind, key, atHour);
     },
@@ -268,7 +277,6 @@ export interface BrokerIdentityProviderOptions {
   readonly recording?: DashboardSource;
   readonly branchBounds?: HourInterval;
   readonly needFlags?: boolean;
-  readonly onDemand?: IdentityDemand;
 }
 
 export function createBrokerIdentityProvider(
@@ -297,6 +305,7 @@ export function createBrokerIdentityProvider(
   };
 
   return {
+    demandOwner: 'view',
     resolve(kind: EntityKind, key: string, atHour: DisplayedHour): PlanIdentityResult {
       const index = broker.indexOf(scope, options.recording, options.branchBounds);
       const result = identityResultFromIndex(index, kind, key, atHour);
@@ -310,7 +319,6 @@ export function createBrokerIdentityProvider(
             queueMicrotask(flushDemands);
           }
         }
-        options.onDemand?.(kind, key, atHour);
       }
       return result;
     },

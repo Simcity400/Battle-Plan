@@ -733,11 +733,14 @@ const STATE_FIELDS: [RecordField; 11] = [
 ];
 const STATE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&STATE_FIELDS, STATE_RECORD).expect("valid record layout");
-const STATE_HEAD_LAYOUT: RecordLayout<'static> = RecordLayout::new(
-    &[STATE_FIELDS[0], STATE_FIELDS[2], STATE_FIELDS[3]],
-    STATE_RECORD,
-)
-.expect("valid record layout");
+const STATE_HEAD_RECORD: usize = 16;
+const STATE_HEAD_FIELDS: [RecordField; 3] = [
+    field(0, 0, 8),
+    field(cstate::ID, 8, 4),
+    field(cstate::CONTROLLER, 12, 4),
+];
+const STATE_HEAD_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&STATE_HEAD_FIELDS, STATE_HEAD_RECORD).expect("valid record layout");
 
 const COUNTRY_FIELDS: [RecordField; 1] = [field(ccountry::RESOURCES, 0, 8)];
 const COUNTRY_LAYOUT: RecordLayout<'static> =
@@ -1146,52 +1149,87 @@ fn walk_inner(
             *word = u64_at(bytes, slot * 8);
         }
     }
+    let mut unselected_controllers = 0usize;
     let mut next = 1;
     while next < slots {
-        let mut ids = [0_u32; BATCH];
-        let mut len = 0;
-        while next < slots && len < BATCH {
+        let mut sel_ids = [0_u32; BATCH];
+        let mut sel_ptrs = [0_usize; BATCH];
+        let mut sel_len = 0;
+        let mut head_ids = [0_u32; BATCH];
+        let mut head_ptrs = [0_usize; BATCH];
+        let mut head_len = 0;
+        while next < slots && sel_len < BATCH && head_len < BATCH {
             let pointer = usize::try_from(words[next]).map_err(|_| "state pointer overflow")?;
             if pointer != 0 {
                 present = true;
-                if select.any_country || (select.states)(next as u32) {
-                    addresses[len] = pointer;
-                    ids[len] = next as u32;
-                    len += 1;
+                let id = next as u32;
+                if (select.states)(id) {
+                    sel_ptrs[sel_len] = pointer;
+                    sel_ids[sel_len] = id;
+                    sel_len += 1;
+                } else if select.any_country {
+                    head_ptrs[head_len] = pointer;
+                    head_ids[head_len] = id;
+                    head_len += 1;
                 }
             }
             next += 1;
         }
-        if len == 0 {
-            continue;
+        if sel_len != 0 {
+            let record = &mut bytes[..];
+            records(
+                memory,
+                &sel_ptrs[..sel_len],
+                &STATE_LAYOUT,
+                record,
+                "state resource fields unreadable",
+            )?;
+            for (row, &slot) in sel_ids[..sel_len].iter().enumerate() {
+                let fields: [u8; STATE_RECORD] = record
+                    [row * STATE_RECORD..(row + 1) * STATE_RECORD]
+                    .try_into()
+                    .unwrap();
+                if u64_at(&fields, STATE_VTABLE) != vtable {
+                    return Err("state vtable mismatch");
+                }
+                let id = u32_at(&fields, STATE_ID);
+                if id != slot {
+                    return Err("state id differs from slot");
+                }
+                states[count] = Scratch {
+                    pointer: sel_ptrs[row],
+                    id,
+                    controller: u32_at(&fields, STATE_CONTROLLER),
+                    fields,
+                    ..Scratch::default()
+                };
+                count += 1;
+            }
         }
-        let record = &mut bytes[..];
-        records(
-            memory,
-            &addresses[..len],
-            &STATE_HEAD_LAYOUT,
-            record,
-            "state resource fields unreadable",
-        )?;
-        for (row, &slot) in ids[..len].iter().enumerate() {
-            let fields: [u8; STATE_RECORD] = record[row * STATE_RECORD..(row + 1) * STATE_RECORD]
-                .try_into()
-                .unwrap();
-            if u64_at(&fields, STATE_VTABLE) != vtable {
-                return Err("state vtable mismatch");
+        if head_len != 0 {
+            let record = &mut bytes[..];
+            records(
+                memory,
+                &head_ptrs[..head_len],
+                &STATE_HEAD_LAYOUT,
+                record,
+                "state resource fields unreadable",
+            )?;
+            for (row, &slot) in head_ids[..head_len].iter().enumerate() {
+                let base_at = row * STATE_HEAD_RECORD;
+                if u64_at(record, base_at) != vtable {
+                    return Err("state vtable mismatch");
+                }
+                let id = u32_at(record, base_at + 8);
+                if id != slot {
+                    return Err("state id differs from slot");
+                }
+                let controller = u32_at(record, base_at + 12);
+                if controller != 0 {
+                    words[unselected_controllers] = u64::from(controller);
+                    unselected_controllers += 1;
+                }
             }
-            let id = u32_at(&fields, STATE_ID);
-            if id != slot {
-                return Err("state id differs from slot");
-            }
-            states[count] = Scratch {
-                pointer: addresses[row],
-                id,
-                controller: u32_at(&fields, STATE_CONTROLLER),
-                fields,
-                ..Scratch::default()
-            };
-            count += 1;
         }
     }
     if !present {
@@ -1246,53 +1284,11 @@ fn walk_inner(
             state.slot = control(state.controller)?;
         }
     }
+    for &controller in &words[..unselected_controllers] {
+        let _ = control(controller as u32)?;
+    }
     let controllers = &mut controllers[..distinct];
     controllers.sort_unstable();
-    for chunk in controllers.chunks(BATCH) {
-        for (index, &slot) in chunk.iter().enumerate() {
-            addresses[index] = nations[slot as usize].pointer;
-        }
-        records(
-            memory,
-            &addresses[..chunk.len()],
-            &COUNTRY_LAYOUT,
-            bytes,
-            "country fields unreadable",
-        )?;
-        for (index, &slot) in chunk.iter().enumerate() {
-            nations[slot as usize].resources = usize::try_from(u64_at(bytes, index * 8))
-                .ok()
-                .filter(|&pointer| pointer != 0)
-                .ok_or("country resources pointer unreadable or null")?;
-        }
-    }
-
-    let mut selected = 0;
-    for index in 0..count {
-        if (select.states)(states[index].id) {
-            states[selected] = states[index];
-            selected += 1;
-        }
-    }
-    let count = selected;
-    let states = &mut states[..count];
-    for batch in states.chunks_mut(BATCH) {
-        for (address, state) in addresses.iter_mut().zip(batch.iter()) {
-            *address = state.pointer;
-        }
-        records(
-            memory,
-            &addresses[..batch.len()],
-            &STATE_LAYOUT,
-            bytes,
-            "state resource fields unreadable",
-        )?;
-        for (row, state) in batch.iter_mut().enumerate() {
-            state
-                .fields
-                .copy_from_slice(&bytes[row * STATE_RECORD..(row + 1) * STATE_RECORD]);
-        }
-    }
 
     for (index, state) in states.iter().enumerate() {
         order[index] = (state.slot, index as u32);
@@ -1324,6 +1320,24 @@ fn walk_inner(
         }
     }
     let controllers = &mut controllers[..wanted];
+    for chunk in controllers.chunks(BATCH) {
+        for (index, &slot) in chunk.iter().enumerate() {
+            addresses[index] = nations[slot as usize].pointer;
+        }
+        records(
+            memory,
+            &addresses[..chunk.len()],
+            &COUNTRY_LAYOUT,
+            bytes,
+            "country fields unreadable",
+        )?;
+        for (index, &slot) in chunk.iter().enumerate() {
+            nations[slot as usize].resources = usize::try_from(u64_at(bytes, index * 8))
+                .ok()
+                .filter(|&pointer| pointer != 0)
+                .ok_or("country resources pointer unreadable or null")?;
+        }
+    }
 
     let resources_vtable = site(base, ccountry_resources::VTABLE_RVA)? as u64;
     let origin_vtable = site(base, cresource_origin::VTABLE_RVA)? as u64;

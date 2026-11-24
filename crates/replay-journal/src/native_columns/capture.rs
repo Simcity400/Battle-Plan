@@ -65,7 +65,7 @@ impl RowCells {
     }
 
     pub fn release_scratch(&mut self) {
-        const LIMIT: usize = 32 * 1024;
+        const LIMIT: usize = 1024 * 1024;
         self.batch.release_scratch();
         self.entries.clear();
         if self.entries.capacity().saturating_mul(size_of::<Entry>()) > LIMIT {

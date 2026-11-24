@@ -1,16 +1,31 @@
-import type { BarsProjection } from './model.ts';
+import {
+  DEFAULT_VIEW,
+  ensureFamilyProjection,
+  familyProjection,
+  registerFamilyProjection,
+  registeredFamilyProjections,
+} from '../registry.ts';
+import type { BarsModel, BarsProjection } from './model.ts';
 
-const projections = new Map<string, BarsProjection<any>>();
-
-export function registerBarsProjection<TOptions>(projection: BarsProjection<TOptions>): BarsProjection<TOptions> {
-  projections.set(projection.kind, projection as BarsProjection<any>);
-  return projection;
+export function registerBarsProjection<TOptions>(
+  projection: BarsProjection<TOptions>,
+  view = DEFAULT_VIEW,
+): BarsProjection<TOptions> {
+  return registerFamilyProjection(projection, view) as BarsProjection<TOptions>;
 }
 
-export function barsProjection(kind: string): BarsProjection<any> | undefined {
-  return projections.get(kind);
+export function barsProjection(kind: string, view?: string): BarsProjection<any> | undefined {
+  return familyProjection<BarsModel, any>('bars', kind, view) as BarsProjection<any> | undefined;
+}
+
+export function ensureBarsProjection(
+  kind: string,
+  view: string | undefined,
+  onReady: () => void,
+): BarsProjection<any> | 'loading' | 'unknown' {
+  return ensureFamilyProjection<BarsModel, any>('bars', kind, view, onReady) as BarsProjection<any> | 'loading' | 'unknown';
 }
 
 export function registeredBarsKinds(): string[] {
-  return [...projections.keys()];
+  return [...new Set(registeredFamilyProjections('bars').map(entry => entry.kind))];
 }
