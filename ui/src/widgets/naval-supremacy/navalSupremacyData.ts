@@ -108,7 +108,10 @@ export function mergeSupremacy(windows: ReadonlyMap<number, NavalSupremacyReply>
     lastHour = Math.max(lastHour, reply.lastHour);
     for (const region of reply.regions) {
       let into = regions.get(region.id);
-      if (!into) regions.set(region.id, into = { id: region.id, name: region.name, runs: [] });
+      if (!into) {
+        into = { id: region.id, name: region.name, pinned: region.pinned, runs: [] };
+        regions.set(region.id, into);
+      }
       for (const run of region.runs) {
         const placed = { ...run, firstDay: run.firstDay + offset, lastDay: run.lastDay + offset };
         const open = into.runs.at(-1);

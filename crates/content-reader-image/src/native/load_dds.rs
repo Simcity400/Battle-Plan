@@ -18,13 +18,15 @@ enum Pixels {
     X1R5G5B5,
     B8G8R8,
     B8G8R8A8,
+    B8G8R8X8,
+    R8G8B8A8,
 }
 
 impl Pixels {
     fn zero(self) -> Zero {
         match self {
-            Self::B5G6R5 | Self::B8G8R8 => Zero::Opaque,
-            Self::A1R5G5B5 | Self::X1R5G5B5 | Self::B8G8R8A8 => Zero::Transparent,
+            Self::B5G6R5 | Self::B8G8R8 | Self::B8G8R8X8 => Zero::Opaque,
+            Self::A1R5G5B5 | Self::X1R5G5B5 | Self::B8G8R8A8 | Self::R8G8B8A8 => Zero::Transparent,
         }
     }
 
@@ -32,7 +34,7 @@ impl Pixels {
         match self {
             Self::B5G6R5 | Self::A1R5G5B5 | Self::X1R5G5B5 => 2,
             Self::B8G8R8 => 3,
-            Self::B8G8R8A8 => 4,
+            Self::B8G8R8A8 | Self::B8G8R8X8 | Self::R8G8B8A8 => 4,
         }
     }
 
@@ -40,18 +42,23 @@ impl Pixels {
         match self {
             Self::B5G6R5 => TextureFormat::B5G6R5,
             Self::A1R5G5B5 | Self::X1R5G5B5 => TextureFormat::B5G5R5A1,
-            Self::B8G8R8 | Self::B8G8R8A8 => TextureFormat::Rgba8,
+            Self::B8G8R8 | Self::B8G8R8A8 | Self::B8G8R8X8 | Self::R8G8B8A8 => TextureFormat::Rgba8,
         }
     }
 
     fn convert(self, source: &[u8]) -> Vec<u8> {
+        if matches!(self, Self::R8G8B8A8) {
+            return source.to_vec();
+        }
         let mut out = Vec::with_capacity(source.len() / self.bytes() * self.format().unit().1);
         for texel in source.chunks_exact(self.bytes()) {
             match self {
                 Self::B8G8R8A8 => out.extend_from_slice(&[texel[2], texel[1], texel[0], texel[3]]),
+                Self::B8G8R8X8 => out.extend_from_slice(&[texel[2], texel[1], texel[0], 255]),
                 Self::B8G8R8 => out.extend_from_slice(&[texel[2], texel[1], texel[0], 255]),
                 Self::B5G6R5 | Self::A1R5G5B5 => out.extend_from_slice(texel),
                 Self::X1R5G5B5 => out.extend_from_slice(&[texel[0], texel[1] | 0x80]),
+                Self::R8G8B8A8 => out.extend_from_slice(texel),
             }
         }
         out
@@ -72,51 +79,93 @@ pub(super) fn load(bytes: impl Into<crate::Bytes>) -> Result<Option<(Texture, Ze
         )));
     }
     let word = |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-    let (height, width, mip_count) = (word(12), word(16), word(28));
+    let (height, width, raw_mip_count) = (word(12), word(16), word(28));
     let (flags, fourcc, bits) = (word(80), word(84), word(88));
     let masks = [word(92), word(96), word(100), word(104)];
-    let start = if flags == 4 && fourcc == code(b"DX10") {
-        HEADER + 20
+    let is_dx10 = flags & 4 != 0 && fourcc == code(b"DX10");
+    let start = if is_dx10 { HEADER + 20 } else { HEADER };
+    let (form, mip_count, cube) = if is_dx10 {
+        if bytes.len() >= HEADER + 4 && matches!(word(128), 98 | 99) {
+            return bc7(&bytes, word, word(128) == 99);
+        }
+        if bytes.len() < HEADER + 20 {
+            return Err(Failure::Undecodable(
+                "a DX10 DDS: truncated DX10 header".to_owned(),
+            ));
+        }
+        let dxgi = word(128);
+        let dimension = word(132);
+        let misc = word(136);
+        let array_size = word(140);
+        if dimension != 3 || word(24) > 1 || word(112) & VOLUME != 0 {
+            return Err(Failure::Undecodable(format!(
+                "a DX10 DDS (DXGI format {dxgi}): unsupported resource dimension {dimension} or volume depth {}",
+                word(24)
+            )));
+        }
+        if array_size != 1 {
+            return Err(Failure::Undecodable(format!(
+                "a DX10 DDS (DXGI format {dxgi}): unsupported texture array size {array_size}"
+            )));
+        }
+        let form = match dxgi {
+            70 | 71 | 72 => Form::Blocks(TextureFormat::Bc1, 8),
+            73 | 74 | 75 => Form::Blocks(TextureFormat::Bc2, 16),
+            76 | 77 | 78 => Form::Blocks(TextureFormat::Bc3, 16),
+            27 | 28 | 29 => Form::Pixels(Pixels::R8G8B8A8),
+            87 | 90 | 91 => Form::Pixels(Pixels::B8G8R8A8),
+            88 | 92 | 93 => Form::Pixels(Pixels::B8G8R8X8),
+            85 => Form::Pixels(Pixels::B5G6R5),
+            86 => Form::Pixels(Pixels::A1R5G5B5),
+            other => {
+                return Err(Failure::Undecodable(format!(
+                    "a DX10 DDS with unsupported DXGI format {other}"
+                )));
+            }
+        };
+        let mips = if word(8) & 0x2_0000 != 0 {
+            raw_mip_count.max(1)
+        } else {
+            1
+        };
+        let cube = word(112) & CUBE_MAP != 0 || misc & DX10_CUBE != 0;
+        (form, mips, cube)
     } else {
-        HEADER
-    };
-    if start == HEADER + 20 && bytes.len() >= HEADER + 4 && matches!(word(128), 98 | 99) {
-        return bc7(&bytes, word, word(128) == 99);
-    }
-    let form = if fourcc == code(b"DXT1") {
-        Form::Blocks(TextureFormat::Bc1, 8)
-    } else if fourcc == code(b"DXT2") || fourcc == code(b"DXT4") {
-        return Ok(None);
-    } else if fourcc == code(b"DXT3") {
-        Form::Blocks(TextureFormat::Bc2, 16)
-    } else if fourcc == code(b"DXT5") {
-        Form::Blocks(TextureFormat::Bc3, 16)
-    } else if flags & 0x20240 == 0 || bits == 32 {
-        Form::Pixels(Pixels::B8G8R8A8)
-    } else if bits == 24 {
-        Form::Pixels(Pixels::B8G8R8)
-    } else if bits == 16 {
-        let rgb = flags & 0x40 != 0;
-        Form::Pixels(if rgb && masks[..3] == [0xF800, 0x7E0, 0x1F] {
-            Pixels::B5G6R5
-        } else if flags & 0x41 == 0x41 && masks == [0x7C00, 0x3E0, 0x1F, 0x8000] {
-            Pixels::A1R5G5B5
-        } else if rgb && masks[..3] == [0x7C00, 0x3E0, 0x1F] {
-            Pixels::X1R5G5B5
+        let form = if fourcc == code(b"DXT1") {
+            Form::Blocks(TextureFormat::Bc1, 8)
+        } else if fourcc == code(b"DXT2") || fourcc == code(b"DXT4") {
+            return Ok(None);
+        } else if fourcc == code(b"DXT3") {
+            Form::Blocks(TextureFormat::Bc2, 16)
+        } else if fourcc == code(b"DXT5") {
+            Form::Blocks(TextureFormat::Bc3, 16)
+        } else if flags & 0x20240 == 0 || bits == 32 {
+            Form::Pixels(Pixels::B8G8R8A8)
+        } else if bits == 24 {
+            Form::Pixels(Pixels::B8G8R8)
+        } else if bits == 16 {
+            let rgb = flags & 0x40 != 0;
+            Form::Pixels(if rgb && masks[..3] == [0xF800, 0x7E0, 0x1F] {
+                Pixels::B5G6R5
+            } else if flags & 0x41 == 0x41 && masks == [0x7C00, 0x3E0, 0x1F, 0x8000] {
+                Pixels::A1R5G5B5
+            } else if rgb && masks[..3] == [0x7C00, 0x3E0, 0x1F] {
+                Pixels::X1R5G5B5
+            } else {
+                return Err(Failure::Undefined(format!(
+                    "a 16-bit DDS with flags {flags:#x} and masks {masks:#x?}: DDS decoding \
+                     loads it as format 0, uploaded as B8G8R8X8 with 0-bit rows: the texture does \
+                     not hold the file's texels"
+                )));
+            })
         } else {
             return Err(Failure::Undefined(format!(
-                "a 16-bit DDS with flags {flags:#x} and masks {masks:#x?}: DDS decoding \
-                 loads it as format 0, uploaded as B8G8R8X8 with 0-bit rows: the texture does \
-                 not hold the file's texels"
+                "a {bits}-bit DDS with flags {flags:#x}: DDS decoding loads it as format 0x1A, \
+                 uploaded as B8G8R8X8 with 0-bit rows: the texture does not hold the file's texels"
             )));
-        })
-    } else {
-        return Err(Failure::Undefined(format!(
-            "a {bits}-bit DDS with flags {flags:#x}: DDS decoding loads it as format 0x1A, \
-             uploaded as B8G8R8X8 with 0-bit rows: the texture does not hold the file's texels"
-        )));
+        };
+        (form, raw_mip_count, word(112) & CUBE_MAP != 0)
     };
-    let cube = word(112) & CUBE_MAP != 0;
     let (block, unit) = match &form {
         Form::Blocks(_, size) => (true, *size),
         Form::Pixels(pixels) => (false, pixels.bytes()),

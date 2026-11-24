@@ -14,6 +14,11 @@ export interface DetailWindowClock {
   readonly play?: () => void;
 }
 
+export interface DetailWindowPosition {
+  readonly left: number;
+  readonly top: number;
+}
+
 export interface DetailWindowHostProps {
   readonly open: boolean;
   readonly subject: string | null;
@@ -27,6 +32,9 @@ export interface DetailWindowHostProps {
   readonly draggable?: boolean;
   readonly pauseClock?: boolean;
   readonly clock?: DetailWindowClock;
+  readonly initialPosition?: DetailWindowPosition | null;
+  readonly settled?: boolean;
+  readonly onPositionChange?: (position: DetailWindowPosition) => void;
   readonly headerActions?: ReactNode;
   readonly className?: string;
   readonly closeLabel?: string;
@@ -53,6 +61,9 @@ export function DetailWindowHost({
   draggable = true,
   pauseClock = false,
   clock,
+  initialPosition = null,
+  settled = true,
+  onPositionChange,
   headerActions,
   className = '',
   closeLabel = 'Close window',
@@ -63,10 +74,12 @@ export function DetailWindowHost({
   const panel = usePopover('start');
   const panelRef = useRef(panel);
   panelRef.current = panel;
-  const draggedPos = useRef<{ left: number; top: number } | null>(null);
+  const draggedPos = useRef<DetailWindowPosition | null>(null);
+  const userDragged = useRef(false);
+  const wasVisible = useRef(false);
   const pausedByWindow = useRef(false);
-  const stateRef = useRef({ onClose, returnFocus, visible });
-  stateRef.current = { onClose, returnFocus, visible };
+  const stateRef = useRef({ onClose, returnFocus, visible, initialPosition, settled, onPositionChange });
+  stateRef.current = { onClose, returnFocus, visible, initialPosition, settled, onPositionChange };
 
   const restoreFocus = (closingPanel: HTMLElement | null) => {
     const targetSelector = stateRef.current.returnFocus;
@@ -111,50 +124,61 @@ export function DetailWindowHost({
     };
   }, [visible, pauseClock, clock]);
 
+  const positionWindow = () => {
+    const el = panelRef.current.popup.current;
+    if (!el) return;
+    const vw = document.documentElement?.clientWidth || window.innerWidth || 1280;
+    const vh = document.documentElement?.clientHeight || window.innerHeight || 720;
+    const pinned = draggedPos.current;
+    if (!pinned && el.style) {
+      el.style.left = '0px';
+      el.style.top = '0px';
+    }
+    const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : { width: 360, height: 260 };
+    const width = rect.width || 360;
+    const height = rect.height || 260;
+    let next: DetailWindowPosition;
+    if (pinned) {
+      next = clampWindowPosition(pinned.left, pinned.top, width, height, vw, vh);
+    } else if (placement === 'beside' && anchor?.current) {
+      const anchorRect = anchor.current.getBoundingClientRect();
+      next = clampWindowPosition(anchorRect.right + 8, anchorRect.top - 6, width, height, vw, vh);
+    } else {
+      next = centerWindowPosition(width, height, vw, vh);
+    }
+    if (el.style) {
+      el.style.left = `${next.left}px`;
+      el.style.top = `${next.top}px`;
+      el.style.visibility = 'visible';
+    }
+    if (!pinned && !userDragged.current && stateRef.current.settled && rect.width > 0 && rect.height > 0) {
+      draggedPos.current = next;
+      stateRef.current.onPositionChange?.(next);
+    }
+  };
+
   useLayoutEffect(() => {
-    const current = panelRef.current;
-    const element = current.popup.current;
+    const element = panelRef.current.popup.current;
     if (!visible) {
+      wasVisible.current = false;
       draggedPos.current = null;
-      if (element?.matches(':popover-open')) element.hidePopover();
+      userDragged.current = false;
+      if (element?.matches?.(':popover-open')) element.hidePopover();
       return;
     }
-    const positionWindow = () => {
-      const el = panelRef.current.popup.current;
-      if (!el) return;
-      const vw = document.documentElement?.clientWidth || window.innerWidth || 1280;
-      const vh = document.documentElement?.clientHeight || window.innerHeight || 720;
-      const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : { width: 360, height: 260 };
-      const width = rect.width || 360;
-      const height = rect.height || 260;
-      let next: { left: number; top: number };
-      if (draggedPos.current) {
-        next = clampWindowPosition(draggedPos.current.left, draggedPos.current.top, width, height, vw, vh);
-      } else if (placement === 'beside' && anchor?.current) {
-        const anchorRect = anchor.current.getBoundingClientRect();
-        next = clampWindowPosition(anchorRect.right + 8, anchorRect.top - 6, width, height, vw, vh);
-      } else {
-        next = centerWindowPosition(width, height, vw, vh);
-      }
-      if (el.style) {
-        el.style.left = `${next.left}px`;
-        el.style.top = `${next.top}px`;
-        el.style.visibility = 'visible';
-      }
-    };
-    current.openAt(() => {
-      const vw = document.documentElement?.clientWidth || window.innerWidth || 1280;
-      const vh = document.documentElement?.clientHeight || window.innerHeight || 720;
-      if (draggedPos.current) {
-        return { left: draggedPos.current.left, right: draggedPos.current.left, top: draggedPos.current.top, bottom: draggedPos.current.top };
-      }
-      if (placement === 'beside' && anchor?.current) {
-        const rect = anchor.current.getBoundingClientRect();
-        return { left: rect.right + 8, right: rect.right + 8, top: rect.top - 6, bottom: rect.top - 6 };
-      }
-      return { left: vw / 2, right: vw / 2, top: vh / 2, bottom: vh / 2 };
-    });
+    const opening = !wasVisible.current;
+    wasVisible.current = true;
+    if (opening) {
+      userDragged.current = false;
+      draggedPos.current = stateRef.current.initialPosition ?? null;
+    }
+    if (element && !element.matches?.(':popover-open')) {
+      element.showPopover?.();
+    }
     positionWindow();
+    if (opening && element && !element.contains(document.activeElement)) {
+      element.focus?.({ preventScroll: true });
+    }
     const observer = typeof ResizeObserver === 'function' && element ? new ResizeObserver(positionWindow) : null;
     if (observer && element) observer.observe(element);
     window.addEventListener('resize', positionWindow);
@@ -164,10 +188,23 @@ export function DetailWindowHost({
     };
   }, [visible, placement, anchor]);
 
+  useLayoutEffect(() => {
+    if (!visible || !settled) return;
+    positionWindow();
+  }, [visible, settled]);
+
+  useEffect(() => {
+    if (!visible || subject === null) return;
+    const element = panelRef.current.popup.current;
+    if (element && !element.contains(document.activeElement)) {
+      element.focus?.({ preventScroll: true });
+    }
+  }, [visible, subject]);
+
   useEffect(() => {
     if (!visible) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
       const active = document.activeElement;
       const inAnchor = Boolean(anchor?.current?.contains(active));
       const inPanel = Boolean(panelRef.current.popup.current?.contains(active));
@@ -185,9 +222,13 @@ export function DetailWindowHost({
     if ((event.target as Element | null)?.closest('button, a, input, select, textarea')) return;
     const element = panelRef.current.popup.current;
     if (!element) return;
+    if (!element.contains(document.activeElement)) {
+      element.focus?.({ preventScroll: true });
+    }
     const rect = element.getBoundingClientRect();
     const offsetX = event.clientX - rect.left;
     const offsetY = event.clientY - rect.top;
+    userDragged.current = true;
     const onMove = (moveEvent: PointerEvent) => {
       const vw = document.documentElement.clientWidth || window.innerWidth;
       const vh = document.documentElement.clientHeight || window.innerHeight;
@@ -195,6 +236,7 @@ export function DetailWindowHost({
       draggedPos.current = { left: next.left, top: next.top };
       element.style.left = `${next.left}px`;
       element.style.top = `${next.top}px`;
+      stateRef.current.onPositionChange?.(next);
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
@@ -212,6 +254,7 @@ export function DetailWindowHost({
     <Popover
       menu={panel}
       manual
+      tabIndex={-1}
       className={`detail-window ${className}`.trim()}
       aria-label={title}
       data-subject={subject ?? undefined}

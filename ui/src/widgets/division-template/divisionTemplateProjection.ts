@@ -13,8 +13,8 @@ import { registerTableProjection } from '../../families/table/registry.ts';
 import { OFFERED } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, partialValue, valueFromNullable, type Value } from '../../families/value.ts';
 import type { DivisionTemplatesReply, TemplateEntry } from '../../generated/dashboard';
+import { gameWindow } from '../../dashboard/gameWindows.ts';
 import { DEFAULT_SORT, OPTIONS } from './definition.ts';
-import { designerSnapshot } from './designerSnapshot.ts';
 import {
   battalionCount,
   priorityLabel,
@@ -277,6 +277,6 @@ export const divisionTemplateDeclaration: TableWidgetDeclaration<DivisionTemplat
   projectionOptions: ctx => ({
     countryName: ctx.countryName,
     cellBars: ctx.options.cellBars === true,
-    canOpenDesigner: Boolean(designerSnapshot()),
+    canOpenDesigner: Boolean(gameWindow('divisionDesigner')),
   }),
 };

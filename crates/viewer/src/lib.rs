@@ -25,6 +25,7 @@ mod dump_head;
 use viewer_runtime::errors::invalid;
 mod embedded;
 use viewer_playback::engaged_index;
+pub mod game_windows;
 pub mod host;
 mod map;
 use viewer_playback::map_views;

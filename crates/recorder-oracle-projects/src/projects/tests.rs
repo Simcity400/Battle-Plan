@@ -407,6 +407,9 @@ fn raid_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
         air_wing: 0,
         travelled: Some(2_210_000),
         preparation_hours: -2,
+        end_hour: None,
+        completion_country: None,
+        completion_recorded: RaidRow::END_HOUR_RECORDED | RaidRow::COMPLETION_COUNTRY_RECORDED,
         source: RaidSource {
             kind: None,
             kind_present: 0,
@@ -564,6 +567,88 @@ fn raids_compare_the_travelled_distance_with_the_saved_one() {
             .keys()
             .any(|reason| reason.contains("travelled"))
     );
+}
+
+#[test]
+fn raids_compare_end_hour_and_completion_country_across_outcomes_controller_flips_and_absence() {
+    use content_reader_save::{GameDate, SavedDate};
+    let (base_frame, base_pack, ger) = raid_fixture();
+    let pol = CountryRow { id: 103, canonical_slot: 1, tag: b"POL".to_vec(), ..Default::default() };
+    let fra = CountryRow { id: 104, canonical_slot: 2, tag: b"FRA".to_vec(), ..Default::default() };
+    let countries = BTreeMap::from([(102, &ger), (103, &pol), (104, &fra)]);
+
+    let mut active_report = Report::default();
+    compare(&base_frame, &base_pack, &countries, &BTreeMap::new(), &mut active_report).unwrap();
+    assert!(active_report.differences.is_empty(), "{:?}", active_report.differences);
+    assert!(active_report.limitations.keys().all(|k| !k.contains("completion date") && !k.contains("completion country")));
+
+    let end_date = SavedDate::Calendar(GameDate::parse(b"1939.9.1.12").unwrap());
+    let end_hour = end_date.engine_hour().unwrap();
+    let recorded_both = RaidRow::END_HOUR_RECORDED | RaidRow::COMPLETION_COUNTRY_RECORDED;
+    for outcome in [1, 2, 3, 4, 5] {
+        let mut frame = base_frame.clone();
+        frame.hour = end_hour + 100;
+        let mut pack = base_pack.clone();
+        let TableView::Complete(TableRows::Raids(rows)) = &mut *frame.tables[TableId::Raids.index()] else { panic!() };
+        rows[0].phase = 5;
+        rows[0].outcome = outcome;
+        rows[0].end_hour = Some(end_hour);
+        rows[0].completion_country = Some(103);
+        rows[0].completion_recorded = recorded_both;
+        *frame.tables[TableId::RaidEquipment.index()] = TableView::Complete(TableRows::RaidEquipment(vec![]));
+        *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![replay_data::rows::StateRow { id: 291, owner: 104, controller: 104, ..Default::default() }]));
+        let saved = &mut pack.raids.as_mut().unwrap()[0].instances[0];
+        saved.phase = 5;
+        saved.outcome = outcome;
+        saved.end_date = Some(end_date);
+        saved.victim_country = Some(b"POL".to_vec());
+        let mut report = Report::default();
+        compare(&frame, &pack, &countries, &BTreeMap::new(), &mut report).unwrap();
+        assert!(report.differences.is_empty(), "outcome {outcome}: {:?}", report.differences);
+
+        let TableView::Complete(TableRows::Raids(rows)) = &mut *frame.tables[TableId::Raids.index()] else { panic!() };
+        rows[0].completion_country = Some(104);
+        let mut wrong_victim = Report::default();
+        compare(&frame, &pack, &countries, &BTreeMap::new(), &mut wrong_victim).unwrap();
+        assert!(wrong_victim.differences.iter().any(|d| d.contains("completion_country")));
+
+        let TableView::Complete(TableRows::Raids(rows)) = &mut *frame.tables[TableId::Raids.index()] else { panic!() };
+        rows[0].completion_country = Some(103);
+        rows[0].end_hour = Some(end_hour + 1);
+        let mut wrong_end = Report::default();
+        compare(&frame, &pack, &countries, &BTreeMap::new(), &mut wrong_end).unwrap();
+        assert!(wrong_end.differences.iter().any(|d| d.contains("end_hour")));
+    }
+
+    let mut no_country_frame = base_frame.clone();
+    no_country_frame.hour = end_hour + 100;
+    let mut no_country_pack = base_pack.clone();
+    let TableView::Complete(TableRows::Raids(rows)) = &mut *no_country_frame.tables[TableId::Raids.index()] else { panic!() };
+    rows[0].phase = 5;
+    rows[0].outcome = 5;
+    rows[0].end_hour = Some(end_hour);
+    rows[0].completion_country = None;
+    rows[0].completion_recorded = recorded_both;
+    *no_country_frame.tables[TableId::RaidEquipment.index()] = TableView::Complete(TableRows::RaidEquipment(vec![]));
+    let saved = &mut no_country_pack.raids.as_mut().unwrap()[0].instances[0];
+    saved.phase = 5;
+    saved.outcome = 5;
+    saved.end_date = Some(end_date);
+    saved.victim_country = None;
+    let mut absent_report = Report::default();
+    compare(&no_country_frame, &no_country_pack, &countries, &BTreeMap::new(), &mut absent_report).unwrap();
+    assert!(absent_report.differences.is_empty(), "{:?}", absent_report.differences);
+    assert!(absent_report.limitations.keys().all(|k| !k.contains("completion country")));
+
+    let TableView::Complete(TableRows::Raids(rows)) = &mut *no_country_frame.tables[TableId::Raids.index()] else { panic!() };
+    rows[0].end_hour = None;
+    rows[0].completion_country = None;
+    rows[0].completion_recorded = 0;
+    let mut withheld_report = Report::default();
+    compare(&no_country_frame, &no_country_pack, &countries, &BTreeMap::new(), &mut withheld_report).unwrap();
+    assert!(withheld_report.differences.is_empty());
+    assert!(withheld_report.limitations.keys().any(|k| k.contains("completion date")));
+    assert!(withheld_report.limitations.keys().any(|k| k.contains("completion country")));
 }
 
 #[test]

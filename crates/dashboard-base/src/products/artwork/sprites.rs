@@ -4,7 +4,6 @@ use crate::{
     catalogue::{self, Catalogue},
     products::{LoadContext, Product, check_reply_budget},
 };
-use content_reader_gfx::gfx::SpriteSet;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -58,6 +57,9 @@ pub struct SpriteImage {
     pub text: Option<bool>,
     #[doc = " An artwork URL, or null with a named, counted refusal."]
     pub icon: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub resolution: Option<super::ArtResolution>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, TS)]
@@ -92,36 +94,11 @@ pub fn shown_icon_key(catalogue: &Catalogue, authored: &[u8]) -> Result<String, 
     })
 }
 
-fn frame_png(catalogue: &Catalogue, key: &str, frame: u32) -> io::Result<String> {
-    icon_key(catalogue, key.as_bytes()).map_err(crate::invalid)?;
-    let sprite = catalogue
-        .sprites
-        .find(key)
-        .map_err(crate::invalid)?
-        .expect("validated sprite key");
-    catalogue::sprite_frame_png(
-        &catalogue.content.layers,
-        sprite,
-        *catalogue
-            .gui_decode
-            .as_ref()
-            .map_err(|why| crate::invalid(why.clone()))?,
-        frame,
-        super::ICON_EDGE,
-    )
-}
-
-fn routed(sprites: &SpriteSet, key: &str, asked: &SpriteFrame) -> io::Result<(String, u32)> {
-    if asked.text != Some(true) {
-        return Ok((key.to_owned(), asked.frame));
+fn asked_resolution(catalogue: &Catalogue, key: &str, asked: &SpriteFrame) -> super::ArtResolution {
+    if asked.text == Some(true) {
+        return super::resolve_text_icon(catalogue, key, super::ICON_EDGE);
     }
-    let (sprite, frame) = dashboard_text::catalogue::text_icon(sprites, key)?;
-    Ok((sprite.name.clone(), frame))
-}
-
-fn asked_png(catalogue: &Catalogue, key: &str, asked: &SpriteFrame) -> io::Result<String> {
-    let (key, frame) = routed(&catalogue.sprites, key, asked)?;
-    frame_png(catalogue, &key, frame)
+    super::resolve_sprite(catalogue, key, asked.frame, super::ICON_EDGE)
 }
 
 impl Product for SpriteArtwork {
@@ -181,10 +158,12 @@ fn images(
     for asked in params.sprites.iter().collect::<BTreeSet<_>>() {
         crate::metadata::check_cancel(cancelled)?;
         let key = &asked.key;
-        let result = match &asked.recorded {
-            Some(recorded) if recorded == key => {
-                asked_png(catalogue.recorded().map_or(catalogue, |recorded| &**recorded), key, asked)
-            }
+        let resolution = match &asked.recorded {
+            Some(recorded) if recorded == key => asked_resolution(
+                catalogue.recorded().map_or(catalogue, |recorded| &**recorded),
+                key,
+                asked,
+            ),
             recorded => catalogue::draw(
                 || format!("sprite {key}"),
                 catalogue,
@@ -193,17 +172,30 @@ fn images(
                         Some(recorded) if !std::ptr::eq(drawing, catalogue) => recorded,
                         _ => key,
                     };
-                    asked_png(drawing, key, asked).map_err(|error| error.to_string())
+                    let resolved = asked_resolution(drawing, key, asked);
+                    match &resolved {
+                        super::ArtResolution::Ready { .. } => Ok(resolved),
+                        _ => Err(resolved
+                            .reason()
+                            .unwrap_or("sprite artwork unavailable")
+                            .to_owned()),
+                    }
                 },
             )
             .get()
             .clone()
-            .map_err(crate::invalid),
+            .unwrap_or_else(|why| super::ArtResolution::ConfirmedMissing {
+                reason: why,
+                origin: None,
+                file: None,
+            }),
         };
-        let icon = match result {
-            Ok(icon) => Some(icon),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
-            Err(error) => {
+        let icon = match &resolution {
+            super::ArtResolution::Ready { url, .. } => Some(url.clone()),
+            _ => {
+                let error = resolution
+                    .reason()
+                    .unwrap_or("sprite artwork unavailable");
                 *refusals
                     .entry(format!("sprite {key} frame {}: {error}", asked.frame))
                     .or_default() += 1;
@@ -216,6 +208,7 @@ fn images(
             recorded: asked.recorded.clone(),
             text: asked.text,
             icon,
+            resolution: Some(resolution),
         });
         check_reply_budget(&reply)?;
     }
@@ -538,6 +531,7 @@ mod tests {
 
     #[test]
     fn a_text_icon_is_drawn_from_its_stems_sprite_at_its_suffixs_frame_and_a_sprite_at_its_asked_frame() {
+        use content_reader_gfx::gfx::SpriteSet;
         use content_reader_gui::gui::native::sprites::{Plain, SpriteFacts, SpriteKind, Sprites};
         let facts = Sprites {
             sprites: vec![SpriteFacts {
@@ -549,11 +543,19 @@ mod tests {
             ..Sprites::default()
         };
         let sprites = SpriteSet::new(&[("interface/mod.gfx".to_owned(), facts)]);
+        let routed = |key: &str, asked: &SpriteFrame| -> io::Result<(String, u32)> {
+            if asked.text == Some(true) {
+                let (sprite, frame) = dashboard_text::catalogue::text_icon(&sprites, key)?;
+                Ok((sprite.name.clone(), frame))
+            } else {
+                Ok((key.to_owned(), asked.frame))
+            }
+        };
         let text = |key: &str| SpriteFrame { text: Some(true), ..frame(key, 0) };
-        assert_eq!(routed(&sprites, "Mixed_Mod|3", &text("Mixed_Mod|3")).unwrap(), ("GFX_Mixed_Mod".to_owned(), 2), "the suffix names the third frame, never the first");
-        assert_eq!(routed(&sprites, "Mixed_Mod", &text("Mixed_Mod")).unwrap(), ("GFX_Mixed_Mod".to_owned(), 0));
-        assert_eq!(routed(&sprites, "GFX_Mixed_Mod", &frame("GFX_Mixed_Mod", 2)).unwrap(), ("GFX_Mixed_Mod".to_owned(), 2), "a sprite is drawn at the frame asked");
-        assert!(routed(&sprites, "Absent_Icon", &text("Absent_Icon")).is_err(), "an undeclared text icon is refused by name");
+        assert_eq!(routed("Mixed_Mod|3", &text("Mixed_Mod|3")).unwrap(), ("GFX_Mixed_Mod".to_owned(), 2), "the suffix names the third frame, never the first");
+        assert_eq!(routed("Mixed_Mod", &text("Mixed_Mod")).unwrap(), ("GFX_Mixed_Mod".to_owned(), 0));
+        assert_eq!(routed("GFX_Mixed_Mod", &frame("GFX_Mixed_Mod", 2)).unwrap(), ("GFX_Mixed_Mod".to_owned(), 2), "a sprite is drawn at the frame asked");
+        assert!(routed("Absent_Icon", &text("Absent_Icon")).is_err(), "an undeclared text icon is refused by name");
     }
 
     #[test]

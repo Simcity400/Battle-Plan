@@ -16,6 +16,7 @@ import { resolveOptions, sectionFields, setOption } from '../options';
 import type { OptionSection, OptionValue } from '../options';
 import { SECTION_TITLES, settingsSections } from '../settingsSections';
 import type { SettingsSection } from '../settingsSections';
+import { resolveWidgetScopedOptions } from '../../widgets/manifest';
 import { CountriesSection } from './CountriesSection';
 import { OptionFields } from './OptionFields';
 import { TimeSection } from './TimeSection';
@@ -47,20 +48,21 @@ function SettingsBody({ widget, template, runtime, onChange, choices, mapOptions
   mapOptions?: MapOptions; onMapOptions?: (options: MapOptions) => void;
 }) {
   const definition = widgetDefinition(widget.kind);
-  const values = resolveOptions(definition?.options, widget.options);
+  const optionFields = resolveWidgetScopedOptions(widget.kind, widget.options, definition);
+  const values = resolveOptions(optionFields, widget.options);
   const effective = resolveWidgetCampaign(widget, template, runtime.defaultRoleId);
   const reference = runtime.tracks.find(track => track.id === effective.trackIds[0]);
   const save = (next: WidgetSpec) => onChange(next, true);
   const setValue = (key: string, value: OptionValue) => {
-    const options = setOption(definition?.options, widget.options, key, value);
+    const options = setOption(optionFields, widget.options, key, value);
     if (!options) return;
     const label = (choice: OptionValue) => listedChoices(choices?.[key])?.find(item => item.value === choice)?.label;
-    const field = definition?.options?.find(item => item.key === key);
+    const field = optionFields.find(item => item.key === key);
     const named = field?.kind === 'content-choice' && field.titleChoice !== false && [definition?.title, label(values[key])].includes(widget.title);
     const title = named ? label(value) ?? definition?.title ?? widget.title : widget.title;
     save({ ...widget, options, title });
   };
-  const fields = (section: OptionSection) => <OptionFields fields={sectionFields(definition?.options, section, values, widget.countries, widget.time.mode)} values={values}
+  const fields = (section: OptionSection) => <OptionFields fields={sectionFields(optionFields, section, values, widget.countries, widget.time.mode)} values={values}
     choices={choices} onChange={setValue} />;
   const body = (section: SettingsSection) => {
     switch (section) {
@@ -80,7 +82,7 @@ function SettingsBody({ widget, template, runtime, onChange, choices, mapOptions
   return <div className="widget-settings-content">
     <TitleField widget={widget} onChange={save} />
     {definition && <HeaderIcon widget={widget} definition={definition} />}
-    {settingsSections(definition, values, widget.countries, widget.time.mode).map(section => <section key={section} className="settings-section" aria-label={SECTION_TITLES[section]}>
+    {settingsSections(definition, values, widget.countries, widget.time.mode, optionFields).map(section => <section key={section} className="settings-section" aria-label={SECTION_TITLES[section]}>
       <h3>{SECTION_TITLES[section]}</h3>{body(section)}
     </section>)}
   </div>;

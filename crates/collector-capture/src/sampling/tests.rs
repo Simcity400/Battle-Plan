@@ -1270,6 +1270,63 @@ fn a_refused_hand_off_records_its_hour_and_returns_the_frame() {
 }
 
 #[test]
+fn idle_parking_allocates_nothing_and_parked_eviction_keeps_priority_free_count_exact() {
+    use crate::frame_pool::STEADY;
+    let shared =
+    // SAFETY: The caller owns the session or isolated fixture state required by this constructor.
+    unsafe { Shared::new(0, 0, 1) };
+    assert_eq!(shared.frames.len(), STEADY);
+    assert_eq!(shared.frame_priority.free_count(), STEADY);
+
+    for _ in 0..4 {
+        let mut grow_ns = u64::MAX;
+        // SAFETY: This fixture owns its frame and worker state without a live attachment.
+        let index = unsafe { shared.take_frame(&mut grow_ns) }.expect("steady frame");
+        assert_eq!(grow_ns, 0);
+        // SAFETY: This fixture exclusively owns the taken slot.
+        let evicted = unsafe { shared.recycle_frame_unfreed(index) };
+        assert!(evicted.is_none());
+    }
+    collector_test_support::with_allocations_denied(|| {
+        assert!(shared.park_idle_steady_frame());
+    });
+    assert!(!collector_memory::terminal::failed());
+    assert_eq!(shared.frames.len(), STEADY);
+    assert_eq!(shared.frame_priority.free_count(), STEADY);
+
+    let mut held = Vec::new();
+    for _ in 0..=STEADY {
+        let mut grow_ns = u64::MAX;
+        // SAFETY: This fixture owns its frame and worker state without a live attachment.
+        held.push(unsafe { shared.take_frame(&mut grow_ns) }.expect("steady or grown frame"));
+    }
+    assert_eq!(shared.frames.live(), STEADY + 1);
+    assert_eq!(shared.frames.len(), 0);
+    assert_eq!(shared.frame_priority.free_count(), 0);
+
+    for &index in &held[..STEADY] {
+        // SAFETY: This fixture exclusively owns each taken slot.
+        unsafe { shared.prepare_frame_for_reuse(index) };
+        // SAFETY: This fixture exclusively owns each taken slot.
+        assert!(unsafe { shared.recycle_frame_unfreed(index) }.is_none());
+    }
+    // SAFETY: This fixture exclusively owns the surplus unparked slot.
+    let evicted = unsafe { shared.recycle_frame_unfreed(held[STEADY]) };
+    assert!(evicted.is_some_and(|frame| frame.extended.is_parked()));
+    assert_eq!(shared.frames.live(), STEADY);
+    assert_eq!(shared.frames.len(), STEADY);
+    assert_eq!(shared.frame_priority.free_count(), STEADY);
+
+    for _ in 0..STEADY {
+        let mut grow_ns = u64::MAX;
+        // SAFETY: This fixture owns its frame and worker state without a live attachment.
+        let _ = unsafe { shared.take_frame(&mut grow_ns) }.expect("free frame after eviction");
+    }
+    assert_eq!(shared.frames.len(), 0);
+    assert_eq!(shared.frame_priority.free_count(), 0);
+}
+
+#[test]
 fn a_stalled_spool_never_holds_the_game_and_the_pool_returns_to_its_steady_frames() {
     use std::{collections::HashSet, sync::mpsc};
     let shared = Arc::new(

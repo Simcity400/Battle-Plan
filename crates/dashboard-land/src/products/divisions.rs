@@ -273,8 +273,10 @@ pub const DESIGN_TABLES: [TableId; 5] = [TableId::Countries, TableId::CountryLin
 fn template_sprite(cat: &Catalogue, priority_unit: u32, custom: i32, unit: &[u8]) -> Result<String, String> {
     let key = icon_key(priority_unit, custom, unit, |key| cat.sprites.find(key).map(|sprite| sprite.is_some()))?;
     let sprite = cat.sprites.find(&key)?.ok_or_else(|| format!("Division sprite {key} is unavailable"))?;
-    let decode = cat.gui_decode.clone()?;
-    catalogue::sprite_frame_png(&cat.content.layers, sprite, decode, 0, 48).map_err(|why| format!("Division sprite {key}: {why}"))
+    dashboard_base::products::artwork::resolve_sprite_type(cat, sprite, 0, 48)
+        .into_result()
+        .and_then(|url| url.ok_or_else(|| "artwork unavailable".to_owned()))
+        .map_err(|why| format!("Division sprite {key}: {why}"))
 }
 
 fn icon_key(priority_unit: u32, custom: i32, unit: &[u8], exists: impl Fn(&str) -> Result<bool, String>) -> Result<String, String> {

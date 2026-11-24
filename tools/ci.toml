@@ -154,6 +154,14 @@ inputs = ["ui/**", "tools/**/*.ts", "tools/**/*.mjs", "tools/**/*.js"]
 command = ["{npm}", "run", "check:ui"]
 
 [[job]]
+name = "widget-manifest"
+group = "linux"
+tier = "check"
+toolchain = "node"
+inputs = ["ui/src/widgets/**", "ui/src/families/**", "ui/src/dashboard/definitions.ts", "ui/src/dashboard/options.ts", "ui/src/draw/views/drawn.ts", "tools/check-widget-manifest.mjs"]
+command = ["{node}", "tools/check-widget-manifest.mjs"]
+
+[[job]]
 name = "ui-tests"
 group = "linux"
 tier = "check"

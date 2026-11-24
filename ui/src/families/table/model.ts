@@ -1,6 +1,7 @@
 import type { LiveValues } from '../../charts/live';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
+import { changedLiveRows } from '../../draw/views/fields.ts';
 import type { AuditRow } from '../../draw/notifications';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import {
@@ -22,7 +23,7 @@ import {
 import { canonicalAuditData } from '../audit.ts';
 import { spokenValue, valueStateProps, type ValueFormat } from '../valueFormat.ts';
 import type { FamilyColumnLayout } from './layout.ts';
-import { lookAt, type CountryLook, type CountryLooksMap } from '../looks.ts';
+import { lookAt, nextLookChange, type CountryLook, type CountryLooksMap } from '../looks.ts';
 import { measuresColumn, type TableColumnDefaults, type TableSettings, type TableSortDirection } from './settings.ts';
 
 export interface TableColumnSpec extends TableColumnDefaults {
@@ -96,6 +97,9 @@ export interface TableModel {
   readonly rows: readonly TableRow[];
   readonly hour: number;
   readonly nextChangeAt?: number;
+  readonly rowTimeBoundaries?: boolean;
+  readonly changedKeys?: ReadonlySet<string>;
+  readonly changedRows?: ReadonlyMap<string, TableRow>;
   readonly refused?: string;
   readonly empty?: string;
   readonly emptyDetail?: string;
@@ -132,13 +136,14 @@ export type TableProjection<TOptions = unknown> = FamilyProjection<TableModel, T
   readonly family: 'table';
 };
 
-export function resolveCellAtHour(cell: TableCell, hour: number): { readonly value: Value; readonly icon?: string; readonly missingName: boolean } {
+export function resolveCellAtHour(cell: TableCell, hour: number): { readonly value: Value; readonly icon?: string; readonly iconPending?: boolean; readonly missingName: boolean } {
   if (cell.looks) {
     const look = lookAt(cell.looks, cell.lookHour ?? hour);
+    const iconPending = look?.flagPending === true ? true : undefined;
     if (look && look.name !== null && look.name.trim() !== '') {
-      return { value: knownValue(look.name), icon: look.flag, missingName: false };
+      return { value: knownValue(look.name), icon: look.flag, ...(iconPending ? { iconPending } : {}), missingName: false };
     }
-    return { value: notRecorded(look?.status ?? 'Country name unavailable'), icon: look?.flag, missingName: true };
+    return { value: notRecorded(look?.status ?? 'Country name unavailable'), icon: look?.flag, ...(iconPending ? { iconPending } : {}), missingName: true };
   }
   assertValue(cell.value, 'table cell');
   if (cell.bar) assertValue(cell.bar.fraction, 'table cell bar');
@@ -285,25 +290,169 @@ export function resolveTableRows(
   return flat;
 }
 
-export function nextTableChange(model: TableModel, hour: number): number {
-  let soonest = model.nextChangeAt !== undefined && model.nextChangeAt > hour ? model.nextChangeAt : Infinity;
-  const walk = (rows: readonly TableRow[]) => {
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i]!;
-      if (row.revealAt !== undefined && row.revealAt > hour && row.revealAt < soonest) soonest = row.revealAt;
-      for (const key in row.cells) {
-        const cell = row.cells[key]!;
-        if (!cell.looks || cell.lookHour !== undefined) continue;
-        for (let j = 0; j < cell.looks.length; j++) {
-          const from = cell.looks[j]!.from;
-          if (from > hour && from < soonest) soonest = from;
-        }
-      }
-      if (row.children) walk(row.children);
+function sortValueOf(row: TableRow, sortColumn: string, hour: number): Value {
+  const cell = row.cells[sortColumn];
+  if (!cell) return notRecorded('Column not present on row');
+  return cell.sortValue ?? (cell.looks ? resolveCellAtHour(cell, hour).value : cell.value);
+}
+
+function sameValueScalar(a: Value, b: Value): boolean {
+  if (a === b) return true;
+  if (a.kind !== b.kind) return false;
+  if (a.kind === 'known' || a.kind === 'zero') return a.value === (b as typeof a).value;
+  if (a.kind === 'partial') return a.value === (b as typeof a).value;
+  return true;
+}
+
+export function resolveTableRowsIncremental(
+  prevModel: TableModel,
+  prevFlat: readonly FlatTableRow[],
+  prevRowIndex: ReadonlyMap<string, number>,
+  model: TableModel,
+  settings: TableSettings,
+): { readonly flatRows: FlatTableRow[]; readonly rowIndex: Map<string, number> } | null {
+  const changed = model.changedKeys;
+  if (!changed) return null;
+  if (
+    prevModel.columns !== model.columns
+    || prevModel.unsorted !== model.unsorted
+    || prevModel.rows.length !== model.rows.length
+    || prevFlat.length !== model.rows.length
+  ) return null;
+  if (changed.size === 0) {
+    return { flatRows: prevFlat as FlatTableRow[], rowIndex: prevRowIndex as Map<string, number> };
+  }
+  if (changed.size * 2 > model.rows.length) return null;
+
+  const hour = model.hour;
+  const firstColumnKey = model.columns[0]?.key;
+  const unsorted = model.unsorted === true;
+  const sortColumn = settings.sort.column;
+  const direction = settings.sort.direction;
+
+  let newRowsByKey: ReadonlyMap<string, TableRow>;
+  if (model.changedRows && model.changedRows.size === changed.size) {
+    for (const r of model.changedRows.values()) {
+      if (r.group !== undefined || r.children !== undefined || r.revealAt !== undefined) return null;
+      validateRowCells(r);
     }
-  };
-  walk(model.rows);
-  return soonest;
+    newRowsByKey = model.changedRows;
+  } else {
+    const map = new Map<string, TableRow>();
+    for (let i = 0; i < model.rows.length; i++) {
+      const r = model.rows[i]!;
+      if (changed.has(r.key)) {
+        if (r.group !== undefined || r.children !== undefined || r.revealAt !== undefined) return null;
+        validateRowCells(r);
+        map.set(r.key, r);
+      }
+    }
+    if (map.size !== changed.size) return null;
+    newRowsByKey = map;
+  }
+
+  const nextFlat = prevFlat.slice();
+  const movedPositions: number[] = [];
+  const movedEntries: { readonly flat: Extract<FlatTableRow, { kind: 'data' }>; readonly sortKey: { readonly value: Value; readonly name: string; readonly key: string } }[] = [];
+
+  for (const [key, newRow] of newRowsByKey) {
+    const oldPos = prevRowIndex.get(key);
+    if (oldPos === undefined) return null;
+    const prevItem = prevFlat[oldPos];
+    if (!prevItem || prevItem.kind !== 'data' || prevItem.isTreeGroup || prevItem.level !== 1) return null;
+    const newName = rowNameAtHour(newRow, firstColumnKey, hour);
+    const updatedItem: Extract<FlatTableRow, { kind: 'data' }> = {
+      ...prevItem,
+      name: newName,
+      row: newRow,
+    };
+    if (unsorted) {
+      nextFlat[oldPos] = updatedItem;
+      continue;
+    }
+    const oldVal = sortValueOf(prevItem.row, sortColumn, prevModel.hour);
+    const newVal = sortValueOf(newRow, sortColumn, hour);
+    if (newName === prevItem.name && sameValueScalar(oldVal, newVal)) {
+      nextFlat[oldPos] = updatedItem;
+    } else {
+      movedPositions.push(oldPos);
+      movedEntries.push({ flat: updatedItem, sortKey: { value: newVal, name: newName, key } });
+    }
+  }
+
+  if (movedEntries.length === 0) {
+    return { flatRows: nextFlat, rowIndex: prevRowIndex as Map<string, number> };
+  }
+
+  movedPositions.sort((a, b) => b - a);
+  let minTouched = movedPositions[movedPositions.length - 1]!;
+  let firstClean = movedPositions[0]! + 1 - movedPositions.length;
+  for (let i = 0; i < movedPositions.length; i++) {
+    nextFlat.splice(movedPositions[i]!, 1);
+  }
+  for (let m = 0; m < movedEntries.length; m++) {
+    const entry = movedEntries[m]!;
+    let lo = 0;
+    let hi = nextFlat.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      const midItem = nextFlat[mid]!;
+      if (midItem.kind !== 'data') return null;
+      const midKey = { value: sortValueOf(midItem.row, sortColumn, hour), name: midItem.name, key: midItem.key };
+      if (compareValueRows(midKey, entry.sortKey, direction) <= 0) lo = mid + 1;
+      else hi = mid;
+    }
+    nextFlat.splice(lo, 0, entry.flat);
+    if (lo < minTouched) minTouched = lo;
+    firstClean = (lo <= firstClean ? firstClean : lo) + 1;
+  }
+
+  const end = Math.min(nextFlat.length, firstClean);
+  const rowIndex = new Map(prevRowIndex);
+  for (let i = minTouched; i < end; i++) {
+    const item = nextFlat[i]!;
+    if (item.kind !== 'data') return null;
+    if (item.rank !== i + 1) {
+      nextFlat[i] = { ...item, rank: i + 1 };
+    }
+    rowIndex.set(item.key, i);
+  }
+  return { flatRows: nextFlat, rowIndex };
+}
+
+const modelBoundsCache = new WeakMap<TableModel, readonly number[]>();
+
+export function nextTableChange(model: TableModel, hour: number): number {
+  const own = model.nextChangeAt !== undefined && model.nextChangeAt > hour ? model.nextChangeAt : Infinity;
+  if (model.rowTimeBoundaries === false) return own;
+  let bounds = modelBoundsCache.get(model);
+  if (!bounds) {
+    const edges = new Set<number>();
+    const walk = (rows: readonly TableRow[]) => {
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i]!;
+        if (row.revealAt !== undefined) edges.add(row.revealAt);
+        for (const key in row.cells) {
+          const cell = row.cells[key]!;
+          if (!cell.looks || cell.lookHour !== undefined) continue;
+          for (let j = 0; j < cell.looks.length; j++) edges.add(cell.looks[j]!.from);
+        }
+        if (row.children) walk(row.children);
+      }
+    };
+    walk(model.rows);
+    bounds = edges.size ? [...edges].sort((a, b) => a - b) : [];
+    modelBoundsCache.set(model, bounds);
+  }
+  if (!bounds.length) return own;
+  let low = 0, high = bounds.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (bounds[mid]! <= hour) low = mid + 1;
+    else high = mid;
+  }
+  const nextEdge = bounds[low] ?? Infinity;
+  return nextEdge < own ? nextEdge : own;
 }
 
 export interface CountryColorSource {
@@ -325,7 +474,70 @@ export interface CellPaintModel {
   readonly countryColor: string | null;
   readonly icon: string | null;
   readonly iconSlot: boolean;
+  readonly iconPending?: boolean;
   readonly missingName: boolean;
+}
+
+export function updateColumnMaximaIncremental(
+  prevMaxima: ReadonlyMap<string, number>,
+  prevRows: readonly FlatTableRow[],
+  prevRowIndex: ReadonlyMap<string, number>,
+  nextRows: readonly FlatTableRow[],
+  nextRowIndex: ReadonlyMap<string, number>,
+  columns: readonly Pick<FamilyColumnLayout, 'key' | 'display' | 'numeric'>[],
+  changedKeys: ReadonlySet<string>,
+  prevHour: number,
+  hour: number,
+): Map<string, number> {
+  const nextMaxima = new Map<string, number>();
+  for (let c = 0; c < columns.length; c++) {
+    const column = columns[c]!;
+    if (!column.numeric || !measuresColumn(column)) continue;
+    const prevMax = prevMaxima.get(column.key) ?? 0;
+    let maxVal = prevMax;
+    let rescan = false;
+    for (const key of changedKeys) {
+      const oldIdx = prevRowIndex.get(key);
+      const newIdx = nextRowIndex.get(key);
+      const oldItem = oldIdx !== undefined ? prevRows[oldIdx] : undefined;
+      const newItem = newIdx !== undefined ? nextRows[newIdx] : undefined;
+      let oldNum: number | undefined;
+      if (oldItem && oldItem.kind === 'data') {
+        const oldCell = oldItem.row.cells[column.key];
+        if (oldCell && oldCell.maximum === undefined && oldCell.bar === undefined) {
+          oldNum = valueNumber(oldCell.looks ? resolveCellAtHour(oldCell, prevHour).value : oldCell.value);
+        }
+      }
+      let newNum: number | undefined;
+      if (newItem && newItem.kind === 'data') {
+        const newCell = newItem.row.cells[column.key];
+        if (newCell && newCell.maximum === undefined && newCell.bar === undefined) {
+          newNum = valueNumber(newCell.looks ? resolveCellAtHour(newCell, hour).value : newCell.value);
+        }
+      }
+      if (newNum !== undefined && newNum > maxVal) maxVal = newNum;
+      if (oldNum !== undefined && prevMax > 0 && oldNum >= prevMax && (newNum === undefined || newNum < prevMax)) {
+        rescan = true;
+      }
+    }
+    if (rescan) {
+      let maximum = 0;
+      let measured = false;
+      for (let i = 0; i < nextRows.length; i++) {
+        const item = nextRows[i]!;
+        if (item.kind !== 'data') continue;
+        const cell = item.row.cells[column.key];
+        if (!cell || cell.maximum !== undefined || cell.bar !== undefined) continue;
+        measured = true;
+        const num = valueNumber(cell.looks ? resolveCellAtHour(cell, hour).value : cell.value);
+        if (num !== undefined && num > maximum) maximum = num;
+      }
+      if (measured && maximum > 0) nextMaxima.set(column.key, maximum);
+    } else if (maxVal > 0) {
+      nextMaxima.set(column.key, maxVal);
+    }
+  }
+  return nextMaxima;
 }
 
 export function computeColumnMaxima(
@@ -334,17 +546,18 @@ export function computeColumnMaxima(
   hour: number,
 ): Map<string, number> {
   const maxima = new Map<string, number>();
-  for (const column of columns) {
+  for (let c = 0; c < columns.length; c++) {
+    const column = columns[c]!;
     if (!column.numeric || !measuresColumn(column)) continue;
     let maximum = 0;
     let measured = false;
-    for (const item of rows) {
+    for (let i = 0; i < rows.length; i++) {
+      const item = rows[i]!;
       if (item.kind !== 'data') continue;
       const cell = item.row.cells[column.key];
       if (!cell || cell.maximum !== undefined || cell.bar !== undefined) continue;
       measured = true;
-      const resolved = resolveCellAtHour(cell, hour);
-      const num = valueNumber(resolved.value);
+      const num = valueNumber(cell.looks ? resolveCellAtHour(cell, hour).value : cell.value);
       if (num !== undefined && num > maximum) maximum = num;
     }
     if (measured && maximum > 0) maxima.set(column.key, maximum);
@@ -378,7 +591,7 @@ export function resolveCellPaintModel(
 ): CellPaintModel {
   const resolved = cell
     ? resolveCellAtHour(cell, hour)
-    : { value: notRecorded('Not recorded'), icon: undefined, missingName: false };
+    : { value: notRecorded('Not recorded'), icon: undefined, iconPending: undefined, missingName: false };
   const bar = cell
     ? barFractionOf(cell, resolved.value, cell.maximum ?? maxima.get(column.key))
     : { fraction: null, alert: false };
@@ -401,6 +614,7 @@ export function resolveCellPaintModel(
     countryColor,
     icon: resolved.icon ?? null,
     iconSlot: cell?.iconSlot === true,
+    ...(resolved.iconPending ? { iconPending: true } : {}),
     missingName: resolved.missingName,
   };
 }
@@ -414,17 +628,21 @@ export interface TableAuditInput {
   readonly maxima?: ReadonlyMap<string, number>;
   readonly window?: { readonly first: number; readonly count: number };
   readonly countryColors?: CountryColorSource;
+  readonly rowAuditCache?: WeakMap<TableRow, { readonly sig: string; readonly rows: readonly AuditRow[] }>;
 }
 
 const EMPTY_HIDDEN: ReadonlySet<string> = new Set();
 
 export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
-  const { model, flatRows, visibleColumns, window, countryColors } = input;
+  const { model, flatRows, visibleColumns, window, countryColors, rowAuditCache } = input;
   const hour = model.hour;
   const hiddenKeys = input.hiddenKeys ?? EMPTY_HIDDEN;
   const rankShown = input.rankShown === true;
   const maxima = input.maxima ?? computeColumnMaxima(flatRows, visibleColumns, hour);
   const hasData = flatRows.some(item => item.kind === 'data');
+  const colsSig = rowAuditCache
+    ? `${visibleColumns.map(c => `${c.key}:${c.display}:${c.tone ?? ''}:${maxima.get(c.key) ?? ''}`).join('|')}|${[...hiddenKeys].join(',')}`
+    : '';
   const out: AuditRow[] = [
     {
       row: '__table__',
@@ -469,30 +687,44 @@ export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
       });
       continue;
     }
-    out.push({
-      row: item.key,
-      key: `${item.key}:_row`,
-      value: canonicalAuditData({
-        kind: 'data',
-        rank: rankShown ? item.rank : null,
-        level: item.level,
-        treeGroup: item.isTreeGroup,
-        open: item.isTreeGroup ? item.isOpen : null,
-        muted: item.row.muted === true,
-      }),
-    });
+    const rowSig = rowAuditCache
+      ? `${rankShown ? item.rank : ''}|${item.level}|${item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1}|${colsSig}`
+      : '';
+    const cached = rowAuditCache?.get(item.row);
+    if (cached && cached.sig === rowSig && model.rowTimeBoundaries === false) {
+      for (let k = 0; k < cached.rows.length; k++) out.push(cached.rows[k]!);
+      continue;
+    }
+    const rowOut: AuditRow[] = [
+      {
+        row: item.key,
+        key: `${item.key}:_row`,
+        value: canonicalAuditData({
+          kind: 'data',
+          rank: rankShown ? item.rank : null,
+          level: item.level,
+          treeGroup: item.isTreeGroup,
+          open: item.isTreeGroup ? item.isOpen : null,
+          muted: item.row.muted === true,
+        }),
+      },
+    ];
     for (const col of visibleColumns) {
-      out.push({
+      rowOut.push({
         row: item.key,
         key: `${item.key}:${col.key}`,
         value: canonicalAuditData(resolveCellPaintModel(item.row.cells[col.key], col, hour, maxima, countryColors)),
       });
     }
-    out.push({
+    rowOut.push({
       row: item.key,
       key: `${item.key}:_tooltip`,
       value: canonicalAuditData(deriveRowTooltip(item, model.columns, hiddenKeys, hour)),
     });
+    if (rowAuditCache && model.rowTimeBoundaries === false) {
+      rowAuditCache.set(item.row, { sig: rowSig, rows: rowOut });
+    }
+    for (let k = 0; k < rowOut.length; k++) out.push(rowOut[k]!);
   }
   return out;
 }
@@ -617,6 +849,9 @@ export function deriveTableTooltip(
 const pathPartsCache = new Map<string, readonly string[]>();
 
 function readPath(obj: unknown, path: string): unknown {
+  if (path.indexOf('.') < 0) {
+    return obj != null && typeof obj === 'object' ? (obj as Record<string, unknown>)[path] : undefined;
+  }
   let parts = pathPartsCache.get(path);
   if (!parts) {
     parts = path.split('.');
@@ -691,6 +926,7 @@ export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
   readonly tooltipAction?: (row: TRow, options: TOptions) => string | undefined;
   readonly rowMeta?: (row: TRow, reply: TReply, options: TOptions) => unknown;
   readonly nextChange?: (readView: BoundedReadView, options: TOptions) => number;
+  readonly incrementalLive?: (options: TOptions) => boolean;
 }
 
 function resolveNullable<TRow, TOptions>(
@@ -729,6 +965,17 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
     return held;
   };
 
+  interface IncrementalDeclCache {
+    readonly live: LiveValues<number | bigint | string> | null;
+    readonly validFrom: number;
+    readonly validUntil: number;
+    readonly colSpecs: readonly DeclarativeColumnSpec<TRow, TOptions>[];
+    readonly rawRows: readonly TRow[];
+    readonly keyToIndex: ReadonlyMap<string, number>;
+    readonly model: TableModel;
+  }
+  const incCache = new WeakMap<object, WeakMap<object, IncrementalDeclCache>>();
+
   return {
     kind: spec.kind,
     family: 'table',
@@ -743,6 +990,54 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
         : rawPanel !== undefined
           ? checkedReply(rawPanel)
           : undefined;
+      const labels = optionsLabels(options);
+
+      const canIncremental = answer === undefined
+        && reply !== undefined && typeof reply === 'object' && reply !== null
+        && options !== undefined && typeof options === 'object' && options !== null
+        && (spec.incrementalLive ? spec.incrementalLive(options) : false);
+
+      let prevInc: IncrementalDeclCache | undefined;
+      if (canIncremental) {
+        prevInc = incCache.get(reply as object)?.get(options as object);
+        if (prevInc && hour >= prevInc.validFrom && hour < prevInc.validUntil) {
+          const changed = changedLiveRows(prevInc.live, live);
+          if (changed !== null) {
+            if (changed.size === 0) {
+              return { ...prevInc.model, hour, changedKeys: changed, changedRows: new Map() };
+            }
+            if (changed.size * 2 < prevInc.rawRows.length) {
+              const colSpecs = prevInc.colSpecs;
+              const buildRow = (row: TRow): TableRow => buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, labels, row);
+              const nextRows = prevInc.model.rows.slice();
+              const touchedKeys = new Set<string>();
+              const touchedRows = new Map<string, TableRow>();
+              for (const key of changed) {
+                const idx = prevInc.keyToIndex.get(key);
+                if (idx === undefined) continue;
+                const built = buildRow(prevInc.rawRows[idx]!);
+                nextRows[idx] = built;
+                touchedKeys.add(key);
+                touchedRows.set(key, built);
+              }
+              const nextModel: TableModel = {
+                ...prevInc.model,
+                hour,
+                rows: nextRows,
+                changedKeys: touchedKeys,
+                changedRows: touchedRows,
+              };
+              incCache.get(reply as object)!.set(options as object, {
+                ...prevInc,
+                live,
+                model: nextModel,
+              });
+              return nextModel;
+            }
+          }
+        }
+      }
+
       const rawCols = typeof spec.columns === 'function'
         ? (reply !== undefined ? spec.columns(reply, options) : [])
         : spec.columns;
@@ -771,118 +1066,15 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
       if (reply === undefined) {
         return { columns, rows: [], hour, unsorted: spec.unsorted, rank, rankMarkers };
       }
-      const labels = optionsLabels(options);
       const extracted = spec.rows(reply, live, hour, options);
-      const buildRow = (row: TRow): TableRow => {
-        const key = spec.rowKey(row);
-        const cells: Record<string, TableCell> = {};
-        const rowNa = spec.naWhen?.(row, options) ?? null;
-        for (let ci = 0; ci < colSpecs.length; ci++) {
-          const col = colSpecs[ci]!;
-          const colNa = col.naWhen ? col.naWhen(row, options) : (ci > 0 ? rowNa : null);
-          let cellValue: Value;
-          let iconSlot = col.iconSlot;
-          let countryTag: string | undefined;
-          let looks: readonly CountryLook[] | undefined;
-          let bar: TableCellBar | null | undefined;
-          let sortValue: Value | undefined;
-
-          if (colNa !== null) {
-            cellValue = notApplicable(colNa);
-            bar = null;
-            if (col.sortValue) sortValue = col.sortValue(row, live, hour, options);
-          } else {
-            let cellLookHour: number | undefined;
-            if (col.countryField) {
-              const rawTag = readPath(row, col.countryField);
-              const tag = typeof rawTag === 'string' && rawTag ? rawTag : null;
-              iconSlot = true;
-              countryTag = tag ?? undefined;
-              looks = tag ? labels?.[tag] : undefined;
-              if (col.lookHour) cellLookHour = col.lookHour(row, hour, options);
-              if (tag === null) {
-                cellValue = notRecorded('Unknown country');
-              } else {
-                const look = lookAt(looks, cellLookHour ?? hour);
-                cellValue = look && look.name && look.name.trim() ? knownValue(look.name) : notRecorded(look?.status ?? 'Country name unavailable');
-              }
-            } else if (col.value) {
-              cellValue = col.value(row, live, hour, options);
-            } else if (col.liveField) {
-              const partial = col.partial?.(row, live, options) ?? null;
-              cellValue = valueFromLive(live, `${key}\u0000${col.liveField}`, { partialReason: partial });
-            } else if (col.path || col.field) {
-              const raw = col.path ? readPath(row, col.path) : row[col.field!];
-              const whenNull = resolveNullable(col.whenNull, row, options);
-              const partial = col.partial?.(row, live, options) ?? null;
-              const cleaned = typeof raw === 'string' && !col.rawBigInt && !raw.trim() ? null : raw;
-              cellValue = col.rawBigInt
-                ? valueFromRawBigInt(raw as string | null | undefined, whenNull, { partial })
-                : valueFromNullable(cleaned as Scalar | null | undefined, whenNull, { partial });
-            } else {
-              cellValue = notRecorded('No value source declared');
-            }
-            if (col.looks) looks = col.looks(row, options);
-            if (col.lookHour && cellLookHour === undefined) cellLookHour = col.lookHour(row, hour, options);
-            if (col.country) {
-              const resolvedCountry = typeof col.country === 'string' ? readPath(row, col.country) : col.country(row, options);
-              countryTag = typeof resolvedCountry === 'string' && resolvedCountry ? resolvedCountry : undefined;
-            }
-            bar = col.bar ? col.bar(row, live, options) : undefined;
-            if (col.sortValue) {
-              sortValue = col.sortValue(row, live, hour, options);
-            } else if (col.sortPath) {
-              const rawSort = readPath(row, col.sortPath);
-              sortValue = valueFromNullable(rawSort as Scalar | null | undefined, resolveNullable(col.whenNull, row, options));
-            }
-            cells[col.key] = {
-              value: cellValue,
-              ...(col.format ? { format: col.format } : {}),
-              ...(col.icon ? { icon: col.icon(row, options) } : {}),
-              ...(iconSlot ? { iconSlot: true } : {}),
-              ...(looks ? { looks } : {}),
-              ...(cellLookHour !== undefined ? { lookHour: cellLookHour } : {}),
-              ...(countryTag ? { country: countryTag } : {}),
-              ...(col.status ? { status: col.status(row, options) } : {}),
-              ...(bar !== undefined ? { bar } : {}),
-              ...(col.maximum !== undefined ? { maximum: col.maximum } : {}),
-              ...(sortValue ? { sortValue } : {}),
-            };
-            continue;
-          }
-          cells[col.key] = {
-            value: cellValue,
-            ...(col.format ? { format: col.format } : {}),
-            ...(col.icon ? { icon: col.icon(row, options) } : {}),
-            ...(iconSlot ? { iconSlot: true } : {}),
-            ...(looks ? { looks } : {}),
-            ...(countryTag ? { country: countryTag } : {}),
-            ...(col.status ? { status: col.status(row, options) } : {}),
-            ...(bar !== undefined ? { bar } : {}),
-            ...(col.maximum !== undefined ? { maximum: col.maximum } : {}),
-            ...(sortValue ? { sortValue } : {}),
-          };
-        }
-        const childItems = spec.children?.(row);
-        return {
-          key,
-          name: spec.rowName(row, hour, options),
-          cells,
-          ...(spec.group ? { group: spec.group(row, hour, options) } : {}),
-          ...(childItems ? { children: childItems.map(buildRow) } : {}),
-          ...(spec.initiallyOpen ? { initiallyOpen: spec.initiallyOpen(row) } : {}),
-          ...(spec.muted?.(row) ? { muted: true } : {}),
-          ...(spec.tooltipTitle ? { tooltipTitle: spec.tooltipTitle(row, hour, options) } : {}),
-          ...(spec.tooltipExtra ? { tooltipExtra: () => spec.tooltipExtra!(row, reply, live, hour, options) } : {}),
-          ...(spec.tooltipNote ? { tooltipNote: spec.tooltipNote(row, reply, live, hour, options) } : {}),
-          ...(spec.tooltipAction ? { tooltipAction: spec.tooltipAction(row, options) } : {}),
-          ...(spec.rowMeta ? { meta: spec.rowMeta(row, reply, options) } : {}),
-        };
-      };
-      return {
+      const hasCustomLooks = colSpecs.some(col => col.looks !== undefined);
+      const buildRow = (row: TRow): TableRow => buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, labels, row);
+      const builtRows = extracted.rows.map(buildRow);
+      const model: TableModel = {
         columns,
-        rows: extracted.rows.map(buildRow),
+        rows: builtRows,
         hour,
+        ...(!hasCustomLooks ? { rowTimeBoundaries: false } : {}),
         ...(extracted.empty !== undefined ? { empty: extracted.empty } : {}),
         ...(extracted.emptyDetail !== undefined ? { emptyDetail: extracted.emptyDetail } : {}),
         ...(extracted.emptyKind !== undefined ? { emptyKind: extracted.emptyKind } : {}),
@@ -893,6 +1085,142 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
         rank,
         rankMarkers,
       };
+      if (canIncremental && builtRows.length > 0 && !spec.children) {
+        let byOpt = incCache.get(reply as object);
+        if (!byOpt) incCache.set(reply as object, byOpt = new WeakMap());
+        const keyToIndex = new Map<string, number>();
+        for (let i = 0; i < builtRows.length; i++) keyToIndex.set(builtRows[i]!.key, i);
+        const validUntil = Math.min(
+          nextLookChange(labels, hour),
+          spec.nextChange ? spec.nextChange(readView, options) : Infinity,
+        );
+        byOpt.set(options as object, {
+          live,
+          validFrom: hour,
+          validUntil,
+          colSpecs,
+          rawRows: extracted.rows,
+          keyToIndex,
+          model,
+        });
+      }
+      return model;
     },
+  };
+}
+
+function buildDeclarativeRow<TReply, TRow, TOptions>(
+  spec: DeclarativeTableSpec<TReply, TRow, TOptions>,
+  colSpecs: readonly DeclarativeColumnSpec<TRow, TOptions>[],
+  reply: TReply,
+  live: LiveValues<number | bigint | string> | null,
+  hour: number,
+  options: TOptions,
+  labels: CountryLooksMap | undefined,
+  row: TRow,
+): TableRow {
+  const key = spec.rowKey(row);
+  const cells: Record<string, TableCell> = {};
+  const rowNa = spec.naWhen?.(row, options) ?? null;
+  for (let ci = 0; ci < colSpecs.length; ci++) {
+    const col = colSpecs[ci]!;
+    const colNa = col.naWhen ? col.naWhen(row, options) : (ci > 0 ? rowNa : null);
+    let cellValue: Value;
+    let iconSlot = col.iconSlot;
+    let countryTag: string | undefined;
+    let looks: readonly CountryLook[] | undefined;
+    let bar: TableCellBar | null | undefined;
+    let sortValue: Value | undefined;
+
+    if (colNa !== null) {
+      cellValue = notApplicable(colNa);
+      bar = null;
+      if (col.sortValue) sortValue = col.sortValue(row, live, hour, options);
+    } else {
+      let cellLookHour: number | undefined;
+      if (col.countryField) {
+        const rawTag = readPath(row, col.countryField);
+        const tag = typeof rawTag === 'string' && rawTag ? rawTag : null;
+        iconSlot = true;
+        countryTag = tag ?? undefined;
+        looks = tag ? labels?.[tag] : undefined;
+        if (col.lookHour) cellLookHour = col.lookHour(row, hour, options);
+        if (tag === null) {
+          cellValue = notRecorded('Unknown country');
+        } else {
+          const look = lookAt(looks, cellLookHour ?? hour);
+          cellValue = look && look.name && look.name.trim() ? knownValue(look.name) : notRecorded(look?.status ?? 'Country name unavailable');
+        }
+      } else if (col.value) {
+        cellValue = col.value(row, live, hour, options);
+      } else if (col.liveField) {
+        const partial = col.partial?.(row, live, options) ?? null;
+        cellValue = valueFromLive(live, `${key}\u0000${col.liveField}`, { partialReason: partial });
+      } else if (col.path || col.field) {
+        const raw = col.path ? readPath(row, col.path) : row[col.field!];
+        const whenNull = resolveNullable(col.whenNull, row, options);
+        const partial = col.partial?.(row, live, options) ?? null;
+        const cleaned = typeof raw === 'string' && !col.rawBigInt && !raw.trim() ? null : raw;
+        cellValue = col.rawBigInt
+          ? valueFromRawBigInt(raw as string | null | undefined, whenNull, { partial })
+          : valueFromNullable(cleaned as Scalar | null | undefined, whenNull, { partial });
+      } else {
+        cellValue = notRecorded('No value source declared');
+      }
+      if (col.looks) looks = col.looks(row, options);
+      if (col.lookHour && cellLookHour === undefined) cellLookHour = col.lookHour(row, hour, options);
+      if (col.country) {
+        const resolvedCountry = typeof col.country === 'string' ? readPath(row, col.country) : col.country(row, options);
+        countryTag = typeof resolvedCountry === 'string' && resolvedCountry ? resolvedCountry : undefined;
+      }
+      bar = col.bar ? col.bar(row, live, options) : undefined;
+      if (col.sortValue) {
+        sortValue = col.sortValue(row, live, hour, options);
+      } else if (col.sortPath) {
+        const rawSort = readPath(row, col.sortPath);
+        sortValue = valueFromNullable(rawSort as Scalar | null | undefined, resolveNullable(col.whenNull, row, options));
+      }
+      cells[col.key] = {
+        value: cellValue,
+        ...(col.format ? { format: col.format } : {}),
+        ...(col.icon ? { icon: col.icon(row, options) } : {}),
+        ...(iconSlot ? { iconSlot: true } : {}),
+        ...(looks ? { looks } : {}),
+        ...(cellLookHour !== undefined ? { lookHour: cellLookHour } : {}),
+        ...(countryTag ? { country: countryTag } : {}),
+        ...(col.status ? { status: col.status(row, options) } : {}),
+        ...(bar !== undefined ? { bar } : {}),
+        ...(col.maximum !== undefined ? { maximum: col.maximum } : {}),
+        ...(sortValue ? { sortValue } : {}),
+      };
+      continue;
+    }
+    cells[col.key] = {
+      value: cellValue,
+      ...(col.format ? { format: col.format } : {}),
+      ...(col.icon ? { icon: col.icon(row, options) } : {}),
+      ...(iconSlot ? { iconSlot: true } : {}),
+      ...(looks ? { looks } : {}),
+      ...(countryTag ? { country: countryTag } : {}),
+      ...(col.status ? { status: col.status(row, options) } : {}),
+      ...(bar !== undefined ? { bar } : {}),
+      ...(col.maximum !== undefined ? { maximum: col.maximum } : {}),
+      ...(sortValue ? { sortValue } : {}),
+    };
+  }
+  const childItems = spec.children?.(row);
+  return {
+    key,
+    name: spec.rowName(row, hour, options),
+    cells,
+    ...(spec.group ? { group: spec.group(row, hour, options) } : {}),
+    ...(childItems ? { children: childItems.map(child => buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, labels, child)) } : {}),
+    ...(spec.initiallyOpen ? { initiallyOpen: spec.initiallyOpen(row) } : {}),
+    ...(spec.muted?.(row) ? { muted: true } : {}),
+    ...(spec.tooltipTitle ? { tooltipTitle: spec.tooltipTitle(row, hour, options) } : {}),
+    ...(spec.tooltipExtra ? { tooltipExtra: () => spec.tooltipExtra!(row, reply, live, hour, options) } : {}),
+    ...(spec.tooltipNote ? { tooltipNote: spec.tooltipNote(row, reply, live, hour, options) } : {}),
+    ...(spec.tooltipAction ? { tooltipAction: spec.tooltipAction(row, options) } : {}),
+    ...(spec.rowMeta ? { meta: spec.rowMeta(row, reply, options) } : {}),
   };
 }

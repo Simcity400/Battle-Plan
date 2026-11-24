@@ -11,7 +11,13 @@ import { AuditSnapshotStore, auditRowsOf, subscribeFamilyAuditing, useFamilyAudi
 import type { FamilySourceSubscription } from '../contract.ts';
 import { createBoundAuditReader, type BoundAuditEntry, type FamilyAuditVerifier } from './auditBinding.ts';
 import { FamilyTooltipController } from './tooltips.ts';
-export { createBoundAuditReader, type BoundAuditEntry, type FamilyAuditVerifier } from './auditBinding.ts';
+export {
+  createBoundAuditReader,
+  createPlanAuditVerifier,
+  type BoundAuditEntry,
+  type FamilyAuditVerifier,
+  type PlanAuditSnapshot,
+} from './auditBinding.ts';
 export { reportFamilyShownHour } from './shownHour.ts';
 
 const STATIC_HOLD = {};
@@ -83,6 +89,7 @@ export function useFamilyPlacement(options: FamilyPlacementOptions): FamilyPlace
   const pipe = useFollowedWidget(pipeline, pipeKey, {
     offset,
     pin,
+    ...(owner !== undefined ? { owner } : {}),
     bounds,
     widget: widgetKey,
     kind: `${widgetKind}:${declarationKind}`,

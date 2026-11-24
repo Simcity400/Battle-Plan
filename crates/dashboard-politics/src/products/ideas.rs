@@ -743,7 +743,10 @@ pub(crate) fn present(
     cancelled: &AtomicBool,
 ) -> io::Result<IdeaHistoryReply> {
     let tokens: BTreeSet<&str> = ideas.spans.iter().map(|span| span.token.as_str()).collect();
-    let mut warnings = vec!["Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned()];
+    let mut warnings = vec![format!(
+        "{}; visual assets are outside content hash coverage.",
+        dashboard_base::products::artwork::CURRENT_INSTALL_ART_LABEL
+    )];
     warnings.extend(content.warnings.iter().cloned());
     let (_, category_gap) = content.ideas.tags.categories();
     let (_, law_gap) = content.ideas.laws("");

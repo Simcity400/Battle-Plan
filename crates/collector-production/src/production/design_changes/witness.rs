@@ -1,7 +1,7 @@
 use super::*;
 use std::cell::{Cell, RefCell};
 
-pub(super) const MAX_WITNESS_BYTES: usize = 512 * 1024;
+pub(super) const MAX_WITNESS_BYTES: usize = 12 * 1024 * 1024;
 const MAX_COALESCED_SPAN: usize = 4096;
 
 pub(super) struct Witness {
