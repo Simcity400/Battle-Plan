@@ -19,14 +19,17 @@ import type { LaneArtCache } from '../art/laneCache.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { drawHatchLines } from '../valueCanvas.ts';
 import type { ArtResult } from '../plan.ts';
-import type {
-  BreakdownLayout,
-  MosaicTile,
-  MosaicViewLayout,
-  PartsViewLayout,
-  RingViewLayout,
-  TotalLineLayout,
+import {
+  firstRowFrom,
+  type BreakdownLayout,
+  type MosaicTile,
+  type MosaicViewLayout,
+  type PartsViewLayout,
+  type Rect,
+  type RingViewLayout,
+  type TotalLineLayout,
 } from './layout.ts';
+import type { BreakdownComparison } from './model.ts';
 
 export interface BreakdownPaintInput {
   readonly layout: BreakdownLayout;
@@ -58,8 +61,23 @@ function flagStateOf(
   return { kind: 'pending' };
 }
 
+function drawComparison(ctx: Canvas2D, comparison: BreakdownComparison, box: Rect, cy: number, theme: FamilyTheme): void {
+  const right = box.x + box.width;
+  ctx.save();
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'right';
+  ctx.font = `500 12px ${theme.font}`;
+  ctx.fillStyle = theme.text;
+  const valW = textWidth(ctx, comparison.value);
+  ctx.fillText(comparison.value, right, cy);
+  ctx.font = `400 12px ${theme.font}`;
+  ctx.fillStyle = theme.muted;
+  ctx.fillText(comparison.label, right - valW - 6, cy);
+  ctx.restore();
+}
+
 function drawTotalLine(ctx: Canvas2D, line: TotalLineLayout, theme: FamilyTheme): void {
-  const { rect, total, periodLabel, comparison, partialTabRect } = line;
+  const { rect, total, periodLabel, comparison, comparisonRect, partialTabRect } = line;
   const cy = rect.y + rect.height / 2;
   ctx.save();
   ctx.textBaseline = 'middle';
@@ -86,22 +104,9 @@ function drawTotalLine(ctx: Canvas2D, line: TotalLineLayout, theme: FamilyTheme)
   }
 
   let rightEdge = rect.x + rect.width;
-  if (comparison) {
-    ctx.font = `500 12px ${theme.font}`;
-    const valW = textWidth(ctx, comparison.value);
-    ctx.font = `400 12px ${theme.font}`;
-    const lblW = textWidth(ctx, comparison.label);
-    const totalCompW = lblW + 6 + valW;
-    if (rightEdge - totalCompW > cursor + 16) {
-      ctx.textAlign = 'right';
-      ctx.font = `500 12px ${theme.font}`;
-      ctx.fillStyle = theme.text;
-      ctx.fillText(comparison.value, rightEdge, cy + 2);
-      ctx.font = `400 12px ${theme.font}`;
-      ctx.fillStyle = theme.muted;
-      ctx.fillText(comparison.label, rightEdge - valW - 6, cy + 2);
-      rightEdge -= totalCompW + 14;
-    }
+  if (comparison && comparisonRect) {
+    drawComparison(ctx, comparison, comparisonRect, cy + 2, theme);
+    rightEdge = comparisonRect.x - 14;
   }
 
   if (periodLabel && rightEdge > cursor + 24) {
@@ -130,13 +135,15 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
   const trackFill = tokens.dark ? 'rgba(245, 245, 245, 0.045)' : 'rgba(15, 23, 42, 0.05)';
   const treeStroke = tokens.hairlineStrong;
 
-  for (const row of layout.rows) {
+  for (let at = firstRowFrom(layout.rows, scrollTop - 2); at < layout.rows.length; at++) {
+    const row = layout.rows[at]!;
     const sy = viewTop + row.y - scrollTop;
-    if (sy + row.height < viewTop - 2 || sy > layout.height + 2) continue;
+    if (sy > layout.height + 2) break;
     const cy = sy + row.height / 2;
 
+    const inspectedSegment = inspectedKey !== null && row.segments.length > 0 && row.segments.some(s => s.key === inspectedKey);
     const isSelected = selectedKey !== null && selectedKey === row.key;
-    const isInspected = inspectedKey !== null && (inspectedKey === row.key || (row.segments.length > 0 && row.segments.some(s => s.key === inspectedKey)));
+    const isInspected = inspectedKey !== null && (inspectedKey === row.key || inspectedSegment);
     const isFocused = focusedKey !== null && focusedKey === row.key;
 
     if (isSelected) {
@@ -190,7 +197,7 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
             const seg = row.segments[i]!;
             const isLast = i === row.segments.length - 1;
             const segActive = inspectedKey === seg.key;
-            const segAlpha = inspectedKey && row.segments.some(s => s.key === inspectedKey) && !segActive ? 0.65 : 1;
+            const segAlpha = inspectedSegment && !segActive ? 0.65 : 1;
             if (isLast) {
               drawBar(ctx, seg.x, barY, seg.width, barH, seg.color, 'right', segAlpha);
             } else {
@@ -230,7 +237,7 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
         ctx.restore();
       }
     } else {
-      const treeX = layout.padX + 6.5;
+      const treeX = layout.padX + (row.depth === 1 ? 6.5 : 26.5);
       ctx.save();
       ctx.strokeStyle = treeStroke;
       ctx.lineWidth = 1;
@@ -243,14 +250,14 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
       ctx.restore();
 
       ctx.save();
-      ctx.font = `400 12px ${theme.font}`;
-      ctx.fillStyle = theme.text;
+      ctx.font = row.depth === 1 ? `400 12px ${theme.font}` : `400 11.5px ${theme.font}`;
+      ctx.fillStyle = row.depth === 1 ? theme.text : theme.muted;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText(fitText(ctx, row.part.name, row.nameWidth), row.nameX, cy);
       ctx.restore();
 
-      const barH = 8;
+      const barH = row.depth === 1 ? 8 : 6;
       const barY = Math.round(cy - barH / 2);
       if (row.part.notRecorded || row.part.value === null) {
         drawMissingMark(ctx, row.barX, cy, row.barWidth, theme);
@@ -262,7 +269,7 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
         ctx.fill();
         ctx.restore();
         if (row.barFillWidth > 0) {
-          drawBar(ctx, row.barX, barY, row.barFillWidth, barH, row.swatchColor, 'right', 0.62);
+          drawBar(ctx, row.barX, barY, row.barFillWidth, barH, row.swatchColor, 'right', row.depth === 1 ? 0.62 : 0.45);
         }
       }
 
@@ -289,7 +296,7 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
 
   ctx.restore();
 
-  if (scrollTop + viewH < layout.contentHeight - 2) {
+  if (scrollTop + layout.height < layout.contentHeight - 2) {
     drawScrollFade(ctx, 0, layout.height - 22, layout.width, 22, theme, 'bottom');
   }
 }
@@ -339,33 +346,20 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
   const { theme, scrollTop, inspectedKey, selectedKey, focusedKey } = input;
 
   if (layout.topLine) {
-    const { rect, text, comparison, partialTabRect } = layout.topLine;
+    const { rect, text, comparison, comparisonRect } = layout.topLine;
     const cy = rect.y + rect.height / 2;
     ctx.save();
     ctx.textBaseline = 'middle';
     let rightEdge = rect.x + rect.width;
-    if (comparison) {
-      ctx.font = `500 12px ${theme.font}`;
-      const valW = textWidth(ctx, comparison.value);
-      ctx.font = `400 12px ${theme.font}`;
-      const lblW = textWidth(ctx, comparison.label);
-      ctx.textAlign = 'right';
-      ctx.font = `500 12px ${theme.font}`;
-      ctx.fillStyle = theme.text;
-      ctx.fillText(comparison.value, rightEdge, cy);
-      ctx.font = `400 12px ${theme.font}`;
-      ctx.fillStyle = theme.muted;
-      ctx.fillText(comparison.label, rightEdge - valW - 6, cy);
-      rightEdge -= lblW + valW + 18;
+    if (comparison && comparisonRect) {
+      drawComparison(ctx, comparison, comparisonRect, cy, theme);
+      rightEdge = comparisonRect.x - 12;
     }
     if (text) {
       ctx.textAlign = 'left';
       ctx.font = `400 12px ${theme.font}`;
       ctx.fillStyle = theme.muted;
-      ctx.fillText(fitText(ctx, text, Math.max(20, rightEdge - rect.x - (partialTabRect ? 14 : 0))), rect.x, cy);
-    }
-    if (partialTabRect) {
-      drawPartialTab(ctx, partialTabRect.x, cy, theme);
+      ctx.fillText(fitText(ctx, text, Math.max(20, rightEdge - rect.x)), rect.x, cy);
     }
     ctx.restore();
     drawRowHairline(ctx, rect.x, rect.x + rect.width, rect.y + rect.height, theme, 'normal');
@@ -459,6 +453,7 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
   ctx.fillStyle = theme.text;
   const valY = layout.center.verb ? layout.cy + 4 : layout.cy;
   ctx.fillText(fitText(ctx, layout.center.value, maxHoleW), layout.cx, valY);
+  if (layout.center.partialTabRect) drawPartialTab(ctx, layout.center.partialTabRect.x, valY, theme);
   if (layout.center.unitLine) {
     ctx.font = `400 11px ${theme.font}`;
     ctx.fillStyle = theme.muted;
@@ -478,9 +473,10 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
     const valRight = list.x + list.width - shareW - 6;
     const shareRight = list.x + list.width;
 
-    for (const row of list.rows) {
+    for (let at = firstRowFrom(list.rows, scrollTop - 2); at < list.rows.length; at++) {
+      const row = list.rows[at]!;
       const sy = list.top + row.y - scrollTop;
-      if (sy + row.height < list.top - 2 || sy > list.top + list.height + 2) continue;
+      if (sy > list.top + list.height + 2) break;
       const cy = sy + row.height / 2;
 
       const isSelected = selectedKey === row.key;
@@ -534,7 +530,7 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
         }
         ctx.restore();
       } else {
-        const swatchX = list.x + 30;
+        const swatchX = list.x + (row.depth === 1 ? 30 : 44);
         ctx.save();
         ctx.fillStyle = row.swatchColor;
         ctx.beginPath();

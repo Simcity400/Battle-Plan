@@ -29,6 +29,7 @@ fn the_whole_and_its_order_are_decided_here() {
     assert_eq!(decisions.raw.as_deref(), Some("992"));
     assert_eq!(keys(&decisions.children), ["war", "economy"]);
     assert_eq!(decisions.children[0].share, Some(640.0 / 8473.0), "a sub-part's share is of the whole");
+    assert_eq!(decisions.children[0].parent_share, Some(640.0 / 992.0));
     assert_eq!(decisions.ordinal, 0, "colours follow the recording's order, not the drawn one");
 }
 
@@ -95,4 +96,71 @@ fn counts_add_up_the_levels() {
     ];
     let reply = breakdown(0, &leaves, &Unrecorded::default());
     assert_eq!(reply.parts[0].count, Some(5));
+}
+
+#[test]
+fn known_children_add_up_to_their_part_and_carry_its_share() {
+    let alpha = node("alpha", 0);
+    let leaves = [
+        leaf(&[alpha.clone(), node("one", 0)], Amount::Known(640)),
+        leaf(&[alpha.clone(), node("two", 1)], Amount::Known(352)),
+        leaf(&[alpha], Amount::Known(423)),
+        leaf(&[node("beta", 1)], Amount::Known(1415)),
+    ];
+    let reply = breakdown(0, &leaves, &Unrecorded::default());
+    let alpha = reply.parts.iter().find(|part| part.key == "alpha").expect("alpha");
+    assert_eq!(keys(&alpha.children), ["one", "two", REST_KEY], "an amount given to the part itself is its last known child");
+    assert!(alpha.children[2].other);
+    assert_eq!(alpha.children[2].raw.as_deref(), Some("423"));
+    assert_eq!(alpha.children[0].parent_share, Some(640.0 / 1415.0), "a sub-part's share of its part uses the part as denominator");
+    assert_eq!(alpha.children[0].share, Some(640.0 / 2830.0));
+    assert_eq!(alpha.parent_share, alpha.share, "a first-level part's parent is the whole");
+}
+
+fn history() -> History {
+    let mut built = HistoryBuilder::new(0, 0, 100);
+    let a = built.leaf(vec![node("a", 0)]);
+    let b = built.leaf(vec![node("b", 1)]);
+    built.add(10, a, Amount::Known(5), Some(1));
+    built.add(20, b, Amount::Known(7), Some(1));
+    built.add(30, a, Amount::Partial(1, "inexact".into()), Some(1));
+    built.add(40, b, Amount::NotRecorded("lost".into()), None);
+    built.add(45, b, Amount::Known(3), None);
+    built.unrecorded(50, 54, "gap");
+    built.qualify(60, "unattributed");
+    built.change(70);
+    built.build()
+}
+
+#[test]
+fn a_history_answers_each_hour_by_lookup_with_the_hour_of_the_next_change() {
+    let held = history();
+    let (before, through) = held.at(5);
+    assert!(before.parts.is_empty(), "nothing read by hour 5");
+    assert_eq!((before.total.raw.as_deref(), before.total.state, through), (Some("0"), BreakdownState::Known, 9));
+    let (at15, through) = held.at(15);
+    assert_eq!((keys(&at15.parts), at15.total.raw.as_deref(), through), (vec!["a"], Some("5"), 19), "b appears at 20, so 15 stands through 19");
+    let (at35, _) = held.at(35);
+    assert_eq!(at35.parts.iter().map(|part| (part.key.as_str(), part.state)).collect::<Vec<_>>(), [("b", BreakdownState::Known), ("a", BreakdownState::Partial)]);
+    let (at47, through) = held.at(47);
+    let b = at47.parts.iter().find(|part| part.key == "b").expect("b");
+    assert_eq!((b.state, b.raw.as_deref(), through), (BreakdownState::AtLeast, Some("10"), 49), "an amount not recorded stays with the sum: what follows adds to a lower bound");
+    let (gap, through) = held.at(52);
+    assert_eq!((gap.unrecorded_hours, through), (3, 52), "inside an unrecorded stretch the count of hours changes every hour");
+    let (after, through) = held.at(65);
+    assert_eq!(after.unrecorded_hours, 5);
+    assert!(after.total.reason.as_deref().is_some_and(|reason| reason.contains("unattributed") && reason.contains("gap")));
+    assert_eq!(through, 69, "another shown value changes at 70");
+    assert_eq!(held.at(80).1, 100, "the last answer stands to the history's end");
+    for hour in [5, 15, 35, 47, 52, 65, 80] {
+        assert_eq!(held.at(hour), history().at(hour), "a seek and a fresh build answer alike at {hour}");
+    }
+}
+
+#[test]
+fn a_dated_value_is_the_last_one_read_by_the_hour() {
+    let dated = Dated::new(vec![(20, "b"), (10, "a"), (20, "c")]);
+    assert_eq!((dated.at(5), dated.at(10), dated.at(25)), (None, Some(&"a"), Some(&"c")));
+    assert_eq!(dated.hours().collect::<Vec<_>>(), [10, 20]);
+    assert_eq!((counted(&[3, 7, 7, 9], 7), counted(&[3, 7, 7, 9], 2)), (3, 0));
 }

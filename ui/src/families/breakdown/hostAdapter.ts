@@ -1,7 +1,8 @@
 import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import type { BreakdownViewOptions } from './declaration.ts';
 import type { FamilyBreakdownBinding } from './laneView.ts';
-import { deriveBreakdownAudit, type BreakdownModel } from './model.ts';
+import type { BreakdownModel } from './model.ts';
+import { auditLayout, deriveBreakdownAudit } from './structure.ts';
 
 export function parseBreakdownHit(hitKey: string | null): ParsedFamilyHit | null {
   if (!hitKey) return null;
@@ -31,7 +32,7 @@ export const breakdownHostAdapter: FamilyHostAdapter<BreakdownModel, BreakdownVi
   },
   getRowStride: () => 23,
   getPageStep: (_fields, viewport) => Math.max(1, Math.floor(viewport.height / 23)),
-  deriveAuditRows: model => deriveBreakdownAudit(model),
+  deriveAuditRows: (model, _hour, context) => deriveBreakdownAudit(model, auditLayout(model, context.viewport.width, context.viewport.height, context.expanded, context.theme)),
   auditOrdered: true,
   buildBinding: ctx => {
     if (!ctx.theme) return null;

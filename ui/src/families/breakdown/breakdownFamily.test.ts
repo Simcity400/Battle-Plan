@@ -7,8 +7,9 @@ import { ppSpendingProjection } from '../../widgets/political-power-spending-bre
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { parseBreakdownHit } from './hostAdapter.ts';
-import { layoutBreakdown, type PartsViewLayout, type RingViewLayout, type MosaicViewLayout } from './layout.ts';
-import { deriveBreakdownAudit, deriveBreakdownNavAndMirror, partColour, breakdownLevel, type BreakdownModel } from './model.ts';
+import { hitTestBreakdown, layoutBreakdown, type PartsViewLayout, type RingViewLayout, type MosaicViewLayout } from './layout.ts';
+import { buildBreakdownTooltip, partColour, breakdownLevel, PATH, type BreakdownModel } from './model.ts';
+import { deriveBreakdownAudit, deriveBreakdownNavAndMirror } from './structure.ts';
 import { breakdownParts, breakdownTotal, type BreakdownWords } from './product.ts';
 
 const THEME: FamilyTheme = {
@@ -48,6 +49,7 @@ function wire(key: string, ordinal: number, raw: string | null, extra: Partial<W
     state: raw === null ? 'notRecorded' : 'known',
     reason: raw === null ? `${key} was not recorded` : null,
     share: null,
+    parentShare: null,
     count: null,
     children: [],
     ...extra,
@@ -71,7 +73,7 @@ function spent(): Breakdown {
       wire('Daily costs', 3, '2071', { share: 0.35 }),
       wire('Decisions', 0, '1415', {
         share: 0.24,
-        children: [wire('War measures', 0, '640', { share: 0.11 }), wire('Economy', 1, '352', { share: 0.059 })],
+        children: [wire('Plan A', 0, '640', { share: 0.11 }), wire('Plan B', 1, '352', { share: 0.059 })],
       }),
       wire('Other', 1, '63', { share: 0.01, other: true }),
     ],
@@ -120,7 +122,7 @@ test('a partly known whole is the figure with its partial mark and no shares, wi
   const ring = layoutBreakdown({ view: 'ring', level: breakdownLevel(read), width: 1111, height: 346, theme: THEME, namesInRing: true, userExpanded: {}, measure }) as RingViewLayout;
   assert.equal(ring.center.verb, 'Spent', 'no lower-bound wording');
   assert.ok(ring.innerSlices.every(slice => slice.label === null), 'no names on a hatched ring');
-  assert.deepEqual(deriveBreakdownAudit(read).map(row => row.value), ['partial:211', '211', 'notRecorded:New ships was not recorded', 'notRecorded:Refits was not recorded']);
+  assert.deepEqual(deriveBreakdownAudit(read, parts).map(row => row.value), ['atLeast:211', '211', 'notRecorded:New ships was not recorded', 'notRecorded:Refits was not recorded']);
 });
 
 test('the three views lay out the same parts', () => {
@@ -130,7 +132,7 @@ test('the three views lay out the same parts', () => {
   assert.deepEqual(parts.rows.filter(row => row.depth === 0).map(row => row.key), ['Daily costs', 'Decisions', 'Other']);
   const ring = layoutBreakdown({ ...base, view: 'ring' }) as RingViewLayout;
   assert.equal(ring.openKey, 'Decisions', 'the first part with sub-parts opens in the list');
-  assert.ok(ring.outerSlices.some(slice => slice.key === 'War measures'));
+  assert.ok(ring.outerSlices.some(slice => slice.key === `Decisions${PATH}Plan A`));
   const mosaic = layoutBreakdown({ ...base, view: 'mosaic' }) as MosaicViewLayout;
   assert.ok(mosaic.tiles.some(tile => tile.key === 'Decisions' && tile.isGroup));
   const narrow = layoutBreakdown({ ...base, view: 'ring', width: 320, height: 220 }) as RingViewLayout;
@@ -144,8 +146,8 @@ test('expanding a part is held by the host, shared by the parts list and the rin
   const closed = layoutBreakdown({ ...base, view: 'parts', userExpanded: { Decisions: false } }) as PartsViewLayout;
   assert.equal(closed.rows.some(row => row.parentKey === 'Decisions'), false);
   const open = layoutBreakdown({ ...base, view: 'parts', userExpanded: { Decisions: true } }) as PartsViewLayout;
-  assert.deepEqual(open.rows.filter(row => row.parentKey === 'Decisions').map(row => row.key), ['War measures', 'Economy']);
-  const { nav } = deriveBreakdownNavAndMirror(level, open.expanded);
+  assert.deepEqual(open.rows.filter(row => row.parentKey === 'Decisions').map(row => row.key), [`Decisions${PATH}Plan A`, `Decisions${PATH}Plan B`]);
+  const { nav } = deriveBreakdownNavAndMirror(open, level.total);
   assert.equal(nav.find(entry => entry[0] === 'Decisions')![3], 1, 'navigation reports the open part so a toggle closes it');
   const ring = layoutBreakdown({ ...base, view: 'ring', userExpanded: { Decisions: false } }) as RingViewLayout;
   assert.equal(ring.openKey, null, 'closing the default open part closes it');
@@ -206,4 +208,89 @@ test('construction spending reads IC used since the branch began and names what 
     'Output of 2 projects before the recording began is not counted.',
     'Output of 1 project not traced to a country is not counted.',
   ]);
+});
+
+function nested(): Breakdown {
+  const items = Array.from({ length: 11 }, (_, at) => wire(`item-${at}`, at, String(10 + at), { share: 0.001, parentShare: 0.01 }));
+  return {
+    decimals: 0,
+    total: { raw: '2000', state: 'known', reason: null },
+    parts: [
+      wire('New', 0, '1415', {
+        share: 0.7075,
+        parentShare: 0.7075,
+        children: [wire('type:7', 1, '640', { share: 0.32, parentShare: 640 / 1415, children: items }), wire('type:8', 0, '352', { share: 0.176, parentShare: 352 / 1415 })],
+      }),
+      wire('Repairs', 1, '585', { share: 0.2925, parentShare: 0.2925, children: [wire('type:7', 0, '585', { share: 0.2925, parentShare: 1 })] }),
+    ],
+    unrecordedHours: 0,
+  };
+}
+
+const at = (width: number, height: number) => ({ width, height, theme: THEME, namesInRing: true, measure });
+
+test('known children are drawn against their part, never stretched over it, and say whose share they are', () => {
+  const level = breakdownLevel(model(nested()));
+  const parts = layoutBreakdown({ ...at(1111, 346), level, view: 'parts', userExpanded: { New: false } }) as PartsViewLayout;
+  const row = parts.rows.find(item => item.key === 'New')!;
+  const covered = row.segments.reduce((sum, segment) => sum + segment.width, 0) + row.segments.length - 1;
+  assert.ok(Math.abs(covered - row.barFillWidth * (992 / 1415)) < 1, 'children worth 992 of 1,415 cover that much of the bar');
+  const ring = layoutBreakdown({ ...at(1111, 346), level, view: 'ring', userExpanded: {} }) as RingViewLayout;
+  const inner = ring.innerSlices.find(slice => slice.key === 'New')!;
+  const outer = ring.outerSlices.filter(slice => slice.parentKey === 'New');
+  assert.ok(outer[outer.length - 1]!.a1 < inner.a1 - 0.1, 'the outer ring leaves the part unattributed to a child unfilled');
+  const tip = buildBreakdownTooltip(model(nested()), level, `New${PATH}type:7`, THEME)!;
+  assert.ok(JSON.stringify(tip).includes('45%'), 'the share of the part is 640 of 1,415');
+  const narrow = layoutBreakdown({ ...at(320, 220), level: breakdownLevel(model(spent())), view: 'ring', userExpanded: {} }) as RingViewLayout;
+  assert.ok(narrow.center.partialTabRect, 'a partial total keeps its mark at minimum size');
+  assert.equal(hitTestBreakdown(narrow, narrow.center.partialTabRect!.x + 3, narrow.center.partialTabRect!.y + 6, 0), 'row:__partial__');
+});
+
+test('a part is known by its whole path, and every painted tile is navigable', () => {
+  const read = model(nested());
+  const level = breakdownLevel(read);
+  const keys = read.parts.flatMap(part => (part.children ?? []).map(child => child.key));
+  assert.deepEqual(keys, [`New${PATH}type:7`, `New${PATH}type:8`, `Repairs${PATH}type:7`], 'one building type under two purposes is two parts');
+  assert.equal(JSON.stringify(buildBreakdownTooltip(read, level, `Repairs${PATH}type:7`, THEME)).includes('585'), true, 'hovering repairs shows the repairs amount');
+  const mosaic = layoutBreakdown({ ...at(1111, 346), level, view: 'mosaic', userExpanded: {} }) as MosaicViewLayout;
+  const painted = mosaic.tiles.flatMap(tile => [tile.key, ...tile.children.map(child => child.key)]);
+  const { nav } = deriveBreakdownNavAndMirror(mosaic, level.total);
+  assert.deepEqual(nav.map(entry => entry[0]).sort(), painted.sort(), 'navigation is the installed tiles');
+});
+
+test('a child keeps its tint when the amounts reorder it', () => {
+  const swapped = nested();
+  const children = swapped.parts[0]!.children;
+  swapped.parts[0] = { ...swapped.parts[0]!, children: [children[1]!, children[0]!] };
+  const tint = (breakdown: Breakdown) => {
+    const parts = layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(model(breakdown)), view: 'parts', userExpanded: { New: false } }) as PartsViewLayout;
+    return parts.rows.find(row => row.key === 'New')!.segments.find(segment => segment.key === `New${PATH}type:8`)!.color;
+  };
+  assert.equal(tint(swapped), tint(nested()));
+});
+
+test('the list scrolls to its last row and shows every item under an open part', () => {
+  const level = breakdownLevel(model(nested()));
+  const parts = layoutBreakdown({ ...at(1111, 200), level, view: 'parts', userExpanded: { New: true } }) as PartsViewLayout;
+  const last = parts.rows[parts.rows.length - 1]!;
+  assert.ok(parts.contentHeight >= parts.bodyTop + last.y + last.height, 'the scroll extent counts the total line above the list');
+  assert.equal(parts.rows.filter(row => row.depth === 2).length, 11, 'every item of an open category is a row');
+  const tip = JSON.stringify(buildBreakdownTooltip(model(nested()), level, `New${PATH}type:7`, THEME));
+  assert.ok(tip.includes('3 more in the list'), 'the tooltip names what it leaves to the list');
+  const row = parts.rows[3]!;
+  assert.equal(hitTestBreakdown(parts, 40, parts.bodyTop + row.y + 2, 0), `row:${row.key}`);
+});
+
+test('the audit lists what the installed view draws: shares, open children and the comparison note', () => {
+  const read: BreakdownModel = { ...model(nested()), comparison: { label: 'Gained', value: 'Not recorded', note: 'Some gains were not recorded.' } };
+  const level = breakdownLevel(read);
+  const closed = layoutBreakdown({ ...at(1111, 346), level, view: 'parts', userExpanded: { New: false } });
+  const open = layoutBreakdown({ ...at(1111, 346), level, view: 'parts', userExpanded: { New: true } });
+  const rows = deriveBreakdownAudit(read, open);
+  assert.ok(rows.some(row => row.key === '__comparison__' && String(row.value).includes('Some gains were not recorded.')));
+  assert.ok(rows.some(row => row.key === 'New' && String(row.value).endsWith('|71%')), 'a drawn share is audited');
+  assert.ok(deriveBreakdownAudit(read, open).length > deriveBreakdownAudit(read, closed).length, 'opening a part audits its drawn children');
+  const moved = nested();
+  moved.parts[0] = { ...moved.parts[0]!, children: [{ ...moved.parts[0]!.children[0]!, raw: '700' }, { ...moved.parts[0]!.children[1]!, raw: '292' }] };
+  assert.notDeepEqual(deriveBreakdownAudit(model(moved), layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(model(moved)), view: 'parts', userExpanded: { New: true } })), deriveBreakdownAudit(model(nested()), layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(model(nested())), view: 'parts', userExpanded: { New: true } })), 'moving spending between children under a fixed part changes the audit');
 });

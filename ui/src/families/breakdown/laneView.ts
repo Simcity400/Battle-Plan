@@ -12,8 +12,6 @@ import { projectScene, samePictures, snapshotPictures } from '../scene.ts';
 import type { BreakdownViewOptions } from './declaration.ts';
 import {
   buildBreakdownTooltip,
-  deriveBreakdownAudit,
-  deriveBreakdownNavAndMirror,
   breakdownLevel,
   type BreakdownModel,
   type BreakdownPart,
@@ -21,6 +19,7 @@ import {
 } from './model.ts';
 import { hitTestBreakdown, layoutBreakdown, type BreakdownLayout } from './layout.ts';
 import { drawBreakdown } from './painter.ts';
+import { deriveBreakdownAudit, deriveBreakdownNavAndMirror } from './structure.ts';
 import { ensureBreakdownProjection } from './registry.ts';
 
 export interface FamilyBreakdownBinding<TOptions extends BreakdownViewOptions = BreakdownViewOptions> {
@@ -280,10 +279,8 @@ export function familyBreakdownLaneView(
           userExpanded: bound.expanded,
           measure,
         }) : null;
-        const contentHeight = layout
-          ? (layout.view === 'ring' ? (layout.sideList?.contentHeight ?? bound.height) : layout.contentHeight)
-          : bound.height;
-        const { nav, mirror } = deriveBreakdownNavAndMirror(level, layout?.expanded ?? {});
+        const contentHeight = layout ? layout.contentHeight : bound.height;
+        const { nav, mirror } = layout ? deriveBreakdownNavAndMirror(layout, level.total) : { nav: [], mirror: { first: 0, total: 0, rows: [] } };
         const revision = content();
         held.structure = {
           revision,
@@ -345,7 +342,7 @@ export function familyBreakdownLaneView(
       if (bound.audit) {
         const id = bound.auditId ?? -1;
         if (!structure.audit || structure.audit.value.id !== id) {
-          structure.audit = { value: { id, rows: deriveBreakdownAudit(model) }, content: content() };
+          structure.audit = { value: { id, rows: deriveBreakdownAudit(model, structure.layout) }, content: content() };
         }
         fields.audit = structure.audit;
       }
