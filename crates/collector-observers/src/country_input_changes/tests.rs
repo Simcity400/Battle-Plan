@@ -435,14 +435,14 @@ fn counter_forwards_reach_the_counter_set() {
     drop(domain.forward(
         Forward::Cores,
         state.as_ptr() as usize,
-        &*tag as *const u32 as usize,
+        &raw const *tag as usize,
     ));
     assert_eq!(take(&domain, Table::Counters), (epoch, vec![]));
     *tag = 5;
     drop(domain.forward(
         Forward::Cores,
         state.as_ptr() as usize,
-        &*tag as *const u32 as usize,
+        &raw const *tag as usize,
     ));
     let moved = take(&domain, Table::Counters).0;
     assert!(moved.is_some() && moved != epoch);

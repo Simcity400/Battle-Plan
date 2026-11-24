@@ -85,10 +85,10 @@ fn slots_keep_their_place_as_segments_are_added() {
     }
     let pool = FramePool::new();
     let first = pool.vacant().unwrap();
-    let address = pool.slot(first) as *const Slot;
+    let address = std::ptr::from_ref::<Slot>(pool.slot(first));
     let made: Vec<_> = (0..200).map(|_| pool.vacant().unwrap()).collect();
     assert_eq!(made, (1..=200).collect::<Vec<_>>());
-    assert_eq!(pool.slot(first) as *const Slot, address);
+    assert_eq!(std::ptr::from_ref::<Slot>(pool.slot(first)), address);
     assert_eq!(pool.made(), 201);
     assert_eq!(pool.live(), 0);
     pool.abandon(57);

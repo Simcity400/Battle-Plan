@@ -116,7 +116,7 @@ pub unsafe fn install_offered() {
         return;
     };
     let capacity = next.slots.len();
-    let pointer = &mut *next as *mut Storage;
+    let pointer = &raw mut *next;
     swap.retired = swap.current.replace(next);
     LOG.store(pointer, Ordering::SeqCst);
     CAPACITY.store(capacity, Ordering::Release);
@@ -659,7 +659,7 @@ pub unsafe fn reset_log_for_test(capacity: usize) {
     OBSERVATION.required.store(0, Ordering::Relaxed);
     SPILL.clear();
     let mut current = Storage::new(capacity).unwrap();
-    LOG.store(&mut *current, Ordering::SeqCst);
+    LOG.store(&raw mut *current, Ordering::SeqCst);
     CAPACITY.store(capacity, Ordering::Release);
     *LOG_SWAP.lock().unwrap() = LogSwap {
         current: Some(current),
@@ -817,10 +817,10 @@ mod tests {
             .as_u64()
             .unwrap();
         presize(population);
-        let offered = LOG_SWAP.lock().unwrap().next.as_deref().unwrap() as *const Storage;
+        let offered = std::ptr::from_ref::<Storage>(LOG_SWAP.lock().unwrap().next.as_deref().unwrap());
         presize(population);
         assert_eq!(
-            LOG_SWAP.lock().unwrap().next.as_deref().unwrap() as *const Storage,
+            std::ptr::from_ref::<Storage>(LOG_SWAP.lock().unwrap().next.as_deref().unwrap()),
             offered
         );
         assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);

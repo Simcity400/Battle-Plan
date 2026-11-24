@@ -981,7 +981,7 @@ pub(super) fn copy_program_row(
     true
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "The two-phase native read order shares separate pointer and reference scratch without changing their ownership."
 )]

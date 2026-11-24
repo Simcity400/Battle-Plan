@@ -11,7 +11,10 @@ pub struct SlotSet {
 }
 
 impl SlotSet {
-    #[allow(clippy::new_without_default)]
+    #[expect(
+        clippy::new_without_default,
+        reason = "SlotSet is built only through new by its walks, and no caller needs Default"
+    )]
     pub fn new() -> Self {
         Self {
             bits: [0; WORDS],

@@ -563,7 +563,10 @@ impl CapturedRow {
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "one state capture returns its row, spans, certificates and reads together"
+)]
 fn capture(
     memory: &impl Memory,
     base: usize,

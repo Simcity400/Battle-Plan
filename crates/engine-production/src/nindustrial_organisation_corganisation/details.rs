@@ -224,7 +224,10 @@ impl Freshness {
         flags: true,
     };
 }
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pointer, organisation and country identify one row, and the row, scratch and freshness come from the caller"
+)]
 pub fn capture_selected(
     memory: &impl Memory,
     base: usize,

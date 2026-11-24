@@ -302,7 +302,7 @@ fn ace(
     killer: Option<(u64, u32)>,
     names: [(&str, bool); 3],
 ) {
-    #![allow(clippy::too_many_arguments)]
+    #![expect(clippy::too_many_arguments, reason = "writes every field of one fake ace record")]
     use engine_native_air::cace;
     use engine_native_memory::msvc_string;
     put64(bytes, at, cace::VTABLE_RVA.0 as u64);

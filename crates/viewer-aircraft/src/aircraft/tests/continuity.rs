@@ -178,7 +178,7 @@ fn a_plan_that_changes_one_wings_flights_starts_that_run_anew() {
         previous.eased_runs(&rigs, &defines, time);
     }
     let drawn = previous.clone().eased_runs(&rigs, &defines, at);
-    let mut restarted = source.clone();
+    let mut restarted = source;
     restarted.flights[1].origin = [6.0, 10.0, 6.0];
     restarted.assign_seeds(&lifetime);
     restarted.carry_presentation(&mut previous.clone(), Continuity::Continue).unwrap();
@@ -226,7 +226,7 @@ fn a_run_advanced_straight_to_a_time_stands_where_playing_to_it_stands() {
         played = next;
         played.advance(&rigs, &defines, None, frame as f32 / 30.0, &stand);
     }
-    let mut sought = source.clone();
+    let mut sought = source;
     sought.assign_seeds(&lifetime);
     sought.advance(&rigs, &defines, None, at, &stand);
     assert!(played.runs[0].cycle > 0, "the fixture passes a cycle");

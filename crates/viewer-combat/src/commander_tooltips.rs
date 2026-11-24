@@ -326,7 +326,7 @@ const LAND_DESCRIPTION_UNRECORDED: &str =
 const LAND_TIMED_TRAITS_UNRECORDED: &str =
     "LandCombatDetails.side_inputs (timed traits) not recorded";
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the text resources and each recorded fact of one commander's portrait")]
 fn land_portrait(
     icons: &dyn TextIcons,
     loc: &Localisation,

@@ -105,7 +105,7 @@ fn another_spelling_of_the_same_folder_is_the_same_mount() {
     }
     let link = root.0.join("junction");
     junction(&link, &long);
-    let mut spellings = vec![link.clone()];
+    let mut spellings = vec![link];
     let short = short_path(&long);
     if !short
         .file_name()
@@ -128,7 +128,7 @@ fn another_spelling_of_the_same_folder_is_the_same_mount() {
         let spelled = game(&spelling.join("base"));
         let what = spelling.display();
         assert!(
-            mounts_match(&[spelled.clone()], std::slice::from_ref(&expected)),
+            mounts_match(std::slice::from_ref(&spelled), std::slice::from_ref(&expected)),
             "{what}"
         );
         assert!(
@@ -139,7 +139,7 @@ fn another_spelling_of_the_same_folder_is_the_same_mount() {
             "{what}"
         );
         assert!(
-            !mounts_match(&[spelled.clone()], std::slice::from_ref(&other)),
+            !mounts_match(std::slice::from_ref(&spelled), std::slice::from_ref(&other)),
             "{what}"
         );
         assert!(
@@ -150,7 +150,7 @@ fn another_spelling_of_the_same_folder_is_the_same_mount() {
             "{what}"
         );
         assert!(
-            !mounts_match(&[spelled.clone()], &[expected.clone(), other.clone()]),
+            !mounts_match(std::slice::from_ref(&spelled), &[expected.clone(), other.clone()]),
             "{what}"
         );
         assert!(

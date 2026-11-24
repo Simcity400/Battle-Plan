@@ -864,7 +864,7 @@ fn constructor_shim_return_pc_and_callback_unwind_metadata() {
         let mut image_base = 0;
         assert!(
             !unsafe {
-                RtlLookupFunctionEntry(function as u64, &mut image_base, std::ptr::null_mut())
+                RtlLookupFunctionEntry(function as u64, &raw mut image_base, std::ptr::null_mut())
             }
             .is_null()
         );

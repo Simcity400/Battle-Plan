@@ -1271,7 +1271,6 @@ impl Captured {
         (context, selection)
     }
 
-    #[allow(clippy::type_complexity)]
     pub fn join_relations(
         &mut self,
         mut job: RelationsJob,
@@ -3968,7 +3967,7 @@ fn scope_identity(scope: cvariables::Scope) -> (u8, u32) {
     }
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the walk's operands, its row arenas, the delta and the held store"
 )]
@@ -4577,7 +4576,10 @@ fn default_drain() -> Drain {
     |_, _, _| None
 }
 
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the opinion slot holds the shared store inline so lending and returning it never allocates"
+)]
 enum OpinionSlot {
     Unmade,
     Home(SharedOpinions),
@@ -8572,7 +8574,7 @@ mod tests {
         assert_eq!(run(&mut second), rows);
         assert!(second.shared.is_none());
         first.return_opinions();
-        let mut lent = LentOpinions::borrow(store.clone()).unwrap();
+        let mut lent = LentOpinions::borrow(store).unwrap();
         assert!(lent.shared().baseline.allocated_bytes() > 0);
         drop(lent);
         let mut cleared = bytes.clone();

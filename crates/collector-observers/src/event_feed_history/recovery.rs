@@ -171,7 +171,7 @@ impl Store {
             .saturating_mul(2)
             .max(self.owner_controls)
     }
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "A local refusal keeps the selected registry, census identity and publication operands."
     )]

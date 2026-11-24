@@ -701,7 +701,7 @@ mod tests {
         let encoded = encode(&tables(Ok(table.clone()), Ok(cursor_table.clone())));
         let decoded = decode(&encoded).unwrap();
         assert_eq!(decoded.folding, Ok(table.clone()));
-        assert_eq!(decoded.cursors, Ok(cursor_table.clone()));
+        assert_eq!(decoded.cursors, Ok(cursor_table));
         let decoded_cursors = decoded.cursors.unwrap();
         assert_eq!(
             decoded_cursors.path_for(cursors::CursorAction::Normal),

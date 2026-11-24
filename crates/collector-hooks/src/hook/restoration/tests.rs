@@ -51,6 +51,10 @@ fn prepared_restore_and_final_quiet_need_no_allocations_after_capture_stop() {
         let b = Hook::set_enabled_iter(hooks[1..2].iter_mut(), false);
         let c = Hook::set_enabled_iter(hooks[2..3].iter_mut(), false);
         let d = Hook::set_enabled_iter_tracking_busy(hooks[3..].iter_mut(), false);
+        #[expect(
+            clippy::single_range_in_vec_init,
+            reason = "quiet takes a slice of ranges and this test names one"
+        )]
         let quiet = quiet(&[code.0 as usize..code.0 as usize + 4096], &[], || false);
         drop(scratch);
         (a, b, c, d, quiet)

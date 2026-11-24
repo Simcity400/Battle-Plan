@@ -209,7 +209,10 @@ impl Captured {
         [qpc().saturating_sub(started).max(0) as u64, 0]
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the census admission and role store"
+    )]
     pub fn capture_census(
         &mut self,
         memory: &impl Memory,
@@ -233,7 +236,10 @@ impl Captured {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the census, role store and both change sources"
+    )]
     pub fn capture_census_with(
         &mut self,
         memory: &impl Memory,

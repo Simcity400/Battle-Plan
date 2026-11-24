@@ -775,7 +775,7 @@ mod owned_tests {
             };
             assert_eq!(rows, expected[1..]);
         }
-        capture.parts[0].arena.first[0] = original.clone();
+        capture.parts[0].arena.first[0] = original;
         capture.parts[0].rows.rows[0].portraits[1] = 0;
         assert!(matches!(
             capture.table_inputs(Some(&mut projection))[0],

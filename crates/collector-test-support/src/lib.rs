@@ -189,6 +189,6 @@ pub fn qpc_frequency() -> u64 {
         fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
     }
     let mut frequency = 0;
-    unsafe { QueryPerformanceFrequency(&mut frequency) };
+    unsafe { QueryPerformanceFrequency(&raw mut frequency) };
     frequency.max(1) as u64
 }

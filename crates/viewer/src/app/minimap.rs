@@ -77,7 +77,7 @@ impl Viewer {
         })
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "one frame's view, pointer and clock, as the picker's draw takes them"
     )]
@@ -191,7 +191,7 @@ impl Viewer {
         dropped
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "one frame's view, pointer and clock, as the picker's draw takes them"
     )]

@@ -1395,7 +1395,7 @@ impl Scene {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the branch and hour, the seek flag, the hours, the continuity, and the anchor, heights and resources")]
     pub fn present_hours<'a>(
         &mut self,
         at: (replay_data::BranchId, i32),
@@ -2827,6 +2827,7 @@ impl Scene {
         self.beside_lane.start(move || beside.step());
         let (beside_lane, aircraft, sprawl, city_presentation) =
             (&mut self.beside_lane, &mut self.aircraft, &mut self.sprawl, &mut self.city_presentation);
+        #[expect(clippy::mutable_key_type, reason = "asset keys cache display data outside equality and ordering")]
         let struck = step::Presentation {
             graphics: &self.graphics,
             trains: self.trains.as_mut(),

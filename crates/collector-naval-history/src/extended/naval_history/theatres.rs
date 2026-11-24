@@ -602,7 +602,6 @@ fn copy_naval_theatres_with_root(
     let _ = carmy_group::VTABLE_RVA;
 }
 
-#[allow(clippy::too_many_arguments)]
 fn copy_country_theatres(
     log: &mut RawLog<NAVAL_PACK_N>,
     memory: &impl engine_native_memory::Memory,

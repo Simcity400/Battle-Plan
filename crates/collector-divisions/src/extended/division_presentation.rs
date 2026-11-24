@@ -234,7 +234,7 @@ fn unique(keys: &mut Vec<u64>, divisions: impl ExactSizeIterator<Item = u64>) ->
 }
 
 fn position<T>(rows: &[T], row: &T) -> usize {
-    (row as *const T as usize - rows.as_ptr() as usize) / std::mem::size_of::<T>().max(1)
+    (std::ptr::from_ref::<T>(row) as usize - rows.as_ptr() as usize) / std::mem::size_of::<T>().max(1)
 }
 
 fn camouflage(camouflage: Option<carmy::Camouflage>) -> Option<DivisionCamouflage> {
@@ -1773,7 +1773,10 @@ impl Captured {
         [movement.ticks[0], status + movement.ticks[1]]
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the status capture takes the sources, hour, army stats, change source and preparation choice"
+    )]
     fn capture_status_at(
         &mut self,
         memory: &impl Memory,

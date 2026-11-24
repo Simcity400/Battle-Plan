@@ -286,7 +286,7 @@ fn decode_detach_keeps_worker_panic_after_drain_panic_and_a_later_empty_drain() 
     *WORKER.lock().unwrap() = Some(std::thread::spawn(|| {
         failure::worker(|| panic!("original worker failure"));
     }));
-    sampling::SHARED.store((&shared as *const Shared).cast_mut(), Ordering::Release);
+    sampling::SHARED.store((&raw const shared).cast_mut(), Ordering::Release);
     let first =
     // SAFETY: Hourly admission is closed and capture is quiet before this decode drain.
     unsafe { detach_drain(|_| panic!("later detach progress failure")) }.unwrap_err();
@@ -4134,7 +4134,7 @@ fn payload_pools_keep_a_payload_for_every_frame_a_backlog_holds_and_trim_back() 
         // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
         unsafe { shared.take_frame(&mut 0) }.unwrap())
         .collect();
-    sampling::SHARED.store((&shared as *const Shared).cast_mut(), Ordering::Release);
+    sampling::SHARED.store((&raw const shared).cast_mut(), Ordering::Release);
     let sized = || {
         let mut job = CapitulationJob::new();
         job.log = collector_raw::raw::RawLog::new(4, 64);

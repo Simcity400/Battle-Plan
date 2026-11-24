@@ -419,7 +419,10 @@ fn flag(memory: &impl Memory, address: usize, reason: &'static str) -> Result<bo
         .ok_or(reason)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the output, paths, combat memo, names, tooltip scratch and references are separate caller-owned parts of one walk"
+)]
 pub fn walk_with_tooltip_and_combat_references(
     memory: &impl Memory,
     base: usize,
@@ -444,7 +447,10 @@ pub fn walk_with_tooltip_and_combat_references(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the output, paths, combat memo, names, tooltip scratch and references are separate caller-owned parts of one walk"
+)]
 fn walk_impl(
     memory: &impl Memory,
     base: usize,

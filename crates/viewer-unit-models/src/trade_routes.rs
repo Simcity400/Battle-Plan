@@ -463,7 +463,7 @@ fn client_layers(
     Ok(layers)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the routes, the lines and report it fills, and each recorded fact of one line")]
 fn push_line<'a, R: RouteFields>(
     routes: &BTreeMap<RouteKey, &'a R>,
     out: &mut Vec<Line<'a, R>>,
@@ -860,7 +860,7 @@ fn build_into(
 
 pub type Emit<'a> = dyn FnMut(&mut OrderField, &viewer_gpu::ribbon_content::ArrowType, &Shaped, [f32; 4], [f32; 4], &HeightField<'_>) -> Option<Vec<[f32; 2]>> + 'a;
 
-#[allow(clippy::too_many_arguments, reason = "the tables, the countries, the exchanges and the two content callbacks are each the caller's")]
+#[expect(clippy::too_many_arguments, reason = "the tables, the countries, the exchanges and the two content callbacks are each the caller's")]
 pub fn build_lines<O: OriginFields, C: ClientFields, R: RouteFields, G: RegionalFields>(
     inputs: &Inputs<'_>,
     tables: &Tables<'_, O, C, R, G>,

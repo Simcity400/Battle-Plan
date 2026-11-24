@@ -799,7 +799,7 @@ impl Captured {
             engine_native_memory::capture_text::Owned,
             engine_native_memory::capture_text::Owned,
             engine_native_memory::capture_text::Owned,
-        >| { starts[(r as *const _ as usize - base) / stride] };
+        >| { starts[(std::ptr::from_ref(r) as usize - base) / stride] };
         let original_tag_bytes = |r: &ccountry::AppearanceRow<
             engine_native_memory::capture_text::Owned,
             engine_native_memory::capture_text::Owned,

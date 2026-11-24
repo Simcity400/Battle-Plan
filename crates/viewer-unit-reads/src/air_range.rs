@@ -23,7 +23,7 @@ pub struct FrameSources<'a> {
     frame: &'a replay_frame::frame::DecodedFrame,
     countries: OnceCell<Result<BTreeMap<u32, &'a RaidCountryInputRow>, String>>,
     command_power: OnceCell<Result<BTreeMap<u32, &'a CountryCommandPowerRow>, String>>,
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity, reason = "each ace's own read or refusal, cached once and refused as a whole when unread")]
     aces: OnceCell<Result<BTreeMap<u64, Result<&'a AceRangeInputRow, String>>, String>>,
 }
 

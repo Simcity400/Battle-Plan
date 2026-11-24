@@ -8,6 +8,7 @@ fn block(camera: f32, clock: f32) -> Vec<u8> {
     bytes
 }
 
+#[expect(clippy::single_range_in_vec_init, reason = "a buffer's reads are a list of byte ranges, here one")]
 fn reads() -> shader_pipeline::Buffer {
     shader_pipeline::Buffer {
         binding: 0,
@@ -16,6 +17,7 @@ fn reads() -> shader_pipeline::Buffer {
     }
 }
 
+#[expect(clippy::single_range_in_vec_init, reason = "a buffer's reads are a list of byte ranges, here one")]
 fn reads_eight() -> shader_pipeline::Buffer {
     shader_pipeline::Buffer {
         binding: 0,

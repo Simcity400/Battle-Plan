@@ -406,7 +406,10 @@ fn line_kind(base: usize, vtable: usize) -> Option<u8> {
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one line-efficiency copy names its kind, variant, activity, header and defines"
+)]
 fn copy_line_efficiency(
     log: &mut RawLog<8>,
     memory: &impl Memory,

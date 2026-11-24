@@ -91,7 +91,6 @@ impl Looks {
     }
 }
 
-#[allow(clippy::too_many_arguments, reason = "the camera, the view, the ground and the frame's head")]
 pub fn present(
     camera: &Camera,
     viewport: [u32; 2],
@@ -154,7 +153,7 @@ pub fn present(
     looks
 }
 
-#[allow(clippy::too_many_arguments, reason = "the camera, the view, the ground and where the icon stands")]
+#[expect(clippy::too_many_arguments, reason = "the camera, the view, the ground and where the icon stands")]
 fn look(
     camera: &Camera,
     viewport: [u32; 2],

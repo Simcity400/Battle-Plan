@@ -56,7 +56,7 @@ impl<T> SharedBox<T> {
     }
 
     pub fn as_ptr(this: &Self) -> *const T {
-        &this.inner().value
+        &raw const this.inner().value
     }
 
     pub fn strong_count(this: &Self) -> usize {

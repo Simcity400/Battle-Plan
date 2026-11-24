@@ -574,7 +574,7 @@ fn music_inputs_recheck_hour_boundaries_and_refused_table_availability() {
     let memo = Memo::new(8);
     let base = frame(3);
     run(&memo, &base, &content, 1);
-    let mut next = base.clone();
+    let mut next = base;
     next.hour = 21;
     let (ended, evaluated) = run(&memo, &next, &content, 1);
     assert_eq!(ended.weights[4].map(f64::to_bits), Some(7.0f64.to_bits()));

@@ -313,7 +313,7 @@ pub(super) fn bind(
         out.refuse(format!("state view terrain hover: {why}"));
     }
     hover(out, root, "terrain_picture", terrain.map_err(|why| format!("state view terrain hover: {why}")));
-    let sees = facts.slot(facts.state.controller).map_err(|why| why.to_string()).and_then(|controller| energy(content, vision.shares_vision_proven(controller)));
+    let sees = facts.slot(facts.state.controller).and_then(|controller| energy(content, vision.shares_vision_proven(controller)));
     hover(out, root, "energy_text", sees.map_err(|why| format!("state view energy hover: {why}")));
     let id = facts.province.id;
     let mud = weather(content, frame, id, |_| Ok(Some("weather_mud")));

@@ -330,7 +330,10 @@ fn scope_pointer(
         .ok_or("script variable scope root unreadable")
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the scope, container and head locate the variables, and the entries, names and carry are caller-owned"
+)]
 fn store_rows(
     memory: &impl Memory,
     base: usize,

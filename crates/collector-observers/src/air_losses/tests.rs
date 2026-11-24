@@ -32,7 +32,6 @@ impl Drop for ObservationOwner {
 
 static FORWARDED: Mutex<[usize; 7]> = Mutex::new([0; 7]);
 type Writer = unsafe extern "system" fn(usize, usize, usize, usize, usize, usize, usize) -> usize;
-#[allow(clippy::too_many_arguments)]
 unsafe extern "system" fn forwarding(
     a: usize,
     b: usize,
@@ -65,7 +64,6 @@ fn assembly_forwards_seven_slots_and_native_return() {
     assert_eq!(active(), 0);
 }
 static PASSED: Mutex<[usize; 7]> = Mutex::new([0; 7]);
-#[allow(clippy::too_many_arguments)]
 unsafe extern "system" fn passed_through(
     a: usize,
     b: usize,
@@ -366,7 +364,7 @@ impl World {
         };
         unsafe {
             pre(
-                &mut context,
+                &raw mut context,
                 self.pointer(Self::AIR),
                 self.pointer(Self::WING),
                 1,
@@ -384,11 +382,10 @@ impl World {
                 0,
                 cause,
             );
-            post(&mut context);
+            post(&raw mut context);
         }
     }
 }
-#[allow(clippy::too_many_arguments)]
 unsafe extern "system" fn native_write(
     _receiver: usize,
     wing: usize,
@@ -587,7 +584,7 @@ fn system_unwind_crosses_assembly_and_patched_native_caller_frames() {
         let mut handler = std::ptr::null_mut();
         let mut frame = 0u64;
         let entry =
-            unsafe { RtlLookupFunctionEntry(context.0.Rip, &mut image, std::ptr::null_mut()) };
+            unsafe { RtlLookupFunctionEntry(context.0.Rip, &raw mut image, std::ptr::null_mut()) };
         assert!(
             !entry.is_null(),
             "both frames need registered Windows unwind metadata"
@@ -598,9 +595,9 @@ fn system_unwind_crosses_assembly_and_patched_native_caller_frames() {
                 image,
                 context.0.Rip,
                 entry,
-                &mut context.0,
-                &mut handler,
-                &mut frame,
+                &raw mut context.0,
+                &raw mut handler,
+                &raw mut frame,
                 std::ptr::null_mut(),
             );
         }

@@ -882,7 +882,10 @@ pub(crate) struct DivisionPartRequest {
     pub(crate) presentation: Option<(Arc<PresentationInputs>, usize)>,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "jobs move through the executor by value so dispatch never allocates"
+)]
 pub(crate) enum Job {
     Characters(CharactersRequest),
     Relations(RelationsRequest),
@@ -962,7 +965,10 @@ pub(crate) enum Job {
     Templates(TemplatesRequest),
 }
 #[derive(Clone, Copy)]
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "reports are copied out by value so collection never allocates"
+)]
 pub(crate) enum Report {
     Characters(characters::CharactersCopyReport),
     Relations(intel::RelationsCopyReport),
@@ -4041,7 +4047,7 @@ mod tests {
             let mut retained = Some(make());
             let store = |job: &Job| match job {
                 Job::Relations(request) => {
-                    request.payload.fingerprints.as_deref().unwrap() as *const SliceFingerprints
+                    std::ptr::from_ref::<SliceFingerprints>(request.payload.fingerprints.as_deref().unwrap())
                 }
                 _ => unreachable!(),
             };
@@ -4077,7 +4083,7 @@ mod tests {
             assert_eq!(
                 fingerprints
                     .as_deref()
-                    .map(|store| store as *const SliceFingerprints),
+                    .map(|store| std::ptr::from_ref::<SliceFingerprints>(store)),
                 Some(original_store)
             );
             assert_eq!(

@@ -687,7 +687,7 @@ fn a_railway_gun_stands_and_moves_on_its_own_slot_unless_it_snaps() {
     assert_eq!(snapped.at(), [122.0, 0.0, 1.0]);
     let defending = Row {
         combat_role: 2,
-        ..attacking.clone()
+        ..attacking
     };
     assert_eq!(
         UnitRoute::railway_gun(&defending).standing(1, true, 10, &anchor),

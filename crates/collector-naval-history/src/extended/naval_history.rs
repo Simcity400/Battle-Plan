@@ -841,7 +841,7 @@ impl Captured {
         let stride = size_of::<cprovince_railway_info::Row>();
         let rail_hour = self.rail_hour;
         let entry_of = |r: &cprovince_railway_info::Row| {
-            let hint = (r as *const cprovince_railway_info::Row as usize - base) / stride;
+            let hint = (std::ptr::from_ref::<cprovince_railway_info::Row>(r) as usize - base) / stride;
             captured.and_then(|captured| {
                 if let Some(row) = captured.get(hint)
                     && row.province == r.province
@@ -1391,7 +1391,6 @@ impl Captured {
         self.capture_reserved_land_inner(memory, base, root, prior_rosters, staging_refusal);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn capture_reserved_land_inner(
         &mut self,
         memory: &impl Memory,

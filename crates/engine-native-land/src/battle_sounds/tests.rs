@@ -149,8 +149,8 @@ fn battles_follow_the_tree_preorder_with_exact_bits_and_member_order() {
     let mut odd = battle(-0.0, 7.25, 1.0, &[44]);
     odd.radius = 0x7fc0_1234;
     let placed = vec![
-        (0, vec![odd.clone()]),
-        (1, vec![sounding.clone(), battle(3.0, 0.0, 9.0, &[])]),
+        (0, vec![odd]),
+        (1, vec![sounding, battle(3.0, 0.0, 9.0, &[])]),
         (2, vec![battle(6.0, 0.0, 9.0, &[60])]),
         (5, vec![battle(4.0, 0.0, 9.0, &[40, 40])]),
         (6, vec![battle(5.0, 0.0, 9.0, &[50])]),

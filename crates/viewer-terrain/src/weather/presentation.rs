@@ -253,7 +253,7 @@ impl Presentation {
         }
         let page = map_display_data::PAGE_ITEMS;
         self.rect.clear();
-        for row in rows.clone() {
+        for row in rows {
             let mut at = (row as usize * width as usize + columns.start as usize) * 4;
             let end = at + columns.len() * 4;
             while at < end {
@@ -526,6 +526,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::single_range_in_vec_init, reason = "the uploads are a list of ranges, and the merged writes leave one")]
     fn pending_upload_ranges_go_in_one_write_where_a_write_costs_more_than_the_gap() {
         for count in [3, 1500, 5000] {
             let apart = MERGE + 16;
@@ -567,6 +568,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::single_range_in_vec_init, reason = "the hatch writes are a list of ranges, and each step owes one")]
     fn the_hatch_mask_covers_pending_shown_and_fading_unknown_cells_only() {
         let snapshot = |unknown: [u8; 3], identity: u64| {
             Arc::new(SnowMud {
@@ -613,6 +615,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::single_range_in_vec_init, reason = "the hatch writes are a list of ranges, and the turned cell owes one")]
     fn a_grid_taken_in_rectangles_is_presented_as_one_taken_whole() {
         let (width, height) = (40u32, 30u32);
         let grid = |seed: u8, unknown: Option<usize>| {

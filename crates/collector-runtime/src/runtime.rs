@@ -376,7 +376,7 @@ fn bootstrap_witness_path(
     }
     let mut file = unsafe { File::from_raw_handle(handle) };
     let mut length = 0_i64;
-    if unsafe { GetFileSizeEx(file.as_raw_handle(), &mut length) } == 0 {
+    if unsafe { GetFileSizeEx(file.as_raw_handle(), &raw mut length) } == 0 {
         return Err("collector bootstrap witness size unreadable");
     }
     if length != replay_data::witness::WITNESS_BYTES as i64 {
@@ -491,10 +491,10 @@ fn run(
     if unsafe {
         GetProcessTimes(
             GetCurrentProcess(),
-            &mut creation,
-            &mut exit,
-            &mut kernel,
-            &mut user,
+            &raw mut creation,
+            &raw mut exit,
+            &raw mut kernel,
+            &raw mut user,
         )
     } == 0
     {
@@ -509,7 +509,7 @@ fn run(
     }
     let _owner = Owner::claim(process_start, &SHARED)?;
     let mut frequency = 0;
-    if unsafe { QueryPerformanceFrequency(&mut frequency) } == 0
+    if unsafe { QueryPerformanceFrequency(&raw mut frequency) } == 0
         || frequency <= 0
         || session.qpc_frequency != frequency as u64
     {
@@ -4308,7 +4308,7 @@ struct SpoolStatus<P, D> {
     #[serde(skip_serializing_if = "Option::is_none")]
     restoration_error: Option<&'static str>,
 }
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "one status line reports every spool state field")]
 fn spool_status<'a>(
     processor: &'a Processor,
     shared: &'a Shared,
@@ -4417,7 +4417,10 @@ fn verify_content_roster(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the spool thread owns its session, processor, sizing, writer and history separately"
+)]
 fn spool_loop(
     shared: &Shared,
     config: &Config,
@@ -5442,7 +5445,7 @@ fn handle_id(thread: &std::thread::JoinHandle<()>) -> Option<u32> {
     use std::os::windows::io::AsRawHandle;
     // SAFETY: the handle stays open while the JoinHandle lives.
     let id =
-        unsafe { windows_sys::Win32::System::Threading::GetThreadId(thread.as_raw_handle() as _) };
+        unsafe { windows_sys::Win32::System::Threading::GetThreadId(thread.as_raw_handle().cast()) };
     (id != 0).then_some(id)
 }
 

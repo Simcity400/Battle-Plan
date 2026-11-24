@@ -69,7 +69,7 @@ impl Parameter {
             track?
                 .split(',')
                 .filter_map(|item| item.parse::<f32>().ok())
-                .last()
+                .next_back()
         };
         let base = last_number(t.first()).unwrap_or(default);
         let curve = t
@@ -2115,7 +2115,6 @@ fn prepare_changed(
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn weather_packets(
     assets: &Assets,
     drawn: &[Option<((usize, bool), usize, i32)>],
@@ -2567,7 +2566,7 @@ impl Pass {
         self.native.warm(device, &emitters);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the arena, encoder and targets, plus the camera, view, native inputs and packets of one draw")]
     pub fn draw_view(
         &mut self,
         arena: &shader_pipeline::gpu::Arena,

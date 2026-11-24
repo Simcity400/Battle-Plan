@@ -111,7 +111,7 @@ fn wait_out(slot: usize) {
         unsafe {
             WaitOnAddress(
                 STATE.as_ptr().cast(),
-                (&running as *const u32).cast(),
+                (&raw const running).cast(),
                 size_of::<u32>(),
                 100,
             )

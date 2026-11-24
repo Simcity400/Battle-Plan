@@ -29,7 +29,7 @@ pub fn walk_country_buffer<M: Memory>(
     )
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "Reuse the authenticated grant operands and caller-owned output without a second acquisition."
 )]
@@ -58,7 +58,7 @@ pub fn walk_country_with_applied<M: Memory>(
     )
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "Keep grant reuse and the independent sharing-roster certificate explicit at the capture boundary."
 )]

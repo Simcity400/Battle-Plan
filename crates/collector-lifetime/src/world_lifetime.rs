@@ -332,8 +332,8 @@ mod tests {
                 native_entries: 0,
                 native_flights: 0,
             };
-            let result = unsafe { invoke(&mut probe, reenter) };
-            assert_eq!(result, &mut probe as *mut Probe);
+            let result = unsafe { invoke(&raw mut probe, reenter) };
+            assert_eq!(result, &raw mut probe);
             assert_eq!(probe.native_entries, reenter + 1);
             assert_eq!(probe.native_flights, 0);
             assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
@@ -362,7 +362,7 @@ mod tests {
         ] {
             let mut image_base = 0;
             let function =
-                unsafe { RtlLookupFunctionEntry(pc as u64, &mut image_base, std::ptr::null_mut()) };
+                unsafe { RtlLookupFunctionEntry(pc as u64, &raw mut image_base, std::ptr::null_mut()) };
             assert!(!function.is_null());
             let mut context = AlignedContext(unsafe { std::mem::zeroed() });
             context.0.Rip = pc as u64;
@@ -377,9 +377,9 @@ mod tests {
                     image_base,
                     pc as u64,
                     function,
-                    &mut context.0,
-                    &mut handler_data,
-                    &mut establisher,
+                    &raw mut context.0,
+                    &raw mut handler_data,
+                    &raw mut establisher,
                     std::ptr::null_mut(),
                 );
             }

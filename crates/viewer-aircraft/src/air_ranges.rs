@@ -189,7 +189,7 @@ pub fn read_fields(
 }
 
 impl Fields {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the frame, the viewer, the range sources and defines, and the map's centres and heights")]
     fn read_carriers(
         &mut self,
         frame: &DecodedFrame,
@@ -328,7 +328,7 @@ fn group(groups: &mut Vec<([i32; 2], i64, bool)>, origin: [i32; 2], range: i64, 
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the frame, the selection, the range defines and sources, and the map's centres and heights")]
 fn read_at(
     frame: &DecodedFrame,
     selected: &[u64],

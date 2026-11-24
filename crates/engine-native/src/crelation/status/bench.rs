@@ -85,7 +85,10 @@ pub struct Counting {
 }
 
 impl Counting {
-    #[allow(clippy::new_without_default)]
+    #[expect(
+        clippy::new_without_default,
+        reason = "new attaches to live process memory through unsafe code, which a Default impl would hide"
+    )]
     pub fn new() -> Self {
         Self {
             live: unsafe { LiveMemory::new() },

@@ -578,7 +578,10 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the pointer, id, regions, contributor and guard are separate facts of one task force, and the count and owner caches are caller-owned"
+    )]
     pub fn visit_with_original_counter_contribution_observed(
         &mut self,
         pointer: usize,

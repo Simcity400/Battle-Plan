@@ -265,7 +265,6 @@ type NativeFunction = unsafe extern "system-unwind" fn(
 #[doc = " Native arguments (four registers, four stack slots; entries with fewer"]
 #[doc = " ignore the rest), the site and the caller's return address. RAX returns"]
 #[doc = " unchanged from the original."]
-#[allow(clippy::too_many_arguments)]
 unsafe extern "system-unwind" fn body(
     a: usize,
     b: usize,

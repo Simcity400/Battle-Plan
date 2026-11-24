@@ -299,7 +299,6 @@ fn positions(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn relayout(
     instance: &mut Instance,
     root: &native::Element,
