@@ -23,5 +23,5 @@ export const definition = {
   kind: 'occupied-states', version: 1, title: 'Occupied states', icon: 'globe',
   description: 'Occupied states, resistance, compliance, garrisons and occupation laws.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'history', data: true, history: true,
-  countries: { max: Number.MAX_SAFE_INTEGER }, minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 10 }, options: OPTIONS, playsBackDated: true,
+  countries: { max: Number.MAX_SAFE_INTEGER }, minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 10 }, options: OPTIONS,
 } as const satisfies WidgetMeta;
