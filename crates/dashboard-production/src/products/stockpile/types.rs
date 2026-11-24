@@ -321,7 +321,6 @@ fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, c
         range(TableId::Stockpiles, u128::from(id) << 32, u128::from(id) << 32 | u128::from(u32::MAX)),
         range(TableId::LogisticsEquipment, u128::from(id) << 32, u128::from(id) << 32 | u128::from(u32::MAX)),
         Read::all(TableId::ProductionLines),
-        Read::all(TableId::CountryLinks),
     ];
     reads.extend(NAME_TABLES.map(Read::all));
     let frame = at_hour::frame(&query, hour, &reads, "Equipment stockpile")?;
