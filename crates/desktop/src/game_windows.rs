@@ -1,8 +1,13 @@
 use crate::dashboard_service::{DashboardService, host_config};
 use dashboard_core::QueryError;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use tauri::{Manager, State, WebviewWindow};
 use viewer::game_windows::{GameWindowError, GameWindowRender, GameWindowRequest, Service};
+
+static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Default)]
 pub struct GameWindows(Arc<Service>);
@@ -57,7 +62,12 @@ pub async fn render_game_window(
         .visual_mods
         .unwrap_or_default();
     let renderer = Arc::clone(&renderer.0);
-    let cancel_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let cancel_id = request_id.unwrap_or_else(|| {
+        format!(
+            "gw-fallback-{}",
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        )
+    });
     let registration = renderer.register_cancel(cancel_id);
     tauri::async_runtime::spawn_blocking(move || {
         let (config, _) = host_config().map_err(QueryError::from)?;
