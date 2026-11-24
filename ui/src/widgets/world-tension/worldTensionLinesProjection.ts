@@ -169,7 +169,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
       }
       const headValue = endHour !== null && band.endValue !== null && Number.isFinite(band.endValue) ? band.endValue : null;
       const headText = headValue !== null ? formatContributionPct(headValue, band.endRaw, reply.contributionScale) : null;
-      if (headText !== null) endTexts.set(`slot:${band.slot}`, headText);
+      endTexts.set(`slot:${band.slot}`, headText ?? band.endMissing ?? 'Not recorded at this hour.');
       let exact: TimeChartSeriesModel['exact'] = null;
       if (exactHover && hoverCells) {
         if (hoverContribMissing) {
@@ -220,9 +220,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
           : null,
       };
     });
-    const auditRows = series
-      .filter(s => s.role === 'primary' && endTexts.has(s.id))
-      .map(s => auditRow(s.id, endTexts.get(s.id)!));
+    const auditRows = series.map(s => auditRow(s.id, endTexts.get(s.id)!));
     return {
       kind: 'world-tension',
       measureTitle: 'Contribution to world tension',
