@@ -1090,28 +1090,66 @@ impl<'q, 'a> Reader<'q, 'a> {
                     }
                 }
                 for (&run, held) in &slivers {
-                    let mut ranges: Vec<(i32, i32)> = held.iter().map(|&(_, a, b)| (a as i32, b as i32)).collect();
-                    ranges.sort_unstable();
-                    let mut merged: Vec<(i32, i32)> = Vec::new();
-                    for (a, b) in ranges {
-                        match merged.last_mut() {
-                            Some(last) if last.1 + 1 >= a => last.1 = last.1.max(b),
-                            _ => merged.push((a, b)),
+                    let mut unfiltered: Vec<(usize, i64, i64)> = Vec::new();
+                    let mut filtered: Vec<(usize, i64, i64)> = Vec::new();
+                    for &(at, a, b) in held {
+                        if patterns[at].mask == 0 && patterns[at].value == 0 {
+                            unfiltered.push((at, a, b));
+                        } else {
+                            filtered.push((at, a, b));
                         }
                     }
-                    let mut by_start: Vec<(i64, i64, usize)> = held.iter().map(|&(at, a, b)| (a, b, at)).collect();
-                    by_start.sort_unstable_by_key(|&(a, b, _)| (a, b));
-                    self.visit_bucket_ranges(run, &merged, |entry| {
-                        let hour = i64::from(entry.hour);
-                        for &(a, b, at) in &by_start {
-                            if a > hour {
-                                break;
-                            }
-                            if hour <= b && patterns[at].holds(entry.facet) {
-                                out[at].push((hour.div_euclid(bin) * bin, 1));
+                    if !unfiltered.is_empty() {
+                        let mut ranges: Vec<(i32, i32)> = unfiltered.iter().map(|&(_, a, b)| (a as i32, b as i32)).collect();
+                        ranges.sort_unstable();
+                        let mut merged: Vec<(i32, i32)> = Vec::new();
+                        for (a, b) in ranges {
+                            match merged.last_mut() {
+                                Some(last) if last.1 + 1 >= a => last.1 = last.1.max(b),
+                                _ => merged.push((a, b)),
                             }
                         }
-                    })?;
+                        let loaded = self.load_buckets(run, &merged)?;
+                        for (at, a, b) in unfiltered {
+                            let (a32, b32) = (a as i32, b as i32);
+                            for &(bucket_start, ref entries) in &loaded {
+                                let bucket_end = bucket_start + six - 1;
+                                if bucket_end < a || bucket_start > b {
+                                    continue;
+                                }
+                                let lo = entries.partition_point(|e| e.hour < a32);
+                                let hi = entries.partition_point(|e| e.hour <= b32);
+                                let count = (hi - lo) as u64;
+                                if count > 0 {
+                                    out[at].push((bucket_start.div_euclid(bin) * bin, count));
+                                }
+                            }
+                        }
+                    }
+                    if !filtered.is_empty() {
+                        let mut ranges: Vec<(i32, i32)> = filtered.iter().map(|&(_, a, b)| (a as i32, b as i32)).collect();
+                        ranges.sort_unstable();
+                        let mut merged: Vec<(i32, i32)> = Vec::new();
+                        for (a, b) in ranges {
+                            match merged.last_mut() {
+                                Some(last) if last.1 + 1 >= a => last.1 = last.1.max(b),
+                                _ => merged.push((a, b)),
+                            }
+                        }
+                        let mut by_start: Vec<(i64, i64, usize)> = filtered.iter().map(|&(at, a, b)| (a, b, at)).collect();
+                        by_start.sort_unstable_by_key(|&(a, b, _)| (a, b));
+                        self.visit_bucket_ranges(run, &merged, |entry| {
+                            let hour = i64::from(entry.hour);
+                            for &(a, b, at) in &by_start {
+                                if a > hour {
+                                    break;
+                                }
+                                if hour <= b && patterns[at].holds(entry.facet) {
+                                    out[at].push((hour.div_euclid(bin) * bin, 1));
+                                }
+                            }
+                        })?;
+                    }
                 }
             }
             Overlap::FirstMatch => {
@@ -1509,9 +1547,13 @@ impl<'q, 'a> Reader<'q, 'a> {
             }
             let range = ((start.max(i64::from(from))) as i32, ((start + bin - 1).min(i64::from(to))) as i32);
             let mut buckets: BTreeMap<i64, Vec<(usize, u64)>> = BTreeMap::new();
-            for (at, counts) in self.bins_with(patterns, range.0, range.1, six, overlap)?.into_iter().enumerate() {
-                for (bucket, count) in counts {
-                    buckets.entry(bucket).or_default().push((at, count));
+            if bin == six {
+                buckets.insert(start, held.clone());
+            } else {
+                for (at, counts) in self.bins_with(patterns, range.0, range.1, six, overlap)?.into_iter().enumerate() {
+                    for (bucket, count) in counts {
+                        buckets.entry(bucket).or_default().push((at, count));
+                    }
                 }
             }
             for (&bucket, b_held) in buckets.iter().rev() {
@@ -1539,15 +1581,43 @@ impl<'q, 'a> Reader<'q, 'a> {
                         let lo = entries.partition_point(|e| e.hour < b_from);
                         let hi = entries.partition_point(|e| e.hour <= b_to);
                         let slice = &entries[lo..hi];
-                        if !slice.is_empty() && slice[0].hour == slice[slice.len() - 1].hour {
-                            let mut mine: Vec<usize> = (0..patterns.len()).filter(|&at| patterns[at].run == run).collect();
-                            mine.sort_unstable_by_key(|&at| (patterns[at].group, at));
-                            let want_lo = first.saturating_sub(seen_newer) as usize;
-                            let want_hi = end.saturating_sub(seen_newer) as usize;
-                            let ord_base = base + total - seen_newer - b_count;
-                            let own_base = group_total[0] - newer_in_group[0] - b_count;
-                            let mut matched_idx = 0usize;
-                            for &entry in slice {
+                        let mut mine: Vec<usize> = (0..patterns.len()).filter(|&at| patterns[at].run == run).collect();
+                        mine.sort_unstable_by_key(|&at| (patterns[at].group, at));
+                        let mut h_hi = slice.len();
+                        while h_hi > 0 && seen_newer < end {
+                            let hour = slice[h_hi - 1].hour;
+                            let h_lo = slice[..h_hi].partition_point(|e| e.hour < hour);
+                            let hour_slice = &slice[h_lo..h_hi];
+                            let unfiltered_hour = mine.iter().any(|&at| {
+                                let p = &patterns[at];
+                                p.mask == 0 && p.value == 0 && p.first <= hour && hour <= p.last
+                            });
+                            if unfiltered_hour {
+                                let hour_count = hour_slice.len() as u64;
+                                if seen_newer + hour_count > first {
+                                    let want_lo = first.saturating_sub(seen_newer) as usize;
+                                    let want_hi = end.saturating_sub(seen_newer).min(hour_count) as usize;
+                                    let ord_base = base + total - seen_newer - hour_count;
+                                    let own_base = group_total[0] - newer_in_group[0] - hour_count;
+                                    record_examined(want_hi - want_lo);
+                                    for (idx_in_hour, &entry) in hour_slice[want_lo..want_hi].iter().enumerate() {
+                                        let k = (want_lo + idx_in_hour) as u64;
+                                        chosen.push(Chosen {
+                                            run,
+                                            entry,
+                                            group: 0,
+                                            ordinal: ord_base + k,
+                                            own: own_base + k,
+                                        });
+                                    }
+                                }
+                                seen_newer += hour_count;
+                                newer_in_group[0] += hour_count;
+                                h_hi = h_lo;
+                                continue;
+                            }
+                            let mut matched_entries: Vec<BucketEntry> = Vec::new();
+                            for &entry in hour_slice {
                                 record_examined(1);
                                 let hit = match overlap {
                                     Overlap::FirstMatch => canonical_match_at(patterns, &mine, entry.hour, entry.facet).is_some(),
@@ -1556,28 +1626,33 @@ impl<'q, 'a> Reader<'q, 'a> {
                                         p.first <= entry.hour && entry.hour <= p.last && p.holds(entry.facet)
                                     }),
                                 };
-                                if !hit {
-                                    continue;
+                                if hit {
+                                    matched_entries.push(entry);
                                 }
-                                if matched_idx >= want_lo && matched_idx < want_hi {
+                            }
+                            let hour_count = matched_entries.len() as u64;
+                            if seen_newer + hour_count > first {
+                                let want_lo = first.saturating_sub(seen_newer) as usize;
+                                let want_hi = end.saturating_sub(seen_newer).min(hour_count) as usize;
+                                let ord_base = base + total - seen_newer - hour_count;
+                                let own_base = group_total[0] - newer_in_group[0] - hour_count;
+                                for (idx_in_hour, &entry) in matched_entries[want_lo..want_hi].iter().enumerate() {
+                                    let k = (want_lo + idx_in_hour) as u64;
                                     chosen.push(Chosen {
                                         run,
                                         entry,
                                         group: 0,
-                                        ordinal: ord_base + matched_idx as u64,
-                                        own: own_base + matched_idx as u64,
+                                        ordinal: ord_base + k,
+                                        own: own_base + k,
                                     });
                                 }
-                                matched_idx += 1;
-                                if matched_idx >= want_hi {
-                                    break;
-                                }
                             }
-                            seen_newer += b_count;
-                            newer_in_group[0] += b_count;
-                            continue;
+                            seen_newer += hour_count;
+                            newer_in_group[0] += hour_count;
+                            h_hi = h_lo;
                         }
                     }
+                    continue;
                 }
 
                 #[derive(Clone, Copy)]
