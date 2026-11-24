@@ -167,6 +167,50 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.designsProjection, declaration: mod.designsDeclaration }),
     ),
   },
+  {
+    kind: 'air-missions',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'air-missions',
+      DEFAULT_VIEW,
+      () => import('../air-missions/airMissionsProjection.ts'),
+      mod => ({ projection: mod.airMissionsProjection, declaration: mod.airMissionsDeclaration }),
+    ),
+  },
+  {
+    kind: 'dockyards-and-repairs',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'dockyards-and-repairs',
+      DEFAULT_VIEW,
+      () => import('../dockyards-and-repairs/dockyardsProjection.ts'),
+      mod => ({ projection: mod.dockyardsProjection, declaration: mod.dockyardsDeclaration }),
+    ),
+  },
+  {
+    kind: 'refits',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'refits',
+      DEFAULT_VIEW,
+      () => import('../refits/refitsProjection.ts'),
+      mod => ({ projection: mod.refitsProjection, declaration: mod.refitsDeclaration }),
+    ),
+  },
+  {
+    kind: 'training-queue',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'training-queue',
+      DEFAULT_VIEW,
+      () => import('../training-queue/trainingQueueProjection.ts'),
+      mod => ({ projection: mod.trainingQueueProjection, declaration: mod.trainingQueueDeclaration }),
+    ),
+  },
 ];
 
 export const tableFamilyManifest: FamilyManifestModule = {
