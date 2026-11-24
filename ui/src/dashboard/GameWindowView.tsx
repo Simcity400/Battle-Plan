@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { FocusEvent, KeyboardEvent, MouseEvent, ReactNode } from 'react';
+import type { FocusEvent, KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from 'react';
 import WidgetState from '../components/WidgetState';
 import { hideTooltip, showTooltip } from '../charts/tooltip';
 import { useDetailWindowClose } from '../families/host/DetailWindowHost';
-import type { DashboardClient, GameWindowRegion, GameWindowRender, GameWindowRequest } from './client';
+import type { DashboardClient, GameWindowRegion, GameWindowRender, GameWindowRequest, GameWindowScroll } from './client';
 import { useContentRevision } from './contentRevision';
 import {
   accessibleRegions,
@@ -17,12 +17,15 @@ import {
   hitTestHover,
   hitTestScroll,
   isActivatableClose,
+  listKeyInput,
+  listPosition,
   normalizeGameWindowRequest,
   normalizeScale,
   planGameWindowRender,
   regionTooltipContent,
-  wheelScrollPosition,
+  scrollClickInput,
 } from './gameWindowLogic';
+import type { ListInput } from './gameWindowLogic';
 import type { ShownWindow } from './gameWindows';
 import './gameWindow.css';
 
@@ -294,6 +297,15 @@ export default function GameWindowView({
   const wheelState = useRef({ render, logicalPoint, subjectKey, positions });
   wheelState.current = { render, logicalPoint, subjectKey, positions };
   const shown = render !== null;
+  const moveList = useCallback((scroll: GameWindowScroll, input: ListInput): boolean => {
+    const now = wheelState.current;
+    const current = now.positions?.[scroll.list];
+    const next = listPosition(scroll, current, input);
+    if (next === (current ?? scroll.position)) return false;
+    hideTooltip(ownerId);
+    setScrolled({ subject: now.subjectKey, positions: { ...now.positions, [scroll.list]: next } });
+    return true;
+  }, [ownerId]);
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -304,29 +316,60 @@ export default function GameWindowView({
       const list = point ? hitTestScroll(now.render.regions, point[0], point[1]) : null;
       if (!list?.scroll) return;
       event.preventDefault();
-      const next = wheelScrollPosition(list.scroll, now.positions?.[list.path], event.deltaY);
-      if (next === (now.positions?.[list.path] ?? list.scroll.position)) return;
-      hideTooltip(ownerId);
-      setScrolled({ subject: now.subjectKey, positions: { ...now.positions, [list.path]: next } });
+      moveList(list.scroll, { kind: 'wheel', delta: event.deltaY });
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', onWheel);
-  }, [shown, ownerId]);
+  }, [shown, moveList]);
 
-  const handlePointerDown = useCallback(() => {
+  const drag = useRef<{ pointer: number; scroll: GameWindowScroll; from: number } | null>(null);
+  const handlePointerDown = useCallback((event: PointerEvent<HTMLElement>) => {
     hostRef.current?.focus({ preventScroll: true });
+    const point = logicalPoint(event.clientX, event.clientY);
+    const hit = point ? hitAt(event.clientX, event.clientY)?.click ?? null : null;
+    const scroll = hit?.scroll;
+    if (!point || !scroll || scroll.control.kind !== 'thumb' || hit.disabled) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drag.current = { pointer: event.pointerId, scroll, from: point[scroll.vertical ? 1 : 0] };
+  }, [hitAt, logicalPoint]);
+
+  const handlePointerMove = useCallback((event: PointerEvent<HTMLElement>) => {
+    const held = drag.current;
+    if (!held || held.pointer !== event.pointerId) return;
+    const point = logicalPoint(event.clientX, event.clientY);
+    if (!point) return;
+    moveList(held.scroll, { kind: 'drag', moved: point[held.scroll.vertical ? 1 : 0] - held.from });
+  }, [logicalPoint, moveList]);
+
+  const handlePointerUp = useCallback((event: PointerEvent<HTMLElement>) => {
+    if (drag.current?.pointer !== event.pointerId) return;
+    drag.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
   }, []);
 
   const handleClick = useCallback((event: MouseEvent<HTMLElement>) => {
+    const point = logicalPoint(event.clientX, event.clientY);
     const hit = hitAt(event.clientX, event.clientY)?.click ?? null;
-    if (isActivatableClose(hit)) {
+    const input = render && point ? scrollClickInput(render.regions, hit, point[0], point[1]) : null;
+    if (input && hit?.scroll) {
+      moveList(hit.scroll, input);
+    } else if (isActivatableClose(hit)) {
       hideTooltip(ownerId);
       effectiveClose?.();
     } else if (hit?.view && onView) {
       hideTooltip(ownerId);
       onView(hit.view);
     }
-  }, [hitAt, effectiveClose, onView, ownerId]);
+  }, [hitAt, logicalPoint, render, moveList, effectiveClose, onView, ownerId]);
+
+  const handleListKey = useCallback((scroll: GameWindowScroll, event: KeyboardEvent<HTMLElement>) => {
+    const input = listKeyInput(event.key);
+    if (!input) return;
+    event.preventDefault();
+    event.stopPropagation();
+    moveList(scroll, input);
+  }, [moveList]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape' && effectiveClose) {
@@ -390,6 +433,9 @@ export default function GameWindowView({
         ref={canvasRef}
         className={`game-window-canvas${hoveredClose ? ' is-close-hover' : ''}`}
         onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
         onMouseEnter={handleMove}
         onMouseMove={handleMove}
         onMouseLeave={handleLeave}
@@ -408,14 +454,47 @@ export default function GameWindowView({
           draggable={false}
         />
         <div className="game-window-regions" aria-label={`${label} controls`}>
-          {focusRegions.map(({ region, rect, label: regionLabel, closeable }, index) => {
+          {focusRegions.map(({ region, rect, label: regionLabel, role }, index) => {
             const style = {
               left: `${(rect[0] / logicalWidth) * 100}%`,
               top: `${(rect[1] / logicalHeight) * 100}%`,
               width: `${(rect[2] / logicalWidth) * 100}%`,
               height: `${(rect[3] / logicalHeight) * 100}%`,
             };
-            if (closeable && effectiveClose) {
+            const scroll = region.scroll;
+            if (role === 'list' && scroll) {
+              return <div
+                key={`${region.path}:${index}`}
+                role="scrollbar"
+                tabIndex={0}
+                className="game-window-region-focus"
+                style={style}
+                aria-label={regionLabel}
+                aria-orientation={scroll.vertical ? 'vertical' : 'horizontal'}
+                aria-valuemin={0}
+                aria-valuemax={scroll.range}
+                aria-valuenow={positions?.[scroll.list] ?? scroll.position}
+                onKeyDown={event => handleListKey(scroll, event)}
+              />;
+            }
+            if (role === 'view' && onView && region.view) {
+              const view = region.view;
+              return <button
+                key={`${region.path}:${index}`}
+                type="button"
+                className="game-window-region-focus"
+                style={style}
+                aria-label={regionLabel}
+                onFocus={event => handleRegionFocus(region, event)}
+                onBlur={handleRegionBlur}
+                onClick={event => {
+                  event.stopPropagation();
+                  hideTooltip(ownerId);
+                  onView(view);
+                }}
+              />;
+            }
+            if (role === 'close' && effectiveClose) {
               return <button
                 key={`${region.path}:${index}`}
                 type="button"
@@ -431,6 +510,7 @@ export default function GameWindowView({
                 }}
               />;
             }
+            if (role !== 'note') return null;
             return <span
               key={`${region.path}:${index}`}
               role="note"
@@ -445,6 +525,11 @@ export default function GameWindowView({
         </div>
       </div>
     </div>
+    {render.text.length > 0 && <ul className="sr-only" aria-label={`${label} contents`}>
+      {render.text.map((entry, index) => <li key={`${entry.path}:${index}`}>
+        {entry.label}: {entry.value ?? `not recorded (${entry.missing ?? 'no reason given'})`}
+      </li>)}
+    </ul>}
     {render.artLabel && <div className="game-window-art-note">{render.artLabel}</div>}
   </>);
 }

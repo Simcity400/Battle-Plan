@@ -15,12 +15,11 @@ import { countryDrillTagAt } from '../../dashboard/countryIdentity';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { NumericReply } from '../../dashboard/numericReply';
-import { resolveOptions } from '../../dashboard/options';
 import { useHeldEdges } from '../../dashboard/regionGate';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
@@ -28,7 +27,6 @@ import { coverageOf, useRegion } from '../../dashboard/widgetTime.ts';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
 import { chooseDrillCountry, drillCountryCoverage, drillCountrySpans } from '../country-measure/drillCountry';
-import { STABILITY_OPTIONS } from './definition';
 import StabilityDrill, { MEASURE_NAMES } from './StabilityDrill';
 import type { Measure } from './stabilityData';
 import { chooseStabilityActor, stabilityPickAction, type StabilityPick } from './stabilityDrillData';
@@ -54,11 +52,10 @@ function pickFromAction(subject: string, actionHour: number, tags: readonly stri
   return { hour, candidates: [...tags], lines, tag: tags.length === 1 ? tags[0]! : null, measure: shown[0]! };
 }
 
-export default function StabilityDetail({ widget, runtime, active, chart }: WidgetProps & {
+export default function StabilityDetail({ widget, runtime, active, options, chart }: FamilyViewProps & {
   readonly chart?: (onActivate: (subject: string, hour: number) => void) => ReactNode;
 }) {
   const tokens = useChartTokens();
-  const options = resolveOptions(STABILITY_OPTIONS, widget.options);
   const [heldEdges, holdEdges] = useHeldEdges();
   const drillNeeds = useMemo(() => ({ ...HOLDERS, changes: heldEdges }), [heldEdges]);
   const drillControl = useDrill(runtime, useRegion(widget), null, undefined, undefined, drillNeeds);

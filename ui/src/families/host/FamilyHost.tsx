@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
-import type { WidgetSpec } from '../../dashboard/model';
+import type { WidgetBase } from '../../dashboard/model';
 import { PreparingPage } from '../../dashboard/preparing.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { useWidgetSkeleton, WidgetCaption } from '../../dashboard/widgetFrame.tsx';
@@ -174,7 +174,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly options: TOptions;
   readonly label: string;
   readonly subject: string;
-  readonly widget: WidgetSpec;
+  readonly widget: WidgetBase;
   readonly runtime: WidgetRuntime;
   readonly active: boolean;
   readonly subscriptions: readonly FamilySourceSubscription[];

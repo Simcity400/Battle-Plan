@@ -2,18 +2,15 @@ import { useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { productRequest } from '../../dashboard/request.ts';
-import { resolveOptions } from '../../dashboard/options';
-import { DeclaredFamilyWidget, DetailWindowHost } from '../../families/host/index.ts';
-import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
+import { DetailWindowHost } from '../../families/host/index.ts';
+import { FamilyWidget } from '../../families/host/registry.tsx';
 import type { ArmyLossesReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import {
-  armyLossesDeclaration,
   formatMonthTitle,
   LEDGERS,
   LEDGER_LABELS,
@@ -33,11 +30,10 @@ interface PickedMonth {
   readonly ledger: LossLedger;
 }
 
-export default function ArmyLossesWidget(props: WidgetProps) {
-  const { widget, runtime, active } = props;
+export default function ArmyLossesWidget(props: FamilyViewProps) {
+  const { widget, runtime, active, options } = props;
   const anchor = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState<PickedMonth | null>(null);
-  const options = resolveOptions(OPTIONS, widget.options);
   const { measure, ledger } = resolveArmyLossesOptions(options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
@@ -68,10 +64,9 @@ export default function ArmyLossesWidget(props: WidgetProps) {
 
   return (
     <div ref={anchor} style={{ height: '100%', minHeight: 0 }}>
-      <DeclaredFamilyWidget
+      {props.manifestDeclaration ? <FamilyWidget
         {...props}
-        adapter={timeChartHostAdapter}
-        declaration={armyLossesDeclaration}
+        family={props.manifestDeclaration.family} declaration={props.manifestDeclaration}
         onActivate={action => {
           if (!action.subject.startsWith('month:')) return;
           const meta = action.meta as { readonly frameHour?: number; readonly monthFirstHour?: number; readonly country?: string } | undefined;
@@ -81,7 +76,7 @@ export default function ArmyLossesWidget(props: WidgetProps) {
           if (!country || !Number.isFinite(frameHour) || !Number.isFinite(monthHour)) return;
           setPicked({ month: monthOfHour(monthHour), frameHour, country, measure, ledger });
         }}
-      />
+      /> : null}
       <DetailWindowHost
         open={picked !== null}
         subject={picked ? String(picked.month) : null}
