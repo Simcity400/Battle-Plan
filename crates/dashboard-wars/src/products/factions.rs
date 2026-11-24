@@ -505,4 +505,87 @@ mod tests {
             "a member outside the view adds nothing; overlapping spans count once"
         );
     }
+
+    #[test]
+    fn faction_group_lines_plot_all_witnessed_truncated_bins_and_blank_partially_witnessed_bins() {
+        use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
+        use replay::campaign::Replay;
+        use replay_data::rows::{CountryFactoriesRow, CountryLinkRow, CountryRow, TableRows};
+        use replay_frame::frame::TableView;
+        use std::sync::Arc;
+
+        let fac_trunc = "Country factories read only in part at this hour (1 rows not read)";
+        let ger = CountryFactoriesRow { country: 9001, military_total_raw: 1_000_000, ..Default::default() };
+        let ita = CountryFactoriesRow { country: 9002, military_total_raw: 2_000_000, ..Default::default() };
+        let fra = CountryFactoriesRow { country: 9003, military_total_raw: 500_000, ..Default::default() };
+        let frames: Vec<DecodedFrame> = (120..=149)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+                    CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..Default::default() },
+                    CountryRow { id: 9002, canonical_slot: 8, tag: b"ITA".to_vec(), ..Default::default() },
+                    CountryRow { id: 9003, canonical_slot: 9, tag: b"FRA".to_vec(), ..Default::default() },
+                ]))
+                .into();
+                frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+                    CountryLinkRow { id: 9001, canonical_slot: 7 },
+                    CountryLinkRow { id: 9002, canonical_slot: 8 },
+                    CountryLinkRow { id: 9003, canonical_slot: 9 },
+                ]))
+                .into();
+                frame.tables[TableId::CountryFactories.index()] = match hour {
+                    128 => TableView::Truncated { rows: TableRows::CountryFactories(vec![ger.clone()]), missing: 1 }.into(),
+                    129 => TableView::Truncated { rows: TableRows::CountryFactories(vec![ita.clone()]), missing: 1 }.into(),
+                    134 => TableView::Truncated { rows: TableRows::CountryFactories(vec![ger.clone(), ita.clone()]), missing: 1 }.into(),
+                    _ => TableView::Complete(TableRows::CountryFactories(vec![ger.clone(), ita.clone(), fra.clone()])).into(),
+                };
+                frame
+            })
+            .collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let src = Source::from_replay(
+            dashboard_base::SourceKey { source_id: "faction-trunc".into(), revision: "1".into() },
+            "faction-trunc.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        let ask = |tags: &[&str]| {
+            let params = FactionLinesParams {
+                branch_id: "1".into(),
+                kind: "country-factories".into(),
+                measure: "built1".into(),
+                from: 120,
+                to: 149,
+                width: 5,
+                membership: None,
+                members: Some(tags.iter().map(|tag| GroupMember { tag: (*tag).into(), spans: None }).collect()),
+                unread: None,
+            };
+            FactionLines::load(&src, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
+        };
+
+        let both_witnessed = ask(&["GER", "ITA"]);
+        let line = &both_witnessed.lines[0];
+        assert!(line.summary.buckets[0].is_some());
+        assert!(line.summary.buckets[1].is_none(), "bin 1 has unwitnessed member at 128 and 129");
+        assert_eq!(line.summary.buckets[2].expect("bin 2 witnesses both GER and ITA at 134").last_value, 30.0);
+        assert!(line.summary.buckets[3].is_some());
+        assert!(line.summary.buckets[4].is_some());
+        assert_eq!(line.missing, vec![MissingSpan { first_hour: 128, last_hour: 129, reason: fac_trunc.into() }]);
+
+        let partial = ask(&["GER", "FRA"]);
+        let partial_line = &partial.lines[0];
+        assert!(partial_line.summary.buckets[1].is_none());
+        assert!(partial_line.summary.buckets[2].is_none(), "FRA is unwitnessed at 134 so bin 2 is blanked");
+        assert!(partial_line.summary.buckets[4].is_some());
+        assert_eq!(
+            partial_line.missing,
+            vec![
+                MissingSpan { first_hour: 128, last_hour: 129, reason: fac_trunc.into() },
+                MissingSpan { first_hour: 134, last_hour: 134, reason: fac_trunc.into() },
+            ]
+        );
+    }
 }

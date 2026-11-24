@@ -20,6 +20,8 @@ use ts_rs::TS;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod truncated_tests;
 
 pub mod board;
 pub mod ranked;

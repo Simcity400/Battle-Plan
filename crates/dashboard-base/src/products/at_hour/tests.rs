@@ -875,3 +875,59 @@ fn a_table_read_in_part_is_the_rows_its_hour_read_on_every_path() {
         }
     }
 }
+
+#[test]
+fn at_hour_live_cells_apply_witness_rule_on_cold_and_incremental_across_truncated_swap() {
+    let trunc_reason = "Country resources read only in part at this hour (1 rows not read)";
+    let coal_ger = CountryResourceRow { country: 9001, resource: 1, special_total: 400, production_demand: -10, ..CountryResourceRow::default() };
+    let coal_ita = CountryResourceRow { country: 9002, resource: 1, special_total: 500, production_demand: -20, ..CountryResourceRow::default() };
+    let frames = (FIRST..=LAST)
+        .map(|hour| {
+            let mut f = frame(hour);
+            match hour {
+                110 => {
+                    *f.tables[TableId::CountryResources.index()] = TableView::Truncated { rows: TableRows::CountryResources(vec![coal_ger.clone()]), missing: 1 };
+                }
+                111 => {
+                    *f.tables[TableId::CountryResources.index()] = TableView::Truncated { rows: TableRows::CountryResources(vec![coal_ita.clone()]), missing: 1 };
+                }
+                _ => {
+                    *f.tables[TableId::CountryResources.index()] = TableView::Complete(TableRows::CountryResources(vec![coal_ger.clone(), coal_ita.clone()]));
+                }
+            }
+            f
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let source = Source::from_replay(crate::SourceKey { source_id: "at-hour-trunc-live".into(), revision: "1".into() }, "trunc-live.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let panel = exact_panel::<Power>(&source, &load(), &json!({ "branchId": "1", "country": "GER" })).unwrap();
+    let exact = panel.exact().unwrap();
+    let token = AtomicBool::new(false);
+
+    let res_values = |reply: &Value| -> Value {
+        reply["live"]["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|group| group["table"] == TableId::CountryResources.index())
+            .unwrap()["values"]
+            .clone()
+    };
+
+    for (hour, expected) in [
+        (109, json!([400, -10])),
+        (110, json!([400, -10])),
+        (111, json!([trunc_reason, trunc_reason])),
+        (112, json!([400, -10])),
+    ] {
+        let cold = (exact.cold)(hour, &token).unwrap();
+        assert_eq!(res_values(&cold), expected, "cold live cells at hour {hour}");
+    }
+
+    let reads = stepped(&pages, exact, 1, 108, 1);
+    for read in reads.into_iter().filter(|read| !read.pending) {
+        let cold = (exact.cold)(read.hour, &token).unwrap();
+        assert_eq!(read.value.as_ref().as_ref().unwrap(), &cold, "incremental equals cold at hour {}", read.hour);
+    }
+}
