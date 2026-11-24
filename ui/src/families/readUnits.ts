@@ -165,6 +165,7 @@ export type Settlement =
 
 export interface SettleInput {
   readonly following: boolean;
+  readonly moving: boolean;
   readonly hour: number;
   readonly subscribed: boolean;
   readonly endHour: number;
@@ -217,7 +218,7 @@ export function settleUnits(
   if (!input.following) {
     return { kind: 'complete', bundle: { hour: Number.isFinite(answered) ? answered : input.hour, span, proof: null, panels } };
   }
-  if (lo > hi || lo > input.hour) return { kind: 'hold' };
+  if (lo > hi || lo > input.hour || (!input.moving && input.hour > hi)) return { kind: 'hold' };
   const hour = Number.isFinite(lo) ? lo : Math.min(input.hour, hi);
   return { kind: 'complete', bundle: { hour, span, proof: [lo, hi], panels } };
 }

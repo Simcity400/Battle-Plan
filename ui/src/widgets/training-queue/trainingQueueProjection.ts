@@ -62,9 +62,9 @@ function orderLine(order: TrainingOrder): string {
 const [DIVISION, TRAINING, EQUIPMENT, MANPOWER] = COLUMNS;
 
 const QUEUE_COLUMNS: readonly DeclarativeColumnSpec<QueueRow, Record<string, never>>[] = [
-  { ...DIVISION!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Motorized Infantry Division 1941 B'], iconSlot: true,
+  { ...DIVISION!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Motorized Infantry Division 1941 B'],
     icon: row => row.kind === 'order' ? row.icon : undefined,
-    extra: row => (row.kind === 'order' ? { subtext: orderLine(row.order) } : {}),
+    extra: row => (row.kind === 'order' ? { iconSlot: true, subtext: orderLine(row.order) } : {}),
     value: row => row.kind === 'order'
       ? textValue(row.order.templateName, row.order.templateMissing ?? 'Template name unavailable')
       : textValue(row.division.name, row.division.nameMissing ?? 'Division name unavailable') },
