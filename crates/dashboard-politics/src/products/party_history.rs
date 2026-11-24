@@ -614,7 +614,7 @@ impl Product for PartyHistory {
         let parties = history(source, params.branch(), &params.country, cancelled)?;
         let politics = context.content().and_then(|content| politics_content(source, content)).map_err(|error| error.to_string());
         let query = dashboard_base::queries::query(source, params.branch())?;
-        let reply = present(politics.as_deref().map_err(Clone::clone), params, &query.holders.name(&params.country, query.timeline.last), &parties, cancelled)?;
+        let reply = present(politics.as_deref().map_err(Clone::clone), params, &query.holders.nearest_name(&params.country, query.timeline.last), &parties, cancelled)?;
         check_reply_budget(&reply)?;
         Ok(reply)
     }
