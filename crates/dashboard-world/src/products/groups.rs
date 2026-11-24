@@ -780,6 +780,28 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_made_on_a_failed_naming_lookup_is_made_again_and_one_made_on_content_is_kept() {
+        use dashboard_base::test_fixtures::{source, source_with_content};
+        let root = std::env::temp_dir().join(format!("shared-groups-{}", uuid::Uuid::new_v4()));
+        let (held, context) = source_with_content((100..=110).map(|hour| source(1, hour, Some(1))).collect(), &root);
+        use dashboard_query::{identity::Holders, timeline::{Join, Stretch, Timeline}};
+        let replay = held.replay();
+        let timeline = Timeline { id: 1, first: 100, last: 110, stretches: vec![Stretch { run: 0, first: 100, last: 110, join: Join::Start }], unheld: Vec::new() };
+        let query = Query { replay: &replay, timeline: Arc::new(timeline), holders: Arc::new(Holders::new(Default::default(), Vec::new())) };
+        let options = context.content.clone().expect("the fixture names its content");
+        let refused = LoadContext { content: Some(dashboard_base::products::ContentOptions { allow_unverified: false, ..options }) };
+        let failed = shared(&held, &query, &refused, &AtomicBool::new(false)).unwrap();
+        let retried = shared(&held, &query, &refused, &AtomicBool::new(false)).unwrap();
+        assert!(!Arc::ptr_eq(&failed, &retried), "a reply made on a failed naming lookup is not kept: the next request looks again");
+        let named = shared(&held, &query, &context, &AtomicBool::new(false)).unwrap();
+        assert!(Arc::ptr_eq(&named, &shared(&held, &query, &context, &AtomicBool::new(true)).unwrap()), "a reply made on the content is kept for that content");
+        drop(query);
+        drop(replay);
+        drop(held);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn sparse_stretches_coalesce_group_runs_independent_of_stretch_count() {
         let mut gaps = Vec::new();
         let mut members = Vec::new();
