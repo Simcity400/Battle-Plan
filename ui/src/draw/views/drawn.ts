@@ -1,15 +1,9 @@
-import '../../widgets/familyManifest.ts';
-import { familyBarsLaneView } from '../../families/bars/laneView.ts';
-import { familyBreakdownLaneView } from '../../families/breakdown/laneView.ts';
-import { familyHeatLanesLaneView } from '../../families/heat/lanesLaneView.ts';
-import { familyHeatMatrixLaneView } from '../../families/heat/matrixLaneView.ts';
+import { familyLaneView } from '../../widgets/familyManifest.ts';
 import type { LaneView, Painted, PaintInput, Scene } from '../lane.ts';
 import { panelViews, readingStructure } from '../panels/views.ts';
 import { ArsenalPicture, arsenalNext, type ArsenalModel } from '../arsenal.ts';
 import { validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { fieldsOf, liveValues, sameLive, type LiveMap } from './fields.ts';
-import { tableView } from './table.ts';
-import { timeChartLaneView } from '../../families/time-chart/laneView.ts';
 
 export type PanelTexts = Map<string, string>;
 
@@ -89,13 +83,9 @@ function race(wake: (widget: number) => void): LaneView {
 }
 
 export function drawnViews(kind: string, wake: (widget: number) => void): LaneView | undefined {
+  const family = familyLaneView(kind, wake);
+  if (family) return family;
   if (kind === 'panel') return panelTexts();
-  if (kind === 'table') return tableView(readingStructure, wake);
-  if (kind === 'bars') return familyBarsLaneView(wake);
-  if (kind === 'breakdown') return familyBreakdownLaneView(wake);
-  if (kind === 'heat-matrix') return familyHeatMatrixLaneView(wake);
-  if (kind === 'heat-lanes') return familyHeatLanesLaneView(wake);
   if (kind === 'race') return race(wake);
-  if (kind === 'time-chart') return timeChartLaneView(wake);
   return undefined;
 }
