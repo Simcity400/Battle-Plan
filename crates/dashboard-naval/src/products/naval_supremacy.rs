@@ -158,6 +158,8 @@ pub struct NavalSupremacyReply {
     pub viewer_color_missing: Option<String>,
     pub legend: Vec<SupremacyLegendItem>,
     pub regions: Vec<SupremacyRegion>,
+    #[doc = " Why the most active regions are not a proven rank: a day of the view, or a region's score on one, is not recorded. A top then lists only the pinned regions."]
+    pub rank_missing: Option<String>,
     pub scale: i32,
     pub warnings: Vec<String>,
 }
@@ -393,6 +395,40 @@ pub(crate) fn mission_registered_ships(frame: &DecodedFrame, viewer_slot: u32) -
     MissionRegisteredShips { own: Ok(own), enemy }
 }
 
+fn most_active(runs: &BTreeMap<u32, Vec<SupremacyRun>>, unknown: &[UnknownDays], eligible: impl Fn(u32) -> bool, top: Option<usize>) -> (Vec<u32>, Option<String>) {
+    let mut missing = unknown.first().map(|days| format!("Naval supremacy is not recorded on some days of the view: {}", days.reason));
+    let mut scored: Vec<(u32, Option<i128>)> = runs
+        .iter()
+        .filter(|(id, _)| eligible(**id))
+        .map(|(&id, region_runs)| {
+            let score: Option<i128> = region_runs
+                .iter()
+                .map(|run| {
+                    let days = i128::from(run.last_day - run.first_day + 1);
+                    let friendly = run.friendly.as_deref().and_then(|value| value.parse::<i128>().ok())?.max(0);
+                    let enemy = run.enemy.as_deref().and_then(|value| value.parse::<i128>().ok())?.max(0);
+                    Some((friendly + enemy) * days)
+                })
+                .sum();
+            (id, score)
+        })
+        .filter(|&(_, score)| score.is_none_or(|score| score > 0))
+        .collect();
+    if missing.is_none() && scored.iter().any(|(_, score)| score.is_none()) {
+        missing = Some("A region's naval scores are not recorded on some days of the view".into());
+    }
+    scored.sort_by(|a, b| match (a.1, b.1) {
+        (Some(x), Some(y)) => y.cmp(&x).then(a.0.cmp(&b.0)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.0.cmp(&b.0),
+    });
+    if let Some(limit) = top {
+        scored.truncate(if missing.is_some() { 0 } else { limit });
+    }
+    (scored.into_iter().map(|(id, _)| id).collect(), missing)
+}
+
 fn supremacy_legend(regions: &[SupremacyRegion], viewer_label: &str) -> Vec<SupremacyLegendItem> {
     let mut seen = BTreeSet::new();
     for region in regions {
@@ -603,38 +639,20 @@ impl Product for NavalSupremacy {
                 runs: runs_vec,
             }
         };
+        let mut rank_missing: Option<String> = None;
         let selected_regions: Vec<SupremacyRegion> = if let Some(explicit) = &params.regions {
             explicit.iter().map(|&id| make_region(id, true, runs.remove(&id).unwrap_or_default())).collect()
         } else if params.top.is_some() || params.pinned_regions.is_some() || params.hidden_regions.is_some() {
             let mut seen = HashSet::new();
             let pinned_list: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
             let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
-            let mut scored: Vec<(u32, i128)> = runs
-                .iter()
-                .filter(|(id, _)| !seen.contains(id) && !hidden.contains(id))
-                .map(|(&id, region_runs)| {
-                    let score: i128 = region_runs
-                        .iter()
-                        .map(|run| {
-                            let days = i128::from(run.last_day - run.first_day + 1);
-                            let f = run.friendly.as_deref().and_then(|s| s.parse::<i128>().ok()).unwrap_or(0).max(0);
-                            let e = run.enemy.as_deref().and_then(|s| s.parse::<i128>().ok()).unwrap_or(0).max(0);
-                            (f + e) * days
-                        })
-                        .sum();
-                    (id, score)
-                })
-                .filter(|&(_, score)| score > 0)
-                .collect();
-            scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-            if let Some(limit) = params.top {
-                scored.truncate(limit);
-            }
+            let (scored, missing) = most_active(&runs, &unknown, |id| !seen.contains(&id) && !hidden.contains(&id), params.top);
+            rank_missing = missing;
             let mut out = Vec::with_capacity(pinned_list.len() + scored.len());
             for id in pinned_list {
                 out.push(make_region(id, true, runs.remove(&id).unwrap_or_default()));
             }
-            for (id, _) in scored {
+            for id in scored {
                 out.push(make_region(id, false, runs.remove(&id).unwrap_or_default()));
             }
             out
@@ -674,6 +692,7 @@ impl Product for NavalSupremacy {
             viewer_color_missing: viewer_look.color_missing,
             legend,
             regions: selected_regions,
+            rank_missing,
             scale: SCALE,
             warnings,
         };
