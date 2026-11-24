@@ -15,6 +15,8 @@ export interface TooltipListItem {
   readonly label: string;
   readonly value?: string;
   readonly swatch?: string;
+  readonly icon?: string;
+  readonly countryFlag?: TooltipRow['countryFlag'];
   readonly tone?: 'positive' | 'negative' | 'neutral' | 'muted';
   readonly indent?: boolean;
   readonly strong?: boolean;
@@ -74,6 +76,8 @@ export function buildTooltipContent(payload: FamilyTooltipPayload): TooltipConte
           ? { valueState: { kind: 'missing', reason: item.missingReason }, detail: item.missingReason }
           : item.value !== undefined ? { value: item.value } : {}),
         ...(item.swatch ? { swatch: item.swatch } : {}),
+        ...(item.icon ? { icon: item.icon } : {}),
+        ...(item.countryFlag ? { countryFlag: item.countryFlag } : {}),
         ...(item.tone ? { tone: item.tone } : {}),
         ...(item.indent ? { indent: true } : {}),
         ...(item.strong ? { strong: true } : {}),

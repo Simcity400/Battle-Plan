@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CELL, cellState, cellValue, parseAnswer, rowKeys, rowName, rowReason } from './message.ts';
 import type { FollowedRows } from './message';
-import { mergeChanged, patchAnswer, serializeAnswer } from './tables.ts';
+import { changedAnswerRows, mergeChanged, patchAnswer, serializeAnswer } from './tables.ts';
 import { answerBody } from './messages.fixture.ts';
 
 const rows = (spec: Parameters<typeof answerBody>[0]) => parseAnswer(answerBody(spec)) as FollowedRows;
@@ -130,4 +130,35 @@ test('serializeAnswer fast path preserves decoded answers via bulk tail copy and
   const cleared = parseAnswer(clearedWire) as FollowedRows;
   assert.equal(rowReason(cleared, 777), null);
   assert.equal(cleared.ends.length - 1, 1500, 'cleared reason text is compacted out of the text table');
+});
+
+test('changedAnswerRows reports only exact mutated rows inside patched chunks and decodes ASCII and UTF-8 names', () => {
+  const keys = Array.from({ length: 40 }, (_, i) => BigInt(i + 1));
+  const names = keys.map((k, i) => (i === 5 ? 'Öst' : i === 12 ? 'GER' : `C${k}`));
+  const base = rows({ keys, columns: 2, values: keys.flatMap(k => [k * 10n, k * 20n]), names });
+  assert.equal(rowName(base, 5), 'Öst');
+  assert.equal(rowName(base, 12), 'GER');
+  assert.deepEqual(changedAnswerRows(base, base), []);
+
+  const step1 = patchAnswer(base, rows({
+    keys: [keys[2]!, keys[19]!],
+    columns: 2,
+    values: [999n, 30n, 190n, 400n],
+    changed: true,
+  }));
+  assert.deepEqual(changedAnswerRows(base, step1), [2, 19], 'ignores unchanged sibling rows in the same 8-row chunks');
+
+  const step2 = patchAnswer(step1, rows({
+    keys: [keys[2]!, keys[31]!],
+    columns: 2,
+    values: [999n, 30n, 0n, 0n],
+    states: [CELL.value, CELL.value, CELL.unrecorded, CELL.unrecorded],
+    reasons: [null, 'offline'],
+    changed: true,
+  }));
+  assert.deepEqual(changedAnswerRows(step1, step2), [31], 'no-op patch on row 2 is not reported as changed');
+  assert.deepEqual(changedAnswerRows(base, step2), [2, 19, 31]);
+
+  const otherBase = rows({ keys, columns: 2, values: keys.flatMap(k => [k * 10n, k * 20n]), names });
+  assert.equal(changedAnswerRows(base, otherBase), null, 'different backing buffer returns null');
 });

@@ -855,7 +855,9 @@ impl Captured {
                 if self.parked {
                     return None;
                 }
-                let mut slot = engine_allocation::boxed_uninit::<ParkedPacks>().ok()?;
+                let mut slot =
+                    engine_allocation::advisory(engine_allocation::boxed_uninit::<ParkedPacks>)
+                        .ok()?;
                 let ptr = slot.as_mut_ptr();
                 macro_rules! move_pack {
                     ($field:ident, $vacant:expr) => {
@@ -926,6 +928,59 @@ impl Captured {
                 // SAFETY: every field of `ParkedPacks` was initialized above, and
                 // `MaybeUninit<ParkedPacks>` has the exact same layout as `ParkedPacks`.
                 Some(unsafe { Box::from_raw(Box::into_raw(slot).cast::<ParkedPacks>()) })
+            }
+            pub fn discard_parked_packs(&mut self) -> bool {
+                if self.parked {
+                    return false;
+                }
+                self.division_presentation = division_presentation::Captured::vacant();
+                self.production = production::Captured::vacant();
+                self.production_modifiers = production_modifiers::Captured::vacant();
+                self.characters = characters::Captured::vacant();
+                self.projects = projects::Captured::vacant();
+                self.economy = economy::Captured::vacant();
+                self.governance = governance::Captured::vacant();
+                self.division_templates = division_templates::Captured::vacant();
+                self.intel = intel::Captured::vacant();
+                self.air_histories = air_histories::Captured::vacant();
+                self.ship_models = ship_models::Captured::vacant();
+                self.fuel_awards = fuel_awards::Captured::vacant();
+                self.character_portraits = character_portraits::Captured::vacant();
+                self.naval_history = naval_history::Captured::vacant();
+                self.scores_rails_spare = None;
+                self.ordinary_spare = None;
+                self.slow_spare = None;
+                self.late_spare = None;
+                self.gated_spare = None;
+                self.supply_trains = supply_trains::Captured::vacant();
+                self.visibility = visibility::Captured::vacant();
+                self.industrial_organisations = industrial_organisations::Captured::vacant();
+                self.weather = weather::Captured::vacant();
+                self.logistics = logistics::Captured::vacant();
+                self.war_overview = war_overview::Captured::vacant();
+                self.plans = plans::Captured::vacant();
+                self.air = air::Captured::vacant();
+                self.new_divisions = new_divisions::Captured::vacant();
+                self.event_feed = event_feed::Captured::vacant();
+                self.country_appearance = country_appearance::Captured::vacant();
+                self.hired_advisors = hired_advisors::Captured::vacant();
+                self.peace_settlements = peace_settlements::Captured::vacant();
+                self.peace_bids = peace_bids::Captured::vacant();
+                self.province_unit_order = province_unit_order::Captured::vacant();
+                self.construction = construction::Captured::vacant();
+                self.country_counters = country_counters::Captured::vacant();
+                self.character_inputs = character_inputs::Captured::vacant();
+                self.fog = fog::Captured::vacant();
+                self.model_inputs = model_inputs::Captured::vacant();
+                self.country_stability = country_stability::Captured::vacant();
+                self.country_factories = country_factories::Captured::vacant();
+                self.state_building_inputs = state_building_inputs::Captured::vacant();
+                self.naval_mission_inputs = naval_mission_inputs::Captured::vacant();
+                self.raid_state_inputs = raid_state_inputs::Captured::vacant();
+                self.raid_target_statuses = raid_target_statuses::Captured::vacant();
+                self.raid_launch_inputs = raid_launch_inputs::Captured::vacant();
+                self.parked = true;
+                true
             }
             pub fn install_parked_packs(&mut self, mut parked: Box<ParkedPacks>) {
                 std::mem::swap(&mut self.division_presentation, &mut parked.division_presentation);

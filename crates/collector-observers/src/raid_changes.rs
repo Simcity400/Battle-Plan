@@ -16,7 +16,8 @@ const CAPACITY_SITE: usize = 24;
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
 static DAILY_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
-static DAILY_FLIGHTS: AtomicUsize = AtomicUsize::new(0);
+static DAILY_FLIGHTS: collector_primitives::asymmetric::FlightGate =
+    collector_primitives::asymmetric::FlightGate::new(0);
 std::thread_local! {
     static CERTIFIED_PASS: Cell<bool> = const { Cell::new(false) };
     static REFRESHING_ORIGIN: Cell<Option<usize>> = const { Cell::new(None) };
@@ -39,7 +40,7 @@ pub struct Watches {
     countries: DirtySet,
     sites: DirtySet,
     routes: DirtySet,
-    origin_flights: AtomicUsize,
+    origin_flights: collector_primitives::asymmetric::FlightGate,
     calls: CallCounters<SITES>,
     origin_calls: AtomicU64,
     unnamed: AtomicU64,
@@ -75,7 +76,7 @@ impl Watches {
             countries: DirtySet::new(),
             sites: DirtySet::new(),
             routes: DirtySet::new(),
-            origin_flights: AtomicUsize::new(0),
+            origin_flights: collector_primitives::asymmetric::FlightGate::new(0),
             calls: CallCounters::new(),
             origin_calls: AtomicU64::new(0),
             unnamed: AtomicU64::new(0),
@@ -128,18 +129,16 @@ impl Watches {
         original: impl FnOnce() -> R,
     ) -> R {
         struct Flight<'a> {
-            active: &'a AtomicUsize,
+            _guard: collector_primitives::asymmetric::FlightGuard<'a>,
             previous_origin: Option<usize>,
         }
         impl Drop for Flight<'_> {
             fn drop(&mut self) {
                 REFRESHING_ORIGIN.with(|current| current.set(self.previous_origin));
-                self.active.fetch_sub(1, Ordering::SeqCst);
             }
         }
-        self.origin_flights.fetch_add(1, Ordering::SeqCst);
         let _flight = Flight {
-            active: &self.origin_flights,
+            _guard: self.origin_flights.enter(true),
             previous_origin: REFRESHING_ORIGIN.with(|current| current.replace(Some(origin))),
         };
         let before = kind();
@@ -245,15 +244,17 @@ pub trait Changes: Sync {
 
 impl Changes for Watches {
     fn take(&self, family: Family, visit: &mut dyn FnMut(usize)) -> Option<u64> {
-        let origin_calls =
-            (family == Family::Routes).then(|| self.origin_calls.load(Ordering::Acquire));
-        if family == Family::Routes && self.origin_flights.load(Ordering::SeqCst) != 0 {
-            return None;
-        }
+        let origin_before = if family == Family::Routes {
+            let calls = self.origin_calls.load(Ordering::Acquire);
+            let epoch = self.origin_flights.quiet_epoch()?;
+            Some((calls, epoch))
+        } else {
+            None
+        };
         let epoch = self.sets()[family as usize].take(visit);
-        if let Some(before) = origin_calls
-            && (self.origin_flights.load(Ordering::SeqCst) != 0
-                || self.origin_calls.load(Ordering::Acquire) != before)
+        if let Some((before_calls, before_epoch)) = origin_before
+            && (self.origin_flights.quiet_epoch() != Some(before_epoch)
+                || self.origin_calls.load(Ordering::Acquire) != before_calls)
         {
             return None;
         }
@@ -339,8 +340,8 @@ std::thread_local! {
 
 pub fn active() -> usize {
     WATCHES.sets().iter().map(|set| set.active()).sum::<usize>()
-        + DAILY_FLIGHTS.load(Ordering::SeqCst)
-        + WATCHES.origin_flights.load(Ordering::SeqCst)
+        + DAILY_FLIGHTS.active()
+        + WATCHES.origin_flights.active()
 }
 
 pub fn boundary(invalidate: bool) {
@@ -674,7 +675,7 @@ unsafe extern "system" fn daily_refresh_base_capacities(
     fourth: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::RaidChanges);
-    DAILY_FLIGHTS.fetch_add(1, Ordering::SeqCst);
+    let _daily = DAILY_FLIGHTS.enter(false);
     let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let unchanged = collector_extended_support::hourly::ticking()
         .then(|| {
@@ -701,7 +702,6 @@ unsafe extern "system" fn daily_refresh_base_capacities(
             .untimed_capacities
             .fetch_add(stores, Ordering::Relaxed);
     }
-    DAILY_FLIGHTS.fetch_sub(1, Ordering::SeqCst);
     result
 }
 

@@ -105,8 +105,8 @@ struct Held {
     countries: Vec<HeldCountry>,
     keys: Vec<u32>,
     values: Vec<Option<i64>>,
-    template_token: Option<((u64, u64), (u64, u64), usize)>,
-    template_spans: Vec<(usize, usize, usize)>,
+    template_deps: Option<((u64, u64), usize)>,
+    template_spans: Vec<(usize, (u64, u64), usize, usize)>,
     template_keys: Vec<u32>,
 }
 
@@ -116,7 +116,7 @@ impl Held {
         self.countries.clear();
         self.keys.clear();
         self.values.clear();
-        self.template_token = None;
+        self.template_deps = None;
         self.template_spans.clear();
         self.template_keys.clear();
     }
@@ -125,7 +125,7 @@ impl Held {
         self.countries.capacity() * size_of::<HeldCountry>()
             + self.keys.capacity() * size_of::<u32>()
             + self.values.capacity() * size_of::<Option<i64>>()
-            + self.template_spans.capacity() * size_of::<(usize, usize, usize)>()
+            + self.template_spans.capacity() * size_of::<(usize, (u64, u64), usize, usize)>()
             + self.template_keys.capacity() * size_of::<u32>()
     }
 }
@@ -1380,35 +1380,44 @@ impl SpeedTerms {
         templates.sort_unstable();
         templates.dedup();
         reserve(&mut self.templates, templates.len())?;
-        let template_token = collector_division_templates::template_changes::Changes::quiet(
+        let template_deps = collector_division_templates::template_changes::Changes::core_dependencies(
             &collector_division_templates::template_changes::Observer,
         )
-        .zip(
-            collector_division_templates::template_changes::Changes::core_dependencies(
-                &collector_division_templates::template_changes::Observer,
-            ),
-        )
-        .map(|(q, d)| (q, d, base));
-        if template_token.is_none() || self.held.template_token != template_token {
-            self.held.template_token = template_token;
+        .map(|d| (d, base));
+        if template_deps.is_none() || self.held.template_deps != template_deps {
+            self.held.template_deps = template_deps;
             self.held.template_spans.clear();
             self.held.template_keys.clear();
         }
-        let mut added_templates = false;
+        let sorted_len = self.held.template_spans.len();
+        let mut live_key_len = 0usize;
         for &template in templates.iter() {
             let start = self.keys.len();
-            if template_token.is_some()
-                && let Ok(at) = self
-                    .held
-                    .template_spans
+            let cached_at = if template_deps.is_some() {
+                self.held.template_spans[..sorted_len]
                     .binary_search_by_key(&template, |entry| entry.0)
-            {
-                let (_, h_start, h_len) = self.held.template_spans[at];
-                reserve(&mut self.keys, h_len)?;
-                self.keys
-                    .extend_from_slice(&self.held.template_keys[h_start..h_start + h_len]);
-                self.templates.push((template, Ok((start, h_len))));
-                continue;
+                    .ok()
+            } else {
+                None
+            };
+            let current_seq = if template_deps.is_some() {
+                collector_division_templates::template_changes::Changes::sequence(
+                    &collector_division_templates::template_changes::Observer,
+                    template,
+                )
+            } else {
+                None
+            };
+            if let (Some(at), Some(seq)) = (cached_at, current_seq) {
+                let (_, held_seq, h_start, h_len) = self.held.template_spans[at];
+                if seq == held_seq {
+                    reserve(&mut self.keys, h_len)?;
+                    self.keys
+                        .extend_from_slice(&self.held.template_keys[h_start..h_start + h_len]);
+                    self.templates.push((template, Ok((start, h_len))));
+                    live_key_len += h_len;
+                    continue;
+                }
             }
             if engine_native::carmy::movement_speed_key_demands(
                 memory,
@@ -1418,10 +1427,33 @@ impl SpeedTerms {
             )
             .is_err()
             {
+                if let Some(at) = cached_at {
+                    self.held.template_spans[at].1 = (u64::MAX, u64::MAX);
+                }
                 self.counts[2][2] += 1;
-            } else if template_token.is_some() {
+            } else if let Some(seq) = current_seq {
                 let len = self.keys.len() - start;
-                if engine_allocation::advisory(|| {
+                live_key_len += len;
+                if let Some(at) = cached_at {
+                    let (_, _, old_start, old_len) = self.held.template_spans[at];
+                    if len <= old_len {
+                        self.held.template_keys[old_start..old_start + len]
+                            .copy_from_slice(&self.keys[start..start + len]);
+                        self.held.template_spans[at] = (template, seq, old_start, len);
+                    } else if engine_allocation::advisory(|| {
+                        engine_allocation::reserve(&mut self.held.template_keys, len)
+                    })
+                    .is_ok()
+                    {
+                        let h_start = self.held.template_keys.len();
+                        self.held
+                            .template_keys
+                            .extend_from_slice(&self.keys[start..start + len]);
+                        self.held.template_spans[at] = (template, seq, h_start, len);
+                    } else {
+                        self.held.template_spans[at].1 = (u64::MAX, u64::MAX);
+                    }
+                } else if engine_allocation::advisory(|| {
                     engine_allocation::reserve(&mut self.held.template_spans, 1)?;
                     engine_allocation::reserve(&mut self.held.template_keys, len)
                 })
@@ -1431,15 +1463,20 @@ impl SpeedTerms {
                     self.held
                         .template_keys
                         .extend_from_slice(&self.keys[start..start + len]);
-                    self.held.template_spans.push((template, h_start, len));
-                    added_templates = true;
+                    self.held.template_spans.push((template, seq, h_start, len));
                 }
             }
             self.templates
                 .push((template, Ok((start, self.keys.len() - start))));
         }
-        if added_templates {
+        if self.held.template_spans.len() > sorted_len {
             self.held.template_spans.sort_unstable_by_key(|entry| entry.0);
+        }
+        if self.held.template_keys.len() > 16_384
+            && self.held.template_keys.len() > live_key_len.saturating_mul(4)
+        {
+            self.held.template_spans.clear();
+            self.held.template_keys.clear();
         }
         Ok(())
     }

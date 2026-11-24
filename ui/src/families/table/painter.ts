@@ -26,7 +26,7 @@ import { hasMeasuredValue, type Value } from '../value.ts';
 import { drawFormattedValue, drawHatchRect } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';
 import type { FamilyColumnLayout, FamilyTableLayout } from './layout.ts';
-import { computeColumnMaxima, resolveCellAtHour, resolveCellPaintModel, type FlatTableRow } from './model.ts';
+import { computeColumnMaxima, resolveCellAtHour, resolveCellPaintModel, type FlatTableRow, type TableRow } from './model.ts';
 
 export { computeColumnMaxima };
 
@@ -51,6 +51,7 @@ export function rankHoldForSpeed(speed: number): number {
 export interface FamilyTablePicture {
   frame: string | null;
   rowKeys: (string | undefined)[];
+  rowRefs: (TableRow | undefined)[];
   rowMarks: (string | undefined)[];
   cells: Map<string, (string | undefined)[]>;
   ranks: (string | undefined)[];
@@ -60,12 +61,16 @@ export interface FamilyTablePicture {
   maximaHour?: number;
   maximaCols?: string;
   maxima?: Map<string, number>;
+  lastMaximaSig?: string;
+  lastIconVersion?: number;
+  lastHour?: number;
 }
 
 export function createTablePicture(): FamilyTablePicture {
   return {
     frame: null,
     rowKeys: [],
+    rowRefs: [],
     rowMarks: [],
     cells: new Map(),
     ranks: [],
@@ -101,9 +106,12 @@ export interface DrawFamilyTableInput {
   readonly focusedKey?: string | null;
   readonly empty?: string;
   readonly icons?: ReadonlyMap<string, ImageBitmap | null>;
+  readonly iconVersion?: number;
   readonly artCache?: LaneArtCache;
   readonly dpr?: number;
   readonly hasGroupHeaders?: boolean;
+  readonly precomputedMaxima?: Map<string, number>;
+  readonly staticRowLooks?: boolean;
 }
 
 const fontOf = (theme: TableTheme, size: number, weight: number) => `${weight} ${size}px ${theme.font}`;
@@ -210,7 +218,7 @@ export function drawFamilyTable(
   picture?: FamilyTablePicture,
 ): PaintStats {
   const { layout, rows, settings, hour, width, height, scrollLeft, scrollTop, rankShown, rankWidth, theme, now, glideDuration, glide, markers,
-    inspectedKey, selectedKey, focusedKey, empty, icons, artCache, dpr = 1 } = input;
+    inspectedKey, selectedKey, focusedKey, empty, icons, iconVersion, artCache, dpr = 1, precomputedMaxima, staticRowLooks } = input;
   const rowHeight = ROW_HEIGHT[settings.density];
   const bounds = scrollBounds(layout, width, scrollLeft);
   const rank = rankShown ? rankWidth : 0;
@@ -247,9 +255,33 @@ export function drawFamilyTable(
     return cached;
   };
 
-  const maximaCols = JSON.stringify(layout.columns.map(c => (c.numeric && measuresColumn(c) ? [c.key, c.display] : null)));
+  let maximaCols = '';
+  let hasMeasuredCols = false;
+  for (let c = 0; c < layout.columns.length; c++) {
+    const col = layout.columns[c]!;
+    if (col.numeric && measuresColumn(col)) {
+      hasMeasuredCols = true;
+      maximaCols += `${col.key}:${col.display}|`;
+    }
+  }
   let maxima: Map<string, number>;
-  if (picture && picture.maxima && picture.maximaRows === rows && picture.maximaHour === hour && picture.maximaCols === maximaCols) {
+  if (precomputedMaxima) {
+    maxima = precomputedMaxima;
+    if (picture) {
+      picture.maximaRows = rows;
+      picture.maximaHour = hour;
+      picture.maximaCols = maximaCols;
+      picture.maxima = maxima;
+    }
+  } else if (!hasMeasuredCols) {
+    maxima = new Map();
+    if (picture) {
+      picture.maximaRows = rows;
+      picture.maximaHour = hour;
+      picture.maximaCols = maximaCols;
+      picture.maxima = maxima;
+    }
+  } else if (picture && picture.maxima && picture.maximaRows === rows && picture.maximaHour === hour && picture.maximaCols === maximaCols) {
     maxima = picture.maxima;
   } else {
     maxima = computeColumnMaxima(rows, layout.columns, hour);
@@ -260,22 +292,20 @@ export function drawFamilyTable(
       picture.maxima = maxima;
     }
   }
+  let maximaSig = '';
+  if (maxima.size > 0) {
+    for (const [k, v] of maxima) maximaSig += `${k}=${v};`;
+  }
   const moving = glideDuration > 0 && glide.size > 0;
-  const hasGroupHeaders = input.hasGroupHeaders ?? rows.some(item => item.kind === 'group-header');
-  const frameKey = picture && !moving && !layout.scrollable && !hasGroupHeaders
-    ? JSON.stringify([
-        width,
-        height,
-        rowHeight,
-        rank,
-        scrollTop,
-        scrollLeft,
-        first,
-        last,
-        rows.length ? '' : empty ?? '',
-        layout.columns.map(c => [c.key, c.width, c.display, c.tone ?? '']),
-      ])
-    : null;
+  let frameKey: string | null = null;
+  if (picture && !moving) {
+    let colKey = '';
+    for (let c = 0; c < layout.columns.length; c++) {
+      const col = layout.columns[c]!;
+      colKey += `${col.key}:${col.width}:${col.display}:${col.tone ?? ''}|`;
+    }
+    frameKey = `${width}|${height}|${rowHeight}|${rank}|${scrollTop}|${scrollLeft}|${layout.scrollable ? 1 : 0}|${first}|${last}|${rows.length ? '' : empty ?? ''}|${colKey}`;
+  }
 
   const drawSingleCell = (
     item: Extract<FlatTableRow, { kind: 'data' }>,
@@ -496,19 +526,27 @@ export function drawFamilyTable(
         : (icons?.get(icon) ? 1 : icons?.get(icon) === null ? 2 : 0));
     const art = icon === undefined && !iconPending ? '' : `${icon ?? ''}\u0003${iconState}`;
     const treeKey = item.isTreeGroup ? (item.isOpen ? 'o' : 'c') : String(item.level);
-    const key = JSON.stringify([
-      formatted.kind,
-      formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text,
-      paintModel.missingName ? 1 : 0,
-      pixels,
-      fill,
-      slotWidth,
-      art,
-      treeKey,
-      item.row.muted ? 1 : 0,
-      paintModel.status ?? '',
-    ]);
+    const textVal = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text;
+    const key = `${formatted.kind}\u0002${textVal}\u0002${paintModel.missingName ? 1 : 0}\u0002${pixels}\u0002${fill}\u0002${slotWidth}\u0002${art}\u0002${treeKey}\u0002${item.row.muted ? 1 : 0}\u0002${paintModel.status ?? ''}`;
     return { formatted, fraction, fill, icon, iconPending, missingName: paintModel.missingName, key };
+  };
+
+  const drawGroupHeaderRow = (item: Extract<FlatTableRow, { kind: 'group-header' }>, y: number) => {
+    const fullW = Math.max(width, layout.totalWidth);
+    ctx.fillStyle = theme.surface;
+    ctx.fillRect(0, y, fullW, rowHeight);
+    ctx.fillStyle = theme.lineSoft;
+    ctx.globalAlpha = 0.45;
+    ctx.fillRect(0, y, fullW, rowHeight);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = theme.line;
+    ctx.fillRect(0, y + rowHeight - 1, fullW, 1);
+    const smallFont = fontOf(theme, theme.fontSize.small, VALUE_WEIGHT);
+    ctx.font = smallFont;
+    ctx.fillStyle = theme.muted;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(fit(item.label, smallFont, Math.max(1, width - 16)), CELL_INSET, y + rowHeight / 2);
   };
 
   if (picture && frameKey !== null && picture.frame === frameKey) {
@@ -516,6 +554,46 @@ export function drawFamilyTable(
     let paintedCells = 0;
     const dirtyRows = new Set<number>();
     const rowWidth = Math.max(width, layout.totalWidth);
+    const maximaSame = picture.lastMaximaSig === maximaSig;
+    const iconsSame = iconVersion !== undefined && picture.lastIconVersion === iconVersion;
+    const hourSafe = staticRowLooks === true || picture.lastHour === hour;
+    const canFastSkip = maximaSame && iconsSame && hourSafe;
+
+    const skipRow = new Uint8Array(Math.max(0, last - first));
+    if (canFastSkip) {
+      for (let index = first; index < last; index++) {
+        const item = rows[index]!;
+        if (item.kind === 'group-header') {
+          if (picture.rowKeys[index] === item.key && picture.rowMarks[index] === `g:${item.label}`) {
+            skipRow[index - first] = 1;
+          }
+          continue;
+        }
+        if (picture.rowRefs[index] !== item.row || picture.rowKeys[index] !== item.key) continue;
+        const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
+        if (picture.rowMarks[index] !== mark) continue;
+        if (rank > 0) {
+          const rSig = `${rankSignature(item)}\u0001${mark}`;
+          if (picture.ranks[index] !== rSig) continue;
+        }
+        skipRow[index - first] = 1;
+      }
+    }
+
+    for (let index = first; index < last; index++) {
+      if (skipRow[index - first]) continue;
+      const item = rows[index]!;
+      if (item.kind !== 'group-header') continue;
+      const gMark = `g:${item.label}`;
+      if (picture.rowKeys[index] === item.key && picture.rowMarks[index] === gMark) continue;
+      drawGroupHeaderRow(item, index * rowHeight - scrollTop);
+      picture.rowKeys[index] = item.key;
+      picture.rowRefs[index] = undefined;
+      picture.rowMarks[index] = gMark;
+      picture.ranks[index] = undefined;
+      dirtyRows.add(index);
+      drew = true;
+    }
 
     let x = rank - bounds.left;
     for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
@@ -524,6 +602,7 @@ export function drawFamilyTable(
       let drawn = picture.cells.get(column.key);
       if (!drawn) picture.cells.set(column.key, drawn = []);
       for (let index = first; index < last; index++) {
+        if (skipRow[index - first]) continue;
         const item = rows[index]!;
         if (item.kind !== 'data') continue;
         const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
@@ -543,15 +622,41 @@ export function drawFamilyTable(
 
     if (rank > 0) {
       for (let index = first; index < last; index++) {
+        if (skipRow[index - first]) continue;
         const item = rows[index]!;
         if (item.kind !== 'data') continue;
         const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
         const rSig = `${rankSignature(item)}\u0001${mark}`;
         if (picture.ranks[index] === rSig && !dirtyRows.has(index)) continue;
-        drawRank(item, index, -bounds.left, index * rowHeight - scrollTop);
+        drawRank(item, index, layout.scrollable ? 0 : -bounds.left, index * rowHeight - scrollTop);
         picture.ranks[index] = rSig;
         dirtyRows.add(index);
         drew = true;
+      }
+    }
+
+    if (layout.scrollable && dirtyRows.size > 0 && layout.columns.length > 0) {
+      const col0 = layout.columns[0]!;
+      const pinnedWidth = rank + col0.width;
+      const slot0 = trackSlotWidth(col0);
+      for (const index of dirtyRows) {
+        const item = rows[index]!;
+        if (item.kind !== 'data') continue;
+        const y = index * rowHeight - scrollTop;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, y, pinnedWidth, rowHeight);
+        ctx.clip();
+        paintRowGround(ctx, theme, rank, y, col0.width, rowHeight, index % 2 === 1, inspectedKey === item.key, selectedKey === item.key, true);
+        const look0 = computeLook(item, col0, slot0);
+        drawSingleCell(item, col0, 0, rank, y, slot0, look0.fraction, look0.fill, look0.icon, look0.iconPending, look0.formatted, look0.missingName);
+        if (rank > 0) drawRank(item, index, 0, y);
+        ctx.restore();
+        const edge = ctx.createLinearGradient(pinnedWidth - 1, 0, pinnedWidth + 12, 0);
+        edge.addColorStop(0, theme.surface);
+        edge.addColorStop(1, 'transparent');
+        ctx.fillStyle = edge;
+        ctx.fillRect(pinnedWidth - 1, y, 13, rowHeight);
       }
     }
 
@@ -563,19 +668,33 @@ export function drawFamilyTable(
     }
 
     for (let index = first; index < last; index++) {
+      if (skipRow[index - first]) continue;
       const item = rows[index]!;
       picture.rowKeys[index] = item.key;
-      picture.rowMarks[index] = item.kind === 'data' ? rowMarkState(item.key, inspectedKey, selectedKey, focusedKey) : '';
+      if (item.kind === 'data') {
+        picture.rowRefs[index] = item.row;
+        picture.rowMarks[index] = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
+      } else {
+        picture.rowRefs[index] = undefined;
+        picture.rowMarks[index] = `g:${item.label}`;
+      }
     }
+    picture.lastMaximaSig = maximaSig;
+    picture.lastIconVersion = iconVersion;
+    picture.lastHour = hour;
     return { drew, paintedCells, measurements };
   }
 
   if (picture) {
     picture.frame = frameKey;
     picture.rowKeys = [];
+    picture.rowRefs = [];
     picture.rowMarks = [];
     picture.cells = new Map();
     picture.ranks = [];
+    picture.lastMaximaSig = maximaSig;
+    picture.lastIconVersion = iconVersion;
+    picture.lastHour = hour;
   }
 
   ctx.clearRect(0, 0, width, height);
@@ -626,18 +745,12 @@ export function drawFamilyTable(
         const y = rowY(item, index);
         if (item.kind === 'group-header') {
           if (colIndex === 0) {
-            ctx.fillStyle = theme.lineSoft;
-            ctx.globalAlpha = 0.45;
-            ctx.fillRect(0, y, Math.max(width, layout.totalWidth), rowHeight);
-            ctx.globalAlpha = 1;
-            ctx.fillStyle = theme.line;
-            ctx.fillRect(0, y + rowHeight - 1, Math.max(width, layout.totalWidth), 1);
-            const smallFont = fontOf(theme, theme.fontSize.small, VALUE_WEIGHT);
-            ctx.font = smallFont;
-            ctx.fillStyle = theme.muted;
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(fit(item.label, smallFont, Math.max(1, width - 16)), CELL_INSET, y + rowHeight / 2);
+            drawGroupHeaderRow(item, y);
+            if (picture && !pinned) {
+              picture.rowKeys[index] = item.key;
+              picture.rowRefs[index] = undefined;
+              picture.rowMarks[index] = `g:${item.label}`;
+            }
           }
           continue;
         }
@@ -646,6 +759,7 @@ export function drawFamilyTable(
         if (drawn && !pinned) {
           drawn[index] = `${look.key}\u0001${mark}`;
           picture!.rowKeys[index] = item.key;
+          picture!.rowRefs[index] = item.row;
           picture!.rowMarks[index] = mark;
         }
         paintRowGround(ctx, theme, x, y, column.width, rowHeight, index % 2 === 1, inspectedKey === item.key, selectedKey === item.key, true);
