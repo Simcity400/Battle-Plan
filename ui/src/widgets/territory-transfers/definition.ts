@@ -10,7 +10,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'victoryPoints', label: 'Victory points (net)', as: 'plain', offered: OFFERED.number },
 ];
 export const DEFAULT_SORT = { column: 'net', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'normal', overflow: 'scroll', sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', sort: DEFAULT_SORT };
 export const OPTIONS: readonly OptionField[] = tableFamilyOptions(COLUMNS, TABLE_BASE);
 
 export const definition = {

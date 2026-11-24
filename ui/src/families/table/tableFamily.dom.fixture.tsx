@@ -152,7 +152,7 @@ const LOOKS = {
 
 const SPECS = scoreboardColumnsSpec(SCOREBOARD_FIXTURE_COLUMNS, null);
 const SETTINGS = {
-  ...tableSettingsOf(undefined, SPECS, { density: 'comfortable', overflow: 'scroll', sort: { column: 'factories', direction: 'descending' } }),
+  ...tableSettingsOf(undefined, SPECS, { density: 'comfortable', sort: { column: 'factories', direction: 'descending' } }),
   order: SPECS.map(s => s.key),
   sort: { column: 'factories', direction: 'descending' as const },
 };
@@ -584,12 +584,10 @@ window.tableFamilyDom = {
 
     hostNode!.style.width = '210px';
     const scrollsSideways = await until(() => !!hostNode!.querySelector('.tf-edges[data-right]'), 3000);
-    const moreButton = !!hostNode!.querySelector('.tf-more-cols');
-    return { firstKey, afterDown, activated: [...activated], liveStatus, scrollsSideways, moreButton, totalInstallReads };
+    return { firstKey, afterDown, activated: [...activated], liveStatus, scrollsSideways, totalInstallReads };
   },
 
   async testEmptySpaceContextMenuAndValueStateTooltip() {
-    document.querySelector<HTMLElement>('.tf-chooser:popover-open')?.hidePopover?.();
     hostNode!.style.width = '460px';
     const nextHour = Math.floor(clock.getSnapshot().hour) + 2;
     clock.seek(nextHour);

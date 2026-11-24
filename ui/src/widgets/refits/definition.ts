@@ -8,7 +8,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'strength', label: 'Strength', as: 'meterBefore', tone: 'grey', offered: OFFERED.number },
   { key: 'dockyards', label: 'Dockyards', as: 'faint', tone: 'grey', offered: OFFERED.number },
 ];
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'tooltip', sort: { column: 'progress', direction: 'descending' } };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', sort: { column: 'progress', direction: 'descending' } };
 export const OPTIONS: readonly OptionField[] = tableFamilyOptions(COLUMNS, TABLE_BASE);
 export const definition = {
   kind: 'refits', version: 1, title: 'Refits', icon: 'anchor', category: 'Navy',

@@ -49,7 +49,7 @@ export const tableSettingsPolicy: FamilySettingsPolicy<TableSettings> = {
     if (policy.kind === 'table') return tableSettingsOf(options[policy.key ?? TABLE_SETTINGS_KEY], columns, policy.base);
     return ctx
       ? policy.resolve(ctx, columns)
-      : tableSettingsOf(undefined, columns, { density: 'normal', barsBehind: 'all', overflow: 'scroll', sort: { column: columns[0]?.key ?? '', direction: 'descending' } });
+      : tableSettingsOf(undefined, columns, { density: 'normal', barsBehind: 'all', sort: { column: columns[0]?.key ?? '', direction: 'descending' } });
   },
   store: (raw, next, live, ctx, setOption) => {
     const policy = (raw as AnyTableWidgetDeclaration).settings;
@@ -101,18 +101,14 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
     const flatRows = resolveTableRows(model, settings, expanded);
     const rankShown = model.rank === true;
     const rankWidth = rankShown ? (model.rankMarkers ? 64 : 36) : 0;
-    const protectedKeys = new Set<string>();
-    if (!model.unsorted && settings.sort.column) protectedKeys.add(settings.sort.column);
-    const layout = layoutFamilyTable(buildColumnLayouts(model.columns, settings, measured), Math.max(1, viewport.width), settings.overflow, {
+    const layout = layoutFamilyTable(buildColumnLayouts(model.columns, settings, measured), Math.max(1, viewport.width), {
       rankShown,
       rankWidth,
-      protectedKeys,
     });
     return deriveTableAudit({
       model,
       flatRows,
       visibleColumns: layout.columns,
-      hiddenKeys: new Set(layout.hidden),
       rankShown,
       window: window ?? { first: 0, count: flatRows.length },
       countryColors: theme ? { countryLooks: theme.countryLooks, country: theme.country } : undefined,

@@ -162,7 +162,7 @@ test('declarative table projection refuses bare null where a 5-state value is re
     hour: 10,
     panels: new Map([['main', { items: [{ id: 'a', count: 1 }] }]]),
   }), {});
-  const settings = tableSettingsOf(undefined, model.columns, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'count', direction: 'descending' } });
+  const settings = tableSettingsOf(undefined, model.columns, { density: 'comfortable', sort: { column: 'count', direction: 'descending' } });
   assert.throws(() => resolveTableRows(model, settings), InvalidFamilyValueError);
 });
 
@@ -289,7 +289,7 @@ test('apm-table projection matches followed wire answers and exact replies, incl
     labels: { GER: [{ from: 0, name: 'Germany' }], ITA: [{ from: 0, name: 'Italy' }] },
   };
   const cols = apmTableColumns(false, true);
-  const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'apm', direction: 'descending' } });
+  const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', sort: { column: 'apm', direction: 'descending' } });
   const apmLayouts = buildColumnLayouts(cols, settings);
   const fModel = apmTableProjection.project(createBoundedReadView({ hour: 100, answers: new Map([['main', wire]]) }), opts);
   const eModel = apmTableProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['main', reply]]) }), opts);
@@ -359,7 +359,7 @@ test('occupied-states, game-score (with faction groups), and division-template (
     labels: { GER: [{ from: 0, name: 'Germany' }], ENG: [{ from: 0, name: 'United Kingdom' }] },
   });
   const gsCols = gameScoreColumns(undefined);
-  const gsFlat = resolveTableRows(gsModel, tableSettingsOf(undefined, gsCols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'total', direction: 'descending' } }));
+  const gsFlat = resolveTableRows(gsModel, tableSettingsOf(undefined, gsCols, { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }));
   assert.deepEqual(gsFlat.filter(r => r.kind === 'group-header').map(r => r.label), ['Allies', 'Axis']);
 
   const gsTopOptions = { all: false, holders: null, membership: null, top: 1, by: 'army' as const, factions: false, factionRuns: null, rankMarkers: false, labels: {} };
@@ -385,7 +385,7 @@ test('occupied-states, game-score (with faction groups), and division-template (
     ],
   };
   const dtCols = divisionTemplateColumns();
-  const dtSettings = tableSettingsOf(undefined, dtCols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'template', direction: 'ascending' } });
+  const dtSettings = tableSettingsOf(undefined, dtCols, { density: 'comfortable', sort: { column: 'template', direction: 'ascending' } });
   const dtModel = divisionTemplateProjection.project(createBoundedReadView({ hour: 50, panels: new Map([['main', dtReply]]), live: new Map([['main', repliedCells(dtReply).read()]]) }), {
     countryName: 'Germany',
    
@@ -401,11 +401,11 @@ test('dirty cell painter repaints only changed cells and bounds text measurement
     { key: 'v1', label: 'Score', as: 'faint', tone: 'blue', offered: ['plain', 'faint'], priority: 1, numeric: true, format: 'integer', widest: ['999,999'] },
     { key: 'v2', label: 'Rate', as: 'plain', offered: ['plain'], priority: 2, numeric: true, format: 'decimal1', widest: ['999.9'] },
   ];
-  const settings = tableSettingsOf(undefined, columns, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'v1', direction: 'descending' } });
+  const settings = tableSettingsOf(undefined, columns, { density: 'comfortable', sort: { column: 'v1', direction: 'descending' } });
   const baseCols = buildColumnLayouts(columns, settings);
   const { ctx, counts, reset } = instrumentedContext();
   const fixedWidths = measureFixedColumnWidths(baseCols, settings, TEST_THEME, text => ctx.measureText(text).width);
-  const layout = layoutFamilyTable(buildColumnLayouts(columns, settings, fixedWidths), 480, 'tooltip', { rankShown: false, rankWidth: 0 });
+  const layout = layoutFamilyTable(buildColumnLayouts(columns, settings, fixedWidths), 480, { rankShown: false, rankWidth: 0 });
   const picture = createTablePicture();
 
   const makeRows = (vals: [number, number][]) => resolveTableRows({
@@ -494,7 +494,7 @@ test('1,500 countries project, sort, audit identically, and paint only visible r
   const { ctx, counts, reset } = instrumentedContext();
   const baseCols = buildColumnLayouts(specs, settings);
   const fixedWidths = measureFixedColumnWidths(baseCols, settings, TEST_THEME, text => ctx.measureText(text).width);
-  const layout = layoutFamilyTable(buildColumnLayouts(specs, settings, fixedWidths), 480, 'tooltip', { rankShown: true, rankWidth: 36 });
+  const layout = layoutFamilyTable(buildColumnLayouts(specs, settings, fixedWidths), 480, { rankShown: true, rankWidth: 36 });
   const picture = createTablePicture();
   reset();
   const draw = drawFamilyTable(ctx, { layout, rows: followedRows, settings, hour: 200, width: 480, height: 320, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 1, glideDuration: 0, glide: new Map(), markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, icons: new Map(), dpr: 1 }, picture);
@@ -535,7 +535,7 @@ test('occupied-states projection carries country looks at hour, filter ranges, u
   assert.deepEqual(at15.rows.map(r => r.key), ['1']);
   const settings = tableSettingsOf(undefined, OCCUPIED_DEFAULTS, OCCUPIED_BASE);
   const flat15 = resolveTableRows(at15, settings);
-  const tip = deriveTableTooltip(flat15, '1', at15.columns, new Set(), 15);
+  const tip = deriveTableTooltip(flat15, '1', at15.columns, 15);
   assert.ok(tip);
   assert.equal(tip.rows.find(r => r.label === 'Resistance')?.valueState?.text, '25%');
   assert.equal(tip.rows.find(r => r.label === 'Assigned manpower')?.valueState?.text, '0', 'known assigned with no live cell reads 0');
@@ -554,13 +554,13 @@ test('layout hides lowest-priority columns into tooltip or keeps all columns in 
     { key: 'resistance', label: 'Resistance', as: 'meterAfter', offered: ['meterAfter'], priority: 1, numeric: true },
     { key: 'owner', label: 'Owner', as: 'plain', offered: ['plain'], priority: 6, text: true },
   ];
-  const settings = tableSettingsOf(undefined, specs, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'resistance', direction: 'descending' } });
+  const settings = tableSettingsOf(undefined, specs, { density: 'comfortable', sort: { column: 'resistance', direction: 'descending' } });
   const cols = buildColumnLayouts(specs, settings, { state: 140, resistance: 130, owner: 140 });
-  const hiddenLayout = layoutFamilyTable(cols, 370, 'tooltip');
-  assert.deepEqual(hiddenLayout.columns.map(c => c.key), ['state', 'resistance']);
-  assert.deepEqual(hiddenLayout.hidden, ['owner']);
-  assert.deepEqual(hiddenLayout.columns.map(c => [c.leadInset ?? 0, c.trailInset ?? 0]), [[6, 0], [0, 6]], 'the 6 px side margin sits on the first and last columns kept');
-  const scrollLayout = layoutFamilyTable(cols, 250, 'scroll');
+  const narrowLayout = layoutFamilyTable(cols, 370);
+  assert.deepEqual(narrowLayout.columns.map(c => c.key), ['state', 'resistance', 'owner'], 'a narrow table keeps every column and scrolls');
+  assert.equal(narrowLayout.scrollable, true);
+  assert.deepEqual(narrowLayout.columns.map(c => [c.leadInset ?? 0, c.trailInset ?? 0]), [[6, 0], [0, 0], [0, 6]], 'the 6 px side margin sits on the first and last columns');
+  const scrollLayout = layoutFamilyTable(cols, 250);
   assert.equal(scrollLayout.scrollable, true);
   assert.equal(scrollLayout.pinnedWidth, 146);
 
@@ -604,7 +604,7 @@ test('lane view skips projection on next(), caches unchanged sources across serv
     const settings = tableSettingsOf(undefined, [
       { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
       { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
-    ], { density: 'comfortable', overflow: 'tooltip', sort: { column: 'v', direction: 'descending' } });
+    ], { density: 'comfortable', sort: { column: 'v', direction: 'descending' } });
     const staticPanels = { main: { rows: [{ id: 'GER', v: 10 }] } };
     const options = {};
     const model = {
@@ -668,7 +668,7 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
     const settings = tableSettingsOf(undefined, [
       { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
       { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
-    ], { density: 'comfortable', overflow: 'tooltip', sort: { column: 'v', direction: 'descending' } });
+    ], { density: 'comfortable', sort: { column: 'v', direction: 'descending' } });
     const makeModel = (rows: { id: string; v: number }[], focusedKey: string | null = null, extra: Record<string, unknown> = {}) => ({
       family: 'table' as const,
       kind: 'test-lane-cache',
@@ -724,8 +724,8 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
     assert.equal((audit2.fields.audit!.value as { id: number }).id, 8, 'audit carries snapshot id 8 when snapshot changes');
 
     const cols: TableColumnSpec[] = [{ key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true }];
-    const hitSettings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'name', direction: 'ascending' } });
-    const hitLayout = layoutFamilyTable(buildColumnLayouts(cols, hitSettings, { name: 160 }), 320, 'tooltip');
+    const hitSettings = tableSettingsOf(undefined, cols, { density: 'comfortable', sort: { column: 'name', direction: 'ascending' } });
+    const hitLayout = layoutFamilyTable(buildColumnLayouts(cols, hitSettings, { name: 160 }), 320);
     const hitRows = resolveTableRows({
       columns: cols,
       hour: 1,
@@ -763,8 +763,8 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
       { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
       { key: 'v', label: 'Val', as: 'faint', tone: 'blue', offered: ['faint'], priority: 1, numeric: true, format: 'integer' },
     ];
-    const numSettings = tableSettingsOf(undefined, numCols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'v', direction: 'descending' } });
-    const numLayout = layoutFamilyTable(buildColumnLayouts(numCols, numSettings, { name: 120, v: 120 }), 320, 'tooltip');
+    const numSettings = tableSettingsOf(undefined, numCols, { density: 'comfortable', sort: { column: 'v', direction: 'descending' } });
+    const numLayout = layoutFamilyTable(buildColumnLayouts(numCols, numSettings, { name: 120, v: 120 }), 320);
     const numRows = resolveTableRows({
       columns: numCols,
       hour: 1,
@@ -788,7 +788,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
     { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
     { key: 'rate', label: 'Rate', as: 'faint', tone: 'country', offered: ['faint'], priority: 1, numeric: true, format: 'decimal1' },
   ];
-  const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'rate', direction: 'descending' } });
+  const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', sort: { column: 'rate', direction: 'descending' } });
   const mkModel = (rate: number, groupLabel: string) => ({
     columns: cols,
     hour: 10,
@@ -882,7 +882,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
   assert.equal(mirror.rows[0]!.key, 'R0');
   assert.equal(mirror.rows[0]!.rowIndex, 0, 'off-screen focused row carries its true rowIndex, not window offset');
 
-  const layout = layoutFamilyTable(buildColumnLayouts(cols, settings, { name: 140, rate: 140 }), 320, 'tooltip');
+  const layout = layoutFamilyTable(buildColumnLayouts(cols, settings, { name: 140, rate: 140 }), 320);
   const longGlide = new Map([['R12', { from: -12 * 28, to: 0, started: 100 }]]);
   const hitGliding = hitFamilyTable(layout, flatMany, { x: 20, y: 10 }, 28, 0, 0, false, 0, longGlide, 100, 180);
   assert.equal(hitGliding.rowKey, 'R12', 'row gliding from index 12 into y=0 is hit-tested accurately');
@@ -947,7 +947,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
         settings: tableSettingsOf(undefined, [
           { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
           { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
-        ], { density: 'comfortable', overflow: 'tooltip', sort: { column: 'name', direction: 'ascending' } }),
+        ], { density: 'comfortable', sort: { column: 'name', direction: 'ascending' } }),
         sources: {},
         staticPanels: { main: { designer, priority } },
         width: 320,
@@ -982,7 +982,7 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
     { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true },
     { key: 'garrison', label: 'Garrison', as: 'meterBefore', tone: 'blue', offered: ['meterBefore'], priority: 1, numeric: true, format: 'integer' },
   ];
-  const occSettings = tableSettingsOf(undefined, occCols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'garrison', direction: 'descending' } });
+  const occSettings = tableSettingsOf(undefined, occCols, { density: 'comfortable', sort: { column: 'garrison', direction: 'descending' } });
   const occLayouts = buildColumnLayouts(occCols, occSettings);
   const mkOcc = (opts: { fraction: number; alert: boolean; flag: string; missingName: boolean; pill: string; extra: string }) => {
     const model = {
@@ -1108,7 +1108,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
     { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true },
     { key: 'score', label: 'Score', as: 'faint', tone: 'country', offered: ['faint'], priority: 1, numeric: true, format: 'integer' },
   ];
-  const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'score', direction: 'descending' } });
+  const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', sort: { column: 'score', direction: 'descending' } });
   const layouts = buildColumnLayouts(cols, settings);
   const mkModel = (hour: number) => ({
     columns: cols,
@@ -1136,7 +1136,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
     null,
     'P1: tooltip audit omits presentation hour so valid picture at hour 10 matches exact audit at hour 12',
   );
-  const tip10 = deriveTableTooltip(flat10, 'GER', cols, new Set(), 10)!;
+  const tip10 = deriveTableTooltip(flat10, 'GER', cols, 10)!;
   assert.equal(tip10.subtitle, undefined, 'P1: deriveRowTooltip carries no hour-derived subtitle');
   const auditColorDiff = deriveTableAudit({ model: m10, flatRows: flat10, visibleColumns: layouts, rankShown: true, countryColors: colorsB });
   assert.notEqual(
@@ -1167,7 +1167,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         family: 'table',
         kind: 'game-score',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
-        settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', overflow: 'tooltip', sort: { column: 'total', direction: 'descending' } }),
+        settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
         sources: { main: 7 },
         width: 320,
         height: 200,
@@ -1192,7 +1192,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         family: 'table',
         kind: 'game-score',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
-        settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', overflow: 'tooltip', sort: { column: 'total', direction: 'descending' } }),
+        settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
         sources: {},
         staticPanels: { main: { missing: null, warnings: [], hints: {}, multipliers: [], rows: [{ tag: 'GER', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } }] } },
         width: 320,
@@ -1231,7 +1231,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         family: 'table',
         kind: 'game-score',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
-        settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', overflow: 'tooltip', sort: { column: 'total', direction: 'descending' } }),
+        settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
         sources: {},
         staticPanels: { main: { missing: null, warnings: [], hints: {}, multipliers: [], rows: [{ tag: 'GER', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } }] } },
         width: 320,
@@ -1309,7 +1309,7 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
     { key: 'name', label: 'Name', as: 'flagName', offered: ['flagName'], priority: 0, text: true },
     { key: 'val', label: 'Value', as: 'plain', offered: ['plain'], priority: 1, numeric: true, format: 'decimal1' },
   ];
-  const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'name', direction: 'ascending' } });
+  const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', sort: { column: 'name', direction: 'ascending' } });
 
   registerTableProjection({
     kind: 'test-r5-reveal',
@@ -1504,7 +1504,7 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   const mAtLeast = mkTipModel(partialValue(1.001, 'Missing corps', { atLeast: true }));
   const mPlainPartial = mkTipModel(partialValue(1.001, 'Missing corps', { atLeast: false }));
   const mDiffUnderlying = mkTipModel(partialValue(1.004, 'Missing corps', { atLeast: true }));
-  const tipAtLeast = deriveTableTooltip(resolveTableRows(mAtLeast, settings), 'GER', cols, new Set(), 10)!;
+  const tipAtLeast = deriveTableTooltip(resolveTableRows(mAtLeast, settings), 'GER', cols, 10)!;
   const extraRow = tipAtLeast.rows.find(r => r.label === 'Strength')!;
   assert.equal(extraRow.value, undefined, 'F8: tooltip row keeps typed ValueState instead of flattened string');
   assert.equal(extraRow.valueState?.kind, 'partial');
@@ -1532,7 +1532,7 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
     { key: 'score', label: 'Score', as: 'faint', tone: 'blue', offered: ['faint'], priority: 1, numeric: true, format: 'integer' },
     { key: 'extra', label: 'Extra', as: 'faint', tone: 'blue', offered: ['faint'], priority: 2, numeric: true, format: 'integer' },
   ];
-  const settings = tableSettingsOf(undefined, cols, { density: 'compact', overflow: 'tooltip', sort: { column: 'score', direction: 'descending' } });
+  const settings = tableSettingsOf(undefined, cols, { density: 'compact', sort: { column: 'score', direction: 'descending' } });
   const layouts = buildColumnLayouts(cols, settings);
   const N = 120;
   let seed = 0x51a7f00d;
@@ -1622,8 +1622,8 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
 
   const { ctx, counts } = instrumentedContext();
   (ctx as unknown as { createLinearGradient: () => { addColorStop: () => void } }).createLinearGradient = () => ({ addColorStop() {} });
-  const scrollSettings = tableSettingsOf(undefined, cols, { density: 'compact', overflow: 'scroll', sort: { column: 'score', direction: 'descending' } });
-  const scrollLayout = layoutFamilyTable(buildColumnLayouts(cols, scrollSettings, { name: 160, score: 160, extra: 160 }), 260, 'scroll');
+  const scrollSettings = tableSettingsOf(undefined, cols, { density: 'compact', sort: { column: 'score', direction: 'descending' } });
+  const scrollLayout = layoutFamilyTable(buildColumnLayouts(cols, scrollSettings, { name: 160, score: 160, extra: 160 }), 260);
   assert.equal(scrollLayout.scrollable, true);
   const groupedRows = resolveTableRows({
     columns: cols,
@@ -1702,7 +1702,7 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
     const rmSettings = tableSettingsOf(undefined, [
       { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
       { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
-    ], { density: 'compact', overflow: 'tooltip', sort: { column: 'v', direction: 'descending' } });
+    ], { density: 'compact', sort: { column: 'v', direction: 'descending' } });
     const state = new Map<string, unknown>();
     let seq = 1;
     const paintRows = (list: { id: string; v: number }[], hour: number) => laneView.paint({
@@ -1807,7 +1807,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
     transferToImageBitmap() { return { close() {} }; }
   };
   try {
-    const settingsFor = (direction: 'ascending' | 'descending') => tableSettingsOf(undefined, columns, { density: 'normal', overflow: 'scroll', sort: { column: 'v', direction } });
+    const settingsFor = (direction: 'ascending' | 'descending') => tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'v', direction } });
     const lane = () => {
       const view = familyTableLaneView(() => {}, { clock: () => 5000 });
       const state = new Map<string, unknown>();
@@ -1874,8 +1874,8 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
     { key: 'net', label: 'Net', as: 'plain', offered: ['plain'], priority: 1, numeric: true, cellKind: 'twoWay' },
   ];
-  const kindSettings = tableSettingsOf(undefined, kinds, { density: 'normal', overflow: 'scroll', sort: { column: 'net', direction: 'descending' } });
-  const grown = layoutFamilyTable(buildColumnLayouts(kinds, kindSettings, { pic: 52, name: 128, net: 140 }), 600, 'scroll');
+  const kindSettings = tableSettingsOf(undefined, kinds, { density: 'normal', sort: { column: 'net', direction: 'descending' } });
+  const grown = layoutFamilyTable(buildColumnLayouts(kinds, kindSettings, { pic: 52, name: 128, net: 140 }), 600);
   assert.deepEqual(grown.columns.map(c => c.width), [58, 600 - 58 - 146, 146], 'the item column takes all the spare width; the kind and two-way columns keep theirs');
 
   const signedRows = resolveTableRows({ hour: 1, columns: kinds, rows: [
@@ -1900,8 +1900,8 @@ test('cell kinds for converted tables: an item column takes the spare width, two
   assert.equal(extraModel.rows[1]!.cells.total!.blank, true);
 
   const grid = gridContext(400, 120);
-  const extraSettings = tableSettingsOf(undefined, extraModel.columns, { density: 'normal', overflow: 'scroll', sort: { column: 'name', direction: 'ascending' } });
-  const extraLayout = layoutFamilyTable(buildColumnLayouts(extraModel.columns, extraSettings, { name: 200, total: 120 }), 400, 'scroll');
+  const extraSettings = tableSettingsOf(undefined, extraModel.columns, { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
+  const extraLayout = layoutFamilyTable(buildColumnLayouts(extraModel.columns, extraSettings, { name: 200, total: 120 }), 400);
   drawFamilyTable(grid.ctx as unknown as CanvasRenderingContext2D, { layout: extraLayout, rows: resolveTableRows(extraModel, extraSettings), settings: extraSettings, hour: 1, width: 400, height: 120, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 1, glideDuration: 0, glide: new Map(), markers: new Map(), icons: new Map(), dpr: 1 });
   const texts = [...grid.marks.values()];
   assert.equal(texts.filter(t => t === '—').length, 1, 'the group row shows its not-applicable dash; the blank child cell draws nothing');
@@ -1928,7 +1928,7 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     const view = familyTableLaneView(() => {}, { clock: () => 1 });
     const state = new Map<string, unknown>();
     let seq = 1;
-    const settings = tableSettingsOf(undefined, [{ key: 'name', label: 'Country', as: 'plain', offered: ['plain'] }], { density: 'normal', overflow: 'scroll', sort: { column: 'name', direction: 'ascending' } });
+    const settings = tableSettingsOf(undefined, [{ key: 'name', label: 'Country', as: 'plain', offered: ['plain'] }], { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
     const paint = () => view.paint({
       widget: 1, subs: [], pictures: [],
       model: { family: 'table' as const, kind: 'test-names-arrive', options: {}, settings, sources: {}, staticPanels: { main: { at: seq } }, width: 120, height: 80, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
@@ -1946,7 +1946,7 @@ test('cell kinds for converted tables: an item column takes the spare width, two
 
 test('the table host adapter stores and resolves table settings through its declaration policy and sizes media rows', () => {
   const columns = [{ key: 'a', label: 'A', priority: 1, as: 'number', offered: ['number'], width: 80 }, { key: 'b', label: 'B', priority: 2, as: 'number', offered: ['number'], width: 80 }] as never;
-  const declaration = { family: 'table', kind: 'synthetic-settings', columns, settings: { kind: 'table', base: { density: 'normal', barsBehind: 'all', overflow: 'scroll', sort: { column: 'a', direction: 'descending' } } } };
+  const declaration = { family: 'table', kind: 'synthetic-settings', columns, settings: { kind: 'table', base: { density: 'normal', barsBehind: 'all', sort: { column: 'a', direction: 'descending' } } } };
   const policy = tableHostAdapter.settings!;
   const initial = policy.resolve(declaration, null, {});
   assert.equal(initial.sort.column, 'a');

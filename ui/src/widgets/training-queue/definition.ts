@@ -9,7 +9,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'equipment', label: 'Equipment', as: 'meterBefore', tone: 'grey', offered: OFFERED.number },
   { key: 'manpower', label: 'Manpower', as: 'plain', offered: ['plain'] },
 ];
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'tooltip', sort: { column: 'training', direction: 'descending' } };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', sort: { column: 'training', direction: 'descending' } };
 export const OPTIONS: readonly OptionField[] = [REACHED_COUNTRY_OPTION, ...tableFamilyOptions(COLUMNS, TABLE_BASE)];
 export const definition = {
   kind: 'training-queue', version: 1, title: 'Training queue', icon: 'helmet', category: 'Army',

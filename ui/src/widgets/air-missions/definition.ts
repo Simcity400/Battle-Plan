@@ -6,7 +6,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'region', label: 'Region', as: 'plain', offered: OFFERED.text },
 ];
 export const WINGS_COLUMN: TableColumnDefaults = { key: 'wings', label: 'Wings', as: 'faint', tone: 'grey', offered: OFFERED.number };
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'tooltip', sort: { column: 'wings', direction: 'descending' } };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', sort: { column: 'wings', direction: 'descending' } };
 export const OPTIONS: readonly OptionField[] = tableFamilyOptions(COLUMNS, TABLE_BASE);
 export const definition = {
   kind: 'air-missions', version: 1, title: 'Air missions', icon: 'plane', category: 'Air',

@@ -232,7 +232,7 @@ test('shared data-driven settings controls expose bars-behind, three row heights
     { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName', 'name'] },
     { key: 'factories', label: 'Factories', as: 'faint', offered: ['plain', 'faint'] },
   ];
-  const base: TableBase = { density: 'normal', barsBehind: 'sorted', overflow: 'tooltip', sort: { column: 'factories', direction: 'descending' } };
+  const base: TableBase = { density: 'normal', barsBehind: 'sorted', sort: { column: 'factories', direction: 'descending' } };
   const fields = [
     viewSwitchControl([{ value: 'rows', label: 'Rows' }, { value: 'bars', label: 'Bars' }], 'rows'),
     rowHeightControl('normal'),

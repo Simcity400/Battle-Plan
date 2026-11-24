@@ -9,7 +9,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'wing', label: 'Air wing', as: 'plain', offered: OFFERED.text },
   { key: 'since', label: 'Ace since', as: 'plain', offered: ['plain'] },
 ];
-export const TABLE_BASE: TableBase = { density: 'comfortable', barsBehind: 'all', overflow: 'tooltip', sort: { column: 'since', direction: 'descending' } };
+export const TABLE_BASE: TableBase = { density: 'comfortable', barsBehind: 'all', sort: { column: 'since', direction: 'descending' } };
 export const OPTIONS: readonly OptionField[] = tableFamilyOptions(COLUMNS, TABLE_BASE);
 export const definition = {
   kind: 'aces', version: 1, title: 'Aces', icon: 'star',

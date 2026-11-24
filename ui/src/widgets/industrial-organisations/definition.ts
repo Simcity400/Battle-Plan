@@ -10,7 +10,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'policy', label: 'Policy', as: 'plain', offered: OFFERED.text },
 ];
 export const DEFAULT_SORT = { column: 'size', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'normal', overflow: 'scroll', sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', sort: DEFAULT_SORT };
 export const OPTIONS: readonly OptionField[] = tableFamilyOptions(COLUMNS, TABLE_BASE);
 
 export const definition = {

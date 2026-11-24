@@ -24,10 +24,8 @@ interface ChromeMeta {
 interface ChromeWidths {
   readonly widths: Readonly<Record<string, number>>;
   readonly visible: readonly string[];
-  readonly hidden: readonly string[];
   readonly scrollable: boolean;
   readonly pinnedCount?: number;
-  readonly moreWidth: number;
 }
 
 export default function TableChrome({ state, settings, onSettings, editable, viewportWidth, bodyBlocked, announce, targets }: FamilyChromeProps<TableSettings>) {
@@ -64,21 +62,18 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
         const pinnedCount = measured.pinnedCount || 1;
         return {
           columns: visible,
-          totalWidth: rank + measured.moreWidth + visible.reduce((sum, col) => sum + col.width, 0),
+          totalWidth: rank + visible.reduce((sum, col) => sum + col.width, 0),
           scrollable: measured.scrollable,
           pinnedWidth: rank + visible.slice(0, pinnedCount).reduce((sum, col) => sum + col.width, 0),
           pinnedCount,
         };
       }
     }
-    const protectedKeys = new Set<string>();
-    if (!meta.unsorted && settings.sort.column) protectedKeys.add(settings.sort.column);
-    return layoutFamilyTable(base, Math.max(1, viewportWidth || 320), 'scroll', {
+    return layoutFamilyTable(base, Math.max(1, viewportWidth || 320), {
       rankShown: meta.rankShown === true,
       rankWidth: meta.rankWidth || 36,
-      protectedKeys,
     });
-  }, [columns, settings, measured, resizing, meta.unsorted, meta.rankShown, meta.rankWidth, viewportWidth]);
+  }, [columns, settings, measured, resizing, meta.rankShown, meta.rankWidth, viewportWidth]);
 
   const specMap = useMemo(() => new Map(columns.map(col => [col.key, col])), [columns]);
   const headerColumns = useMemo<TableHeaderColumn[]>(() => (layout?.columns ?? []).map(col => {
@@ -138,7 +133,6 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
           <FamilyTableHeader
             columns={headerColumns}
             allColumns={columns}
-            hiddenColumns={[]}
             settings={settings}
             unsorted={meta.unsorted}
             editableColumns={editable}

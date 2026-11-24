@@ -760,13 +760,7 @@ export function familyTableLaneView(
           held.widthConfigKey = configKey;
         }
         allLayouts = buildColumnLayouts(model.columns, bound.settings, held.fixedWidths);
-        const protectedKeys = new Set<string>();
-        if (!model.unsorted && bound.settings.sort.column) protectedKeys.add(bound.settings.sort.column);
-        layout = layoutFamilyTable(allLayouts, Math.max(1, bound.width), bound.settings.overflow, {
-          rankShown,
-          rankWidth,
-          protectedKeys,
-        });
+        layout = layoutFamilyTable(allLayouts, Math.max(1, bound.width), { rankShown, rankWidth });
         held.layoutCols = model.columns;
         held.layoutSettings = bound.settings;
         held.layoutWidth = bound.width;
@@ -782,11 +776,9 @@ export function familyTableLaneView(
         const widthsPayload = {
           widths: Object.fromEntries([...allLayouts.filter(col => col.shown), ...layout.columns].map(col => [col.key, col.width])),
           visible: layout.columns.map(col => col.key),
-          hidden: layout.hidden,
           totalWidth: layout.totalWidth,
           scrollable: layout.scrollable,
           pinnedCount: layout.pinnedCount,
-          moreWidth: layout.moreWidth,
         };
         const widthsText = JSON.stringify(widthsPayload);
         held.widthsField = { value: widthsPayload, content: cachedField(held, 'widths', widthsText, content) };
@@ -1027,13 +1019,12 @@ export function familyTableLaneView(
       }
       if (held.mirrorField) fields.mirror = held.mirrorField;
 
-      const hiddenSet = (inspectedKey || focusedKey) ? new Set(layout.hidden) : null;
       let builtTipKey: string | null = null;
       let builtTip: ReturnType<typeof deriveTableTooltip> = null;
       const getTip = (rowKey: string) => {
         if (builtTipKey === rowKey) return builtTip;
         builtTipKey = rowKey;
-        builtTip = deriveTableTooltip(flatRows, rowKey, model.columns, hiddenSet!, model.hour);
+        builtTip = deriveTableTooltip(flatRows, rowKey, model.columns, model.hour);
         return builtTip;
       };
 
@@ -1081,7 +1072,6 @@ export function familyTableLaneView(
             model,
             flatRows,
             visibleColumns: layout.columns,
-            hiddenKeys: new Set(layout.hidden),
             rankShown,
             maxima,
             window: bound.window,

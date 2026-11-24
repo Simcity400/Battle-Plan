@@ -5,7 +5,6 @@ import {
   ROW_MARGIN_X,
   type TableColumnLayout,
   type TableLayout,
-  type TableOverflow,
   type TableSettings,
   type TableTheme,
 } from './settings.ts';
@@ -33,7 +32,6 @@ export interface FamilyColumnLayout extends TableColumnLayout {
 
 export interface FamilyTableLayout extends Omit<TableLayout, 'columns'> {
   readonly columns: FamilyColumnLayout[];
-  readonly moreWidth: number;
 }
 
 const SORT_ARROW_WIDTH = 16;
@@ -217,15 +215,12 @@ function growColumns(shown: readonly FamilyColumnLayout[], spare: number): Famil
 export function layoutFamilyTable(
   columns: readonly FamilyColumnLayout[],
   available: number,
-  overflow: TableOverflow,
   options: {
     readonly rankShown?: boolean;
     readonly rankWidth?: number;
-    readonly protectedKeys?: ReadonlySet<string>;
   } = {},
 ): FamilyTableLayout {
-  const plain = columns.filter(col => col.shown);
-  const shown = withEdgeInsets(plain);
+  const shown = withEdgeInsets(columns.filter(col => col.shown));
   const rank = options.rankShown ? (options.rankWidth ?? 36) : 0;
   let pinnedCount = 0;
   for (let i = 0; i < shown.length; i++) {
@@ -233,53 +228,11 @@ export function layoutFamilyTable(
     else break;
   }
   if (pinnedCount === 0 && shown.length > 0) pinnedCount = 1;
-  const pinnedWidth = rank + shown.slice(0, pinnedCount).reduce((sum, col) => sum + col.width, 0);
-  const totalOf = (list: readonly FamilyColumnLayout[]) => rank + list.reduce((sum, col) => sum + col.width, 0);
-  const rawTotal = totalOf(shown);
+  const pinnedWidthOf = (list: readonly FamilyColumnLayout[]) => rank + list.slice(0, pinnedCount).reduce((sum, col) => sum + col.width, 0);
+  const rawTotal = rank + shown.reduce((sum, col) => sum + col.width, 0);
   if (rawTotal < available && shown.length > 0) {
     const expanded = growColumns(shown, available - rawTotal);
-    const nextPinnedWidth = rank + expanded.slice(0, pinnedCount).reduce((sum, col) => sum + col.width, 0);
-    return {
-      columns: expanded,
-      hidden: [],
-      totalWidth: available,
-      scrollable: false,
-      pinnedWidth: nextPinnedWidth,
-      pinnedCount,
-      moreWidth: 0,
-    };
+    return { columns: expanded, totalWidth: available, scrollable: false, pinnedWidth: pinnedWidthOf(expanded), pinnedCount };
   }
-  const scrollable = rawTotal > available && overflow === 'scroll';
-  if (overflow === 'scroll' || rawTotal <= available) {
-    return {
-      columns: shown,
-      hidden: [],
-      totalWidth: rawTotal,
-      scrollable,
-      pinnedWidth,
-      pinnedCount,
-      moreWidth: 0,
-    };
-  }
-  const protectedKeys = new Set<string>(options.protectedKeys ?? []);
-  for (let i = 0; i < pinnedCount; i++) if (shown[i]) protectedKeys.add(shown[i]!.key);
-  const hidden = new Set<string>();
-  let kept = shown;
-  const candidates = plain
-    .filter(col => !protectedKeys.has(col.key))
-    .sort((a, b) => b.priority - a.priority);
-  for (const col of candidates) {
-    if (totalOf(kept) <= available) break;
-    hidden.add(col.key);
-    kept = withEdgeInsets(plain.filter(item => !hidden.has(item.key)));
-  }
-  return {
-    columns: kept,
-    hidden: [...hidden],
-    totalWidth: totalOf(kept),
-    scrollable: totalOf(kept) > available,
-    pinnedWidth: rank + kept.slice(0, Math.min(pinnedCount, kept.length)).reduce((sum, col) => sum + col.width, 0),
-    pinnedCount: Math.min(pinnedCount, kept.length),
-    moreWidth: 0,
-  };
+  return { columns: shown, totalWidth: rawTotal, scrollable: rawTotal > available, pinnedWidth: pinnedWidthOf(shown), pinnedCount };
 }
