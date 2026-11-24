@@ -185,6 +185,44 @@ test('review 5 finding 16: each pointer is answered with the row under its own p
   } finally { close(); }
 });
 
+test('R3-S7: a hit asked on A and answered after B installs reaches its callback, but never inspects B with A’s key; a page showing nothing misses', async () => {
+  const drawn: LaneView = { paint: input => ({ surfaces: input.binding.surfaces.map(() => ({ source: { width: 1, height: 1 }, content: `h:${input.hour}` })), fields: {}, motion: false,
+    hit: () => `row:${input.hour}` }) };
+  const { pipeline, clock, send, source, settle, close } = inProcess({ views: kind => kind === 'drawn' ? drawn : undefined });
+  try {
+    const id = pipeline.acquire('widget|0', { offset: 0, pin: null });
+    const sub = pipeline.subscribe(id, {}, source, '1', 0, { product: 'series-state' }, 'followed')!;
+    pipeline.present(id, 'drawn');
+    pipeline.bind(id, [surface()], { surfaces: [{ width: 10, height: 1, dpr: 1 }] });
+    clock.seek(10);
+    await settle(() => pipeline.status(sub).status === 'followed');
+    send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [7n] } }], false, NATIVE, clock.getSnapshot().seekSequence));
+    assert.ok(await settle(() => pipeline.view(id)?.mode === 'picture'));
+    const a = pipeline.view(id)!.id;
+    const worker = (pipeline as unknown as { host: { lanes: { onmessage: ((event: MessageEvent) => void) | null }[] } }).host.lanes[0]!;
+    const deliver = worker.onmessage!;
+    const held: MessageEvent[] = [];
+    worker.onmessage = event => { if ((event.data as { type: string }).type === 'hit') held.push(event); else deliver(event); };
+    const heard: { key: string | null; installedId?: number }[] = [];
+    pipeline.pointer(id, 0, [1, 0], (key, meta) => heard.push({ key, ...(meta?.installedId !== undefined ? { installedId: meta.installedId } : {}) }));
+    assert.ok(await settle(() => held.length === 1));
+    send(message(12, [{ id: sub, answer: { keys: [1n], columns: 1, values: [8n], changed: true } }], false, NATIVE, clock.getSnapshot().seekSequence));
+    clock.seek(12);
+    send(message(12, [{ id: sub, answer: { keys: [1n], columns: 1, values: [8n] } }], false, NATIVE, clock.getSnapshot().seekSequence));
+    assert.ok(await settle(() => pipeline.view(id)?.id !== a && pipeline.view(id)?.mode === 'picture'), 'B installs while A’s hit is in flight');
+    worker.onmessage = deliver;
+    for (const event of held) deliver(event);
+    assert.deepEqual(heard, [{ key: 'row:10', installedId: a }], 'the stamped click is delivered to its callback with the picture it hit');
+    assert.equal(pipeline.inspecting(id), null, 'live inspection is not moved onto B with A’s key');
+
+    pipeline.page.name(id, 'reading');
+    const blank: (string | null)[] = [];
+    pipeline.pointer(id, 0, [1, 0], key => blank.push(key));
+    assert.ok(await settle(() => blank.length === 1));
+    assert.deepEqual([blank[0], pipeline.inspecting(id)], [null, null], 'with no picture on the page, the lane’s old picture is not hit');
+  } finally { close(); }
+});
+
 test('review 6 C: a route nobody follows is sent no clock, so a widget scrolled back in installs on the same seek', async () => {
   const { pipeline, clock, send, source, asked, settle, close } = inProcess();
   try {

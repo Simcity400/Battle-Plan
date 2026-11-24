@@ -46,7 +46,7 @@ interface WidgetState {
 }
 
 export interface SupplyChange {
-  readonly statics?: { readonly staticPanels?: unknown; readonly staticAnswers?: unknown } | null;
+  readonly statics?: { readonly staticPanels?: unknown; readonly staticAnswers?: unknown; readonly staticShifts?: unknown } | null;
   readonly identity?: object | null;
   readonly dated?: Dated | null;
 }
@@ -302,9 +302,9 @@ export class Pipeline {
       const told = this.hits.get(message.widget)?.shift();
       const pageWidget = this.page.widgets.get(message.widget);
       const staleOwner = message.owner !== undefined && pageWidget?.owner !== undefined && message.owner !== pageWidget.owner;
-      const staleInstall = message.installedId !== undefined && told?.installed !== undefined && message.installedId !== told.installed;
+      const staleInstall = told !== undefined && message.installedId !== told.installed;
       const acceptedKey = staleOwner || staleInstall ? null : message.key;
-      if (!staleOwner && !staleInstall) {
+      if (!staleOwner && !staleInstall && pageWidget?.installed?.id === message.installedId) {
         this.page.inspect(message.widget, acceptedKey);
         this.flush();
       }
