@@ -141,6 +141,9 @@ test('research timeline projects slot lanes clipped to the playhead, with covera
 
   assert.equal(model.lanes.length, 2, 'slot 3 opens at day 180 and stays hidden at day 160');
   assert.deepEqual(model.lanes.map(l => l.label), ['Slot 1', 'Slot 2']);
+  assert.equal(model.lanes[0]!.openedMarker, undefined, 'slot open at coverage start carries no opened marker');
+  assert.deepEqual(model.lanes[1]!.openedMarker, { hour: day(100), label: 'opened' }, 'slot opening inside recorded coverage carries opened marker');
+  assert.deepEqual(model.legend?.map(entry => entry.label), ['Completed', 'In progress', 'Idle', 'Not recorded']);
   assert.equal(model.summaryText, '2 completed');
   assert.deepEqual(model.unobserved, [{ firstHour: day(60) + 1, lastHour: day(80) - 1 }]);
   assert.deepEqual(model.notes, ['Head: 1 in progress · Improved Submarine 81%, 29 days left']);
@@ -177,6 +180,23 @@ test('research timeline projects slot lanes clipped to the playhead, with covera
   assert.equal(filtered.lanes[0]!.spans[0]!.color, CHART_MEASURE_COLOURS.other, 'non-matching folder dimmed');
   assert.equal(filtered.lanes[0]!.spans[2]!.color, CHART_MEASURE_COLOURS.intelCoverage, 'matching folder stays highlighted');
   assert.equal(filtered.summaryText, '0 completed');
+
+  const noGapData = dataOf({
+    coverage: [{ firstHour: day(0), lastHour: day(200) }],
+    slots: [slot(0, [{ firstHour: day(0), lastHour: day(200) }], [])],
+  });
+  const noGapModel = researchProjection.project(createBoundedReadView({ hour: day(100), panels: new Map<string, unknown>([['main', noGapData]]) }), opt);
+  assert.deepEqual(noGapModel.legend?.map(entry => entry.label), ['Completed', 'In progress', 'Idle']);
+
+  const afterGapData = dataOf({
+    coverage: [{ firstHour: day(0), lastHour: day(60) }, { firstHour: day(80), lastHour: day(200) }],
+    slots: [
+      slot(0, [{ firstHour: day(0), lastHour: day(60) }, { firstHour: day(80), lastHour: day(200) }], []),
+      slot(1, [{ firstHour: day(80), lastHour: day(200) }], []),
+    ],
+  });
+  const afterGapModel = researchProjection.project(createBoundedReadView({ hour: day(120), panels: new Map<string, unknown>([['main', afterGapData]]) }), opt);
+  assert.equal(afterGapModel.lanes[1]!.openedMarker, undefined, 'slot first seen right after a gap has unrecorded opening and omits marker');
 });
 
 test('coverage helpers and completedRow preserve cross-slot start date and duration', () => {
