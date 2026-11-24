@@ -792,6 +792,37 @@ pub(super) fn compare_raids(
                 format!("{label}.travelled"),
             ),
         }
+        let saved_end = saved_end_hour(saved)?;
+        match row.end_hour_recorded() {
+            replay_data::rows::Recorded::Value(end_hour) => equal(
+                report,
+                format!("{label}.end_hour"),
+                end_hour,
+                saved_end,
+            ),
+            replay_data::rows::Recorded::NotRecorded => report.limitation(
+                "the recording did not read this raid's completion date",
+                format!("{label}.end_hour"),
+            ),
+        }
+        match row.completion_country_recorded() {
+            replay_data::rows::Recorded::Value(completion_country) => {
+                let actual = completion_country
+                    .map(|raw| signed_country(raw as i32, countries))
+                    .transpose()?
+                    .flatten();
+                equal(
+                    report,
+                    format!("{label}.completion_country"),
+                    actual,
+                    saved.victim_country.as_deref(),
+                );
+            }
+            replay_data::rows::Recorded::NotRecorded => report.limitation(
+                "the recording did not read this raid's completion country",
+                format!("{label}.completion_country"),
+            ),
+        }
         count += 1;
     }
     for id in expected_children.keys() {
@@ -801,7 +832,7 @@ pub(super) fn compare_raids(
     }
     report.compared("Raids", count);
     report.limitation(
-        "dummy payloads, equipment payloads, dates and victims are outside this field set",
+        "dummy payloads and equipment payloads are outside this field set",
         "Raids and RaidCountries",
     );
     Ok(())
