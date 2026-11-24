@@ -644,11 +644,9 @@ function wrapBoundedRowSource<TRow extends DatedLogRow>(
   return {
     identity: source.identity,
     total: source.total,
-    liveCount: source.liveCount,
     at: source.at,
     missing: boundedMissing,
     refused: source.refused,
-    frozen: source.frozen && source.frozen.hour <= hour ? source.frozen : null,
     ...(source.facetTotals ? { facetTotals: source.facetTotals } : {}),
     ...(source.rawHead !== undefined ? { rawHead: source.rawHead } : {}),
     sliceAt(reqHour: number, first: number, count: number): readonly LogRowSlot<TRow>[] {
@@ -698,6 +696,7 @@ export interface BoundedReadViewInput {
   };
   readonly resolveLive?: (name: string) => LiveValues<number | bigint | string> | null | undefined;
   readonly resolveRows?: (name: string) => TableRowSource<DatedLogRow> | undefined;
+  readonly onRowWindow?: () => void;
 }
 
 const NO_REVISIONS: Readonly<Record<string, number>> = Object.freeze({});
@@ -729,7 +728,10 @@ export function createBoundedReadView(input: BoundedReadViewInput): BoundedReadV
     hour: h,
     validInterval,
     revisions,
-    ...(input.rowWindow ? { rowWindow: input.rowWindow } : {}),
+    get rowWindow() {
+      input.onRowWindow?.();
+      return input.rowWindow;
+    },
     panel<T = unknown>(name: string): T | undefined {
       const raw = ensure().panels.get(name);
       if (raw !== undefined && raw !== null && typeof raw === 'object') {
