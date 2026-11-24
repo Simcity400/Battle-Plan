@@ -106,6 +106,15 @@ pub struct CountryFlagUnavailable {
     #[doc = " The choice: its index in the request's `flags`."]
     pub flag: u32,
     pub reason: String,
+    pub resolution: dashboard_base::products::artwork::ArtResolution,
+}
+
+fn unavailable_flag(flag: u32, resolution: dashboard_base::products::artwork::ArtResolution) -> CountryFlagUnavailable {
+    CountryFlagUnavailable {
+        flag,
+        reason: resolution.reason().unwrap_or(UNAVAILABLE).to_owned(),
+        resolution,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -1086,10 +1095,12 @@ impl FlagContext {
                     size: request.size,
                     flags,
                     unavailable: (0..request.flags.len() as u32)
-                        .map(|flag| CountryFlagUnavailable {
-                            flag,
+                        .map(|flag| unavailable_flag(flag, dashboard_base::products::artwork::ArtResolution::Refused {
                             reason: format!("Shield artwork unavailable: {reason}"),
-                        })
+                            construct: "flag-shield-style".to_owned(),
+                            origin: None,
+                            file: None,
+                        }))
                         .collect(),
                     warnings,
                 });
@@ -1111,6 +1122,7 @@ impl FlagContext {
             }
             let mut found = None;
             let mut reasons = Vec::new();
+            let mut refused = false;
             for &set in sets {
                 let at = atlas(set);
                 let Some(key) = &choice.keys[at] else {
@@ -1128,6 +1140,7 @@ impl FlagContext {
                     if finding.kind == dashboard_core::findings::Kind::Refused {
                         warnings.push(format!("{key}: {}", finding.message));
                         reasons.push(finding.message);
+                        refused = true;
                     }
                 }
                 if let FlagSearch::Found { asset, image, origin } = search {
@@ -1137,14 +1150,14 @@ impl FlagContext {
             }
             match found {
                 Some((asset, image, origin)) => shielded.push((flag, asset, image, origin)),
-                None => unavailable.push(CountryFlagUnavailable {
-                    flag,
-                    reason: if reasons.is_empty() {
-                        UNAVAILABLE.into()
+                None => {
+                    let reason = if reasons.is_empty() { UNAVAILABLE.into() } else { reasons.join("; ") };
+                    unavailable.push(unavailable_flag(flag, if refused {
+                        dashboard_base::products::artwork::ArtResolution::Refused { reason, construct: "flag-file".to_owned(), origin: None, file: None }
                     } else {
-                        reasons.join("; ")
-                    },
-                }),
+                        dashboard_base::products::artwork::ArtResolution::ConfirmedMissing { reason, origin: None, file: None }
+                    }));
+                }
             }
         }
         let drawn: Vec<io::Result<Rgba8Image>> = match shield_style {
@@ -1160,7 +1173,7 @@ impl FlagContext {
                     Ok(drawn) => drawn,
                     Err(error) => {
                         warnings.push(format!("Shield artwork unavailable: {error}"));
-                        Vec::new()
+                        shielded.iter().map(|_| Err(io::Error::other(error.to_string()))).collect()
                     }
                 }
             }
@@ -1178,7 +1191,7 @@ impl FlagContext {
                     if !warnings.contains(&reason) {
                         warnings.push(reason.clone());
                     }
-                    unavailable.push(CountryFlagUnavailable { flag, reason });
+                    unavailable.push(unavailable_flag(flag, dashboard_base::products::artwork::ArtResolution::Failed { reason, retryable: false }));
                     continue;
                 }
             };
@@ -1223,10 +1236,10 @@ impl FlagContext {
                         resolution: Some(resolution),
                     });
                 }
-                Err(error) => unavailable.push(CountryFlagUnavailable {
-                    flag,
+                Err(error) => unavailable.push(unavailable_flag(flag, dashboard_base::products::artwork::ArtResolution::Failed {
                     reason: format!("flag artwork could not be encoded: {error}"),
-                }),
+                    retryable: false,
+                })),
             }
         }
         Ok(CountryFlagReply {
@@ -1552,6 +1565,11 @@ mod tests {
         assert_eq!(
             reply.unavailable[0].reason,
             format!("Shield artwork unavailable: {reason}")
+        );
+        assert!(
+            matches!(reply.unavailable[0].resolution, dashboard_base::products::artwork::ArtResolution::Refused { .. }),
+            "an unsupported shield is refused, never confirmed missing: {:?}",
+            reply.unavailable[0].resolution
         );
         assert_eq!(
             reply.warnings,

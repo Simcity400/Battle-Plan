@@ -134,6 +134,116 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.rosterProjection, declaration: mod.rosterDeclaration }),
     ),
   },
+  {
+    kind: 'industrial-organisations',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'industrial-organisations',
+      DEFAULT_VIEW,
+      () => import('../industrial-organisations/organisationsProjection.ts'),
+      mod => ({ projection: mod.organisationsProjection, declaration: mod.organisationsDeclaration }),
+    ),
+  },
+  {
+    kind: 'agency-comparison',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'agency-comparison',
+      DEFAULT_VIEW,
+      () => import('../agency-comparison/agencyProjection.ts'),
+      mod => ({ projection: mod.agencyProjection, declaration: mod.agencyDeclaration }),
+    ),
+  },
+  {
+    kind: 'equipment-designs',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'equipment-designs',
+      DEFAULT_VIEW,
+      () => import('../equipment-designs/designsProjection.ts'),
+      mod => ({ projection: mod.designsProjection, declaration: mod.designsDeclaration }),
+    ),
+  },
+  {
+    kind: 'air-missions',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'air-missions',
+      DEFAULT_VIEW,
+      () => import('../air-missions/airMissionsProjection.ts'),
+      mod => ({ projection: mod.airMissionsProjection, declaration: mod.airMissionsDeclaration }),
+    ),
+  },
+  {
+    kind: 'dockyards-and-repairs',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'dockyards-and-repairs',
+      DEFAULT_VIEW,
+      () => import('../dockyards-and-repairs/dockyardsProjection.ts'),
+      mod => ({ projection: mod.dockyardsProjection, declaration: mod.dockyardsDeclaration }),
+    ),
+  },
+  {
+    kind: 'refits',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'refits',
+      DEFAULT_VIEW,
+      () => import('../refits/refitsProjection.ts'),
+      mod => ({ projection: mod.refitsProjection, declaration: mod.refitsDeclaration }),
+    ),
+  },
+  {
+    kind: 'training-queue',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'training-queue',
+      DEFAULT_VIEW,
+      () => import('../training-queue/trainingQueueProjection.ts'),
+      mod => ({ projection: mod.trainingQueueProjection, declaration: mod.trainingQueueDeclaration }),
+    ),
+  },
+  {
+    kind: 'aces',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'aces',
+      DEFAULT_VIEW,
+      () => import('../aces/acesProjection.ts'),
+      mod => ({ projection: mod.acesProjection, declaration: mod.acesDeclaration }),
+    ),
+  },
+  {
+    kind: 'faction-goals',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'faction-goals',
+      DEFAULT_VIEW,
+      () => import('../faction-goals/factionGoalsProjection.ts'),
+      mod => ({ projection: mod.factionGoalsProjection, declaration: mod.factionGoalsDeclaration }),
+    ),
+  },
+  {
+    kind: 'most-decorated-divisions',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'most-decorated-divisions',
+      DEFAULT_VIEW,
+      () => import('../most-decorated-divisions/mostDecoratedProjection.ts'),
+      mod => ({ projection: mod.mostDecoratedProjection, declaration: mod.mostDecoratedDeclaration }),
+    ),
+  },
 ];
 
 export const tableFamilyManifest: FamilyManifestModule = {

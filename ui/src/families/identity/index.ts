@@ -1,7 +1,8 @@
-import type { Failure } from '../../dashboard/queryError';
+import { classifyFailure, RefusedError, type Failure } from '../../dashboard/queryError.ts';
 import type {
   CountryFactsReply,
   CountryFlagChoice,
+  CountryFlagSize,
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyle,
@@ -10,6 +11,7 @@ import type {
   HourSpan,
 } from '../../generated/dashboard';
 import { compareTags } from '../../dashboard/tagOrder.ts';
+import { artHandleKey } from '../art/types.ts';
 import { resolveSlotHolderRuns, type HolderRun } from '../holders.ts';
 import {
   countryTagKey,
@@ -20,6 +22,7 @@ import {
   type CountryIdentityKey,
   type CountryIdentityResult,
   type DrawnFlagEntry,
+  type EntityIdentityKey,
   type EntityIdentityResult,
   type EntityRunEntry,
   type FactionIdentityKey,
@@ -30,6 +33,8 @@ import {
   type IdentityResult,
   type IdentityScope,
   type IdentitySnapshot,
+  type SnapshotFailure,
+  type SnapshotFailures,
   type StyleIntervalEntry,
 } from './types.ts';
 
@@ -43,6 +48,25 @@ const NO_NAME = 'Country name unavailable';
 const NO_FLAG = 'flag unavailable';
 const FACTIONS_NOT_RECORDED = 'Factions were not recorded at this hour';
 const FACTION_ABSENT = 'Faction does not exist at this hour';
+
+export function drawnFlagKey(size: CountryFlagSize, choice: CountryFlagChoice): string {
+  return artHandleKey({ kind: 'flag', choice: flagChoiceKey(choice), size });
+}
+
+function sentFailure(failure: Failure): SnapshotFailure {
+  return { message: failure.message, refused: classifyFailure(failure)?.kind === 'refused' };
+}
+
+function keptFailure(sent: SnapshotFailure): Failure {
+  return sent.refused ? new RefusedError(sent.message) : new Error(sent.message);
+}
+
+function sentFailures(failures: ReadonlyMap<string, Failure>): Record<string, SnapshotFailure> | undefined {
+  if (!failures.size) return undefined;
+  const out: Record<string, SnapshotFailure> = {};
+  for (const [key, failure] of failures) out[key] = sentFailure(failure);
+  return out;
+}
 
 function nextBoundaryOf(lastHour: number): number {
   return Number.isFinite(lastHour) ? lastHour + 1 : Infinity;
@@ -187,10 +211,16 @@ export class IdentityIndex {
       }
     }
     if (snapshot.drawnFlags) {
-      for (const [choice, entry] of Object.entries(snapshot.drawnFlags)) {
-        index.drawnFlags.set(choice, entry);
+      for (const [key, entry] of Object.entries(snapshot.drawnFlags)) {
+        index.drawnFlags.set(key, entry);
       }
     }
+    const failures = snapshot.failures;
+    if (failures?.facts) index.factsFailure = keptFailure(failures.facts);
+    if (failures?.identities) index.identitiesFailure = keptFailure(failures.identities);
+    if (failures?.groups) index.groupsFailure = keptFailure(failures.groups);
+    for (const [key, sent] of Object.entries(failures?.styles ?? {})) index.styleFailures.set(key, keptFailure(sent));
+    for (const [key, sent] of Object.entries(failures?.entities ?? {})) index.entityFailures.set(key, keptFailure(sent));
     return index;
   }
 
@@ -200,7 +230,16 @@ export class IdentityIndex {
     const entities: Record<string, readonly EntityRunEntry[]> = {};
     for (const [key, entries] of this.entityRuns) entities[key] = entries;
     const drawnFlags: Record<string, DrawnFlagEntry> = {};
-    for (const [choice, entry] of this.drawnFlags) drawnFlags[choice] = entry;
+    for (const [key, entry] of this.drawnFlags) drawnFlags[key] = entry;
+    const styleFailures = sentFailures(this.styleFailures);
+    const entityFailures = sentFailures(this.entityFailures);
+    const failures: SnapshotFailures = {
+      ...(this.factsFailure ? { facts: sentFailure(this.factsFailure) } : {}),
+      ...(this.identitiesFailure ? { identities: sentFailure(this.identitiesFailure) } : {}),
+      ...(this.groupsFailure ? { groups: sentFailure(this.groupsFailure) } : {}),
+      ...(styleFailures ? { styles: styleFailures } : {}),
+      ...(entityFailures ? { entities: entityFailures } : {}),
+    };
     return {
       scope: this.scope,
       ...(Number.isFinite(this.branchBounds[0]) && Number.isFinite(this.branchBounds[1]) ? { branchBounds: this.branchBounds } : {}),
@@ -210,11 +249,16 @@ export class IdentityIndex {
       ...(this.styleRuns.size ? { styles } : {}),
       ...(this.entityRuns.size ? { entities } : {}),
       ...(this.drawnFlags.size ? { drawnFlags } : {}),
+      ...(Object.keys(failures).length ? { failures } : {}),
     };
   }
 
   setBranchBounds(bounds: HourInterval): void {
     this.branchBounds = bounds;
+  }
+
+  bounds(): HourInterval {
+    return this.branchBounds;
   }
 
   setFacts(reply: CountryFactsReply, final = true): void {
@@ -318,22 +362,39 @@ export class IdentityIndex {
     this.styleFailures.delete(`${Math.floor(hour)}\u0000${tag}`);
   }
 
-  setEntityRuns(key: Exclude<IdentityKey, CountryIdentityKey | FactionIdentityKey>, runs: readonly EntityRunEntry[]): void {
+  setEntityRuns(key: EntityIdentityKey, runs: readonly EntityRunEntry[]): void {
     const id = identityKeyString(key);
     this.entityRuns.set(id, [...runs].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour));
     this.entityFailures.delete(id);
   }
 
-  setEntityFailure(key: Exclude<IdentityKey, CountryIdentityKey | FactionIdentityKey>, failure: Failure): void {
+  addEntityRun(key: EntityIdentityKey, run: EntityRunEntry): void {
+    const id = identityKeyString(key);
+    const kept = (this.entityRuns.get(id) ?? []).filter(item => item.lastHour < run.firstHour || item.firstHour > run.lastHour);
+    kept.push(run);
+    kept.sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
+    this.entityRuns.set(id, kept);
+    this.entityFailures.delete(id);
+  }
+
+  setEntityFailure(key: EntityIdentityKey, failure: Failure): void {
     this.entityFailures.set(identityKeyString(key), failure);
   }
 
-  setDrawnFlag(choice: CountryFlagChoice, entry: DrawnFlagEntry): void {
-    this.drawnFlags.set(flagChoiceKey(choice), entry);
+  clearEntityFailures(): void {
+    this.entityFailures.clear();
   }
 
-  getDrawnFlag(choice: CountryFlagChoice): DrawnFlagEntry | undefined {
-    return this.drawnFlags.get(flagChoiceKey(choice));
+  setDrawnFlag(size: CountryFlagSize, choice: CountryFlagChoice, entry: DrawnFlagEntry): void {
+    this.drawnFlags.set(drawnFlagKey(size, choice), entry);
+  }
+
+  getDrawnFlag(size: CountryFlagSize, choice: CountryFlagChoice): DrawnFlagEntry | undefined {
+    return this.drawnFlags.get(drawnFlagKey(size, choice));
+  }
+
+  forgetDrawnFlag(size: CountryFlagSize, choice: CountryFlagChoice): void {
+    this.drawnFlags.delete(drawnFlagKey(size, choice));
   }
 
   slotHolderAt(slot: number, hour: number): { readonly tag: string; readonly countryId: number; readonly valid: HourInterval } | null {
@@ -712,7 +773,7 @@ export class IdentityIndex {
     };
   }
 
-  private resolveEntity(key: Exclude<IdentityKey, CountryIdentityKey | FactionIdentityKey>, at: number): EntityIdentityResult {
+  private resolveEntity(key: EntityIdentityKey, at: number): EntityIdentityResult {
     const id = identityKeyString(key);
     const entry = findCoveringEntity(this.entityRuns.get(id), at);
     if (entry) {

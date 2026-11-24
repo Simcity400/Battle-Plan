@@ -1,5 +1,0 @@
-.industrial-organisations { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.mio-icon { width: 22px; height: 22px; flex: none; object-fit: contain; }
-.mio-muted { color: var(--muted); }
-.mio-name { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
-.industrial-organisations-main { display: flex; flex-direction: column; flex: 1; min-height: 0; }

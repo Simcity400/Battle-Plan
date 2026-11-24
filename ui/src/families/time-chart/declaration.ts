@@ -85,7 +85,7 @@ export interface TimeChartBinding<TOptions = unknown> {
   readonly height: number;
   readonly theme?: FamilyTheme;
   readonly identitySnapshot?: IdentitySnapshot | null;
-  readonly spriteResolutions?: Readonly<Record<string, ArtResolution>>;
+  readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
   readonly view?: { readonly x?: readonly [number, number] | null; readonly y?: readonly [number, number] | null };
   readonly tiledLines?: readonly SerializedTiledLine[];
   readonly keepTiled?: readonly number[];

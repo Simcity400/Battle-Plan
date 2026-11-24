@@ -361,6 +361,18 @@ test('occupied-states, game-score (with faction groups), and division-template (
   const gsFlat = resolveTableRows(gsModel, tableSettingsOf(undefined, gsCols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'total', direction: 'descending' } }));
   assert.deepEqual(gsFlat.filter(r => r.kind === 'group-header').map(r => r.label), ['Allies', 'Axis']);
 
+  const gsTopOptions = { all: false, holders: null, membership: null, top: 1, by: 'army' as const, factions: false, factionRuns: null, rankMarkers: false, labels: {} };
+  const gsTopAt = (top: unknown, live: (key: string) => number) => gameScoreProjection.project(createBoundedReadView({
+    hour: 50,
+    panels: new Map([['main', { ...gsReply, ...(top === undefined ? {} : { top }) }]]),
+    live: new Map([['main', { get: live, missing: () => 'Not recorded' }]]),
+  }), gsTopOptions);
+  const gsRanked = gsTopAt({ tags: ['ENG'], missing: null }, key => (key.startsWith('GER') ? 300 : 200));
+  assert.deepEqual(gsRanked.rows.map(row => row.key), ['ENG'], 'the top is the product\u2019s, not a client sort of live values that favour GER');
+  const gsRefused = gsTopAt({ tags: [], missing: 'The top 1 by army score needs every country\u2019s army score, and 1 of 3 were not recorded at this hour' }, () => 1);
+  assert.deepEqual([gsRefused.rows.length, gsRefused.empty], [0, 'The top 1 by army score needs every country\u2019s army score, and 1 of 3 were not recorded at this hour'], 'an unproven top is refused with the product\u2019s reason');
+  assert.equal(gsTopAt(undefined, () => 1).rows.length, 0, 'a top never answered is not ranked in the client');
+
   const dtReply: DivisionTemplatesReply = {
     tag: 'GER',
     countFor: 'owner',
@@ -546,9 +558,10 @@ test('layout hides lowest-priority columns into tooltip or keeps all columns in 
   const hiddenLayout = layoutFamilyTable(cols, 370, 'tooltip');
   assert.deepEqual(hiddenLayout.columns.map(c => c.key), ['state', 'resistance']);
   assert.deepEqual(hiddenLayout.hidden, ['owner']);
+  assert.deepEqual(hiddenLayout.columns.map(c => [c.leadInset ?? 0, c.trailInset ?? 0]), [[6, 0], [0, 6]], 'the 6 px side margin sits on the first and last columns kept');
   const scrollLayout = layoutFamilyTable(cols, 250, 'scroll');
   assert.equal(scrollLayout.scrollable, true);
-  assert.equal(scrollLayout.pinnedWidth, 140);
+  assert.equal(scrollLayout.pinnedWidth, 146);
 
   const bigModel = {
     columns: specs.slice(0, 2),
@@ -975,7 +988,7 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
       columns: occCols,
       hour: 50,
       rank: true,
-      summaryPill: opts.pill,
+      titleSummary: opts.pill,
       rows: [{
         key: 'S1',
         name: opts.missingName ? 'Name not recorded' : 'Germany',
@@ -1003,7 +1016,7 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
   assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: true, flag: 'ger.png', missingName: false, pill: '1 state', extra: '80%' })), null, 'N1: catches garrison alert flag change');
   assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'pol.png', missingName: false, pill: '1 state', extra: '80%' })), null, 'N1: catches flag identity change');
   assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: true, pill: '1 state', extra: '80%' })), null, 'N1: catches missingName hatch change');
-  assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: false, pill: '2 states', extra: '80%' })), null, 'N1: catches summaryPill change');
+  assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: false, pill: '2 states', extra: '80%' })), null, 'N1: catches titleSummary change');
   assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: false, pill: '1 state', extra: '40%' })), null, 'N1: catches tooltipExtra change');
 
   const slotRuns = resolveSlotHolderRuns([
@@ -1710,6 +1723,221 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
     (timerCb as (() => void) | null)?.();
     assert.ok(wakes >= 1, 'one-shot timer wakes widget when markers expire');
     laneView.unmount?.(1, state);
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
+});
+
+function gridContext(width: number, height: number) {
+  type Box = readonly [number, number, number, number];
+  const marks = new Map<string, string>();
+  const at = (x: number, y: number) => `${Math.round(x)},${Math.round(y)}`;
+  const canvasBox: Box = [0, 0, width, height];
+  let clipBox: Box = canvasBox;
+  let pending: Box | null = null;
+  const stack: Box[] = [];
+  const inside = (x: number, y: number) => x >= clipBox[0] && x < clipBox[2] && y >= clipBox[1] && y < clipBox[3];
+  const clear = (x: number, y: number, w: number, h: number) => {
+    for (const key of [...marks.keys()]) {
+      const [px, py] = key.split(',').map(Number) as [number, number];
+      if (px >= x && px < x + w && py >= y && py < y + h && inside(px, py)) marks.delete(key);
+    }
+  };
+  const mark = (x: number, y: number, text: string) => { if (inside(x, y)) marks.set(at(x, y), text); };
+  const target: Record<string, unknown> = {
+    font: '', fillStyle: '', strokeStyle: '', lineWidth: 1, textAlign: 'left', textBaseline: 'alphabetic', globalAlpha: 1,
+    save: () => { stack.push(clipBox); },
+    restore: () => { clipBox = stack.pop() ?? canvasBox; },
+    beginPath: () => { pending = null; },
+    rect: (x: number, y: number, w: number, h: number) => { pending = [x, y, x + w, y + h]; },
+    clip: () => {
+      if (pending) clipBox = [Math.max(clipBox[0], pending[0]), Math.max(clipBox[1], pending[1]), Math.min(clipBox[2], pending[2]), Math.min(clipBox[3], pending[3])];
+    },
+    fillText: (text: string, x: number, y: number) => mark(x, y, String(text)),
+    fillRect: (x: number, y: number, w: number, h: number) => clear(x, y, w, h),
+    clearRect: (x: number, y: number, w: number, h: number) => clear(x, y, w, h),
+    drawImage: (_img: unknown, x: number, y: number) => mark(x, y, 'image'),
+    measureText: (text: string) => ({ width: String(text).length * 7 }),
+    createLinearGradient: () => ({ addColorStop() {} }),
+    createPattern: () => null,
+    getTransform: () => ({ a: 1, d: 1 }),
+  };
+  const ctx = new Proxy(target, { get: (t, k) => (k in t ? t[k as string] : () => {}) });
+  return { ctx, marks };
+}
+
+test('an incremental table paint after a seek back, a same-hour correction and a reorder equals a fresh paint, cell by cell', () => {
+  type Row = { id: string; v: number; flag: string };
+  const columns: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
+    { key: 'flag', label: 'Flag', as: 'plain', offered: ['plain'], priority: 1, text: true },
+    { key: 'v', label: 'Val', as: 'faint', barEligible: true, offered: ['plain', 'faint'], priority: 2, numeric: true },
+  ];
+  registerTableProjection({
+    kind: 'test-fresh-equals-incremental',
+    family: 'table',
+    project: readView => {
+      const reply = readView.panel('main') as { rows: Row[] };
+      return {
+        hour: readView.hour,
+        rank: true,
+        defaultRankShown: true,
+        rankMarkers: true,
+        columns,
+        rows: reply.rows.map(r => ({
+          key: r.id,
+          name: r.id,
+          cells: {
+            name: { value: knownValue(r.id) },
+            flag: { value: knownValue('Owner'), flags: [{ tag: r.flag }] },
+            v: { value: knownValue(r.v), format: 'integer' },
+          },
+        })),
+      };
+    },
+  });
+  const contexts: ReturnType<typeof gridContext>[] = [];
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = class {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() { const grid = gridContext(this.width, this.height); contexts.push(grid); return grid.ctx; }
+    transferToImageBitmap() { return { close() {} }; }
+  };
+  try {
+    const settingsFor = (direction: 'ascending' | 'descending') => tableSettingsOf(undefined, columns, { density: 'normal', overflow: 'scroll', sort: { column: 'v', direction } });
+    const lane = () => {
+      const view = familyTableLaneView(() => {}, { clock: () => 5000 });
+      const state = new Map<string, unknown>();
+      let seq = 1;
+      const before = contexts.length;
+      const paint = (rows: Row[], hour: number, settings: TableSettings) => view.paint({
+        widget: 1,
+        subs: [],
+        pictures: [],
+        model: { family: 'table' as const, kind: 'test-fresh-equals-incremental', options: {}, settings, sources: {}, staticPanels: { main: { rows } }, width: 360, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
+        hour,
+        speed: 24,
+        binding: { generation: 1, surfaces: [{ width: 360, height: 200, dpr: 1 }], offset: 0, pin: null },
+        inspect: null,
+        now: 5000,
+      }, state, () => `c${seq++}`);
+      return { paint, marks: () => new Map(contexts[before]!.marks) };
+    };
+    const fresh = (rows: Row[], hour: number, settings: TableSettings) => {
+      const other = lane();
+      other.paint(rows, hour, settings);
+      return other.marks();
+    };
+    const atOne: Row[] = [{ id: 'A', v: 20, flag: 'X' }, { id: 'B', v: 10, flag: 'Y' }, { id: 'C', v: 5, flag: 'Z' }];
+    const atTwo: Row[] = [{ id: 'A', v: 5, flag: 'X' }, { id: 'B', v: 30, flag: 'Y' }, { id: 'C', v: 6, flag: 'Z' }];
+    const corrected: Row[] = [{ id: 'A', v: 20, flag: 'W' }, { id: 'B', v: 10, flag: 'Y' }, { id: 'C', v: 5, flag: 'Z' }];
+    const descending = settingsFor('descending');
+    const ascending = settingsFor('ascending');
+    const played = lane();
+    played.paint(atOne, 1, descending);
+    played.paint(atTwo, 2, descending);
+    assert.ok([...played.marks().values()].some(text => text.includes('▲')), 'a forward step marks the rank change');
+
+    played.paint(atOne, 1, descending);
+    assert.deepEqual(played.marks(), fresh(atOne, 1, descending), 'after a seek back the picture equals a fresh paint');
+
+    played.paint(corrected, 1, descending);
+    assert.deepEqual(played.marks(), fresh(corrected, 1, descending), 'a same-hour correction of a cell’s sole flag repaints it');
+
+    played.paint(corrected, 1, ascending);
+    assert.deepEqual(played.marks(), fresh(corrected, 1, ascending), 'a reorder at the same hour equals a fresh paint');
+
+    const replaced = played.paint([{ id: 'D', v: 40, flag: 'X' }, { id: 'B', v: 10, flag: 'Y' }, { id: 'C', v: 5, flag: 'Z' }], 2, ascending);
+    const navKeys = (replaced.fields.nav?.value as readonly (readonly [string])[]).map(item => item[0]);
+    assert.deepEqual([...navKeys].sort(), ['B', 'C', 'D'], 'navigation installed with the picture offers the subjects painted, never the replaced one');
+
+    const grouped = resolveTableRows({
+      hour: 10,
+      columns,
+      rows: [
+        { key: 'P', name: 'P', cells: { name: { value: knownValue('P') }, v: { value: knownValue(1) } } },
+        { key: 'Q', name: 'Q', revealAt: 20, group: { key: 'g', label: 'Group' }, cells: { name: { value: knownValue('Q') }, v: { value: knownValue(2) } } },
+      ],
+    }, descending);
+    assert.deepEqual(grouped.map(item => item.kind), ['data'], 'a group revealed later adds no heading before its hour');
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
+});
+
+test('cell kinds for converted tables: an item column takes the spare width, two-way bars scale by magnitude, declared extras reach the cell, a blank cell draws nothing, and names that arrive re-measure the column', () => {
+  const kinds: TableColumnSpec[] = [
+    { key: 'pic', label: '', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'kind', sortable: false },
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
+    { key: 'net', label: 'Net', as: 'plain', offered: ['plain'], priority: 1, numeric: true, cellKind: 'twoWay' },
+  ];
+  const kindSettings = tableSettingsOf(undefined, kinds, { density: 'normal', overflow: 'scroll', sort: { column: 'net', direction: 'descending' } });
+  const grown = layoutFamilyTable(buildColumnLayouts(kinds, kindSettings, { pic: 52, name: 128, net: 140 }), 600, 'scroll');
+  assert.deepEqual(grown.columns.map(c => c.width), [58, 600 - 58 - 146, 146], 'the item column takes all the spare width; the kind and two-way columns keep theirs');
+
+  const signedRows = resolveTableRows({ hour: 1, columns: kinds, rows: [
+    { key: 'A', name: 'A', cells: { name: { value: knownValue('A') }, net: { value: knownValue(-30) } } },
+    { key: 'B', name: 'B', cells: { name: { value: knownValue('B') }, net: { value: knownValue(10) } } },
+  ] }, kindSettings);
+  assert.equal(computeColumnMaxima(signedRows, grown.columns, 1).get('net'), 30, 'a two-way column scales by the largest magnitude');
+
+  const extraProjection = declareTableProjection<{ rows: { id: string; group: boolean }[] }, { id: string; group: boolean }, Record<string, never>>({
+    kind: 'test-cell-extras',
+    columns: [
+      { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, field: 'id', text: true, extra: row => ({ subtext: `${row.id} stored`, flags: [{ tag: 'GER' }, { tag: 'SOV', dimmed: true }] }) },
+      { key: 'total', label: 'Total', as: 'plain', offered: ['plain'], priority: 1, numeric: true, value: () => notApplicable('Group rows only'), extra: row => (row.group ? {} : { blank: true }) },
+    ],
+    rows: reply => ({ rows: reply.rows }),
+    rowKey: r => r.id,
+    rowName: r => r.id,
+  });
+  const extraModel = extraProjection.project(createBoundedReadView({ hour: 1, panels: new Map([['main', { rows: [{ id: 'G', group: true }, { id: 'C', group: false }] }]]) }), {});
+  assert.equal(extraModel.rows[0]!.cells.name!.subtext, 'G stored');
+  assert.deepEqual(extraModel.rows[0]!.cells.name!.flags?.map(f => [f.tag, f.dimmed === true]), [['GER', false], ['SOV', true]], 'two flags in one cell, the actor first and the other dimmed');
+  assert.equal(extraModel.rows[1]!.cells.total!.blank, true);
+
+  const grid = gridContext(400, 120);
+  const extraSettings = tableSettingsOf(undefined, extraModel.columns, { density: 'normal', overflow: 'scroll', sort: { column: 'name', direction: 'ascending' } });
+  const extraLayout = layoutFamilyTable(buildColumnLayouts(extraModel.columns, extraSettings, { name: 200, total: 120 }), 400, 'scroll');
+  drawFamilyTable(grid.ctx as unknown as CanvasRenderingContext2D, { layout: extraLayout, rows: resolveTableRows(extraModel, extraSettings), settings: extraSettings, hour: 1, width: 400, height: 120, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 1, glideDuration: 0, glide: new Map(), markers: new Map(), icons: new Map(), dpr: 1 });
+  const texts = [...grid.marks.values()];
+  assert.equal(texts.filter(t => t === '—').length, 1, 'the group row shows its not-applicable dash; the blank child cell draws nothing');
+
+  const names = new Map<string, string>([['A', 'A']]);
+  registerTableProjection({
+    kind: 'test-names-arrive',
+    family: 'table',
+    project: readView => ({
+      hour: readView.hour,
+      columns: [{ key: 'name', label: 'Country', as: 'plain', offered: ['plain'], priority: 0, text: true }],
+      rows: [{ key: 'A', name: names.get('A')!, cells: { name: { value: knownValue(names.get('A')!) } } }],
+    }),
+  });
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = class {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() { return gridContext(this.width, this.height).ctx; }
+    transferToImageBitmap() { return { close() {} }; }
+  };
+  try {
+    const view = familyTableLaneView(() => {}, { clock: () => 1 });
+    const state = new Map<string, unknown>();
+    let seq = 1;
+    const settings = tableSettingsOf(undefined, [{ key: 'name', label: 'Country', as: 'plain', offered: ['plain'] }], { density: 'normal', overflow: 'scroll', sort: { column: 'name', direction: 'ascending' } });
+    const paint = () => view.paint({
+      widget: 1, subs: [], pictures: [],
+      model: { family: 'table' as const, kind: 'test-names-arrive', options: {}, settings, sources: {}, staticPanels: { main: { at: seq } }, width: 120, height: 80, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
+      hour: 1, speed: 0, binding: { generation: 1, surfaces: [{ width: 120, height: 80, dpr: 1 }], offset: 0, pin: null }, inspect: null, now: 1,
+    }, state, () => `c${seq++}`);
+    const widthOf = (painted: ReturnType<typeof paint>) => (painted.fields.widths?.value as { widths: Record<string, number> }).widths.name!;
+    const before = widthOf(paint());
+    names.set('A', 'A country whose recorded name arrived later and is long');
+    const after = widthOf(paint());
+    assert.ok(after > before, `a name that arrives after the first measurement widens its column (${before} -> ${after})`);
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
   }

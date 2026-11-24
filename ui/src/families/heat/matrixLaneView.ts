@@ -3,7 +3,7 @@ import type { LaneView, Painted, PaintInput, Scene } from '../../draw/lane.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
 import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
-import type { ArtProvider, EntityKind, FamilyTheme, IdentityProvider } from '../contract.ts';
+import type { ArtProvider, FamilyTheme, IdentityProvider } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
@@ -19,7 +19,7 @@ import {
 } from './matrixModel.ts';
 import { collectVisibleMatrixArt, createMatrixPicture, drawHeatMatrix, type HeatMatrixPicture } from './matrixPainter.ts';
 import { ensureHeatMatrixProjection } from './matrixRegistry.ts';
-import { readViewFromHeatScene, samePictures, snapshotPictures, stringifyTooltipPayload } from './sceneReadView.ts';
+import { projectFromScene, readViewFromHeatScene, samePictures, snapshotPictures, stringifyTooltipPayload } from './sceneReadView.ts';
 
 export interface FamilyHeatMatrixBinding<TOptions = unknown> {
   readonly family: 'heat-matrix';
@@ -72,6 +72,9 @@ interface HeldHeatMatrix {
   validFrom: number;
   validUntil: number;
   cachedModel: HeatMatrixModel | null;
+  widestFor: string;
+  widestRowName: number;
+  widestTrailing: number;
   cachedModelKind: string;
   cachedLayout: HeatMatrixLayout | null;
 
@@ -106,6 +109,33 @@ export interface FamilyHeatMatrixLaneOptions {
   readonly clock?: () => number;
   readonly fetchBitmap?: LaneArtFetcher;
   readonly artMaxEntries?: number;
+}
+
+export function widestNames(
+  ctx: { font: string; measureText(text: string): { width: number } },
+  font: string,
+  rows: readonly { readonly label: string; readonly trailing?: string }[],
+): { readonly name: number; readonly trailing: number } {
+  ctx.font = font;
+  let name = 0;
+  let trailing = 0;
+  const sampleLimit = Math.min(rows.length, 60);
+  for (let i = 0; i < sampleLimit; i++) {
+    const row = rows[i]!;
+    name = Math.max(name, ctx.measureText(row.label).width);
+    if (row.trailing) trailing = Math.max(trailing, ctx.measureText(row.trailing).width);
+  }
+  return { name, trailing };
+}
+
+export function matrixExtentSignature(
+  layout: { readonly totalWidth: number; readonly totalHeight: number; readonly cellSize: number; readonly gridLeft: number; readonly gridTop: number },
+  model: Pick<HeatMatrixModel, 'rows' | 'columns'>,
+): string {
+  return JSON.stringify([
+    layout.totalWidth, layout.totalHeight, layout.cellSize, layout.gridLeft, layout.gridTop,
+    model.rows.map(row => row.id), model.columns.map(column => column.id),
+  ]);
 }
 
 export function familyHeatMatrixLaneView(
@@ -180,6 +210,9 @@ export function familyHeatMatrixLaneView(
           validFrom: Infinity,
           validUntil: -Infinity,
           cachedModel: null,
+          widestFor: '',
+          widestRowName: 0,
+          widestTrailing: 0,
           cachedModelKind: '',
           cachedLayout: null,
           metaSig: '',
@@ -233,22 +266,15 @@ export function familyHeatMatrixLaneView(
       if (canReuseModel) {
         model = held.cachedModel!;
       } else {
-        const pendingIdentityDemands = new Map<string, readonly [EntityKind, string, number]>();
-        const demandedArt = new Set<string>();
-        const readView = readViewFromHeatScene(input, bound, input.hour, {
+        const projected = projectFromScene(input, bound, input.hour, {
           identity: held.identityProvider,
-          onIdentityDemand: (kind, key, atHour) => {
-            pendingIdentityDemands.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]);
-          },
           art: held.artProvider,
-          onArtDemand: handle => {
-            const url = artUrlForHandle(handle, held!.identityIndex);
-            if (url) demandedArt.add(url);
-          },
-        });
-        model = projection.project(readView, bound.options);
-        held.demandedArtUrls = [...demandedArt];
-        const demandsList = [...pendingIdentityDemands.values()];
+          artUrl: handle => artUrlForHandle(handle, held!.identityIndex),
+        }, view => projection.project(view, bound.options));
+        model = projected.model;
+        const readView = projected.view;
+        held.demandedArtUrls = projected.artUrls;
+        const demandsList = projected.identityDemands;
         if (demandsList.length) {
           const dText = JSON.stringify(demandsList);
           held.identityDemandsField = { value: demandsList, content: cachedField(held, 'identityDemands', dText, content) };
@@ -275,14 +301,15 @@ export function familyHeatMatrixLaneView(
         return { mode: 'refused', reason: model.refused, surfaces: [], fields: {}, motion: false };
       }
 
-      let widestRowName = 0;
-      if (bound.theme) {
-        held.ctx.font = `500 ${bound.theme.fontSize.small}px ${bound.theme.font}`;
-        const sampleLimit = Math.min(model.rows.length, 60);
-        for (let i = 0; i < sampleLimit; i++) {
-          widestRowName = Math.max(widestRowName, held.ctx.measureText(model.rows[i]!.label).width);
-        }
+      const font = bound.theme ? `500 ${bound.theme.fontSize.small}px ${bound.theme.font}` : '';
+      if (modelChanged || held.widestFor !== font) {
+        held.widestFor = font;
+        const widest = bound.theme ? widestNames(held.ctx, font, model.rows) : { name: 0, trailing: 0 };
+        held.widestRowName = widest.name;
+        held.widestTrailing = widest.trailing;
       }
+      const widestRowName = held.widestRowName;
+      const widestTrailing = held.widestTrailing;
 
       const layout = layoutHeatMatrix({
         width: bound.width,
@@ -293,6 +320,7 @@ export function familyHeatMatrixLaneView(
         columns: model.columns,
         legend: model.legend,
         widestRowName: widestRowName > 0 ? widestRowName : undefined,
+        widestTrailing: widestTrailing > 0 ? widestTrailing : undefined,
       });
       held.cachedLayout = layout;
 
@@ -329,6 +357,7 @@ export function familyHeatMatrixLaneView(
         model.empty ?? null,
         model.emptyDetail ?? null,
         model.emptyKind ?? 'empty',
+        model.summaryText ?? null,
         model.notes ?? [],
         model.warnings ?? [],
       ]);
@@ -339,6 +368,7 @@ export function familyHeatMatrixLaneView(
             empty: model.empty ?? null,
             emptyDetail: model.emptyDetail ?? null,
             emptyKind: model.emptyKind ?? 'empty',
+            summaryText: model.summaryText ?? null,
             notes: model.notes ?? [],
             warnings: model.warnings ?? [],
           },
@@ -347,15 +377,7 @@ export function familyHeatMatrixLaneView(
       }
       fields.meta = held.metaField;
 
-      const eSig = JSON.stringify([
-        layout.totalWidth,
-        layout.totalHeight,
-        layout.cellSize,
-        layout.gridLeft,
-        layout.gridTop,
-        model.rows.length,
-        model.columns.length,
-      ]);
+      const eSig = matrixExtentSignature(layout, model);
       if (eSig !== held.extentSig || !held.extentField) {
         held.extentSig = eSig;
         held.extentField = {

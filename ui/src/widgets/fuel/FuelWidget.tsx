@@ -5,6 +5,7 @@ import { Segmented } from '../../components/Segmented';
 import { useContextMenu } from '../../components/ContextMenu';
 import { dayLabel } from '../../charts/draw';
 import DrillHost from '../../charts/drill/DrillHost';
+import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
 import { CLOSED, pinnedBreakdown } from '../../charts/drill/drillState';
 import { useDrill } from '../../charts/drill/useDrill';
 import { motionOf } from '../../charts/easing.ts';
@@ -141,11 +142,16 @@ export default function FuelWidget(props: WidgetProps) {
   const pinHeld = drillControl.gate.checkHold(drillCountry?.holder ?? null);
   const pinCountry = pinHeld.held;
   const pinTime = pinTimed.time;
+  const detailTitle = 'Fuel consumption and daily accounting';
+  const detailDay = drillFollows && playing ? 'Following playback' : at === null ? '' : dayLabel(at);
+  const closeDetail = () => dispatch({ type: 'close' });
   return <div ref={anchor} style={{ height: '100%', minHeight: 0 }}>
-    <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null} anchor={anchor} mode="window" title="Fuel consumption and daily accounting"
-      day={drillFollows && playing ? 'Following playback' : at === null ? '' : dayLabel(at)}
-      canFollow={actualHour !== null && !!drillTag} onClose={() => dispatch({ type: 'close' })}
-      main={<DeclaredFamilyWidget {...props} adapter={timeChartHostAdapter} declaration={fuelDeclaration} onActivate={action => open(action.hour)} />}
+    <DeclaredFamilyWidget {...props} adapter={timeChartHostAdapter} declaration={fuelDeclaration} onActivate={action => open(action.hour)} />
+    <DetailWindowHost open={drill.breakdown !== null} subject={drillTag} hour={at} title={detailTitle} day={detailDay} anchor={anchor} onClose={closeDetail}>
+    <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null} anchor={anchor} mode="inline" title={detailTitle}
+      day={detailDay}
+      canFollow={actualHour !== null && !!drillTag} onClose={closeDetail}
+      main={null}
       pinRefused={pinTimed.refused ?? pinHeld.refused ?? null} onPin={drillTag && !actorState && pinTime && pinCountry ? () => {
         const pinned = pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [pinCountry.tag] } }, BREAKDOWNS.find(item => item.id === drillMeasure)!, track.id, pinTime);
         pinned.options = { ...pinned.options, fuelCountry: pinCountry.token,
@@ -158,7 +164,8 @@ export default function FuelWidget(props: WidgetProps) {
         if (drill.breakdown !== null && at !== null) dispatch({ type: 'open', breakdown: next, hour: at, follow: drillControl.following, country: drill.country });
       }} options={BREAKDOWNS.map(item => ({ value: item.id, label: item.label }))} />
       {breakdown}
-    </DrillHost>{menu.menu}</div>;
+    </DrillHost>
+    </DetailWindowHost>{menu.menu}</div>;
 }
 
 function FuelPinnedHeader({ runtime, track, countrySlot, active, show, tag, hour, reason, failure }: {

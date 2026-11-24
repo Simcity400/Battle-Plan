@@ -9,6 +9,7 @@ pub mod stability;
 pub mod focus;
 pub mod national_focus;
 pub mod focus_artwork;
+pub mod focus_card;
 pub mod technology_artwork;
 pub mod focus_dto;
 
