@@ -121,6 +121,3 @@ export function joinTagChanges<R extends { tag: string; firstHour: number; lastH
     .sort((a, b) => a[0].firstHour - b[0].firstHour);
 }
 
-export function countryMembership<R extends { tag: string; firstHour: number; lastHour: number }>(runs: readonly R[], lineage: Lineage): Map<string, R[]> {
-  return new Map(joinTagChanges(runs, lineage).map(group => [lineage.countryAt(group[0].tag, group[0].firstHour), group]));
-}

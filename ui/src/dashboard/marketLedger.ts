@@ -127,4 +127,3 @@ export const ledgerSelection = (item: LedgerItem): string | null =>
   item.kind === null || item.contract === null || (item.kind === 34 && item.mode === null) ? null
     : lease(item) ? `agreement:${item.contract}` : `contract:${item.kind === 10}:${item.contract}`;
 
-export const LEDGER_EMPTY = 'No market activity matches these settings.';

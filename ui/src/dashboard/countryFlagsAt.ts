@@ -10,16 +10,6 @@ import type { BoundTrack } from './model';
 
 export { flagReadMetadata } from './countryLabelData.ts';
 
-export function useCountryFlagsAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  size: CountryFlagSize = 'panel'): ReadonlyMap<string, string> {
-  const flags = useCountryFlagsRead(client, track, wanted, active, size);
-  return useMemo(() => {
-    const urls = new Map<string, string>();
-    for (const [key, flag] of flags) if (flag && !isFailedFact(flag) && flag.url) urls.set(key, flag.url);
-    return urls;
-  }, [flags]);
-}
-
 export type { CountryLabel } from './countryLabelData';
 import type { CountryLabel, CountryLabelValue } from './countryLabelData';
 

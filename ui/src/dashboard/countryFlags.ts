@@ -77,13 +77,6 @@ function tell(state: Drawings, key: string): void {
   });
 }
 
-export function drawnFlag(client: DashboardClient, recording: Pick<DashboardSource, 'id' | 'revision'>, content: number, size: CountryFlagSize,
-  choice: CountryFlagChoice): FlagValue | undefined {
-  const state = states.get(client);
-  const drawn = state?.content === content ? state.entries.get(drawKey(groupKey(recording, size), choice)) : undefined;
-  return drawn && ('failed' in drawn ? drawn.failed : drawn.read);
-}
-
 export function drawFlags(client: DashboardClient, recording: DashboardSource, content: number, size: CountryFlagSize, choices: Iterable<CountryFlagChoice>): void {
   const state = drawings(client, content);
   const group = groupKey(recording, size);
@@ -176,20 +169,6 @@ export function forgetFlags(client: DashboardClient, sourceId: string, settled =
   for (const key of [...state.asked]) if (ours(key)) state.asked.delete(key);
   for (const [group, queued] of [...state.queue]) if (queued.recording.id === sourceId) state.queue.delete(group);
 }
-
-export function retryFlags(client: DashboardClient, sourceId: string): void {
-  retryTimelines(client, sourceId);
-  const state = states.get(client);
-  if (!state) return;
-  for (const [key, entry] of [...state.entries]) {
-    if (!('failed' in entry) || (JSON.parse(key.slice(0, key.indexOf('\n'))) as unknown[])[0] !== sourceId) continue;
-    state.entries.delete(key);
-    state.failures.delete(key);
-    tell(state, key);
-  }
-}
-
-export const flagReadKey = (read: FlagAt) => JSON.stringify([read.branchId, read.hour, read.tag]);
 
 export function useFlagReads(client: DashboardClient, recording: DashboardSource | undefined, reads: readonly FlagAt[], active: boolean,
   size: CountryFlagSize, exact = false): ReadonlyMap<string, FlagValue> {

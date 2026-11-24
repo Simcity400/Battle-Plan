@@ -8,8 +8,5 @@ export const countryFromKey = (key: string): CountryRef => key.startsWith(SLOT_M
 
 export const isSlotKey = (key: string): boolean => typeof countryFromKey(key) === 'number';
 
-export const metadataCountry = (countries: readonly CountryMetadata[], key: string): CountryMetadata | undefined =>
-  isSlotKey(key) ? countries.find(country => country.id === String(countryFromKey(key))) : countries.find(country => country.tag === key);
-
 export const answersKey = (asked: CountryRef | null | undefined, key: string | null | undefined): boolean =>
   key != null && asked != null && countryKey(asked) === key;

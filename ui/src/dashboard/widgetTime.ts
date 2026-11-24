@@ -5,8 +5,6 @@ import type { PlaybackController } from './playback';
 import { pageClock } from './widgetClock.ts';
 import { axisHour, coverageAt, coverageSpan, regionFollows, regionHour, regionKey, regionOutside, regionTrack, SPEC, type AxisHour, OUTSIDE_MESSAGE, type Outside, type Region, type RegionAction, type TrackHour } from './regionTime.ts';
 
-export { SETTINGS_DETAIL } from './regionTime.ts';
-
 export class ActiveHeads {
   private readonly heads = new Set<object>();
   private readonly listeners = new Set<() => void>();

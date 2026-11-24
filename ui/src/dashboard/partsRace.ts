@@ -64,10 +64,6 @@ export function partsRaceModel(reply: PartsRaceReply): PartsRaceModel {
     tags: reply.series.map(series => series.tag) };
 }
 
-export function hasPartsRaceValues(model: PartsRaceModel): boolean {
-  return model.reply.series.some(series => series.runs.some(run => run.total !== null));
-}
-
 export interface PartsRaceAt { total: number | null; values: readonly (number | null)[]; run: PartsRaceRun; stretch: number }
 export function partsRaceAt(model: PartsRaceModel, tag: string, hour: number): PartsRaceAt | null {
   const item = model.series.get(tag);

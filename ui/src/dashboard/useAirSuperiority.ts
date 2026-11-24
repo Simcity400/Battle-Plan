@@ -12,8 +12,6 @@ import { airChoiceToken } from './airOptions';
 import type { AirChoicesReply, FactionGroup } from '../generated/dashboard';
 import { productRequest } from './request.ts';
 
-export { airMode, airParams, type AirModeSettings };
-
 export function useAirChoicesReply(runtime: WidgetRuntime, widget: WidgetSpec, active: boolean) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority-choices', params: { branchId: track.branch.id } }) : null;

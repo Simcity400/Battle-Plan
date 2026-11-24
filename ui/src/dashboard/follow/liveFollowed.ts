@@ -22,35 +22,3 @@ const NO_PAINT = () => {};
 
 const noStructure = () => '';
 
-export const answered = (answer: FollowedAnswer | undefined) => answer === undefined ? '' : 'answered';
-
-export function useLiveFollow<T>(store: FollowStore | null, query: FollowQuery | null, target: RefObject<Element | null>,
-  read: (entry: FollowEntry) => T, structureOf: (answer: FollowedAnswer | undefined) => string = noStructure): Followed & { live: Live<T> | undefined } {
-  const reading = useRef(read);
-  reading.current = read;
-  const followed = useFollow(store, query, target, NO_PAINT, structureOf);
-  const entry = followed.entry;
-  const live = useMemo(() => store && entry ? liveFollowed(entry, held => reading.current(held)) : undefined, [store, entry]);
-  return { ...followed, live };
-}
-
-export function answerValues(answer: FollowedAnswer | undefined, keys: readonly string[], scale = 0, column = 0): LiveValues<number> {
-  const rows = new Map(keys.map((key, row) => [key, row]));
-  const missing = (key: string) => {
-    if (!answer) return 'Not read yet';
-    if (answer.kind === 'notRecorded') return answer.reason;
-    const row = rows.get(key);
-    if (row === undefined || row >= answer.rows) return 'Not in the answer';
-    return rowReason(answer, row) ?? (cellState(answer, row * answer.columns + column) === CELL.missing ? 'No value' : 'Not recorded at this hour');
-  };
-  return {
-    get: key => {
-      const row = rows.get(key);
-      if (!answer || answer.kind === 'notRecorded' || row === undefined || row >= answer.rows) return undefined;
-      const at = row * answer.columns + column;
-      if (cellState(answer, at) !== CELL.value) return undefined;
-      return (cellNumber(answer, at) ?? Number(cellValue(answer, at))) / 10 ** scale;
-    },
-    missing,
-  };
-}

@@ -47,8 +47,6 @@ export function checkedTime(time: PinTime, tracks: readonly Timed[], rangeTrack?
     : { time: null, refused: 'No track recorded this moment, so there is nothing to pin.' };
 }
 
-export const validTime = (time: PinTime, tracks: readonly Timed[], rangeTrack?: string): GatedTime | null => checkedTime(time, tracks, rangeTrack).time;
-
 export type PinnedSpec = Omit<WidgetSpec, 'time'> & { readonly time: GatedTime };
 export const persistedSpec = (pinned: PinnedSpec): WidgetSpec => ({ ...pinned, time: pinned.time.value });
 
@@ -59,7 +57,6 @@ export type ParamsFor<K extends string> = Unchecked & AnyRequestParams<GatedHour
   & (K extends keyof RequestParams<GatedHour, BoundHour> ? RequestParams<GatedHour, BoundHour>[K] : unknown);
 export type GatedParams = ParamsFor<string>;
 
-export type { HourRole };
 export const exactRole = (role: HourRole): boolean => role === 'read' || role === 'bucket';
 
 export function requestFields(product: string): Readonly<Record<string, HourRole>> | null {
@@ -142,11 +139,9 @@ export interface Outside {
   span?: { firstHour: number; lastHour: number };
   pinned?: boolean;
 }
-export interface RegionTime { hour: TrackHour | null; window: HourWindow | null; follows: boolean; outside: Outside | null }
 
 export const OUTSIDE_MESSAGE = 'This time is outside the recording.';
 export const UNRECORDED_MESSAGE = 'Not recorded at this time.';
-export const SETTINGS_DETAIL = 'Choose another time in widget settings.';
 export const SPEC: RegionAction = { kind: 'spec' };
 export const FOLLOW: RegionAction = { kind: 'follow' };
 
@@ -272,12 +267,6 @@ export function regionOutside(region: Region, track: BoundTrack | undefined, tra
   if (covered.hour !== null) return null;
   if (!ownTime(region)) return covered.outside;
   return { ...covered.outside, pinned: true };
-}
-
-export function resolveRegion(region: Region, track: BoundTrack | undefined, tracks: readonly BoundTrack[], axis: AxisHour): RegionTime {
-  const window = regionWindow(region, track, tracks, axis);
-  const hour = recordedHour(track, window?.lastHour);
-  return { hour, window: hour === null ? null : window, follows: regionFollows(region), outside: hour === null ? regionOutside(region, track, tracks, axis) : null };
 }
 
 export function regionKey(region: Region): string {

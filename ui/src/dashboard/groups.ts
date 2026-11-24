@@ -10,7 +10,6 @@ import type { CountryIdentityIndex } from './countryIdentity.ts';
 import { PlaybackIntervals, spanChanges } from '../charts/playbackIntervals.ts';
 import { NO_MEMBERS } from './noMembers.ts';
 
-
 export function groupRuns(reply: CountryGroupReply, group: CountryGroup): MembershipRun[] | null {
   switch (group.type) {
     case 'humans': return reply.humans;
@@ -41,18 +40,6 @@ export function groupMembers(runs: readonly MembershipRun[], membership: GroupMe
   return [...new Set(tags)].slice(0, max);
 }
 
-export interface MembershipChange { hour: number; tag: string; change: 'joined' | 'left' }
-
-export function membershipChanges(runs: readonly MembershipRun[], firstHour: number, lastHour: number, unobserved: readonly HourSpan[] = []): MembershipChange[] {
-  const hidden = (hour: number) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
-  const changes: MembershipChange[] = [];
-  for (const run of runs) {
-    if (run.firstHour > firstHour && !hidden(run.firstHour - 1)) changes.push({ hour: run.firstHour, tag: run.tag, change: 'joined' });
-    if (run.lastHour < lastHour && !hidden(run.lastHour + 1)) changes.push({ hour: run.lastHour + 1, tag: run.tag, change: 'left' });
-  }
-  return changes.sort((a, b) => a.hour - b.hour || a.tag.localeCompare(b.tag) || a.change.localeCompare(b.change));
-}
-
 export const DEFAULT_TOP = 10;
 
 export function countrySelectionModes(limits: { factions?: boolean; all?: boolean }): { value: string; label: string }[] {
@@ -70,11 +57,6 @@ export function countrySelectionFor(mode: string, max: number): CountrySelection
     : mode === 'group' ? { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } : { kind: 'selected' };
 }
 
-export function topCountries(values: ReadonlyMap<string, number | null>, count: number): string[] {
-  return [...values].filter((entry): entry is [string, number] => entry[1] != null && Number.isFinite(entry[1]))
-    .sort((a, b) => b[1] - a[1] || compareTags(a[0], b[0])).slice(0, count).map(([tag]) => tag);
-}
-
 export function groupLabel(group: CountryGroup, reply: CountryGroupReply | undefined, countryName: (tag: string) => string, hour?: number,
   overrides?: Readonly<Record<string, { name?: string }>>): string {
   switch (group.type) {
@@ -90,10 +72,6 @@ export function groupLabel(group: CountryGroup, reply: CountryGroupReply | undef
 
 export function isMember(membership: readonly HourSpan[] | undefined, hour: number): boolean {
   return !membership || membership.some(run => run.firstHour <= hour && hour <= run.lastHour);
-}
-
-export function clipRuns(runs: readonly Run[], membership: readonly MembershipRun[]): Run[] {
-  return clipToSpans(runs, membership);
 }
 
 function unrecorded(membership: GroupMembership): string {
@@ -279,13 +257,6 @@ export interface ResolvedCountries {
   factionId?: string;
 }
 
-export function groupShareReason(resolved: ResolvedCountries, membership: GroupMembership, hour: number): string | null {
-  if (resolved.reason) return resolved.reason;
-  if (membership === 'ever' && resolved.unobserved.length) return 'Group membership is incomplete for this campaign.';
-  if (membership === 'hour' && resolved.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour)) return unrecorded(membership);
-  return null;
-}
-
 export function rankedCandidates(resolved: ResolvedCountries, hour: number, all: readonly string[]): string[] {
   if (resolved.top != null) return [...all];
   if (!resolved.membership) return resolved.tags;
@@ -337,48 +308,6 @@ export function projectResolvedCountries(resolved: ResolvedCountries, filter: Re
   for (const span of filter.unobserved) unobserved.set(JSON.stringify([span.firstHour, span.lastHour]), span);
   return { ...resolved, tags: [...membership.keys()], membership,
     unobserved: [...unobserved.values()].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour) };
-}
-
-export function aggregateGroupRuns(lines: readonly { tag: string; runs: readonly Run[] }[], resolved: ResolvedCountries, range: HourSpan): Run[] {
-  if (resolved.factionId != null) throw new Error('Summed faction groups must read the faction-totals product.');
-  type Change = { expected: number; recorded: number; value: number; unknown: number; breaks: boolean };
-  const events = new Map<number, Change>();
-  const event = (hour: number) => {
-    let change = events.get(hour);
-    if (!change) { change = { expected: 0, recorded: 0, value: 0, unknown: 0, breaks: false }; events.set(hour, change); }
-    return change;
-  };
-  event(range.firstHour); event(range.lastHour + 1);
-  for (const tag of resolved.tags) {
-    for (const span of resolved.membership?.get(tag) ?? [range]) {
-      const first = Math.max(range.firstHour, span.firstHour);
-      const last = Math.min(range.lastHour, span.lastHour);
-      if (first <= last) { event(first).expected++; event(last + 1).expected--; }
-    }
-  }
-  for (const line of lines) for (const run of line.runs) {
-    event(run.firstHour).recorded++; event(run.firstHour).value += run.value;
-    event(run.firstHour).breaks ||= run.breakBefore === true;
-    event(run.lastHour + 1).recorded--; event(run.lastHour + 1).value -= run.value;
-  }
-  for (const span of resolved.membership ? resolved.unobserved : []) {
-    const first = Math.max(range.firstHour, span.firstHour);
-    const last = Math.min(range.lastHour, span.lastHour);
-    if (first <= last) { event(first).unknown++; event(last + 1).unknown--; }
-  }
-  let expected = 0, recorded = 0, value = 0, unknown = 0;
-  const hours = [...events.keys()].sort((a, b) => a - b);
-  const runs: Run[] = [];
-  hours.forEach((hour, index) => {
-    const change = events.get(hour)!;
-    expected += change.expected; recorded += change.recorded; value += change.value; unknown += change.unknown;
-    const lastHour = hours[index + 1] - 1;
-    if (index + 1 === hours.length || expected === 0 || unknown > 0 || expected !== recorded || !Number.isSafeInteger(value)) return;
-    const previous = runs.at(-1);
-    if (previous && !change.breaks && previous.lastHour + 1 === hour && previous.value === value) previous.lastHour = lastHour;
-    else runs.push({ firstHour: hour, lastHour, value, ...(change.breaks ? { breakBefore: true } : {}) });
-  });
-  return runs;
 }
 
 export interface WorldRequestTags { tags: string[]; ready: boolean; reason: string | null }

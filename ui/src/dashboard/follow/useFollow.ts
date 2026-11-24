@@ -10,7 +10,7 @@ import type { Reading } from './useFollowed';
 import { holdElement } from '../../draw/bitmapSurface.ts';
 import { asFailure, type Failure } from '../queryError.ts';
 
-export { observeOnScreen, screenHolder, NEAR_SCREEN, DASHBOARD_SCROLL } from './onScreen.ts';
+export { observeOnScreen, NEAR_SCREEN, DASHBOARD_SCROLL } from './onScreen.ts';
 export type { OnScreen } from './onScreen.ts';
 
 const noStructure = () => '';

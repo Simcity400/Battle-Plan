@@ -80,34 +80,11 @@ function formatSafe(signed: number, scale: number, digits: number): string | nul
   return end > text.length - digits ? `${sign}${whole}.${text.slice(text.length - digits, end)}` : sign + whole;
 }
 
-export function formatAmountFast(raw: bigint, scale: number, digits: number): string {
-  if (raw > 9_007_199_254_740_991n || raw < -9_007_199_254_740_991n) return formatAmount(raw, scale, digits);
-  return formatSafe(Number(raw), scale, digits) ?? formatAmount(raw, scale, digits);
-}
-
 function amount(answer: FollowedRows, at: number, scale: number, digits: number, times: number): string {
   const value = cellNumber(answer, at);
   const safe = value !== null && Number.isSafeInteger(value * times) ? formatSafe(value * times, scale, digits) : null;
   return safe ?? formatAmount(cellValue(answer, at) * BigInt(times), scale, digits);
 }
-
-export function paintAmounts(answer: FollowedAnswer | undefined, slots: readonly TextCell[], scale: number, digits: number, times = 1, suffix = '', column = 0, first = 0): void {
-  for (let index = 0; index < slots.length; index++) {
-    const slot = slots[index]!, row = first + index;
-    if (!answer) { slot.put(DASH, 'Not read yet'); continue; }
-    if (answer.kind === 'notRecorded') { slot.put(DASH, answer.reason); continue; }
-    if (row >= answer.rows) { slot.put(DASH, 'Not in the answer'); continue; }
-    const at = row * answer.columns + column, state = cellState(answer, at);
-    if (state === CELL.value) slot.put(amount(answer, at, scale, digits, times) + suffix, '');
-    else slot.put(DASH, rowReason(answer, row) ?? (state === CELL.missing ? 'No value' : 'Not recorded at this hour'));
-  }
-}
-
-export const paintMeasure = (answer: FollowedAnswer | undefined, slots: readonly TextCell[], scale: number, digits: number) =>
-  paintAmounts(answer, slots, scale, digits);
-
-export const paintMeasureRow = (answer: FollowedAnswer | undefined, cell: TextCell, row: number, scale: number, digits: number) =>
-  paintAmounts(answer, [cell], scale, digits, 1, '', 0, row);
 
 export function rowAmount(answer: FollowedAnswer | undefined, row: number, scale: number): number | null | undefined {
   if (!answer) return undefined;
@@ -116,35 +93,3 @@ export function rowAmount(answer: FollowedAnswer | undefined, row: number, scale
   return (value ?? Number(cellValue(answer, row * answer.columns))) / 10 ** scale;
 }
 
-export const paintStability = (answer: FollowedAnswer | undefined, slots: readonly TextCell[], scale: number, digits: number) =>
-  paintAmounts(answer, slots, scale, digits, 100, '%');
-
-export function paintArmy(answer: FollowedAnswer | undefined, rows: readonly { bar: BarCell; value: TextCell }[], scale: number, digits: number, column = 0): void {
-  const held = answer && answer.kind !== 'notRecorded' ? answer : null;
-  let greatest = 0n;
-  if (held) for (let row = 0; row < held.rows; row++) {
-    const at = row * held.columns + column;
-    if (cellState(held, at) === CELL.value && cellValue(held, at) > greatest) greatest = cellValue(held, at);
-  }
-  for (let row = 0; row < rows.length; row++) {
-    const { bar, value } = rows[row]!;
-    const at = held && row < held.rows ? row * held.columns + column : -1;
-    if (!held || at < 0 || cellState(held, at) !== CELL.value) {
-      bar.put('0%');
-      value.put(DASH, answer?.kind === 'notRecorded' ? answer.reason : held && at >= 0 ? rowReason(held, row) ?? 'Not recorded at this hour' : 'Not read yet');
-      continue;
-    }
-    const raw = cellValue(held, at);
-    const width = `${greatest > 0n ? Number((raw * 10_000n) / greatest) / 100 : 0}%`;
-    bar.put(width);
-    value.put(amount(held, at, scale, digits, 1), '');
-  }
-}
-
-export function paintTexts(root: Element | null, texts: ReadonlyMap<string, string>): void {
-  if (!root) return;
-  for (const element of root.querySelectorAll<HTMLElement>('[data-paint]')) {
-    const text = texts.get(element.dataset.paint!);
-    if (text !== undefined && element.textContent !== text) element.textContent = text;
-  }
-}

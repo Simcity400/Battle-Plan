@@ -317,4 +317,3 @@ export function eventsThrough(hours: readonly number[], hour: number): number {
   return lo;
 }
 
-export const tallyRunAt = (series: RaidTallySeries | undefined, hour: number) => runAt(series?.runs ?? [], Math.floor(hour));

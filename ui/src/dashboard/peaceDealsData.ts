@@ -115,8 +115,6 @@ export function peaceDealKnownAt(deal: PeaceDeal & PeaceObservationTiming): numb
   return deal.captured ? Math.max(hour, deal.captured.publicationHour)
     : deal.endHour != null ? Math.max(hour, deal.firstAbsentHour ?? hour) : hour;
 }
-export const peaceWarName = (deal: PeaceDeal) => deal.warName ?? 'War name not recorded';
-export const peaceCaptureLabel = (deal: Pick<PeaceDeal, 'captureUnavailable'> & PeaceObservationTiming, hour = Infinity) => deal.captureUnavailable == null || (deal.captureUnavailableHour ?? -Infinity) > hour ? null : 'Outcomes not recorded';
 export function peaceDealAt(deal: PeaceDeal & PeaceObservationTiming, hour: number): PeaceDeal {
   return deal.captureUnavailable != null && (deal.captureUnavailableHour ?? -Infinity) > hour
     ? { ...deal, captureUnavailable: null, limitations: deal.limitations.filter(reason => reason !== deal.captureUnavailable) } : deal;
@@ -124,6 +122,3 @@ export function peaceDealAt(deal: PeaceDeal & PeaceObservationTiming, hour: numb
 export function peaceDealIsBy(deal: PeaceDeal): boolean {
   return !deal.captured && (deal.endIsBy || deal.items.some(item => item.dates.beforeHour !== item.dates.afterHour));
 }
-export const peaceObservationLabel = (deal: PeaceDeal) => deal.observation === 'recordedConference' ? null
-  : deal.observation === 'conferenceNotRecorded' ? 'Conference not recorded; grouped war-end outcomes' : 'Conference attribution not recorded';
-export const peaceDealLabel = (deal: PeaceDeal) => `${peaceDealIsBy(deal) ? 'by ' : ''}${formatDateTime(peaceDealHour(deal))} · ${peaceWarName(deal)}${peaceObservationLabel(deal) ? ` · ${peaceObservationLabel(deal)}` : ''}`;

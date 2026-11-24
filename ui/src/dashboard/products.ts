@@ -180,14 +180,6 @@ export function forgetProducts(client: DashboardClient, sourceId: string): void 
   tileCache(client).forget(`${sourceId}|`);
 }
 
-export function forgetSettledProducts(client: DashboardClient, sourceId: string): void {
-  cache(client).deleteSettled(sourceId);
-  cache(client, true).deleteSettled(sourceId);
-  forgetFlags(client, sourceId, true);
-  forgetFacts(client, sourceId);
-  forgetTimelines(client, sourceId, true);
-}
-
 export interface ProductState<T> { data?: T; error?: Failure; retry: () => void }
 
 function useRunWhileStarted(active: boolean, key: string | null) {

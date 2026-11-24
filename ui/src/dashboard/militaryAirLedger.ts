@@ -100,11 +100,6 @@ function isMilitaryAirReply(value: unknown, windowed = false): value is Military
   return true;
 }
 
-export function validateMilitaryAirReply(value: unknown): MilitaryAirLedger {
-  if (!isMilitaryAirReply(value)) throw new Error('Invalid military air ledger reply');
-  return value;
-}
-
 export function validateMilitaryAirWindow(value: unknown): MilitaryAirReply {
   if (!isMilitaryAirReply(value, true)) throw new Error('Invalid military air ledger reply');
   return value as unknown as MilitaryAirReply;
