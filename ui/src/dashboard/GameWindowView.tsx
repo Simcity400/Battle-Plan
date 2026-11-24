@@ -7,6 +7,7 @@ import { useContentRevision } from './contentRevision';
 import {
   gameWindowRequestKey,
   hitTestRegion,
+  hitTestScrollRegion,
   nextScrollOffset,
   normalizeScale,
   regionTooltipContent,
@@ -160,13 +161,16 @@ export default function GameWindowView({
   }, [hitAt, onClose, ownerId]);
 
   const handleWheel = useCallback((event: WheelEvent<HTMLImageElement>) => {
-    const hit = hitAt(event.clientX, event.clientY);
+    if (!render) return;
+    const point = logicalPoint(event.clientX, event.clientY);
+    if (!point) return;
+    const hit = hitTestScrollRegion(render.regions, point[0], point[1]);
     if (!hit?.scroll) return;
     const next = nextScrollOffset(scroll, hit.scroll, event.deltaY, event.deltaX);
     if (!next) return;
     event.preventDefault();
     setScroll(next);
-  }, [hitAt, scroll]);
+  }, [render, logicalPoint, scroll]);
 
   if (error) {
     return <WidgetState kind="error" failure={error} />;

@@ -45,6 +45,22 @@ export function hitTestRegion(
 ): GameWindowRegion | null {
   for (let index = regions.length - 1; index >= 0; index--) {
     const region = regions[index];
+    if (!region.close && !region.tooltip) continue;
+    if (!inRect(region.rect, x, y)) continue;
+    if (region.clip && !inRect(region.clip, x, y)) continue;
+    return region;
+  }
+  return null;
+}
+
+export function hitTestScrollRegion(
+  regions: readonly GameWindowRegion[],
+  x: number,
+  y: number,
+): GameWindowRegion | null {
+  for (let index = regions.length - 1; index >= 0; index--) {
+    const region = regions[index];
+    if (!region.scroll) continue;
     if (!inRect(region.rect, x, y)) continue;
     if (region.clip && !inRect(region.clip, x, y)) continue;
     return region;

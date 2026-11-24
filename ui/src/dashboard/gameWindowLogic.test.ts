@@ -4,6 +4,7 @@ import type { GameWindowRegion, GameWindowRequest } from './client.ts';
 import {
   gameWindowRequestKey,
   hitTestRegion,
+  hitTestScrollRegion,
   nextScrollOffset,
   normalizeScale,
   regionTooltipContent,
@@ -85,7 +86,9 @@ test('hit-tests top-most matching region and respects clip bounds', () => {
   ];
 
   assert.equal(hitTestRegion(regions, 25, 25)?.path, 'win/clipped_item');
-  assert.equal(hitTestRegion(regions, 70, 70)?.path, 'win/scroll_area');
+  assert.equal(hitTestRegion(regions, 70, 70), null);
+  assert.equal(hitTestScrollRegion(regions, 25, 25)?.path, 'win/scroll_area');
+  assert.equal(hitTestScrollRegion(regions, 70, 70)?.path, 'win/scroll_area');
   const closeHit = hitTestRegion(regions, 170, 16);
   assert.equal(closeHit?.close, true);
   assert.deepEqual(regionTooltipContent(closeHit!), {

@@ -489,13 +489,18 @@ pub fn container_holder(layout: &Layout, container_path: &str) -> Option<native_
         .regions
         .iter()
         .find(|region| region.path == container_path)?;
-    let prefix = format!("{container_path}/");
+    let dot_prefix = format!("{container_path}.");
+    let slash_prefix = format!("{container_path}/");
     let before = layout
         .parts
         .iter()
         .enumerate()
         .rev()
-        .find(|(_, part)| part.path == container_path || part.path.starts_with(&prefix))
+        .find(|(_, part)| {
+            part.path == container_path
+                || part.path.starts_with(&dot_prefix)
+                || part.path.starts_with(&slash_prefix)
+        })
         .map_or(layout.parts.len(), |(index, _)| index + 1);
     Some(native_gui::Holder {
         path: container_path.to_owned(),
@@ -914,9 +919,9 @@ impl Service {
             art_from_current_install,
             close_paths,
             tooltip_overrides,
-            move |_, _, _| Ok(extra),
-            move |root, _, localisation, instance, _| configure(root, localisation, instance),
-            |_, _, _, _, _| Ok(ComposedPlan::default()),
+            move |_, _, _| Ok((extra, ())),
+            move |root, _, localisation, instance, _, _| configure(root, localisation, instance),
+            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
         )
     }
 
@@ -924,7 +929,7 @@ impl Service {
         clippy::too_many_arguments,
         reason = "the window cache key, layers, and per-render callbacks are independent inputs"
     )]
-    pub fn render_composed_from_layers(
+    pub fn render_composed_from_layers<S>(
         &self,
         key: WindowCacheKey,
         layers: &ResolvedLayers,
@@ -938,13 +943,14 @@ impl Service {
             &NativeWindows,
             &resources::Registry,
             &Localisation,
-        ) -> Result<Assets, String>,
+        ) -> Result<(Assets, S), String>,
         configure_main: impl FnOnce(
             &Element,
             &NativeWindows,
             &Localisation,
             &mut Instance,
             &mut BTreeMap<String, GameWindowTooltip>,
+            &S,
         ),
         compose: impl FnOnce(
             &Layout,
@@ -952,6 +958,7 @@ impl Service {
             &NativeWindows,
             &dyn Resources,
             &Localisation,
+            &S,
         ) -> Result<ComposedPlan, String>,
     ) -> Result<GameWindowRender, String> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -970,7 +977,7 @@ impl Service {
             interfaces.insert(interface_key.clone(), shared);
         }
         let shared = interfaces.get(&interface_key).expect("interface cached");
-        let extra_assets = prepare_assets(
+        let (extra_assets, state) = prepare_assets(
             shared.windows.as_ref(),
             &shared.registry,
             shared.localisation.as_ref(),
@@ -1018,6 +1025,7 @@ impl Service {
             cached.localisation.as_ref(),
             &mut instance,
             &mut main_tooltips,
+            &state,
         );
         instance.tick(root, &assets, STEADY_TICK)?;
         let layout = instance
@@ -1030,6 +1038,7 @@ impl Service {
             cached.windows.as_ref(),
             &assets,
             cached.localisation.as_ref(),
+            &state,
         )?;
         let output = if plan.sub_windows.is_empty() {
             render_layout_offscreen(gpu, &mut cached.pass, &layout, &assets, scale)?

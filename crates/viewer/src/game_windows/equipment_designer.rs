@@ -1,7 +1,7 @@
 use super::{
     ComposedPlan, ComposedSubWindow, DEFAULT_VIEWPORT, GameWindowRegion, GameWindowRender,
     GameWindowRequest, GameWindowScrollRegion, GameWindowTooltip, Service, WindowCacheKey,
-    container_holder, element_by_path, layout_window, strip_markup,
+    container_holder, layout_window, strip_markup,
 };
 use content_reader_gui::gui::native::{Element, Fields, Kind, resources::Registry};
 use content_reader_key_names::{
@@ -150,7 +150,6 @@ struct ResolvedMio {
 
 #[derive(Clone, Debug)]
 struct FittedModule {
-    slot: String,
     module: String,
     category: String,
     gui_category: String,
@@ -717,11 +716,11 @@ pub fn render(
         .or_else(|| spell(lexical, definition.archetype_token))
         .unwrap_or_else(|| equipment_key.clone());
 
-    let kind = classify_designer(&equipment_db, equipment, dlc_mask)?;
+    let kind = classify_designer(&equipment_db, equipment, u64::from(dlc_mask))?;
     let tag = resolve_variant_tag(&frame, definition, &target.tag);
     let design_state = match &definition.design {
         Recorded::Value(state) => Some(state),
-        Recorded::Refused(_) | Recorded::Absent => None,
+        _ => None,
     };
     let stats_row = frame
         .complete::<tables::VariantStats>()
@@ -765,11 +764,14 @@ pub fn render(
         visual_revision: visual_revision.to_owned(),
         window: window_name.to_owned(),
     };
+    struct ResolvedVisuals {
+        icon_sprite: Option<String>,
+        blueprint_name: Option<String>,
+        mio_sprite: Option<String>,
+    }
+
     let scroll = request.scroll.clone();
     let empty_tooltips = BTreeMap::new();
-    let mut resolved_icon_sprite: Option<String> = None;
-    let mut resolved_blueprint_name: Option<String> = None;
-    let mut resolved_mio_sprite: Option<String> = None;
 
     service.render_composed_from_layers(
         cache_key,
@@ -782,6 +784,11 @@ pub fn render(
         &empty_tooltips,
         |windows, registry, localisation| {
             let mut extra = Assets::default();
+            let mut visuals = ResolvedVisuals {
+                icon_sprite: None,
+                blueprint_name: None,
+                mio_sprite: None,
+            };
             add_sprite(&mut extra, "GFX_resources_strip");
             add_sprite(&mut extra, "GFX_production_cost");
             add_sprite(&mut extra, "GFX_navprod_cost");
@@ -791,14 +798,14 @@ pub fn render(
 
             if let Some(icon) = resolve_equipment_icon(&data, registry) {
                 add_sprite(&mut extra, &icon);
-                resolved_icon_sprite = Some(icon);
+                visuals.icon_sprite = Some(icon);
             }
             if let Some(mio) = &data.mio
                 && let Some(sprite) = &mio.sprite
                 && registry.sprite(sprite.as_bytes()).is_some()
             {
                 add_sprite(&mut extra, sprite);
-                resolved_mio_sprite = Some(sprite.clone());
+                visuals.mio_sprite = Some(sprite.clone());
             }
 
             if kind.is_modular() {
@@ -825,7 +832,7 @@ pub fn render(
                             ),
                         );
                     }
-                    resolved_blueprint_name = Some(bp_name);
+                    visuals.blueprint_name = Some(bp_name);
                 }
                 for (slot_key, slot_gfx) in &data.module_slots {
                     if let Some(fitted) = data.fitted_modules.get(slot_key) {
@@ -859,21 +866,21 @@ pub fn render(
                 }
             }
 
-            Ok(extra)
+            Ok((extra, visuals))
         },
-        |root, _windows, localisation, instance, tooltips| {
+        |root, _windows, localisation, instance, tooltips, visuals| {
             configure_main_window(
                 root,
                 localisation,
                 instance,
                 &data,
                 &resource_db,
-                resolved_icon_sprite.as_deref(),
-                resolved_mio_sprite.as_deref(),
+                visuals.icon_sprite.as_deref(),
+                visuals.mio_sprite.as_deref(),
                 tooltips,
             );
         },
-        |main_layout, root, windows, resources, localisation| {
+        |main_layout, root, windows, resources, localisation, visuals| {
             compose_sub_windows(
                 main_layout,
                 root,
@@ -882,8 +889,8 @@ pub fn render(
                 localisation,
                 &data,
                 &equipment_db,
-                resolved_blueprint_name.as_deref(),
-                resolved_icon_sprite.as_deref(),
+                visuals.blueprint_name.as_deref(),
+                visuals.icon_sprite.as_deref(),
                 &scroll,
             )
         },
@@ -1046,9 +1053,8 @@ fn extract_design_data(
             .unwrap_or("")
             .to_ascii_lowercase();
         fitted_modules.insert(
-            slot.clone(),
+            slot,
             FittedModule {
-                slot,
                 module,
                 category,
                 gui_category,
@@ -1315,9 +1321,38 @@ fn format_production_cost(kind: DesignerKind, build_cost: Option<i64>) -> String
     }
 }
 
-fn find_direct<'a>(root: &'a Element, name: &str) -> Option<&'a Element> {
-    let path = format!("{}/{name}", root.path);
-    element_by_path(root, &path)
+fn find_child<'a>(parent: &'a Element, segment: &str) -> Option<&'a Element> {
+    if let Some(found) = parent
+        .children
+        .iter()
+        .find(|child| child.spelling.eq_ignore_ascii_case(segment))
+    {
+        return Some(found);
+    }
+    if let Fields::DropDown(dd) = &parent.fields {
+        if let Some(expand) = dd.expand_button.as_deref()
+            && expand.spelling.eq_ignore_ascii_case(segment)
+        {
+            return Some(expand);
+        }
+        if let Some(found) = dd
+            .inner
+            .children
+            .iter()
+            .find(|child| child.spelling.eq_ignore_ascii_case(segment))
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_direct<'a>(root: &'a Element, path: &str) -> Option<&'a Element> {
+    let mut current = root;
+    for segment in path.split('/') {
+        current = find_child(current, segment)?;
+    }
+    Some(current)
 }
 
 fn hide_by_name(instance: &mut Instance, root: &Element, name: &str) {
@@ -1664,9 +1699,9 @@ fn compose_sub_windows(
     if data.kind.is_modular() {
         if let Some(bp_name) = blueprint_name
             && let Some(bp_root) = windows.gui_type(bp_name.as_bytes())
+            && let Some(preview_el) = find_direct(root, "equipment_modules/equipment_preview")
         {
-            let preview_path = format!("{}/equipment_modules/equipment_preview", root.path);
-            if let Some(holder) = container_holder(main_layout, &preview_path) {
+            if let Some(holder) = container_holder(main_layout, &preview_el.path) {
                 let bp_layout = layout_window(bp_root, resources, viewport, |instance| {
                     configure_blueprint(bp_root, instance, &data.fitted_modules);
                 })?;
@@ -1697,66 +1732,40 @@ fn compose_sub_windows(
 
         if let Some(stat_root) = windows.gui_type(b"stat_entry") {
             let columns = build_stat_columns(data.kind, data.stats.as_ref(), data.manpower);
-            compose_stat_grid(
-                main_layout,
-                root,
-                &format!("{}/info/base_stats", root.path),
-                &format!("{}/info/base_stats/stats_grid", root.path),
-                "base_stats",
-                stat_root,
-                "stat_entry",
-                "value",
-                &columns.base,
-                1,
-                155,
-                20,
-                resources,
-                localisation,
-                scroll,
-                &mut plan,
-            )?;
-            compose_stat_grid(
-                main_layout,
-                root,
-                &format!("{}/info/combat_stats", root.path),
-                &format!("{}/info/combat_stats/stats_grid", root.path),
-                "combat_stats",
-                stat_root,
-                "stat_entry",
-                "value",
-                &columns.combat,
-                1,
-                155,
-                20,
-                resources,
-                localisation,
-                scroll,
-                &mut plan,
-            )?;
-            compose_stat_grid(
-                main_layout,
-                root,
-                &format!("{}/info/misc_stats", root.path),
-                &format!("{}/info/misc_stats/stats_grid", root.path),
-                "misc_stats",
-                stat_root,
-                "stat_entry",
-                "value",
-                &columns.misc,
-                1,
-                155,
-                20,
-                resources,
-                localisation,
-                scroll,
-                &mut plan,
-            )?;
+            for (rel_container, rel_grid, target_name, lines) in [
+                ("info/base_stats", "info/base_stats/stats_grid", "base_stats", &columns.base),
+                ("info/combat_stats", "info/combat_stats/stats_grid", "combat_stats", &columns.combat),
+                ("info/misc_stats", "info/misc_stats/stats_grid", "misc_stats", &columns.misc),
+            ] {
+                if let (Some(container_el), Some(grid_el)) =
+                    (find_direct(root, rel_container), find_direct(root, rel_grid))
+                {
+                    compose_stat_grid(
+                        main_layout,
+                        &container_el.path,
+                        grid_el,
+                        target_name,
+                        stat_root,
+                        "stat_entry",
+                        "value",
+                        lines,
+                        1,
+                        155,
+                        20,
+                        resources,
+                        localisation,
+                        scroll,
+                        &mut plan,
+                    )?;
+                }
+            }
         }
     } else if let DesignerKind::Upgrade(domain) = data.kind {
         let sub_name = domain.sub_window();
-        if let Some(sub_root) = windows.gui_type(sub_name.as_bytes()) {
-            let host_path = format!("{}/active_equipment_view", root.path);
-            if let Some(holder) = container_holder(main_layout, &host_path) {
+        if let Some(sub_root) = windows.gui_type(sub_name.as_bytes())
+            && let Some(host_el) = find_direct(root, "active_equipment_view")
+        {
+            if let Some(holder) = container_holder(main_layout, &host_el.path) {
                 let sub_layout = layout_window(sub_root, resources, viewport, |instance| {
                     configure_upgrade_view(sub_root, localisation, instance, data, icon_sprite);
                 })?;
@@ -1771,13 +1780,17 @@ fn compose_sub_windows(
                 });
             }
         }
-        if let Some(stat_root) = windows.gui_type(b"equipment_designer_stat_entry") {
+        if let Some(stat_root) = windows.gui_type(b"equipment_designer_stat_entry")
+            && let (Some(container_el), Some(grid_el)) = (
+                find_direct(root, "equipment_info"),
+                find_direct(root, "equipment_info/equipment_info_grid"),
+            )
+        {
             let columns = build_stat_columns(data.kind, data.stats.as_ref(), data.manpower);
             compose_stat_grid(
                 main_layout,
-                root,
-                &format!("{}/equipment_info", root.path),
-                &format!("{}/equipment_info/equipment_info_grid", root.path),
+                &container_el.path,
+                grid_el,
                 "equipment_info",
                 stat_root,
                 "equipment_designer_stat_entry",
@@ -2102,9 +2115,8 @@ fn configure_upgrade_view(
 )]
 fn compose_stat_grid(
     main_layout: &Layout,
-    root: &Element,
     container_path: &str,
-    grid_path: &str,
+    grid_el: &Element,
     scroll_target: &str,
     stat_root: &Element,
     stat_window_name: &str,
@@ -2121,16 +2133,14 @@ fn compose_stat_grid(
     let Some(holder) = main_layout
         .holders
         .iter()
-        .find(|holder| holder.path == grid_path)
+        .find(|holder| holder.path == grid_el.path)
     else {
         return Ok(());
     };
-    let grid_offset = element_by_path(root, grid_path)
-        .and_then(|element| match &element.fields {
-            Fields::Grid(grid) => Some([grid.position.x.value, grid.position.y.value]),
-            _ => None,
-        })
-        .unwrap_or([0, 0]);
+    let grid_offset = match &grid_el.fields {
+        Fields::Grid(grid) => [grid.position.x.value, grid.position.y.value],
+        _ => [0, 0],
+    };
     let rows_count = lines.len().div_ceil(columns.max(1));
     let total_height = (rows_count as i32) * slot_height;
     let visible_height = main_layout

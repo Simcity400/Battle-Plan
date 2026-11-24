@@ -122,6 +122,11 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
     setPicked({ owner, row });
     dispatch({ type: 'open', breakdown: SHEET.id, hour, follow: drillControl.followsAt(hour) });
   };
+  const closeDrill = useCallback(() => {
+    dispatch({ type: 'close' });
+    setWindowLines(NO_WARNINGS);
+    setWindowShown(null);
+  }, [dispatch]);
   const drillRegion = drillControl.region;
   const at = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
 
@@ -147,11 +152,6 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
           {table('Obsolete designs', obsolete, obsoleteColumns, true)}</div>
       </details>}
     </div>;
-  const closeDrill = useCallback(() => {
-    dispatch({ type: 'close' });
-    setWindowLines(NO_WARNINGS);
-    setWindowShown(null);
-  }, [dispatch]);
   return <div ref={anchor} data-detail={failureDetails([...names.values()].map(nameReadFailure))} className="equipment-designs">
     {header}
     <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null && !!picked} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
