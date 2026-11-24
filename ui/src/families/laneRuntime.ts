@@ -42,6 +42,7 @@ export interface LaneFrame<TBinding extends LaneBinding, TModel, TLayout> {
   readonly speed: number;
   readonly art: LaneArtCache;
   readonly index: IdentityIndex | null;
+  readonly projection: FamilyProjection<TModel, unknown>;
   readonly projected: BoundedReadView;
   readNow(): BoundedReadView;
 }
@@ -51,9 +52,10 @@ export type LaneStatus = 'picture' | 'scene' | { readonly refused: string };
 export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   readonly family: FamilyId;
   boundary(model: TModel, hour: number): number;
+  redraw(model: TModel, hour: number): number;
   status(model: TModel): LaneStatus;
   view(binding: TBinding): readonly unknown[];
-  layout(model: TModel, binding: TBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D): TLayout;
+  layout(model: TModel, binding: TBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, hour: number): TLayout;
   paint(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean;
   hit(frame: LaneFrame<TBinding, TModel, TLayout>, point: readonly [number, number]): string | null;
   tooltip(frame: LaneFrame<TBinding, TModel, TLayout>, key: string, focus: boolean): FamilyTooltipEntry | null;
@@ -92,6 +94,8 @@ interface Held<TModel, TLayout> {
   parts: readonly (readonly unknown[])[];
   validFrom: number;
   validUntil: number;
+  drawFrom: number;
+  drawUntil: number;
   demandFields: Record<string, Field>;
   layout: TLayout | null;
   layoutKey: readonly unknown[];
@@ -191,7 +195,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       artProvider: createLaneArtProvider(art),
       projected: null, projectedArtRevision: 0,
       kind: '', viewName: undefined, options: undefined, staticPanels: undefined, staticAnswers: undefined,
-      parts: [], validFrom: Infinity, validUntil: -Infinity,
+      parts: [], validFrom: Infinity, validUntil: -Infinity, drawFrom: Infinity, drawUntil: -Infinity,
       demandFields: {},
       layout: null, layoutKey: [], drawKey: [], content: '', motion: false, artKey: '',
       structureKey: [], structureFields: {},
@@ -214,7 +218,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const projection = projectionOf(binding, scene.widget);
       if (projection === 'loading' || projection === 'unknown') return Infinity;
       const held = state?.get(stateKey) as Held<TModel, TLayout> | undefined;
-      if (held && sameInputs(held, binding, scene, hour)) return held.validUntil;
+      if (held && sameInputs(held, binding, scene, hour)) return Math.min(held.validUntil, Math.max(hour + 1, family.redraw(held.projected!.model, hour)));
       if (!projection.nextChange) return Infinity;
       return projection.nextChange(sceneReadView(scene, binding, hour, held ? readersOf(held) : undefined), binding.options);
     },
@@ -299,10 +303,16 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         if (projected.identityDemands.length) demands.identityDemands = field(keep, 'identityDemands', projected.identityDemands, content);
         if (projected.artAsks.length) demands.artDemands = field(keep, 'artDemands', projected.artAsks, content);
         keep.demandFields = demands;
+        keep.drawUntil = -Infinity;
       }
       const projected = keep.projected!;
       const model = projected.model;
-      const nextChangeAt = Number.isFinite(keep.validUntil) ? { nextChangeAt: keep.validUntil } : {};
+      if (hour < keep.drawFrom || hour >= keep.drawUntil) {
+        keep.drawFrom = hour;
+        keep.drawUntil = Math.min(keep.validUntil, Math.max(hour + 1, family.redraw(model, hour)));
+      }
+      const drawn = keep.drawFrom;
+      const nextChangeAt = Number.isFinite(keep.drawUntil) ? { nextChangeAt: keep.drawUntil } : {};
 
       const status = family.status(model);
       if (typeof status === 'object') {
@@ -311,22 +321,24 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       }
 
       const view = family.view(binding);
-      const layoutKey = [model, surface.width, surface.height, theme, ...view];
+      const layoutKey = [model, drawn, surface.width, surface.height, theme, ...view];
       if (!keep.layout || !sameKey(keep.layoutKey, layoutKey)) {
-        keep.layout = family.layout(model, binding, surface, theme, keep.ctx);
+        keep.layout = family.layout(model, binding, surface, theme, keep.ctx, drawn);
         keep.layoutKey = layoutKey;
       }
       const layout = keep.layout;
       let readNow: BoundedReadView | null = null;
       const frame: LaneFrame<TBinding, TModel, TLayout> = {
-        binding, theme, model, layout, hour, surface,
+        binding, theme, model, layout, surface,
+        hour: drawn,
         inspect: input.inspect,
         now: input.now,
         speed: input.speed,
         art: keep.art,
         index: keep.index,
+        projection,
         projected: projected.view,
-        readNow: () => readNow ??= sceneReadView(input, binding, hour, readers),
+        readNow: () => readNow ??= sceneReadView(input, binding, drawn, readers),
       };
 
       const drawKey = [layout, binding.scrollTop, input.inspect, binding.selectedKey, binding.focusedKey, keep.index, keep.artProvider, keep.artRevision, width, height];

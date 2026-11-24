@@ -62,6 +62,7 @@ const inspectedRow = (inspect: string | null): string | null => (inspect?.starts
 const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, BreakdownFrameLayout> = {
   family: 'breakdown',
   boundary: () => Infinity,
+  redraw: () => Infinity,
   status: () => 'scene',
   view: binding => [binding.expanded],
   layout(model, binding, surface, theme, measure) {

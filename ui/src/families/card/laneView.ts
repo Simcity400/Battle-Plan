@@ -19,6 +19,7 @@ const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
     assertCardModelValid(model, hour);
     return model.nextChangeAt ?? Infinity;
   },
+  redraw: () => Infinity,
   status: model => (model.rows.length > 0 || model.empty !== undefined ? 'picture' : 'scene'),
   view: () => [],
   layout: (model, _binding, surface) => layoutCards(model, surface.width, surface.height),

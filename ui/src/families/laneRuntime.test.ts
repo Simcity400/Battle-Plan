@@ -32,6 +32,7 @@ registerFamilyProjection<Model, Options>({
 const family: LaneFamily<Binding, Model, Layout> = {
   family: 'test-lane',
   boundary: () => Infinity,
+  redraw: () => Infinity,
   status: () => 'picture',
   view: () => [],
   layout(model) {
@@ -145,7 +146,7 @@ test('after a seek back, a same-hour correction and a reorder the picture equals
 
 test('the shared quiet-frame check: no drawing or new field between boundaries, and a playing chart’s next hour is a real boundary', () => {
   assert.equal(assertQuietFrames(() => createLaneView(family, () => {}), { label: 'fixture', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 12 }), 20);
-  const hourly: LaneFamily<Binding, Model, Layout> = { ...family, boundary: (_model, hour) => hour + 1 };
+  const hourly: LaneFamily<Binding, Model, Layout> = { ...family, redraw: (_model, hour) => hour + 1 };
   assert.equal(assertQuietFrames(() => createLaneView(hourly, () => {}), { label: 'hourly', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 12 }), 13);
 });
 
