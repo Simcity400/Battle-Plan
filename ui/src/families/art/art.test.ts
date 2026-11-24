@@ -110,8 +110,11 @@ test('LaneArtCache distinguishes all six Rust ArtResolution states, wakes on loa
 
   cache.requestVisible([readyArt('art://third'), readyArt('art://fourth')]);
   await flush();
-  assert.equal(cache.cachedCount, 3);
-  assert.ok(closed.includes('art://ok'), 'evicted bitmap is closed');
+  assert.equal(cache.cachedCount, 4, 'the painted window is pinned and the scrolled-away pair stays inside the inactive budget');
+  cache.requestVisible([readyArt('art://fifth'), readyArt('art://sixth')]);
+  await flush();
+  assert.equal(cache.cachedCount, 5, 'two pinned plus the inactive budget of three');
+  assert.ok(closed.includes('art://ok'), 'the least recently shown inactive bitmap is evicted and closed');
 
   cache.setContentRevision(2);
   assert.equal(cache.cachedCount, 0);
@@ -205,10 +208,13 @@ test('at 1,500 assets the lane decodes a bounded few at a time and holds no more
 
   lane.requestVisible(urls.slice(1400));
   for (let i = 0; i < 2000; i++) await Promise.resolve();
-  assert.equal(started, 228);
-  assert.equal(lane.cachedCount, 128);
-  assert.equal(open, 128, 'art scrolled away is closed to make room');
+  assert.equal(started, 228, 'the painted window loads past the inactive budget');
+  assert.equal(lane.cachedCount, 228, 'the window of 100 is pinned beside the 128 inactive bitmaps');
   assert.equal(lane.resolve(urls[1499]!).status, 'ready');
+  lane.requestVisible(urls.slice(1300, 1400));
+  for (let i = 0; i < 2000; i++) await Promise.resolve();
+  assert.equal(lane.cachedCount, 228, 'scrolling away leaves the window plus the inactive budget, never more');
+  assert.equal(open, 228, 'art evicted from the inactive set is closed');
   lane.dispose();
   assert.equal(open, 0);
 
@@ -281,9 +287,9 @@ test('ArtProvider plugs LaneArtCache and DomArtCache behind BoundedReadView.art(
   assert.ok(painted.status === 'ready' && painted.bitmap, 'the painter draws it from the cache');
   const decoded = painted.bitmap as unknown as ReturnType<typeof fakeBitmap>;
 
-  laneCache.requestVisible(['art://other']);
+  laneCache.requestVisible(['art://other'], ['art://offscreen']);
   for (let i = 0; i < 4; i++) await Promise.resolve();
-  assert.equal(decoded.closed, true, 'art scrolled away is evicted and closed');
+  assert.equal(decoded.closed, true, 'art scrolled away is evicted and closed to make room for other demand');
   const repainted = resolveCachedArt(ready, laneCache as unknown as LaneArtCache<ImageBitmap>);
   assert.ok(repainted.status === 'ready' && repainted.bitmap === undefined, 'a cached model painted again after the eviction draws its art as loading, never the closed bitmap');
 
@@ -556,4 +562,29 @@ test('the lane pins and fetches every visible bitmap past its budget; offscreen 
   for (let paint = 0; paint < 20; paint++) { cache.requestVisible(few, offscreen); await flush(); }
   assert.equal(fetched.length, before, 'a demanded bitmap is never evicted to admit another, so repeated paints fetch nothing');
   assert.ok(cache.cachedCount <= 138);
+});
+
+test('the lane pins exactly the painted window: scrolling 1,500 rows paused loads every visible image, residency stays within the window plus the inactive budget, and nothing resident is fetched again', async () => {
+  const fetched = new Map<string, number>();
+  const budget = 64;
+  const cache = new LaneArtCache({ maxEntries: budget, maxConcurrent: 6, fetchBitmap: async url => { assert.equal(cache.map.has(url), false, 'a resident image is never fetched again'); fetched.set(url, (fetched.get(url) ?? 0) + 1); await Promise.resolve(); return fakeBitmap(); } });
+  const flush = async () => { for (let i = 0; i < 200; i++) await Promise.resolve(); };
+  const rows = Array.from({ length: 1_500 }, (_, at) => readyArt(`art://row-${at}`));
+  const window = 20;
+  for (let first = 0; first + window <= rows.length; first += window) {
+    const visible = rows.slice(first, first + window);
+    for (let paint = 0; paint < 3; paint++) {
+      const before = new Map(fetched);
+      cache.requestVisible(visible, rows);
+      await flush();
+      if (paint > 0) assert.deepEqual(fetched, before, `rows ${first}: a paused repaint fetches nothing`);
+    }
+    assert.ok(visible.every(art => cache.stateOfUrl(art.url) === 'ready'), `rows ${first}: every painted image is resident`);
+    assert.ok(cache.cachedCount <= window + budget, `rows ${first}: residency ${cache.cachedCount} stays within the window plus the inactive budget`);
+  }
+  const back = rows.slice(0, window);
+  cache.requestVisible(back, rows);
+  await flush();
+  assert.ok(back.every(art => cache.stateOfUrl(art.url) === 'ready'), 'scrolling back loads the first rows again');
+  assert.ok(cache.cachedCount <= window + budget);
 });

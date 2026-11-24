@@ -95,16 +95,16 @@ export function collectArtUrls(
   return [...urls];
 }
 
-export function mergeArtDemands(held: readonly ArtHandle[], asked: readonly ArtHandle[]): readonly ArtHandle[] {
-  const seen = new Set(held.map(artHandleKey));
-  let merged: ArtHandle[] | null = null;
-  for (const handle of asked) {
+export function readArtDemands(held: readonly ArtHandle[], read: readonly ArtHandle[]): readonly ArtHandle[] {
+  const seen = new Set<string>();
+  const next: ArtHandle[] = [];
+  for (const handle of read) {
     const key = artHandleKey(handle);
-    if (seen.has(key)) continue;
+    if (seen.has(key) || !needsArtResolution(handle)) continue;
     seen.add(key);
-    (merged ??= [...held]).push(handle);
+    next.push(handle);
   }
-  return merged ?? held;
+  return next.length === held.length && next.every((handle, at) => artHandleKey(handle) === artHandleKey(held[at]!)) ? held : next;
 }
 
 function isDirectUrl(candidate: string): boolean {

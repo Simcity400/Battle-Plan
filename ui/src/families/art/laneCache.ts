@@ -159,8 +159,9 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
         controller.abort();
       }
     }
-    for (const url of this.queue) this.touch(url);
-    this.evict();
+    for (const url of demanded) this.touch(url);
+    for (const url of shown) this.touch(url);
+    this.trim();
     this.pump();
   }
 
@@ -215,16 +216,23 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     return this.visible.has(url) || this.demanded.has(url);
   }
 
+  private inactiveCount(): number {
+    let count = 0;
+    for (const url of this.bitmaps.keys()) if (!this.visible.has(url)) count++;
+    for (const url of this.pending.keys()) if (!this.visible.has(url)) count++;
+    return count;
+  }
+
   private pump(): void {
     if (this.disposed) return;
     while (this.cursor < this.queue.length && this.pending.size < this.maxConcurrent) {
       const url = this.queue[this.cursor]!;
-      this.cursor++;
-      if (this.bitmaps.has(url) || this.pending.has(url) || this.failed.has(url)) continue;
-      if (!this.visible.has(url)) {
-        this.evict(this.maxEntries - this.pending.size - 1);
-        if (this.bitmaps.size + this.pending.size >= this.maxEntries) return;
+      if (this.bitmaps.has(url) || this.pending.has(url) || this.failed.has(url)) {
+        this.cursor++;
+        continue;
       }
+      if (!this.visible.has(url) && this.inactiveCount() >= this.maxEntries && !this.evictOne(key => !this.demanded.has(key))) return;
+      this.cursor++;
       this.startFetch(url);
     }
   }
@@ -248,7 +256,7 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
         this.failed.delete(url);
         if (this.wants(url)) {
           this.bitmaps.set(url, bitmap);
-          this.evict();
+          this.trim();
         } else {
           bitmap.close();
         }
@@ -273,13 +281,19 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     );
   }
 
-  private evict(limit = this.maxEntries): void {
-    if (this.bitmaps.size <= limit) return;
+  private evictOne(evictable: (url: string) => boolean): boolean {
     for (const [key, bitmap] of this.bitmaps) {
-      if (this.bitmaps.size <= limit) break;
-      if (this.wants(key)) continue;
+      if (this.visible.has(key) || !evictable(key)) continue;
       this.bitmaps.delete(key);
       bitmap.close();
+      return true;
     }
+    return false;
+  }
+
+  private trim(): void {
+    let over = this.inactiveCount() - this.maxEntries;
+    while (over > 0 && this.evictOne(key => !this.demanded.has(key))) over--;
+    while (over > 0 && this.evictOne(() => true)) over--;
   }
 }
