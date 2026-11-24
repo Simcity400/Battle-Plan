@@ -1,15 +1,14 @@
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
-import type { LaneView } from '../../draw/lane.ts';
 import { collectArtUrls } from '../art/provider.ts';
 import type { ArtHandle, BoundedReadView, FamilyTheme, MirrorModel } from '../contract.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 import type { IdentityIndex } from '../identity/index.ts';
-import { createLaneView, type LaneBinding, type LaneFamily, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import { AXIS_HEIGHT, frameTimeline, placeTimeline, visibleRange, type TimelineLayout, type TimelinePlacement } from './layout.ts';
 import { resolutionFor, type TimelineResolution } from './resolution.ts';
-import { deriveTimelineAudit, laneByKey, spanAt, type TimelineHit, type TimelineLane, type TimelineModel, type TimelineProjection } from './model.ts';
-import { decodeTimelineHit, drawTimeline, encodeTimelineHit, hitTimeline } from './painter.ts';
+import { decodeTimelineHit, deriveTimelineAudit, encodeTimelineHit, laneByKey, spanAt, type TimelineHit, type TimelineLane, type TimelineModel, type TimelineProjection } from './model.ts';
+import { drawTimeline, hitTimeline } from './painter.ts';
 
 export interface FamilyTimelineBinding<TOptions = unknown> extends LaneBinding<TOptions> {
   readonly family: 'timeline';
@@ -130,7 +129,7 @@ function focusHit(model: TimelineModel, key: string, hour: number): TimelineHit 
   return current ? { kind: 'span', laneKey: key, spanId: current.id, hour } : { kind: 'lane', laneKey: key, hour };
 }
 
-const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, TimelineFrameLayout> = {
+export const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, TimelineFrameLayout> = {
   family: 'timeline',
   boundary: model => model.nextChangeAt,
   redraw: (_model, hour) => nextDayStart(hour),
@@ -183,7 +182,3 @@ const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, TimelineFra
   audit: frame => deriveTimelineAudit(frame.model),
   visibleArt: frame => collectArt(frame.model, frame.layout.frame, frame.binding.scrollTop, frame.index),
 };
-
-export function familyTimelineLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(timelineLane, wake, options);
-}

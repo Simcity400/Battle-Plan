@@ -199,7 +199,7 @@ pub const FIELDS: crate::fields::Fields = {
         ("key", Undated), ("measures", Undated), ("firstHour", Start), ("lastHour", End), ("top", Undated),
         ("hour", Read), ("width", Undated), ("within[].1[].firstHour", Start), ("within[].1[].lastHour", End), ("binHours", Undated), ("index", Undated),
         ("withMarks", Undated), ("least", Undated), ("countries[]", Undated), ("lines[].country", Undated), ("reads[].country", Undated), ("within[].0", Undated),
-        ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated), ("rankBy", Undated), ("group", Undated),
+        ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated), ("family.country", Undated), ("rankBy", Undated), ("group", Undated),
     ]
 };
 
@@ -898,7 +898,7 @@ impl<'q, 'a> Line<'q, 'a> {
         if self.series.key.unowned() {
             return country.tag().and_then(|tag| self.series.key.fixed(tag)).is_none().then(|| self.query.holders.say(country, hour, |name| format!("{name} names no row of {}", self.series.kind)));
         }
-        let Some(name) = self.query.holders.label(country, hour) else { return Some(self.query.holders.unnamed(country).to_owned()) };
+        let Some(name) = self.query.holders.label(country, hour) else { return Some(self.query.holders.unnamed(country, hour)) };
         if let Some((_, _, reason)) = self.query.holders.unknown.iter().find(|(first, last, _)| *first <= hour && hour <= *last) {
             return Some(format!("Who holds {name} is not known: {reason}"));
         }
@@ -1904,7 +1904,8 @@ impl<'q, 'a> Line<'q, 'a> {
         coverage: fn(&Self, &Part, i32, i32, &mut Vec<MissingSpan>) -> io::Result<Vec<(i64, i64)>>,
     ) -> io::Result<Vec<MissingSpan>> {
         let mut out = self.unheld(&country, from, to, parts);
-        let rowless = self.query.holders.say(&country, to, |name| format!("{name}'s {} was not recorded here", self.measure.name));
+        let edges = self.name_edges(&country);
+        let rowless = |at: i32| self.query.holders.say(&country, at, |name| format!("{name}'s {} was not recorded here", self.measure.name));
         for part in parts {
             let complete = coverage(self, part, from, to, &mut out)?;
             if complete.is_empty() {
@@ -1918,7 +1919,7 @@ impl<'q, 'a> Line<'q, 'a> {
                     Some((born, ended)) => [(a, b.min(born - 1)), (a.max(ended + 1), b)],
                 };
                 for (x, y) in outside.into_iter().filter(|(x, y)| x <= y) {
-                    out.push(MissingSpan { first_hour: x as i32, last_hour: y as i32, reason: rowless.clone() });
+                    named_spans(&edges, x, y, &rowless, &mut out);
                 }
             }
         }
@@ -2209,7 +2210,7 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(Some(read))
     }
 
-    pub fn unheld(&self, country: &Country, from: i32, to: i32, parts: &[Part]) -> Vec<MissingSpan> {
+    fn name_edges(&self, country: &Country) -> Vec<i64> {
         let mut edges: Vec<i64> = Vec::new();
         for gap in &self.query.timeline.unheld {
             edges.extend([i64::from(gap.first), i64::from(gap.last) + 1]);
@@ -2225,21 +2226,18 @@ impl<'q, 'a> Line<'q, 'a> {
         }
         edges.sort_unstable();
         edges.dedup();
+        edges
+    }
+
+    pub fn unheld(&self, country: &Country, from: i32, to: i32, parts: &[Part]) -> Vec<MissingSpan> {
+        let edges = self.name_edges(country);
         let mut out: Vec<MissingSpan> = Vec::new();
+        let reason = |at: i32| {
+            self.missing_at(country, at)
+                .unwrap_or_else(|| self.query.holders.say(country, at, |name| format!("{name}'s {} was not recorded here", self.measure.name)))
+        };
         let push = |first: i64, last: i64, out: &mut Vec<MissingSpan>| {
-            let mut at = first;
-            while at <= last {
-                let next = edges[edges.partition_point(|&edge| edge <= at)..].first().copied().unwrap_or(i64::MAX);
-                let end = (next - 1).min(last);
-                let reason = self
-                    .missing_at(country, at as i32)
-                    .unwrap_or_else(|| self.query.holders.say(country, at as i32, |name| format!("{name}'s {} was not recorded here", self.measure.name)));
-                match out.last_mut() {
-                    Some(held) if held.reason == reason && i64::from(held.last_hour) + 1 == at => held.last_hour = end as i32,
-                    _ => out.push(MissingSpan { first_hour: at as i32, last_hour: end as i32, reason }),
-                }
-                at = end + 1;
-            }
+            named_spans(&edges, first, last, &reason, out);
         };
         let mut hour = i64::from(from);
         for part in parts {
@@ -2709,4 +2707,18 @@ fn zero_absent_covered(held: &read::CoveredRuns, zero: &[(i32, i32)], from: i32,
         }
     }
     out
+}
+
+fn named_spans(edges: &[i64], first: i64, last: i64, reason: &dyn Fn(i32) -> String, out: &mut Vec<MissingSpan>) {
+    let mut at = first;
+    while at <= last {
+        let next = edges[edges.partition_point(|&edge| edge <= at)..].first().copied().unwrap_or(i64::MAX);
+        let end = (next - 1).min(last);
+        let reason = reason(at as i32);
+        match out.last_mut() {
+            Some(held) if held.reason == reason && i64::from(held.last_hour) + 1 == at => held.last_hour = end as i32,
+            _ => out.push(MissingSpan { first_hour: at as i32, last_hour: end as i32, reason }),
+        }
+        at = end + 1;
+    }
 }

@@ -1,4 +1,4 @@
-import type { WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewRenderer } from '../../dashboard/definitions';
 import InternationalMarketWidget from './InternationalMarketWidget';
 
-export default { render: InternationalMarketWidget } satisfies WidgetRenderer;
+export default { render: InternationalMarketWidget } satisfies FamilyViewRenderer;

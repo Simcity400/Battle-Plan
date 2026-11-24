@@ -417,27 +417,3 @@ export function hitTimeline(layout: TimelineLayout, resolution: TimelineResoluti
   }
   return nearest ? { kind: 'span', laneKey: lane.key, spanId: nearest.spanId, hour } : { kind: 'lane', laneKey: lane.key, hour };
 }
-
-const SEP = '\u001f';
-
-export function encodeTimelineHit(hit: TimelineHit | null): string | null {
-  if (!hit) return null;
-  return `${hit.kind}:${hit.laneKey}${SEP}${hit.spanId ?? ''}${SEP}${hit.hour ?? ''}`;
-}
-
-export function decodeTimelineHit(token: string | null | undefined): TimelineHit | null {
-  if (!token) return null;
-  const colon = token.indexOf(':');
-  if (colon < 0) return null;
-  const kind = token.slice(0, colon);
-  if (kind !== 'lane' && kind !== 'span' && kind !== 'toggle') return null;
-  const [laneKey, spanId, hourText] = token.slice(colon + 1).split(SEP);
-  if (!laneKey) return null;
-  const hour = hourText ? Number(hourText) : NaN;
-  return {
-    kind,
-    laneKey,
-    ...(spanId ? { spanId } : {}),
-    ...(Number.isFinite(hour) ? { hour } : {}),
-  };
-}

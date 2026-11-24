@@ -7,14 +7,15 @@ import { createBoundedReadView } from '../boundedView.ts';
 import { timelineHostAdapter } from './hostAdapter.ts';
 import { frameTimeline, LEGEND_HEIGHT, placeTimeline } from './layout.ts';
 import { resolutionFor } from './resolution.ts';
-import { familyTimelineLaneView, nextDayStart, type FamilyTimelineBinding } from './laneView.ts';
+import { timelineLane, nextDayStart, type FamilyTimelineBinding } from './laneView.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { timelineModel } from './helpers.ts';
 import type { PaintInput } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { assertFreshPaint, assertQuietFrames, LANE_THEME, LaneTransport } from '../laneRuntime.fixture.ts';
-import { visibleLanes, type TimelineLane, type TimelineModel, type TimelineProjection } from './model.ts';
-import { decodeTimelineHit, drawTimeline, encodeTimelineHit, hitTimeline } from './painter.ts';
+import { createLaneView } from '../laneRuntime.ts';
+import { decodeTimelineHit, encodeTimelineHit, visibleLanes, type TimelineLane, type TimelineModel, type TimelineProjection } from './model.ts';
+import { drawTimeline, hitTimeline } from './painter.ts';
 
 const H = (year: number, month = 1, day = 1) => engineHour({ year, month, day, hour: 1 })!;
 const FIRST = H(1936);
@@ -173,7 +174,7 @@ test('a hover over an unchanged model neither re-projects nor re-places, and pai
   (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeCanvas;
   try {
     const opsFor = (count: number) => {
-      const view = familyTimelineLaneView(() => {});
+      const view = createLaneView(timelineLane, () => {});
       const state = new Map<string, unknown>();
       const binding = new LaneTransport().carry<FamilyTimelineBinding<{ readonly n: number }>>({ family: 'timeline', kind: `test-timeline-${count}`, options: { n: count }, sources: {},
         width: 600, height: 240, scrollTop: 0, theme, identitySnapshot: null, selectedKey: null, focusedKey: null, expanded: {}, pauseFlush: 0 });
@@ -212,8 +213,8 @@ test('a timeline lane equals a fresh paint after a seek back, a correction and a
   const held = binding([lane('Winter War', true), child]);
   const surface = { width: 600, height: 240, dpr: 1 };
   const at = FIRST + 1000 + 5;
-  assert.equal(assertQuietFrames(() => familyTimelineLaneView(() => {}), { label: 'quiet', binding: held, hour: at }, 30, surface), nextDayStart(at));
-  assertFreshPaint(() => familyTimelineLaneView(() => {}), [
+  assert.equal(assertQuietFrames(() => createLaneView(timelineLane, () => {}), { label: 'quiet', binding: held, hour: at }, 30, surface), nextDayStart(at));
+  assertFreshPaint(() => createLaneView(timelineLane, () => {}), [
     { label: 'held', binding: held, hour: at, check: true },
     { label: 'a day later', binding: held, hour: at + 30, speed: 24 },
     { label: 'seek back', binding: held, hour: at, check: true },

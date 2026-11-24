@@ -10,9 +10,10 @@ import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import { resolvePlaybackProvenInterval } from '../broker.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas } from '../laneRuntime.fixture.ts';
+import { createLaneView } from '../laneRuntime.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { parseBreakdownHit } from './hostAdapter.ts';
-import { familyBreakdownLaneView } from './laneView.ts';
+import { breakdownLane } from './laneView.ts';
 import { hitTestBreakdown, layoutBreakdown, type PartsViewLayout, type RingViewLayout, type MosaicViewLayout } from './layout.ts';
 import { buildBreakdownTooltip, partColour, breakdownLevel, PATH, type BreakdownModel } from './model.ts';
 import { deriveBreakdownAudit, deriveBreakdownNavAndMirror } from './structure.ts';
@@ -205,8 +206,8 @@ test('political power spending reads the product at the displayed hour', () => {
   });
   const held = lane(reply(spent()));
   const surface = { width: 600, height: 300, dpr: 1 };
-  assertQuietFrames(() => familyBreakdownLaneView(() => {}), { label: 'spending', binding: held, hour: START + 10 }, 24, surface);
-  assertFreshPaint(() => familyBreakdownLaneView(() => {}), [
+  assertQuietFrames(() => createLaneView(breakdownLane, () => {}), { label: 'spending', binding: held, hour: START + 10 }, 24, surface);
+  assertFreshPaint(() => createLaneView(breakdownLane, () => {}), [
     { label: 'spent', binding: held, hour: START + 10, check: true },
     { label: 'later', binding: lane(reply(partlyKnown(), { hour: START + 20 })), hour: START + 20, speed: 24 },
     { label: 'seek back', binding: held, hour: START + 10, check: true },
@@ -402,7 +403,7 @@ test('the art asked for is the flags the laid-out rows draw, found once per layo
   const fetched: string[] = [];
   const recording = installRecordingCanvas();
   try {
-    const lane = driveLane(familyBreakdownLaneView(() => {}, { fetchBitmap: async url => { fetched.push(url); return { width: 18, height: 12, close() {} } as never; } }), recording.canvases, { width: 600, height: 300, dpr: 1 });
+    const lane = driveLane(createLaneView(breakdownLane, () => {}, { fetchBitmap: async url => { fetched.push(url); return { width: 18, height: 12, close() {} } as never; } }), recording.canvases, { width: 600, height: 300, dpr: 1 });
     const binding = { family: 'breakdown', kind: 'test-breakdown-art', options: { view: 'parts', namesInRing: true, digits: 0 }, sources: {}, scrollTop: 0, theme: THEME, width: 600, height: 300, expanded: { Decisions: false } };
     lane.paint({ label: 'closed', binding, hour: START + 10 });
     for (let i = 0; i < 8; i++) await null;

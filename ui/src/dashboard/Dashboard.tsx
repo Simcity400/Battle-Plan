@@ -24,6 +24,7 @@ import type { LayoutLibrary, LayoutSaveAction } from './storage';
 import { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
 import '../widgets';
+import { presetStoredOptions } from '../widgets/manifest';
 import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/rendererLoaders';
 import { CAMPAIGN_MAP_VIEW, campaignToggled, MapViewsStore, toggleMapSetting } from './geometry';
 import { DEFAULT_MAP_OPTIONS, observedRole, observedSwitches } from './mapPicker';
@@ -680,7 +681,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
         }} />
       <div className="dash-toolbar" role="toolbar" aria-label="Layout changes">
         <span className="toolbar-slot" data-shown={editing || undefined}><WidgetPicker runtime={runtime} placed={template.widgets} disabled={!editing} onOpen={() => saveMenu.popup.current?.hidePopover()} onAdd={(kind, initial) => {
-          const widget = { ...createWidget(kind, template.tracks[0].id), ...initial };
+          const widget = { ...createWidget(kind, template.tracks[0].id), ...initial, ...(initial?.options ? { options: presetStoredOptions(kind, initial.options) } : {}) };
           update((previous) => ({ ...previous, widgets: [...previous.widgets, widget], layouts: addGridItem(previous.layouts, widget) }));
         }} /></span>
         {!layoutAtDefault && <button ref={resetMenu.trigger} type="button" className="icon-button header-reset toolbar-slot" data-shown={editing || undefined} aria-label="Reset layout" data-tooltip="Reset arrangement to default"

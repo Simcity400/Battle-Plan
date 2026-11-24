@@ -49,7 +49,7 @@ test('a content-derived widget becomes one card per preset, and each card counts
   assert.deepEqual(politics.map(entry => [entry.key, entry.title]), [
     ['idea-timeline:laws', 'Laws'], ['idea-timeline:mod council,elite:20:seat', 'Extra council'], ['political-power', 'Political power']],
     'the generic widget gives way to its presets');
-  const placed = [{ kind: 'idea-timeline', options: { category: 'laws' } }, { kind: 'idea-timeline', options: { category: 'laws' } }, { kind: 'idea-timeline', options: {} }, { kind: 'political-power' }];
+  const placed: { kind: string; options: Record<string, string> }[] = [{ kind: 'idea-timeline', options: { category: 'laws' } }, { kind: 'idea-timeline', options: { category: 'laws' } }, { kind: 'idea-timeline', options: { category: '' } }, { kind: 'political-power', options: {} }];
   assert.deepEqual(politics.map(entry => placedCount(entry, placed)), [2, 0, 1]);
   const [loading] = catalogueEntries(groups, new Map([['idea-timeline', { presets: [], reason: 'Loading this campaign’s idea categories…' }]]));
   assert.deepEqual(loading.map(entry => [entry.key, entry.note]), [['idea-timeline', 'Loading this campaign’s idea categories…'], ['political-power', null]],
@@ -70,12 +70,12 @@ test('a widget keeps its own card and lists each of its views right after it', (
     ['navy-size:show=breakdown', 'Navy size: Ship classes', true], ['ships-sunk', 'Ships sunk', false]]);
   assert.equal(navyGroup[0].initial, undefined, 'the own card adds the widget as it always did');
   assert.deepEqual(navyGroup[1].initial, { title: 'Navy size over time', options: { view: 'lines' } }, 'a view card adds its title and options');
-  const placed = [
-    { kind: 'navy-size' }, { kind: 'navy-size', options: { view: 'race', show: 'main' } },
-    { kind: 'navy-size', options: { view: 'lines' } }, { kind: 'navy-size', options: { view: 'lines', show: 'breakdown' } },
-    { kind: 'navy-size', options: { show: 'breakdown' } }, { kind: 'navy-size', options: { view: 'unknown' } }, { kind: 'ships-sunk' }];
+  const placed: { kind: string; options: Record<string, string> }[] = [
+    { kind: 'navy-size', options: { view: 'race', show: 'main' } }, { kind: 'navy-size', options: { view: 'race', show: 'main' } },
+    { kind: 'navy-size', options: { view: 'lines', show: 'main' } }, { kind: 'navy-size', options: { view: 'lines', show: 'breakdown' } },
+    { kind: 'navy-size', options: { view: 'race', show: 'breakdown' } }, { kind: 'navy-size', options: { view: 'race', show: 'main' } }, { kind: 'ships-sunk', options: {} }];
   assert.deepEqual(navyGroup.map(entry => placedCount(entry, placed)), [3, 2, 1, 1],
-    'each card counts the copies showing its view, reading a missing or illegal value as the default');
+    'each card counts the copies whose resolved options show its view');
 
   const ideas = { ...widget('idea-timeline', 'Idea timeline'), variants: [{ key: 'view=list', initial: { title: 'Idea list', options: { view: 'list' } } }] };
   const [politics] = catalogueEntries(widgetGroups([ideas], pages), new Map([['idea-timeline', { reason: null,

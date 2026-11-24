@@ -8,9 +8,8 @@ import { formatCompactScalar, formatScalar } from '../../families/valueFormat.ts
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
 import type { ChartArtSlot, ChartGap, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import {
-  assignCountrySeriesColours,
   branchGapsOf,
-  countrySeriesIdentity,
+  countrySeriesLooks,
   exactHoverReadings,
   memberAt,
   missingSpansOf,
@@ -61,8 +60,14 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
     const present = tags.filter(tag => memberAt(options.membership, tag, hour));
     const presentSet = new Set(present);
     const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
-    const colourMap = assignCountrySeriesColours(ordered, options.holders, readView, hour, options.surface,
-      CHART_MEASURE_COLOURS.politicalPower, tag => rowOf.get(tag) ?? 0);
+    const looks = countrySeriesLooks(ordered, readView, {
+      holders: options.holders,
+      from: options.extent[0],
+      surface: options.surface,
+      withFlag: !single,
+      recordedOrdinal: tag => rowOf.get(tag) ?? 0,
+      singleColor: CHART_MEASURE_COLOURS.politicalPower,
+    });
     const measureIcon: ChartArtSlot | undefined = single
       ? { art: readView.art(measureArtHandle('politicalPower')), label: 'Political power' }
       : undefined;
@@ -70,8 +75,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
     const series: TimeChartSeriesModel[] = ordered.map((tag, rank) => {
       const isTail = !single && rank >= 8;
       const bounded = seriesMap?.get(tag) ?? null;
-      const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, !single);
-      const color = isTail ? CHART_MEASURE_COLOURS.tailLine : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.politicalPower);
+      const { name, flag, color, identities } = looks.get(tag)!;
       const headValue = headByTag.get(tag) ?? null;
       return {
         id: tag,
@@ -87,6 +91,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
         headHour: hour,
         exact: exact?.[rowOf.get(tag) ?? -1] ?? null,
         flag,
+        ...(single ? {} : { identities }),
         icon: measureIcon,
         missingSpans: missingSpansOf(bounded),
         rank,

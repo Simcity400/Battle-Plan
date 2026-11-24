@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { WidgetProps, WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/definitions';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
@@ -15,7 +15,7 @@ import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { ArmyAttribution, ForceAtReply } from '../../generated/dashboard';
 
 function ArmyAtDetail({ runtime, trackId, tag, hour, countFor, active }: {
-  readonly runtime: WidgetProps['runtime'];
+  readonly runtime: FamilyViewProps['runtime'];
   readonly trackId: string | undefined;
   readonly tag: string;
   readonly hour: GatedHour;
@@ -57,10 +57,10 @@ function ArmyAtDetail({ runtime, trackId, tag, hour, countFor, active }: {
   );
 }
 
-function ArmySizeFamilyWidget(props: WidgetProps) {
-  const { widget, runtime, active, view, manifestDeclaration } = props;
+function ArmySizeFamilyWidget(props: FamilyViewProps) {
+  const { widget, runtime, active, view, options, manifestDeclaration } = props;
   const isLines = manifestDeclaration?.family === 'time-chart';
-  const countFor = (widget.options?.countFor === 'host' ? 'host' : 'owner') as ArmyAttribution;
+  const countFor: ArmyAttribution = options.countFor === 'host' ? 'host' : 'owner';
   const anchorRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
   const gate = useGate(runtime, widget, SPEC, active);
@@ -109,4 +109,4 @@ function ArmySizeFamilyWidget(props: WidgetProps) {
   );
 }
 
-export default { render: ArmySizeFamilyWidget } satisfies WidgetRenderer;
+export default { render: ArmySizeFamilyWidget } satisfies FamilyViewRenderer;
