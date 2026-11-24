@@ -943,6 +943,7 @@ pub struct Shared {
     parked_packs: Mutex<Vec<Box<extended::ParkedPacks>>>,
     retired_parked: Mutex<Vec<Box<extended::ParkedPacks>>>,
     parked_total_bytes: AtomicU64,
+    unparked_frames: AtomicUsize,
     retired_parked_pending: AtomicBool,
     pub(crate) builder_waker: OnceLock<std::thread::Thread>,
     #[cfg(test)]
@@ -1525,6 +1526,7 @@ impl Shared {
             parked_packs: Mutex::new(Vec::new()),
             retired_parked: Mutex::new(Vec::new()),
             parked_total_bytes: AtomicU64::new(0),
+            unparked_frames: AtomicUsize::new(0),
             retired_parked_pending: AtomicBool::new(false),
             builder_waker: OnceLock::new(),
                     #[cfg(test)]
@@ -1579,7 +1581,11 @@ impl Shared {
     }
 
     fn publish_frame(&self, frame: Box<Captured>, ahead: bool) -> std::io::Result<()> {
+        let unparked = !frame.extended.is_parked();
         let index = self.frames.vacant()?;
+        if unparked {
+            self.unparked_frames.fetch_add(1, Ordering::AcqRel);
+        }
         self.frames.install(index, frame);
         if ahead {
             self.frames.built_ahead(index);
@@ -1596,7 +1602,11 @@ impl Shared {
         ahead: bool,
         claim: crate::frame_pool::GrowthClaim<'_>,
     ) -> std::io::Result<()> {
+        let unparked = !frame.extended.is_parked();
         let index = self.frames.vacant()?;
+        if unparked {
+            self.unparked_frames.fetch_add(1, Ordering::AcqRel);
+        }
         self.frames.install_claimed(index, frame, claim);
         if ahead {
             self.frames.built_ahead(index);
@@ -1770,6 +1780,7 @@ impl Shared {
                 Ok(mut frame) => {
                     frame.extended.install_parked_packs(parked);
                     self.parked_total_bytes.fetch_sub(bytes, Ordering::Relaxed);
+                    self.unparked_frames.fetch_add(1, Ordering::AcqRel);
                     self.frames
                         .install_claimed_with_credit(index, frame, claim, bytes);
                     Ok(())
@@ -1781,6 +1792,7 @@ impl Shared {
             },
             None => match self.new_frame() {
                 Ok(frame) => {
+                    self.unparked_frames.fetch_add(1, Ordering::AcqRel);
                     self.frames.install_claimed(index, frame, claim);
                     Ok(())
                 }
@@ -1907,6 +1919,62 @@ impl Shared {
         self.retired_parked_pending.load(Ordering::Acquire)
     }
 
+    pub fn park_idle_steady_frame(&self) -> bool {
+        if self.unparked_frames.load(Ordering::Acquire) < crate::frame_pool::STEADY
+            || !self.frames.steady_idle()
+        {
+            return false;
+        }
+        let Some(index) = self.frames.take_oldest_idle(crate::frame_pool::AHEAD) else {
+            return false;
+        };
+        // SAFETY: `take_oldest_idle` claimed exclusive `HELD` ownership of this frame slot.
+        let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
+        let parked = frame.extended.take_parked_packs();
+        let freed = parked.is_some();
+        if let Some(parked) = parked {
+            self.unparked_frames.fetch_sub(1, Ordering::AcqRel);
+            self.frames.set_parked(index, true);
+            drop(parked);
+            self.set_frame_bytes(index, frame.allocated_bytes() as u64);
+        }
+        let restored = self.frames.restore(index);
+        debug_assert!(restored.is_ok());
+        freed
+    }
+
+    pub fn drain_surplus_parked(&self) -> bool {
+        if self.frames.live() > crate::frame_pool::STEADY {
+            return false;
+        }
+        let steady_idle = self.frames.steady_idle();
+        let unparked = self.unparked_frames.load(Ordering::Acquire);
+        if !steady_idle && unparked < crate::frame_pool::STEADY {
+            return false;
+        }
+        let drained = match self.parked_packs.lock() {
+            Ok(mut slots) => {
+                if slots.is_empty()
+                    || self.frames.live() > crate::frame_pool::STEADY
+                    || (!self.frames.steady_idle()
+                        && self.unparked_frames.load(Ordering::Acquire)
+                            < crate::frame_pool::STEADY)
+                {
+                    return false;
+                }
+                std::mem::take(&mut *slots)
+            }
+            Err(_) => return false,
+        };
+        let bytes: u64 = drained
+            .iter()
+            .map(|entry| entry.allocated_bytes() as u64)
+            .sum();
+        drop(drained);
+        self.adjust_parked_bytes(bytes, 0);
+        true
+    }
+
     pub fn drain_retired_parked(&self) -> bool {
         let drained = match self.retired_parked.lock() {
             Ok(mut queue) => {
@@ -1943,6 +2011,8 @@ impl Shared {
         }
         if let Some((parked, bytes)) = self.take_parked_pack() {
             frame.extended.install_parked_packs(parked);
+            self.unparked_frames.fetch_add(1, Ordering::AcqRel);
+            self.frames.set_parked(index, false);
             let after = frame.allocated_bytes() as u64;
             self.parked_total_bytes.fetch_sub(bytes, Ordering::Relaxed);
             self.frames
@@ -1953,6 +2023,10 @@ impl Shared {
             frame.extended.hydrate_parked_packs(&capacities.extended);
             frame.extended.share_country_intel(&self.country_intel);
             frame.extended.share_template_home(&self.template_home);
+            if !frame.extended.is_parked() {
+                self.unparked_frames.fetch_add(1, Ordering::AcqRel);
+                self.frames.set_parked(index, false);
+            }
             self.set_frame_bytes(index, frame.allocated_bytes() as u64);
             !collector_memory::terminal::failed()
         }
@@ -2082,9 +2156,27 @@ impl Shared {
         frame.reset_verdicts();
         frame.verdicts_reset = true;
         frame.extended.release_transient();
-        let parked = (self.frames.live() > crate::frame_pool::STEADY)
-            .then(|| frame.extended.take_parked_packs())
-            .flatten();
+        let parked = if !frame.extended.is_parked()
+            && self
+                .unparked_frames
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    (count > crate::frame_pool::STEADY).then_some(count - 1)
+                })
+                .is_ok()
+        {
+            match frame.extended.take_parked_packs() {
+                Some(parked) => {
+                    self.frames.set_parked(index, true);
+                    Some(parked)
+                }
+                None => {
+                    self.unparked_frames.fetch_add(1, Ordering::AcqRel);
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let result = frame.prepare_clock(self.clock_required());
         let after = frame.allocated_bytes() as u64;
         if let Some(parked) = parked {
@@ -2163,10 +2255,28 @@ impl Shared {
         // SAFETY: This stage owns the installed frame slot.
         unsafe { self.frame_stage(index, FrameStage::Free) };
         if how == Return::Newest && self.frames.surplus() {
-            return Some(
-                // SAFETY: The caller owns the installed slot and all other frame users are finished.
-                unsafe { self.frames.vacate(index) },
-            );
+            // SAFETY: This caller exclusively owns the frame slot before vacating or returning it.
+            let is_parked = unsafe { (*self.frames[index].load(Ordering::Acquire)).extended.is_parked() };
+            if !is_parked
+                && let Some(parked_index) = self.frames.take_parked_free()
+            {
+                // SAFETY: `take_parked_free` claimed exclusive ownership of the parked slot.
+                let evicted = unsafe { self.frames.vacate(parked_index) };
+                if !evicted.extended.is_parked() {
+                    self.unparked_frames.fetch_sub(1, Ordering::AcqRel);
+                }
+                self.frame_priority.publish();
+                let published = self.frames.push(index);
+                debug_assert!(published.is_ok());
+                self.frame_priority.refresh();
+                return Some(evicted);
+            }
+            // SAFETY: The caller owns the installed slot and all other frame users are finished.
+            let evicted = unsafe { self.frames.vacate(index) };
+            if !evicted.extended.is_parked() {
+                self.unparked_frames.fetch_sub(1, Ordering::AcqRel);
+            }
+            return Some(evicted);
         }
         self.frame_priority.publish();
         let published = if how == Return::Idle {

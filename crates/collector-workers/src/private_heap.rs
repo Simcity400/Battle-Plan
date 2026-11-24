@@ -1340,29 +1340,94 @@ impl PrivateHeap {
                 if !freed {
                     if page_class {
                         let record = slab as *mut Record;
-                        for index in at..end {
+                        let mut index = at;
+                        while index < end {
                             let entry = blocks[index];
                             let block = (entry & !1) as *mut u8;
                             if entry & 1 != 0 {
                                 self.depot.keep_cold(class, cold_node(block, class));
+                                index += 1;
                             } else if kept_end < WARM_PAGE_BLOCKS {
                                 blocks[kept_end] = block as usize;
                                 kept_end += 1;
-                            } else if self.page_call(|| unsafe {
-                                VirtualFree(block.cast(), size, MEM_DECOMMIT)
-                            }) != 0
-                            {
-                                // SAFETY: `record` is Page 0 of the slab and stays committed.
-                                unsafe { (*record).committed.fetch_sub(size, Ordering::Relaxed) };
-                                self.depot.keep_cold(class, cold_node(block, class));
-                                reclaimed += size;
+                                index += 1;
                             } else {
-                                blocks[kept_end] = block as usize;
-                                kept_end += 1;
+                                let run_start = entry & !1;
+                                let mut run_end_addr = run_start + size;
+                                let mut run_end = index + 1;
+                                while run_end < end {
+                                    let next_entry = blocks[run_end];
+                                    if next_entry & 1 != 0 || next_entry != run_end_addr {
+                                        break;
+                                    }
+                                    run_end_addr += size;
+                                    run_end += 1;
+                                }
+                                let run_bytes = run_end_addr - run_start;
+                                if self.page_call(|| unsafe {
+                                    VirtualFree(run_start as *mut c_void, run_bytes, MEM_DECOMMIT)
+                                }) != 0
+                                {
+                                    // SAFETY: `record` is Page 0 of the slab and stays committed.
+                                    unsafe {
+                                        (*record).committed.fetch_sub(run_bytes, Ordering::Relaxed);
+                                    }
+                                    for item in &blocks[index..run_end] {
+                                        self.depot
+                                            .keep_cold(class, cold_node(*item as *mut u8, class));
+                                    }
+                                    reclaimed += run_bytes;
+                                } else {
+                                    for pos in index..run_end {
+                                        blocks[kept_end] = blocks[pos];
+                                        kept_end += 1;
+                                    }
+                                }
+                                index = run_end;
                             }
                         }
                     } else {
                         let record = slab as *mut Record;
+                        let mut decommit_start = 0usize;
+                        let mut decommit_end = 0usize;
+                        let mut flush_decommit = |start: &mut usize, end_addr: &mut usize| {
+                            if *start == *end_addr {
+                                return;
+                            }
+                            let run_start = *start;
+                            let run_bytes = *end_addr - run_start;
+                            *start = 0;
+                            *end_addr = 0;
+                            if self.page_call(|| unsafe {
+                                VirtualFree(run_start as *mut c_void, run_bytes, MEM_DECOMMIT)
+                            }) != 0
+                            {
+                                // SAFETY: `record` is Page 0 of the slab and stays committed.
+                                unsafe {
+                                    (*record).committed.fetch_sub(run_bytes, Ordering::Relaxed);
+                                }
+                                let mut page = run_start;
+                                while page < run_start + run_bytes {
+                                    self.depot.keep_cold_subpage(
+                                        class,
+                                        cold_subpage_node(page as *mut u8),
+                                    );
+                                    page += PAGE;
+                                }
+                                reclaimed += run_bytes;
+                            } else {
+                                let mut page = run_start;
+                                while page < run_start + run_bytes {
+                                    for offset in 0..per_page {
+                                        self.depot.keep_single(
+                                            class,
+                                            (page + offset * size) as *mut u8,
+                                        );
+                                    }
+                                    page += PAGE;
+                                }
+                            }
+                        };
                         let mut p_start = at;
                         while p_start < end {
                             let page_addr = (blocks[p_start] & !1) & !(PAGE - 1);
@@ -1373,6 +1438,7 @@ impl PrivateHeap {
                                 p_end += 1;
                             }
                             if p_end - p_start == 1 && blocks[p_start] & 1 != 0 {
+                                flush_decommit(&mut decommit_start, &mut decommit_end);
                                 self.depot.keep_cold_subpage(
                                     class,
                                     cold_subpage_node(page_addr as *mut u8),
@@ -1380,18 +1446,19 @@ impl PrivateHeap {
                             } else if page_addr > slab
                                 && p_end - p_start == per_page
                                 && warm_pages_kept >= WARM_SUBPAGE_PAGES
-                                && self.page_call(|| unsafe {
-                                    VirtualFree(page_addr as *mut c_void, PAGE, MEM_DECOMMIT)
-                                }) != 0
                             {
-                                // SAFETY: `record` is Page 0 of the slab and stays committed.
-                                unsafe { (*record).committed.fetch_sub(PAGE, Ordering::Relaxed) };
-                                self.depot.keep_cold_subpage(
-                                    class,
-                                    cold_subpage_node(page_addr as *mut u8),
-                                );
-                                reclaimed += PAGE;
+                                if decommit_start == decommit_end {
+                                    decommit_start = page_addr;
+                                    decommit_end = page_addr + PAGE;
+                                } else if page_addr == decommit_end {
+                                    decommit_end += PAGE;
+                                } else {
+                                    flush_decommit(&mut decommit_start, &mut decommit_end);
+                                    decommit_start = page_addr;
+                                    decommit_end = page_addr + PAGE;
+                                }
                             } else {
+                                flush_decommit(&mut decommit_start, &mut decommit_end);
                                 if page_addr > slab && p_end - p_start == per_page {
                                     warm_pages_kept += 1;
                                 }
@@ -1406,6 +1473,7 @@ impl PrivateHeap {
                             }
                             p_start = p_end;
                         }
+                        flush_decommit(&mut decommit_start, &mut decommit_end);
                     }
                 }
                 at = end;

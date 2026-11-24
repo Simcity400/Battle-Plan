@@ -338,25 +338,21 @@ impl Family {
     }
 }
 
-struct Counters {
-    calls: AtomicU64,
+struct SampleCounters {
     sampled: AtomicU64,
     detour: AtomicU64,
     original: AtomicU64,
-    returns: AtomicU64,
     returns_sampled: AtomicU64,
     returns_detour: AtomicU64,
     overhead: AtomicU64,
     returns_overhead: AtomicU64,
 }
-impl Counters {
+impl SampleCounters {
     const fn new() -> Self {
         Self {
-            calls: AtomicU64::new(0),
             sampled: AtomicU64::new(0),
             detour: AtomicU64::new(0),
             original: AtomicU64::new(0),
-            returns: AtomicU64::new(0),
             returns_sampled: AtomicU64::new(0),
             returns_detour: AtomicU64::new(0),
             overhead: AtomicU64::new(0),
@@ -366,10 +362,18 @@ impl Counters {
 }
 
 #[repr(align(64))]
-struct Slot([Counters; FAMILY_COUNT]);
+struct Slot {
+    calls: [AtomicU64; FAMILY_COUNT],
+    returns: [AtomicU64; FAMILY_COUNT],
+    samples: [SampleCounters; FAMILY_COUNT],
+}
 impl Slot {
     const fn new() -> Self {
-        Self([const { Counters::new() }; FAMILY_COUNT])
+        Self {
+            calls: [const { AtomicU64::new(0) }; FAMILY_COUNT],
+            returns: [const { AtomicU64::new(0) }; FAMILY_COUNT],
+            samples: [const { SampleCounters::new() }; FAMILY_COUNT],
+        }
     }
 }
 
@@ -449,12 +453,13 @@ impl Table {
             usize::MAX
         };
         let phase = label();
-        let counters = &self.slots[slot].0[family as usize];
+        let entry = &self.slots[slot];
         let shared = slot == SHARED_SLOT;
+        let index = family as usize;
         let count = if returning {
-            &counters.returns
+            &entry.returns[index]
         } else {
-            &counters.calls
+            &entry.calls[index]
         };
         let previous = bump(count, shared, 1);
         let start = if previous & (family.period() - 1) == 0 || forced() {
@@ -463,10 +468,34 @@ impl Table {
             0
         };
         Span {
-            counters,
+            samples: &entry.samples[index],
             shared,
             returning,
             in_flight_slot,
+            start,
+            original: Cell::new(0),
+            originals: Cell::new(0),
+            _phase: phase,
+            _thread: PhantomData,
+        }
+    }
+    #[inline(always)]
+    fn enter_ungated(&'static self, slot: usize, family: Family) -> Span {
+        let phase = label();
+        let entry = &self.slots[slot];
+        let shared = slot == SHARED_SLOT;
+        let index = family as usize;
+        let previous = bump(&entry.calls[index], shared, 1);
+        let start = if previous & (family.period() - 1) == 0 || forced() {
+            now().max(1)
+        } else {
+            0
+        };
+        Span {
+            samples: &entry.samples[index],
+            shared,
+            returning: false,
+            in_flight_slot: usize::MAX,
             start,
             original: Cell::new(0),
             originals: Cell::new(0),
@@ -481,8 +510,12 @@ impl Table {
             .iter()
             .chain(std::iter::once(&self.slots[SHARED_SLOT]));
         for slot in slots {
-            for (total, counters) in totals.iter_mut().zip(&slot.0) {
-                total.add(counters);
+            for (index, total) in totals.iter_mut().enumerate() {
+                total.add(
+                    &slot.calls[index],
+                    &slot.returns[index],
+                    &slot.samples[index],
+                );
             }
         }
         totals
@@ -613,6 +646,10 @@ pub fn enter(family: Family) -> Span {
     TABLE.enter(current_slot(), family, false)
 }
 #[inline(always)]
+pub fn enter_ungated(family: Family) -> Span {
+    TABLE.enter_ungated(current_slot(), family)
+}
+#[inline(always)]
 pub fn enter_return(family: Family) -> Span {
     TABLE.enter(current_slot(), family, true)
 }
@@ -622,7 +659,7 @@ pub fn label() -> collector_memory::terminal::Scope {
 }
 
 pub struct Span {
-    counters: &'static Counters,
+    samples: &'static SampleCounters,
     shared: bool,
     returning: bool,
     in_flight_slot: usize,
@@ -652,16 +689,16 @@ impl Span {
         let original = self.original.get().min(total);
         let detour = total - original;
         let overhead = overhead_ticks(self.originals.get()).min(detour);
-        let counters = self.counters;
+        let samples = self.samples;
         if self.returning {
-            bump(&counters.returns_sampled, self.shared, 1);
-            bump(&counters.returns_detour, self.shared, detour);
-            bump(&counters.returns_overhead, self.shared, overhead);
+            bump(&samples.returns_sampled, self.shared, 1);
+            bump(&samples.returns_detour, self.shared, detour);
+            bump(&samples.returns_overhead, self.shared, overhead);
         } else {
-            bump(&counters.sampled, self.shared, 1);
-            bump(&counters.detour, self.shared, detour);
-            bump(&counters.original, self.shared, original);
-            bump(&counters.overhead, self.shared, overhead);
+            bump(&samples.sampled, self.shared, 1);
+            bump(&samples.detour, self.shared, detour);
+            bump(&samples.original, self.shared, original);
+            bump(&samples.overhead, self.shared, overhead);
         }
     }
 }
@@ -696,14 +733,14 @@ static STARTED: Once = Once::new();
 const OVERHEAD_SAMPLES: usize = 512;
 
 fn calibrate_overhead() {
-    static CALIBRATION: Counters = Counters::new();
+    static CALIBRATION: SampleCounters = SampleCounters::new();
     let mut samples = [[0_u64; OVERHEAD_SAMPLES]; 2];
     for (case, samples) in samples.iter_mut().enumerate() {
         for sample in samples.iter_mut() {
             let before = CALIBRATION.detour.load(Ordering::Relaxed);
             let phase = label();
             let span = Span {
-                counters: &CALIBRATION,
+                samples: &CALIBRATION,
                 shared: false,
                 returning: false,
                 in_flight_slot: usize::MAX,
@@ -740,13 +777,13 @@ struct Totals {
     estimated_overhead: u128,
 }
 impl Totals {
-    fn add(&mut self, counters: &Counters) {
+    fn add(&mut self, calls_counter: &AtomicU64, returns_counter: &AtomicU64, counters: &SampleCounters) {
         let load = |value: &AtomicU64| value.load(Ordering::Relaxed);
-        let calls = load(&counters.calls);
+        let calls = load(calls_counter);
         let sampled = load(&counters.sampled);
         let detour = load(&counters.detour);
         let original = load(&counters.original);
-        let returns = load(&counters.returns);
+        let returns = load(returns_counter);
         let returns_sampled = load(&counters.returns_sampled);
         let returns_detour = load(&counters.returns_detour);
         let overhead = load(&counters.overhead);
@@ -975,8 +1012,9 @@ mod tests {
         table.claim();
         table.claim();
         let set = |slot: usize, calls: u64, sampled: u64, detour: u64, original: u64| {
-            let counters = &table.slots[slot].0[Family::OpinionChanges as usize];
-            counters.calls.store(calls, Ordering::Relaxed);
+            let index = Family::OpinionChanges as usize;
+            table.slots[slot].calls[index].store(calls, Ordering::Relaxed);
+            let counters = &table.slots[slot].samples[index];
             counters.sampled.store(sampled, Ordering::Relaxed);
             counters.detour.store(detour, Ordering::Relaxed);
             counters.original.store(original, Ordering::Relaxed);

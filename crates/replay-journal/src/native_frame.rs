@@ -85,6 +85,7 @@ pub struct FrameWriter {
     order: Vec<usize>,
     retried: Vec<u64>,
     owners: Vec<Option<Owners>>,
+    slice_same: Vec<bool>,
     last: Option<(BranchId, i32)>,
     dense: Vec<AtomicI32>,
     intern_until: Vec<i32>,
@@ -131,6 +132,18 @@ impl Owners {
         }
     }
 
+    fn from_rows(id: TableId, rows: &TableRows) -> io::Result<Self> {
+        struct Extract(TableId);
+        impl RowsVisit for Extract {
+            type Output = io::Result<Owners>;
+
+            fn rows<R: RowCodec>(self, rows: &[R]) -> Self::Output {
+                Owners::from_keys(self.0, rows.len(), rows.iter().map(RowCodec::key))
+            }
+        }
+        rows.visit(Extract(id))
+    }
+
     fn sort_unstable(&mut self) {
         match self {
             Self::U64(keys) => keys.sort_unstable(),
@@ -139,9 +152,9 @@ impl Owners {
     }
 }
 
-struct Slice {
-    owners: Vec<u32>,
-    keys: Owners,
+enum Slice {
+    Same,
+    Update { owners: Vec<u32>, keys: Owners },
 }
 
 pub struct FrameHour {
@@ -247,6 +260,7 @@ impl FrameWriter {
             order: engine_allocation::collect_vec(0..TABLE_COUNT)?,
             retried: engine_allocation::filled(TABLE_COUNT, 0)?,
             owners: engine_allocation::default_vec(TABLE_COUNT)?,
+            slice_same: engine_allocation::filled(TABLE_COUNT, false)?,
             last: None,
             dense: engine_allocation::collect_vec(
                 (0..TABLE_COUNT).map(|_| AtomicI32::new(i32::MIN)),
@@ -330,6 +344,7 @@ impl FrameWriter {
             table_ns,
             retried,
             owners,
+            slice_same,
             dense,
             intern_until,
             ..
@@ -363,6 +378,7 @@ impl FrameWriter {
                     &mut writers[index],
                     Strings::Interning(&mut *dictionary),
                     &mut buffers[0],
+                    &mut slice_same[index],
                 )?,
             };
             let was_read = read[index / 64] & (1 << (index % 64)) != 0;
@@ -413,15 +429,15 @@ impl FrameWriter {
                 TableInput::SliceUpdate { update, .. }
                     if owner_slice(update) && previous.get(index).copied().flatten().is_none() =>
                 {
-                    let id = TableId::ALL[index];
-                    Some(Slice {
-                        owners: engine_allocation::copy_vec(update.owners())?,
-                        keys: Owners::from_keys(
-                            id,
-                            update.rows().len(),
-                            update.rows().iter().map(|row| row.key()),
-                        )?,
-                    })
+                    if slice_same[index] && owners[index].is_some() {
+                        Some(Slice::Same)
+                    } else {
+                        let id = TableId::ALL[index];
+                        Some(Slice::Update {
+                            owners: engine_allocation::copy_vec(update.owners())?,
+                            keys: Owners::from_rows(id, update.rows())?,
+                        })
+                    }
                 }
                 _ => None,
             });
@@ -498,6 +514,7 @@ impl FrameWriter {
             absent,
             shared: held,
             owners,
+            slice_same,
             dense,
             intern_until,
             starting,
@@ -523,6 +540,7 @@ impl FrameWriter {
         let writers = Disjoint::new(writers);
         let prepared = Disjoint::new(prepared);
         let walls = Disjoint::new(walls);
+        let slice_same = Disjoint::new(slice_same);
         let buffers = Disjoint::new(buffers);
         let (next, lane) = (AtomicUsize::new(0), AtomicUsize::new(0));
         let (dictionary, order, intern_until) = (&*dictionary, &**order, &**intern_until);
@@ -541,19 +559,24 @@ impl FrameWriter {
                     continue;
                 }
                 // SAFETY: `order` is a permutation of `0..TABLE_COUNT`, so each `index` is claimed once.
-                let (writer, hour, wall) = unsafe {
+                let (writer, hour, wall, same) = unsafe {
                     (
                         writers.get_mut(index),
                         prepared.get_mut(index),
                         walls.get_mut(index),
+                        slice_same.get_mut(index),
                     )
                 };
+                if dictionary.is_empty() && writer.has_texts() {
+                    continue;
+                }
                 let started = Instant::now();
                 *hour = Some(part.table(
                     index,
                     writer,
                     Strings::Reading(dictionary),
                     buffers,
+                    same,
                 ));
                 *wall = started.elapsed().as_nanos() as u64;
             }
@@ -594,11 +617,11 @@ impl FrameWriter {
         for lane in &mut self.lanes {
             lane.cells.release_scratch();
             lane.removed.clear();
-            if lane.removed.capacity().saturating_mul(size_of::<u128>()) > 32 * 1024 {
+            if lane.removed.capacity().saturating_mul(size_of::<u128>()) > 1024 * 1024 {
                 lane.removed = Vec::new();
             }
             lane.pairs.clear();
-            if lane.pairs.capacity().saturating_mul(size_of::<Pair>()) > 32 * 1024 {
+            if lane.pairs.capacity().saturating_mul(size_of::<Pair>()) > 1024 * 1024 {
                 lane.pairs = Vec::new();
             }
         }
@@ -662,8 +685,15 @@ impl FrameWriter {
                     *held = shared.take();
                     let id = TableId::ALL[index];
                     *owners = match (slice.take(), owners.take()) {
-                        (Some(slice), Some(mut known)) => {
-                            hold_slice(&mut known, &slice, id)?;
+                        (Some(Slice::Same), Some(known)) => Some(known),
+                        (
+                            Some(Slice::Update {
+                                owners: slice_owners,
+                                keys,
+                            }),
+                            Some(mut known),
+                        ) => {
+                            hold_slice(&mut known, &slice_owners, &keys, id)?;
                             Some(known)
                         }
                         (Some(_), None) => Some(held_owners(&*writer, id)?),
@@ -857,7 +887,9 @@ impl Part<'_> {
         writer: &mut TableWriter,
         strings: Strings<'_>,
         lane: &mut Lane,
+        slice_same: &mut bool,
     ) -> io::Result<TableHour> {
+        *slice_same = false;
         let id = TableId::ALL[index];
         let input = &self.input.tables[index];
         let read = self.read[index / 64] & (1 << (index % 64)) != 0;
@@ -873,7 +905,8 @@ impl Part<'_> {
             && written.is_none()
             && previous.is_none()
         {
-            removed(id, writer, update, self.owners[index].as_ref(), &mut lane.removed)?;
+            let same = removed(id, writer, update, self.owners[index].as_ref(), &mut lane.removed)?;
+            *slice_same = known && same;
         }
         let carried_complete = source.is_none()
             && !self.starting
@@ -1126,7 +1159,7 @@ fn held_owners(writer: &TableWriter, id: TableId) -> io::Result<Owners> {
     Ok(keys)
 }
 
-fn merge_slice_keys<T: Copy>(
+fn merge_slice_keys<T: Copy + Eq>(
     owners: &mut Vec<T>,
     slice_owners: &[u32],
     slice_keys: &[T],
@@ -1134,11 +1167,24 @@ fn merge_slice_keys<T: Copy>(
 ) -> io::Result<()> {
     let mut old_at = 0usize;
     let mut replaced_old = 0usize;
+    let mut same = true;
+    let mut check_keys = slice_keys;
     for &owner in slice_owners {
         let start = owners[old_at..].partition_point(|&key| owner_of_key(key) < owner) + old_at;
         let end = owners[start..].partition_point(|&key| owner_of_key(key) <= owner) + start;
         replaced_old += end - start;
+        if same {
+            let (own, rest) =
+                check_keys.split_at(check_keys.partition_point(|&key| owner_of_key(key) <= owner));
+            check_keys = rest;
+            if &owners[start..end] != own {
+                same = false;
+            }
+        }
         old_at = end;
+    }
+    if same && check_keys.is_empty() {
+        return Ok(());
     }
     let final_len = owners.len() - replaced_old + slice_keys.len();
     let mut out = engine_allocation::vec(final_len)?;
@@ -1158,30 +1204,90 @@ fn merge_slice_keys<T: Copy>(
     Ok(())
 }
 
-fn hold_slice(owners: &mut Owners, slice: &Slice, id: TableId) -> io::Result<()> {
-    match (owners, &slice.keys) {
+fn hold_slice(
+    owners: &mut Owners,
+    slice_owners: &[u32],
+    slice_keys: &Owners,
+    id: TableId,
+) -> io::Result<()> {
+    match (owners, slice_keys) {
         (Owners::U64(known), Owners::U64(incoming)) => {
-            merge_slice_keys(known, &slice.owners, incoming, |key| owner_of_u64(id, key))
+            merge_slice_keys(known, slice_owners, incoming, |key| owner_of_u64(id, key))
         }
         (Owners::U128(known), Owners::U128(incoming)) => {
-            merge_slice_keys(known, &slice.owners, incoming, |key| owner_of(id, key))
+            merge_slice_keys(known, slice_owners, incoming, |key| owner_of(id, key))
         }
         (Owners::U128(known), Owners::U64(incoming)) => {
             let widened = engine_allocation::collect_vec(incoming.iter().copied().map(u128::from))?;
-            merge_slice_keys(known, &slice.owners, &widened, |key| owner_of(id, key))
+            merge_slice_keys(known, slice_owners, &widened, |key| owner_of(id, key))
         }
         (slot @ Owners::U64(_), Owners::U128(incoming)) => {
             let Owners::U64(old) = std::mem::replace(slot, Owners::U128(Vec::new())) else {
                 unreachable!();
             };
             let mut widened = engine_allocation::collect_vec(old.into_iter().map(u128::from))?;
-            merge_slice_keys(&mut widened, &slice.owners, incoming, |key| {
-                owner_of(id, key)
-            })?;
+            merge_slice_keys(&mut widened, slice_owners, incoming, |key| owner_of(id, key))?;
             *slot = Owners::U128(widened);
             Ok(())
         }
     }
+}
+
+fn scan_owner_removed<T: Copy, R: RowCodec>(
+    id: TableId,
+    old_keys: &[T],
+    slice_owners: &[u32],
+    rows: &[R],
+    owner_of_old: impl Fn(T) -> u32,
+    widen: impl Fn(T) -> u128,
+    out: &mut Vec<u128>,
+) -> io::Result<bool> {
+    let mut same_keys = true;
+    let mut old_at = 0usize;
+    let mut new_at = 0usize;
+    let mut matched_rows = 0usize;
+    for &owner in slice_owners {
+        let start = old_keys[old_at..].partition_point(|&key| owner_of_old(key) < owner) + old_at;
+        let end = old_keys[start..].partition_point(|&key| owner_of_old(key) <= owner) + start;
+        old_at = end;
+        while new_at < rows.len() && owner_of(id, rows[new_at].key()) < owner {
+            new_at += 1;
+        }
+        let new_start = new_at;
+        while new_at < rows.len() && owner_of(id, rows[new_at].key()) == owner {
+            new_at += 1;
+        }
+        matched_rows += new_at - new_start;
+        let old_slice = &old_keys[start..end];
+        let new_slice = &rows[new_start..new_at];
+        let (mut oi, mut ni) = (0usize, 0usize);
+        while oi < old_slice.len() && ni < new_slice.len() {
+            let ok = widen(old_slice[oi]);
+            let nk = new_slice[ni].key();
+            if ok == nk {
+                oi += 1;
+                ni += 1;
+            } else if ok < nk {
+                same_keys = false;
+                engine_allocation::reserve(out, 1)?;
+                out.push(ok);
+                oi += 1;
+            } else {
+                same_keys = false;
+                ni += 1;
+            }
+        }
+        while oi < old_slice.len() {
+            same_keys = false;
+            engine_allocation::reserve(out, 1)?;
+            out.push(widen(old_slice[oi]));
+            oi += 1;
+        }
+        if ni < new_slice.len() {
+            same_keys = false;
+        }
+    }
+    Ok(same_keys && matched_rows == rows.len())
 }
 
 fn removed(
@@ -1190,10 +1296,10 @@ fn removed(
     update: &SliceUpdate,
     owners: Option<&Owners>,
     out: &mut Vec<u128>,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     out.clear();
     if update.owners.is_empty() && update.keys.is_empty() && update.ranges.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     if !update.keys.is_empty() && update.owners.is_empty() && update.ranges.is_empty() {
         let table = writer.table();
@@ -1203,12 +1309,60 @@ fn removed(
                 out.push(key);
             }
         }
-        return Ok(());
+        return Ok(false);
     }
     if let Some(owners) = owners.filter(|_| owner_slice(update)) {
+        let slice_owners = update.owners();
+        if slice_owners.windows(2).all(|pair| pair[0] < pair[1]) {
+            struct OwnerRemoved<'a> {
+                id: TableId,
+                owners: &'a Owners,
+                slice_owners: &'a [u32],
+                out: &'a mut Vec<u128>,
+            }
+            impl RowsVisit for OwnerRemoved<'_> {
+                type Output = io::Result<Option<bool>>;
+
+                fn rows<R: RowCodec>(self, rows: &[R]) -> Self::Output {
+                    if !rows.windows(2).all(|pair| pair[0].key() < pair[1].key()) {
+                        return Ok(None);
+                    }
+                    let same = match self.owners {
+                        Owners::U64(keys) => scan_owner_removed(
+                            self.id,
+                            keys,
+                            self.slice_owners,
+                            rows,
+                            |key| owner_of_u64(self.id, key),
+                            u128::from,
+                            self.out,
+                        )?,
+                        Owners::U128(keys) => scan_owner_removed(
+                            self.id,
+                            keys,
+                            self.slice_owners,
+                            rows,
+                            |key| owner_of(self.id, key),
+                            |key| key,
+                            self.out,
+                        )?,
+                    };
+                    Ok(Some(same))
+                }
+            }
+            if let Some(same) = update.rows.visit(OwnerRemoved {
+                id,
+                owners,
+                slice_owners,
+                out,
+            })? {
+                return Ok(same);
+            }
+            out.clear();
+        }
         match owners {
             Owners::U64(keys) => {
-                for &owner in update.owners() {
+                for &owner in slice_owners {
                     let start = keys.partition_point(|&key| owner_of_u64(id, key) < owner);
                     for &key in &keys[start..] {
                         if owner_of_u64(id, key) != owner {
@@ -1223,7 +1377,7 @@ fn removed(
                 }
             }
             Owners::U128(keys) => {
-                for &owner in update.owners() {
+                for &owner in slice_owners {
                     let start = keys.partition_point(|&key| owner_of(id, key) < owner);
                     for &key in &keys[start..] {
                         if owner_of(id, key) != owner {
@@ -1237,7 +1391,7 @@ fn removed(
                 }
             }
         }
-        return Ok(());
+        return Ok(false);
     }
     let table = writer.table();
     let live = table.live();
@@ -1254,7 +1408,7 @@ fn removed(
         }
     }
     out.sort_unstable();
-    Ok(())
+    Ok(false)
 }
 
 #[derive(Clone, Copy)]

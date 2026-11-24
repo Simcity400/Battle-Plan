@@ -17,11 +17,28 @@ pub(crate) fn write_status(path: &Path, status: &impl serde::Serialize) -> io::R
 }
 pub(crate) fn write_status_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let temp = path.with_extension("json.tmp");
-    fs::write(&temp, bytes)?;
+    retry_transient(|| fs::write(&temp, bytes))?;
     replace_status(&temp, path)
 }
 
-const STATUS_RENAME_RETRY_BUDGET: Duration = Duration::from_millis(30);
+const STATUS_RENAME_RETRY_BUDGET: Duration = Duration::from_millis(250);
+
+fn retry_transient(mut op: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    let started = Instant::now();
+    loop {
+        let error = match op() {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        let Some(delay) = status_rename_retry_delay(&error, started.elapsed()) else {
+            return Err(error);
+        };
+        std::thread::sleep(delay);
+        if started.elapsed() >= STATUS_RENAME_RETRY_BUDGET {
+            return Err(error);
+        }
+    }
+}
 
 fn status_rename_retry_delay(error: &io::Error, elapsed: Duration) -> Option<Duration> {
     if !matches!(error.raw_os_error(), Some(5 | 32)) {
@@ -86,20 +103,7 @@ fn replace_status(temp: &Path, path: &Path) -> io::Result<()> {
     };
     let source = wide(temp);
     let target = wide(path);
-    let started = Instant::now();
-    loop {
-        let error = match replace_once(&source, &target) {
-            Ok(()) => return Ok(()),
-            Err(error) => error,
-        };
-        let Some(delay) = status_rename_retry_delay(&error, started.elapsed()) else {
-            return Err(error);
-        };
-        std::thread::sleep(delay);
-        if started.elapsed() >= STATUS_RENAME_RETRY_BUDGET {
-            return Err(error);
-        }
-    }
+    retry_transient(|| replace_once(&source, &target))
 }
 
 #[cfg(test)]
@@ -112,7 +116,10 @@ fn status_rename_retries_only_transient_errors_before_deadline() {
             Some(Duration::from_millis(1))
         );
         assert_eq!(
-            status_rename_retry_delay(&error, Duration::from_micros(29_500)),
+            status_rename_retry_delay(
+                &error,
+                STATUS_RENAME_RETRY_BUDGET - Duration::from_micros(500)
+            ),
             Some(Duration::from_micros(500))
         );
         assert_eq!(
@@ -120,7 +127,10 @@ fn status_rename_retries_only_transient_errors_before_deadline() {
             None
         );
         assert_eq!(
-            status_rename_retry_delay(&error, Duration::from_millis(31)),
+            status_rename_retry_delay(
+                &error,
+                STATUS_RENAME_RETRY_BUDGET + Duration::from_millis(1)
+            ),
             None
         );
     }

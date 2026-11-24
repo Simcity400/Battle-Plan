@@ -96,6 +96,33 @@ impl Bits {
         Ok(())
     }
 
+    pub(crate) fn set_range(&mut self, start: u32, len: usize) -> io::Result<()> {
+        if len == 0 {
+            return Ok(());
+        }
+        let end = start as usize + len;
+        let first_word = start as usize / 64;
+        let last_word = (end - 1) / 64;
+        if last_word >= self.words.len() {
+            engine_allocation::resize_default(&mut self.words, last_word + 1)?;
+        }
+        let first_bit = start as usize % 64;
+        let last_bit = end % 64;
+        let end_mask = if last_bit == 0 {
+            u64::MAX
+        } else {
+            (1u64 << last_bit) - 1
+        };
+        if first_word == last_word {
+            self.words[first_word] |= end_mask & (u64::MAX << first_bit);
+        } else {
+            self.words[first_word] |= u64::MAX << first_bit;
+            self.words[first_word + 1..last_word].fill(u64::MAX);
+            self.words[last_word] |= end_mask;
+        }
+        Ok(())
+    }
+
     pub(crate) fn clear(&mut self, bit: u32) {
         if let Some(word) = self.words.get_mut(bit as usize / 64) {
             *word &= !(1 << (bit % 64));
@@ -1281,6 +1308,133 @@ impl Slots {
         Ok(())
     }
 
+    pub(crate) fn insert_unique(&mut self, keys: &Keys, key: u128, slot: u32) -> io::Result<()> {
+        if self.max_slot && slot != EMPTY && keys.get(EMPTY as usize) == Some(key) {
+            return Err(invalid(format!(
+                "Row key {key:#x} at slot {slot} is already held at slot {EMPTY}"
+            )));
+        }
+        if slot == EMPTY {
+            if let Some(held) = self.get(keys, key).filter(|&held| held != EMPTY) {
+                return Err(invalid(format!(
+                    "Row key {key:#x} at slot {slot} is already held at slot {held}"
+                )));
+            }
+            self.max_slot = true;
+            return Ok(());
+        }
+        self.reserve(keys, 1)?;
+        let mask = self.buckets.len() - 1;
+        let mut at = tag(key) as usize & mask;
+        loop {
+            let held = self.buckets[at];
+            if held == EMPTY {
+                self.put(at, slot)?;
+                self.len += 1;
+                return Ok(());
+            }
+            if held == slot {
+                return Ok(());
+            }
+            if keys.get(held as usize) == Some(key) {
+                return Err(invalid(format!(
+                    "Row key {key:#x} at slot {slot} is already held at slot {held}"
+                )));
+            }
+            at = (at + 1) & mask;
+        }
+    }
+
+    pub(crate) fn insert_batch(
+        &mut self,
+        keys: &Keys,
+        slots: &[u32],
+        inserted_keys: &[u128],
+    ) -> io::Result<()> {
+        if slots.is_empty() {
+            return Ok(());
+        }
+        let live = self
+            .len
+            .checked_add(slots.len())
+            .ok_or_else(engine_allocation::oom)?;
+        if live.saturating_mul(4) > self.buckets.len().saturating_mul(3) {
+            let mut buckets = 8_usize;
+            while buckets.saturating_mul(5) < live.saturating_mul(8) {
+                buckets = buckets
+                    .checked_mul(2)
+                    .filter(|&buckets| buckets <= 1 << 31)
+                    .ok_or_else(engine_allocation::oom)?;
+            }
+            let mut rebuilt = engine_allocation::filled(buckets, EMPTY)?;
+            let mask = buckets - 1;
+            if self.len > 0 {
+                for &slot in self.buckets.iter() {
+                    if slot == EMPTY {
+                        continue;
+                    }
+                    let mut at = tag(keys.at(slot as usize)) as usize & mask;
+                    while rebuilt[at] != EMPTY {
+                        at = (at + 1) & mask;
+                    }
+                    rebuilt[at] = slot;
+                }
+            }
+            let mut new_len = self.len;
+            let mut new_max_slot = self.max_slot;
+            for (&slot, &key) in slots.iter().zip(inserted_keys) {
+                if new_max_slot && slot != EMPTY && keys.get(EMPTY as usize) == Some(key) {
+                    return Err(invalid(format!(
+                        "Row key {key:#x} at slot {slot} is already held at slot {EMPTY}"
+                    )));
+                }
+                let mut at = tag(key) as usize & mask;
+                if slot == EMPTY {
+                    loop {
+                        let held = rebuilt[at];
+                        if held == EMPTY {
+                            break;
+                        }
+                        if keys.at(held as usize) == key {
+                            return Err(invalid(format!(
+                                "Row key {key:#x} at slot {slot} is already held at slot {held}"
+                            )));
+                        }
+                        at = (at + 1) & mask;
+                    }
+                    new_max_slot = true;
+                    continue;
+                }
+                loop {
+                    let held = rebuilt[at];
+                    if held == EMPTY {
+                        rebuilt[at] = slot;
+                        new_len += 1;
+                        break;
+                    }
+                    if held == slot {
+                        break;
+                    }
+                    if keys.at(held as usize) == key {
+                        return Err(invalid(format!(
+                            "Row key {key:#x} at slot {slot} is already held at slot {held}"
+                        )));
+                    }
+                    at = (at + 1) & mask;
+                }
+            }
+            self.buckets = Paged::from_slice(&rebuilt, EMPTY)?;
+            self.len = new_len;
+            self.max_slot = new_max_slot;
+            return Ok(());
+        }
+        for (&slot, &key) in slots.iter().zip(inserted_keys) {
+            self.insert_unique(keys, key, slot)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(crate) fn insert(&mut self, keys: &Keys, key: u128, slot: u32) -> io::Result<()> {
         if slot == EMPTY {
             self.max_slot = true;
@@ -1476,12 +1630,9 @@ impl Table {
             return Err(invalid("Restart table's live slots exceed its slot count"));
         }
         table.resize(slots)?;
-        table.index(keys.len())?;
         let live_slots = engine_allocation::collect_vec(live.ones())?;
         table.keys.write_slots(&live_slots, keys)?;
-        for (&slot, &key) in live_slots.iter().zip(keys) {
-            table.key_slot(key, slot)?;
-        }
+        table.by_key.insert_batch(&table.keys, &live_slots, keys)?;
         table.live = live;
         Ok(table)
     }
@@ -1600,23 +1751,6 @@ impl Table {
         self.by_key.get(&self.keys, key)
     }
 
-    fn index(&mut self, additional: usize) -> io::Result<()> {
-        self.by_key.reserve(&self.keys, additional)
-    }
-
-    fn key_slot(&mut self, key: u128, slot: u32) -> io::Result<()> {
-        if let Some(held) = self
-            .by_key
-            .get(&self.keys, key)
-            .filter(|&held| held != slot)
-        {
-            return Err(invalid(format!(
-                "Row key {key:#x} at slot {slot} is already held at slot {held}"
-            )));
-        }
-        self.by_key.insert(&self.keys, key, slot)
-    }
-
     pub fn column(&self, column: usize) -> Option<&Column> {
         self.columns.get(column)
     }
@@ -1663,7 +1797,9 @@ impl Table {
     }
 
     fn recorded_again(&mut self, column: usize, slots: &[u32]) {
-        if let Some(bits) = self.unrecorded.get_mut(column) {
+        if let Some(bits) = self.unrecorded.get_mut(column)
+            && !bits.words.is_empty()
+        {
             for &slot in slots {
                 bits.clear(slot);
             }
@@ -1684,6 +1820,13 @@ impl Table {
 
     fn live_slots(&self, slots: &[u32]) -> io::Result<()> {
         ascending(slots)?;
+        if let (Some(&first), Some(&last)) = (slots.first(), slots.last())
+            && first == 0
+            && last as usize + 1 == slots.len()
+            && self.live.all_set(slots.len())
+        {
+            return Ok(());
+        }
         if let Some(&slot) = slots.iter().find(|&&slot| !self.live.get(slot)) {
             return Err(invalid(format!(
                 "Run names slot {slot}, which holds no row"
@@ -1719,7 +1862,9 @@ impl Table {
         if keys.len() != slots.len() {
             return Err(invalid("Insert carries other than one key per slot"));
         }
-        if let Some(&slot) = slots.iter().find(|&&slot| self.live.get(slot)) {
+        if self.slots > 0
+            && let Some(&slot) = slots.iter().find(|&&slot| self.live.get(slot))
+        {
             return Err(invalid(format!(
                 "Insert names slot {slot}, which holds a row"
             )));
@@ -1727,11 +1872,16 @@ impl Table {
         if let Some(&last) = slots.last() {
             self.resize(last as usize + 1)?;
         }
-        self.index(slots.len())?;
         self.keys.write_slots(slots, keys)?;
-        for (&slot, &key) in slots.iter().zip(keys) {
-            self.key_slot(key, slot)?;
-            self.live.set(slot)?;
+        self.by_key.insert_batch(&self.keys, slots, keys)?;
+        if let (Some(&first), Some(&last)) = (slots.first(), slots.last())
+            && (last - first) as usize + 1 == slots.len()
+        {
+            self.live.set_range(first, slots.len())?;
+        } else {
+            for &slot in slots {
+                self.live.set(slot)?;
+            }
         }
         Ok(())
     }

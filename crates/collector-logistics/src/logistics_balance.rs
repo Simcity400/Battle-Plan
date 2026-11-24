@@ -18,7 +18,11 @@ static WRITE: AtomicUsize = AtomicUsize::new(0);
 static ADVANCE: AtomicUsize = AtomicUsize::new(0);
 static CLEAR: AtomicUsize = AtomicUsize::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
-pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE: collector_primitives::asymmetric::FlightGate =
+    collector_primitives::asymmetric::FlightGate::new(0);
+pub fn active() -> usize {
+    ACTIVE.active()
+}
 static FAILED_READS: AtomicU64 = AtomicU64::new(0);
 static UNATTRIBUTED: AtomicU64 = AtomicU64::new(0);
 static REFUSALS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
@@ -81,16 +85,15 @@ static STORAGE: Mutex<Retained> = Mutex::new(Retained {
     scratch_charge: None,
 });
 
-struct Guard;
-impl Guard {
-    fn enter() -> Self {
-        ACTIVE.fetch_add(1, Ordering::SeqCst);
-        Self
-    }
+struct Guard {
+    _guard: collector_primitives::asymmetric::FlightGuard<'static>,
 }
-impl Drop for Guard {
-    fn drop(&mut self) {
-        ACTIVE.fetch_sub(1, Ordering::SeqCst);
+impl Guard {
+    #[inline(always)]
+    fn enter() -> Self {
+        Self {
+            _guard: ACTIVE.enter(false),
+        }
     }
 }
 
@@ -334,7 +337,7 @@ pub fn prepare(memory: &impl Memory, base: usize) -> io::Result<usize> {
         scratch_charge,
     } = &mut *retained;
     let current = LOG.load(Ordering::SeqCst);
-    if ACTIVE.load(Ordering::SeqCst) == 0 {
+    if !ACTIVE.any_active() {
         let pending = PENDING.swap(ptr::null_mut(), Ordering::SeqCst);
         storage.retain(|owner| owner.as_ptr() == current || owner.as_ptr() == pending);
     }
@@ -390,7 +393,7 @@ pub fn prepare(memory: &impl Memory, base: usize) -> io::Result<usize> {
     storage.push(owner);
     let pointer = &raw mut storage.last_mut().unwrap()[0];
     PENDING.store(pointer, Ordering::SeqCst);
-    if ACTIVE.load(Ordering::SeqCst) == 0 {
+    if !ACTIVE.any_active() {
         LOG.store(pointer, Ordering::SeqCst);
     }
     Ok(rows)
@@ -401,7 +404,7 @@ pub fn prepare(memory: &impl Memory, base: usize) -> io::Result<usize> {
 /// # Safety
 /// Hooks must be removed and all callbacks/readers quiescent before release.
 pub unsafe fn release() {
-    debug_assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+    debug_assert_eq!(ACTIVE.active(), 0);
     ENABLED.store(false, Ordering::SeqCst);
     LOG.store(ptr::null_mut(), Ordering::SeqCst);
     PENDING.store(ptr::null_mut(), Ordering::SeqCst);
