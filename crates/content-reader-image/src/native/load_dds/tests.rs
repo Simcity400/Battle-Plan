@@ -278,3 +278,57 @@ fn sixteen_bit_forms() {
     other.extend([0, 0]);
     assert!(matches!(load(&other), Err(Failure::Undefined(_))));
 }
+
+#[test]
+fn dx10_uncompressed_formats_keep_exact_channel_order() {
+    for dxgi in [87, 91] {
+        let mut file = dx10(2, 1, 1, dxgi);
+        file.extend([10, 20, 30, 40, 50, 60, 70, 80]);
+        let (texture, zero) = load(&file).unwrap().unwrap();
+        assert_eq!(texture.format, TextureFormat::Rgba8);
+        assert_eq!(zero, Zero::Transparent);
+        assert_eq!(texture.base().data, [30, 20, 10, 40, 70, 60, 50, 80]);
+    }
+    for dxgi in [28, 29] {
+        let mut file = dx10(2, 1, 1, dxgi);
+        file.extend([10, 20, 30, 40, 50, 60, 70, 80]);
+        let (texture, zero) = load(&file).unwrap().unwrap();
+        assert_eq!(texture.format, TextureFormat::Rgba8);
+        assert_eq!(zero, Zero::Transparent);
+        assert_eq!(texture.base().data, [10, 20, 30, 40, 50, 60, 70, 80]);
+    }
+    for dxgi in [88, 93] {
+        let mut file = dx10(1, 1, 1, dxgi);
+        file.extend([10, 20, 30, 0]);
+        let (texture, zero) = load(&file).unwrap().unwrap();
+        assert_eq!(texture.format, TextureFormat::Rgba8);
+        assert_eq!(zero, Zero::Opaque);
+        assert_eq!(texture.base().data, [30, 20, 10, 255]);
+    }
+}
+
+#[test]
+fn dx10_bc_formats_decode_as_blocks_and_unsupported_dxgi_is_refused_by_name() {
+    for (dxgi, expected, block_bytes) in [
+        (71, TextureFormat::Bc1, 8),
+        (72, TextureFormat::Bc1, 8),
+        (74, TextureFormat::Bc2, 16),
+        (77, TextureFormat::Bc3, 16),
+        (78, TextureFormat::Bc3, 16),
+    ] {
+        let mut file = dx10(4, 4, 1, dxgi);
+        file.extend(std::iter::repeat_n(0x5A, block_bytes));
+        let (texture, _) = load(&file).unwrap().unwrap();
+        assert_eq!(texture.format, expected);
+        assert_eq!((texture.width, texture.height), (4, 4));
+        assert_eq!(texture.base().data.len(), block_bytes);
+    }
+    for unsupported in [10, 61, 80, 83, 95] {
+        let mut file = dx10(4, 4, 1, unsupported);
+        file.extend([0; 64]);
+        assert!(
+            matches!(load(&file), Err(Failure::Undecodable(ref why)) if why.contains(&format!("DXGI format {unsupported}"))),
+            "expected named refusal for DXGI format {unsupported}"
+        );
+    }
+}
