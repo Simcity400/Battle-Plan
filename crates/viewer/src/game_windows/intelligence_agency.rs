@@ -213,7 +213,8 @@ pub fn render(
         Ok(content) => extra_warnings.extend(content.warnings.iter().cloned()),
         Err(why) => extra_warnings.push(why.clone()),
     }
-    let (listed, upgrades_missing) = agencies::agencies(&frame, true, content.as_deref().map_err(String::as_str), &mut extra_warnings)
+    let mut population_warnings = Vec::new();
+    let (listed, upgrades_missing) = agencies::agencies(&frame, true, content.as_deref().map_err(String::as_str), &mut population_warnings)
         .map_err(|error| GameWindowError::refused(format!("The intelligence agency window cannot be shown at hour {}: {error}", request.hour)))?;
     let agency = listed
         .into_iter()
