@@ -568,7 +568,7 @@ export type ArmyChartLine = { country: CountryRef, identities: Array<ArmyIdentit
 export type ArmyChartReply = { series: Array<ArmyChartLine>, };
 export type CampaignClockParams = { branchId: string, firstHour: number, lastHour: number, };
 export type CampaignClockReply = { available: boolean, recordedSeconds: number | null, playingSeconds: number | null, pausedSeconds: number | null, complete: boolean, warnings: Array<string>, };
-export type ApmParams = { branchId: string, group: ApmGroup, registry: boolean, firstHour: number | null, lastHour: number | null, tags: Array<string> | null, membership: Array<ApmMembership> | null, players: Array<string>, buckets: number, };
+export type ApmParams = { branchId: string, group: ApmGroup, registry: boolean, hour: number | null, firstHour: number | null, lastHour: number | null, tags: Array<string> | null, membership: Array<ApmMembership> | null, players: Array<string>, buckets: number, };
 export type ApmReply = { available: boolean, players: Array<ApmPlayer>, series: Array<ApmSeries>, warnings: Array<string>, };
 export type ApmGroup = "country" | "player";
 export type ApmPlayer = { id: string, name: string | null, nameMissing: string | null, tags: Array<string>, };
@@ -6502,7 +6502,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "peace-deals": {},
   "place-name-runs": { "from": "start", "to": "end" },
   "place-names": { "places[].hour": "read", "states[].hour": "read" },
-  "player-apm": { "firstHour": "start", "lastHour": "end", "membership[].firstHour": "start", "membership[].lastHour": "end" },
+  "player-apm": { "firstHour": "start", "hour": "read", "lastHour": "end", "membership[].firstHour": "start", "membership[].lastHour": "end" },
   "politics-state": { "hour": "read" },
   "politics-state-history": {},
   "power-spending-breakdown": { "from": "start", "hour": "end" },
@@ -6687,7 +6687,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "peace-deals": { "branchId": "leaf" },
   "place-name-runs": { "branchId": "leaf", "from": "leaf", "land": "leaf", "provinces": "node", "provinces[]": "leaf", "states": "node", "states[]": "leaf", "to": "leaf" },
   "place-names": { "branchId": "leaf", "land": "leaf", "places": "node", "places[]": "node", "places[].hour": "leaf", "places[].provinceId": "leaf", "states": "node", "states[]": "node", "states[].hour": "leaf", "states[].stateId": "leaf" },
-  "player-apm": { "branchId": "leaf", "buckets": "leaf", "firstHour": "leaf", "group": "leaf", "lastHour": "leaf", "membership": "node", "membership[]": "node", "membership[].firstHour": "leaf", "membership[].lastHour": "leaf", "membership[].tag": "leaf", "players": "node", "players[]": "leaf", "registry": "leaf", "tags": "node", "tags[]": "leaf" },
+  "player-apm": { "branchId": "leaf", "buckets": "leaf", "firstHour": "leaf", "group": "leaf", "hour": "leaf", "lastHour": "leaf", "membership": "node", "membership[]": "node", "membership[].firstHour": "leaf", "membership[].lastHour": "leaf", "membership[].tag": "leaf", "players": "node", "players[]": "leaf", "registry": "leaf", "tags": "node", "tags[]": "leaf" },
   "politics-state": { "branchId": "leaf", "country": "any", "hour": "leaf", "view": "leaf" },
   "politics-state-history": { "branchId": "leaf", "country": "any", "hour": "leaf", "mode": "leaf" },
   "power-spending-breakdown": { "branchId": "leaf", "country": "any", "currency": "leaf", "from": "leaf", "hour": "leaf" },
@@ -6872,7 +6872,7 @@ export type RequestParams<E, B> = {
   "peace-deals": {};
   "place-name-runs": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
   "place-names": { readonly [key: string]: unknown; readonly "places"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null; readonly "states"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null };
-  "player-apm": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
+  "player-apm": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "hour"?: B | null; readonly "lastHour"?: B | null; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
   "politics-state": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "politics-state-history": {};
   "power-spending-breakdown": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "hour"?: B | null };
