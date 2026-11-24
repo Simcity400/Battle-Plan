@@ -67,6 +67,7 @@ export type ValueFormat =
   | 'clockSeconds'
   | 'decimal1'
   | 'percent2'
+  | 'share'
   | { readonly decimals: number; readonly percent?: boolean; readonly unit?: string; readonly signed?: boolean; readonly maxDecimals?: number; readonly fixedDecimals?: boolean };
 
 export interface FormatValueOptions {
@@ -137,6 +138,7 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
     return `${negative ? '\u2212' : ''}${digits}`;
   }
   if (format === 'clockSeconds') return formatClockSeconds(raw);
+  if (format === 'share') return formatShare(Number(raw));
   if (format === 'decimal1') {
     return formatFixedDecimal(raw, 1, false, true, '\u2212');
   }
@@ -208,7 +210,7 @@ const COMPACT_UNITS = [
 export function formatCompactScalar(raw: Scalar, format?: ValueFormat): CompactScalar {
   const exact = formatScalar(raw, format);
   if (typeof raw === 'string') return { text: exact, exact, compacted: false };
-  if (format === 'clockSeconds' || format === 'fixed5Percent' || format === 'percent2') {
+  if (format === 'clockSeconds' || format === 'fixed5Percent' || format === 'percent2' || format === 'share') {
     return { text: exact, exact, compacted: false };
   }
   if (typeof format === 'object' && format.percent) {
@@ -475,6 +477,7 @@ export function defaultWidestSamples(format?: ValueFormat): readonly string[] {
   if (format === 'clockSeconds') return ['99:59:59'];
   if (format === 'decimal1') return ['999.9'];
   if (format === 'percent2') return ['100.00%'];
+  if (format === 'share') return ['100%'];
   if (format === 'integer') return ['9,999,999'];
   if (format.percent) return ['100.00%'];
   const frac = format.decimals > 0 ? `.${'9'.repeat(Math.min(format.decimals, 2))}` : '';

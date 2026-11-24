@@ -353,4 +353,7 @@ test('fixedDecimals and formatShare preserve exact temperature, modifier, and sh
   assert.equal(formatShare(0.334), '33%');
   assert.equal(formatShare(0.9999), '100%');
   assert.equal(formatShare(null), '');
+  assert.equal(formatScalar(11 / 5975, 'share'), '0.2%');
+  assert.equal(formatScalar(0, 'share'), '0%');
+  assert.deepEqual(formatValueState(knownValue(0.24), 'share'), { kind: 'known', text: '24%', spoken: '24%', audit: '24%' });
 });
