@@ -30,14 +30,10 @@ import {
   drawTrackBar,
   drawTwoWayBar,
   resolveKitTokens,
-  TIMELINE_BAR_ICON_MIN_WIDTH,
-  computeTimelineTicks,
-  drawBottomTimeAxis,
-  drawChevron,
-  drawSparkline,
-  drawSplitWarBar,
-  drawThresholdMeter,
-  drawTimelineSpanBar,
+  TIMELINE_LABEL_MIN_WIDTH,
+  computeTimeAxisTicks,
+  drawTimeAxis,
+  drawTimelineBar,
 } from './kit.ts';
 
 const THEME: FamilyTheme = {
@@ -258,59 +254,36 @@ test('name slots report truncation, status marks use dots/rings, and date/missin
   assert.equal(tokens.hoverTabBg, THEME.text);
 });
 
-test('timeline primitives handle notches, narrow icon/name threshold, split war diamonds, bottom axis and meters', () => {
+test('timeline bars hide icon and name under the minimum width, mix ended items toward the surface, and the axis labels years or months', () => {
   const bitmap = { width: 32, height: 32 } as unknown as CanvasImageSource;
+  const icon = { kind: 'ready', bitmap, width: 32, height: 32 } as const;
   const narrow = makeFakeCtx();
-  const narrowRes = drawTimelineSpanBar(narrow.ctx, {
-    x: 10, y: 10, width: TIMELINE_BAR_ICON_MIN_WIDTH - 2, height: 18, fill: '#3987e5', theme: THEME,
-    icon: { kind: 'ready', bitmap, width: 32, height: 32 }, label: 'Free Trade',
-  });
-  assert.equal(narrowRes.showedIcon, false);
-  assert.equal(narrowRes.showedLabel, false);
+  const narrowRes = drawTimelineBar(narrow.ctx, { x: 10, y: 10, width: TIMELINE_LABEL_MIN_WIDTH - 1, height: 18, fill: '#3987e5', theme: THEME, open: true, icon, label: 'Free Trade' });
+  assert.deepEqual([narrowRes.showedIcon, narrowRes.label], [false, null]);
 
   const wide = makeFakeCtx();
-  const wideRes = drawTimelineSpanBar(wide.ctx, {
-    x: 10, y: 10, width: 120, height: 18, fill: '#3987e5', theme: THEME,
-    heldBefore: true, openAtPlayhead: true,
-    icon: { kind: 'ready', bitmap, width: 32, height: 32 }, label: 'Free Trade',
-  });
+  const wideRes = drawTimelineBar(wide.ctx, { x: 10, y: 10, width: 140, height: 18, fill: '#3987e5', theme: THEME, heldBefore: true, open: true, icon, label: 'Free Trade' });
   assert.equal(wideRes.showedIcon, true);
-  assert.equal(wideRes.showedLabel, true);
+  assert.equal(wideRes.label?.text, 'Free Trade');
   assert.ok(wide.ops.some(op => op.op === 'drawImage'));
-  assert.ok(wide.ops.some(op => op.op === 'fillText' && op.args[0] === 'Free Trade'));
 
-  const shortWar = makeFakeCtx();
-  const shortRes = drawSplitWarBar(shortWar.ctx, {
-    x: 40, y: 8, width: 6, height: 14, topFill: '#3987e5', bottomFill: '#d95926', theme: THEME,
-  });
-  assert.equal(shortRes.diamond, true);
-
-  const longWar = makeFakeCtx();
-  const longRes = drawSplitWarBar(longWar.ctx, {
-    x: 40, y: 8, width: 90, height: 14, topFill: '#3987e5', bottomFill: '#d95926', theme: THEME, openAtPlayhead: true,
-  });
-  assert.equal(longRes.diamond, false);
-  assert.equal(longWar.ops.filter(op => op.op === 'roundRect').length, 2);
+  const open = makeFakeCtx();
+  drawTimelineBar(open.ctx, { x: 0, y: 0, width: 40, height: 14, fill: '#3987e5', theme: THEME, open: true });
+  const ended = makeFakeCtx();
+  drawTimelineBar(ended.ctx, { x: 0, y: 0, width: 40, height: 14, fill: '#3987e5', theme: THEME, open: false });
+  const fillOf = (ops: ReturnType<typeof makeFakeCtx>['ops']) => ops.find(op => op.op === 'fill')?.fillStyle;
+  assert.notEqual(fillOf(open.ops), fillOf(ended.ops), 'an ended item is mixed toward the surface');
 
   const h1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
-  const h1940 = engineHour({ year: 1940, month: 6, day: 15, hour: 1 })!;
-  const h1937 = engineHour({ year: 1937, month: 3, day: 1, hour: 1 })!;
-  const yearTicks = computeTimelineTicks(h1936, h1940, 400);
-  assert.ok(yearTicks.some(t => t.label === '1937'));
-  const monthTicks = computeTimelineTicks(h1936, h1937, 400);
-  assert.ok(monthTicks.some(t => t.label.startsWith('Jan')));
+  const h1941 = engineHour({ year: 1941, month: 9, day: 15, hour: 1 })!;
+  const years = computeTimeAxisTicks(h1936, h1941, 600);
+  assert.deepEqual(years.map(tick => tick.label), ['1937', '1938', '1939', '1940', '1941']);
+  const h1937 = engineHour({ year: 1937, month: 1, day: 1, hour: 1 })!;
+  assert.ok(computeTimeAxisTicks(h1936, h1937, 600).some(tick => tick.label === 'Jul'), 'under two years the axis shows months');
 
   const axis = makeFakeCtx();
-  const axisRes = drawBottomTimeAxis(axis.ctx, {
-    plotLeft: 180, plotRight: 580, plotTop: 0, axisTop: 200,
-    startHour: h1936, endHour: h1940, playheadHour: h1940, theme: THEME,
-  });
-  assert.ok(axisRes.playheadX !== null);
-  assert.ok(axis.ops.some(op => op.op === 'fillText' && op.args[0] === '15 Jun 1940'));
-
-  const extra = makeFakeCtx();
-  drawChevron(extra.ctx, 4, 16, true, THEME.muted);
-  drawThresholdMeter(extra.ctx, 10, 16, 120, 7, 0.75, '#3987e5', THEME);
-  drawSparkline(extra.ctx, 140, 6, 48, 20, [0.2, 0.4, null, 0.7, 0.8], '#3987e5', THEME);
-  assert.ok(extra.ops.some(op => op.op === 'stroke'));
+  drawTimeAxis(axis.ctx, years, { plotLeft: 100, plotRight: 700, axisTop: 200, startHour: h1936, endHour: h1941, playhead: h1941, playheadLabel: '15 Sep 1941', theme: THEME });
+  const texts = axis.ops.filter(op => op.op === 'fillText').map(op => op.args[0]);
+  assert.ok(texts.includes('15 Sep 1941'));
+  assert.ok(!texts.includes('1941'), 'a year label under the playhead tab is dropped');
 });

@@ -84,6 +84,16 @@ function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: Timeline
     x += 12 + 8;
   }
   const width = Math.max(0, right - x);
+  if (lane.kind === 'heading') {
+    ctx.save();
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+    ctx.fillStyle = theme.muted;
+    ctx.fillText(fitLine(lane.label, width, s => textWidth(ctx, s)).text, x, mid);
+    ctx.restore();
+    return;
+  }
   const twoLines = !!lane.subtitle && !layout.compact;
   ctx.save();
   ctx.textAlign = 'left';
@@ -190,7 +200,7 @@ export function drawTimeline(ctx: Canvas2D, input: TimelinePaintInput): readonly
     drawLabel(ctx, placed, y, input);
     const mid = y + placed.height / 2;
     if (lane.kind === 'group') drawGroupRule(ctx, lane, mid, layout, theme);
-    else drawBars(ctx, lane, mid, input);
+    else if (lane.kind === 'item') drawBars(ctx, lane, mid, input);
   }
   if (scrollTop + layout.bodyHeight < layout.contentHeight - 1) {
     drawScrollFade(ctx, 0, layout.bodyHeight - 24, layout.width, 24, theme, 'bottom');
@@ -215,6 +225,7 @@ export function hitTimeline(layout: TimelineLayout, x: number, y: number, scroll
   const placed = placedLaneAt(layout, y + scrollTop);
   if (!placed) return null;
   const { lane } = placed;
+  if (lane.kind === 'heading') return null;
   if (lane.expandable && x < layout.labelWidth) return { kind: 'toggle', laneKey: lane.key };
   if (x < layout.plotLeft || x > layout.plotRight) return { kind: 'lane', laneKey: lane.key };
   const hour = Math.floor(xToHour(layout, x));

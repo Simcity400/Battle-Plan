@@ -18,7 +18,7 @@ export interface TimelineSpan {
   readonly meta?: unknown;
 }
 
-export type TimelineLaneKind = 'item' | 'group';
+export type TimelineLaneKind = 'item' | 'group' | 'heading';
 
 export interface TimelineLane {
   readonly key: string;

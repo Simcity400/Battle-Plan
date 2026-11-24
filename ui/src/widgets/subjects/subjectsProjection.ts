@@ -1,226 +1,144 @@
-import { formatDay } from '../../dashboard/calendar.ts';
-import { runState, startUnseen } from '../../charts/timeline/runState.ts';
+import { CHART_MEASURE_COLOURS, colour, readableColour } from '../../charts/palette.ts';
+import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { Lineage } from '../../dashboard/identity.ts';
+import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { clipSpansToHour, inHourSpans, nextBoundaryAfter, paletteAt, resolveCountryChip } from '../../families/timeline/helpers.ts';
-import type { TimelineLaneModel, TimelineModel, TimelineProjection, TimelineSpanModel } from '../../families/timeline/model.ts';
+import { countryLook, inHourSpans, nextBoundaryAfter, timelineModel, spanStart } from '../../families/timeline/helpers.ts';
+import { laneByKey, spanAt, type TimelineLane, type TimelineProjection, type TimelineSpan } from '../../families/timeline/model.ts';
 import { registerTimelineProjection } from '../../families/timeline/registry.ts';
-import type { SubjectLevel, SubjectReply } from '../../generated/dashboard';
+import type { CountryGroupReply, SubjectLevel, SubjectReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition.ts';
 import {
   changeHours,
-  levelAt,
-  levelName,
+  laneCountries,
+  levelColours,
   overlordViews,
-  runNear,
+  subjectLanes,
   validateSubjectReply,
   type OverlordOrder,
   type SubjectOrder,
 } from './subjectsData.ts';
 
-export interface SubjectsProjectionOptions {
+export interface SubjectsOptions {
   readonly order: OverlordOrder;
   readonly subjects: SubjectOrder;
   readonly showEnded: boolean;
-  readonly showLevelNames: boolean;
-  readonly branchFirst: number;
+  readonly levelNames: boolean;
+  readonly firstHour: number;
   readonly surface: string;
-  readonly selectedTags: readonly string[] | null;
+  readonly selected: readonly string[] | null;
 }
 
-export const subjectsProjection: TimelineProjection<SubjectsProjectionOptions> = registerTimelineProjection({
+const views = new WeakMap<SubjectReply, WeakMap<CountryGroupReply, ReturnType<typeof overlordViews>>>();
+
+function viewsOf(reply: SubjectReply, groups: CountryGroupReply) {
+  let byGroups = views.get(reply);
+  if (!byGroups) views.set(reply, byGroups = new WeakMap());
+  let held = byGroups.get(groups);
+  if (!held) byGroups.set(groups, held = overlordViews(reply, new Lineage(groups.identityChanges), countryIdentityIndex(groups.countryIdentities)));
+  return held;
+}
+
+function boundaries(reply: SubjectReply, groups: CountryGroupReply | undefined): number[] {
+  return changeHours(reply, groups?.identityChanges);
+}
+
+export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerTimelineProjection<SubjectsOptions>({
   kind: 'subjects',
 
   nextChange(readView) {
     const reply = readView.panel<SubjectReply>('main');
-    if (!reply) return Infinity;
-    return nextBoundaryAfter(changeHours(reply), readView.hour);
+    return reply ? nextBoundaryAfter(boundaries(reply, readView.panel<CountryGroupReply>('groups')), readView.hour) : Infinity;
   },
 
-  project(readView, opt): TimelineModel {
+  project(readView, opt) {
     const hour = readView.hour;
     const reply = readView.panel<SubjectReply>('main');
-    const extent: [number, number] = [opt.branchFirst, Math.max(opt.branchFirst + 1, hour)];
-    if (!reply) {
-      return { mode: 'lanes', hour, extent, playhead: hour, lanes: [], empty: 'Loading subjects\u2026' };
+    const groups = readView.panel<CountryGroupReply>('groups');
+    const base = { hour, firstHour: opt.firstHour, labelWidth: 230 };
+    if (!reply || !groups) return timelineModel(base);
+    const nextChangeAt = nextBoundaryAfter(boundaries(reply, groups), hour);
+    const warnings = [...reply.warnings, ...groups.warnings];
+    if (!reply.runs.length) return timelineModel({ ...base, empty: 'No subjects recorded', warnings, nextChangeAt });
+    const overlords = viewsOf(reply, groups);
+    const levels = new Map<string, SubjectLevel>(reply.levels.map(level => [level.token, level]));
+    const other = readableColour(CHART_MEASURE_COLOURS.other, opt.surface);
+    const fills = levelColours(reply.levels, reply.levels.map((_, index) => colour(opt.surface, index)), other);
+    const unobserved = overlords[0]?.unknown ?? reply.unobserved;
+    const selected = opt.selected ? new Set(opt.selected) : null;
+    const built = subjectLanes(overlords, levels, fills, hour, {
+      order: opt.order,
+      subjects: opt.subjects,
+      ended: opt.showEnded,
+      countries: selected,
+      countryIds: selected ? overlords[0]?.identities?.selected([...selected]) ?? null : null,
+    }, { country: tag => ({ name: countryLook(readView, tag, hour).name }), day: formatDateOnly }, unobserved);
+    if (!built.lanes.length) {
+      return timelineModel({ ...base, empty: selected ? 'None of the chosen countries has been an overlord or a subject yet' : 'No subjects yet', warnings, nextChangeAt });
     }
-    if (!reply.runs.length) {
-      return {
-        mode: 'lanes',
-        hour,
-        extent,
-        playhead: hour,
-        lanes: [],
-        empty: reply.warnings.length ? 'Subject relations are unavailable.' : 'No subjects recorded.',
-        warnings: reply.warnings,
-      };
+    const tagOf = new Map<string, string>();
+    for (const lane of built.lanes) {
+      const [tag] = laneCountries([lane], built.info, hour);
+      if (tag) tagOf.set(lane.id, tag);
     }
-
-    const levels = new Map<string, SubjectLevel>(reply.levels.map(l => [l.token, l]));
-    const levelColor = new Map<string, string>(reply.levels.map((l, idx) => [l.token, paletteAt(opt.surface, idx)]));
-    const fallbackColor = paletteAt(opt.surface, reply.levels.length);
-    const unobserved = clipSpansToHour(reply.unobserved, hour);
-    const views = overlordViews(reply, new Lineage([]));
-    const tagSet = opt.selectedTags ? new Set(opt.selectedTags) : null;
-
-    const overlords = views
-      .map(ov => {
-        const shown = ov.subjects.filter(sv => {
-          const first = sv.runs[0]?.firstHour ?? Infinity;
-          if (first > hour) return false;
-          if (!opt.showEnded && runState(sv.stretches, hour, reply.unobserved).kind === 'ended') return false;
-          return true;
-        });
-        if (!shown.length) return null;
-        if (tagSet) {
-          const matched = shown.some(sv => sv.runs.some(r => r.firstHour <= hour && (tagSet.has(r.overlord) || tagSet.has(r.subject))));
-          if (!matched) return null;
-        }
-        const latestRun = shown[0]?.runs.find(r => r.firstHour <= hour) ?? shown[0]?.runs[0];
-        const overlordTag = latestRun?.overlord ?? ov.key;
-        const overlordChip = resolveCountryChip(readView, overlordTag, hour);
-        const activeCount = shown.filter(sv => sv.runs.some(r => r.firstHour <= hour && hour <= r.lastHour)).length;
-        return { ov, shown, overlordTag, overlordChip, activeCount };
-      })
-      .filter((x): x is NonNullable<typeof x> => x !== null);
-
-    if (!overlords.length) {
-      return {
-        mode: 'lanes',
-        hour,
-        extent,
-        playhead: hour,
-        lanes: [],
-        empty: tagSet ? 'None of the chosen countries has been an overlord or a subject yet.' : 'No subjects yet.',
-        warnings: reply.warnings,
-      };
-    }
-
-    overlords.sort(
-      opt.order === 'name'
-        ? (a, b) => a.overlordChip.name.localeCompare(b.overlordChip.name)
-        : opt.order === 'subjects'
-          ? (a, b) => b.activeCount - a.activeCount || a.ov.firstSince - b.ov.firstSince
-          : (a, b) => a.ov.firstSince - b.ov.firstSince,
-    );
-
-    const lanes: TimelineLaneModel[] = [];
-    for (const { ov, shown, overlordTag, overlordChip, activeCount } of overlords) {
-      const ruleStart = Math.min(...shown.map(s => s.runs[0]?.firstHour ?? hour));
-      const ruleEnd = Math.min(hour, Math.max(...shown.map(s => s.runs.at(-1)?.lastHour ?? ruleStart)));
-      const subText = `${activeCount} ${activeCount === 1 ? 'subject' : 'subjects'}`;
-      lanes.push({
-        key: `overlord:${ov.key}`,
-        kind: 'group-header',
-        label: overlordChip.name,
-        subtitle: subText,
-        flag: overlordChip.flag,
-        flagTag: overlordTag,
-        ruleColor: overlordChip.color ?? '#8c95a6',
-        ruleSpan: [ruleStart, Math.max(ruleStart, ruleEnd)],
-        auditValue: `${overlordChip.name}|${subText}`,
-        meta: { kind: 'overlord', overlordTag },
-      });
-
-      const subItems = shown.map(sv => {
-        const run = runNear(sv, hour);
-        const subjectTag = run.subject;
-        const chip = resolveCountryChip(readView, subjectTag, Math.min(hour, run.lastHour));
-        return { sv, run, subjectTag, chip };
-      });
-      subItems.sort(
-        opt.subjects === 'name'
-          ? (a, b) => a.chip.name.localeCompare(b.chip.name)
-          : (a, b) => a.run.startHour - b.run.startHour || a.chip.name.localeCompare(b.chip.name),
-      );
-
-      for (const { sv, run, subjectTag, chip } of subItems) {
-        const spans: TimelineSpanModel[] = [];
-        for (const r of sv.runs) {
-          if (r.firstHour > hour) continue;
-          for (const step of r.steps) {
-            if (step.firstHour > hour) continue;
-            const openAtPlayhead = step.lastHour >= hour;
-            const ended = !openAtPlayhead;
-            const color = step.level ? (levelColor.get(step.level) ?? fallbackColor) : fallbackColor;
-            spans.push({
-              id: `${sv.key}:${step.firstHour}`,
-              firstHour: step.firstHour,
-              lastHour: Math.min(step.lastHour, hour),
-              color,
-              label: opt.showLevelNames ? levelName(levels, step.level) : undefined,
-              heldBefore: startUnseen(step.firstHour, opt.branchFirst, reply.unobserved),
-              fadedEnd: ended && inHourSpans(reply.unobserved, step.lastHour + 1),
-              ended,
-              openAtPlayhead,
-              meta: { level: step.level, startHour: r.startHour },
-            });
-          }
-        }
-        const active = run.firstHour <= hour && hour <= run.lastHour;
-        const currentLvl = active ? levelAt(run, hour) ?? null : null;
-        const subtitle = active
-          ? `${levelName(levels, currentLvl)} \u00b7 since ${formatDay(run.startHour)}`
-          : `Ended ${formatDay(Math.min(hour, run.lastHour))}`;
-        lanes.push({
-          key: `subject:${sv.key}`,
-          kind: 'standard',
-          depth: 1,
-          label: chip.name,
-          subtitle,
-          flag: chip.flag,
-          flagTag: subjectTag,
-          dimmed: !active,
-          spans,
-          auditValue: `${chip.name}|${subtitle}`,
-          meta: { kind: 'subject', overlordName: overlordChip.name, subjectTag, startHour: run.startHour },
+    let headerKey = '';
+    const lanes: TimelineLane[] = built.lanes.map(source => {
+      const tag = tagOf.get(source.id);
+      const look = tag ? countryLook(readView, tag, hour) : null;
+      const heading = source.heading === true;
+      if (heading) headerKey = source.id;
+      const spans: TimelineSpan[] = [];
+      for (const span of source.spans) {
+        if (span.firstHour > hour) continue;
+        const open = span.lastHour >= hour;
+        spans.push({
+          id: `${source.id}@${span.id}`,
+          firstHour: span.firstHour,
+          lastHour: Math.min(span.lastHour, hour),
+          color: span.color ?? other,
+          ...(!heading && opt.levelNames && span.label ? { label: span.label } : {}),
+          ...spanStart(span.firstHour, opt.firstHour, unobserved),
+          endUnseen: !open && inHourSpans(unobserved, span.lastHour + 1),
+          open,
         });
       }
-    }
-
-    return {
-      mode: 'lanes',
-      hour,
-      extent,
-      playhead: hour,
-      lanes,
-      unobserved,
-      iconsOnBars: false,
-      labelWidth: 224,
-      warnings: reply.warnings,
-      nextChangeAt: nextBoundaryAfter(changeHours(reply), hour),
-    };
+      const name = source.identity?.label ?? 'Unknown country';
+      return {
+        key: source.id,
+        kind: heading ? 'group' as const : 'item' as const,
+        ...(heading ? {} : { depth: 1, parentKey: headerKey }),
+        label: name,
+        subtitle: source.label,
+        ...(look ? { flag: look.flag, flagTag: look.tag } : { flagTag: '?' }),
+        ...(heading && look?.colour ? { ruleColor: look.colour } : {}),
+        spans,
+        auditValue: `${name}|${source.label}`,
+      };
+    });
+    return timelineModel({ ...base, lanes, unobserved, warnings, nextChangeAt });
   },
 
-  tooltip(model, target, hour) {
-    const lane = model.lanes?.find(l => l.key === (target.laneKey ?? target.key));
+  tooltip(model, hit) {
+    const lane = laneByKey(model, hit.laneKey);
     if (!lane) return null;
-    const meta = lane.meta as { kind?: string; overlordName?: string; startHour?: number } | undefined;
-    if (meta?.kind === 'overlord') {
-      return {
-        title: lane.label,
-        subtitle: 'Overlord',
-        hour,
-        items: [{ label: 'Subjects', value: lane.subtitle ?? '0' }],
-      };
-    }
-    const span = target.spanId
-      ? lane.spans?.find(s => s.id === target.spanId)
-      : lane.spans?.find(s => s.firstHour <= hour && hour <= s.lastHour) ?? lane.spans?.at(-1);
+    const at = hit.hour ?? model.hour;
+    if (lane.kind === 'group') return { title: lane.label, subtitle: 'Overlord', hour: at, items: [{ label: 'Subjects', value: lane.subtitle ?? '' }] };
+    const span = spanAt(lane, hit);
+    const overlord = model.lanes.find(item => item.key === lane.parentKey);
+    const level = span?.label;
     return {
       title: lane.label,
-      subtitle: meta?.overlordName ? `Subject of ${meta.overlordName}` : 'Subject',
-      hour,
+      subtitle: overlord ? `Subject of ${overlord.label}` : 'Subject',
+      hour: at,
       items: [
-        ...(span?.label ? [{ label: 'Level', value: span.label, swatch: span.color }] : []),
-        ...(meta?.startHour !== undefined ? [{ label: 'Subject since', value: formatDay(meta.startHour) }] : []),
-        ...(span ? [{ label: 'Status', value: span.openAtPlayhead ? 'Still a subject' : `Ended ${formatDay(span.lastHour)}` }] : []),
+        ...(level && span ? [{ label: 'Level', value: level, swatch: span.color }] : []),
+        { label: 'Status', value: lane.subtitle ?? '' },
       ],
     };
   },
 });
 
-export const subjectsDeclaration: TimelineWidgetDeclaration<SubjectsProjectionOptions> = {
+export const subjectsDeclaration: TimelineWidgetDeclaration<SubjectsOptions> = {
   family: 'timeline',
   kind: 'subjects',
   label: 'Overlords and subjects',
@@ -231,33 +149,33 @@ export const subjectsDeclaration: TimelineWidgetDeclaration<SubjectsProjectionOp
   countries: { mode: 'multi', labels: true, allTagsForLabels: true },
   jumpToDate: true,
   keyByBranch: true,
-  sources: ctx => ({
-    owner: `subjects:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
-    entries: [{
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'branch-to-hour',
-        coverage: { mode: 'population', form: 'all' },
-        product: 'subjects',
-        followQuery: null,
-        params: { branchId: ctx.branch.id },
-        buildSpanParams: base => base,
-        validate: validateSubjectReply,
-      },
-    }],
-    allowEmptyFollow: true,
-  }),
+  sources: ctx => {
+    const read = (product: 'subjects' | 'country-groups', validate?: (data: unknown) => unknown) => ({
+      shape: 'branch-to-hour' as const,
+      coverage: { mode: 'population' as const, form: 'all' as const },
+      product,
+      followQuery: null,
+      params: { branchId: ctx.branch.id },
+      buildSpanParams: (params: Readonly<Record<string, unknown>>) => params,
+      ...(validate ? { validate } : {}),
+    });
+    return {
+      owner: `subjects:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
+      entries: [
+        { name: 'main', source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset, read: read('subjects', validateSubjectReply) },
+        { name: 'groups', source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset, read: read('country-groups') },
+      ],
+      allowEmptyFollow: true,
+    };
+  },
   projection: subjectsProjection,
-  projectionOptions: ctx => ({
+  projectionOptions: (ctx, extra) => ({
     order: (ctx.options.order as OverlordOrder) ?? 'first',
     subjects: (ctx.options.subjects as SubjectOrder) ?? 'since',
     showEnded: ctx.options.ended !== 'hidden',
-    showLevelNames: ctx.options.names !== false,
-    branchFirst: ctx.branch.firstHour,
-    surface: '#16181d',
-    selectedTags: ctx.countries.all ? null : ctx.countries.tags,
+    levelNames: ctx.options.names !== false,
+    firstHour: ctx.branch.firstHour,
+    surface: extra.surface,
+    selected: ctx.countries.all ? null : ctx.countries.tags,
   }),
 };

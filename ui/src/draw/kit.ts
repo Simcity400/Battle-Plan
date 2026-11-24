@@ -1133,7 +1133,7 @@ export function computeTimeAxisTicks(startHour: number, endHour: number, plotWid
     if (month > 12) { month = 1; year++; }
     while (year < end.year || (year === end.year && month <= end.month)) {
       if ((month - 1) % step === 0) {
-        const hour = engineHour({ year, month, day: 1, hour: 0 });
+        const hour = engineHour({ year, month, day: 1, hour: 1 });
         if (hour !== null && hour > startHour && hour <= endHour) {
           ticks.push({ hour, label: month === 1 ? String(year) : monthNames[month - 1]!.slice(0, 3) });
         }
@@ -1148,7 +1148,7 @@ export function computeTimeAxisTicks(startHour: number, endHour: number, plotWid
   const step = [1, 2, 5, 10, 20, 50].find(candidate => Math.ceil(years / candidate) <= fit) ?? 100;
   for (let year = start.year + 1; year <= end.year; year++) {
     if (year % step !== 0) continue;
-    const hour = engineHour({ year, month: 1, day: 1, hour: 0 });
+    const hour = engineHour({ year, month: 1, day: 1, hour: 1 });
     if (hour !== null && hour > startHour && hour <= endHour) ticks.push({ hour, label: String(year) });
   }
   return ticks;

@@ -18,6 +18,7 @@ import { ensureTimelineProjection } from './registry.ts';
 export interface FamilyTimelineBinding<TOptions = unknown> {
   readonly family: 'timeline';
   readonly kind: string;
+  readonly view?: string;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
@@ -53,7 +54,7 @@ interface HeldTimeline {
   ctx: OffscreenCanvasRenderingContext2D;
   content: string;
   art: LaneArtCache;
-  identitySnapshot: IdentitySnapshot | undefined;
+  identitySnapshot: IdentitySnapshot | null | undefined;
   identityIndex: IdentityIndex | null;
   identityProvider: IdentityProvider | undefined;
   artProvider: ArtProvider;
@@ -88,26 +89,26 @@ function keptField(held: HeldTimeline, name: string, value: unknown, text: strin
 }
 
 function navOf(layout: TimelineLayout): FamilyNavTuple[] {
-  return layout.lanes.map(placed => {
+  const nav: FamilyNavTuple[] = [];
+  for (const placed of layout.lanes) {
     const lane = placed.lane;
+    if (lane.kind === 'heading') continue;
     const tree = lane.expandable ? (layout.lanes[placed.ordinal + 1]?.lane.parentKey === lane.key ? 1 : 0) : -1;
-    return [lane.key, lane.label, placed.ordinal, tree, lane.parentKey ?? '', lane.meta ?? null];
-  });
+    nav.push([lane.key, lane.label, nav.length, tree, lane.parentKey ?? '', lane.meta ?? null]);
+  }
+  return nav;
 }
 
 function mirrorOf(layout: TimelineLayout): MirrorModel {
-  return {
-    first: 0,
-    total: layout.lanes.length,
-    rows: layout.lanes.map(placed => ({
-      key: placed.lane.key,
-      name: placed.lane.label,
-      rowIndex: placed.ordinal,
-      level: placed.lane.depth ?? 0,
-      ...(placed.lane.expandable ? { group: true, open: layout.lanes[placed.ordinal + 1]?.lane.parentKey === placed.lane.key } : {}),
-      cells: placed.lane.subtitle ? [{ column: 'status', spoken: placed.lane.subtitle }] : [],
-    })),
-  };
+  const rows = layout.lanes.filter(placed => placed.lane.kind !== 'heading').map((placed, index) => ({
+    key: placed.lane.key,
+    name: placed.lane.label,
+    rowIndex: index,
+    level: placed.lane.depth ?? 0,
+    ...(placed.lane.expandable ? { group: true, open: layout.lanes[placed.ordinal + 1]?.lane.parentKey === placed.lane.key } : {}),
+    cells: placed.lane.subtitle ? [{ column: 'status', spoken: placed.lane.subtitle }] : [],
+  }));
+  return { first: 0, total: rows.length, rows };
 }
 
 export function defaultTimelineTooltip(model: TimelineModel, lane: TimelineLane, hit: TimelineHit): FamilyTooltipPayload {
@@ -158,7 +159,7 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
     next(scene: Scene, hour: number, state?: Map<string, unknown>): number {
       const bound = scene.model;
       if (!isFamilyTimelineBinding(bound)) return Infinity;
-      const projection = ensureTimelineProjection(bound.kind, () => wake(scene.widget));
+      const projection = ensureTimelineProjection(bound.kind, bound.view, () => wake(scene.widget));
       if (projection === 'loading') return hour + 1;
       if (projection === 'unknown') return Infinity;
       const held = state?.get(STATE_KEY) as HeldTimeline | undefined;
@@ -179,7 +180,7 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
       const bound = input.model;
       const surface = input.binding.surfaces[0];
       if (!isFamilyTimelineBinding(bound) || !surface) return { surfaces: [], fields: {}, motion: false };
-      const projection = ensureTimelineProjection(bound.kind, () => wake(input.widget));
+      const projection = ensureTimelineProjection(bound.kind, bound.view, () => wake(input.widget));
       if (projection === 'loading') return { surfaces: [], fields: {}, motion: false, nextChangeAt: input.hour + 1 };
       if (projection === 'unknown') {
         return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown timeline view: ${bound.kind}` };

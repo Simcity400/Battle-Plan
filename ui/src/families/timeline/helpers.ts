@@ -1,82 +1,52 @@
-import { categoricalPalette } from '../../charts/palette.ts';
 import type { HourSpan } from '../../generated/dashboard';
 import { flagArtHandle } from '../art/provider.ts';
-import type { ArtHandle, BoundedReadView, DisplayedHour } from '../plan.ts';
-import type { TimelineCountryChip } from './model.ts';
+import type { ArtHandle, BoundedReadView, DisplayedHour } from '../contract.ts';
+import type { TimelineLane, TimelineModel } from './model.ts';
 
 export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
-  if (!url) return null;
-  return { kind: 'url', url };
+  return url ? { kind: 'url', url } : null;
 }
 
-export function resolveCountryChip(
-  readView: BoundedReadView,
-  tag: string | null | undefined,
-  atHour?: number,
-  options?: { readonly dimmed?: boolean; readonly fallbackName?: string },
-): TimelineCountryChip {
-  const h = atHour !== undefined ? Math.min(atHour, readView.hour) : readView.hour;
-  if (!tag) {
-    return {
-      tag: '',
-      name: options?.fallbackName ?? 'Country not recorded',
-      flag: null,
-      flagMissing: true,
-      color: null,
-      dimmed: options?.dimmed,
-    };
-  }
-  const id = readView.who('country', tag, h);
-  const name = id.name.status === 'ready'
-    ? id.name.value
-    : id.name.status === 'pending'
-      ? tag
-      : options?.fallbackName ?? tag;
-  const flag = id.flagChoice?.status === 'ready' ? flagArtHandle(id.flagChoice.value, 'panel') : null;
-  const flagMissing = id.flagChoice?.status === 'absent';
-  const color = id.colour?.status === 'ready' ? id.colour.value : null;
+export interface CountryLook {
+  readonly tag: string;
+  readonly name: string;
+  readonly flag: ArtHandle | null;
+  readonly colour: string | null;
+}
+
+export function countryLook(readView: BoundedReadView, tag: string, atHour: number): CountryLook {
+  const who = readView.who('country', tag, Math.min(atHour, readView.hour));
   return {
     tag,
-    name,
-    flag,
-    flagMissing,
-    color,
-    dimmed: options?.dimmed,
+    name: who.name.status === 'ready' ? who.name.value : tag,
+    flag: who.flagChoice?.status === 'ready' ? flagArtHandle(who.flagChoice.value, 'panel') : null,
+    colour: who.colour?.status === 'ready' ? who.colour.value : null,
   };
 }
 
-export function paletteAt(surface: string, index: number): string {
-  const colors = categoricalPalette(surface);
-  return colors[((index % colors.length) + colors.length) % colors.length]!;
-}
-
-export function clipSpansToHour(spans: readonly HourSpan[] | undefined, hour: DisplayedHour): HourSpan[] {
-  if (!spans?.length) return [];
+export function clipSpansToHour(spans: readonly HourSpan[] | undefined, hour: number): HourSpan[] {
   const out: HourSpan[] = [];
-  for (const s of spans) {
-    if (s.firstHour > hour) continue;
-    out.push({ firstHour: s.firstHour, lastHour: Math.min(s.lastHour, hour) });
+  for (const span of spans ?? []) {
+    if (span.firstHour > hour) continue;
+    out.push({ firstHour: span.firstHour, lastHour: Math.min(span.lastHour, hour) });
   }
   return out;
 }
 
 export function inHourSpans(spans: readonly HourSpan[] | undefined, hour: number): boolean {
-  if (!spans?.length) return false;
-  for (const s of spans) {
-    if (s.firstHour <= hour && hour <= s.lastHour) return true;
+  for (const span of spans ?? []) {
+    if (span.firstHour <= hour && hour <= span.lastHour) return true;
   }
   return false;
 }
 
-export function formatDurationShort(hours: number): string {
-  const days = Math.max(0, Math.floor(hours / 24));
-  if (days < 1) return '< 1 day';
-  if (days < 60) return `${days} ${days === 1 ? 'day' : 'days'}`;
-  const months = Math.floor(days / 30);
-  if (months < 24) return `${months} ${months === 1 ? 'month' : 'months'}`;
-  const years = Math.floor(days / 365);
-  const remMonths = Math.floor((days - years * 365) / 30);
-  return remMonths > 0 ? `${years}y ${remMonths}m` : `${years} ${years === 1 ? 'year' : 'years'}`;
+export function spanStart(firstHour: number, branchFirst: number, unobserved: readonly HourSpan[] | undefined): { readonly heldBefore?: true; readonly startBy?: true } {
+  if (firstHour <= branchFirst) return { heldBefore: true };
+  return inHourSpans(unobserved, firstHour - 1) ? { startBy: true } : {};
+}
+
+export function sortedBoundaries(hours: Iterable<number>): number[] {
+  return [...new Set(hours)].sort((a, b) => a - b);
 }
 
 export function nextBoundaryAfter(hours: readonly number[], current: number): number {
@@ -88,4 +58,33 @@ export function nextBoundaryAfter(hours: readonly number[], current: number): nu
     else hi = mid;
   }
   return lo < hours.length ? hours[lo]! : Infinity;
+}
+
+export interface TimelineModelParts {
+  readonly hour: DisplayedHour;
+  readonly firstHour: number;
+  readonly lanes?: readonly TimelineLane[];
+  readonly unobserved?: readonly HourSpan[];
+  readonly iconsOnBars?: boolean;
+  readonly labelWidth: number;
+  readonly summaryText?: string | null;
+  readonly empty?: string | null;
+  readonly emptyKind?: 'empty' | 'unavailable';
+  readonly warnings?: readonly string[];
+  readonly nextChangeAt?: number;
+}
+
+export function timelineModel(parts: TimelineModelParts): TimelineModel {
+  return {
+    hour: parts.hour,
+    extent: [parts.firstHour, Math.max(parts.firstHour + 1, parts.hour)],
+    lanes: parts.lanes ?? [],
+    unobserved: clipSpansToHour(parts.unobserved, parts.hour),
+    iconsOnBars: parts.iconsOnBars ?? false,
+    labelWidth: parts.labelWidth,
+    ...(parts.summaryText ? { summaryText: parts.summaryText } : {}),
+    ...(parts.empty ? { empty: parts.empty, emptyKind: parts.emptyKind ?? 'empty' } : {}),
+    warnings: parts.warnings ?? [],
+    nextChangeAt: parts.nextChangeAt ?? Infinity,
+  };
 }

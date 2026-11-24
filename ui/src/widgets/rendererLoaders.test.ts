@@ -34,6 +34,7 @@ test('every widget module loads with its registered lazy body and the catalogue 
     await vite.ssrLoadModule('/ui/src/widgets/index.ts');
     const { loadWidgetRenderer: load, setPlaybackActive: setPlaying } = await vite.ssrLoadModule('/ui/src/widgets/rendererLoaders.ts');
     const { widgetDefinition } = await vite.ssrLoadModule('/ui/src/dashboard/definitions.ts');
+    const { familyHost } = await vite.ssrLoadModule('/ui/src/families/host/registry.tsx');
     const clock = {};
     setPlaying(clock, true);
     try {
@@ -46,7 +47,7 @@ test('every widget module loads with its registered lazy body and the catalogue 
       const registered = widgetDefinition(meta.kind);
       const renderer = await load(meta.kind);
       assert.ok(
-        typeof renderer.render === 'function' || renderer.declaration?.family === 'table',
+        typeof renderer.render === 'function' || (renderer.declaration !== undefined && familyHost(renderer.declaration.family) !== undefined),
         `${meta.kind} body or family declaration loads`,
       );
       if (renderer.declaration) {

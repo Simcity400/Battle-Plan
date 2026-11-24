@@ -13,6 +13,6 @@ export function timelineProjection(kind: string): TimelineProjection<unknown> | 
   return familyProjection<TimelineModel, unknown>('timeline', kind) as TimelineProjection<unknown> | undefined;
 }
 
-export function ensureTimelineProjection(kind: string, onReady: () => void): TimelineProjection<unknown> | 'loading' | 'unknown' {
-  return ensureFamilyProjection<TimelineModel, unknown>('timeline', kind, undefined, onReady) as TimelineProjection<unknown> | 'loading' | 'unknown';
+export function ensureTimelineProjection(kind: string, view: string | undefined, onReady: () => void): TimelineProjection<unknown> | 'loading' | 'unknown' {
+  return ensureFamilyProjection<TimelineModel, unknown>('timeline', kind, view, onReady) as TimelineProjection<unknown> | 'loading' | 'unknown';
 }
