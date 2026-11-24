@@ -168,3 +168,17 @@ test('a newcomer starting the same hour never takes the seat a continuing holder
   const lanes = lanesFor(reply, GOVERNMENT).filter(lane => lane.id.startsWith('political_advisor#'));
   assert.deepEqual(lanes.map(lane => lane.spans.map(span => span.id)), [['b:10', 'b:21'], ['c:10', 'a:21']]);
 });
+
+test('a slot that holds several items at once gets a lane per item held together, so no lane overlaps itself', () => {
+  const council: CategoryInfo = { token: 'mod_council', name: 'Council', kind: null, hidden: false, politicsTab: true, slots: [
+    { token: 'mod_faction', name: 'Internal faction', character: false, seats: 1, laws: [] },
+  ] };
+  const reply = { ...REPLY, categories: [council], ideas: [idea('a', 'mod_faction', 'mod_council'), idea('b', 'mod_faction', 'mod_council'), idea('c', 'mod_faction', 'mod_council')],
+    spans: [
+      { token: 'a', firstHour: 0, lastHour: 100, slot: null, character: null },
+      { token: 'b', firstHour: 0, lastHour: 100, slot: null, character: null },
+      { token: 'c', firstHour: 101, lastHour: 200, slot: null, character: null },
+    ] };
+  const lanes = lanesFor(reply, council);
+  assert.deepEqual(lanes.map(lane => [lane.id, lane.spans.map(span => span.token)]), [['mod_faction', ['a', 'c']], ['mod_faction#1', ['b']]]);
+});

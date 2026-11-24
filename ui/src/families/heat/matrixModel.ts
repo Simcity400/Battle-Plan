@@ -206,13 +206,13 @@ export function deriveMatrixMirror(
   const c1 = Math.min(model.columns.length, endCol);
   for (let r = r0; r < r1; r++) {
     const entity = model.rows[r]!;
-    const cells = [];
+    const cells = [{ column: 'Country', spoken: entity.label }];
     for (let c = c0; c < c1; c++) {
       const col = model.columns[c]!;
       const cell = model.cell(r, c);
       cells.push({
         column: col.label,
-        spoken: cellAuditValue(cell),
+        spoken: `${col.label}: ${cellAuditValue(cell)}`,
       });
     }
     rows.push({

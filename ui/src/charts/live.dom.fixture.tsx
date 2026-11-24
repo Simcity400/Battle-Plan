@@ -7,8 +7,6 @@ import type { LiveValues } from './live';
 import Table from './table/Table';
 import type { TableColumn } from './table/Table';
 import type { SortValue } from './table/logic';
-import HeatMatrix from './heat/HeatMatrix';
-import type { MatrixCell } from './heat/matrix';
 import Timeline from './timeline/Timeline';
 import Sunburst from './sunburst/Sunburst';
 import type { SunburstItem, SunburstValues } from './sunburst/Sunburst';
@@ -86,8 +84,6 @@ const tableColumns: TableColumn<Row>[] = [
 const tableLive = new LiveCell<LiveValues<SortValue>>(valuesOf(new Map(), 'Not read yet'));
 const rowKey = (row: Row) => row.key;
 
-const axis = Array.from({ length: 6 }, (_, i) => ({ id: `c${i}`, label: `Country ${i}` }));
-const heatLive = new LiveCell<LiveValues<MatrixCell>>(valuesOf(new Map(), 'Not read yet'));
 
 const lanes = [{ id: 'slot', label: 'Slot', spans: [{ id: 'holder', firstHour: 0, lastHour: 1000, label: 'Holder' }] }];
 const timelineHead = new LiveCell(100);
@@ -138,25 +134,6 @@ export const fixture = {
       });
   },
   tableMounted: () => roots.get('table')!.host.querySelectorAll('tbody tr').length,
-
-  async mountHeat(live: boolean) {
-    const { root } = host('heat', 600, 400);
-    root.render(counted('heat', <HeatMatrix key={String(live)} label="Synthetic matrix" rows={axis} columns={axis} cell={() => ({ color: '#999999' })} revision={0}
-      tooltip={() => null} active live={live ? heatLive : undefined} />));
-    await settle();
-  },
-  async pushHeat(color: string, missing?: [number, number]) {
-    const cells = new Map<string, MatrixCell>();
-    for (const [r, row] of axis.entries()) for (const [c, column] of axis.entries())
-      if (!missing || missing[0] !== r || missing[1] !== c) cells.set(liveKey(row.id, column.id), { color });
-    heatLive.set(valuesOf(cells, 'Not recorded at this hour'));
-    await settle();
-  },
-  heatFills() {
-    const counts: Record<string, number> = {};
-    for (const fill of lastFrame('heat').fills) if (/^#[0-9a-f]{6}$/.test(fill)) counts[fill] = (counts[fill] ?? 0) + 1;
-    return counts;
-  },
 
   async mountTimeline(live: boolean) {
     const { root } = host('timeline', 600, 200);

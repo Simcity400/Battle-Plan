@@ -1,4 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import NationalSpiritsWidget from './NationalSpiritsWidget';
+import { nationalSpiritsDeclaration } from './nationalSpiritsProjection';
 
-export default { render: NationalSpiritsWidget } satisfies WidgetRenderer;
+export default { declaration: nationalSpiritsDeclaration } satisfies WidgetRenderer;

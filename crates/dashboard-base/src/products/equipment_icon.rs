@@ -48,7 +48,7 @@ fn type_model<'a>(equipment: &'a Database, key: &str) -> Result<TypeModel<'a>, S
     })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Icon {
     Sprite(String),
     Path(String),
@@ -222,19 +222,8 @@ impl IconChoice {
                 .contains(name)
                 .then(|| Icon::Sprite(name.to_owned()))),
         };
-        let file = |path: &str| match layers.art_file_source(path.as_bytes()) {
-            Ok(content_reader_layers::content::ArtFileSource::Mounted { .. }) => {
-                Ok(Some(Icon::Path(path.to_owned())))
-            }
-            Ok(content_reader_layers::content::ArtFileSource::Unmounted { layer, reason }) => {
-                let owner = &layers.layers[layer];
-                let name = owner.display_name().unwrap_or(&owner.id);
-                Err(format!(
-                    "{name} is not mounted ({reason}); {path} cannot be resolved without risking a substitute"
-                ))
-            }
-            Ok(content_reader_layers::content::ArtFileSource::Missing) => Ok(None),
-            Err(error) => Err(format!("{path}: {error}")),
+        let file = |path: &str| {
+            art_file_present(layers, path).map(|found| found.then(|| Icon::Path(path.to_owned())))
         };
         self.walk(|probe| match probe {
             Probe::Sprite(name) => sprite(name),
@@ -365,7 +354,7 @@ impl IconContent {
             dlc,
             sprites,
             refused_sprites: BTreeMap::new(),
-            files: Box::new(move |path| layers.has_file(path).map_err(|e| e.to_string())),
+            files: Box::new(move |path| art_file_present(layers.presentation(), path)),
             stamped: false,
             load_warnings: warnings,
             visual: String::new(),
@@ -669,6 +658,21 @@ impl IconContent {
             Probe::File(path) => Ok(self.file(path)?.then(|| Icon::Path(path.clone()))),
             Probe::Existing(name) => self.existing(name),
         }
+    }
+}
+
+fn art_file_present(layers: &content_reader_layers::ResolvedLayers, path: &str) -> Result<bool, String> {
+    match layers.art_file_source(path.as_bytes()) {
+        Ok(content_reader_layers::content::ArtFileSource::Mounted { .. }) => Ok(true),
+        Ok(content_reader_layers::content::ArtFileSource::Unmounted { layer, reason }) => {
+            let owner = &layers.layers[layer];
+            let name = owner.display_name().unwrap_or(&owner.id);
+            Err(format!(
+                "{name} is not mounted ({reason}); {path} cannot be resolved without risking a substitute"
+            ))
+        }
+        Ok(content_reader_layers::content::ArtFileSource::Missing) => Ok(false),
+        Err(error) => Err(format!("{path}: {error}")),
     }
 }
 
