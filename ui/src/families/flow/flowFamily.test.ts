@@ -214,3 +214,22 @@ test('the trade matrix keys a partner by its recorded slot and an unproven popul
   const absent = model.cells.absent;
   assert.equal(typeof absent === 'function' ? absent(0).kind : absent.kind, 'missing');
 });
+
+test('a faction is sent as the group, resolved in Rust at the hour, never as the union of its members or a one-member centre', async () => {
+  const { tradeFlowDeclaration } = await import('../../widgets/trade-flows/tradeFlowsProjection.ts');
+  const ctx = (membership: 'hour' | 'ever' | 'end') => ({
+    track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
+    branch: { id: '1' },
+    options: {},
+    countryTag: null,
+    countries: { all: false, top: null, tags: ['GER'] },
+    widget: { countries: { kind: 'group', group: { type: 'faction', id: '42' }, membership, aggregate: false } },
+  }) as never;
+  const params = tradeFlowDeclaration.sources(ctx('hour'), { height: 360 }).entries[0]!.read.params as Record<string, unknown>;
+  assert.deepEqual(params.group, { type: 'faction', id: '42', membership: 'hour' });
+  assert.equal(params.subject, undefined, 'one member so far is not a centred view of it');
+  assert.equal(params.countries, undefined, 'no member list leaves the client');
+  assert.equal((tradeFlowDeclaration.sources(ctx('ever'), {}).entries[0]!.read.params as { group: { membership: string } }).group.membership, 'ever');
+  assert.match(tradeFlowDeclaration.unavailable!(ctx('end'), 0) ?? '', /end of the recording/);
+  assert.equal(tradeFlowDeclaration.unavailable!(ctx('hour'), 0), null);
+});
