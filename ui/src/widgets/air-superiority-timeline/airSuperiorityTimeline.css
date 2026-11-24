@@ -1,6 +1,0 @@
-.air-timeline { display: flex; flex-direction: column; gap: 4px; height: 100%; min-height: 0; }
-.air-timeline-chart { flex: 1; min-height: 120px; }
-
-.air-pattern-key { display: flex; flex-wrap: wrap; gap: 1rem; font-size: .85em; color: var(--text-secondary); }
-.air-pattern-key span { display: inline-flex; align-items: center; gap: .4rem; }
-.air-pattern-key i { width: 1rem; height: .75rem; border: 1px solid var(--border); background: var(--surface); }

@@ -14,7 +14,9 @@ import {
   deriveLanesAudit,
   deriveLanesMirror,
   deriveLanesTooltip,
+  laneIdentities,
   laneInspectKey,
+  lanesExtentSignature,
   parseLaneInspectKey,
   type HeatLanesModel,
 } from './lanesModel.ts';
@@ -349,14 +351,7 @@ export function familyHeatLanesLaneView(
       }
       fields.meta = held.metaField;
 
-      const eSig = JSON.stringify([
-        layout.totalHeight,
-        layout.rowStride,
-        layout.plotTop,
-        layout.plotHeight,
-        model.rows.length,
-        model.hour,
-      ]);
+      const eSig = lanesExtentSignature(layout, model.rows);
       if (eSig !== held.extentSig || !held.extentField) {
         held.extentSig = eSig;
         held.extentField = {
@@ -365,7 +360,7 @@ export function familyHeatLanesLaneView(
             rowStride: layout.rowStride,
             plotTop: layout.plotTop,
             plotHeight: layout.plotHeight,
-            rows: model.rows,
+            rows: laneIdentities(model.rows),
           },
           content: content(),
         };

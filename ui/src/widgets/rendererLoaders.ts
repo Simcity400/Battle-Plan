@@ -1,52 +1,75 @@
 import { registerWidgets } from '../dashboard/definitions.ts';
 import type { WidgetRenderer } from '../dashboard/definitions.ts';
 import { widgetMetas } from './definitions.ts';
+import { normalizeView, viewKey, type FamilyViewEntry, type LegacyWidgetEntry } from '../families/manifest.ts';
 import { FAMILY_VIEWS, FAMILY_VIEW_UI, LEGACY_WIDGETS } from './manifest.ts';
 
 type RendererLoader = () => Promise<{ default: WidgetRenderer }>;
 
-function buildRendererLoaders(): Record<string, RendererLoader> {
-  const map: Record<string, RendererLoader> = {};
-  for (const entry of LEGACY_WIDGETS) {
-    if (!Object.hasOwn(map, entry.kind)) {
-      map[entry.kind] = entry.load;
-    }
+export interface RendererLoaderEntry {
+  readonly kind: string;
+  readonly view: string;
+  readonly load: RendererLoader;
+}
+
+export function buildRendererLoaders(
+  legacy: readonly LegacyWidgetEntry[],
+  family: readonly FamilyViewEntry[],
+  ui: Readonly<Record<string, { readonly load: RendererLoader }>>,
+): ReadonlyMap<string, RendererLoaderEntry> {
+  const map = new Map<string, RendererLoaderEntry>();
+  for (const entry of legacy) {
+    const key = viewKey(entry.kind, entry.view);
+    if (!map.has(key)) map.set(key, { kind: entry.kind, view: normalizeView(entry.view), load: entry.load });
   }
-  for (const entry of FAMILY_VIEWS) {
-    if (Object.hasOwn(map, entry.kind)) continue;
-    const ui = Object.hasOwn(FAMILY_VIEW_UI, entry.kind) ? FAMILY_VIEW_UI[entry.kind] : undefined;
-    map[entry.kind] = ui
-      ? ui.load
-      : () => entry.loadSpec().then(spec => ({ default: { declaration: spec.declaration } as WidgetRenderer }));
+  for (const entry of family) {
+    const key = viewKey(entry.kind, entry.view);
+    if (map.has(key)) continue;
+    const override = Object.hasOwn(ui, entry.kind) ? ui[entry.kind] : undefined;
+    map.set(key, {
+      kind: entry.kind,
+      view: normalizeView(entry.view),
+      load: override
+        ? override.load
+        : () => entry.loadSpec().then(spec => ({ default: { declaration: spec.declaration } as WidgetRenderer })),
+    });
   }
   return map;
 }
 
-export const rendererLoaders = buildRendererLoaders() as Record<(typeof widgetMetas)[number]['kind'], RendererLoader>;
+const rendererLoaders = buildRendererLoaders(LEGACY_WIDGETS, FAMILY_VIEWS, FAMILY_VIEW_UI);
+const defaultViews = new Map<string, string>();
+for (const [key, entry] of rendererLoaders) if (!defaultViews.has(entry.kind)) defaultViews.set(entry.kind, key);
+const keyFor = (kind: string, view?: string) => view === undefined ? defaultViews.get(kind) : viewKey(kind, view);
+
+export const rendererKinds = (): readonly string[] => [...defaultViews.keys()];
 
 const loaded = new Map<string, Promise<WidgetRenderer>>();
 const ready = new Map<string, WidgetRenderer>();
-export const loadedWidgetRenderer = (kind: string): WidgetRenderer | undefined => ready.get(kind);
-export function loadWidgetRenderer(kind: string): Promise<WidgetRenderer | undefined> {
-  if (!Object.hasOwn(rendererLoaders, kind)) return Promise.resolve(undefined);
-  const loader = rendererLoaders[kind as keyof typeof rendererLoaders];
-  if (!loader) return Promise.resolve(undefined);
-  let held = loaded.get(kind);
+export const loadedWidgetRenderer = (kind: string, view?: string): WidgetRenderer | undefined => {
+  const key = keyFor(kind, view);
+  return key === undefined ? undefined : ready.get(key);
+};
+export function loadWidgetRenderer(kind: string, view?: string): Promise<WidgetRenderer | undefined> {
+  const key = keyFor(kind, view);
+  const entry = key === undefined ? undefined : rendererLoaders.get(key);
+  if (key === undefined || !entry) return Promise.resolve(undefined);
+  let held = loaded.get(key);
   if (!held) {
-    held = loader().then(module => {
+    held = entry.load().then(module => {
       const meta = widgetMetas.find(meta => meta.kind === kind)!;
       registerWidgets([{ ...meta, useOptionChoices: (module.default as WidgetRenderer).useOptionChoices }]);
-      ready.set(kind, module.default);
+      ready.set(key, module.default);
       return module.default;
     });
-    loaded.set(kind, held);
-    held.catch(() => { loaded.delete(kind); });
+    loaded.set(key, held);
+    held.catch(() => { loaded.delete(key); });
   }
   return held;
 }
 
 export function preloadWidgetRenderers(kinds: Iterable<string>): void {
-  for (const kind of kinds) if (!ready.has(kind)) void loadWidgetRenderer(kind).catch(() => {});
+  for (const kind of kinds) if (!loadedWidgetRenderer(kind)) void loadWidgetRenderer(kind).catch(() => {});
 }
 
 const activeClocks = new Set<object>();
@@ -105,7 +128,7 @@ function preloadModuleUrl(url: string): Promise<void> {
 }
 
 let idlePreload = false;
-let preloadQueue: string[] | null = null;
+let preloadQueue: readonly unknown[] | null = null;
 let preloadInFlight = false;
 let preloadWaiters: Set<() => void> | null = null;
 
@@ -114,7 +137,7 @@ export function preloadStatus(): { started: boolean; done: boolean; remaining: n
     started: idlePreload,
     done: idlePreload && preloadQueue === null && !preloadInFlight,
     remaining: (preloadQueue ? preloadQueue.length : 0) + (preloadInFlight ? 1 : 0),
-    total: Object.keys(rendererLoaders).length,
+    total: rendererLoaders.size,
   };
 }
 
@@ -128,7 +151,10 @@ export function preloadAllWidgetRenderers(options?: IdlePreloadOptions): () => v
   const custom = options !== undefined;
   if (!custom && (idlePreload || typeof window === 'undefined')) return () => {};
   if (!custom) idlePreload = true;
-  const kinds = [...(options?.kinds ?? Object.keys(rendererLoaders))].filter(kind => !ready.has(kind));
+  const queued = (options?.kinds
+    ? options.kinds.map(kind => ({ kind, view: undefined as string | undefined, key: keyFor(kind) ?? kind }))
+    : [...rendererLoaders].map(([key, entry]) => ({ kind: entry.kind, view: entry.view as string | undefined, key })))
+    .filter(item => !ready.has(item.key));
   const finish = () => {
     if (custom) return;
     preloadQueue = null;
@@ -137,11 +163,10 @@ export function preloadAllWidgetRenderers(options?: IdlePreloadOptions): () => v
       preloadWaiters = null;
     }
   };
-  if (kinds.length === 0) { finish(); return () => {}; }
-  if (!custom) preloadQueue = kinds;
+  if (queued.length === 0) { finish(); return () => {}; }
+  if (!custom) preloadQueue = queued;
   const chunks = options?.chunks ?? builtChunks();
   const preload = options?.preload ?? preloadModuleUrl;
-  const load = options?.load ?? loadWidgetRenderer;
   const schedule = options?.schedule ?? (run => typeof requestIdleCallback === 'function'
     ? requestIdleCallback(run)
     : window.setTimeout(() => run({ didTimeout: false, timeRemaining: () => MIN_IDLE_MS }), 120));
@@ -154,24 +179,25 @@ export function preloadAllWidgetRenderers(options?: IdlePreloadOptions): () => v
   let inFlight = false;
   const next = () => {
     if (stopped || inFlight || handle !== null) return;
-    if (!kinds.length) { finish(); return; }
+    if (!queued.length) { finish(); return; }
     if (isPlaybackActive()) return;
     handle = schedule(deadline => {
       handle = null;
       if (stopped || isPlaybackActive()) return;
       if (deadline.didTimeout || deadline.timeRemaining() < MIN_IDLE_MS) { next(); return; }
-      while (kinds.length && ready.has(kinds[0]!)) kinds.shift();
-      const kind = kinds.shift();
-      if (kind === undefined) { finish(); return; }
+      while (queued.length && ready.has(queued[0]!.key)) queued.shift();
+      const item = queued.shift();
+      if (item === undefined) { finish(); return; }
+      const kind = item.kind;
       const url = chunks?.[kind];
       inFlight = true;
       if (!custom) preloadInFlight = true;
-      const pending = url ? Promise.resolve(preload(url)) : load(kind);
+      const pending = url ? Promise.resolve(preload(url)) : (options?.load ? options.load(kind) : loadWidgetRenderer(kind, item.view));
       void pending.catch(() => {}).finally(() => {
         inFlight = false;
         if (!custom) preloadInFlight = false;
         if (stopped) return;
-        if (kinds.length === 0) finish();
+        if (queued.length === 0) finish();
         else next();
       });
     });

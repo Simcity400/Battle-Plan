@@ -1,4 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import AirMissionsWidget from './AirMissionsWidget';
-import { useAirMissionChoices } from './useAirMissions';
-export default { render: AirMissionsWidget, useOptionChoices: useAirMissionChoices } satisfies WidgetRenderer;
+import { airMissionsDeclaration } from './airMissionsProjection';
+
+export default { declaration: airMissionsDeclaration } satisfies WidgetRenderer;

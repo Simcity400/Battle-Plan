@@ -13,7 +13,8 @@ import { perfLog } from '../../shell/perf.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { auditIdOf } from '../audit.ts';
 import { displayedHour } from '../boundedView.ts';
-import type { BoundedReadView, DisplayedHour, EntityKind, FamilySourceSubscription, InstalledAction, InstalledActionTarget, InstalledPicture, MirrorModel } from '../contract.ts';
+import type { ArtResolutions } from '../art/provider.ts';
+import type { ArtHandle, BoundedReadView, DisplayedHour, EntityKind, FamilySourceSubscription, InstalledAction, InstalledActionTarget, InstalledPicture, MirrorModel } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import {
   attachAuditWatch,
@@ -170,6 +171,8 @@ export interface FamilyTableHostProps<TOptions> {
   readonly countryLooks?: CountryLooksMap;
   readonly identitySnapshot?: IdentitySnapshot | null;
   readonly onIdentityDemands?: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
+  readonly artResolutions?: ArtResolutions;
+  readonly onArtDemands?: (demands: readonly ArtHandle[]) => void;
   readonly onViewportSize?: (width: number, height: number) => void;
   readonly selectedKey?: string | null;
   readonly onActivate?: (key: string, meta?: unknown, hour?: number) => void;
@@ -191,7 +194,7 @@ interface TableMetaState {
   emptyDetail: string | null;
   emptyKind: 'empty' | 'unavailable';
   titleSummary: string | null;
-  summaryPill: string | null;
+  titleSummaryPartial: string | null;
   hideHeader: boolean;
   rowHeightMode: 'standard' | 'media';
   notes: readonly string[];
@@ -238,6 +241,8 @@ export default function FamilyTableHost<TOptions>({
   countryLooks,
   identitySnapshot = null,
   onIdentityDemands,
+  artResolutions,
+  onArtDemands,
   onViewportSize,
   selectedKey = null,
   onActivate,
@@ -308,7 +313,7 @@ export default function FamilyTableHost<TOptions>({
     emptyDetail: null,
     emptyKind: 'empty',
     titleSummary: null,
-    summaryPill: null,
+    titleSummaryPartial: null,
     hideHeader: false,
     rowHeightMode: 'standard',
     notes: [],
@@ -403,6 +408,8 @@ export default function FamilyTableHost<TOptions>({
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
+    artResolutions,
+    onArtDemands,
     onViewportSize,
     selectedKey,
     onActivate,
@@ -425,6 +432,8 @@ export default function FamilyTableHost<TOptions>({
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
+    artResolutions,
+    onArtDemands,
     onViewportSize,
     selectedKey,
     onActivate,
@@ -506,6 +515,7 @@ export default function FamilyTableHost<TOptions>({
       scrollTop: st,
       theme: cur.theme,
       ...(cur.identitySnapshot ? { identitySnapshot: cur.identitySnapshot } : {}),
+      ...(cur.artResolutions ? { artResolutions: cur.artResolutions } : {}),
       selectedKey: cur.selectedKey,
       focusedKey: focusInsideRef.current ? focusedKeyRef.current : null,
       expanded: expandedRef.current,
@@ -667,7 +677,8 @@ export default function FamilyTableHost<TOptions>({
           rawMeta?.empty ?? null,
           rawMeta?.emptyDetail ?? null,
           rawMeta?.emptyKind ?? 'empty',
-          rawMeta?.titleSummary ?? rawMeta?.summaryPill ?? null,
+          rawMeta?.titleSummary ?? null,
+          rawMeta?.titleSummaryPartial ?? null,
           rawMeta?.hideHeader ?? false,
           rawMeta?.rowHeightMode ?? 'standard',
           rawMeta?.notes ?? [],
@@ -688,7 +699,7 @@ export default function FamilyTableHost<TOptions>({
             emptyDetail: rawMeta?.emptyDetail ?? null,
             emptyKind: rawMeta?.emptyKind ?? 'empty',
             titleSummary: rawMeta?.titleSummary ?? null,
-            summaryPill: rawMeta?.summaryPill ?? null,
+            titleSummaryPartial: rawMeta?.titleSummaryPartial ?? null,
             hideHeader: rawMeta?.hideHeader ?? false,
             rowHeightMode: rawMeta?.rowHeightMode ?? 'standard',
             notes: rawMeta?.notes ?? [],
@@ -706,6 +717,8 @@ export default function FamilyTableHost<TOptions>({
       if (demandsField && latestRef.current.onIdentityDemands) {
         latestRef.current.onIdentityDemands(demandsField);
       }
+      const artField = shown?.fields?.artDemands as readonly ArtHandle[] | undefined;
+      if (artField && latestRef.current.onArtDemands) latestRef.current.onArtDemands(artField);
 
       if (!visible || !shown?.fields || shown.id === undefined) {
         installedPictureRef.current = null;
@@ -949,7 +962,7 @@ export default function FamilyTableHost<TOptions>({
 
   useLayoutEffect(() => {
     if (pipe !== null && enabled) bind();
-  }, [pipe, enabled, bind, options, settings, theme, reducedMotion, staticSources, identitySnapshot, selectedKey, expanded, subsReady, auditable, exactReadView, audit.captureActive]);
+  }, [pipe, enabled, bind, options, settings, theme, reducedMotion, staticSources, identitySnapshot, artResolutions, selectedKey, expanded, subsReady, auditable, exactReadView, audit.captureActive]);
 
   useFamilyPauseFlush(runtime.clock, () => {
     if (!pipeline || pipe === null) return;
@@ -1062,9 +1075,8 @@ export default function FamilyTableHost<TOptions>({
 
   if (blockedState) return <>{blockedState}</>;
 
-  const titleSummaryText = meta.titleSummary ?? meta.summaryPill;
-  const summaryNode = headerSlot && meta.mode === 'picture' && !meta.empty && titleSummaryText
-    ? createPortal(<span className="tf-title-summary">{titleSummaryText}</span>, headerSlot)
+  const summaryNode = headerSlot && meta.mode === 'picture' && !meta.empty && meta.titleSummary
+    ? createPortal(<span className="tf-title-summary">{meta.titleSummary}{meta.titleSummaryPartial && <span className="tf-title-hatch" role="img" aria-label={meta.titleSummaryPartial} title={meta.titleSummaryPartial} />}</span>, headerSlot)
     : null;
 
   const bodyStateNode = renderFamilyBodyState({

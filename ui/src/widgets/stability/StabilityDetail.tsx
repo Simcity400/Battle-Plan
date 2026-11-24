@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import DrillHost from '../../charts/drill/DrillHost';
+import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
 import { useDrill } from '../../charts/drill/useDrill';
 import { motionOf } from '../../charts/easing.ts';
 import { jumpItem } from '../../charts/jump';
@@ -168,15 +169,20 @@ export default function StabilityDetail({ widget, runtime, active, countrySlot, 
   const pinHeld = drillControl.gate.checkHold(selectedCountry && actorSpans ? { tag: selectedCountry.tag, origin: track.branch.firstHour + selectedCountry.originOffset } : null);
   const pinCountry = pinHeld.held;
   const pinTime = pinTimed.time;
+  const detailTitle = `${shownTag && drillAt !== null ? `${drillLabels.labelAt(Math.floor(drillAt))(shownTag).name}: ` : ''}What makes up ${MEASURE_NAMES[drillMeasure].toLowerCase()}`;
+  const detailDay = drillAt == null ? '' : drillFollows ? <LiveText live={dayText} at="day" /> : dayLabel(Math.floor(drillAt));
+  const closeDetail = () => { dispatchDrill({ type: 'close' }); setActorPick(null); };
   return <div className="stability" ref={anchor}>
-    <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode="window" anchor={anchor}
-      title={`${shownTag && drillAt !== null ? `${drillLabels.labelAt(Math.floor(drillAt))(shownTag).name}: ` : ''}What makes up ${MEASURE_NAMES[drillMeasure].toLowerCase()}`}
-      day={drillAt == null ? '' : drillFollows ? <LiveText live={dayText} at="day" /> : dayLabel(Math.floor(drillAt))}
+    {chart?.(onActivate) ?? null}
+    <DetailWindowHost open={drill.breakdown !== null} subject={drillTag} hour={drillAt} title={detailTitle} day={detailDay} anchor={anchor} onClose={closeDetail}>
+    <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode="inline" anchor={anchor}
+      title={detailTitle}
+      day={detailDay}
       canFollow={!choosingActor && drillTag !== null && liveHour !== null && liveHour >= track.branch.firstHour && liveHour <= track.branch.lastHour}
-      onClose={() => { dispatchDrill({ type: 'close' }); setActorPick(null); }}
+      onClose={closeDetail}
       pinRefused={pinTimed.refused ?? pinHeld.refused ?? null} onPin={pinCountry && pinTime ? () => runtime.addWidgetBelow(widget.id,
         pinStabilityDrill({ ...widget, options: { ...widget.options, stabilityCountry: JSON.stringify(heldDrillCountry(pinCountry, track)) } }, breakdownOf, track.id, pinCountry.tag, pinTime)) : undefined}
-      main={chart?.(onActivate) ?? null}>
+      main={null}>
       {choosingActor && chosen && <CountryPicker countries={track.source.metadata.countries} playerCountryId={null}
         selectedTag={null} source={track.source} client={runtime.client} allowedTags={chosen.candidates}
         flagAt={{ branchId: track.branch.id, hour: chosen.hour }} onChange={tag => {
@@ -190,6 +196,7 @@ export default function StabilityDetail({ widget, runtime, active, countrySlot, 
         : choosingActor ? <p className="drill-empty">Choose a country from the drawn lines for this moment.</p>
           : unresolved ?? drillBody(drillMeasure, setDrillMeasure, hour => dispatchDrill({ type: 'pick', hour }))}
     </DrillHost>
+    </DetailWindowHost>
     {menu.menu}
   </div>;
 }

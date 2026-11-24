@@ -202,6 +202,26 @@ export function DetailWindowHost({
   }, [visible, subject]);
 
   useEffect(() => {
+    const element = panelRef.current.popup.current;
+    if (!visible || !element) return;
+    let focused: Element | null = null;
+    const onFocusIn = (event: FocusEvent) => { focused = event.target as Element | null; };
+    const reclaim = () => {
+      if (!focused || focused.isConnected) return;
+      focused = null;
+      const now = document.activeElement;
+      if (!now || now === document.body) element.focus?.({ preventScroll: true });
+    };
+    element.addEventListener('focusin', onFocusIn);
+    const observer = typeof MutationObserver === 'function' ? new MutationObserver(reclaim) : null;
+    observer?.observe(element, { childList: true, subtree: true });
+    return () => {
+      observer?.disconnect();
+      element.removeEventListener('focusin', onFocusIn);
+    };
+  }, [visible]);
+
+  useEffect(() => {
     if (!visible) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
