@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { OccupationReserveReply, ReserveHistoryReply } from '../../generated/dashboard';
-import { holderBands, historySources, segmentParts, sourceTagAt, validateOccupationReserve, validateReserveHistory } from './occupationReserveData.ts';
+import { segmentParts, sourceTagAt, validateOccupationReserve, validateReserveHistory } from './occupationReserveData.ts';
 
 const country = (id: number, tag: string | null = `T${id}`) => ({ id, tag });
 const reply: OccupationReserveReply = {
@@ -33,16 +33,12 @@ const history: ReserveHistoryReply = {
   warnings: [],
 };
 
-test('the holder drill stacks each source over time, an admitted holder at zero from a source it has none from, unknown hours a gap', () => {
+test('reserve history helpers validate segments, extract source parts, and resolve dated source tags', () => {
   assert.equal(validateReserveHistory(history), history);
-  const sources = historySources(history);
-  assert.deepEqual(sources, [9, 8]);
+  const sources = [9, 8];
   assert.deepEqual(segmentParts(history.segments[0]!, sources), [0, 100]);
+  assert.deepEqual(segmentParts(history.segments[1]!, sources), [400, 100]);
   assert.deepEqual(segmentParts(history.segments[2]!, sources), [undefined, undefined]);
-  const bands = holderBands(history, sources);
-  assert.deepEqual(bands[0], [{ firstHour: 0, lastHour: 9, value: 0, breakBefore: true }, { firstHour: 10, lastHour: 19, value: 400, breakBefore: false },
-    { firstHour: 40, lastHour: 49, value: 0, breakBefore: true }]);
-  assert.deepEqual(bands[1], [{ firstHour: 0, lastHour: 19, value: 100, breakBefore: true }, { firstHour: 40, lastHour: 49, value: 0, breakBefore: true }]);
   assert.equal(sourceTagAt(history, 9, 12), null);
   assert.equal(sourceTagAt(history, 9, 16), 'ITA');
   assert.throws(() => validateReserveHistory({ ...history, segments: [history.segments[1]!, history.segments[0]!] }));

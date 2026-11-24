@@ -5,7 +5,7 @@ import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../famil
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded, textValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
-import type { DivisionEquipmentReply, EquipmentTemplate, EquipmentType, StockpileArtworkReply } from '../../generated/dashboard';
+import type { DivisionEquipmentReply, DivisionEquipmentView, EquipmentTemplate, EquipmentType, StockpileArtworkReply } from '../../generated/dashboard';
 import { urlArtHandle } from '../../families/art/provider.ts';
 import { artState, type ArtState } from '../../families/table/identityCell.ts';
 import { TEMPLATE_BASE, TEMPLATE_COLUMNS, TEMPLATE_TABLE_KEY, TYPE_BASE, TYPE_COLUMNS, TYPE_TABLE_KEY } from './definition.ts';
@@ -87,12 +87,15 @@ function typePicture(type: EquipmentType, pictures: ReadonlyMap<string, string>,
   return type.archetype === null ? {} : artState(readView, urlArtHandle(pictures.get(type.archetype.toLowerCase())));
 }
 
+function typeName(row: EquipmentType): Value<string> {
+  return row.unclassified ? knownValue('Unclassified equipment') : textValue(row.name, row.nameMissing ?? 'Equipment name unavailable');
+}
+
 const TYPE_SPEC: readonly DeclarativeColumnSpec<TypeRow, Record<string, never>>[] = [
   { ...PICTURE!, priority: 6, sortable: false, cellKind: 'kind', iconSlot: true, icon: row => row.picture.icon, iconPending: row => row.picture.iconPending === true,
     extra: row => ({ artShape: 'equipment', ...(row.name ? { artName: row.name } : {}) }),
-    value: row => row.archetype === null ? knownValue('Unclassified equipment') : textValue(row.name, row.nameMissing ?? 'Equipment name unavailable') },
-  { ...TYPE!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Infantry Equipment'],
-    value: row => row.archetype === null ? knownValue('Unclassified equipment') : textValue(row.name, row.nameMissing ?? 'Equipment name unavailable') },
+    value: typeName },
+  { ...TYPE!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Infantry Equipment'], value: typeName },
   { ...HELD!, priority: 3, numeric: true, format: 'integer', widest: ['999,999'], value: row => amount(row.heldRaw, 'Holdings not recorded') },
   { ...NEEDED!, priority: 2, numeric: true, format: 'integer', widest: ['999,999'], value: row => amount(row.neededRaw, 'Need not recorded') },
   { ...MISSING!, priority: 1, numeric: true, format: 'integer', widest: ['−999,999'], value: row => missingValue(row.missingRaw),
@@ -130,7 +133,7 @@ export const equipmentTypeProjection: TableProjection<Record<string, never>> = r
       const rows = reply.types.map(type => ({ ...type, picture: typePicture(type, pictures, readView) }));
       return { rows, titleSummary: summary(reply), titleSummaryPartial: partial(reply), warnings: reply.warnings };
     },
-    rowKey: row => JSON.stringify([row.archetype]),
+    rowKey: row => row.key,
     rowName: row => row.name ?? 'Equipment name unavailable',
     tooltipExtra: row => typeTooltip(row),
     tooltipNote: (_row, reply) => asOf(reply),
@@ -186,12 +189,12 @@ export const equipmentTemplateProjection: TableProjection<Record<string, never>>
     tooltipNote: (_row, reply) => asOf(reply),
   }), 'template');
 
-function sources(ctx: FamilyPlanContext): SourcePlan {
+function sources(ctx: FamilyPlanContext, view: DivisionEquipmentView): SourcePlan {
   const params = ctx.countryTag
-    ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), countFor: ctx.options.countFor === 'host' ? 'host' : 'owner' }
+    ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), countFor: ctx.options.countFor === 'host' ? 'host' : 'owner', view }
     : null;
   return {
-    owner: `division-equipment:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${ctx.countryTag ?? ''}:${params?.countFor ?? ''}`,
+    owner: `division-equipment:${view}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${ctx.countryTag ?? ''}:${params?.countFor ?? ''}`,
     entries: params
       ? [{
           name: 'main',
@@ -207,7 +210,7 @@ function sources(ctx: FamilyPlanContext): SourcePlan {
             params,
             validate: validateDivisionEquipment,
           },
-        }, {
+        }, ...(view === 'types' ? [{
           name: 'pictures',
           source: ctx.track.source,
           branch: ctx.branch.id,
@@ -221,7 +224,7 @@ function sources(ctx: FamilyPlanContext): SourcePlan {
             params: { branchId: ctx.branch.id, country: params.country, variants: [] },
             validate: validateTypePictures,
           },
-        }]
+        } as const] : [])]
       : [],
   };
 }
@@ -234,7 +237,7 @@ export const equipmentTypeDeclaration: TableWidgetDeclaration<Record<string, nev
   emptyCampaign: 'Load a campaign to see division equipment.',
   icon: 'cube',
   countries: { mode: 'single', choose: 'Choose a country to see its division equipment.' },
-  sources: ctx => sources(ctx),
+  sources: ctx => sources(ctx, 'types'),
   projection: equipmentTypeProjection,
   columns: TYPE_SPEC,
   settings: { kind: 'table', key: TYPE_TABLE_KEY, base: TYPE_BASE },
@@ -245,6 +248,7 @@ export const equipmentTypeDeclaration: TableWidgetDeclaration<Record<string, nev
 export const equipmentTemplateDeclaration: TableWidgetDeclaration<Record<string, never>> = {
   ...equipmentTypeDeclaration,
   label: 'Division equipment by template',
+  sources: ctx => sources(ctx, 'templates'),
   projection: equipmentTemplateProjection,
   columns: TEMPLATE_SPEC,
   settings: { kind: 'table', key: TEMPLATE_TABLE_KEY, base: TEMPLATE_BASE },
