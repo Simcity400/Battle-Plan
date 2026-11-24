@@ -297,6 +297,10 @@ fn tag_at<'h>(holders: &'h HashMap<u32, Vec<(String, i32, i32)>>, slot: u32, hou
     named(holders, slot, hour, hour).next().map(|(tag, ..)| tag)
 }
 
+fn event_tag<'h>(holders: &'h HashMap<u32, Vec<(String, i32, i32)>>, slot: u32, hour: i32) -> Option<&'h str> {
+    (slot != TagHolderRow::NONE).then(|| tag_at(holders, slot, hour)).flatten()
+}
+
 struct Naming {
     templates: Result<Arc<Catalog>, String>,
     localisation: Arc<Localisation>,
@@ -471,7 +475,7 @@ pub fn groups(source: &Source, query: &Query<'_>, branch_id: &str, context: &Loa
             if read_at < stretch.first || read_at > stretch.last || hour < timeline.first {
                 continue;
             }
-            let tag = |slot: u32| (slot != TagHolderRow::NONE).then(|| tag_at(&holders, slot, hour).or_else(|| tag_at(&holders, slot, read_at))).flatten();
+            let tag = |slot: u32| event_tag(&holders, slot, hour);
             match kind {
                 WarEventRow::START => match (tag(first), tag(second)) {
                     (Some(attacking), Some(defending)) => {
@@ -779,6 +783,15 @@ mod tests {
         );
         assert_eq!(coalesced_wars.len(), 1);
         assert_eq!((coalesced_wars[0].first_hour, coalesced_wars[0].last_hour), (0, 1990));
+    }
+
+    #[test]
+    fn a_backdated_war_event_is_attributed_to_the_slot_holder_at_its_own_hour_or_to_no_one() {
+        let holders = HashMap::from([(7, vec![("AAA".to_owned(), 0, 99), ("BBB".to_owned(), 100, 200)]), (9, vec![("CCC".to_owned(), 120, 200)])]);
+        assert_eq!(event_tag(&holders, 7, 50), Some("AAA"));
+        assert_eq!(event_tag(&holders, 7, 150), Some("BBB"));
+        assert_eq!(event_tag(&holders, 9, 60), None, "the later holder of the slot is never named for an earlier event");
+        assert_eq!(event_tag(&holders, TagHolderRow::NONE, 150), None);
     }
 
     #[test]

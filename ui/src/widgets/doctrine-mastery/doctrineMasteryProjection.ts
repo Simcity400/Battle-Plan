@@ -37,6 +37,7 @@ export interface DoctrineTrackMeta {
   readonly title: string;
   readonly subId: string | null;
   readonly rewards: readonly MasteryReward[];
+  readonly rewardsUnknown: string | null;
   readonly unlocked: number;
   readonly masteryRaw: string | null;
 }
@@ -121,6 +122,8 @@ export const doctrineMasteryProjection: MeterProjection<DoctrineMasteryProjectio
         let subtitle: string;
         if (item.sub === null) {
           subtitle = tName;
+        } else if (item.rewardsUnknown !== null) {
+          subtitle = `${item.unlocked} ${item.unlocked === 1 ? 'step' : 'steps'} unlocked`;
         } else if (totalSteps === 0) {
           subtitle = tName;
         } else if (item.unlocked >= totalSteps) {
@@ -140,7 +143,7 @@ export const doctrineMasteryProjection: MeterProjection<DoctrineMasteryProjectio
           ? (numbers.mastery !== null ? dailyText(numbers.effective) || undefined : undefined)
           : bankLabel;
         const compactFigure = item.sub !== null
-          ? (totalSteps > 0 ? `${item.unlocked}/${totalSteps}` : (numbers.mastery !== null ? masteryText(numbers.mastery) : undefined))
+          ? (item.rewardsUnknown !== null ? `${item.unlocked} unlocked` : totalSteps > 0 ? `${item.unlocked}/${totalSteps}` : (numbers.mastery !== null ? masteryText(numbers.mastery) : undefined))
           : '\u2014';
 
         const tooltipItems: TooltipListItem[] = [
@@ -170,7 +173,9 @@ export const doctrineMasteryProjection: MeterProjection<DoctrineMasteryProjectio
               ? { missingReason: 'Not recorded' }
               : { value: masteryText(numbers.bank) }),
           },
-          { label: 'Steps unlocked', value: `${item.unlocked} of ${totalSteps}`, divider: true },
+          ...(item.rewardsUnknown !== null
+            ? [{ label: 'Steps unlocked', value: String(item.unlocked), divider: true }, { label: 'Steps in all', missingReason: item.rewardsUnknown }]
+            : [{ label: 'Steps unlocked', value: `${item.unlocked} of ${totalSteps}`, divider: true }]),
           ...unlockedRewards(item).map(r => ({ label: rewardName(r), indent: true })),
           ...(folder.completed.length
             ? [
@@ -187,6 +192,7 @@ export const doctrineMasteryProjection: MeterProjection<DoctrineMasteryProjectio
           title: item.sub !== null ? subTitle : tName,
           subId: item.sub?.id ?? null,
           rewards: item.rewards,
+          rewardsUnknown: item.rewardsUnknown,
           unlocked: item.unlocked,
           masteryRaw: numbers.mastery !== null ? numbers.mastery.toString() : null,
         };
@@ -205,13 +211,13 @@ export const doctrineMasteryProjection: MeterProjection<DoctrineMasteryProjectio
           figureMissingLabel: missingMastery ? 'Not recorded' : undefined,
           secondary,
           compactFigure,
-          clickable: item.sub !== null && totalSteps > 0,
+          clickable: item.sub !== null && (totalSteps > 0 || item.rewardsUnknown !== null),
           spoken: item.sub === null
             ? `${fName}, ${tName}, No subdoctrine chosen${bankLabel ? `, ${bankLabel}` : ''}`
             : `${fName}, ${subTitle}, ${subtitle}, ${figure ?? 'Not recorded'}${secondary ? `, ${secondary}` : ''}`,
           audit: item.sub === null
             ? `empty|${bankLabel ?? ''}`
-            : `${subTitle}|${figure ?? 'not-recorded'}|${secondary ?? ''}|${item.unlocked}/${totalSteps}`,
+            : `${subTitle}|${figure ?? 'not-recorded'}|${secondary ?? ''}|${item.unlocked}/${item.rewardsUnknown !== null ? 'not-known' : totalSteps}`,
           tooltip: {
             title: item.sub !== null ? subTitle : tName,
             hour: readView.hour,
