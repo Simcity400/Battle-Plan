@@ -76,7 +76,6 @@ export interface BranchToHourSourceRead {
   readonly product: DeclaredProduct;
   readonly followQuery: Readonly<Record<string, unknown>> | null;
   readonly params: Readonly<Record<string, unknown>> | null;
-  readonly chunkHours?: number;
   readonly provenInterval?: (data: unknown, requested: readonly [number, number], hour: number) => readonly [number, number] | null;
   readonly buildSpanParams?: (
     base: Readonly<Record<string, unknown>>,
@@ -93,7 +92,6 @@ export interface TrailingWindowSourceRead {
   readonly windowHours: number;
   readonly followQuery: Readonly<Record<string, unknown>> | null;
   readonly params: Readonly<Record<string, unknown>> | null;
-  readonly chunkHours?: number;
   readonly provenInterval?: (data: unknown, requested: readonly [number, number], hour: number) => readonly [number, number] | null;
   readonly buildSpanParams?: (
     base: Readonly<Record<string, unknown>>,
@@ -168,7 +166,6 @@ export interface CompiledFollowSubscription {
 }
 
 export interface BoundedSlice<T> extends Iterable<T> {
-  readonly source: readonly T[];
   readonly closedLength: number;
   readonly length: number;
   readonly tail?: T;
