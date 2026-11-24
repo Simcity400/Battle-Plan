@@ -93,15 +93,17 @@ test('table family plays live with zero React commits, zero layout reads on inst
       await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: px, y: pyRow1 });
       assert.equal(await act<boolean>('waitInspected("ITA")'), true, 'pointer hovers row 1 (ITA) while keyboard stays on FRA');
       const pinned = await act<{ title: string | null; subtitle: string | null; installReads: number }>('pinFocusedRow()');
-      assert.equal(pinned.title, 'FRA', 'P pins keyboard-focused FRA, not pointer-hovered ITA');
+      assert.equal(pinned.title, 'France', 'P pins keyboard-focused FRA (France), not pointer-hovered ITA (Italy)');
       assert.ok((pinned.subtitle ?? '').startsWith('Pinned at '), `pinned tooltip carries pinned subtitle: ${pinned.subtitle}`);
       assert.equal(pinned.installReads, 0, 'zero layout/style reads during install even with active focus and hover tooltips');
 
-      const overflow = await act<{ tipOverflowed: boolean; commits: number; installReads: number; installs: number }>('testOverflowTooltipDuringPlayback()');
+      const overflow = await act<{ tipOverflowed: boolean; commits: number; installs: number; unchangedInstalls: number; unchangedTooltipCommits: number; unchangedInstallReads: number }>('testOverflowTooltipDuringPlayback()');
       assert.equal(overflow.tipOverflowed, true, 'M8: fitTooltip genuinely truncated the tooltip');
       assert.ok(overflow.installs >= 3, `M8: multiple installs occurred during playback (${overflow.installs})`);
-      assert.equal(overflow.commits, 0, `M8: cached overflowing tooltip causes zero TooltipLayer commits across unchanged installs (got ${overflow.commits})`);
-      assert.equal(overflow.installReads, 0, `M8: cached overflowing tooltip causes zero layout reads across unchanged installs (got ${overflow.installReads})`);
+      assert.equal(overflow.commits, 0, `M8: overflowing tooltip causes zero FamilyHost commits during live playback (got ${overflow.commits})`);
+      assert.ok(overflow.unchangedInstalls >= 3, `M8: multiple unchanged installs occurred (${overflow.unchangedInstalls})`);
+      assert.equal(overflow.unchangedTooltipCommits, 0, `M8: cached overflowing tooltip causes zero TooltipLayer commits across unchanged installs (got ${overflow.unchangedTooltipCommits})`);
+      assert.equal(overflow.unchangedInstallReads, 0, `M8: cached overflowing tooltip causes zero layout reads across unchanged installs (got ${overflow.unchangedInstallReads})`);
     } finally {
       cdp.close();
     }

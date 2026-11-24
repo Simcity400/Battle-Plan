@@ -606,17 +606,18 @@ pub(crate) fn edges_armed() -> bool {
     EDGES_ARMED.load(Ordering::Acquire)
 }
 
-pub fn edges_withheld() -> Option<String> {
+pub fn with_edges_withheld<T>(f: impl FnOnce(Option<&str>) -> T) -> T {
     if edges_armed() {
-        return None;
+        return f(None);
     }
-    Some(
-        EDGES_WITHHELD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-            .unwrap_or_else(|| EDGES_UNARMED.into()),
-    )
+    let guard = EDGES_WITHHELD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(Some(guard.as_deref().unwrap_or(EDGES_UNARMED)))
+}
+
+pub fn edges_withheld() -> Option<String> {
+    with_edges_withheld(|reason| reason.map(str::to_owned))
 }
 #[derive(Clone, Copy)]
 struct Border {

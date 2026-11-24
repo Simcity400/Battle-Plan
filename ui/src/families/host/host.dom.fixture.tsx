@@ -26,6 +26,7 @@ import TableChrome from '../table/TableChrome.tsx';
 import FamilyHost from './FamilyHost.tsx';
 import DeclaredFamilyWidget, { type DeclaredFamilyWidgetProps } from './DeclaredFamilyWidget.tsx';
 import type { FamilyPlanContext, SourcePlan } from '../contract.ts';
+import type { IdentitySnapshot } from '../identity/types.ts';
 import type { FamilyStaticSources } from './adapter.ts';
 import '../../styles.css';
 
@@ -262,6 +263,38 @@ const RUNTIME_BY_SOURCE = new Map<DashboardSource, WidgetRuntime>([
   [sourceA, makeRuntime(sourceA)],
   [sourceB, makeRuntime(sourceB)],
 ]);
+function makeIdentity(sourceId: string): IdentitySnapshot {
+  return {
+    scope: { sourceId, revision: 'r1', branchId: '1', content: 1 },
+    branchBounds: [0, 2000],
+    facts: {
+      branchId: '1',
+      known: [[0, 2000]],
+      names: ['Germany', 'France', 'Italy', 'United Kingdom'],
+      reasons: [],
+      flags: [
+        { keys: ['GER', null, null], reasons: [null, null, null] },
+        { keys: ['FRA', null, null], reasons: [null, null, null] },
+        { keys: ['ITA', null, null], reasons: [null, null, null] },
+        { keys: ['ENG', null, null], reasons: [null, null, null] },
+      ],
+      countries: [
+        { tag: 'GER', runs: [[0, 0, 0x444444, -1, 0]] },
+        { tag: 'FRA', runs: [[0, 1, 0x3366aa, -1, 1]] },
+        { tag: 'ITA', runs: [[0, 2, 0x338844, -1, 2]] },
+        { tag: 'ENG', runs: [[0, 3, 0xcc4444, -1, 3]] },
+      ],
+      warnings: [],
+    },
+    factsFinal: true,
+  };
+}
+
+const IDENTITY_BY_SOURCE = new Map<DashboardSource, IdentitySnapshot>([
+  [sourceA, makeIdentity('camp-A')],
+  [sourceB, makeIdentity('camp-B')],
+]);
+
 const SUBS_BY_SOURCE = new Map<DashboardSource, ReturnType<typeof makeSubs>>([
   [sourceA, makeSubs(sourceA)],
   [sourceB, makeSubs(sourceB)],
@@ -300,6 +333,7 @@ const SPAN_DECLARATION = {
 function renderApp() {
   const rt = RUNTIME_BY_SOURCE.get(currentState.source)!;
   const subs = SUBS_BY_SOURCE.get(currentState.source)!;
+  const identity = IDENTITY_BY_SOURCE.get(currentState.source)!;
   const frameCtx = {
     token: currentState.frameToken,
     announce: () => {},
@@ -326,6 +360,7 @@ function renderApp() {
               active={currentState.active}
               settings={SETTINGS}
               subscriptions={subs}
+              identitySnapshot={identity}
               exactReadView={NO_EXACT}
               offset={0}
               pin={null}
@@ -348,6 +383,7 @@ function renderApp() {
                 active
                 settings={SETTINGS}
                 subscriptions={subs}
+                identitySnapshot={identity}
                 exactReadView={NO_EXACT}
                 offset={0}
                 pin={null}
@@ -371,6 +407,7 @@ function renderApp() {
                   runtime={rt}
                   active
                   subscriptions={subs}
+                  identitySnapshot={identity}
                   offset={0}
                   pin={null}
                   bounds={BOUNDS}
@@ -403,6 +440,7 @@ function renderApp() {
                   active
                   subscriptions={NO_SUBSCRIPTIONS}
                   staticSources={currentState.statics}
+                  identitySnapshot={identity}
                   offset={0}
                   pin={null}
                   bounds={BOUNDS}
@@ -659,7 +697,7 @@ window.hostDom = {
     await until(() => pipeline.view(pipeG)?.mode === 'picture' && !pipeline.view(pipeG)?.dim
       && container!.querySelectorAll('[data-slot="generic"] table tbody tr').length === 4);
     container!.querySelector<HTMLElement>('[data-slot="generic"] table tbody tr[data-row-key="ENG"]')!.focus();
-    const shown = await until(() => tooltipStore.get()?.content.title === 'ENG', 2000);
+    const shown = await until(() => tooltipStore.get()?.content.title === 'United Kingdom', 2000);
     await frames(4);
 
     let storeUpdates = 0;

@@ -2982,9 +2982,15 @@ fn taking_a_playing_seeks_reset_notifies_control_watchers_with_clock_unlocked() 
 
 #[test]
 fn watch_control_ignores_publications_and_rows_notifying_wakes_on_completion() {
-    let (bytes, run, _) = record_log(Writing { cap: 256, ..Writing::at(3) }, 0, 24);
+    let last = (2 * BLOCK - 1) as i32;
+    let (bytes, run, _) = record_log(Writing { cap: 256, ..Writing::at(3) }, 0, 2 * BLOCK);
     let gated = gated(bytes);
     let pages = Arc::new(Runs { extents: vec![gated], runs: vec![run], kinds: vec![LOG.to_vec()] });
+    let second_page_from = pages.runs[0].pages[1].tables[0].parts.iter()
+        .flat_map(|part| part.frames.iter().map(|frame| frame.offset))
+        .min()
+        .unwrap();
+    pages.extents[0].close(second_page_from, u64::MAX);
     let playhead = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings(), None).unwrap());
     let reader = playhead.declare(vec![Declared { table: 0, columns: vec![0, 1], keyed: true, passing: false, hourly: false }], None).unwrap();
     let mut consumer = playhead.consumer(reader);
@@ -3010,15 +3016,13 @@ fn watch_control_ignores_publications_and_rows_notifying_wakes_on_completion() {
     });
     let seq_before = playhead.control_seq();
     let act_before = playhead.activity();
-    consumer.advance(23);
-    playhead.wait_until(|| playhead.newest() == Some(23));
-    loop {
+    pages.extents[0].open();
+    consumer.advance(last);
+    playhead.wait_until(|| playhead.newest() == Some(last));
+    while all_wakes.load(Ordering::Acquire) == 0 || playhead.activity() <= act_before {
         wakes.recv().unwrap();
-        if playhead.activity() > act_before {
-            break;
-        }
     }
-    let _ = consumer.take(23, &mut steps);
+    let _ = consumer.take(last, &mut steps);
     assert!(playhead.activity() > act_before && all_wakes.load(Ordering::Acquire) > 0, "publications bump activity and wake watch");
     assert_eq!(playhead.control_seq(), seq_before, "publications must not bump control_seq");
     assert_eq!(control_wakes.load(Ordering::Acquire), 0, "watch_control must not wake on plain publications");
