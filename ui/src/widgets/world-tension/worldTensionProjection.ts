@@ -164,13 +164,14 @@ function buildHoverDetail(
       tone: 'muted',
       strong: true,
     });
-    return { hour: hover.hour, items, replacesSeries: true };
+  } else {
+    const tensionPct = Number(tensionVal) / detail.tensionScale;
+    items.push({ label: 'World tension', value: formatPct(tensionPct), strong: true });
   }
-  const tensionPct = Number(tensionVal) / detail.tensionScale;
-  items.push({ label: 'World tension', value: formatPct(tensionPct), strong: true });
   if (sumVal !== undefined) {
     const sumPct = Number(sumVal) / detail.contributionScale;
-    if (Math.abs(sumPct - tensionPct) >= 0.05) {
+    const tensionPct = tensionVal !== undefined ? Number(tensionVal) / detail.tensionScale : null;
+    if (tensionPct === null || Math.abs(sumPct - tensionPct) >= 0.05) {
       items.push({ label: 'Uncapped sum', value: formatPct(sumPct), tone: 'muted' });
     }
   }
@@ -240,7 +241,9 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       ...options.gaps,
       ...reply.missing.map(m => ({ firstHour: m.firstHour, lastHour: m.lastHour, reason: m.reason })),
     ];
-    const hasRecorded = reply.total.some(v => v !== null);
+    const hasRecorded = reply.total.some(v => v !== null)
+      || reply.bands.some(b => b.values.some(v => v !== null))
+      || (reply.other?.values.some(v => v !== null) ?? false);
     if (!hasRecorded) {
       const reason = reply.missing[0]?.reason ?? 'World tension was not recorded for this period.';
       return {
@@ -255,8 +258,12 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
         empty: { message: reason, kind: 'unavailable' },
       };
     }
-    const endHour = reply.endHour ?? hour;
-    const bandInfos = reply.bands.map(band => contributorLabel(readView, band.tag, band.remembered, endHour));
+    const hasNegative = reply.total.some(v => v !== null && v < 0)
+      || reply.bands.some(b => b.values.some(v => v !== null && v < 0))
+      || (reply.other?.values.some(v => v !== null && v < 0) ?? false);
+    const endHour = reply.endHour;
+    const labelHour = endHour ?? hour;
+    const bandInfos = reply.bands.map(band => contributorLabel(readView, band.tag, band.remembered, labelHour));
     const bandColors = resolveBandColors(bandInfos.map(info => info.color), options.surface);
     const orderedBands: ChartStackBand[] = [];
     for (let i = 0; i < reply.bands.length; i++) {
@@ -266,7 +273,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       const flag = info.flagChoice
         ? { art: readView.art(flagArtHandle(info.flagChoice, 'panel')), tag: band.tag ?? undefined, label: info.name }
         : undefined;
-      const endVal = band.endValue;
+      const endVal = endHour !== null ? band.endValue : null;
       orderedBands.push({
         id: `slot:${band.slot}`,
         key: band.tag ?? `slot:${band.slot}`,
@@ -275,7 +282,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
         opacity: 0.84,
         values: band.values,
         ...(flag ? { flag } : {}),
-        endLabel: endVal != null && endVal >= 0.05
+        endLabel: endVal != null && Math.abs(endVal) >= 0.05
           ? {
               ...(flag ? { flag } : {}),
               name: info.name,
@@ -287,7 +294,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
     }
     if (reply.other) {
       const otherLabel = reply.other.count > 0 ? `Other (${reply.other.count})` : 'Other';
-      const otherEnd = reply.other.endValue;
+      const otherEnd = endHour !== null ? reply.other.endValue : null;
       orderedBands.push({
         id: 'other',
         key: 'other',
@@ -295,7 +302,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
         color: OTHER_COLOR,
         opacity: 0.72,
         values: reply.other.values,
-        endLabel: otherEnd != null && otherEnd >= 0.05
+        endLabel: otherEnd != null && Math.abs(otherEnd) >= 0.05
           ? {
               name: otherLabel,
               shortName: 'Other',
@@ -306,24 +313,28 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       });
     }
     let lastTotal: number | null = null;
-    for (let i = reply.hours.length - 1; i >= 0; i--) {
-      if (reply.hours[i]! <= hour) {
-        lastTotal = reply.total[i] ?? null;
-        break;
+    if (endHour !== null) {
+      for (let i = reply.hours.length - 1; i >= 0; i--) {
+        if (reply.hours[i]! <= hour) {
+          lastTotal = reply.total[i] ?? null;
+          break;
+        }
       }
     }
     const worldIcon = { art: readView.art(measureArtHandle('worldTension')), label: 'World tension' };
     const markers = options.showMarkers ? buildMarkers(readView, reply, hour) : undefined;
     const hoverDetail = buildHoverDetail(readView, reply, hour);
-    const auditRows = [
-      ...(lastTotal !== null ? [auditRow('__total__', formatPct(lastTotal))] : []),
-      ...reply.bands.flatMap(band => (band.endValue != null && band.endValue >= 0.05
-        ? [auditRow(band.tag ?? `slot:${band.slot}`, formatPct(band.endValue))]
-        : [])),
-      ...(reply.other && reply.other.endValue != null && reply.other.endValue >= 0.05
-        ? [auditRow('other', formatPct(reply.other.endValue))]
-        : []),
-    ];
+    const auditRows = endHour === null
+      ? []
+      : [
+          ...(lastTotal !== null ? [auditRow('__total__', formatPct(lastTotal))] : []),
+          ...reply.bands.flatMap(band => (band.endValue != null && Math.abs(band.endValue) >= 0.05
+            ? [auditRow(band.tag ?? `slot:${band.slot}`, formatPct(band.endValue))]
+            : [])),
+          ...(reply.other && reply.other.endValue != null && Math.abs(reply.other.endValue) >= 0.05
+            ? [auditRow('other', formatPct(reply.other.endValue))]
+            : []),
+        ];
     return {
       kind: 'world-tension',
       measureTitle: 'World tension',
@@ -332,8 +343,8 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       extent: options.extent,
       yAxis: {
         format: 'percent',
-        fixed: options.values === 'share' ? [0, 100] : null,
-        min: 0,
+        fixed: options.values === 'share' && !hasNegative ? [0, 100] : null,
+        ...(hasNegative ? {} : { min: 0 }),
       },
       series: [],
       stack: {

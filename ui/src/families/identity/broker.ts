@@ -692,7 +692,8 @@ export class IdentityBroker {
         const failure = asFailure(error);
         const count = (state.entityRetryAt.get(request.id)?.count ?? 0) + 1;
         state.entityRetryAt.set(request.id, { count, at: transientError(error) ? this.clock.now() + retryDelay(count) : Infinity });
-        for (const key of keys.values()) state.index.setEntityFailure(key, failure);
+        const [from, to] = request.kind === 'regions' ? state.index.bounds() : [request.from, request.to];
+        for (const key of keys.values()) state.index.setEntityFailure(key, from, to, failure);
         this.notify(state);
         this.reconcile(state);
       },
@@ -726,7 +727,9 @@ export class IdentityBroker {
       } else if (ask.key.kind === 'faction') {
         groups = true;
         facts = true;
-      } else if (state.index.resolve(ask.key, at).kind === 'pending') {
+      } else {
+        const answered = state.index.resolve(ask.key, at).kind;
+        if (answered !== 'pending' && answered !== 'failed') continue;
         const request = entityRequestOf(ask.key, at, state.index.bounds());
         if (request) entities.push([request, identityKeyString(ask.key), ask.key]);
       }

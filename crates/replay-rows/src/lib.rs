@@ -4,6 +4,7 @@ pub mod codec;
 pub mod display;
 #[doc(hidden)]
 pub mod event_feed_values;
+pub mod event_window_values;
 pub mod fixed_point;
 #[doc(hidden)]
 pub mod measurement;
@@ -18,7 +19,7 @@ pub mod value;
 pub type Hour = i32;
 pub type SessionId = u64;
 pub type BranchId = u64;
-pub const FORMAT_VERSION: u16 = rows::compatibility::RAID_COMPLETION_FIELDS_FORMAT;
+pub const FORMAT_VERSION: u16 = rows::compatibility::EVENT_WINDOWS_FORMAT;
 
 #[doc(hidden)]
 pub use engine_allocation as __allocation;

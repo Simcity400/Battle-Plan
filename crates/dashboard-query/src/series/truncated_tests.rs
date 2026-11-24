@@ -326,6 +326,18 @@ fn a_rank_reply_keeps_every_asked_country_reads_every_measure_and_holds_only_whe
     assert!(top.rows[0].readings.iter().all(|reading| reading.run.is_some()), "the detail measure is read for a ranked country");
     assert_eq!((top.from, top.until), (T2 + 1, T3 - 1), "an hour whose population is unknown is not proven, though ITA's values run on");
 
+    let group = serde_json::json!({ "branchId": "1", "family": { "kind": "country-factories", "measure": "built1" }, "hour": T2 + 1, "group": { "type": "faction", "id": "42" } });
+    let members = |refused: Option<&'static str>| {
+        move |_: &ranked::GroupSelection, _: i32| Ok(ranked::Members { tags: vec!["GER".into(), "ITA".into()], refused: refused.map(str::to_owned), from: T2 + 1, until: T2 + 2 })
+    };
+    let grouped = |resolve: ranked::Resolve<'_>| -> ranked::SeriesRankReply { serde_json::from_value(answer_grouped(&query, ranked::PRODUCT, &group, resolve).unwrap().unwrap()).unwrap() };
+    let known = grouped(&members(None));
+    assert_eq!(tags(&known), ["ITA", "GER"], "a group's members at the hour are ranked by the product");
+    assert_eq!((known.from, known.until), (T2 + 1, T2 + 2), "the reply holds only while the membership does");
+    let unknown = grouped(&members(Some("Membership of this group is not recorded at this hour")));
+    assert_eq!((unknown.rows.len(), unknown.refused.as_deref()), (0, Some("Membership of this group is not recorded at this hour")), "unknown membership is refused, never a union");
+    assert!(answer(&query, ranked::PRODUCT, &group).is_err(), "a group is only answered where its membership is read");
+
     let gap = Line::new(&query, &GAP_EXP, &GAP_EXP.measures[0]).unwrap();
     assert_eq!(gap.rank_at(BASE, 2, false).unwrap(), Err("GER's army was not recorded at this hour".to_owned()), "an unrecorded contender refuses the rank");
 

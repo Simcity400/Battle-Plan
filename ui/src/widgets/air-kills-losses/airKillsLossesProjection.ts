@@ -57,6 +57,7 @@ export const airKillsLossesDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptio
     rightHeader: 'Enemy aircraft destroyed',
     unit: 'Aircraft',
     ratio: true,
+    none: ctx.options.measure === 'dealt' ? 'No enemy aircraft destroyed yet.' : 'No aircraft lost yet.',
     chosen: !ctx.countries.all && ctx.countries.top == null ? ctx.countries.tags : null,
   }),
   jumpToDate: true,
@@ -79,4 +80,5 @@ export const airLossCausesDeclaration: BarsWidgetDeclaration<MilitaryAirAtOption
   label: 'Own aircraft lost by cause',
   sources: ctx => militaryAirSources('air-loss-causes', ctx, militaryAirParams(ctx, 'airLosses', 'taken', { regions: numbers(ctx.options.regions), causes: numbers(ctx.options.causes) })),
   projection: airLossCausesProjection,
+  projectionOptions: ctx => ({ ...airKillsLossesDeclaration.projectionOptions(ctx), none: 'No aircraft lost yet.' }),
 };
