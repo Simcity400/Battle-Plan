@@ -42,8 +42,9 @@ export default function FuelWidget(props: FamilyViewProps) {
   const tags = countries.tags;
   const membership = countries.membership ?? undefined;
   const following = widget.time.mode === 'follow';
-  const playing = usePlaybackMotion(runtime.clock) !== undefined;
-  const clockHour = usePlaybackHour(runtime.clock, active && drillControl.following && !playing);
+  const drillOpen = storedDrill.breakdown !== null;
+  const playing = usePlaybackMotion(runtime.clock, active && drillOpen) !== undefined;
+  const clockHour = usePlaybackHour(runtime.clock, active && drillOpen && drillControl.following);
   const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
   const playhead = window && (following || widget.time.mode === 'pin') ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour]
