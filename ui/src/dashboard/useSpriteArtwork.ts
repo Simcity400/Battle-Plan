@@ -48,7 +48,7 @@ export function useSpriteArtResolutions(
   const state = stateOf(runtime.client);
   const icons = state.caches.icons(scope);
   const errors = failedFor(state, scope);
-  const [, setLanded] = useState(0);
+  const [landed, setLanded] = useState(0);
 
   useEffect(() => {
     const release = state.caches.hold(scope);
@@ -102,7 +102,7 @@ export function useSpriteArtResolutions(
     if (!icons.has(id)) return PENDING_ART;
     const url = icons.get(id);
     return url ? readyArt(url, { assetId: id, provenance: CURRENT_INSTALL_PROVENANCE }) : missingArt('Sprite art not found in current installation');
-  }, [icons, errors]);
+  }, [icons, errors, landed]);
 }
 
 export function useSpriteArtwork(

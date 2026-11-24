@@ -140,12 +140,22 @@ describe('time-chart BoundedSeries & Foundation C integration', () => {
   });
 
   it('resolves dated country identity through Foundation C IdentityIndex snapshot provider', () => {
-    const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: 'b', contentRevision: 0 }, [H1936, H1936 + 5000]);
-    index.ingestStyle({ tag: 'GER', name: 'German Reich', color: [69, 69, 69], flag: null, missing: null }, H1936);
+    const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: 'b', content: 0 }, [H1936, H1936 + 5000]);
+    index.setFacts({
+      branchId: 'b',
+      known: [[H1936, H1936 + 5000]],
+      names: ['German Reich'],
+      reasons: [],
+      flags: [{ keys: ['GER_fascism', null, null], reasons: [null, null, null] }],
+      countries: [{ tag: 'GER', runs: [[H1936, 0, 0x454545, -1, 0]] }],
+      warnings: [],
+    });
     const provider = createSnapshotIdentityProvider(index);
     const res = provider.resolve('country', 'GER', displayedHour(H1936));
     assert.deepEqual(res.name, { status: 'ready', value: 'German Reich' });
     assert.deepEqual(res.colour, { status: 'ready', value: 'rgb(69, 69, 69)' });
+    assert.equal(res.flagChoice?.status, 'ready');
+    if (res.flagChoice?.status === 'ready') assert.ok(res.flagChoice.value.includes('GER_fascism'));
   });
 });
 
