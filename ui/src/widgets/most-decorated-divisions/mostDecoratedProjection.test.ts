@@ -7,7 +7,7 @@ import { mostDecoratedProjection } from './mostDecoratedProjection.ts';
 
 const division = (id: string, extra: Partial<CareerRow['facts']> = {}): CareerRow => ({
   division: id, tag: 'CHI', template: '4', name: `${id}th Division`, nameMissing: null,
-  facts: { medals: 2, awards: [{ medal: 0, count: 2 }], historyMissing: null, experienceRaw: '30000', level: 1, levelName: 'Trained', kills: 13671, ...extra },
+  facts: { medals: 2, awards: [{ medal: 0, count: 2 }], historyMissing: null, experienceRaw: '30000', level: 1, levelName: 'Trained', casualtiesTaken: 13671, ...extra },
 });
 
 const reply = (divisions: CareerRow[]): DivisionCareersReply => ({
@@ -19,8 +19,8 @@ const project = (raw: unknown) => mostDecoratedProjection.project(
   { filter: { passing: null, unrecorded: [], bounds: [] } },
 );
 
-test('a division shows its recorded medals, experience word and casualties dealt; an unread history is missing, a recorded zero stays zero', () => {
-  const model = project(reply([division('66'), division('7', { medals: null, historyMissing: 'Medal history was not read', awards: [], kills: 0 })]));
+test('a division shows its recorded medals, experience word and casualties taken; an unread history is missing, a recorded zero stays zero', () => {
+  const model = project(reply([division('66'), division('7', { medals: null, historyMissing: 'Medal history was not read', awards: [], casualtiesTaken: 0 })]));
   const [decorated, unread] = model.rows;
   assert.deepEqual([decorated!.cells.medals!.value, decorated!.cells.experience!.value, decorated!.cells.kills!.value], [knownValue(2), knownValue('Trained'), knownValue(13671)]);
   assert.deepEqual(unread!.cells.medals!.value, notRecorded('Medal history was not read'));

@@ -70,7 +70,7 @@ const DECORATED_COLUMNS: readonly DeclarativeColumnSpec<DecoratedRow, DecoratedO
     value: item => textValue(item.row.facts.levelName, 'Experience not recorded'),
     sortValue: item => item.row.facts.experienceRaw === null ? notRecorded('Experience not recorded') : knownValue(BigInt(item.row.facts.experienceRaw)) },
   { ...KILLS!, priority: 3, numeric: true, format: 'integer', widest: ['999,999'],
-    value: item => count(item.row.facts.kills, 'Casualties dealt not recorded') },
+    value: item => count(item.row.facts.casualtiesTaken, 'Casualties taken not recorded') },
 ];
 
 export const mostDecoratedProjection: TableProjection<DecoratedOptions> = registerTableProjection(
