@@ -1,7 +1,7 @@
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
-import type { AuditRow } from '../../draw/notifications';
+import type { FamilyAuditRow } from '../auditRow.ts';
 import type { ArtResolution } from '../art/types.ts';
 import type {
   ArtHandle,
@@ -17,6 +17,7 @@ import type { OptionValue } from '../../dashboard/options';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { FamilyPlanContext } from '../plan.ts';
 import { normalizeView } from '../manifest.ts';
+import type { PagedRowsSnapshot } from '../table/rowSource.ts';
 import type { FamilyNavTuple } from './keyboard.ts';
 import { parseDefaultRowHit } from './pointer.ts';
 
@@ -156,6 +157,7 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
+  readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
@@ -300,7 +302,7 @@ export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBindin
   readonly getGridMetrics?: (fields: Readonly<Record<string, unknown>>) => FamilyGridMetrics | null;
   readonly parseGridKey?: (key: string | null) => { readonly row: number; readonly column: number } | null;
   readonly formatGridKey?: (row: number, column: number) => string;
-  readonly deriveAuditRows?: (model: TModel, hour: number, context: FamilyAuditContext<TSettings>) => readonly AuditRow[];
+  readonly deriveAuditRows?: (model: TModel, hour: number, context: FamilyAuditContext<TSettings>) => readonly FamilyAuditRow[];
   readonly auditOrdered?: boolean;
   readonly gestures?: FamilyGestureHandlers;
   readonly exclusiveExpansion?: (fields: Readonly<Record<string, unknown>>) => boolean;

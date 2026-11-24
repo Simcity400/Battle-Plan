@@ -25,6 +25,7 @@ dashboard_base::register_hourly_products! {
     DIVISIONS_TEMPLATES_DIVISIONTEMPLATES => crate::products::divisions::templates::DivisionTemplates,
     DIVISIONS_CAREERS_DIVISIONCAREERS => crate::products::divisions::careers::DivisionCareers,
     DIVISIONS_CAREERS_DIVISIONRECORD => crate::products::divisions::careers::DivisionRecord,
+    DIVISIONS_CAREERS_DECORATEDDIVISIONS => crate::products::divisions::careers::DecoratedDivisions,
     DIVISIONS_EQUIPMENT_DIVISIONEQUIPMENT => crate::products::divisions::equipment::DivisionEquipment,
     ARMY_LOSSES_ARMYLOSSES => crate::products::army_losses::ArmyLosses,
     FORCES_AIRFORCEAT => crate::products::forces::AirForceAt,

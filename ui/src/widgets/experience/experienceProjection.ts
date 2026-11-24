@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/contract.ts';
@@ -77,7 +78,7 @@ export const experienceProjection: TimeChartProjection<ExperienceOptions> = regi
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       auditRows: series.flatMap(s => (s.headValue === null || s.headValue === undefined
         ? []
-        : [{ row: s.id, key: s.id, value: formatExperience(s.headValue) }])),
+        : [auditRow(s.id, formatExperience(s.headValue))])),
     };
   },
 });

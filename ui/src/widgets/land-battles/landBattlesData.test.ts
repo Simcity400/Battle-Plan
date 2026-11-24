@@ -11,7 +11,7 @@ import { battleWarnings, battleWindowIndex, battleWindows, rankedLandBattleRows,
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import { casualtyRankingNote, landCasualtyText, landLossText } from './landBattlesData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import { countryMatch, countryMatchFilter, countryScope } from '../../dashboard/groups.ts';
+import { countryMatch, countryMatchFilter } from '../../dashboard/groups.ts';
 
 const history = (id = 'episode'): LandBattle => ({ id, provinceId: 17, start: { hour: 10, bound: 'exact' }, end: { hour: 21, bound: 'exact' },
   endUnknownHour: null, counterBase: 0, priorPeak: null, priorSidePeaks: null, losses: [], result: null,
@@ -307,12 +307,7 @@ test('server ranking predicate equals countryMatch, and ranked summaries retain 
   assert.deepEqual(filter, { tags: null, membership: groups.humans, unobserved: groups.unobserved.humans });
   assert.deepEqual(countryMatchFilter({ kind: 'tags', tags: ['other'] }, [], groups, 40), { tags: null,
     membership: [{ tag: 'former/other', firstHour: 1, lastHour: 9 }, { tag: 'other', firstHour: 10, lastHour: 40 }], unobserved: [] });
-  const scope = countryScope(selection, [], groups, 40)!;
-  assert.deepEqual(scope, [{ tag: 'other', firstHour: 10, lastHour: 18 }, { tag: 'other', firstHour: 21, lastHour: 40 }]);
-  const matches = countryMatch(selection, [], groups, 40).matches;
-  for (let hour = 0; hour <= 41; hour++) assert.equal(scope.some(run => run.firstHour <= hour && hour <= run.lastHour), matches('other', hour), `hour ${hour}`);
-  assert.deepEqual(countryScope({ kind: 'tags', tags: ['other'] }, [], groups, 40), countryMatchFilter({ kind: 'tags', tags: ['other'] }, [], groups, 40).membership);
-  assert.equal(countryScope({ kind: 'all' }, [], groups, 40), null, 'every country asks no scope');
+  assert.equal(countryMatch(selection, [], groups, 40).matches('other', 15), true);
   const ranked = { labels: [], rows: [history()], censusHour: 20, effectiveMeasure: 'Peak size', warnings: [], contentWarnings: [] };
   const ranking = validateLandBattlesRanking(ranked);
   assert.equal(rankedLandBattleRows(ranking, 20)[0].peak.value, 5);

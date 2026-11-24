@@ -1,8 +1,9 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { AIR_OPTIONS } from '../../dashboard/airOptions.ts';
 import type { OptionField } from '../../dashboard/options';
+import { regionPickerControl } from '../../families/settingsControls.ts';
 export const OPTIONS: readonly OptionField[] = [...AIR_OPTIONS,
-  { key: 'regions', section: 'options', label: 'Regions', kind: 'content-set', automatic: 'All active regions', default: '' },
+  regionPickerControl({ automatic: 'All active regions' }),
   { key: 'order', section: 'options', label: 'Sort regions by', kind: 'choice', default: 'contested', choices: [
     { value: 'contested', label: 'Most contested first' }, { value: 'active', label: 'Most active' }, { value: 'name', label: 'Name' }] },
 ];

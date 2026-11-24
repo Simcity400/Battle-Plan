@@ -73,3 +73,15 @@ fn a_slot_follows_its_country_through_a_tag_change_while_the_tag_goes_to_another
     assert_eq!(serde_json::from_str::<Country>("5").unwrap(), country);
     assert_eq!(serde_json::from_str::<Country>(r#""GER""#).unwrap(), Country::from("GER"));
 }
+
+#[test]
+fn a_slot_names_the_tag_it_holds_at_each_hour_and_none_between() {
+    let holders = Holders::new(
+        [("SPR".to_owned(), vec![run(100, 149, GER)]), ("SPA".to_owned(), vec![run(160, 199, GER_AFTER)])].into(),
+        Vec::new(),
+    );
+    assert_eq!(holders.slot_tag(5, 120), Some("SPR"));
+    assert_eq!(holders.slot_tag(5, 155), None, "no tag between the two runs");
+    assert_eq!(holders.slot_tag(5, 199), Some("SPA"));
+    assert_eq!(holders.slot_tag(6, 120), None);
+}

@@ -21,7 +21,7 @@ import type {
   IdentityProvider,
   IdentityResult,
 } from './plan.ts';
-import type { DatedLogRow, LogRowSlot, TableRowSource } from './table/rowSource.ts';
+import type { DatedLogRow, LogRowSlot, RowWindow, TableRowSource } from './table/rowSource.ts';
 import type { Value } from './value.ts';
 
 export class FutureDataError extends Error {
@@ -649,6 +649,8 @@ function wrapBoundedRowSource<TRow extends DatedLogRow>(
     missing: boundedMissing,
     refused: source.refused,
     frozen: source.frozen && source.frozen.hour <= hour ? source.frozen : null,
+    ...(source.facetTotals ? { facetTotals: source.facetTotals } : {}),
+    ...(source.rawHead !== undefined ? { rawHead: source.rawHead } : {}),
     sliceAt(reqHour: number, first: number, count: number): readonly LogRowSlot<TRow>[] {
       if (reqHour > hour) {
         throw new FutureDataError(`Requested row slice at hour ${reqHour} exceeds displayed hour ${hour}`);
@@ -676,6 +678,7 @@ export interface BoundedReadViewInput {
   readonly hour: number;
   readonly validInterval?: readonly [lo: number, hi: number];
   readonly revisions?: Readonly<Record<string, number>>;
+  readonly rowWindow?: RowWindow;
   readonly panels?: ReadonlyMap<string, unknown>;
   readonly answers?: ReadonlyMap<string, FollowedAnswer | undefined>;
   readonly live?: ReadonlyMap<string, LiveValues<number | bigint | string> | null>;
@@ -724,6 +727,7 @@ export function createBoundedReadView(input: BoundedReadViewInput): BoundedReadV
     hour: h,
     validInterval,
     revisions,
+    ...(input.rowWindow ? { rowWindow: input.rowWindow } : {}),
     panel<T = unknown>(name: string): T | undefined {
       const raw = ensure().panels.get(name);
       if (raw !== undefined && raw !== null && typeof raw === 'object') {

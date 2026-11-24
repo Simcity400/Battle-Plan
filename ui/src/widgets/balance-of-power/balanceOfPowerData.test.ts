@@ -151,6 +151,7 @@ test('balance-of-power time-chart projection renders pre-first-reading hatched g
   assert.equal(model.series.length, 1);
   assert.equal(model.series[0]!.step, true);
   assert.equal(model.series[0]!.headValue, 0.36);
+  assert.equal(model.series[0]!.endLabel?.name, 'Consolidated Power');
   assert.equal(model.series[0]!.endLabel?.value, '0.36');
   assert.ok(model.series[0]!.points!.every(pt => pt.hour <= 800), 'no future points past playhead');
   assert.equal(model.gaps?.length, 1);
@@ -162,4 +163,23 @@ test('balance-of-power time-chart projection renders pre-first-reading hatched g
   assert.equal(model.hoverDetail?.hour, 600);
   assert.ok(model.hoverDetail?.items.some(i => i.label === 'Range' && i.value === 'Early Power'));
   assert.ok(model.hoverDetail?.items.some(i => i.label.includes(SIDE_UNAVAILABLE) && i.value === 'characters table was not recorded'));
+
+  const unnamedView = createBoundedReadView({
+    hour: 800,
+    panels: new Map<string, unknown>([['history', hist], ['state', detail([
+      record(0, 'ita_bop', ['ITA'], {
+        range: { token: 'ita_high', name: null, reason: 'missing localisation', min: '25000', max: '100000' },
+      }),
+    ], { current: [{ tag: 'ITA', record: 0 }] })]]),
+    art: { resolve: () => NO_ART },
+  });
+  const unnamedModel = balanceOfPowerProjection.project(unnamedView, {
+    tag: 'ITA',
+    extent: [0, 1000],
+    branchFirstHour: 0,
+    branchGaps: [],
+    gaps: [],
+  });
+  assert.equal(unnamedModel.series[0]!.endLabel?.name, null);
+  assert.equal(unnamedModel.series[0]!.endLabel?.value, '0.36');
 });

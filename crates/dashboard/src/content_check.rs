@@ -252,7 +252,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             content.catalogue()?;
             Ok("Deployment orders, divisions in training, manpower and equipment come from the recorded daily queue read; template, priority, location and archetype names resolve through the recorded naming operands and the content stack.".into())
         }
-        <divisions::careers::DivisionCareers as at_hour::AtHour>::KEY | <divisions::careers::DivisionRecord as at_hour::AtHour>::KEY => {
+        <divisions::careers::DivisionCareers as at_hour::AtHour>::KEY | <divisions::careers::DecoratedDivisions as at_hour::AtHour>::KEY | <divisions::careers::DivisionRecord as at_hour::AtHour>::KEY => {
             content.catalogue()?;
             Ok("Division histories, medal totals, experience and kill counters come from recorded rows; medal, level, entry and place names resolve through recorded lexical spellings and the content stack's localisation and defines.".into())
         }
@@ -412,7 +412,10 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             findings.push(Finding::new(Kind::Offline, key, "seller and buyer flows and their quantities need the recorded TradeFlows rows; unavailable offline"));
             Ok("Resource names and icons are read through the shared resource naming of the recorded content stack.".into())
         }
-        key if key == <economy::market::MarketLendLease as AtHour>::KEY || key == economy::market::ledger::MarketLedger::KEY => {
+        key if key == <economy::market::MarketLendLease as AtHour>::KEY
+            || key == economy::market::ledger::MarketLedger::KEY
+            || key == economy::market::ledger::MarketLedgerTail::KEY =>
+        {
             findings.push(Finding::new(Kind::Offline, key, "market listings, contracts, agreements and occurrences need the recorded market tables; unavailable offline"));
             Ok("Equipment names and icons need the recorded variant operands through the content stack; subsidy archetypes are localised from it.".into())
         }
@@ -430,11 +433,8 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             dashboard_base::content::strategic_regions(&catalogue.content.layers).map_err(|why| why.to_string())?;
             Ok("Ship classes resolve recorded class tokens through the sub-unit database, sea zones through the strategic regions; ship, cause and fleet names are the text the game stored, shown in its recorded language.".into())
         }
-        feed::EventFeed::KEY
-        | feed::EventFeedTail::KEY
-        | feed::EventChoices::KEY
+        feed::EventFeedTail::KEY
         | feed::EventChoicesTail::KEY
-        | feed::Decisions::KEY
         | feed::DecisionsTail::KEY
         | feed::EventFeedSpan::KEY => {
             let catalogue = content.catalogue()?;
@@ -643,7 +643,7 @@ fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), Str
                 );
                 match found {
                     FlagSearch::Found { .. } => any = true,
-                    FlagSearch::Unresolvable | FlagSearch::Absent => {}
+                    FlagSearch::Unresolvable | FlagSearch::Absent(_) => {}
                 }
             }
         }

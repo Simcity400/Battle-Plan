@@ -151,6 +151,7 @@ impl AtHour for ProductionLicences {
     const KEY: &'static str = "production-licences";
     const TITLE: &'static str = "Production licences";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = ProductionLicencesParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, limit];
     type Reply = CountryFlowReply;
@@ -216,6 +217,7 @@ impl AtHour for IndustrialOrganisations {
     const KEY: &'static str = "industrial-organisations";
     const TITLE: &'static str = "Industrial organisations";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = IndustrialOrganisationsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = IndustrialOrganisationsReply;
@@ -337,6 +339,7 @@ impl AtHour for EquipmentDesigns {
     const KEY: &'static str = "equipment-designs";
     const TITLE: &'static str = "Equipment designs";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = EquipmentDesignsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = EquipmentDesignsReply;
