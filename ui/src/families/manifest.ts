@@ -1,5 +1,6 @@
 import type { WidgetMeta, WidgetRenderer, WidgetViewSwitch } from '../dashboard/definitions';
 import type { OptionField, WidgetOptions } from '../dashboard/options';
+import type { LaneView } from '../draw/lane.ts';
 import type { AuditRow } from '../draw/notifications';
 import type { FamilyProjection } from './contract.ts';
 import type { FamilyId, FamilyViewSpec } from './plan.ts';
@@ -38,6 +39,12 @@ export interface FamilyViewEntry {
   readonly viewOption?: string;
   readonly options?: readonly OptionField[];
   readonly loadSpec: () => Promise<FamilyViewModule>;
+}
+
+export interface FamilyManifestModule {
+  readonly family: FamilyId;
+  readonly laneView: (wake: (widget: number) => void) => LaneView;
+  readonly views: readonly FamilyViewEntry[];
 }
 
 export interface LegacyWidgetEntry {
