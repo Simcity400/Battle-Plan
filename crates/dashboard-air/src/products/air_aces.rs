@@ -419,6 +419,7 @@ impl AtHour for AirAcesAt {
     const KEY: &'static str = "air-aces";
     const TITLE: &'static str = "Aces";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = AirAcesParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = AirAcesReply;

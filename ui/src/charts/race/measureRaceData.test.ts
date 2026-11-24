@@ -1,19 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { followedRace, followedRowTags, formatRaw, liveRace, raceLookTags, stateEntries, validateRankedLines, validateRankReply } from './measureRaceData.ts';
+import { followedRace, followedRowTags, formatRaw, liveRace, raceLookTags, rankEntries, rankProvenInterval, validateRankedLines, validateRankReply } from './measureRaceData.ts';
 import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
-import type { SeriesState } from '../../generated/dashboard';
+import type { SeriesRankReply, SeriesState } from '../../generated/dashboard';
 
 const state = (tag: string, valueRaw: string | null, missing: string | null = null): SeriesState => ({ country: tag, hour: 50, drop: null, missing,
   run: valueRaw === null ? null : { firstHour: 40, lastHour: 60, valueRaw, slot: 1, countryId: 1, startsSegment: false, segmentFirstHour: 0, firstExact: true, lastExact: true } });
 
-test('a race at an hour ranks only states holding a value, greatest first and ties by tag, never a missing one as zero', () => {
-  const entries = stateEntries([state('ITA', '500000'), state('GER', '1250000'), state('ENG', null, 'not recorded'), state('FRA', '500000')],
-    5, (raw, decimals) => formatRaw(raw, decimals, 1), 50, 3);
-  assert.deepEqual(entries.map(entry => [entry.tag, entry.value, entry.label, entry.hour]), [['GER', 12.5, '12.5', 50], ['FRA', 5, '5', 50], ['ITA', 5, '5', 50]]);
-  assert.deepEqual(stateEntries([state('GER', '9007199254740993')], 0, raw => raw, 1, 1).map(entry => entry.label), ['9007199254740993'],
+const rank = (states: readonly SeriesState[], decimals: number, from = 50, until = 50, refused: string | null = null): SeriesRankReply => ({
+  branchId: '1', hour: 50, from, until, refused, measures: [{ name: 'free7', decimals }], rows: states.map(held => ({ country: held.country, readings: [held] })),
+});
+
+test('a race at an hour keeps the product order, drawing only rows holding a value, never a missing one as zero', () => {
+  const entries = rankEntries(rank([state('GER', '1250000'), state('ITA', '500000'), state('FRA', '500000'), state('ENG', null, 'not recorded')], 5),
+    (raw, decimals) => formatRaw(raw, decimals, 1), 3);
+  assert.deepEqual(entries.map(entry => [entry.tag, entry.value, entry.label, entry.hour]), [['GER', 12.5, '12.5', 50], ['ITA', 5, '5', 50], ['FRA', 5, '5', 50]]);
+  assert.deepEqual(rankEntries(rank([state('GER', '9007199254740993')], 0), raw => raw, 1).map(entry => entry.label), ['9007199254740993'],
     'a raw value past a safe integer keeps its exact text');
+});
+
+test('a rank holds only the hours its reply proves, never its winners\' value runs', () => {
+  assert.deepEqual(rankProvenInterval(rank([state('GER', '4')], 0), 50), [50, 50], 'the winner runs 40..60, but an omitted country may overtake at 51');
+  assert.deepEqual(rankProvenInterval(rank([], 0, 50, 50, 'Countries not recorded at this hour'), 50), [50, 50], 'a refused top holds its hour only');
+  assert.deepEqual(rankProvenInterval(rank([state('GER', '4')], 0, 45, 58), 50), [45, 58]);
 });
 
 test('a fixed-point raw value is written exactly, grouped, with at most the digits asked', () => {
@@ -25,8 +35,9 @@ test('a fixed-point raw value is written exactly, grouped, with at most the digi
 });
 
 test('rank and ranked chart replies that are malformed are refused', () => {
-  assert.equal(validateRankReply({ branchId: '1', measure: 'free7', decimals: 0, states: [state('GER', '4')] }).states.length, 1);
+  assert.equal(validateRankReply(rank([state('GER', '4')], 0)).rows.length, 1);
   assert.throws(() => validateRankReply({ decimals: 0, states: [{ tag: 'GER', hour: 3, run: { valueRaw: 4 } }] }));
+  assert.throws(() => validateRankReply({ ...rank([state('GER', '4')], 0), from: 51 }), 'a reply must hold its own hour');
   assert.throws(() => validateRankedLines({ decimals: 0, lines: [{ tag: 'GER', membership: [{ firstHour: 5, lastHour: 2 }], missing: [], summary: null }] }));
 });
 

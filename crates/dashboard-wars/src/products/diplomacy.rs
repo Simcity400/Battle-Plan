@@ -268,6 +268,7 @@ impl AtHour for DiplomaticRelations {
     const KEY: &'static str = "diplomatic-relations";
     const TITLE: &'static str = "Diplomatic relations";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads country appearance looks and faction name/membership runs from branch history context at at.hour");
     type Params = DiplomaticRelationsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", top, order];
     type Reply = DiplomaticRelationsReply;

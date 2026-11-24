@@ -6,7 +6,6 @@ import { formatAmount } from '../../charts/valueAxis.ts';
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { OccupationDetailReply, OccupationDetailRow } from '../../generated/dashboard';
 
 export type OccupationMeasure = 'resistance' | 'compliance';
@@ -78,22 +77,4 @@ export function occupationTooltip(tag: string, hour: number, detail: DetailAt | 
     { label: 'States', value: heldCoverage(totals) },
     ...(collaboration ? collaborationRows(row, detail.reply, hour, labelAt) : []),
   ], note: `Average across ${totals.states} states.` };
-}
-
-export function occupationLineTooltip(hour: number, tags: readonly string[], detail: DetailAt | null, labelAt: LabelAt, colour: (tag: string) => string,
-  shown: ShownMeasure, rank: OccupationMeasure, collaboration: boolean): TooltipContent {
-  const title = { title: formatDateTime(hour), subtitle: shown === 'both' ? `Occupation averages; ${measureName(rank).toLowerCase()} first` : `Average ${measureName(rank).toLowerCase()}` };
-  if (!detail || detail.hour !== hour) return { ...title, rows: [{ label: 'Reading this hour…', tone: 'muted' }] };
-  const key = (totals: OccupierTotals) => BigInt(rank === 'resistance' ? totals.resistanceRaw : totals.complianceRaw);
-  const ranked = tags.flatMap(tag => { const totals = totalsOf(detail.values, tag); return totals ? [{ tag, totals }] : []; })
-    .sort((a, b) => { const difference = key(b.totals) - key(a.totals); return difference === 0n ? compareTags(a.tag, b.tag) : difference > 0n ? 1 : -1; });
-  const rows = ranked.flatMap(({ tag, totals }) => {
-    const label = labelAt(hour)(tag);
-    const value = (measure: OccupationMeasure) => occupationPercent(measure === 'resistance' ? totals.resistanceRaw : totals.complianceRaw);
-    return [{ label: label.name, value: value(rank), swatch: colour(tag), strong: true, countryFlag: label },
-      ...(shown === 'both' ? [{ label: `Average ${measureName(otherMeasure(rank)).toLowerCase()}`, value: value(otherMeasure(rank)) }] : []),
-      { label: 'States', value: heldCoverage(totals) },
-      ...(collaboration ? collaborationRows(detail.reply.occupiers.find(item => countryKey(item.country) === tag), detail.reply, hour, labelAt) : [])];
-  });
-  return { ...title, rows: rows.length ? rows : [{ label: 'Not recorded', tone: 'muted' }] };
 }

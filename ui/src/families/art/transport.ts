@@ -4,10 +4,10 @@ import type { BoundTrack } from '../../dashboard/model';
 import { asFailure } from '../../dashboard/queryError.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
-import type { ArtResolution, LeaderPortraitsReply, SpriteFrame, SpriteImage, TechnologyArtworkReply } from '../../generated/dashboard';
+import type { LeaderPortraitsReply, SpriteFrame, SpriteImage, TechnologyArtworkReply } from '../../generated/dashboard';
 import type { ArtHandle } from '../plan.ts';
 import { spriteImageToArt } from './adapters.ts';
-import { artHandleKey, missingArt, readyArt } from './types.ts';
+import { artHandleKey, failedArt, productArt, readyArt, type ArtResolution, type ProductArtResolution } from './types.ts';
 
 export type { SpriteFrame };
 
@@ -48,7 +48,7 @@ export function spriteResolutions(reply: unknown, asked: readonly SpriteFrame[])
       ...(image.recorded !== undefined ? { recorded: image.recorded as string } : {}),
       ...(image.text === true ? { text: true } : {}),
       icon: drawableIcon(image.icon),
-      ...(image.resolution !== undefined ? { resolution: image.resolution as ArtResolution } : {}),
+      ...(image.resolution !== undefined ? { resolution: image.resolution as ProductArtResolution } : {}),
     } as SpriteImage));
   }
   return out;
@@ -65,26 +65,28 @@ function textureResolutions(reply: unknown, asked: readonly ArtHandle[]): Map<st
       throw new Error('The sprite artwork reply is malformed.');
     }
     const id = artHandleKey({ kind: 'path', path: item.path, frame: item.frame, frames: item.frames });
-    if (ids.has(id)) out.set(id, item.resolution as ArtResolution);
+    if (ids.has(id)) out.set(id, productArt(item.resolution as ProductArtResolution));
   }
   return out;
 }
 
 function portraitResolutions(reply: LeaderPortraitsReply, hour: number): Map<string, ArtResolution> {
   if (!reply || !Array.isArray(reply.portraits)) throw new Error('The unit leader portraits reply is malformed.');
-  return new Map(reply.portraits.map(portrait => [artHandleKey({ kind: 'portrait', leader: portrait.reference, hour }), portrait.resolution]));
+  return new Map(reply.portraits.map(portrait => [artHandleKey({ kind: 'portrait', leader: portrait.reference, hour }), productArt(portrait.resolution)]));
 }
 
 export function technologyResolutions(reply: TechnologyArtworkReply, handles: readonly ArtHandle[]): Map<string, ArtResolution> {
   if (!reply || !Array.isArray(reply.items) || !reply.items.every(artworkEntry)) throw new Error('The technology artwork reply is malformed.');
-  const byToken = new Map(reply.items.map(item => [item.token, drawableIcon(item.icon)]));
+  const byToken = new Map(reply.items.map(item => [item.token, item]));
   const out = new Map<string, ArtResolution>();
   for (const handle of handles) {
     if (handle.kind !== 'technology') continue;
-    const icon = byToken.get(handle.token);
-    out.set(artHandleKey(handle), icon === undefined
-      ? missingArt('Technology artwork was not returned for this technology')
-      : icon ? readyArt(icon, { assetId: `technology:${handle.token}` }) : missingArt('Art missing from the current installation'));
+    const item = byToken.get(handle.token);
+    const icon = item && drawableIcon(item.icon);
+    out.set(artHandleKey(handle), !item
+      ? failedArt('The technology artwork reply left this technology out', false)
+      : icon ? readyArt(icon, { assetId: `technology:${handle.token}` })
+        : failedArt('The technology artwork product drew no icon and does not say why', false));
   }
   return out;
 }

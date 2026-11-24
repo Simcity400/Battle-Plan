@@ -2,7 +2,7 @@
 pub mod ledger;
 
 use dashboard_base::products::Country;
-use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour::{At, AtHour, Owner, Read}}, queries::country_ids::Names};
+use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour::{At, AtHour, Owner, Read}}};
 use dashboard_world::products::equipment_names::{EquipmentIcon, VariantName, self as names, Named};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::identity::{Holder, Holders};
@@ -163,13 +163,13 @@ dashboard_base::reply_warnings!(MarketLendLeaseReply);
 
 pub(crate) struct Parties<'a> {
     links: &'a [CountryLinkRow],
-    names: Names,
+    holders: &'a Holders,
     hour: i32,
 }
 
 impl<'a> Parties<'a> {
-    pub(crate) fn new(links: &'a [CountryLinkRow], holders: &Holders, hour: i32) -> Self {
-        Self { links, names: Names::new(holders), hour }
+    pub(crate) fn new(links: &'a [CountryLinkRow], holders: &'a Holders, hour: i32) -> Self {
+        Self { links, holders, hour }
     }
 
     fn slot(&self, raw: u32) -> Option<u32> {
@@ -177,7 +177,7 @@ impl<'a> Parties<'a> {
     }
 
     pub(crate) fn tag(&self, raw: u32) -> Option<String> {
-        self.names.slot_tag(self.slot(raw)?, self.hour).map(str::to_owned)
+        self.holders.slot_tag(self.slot(raw)?, self.hour).map(str::to_owned)
     }
 }
 
@@ -277,6 +277,7 @@ impl AtHour for MarketLendLease {
     const KEY: &'static str = "market-lendlease";
     const TITLE: &'static str = "Market and lend-lease";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = MarketLendLeaseParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, only, leaseSide, "countries[]"];
     type Reply = MarketLendLeaseReply;

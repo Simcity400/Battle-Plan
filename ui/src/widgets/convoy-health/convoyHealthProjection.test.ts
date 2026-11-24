@@ -26,7 +26,7 @@ function reply(lastHour: number): ConvoyHealthReply {
 }
 
 const view = (hour: number, data: ConvoyHealthReply) => createBoundedReadView({ hour, panels: new Map([['convoys', data]]) });
-const OPTIONS = { view: 'regions' as const, surface: SURFACE };
+const OPTIONS = { view: 'regions' as const, surface: SURFACE, country: null };
 
 test('the efficiency scale runs from full at the first stop to empty at the last', () => {
   assert.equal(efficiencyColour(1), '#22364f');
@@ -48,11 +48,13 @@ test('no traffic is the empty lane, unrecorded hours keep their reason, and the 
   const quiet = projectConvoyHealth(view(50, full), OPTIONS).rows[0]!.readout!;
   assert.equal(quiet.kind === 'value' && quiet.tone, 'muted', 'a full route is quiet');
   assert.equal(runs.at(-1)!.lastHour, 50);
+  assert.equal(model.rows[0]!.region, 17, 'each lane names its region for the regions control');
+  assert.deepEqual(model.regions, { pickedHeading: 'Your regions', automaticHeading: 'Most active', addLabel: 'Add region' });
 });
 
 test('a reply that reaches past the displayed hour, or for the other view, draws nothing', () => {
   assert.deepEqual(projectConvoyHealth(view(45, reply(50)), OPTIONS).rows, []);
-  assert.deepEqual(projectConvoyHealth(view(50, reply(50)), { view: 'trade', surface: SURFACE }).rows, []);
+  assert.deepEqual(projectConvoyHealth(view(50, reply(50)), { view: 'trade', surface: SURFACE, country: null }).rows, []);
 });
 
 test('a lend-lease route stays a status in the lane, the readout and the tooltip, never an efficiency', async () => {
@@ -62,7 +64,7 @@ test('a lend-lease route stays a status in the lane, the readout and the tooltip
     known: [[], [], [{ firstHour: 0, lastHour: 50 }]],
     leases: [{ handle: '7', giver: [{ firstHour: 0, lastHour: 50, tag: 'USA', name: 'United States' }], bad: [[0, 19, 1], [20, 50, 0]], convoys: [] }],
   };
-  const model = projectConvoyHealth(view(50, data), { view: 'trade', surface: SURFACE });
+  const model = projectConvoyHealth(view(50, data), { view: 'trade', surface: SURFACE, country: null });
   const [bad, clear] = model.rows[0]!.runs;
   assert.equal(bad!.cell.kind === 'solid' && bad!.cell.label, 'Route bad');
   assert.deepEqual(clear!.cell, { kind: 'clear', label: 'Route clear' });

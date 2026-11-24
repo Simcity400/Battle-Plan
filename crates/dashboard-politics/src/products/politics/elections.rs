@@ -67,7 +67,7 @@ impl AtHour for NextElections {
     const KEY: &'static str = "next-elections";
     const TITLE: &'static str = "Next elections";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     const REPLY_NAMES_NO_HOUR: bool = true;
     type Params = NextElectionsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]"];

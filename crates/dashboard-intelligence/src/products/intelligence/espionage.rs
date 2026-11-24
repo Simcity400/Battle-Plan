@@ -245,6 +245,7 @@ impl AtHour for EspionageOperations {
     const KEY: &'static str = "espionage-operations";
     const TITLE: &'static str = "Espionage operations";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = EspionageOperationsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = EspionageOperationsReply;
@@ -281,6 +282,17 @@ impl AtHour for EspionageOperations {
 
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
         Ok(())
+    }
+
+    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
+        let active = frame
+            .complete::<tables::Operations>()
+            .is_ok_and(|rows| rows.iter().any(|row| row.terminal == 0 && row.duration_days != 0));
+        if !active {
+            return i32::MAX;
+        }
+        let next_day = frame.hour.wrapping_sub(HOUR_EPOCH).div_euclid(24).saturating_add(1).saturating_mul(24);
+        HOUR_EPOCH.saturating_add(next_day).saturating_sub(1)
     }
 
     fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {

@@ -2,7 +2,6 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { axisAt, OUTSIDE_MESSAGE, regionHour, SPEC, type GatedHour } from '../../dashboard/regionTime.ts';
 import { useGate } from '../../dashboard/regionGate.ts';
 import GateState from '../../dashboard/GateState';
-import { countryKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FollowEntry } from '../../dashboard/follow/store';
 import { createPortal } from 'react-dom';
@@ -49,9 +48,9 @@ import { unrecordedReason } from '../../dashboard/tiles/view.ts';
 import type { Live } from '../live';
 import { SECONDARY_DASH } from '../palette.ts';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
-import type { SeriesStateReply } from '../../generated/dashboard';
+import type { SeriesRankReply } from '../../generated/dashboard';
 import { useMeasureSeries } from '../../widgets/country-measure/measureSeries';
-import { followedRace, followedRowTags, liveRace, raceLookTags, stateEntries, validateRankedLines, validateRankReply } from './measureRaceData.ts';
+import { followedRace, followedRowTags, liveRace, raceLookTags, rankEntries, validateRankedLines, validateRankReply } from './measureRaceData.ts';
 import type { RankedLine, RankedMeasure } from './measureRaceData';
 import { drawnItems, hatchEntry, hatchesOf, keyedIds, splitEntry } from './measureParts.ts';
 import type { MeasureParts, PartValues } from './measureParts';
@@ -233,22 +232,20 @@ export default function MeasureRace({ widget, runtime, active, countrySlot = nul
     () => entry.version * 1_000_000 + (raceHead?.version() ?? 0), member !== null, hour => Math.min(hour, entry.through));
   }, [entry, track, runtime.clock, axisOffset, top, tags, member, slots, decimals, format, decorate, partsRead, raceHead, followedTags]);
   useEffect(() => raceHead?.subscribe(() => live.current?.wake()), [raceHead]);
-  const rankRequest = racing && track && !following && (top != null || asked) && askHour !== null ? productRequest({
-    sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
+  const rankCountries = askHour === null ? [] : tags.filter(tag => !member || member(tag, askHour)).map(countryFromKey);
+  const rankRequest = racing && track && !following && (top != null || (asked && rankCountries.length)) && askHour !== null ? productRequest({
+    sourceId: track.source.id, revision: track.source.revision, product: 'series-rank',
     params: top != null ? { branchId: track.branch.id, family: measure, hour: askHour, top }
-      : { branchId: track.branch.id, family: measure, reads: tags.filter(tag => !member || member(tag, askHour)).map(tag => ({ country: countryFromKey(tag), hour: askHour })) },
+      : { branchId: track.branch.id, family: measure, hour: askHour, countries: rankCountries },
   }) : null;
-  const ranked = useFollowedProduct<SeriesStateReply>(runtime.client, rankRequest, ['hour', 'reads'], active,
-    top != null ? validateRankReply : value => value as SeriesStateReply, track?.source);
+  const ranked = useFollowedProduct<SeriesRankReply>(runtime.client, rankRequest, ['hour', 'countries'], active, validateRankReply, track?.source);
   const rankedAt = useMemo(() => {
     if (!ranked.moment) return null;
     const [at, reads] = JSON.parse(ranked.moment) as [unknown, { hour?: unknown }[] | undefined];
     return typeof at === 'number' ? at : typeof reads?.[0]?.hour === 'number' ? reads[0].hour : null;
   }, [ranked.moment]);
   const rankedFits = !!ranked.data && rankedAt !== null && rankedAt === askHour;
-  const unsplit = useMemo(() => ranked.data && rankedFits && rankedAt !== null
-    ? stateEntries(ranked.data.states.filter(state => !member || member(countryKey(state.country), rankedAt)), ranked.data.decimals, format, rankedAt, slots) : [],
-  [ranked.data, rankedFits, member, rankedAt, slots, format]);
+  const unsplit = useMemo(() => ranked.data && rankedFits ? rankEntries(ranked.data, format, slots) : [], [ranked.data, rankedFits, slots, format]);
   const rankedTags = useMemo(() => unsplit.map(item => item.tag), [unsplit]);
   const askedParts = usePartStates(runtime.client, track?.source, track?.branch.id, parts, rankedTags, askHour, active && partsRead && !following);
   const entries = useMemo(() => decorate(unsplit, askedParts.values), [decorate, unsplit, askedParts.values]);
