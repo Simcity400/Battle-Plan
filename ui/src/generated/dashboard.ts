@@ -6417,7 +6417,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "convoy-health": { "branchId": "leaf", "country": "any", "from": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "to": "leaf", "top": "leaf", "view": "leaf" },
   "country-faction-goals": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "country-facts": { "branchId": "leaf" },
-  "country-flags": { "flags": "node", "flags[]": "node", "flags[].keys": "node", "flags[].keys.0": "leaf", "flags[].keys.1": "leaf", "flags[].keys.2": "leaf", "flags[].reasons": "node", "flags[].reasons.0": "leaf", "flags[].reasons.1": "leaf", "flags[].reasons.2": "leaf", "size": "leaf" },
+  "country-flags": { "flags": "node", "flags[]": "node", "flags[].keys": "node", "flags[].keys.0": "leaf", "flags[].keys.1": "leaf", "flags[].keys.2": "leaf", "flags[].reasons": "node", "flags[].reasons.0": "leaf", "flags[].reasons.1": "leaf", "flags[].reasons.2": "leaf", "flags[].searched": "node", "flags[].searched.0": "leaf", "flags[].searched.1": "leaf", "flags[].searched.2": "leaf", "size": "leaf" },
   "country-fuel": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "country-fuel-award-history": { "branchId": "leaf", "country": "any", "hour": "leaf", "recipientKey": "leaf", "window": "leaf" },
   "country-fuel-awards": { "branchId": "leaf", "country": "any", "hour": "leaf" },

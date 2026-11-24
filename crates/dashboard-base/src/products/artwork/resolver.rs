@@ -167,11 +167,7 @@ impl Serialize for Searched {
 
 impl<'de> Deserialize<'de> for Searched {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        if bool::deserialize(deserializer)? {
-            Ok(Self::relayed())
-        } else {
-            Err(serde::de::Error::custom("a completed search is relayed only as true"))
-        }
+        bool::deserialize(deserializer).map(|_| Self::relayed())
     }
 }
 
