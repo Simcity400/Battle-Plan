@@ -157,6 +157,7 @@ pub fn scan_blocks<'a, R>(
         let mut next = 0;
         let mut iterate = std::iter::from_fn(|| {
             if next == blocks.len() {
+                feed.borrow_mut().current = None;
                 return None;
             }
             let position = next;
@@ -339,22 +340,24 @@ mod tests {
     #[test]
     fn a_block_read_after_the_scan_moved_past_it_is_not_a_clean_end() {
         let replay = twelve_blocks();
-        let passed_over = scan_blocks(
-            &replay,
-            replay.index.iter(),
-            &[TableId::Campaign],
-            &AtomicBool::new(false),
-            |reads| {
-                let mut first = reads.next().unwrap().1?;
-                reads.next();
-                Ok(first.next().map(|hour| hour.err().map(|error| error.kind())))
-            },
-        );
-        assert_eq!(
-            passed_over.unwrap(),
-            Some(Some(io::ErrorKind::Other)),
-            "hours skipped by the scan must not read as a finished block"
-        );
+        for blocks in [1, replay.index.len()] {
+            let passed_over = scan_blocks(
+                &replay,
+                replay.index.iter().take(blocks),
+                &[TableId::Campaign],
+                &AtomicBool::new(false),
+                |reads| {
+                    let first = reads.next().unwrap().1?;
+                    reads.next();
+                    Ok(first.map(|hour| hour.err().map(|error| error.kind())).collect::<Vec<_>>())
+                },
+            );
+            assert_eq!(
+                passed_over.unwrap(),
+                [Some(io::ErrorKind::Other)],
+                "hours skipped by the scan must read as one error, not as a finished block or as hours"
+            );
+        }
     }
 
     #[test]

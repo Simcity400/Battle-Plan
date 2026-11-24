@@ -109,13 +109,19 @@ impl Store {
         if bytes.len() > SIZE_LIMIT {
             return Err(damaged(&"map settings exceed their size limit"));
         }
-        let entries: BTreeMap<String, CampaignMapSettings> =
+        let scopes: BTreeMap<String, serde_json::Value> =
             serde_json::from_slice(&bytes).map_err(|error| damaged(&error))?;
-        for (key, entry) in &entries {
-            entry
-                .validate()
-                .map_err(|why| damaged(&format_args!("{key}: {why}")))?;
-        }
+        let entries = scopes
+            .into_iter()
+            .map(|(key, entry)| {
+                let entry = serde_json::from_value::<CampaignMapSettings>(entry)
+                    .map_err(|why| damaged(&format_args!("{key}: {why}")))?;
+                entry
+                    .validate()
+                    .map_err(|why| damaged(&format_args!("{key}: {why}")))?;
+                Ok((key, entry))
+            })
+            .collect::<io::Result<BTreeMap<_, _>>>()?;
         Ok(Self {
             entries,
             error: None,
@@ -883,6 +889,10 @@ mod tests {
         store.reload_from(Ok(path.clone()));
         let error = store.check().unwrap_err();
         assert!(error.contains("campaign-loud") && error.contains(&path.display().to_string()), "{error}");
+        fs::write(&path, br#"{"campaign-a":{"audio":{"voice":"loud"}}}"#).unwrap();
+        store.reload_from(Ok(path.clone()));
+        let error = store.check().unwrap_err();
+        assert!(error.contains("campaign-a") && error.contains(&path.display().to_string()), "{error}");
         let before = store.generation();
         store.configure_game(&path);
         assert_ne!(
