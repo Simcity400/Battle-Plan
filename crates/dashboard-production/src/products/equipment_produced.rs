@@ -892,7 +892,7 @@ fn country_reply(source: &Source, query: &Query<'_>, params: &ProducedCountryPar
     warnings.extend(notes);
     let reply = ProducedCountryReply {
         branch_id: params.branch_id.clone(),
-        tag: query.holders.name(&params.country, query.timeline.last),
+        tag: query.holders.nearest_name(&params.country, query.timeline.last),
         asked: params.country.clone(),
         count: params.count,
         measure: params.measure,

@@ -176,12 +176,21 @@
   color: var(--muted);
 }
 
-.tf-th-hatch,
 .tf-sort-mark {
   display: inline-flex;
   align-items: center;
   flex: none;
   color: var(--accent);
+}
+
+.tf-th-hatch {
+  display: inline-block;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid var(--hatch-edge);
+  background: repeating-linear-gradient(-45deg, transparent 0 2px, var(--hatch) 2px 3.5px);
 }
 
 .tf-th .tf-sort-arrow {
