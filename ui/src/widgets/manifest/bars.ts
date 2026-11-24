@@ -13,12 +13,32 @@ const WORLD_TENSION_RACE_OPTIONS = WORLD_TENSION_OPTIONS.filter(field => field.k
 
 export const BARS_VIEWS: readonly FamilyViewEntry[] = [
   {
+    kind: 'air-kills-losses',
+    view: 'butterfly',
+    label: 'Butterfly',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../air-kills-losses/airKillsLossesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'air-kills-losses', view: 'butterfly',
+      projection: mod.airKillsLossesProjection, declaration: mod.airKillsLossesDeclaration,
+    })),
+  },
+  {
     kind: 'air-superiority-region',
     view: DEFAULT_VIEW,
     family: 'bars',
     loadSpec: () => import('../air-superiority-region/airSuperiorityProjection.ts').then(mod => ({
       family: 'bars', kind: 'air-superiority-region', view: DEFAULT_VIEW,
       projection: mod.airSuperiorityRegionProjection, declaration: mod.airSuperiorityRegionDeclaration,
+    })),
+  },
+  {
+    kind: 'bombing-damage',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: () => import('../bombing-damage/bombingDamageProjection.ts').then(mod => ({
+      family: 'bars', kind: 'bombing-damage', view: DEFAULT_VIEW,
+      projection: mod.bombingDamageProjection, declaration: mod.bombingDamageDeclaration,
     })),
   },
   {
