@@ -833,7 +833,7 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
     let bounds = top.and_then(|_| bounds(&query, &stretches, viewpoint));
     let mut ranked = composer.rank(&candidates, bounds.as_ref(), counted, top, cancelled)?;
     let shown = if params.regions.is_none() && !pinned_list.is_empty() {
-        let mut combined = pinned_list.clone();
+        let mut combined = pinned_list;
         combined.append(&mut ranked);
         combined
     } else {
@@ -871,7 +871,7 @@ impl Product for AirSuperiorityTimeline {
     const KEY: &'static str = "air-superiority-timeline";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AirTimelineParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, mode, viewpoint, viewpointCountry, sides, regions, pinnedRegions, hiddenRegions, theatres, top, tile, "regions[]", "pinnedRegions[]", "hiddenRegions[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, mode, viewpoint, viewpointCountry, sides, regions, pinnedRegions, hiddenRegions, theatres, top, "regions[]", "pinnedRegions[]", "hiddenRegions[]"];
     type Reply = AirTimelineReply;
 
     #[cfg(any(test, feature = "export-types"))]

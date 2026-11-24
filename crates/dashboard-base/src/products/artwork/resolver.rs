@@ -403,24 +403,24 @@ fn resolve_texture_candidate(
     stack: &ResolvedLayers,
     raw_name: &[u8],
     fallback_origin: Option<ArtOrigin>,
-) -> Result<(usize, Vec<u8>, String), ArtResolution> {
+) -> Result<(usize, Vec<u8>, String), Box<ArtResolution>> {
     let name = content_reader_parser::parser::c_string(raw_name);
     if name.is_empty() {
-        return Err(ArtResolution::ConfirmedMissing {
+        return Err(Box::new(ArtResolution::ConfirmedMissing {
             reason: "artwork names no texture".to_owned(),
             origin: fallback_origin,
             file: None,
-        });
+        }));
     }
     let candidates = texture_candidates(name);
     if candidates.is_empty() {
         let text = String::from_utf8_lossy(name).into_owned();
-        return Err(ArtResolution::Refused {
+        return Err(Box::new(ArtResolution::Refused {
             reason: format!("texture {text:?} has no extension"),
             construct: "texture-without-extension".to_owned(),
             origin: fallback_origin,
             file: Some(text),
-        });
+        }));
     }
     let mut tried = Vec::with_capacity(candidates.len());
     for candidate in &candidates {
@@ -433,22 +433,22 @@ fn resolve_texture_candidate(
                 return Ok((layer, path, winning));
             }
             Ok(ArtFileSource::Unmounted { layer, reason }) => {
-                return Err(unmounted_missing(&stack.layers[layer], &reason, display_path));
+                return Err(Box::new(unmounted_missing(&stack.layers[layer], &reason, display_path)));
             }
             Ok(ArtFileSource::Missing) => continue,
             Err(error) => {
-                return Err(ArtResolution::Failed {
+                return Err(Box::new(ArtResolution::Failed {
                     reason: format!("{display_path}: {error}"),
                     retryable: true,
-                });
+                }));
             }
         }
     }
-    Err(ArtResolution::ConfirmedMissing {
+    Err(Box::new(ArtResolution::ConfirmedMissing {
         reason: format!("no layer holds any of {tried:?}"),
         origin: fallback_origin,
         file: tried.into_iter().next(),
-    })
+    }))
 }
 
 fn decode_texture_checked(
@@ -458,7 +458,7 @@ fn decode_texture_checked(
     origin: ArtOrigin,
     winning_path: &[u8],
     display_file: &str,
-) -> Result<content_reader_layers::textures::Texture, ArtResolution> {
+) -> Result<content_reader_layers::textures::Texture, Box<ArtResolution>> {
     let read = |path: &[u8]| {
         if path.eq_ignore_ascii_case(winning_path) {
             stack.read_uncovered_path(winning_path)
@@ -469,29 +469,29 @@ fn decode_texture_checked(
     let decoded = match texture_within(raw_name, &read, decode, None) {
         Ok(decoded) => decoded,
         Err(error) => {
-            return Err(ArtResolution::Failed {
+            return Err(Box::new(ArtResolution::Failed {
                 reason: format!("{display_file}: {error}"),
                 retryable: true,
-            });
+            }));
         }
     };
     let texture = match decoded {
         Ok(texture) => texture,
         Err(no_texture) => {
-            return Err(classify_no_texture(
+            return Err(Box::new(classify_no_texture(
                 no_texture,
                 Some(origin),
                 Some(display_file.to_owned()),
-            ));
+            )));
         }
     };
     if texture.image.faces != 1 {
-        return Err(ArtResolution::Refused {
+        return Err(Box::new(ArtResolution::Refused {
             reason: format!("texture {display_file} is a cube map, not a 2D UI texture"),
             construct: "cube-map-ui-texture".to_owned(),
             origin: Some(origin),
             file: Some(display_file.to_owned()),
-        });
+        }));
     }
     Ok(texture)
 }
@@ -534,7 +534,7 @@ fn resolve_sprite_in_stack(
     let (winning_layer, winning_path, display_file) =
         match resolve_texture_candidate(stack, &plain.texture, declared_origin) {
             Ok(found) => found,
-            Err(resolution) => return resolution,
+            Err(resolution) => return *resolution,
         };
     let origin = ArtOrigin::from_layer(&stack.layers[winning_layer]);
     let texture = match decode_texture_checked(
@@ -546,7 +546,7 @@ fn resolve_sprite_in_stack(
         &display_file,
     ) {
         Ok(texture) => texture,
-        Err(resolution) => return resolution,
+        Err(resolution) => return *resolution,
     };
     let extent = resources::frame_extent(plain, [texture.width, texture.height]);
     if extent.iter().any(|edge| *edge <= 0) {
@@ -634,7 +634,7 @@ fn resolve_texture_in_stack(
     let (winning_layer, winning_path, display_file) =
         match resolve_texture_candidate(stack, path.as_bytes(), None) {
             Ok(found) => found,
-            Err(resolution) => return resolution,
+            Err(resolution) => return *resolution,
         };
     let origin = ArtOrigin::from_layer(&stack.layers[winning_layer]);
     let texture = match decode_texture_checked(
@@ -646,7 +646,7 @@ fn resolve_texture_in_stack(
         &display_file,
     ) {
         Ok(texture) => texture,
-        Err(resolution) => return resolution,
+        Err(resolution) => return *resolution,
     };
     let texture_width = texture.width;
     let texture_height = texture.height;
@@ -1201,7 +1201,7 @@ fn resolve_native_sprite_in_stack(
     let (winning_layer, winning_path, display_file) =
         match resolve_texture_candidate(stack, raw_texture, declared_origin) {
             Ok(found) => found,
-            Err(err) => return native_from_error(err),
+            Err(err) => return native_from_error(*err),
         };
     let origin = ArtOrigin::from_layer(&stack.layers[winning_layer]);
     if let Err(err) = decode_texture_checked(
@@ -1212,7 +1212,7 @@ fn resolve_native_sprite_in_stack(
         &winning_path,
         &display_file,
     ) {
-        return native_from_error(err);
+        return native_from_error(*err);
     }
     let provenance = ArtProvenance::current_install(&origin, scope_key);
     NativeIconResolution::Ready {
@@ -1232,7 +1232,7 @@ fn resolve_native_texture_in_stack(
     let (winning_layer, winning_path, display_file) =
         match resolve_texture_candidate(stack, path.as_bytes(), None) {
             Ok(found) => found,
-            Err(err) => return native_from_error(err),
+            Err(err) => return native_from_error(*err),
         };
     let origin = ArtOrigin::from_layer(&stack.layers[winning_layer]);
     if let Err(err) = decode_texture_checked(
@@ -1243,7 +1243,7 @@ fn resolve_native_texture_in_stack(
         &winning_path,
         &display_file,
     ) {
-        return native_from_error(err);
+        return native_from_error(*err);
     }
     let provenance = ArtProvenance::current_install(&origin, scope_key);
     NativeIconResolution::Ready {
