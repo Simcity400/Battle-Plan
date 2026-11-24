@@ -16,9 +16,8 @@ import type {
   CountryStyleReply,
 } from '../../generated/dashboard';
 import { busyWait } from '../../shell/busy.ts';
-import { IdentityIndex } from './index.ts';
+import { IdentityIndex, drawnFlagKey } from './index.ts';
 import {
-  flagChoiceKey,
   identityScopeKey,
   type CountryIdentityKey,
   type DrawnFlagEntry,
@@ -97,6 +96,14 @@ interface StyleTask {
   readonly controller: AbortController;
 }
 
+interface FlagFailure {
+  readonly count: number;
+  readonly at: number;
+  readonly error: Failure;
+  readonly size: CountryFlagSize;
+  readonly choice: CountryFlagChoice;
+}
+
 interface FlagTask {
   readonly id: number;
   readonly size: CountryFlagSize;
@@ -124,10 +131,9 @@ interface ScopeState {
   readonly styleRetryAt: Map<string, { readonly count: number; readonly at: number; readonly error: Failure }>;
   styleRetryTimer: (() => void) | null;
 
-  readonly flagEntries: Map<string, DrawnFlagEntry>;
   readonly flagRunning: Map<number, FlagTask>;
   readonly flagInflightKeys: Set<string>;
-  readonly flagFailures: Map<string, { readonly count: number; readonly at: number; readonly error: Failure }>;
+  readonly flagFailures: Map<string, FlagFailure>;
   flagRetryTimer: (() => void) | null;
 
   nextTaskId: number;
@@ -183,7 +189,6 @@ export class IdentityBroker {
         styleInflightKeys: new Set(),
         styleRetryAt: new Map(),
         styleRetryTimer: null,
-        flagEntries: new Map(),
         flagRunning: new Map(),
         flagInflightKeys: new Set(),
         flagFailures: new Map(),
@@ -225,7 +230,7 @@ export class IdentityBroker {
   flagFor(scope: IdentityScope, size: CountryFlagSize, choice: CountryFlagChoice): DrawnFlagEntry | undefined {
     const state = this.scopes.get(identityScopeKey(scope));
     if (!state) return undefined;
-    return state.flagEntries.get(`${size}\u0000${flagChoiceKey(choice)}`);
+    return state.index.getDrawnFlag(size, choice);
   }
 
   subscribe(scope: IdentityScope, listener: () => void, recording?: DashboardSource, branchBounds?: HourInterval): () => void {
@@ -262,9 +267,8 @@ export class IdentityBroker {
     const state = this.getState(scope, recording);
     const wanted = new Map<string, CountryFlagChoice>();
     for (const choice of choices) {
-      const choiceId = flagChoiceKey(choice);
-      const key = `${size}\u0000${choiceId}`;
-      if (state.flagEntries.has(key) || state.flagInflightKeys.has(key)) continue;
+      const key = drawnFlagKey(size, choice);
+      if (state.index.getDrawnFlag(size, choice) || state.flagInflightKeys.has(key)) continue;
       wanted.set(key, choice);
     }
     if (wanted.size) this.pumpFlags(state, size, wanted);
@@ -286,7 +290,7 @@ export class IdentityBroker {
     state.styleRetryAt.clear();
     state.flagRetryTimer?.();
     state.flagRetryTimer = null;
-    for (const key of state.flagFailures.keys()) state.flagEntries.delete(key);
+    for (const failure of state.flagFailures.values()) state.index.forgetDrawnFlag(failure.size, failure.choice);
     state.flagFailures.clear();
     this.notify(state);
     this.reconcile(state);
@@ -369,9 +373,8 @@ export class IdentityBroker {
             }
           } else if (resolved.kind === 'known' && demand.needFlags && resolved.flagChoice.kind === 'known') {
             const size: CountryFlagSize = demand.flagSize ?? 'panel';
-            const choiceId = flagChoiceKey(resolved.flagChoice.value);
-            const flagKey = `${size}\u0000${choiceId}`;
-            if (!state.flagEntries.has(flagKey) && !state.flagInflightKeys.has(flagKey)) {
+            const flagKey = drawnFlagKey(size, resolved.flagChoice.value);
+            if (!state.index.getDrawnFlag(size, resolved.flagChoice.value) && !state.flagInflightKeys.has(flagKey)) {
               let map = wantedFlagsBySize.get(size);
               if (!map) wantedFlagsBySize.set(size, map = new Map());
               map.set(flagKey, resolved.flagChoice.value);
@@ -567,7 +570,7 @@ export class IdentityBroker {
     let soonestRetry = Infinity;
     const ready: [string, CountryFlagChoice][] = [];
     for (const [key, choice] of wanted) {
-      if (state.flagEntries.has(key) || state.flagInflightKeys.has(key)) continue;
+      if (state.index.getDrawnFlag(size, choice) || state.flagInflightKeys.has(key)) continue;
       const failed = state.flagFailures.get(key);
       if (failed && failed.at > now) {
         soonestRetry = Math.min(soonestRetry, failed.at);
@@ -582,8 +585,8 @@ export class IdentityBroker {
     if (soonestRetry < Infinity && !state.flagRetryTimer) {
       state.flagRetryTimer = this.clock.after(Math.max(0, soonestRetry - now), () => {
         state.flagRetryTimer = null;
-        for (const [key, info] of [...state.flagFailures]) {
-          if (info.at <= this.clock.now()) state.flagEntries.delete(key);
+        for (const info of state.flagFailures.values()) {
+          if (info.at <= this.clock.now()) state.index.forgetDrawnFlag(info.size, info.choice);
         }
         this.reconcile(state);
       });
@@ -610,8 +613,7 @@ export class IdentityBroker {
           const entry: DrawnFlagEntry = image
             ? { url: image.png, image }
             : { reason: reason ?? 'Flag unavailable' };
-          state.flagEntries.set(key, entry);
-          state.index.setDrawnFlag(choice, entry);
+          state.index.setDrawnFlag(size, choice, entry);
         });
         this.notify(state);
         this.reconcile(state);
@@ -625,10 +627,8 @@ export class IdentityBroker {
         for (const [key, choice] of batch) {
           state.flagInflightKeys.delete(key);
           const count = (state.flagFailures.get(key)?.count ?? 0) + 1;
-          state.flagFailures.set(key, { count, at: retryable ? now + retryDelay(count) : Infinity, error: failure });
-          const entry: DrawnFlagEntry = { failed: failure };
-          state.flagEntries.set(key, entry);
-          state.index.setDrawnFlag(choice, entry);
+          state.flagFailures.set(key, { count, at: retryable ? now + retryDelay(count) : Infinity, error: failure, size, choice });
+          state.index.setDrawnFlag(size, choice, { failed: failure });
         }
         this.notify(state);
         this.reconcile(state);

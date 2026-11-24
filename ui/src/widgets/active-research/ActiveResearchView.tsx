@@ -3,7 +3,7 @@ import ArtFallback from '../../components/ArtFallback';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { openedOn } from '../../dashboard/gameWindows';
 import { useGate } from '../../dashboard/regionGate';
-import { failedArt, missingArt, readyArt, spriteArtKey, type ArtResolution } from '../../families/art/types.ts';
+import { artHandleKey, failedArt, missingArt, readyArt, type ArtResolution } from '../../families/art/types.ts';
 import type { InstalledAction } from '../../families/contract.ts';
 import { DetailWindowHost } from '../../families/host/index.ts';
 import DeclaredFamilyWidget from '../../families/host/DeclaredFamilyWidget.tsx';
@@ -37,12 +37,12 @@ export default function ActiveResearchView(props: WidgetProps) {
     for (const token of tokens) {
       const fail = images.failures.get(token);
       if (fail) {
-        out[spriteArtKey(`technology:${token}`, 0)] = failedArt(fail.message, true);
+        out[artHandleKey({ kind: 'sprite', key: `technology:${token}`, frame: 0 })] = failedArt(fail.message, true);
         continue;
       }
       const entry = images.artwork.get(token);
       if (entry) {
-        out[spriteArtKey(`technology:${token}`, 0)] = entry.icon
+        out[artHandleKey({ kind: 'sprite', key: `technology:${token}`, frame: 0 })] = entry.icon
           ? readyArt(entry.icon, { assetId: `technology:${token}` })
           : missingArt('Art missing from the current installation');
       }

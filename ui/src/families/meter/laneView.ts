@@ -6,7 +6,7 @@ import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '.
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
 import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
-import { PENDING_ART, spriteArtKey, type ArtResolution } from '../art/types.ts';
+import { artHandleKey, PENDING_ART, type ArtResolution } from '../art/types.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
 import { createBoundedReadView } from '../boundedView.ts';
 import type { ArtDemand, ArtHandle, ArtProvider, BoundedReadView, EntityKind, FamilyTheme, IdentityDemand, IdentityProvider } from '../contract.ts';
@@ -153,7 +153,7 @@ function optionsLooks(options: unknown): CountryLooksMap | undefined {
 
 function spriteResolver(resolutions: SpriteResolutions | undefined): ((handle: ArtHandle) => ArtResolution) | undefined {
   if (!resolutions) return undefined;
-  return handle => (handle.kind === 'sprite' ? resolutions[spriteArtKey(handle.key, handle.frame ?? 0)] ?? PENDING_ART : PENDING_ART);
+  return handle => (handle.kind === 'sprite' ? resolutions[artHandleKey(handle)] ?? PENDING_ART : PENDING_ART);
 }
 
 export interface MeterReadViewProviders {
