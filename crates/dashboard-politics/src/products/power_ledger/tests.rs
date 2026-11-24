@@ -1,4 +1,4 @@
-use super::{PowerSpendingParams, SpendCoverage, SpendCurrency, naming, spending};
+use super::{PowerSpendingParams, SpendCoverage, SpendCurrency, SpendReconciliation, naming, spending};
 use dashboard_base::{Source, test_fixtures::{CAMPAIGN, records, source}};
 use dashboard_core::config::LoadContext;
 use replay::campaign::Replay;
@@ -17,6 +17,7 @@ const PP: i64 = 100_000;
 
 fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     frame.tables[table.index()] = TableView::Complete(rows).into();
+    frame.metrics.table_ns[table.index()] = 1;
 }
 
 fn decision(sequence: u64, hour: i32, charge: i64) -> CountryPowerChangeRow {
@@ -808,5 +809,216 @@ fn unavailable_power_changes_or_countries_withholds_gain_coverage_and_balance_ru
         reply.balances.iter().any(|run| run.first_hour == 107 && run.last_hour == 107 && run.value_raw.is_none() && run.reason.is_some()),
         "unavailable Countries marks hour 107 missing in balances: {:?}",
         reply.balances
+    );
+    let changes_gap = asked(&source, 104, 106);
+    assert_eq!(changes_gap.reconciliation.opening_raw.as_deref(), Some("5000000"));
+    assert_eq!(changes_gap.reconciliation.closing_raw.as_deref(), Some("5000000"));
+    assert_eq!(changes_gap.reconciliation.gained_raw, None);
+    assert_eq!(changes_gap.reconciliation.other_changes_raw, None);
+    assert!(changes_gap.reconciliation.reason.as_deref().is_some_and(|reason| reason.contains("Power changes")));
+
+    let closing_gap = asked(&source, 106, 107);
+    assert_eq!(closing_gap.reconciliation.opening_raw.as_deref(), Some("5000000"));
+    assert_eq!(closing_gap.reconciliation.closing_raw, None);
+    assert_eq!(closing_gap.reconciliation.other_changes_raw, None);
+    assert!(closing_gap.reconciliation.reason.as_deref().is_some_and(|reason| reason.contains("Country balances")));
+
+    let opening_gap = asked(&source, 108, 110);
+    assert_eq!(opening_gap.reconciliation.opening_raw, None);
+    assert_eq!(opening_gap.reconciliation.closing_raw.as_deref(), Some("5000000"));
+    assert_eq!(opening_gap.reconciliation.other_changes_raw, None);
+    assert!(opening_gap.reconciliation.reason.as_deref().is_some_and(|reason| reason.contains("Country balances")));
+}
+
+#[test]
+fn reconciliation_verifies_identity_for_political_and_command_power_and_withholds_on_gaps() {
+    use replay_data::{format::FormatVersion, rows::{ClockRow, tables}};
+    use replay_journal::synthetic::{Input, Sample};
+
+    let make_frame = |branch: u64, hour: i32| {
+        let mut frame = source(branch, hour, Some(1_000));
+        set(&mut frame, TableId::Clock, TableRows::Clock(vec![ClockRow { hour, ..Default::default() }]));
+        let pp = match hour {
+            ..=103 => 100 * PP,
+            104..=109 => 220 * PP,
+            110..=143 => 170 * PP,
+            _ => 171 * PP,
+        };
+        let cp = match hour {
+            ..=104 => 120 * PP,
+            105..=109 => 100 * PP,
+            110..=114 => 75 * PP,
+            _ => 100 * PP,
+        };
+        set(
+            &mut frame,
+            TableId::Countries,
+            TableRows::Countries(vec![CountryRow {
+                id: GER,
+                canonical_slot: SLOT,
+                tag: b"GER".to_vec(),
+                political_power_raw: Some(pp),
+                command_power_raw: cp,
+                border_land_doctrine_level: Recorded::Value(None),
+                ..Default::default()
+            }]),
+        );
+        set(&mut frame, TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: GER, canonical_slot: SLOT }]));
+        let changes = match hour {
+            104 => vec![CountryPowerChangeRow {
+                country: GER,
+                sequence: 1,
+                epoch: 1,
+                hour: 104,
+                currency: PowerCurrency::Political,
+                operation: PowerOperation::Add,
+                balance_before_raw: 100 * PP,
+                balance_after_raw: 220 * PP,
+                requested_delta_raw: Some(120 * PP),
+                cause: PowerCause::Focus,
+                site: PowerSite::AddPoliticalPower,
+                ..Default::default()
+            }],
+            105 => vec![CountryPowerChangeRow {
+                country: GER,
+                sequence: 2,
+                epoch: 1,
+                hour: 105,
+                currency: PowerCurrency::Command,
+                operation: PowerOperation::Grant,
+                balance_before_raw: 120 * PP,
+                balance_after_raw: 100 * PP,
+                requested_delta_raw: Some(10 * PP),
+                cause: PowerCause::ScriptEffect,
+                site: PowerSite::AddCommandPower,
+                ..Default::default()
+            }],
+            110 => vec![
+                decision(3, 110, 50 * PP),
+                CountryPowerChangeRow {
+                    country: GER,
+                    sequence: 4,
+                    epoch: 1,
+                    hour: 110,
+                    currency: PowerCurrency::Command,
+                    operation: PowerOperation::Subtract,
+                    balance_before_raw: 100 * PP,
+                    balance_after_raw: 75 * PP,
+                    requested_delta_raw: Some(-25 * PP),
+                    cause: PowerCause::Allocation,
+                    site: PowerSite::AllocateCommandPower,
+                    ..Default::default()
+                },
+            ],
+            115 => vec![CountryPowerChangeRow {
+                country: GER,
+                sequence: 5,
+                epoch: 1,
+                hour: 115,
+                currency: PowerCurrency::Command,
+                operation: PowerOperation::Add,
+                balance_before_raw: 75 * PP,
+                balance_after_raw: 100 * PP,
+                requested_delta_raw: Some(25 * PP),
+                cause: PowerCause::AllocationRefund,
+                site: PowerSite::ReleaseCommandPower,
+                ..Default::default()
+            }],
+            _ => Vec::new(),
+        };
+        set(&mut frame, TableId::CountryPowerChanges, TableRows::CountryPowerChanges(changes));
+        let (days, costs) = if (120..=143).contains(&hour) {
+            (vec![daily(120, 3 * PP, 2 * PP, PP, 50)], vec![cost(120, 2 * PP, 50)])
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(days));
+        set(&mut frame, TableId::CountryPowerDailyCosts, TableRows::CountryPowerDailyCosts(costs));
+        let capture = PoliticsCaptureCoverageRow { country: GER, epoch: 1, since_hour: FIRST, through_hour: hour, streams: PoliticsCaptureCoverageRow::ALL_STREAMS, ..Default::default() };
+        set(&mut frame, TableId::PoliticsCaptureCoverage, TableRows::PoliticsCaptureCoverage(vec![capture]));
+        frame
+    };
+
+    let frames: Vec<DecodedFrame> = (FIRST..=146).map(|hour| make_frame(1, hour)).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let src = Source::from_replay(dashboard_base::SourceKey { source_id: "power-reconcile-exact".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+
+    let pp_span = asked(&src, 102, 146);
+    assert_eq!(
+        pp_span.reconciliation,
+        SpendReconciliation {
+            opening_raw: Some((100 * PP).to_string()),
+            gained_raw: Some((123 * PP).to_string()),
+            lost_at_cap_raw: Some("0".into()),
+            spent_raw: Some((52 * PP).to_string()),
+            closing_raw: Some((171 * PP).to_string()),
+            other_changes_raw: Some("0".into()),
+            reason: None,
+        },
+        "PP span reconciles opening + daily & instant gains - daily & instant spend == closing with 0 other changes"
+    );
+
+    let pp_from_start = asked(&src, FIRST, 146);
+    assert_eq!(pp_from_start.reconciliation.opening_raw, None);
+    assert_eq!(pp_from_start.reconciliation.other_changes_raw, None);
+    assert!(pp_from_start.reconciliation.reason.is_some());
+
+    let query = dashboard_base::queries::query(&src, 1).unwrap();
+    let naming = naming::context(&src, &LoadContext { content: None }).unwrap();
+    let cp_hold = spending(&src, &query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: 102, to: 112 }, &naming, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        cp_hold.reconciliation,
+        SpendReconciliation {
+            opening_raw: Some((120 * PP).to_string()),
+            gained_raw: Some((10 * PP).to_string()),
+            lost_at_cap_raw: Some((30 * PP).to_string()),
+            spent_raw: Some("0".into()),
+            closing_raw: Some((75 * PP).to_string()),
+            other_changes_raw: Some((-25 * PP).to_string()),
+            reason: None,
+        },
+        "CP hold of 25 CP after over-cap grant reports exact -25 CP other_changes"
+    );
+    let cp_released = spending(&src, &query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: 102, to: 116 }, &naming, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        cp_released.reconciliation.other_changes_raw.as_deref(),
+        Some("0"),
+        "CP hold followed by release cancels out to exact 0 other_changes"
+    );
+
+    let run0: Vec<DecodedFrame> = (FIRST..=106).map(|hour| make_frame(1, hour)).collect();
+    let run1: Vec<DecodedFrame> = (107..=112).map(|hour| make_frame(2, hour)).collect();
+    let split = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, run0), records(2, run1)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let split_src = Source::from_replay(dashboard_base::SourceKey { source_id: "power-reconcile-split".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(split), &AtomicBool::new(false)).unwrap();
+    let split_reply = asked(&split_src, 102, 112);
+    assert_eq!(split_reply.reconciliation.other_changes_raw, None);
+    assert!(split_reply.reconciliation.reason.is_some());
+
+    let held_frames: Vec<DecodedFrame> = (FIRST..=110).map(|hour| make_frame(1, hour)).collect();
+    let held_bytes = replay::campaign::fixtures::encode_framed_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(), CAMPAIGN.into(), &[records(1, held_frames)], |synthetic, decoded| {
+        let countries = decoded.complete::<tables::Countries>()?;
+        synthetic.table(TableId::Countries, Input::Snapshot { rows: countries, partial: None, read: true, sample: Sample::FromReadBit })?;
+        let links = decoded.complete::<tables::CountryLinks>()?;
+        synthetic.table(TableId::CountryLinks, Input::Snapshot { rows: links, partial: None, read: true, sample: Sample::FromReadBit })?;
+        let changes = decoded.complete::<tables::CountryPowerChanges>()?;
+        synthetic.table(TableId::CountryPowerChanges, Input::Snapshot { rows: changes, partial: None, read: decoded.hour != 105, sample: Sample::FromReadBit })?;
+        let daily_rows = decoded.complete::<tables::CountryPowerDaily>()?;
+        synthetic.table(TableId::CountryPowerDaily, Input::Snapshot { rows: daily_rows, partial: None, read: true, sample: Sample::FromReadBit })?;
+        let cost_rows = decoded.complete::<tables::CountryPowerDailyCosts>()?;
+        synthetic.table(TableId::CountryPowerDailyCosts, Input::Snapshot { rows: cost_rows, partial: None, read: true, sample: Sample::FromReadBit })?;
+        let cov = decoded.complete::<tables::PoliticsCaptureCoverage>()?;
+        synthetic.table(TableId::PoliticsCaptureCoverage, Input::Snapshot { rows: cov, partial: None, read: true, sample: Sample::FromReadBit })?;
+        Ok(())
+    })
+    .unwrap();
+    let held_replay = Replay::open(held_bytes).unwrap().into_timelines(&Default::default()).unwrap();
+    let held_src = Source::from_replay(dashboard_base::SourceKey { source_id: "power-reconcile-held".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(held_replay), &AtomicBool::new(false)).unwrap();
+    let held_reply = asked(&held_src, 102, 108);
+    assert_eq!(held_reply.reconciliation.gained_raw, None);
+    assert_eq!(held_reply.reconciliation.other_changes_raw, None);
+    assert!(
+        held_reply.reconciliation.reason.as_deref().is_some_and(|reason| reason.contains("was not read at this hour")),
+        "held Complete status without fresh read withholds reconciliation: {:?}",
+        held_reply.reconciliation
     );
 }

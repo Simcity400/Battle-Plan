@@ -184,6 +184,26 @@ pub struct SpendBalanceRun {
     pub reason: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct SpendReconciliation {
+    #[doc = " Balance immediately before the span (`from - 1`), fixed5; none when not recorded."]
+    pub opening_raw: Option<String>,
+    #[doc = " Total recorded gains before cap across the span, fixed5; none when not recorded whole."]
+    pub gained_raw: Option<String>,
+    #[doc = " Total recorded gains lost at cap across the span, fixed5; none when not recorded whole."]
+    pub lost_at_cap_raw: Option<String>,
+    #[doc = " Total recorded spending across the span, fixed5; none when not recorded whole."]
+    pub spent_raw: Option<String>,
+    #[doc = " Balance at the end of the span (`to`), fixed5; none when not recorded."]
+    pub closing_raw: Option<String>,
+    #[doc = " Signed difference `closing - opening - (gained - lost_at_cap - spent)`, fixed5; none when any operand was not recorded."]
+    pub other_changes_raw: Option<String>,
+    #[doc = " Why `other_changes_raw` or an operand was not recorded; none when all operands are recorded."]
+    pub reason: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -208,6 +228,8 @@ pub struct PowerSpendingReply {
     pub gain_coverage: Vec<SpendCoverage>,
     #[doc = " Recorded currency balances over the span and its baseline hour, in order."]
     pub balances: Vec<SpendBalanceRun>,
+    #[doc = " Span balance identity and its availability over `from..=to`."]
+    pub reconciliation: SpendReconciliation,
     pub icons: Vec<EquipmentIcon>,
     #[doc = " None where no item is an idea or an advisor."]
     pub idea_tooltips: Option<SpendIdeaTooltips>,
@@ -238,6 +260,7 @@ impl Product for PowerSpending {
             SpendGain::decl(),
             SpendCoverage::decl(),
             SpendBalanceRun::decl(),
+            SpendReconciliation::decl(),
             SpendIdeaTooltips::decl(),
         ]
     }
@@ -1005,6 +1028,159 @@ fn balances(query: &Query<'_>, piece: &Piece, currency: SpendCurrency, out: &mut
     Ok(())
 }
 
+fn full_coverage_reason(runs: &[SpendCoverage], from: i32, to: i32, fallback: &str) -> Option<String> {
+    let mut cursor = from;
+    for run in runs {
+        let a = run.first_hour.max(from);
+        let b = run.last_hour.min(to);
+        if a > b {
+            continue;
+        }
+        if cursor < a {
+            return Some(fallback.to_owned());
+        }
+        if !run.covered {
+            return Some(run.reason.clone().unwrap_or_else(|| fallback.to_owned()));
+        }
+        cursor = match b.checked_add(1) {
+            Some(next) => next,
+            None => return None,
+        };
+    }
+    (cursor <= to).then(|| fallback.to_owned())
+}
+
+fn balance_at(runs: &[SpendBalanceRun], hour: i32) -> (Option<i128>, Option<String>) {
+    let at = runs.partition_point(|run| run.last_hour < hour);
+    let Some(run) = runs.get(at).filter(|run| run.first_hour <= hour && hour <= run.last_hour) else {
+        return (None, None);
+    };
+    match run.value_raw.as_deref().and_then(|value| value.parse::<i128>().ok()) {
+        Some(value) => (Some(value), None),
+        None => (None, Some(run.reason.clone().unwrap_or_else(|| "Balance was not recorded".into()))),
+    }
+}
+
+fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpendingReply) -> SpendReconciliation {
+    let (from, to) = (params.from, params.to);
+    let continuity_reason = if held.is_empty() {
+        Some("Country was not held during this span".to_owned())
+    } else if held[0].first > from || held.last().expect("non-empty").last < to {
+        Some("Country was not held for the entire span".to_owned())
+    } else if held.windows(2).any(|pair| pair[0].last.checked_add(1) != Some(pair[1].first)) {
+        Some("Country was not held for the entire span".to_owned())
+    } else if held.windows(2).any(|pair| pair[0].run != pair[1].run || pair[1].baseline != pair[1].first.checked_sub(1)) {
+        Some("Continuity broke across a load or recording gap during this span".to_owned())
+    } else if held.len() > 1 {
+        Some("Country holder changed during this span".to_owned())
+    } else {
+        None
+    };
+
+    let spend_coverage_reason = full_coverage_reason(&reply.coverage, from, to, "Spending coverage was not recorded");
+    let gain_coverage_reason = full_coverage_reason(&reply.gain_coverage, from, to, "Power changes were not recorded");
+
+    let (opening, opening_reason) = match from.checked_sub(1) {
+        Some(prev) if held.first().is_some_and(|piece| piece.first == from && piece.baseline == Some(prev)) => {
+            let (value, reason) = balance_at(&reply.balances, prev);
+            let why = value.is_none().then(|| reason.unwrap_or_else(|| "Opening balance before the span was not recorded".into()));
+            (value, why)
+        }
+        _ => (None, Some("Opening balance before the span was not recorded".into())),
+    };
+
+    let (closing, closing_reason) = if held.last().is_some_and(|piece| piece.last == to) {
+        let (value, reason) = balance_at(&reply.balances, to);
+        let why = value.is_none().then(|| reason.unwrap_or_else(|| "Closing balance at the end of the span was not recorded".into()));
+        (value, why)
+    } else {
+        (None, Some("Closing balance at the end of the span was not recorded".into()))
+    };
+
+    let mut spent_sum: Option<i128> = Some(0);
+    let mut spent_item_reason: Option<String> = None;
+    for payment in &reply.payments {
+        if payment.uncovered {
+            spent_item_reason.get_or_insert_with(|| "Some payments occurred during uncovered hours".into());
+            spent_sum = None;
+        } else if payment.unknown > 0 || payment.known_raw.is_none() {
+            spent_item_reason.get_or_insert_with(|| "Some payment costs were not recorded".into());
+            spent_sum = None;
+        } else if let (Some(total), Some(add)) = (spent_sum, payment.known_raw.as_deref().and_then(|value| value.parse::<i128>().ok())) {
+            spent_sum = total.checked_add(add);
+        } else {
+            spent_sum = None;
+        }
+    }
+    for day in &reply.days {
+        if day.uncovered > 0 {
+            spent_item_reason.get_or_insert_with(|| "Some payments occurred during uncovered hours".into());
+            spent_sum = None;
+        } else if day.unknown > 0 || day.charge_raw.is_none() {
+            spent_item_reason.get_or_insert_with(|| "Some payment costs were not recorded".into());
+            spent_sum = None;
+        } else if let (Some(total), Some(add)) = (spent_sum, day.charge_raw.as_deref().and_then(|value| value.parse::<i128>().ok())) {
+            spent_sum = total.checked_add(add);
+        } else {
+            spent_sum = None;
+        }
+    }
+    let spent = (continuity_reason.is_none() && spend_coverage_reason.is_none() && spent_item_reason.is_none())
+        .then_some(spent_sum)
+        .flatten();
+
+    let mut gained_sum: Option<i128> = Some(0);
+    let mut capped_sum: Option<i128> = Some(0);
+    let mut gain_item_reason: Option<String> = None;
+    for gain in &reply.gains {
+        if gain.unknown_days > 0 || gain.gained_raw.is_none() || gain.capped_raw.is_none() {
+            gain_item_reason.get_or_insert_with(|| "Some power gains were not recorded".into());
+            gained_sum = None;
+            capped_sum = None;
+        } else if gain.unmatched > 0 {
+            gain_item_reason.get_or_insert_with(|| "Some daily power applications were not recorded".into());
+            gained_sum = None;
+            capped_sum = None;
+        } else {
+            gained_sum = gained_sum.zip(gain.gained_raw.as_deref().and_then(|value| value.parse::<i128>().ok())).and_then(|(a, b)| a.checked_add(b));
+            capped_sum = capped_sum.zip(gain.capped_raw.as_deref().and_then(|value| value.parse::<i128>().ok())).and_then(|(a, b)| a.checked_add(b));
+        }
+    }
+    let gains_ok = continuity_reason.is_none() && spend_coverage_reason.is_none() && gain_coverage_reason.is_none() && gain_item_reason.is_none();
+    let gained = gains_ok.then_some(gained_sum).flatten();
+    let lost_at_cap = gains_ok.then_some(capped_sum).flatten();
+
+    let (other_changes, reason) = match (continuity_reason.is_none(), opening, gained, lost_at_cap, spent, closing) {
+        (true, Some(open), Some(gain), Some(capped), Some(spend), Some(close)) => {
+            let other = close
+                .checked_sub(open)
+                .and_then(|delta| gain.checked_sub(capped).and_then(|net| net.checked_sub(spend)).and_then(|attributed| delta.checked_sub(attributed)));
+            let why = other.is_none().then(|| "Reconciliation arithmetic overflowed".to_owned());
+            (other, why)
+        }
+        _ => {
+            let why = spend_coverage_reason
+                .or(gain_coverage_reason)
+                .or(continuity_reason)
+                .or(opening_reason)
+                .or(closing_reason)
+                .or(spent_item_reason)
+                .or(gain_item_reason);
+            (None, why)
+        }
+    };
+
+    SpendReconciliation {
+        opening_raw: opening.map(|value| value.to_string()),
+        gained_raw: gained.map(|value| value.to_string()),
+        lost_at_cap_raw: lost_at_cap.map(|value| value.to_string()),
+        spent_raw: spent.map(|value| value.to_string()),
+        closing_raw: closing.map(|value| value.to_string()),
+        other_changes_raw: other_changes.map(|value| value.to_string()),
+        reason,
+    }
+}
+
 fn items_at(query: &Query<'_>, slot: u32, hour: i32) -> io::Result<BTreeMap<u32, PowerItemRow>> {
     let low = u128::from(slot) << 32;
     let reads = [at_hour::Read { table: TableId::PowerItems, keys: at_hour::Keys::Range(low, low | u128::from(u32::MAX)) }];
@@ -1029,6 +1205,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         coverage: Vec::new(),
         gain_coverage: Vec::new(),
         balances: Vec::new(),
+        reconciliation: SpendReconciliation::default(),
         icons: Vec::new(),
         idea_tooltips: None,
         warnings: Vec::new(),
@@ -1040,16 +1217,17 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     let mut gain_buckets: BTreeMap<(i32, Option<i32>), GainBucket> = BTreeMap::new();
     let mut unmatched = 0_u64;
     let has_day_log = query.replay.recording().predates(TableId::PowerSpendDays.index()).is_none();
-    for piece in pieces(query, &params.country, params.from, params.to)? {
+    let held = pieces(query, &params.country, params.from, params.to)?;
+    for piece in &held {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let coverage_start = reply.coverage.len();
-        coverage(query, &piece, currency, &mut reply.coverage)?;
-        balances(query, &piece, currency, &mut reply.balances)?;
-        instant_gains(query, &piece, currency, &mut reply.gain_coverage, &mut gain_buckets)?;
+        coverage(query, piece, currency, &mut reply.coverage)?;
+        balances(query, piece, currency, &mut reply.balances)?;
+        instant_gains(query, piece, currency, &mut reply.gain_coverage, &mut gain_buckets)?;
         let items = items_at(query, piece.slot, piece.last)?;
         let low = u128::from(piece.slot) << 40 | u128::from(currency.code()) << 32;
         let mut missing = 0_u64;
-        changes(query, &piece, low, low | u128::from(u32::MAX), &mut |change| {
+        changes(query, piece, low, low | u128::from(u32::MAX), &mut |change| {
             if change.ordinal == PowerSpendTotalRow::GAINS {
                 if let Some(gain) = gained(&change) {
                     unmatched += u64::from(gain.unmatched);
@@ -1084,7 +1262,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
             }
         })?;
         if has_day_log {
-            let gaps = day_log(query, &piece, currency, &mut |hour, ordinal, mut day| {
+            let gaps = day_log(query, piece, currency, &mut |hour, ordinal, mut day| {
                 let Some(row) = items.get(&ordinal) else {
                     missing += 1;
                     return;
@@ -1120,6 +1298,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
             unmatched: bucket.unmatched,
         })
         .collect();
+    reply.reconciliation = reconcile(params, &held, &reply);
     let rows: Vec<naming::Asked<'_>> = asked.iter().map(|(run, row)| naming::Asked { run: *run, row }).collect();
     let mut icons = BTreeMap::new();
     let named = naming::name(query, &rows, naming, &mut icons, cancelled)?;

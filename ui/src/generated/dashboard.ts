@@ -3831,7 +3831,11 @@ gainCoverage: Array<SpendCoverage>,
 /**
  * Recorded currency balances over the span and its baseline hour, in order.
  */
-balances: Array<SpendBalanceRun>, icons: Array<EquipmentIcon>,
+balances: Array<SpendBalanceRun>,
+/**
+ * Span balance identity and its availability over `from..=to`.
+ */
+reconciliation: SpendReconciliation, icons: Array<EquipmentIcon>,
 /**
  * None where no item is an idea or an advisor.
  */
@@ -3950,6 +3954,35 @@ export type SpendBalanceRun = { firstHour: number, lastHour: number,
  * Recorded currency balance, fixed5; none when the balance or Countries table was not recorded.
  */
 valueRaw: string | null, reason: string | null, };
+export type SpendReconciliation = {
+/**
+ * Balance immediately before the span (`from - 1`), fixed5; none when not recorded.
+ */
+openingRaw: string | null,
+/**
+ * Total recorded gains before cap across the span, fixed5; none when not recorded whole.
+ */
+gainedRaw: string | null,
+/**
+ * Total recorded gains lost at cap across the span, fixed5; none when not recorded whole.
+ */
+lostAtCapRaw: string | null,
+/**
+ * Total recorded spending across the span, fixed5; none when not recorded whole.
+ */
+spentRaw: string | null,
+/**
+ * Balance at the end of the span (`to`), fixed5; none when not recorded.
+ */
+closingRaw: string | null,
+/**
+ * Signed difference `closing - opening - (gained - lost_at_cap - spent)`, fixed5; none when any operand was not recorded.
+ */
+otherChangesRaw: string | null,
+/**
+ * Why `other_changes_raw` or an operand was not recorded; none when all operands are recorded.
+ */
+reason: string | null, };
 export type SpendIdeaTooltips = { ideas: Array<IdeaInfo>, artwork: Array<Artwork>, modifiers: Array<ModifierFormat>, texts: Array<LocalisedText>, };
 export type StabilityReadsParams = { branchId: string, from: number, to: number, };
 export type StabilityReadsReply = { reads: Array<HourSpan>, warnings: Array<string>, };

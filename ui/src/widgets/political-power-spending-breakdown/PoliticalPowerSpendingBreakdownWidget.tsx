@@ -13,10 +13,10 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { ideaTooltip } from '../../dashboard/ideaTooltip';
 import { useIdeaTooltips } from '../../dashboard/useIdeaTooltips';
-import { OTHER_CHANGES_HINT, categoryLabel, firstPaid, groupAt, groupCostNotes, mergedIdeaTooltips, powerGains, powerReconciler, sameSpendingItems, spendingGapNote, spendingGaps, spendingGroups,
+import { categoryLabel, firstPaid, groupAt, groupCostNotes, mergedIdeaTooltips, powerGains, sameSpendingItems, spendingGapNote, spendingGaps, spendingGroups,
   spendingItems } from '../../dashboard/powerSpending.ts';
-import { formatPower, formatPowerChange, powerDecimals } from '../../dashboard/powerDecimals';
-import '../../dashboard/powerSpending.css';
+import type { PowerGain } from '../../dashboard/powerSpending';
+import { formatPower, powerDecimals } from '../../dashboard/powerDecimals';
 import { usePowerSpending } from '../../dashboard/usePowerSpending.ts';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { useHeadHour } from '../army-size/headHour.ts';
@@ -26,7 +26,13 @@ import ReadView from '../../dashboard/ReadView';
 const NO_WARNINGS: string[] = [];
 const LEVELS = ['categoryLevel', 'itemLevel'];
 const ROOT = { id: 'all', label: 'Spent' };
-const NOT_RECORDED = 'Not recorded';
+
+export function gainNote(gain: PowerGain | null, digits: number): string {
+  if (!gain) return '';
+  const gained = `Gained ${formatPower(gain.gained, digits)} PP over the same period`;
+  if (!gain.lost) return `${gained}.`;
+  return gain.lost === gain.gained ? `${gained}; all of it was lost at the cap.` : `${gained}; ${formatPower(gain.lost, digits)} PP of it was lost at the cap.`;
+}
 
 export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
@@ -43,7 +49,6 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   const groups = useMemo(() => ledgers ? spendingGroups(ledgers, from, selection) : null, [ledgers, from, selection]);
   const paidFrom = useMemo(() => groups ? firstPaid(groups) : null, [groups]);
   const gains = useMemo(() => ledgers ? powerGains(ledgers, from, selection) : null, [ledgers, from, selection]);
-  const reconciler = useMemo(() => ledgers && groups && track ? powerReconciler(ledgers, groups, from, track.branch.firstHour, selection) : null, [ledgers, groups, from, track, selection]);
   const branch = track ? [track.branch.firstHour, track.branch.lastHour] as const : null;
   const headHour = useHeadHour(runtime.clock, active && following && !!ledgers, useCallback(clock => {
     const at = hourAt(clock);
@@ -60,20 +65,11 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   }, (a, b) => sameSpendingItems(a.items, b.items)) : undefined, [groups, end, runtime.clock, paintedHour, following, shown]);
   const texts = useMemo(() => liveTexts(runtime.clock, () => paintedHour(runtime.clock.getSnapshot().position), at => {
     const values = new Map<string, string>();
-    if (!ledgers || !groups || !gains || !reconciler || Number.isNaN(at)) return values;
-    const gain = gains(at);
-    values.set('gained', gain ? `${formatPower(gain.gained, digits)} PP` : NOT_RECORDED);
-    values.set('lost', gain && gain.lost > 0n ? `${formatPower(gain.lost, digits)} PP` : '');
-    const other = reconciler(at);
-    values.set('other', other.kind === 'value' ? `${formatPowerChange(other.other, digits)} PP` : other.kind === 'unrecorded' ? NOT_RECORDED : '');
-    values.set('notes', [
-      spendingGapNote(spendingGaps(ledgers, { from, hour: at }, selection)),
-      ...groupCostNotes(groups, at),
-      gain && !gain.complete ? 'Gain wasn’t recorded on some days.' : '',
-      other.kind === 'unrecorded' ? `Other changes not recorded: ${/[.!?]$/.test(other.reason) ? other.reason : `${other.reason}.`}` : '',
-    ].filter(Boolean).join(' '));
+    if (!ledgers || !groups || !gains || Number.isNaN(at)) return values;
+    values.set('gain', gainNote(gains(at), digits));
+    values.set('notes', [spendingGapNote(spendingGaps(ledgers, { from, hour: at }, selection)), ...groupCostNotes(groups, at)].filter(Boolean).join(' '));
     return values;
-  }), [runtime.clock, paintedHour, ledgers, groups, gains, reconciler, from, selection, digits]);
+  }), [runtime.clock, paintedHour, ledgers, groups, gains, from, selection, digits]);
   const ideaData = useMemo(() => mergedIdeaTooltips(ledgers), [ledgers]);
   const ideas = useIdeaTooltips(ideaData, track, runtime.client, active, tag => tag);
   const tooltip = useCallback<NonNullable<SunburstProps['tooltip']>>((node, focus, shownText) => {
@@ -109,11 +105,7 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   if (hour === null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{groupNotice}<WidgetState kind="outside" /></>;
   if (ledgers.every(ledger => !ledger.coverage.length)) return <>{groupNotice}<WidgetState kind="unavailable" message="Political power spending wasn’t recorded." /></>;
   const notes = <LiveText live={texts} at="notes" />;
-  const gain = <p className="politics-spending-summary politics-breakdown-figures" aria-label="Power figures">
-    <span>Gained <b><LiveText live={texts} at="gained" /></b></span>
-    <span>Lost at cap <b><LiveText live={texts} at="lost" /></b></span>
-    <span title={OTHER_CHANGES_HINT}>Other changes <b><LiveText live={texts} at="other" /></b></span>
-  </p>;
+  const gain = <p className="chart-line-key"><LiveText live={texts} at="gain" /></p>;
   if (!items.some(item => item.present)) {
     return <div style={{ height: '100%' }}>{groupNotice}<WidgetState kind="empty" icon="sunburst" message="No political power spent in this period." detail={notes} />{gain}</div>;
   }

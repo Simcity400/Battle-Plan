@@ -2,9 +2,7 @@
 .politics-spending-chips { padding: 0 var(--space-4) var(--space-2); }
 .politics-spending-chips .chip-set { gap: 5px; }
 .politics-spending-summary { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); margin: 0; padding: 0 var(--space-4) var(--space-1); color: var(--muted); font-size: var(--type-sm); font-variant-numeric: tabular-nums; }
-.politics-spending-summary > span:not(:has(span:not(:empty))) { display: none; }
 .politics-spending-summary b { color: var(--text); font-weight: 600; }
-.politics-breakdown-figures { padding: 0; }
 .politics-spending-note { margin: 0; padding: 0 var(--space-4) var(--space-1); color: var(--muted); font-size: var(--type-xs); }
 .politics-spending-note:not(:has(span:not(:empty))) { display: none; }
 .politics-spending-table { flex: 1; min-height: 0; margin-top: var(--space-2); }
