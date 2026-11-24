@@ -13,7 +13,7 @@ export const OPTIONS: readonly OptionField[] = [
   regionPickerControl({ automatic: 'Most active this week' }),
 ];
 export const definition = {
-  kind: 'weather-by-region', version: 1, title: 'Weather by region', icon: 'sun', category: 'Air',
+  kind: 'weather-by-region', version: 1, title: 'Weather by region', icon: 'cloud', category: 'Air',
   description: 'Recorded weather by strategic region over the last week: conditions, temperature and weather modifiers.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, countrySelection: false, history: true,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 10, h: 8 }, options: OPTIONS, viewSwitch: { option: 'show' },
