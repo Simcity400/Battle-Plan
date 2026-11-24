@@ -75,9 +75,13 @@
 }
 
 .fh-summary {
+  margin-left: 6px;
   color: var(--muted);
-  font-size: var(--type-sm);
-  font-weight: 400;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .fh-sr-only {

@@ -508,13 +508,13 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
     let auditId: number | undefined;
     if (perfLog && cur.captureActive && cur.exactReadView && curAdapter.deriveAuditRows) {
-      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows, viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop, cur.settings, expandedRef.current, windowRef.current?.first, windowRef.current?.count];
+      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows, viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop, cur.settings, expandedRef.current, windowRef.current?.first, windowRef.current?.count, cur.theme];
       const prev = lastAuditRef.current;
       if (prev && prev.key.length === key.length && prev.key.every((part, i) => part === key[i])) {
         auditId = prev.id;
       } else {
         const deriveRows = curAdapter.deriveAuditRows;
-        const context = { viewport, settings: cur.settings, expanded: expandedRef.current, window: windowRef.current, fields: installedFieldsRef.current };
+        const context = { viewport, settings: cur.settings, expanded: expandedRef.current, window: windowRef.current, theme: cur.theme, fields: installedFieldsRef.current };
         const snapshot: PlanAuditSnapshot<TModel, TOptions> = {
           projection: cur.declaration,
           options: cur.options,

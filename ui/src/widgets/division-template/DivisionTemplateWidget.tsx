@@ -5,7 +5,8 @@ import { useDrill } from '../../charts/drill/useDrill';
 import { formatDateTime } from '../../dashboard/calendar';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useRegion, useRegionCoverage, useRegionHour } from '../../dashboard/widgetTime.ts';
-import DeclaredTableWidget from '../../families/table/DeclaredTableWidget';
+import type { InstalledAction } from '../../families/contract.ts';
+import { FamilyWidget } from '../../families/host/registry';
 import { gameWindow, subscribeGameWindows } from '../../dashboard/gameWindows';
 import { divisionTemplateDeclaration } from './divisionTemplateProjection';
 import './divisionTemplate.css';
@@ -34,16 +35,17 @@ export default function DivisionTemplateWidget(props: WidgetProps) {
     setOpened(null);
   }, [track?.source.id, track?.source.revision, track?.branch.id, widget.options?.country, dispatch]);
 
-  const handleActivate = useCallback((key: string, meta?: unknown, atHour?: number) => {
-    if (!Designer || atHour === undefined) return;
-    const info = meta as { designer?: 'ordinary' | 'headquarters' | null; tag?: string } | null | undefined;
+  const handleActivate = useCallback((action: InstalledAction) => {
+    if (!Designer) return;
+    const info = action.meta as { designer?: 'ordinary' | 'headquarters' | null; tag?: string } | null | undefined;
     if (!info?.tag || !info.designer) return;
-    setOpened({ template: key, designer: info.designer, tag: info.tag });
-    drillControl.show(key, atHour);
+    setOpened({ template: action.subject, designer: info.designer, tag: info.tag });
+    drillControl.show(action.subject, action.hour);
   }, [Designer, drillControl]);
 
-  const main = <DeclaredTableWidget
+  const main = <FamilyWidget
     {...props}
+    family="table"
     declaration={divisionTemplateDeclaration}
     selectedKey={opened?.template ?? null}
     onActivate={Designer ? handleActivate : undefined}

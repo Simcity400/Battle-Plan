@@ -8,16 +8,6 @@
   background: var(--surface);
 }
 
-.tf-title-summary {
-  margin-left: 6px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .tf-head-clip {
   position: relative;
   flex: none;

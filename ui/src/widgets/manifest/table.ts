@@ -1,3 +1,4 @@
+import { tableHostAdapter } from '../../families/table/hostAdapter.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type FamilyViewModule } from '../../families/manifest.ts';
 import type { AnyTableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { familyTableLaneView } from '../../families/table/laneView.ts';
@@ -140,4 +141,5 @@ export const tableFamilyManifest: FamilyManifestModule = {
   family: 'table',
   laneView: familyTableLaneView,
   views: TABLE_VIEWS,
+  hostAdapter: tableHostAdapter,
 };

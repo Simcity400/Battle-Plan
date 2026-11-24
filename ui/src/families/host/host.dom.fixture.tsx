@@ -17,13 +17,12 @@ import type { FromLane, ToLane } from '../../draw/laneMessages';
 import { laneDispatch } from '../../draw/laneDispatch.ts';
 import { measureWith, PerfRecorder } from '../../shell/perf.ts';
 import type { InstalledAction } from '../contract.ts';
-import { familyTableLaneView, type FamilyTableBinding } from '../table/laneView.ts';
+import { familyTableLaneView } from '../table/laneView.ts';
 import { tableSettingsOf } from '../table/settings.ts';
 import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from '../table/tableFamilyDomShared.ts';
-import FamilyTableHost from '../table/FamilyTableHost.tsx';
-import type { FamilyHostAdapter } from './adapter.ts';
+import { tableHostAdapter } from '../table/hostAdapter.ts';
+import TableChrome from '../table/TableChrome.tsx';
 import FamilyHost from './FamilyHost.tsx';
-import { parseDefaultRowHit } from './pointer.ts';
 import '../../styles.css';
 
 const NATIVE = 9;
@@ -196,38 +195,6 @@ function subsForPipe(pipeId: number): number[] {
   return [...(internal.widgets.get(pipeId)?.subs.values() ?? [])];
 }
 
-function fixtureTableAdapter(): FamilyHostAdapter<unknown, typeof OPTIONS, FamilyTableBinding<typeof OPTIONS>> {
-  return {
-    family: 'table',
-    skeleton: 'table',
-    scroll: 'vertical',
-    navigation: 'rows',
-    mirror: 'table',
-    parseHit: hit => {
-      const row = parseDefaultRowHit(hit);
-      return row && hit ? { key: row.key, toggle: row.toggle, inspectToken: hit } : null;
-    },
-    inspectToken: key => `row:${key}`,
-    buildBinding: ctx => ({
-      family: 'table',
-      kind: ctx.kind,
-      view: ctx.view,
-      options: ctx.options,
-      settings: SETTINGS,
-      sources: ctx.sources,
-      width: ctx.viewport.width,
-      height: ctx.viewport.height,
-      scrollLeft: ctx.viewport.scrollLeft,
-      scrollTop: ctx.viewport.scrollTop,
-      theme: ctx.theme,
-      selectedKey: ctx.selectedKey,
-      focusedKey: ctx.focusedKey,
-      reducedMotion: ctx.reducedMotion,
-      pauseFlush: ctx.pauseFlush,
-    }),
-  };
-}
-const GENERIC_ADAPTER = fixtureTableAdapter();
 
 let root: Root | null = null;
 let genericCommits = 0;
@@ -290,7 +257,10 @@ function renderApp() {
       <WidgetFrameContext.Provider value={frameCtx as never}>
         <Profiler id="host-dom" onRender={() => { commits++; }}>
           <div data-slot="primary" style={{ width: '460px', height: '240px', display: 'flex', flexDirection: 'column' }}>
-            <FamilyTableHost
+            <FamilyHost
+              adapter={tableHostAdapter}
+              chrome={TableChrome}
+              view="default"
               declaration={scoreboardProjection}
               options={OPTIONS}
               label="Scoreboard"
@@ -298,19 +268,21 @@ function renderApp() {
               widget={widget}
               runtime={rt}
               active={currentState.active}
-              columns={SPECS}
               settings={SETTINGS}
               subscriptions={subs}
               exactReadView={NO_EXACT}
               offset={0}
               pin={null}
               bounds={BOUNDS}
-              onActivate={key => { activated.push(key); }}
+              onActivate={action => { activated.push(action.subject); }}
             />
           </div>
           {currentState.secondMounted && (
             <div data-slot="secondary" style={{ width: '460px', height: '240px', display: 'flex', flexDirection: 'column' }}>
-              <FamilyTableHost
+              <FamilyHost
+              adapter={tableHostAdapter}
+              chrome={TableChrome}
+              view="default"
                 declaration={scoreboardProjection}
                 options={OPTIONS}
                 label="Scoreboard Secondary"
@@ -318,7 +290,6 @@ function renderApp() {
                 widget={widget}
                 runtime={rt}
                 active
-                columns={SPECS}
                 settings={SETTINGS}
                 subscriptions={subs}
                 exactReadView={NO_EXACT}
@@ -332,7 +303,9 @@ function renderApp() {
             <Profiler id="generic-host" onRender={() => { genericCommits++; }}>
               <div data-slot="generic" style={{ width: '460px', height: '240px', display: 'flex', flexDirection: 'column' }}>
                 <FamilyHost
-                  adapter={GENERIC_ADAPTER}
+                  adapter={tableHostAdapter}
+                  chrome={TableChrome}
+                  settings={SETTINGS}
                   declaration={scoreboardProjection}
                   view="default"
                   options={OPTIONS}
@@ -373,7 +346,7 @@ window.hostDom = {
     renderApp();
     let pipeId = -1;
     await until(() => {
-      const canvas = container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.tf-canvas');
+      const canvas = container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.fh-canvas');
       if (!canvas?.dataset.placement) return false;
       pipeId = Number(canvas.dataset.placement);
       return pipeId > 0;
@@ -383,19 +356,19 @@ window.hostDom = {
     clock.seek(20);
     seek = clock.getSnapshot().seekSequence;
     sendHour(subs, 20, [90n, 70n, 50n, 30n], true);
-    await until(() => pipeline.view(pipeId)?.mode === 'picture' && (container!.querySelectorAll('[data-slot="primary"] .table-accessibility tbody tr').length === 4));
+    await until(() => pipeline.view(pipeId)?.mode === 'picture' && (container!.querySelectorAll('[data-slot="primary"] table tbody tr').length === 4));
     return { pipeId };
   },
 
   bodyBox() {
-    const box = container!.querySelector<HTMLElement>('[data-slot="primary"] .tf-body')!.getBoundingClientRect();
+    const box = container!.querySelector<HTMLElement>('[data-slot="primary"] .fh-body')!.getBoundingClientRect();
     return { left: box.left, top: box.top };
   },
 
   async testF1PinClearsOnCampaignSwitch() {
-    const firstRow = container!.querySelector<HTMLTableRowElement>('[data-slot="primary"] .table-accessibility tbody tr')!;
+    const firstRow = container!.querySelector<HTMLTableRowElement>('[data-slot="primary"] table tbody tr')!;
     firstRow.focus();
-    const pipeId = Number(container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.tf-canvas')!.dataset.placement);
+    const pipeId = Number(container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.fh-canvas')!.dataset.placement);
     await until(() => !!(pipeline.view(pipeId)?.fields?.focusTooltip as { text?: unknown } | undefined)?.text, 2000);
     firstRow.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', bubbles: true }));
     await until(() => (tooltipStore.get()?.content.subtitle ?? '').startsWith('Pinned at '), 2000);
@@ -408,7 +381,7 @@ window.hostDom = {
 
     currentState = { ...currentState, source: sourceA };
     renderApp();
-    const nextPipe = Number(container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.tf-canvas')!.dataset.placement);
+    const nextPipe = Number(container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.fh-canvas')!.dataset.placement);
     const subs = subsForPipe(nextPipe);
     await until(() => subs.length === 2 && subs.every(id => pipeline.status(id).status === 'followed'));
     clock.seek(25);
@@ -419,9 +392,9 @@ window.hostDom = {
   },
 
   async testF2LeaveThenDeactivateClearsHover() {
-    const pipeId = Number(container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.tf-canvas')!.dataset.placement);
+    const pipeId = Number(container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.fh-canvas')!.dataset.placement);
     const tipVisible = await until(() => tooltipStore.get() !== null, 2000);
-    const bodyEl = container!.querySelector<HTMLElement>('[data-slot="primary"] .tf-body')!;
+    const bodyEl = container!.querySelector<HTMLElement>('[data-slot="primary"] .fh-body')!;
     bodyEl.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false }));
     currentState = { ...currentState, active: false };
     renderApp();
@@ -431,7 +404,7 @@ window.hostDom = {
     renderApp();
     let newPipe = -1;
     await until(() => {
-      const c = container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.tf-canvas');
+      const c = container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.fh-canvas');
       if (!c?.dataset.placement) return false;
       newPipe = Number(c.dataset.placement);
       return newPipe > 0;
@@ -466,7 +439,7 @@ window.hostDom = {
   },
 
   async waitInspected(expectedKey: string) {
-    const pipeId = Number(container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.tf-canvas')!.dataset.placement);
+    const pipeId = Number(container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.fh-canvas')!.dataset.placement);
     return until(() => {
       const tip = pipeline.view(pipeId)?.fields?.tooltip as { text?: { rowKey?: string } | null } | undefined;
       return tip?.text?.rowKey === expectedKey;
@@ -556,9 +529,9 @@ window.hostDom = {
     sendHour(subsG, clock.getSnapshot().hour, [factories, 70n, 50n, 30n]);
     await until(() => pipeline.view(pipeG)?.dim === false && pipeline.view(pipeG)?.h === clock.getSnapshot().hour, 2000);
     genericActivated = [];
-    const box = container!.querySelector<HTMLElement>('[data-slot="generic"] .fh-body')!;
-    box.focus();
-    box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    const row = container!.querySelector<HTMLElement>('[data-slot="generic"] table tbody tr')!;
+    row.focus();
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     const installed = pipeline.view(pipeG);
     const activated = genericActivated[0] ?? null;
 
@@ -606,7 +579,8 @@ window.hostDom = {
     const describedBy = body.getAttribute('aria-describedby');
     const description = describedBy ? document.getElementById(describedBy)?.textContent ?? null : null;
 
-    body.focus();
+    const firstRow = container!.querySelector<HTMLElement>('[data-slot="generic"] table tbody tr')!;
+    firstRow.focus();
     await frames(2);
     clock.setSpeed(24);
     clock.setPlaying(true);
@@ -620,7 +594,7 @@ window.hostDom = {
       dateOnly = now?.id !== idBefore && now?.dim === false && (installCalls.get(pipeG) ?? 0) === installsBefore;
     }
     genericActivated = [];
-    body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     const view = pipeline.view(pipeG);
     const activated = genericActivated[0] ?? null;
     clock.setPlaying(false);
@@ -651,15 +625,15 @@ window.hostDom = {
     let pipeA = -1;
     let pipeB = -1;
     await until(() => {
-      const cA = container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.tf-canvas');
-      const cB = container!.querySelector<HTMLCanvasElement>('[data-slot="secondary"] canvas.tf-canvas');
+      const cA = container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.fh-canvas');
+      const cB = container!.querySelector<HTMLCanvasElement>('[data-slot="secondary"] canvas.fh-canvas');
       if (!cA?.dataset.placement || !cB?.dataset.placement) return false;
       pipeA = Number(cA.dataset.placement);
       pipeB = Number(cB.dataset.placement);
       return pipeA > 0 && pipeB > 0;
     });
-    const cA = container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.tf-canvas')!;
-    const cB = container!.querySelector<HTMLCanvasElement>('[data-slot="secondary"] canvas.tf-canvas')!;
+    const cA = container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.fh-canvas')!;
+    const cB = container!.querySelector<HTMLCanvasElement>('[data-slot="secondary"] canvas.fh-canvas')!;
     const distinctCanvases = cA !== cB;
     const distinctPlacements = pipeA !== pipeB;
     const readers = (perf as unknown as { readers: Map<string, unknown> }).readers;
@@ -682,7 +656,7 @@ window.hostDom = {
     sendHour(subsA, 36, [95n, 70n, 50n, 30n], true);
     const primaryStillInstalls = await until(() => pipeline.view(pipeA)?.h === 36 && !pipeline.view(pipeA)?.dim, 2000);
 
-    const firstRow = container!.querySelector<HTMLTableRowElement>('[data-slot="primary"] .table-accessibility tbody tr')!;
+    const firstRow = container!.querySelector<HTMLTableRowElement>('[data-slot="primary"] table tbody tr')!;
     firstRow.focus();
     firstRow.dispatchEvent(new KeyboardEvent('keydown', { key: 'i', bubbles: true }));
     const typeaheadKey = await until(() => (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key') === 'ITA', 2000)

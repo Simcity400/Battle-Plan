@@ -182,6 +182,7 @@ export interface FamilyAuditContext<TSettings = unknown> {
   readonly settings: TSettings | undefined;
   readonly expanded: Readonly<Record<string, boolean>>;
   readonly window: FamilyRowWindow | null;
+  readonly theme: FamilyTheme | undefined;
   readonly fields: Readonly<Record<string, unknown>>;
 }
 
