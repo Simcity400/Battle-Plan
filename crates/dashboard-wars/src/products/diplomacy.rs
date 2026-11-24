@@ -30,7 +30,7 @@ fn holder_ids(holders: &Holders, countries: &[Country], hour: i32) -> Vec<(Strin
                 Some(Holder::Found { slot, id }) => Some((slot, id)),
                 _ => None,
             };
-            (country.key().into_owned(), id)
+            (holders.name(country, hour), id)
         })
         .collect()
 }
@@ -226,7 +226,9 @@ pub(crate) fn opinions(frame: &DecodedFrame, ids: &[(&str, Option<(u32, u32)>)],
     opinions_matrix(frame, ids, live).map(|(owners, ..)| owners)
 }
 
-fn top_countries_at(frame: &DecodedFrame, holders: &Holders, hour: i32, limit: u32) -> Vec<Country> {
+pub(crate) const TOP_UNRANKED: &str = "The countries' factories were not recorded at this hour, so no top countries can be ranked";
+
+pub(crate) fn top_countries_at(frame: &DecodedFrame, holders: &Holders, hour: i32, limit: u32) -> Result<Vec<Country>, &'static str> {
     let mut slot_to_tag: HashMap<u32, &str> = HashMap::new();
     let mut raw_to_slot: HashMap<u32, u32> = HashMap::new();
     for (tag, _) in &holders.tags {
@@ -241,7 +243,8 @@ fn top_countries_at(frame: &DecodedFrame, holders: &Holders, hour: i32, limit: u
         }
     }
     let mut scores: HashMap<&str, i64> = slot_to_tag.values().map(|&tag| (tag, 0)).collect();
-    if let Ok(factories) = frame.complete::<tables::CountryFactories>() {
+    let factories = frame.complete::<tables::CountryFactories>().map_err(|_| TOP_UNRANKED)?;
+    {
         for row in factories {
             if let Some(&slot) = raw_to_slot.get(&row.country)
                 && let Some(&tag) = slot_to_tag.get(&slot)
@@ -255,7 +258,7 @@ fn top_countries_at(frame: &DecodedFrame, holders: &Holders, hour: i32, limit: u
     let mut ranked: Vec<(&str, i64)> = scores.into_iter().collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
     ranked.truncate(limit as usize);
-    ranked.into_iter().map(|(tag, _)| Country::from(tag)).collect()
+    Ok(ranked.into_iter().map(|(tag, _)| Country::from(tag)).collect())
 }
 
 pub struct DiplomacyContext {
@@ -306,7 +309,7 @@ impl AtHour for DiplomaticRelations {
             _ => return Vec::new(),
         }
         let chosen: Vec<Country> = if params.countries.is_empty() {
-            params.top.map_or_else(Vec::new, |limit| top_countries_at(held, at.holders, at.hour, limit))
+            params.top.map_or_else(Vec::new, |limit| top_countries_at(held, at.holders, at.hour, limit).unwrap_or_default())
         } else {
             params.countries.clone()
         };
@@ -343,7 +346,10 @@ impl AtHour for DiplomaticRelations {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let chosen: Vec<Country> = if params.countries.is_empty() {
-            params.top.map_or_else(Vec::new, |limit| top_countries_at(frame, at.holders, at.hour, limit))
+            match params.top {
+                Some(limit) => top_countries_at(frame, at.holders, at.hour, limit).map_err(dashboard_core::refused)?,
+                None => Vec::new(),
+            }
         } else {
             params.countries.clone()
         };
@@ -360,7 +366,7 @@ impl AtHour for DiplomaticRelations {
                 }
             }
             for country in &chosen {
-                let tag = country.key().into_owned();
+                let tag = at.holders.name(country, at.hour);
                 let look = looks.at(&tag, at.hour);
                 let (fid, fname) = faction_by_tag.get(&tag).map_or((None, None), |(id, name)| (Some(id.clone()), name.clone()));
                 metadata.insert(tag, (look.name, look.name_missing, look.color, fid, fname));

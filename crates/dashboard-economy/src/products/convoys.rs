@@ -519,10 +519,10 @@ pub(crate) fn build_region_cells(
             ConvoyCellState::NotRecorded { reason: if reason.is_empty() { GAP_NOT_RECORDED.to_owned() } else { (*reason).to_owned() } }
         } else if in_spans(unheld, start) {
             ConvoyCellState::NotRecorded { reason: "No country holds this tag at this hour".into() }
-        } else if !in_spans(known, start) {
-            ConvoyCellState::NotRecorded { reason: "Regional convoy efficiency was not recorded".into() }
         } else if let Some(value) = eff_at(start) {
             ConvoyCellState::Efficiency { value }
+        } else if !in_spans(known, start) {
+            ConvoyCellState::NotRecorded { reason: "Regional convoy efficiency was not recorded".into() }
         } else {
             match traffic_at(start) {
                 Some(proof) if proof.crossed.contains(&region) => ConvoyCellState::Efficiency { value: i64::from(SCALE) },

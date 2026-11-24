@@ -420,6 +420,13 @@ pub(crate) fn region_condition_on_day(region: u32, day: usize, measures: &[(Stri
     Some("clear")
 }
 
+pub(crate) fn sampled_read(show: Show, status: replay_columnar::manifest::Status) -> bool {
+    match show {
+        Show::Temperature => replay_recording::columnar_frames::complete(status),
+        Show::Conditions | Show::Modifier => replay_recording::columnar_frames::available(status),
+    }
+}
+
 pub(crate) fn region_readout(
     region: u32,
     days: &[Day],
@@ -441,24 +448,12 @@ pub(crate) fn region_readout(
                 return WeatherReadout::NotRecorded { reason: "Region weather was not recorded at this hour".into() };
             };
             let mut since_idx = last_idx;
-            let mut bounded = true;
             while since_idx > 0 {
                 let prev = since_idx - 1;
-                if days[prev].at.is_none() {
-                    bounded = true;
+                if days[prev].at.is_none() || region_condition_on_day(region, prev, measures) != Some(current) {
                     break;
                 }
-                match region_condition_on_day(region, prev, measures) {
-                    Some(cond) if cond == current => since_idx = prev,
-                    Some(_) => {
-                        bounded = false;
-                        break;
-                    }
-                    None => {
-                        bounded = true;
-                        break;
-                    }
-                }
+                since_idx = prev;
             }
             let name = if current == "clear" {
                 "Clear".to_owned()
@@ -468,8 +463,8 @@ pub(crate) fn region_readout(
             WeatherReadout::Condition {
                 id: current.to_owned(),
                 name,
-                since_hour: Some(days[since_idx].first),
-                since_bounded: bounded,
+                since_hour: days[since_idx].at.map(|(_, hour)| hour),
+                since_bounded: true,
                 as_of_hour,
             }
         }
@@ -664,7 +659,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     let sampled = if params.show == Show::Temperature { TableId::WeatherProvinces } else { TableId::WeatherRegions };
     for stretch in query.timeline.within(first, last) {
         let (from, to) = (stretch.first.max(first), stretch.last.min(last));
-        known.extend(read::statuses(recording, stretch.run, sampled, from, to)?.into_iter().filter(|run| replay_recording::columnar_frames::complete(run.status)).map(|run| (stretch.run, run.first, run.last)));
+        known.extend(read::statuses(recording, stretch.run, sampled, from, to)?.into_iter().filter(|run| sampled_read(params.show, run.status)).map(|run| (stretch.run, run.first, run.last)));
         reads.extend(dashboard_query::cost::storage(|| replay_lanes::lanes::reads(recording, stretch.run, sampled, from, to))?);
     }
     let days = days(first, last, &known, &reads);
@@ -716,7 +711,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
                 let Some((run, at)) = day.at else { continue };
                 let frame = dashboard_query::cost::storage(|| seeker.frame(run, at, &[replay_lanes::at::Read::all(sampled)]))?;
                 if params.show == Show::Modifier {
-                    let Ok(held) = frame.complete::<tables::WeatherRegions>() else { continue };
+                    let Ok(held) = dashboard_text::metadata::recorded_rows::<tables::WeatherRegions>(&frame) else { continue };
                     for row in held {
                         rows.insert(row.id);
                         if keeps(row.id)

@@ -247,3 +247,10 @@ fn recording_gaps_are_not_mislabelled_as_unheld_tag_hours() {
     let unheld_cell = region.cells.iter().find(|c| c.first_hour <= 44 && 44 <= c.last_hour).unwrap();
     assert_eq!(unheld_cell.state, ConvoyCellState::NotRecorded { reason: "No country holds this tag at this hour".into() });
 }
+
+#[test]
+fn a_witnessed_efficiency_stands_where_the_table_read_was_truncated() {
+    let known = [HourSpan { first_hour: 0, last_hour: 9 }];
+    let cells = build_region_cells(17, &[(0, 19, 62_000)], &[], &known, &[], &[], 0, 19);
+    assert_eq!(cells, vec![ConvoyCellRun { first_hour: 0, last_hour: 19, state: ConvoyCellState::Efficiency { value: 62_000 } }]);
+}

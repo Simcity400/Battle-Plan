@@ -50,7 +50,7 @@ pub(crate) fn pieces(stretches: &[Stretch], last_hour: i32, cuts: &BTreeSet<i32>
     let mut out: Vec<Piece> = Vec::new();
     for stretch in stretches {
         let mut first = stretch.first;
-        for &cut in cuts.range(stretch.first + 1..=stretch.last) {
+        for &cut in cuts.range((std::ops::Bound::Excluded(stretch.first), std::ops::Bound::Included(stretch.last))) {
             out.push(Piece { run: stretch.run, first, last: cut - 1, counts_last: true });
             first = cut;
         }
