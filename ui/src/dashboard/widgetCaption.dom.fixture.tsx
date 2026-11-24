@@ -6,7 +6,6 @@ import './dashboard.css';
 import '../charts/charts.css';
 import '../charts/drill/drill.css';
 import '../charts/table/table.css';
-import '../widgets/army-losses-by-month/armyLosses.css';
 import DashboardGrid from './DashboardGrid.tsx';
 import WidgetPreview from './WidgetPreview.tsx';
 import { registerWidgets } from './definitions.ts';
@@ -80,11 +79,11 @@ function MeasureBody({ caption, empty, layout }: { caption: string | null; empty
     {empty
       ? <WidgetState kind="empty" message="No recorded losses yet." />
       : layout === 'chart'
-        ? <div ref={body} className="caption-test-body army-losses">
+        ? <div ref={body} className="caption-test-body" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
           <div className="drill-host">
             <div className="drill-face drill-main">
-              <div className="army-losses-body">
-                <div className="army-losses-chart"><div className="time-chart" /></div>
+              <div style={{ display: 'flex', flexDirection: 'column', flex: '1 1 0', minHeight: 0 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', flex: '1 1 0', minHeight: 0 }}><div className="time-chart" style={{ flex: '1 1 0', minHeight: 0 }} /></div>
               </div>
             </div>
           </div>

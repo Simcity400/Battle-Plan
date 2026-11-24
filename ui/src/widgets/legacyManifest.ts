@@ -4,8 +4,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'air-force-size', load: () => import('./air-force-size') },
   { kind: 'air-kills-losses', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
   { kind: 'air-statistics', load: () => import('./air-statistics') },
-  { kind: 'apm-graph', load: () => import('./apm-graph') },
-  { kind: 'army-losses-by-month', load: () => import('./army-losses-by-month') },
   { kind: 'army-size', slots: ['render', 'countryChip'], load: () => import('./army-size') },
   { kind: 'autonomy', load: () => import('./autonomy') },
   { kind: 'balance-of-power', load: () => import('./balance-of-power') },
@@ -71,5 +69,5 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'volunteers', load: () => import('./volunteers') },
   { kind: 'war-contribution', load: () => import('./war-contribution') },
   { kind: 'wars', load: () => import('./wars') },
-  { kind: 'world-tension', load: () => import('./world-tension') },
+  { kind: 'world-tension', view: 'race', label: 'Contributions race', load: () => import('./world-tension') },
 ];

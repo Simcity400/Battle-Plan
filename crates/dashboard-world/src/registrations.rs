@@ -6,7 +6,7 @@ dashboard_base::register_products! {
     STYLES_COUNTRYSTYLES => crate::products::styles::CountryStyles,
     GROUPS_COUNTRYGROUPS => crate::products::groups::CountryGroups,
     LAND_OWNERS_LANDOWNERSPRODUCT => crate::products::land_owners::LandOwnersProduct,
-    SCALARS_THREATEVENTS => crate::products::scalars::ThreatEvents,
+    SCALARS_WORLDTENSIONSTACK => crate::products::scalars::WorldTensionStack,
     SCALARS_FACTORYGROUPS => crate::products::scalars::FactoryGroups,
     SUBJECTS_SUBJECTS => crate::products::subjects::Subjects,
     PLACE_NAMES_PLACENAMES => crate::products::place_names::PlaceNames,

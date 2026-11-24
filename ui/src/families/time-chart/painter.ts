@@ -282,7 +282,14 @@ export function drawTimeChart(
   }
 
   if (model.mode === 'columns') {
+    const hoveredColIdx = parsedInspect?.kind === 'month' || parsedInspect?.kind === 'fold' ? parsedInspect.index : -1;
     for (const col of layout.columns) {
+      if (col.index === hoveredColIdx) {
+        ctx.save();
+        ctx.fillStyle = tokens.dark ? 'rgba(245, 245, 245, 0.055)' : 'rgba(15, 23, 42, 0.055)';
+        ctx.fillRect(col.x, layout.top, col.width, layout.plotHeight);
+        ctx.restore();
+      }
       if (col.kind === 'fold') {
         drawGapBand(ctx, col.barX, layout.top, col.barWidth, layout.plotHeight, theme);
         continue;
@@ -292,73 +299,129 @@ export function drawTimeChart(
         drawGapBand(ctx, col.barX, layout.top, col.barWidth, layout.plotHeight, theme);
         continue;
       }
-      let yb = layout.toY(0);
+      let yPos = layout.toY(0);
+      let yNeg = layout.toY(0);
       for (const seg of m.segments) {
         if (seg.value === 0) continue;
-        const nextY = layout.toY(seg.value);
-        const h = Math.abs(layout.toY(0) - nextY);
+        const h = Math.abs(layout.toY(0) - layout.toY(seg.value));
         ctx.save();
         ctx.globalAlpha = m.partial ? 0.55 : 1;
         ctx.fillStyle = seg.color;
         if (seg.value > 0) {
-          ctx.fillRect(col.barX, yb - h, col.barWidth, h);
-          yb -= h;
+          ctx.fillRect(col.barX, yPos - h, col.barWidth, h);
+          yPos -= h;
         } else {
-          ctx.fillRect(col.barX, layout.toY(0), col.barWidth, h);
+          ctx.fillRect(col.barX, yNeg, col.barWidth, h);
+          yNeg += h;
         }
         ctx.restore();
       }
     }
   } else if (model.mode === 'stack' && model.stack && model.stack.hours.length > 0) {
-    const { hours, bands, total } = model.stack;
+    const { hours, bands, total, step } = model.stack;
     let count = 0;
     while (count < hours.length && hours[count]! <= model.hour) count++;
     if (count > 0) {
-      const acc = new Float64Array(count);
+      const gapBetween = (a: number, b: number) =>
+        model.gaps?.some(g => g.firstHour > a && g.firstHour < b) ?? false;
+      const isNullAt = (i: number) => total ? total.values[i] == null : bands.every(b => b.values[i] == null);
+      const runs: { readonly start: number; readonly end: number; readonly endHour: number }[] = [];
+      let runStart = -1;
+      for (let i = 0; i < count; i++) {
+        if (isNullAt(i)) {
+          if (runStart >= 0) {
+            runs.push({ start: runStart, end: i - 1, endHour: hours[i]! });
+            runStart = -1;
+          }
+          continue;
+        }
+        if (runStart >= 0 && gapBetween(hours[i - 1]!, hours[i]!)) {
+          const hitGap = model.gaps!.find(g => g.firstHour > hours[i - 1]! && g.firstHour < hours[i]!);
+          runs.push({ start: runStart, end: i - 1, endHour: hitGap ? hitGap.firstHour : hours[i - 1]! });
+          runStart = i;
+        } else if (runStart < 0) {
+          runStart = i;
+        }
+      }
+      if (runStart >= 0) {
+        const trailingGap = model.gaps?.find(g => g.firstHour > hours[count - 1]! && g.firstHour <= model.hour);
+        runs.push({ start: runStart, end: count - 1, endHour: trailingGap ? trailingGap.firstHour : Math.min(layout.xDomain[1], model.hour) });
+      }
       ctx.save();
       ctx.beginPath();
       ctx.rect(layout.left, layout.top - 2, layout.plotWidth + 1, layout.plotHeight + 4);
       ctx.clip();
-      for (const band of bands) {
-        const topVals = new Float64Array(count);
-        for (let i = 0; i < count; i++) {
-          topVals[i] = acc[i]! + (band.values[i] ?? 0);
+      for (const run of runs) {
+        const len = run.end - run.start + 1;
+        const acc = new Float64Array(len);
+        const endX = layout.toX(Math.min(run.endHour, layout.xDomain[1], model.hour));
+        for (const band of bands) {
+          const topVals = new Float64Array(len);
+          let anyValid = false;
+          for (let k = 0; k < len; k++) {
+            const v = band.values[run.start + k];
+            if (v != null && Number.isFinite(v)) anyValid = true;
+            topVals[k] = acc[k]! + (v ?? 0);
+          }
+          if (anyValid) {
+            ctx.beginPath();
+            for (let k = 0; k < len; k++) {
+              const x = layout.toX(hours[run.start + k]!);
+              const y = layout.toY(topVals[k]!);
+              if (k === 0) ctx.moveTo(x, y);
+              else if (step) {
+                ctx.lineTo(x, layout.toY(topVals[k - 1]!));
+                ctx.lineTo(x, y);
+              } else ctx.lineTo(x, y);
+            }
+            if (step && endX > layout.toX(hours[run.end]!)) {
+              ctx.lineTo(endX, layout.toY(topVals[len - 1]!));
+              ctx.lineTo(endX, layout.toY(acc[len - 1]!));
+            }
+            for (let k = len - 1; k >= 0; k--) {
+              const x = layout.toX(hours[run.start + k]!);
+              const y = layout.toY(acc[k]!);
+              if (step && k < len - 1) {
+                ctx.lineTo(layout.toX(hours[run.start + k + 1]!), y);
+              }
+              ctx.lineTo(x, y);
+            }
+            ctx.closePath();
+            ctx.fillStyle = band.color;
+            ctx.globalAlpha = (band.opacity ?? 0.78) * (hoveredSeriesId && hoveredSeriesId !== band.id ? 0.35 : 1);
+            ctx.fill();
+            ctx.globalAlpha = 0.9;
+            ctx.strokeStyle = theme.surface;
+            ctx.lineWidth = 0.8;
+            ctx.stroke();
+          }
+          acc.set(topVals);
         }
-        ctx.beginPath();
-        for (let i = 0; i < count; i++) {
-          const x = layout.toX(hours[i]!);
-          const y = layout.toY(topVals[i]!);
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
+        if (total) {
+          ctx.beginPath();
+          let started = false;
+          let prevY = 0;
+          for (let k = 0; k < len; k++) {
+            const tv = total.values[run.start + k];
+            if (tv == null) continue;
+            const x = layout.toX(hours[run.start + k]!);
+            const y = layout.toY(tv);
+            if (!started) { ctx.moveTo(x, y); started = true; }
+            else if (step) { ctx.lineTo(x, prevY); ctx.lineTo(x, y); }
+            else ctx.lineTo(x, y);
+            prevY = y;
+          }
+          if (started && step && endX > layout.toX(hours[run.end]!)) {
+            ctx.lineTo(endX, prevY);
+          }
+          if (started) {
+            ctx.globalAlpha = 1;
+            ctx.strokeStyle = total.color ?? theme.text;
+            ctx.lineWidth = 1.6;
+            ctx.lineJoin = 'round';
+            ctx.stroke();
+          }
         }
-        for (let i = count - 1; i >= 0; i--) {
-          ctx.lineTo(layout.toX(hours[i]!), layout.toY(acc[i]!));
-        }
-        ctx.closePath();
-        ctx.fillStyle = band.color;
-        ctx.globalAlpha = (band.opacity ?? 0.78) * (hoveredSeriesId && hoveredSeriesId !== band.id ? 0.35 : 1);
-        ctx.fill();
-        ctx.globalAlpha = 0.9;
-        ctx.strokeStyle = theme.surface;
-        ctx.lineWidth = 0.8;
-        ctx.stroke();
-        acc.set(topVals);
-      }
-      if (total) {
-        ctx.beginPath();
-        for (let i = 0; i < count; i++) {
-          const tv = total.values[i];
-          if (tv == null) continue;
-          const x = layout.toX(hours[i]!);
-          const y = layout.toY(tv);
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        }
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = total.color ?? theme.text;
-        ctx.lineWidth = 1.6;
-        ctx.lineJoin = 'round';
-        ctx.stroke();
       }
       ctx.restore();
     }
@@ -645,6 +708,25 @@ export function drawTimeChart(
   if (hoverHour != null && model.mode !== 'columns' && hoverHour >= layout.xDomain[0] && hoverHour <= model.hour) {
     const xh = layout.toX(hoverHour);
     drawCrosshairLine(ctx, xh, layout.top - 2, layout.axisY, theme);
+    if (model.mode === 'stack' && model.stack?.total && model.stack.hours.length > 0) {
+      let at = -1;
+      for (let i = 0; i < model.stack.hours.length; i++) {
+        if (model.stack.hours[i]! <= hoverHour) at = i;
+        else break;
+      }
+      const tv = at >= 0 ? model.stack.total.values[at] : null;
+      if (tv != null && Number.isFinite(tv)) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(xh, layout.toY(tv), 3.4, 0, Math.PI * 2);
+        ctx.fillStyle = model.stack.total.color ?? theme.text;
+        ctx.fill();
+        ctx.strokeStyle = theme.surface;
+        ctx.lineWidth = 1.8;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
     for (const s of model.series) {
       const sampled = sampleSeriesValueAt(s, hoverHour, model.hour);
       if (!sampled) continue;

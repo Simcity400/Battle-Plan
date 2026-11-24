@@ -1,46 +1,66 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import { AFTER_PLAYHEAD_OPTION, choiceVariants } from '../../dashboard/options.ts';
+import { choiceVariants } from '../../dashboard/options.ts';
 import type { OptionField } from '../../dashboard/options';
 import { DATE_OVERLAY_OPTION } from '../../charts/race/options.ts';
-import { breakdownOption, DRILL_OPTION, breakdownVariants } from '../../charts/drill/drillState.ts';
-
-export const TENSION_BREAKDOWN = { id: 'breakdown', label: 'Country contributions' };
+import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../families/table/settings.ts';
 
 const tension = (options: Readonly<Record<string, unknown>>) => (options.view ?? 'tension') === 'tension';
-const stacked = (options: Readonly<Record<string, unknown>>) => tension(options) && (options.show ?? 'main') === 'main';
-const overTime = (options: Readonly<Record<string, unknown>>) => tension(options) || options.view === 'lines';
+const events = (options: Readonly<Record<string, unknown>>) => options.view === 'events';
+const race = (options: Readonly<Record<string, unknown>>) => options.view === 'race';
+
+export const EVENTS_TABLE_BASE: TableBase = {
+  density: 'compact',
+  barsBehind: 'off',
+  overflow: 'scroll',
+  showRank: false,
+  sort: { column: 'date', direction: 'descending' },
+};
+
+const EVENTS_COLUMN_DEFAULTS: readonly TableColumnDefaults[] = [
+  { key: 'date', label: 'Created', as: 'plain', offered: OFFERED.text },
+  { key: 'country', label: 'Country', as: 'flagName', offered: OFFERED.country, showNamesDefault: true },
+  { key: 'reason', label: 'Event', as: 'plain', offered: OFFERED.text, hideable: false },
+  { key: 'added', label: 'Adds', as: 'faint', offered: OFFERED.number },
+  { key: 'until', label: 'Listed until', as: 'plain', offered: OFFERED.text },
+];
+
+export const EVENTS_TABLE_OPTIONS: readonly OptionField[] = tableFamilyOptions(EVENTS_COLUMN_DEFAULTS, EVENTS_TABLE_BASE).map(field => ({
+  ...field,
+  visibleWhen: events,
+}));
+
+export const TENSION_CHART_OPTIONS: readonly OptionField[] = [
+  { key: 'layers', section: 'options', label: 'Layers', hint: 'Ranked at the moment shown', kind: 'choice', default: '5',
+    choices: [{ value: '5', label: 'Top 5 + Other' }, { value: '8', label: 'Top 8 + Other' }], visibleWhen: tension },
+  { key: 'values', section: 'options', label: 'Layers show', kind: 'choice', default: 'share', hint: 'Contributions can exceed 100%.',
+    choices: [{ value: 'share', label: 'Share of world tension' }, { value: 'recorded', label: 'Contributions' }], visibleWhen: tension },
+  { key: 'markers', section: 'options', label: 'Event markers', kind: 'toggle', default: true, visibleWhen: tension },
+];
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'tension', choices: [
     { value: 'tension', label: 'World tension' }, { value: 'race', label: 'Contributions race' },
     { value: 'lines', label: 'Contributions over time' }, { value: 'events', label: 'Threat events' },
   ] },
-  { ...breakdownOption([TENSION_BREAKDOWN], 'World tension'), visibleWhen: tension },
-  { key: 'playback', section: 'time', label: 'While following playback', kind: 'choice', default: 'draw-in', visibleWhen: overTime,
-    choices: [{ value: 'draw-in', label: 'Grow to now' }, { value: 'cursor', label: 'Whole campaign' }, { value: 'window', label: 'Recent window' }] },
-  { ...AFTER_PLAYHEAD_OPTION, visibleWhen: options => overTime(options) && options.playback === 'cursor' },
-  { key: 'windowDays', section: 'time', label: 'Window length', kind: 'number', min: 7, max: 3650, step: 1, unit: 'days', default: 365,
-    visibleWhen: options => overTime(options) && options.playback === 'window' },
-  { key: 'layers', section: 'options', label: 'Layers', hint: 'Ranked at the moment shown', kind: 'choice', default: '5',
-    choices: [{ value: '5', label: 'Top 5 + Other' }, { value: '8', label: 'Top 8 + Other' }], visibleWhen: stacked },
-  { key: 'values', section: 'options', label: 'Layers show', kind: 'choice', default: 'share', hint: 'Contributions can exceed 100%.',
-    choices: [{ value: 'share', label: 'Share of world tension' }, { value: 'recorded', label: 'Contributions' }], visibleWhen: stacked },
-  { key: 'markers', section: 'options', label: 'Event markers', kind: 'toggle', default: true, visibleWhen: stacked },
-  { key: 'list', section: 'options', label: 'Values beside the chart', kind: 'toggle', default: true, visibleWhen: stacked },
-  { ...DRILL_OPTION, visibleWhen: stacked },
-  { ...DATE_OVERLAY_OPTION, visibleWhen: options => options.view === 'race' },
+  ...TENSION_CHART_OPTIONS,
+  ...EVENTS_TABLE_OPTIONS,
+  { ...DATE_OVERLAY_OPTION, visibleWhen: race },
 ];
 
 export const definition = {
-  kind: 'world-tension', version: 3, title: 'World tension & threat', icon: 'alert',
+  kind: 'world-tension', version: 4, title: 'World tension', icon: 'chart-line',
   description: 'World tension over time, stacked by the countries whose actions generated it, with the events that did.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 10 },
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, all: true },
   options: OPTIONS,
-  migrate: (_from, { options = {}, ...widget }) => ({ ...widget,
-    options: { ...options, view: typeof options.view === 'string' && ['tension', 'race', 'lines', 'events'].includes(options.view) ? options.view : 'tension' } }),
-  variants: [...breakdownVariants('World tension & threat', OPTIONS.filter(field => field.key === 'show')),
+  viewSwitch: { option: 'view' },
+  migrate: (_from, { options = {}, ...widget }) => ({
+    ...widget,
+    options: { ...options, view: typeof options.view === 'string' && ['tension', 'race', 'lines', 'events'].includes(options.view) ? options.view : 'tension' },
+  }),
+  variants: [
     ...choiceVariants(OPTIONS.find(field => field.key === 'values'), () => 'World tension contributions'),
-    ...choiceVariants(OPTIONS.find(field => field.key === 'view'), choice => choice.value === 'tension' ? 'World tension & threat' : `World tension: ${choice.label}`)],
+    ...choiceVariants(OPTIONS.find(field => field.key === 'view'), choice => choice.value === 'tension' ? 'World tension' : `World tension: ${choice.label}`),
+  ],
 } as const satisfies WidgetMeta;

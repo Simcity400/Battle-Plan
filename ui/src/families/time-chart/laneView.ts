@@ -1,5 +1,6 @@
 import type { LiveValues } from '../../charts/live';
 import { canvasMeasureText, type Canvas2D, type MeasureText } from '../../charts/textWidth.ts';
+import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
@@ -30,14 +31,18 @@ import { collectVisibleChartArt, drawTimeChart } from './painter.ts';
 const liveAdapter = (map: LiveMap | null): LiveValues<number | bigint | string> | null => {
   if (!map) return null;
   return {
-    get: (key: string) => map.get(key),
+    get: (key: string) => {
+      const value = map.get(key);
+      return typeof value === 'number' || typeof value === 'bigint' ? value : undefined;
+    },
     raw: (key: string) => {
       const value = map.get(key);
       return typeof value === 'bigint' ? value : typeof value === 'number' && Number.isSafeInteger(value) ? BigInt(value) : undefined;
     },
     missing: (key: string) => {
+      if (!map.has(key)) return NOT_LIVE_CELL;
       const value = map.get(key);
-      return typeof value === 'string' ? value : 'Not recorded';
+      return typeof value === 'string' && value.length > 0 ? value : NOT_RECORDED;
     },
   };
 };
@@ -159,7 +164,10 @@ function buildReadView(
     for (const [name, answer] of Object.entries(binding.staticAnswers)) answers.set(name, answer);
   }
   if (binding.staticPanels) {
-    for (const [name, data] of Object.entries(binding.staticPanels)) panels.set(name, data);
+    for (const [name, data] of Object.entries(binding.staticPanels)) {
+      panels.set(name, data);
+      live.set(name, repliedCells(data).read());
+    }
   }
 
   const subIndex = new Map<number, number>();
@@ -239,6 +247,19 @@ function buildReadView(
 }
 
 export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): readonly FamilyNavTuple[] {
+  if (model.mode === 'columns') {
+    return layout.columns.map((col, index) => {
+      if (col.kind === 'fold') {
+        const hour = col.foldMonths?.[0]?.firstHour;
+        const key = hour !== undefined ? `fold:${col.index}@${hour}` : `fold:${col.index}`;
+        return [key, col.foldSpanText ?? col.foldLabel ?? 'Folded months', index, 0, ''] as const;
+      }
+      const m = col.month!;
+      const key = `month:${col.index}@${m.firstHour}`;
+      const name = formatDateOnly(m.firstHour).replace(/^\d+\s+/, '');
+      return [key, name, index, 0, ''] as const;
+    });
+  }
   const stops: { readonly hour: number; readonly key: string; readonly name: string }[] = [];
   for (const tick of layout.axisTicks) {
     if (tick.hour <= model.hour) stops.push({ hour: tick.hour, key: `plot:${tick.hour}`, name: formatDateOnly(tick.hour) });
@@ -450,9 +471,16 @@ export function timeChartLaneView(
           s.endLabel?.flag?.art.status ?? '',
           s.points?.length ?? 0,
         ]),
-        model.columns?.months.length ?? 0,
+        model.columns?.months.map(m => [m.year, m.month, m.status, m.totalValue, m.partial ?? false]) ?? null,
         model.columns?.foldUnrecorded ?? true,
-        model.stack?.hours.length ?? 0,
+        model.stack ? [
+          model.stack.hours.length,
+          model.stack.step === true ? 1 : 0,
+          model.stack.total?.endLabel?.value ?? null,
+          model.stack.total?.endLabel?.icon?.art.status ?? '',
+          model.stack.bands.map(b => [b.id, b.endLabel?.value ?? null, b.endLabel?.flag?.art.status ?? '']),
+        ] : null,
+        model.note ?? null,
         model.markers?.length ?? 0,
         model.gaps?.length ?? 0,
         input.inspect ?? null,

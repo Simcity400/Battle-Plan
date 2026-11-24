@@ -4,6 +4,12 @@ import { familyTableLaneView } from '../../families/table/laneView.ts';
 import type { TableProjection } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
+import { EVENTS_TABLE_OPTIONS, OPTIONS as WORLD_TENSION_OPTIONS } from '../world-tension/definition.ts';
+
+const WORLD_TENSION_EVENTS_SCOPED_OPTIONS = [
+  ...WORLD_TENSION_OPTIONS.filter(field => field.key === 'view'),
+  ...EVENTS_TABLE_OPTIONS,
+];
 
 function tableSpec<TModule>(
   kind: string,
@@ -242,6 +248,20 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       DEFAULT_VIEW,
       () => import('../most-decorated-divisions/mostDecoratedProjection.ts'),
       mod => ({ projection: mod.mostDecoratedProjection, declaration: mod.mostDecoratedDeclaration }),
+    ),
+  },
+  {
+    kind: 'world-tension',
+    view: 'events',
+    label: 'Threat events',
+    family: 'table',
+    viewOption: 'view',
+    options: WORLD_TENSION_EVENTS_SCOPED_OPTIONS,
+    loadSpec: tableSpec(
+      'world-tension',
+      'events',
+      () => import('../world-tension/worldTensionEventsProjection.ts'),
+      mod => ({ projection: mod.worldTensionEventsProjection, declaration: mod.worldTensionEventsDeclaration }),
     ),
   },
 ];

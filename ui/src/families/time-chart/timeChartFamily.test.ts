@@ -334,9 +334,14 @@ describe('time-chart layout & rules C1-C12', () => {
     assert.ok(folded.columns[1]!.label?.includes('1940'));
 
     const foldHit = hitTestTimeChart(base, folded, [folded.columns[0]!.x + 10, folded.top + 20]);
-    assert.equal(foldHit, 'fold:0');
+    assert.equal(foldHit, `fold:0@${months[0]!.firstHour}`);
+    assert.equal(parseTimeChartHit(foldHit)?.hour, months[0]!.firstHour);
     const foldTip = deriveTimeChartTooltip(base, folded, foldHit);
     assert.equal(foldTip?.payload?.title, 'No loss rows recorded');
+
+    const monthHit = hitTestTimeChart(base, folded, [folded.columns[1]!.x + 10, folded.top + 20]);
+    assert.equal(monthHit, `month:1@${months[7]!.firstHour}`);
+    assert.equal(parseTimeChartHit(monthHit)?.hour, months[7]!.firstHour);
 
     const trueTime = layoutTimeChart({ ...base, columns: { ...base.columns!, foldUnrecorded: false } }, 720, 240, FONT, measure);
     assert.equal(trueTime.columns.length, 10);
