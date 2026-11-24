@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { exactDecimal, formatAmount, formatAxisPercent, formatAxisValue, formatNativeFixed5, formatSigned, linearTicks, rescale, rescaleSum } from './valueAxis.ts';
+import { exactDecimal, formatAmount, formatAxisPercent, formatAxisValue, formatNativeFixed5, formatSigned, linearTicks, rescale } from './valueAxis.ts';
 
 const axis = (ticks: number[]) => ticks.map(tick => formatAxisValue(tick, ticks));
 
@@ -65,19 +65,6 @@ test('percent axis labels keep small ticks apart and hold their sign', () => {
   const ticks = [0, 0.1, 0.2, 0.3, 0.4];
   assert.deepEqual(ticks.map(tick => formatAxisPercent(tick, ticks)), ['0.0%', '0.1%', '0.2%', '0.3%', '0.4%']);
   assert.deepEqual([-50, 0, 50].map(tick => formatAxisPercent(tick, [-50, 0, 50])), ['−50%', '0%', '50%']);
-});
-
-test('fraction sums round once at ties with equal or different denominators', () => {
-  assert.equal(rescaleSum(Array.from({ length: 18 }, () => [1n, 24] as const), 1), 8n);
-  const different = [[1n, 3n], [1n, 15n], [1n, 20n]] as const;
-  assert.equal(rescaleSum(different, 1), 5n);
-  assert.equal(rescaleSum([...different].reverse(), 1), 5n);
-  assert.equal(rescaleSum(different.map(([raw, units]) => [-raw, units] as const), 1), -5n);
-  assert.equal(rescaleSum([[1n, 3], [-1n, 3]], 1), 0n);
-  assert.equal(rescaleSum([], 1), 0n);
-  assert.equal(rescaleSum([[9_007_199_254_740_993n, 10]], 1), 9_007_199_254_740_993n);
-  assert.equal(rescaleSum(Array.from({ length: 5_000 }, () => [1n, 24] as const), 1), 2083n);
-  assert.throws(() => rescaleSum([[1n, 0]], 1), RangeError);
 });
 
 test('native fixed-digit amounts truncate toward zero and retain two digits', () => {

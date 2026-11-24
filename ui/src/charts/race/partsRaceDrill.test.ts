@@ -9,7 +9,7 @@ import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { runAt } from '../series.ts';
 import { axisAt, regionHour } from '../../dashboard/regionTime.ts';
 import { drillAction } from '../drill/drillState.ts';
-import { CLOSED_PARTS_RACE, partsRaceDrillActors, partsRaceDrillBands, partsRaceDrillData, pinPartsRace, reducePartsRaceDrill, validateNativePartsRaceReply } from './partsRaceDrill.ts';
+import { CLOSED_PARTS_RACE, partsRaceDrillActors, partsRaceDrillBands, partsRaceDrillData, pinPartsRace, reducePartsRaceDrill, type NativePartsRaceReply } from './partsRaceDrill.ts';
 import { bindCountryParts, countryPartsSelection, pinNativeCountryParts, savedCountryPartsSelection } from './countryPartsDrillData.ts';
 
 const WIDE = { id: 'wide', axisOffset: 0, branch: { id: 'wide', firstHour: 0, lastHour: 100_000 } } as unknown as BoundTrack;
@@ -105,8 +105,8 @@ test('native force binding and restored pins follow aliases, refuse reused tags,
   const original = item('OLD', 7, 101, 0, 4, 5), renamed = item('NEW', 7, 101, 5, 20, 7);
   const later = item('OLD', 8, 102, 10, 20, 99);
   original.identities.push(...later.identities); original.segments.push(...later.segments); original.runs.push(...later.runs);
-  const reply = validateNativePartsRaceReply({ branchId: 'branch', warnings: [],
-    parts: [{ key: 'mod force part', name: 'Force part', unresolved: false }], series: [original, renamed] });
+  const reply: NativePartsRaceReply = { branchId: 'branch', warnings: [],
+    parts: [{ key: 'mod force part', name: 'Force part', unresolved: false }], series: [original, renamed] };
   const native = partsRaceDrillData(partsRaceModel(reply), reply.series, () => null);
   const selected = countryPartsSelection(reply.series, 'OLD', 1)!;
   const binding = bindCountryParts(native, selected.tag, selected.hour, selected.key);
@@ -129,7 +129,7 @@ test('native force binding and restored pins follow aliases, refuse reused tags,
   assert.equal(savedCountryPartsSelection({ ...pin, options: { show: 'breakdown' } }, track), undefined);
   renamed.identities = [{ firstHour: 5, lastHour: 8, slot: 7, countryId: 101 }, { firstHour: 10, lastHour: 20, slot: 7, countryId: 101 }];
   const conflict = item('CONFLICT', 7, 101, 12, 14, 8);
-  const ambiguous = validateNativePartsRaceReply({ ...reply, series: [original, renamed, conflict] });
+  const ambiguous: NativePartsRaceReply = { ...reply, series: [original, renamed, conflict] };
   const broken = bindCountryParts(partsRaceDrillData(partsRaceModel(ambiguous), ambiguous.series, () => null), 'OLD', 1, selected.key);
   const bands = broken.data.bands('OLD', { firstHour: 0, lastHour: 20 });
   for (const hour of [9, 12, 13, 14]) {
@@ -138,5 +138,4 @@ test('native force binding and restored pins follow aliases, refuse reused tags,
     assert.ok(bands.every(runs => runAt(runs, hour) === null));
   }
   assert.equal(broken.data.at('OLD', 15)?.total, 7);
-  assert.throws(() => validateNativePartsRaceReply({ ...reply, series: [{ ...original, identities: undefined }] }), /malformed/);
 });

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
 import { anchoredScrollTop, logOffsets, MONTH_HEIGHT, ROW_HEIGHT } from './logData.ts';
 import type { LogPage, LogRow } from './logData';
-import { logPageItems, logPageRange, logPageTarget, logPixelTarget, logRowOrdinals, logRowTarget, newestPageRows, stableLogPages, wantedLogPages, withContinuation } from './logPages.ts';
+import { logPageItems, logPageRange, logPageTarget, logPixelTarget, logRowOrdinals, logRowTarget, newestPageRows, stableLogPages, wantedLogPages } from './logPages.ts';
 import { logItemState, logShownOrdinals, logSpans } from './logAhead.ts';
 
 const row = (key: string, hour: number): LogRow<string> => ({ key, hour, item: key });
@@ -184,19 +184,6 @@ test('loading a same-month newer page does not transfer an older page divider an
   assert.deepEqual(before, [0, 3800, 3824, 3862]);
   assert.deepEqual(after, [0, 24, 62, 100]);
   assert.equal(anchoredScrollTop(pending, before, loaded, after, 3800), 62);
-});
-
-test('a page the last loaded page continues to is described at once, so an hour before every loaded row shows loading, not none', () => {
-  const described = [{ cursor: null, end: 100 }];
-  const next = (page: { nextCursor: string | null }, index: number) => ({ cursor: page.nextCursor, end: index });
-  const continued = withContinuation(described, new Map([[0, { nextCursor: 'b' }]]), next);
-  assert.deepEqual(continued, [{ cursor: null, end: 100 }, { cursor: 'b', end: 0 }]);
-  const items = logPageItems([{ key: '0', start: 90, end: 100, count: 0, rows: [] }, { key: '1', start: 0, end: 90, count: 256 }], false);
-  assert.ok(logRowOrdinals(items).at(-1)! > 0, 'the described page is a placeholder, not an empty list');
-  assert.equal(withContinuation(described, new Map([[0, { nextCursor: null }]]), next), described);
-  assert.equal(withContinuation(described, new Map(), next), described);
-  const looped = [{ cursor: null, end: 100 }, { cursor: 'b', end: 90 }];
-  assert.equal(withContinuation(looped, new Map([[1, { nextCursor: 'b' }]]), next), looped);
 });
 
 test('following, the rows named with a block are those of the newest pages held, whole pages back to the count asked', () => {

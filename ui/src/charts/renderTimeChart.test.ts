@@ -5,11 +5,9 @@ import { BADGE_STRIP } from './badges.ts';
 import {
   bucketsStream,
   buildSummaryShape,
-  drawBucketStream,
   drawLineSummary,
   drawSummaryShape,
   emitBucketCorners,
-  type BucketStreamReader,
   type ChartBucket,
   type ChartSummary,
 } from './chartSummary.ts';
@@ -19,13 +17,11 @@ import {
   TIME_CHART_DEFAULT_PADDING,
   TIME_CHART_LABEL_MARGIN,
   TIME_CHART_MIN_SPAN,
-  chartTokensEqual,
   drawTimeChartScene,
   fitTimeChartFrame,
   normalizeStripHeight,
   resolveAxisFormatter,
   resolveChartFit,
-  resolveTimeChartFrame,
   resolveTimeChartPadding,
   resolveTimeChartTargetX,
   resolveTimeChartTargetY,
@@ -117,39 +113,49 @@ test('resolveTimeChartPadding handles badges, strip rounding, custom overrides, 
   assert.equal(withBadgesAndStrip.top, BADGE_STRIP);
   assert.equal(withBadgesAndStrip.bottom, TIME_CHART_DEFAULT_PADDING.bottom + 18 + STRIP_GAP);
 
-  const fractionalStrip = resolveTimeChartFrame({
+  const fractionalPadding = resolveTimeChartPadding({
+    layoutWidth: 400,
+    tokens: baseTokens,
+    stripHeight: 48.48,
+    hasBadges: false,
+    hasBadgeSummary: false,
+  });
+  const roundedPadding = resolveTimeChartPadding({
+    layoutWidth: 400,
+    tokens: baseTokens,
+    stripHeight: 48,
+    hasBadges: false,
+    hasBadgeSummary: false,
+  });
+  const fractionalStrip = fitTimeChartFrame({
     layoutWidth: 400,
     layoutHeight: 202,
-    tokens: baseTokens,
-    extent: [0, 720],
-    playhead: 480,
-    playback: 'cursor',
-    paused: true,
-    view: EMPTY_VIEW,
-    axes: defaultAxes,
-    branchStart: 0,
-    layers: [{ extent: () => [0, 100] }],
+    padding: fractionalPadding,
+    x: [0, 720],
+    y: [0, 100],
+    log: false,
     stripHeight: 48.48,
+    hasRows: false,
+    hasExplicitLeftPadding: false,
+    tokens: baseTokens,
     measure: text => text.length * 7,
   });
-  const roundedStrip = resolveTimeChartFrame({
+  const roundedStrip = fitTimeChartFrame({
     layoutWidth: 400,
     layoutHeight: 202,
-    tokens: baseTokens,
-    extent: [0, 720],
-    playhead: 480,
-    playback: 'cursor',
-    paused: true,
-    view: EMPTY_VIEW,
-    axes: defaultAxes,
-    branchStart: 0,
-    layers: [{ extent: () => [0, 100] }],
+    padding: roundedPadding,
+    x: [0, 720],
+    y: [0, 100],
+    log: false,
     stripHeight: 48,
+    hasRows: false,
+    hasExplicitLeftPadding: false,
+    tokens: baseTokens,
     measure: text => text.length * 7,
   });
   assert.equal(normalizeStripHeight(48.48), 48);
-  assert.equal(fractionalStrip.frame.plotHeight, roundedStrip.frame.plotHeight);
-  assert.deepEqual(fractionalStrip.frame.strip, roundedStrip.frame.strip);
+  assert.equal(fractionalStrip.plotHeight, roundedStrip.plotHeight);
+  assert.deepEqual(fractionalStrip.strip, roundedStrip.strip);
 
   const withRows = resolveTimeChartPadding({
     layoutWidth: 200,
@@ -301,7 +307,7 @@ test('fitTimeChartFrame expands left padding from injected MeasureText without D
   assert.equal(locked.plotLeft, 36);
 });
 
-test('resolveTimeChartFrame and drawTimeChartScene run cleanly on a Canvas2D mock and consult injected measure for dates and end labels', () => {
+test('fitTimeChartFrame and drawTimeChartScene run cleanly on a Canvas2D mock and consult injected measure for dates and end labels', () => {
   const measuredDuringDraw: string[] = [];
   let recording = false;
   const customMeasure: MeasureText = text => {
@@ -313,10 +319,7 @@ test('resolveTimeChartFrame and drawTimeChartScene run cleanly on a Canvas2D moc
   const mid1936 = firstHourOfMonth(1936 * 12 + 6);
   const layerCalls: number[] = [];
   let overlayCalled = false;
-  const resolved = resolveTimeChartFrame({
-    layoutWidth: 520,
-    layoutHeight: 240,
-    tokens: baseTokens,
+  const x = resolveTimeChartTargetX({
     extent: [jan1936, end1936],
     playhead: mid1936,
     playback: 'cursor',
@@ -324,8 +327,27 @@ test('resolveTimeChartFrame and drawTimeChartScene run cleanly on a Canvas2D moc
     view: EMPTY_VIEW,
     axes: defaultAxes,
     branchStart: jan1936,
+  });
+  const y = resolveTimeChartTargetY([{ extent: () => [0, 500] }], x, EMPTY_VIEW, defaultAxes);
+  const padding = resolveTimeChartPadding({
+    layoutWidth: 520,
+    tokens: baseTokens,
+    stripHeight: 0,
+    hasBadges: false,
+    hasBadgeSummary: false,
     padding: { right: 120 },
-    layers: [{ extent: () => [0, 500] }],
+  });
+  const frame = fitTimeChartFrame({
+    layoutWidth: 520,
+    layoutHeight: 240,
+    padding,
+    x,
+    y: y.range,
+    log: y.log,
+    stripHeight: 0,
+    hasRows: false,
+    hasExplicitLeftPadding: false,
+    tokens: baseTokens,
     formatValue: 'powerAxis',
     measure: customMeasure,
   });
@@ -334,7 +356,7 @@ test('resolveTimeChartFrame and drawTimeChartScene run cleanly on a Canvas2D moc
   recording = true;
   drawTimeChartScene(
     ctx,
-    resolved.frame,
+    frame,
     baseTokens,
     {
       layoutWidth: 520,
@@ -355,7 +377,7 @@ test('resolveTimeChartFrame and drawTimeChartScene run cleanly on a Canvas2D moc
       overlay: () => {
         overlayCalled = true;
       },
-      endLabels: [{ id: 'GER', text: 'German Reich', suffix: '500', y: resolved.frame.toY(500), color: '#4488ff' }],
+      endLabels: [{ id: 'GER', text: 'German Reich', suffix: '500', y: frame.toY(500), color: '#4488ff' }],
     },
     customMeasure,
   );
@@ -479,7 +501,7 @@ test('bucketsStream treats sparse undefined holes as gaps separating subpaths', 
   assert.deepEqual(Array.from(shape.starts), [0, 2, 4]);
 });
 
-test('buildSummaryShape, drawSummaryShape, and drawBucketStream preserve exact joins, breaks, range clip, and zero-walk reuse', () => {
+test('buildSummaryShape and drawSummaryShape preserve exact joins, breaks, and range clip', () => {
   const buckets: (ChartBucket | null)[] = [
     {
       firstHour: 0,
@@ -596,54 +618,16 @@ test('buildSummaryShape, drawSummaryShape, and drawBucketStream preserve exact j
   assert.equal(heldShape.dots.length, 8);
 
   for (const held of [false, true]) {
+    const shape = held ? heldShape : unheldShape;
     for (const options of [{}, { area: true }, { dash: [4, 2], endDot: false }, { area: true, dash: [6, 3] }]) {
       const legacy = mockCanvas2D();
       const streamed = mockCanvas2D();
       const expectedEnd = drawLineSummary(legacy.ctx, frame, baseTokens, summary, '#4488ff', held, null, options);
-      const actualEnd = drawBucketStream(
-        streamed.ctx,
-        frame,
-        baseTokens,
-        bucketsStream(buckets),
-        '#4488ff',
-        held,
-        summary.to,
-        options,
-      );
+      const actualEnd = drawSummaryShape(streamed.ctx, frame, baseTokens, shape, '#4488ff', options);
       assert.deepEqual(actualEnd, expectedEnd, `end held=${held} opts=${JSON.stringify(options)}`);
       assert.deepEqual(streamed.calls, legacy.calls, `calls held=${held} opts=${JSON.stringify(options)}`);
     }
   }
-
-  let readerTouched = false;
-  const untouchedReader: BucketStreamReader = {
-    get count() {
-      readerTouched = true;
-      return 0;
-    },
-    present: () => {
-      readerTouched = true;
-      return false;
-    },
-    firstHour: () => 0,
-    lastHour: () => 0,
-    firstValue: () => 0,
-    lastValue: () => 0,
-    lastValueHour: () => 0,
-    minHour: () => 0,
-    minValue: () => 0,
-    maxHour: () => 0,
-    maxValue: () => 0,
-    firstBreak: () => false,
-    hasBreak: () => false,
-  };
-  const cachedPaint = mockCanvas2D();
-  const freshPaint = mockCanvas2D();
-  drawSummaryShape(cachedPaint.ctx, frame, baseTokens, unheldShape, '#4488ff', { area: true });
-  drawBucketStream(freshPaint.ctx, frame, baseTokens, bucketsStream(buckets), '#4488ff', false, summary.to, { area: true });
-  assert.deepEqual(cachedPaint.calls, freshPaint.calls);
-  drawBucketStream(mockCanvas2D().ctx, frame, baseTokens, untouchedReader, '#4488ff', false, summary.to, {}, undefined, unheldShape);
-  assert.equal(readerTouched, false);
 
   const rangeFrame = plotFrame(120, 100, { left: 10, right: 10, top: 10, bottom: 10 }, [0, 47], [0, 20], false);
   const rangeBuckets: ChartBucket[] = [
@@ -675,78 +659,11 @@ test('buildSummaryShape, drawSummaryShape, and drawBucketStream preserve exact j
     },
   ];
   const ranged = mockCanvas2D();
-  const rangedEnd = drawBucketStream(ranged.ctx, rangeFrame, baseTokens, bucketsStream(rangeBuckets), '#4488ff', false, 47, {}, [0, 24]);
+  const rangeShape = buildSummaryShape(bucketsStream(rangeBuckets), false, 47);
+  const rangedEnd = drawSummaryShape(ranged.ctx, rangeFrame, baseTokens, rangeShape, '#4488ff', {}, [0, 24]);
   assert.equal(rangedEnd, null);
   const clipRect = ranged.calls.find(call => call[0] === 'rect');
   assert.deepEqual(clipRect, ['rect', rangeFrame.plotLeft, rangeFrame.plotTop, rangeFrame.toX(24) - rangeFrame.plotLeft, rangeFrame.plotHeight]);
   assert.ok(ranged.calls.some(call => call[0] === 'clip'));
   assert.equal(ranged.calls.some(call => call[0] === 'arc'), false);
-
-  const logFrame = plotFrame(120, 100, { left: 10, right: 10, top: 10, bottom: 10 }, [0, 47], [1e-323, 1], true);
-  const logBuckets: ChartBucket[] = [
-    {
-      firstHour: 0,
-      lastHour: 23,
-      firstValue: 0.5,
-      lastValue: 0.5,
-      lastValueHour: 0,
-      minHour: 2,
-      minValue: 0.25,
-      maxHour: 0,
-      maxValue: 0.5,
-      firstBreak: false,
-      hasBreak: false,
-    },
-    {
-      firstHour: 24,
-      lastHour: 47,
-      firstValue: 0.5,
-      lastValue: 0.5,
-      lastValueHour: 24,
-      minHour: 30,
-      minValue: 0,
-      maxHour: 24,
-      maxValue: 0.5,
-      firstBreak: false,
-      hasBreak: false,
-    },
-  ];
-  const logSummary: ChartSummary = { from: 0, to: 47, width: 100, buckets: logBuckets };
-  const logLegacy = mockCanvas2D();
-  const logStream = mockCanvas2D();
-  assert.deepEqual(
-    drawBucketStream(logStream.ctx, logFrame, baseTokens, bucketsStream(logBuckets), '#123', false, 47),
-    drawLineSummary(logLegacy.ctx, logFrame, baseTokens, logSummary, '#123', false),
-  );
-  assert.deepEqual(logStream.calls, logLegacy.calls);
-
-  const logRanged = mockCanvas2D();
-  const logRangedEnd = drawBucketStream(logRanged.ctx, logFrame, baseTokens, bucketsStream(logBuckets), '#123', false, 47, {}, [0, 24]);
-  assert.equal(logRangedEnd, null);
-  assert.deepEqual(
-    logRanged.calls.find(call => call[0] === 'rect'),
-    ['rect', logFrame.plotLeft, logFrame.plotTop, logFrame.toX(24) - logFrame.plotLeft, logFrame.plotHeight],
-  );
-  assert.equal(
-    logRanged.calls.some(call => call[0] === 'arc' && call[3] === baseTokens.lineWidth.series * 2),
-    false,
-  );
-});
-
-test('chartTokensEqual compares every token field by value', () => {
-  const clone: ChartTokens = {
-    ...baseTokens,
-    fontSize: { ...baseTokens.fontSize },
-    lineWidth: { ...baseTokens.lineWidth },
-    categories: [...baseTokens.categories],
-  };
-  assert.equal(chartTokensEqual(baseTokens, clone), true);
-  assert.equal(chartTokensEqual(null, null), true);
-  assert.equal(chartTokensEqual(baseTokens, null), false);
-  assert.equal(chartTokensEqual(baseTokens, { ...clone, accent: '#ff0000' }), false);
-  assert.equal(chartTokensEqual(baseTokens, { ...clone, fontSize: { ...clone.fontSize, small: 12 } }), false);
-  assert.equal(chartTokensEqual(baseTokens, { ...clone, lineWidth: { ...clone.lineWidth, series: 2.5 } }), false);
-  assert.equal(chartTokensEqual(baseTokens, { ...clone, categories: ['#112233', '#445566'] }), false);
-  assert.equal(chartTokensEqual(baseTokens, { ...clone, categories: ['#112233', '#445566', '#000000'] }), false);
-  assert.equal(chartTokensEqual(baseTokens, { ...clone, reducedMotion: true }), false);
 });
