@@ -891,7 +891,7 @@ mod lane_tests {
     #[test]
     fn pages_that_replay_hours_wait_apart_from_every_reply() {
         let params = serde_json::json!({});
-        for key in ["event-feed", "event-choices", "decisions"] {
+        for key in ["event-feed-tail", "event-choices-tail", "decisions-tail"] {
             assert!(products::find(key).is_some_and(|product| product.replays), "{key} is not marked as replaying");
             assert_eq!(product_lane(key, &params), Lane::Replays, "{key}");
         }
