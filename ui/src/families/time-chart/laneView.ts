@@ -342,6 +342,16 @@ export function timeChartLaneView(
       }
 
       if (model.empty) {
+        if (held.canvas.width !== backingWidth || held.canvas.height !== backingHeight) {
+          held.canvas.width = backingWidth;
+          held.canvas.height = backingHeight;
+        }
+        const emptySig = `empty:${backingWidth}x${backingHeight}`;
+        if (emptySig !== held.lastSig) {
+          held.ctx.clearRect(0, 0, backingWidth, backingHeight);
+          held.lastSig = emptySig;
+          held.content = content();
+        }
         const metaPayload = {
           empty: model.empty.message,
           emptyDetail: model.empty.detail ?? null,
@@ -355,7 +365,7 @@ export function timeChartLaneView(
           held.lastMetaContent = content();
         }
         fields.meta = { value: metaPayload, content: `meta:${held.lastMetaContent}` };
-        return { surfaces: [], fields, motion: false };
+        return { surfaces: [{ source: held.canvas, content: held.content }], fields, motion: false };
       }
 
       const parsedInspect = parseChartInspect(input.inspect);
