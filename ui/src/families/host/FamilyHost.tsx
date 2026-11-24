@@ -598,7 +598,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const cur = latestRef.current;
     if (action.toggle && cur.onToggle) cur.onToggle(action);
     else if (action.toggle) {
-      const toggled = toggleExpansion(expansionRef.current, navRef.current, action.subject);
+      const toggled = toggleExpansion(expansionRef.current, navRef.current, action.subject, cur.adapter.exclusiveExpansion?.(installedFieldsRef.current) ?? false);
       if (!toggled) return;
       expansionRef.current = toggled.next;
       say(`${toggled.label} ${toggled.open ? 'expanded' : 'collapsed'}.`);
