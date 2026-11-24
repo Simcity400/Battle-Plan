@@ -138,3 +138,33 @@ test('a card dated after the displayed hour is refused, and narrow cards fold th
   assert.equal(narrow.figureWidth, 0);
   assert.ok(narrow.stateWidth > 0, 'the state keeps its word at the minimum size');
 });
+
+test('special projects follow the product’s order: running with progress and scientist, completed newest first, undated last', async () => {
+  const { specialProjectsProjection } = await import('../../widgets/special-projects/specialProjectsProjection.ts');
+  const hour = engineHour({ year: 1941, month: 9, day: 15, hour: 1 })!;
+  const first = hour - 400 * DAY;
+  const info = (name: string, scientist: number) => ({ name, specialization: 'naval', specializationName: 'Naval', icon: null, iconMissing: 'No sprite', scientist, lastScientist: null });
+  const status = (presentation: number, state: string, progress: number) => ({ firstHour: first, lastHour: hour + 10, readHour: first, presentation, progress, state, iterations: null, scientistRead: null, lastScientistRead: null });
+  const project = (id: string, firstState: string, statuses: unknown[], entries: unknown[] = []) => ({ id, owner: 1, local: 0, firstRead: first, firstState, statuses, entries, attempts: [] });
+  const reply = {
+    branchId: '1', tag: 'GER', identities: [{ firstHour: first, lastHour: hour + 10, slot: 7, countryId: 9 }], unresolved: [], available: [{ firstHour: first, lastHour: hour + 10 }], partial: [],
+    projects: [
+      project('support', 'running', [status(0, 'running', 24)]),
+      project('radar', 'running', [status(1, 'completed', 100)], [{ ordinal: 0, date: hour - 196 * DAY, completion: true, readHour: hour - 196 * DAY, counted: true, presentation: null }]),
+      project('old', 'completed', [status(2, 'completed', 100)]),
+    ],
+    reads: [], presentations: [info('Support Ships', 1), info('Radar', 0), info('Cruiser Submarine', 0)],
+    people: [{ assigned: false, id: null, name: null, portrait: null, missing: null }, { assigned: null, id: null, name: null, portrait: null, missing: 'The program read was not recorded' }],
+    iterationTexts: {}, unavailable: null, warnings: [],
+    shown: { through: hour, running: [0], completed: [{ project: 1, date: hour - 196 * DAY }, { project: 2, date: null }], undated: 1 },
+  };
+  const model = specialProjectsProjection.project(view(hour, reply), {});
+  assertCardModelValid(model, hour);
+  assert.deepEqual(model.rows.map(row => row.kind === 'section' ? `${row.label} ${row.count}` : row.key), ['In progress 1', 'running:support', 'Completed 2', 'done:radar', 'Date not recorded 1', 'done:old']);
+  const [running, radar, old] = items(model);
+  assert.equal(running!.meter?.text, '24%');
+  assert.equal(running!.figure?.value.kind, 'notRecorded', 'an unread scientist is named as not recorded');
+  assert.deepEqual(radar!.figure?.value, { kind: 'known', value: 'No scientist' });
+  assert.deepEqual(old!.date, { hour: null, reason: 'Already complete when the project was first recorded' });
+  assert.equal(radar!.art?.art.status, 'confirmedMissing');
+});

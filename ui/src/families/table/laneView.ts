@@ -350,15 +350,16 @@ function cachedField(held: HeldFamilyTable, name: string, text: string, content:
   return next.content;
 }
 
-function widthConfigOf(columns: readonly TableColumnSpec[], settings: TableSettings, theme: TableTheme | undefined): string {
+function widthConfigOf(columns: readonly TableColumnSpec[], settings: TableSettings, theme: TableTheme | undefined, hideHeader = false): string {
   return JSON.stringify([
+    hideHeader,
     theme?.font ?? '',
     theme?.fontSize.small ?? 0,
     theme?.fontSize.body ?? 0,
     settings.order,
     columns.map(c => {
       const own = settings.columns[c.key];
-      return [c.key, c.label, c.as, own?.show ?? true, own?.as ?? '', own?.width ?? null, c.numeric ? 1 : 0];
+      return [c.key, c.label, c.as, own?.show ?? true, own?.as ?? '', own?.width ?? null, c.numeric ? 1 : 0, c.cellKind ?? ''];
     }),
   ]);
 }
@@ -425,6 +426,7 @@ export interface FamilyTableLaneOptions {
   readonly clock?: () => number;
   readonly fetchBitmap?: LaneArtFetcher;
   readonly artMaxEntries?: number;
+  readonly artMaxConcurrent?: number;
 }
 
 export function familyTableLaneView(
@@ -500,6 +502,7 @@ export function familyTableLaneView(
         const focusTipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
         const art = new LaneArtCache({
           maxEntries: laneOptions?.artMaxEntries,
+          maxConcurrent: laneOptions?.artMaxConcurrent,
           fetchBitmap: laneOptions?.fetchBitmap,
         });
         state.set('familyTable', held = {
@@ -684,8 +687,11 @@ export function familyTableLaneView(
             if (item.kind === 'group-header') {
               hasGroups = true;
               hasVariableHeights = true;
+            } else if (item.kind !== 'data') {
+              hasVariableHeights = true;
+              if (item.kind === 'gap' || item.kind === 'refused') rowIndex.set(item.key, i);
             } else {
-              if (item.level > 1) hasVariableHeights = true;
+              if (item.level > 1 || item.isLiveEnd === true) hasVariableHeights = true;
               rowIndex.set(item.key, i);
             }
           }
@@ -743,7 +749,7 @@ export function familyTableLaneView(
         allLayouts = held.cachedAllLayouts;
         layout = held.cachedLayout!;
       } else {
-        const configKey = `${widthConfigOf(model.columns, bound.settings, bound.theme)}${held.sampleSig}`;
+        const configKey = `${widthConfigOf(model.columns, bound.settings, bound.theme, model.hideHeader === true)}${held.sampleSig}`;
         if (bound.theme && held.widthConfigKey !== configKey) {
           const baseCols = buildColumnLayouts(model.columns, bound.settings);
           const measure = (text: string, font: string) => {
@@ -756,7 +762,7 @@ export function familyTableLaneView(
             }
             return w;
           };
-          held.fixedWidths = measureFixedColumnWidths(baseCols, bound.settings, bound.theme, measure, initialTextSamples(baseCols, flatRows));
+          held.fixedWidths = measureFixedColumnWidths(baseCols, bound.settings, bound.theme, measure, initialTextSamples(baseCols, flatRows), { hideHeader: model.hideHeader === true });
           held.widthConfigKey = configKey;
         }
         allLayouts = buildColumnLayouts(model.columns, bound.settings, held.fixedWidths);
@@ -888,8 +894,25 @@ export function familyTableLaneView(
         held.cachedMaximaCols = maximaCols;
       }
 
-      const visibleFirst = Math.max(0, Math.floor(bound.scrollTop / rowHeight));
-      const visibleLast = Math.min(flatRows.length, Math.ceil((bound.scrollTop + bound.height) / rowHeight) + (held.glide.size && glideMs > 0 ? 2 : 0));
+      let visibleFirst = 0;
+      let visibleLast = flatRows.length;
+      if (rowGeom) {
+        let lo = 0;
+        let hi = flatRows.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (rowGeom.tops[mid]! + rowGeom.heights[mid]! <= bound.scrollTop) lo = mid + 1;
+          else hi = mid;
+        }
+        visibleFirst = lo;
+        let end = visibleFirst;
+        const bottomEdge = bound.scrollTop + bound.height;
+        while (end < flatRows.length && rowGeom.tops[end]! < bottomEdge) end++;
+        visibleLast = Math.min(flatRows.length, end + (held.glide.size && glideMs > 0 ? 2 : 0));
+      } else {
+        visibleFirst = Math.max(0, Math.floor(bound.scrollTop / rowHeight));
+        visibleLast = Math.min(flatRows.length, Math.ceil((bound.scrollTop + bound.height) / rowHeight) + (held.glide.size && glideMs > 0 ? 2 : 0));
+      }
       const visibleIcons = collectVisibleCellIcons(flatRows, layout.columns, model.hour, visibleFirst, visibleLast);
       held.art.requestVisible(held.demandedArtUrls.length ? [...visibleIcons, ...held.demandedArtUrls] : visibleIcons);
 
@@ -920,6 +943,7 @@ export function familyTableLaneView(
           artCache: held.art,
           dpr,
           hasGroupHeaders: held.cachedHasGroupHeaders,
+          dateGrouped: model.dateGrouped === true,
           precomputedMaxima: maxima,
           staticRowLooks: model.rowTimeBoundaries === false,
           rowIndex: held.cachedRowIndex,
@@ -1120,7 +1144,7 @@ export function familyTableLaneView(
         return at.toggle ? `toggle:${at.rowKey}` : `row:${at.rowKey}`;
       };
 
-      const handledPicture = model.rows.length > 0 || model.empty !== undefined || model.clockSummary !== undefined;
+      const handledPicture = model.rows.length > 0 || (model.slots?.length ?? 0) > 0 || model.empty !== undefined || model.clockSummary !== undefined;
       return {
         ...(handledPicture ? { mode: 'picture' as const } : {}),
         ...(Number.isFinite(held.cachedModelNextAt) ? { nextChangeAt: held.cachedModelNextAt } : {}),

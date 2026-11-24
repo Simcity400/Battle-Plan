@@ -880,3 +880,279 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
         "missing EventFeedHistory table must refuse by name rather than guessing or returning notApplicable"
     );
 }
+
+#[test]
+fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_continuing_edges() {
+    use super::{
+        Decisions, DecisionsTail, EventChoices, EventChoicesTail, EventFeed, EventFeedTail, FeedPageParams, FeedTailParams,
+        decisions_dated_panel, event_choices_dated_panel, event_feed_dated_panel,
+    };
+    use dashboard_base::{
+        products::{LoadContext, Product, log_page::LogFacetCountAsk},
+        test_fixtures::{CAMPAIGN, records, source},
+    };
+    use dashboard_query::log::FacetFilter;
+    use dashboard_world::products::groups::MembershipRun;
+    use replay::campaign::Replay;
+    use replay_data::{
+        event_feed_rows::{
+            EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedEventIdentity, EventFeedHistoryRow, EventFeedScript, EventFeedScriptChange,
+            decisions::{DecisionChange, Operation, TIMED},
+        },
+        rows::{Recorded, TableId, TableRows},
+    };
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let ger = EventFeedCountry { reference: 9001, id: 9001, instance: 1 };
+    let tokens = b"mod_mission_aevent_choice_1";
+    let dec_ev = |sequence: u64, hour: i32, src: EventFeedSource, change: Option<DecisionChange>, instance: Option<u32>, lifecycle: Option<i32>| EventFeedEvent {
+        sequence,
+        generation: 1,
+        hour,
+        source: src,
+        actor: ger,
+        target: EventFeedCountry::default(),
+        cause: Recorded::NotRecorded,
+        script: Some(EventFeedScript {
+            token_start: 0,
+            token_len: 13,
+            instance,
+            lifecycle,
+            change: change.map(EventFeedScriptChange::Decision),
+            ..EventFeedScript::default()
+        }),
+    };
+    let ev_choice = |sequence: u64, hour: i32, src: EventFeedSource, option: Option<i32>| EventFeedEvent {
+        sequence,
+        generation: 1,
+        hour,
+        source: src,
+        actor: ger,
+        target: ger,
+        cause: Recorded::NotRecorded,
+        script: Some(EventFeedScript {
+            token_start: 13,
+            token_len: 14,
+            native_event: Some(EventFeedEventIdentity { kind: 50, id: 7 }),
+            option,
+            ..EventFeedScript::default()
+        }),
+    };
+    let pack = |read_hour: i32, events: Vec<EventFeedEvent>| {
+        let count = events.len() as u64;
+        EventFeedHistoryRow {
+            generation: 1,
+            read_hour,
+            coverage: EventFeedCoverage::Complete,
+            counts: Some(EventFeedCounts { acquired: count, settled: count, failed: 0, rejected: 0 }),
+            outstanding: 0,
+            failure: None,
+            script_refusals: 0,
+            events,
+            script_tokens: tokens.to_vec(),
+            script_scopes: Vec::new(),
+        }
+    };
+    let frames: Vec<_> = (100..=106)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            let events = match hour {
+                100 => vec![
+                    dec_ev(1, 100, EventFeedSource::DecisionActivated, Some(DecisionChange::new(Operation::Store, TIMED)), Some(10), Some(0)),
+                    ev_choice(2, 100, EventFeedSource::ScriptEvent, None),
+                ],
+                102 => vec![ev_choice(3, 102, EventFeedSource::EventOption, Some(1))],
+                103 => vec![dec_ev(4, 103, EventFeedSource::DecisionTimedOut, Some(DecisionChange::new(Operation::Update, TIMED)), Some(10), Some(2))],
+                105 => vec![ev_choice(5, 105, EventFeedSource::NewsEvent, None)],
+                _ => Vec::new(),
+            };
+            frame.metrics.table_ns[TableId::EventFeedHistory.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
+            *frame.tables[TableId::EventFeedHistory.index()] = TableView::Complete(TableRows::EventFeedHistory(vec![pack(hour, events)]));
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let replay_source = dashboard_base::Source::from_replay(
+        dashboard_base::SourceKey { source_id: "feed-tails".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let cancel = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let scope = Some(vec![MembershipRun { tag: "GER".into(), first_hour: 100, last_hour: 106 }]);
+
+    let page_all = EventFeed::load(
+        &replay_source,
+        &FeedPageParams { branch_id: "1".into(), facets: Vec::new(), from: Some(100.0), to: 106.0, cursor: None, page_size: 64, scope: None },
+        &context,
+        &cancel,
+    )
+    .unwrap();
+    let tail_all = EventFeedTail::load(
+        &replay_source,
+        &FeedTailParams {
+            branch_id: "1".into(),
+            facets: Vec::new(),
+            from: Some(100.0),
+            hour: Some(106),
+            offset: None,
+            limit: 64,
+            count_facets: vec![LogFacetCountAsk {
+                key: "events".into(),
+                facets: vec![FacetFilter { name: "kind".into(), values: vec![i64::from(EventFeedSource::ScriptEvent as u8), i64::from(EventFeedSource::NewsEvent as u8)], ..Default::default() }],
+            }],
+            scope: None,
+        },
+        &context,
+        &cancel,
+    )
+    .unwrap();
+    let newest_feed = |mut rows: Vec<super::EventFeedPageRow>| {
+        rows.sort_by_key(|row| (std::cmp::Reverse(row.hour), row.ordinal.parse::<u64>().unwrap()));
+        rows
+    };
+    let newest_script = |mut rows: Vec<super::cards::ScriptPageRow>| {
+        rows.sort_by_key(|row| (std::cmp::Reverse(row.hour), row.ordinal.parse::<u64>().unwrap()));
+        rows
+    };
+    assert_eq!(tail_all.total, page_all.total);
+    assert_eq!(tail_all.rows, newest_feed(page_all.rows));
+    assert_eq!(tail_all.facet_totals.len(), 1);
+    assert_eq!(tail_all.facet_totals[0].total, "2");
+
+    let page_scoped = EventFeed::load(
+        &replay_source,
+        &FeedPageParams { branch_id: "1".into(), facets: Vec::new(), from: Some(100.0), to: 106.0, cursor: None, page_size: 64, scope: scope.clone() },
+        &context,
+        &cancel,
+    )
+    .unwrap();
+    let tail_scoped = EventFeedTail::load(
+        &replay_source,
+        &FeedTailParams {
+            branch_id: "1".into(),
+            facets: Vec::new(),
+            from: Some(100.0),
+            hour: Some(106),
+            offset: None,
+            limit: 64,
+            count_facets: vec![LogFacetCountAsk {
+                key: "events".into(),
+                facets: vec![FacetFilter { name: "kind".into(), values: vec![i64::from(EventFeedSource::ScriptEvent as u8), i64::from(EventFeedSource::NewsEvent as u8)], ..Default::default() }],
+            }],
+            scope: scope.clone(),
+        },
+        &context,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(tail_scoped.total, page_scoped.total);
+    assert_eq!(tail_scoped.rows, newest_feed(page_scoped.rows));
+    assert_eq!(tail_scoped.facet_totals[0].total, "2");
+
+    let dec_facets = vec![
+        FacetFilter {
+            name: "kind".into(),
+            values: vec![i64::from(EventFeedSource::DecisionActivated as u8), i64::from(EventFeedSource::DecisionTimedOut as u8)],
+            ..Default::default()
+        },
+        FacetFilter { name: "opener".into(), values: vec![-1], ..Default::default() },
+    ];
+    let dec_page = Decisions::load(
+        &replay_source,
+        &FeedPageParams { branch_id: "1".into(), facets: dec_facets.clone(), from: Some(100.0), to: 106.0, cursor: None, page_size: 64, scope: None },
+        &context,
+        &cancel,
+    )
+    .unwrap();
+    let dec_tail = DecisionsTail::load(
+        &replay_source,
+        &FeedTailParams { branch_id: "1".into(), facets: dec_facets.clone(), from: Some(100.0), hour: Some(106), offset: None, limit: 64, count_facets: Vec::new(), scope: None },
+        &context,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(dec_tail.total, dec_page.total);
+    assert_eq!(dec_tail.rows, newest_script(dec_page.rows));
+    assert_eq!(dec_tail.rows[0].occurrence.as_ref().unwrap().edges.len(), 2);
+
+    let dec_panel = decisions_dated_panel(
+        &replay_source,
+        &context,
+        &serde_json::json!({ "panel": "decisions-tail", "branchId": "1", "facets": dec_facets, "from": 100, "limit": 64 }),
+    )
+    .unwrap();
+    let dec_exact = dec_panel.exact().unwrap();
+    let at_100 = (dec_exact.advance)(100, true, &cancel, None);
+    assert_eq!(*at_100.value, (dec_exact.cold)(100, &cancel));
+    assert_eq!(at_100.value.as_ref().as_ref().unwrap()["rows"][0]["occurrence"]["edges"].as_array().unwrap().len(), 1);
+    let at_101 = (dec_exact.advance)(101, true, &cancel, None);
+    assert!(!at_101.fresh, "quiet hour with no opener and no continuing edge stays quiet");
+    assert_eq!(*at_101.value, (dec_exact.cold)(101, &cancel));
+    let at_103 = (dec_exact.advance)(103, true, &cancel, None);
+    assert!(at_103.fresh, "continuing edge at hour 103 must wake decisions-tail even with no new opener");
+    assert_eq!(*at_103.value, (dec_exact.cold)(103, &cancel));
+    assert_eq!(at_103.value.as_ref().as_ref().unwrap()["rows"][0]["occurrence"]["edges"].as_array().unwrap().len(), 2);
+    let at_104 = (dec_exact.advance)(104, true, &cancel, None);
+    assert!(!at_104.fresh);
+    let back_100 = (dec_exact.advance)(100, true, &cancel, None);
+    assert_eq!(*back_100.value, (dec_exact.cold)(100, &cancel));
+    assert_eq!(back_100.value.as_ref().as_ref().unwrap()["rows"][0]["occurrence"]["edges"].as_array().unwrap().len(), 1);
+
+    let choice_facets = vec![
+        FacetFilter {
+            name: "kind".into(),
+            values: vec![i64::from(EventFeedSource::ScriptEvent as u8), i64::from(EventFeedSource::NewsEvent as u8), i64::from(EventFeedSource::EventOption as u8)],
+            ..Default::default()
+        },
+        FacetFilter { name: "opener".into(), values: vec![-1], ..Default::default() },
+    ];
+    let choice_page = EventChoices::load(
+        &replay_source,
+        &FeedPageParams { branch_id: "1".into(), facets: choice_facets.clone(), from: Some(100.0), to: 106.0, cursor: None, page_size: 64, scope: scope.clone() },
+        &context,
+        &cancel,
+    )
+    .unwrap();
+    let choice_tail = EventChoicesTail::load(
+        &replay_source,
+        &FeedTailParams { branch_id: "1".into(), facets: choice_facets.clone(), from: Some(100.0), hour: Some(106), offset: None, limit: 64, count_facets: Vec::new(), scope: scope.clone() },
+        &context,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(choice_tail.total, choice_page.total);
+    assert_eq!(choice_tail.rows, newest_script(choice_page.rows));
+
+    let choice_panel = event_choices_dated_panel(
+        &replay_source,
+        &context,
+        &serde_json::json!({ "panel": "event-choices-tail", "branchId": "1", "facets": choice_facets, "from": 100, "limit": 64, "scope": scope }),
+    )
+    .unwrap();
+    let choice_exact = choice_panel.exact().unwrap();
+    for hour in [100, 101, 102, 104, 105, 106, 100] {
+        let stepped = (choice_exact.advance)(hour, true, &cancel, None);
+        let cold = (choice_exact.cold)(hour, &cancel);
+        assert_eq!(*stepped.value, cold, "event-choices-tail stepped vs cold at {hour}");
+    }
+
+    let feed_panel = event_feed_dated_panel(
+        &replay_source,
+        &context,
+        &serde_json::json!({ "panel": "event-feed-tail", "branchId": "1", "from": 100, "limit": 64 }),
+    )
+    .unwrap();
+    let feed_exact = feed_panel.exact().unwrap();
+    for hour in [100, 101, 102, 104, 105, 106, 101] {
+        let stepped = (feed_exact.advance)(hour, true, &cancel, None);
+        let cold = (feed_exact.cold)(hour, &cancel);
+        assert_eq!(*stepped.value, cold, "event-feed-tail stepped vs cold at {hour}");
+    }
+}
