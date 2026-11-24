@@ -179,7 +179,7 @@ const END_LABEL_MAX_NAME_PX = 150;
 const FOLD_SLOT_WIDTH = 46;
 const MARKER_MIN_ICON_GAP = 21;
 
-function boundedExtent(bounded: BoundedSeries, xDomain: readonly [number, number], scale = 1): readonly [number, number] | null {
+function boundedExtent(bounded: BoundedSeries, xDomain: readonly [number, number], scale: number, headInView: boolean): readonly [number, number] | null {
   let low = Infinity;
   let high = -Infinity;
   const include = (v: number) => {
@@ -200,7 +200,7 @@ function boundedExtent(bounded: BoundedSeries, xDomain: readonly [number, number
       include(bucket.maxValue);
     }
   }
-  if (bounded.headValue && (bounded.headValue.kind === 'known' || bounded.headValue.kind === 'zero' || bounded.headValue.kind === 'partial')) {
+  if (headInView && bounded.headValue && (bounded.headValue.kind === 'known' || bounded.headValue.kind === 'zero' || bounded.headValue.kind === 'partial')) {
     const num = Number(bounded.headValue.value);
     include(num);
   }
@@ -212,17 +212,19 @@ function seriesExtent(
   xDomain: readonly [number, number],
   until: number,
 ): readonly [number, number] | null {
+  const headHour = series.headHour ?? until;
+  const headInView = headHour >= xDomain[0] && headHour <= xDomain[1];
   if (series.bounded) {
-    const ext = boundedExtent(series.bounded, xDomain, series.valueScale ?? 1);
+    const ext = boundedExtent(series.bounded, xDomain, series.valueScale ?? 1, headInView);
     if (ext) {
-      if (series.headValue != null && Number.isFinite(series.headValue)) {
+      if (headInView && series.headValue != null && Number.isFinite(series.headValue)) {
         return [Math.min(ext[0], series.headValue), Math.max(ext[1], series.headValue)];
       }
       return ext;
     }
   }
   if (!series.points?.length) {
-    if (series.headValue != null && Number.isFinite(series.headValue) && until >= xDomain[0] && until <= xDomain[1]) {
+    if (series.headValue != null && Number.isFinite(series.headValue) && headInView) {
       return [series.headValue, series.headValue];
     }
     return null;
@@ -477,7 +479,8 @@ export function layoutTimeChart(
 
   const measureName = (text: string) => measure(text, labelNameFont);
 
-  if (model.mode === 'lines') {
+  const playheadInView = xDomain[1] >= model.hour;
+  if (model.mode === 'lines' && playheadInView) {
     for (const s of model.series) {
       if (!s.endLabel) continue;
       const end = seriesEndPoint(s, model.hour);

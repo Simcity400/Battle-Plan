@@ -648,4 +648,20 @@ describe('time-chart picture authority', () => {
     assert.equal(tip?.payload?.note, 'Ongoing gap');
     assert.equal(tip?.payload?.subtitle, `From ${formatDateOnly(H1936 + 300)}`, 'no end after the displayed hour');
   });
+  it('scales and draws a historical zoom from its own window, never from the current head', () => {
+    const base = Math.floor(H1936 / 96) * 96;
+    const hour = base + 40 * 24;
+    const line = makeTiledLine('GER', [makeBucket(base, base + 95, 10)]);
+    const bounded = boundTiledSeries(line, displayedHour(hour), { headPoint: { hour, value: 999 }, headValue: knownValue(999) });
+    const model = pictureModel(hour, {
+      view: { x: [base, base + 8] },
+      series: [{ id: 'pp', key: 'pp', name: 'Political power', color: '#e3a83b', role: 'primary', bounded, headValue: 999, headHour: hour,
+        endLabel: { value: '999' } }],
+    });
+    const layout = layoutTimeChart(model, 600, 260, FONT, measure);
+    assert.ok(layout.yDomain[1] < 100, `y axis from the window: ${layout.yDomain[1]}`);
+    assert.equal(layout.endLabels.length, 0, 'no end label when the playhead is outside the window');
+    const { subpaths } = buildLineSubpaths(model.series[0]!, layout, hour);
+    assert.ok(subpaths.flat().every(([, y]) => y >= layout.top - 1), 'no point drawn at the head value');
+  });
 });
