@@ -8,7 +8,7 @@ import { knownValue, textValue, valueFromLive, zeroValue } from '../../families/
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { AirMissionChoice, AirMissionRegion, AirMissionsReply } from '../../generated/dashboard';
 import { validateAirMissions } from './airMissionsData.ts';
-import { COLUMNS, TABLE_BASE, WINGS_COLUMN } from './definition.ts';
+import { COLUMNS, TABLE_BASE, WINGS_COLUMN, OPTIONS } from './definition.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
 
@@ -78,6 +78,7 @@ export const airMissionsDeclaration: TableWidgetDeclaration<Record<string, never
   subject: 'air missions',
   emptyCampaign: 'Load a campaign to see air missions.',
   icon: 'plane',
+  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its air missions.' },
   sources: ctx => {
     const params = ctx.countryTag ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) } : null;

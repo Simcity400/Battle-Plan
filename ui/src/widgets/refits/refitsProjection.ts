@@ -6,7 +6,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import { knownValue, textValue, notApplicable, notRecorded, valueFromNullable, type Value } from '../../families/value.ts';
 import type { NavalRefitsReply, RefitLine, YardShip } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
 import { fixedText, fraction, refitProgress, shipLabel, shipStrength, shipTooltip, validateRefits } from './yardsData.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
@@ -93,6 +93,7 @@ export const refitsDeclaration: TableWidgetDeclaration<Record<string, never>> = 
   subject: 'refits',
   emptyCampaign: 'Load a campaign to see refits.',
   icon: 'anchor',
+  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its refits.' },
   sources: ctx => {
     const params = ctx.countryTag ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) } : null;

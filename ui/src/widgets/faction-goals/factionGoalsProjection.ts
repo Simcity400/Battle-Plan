@@ -9,7 +9,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, notApplicable, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import type { CountryFactionGoalsReply, FactionDetailReply, FactionGoalDefinition } from '../../generated/dashboard';
 import type { StatusMarkKind } from '../../draw/kit.ts';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
 
 export type GoalFilter = 'all' | 'inProgress' | 'completed';
 export interface FactionGoalsOptions { readonly goals: GoalFilter }
@@ -130,6 +130,7 @@ export const factionGoalsDeclaration: TableWidgetDeclaration<FactionGoalsOptions
   subject: 'faction goals',
   emptyCampaign: 'Load a campaign to see faction goals.',
   icon: 'target',
+  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its faction’s goals.' },
   sources: ctx => {
     const params = ctx.countryTag ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) } : null;

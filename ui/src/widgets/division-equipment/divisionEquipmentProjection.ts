@@ -7,7 +7,7 @@ import { encodeTableSettings, tableSettingsOf } from '../../families/table/setti
 import { knownValue, notRecorded, textValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { DivisionEquipmentReply, EquipmentTemplate, EquipmentType } from '../../generated/dashboard';
-import { TEMPLATE_BASE, TEMPLATE_COLUMNS, TEMPLATE_TABLE_KEY, TYPE_BASE, TYPE_COLUMNS, TYPE_TABLE_KEY } from './definition.ts';
+import { TEMPLATE_BASE, TEMPLATE_COLUMNS, TEMPLATE_TABLE_KEY, TYPE_BASE, TYPE_COLUMNS, TYPE_TABLE_KEY, OPTIONS } from './definition.ts';
 import { validateDivisionEquipment } from './divisionEquipmentData.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
@@ -205,6 +205,7 @@ export const divisionEquipmentDeclaration: TableWidgetDeclaration<DivisionEquipm
   subject: 'division equipment',
   emptyCampaign: 'Load a campaign to see division equipment.',
   icon: 'helmet',
+  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its division equipment.' },
   sources: ctx => sources(ctx),
   projection: divisionEquipmentProjection,

@@ -6,7 +6,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, notApplicable, valueFromNullable, type Value } from '../../families/value.ts';
 import type { NavalRepairsReply, RepairPort, YardShip } from '../../generated/dashboard';
 import { fraction, shipLabel, shipStrength, shipTooltip, validateRepairs } from '../refits/yardsData.ts';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
 const ON_PORT = 'Shown on the port';
@@ -92,6 +92,7 @@ export const dockyardsDeclaration: TableWidgetDeclaration<Record<string, never>>
   subject: 'repair ports',
   emptyCampaign: 'Load a campaign to see dockyards and repairs.',
   icon: 'anchor',
+  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its dockyards.' },
   sources: ctx => {
     const params = ctx.countryTag ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) } : null;

@@ -8,7 +8,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import type { CareerRow, CareerTemplate, DivisionCareersReply } from '../../generated/dashboard';
 import { validateDivisionCareers } from '../division-service-record/careersData.ts';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
 
 export interface DecoratedOptions { readonly filter: DeclaredCountryFilter }
 
@@ -118,6 +118,7 @@ export const mostDecoratedDeclaration: TableWidgetDeclaration<DecoratedOptions> 
   subject: 'divisions',
   emptyCampaign: 'Load a campaign to see divisions.',
   icon: 'star',
+  optionFields: OPTIONS,
   countries: { mode: 'filter' },
   sources: ctx => ({
     owner: `most-decorated-divisions:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,

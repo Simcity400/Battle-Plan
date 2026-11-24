@@ -9,7 +9,7 @@ import { knownValue, textValue, notRecorded, type Value } from '../../families/v
 import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
 import type { AirAce, AirAcesReply } from '../../generated/dashboard';
 import { validateAces } from './acesData.ts';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
 
 export interface AcesOptions { readonly filter: DeclaredCountryFilter }
 
@@ -127,6 +127,7 @@ export const acesDeclaration: TableWidgetDeclaration<AcesOptions> = {
   subject: 'aces',
   emptyCampaign: 'Load a campaign to see its aces.',
   icon: 'star',
+  optionFields: OPTIONS,
   countries: { mode: 'filter' },
   sources: ctx => ({
     owner: `aces:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
