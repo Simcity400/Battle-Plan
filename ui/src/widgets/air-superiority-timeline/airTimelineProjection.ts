@@ -12,7 +12,6 @@ import type {
   HeatLanesModel,
   HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
-import { regionLabel } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { regionIds } from '../../families/regionTokens.ts';
@@ -213,7 +212,8 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
     viewpointColour: style?.color ? readableColour(authoredHex(style.color), options.surface) : sideColour(viewpointSide, options.surface, readableColour(CHART_MEASURE_COLOURS.bopRight, options.surface)),
   };
   const rows: HeatLaneRow[] = reply.rows.map(row => {
-    const { label, nameMissing } = regionLabel(readView, row.region, row.name);
+    const label = row.name ?? 'Region name not recorded';
+    const nameMissing = row.name === null ? row.nameMissing ?? 'Region name not recorded' : undefined;
     const readout = readoutOf(row.readout, reply, look, options.surface);
     return {
       id: String(row.region),
