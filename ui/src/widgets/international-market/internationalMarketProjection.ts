@@ -102,7 +102,7 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
             { label: 'Price level', value: row.level === null ? notRecorded('Price level not recorded') : knownValue(levelText(row.level)) },
           ],
           tooltipAction: 'Click for market details',
-          meta: { title: `${seller.name}: market`, tags: row.seller ? [row.seller] : [], selected: `offer:${row.offer.country}` },
+          meta: { title: `${seller.name}: market`, tags: row.seller ? [row.seller] : [], selected: `offer:${row.offer.country}:${row.variant}` },
         };
       });
       return { columns, rows, hour, warnings: reply.warnings };
