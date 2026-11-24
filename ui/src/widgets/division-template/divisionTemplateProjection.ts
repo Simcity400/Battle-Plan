@@ -10,11 +10,11 @@ import {
   type TooltipExtraRow,
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
-import { OFFERED } from '../../families/table/settings.ts';
-import { knownValue, notRecorded, partialValue, valueFromNullable, type Value } from '../../families/value.ts';
+import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, valueFromNullable, type Value } from '../../families/value.ts';
 import type { DivisionTemplatesReply, TemplateEntry } from '../../generated/dashboard';
 import { gameWindow } from '../../dashboard/gameWindows.ts';
-import { DEFAULT_SORT, OPTIONS } from './definition.ts';
+import { OPTIONS, TABLE_BASE } from './definition.ts';
 import {
   battalionCount,
   priorityLabel,
@@ -49,7 +49,6 @@ function compositionValue(entry: TemplateEntry): Value<string> {
 
 export interface DivisionTemplateProjectionOptions {
   readonly countryName: string;
-  readonly cellBars: boolean;
   readonly canOpenDesigner: boolean;
 }
 
@@ -83,8 +82,8 @@ const TEMPLATE_COLUMNS: readonly DeclarativeColumnSpec<TemplateRow, DivisionTemp
   {
     key: 'fielded',
     label: 'Fielded',
-    as: 'plain',
-    cellBarWhen: opt => opt.cellBars,
+    as: 'faint',
+    barEligible: true,
     tone: 'blue',
     offered: OFFERED.number,
     priority: 1,
@@ -138,10 +137,23 @@ const TEMPLATE_COLUMNS: readonly DeclarativeColumnSpec<TemplateRow, DivisionTemp
     sortPath: 'entry.priority',
     whenNull: { kind: 'notRecorded', reasonField: 'entry.priorityMissing', reason: 'Priority not recorded' },
   },
+  {
+    key: 'view',
+    label: '',
+    as: 'plain',
+    cellKind: 'action',
+    offered: OFFERED.text,
+    priority: 5,
+    sortable: false,
+    hideable: false,
+    value: (row, _live, _hour, options) => (row.kind === 'template' && options.canOpenDesigner && row.entry.designer !== null
+      ? knownValue('View')
+      : notApplicable('This row has no designer window')),
+  },
 ];
 
-export function divisionTemplateColumns(cellBars = false): TableColumnSpec[] {
-  return TEMPLATE_COLUMNS.map(col => (col.cellBarWhen ? { ...col, as: cellBars ? 'faint' : 'plain' } : col));
+export function divisionTemplateColumns(): TableColumnSpec[] {
+  return [...TEMPLATE_COLUMNS];
 }
 
 const yesNoValue = (value: boolean | null): Value<string> =>
@@ -159,23 +171,15 @@ export const divisionTemplateProjection: TableProjection<DivisionTemplateProject
     columns: TEMPLATE_COLUMNS,
     rows: (reply, _live, _hour, options) => {
       const rows = templateRows(reply);
-      const current = reply.templates.filter(entry => entry.obsolete === false).length;
-      const unknownStatus = reply.templates.filter(entry => entry.obsolete === null).length;
-      const summaryPill = unknownStatus > 0
-        ? (current > 0
-          ? `${current} current \u00b7 ${unknownStatus} status not recorded`
-          : `${unknownStatus} status not recorded`)
-        : `${current} ${current === 1 ? 'template' : 'templates'}`;
       if (!rows.length) {
         return {
           rows: [],
           empty: `${options.countryName} has no division templates at this date.`,
           emptyKind: 'empty',
           warnings: reply.warnings,
-          summaryPill,
         };
       }
-      return { rows, warnings: reply.warnings, summaryPill };
+      return { rows, warnings: reply.warnings };
     },
     rowKey: row => row.key,
     rowName: row => (row.kind === 'obsolete'
@@ -272,11 +276,10 @@ export const divisionTemplateDeclaration: TableWidgetDeclaration<DivisionTemplat
     };
   },
   projection: divisionTemplateProjection,
-  columns: ctx => divisionTemplateColumns(ctx.options.cellBars === true),
-  settings: { kind: 'options', defaultSort: DEFAULT_SORT },
+  columns: () => divisionTemplateColumns(),
+  settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },
   projectionOptions: ctx => ({
     countryName: ctx.countryName,
-    cellBars: ctx.options.cellBars === true,
     canOpenDesigner: Boolean(gameWindow('divisionDesigner')),
   }),
 };

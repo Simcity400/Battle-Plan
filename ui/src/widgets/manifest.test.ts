@@ -50,6 +50,9 @@ test('manifest accounts for every widget kind once across family views and legac
     assert.equal(familyPairs.has(pair), false, `${pair} must not appear in both lists`);
   }
   assert.equal(FAMILY_VIEWS.length, familyPairs.size, 'each (kind, view) is declared once');
+  for (const kind of ['factories', 'air-superiority-region', 'minefields']) {
+    assert.ok(familyKinds.has(kind), `${kind} must appear in FAMILY_VIEWS`);
+  }
 });
 
 test('multi-view widget routes each (kind, view) to its own family or legacy entry with scoped options', () => {
@@ -249,7 +252,9 @@ test('shared data-driven settings controls expose bars-behind, three row heights
   assert.equal(barsBehindOf('off'), 'off');
   assert.equal(barsBehindOf('sorted'), 'sorted');
   assert.equal(barsBehindOf('all'), 'all');
-  assert.equal(barsBehindOf('bogus'), 'sorted');
+  assert.equal(barsBehindOf('bogus'), 'all');
+  assert.deepEqual(BARS_BEHIND_CHOICES.map(c => c.label), ['Every column', 'Sorted column', 'Off']);
+  assert.deepEqual(ROW_HEIGHT_CHOICES.map(c => c.label), ['Compact', 'Default', 'Comfortable']);
 
   const added1 = addOrderedToken('', 'reg_1');
   const added2 = addOrderedToken(added1!, 'reg_2');

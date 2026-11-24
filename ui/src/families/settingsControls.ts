@@ -10,18 +10,18 @@ export const ROW_HEIGHT_KEY = 'rowHeight';
 export const REGIONS_KEY = 'regions';
 
 export const BARS_BEHIND_CHOICES = [
-  { value: 'off', label: 'Off' },
+  { value: 'all', label: 'Every column' },
   { value: 'sorted', label: 'Sorted column' },
-  { value: 'all', label: 'All columns' },
+  { value: 'off', label: 'Off' },
 ] as const;
 
 export const ROW_HEIGHT_CHOICES = [
   { value: 'compact', label: 'Compact' },
-  { value: 'normal', label: 'Normal' },
+  { value: 'normal', label: 'Default' },
   { value: 'comfortable', label: 'Comfortable' },
 ] as const;
 
-export function barsBehindOf(value: unknown, fallback: BarsBehindMode = 'sorted'): BarsBehindMode {
+export function barsBehindOf(value: unknown, fallback: BarsBehindMode = 'all'): BarsBehindMode {
   return value === 'off' || value === 'sorted' || value === 'all' ? value : fallback;
 }
 
@@ -30,7 +30,7 @@ export function rowHeightOf(value: unknown, fallback: RowHeightMode = 'normal'):
 }
 
 export function barsBehindControl(
-  defaultValue: BarsBehindMode = 'sorted',
+  defaultValue: BarsBehindMode = 'all',
   options?: { key?: string; section?: OptionSection; label?: string; hint?: string; visibleWhen?: OptionField['visibleWhen'] },
 ): OptionField {
   return {

@@ -5,35 +5,45 @@ import type { FamilyTheme } from '../families/contract.ts';
 import {
   BEHIND_BAR_HEIGHT,
   BEHIND_BAR_MAX_WIDTH,
+  BEHIND_BAR_MIN_WIDTH,
   BEHIND_BAR_OFFSET,
   FLAG_LOSER_ALPHA,
   FLAG_SLOT_HEIGHT,
   FLAG_SLOT_WIDTH,
   artInitials,
   barCornerRadius,
+  drawActionButton,
   drawArtSlot,
   drawBarBehindFigure,
+  drawChevron,
+  drawClockSummary,
   drawDateColumn,
   drawDateTab,
   drawFlagSlot,
   drawGapBand,
   drawGradientLegend,
+  drawIconStrip,
   drawMissingMark,
   drawNameSlot,
+  drawOutOfFigure,
   drawPartialTab,
   drawRowHairline,
   drawRowHover,
   drawRowSelected,
   drawSeriesMissingStrip,
+  drawSkillFigure,
   drawSplitBar,
   drawStatusMark,
+  drawStockpileSumCell,
   drawTrackBar,
   drawTwoWayBar,
+  drawWinRateCell,
   resolveKitTokens,
   TIMELINE_LABEL_MIN_WIDTH,
   computeTimeAxisTicks,
   drawTimeAxis,
   drawTimelineBar,
+  winRateColor,
 } from './kit.ts';
 
 const THEME: FamilyTheme = {
@@ -286,4 +296,66 @@ test('timeline bars hide icon and name under the minimum width, mix ended items 
   const texts = axis.ops.filter(op => op.op === 'fillText').map(op => op.args[0]);
   assert.ok(texts.includes('15 Sep 1941'));
   assert.ok(!texts.includes('1941'), 'a year label under the playhead tab is dropped');
+});
+
+test('table cell kit primitives handle minimum bar width, win rate tinting, icon strips, actions, stockpile bars and clock summary', () => {
+  const tiny = makeFakeCtx();
+  const tinyRect = drawBarBehindFigure(tiny.ctx, 120, 18, 0.01, '#4f86f7', { density: 'normal', sorted: true, theme: THEME });
+  assert.ok(tinyRect);
+  assert.equal(tinyRect.width, BEHIND_BAR_MIN_WIDTH);
+
+  const chev = makeFakeCtx();
+  drawChevron(chev.ctx, 4, 18, false, THEME);
+  drawChevron(chev.ctx, 4, 18, true, THEME);
+  assert.equal(chev.ops.filter(op => op.op === 'stroke').length, 2);
+
+  assert.equal(winRateColor(0.2, THEME), 'rgb(255, 107, 111)');
+  assert.equal(winRateColor(0.5, THEME), 'rgb(212, 212, 212)');
+  assert.equal(winRateColor(0.8, THEME), 'rgb(111, 212, 150)');
+  const wr = makeFakeCtx();
+  assert.deepEqual(drawWinRateCell(wr.ctx, 0, 120, 18, 0, 0, THEME), { pct: null });
+  assert.deepEqual(drawWinRateCell(wr.ctx, 0, 120, 18, 12, 4, THEME), { pct: 75 });
+
+  const outOf = makeFakeCtx();
+  drawOutOfFigure(outOf.ctx, '12', '15', 0, 100, 18, THEME);
+  assert.ok(outOf.ops.some(op => op.op === 'fillText' && op.args[0] === ' / 15'));
+
+  const skill = makeFakeCtx();
+  drawSkillFigure(skill.ctx, 0, 80, 18, '5', { kind: 'missing', resolvedName: 'Attack' }, THEME);
+  assert.ok(skill.ops.some(op => op.op === 'fillText' && op.args[0] === '5'));
+
+  const strip = makeFakeCtx();
+  const res = drawIconStrip(strip.ctx, 0, 90, 18, [
+    { state: { kind: 'missing', resolvedName: 'A' }, name: 'A' },
+    { state: { kind: 'missing', resolvedName: 'B' }, name: 'B' },
+    { state: { kind: 'missing', resolvedName: 'C' }, name: 'C' },
+    { state: { kind: 'missing', resolvedName: 'D' }, name: 'D' },
+  ], THEME, { kind: 'traits' });
+  assert.equal(res.drawnCount + res.overflowCount, 4);
+  assert.ok(res.overflowCount > 0);
+
+  const act = makeFakeCtx();
+  const restBox = drawActionButton(act.ctx, 100, 18, 'View', false, THEME);
+  const hoverBox = drawActionButton(act.ctx, 100, 18, 'View', true, THEME);
+  assert.ok(hoverBox.width > restBox.width);
+  assert.ok(act.ops.some(op => op.op === 'fillText' && op.args[0] === 'View'));
+
+  const stock = makeFakeCtx();
+  drawStockpileSumCell(stock.ctx, 0, 200, 0, 48, -120, 400, '-120', THEME);
+  assert.ok(stock.ops.some(op => op.op === 'fillText' && op.args[0] === '-120'));
+
+  const clock = makeFakeCtx();
+  drawClockSummary(clock.ctx, 320, 180, {
+    totalText: '12:30:00',
+    playingText: '10:00:00',
+    pausedText: '2:30:00',
+    playingFraction: 0.8,
+    pausedFraction: 0.2,
+    playingPct: '80%',
+    pausedPct: '20%',
+    complete: true,
+    coverageLabel: 'Complete',
+    spanText: '1 Jan 1936 – 1 Jan 1940',
+  }, THEME);
+  assert.ok(clock.ops.some(op => op.op === 'fillText' && op.args[0] === '12:30:00'));
 });

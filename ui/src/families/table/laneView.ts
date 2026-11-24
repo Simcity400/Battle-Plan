@@ -31,15 +31,17 @@ import {
 } from './model.ts';
 import {
   collectVisibleCellIcons,
+  computeRowLayout,
   createTablePicture,
   drawFamilyTable,
   glideDurationForSpeed,
   hitFamilyTable,
   rankHoldForSpeed,
   type FamilyTablePicture,
+  type RowLayoutGeometry,
 } from './painter.ts';
 import { ensureTableProjection } from './registry.ts';
-import { ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings, type TableTheme } from './settings.ts';
+import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings, type TableTheme } from './settings.ts';
 
 export interface FamilyTableBinding<TOptions = unknown> {
   readonly family: 'table';
@@ -120,6 +122,9 @@ interface HeldFamilyTable {
   cachedModelNextAt: number;
   cachedRows: readonly FlatTableRow[];
   cachedHasGroupHeaders: boolean;
+  cachedHasVariableHeights: boolean;
+  cachedRowGeomKey: string;
+  cachedRowGeom: RowLayoutGeometry | null;
   cachedRowIndex: Map<string, number>;
 
   layoutCols: readonly TableColumnSpec[] | null;
@@ -376,14 +381,16 @@ function metaSignature(model: TableModel, hasTree: boolean, rankShown: boolean, 
     model.empty ?? null,
     model.emptyDetail ?? null,
     model.emptyKind ?? 'empty',
-    model.summaryPill ?? null,
+    model.titleSummary ?? model.summaryPill ?? null,
+    model.hideHeader === true,
+    model.rowHeightMode ?? 'standard',
     model.notes ?? [],
     model.warnings ?? [],
     hasTree,
     model.unsorted === true,
     rankShown,
     rankWidth,
-    model.columns.map(c => [c.key, c.label, c.priority, c.as, c.offered, c.text ? 1 : 0, c.hideable === false ? 0 : 1, c.sortable === false ? 0 : 1, c.numeric ? 1 : 0, c.hint ?? '']),
+    model.columns.map(c => [c.key, c.label, c.unit ?? '', c.priority, c.as, c.offered, c.text ? 1 : 0, c.hideable === false ? 0 : 1, c.sortable === false ? 0 : 1, c.numeric ? 1 : 0, c.hint ?? '', c.notRecordedReason ?? '', c.cellKind ?? '', c.pinned ? 1 : 0]),
   ]);
 }
 
@@ -502,6 +509,9 @@ export function familyTableLaneView(
           cachedModelNextAt: Infinity,
           cachedRows: [],
           cachedHasGroupHeaders: false,
+          cachedHasVariableHeights: false,
+          cachedRowGeomKey: '',
+          cachedRowGeom: null,
           cachedRowIndex: new Map(),
           layoutCols: null,
           layoutSettings: null,
@@ -622,20 +632,28 @@ export function familyTableLaneView(
           ? resolveTableRowsIncremental(prevModel, prevFlatRows, prevRowIndex, model, bound.settings)
           : null;
         let hasGroups: boolean;
+        let hasVariableHeights: boolean;
         let rowIndex: Map<string, number>;
         if (inc) {
           flatRows = inc.flatRows;
           rowIndex = inc.rowIndex;
           hasGroups = false;
+          hasVariableHeights = false;
           incrementalUsed = true;
         } else {
           flatRows = resolveTableRows(model, bound.settings, bound.expanded);
           hasGroups = false;
+          hasVariableHeights = false;
           rowIndex = new Map<string, number>();
           for (let i = 0; i < flatRows.length; i++) {
             const item = flatRows[i]!;
-            if (item.kind === 'group-header') hasGroups = true;
-            else rowIndex.set(item.key, i);
+            if (item.kind === 'group-header') {
+              hasGroups = true;
+              hasVariableHeights = true;
+            } else {
+              if (item.level > 1) hasVariableHeights = true;
+              rowIndex.set(item.key, i);
+            }
           }
         }
         let nextBoundary = Math.min(
@@ -660,6 +678,9 @@ export function familyTableLaneView(
         held.cachedModelHasTimeBoundaries = Number.isFinite(modelNextAt);
         held.cachedRows = flatRows;
         held.cachedHasGroupHeaders = hasGroups;
+        held.cachedHasVariableHeights = hasVariableHeights;
+        held.cachedRowGeom = null;
+        held.cachedRowGeomKey = '';
         held.cachedRowIndex = rowIndex;
       }
       const tProj = timed ? performance.now() : 0;
@@ -668,7 +689,7 @@ export function familyTableLaneView(
         return { mode: 'refused', reason: model.refused, surfaces: [], fields: {}, motion: false };
       }
 
-      const rankShown = model.rank === true;
+      const rankShown = model.rank === true && (bound.settings.showRank === true || model.defaultRankShown === true);
       const rankMarkersOn = rankShown && model.rankMarkers === true;
       const rankWidth = rankShown ? (bound.rankWidth ?? (rankMarkersOn ? 64 : 36)) : 0;
       const layoutSame = held.cachedLayout !== null
@@ -722,11 +743,12 @@ export function familyTableLaneView(
         held.cachedMaximaCols = '';
         held.rowAuditCache = new WeakMap();
         const widthsPayload = {
-          widths: Object.fromEntries(allLayouts.filter(col => col.shown).map(col => [col.key, col.width])),
+          widths: Object.fromEntries([...allLayouts.filter(col => col.shown), ...layout.columns].map(col => [col.key, col.width])),
           visible: layout.columns.map(col => col.key),
           hidden: layout.hidden,
           totalWidth: layout.totalWidth,
           scrollable: layout.scrollable,
+          pinnedCount: layout.pinnedCount,
           moreWidth: layout.moreWidth,
         };
         const widthsText = JSON.stringify(widthsPayload);
@@ -735,7 +757,20 @@ export function familyTableLaneView(
 
       const now = laneOptions?.clock ? laneOptions.clock() : input.now;
       const glideMs = glideDurationForSpeed(input.speed, bound.reducedMotion === true);
-      const rowHeight = ROW_HEIGHT[bound.settings.density];
+      const rowHeightMode = model.rowHeightMode ?? 'standard';
+      const rowHeight = rowHeightMode === 'media' ? MEDIA_ROW_HEIGHT[bound.settings.density] : ROW_HEIGHT[bound.settings.density];
+      let rowGeom: RowLayoutGeometry | null = null;
+      if (held.cachedHasVariableHeights) {
+        const geomKey = `${bound.settings.density}:${rowHeightMode}`;
+        if (held.cachedRowGeom && held.cachedRowGeomKey === geomKey) {
+          rowGeom = held.cachedRowGeom;
+        } else {
+          rowGeom = computeRowLayout(flatRows, bound.settings.density, rowHeightMode);
+          held.cachedRowGeom = rowGeom;
+          held.cachedRowGeomKey = geomKey;
+        }
+      }
+      const totalHeight = rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
       if (modelChanged) {
         if (held.priorRows.length && glideMs > 0) {
           const oldIndex = new Map<string, number>();
@@ -848,6 +883,9 @@ export function familyTableLaneView(
           hasGroupHeaders: held.cachedHasGroupHeaders,
           precomputedMaxima: maxima,
           staticRowLooks: model.rowTimeBoundaries === false,
+          rowHeightMode,
+          rowGeom,
+          clockSummary: model.clockSummary,
         }, held.picture);
         painted = result.drew;
       }
@@ -892,7 +930,10 @@ export function familyTableLaneView(
               empty: model.empty ?? null,
               emptyDetail: model.emptyDetail ?? null,
               emptyKind: model.emptyKind ?? 'empty',
+              titleSummary: model.titleSummary ?? null,
               summaryPill: model.summaryPill ?? null,
+              hideHeader: model.hideHeader === true,
+              rowHeightMode,
               notes: model.notes ?? [],
               warnings: model.warnings ?? [],
               hasTree,
@@ -927,10 +968,10 @@ export function familyTableLaneView(
 
       const focusedIndex = focusedKey ? (held.cachedRowIndex.get(focusedKey) ?? -1) : -1;
       const inspectedPresent = inspectedKey ? held.cachedRowIndex.has(inspectedKey) : false;
-      const tSig = `${flatRows.length}:${focusedIndex}:${inspectedPresent ? 1 : 0}`;
+      const tSig = `${flatRows.length}:${totalHeight}:${focusedIndex}:${inspectedPresent ? 1 : 0}`;
       if (tSig !== held.tableSig || !held.tableField) {
         held.tableSig = tSig;
-        held.tableField = { value: { count: flatRows.length, focusedIndex, inspectedPresent }, content: content() };
+        held.tableField = { value: { count: flatRows.length, totalHeight, focusedIndex, inspectedPresent }, content: content() };
       }
       fields.table = held.tableField;
 
@@ -1032,12 +1073,13 @@ export function familyTableLaneView(
 
       const glideSnapshot = moving ? new Map(held.glide) : undefined;
       const hit = (point: readonly [number, number]) => {
-        const at = hitFamilyTable(layout, flatRows, { x: point[0], y: point[1] }, rowHeight, bound.scrollLeft, bound.scrollTop, rankShown, rankWidth, glideSnapshot, now, glideMs);
+        if (model.clockSummary) return null;
+        const at = hitFamilyTable(layout, flatRows, { x: point[0], y: point[1] }, rowHeight, bound.scrollLeft, bound.scrollTop, rankShown, rankWidth, glideSnapshot, now, glideMs, rowGeom);
         if (at.kind !== 'row' || !at.rowKey) return null;
         return at.toggle ? `toggle:${at.rowKey}` : `row:${at.rowKey}`;
       };
 
-      const handledPicture = model.rows.length > 0 || model.empty !== undefined;
+      const handledPicture = model.rows.length > 0 || model.empty !== undefined || model.clockSummary !== undefined;
       return {
         ...(handledPicture ? { mode: 'picture' as const } : {}),
         ...(Number.isFinite(held.cachedModelNextAt) ? { nextChangeAt: held.cachedModelNextAt } : {}),

@@ -63,7 +63,7 @@ function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: Timeline
   let x = LABEL_PAD + (lane.depth ?? 0) * INDENT;
   const right = layout.labelWidth;
   if (lane.expandable) {
-    drawChevron(ctx, x, mid, laneOpen(lane, expanded), theme.muted, CHEVRON);
+    drawChevron(ctx, x - 4, mid, laneOpen(lane, expanded), theme);
     x += CHEVRON + 6;
   }
   if (lane.flag || lane.flagTag) {

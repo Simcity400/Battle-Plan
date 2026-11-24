@@ -64,9 +64,9 @@ static DEFS: [Def; 16] = {
         def(Factories, "Factories", "factories", ("country-factories", "free7")),
         Def {
             note: Some("Manpower in the field, attributed to each division's owner, as in the Army size widget's default."),
-            ..def(ArmySize, "Army size", "people", ("army-totals", "ownerManpower"))
+            ..def(ArmySize, "Fielded manpower", "people", ("army-totals", "ownerManpower"))
         },
-        def(Territory, "States owned", "states", ("territory", "ownedStates")),
+        def(Territory, "States", "states", ("territory", "ownedStates")),
         Def {
             key: Casualties,
             label: "Casualties",
@@ -79,8 +79,8 @@ static DEFS: [Def; 16] = {
         },
         Def { partial: PARTIAL, note: Some(DEALT_NOTE), ..def(CasualtiesDealt, "Casualties dealt", "people", ("casualty-totals", "dealt")) },
         Def { partial: PARTIAL, note: Some(TAKEN_NOTE), ..def(CasualtiesTaken, "Casualties taken", "people", ("casualty-totals", "taken")) },
-        def(Planes, "Number of planes", "planes", ("air-force-totals", "rosterPlanes")),
-        def(Ships, "Number of ships", "ships", ("navy-totals", "rosterShips")),
+        def(Planes, "Aircraft", "planes", ("air-force-totals", "rosterPlanes")),
+        def(Ships, "Ships", "ships", ("navy-totals", "rosterShips")),
         def(FactoriesBuilt, "Factories built", "factories", ("country-factories", "built7")),
         def(FactoriesTopbar, "Factories in top bar", "factories", ("country-factories", "topBar7")),
         def(EquipmentProduced, "Equipment produced", "units", ("production-country-totals", "unitsWithoutRefits")),

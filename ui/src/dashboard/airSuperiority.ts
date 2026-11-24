@@ -4,8 +4,29 @@ import type { CountryLabel } from './countryFlagsAt';
 import { formatAmount, rescale } from '../charts/valueAxis.ts';
 import { liveKey } from '../charts/live.ts';
 import type { LiveValues } from '../charts/live';
+import { airChoiceKey } from './airOptions.ts';
+import { countryFromKey } from './countryKey.ts';
+import { contentKey, contentSet, type OptionValue } from './options.ts';
 import { int, object } from './validation.ts';
 import type { AirCell, AirChoicesReply, AirRegion, AirSide, AirSuperiorityReply } from '../generated/dashboard';
+
+export function airMode(options: Readonly<Record<string, OptionValue>>, campaign: string, currentCountry: string | null) {
+  const mode = options.mode === 'viewpoint' ? 'viewpoint' as const : 'sides' as const;
+  const chosen = options.viewpoint ? String(options.viewpoint) : '';
+  const viewpoint = mode !== 'viewpoint' ? '' : chosen ? contentKey(chosen).startsWith('country:') ? contentKey(chosen) : airChoiceKey(campaign, chosen) ?? ''
+    : currentCountry ? `country:${currentCountry}` : '';
+  return { mode, viewpoint, sides: contentSet(options.sides).flatMap(value => airChoiceKey(campaign, value) ?? []),
+    regions: contentSet(options.regions).map(value => Number(contentKey(value).slice(2))).filter(Number.isInteger),
+    theatres: contentSet(options.theatres).flatMap(value => airChoiceKey(campaign, value) ?? []) };
+}
+export type AirModeSettings = ReturnType<typeof airMode>;
+
+export function airParams(mode: AirModeSettings) {
+  return { mode: mode.mode, ...(mode.viewpoint ? { viewpoint: mode.viewpoint.startsWith('country:') ? countryFromKey(mode.viewpoint.slice(8)) : mode.viewpoint,
+    ...(mode.viewpoint.startsWith('country:') ? { viewpointCountry: true } : {}) } : {}),
+    ...(mode.sides.length ? { sides: mode.sides } : {}), ...(mode.regions.length ? { regions: mode.regions } : {}),
+    ...(mode.theatres.length ? { theatres: mode.theatres } : {}) };
+}
 
 export type AirState = 'known' | 'unknown' | 'inactive' | 'filtered' | 'no-air-object' | 'gap';
 export interface AirPart { id: string; label: string; color: string; share: number; score: number; side?: AirSide; tag?: string }
