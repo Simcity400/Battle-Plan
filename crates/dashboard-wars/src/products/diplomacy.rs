@@ -30,7 +30,7 @@ fn holder_ids(holders: &Holders, countries: &[Country], hour: i32) -> Vec<(Strin
                 Some(Holder::Found { slot, id }) => Some((slot, id)),
                 _ => None,
             };
-            (country.key().into_owned(), id)
+            (holders.name(country, hour), id)
         })
         .collect()
 }
@@ -360,7 +360,7 @@ impl AtHour for DiplomaticRelations {
                 }
             }
             for country in &chosen {
-                let tag = country.key().into_owned();
+                let tag = at.holders.name(country, at.hour);
                 let look = looks.at(&tag, at.hour);
                 let (fid, fname) = faction_by_tag.get(&tag).map_or((None, None), |(id, name)| (Some(id.clone()), name.clone()));
                 metadata.insert(tag, (look.name, look.name_missing, look.color, fid, fname));

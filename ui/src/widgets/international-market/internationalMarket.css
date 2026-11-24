@@ -1,4 +1,0 @@
-.international-market { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.international-market-table { height: 100%; min-height: 0; }
-.international-market { container-type: inline-size; }
-@container (max-width: 480px) { .international-market .table-country > span { display: none; } }

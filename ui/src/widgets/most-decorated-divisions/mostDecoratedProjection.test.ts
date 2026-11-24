@@ -19,12 +19,12 @@ const project = (raw: unknown) => mostDecoratedProjection.project(
   { filter: { passing: null, unrecorded: [], bounds: [] } },
 );
 
-test('a division shows its recorded medals, experience word and casualties taken; an unread history is missing, a recorded zero stays zero', () => {
+test('a division shows its recorded medals, experience word and casualties dealt; an unread history is missing, a recorded zero stays zero', () => {
   const model = project(reply([division('66'), division('7', { medals: null, historyMissing: 'Medal history was not read', awards: [], casualtiesTaken: 0 })]));
   const [decorated, unread] = model.rows;
-  assert.deepEqual([decorated!.cells.medals!.value, decorated!.cells.experience!.value, decorated!.cells.kills!.value], [knownValue(2), knownValue('Trained'), knownValue(13671)]);
+  assert.deepEqual([decorated!.cells.medals!.value, decorated!.cells.experience!.value, decorated!.cells.casualtiesTaken!.value], [knownValue(2), knownValue('Trained'), knownValue(13671)]);
   assert.deepEqual(unread!.cells.medals!.value, notRecorded('Medal history was not read'));
-  assert.deepEqual(unread!.cells.kills!.value, zeroValue(0));
+  assert.deepEqual(unread!.cells.casualtiesTaken!.value, zeroValue(0));
   const tip = typeof decorated!.tooltipExtra === 'function' ? decorated!.tooltipExtra() : decorated!.tooltipExtra;
   assert.deepEqual(tip?.map(row => [row.label, row.value]), [['Order of the Cloud', knownValue('×2')]]);
 });
