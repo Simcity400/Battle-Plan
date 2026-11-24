@@ -152,7 +152,7 @@ test('apm-table resolves country at row observation hour including hour 0, gives
   const opts = {
     players: true,
     showPaused: true,
-    cellBars: false,
+   
     rankMarkers: false,
     labels,
     unobserved: [[10, 20]] as readonly (readonly [number, number])[],
@@ -187,7 +187,7 @@ test('apm-table resolves country at row observation hour including hour 0, gives
   assert.deepEqual(followedModel.rows.find(r => r.key === 'p1')!.cells.name!.value, { kind: 'known', value: 'Alice' });
   assert.deepEqual(followedModel.rows.find(r => r.key === 'user:deadbeef')!.cells.name!.value, { kind: 'notRecorded', reason: 'Player name is not valid UTF-8.' });
 
-  const cols = apmTableColumns(true, true, false);
+  const cols = apmTableColumns(true, true);
   const tip = deriveTableTooltip(resolveTableRows(model, tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'apm', direction: 'descending' } })), 'p1', cols, new Set(), 400)!;
   assert.equal(tip.rows.find(r => r.label === 'Country')?.valueState?.text, 'Weimar');
 

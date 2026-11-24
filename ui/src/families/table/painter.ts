@@ -1,16 +1,26 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
 import {
-  BAR_GAP,
+  drawChildRowTint,
+  drawClockSummary,
+  drawRowFocusRing,
+  drawRowHairline,
+  drawRowHover,
+  drawRowSelected,
+  type ClockSummaryData,
+} from '../../draw/kit.ts';
+import type { LaneArtCache } from '../art/laneCache.ts';
+import { hasMeasuredValue, type Value } from '../value.ts';
+import { formatValueState } from '../valueFormat.ts';
+import { drawApprovedCell, TREE_CHEVRON_LANE, TREE_INDENT_PX, type CellRenderContext } from './cellPainters.ts';
+import type { FamilyColumnLayout, FamilyTableLayout } from './layout.ts';
+import { computeColumnMaxima, resolveCellAtHour, resolveCellPaintModel, type FlatTableRow, type TableRow } from './model.ts';
+import {
   CELL_INSET,
-  DOT_LANE,
-  HEADER_CARET_LANE,
-  ICON_LANE,
-  METER_HEIGHT,
-  METER_WIDTH,
+  CHILD_ROW_HEIGHT,
+  MEDIA_ROW_HEIGHT,
   ROW_HEIGHT,
-  TRACK_HEIGHT,
-  endAligned,
+  ROW_MARGIN_X,
   glideOffset,
   measuresColumn,
   scrollBounds,
@@ -18,17 +28,12 @@ import {
   type GlideOffset,
   type RankMarker,
   type TableCanvasContext,
+  type TableDensity,
   type TableSettings,
   type TableTheme,
 } from './settings.ts';
-import type { LaneArtCache } from '../art/laneCache.ts';
-import { hasMeasuredValue, type Value } from '../value.ts';
-import { drawFormattedValue, drawHatchRect } from '../valueCanvas.ts';
-import { formatValueState } from '../valueFormat.ts';
-import type { FamilyColumnLayout, FamilyTableLayout } from './layout.ts';
-import { computeColumnMaxima, resolveCellAtHour, resolveCellPaintModel, type FlatTableRow, type TableRow } from './model.ts';
 
-export { computeColumnMaxima };
+export { computeColumnMaxima, TREE_CHEVRON_LANE, TREE_INDENT_PX };
 
 export const WATCHING_SPEED = 24;
 export const FAST_SPEED = 168;
@@ -36,8 +41,8 @@ export const WATCHING_GLIDE_MS = 180;
 export const FAST_GLIDE_MS = 120;
 export const TOP_RANK_HOLD_MS = 1500;
 export const WATCHING_RANK_HOLD_MS = 2500;
-export const TREE_INDENT_PX = 16;
-export const TREE_CHEVRON_LANE = 16;
+const GROUP_HEADER_HEIGHT = 30;
+const HAIRLINE_INSET = 10;
 
 export function glideDurationForSpeed(speed: number, reducedMotion = false): number {
   if (reducedMotion || speed > FAST_SPEED) return 0;
@@ -46,6 +51,39 @@ export function glideDurationForSpeed(speed: number, reducedMotion = false): num
 
 export function rankHoldForSpeed(speed: number): number {
   return speed > FAST_SPEED ? TOP_RANK_HOLD_MS : WATCHING_RANK_HOLD_MS;
+}
+
+export interface RowLayoutGeometry {
+  readonly tops: readonly number[];
+  readonly heights: readonly number[];
+  readonly totalHeight: number;
+}
+
+export function rowHeightOf(
+  item: FlatTableRow,
+  density: TableDensity,
+  mode: 'standard' | 'media' = 'standard',
+): number {
+  if (item.kind === 'group-header') return GROUP_HEADER_HEIGHT;
+  if (item.level > 1) return CHILD_ROW_HEIGHT;
+  return mode === 'media' ? MEDIA_ROW_HEIGHT[density] : ROW_HEIGHT[density];
+}
+
+export function computeRowLayout(
+  rows: readonly FlatTableRow[],
+  density: TableDensity,
+  mode: 'standard' | 'media' = 'standard',
+): RowLayoutGeometry {
+  const tops = new Array<number>(rows.length);
+  const heights = new Array<number>(rows.length);
+  let y = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const h = rowHeightOf(rows[i]!, density, mode);
+    tops[i] = y;
+    heights[i] = h;
+    y += h;
+  }
+  return { tops, heights, totalHeight: y };
 }
 
 export interface FamilyTablePicture {
@@ -61,6 +99,8 @@ export interface FamilyTablePicture {
   maximaHour?: number;
   maximaCols?: string;
   maxima?: Map<string, number>;
+  stockpileRows?: readonly FlatTableRow[];
+  stockpileMaxAbs?: number;
   lastMaximaSig?: string;
   lastIconVersion?: number;
   lastHour?: number;
@@ -112,6 +152,9 @@ export interface DrawFamilyTableInput {
   readonly hasGroupHeaders?: boolean;
   readonly precomputedMaxima?: Map<string, number>;
   readonly staticRowLooks?: boolean;
+  readonly rowHeightMode?: 'standard' | 'media';
+  readonly rowGeom?: RowLayoutGeometry | null;
+  readonly clockSummary?: ClockSummaryData;
 }
 
 const fontOf = (theme: TableTheme, size: number, weight: number) => `${weight} ${size}px ${theme.font}`;
@@ -137,79 +180,62 @@ function rowMarkState(key: string, inspectedKey: string | null | undefined, sele
   return String(i | s | f);
 }
 
-function paintRowGround(
-  ctx: TableCanvasContext,
-  theme: TableTheme,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  odd: boolean,
-  inspected: boolean,
-  selected: boolean,
-  divider = true,
-): void {
-  ctx.fillStyle = theme.surface;
-  ctx.fillRect(x, y, width, height);
-  if (odd) {
-    ctx.globalAlpha = 0.22;
-    ctx.fillStyle = theme.lineSoft;
-    ctx.fillRect(x, y, width, height);
-    ctx.globalAlpha = 1;
-  }
-  if (selected) {
-    ctx.globalAlpha = 0.18;
-    ctx.fillStyle = theme.accent;
-    ctx.fillRect(x, y, width, height);
-    ctx.globalAlpha = 1;
-  } else if (inspected) {
-    ctx.globalAlpha = 0.1;
-    ctx.fillStyle = theme.accent;
-    ctx.fillRect(x, y, width, height);
-    ctx.globalAlpha = 1;
-  }
-  if (divider) {
-    ctx.globalAlpha = 0.65;
-    ctx.fillStyle = theme.line;
-    ctx.fillRect(x, y + height - 1, width, 1);
-    ctx.globalAlpha = 1;
-  }
+function barSpanOf(column: FamilyColumnLayout): number {
+  return Math.max(1, column.width - CELL_INSET * 2);
 }
 
-function paintRowEdges(
+function paintRowBackground(
   ctx: TableCanvasContext,
   theme: TableTheme,
-  x: number,
+  rowWidth: number,
   y: number,
-  width: number,
-  height: number,
+  rowH: number,
+  isChild: boolean,
   inspected: boolean,
   selected: boolean,
   focused: boolean,
+  strongDivider: boolean,
 ): void {
+  ctx.fillStyle = theme.surface;
+  ctx.fillRect(0, y, rowWidth, rowH);
+  if (isChild) drawChildRowTint(ctx, 0, y, rowWidth, rowH, theme);
+  const plateX = ROW_MARGIN_X;
+  const plateW = Math.max(1, rowWidth - ROW_MARGIN_X * 2);
   if (selected) {
-    ctx.fillStyle = theme.accent;
-    ctx.fillRect(x, y, 2, height - 1);
+    drawRowSelected(ctx, plateX, y + 1, plateW, Math.max(1, rowH - 2), theme);
   } else if (inspected) {
-    ctx.fillStyle = theme.muted;
-    ctx.fillRect(x, y, 2, height - 1);
+    drawRowHover(ctx, plateX, y + 1, plateW, Math.max(1, rowH - 2), theme);
   }
   if (focused) {
-    ctx.save();
-    ctx.strokeStyle = theme.accent;
-    ctx.lineWidth = 2;
-    ctx.strokeRect(x + 1, y + 1, Math.max(1, width - 2), Math.max(1, height - 3));
-    ctx.restore();
+    drawRowFocusRing(ctx, plateX, y + 1, plateW, Math.max(1, rowH - 2), theme);
+  }
+  if (!selected && !inspected) {
+    drawRowHairline(ctx, HAIRLINE_INSET, rowWidth - HAIRLINE_INSET, y + rowH - 1, theme, strongDivider ? 'strong' : 'normal');
   }
 }
 
-function barSpanOf(column: FamilyColumnLayout, slot: number): number {
-  const span = column.width - CELL_INSET - (column.numeric ? HEADER_CARET_LANE : CELL_INSET);
-  return column.display === 'meterBefore' || column.display === 'meterAfter'
-    ? METER_WIDTH
-    : column.display === 'track'
-      ? Math.max(0, span - slot - BAR_GAP)
-      : span;
+function paintCellSliceGround(
+  ctx: TableCanvasContext,
+  theme: TableTheme,
+  x: number,
+  y: number,
+  cellWidth: number,
+  rowH: number,
+  rowWidth: number,
+  isChild: boolean,
+  strongDivider: boolean,
+): void {
+  ctx.fillStyle = theme.surface;
+  ctx.fillRect(x, y, cellWidth, rowH);
+  if (isChild) drawChildRowTint(ctx, x, y, cellWidth, rowH, theme);
+  drawRowHairline(ctx, Math.max(x, HAIRLINE_INSET), Math.min(x + cellWidth, rowWidth - HAIRLINE_INSET), y + rowH - 1, theme, strongDivider ? 'strong' : 'normal');
+}
+
+function isLastChildRow(rows: readonly FlatTableRow[], index: number): boolean {
+  const item = rows[index];
+  if (!item || item.kind !== 'data' || item.level <= 1) return false;
+  const next = rows[index + 1];
+  return !next || next.kind !== 'data' || next.level === 1;
 }
 
 export function drawFamilyTable(
@@ -217,13 +243,72 @@ export function drawFamilyTable(
   input: DrawFamilyTableInput,
   picture?: FamilyTablePicture,
 ): PaintStats {
-  const { layout, rows, settings, hour, width, height, scrollLeft, scrollTop, rankShown, rankWidth, theme, now, glideDuration, glide, markers,
-    inspectedKey, selectedKey, focusedKey, empty, icons, iconVersion, artCache, dpr = 1, precomputedMaxima, staticRowLooks } = input;
-  const rowHeight = ROW_HEIGHT[settings.density];
+  const {
+    layout,
+    rows,
+    settings,
+    hour,
+    width,
+    height,
+    scrollLeft,
+    scrollTop,
+    rankShown,
+    rankWidth,
+    theme,
+    now,
+    glideDuration,
+    glide,
+    markers,
+    inspectedKey,
+    selectedKey,
+    focusedKey,
+    empty,
+    icons,
+    iconVersion,
+    artCache,
+    dpr = 1,
+    precomputedMaxima,
+    staticRowLooks,
+    rowHeightMode = 'standard',
+    rowGeom = null,
+    clockSummary,
+  } = input;
+
+  if (clockSummary) {
+    if (picture) picture.frame = null;
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = theme.surface;
+    ctx.fillRect(0, 0, width, height);
+    drawClockSummary(ctx, width, height, clockSummary, theme);
+    return { drew: true, paintedCells: 1, measurements: 0 };
+  }
+
+  const uniformRowHeight = rowHeightMode === 'media' ? MEDIA_ROW_HEIGHT[settings.density] : ROW_HEIGHT[settings.density];
+  const variableHeights = rowGeom !== null;
   const bounds = scrollBounds(layout, width, scrollLeft);
   const rank = rankShown ? rankWidth : 0;
-  const first = Math.max(0, Math.floor(scrollTop / rowHeight));
-  const last = Math.min(rows.length, Math.ceil((scrollTop + height) / rowHeight) + (glide.size && glideDuration > 0 ? 2 : 0));
+  const rowWidth = Math.max(width, layout.totalWidth);
+  const moving = glideDuration > 0 && glide.size > 0;
+
+  let first = 0;
+  let last = rows.length;
+  if (!variableHeights) {
+    first = Math.max(0, Math.floor(scrollTop / uniformRowHeight));
+    last = Math.min(rows.length, Math.ceil((scrollTop + height) / uniformRowHeight) + (moving ? 2 : 0));
+  } else {
+    let lo = 0;
+    let hi = rows.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (rowGeom.tops[mid]! + rowGeom.heights[mid]! <= scrollTop) lo = mid + 1;
+      else hi = mid;
+    }
+    first = lo;
+    let end = first;
+    const bottomEdge = scrollTop + height;
+    while (end < rows.length && rowGeom.tops[end]! < bottomEdge) end++;
+    last = Math.min(rows.length, end + (moving ? 2 : 0));
+  }
 
   let measurements = 0;
   const measureCache = picture?.measures ?? new Map<string, number>();
@@ -255,21 +340,12 @@ export function drawFamilyTable(
     return cached;
   };
 
-  const effectiveDisplayOf = (column: FamilyColumnLayout): FamilyColumnLayout['display'] => {
-    if (!column.numeric || settings.barsBehind === undefined) return column.display;
-    if (column.display !== 'faint' && column.display !== 'plain') return column.display;
-    if (settings.barsBehind === 'off') return 'plain';
-    if (settings.barsBehind === 'all') return 'faint';
-    return column.key === settings.sort.column ? 'faint' : 'plain';
-  };
-  const effectiveColumns = layout.columns.map(column => {
-    const display = effectiveDisplayOf(column);
-    return display === column.display ? column : { ...column, display };
-  });
   let maximaCols = '';
   let hasMeasuredCols = false;
-  for (let c = 0; c < effectiveColumns.length; c++) {
-    const col = effectiveColumns[c]!;
+  let hasStockpileSum = false;
+  for (let c = 0; c < layout.columns.length; c++) {
+    const col = layout.columns[c]!;
+    if (col.cellKind === 'stockpileSum') hasStockpileSum = true;
     if (col.numeric && measuresColumn(col)) {
       hasMeasuredCols = true;
       maximaCols += `${col.key}:${col.display}|`;
@@ -295,7 +371,7 @@ export function drawFamilyTable(
   } else if (picture && picture.maxima && picture.maximaRows === rows && picture.maximaHour === hour && picture.maximaCols === maximaCols) {
     maxima = picture.maxima;
   } else {
-    maxima = computeColumnMaxima(rows, effectiveColumns, hour);
+    maxima = computeColumnMaxima(rows, layout.columns, hour);
     if (picture) {
       picture.maximaRows = rows;
       picture.maximaHour = hour;
@@ -307,197 +383,54 @@ export function drawFamilyTable(
   if (maxima.size > 0) {
     for (const [k, v] of maxima) maximaSig += `${k}=${v};`;
   }
-  const moving = glideDuration > 0 && glide.size > 0;
-  let frameKey: string | null = null;
-  if (picture && !moving) {
-    let colKey = '';
-    for (let c = 0; c < effectiveColumns.length; c++) {
-      const col = effectiveColumns[c]!;
-      colKey += `${col.key}:${col.width}:${col.display}:${col.tone ?? ''}|`;
+
+  let stockpileMaxAbs = 0;
+  if (hasStockpileSum) {
+    if (picture && picture.stockpileRows === rows && picture.stockpileMaxAbs !== undefined) {
+      stockpileMaxAbs = picture.stockpileMaxAbs;
+    } else {
+      for (let i = 0; i < rows.length; i++) {
+        const item = rows[i]!;
+        if (item.kind !== 'data') continue;
+        for (let c = 0; c < layout.columns.length; c++) {
+          const col = layout.columns[c]!;
+          if (col.cellKind !== 'stockpileSum') continue;
+          const b = item.row.cells[col.key]?.stockpile?.balance;
+          if (b != null) stockpileMaxAbs = Math.max(stockpileMaxAbs, Math.abs(b));
+        }
+      }
+      if (picture) {
+        picture.stockpileRows = rows;
+        picture.stockpileMaxAbs = stockpileMaxAbs;
+      }
     }
-    frameKey = `${width}|${height}|${rowHeight}|${rank}|${scrollTop}|${scrollLeft}|${layout.scrollable ? 1 : 0}|${first}|${last}|${rows.length ? '' : empty ?? ''}|${colKey}`;
+    maximaSig += `__sp=${stockpileMaxAbs};`;
   }
 
-  const drawSingleCell = (
-    item: Extract<FlatTableRow, { kind: 'data' }>,
-    column: FamilyColumnLayout,
-    colIndex: number,
-    x: number,
-    y: number,
-    slotWidth: number,
-    fraction: number | null,
-    fill: string,
-    iconUrl: string | undefined,
-    iconPending: boolean,
-    formatted: ReturnType<typeof formatValueState>,
-    missingName: boolean,
-  ) => {
-    const leftBase = x + CELL_INSET;
-    const right = x + column.width - (column.numeric ? HEADER_CARET_LANE : CELL_INSET);
-    const middle = y + rowHeight / 2;
-    let left = leftBase;
-
-    if (colIndex === 0) {
-      if (item.level > 1) left += (item.level - 1) * TREE_INDENT_PX;
-      if (item.isTreeGroup) {
-        ctx.font = fontOf(theme, theme.fontSize.small, LABEL_WEIGHT);
-        ctx.fillStyle = theme.muted;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(item.isOpen ? '\u25be' : '\u25b8', left, middle);
-        left += TREE_CHEVRON_LANE;
-      }
+  let frameKey: string | null = null;
+  if (picture && !moving && !variableHeights) {
+    let colKey = '';
+    for (let c = 0; c < layout.columns.length; c++) {
+      const col = layout.columns[c]!;
+      colKey += `${col.key}:${col.width}:${col.display}:${col.tone ?? ''}:${col.barEligible ? 1 : 0}|`;
     }
+    frameKey = `${width}|${height}|${uniformRowHeight}|${rowHeightMode}|${settings.barsBehind ?? 'all'}|${settings.sort.column}|${rank}|${scrollTop}|${scrollLeft}|${layout.scrollable ? 1 : 0}|${layout.pinnedCount}|${layout.pinnedWidth}|${first}|${last}|${rows.length ? '' : empty ?? ''}|${colKey}`;
+  }
 
-    const cell = item.row.cells[column.key];
-    if (cell?.iconSlot && showsIcon(column.display)) {
-      const icon = iconUrl ? (artCache?.bitmapOf(iconUrl) ?? icons?.get(iconUrl)) : undefined;
-      const pending = iconPending || (iconUrl !== undefined && artCache?.stateOfUrl(iconUrl) === 'pending');
-      const iconHeight = Math.min(14, rowHeight - 8);
-      if (icon) {
-        const scale = Math.min(20 / icon.width, iconHeight / icon.height);
-        const dw = icon.width * scale, dh = icon.height * scale;
-        ctx.drawImage(icon, left + (20 - dw) / 2, middle - dh / 2, dw, dh);
-      } else if (!pending) {
-        drawHatchRect(ctx, left, Math.round(middle - iconHeight / 2), 20, iconHeight, 2, theme);
-      }
-      if (column.display === 'flag') return;
-      left += ICON_LANE;
-    }
-
-    if (missingName) {
-      ctx.font = fontOf(theme, theme.fontSize.body, LABEL_WEIGHT);
-      ctx.fillStyle = theme.muted;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(fit('Name not recorded', ctx.font, Math.max(0, right - left)), left, middle);
-      return;
-    }
-
-    const end = endAligned(column);
-    if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
-      drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: end, muted: item.row.muted }, theme, measure, fit);
-      return;
-    }
-
-    const drawBar = (barX: number, barWidth: number, barHeight: number) => {
-      if (barWidth <= 0 || fraction === null) return;
-      const barY = middle - barHeight / 2;
-      ctx.fillStyle = theme.lineSoft;
-      ctx.beginPath();
-      ctx.roundRect(barX, barY, barWidth, barHeight, barHeight / 2);
-      ctx.fill();
-      if (fraction > 0) {
-        ctx.fillStyle = fill;
-        ctx.beginPath();
-        ctx.roundRect(barX, barY, Math.max(barHeight, barWidth * fraction), barHeight, barHeight / 2);
-        ctx.fill();
-      }
-    };
-
-    if (column.numeric) {
-      switch (column.display) {
-        case 'faint':
-          if (fraction && fraction > 0) {
-            const barWidth = Math.max(0, right - left) * fraction;
-            const barHeight = Math.min(16, rowHeight - 8);
-            ctx.fillStyle = fill;
-            ctx.globalAlpha = 0.24;
-            ctx.beginPath();
-            ctx.roundRect(right - barWidth, middle - barHeight / 2, barWidth, barHeight, 3);
-            ctx.fill();
-            ctx.globalAlpha = 1;
-          }
-          drawFormattedValue(ctx, formatted, { left, right: right - 4, middle, endAligned: true, muted: item.row.muted }, theme, measure, fit);
-          return;
-        case 'track':
-          drawBar(left + slotWidth + BAR_GAP, right - left - slotWidth - BAR_GAP, TRACK_HEIGHT);
-          drawFormattedValue(ctx, formatted, { left, right: left + slotWidth, middle, endAligned: false, muted: item.row.muted }, theme, measure, fit);
-          return;
-        case 'meterBefore':
-          drawBar(left, METER_WIDTH, METER_HEIGHT);
-          drawFormattedValue(ctx, formatted, { left: left + METER_WIDTH + BAR_GAP, right, middle, endAligned: false, muted: item.row.muted }, theme, measure, fit);
-          return;
-        case 'meterAfter':
-          drawBar(right - METER_WIDTH, METER_WIDTH, METER_HEIGHT);
-          drawFormattedValue(ctx, formatted, { left, right: right - METER_WIDTH - BAR_GAP, middle, endAligned: true, muted: item.row.muted }, theme, measure, fit);
-          return;
-        case 'underline': {
-          drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: true, muted: item.row.muted }, theme, measure, fit);
-          const bodyFont = fontOf(theme, theme.fontSize.body, VALUE_WEIGHT);
-          const lineWidth = Math.min(right - left, measure(formatted.text, bodyFont));
-          const lineY = middle + 8;
-          ctx.fillStyle = theme.lineSoft;
-          ctx.fillRect(right - lineWidth, lineY, lineWidth, 2);
-          if (fraction && fraction > 0) {
-            ctx.fillStyle = fill;
-            ctx.fillRect(right - lineWidth, lineY, lineWidth * fraction, 2);
-          }
-          return;
-        }
-        default:
-          drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: true, muted: item.row.muted }, theme, measure, fit);
-          return;
-      }
-    }
-
-    const status = cell?.status;
-    if (status === 'dot') {
-      ctx.fillStyle = fill;
-      ctx.beginPath();
-      ctx.arc(left + 3, middle, 3, 0, Math.PI * 2);
-      ctx.fill();
-      left += DOT_LANE;
-    } else if (status === 'outline' || status === 'fill') {
-      const bodyFont = fontOf(theme, theme.fontSize.body, VALUE_WEIGHT);
-      const pillWidth = Math.min(right - left, measure(formatted.text, bodyFont) + 16);
-      const pillHeight = Math.min(20, rowHeight - 6);
-      ctx.beginPath();
-      ctx.roundRect(left, middle - pillHeight / 2, pillWidth, pillHeight, pillHeight / 2);
-      if (status === 'fill') {
-        ctx.fillStyle = fill;
-        ctx.globalAlpha = 0.18;
-        ctx.fill();
-        ctx.globalAlpha = 1;
-      }
-      ctx.strokeStyle = fill;
-      ctx.globalAlpha = 0.7;
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-      ctx.font = bodyFont;
-      ctx.fillStyle = theme.text;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(fit(formatted.text, bodyFont, pillWidth - 12), left + pillWidth / 2, middle);
-      return;
-    }
-
-    drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: false, muted: item.row.muted }, theme, measure, fit);
+  const renderCtx: CellRenderContext = {
+    ctx,
+    theme,
+    density: settings.density,
+    barsMode: settings.barsBehind ?? 'all',
+    sortedColumn: settings.sort.column,
+    icons,
+    artCache,
+    measure,
+    fit,
   };
 
-  const trackSlotWidth = (column: FamilyColumnLayout): number => {
-    if (column.display !== 'track') return 0;
-    const bodyFont = fontOf(theme, theme.fontSize.body, VALUE_WEIGHT);
-    let widest = 0;
-    for (let index = first; index < last; index++) {
-      const item = rows[index]!;
-      if (item.kind !== 'data') continue;
-      const cell = item.row.cells[column.key];
-      if (!cell) continue;
-      const resolved = resolveCellAtHour(cell, hour);
-      const formatted = formatValueState(resolved.value, cell.format ?? column.valueFormat);
-      if (formatted.kind === 'known' || formatted.kind === 'zero' || formatted.kind === 'partial') {
-        widest = Math.max(widest, measure(formatted.text, bodyFont));
-      }
-    }
-    return Math.ceil(widest);
-  };
-
-  const drawRank = (item: Extract<FlatTableRow, { kind: 'data' }>, index: number, x: number, y: number) => {
-    const inspected = inspectedKey === item.key;
-    const selected = selectedKey === item.key;
-    paintRowGround(ctx, theme, x, y, rank, rowHeight, index % 2 === 1, inspected, selected, true);
-    const middle = y + rowHeight / 2;
+  const drawRankContent = (item: Extract<FlatTableRow, { kind: 'data' }>, x: number, y: number, rowH: number) => {
+    const middle = y + rowH / 2;
     const smallFont = fontOf(theme, theme.fontSize.small, LABEL_WEIGHT);
     ctx.font = smallFont;
     ctx.textAlign = 'left';
@@ -520,11 +453,11 @@ export function drawFamilyTable(
     return marker && marker.until > now ? `${item.key}\u0002${item.rank}\u0002${marker.delta}` : `${item.key}\u0002${item.rank}`;
   };
 
-  const computeLook = (item: Extract<FlatTableRow, { kind: 'data' }>, column: FamilyColumnLayout, slotWidth: number) => {
+  const computeLook = (item: Extract<FlatTableRow, { kind: 'data' }>, column: FamilyColumnLayout) => {
     const cell = item.row.cells[column.key];
     const paintModel = resolveCellPaintModel(cell, column, hour, maxima, theme);
     const formatted = formatValueState(paintModel.value, paintModel.format);
-    const span = Math.max(1, barSpanOf(column, slotWidth) * dpr);
+    const span = Math.max(1, barSpanOf(column) * dpr);
     const pixels = paintModel.bar.fraction === null ? -1 : Math.round(paintModel.bar.fraction * span);
     const fraction = paintModel.bar.fraction === null ? null : pixels / span;
     const fill = paintModel.bar.alert ? theme.red : colorOf(theme, paintModel.tone ?? undefined, paintModel.countryColor, fraction);
@@ -538,33 +471,71 @@ export function drawFamilyTable(
     const art = icon === undefined && !iconPending ? '' : `${icon ?? ''}\u0003${iconState}`;
     const treeKey = item.isTreeGroup ? (item.isOpen ? 'o' : 'c') : String(item.level);
     const textVal = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text;
-    const key = `${formatted.kind}\u0002${textVal}\u0002${paintModel.missingName ? 1 : 0}\u0002${pixels}\u0002${fill}\u0002${slotWidth}\u0002${art}\u0002${treeKey}\u0002${item.row.muted ? 1 : 0}\u0002${paintModel.status ?? ''}`;
-    return { formatted, fraction, fill, icon, iconPending, missingName: paintModel.missingName, key };
+    const secVal = cell?.secondaryValue ? (cell.secondaryValue.kind === 'known' || cell.secondaryValue.kind === 'zero' ? String(cell.secondaryValue.value) : cell.secondaryValue.kind) : '';
+    const extraSig = `${cell?.subtext ?? ''}\u0004${secVal}\u0004${cell?.shortage ? 1 : 0}\u0004${cell?.stockpile ? `${cell.stockpile.balance ?? ''}:${cell.stockpile.produced ?? ''}` : ''}\u0004${cell?.flags?.length ?? 0}\u0004${cell?.icons?.length ?? 0}`;
+    const key = `${formatted.kind}\u0002${textVal}\u0002${paintModel.missingName ? 1 : 0}\u0002${pixels}\u0002${fill}\u0002${paintModel.countryColor ?? ''}\u0002${art}\u0002${treeKey}\u0002${item.row.muted ? 1 : 0}\u0002${paintModel.status ?? ''}\u0002${extraSig}`;
+    return { paintModel, formatted, fraction, fill, key };
   };
 
-  const drawGroupHeaderRow = (item: Extract<FlatTableRow, { kind: 'group-header' }>, y: number) => {
-    const fullW = Math.max(width, layout.totalWidth);
+  const drawGroupHeaderRow = (item: Extract<FlatTableRow, { kind: 'group-header' }>, y: number, rowH: number) => {
     ctx.fillStyle = theme.surface;
-    ctx.fillRect(0, y, fullW, rowHeight);
-    ctx.fillStyle = theme.lineSoft;
-    ctx.globalAlpha = 0.45;
-    ctx.fillRect(0, y, fullW, rowHeight);
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = theme.line;
-    ctx.fillRect(0, y + rowHeight - 1, fullW, 1);
-    const smallFont = fontOf(theme, theme.fontSize.small, VALUE_WEIGHT);
+    ctx.fillRect(0, y, rowWidth, rowH);
+    drawRowHairline(ctx, HAIRLINE_INSET, rowWidth - HAIRLINE_INSET, y + rowH - 1, theme, 'normal');
+    const smallFont = fontOf(theme, 12, VALUE_WEIGHT);
     ctx.font = smallFont;
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText(fit(item.label, smallFont, Math.max(1, width - 16)), CELL_INSET, y + rowHeight / 2);
+    ctx.fillText(fit(item.label, smallFont, Math.max(1, width - 20)), CELL_INSET, y + rowH / 2);
+  };
+
+  const paintPinnedOverlayForRow = (
+    item: Extract<FlatTableRow, { kind: 'data' }>,
+    index: number,
+    y: number,
+    rowH: number,
+  ) => {
+    const inspected = inspectedKey === item.key;
+    const selected = selectedKey === item.key;
+    const focused = focusedKey === item.key;
+    const isChild = item.level > 1;
+    const strong = isLastChildRow(rows, index);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, y, layout.pinnedWidth, rowH);
+    ctx.clip();
+    paintRowBackground(ctx, theme, rowWidth, y, rowH, isChild, inspected, selected, focused, strong);
+    if (rank > 0) drawRankContent(item, 0, y, rowH);
+    let px = rank;
+    const limit = Math.min(layout.pinnedCount, layout.columns.length);
+    for (let c = 0; c < limit; c++) {
+      const col = layout.columns[c]!;
+      const look = computeLook(item, col);
+      drawApprovedCell(renderCtx, {
+        item,
+        column: col,
+        colIndex: c,
+        x: px,
+        y,
+        rowHeight: rowH,
+        paintModel: look.paintModel,
+        formatted: look.formatted,
+        fraction: look.fraction,
+        fill: look.fill,
+        rowHovered: inspected,
+        rowFocused: focused,
+        stockpileMaxAbs,
+      });
+      px += col.width;
+    }
+    ctx.restore();
   };
 
   if (picture && frameKey !== null && picture.frame === frameKey) {
     let drew = false;
     let paintedCells = 0;
     const dirtyRows = new Set<number>();
-    const rowWidth = Math.max(width, layout.totalWidth);
+    const fullRepaintRows = new Set<number>();
     const maximaSame = picture.lastMaximaSig === maximaSig;
     const iconsSame = iconVersion !== undefined && picture.lastIconVersion === iconVersion;
     const hourSafe = staticRowLooks === true || picture.lastHour === hour;
@@ -594,35 +565,96 @@ export function drawFamilyTable(
     for (let index = first; index < last; index++) {
       if (skipRow[index - first]) continue;
       const item = rows[index]!;
-      if (item.kind !== 'group-header') continue;
-      const gMark = `g:${item.label}`;
-      if (picture.rowKeys[index] === item.key && picture.rowMarks[index] === gMark) continue;
-      drawGroupHeaderRow(item, index * rowHeight - scrollTop);
-      picture.rowKeys[index] = item.key;
-      picture.rowRefs[index] = undefined;
-      picture.rowMarks[index] = gMark;
-      picture.ranks[index] = undefined;
+      if (item.kind === 'group-header') {
+        const gMark = `g:${item.label}`;
+        if (picture.rowKeys[index] === item.key && picture.rowMarks[index] === gMark) continue;
+        drawGroupHeaderRow(item, index * uniformRowHeight - scrollTop, uniformRowHeight);
+        picture.rowKeys[index] = item.key;
+        picture.rowRefs[index] = undefined;
+        picture.rowMarks[index] = gMark;
+        picture.ranks[index] = undefined;
+        dirtyRows.add(index);
+        drew = true;
+        continue;
+      }
+      const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
+      if (mark !== '0' || picture.rowMarks[index] !== mark || picture.rowKeys[index] !== item.key) {
+        fullRepaintRows.add(index);
+      }
+    }
+
+    for (const index of fullRepaintRows) {
+      const item = rows[index]!;
+      if (item.kind !== 'data') continue;
+      const y = index * uniformRowHeight - scrollTop;
+      const inspected = inspectedKey === item.key;
+      const selected = selectedKey === item.key;
+      const focused = focusedKey === item.key;
+      const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
+      paintRowBackground(ctx, theme, rowWidth, y, uniformRowHeight, item.level > 1, inspected, selected, focused, isLastChildRow(rows, index));
+      let x = rank - bounds.left;
+      for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
+        const column = layout.columns[colIndex]!;
+        let drawn = picture.cells.get(column.key);
+        if (!drawn) picture.cells.set(column.key, drawn = []);
+        const look = computeLook(item, column);
+        drawApprovedCell(renderCtx, {
+          item,
+          column,
+          colIndex,
+          x,
+          y,
+          rowHeight: uniformRowHeight,
+          paintModel: look.paintModel,
+          formatted: look.formatted,
+          fraction: look.fraction,
+          fill: look.fill,
+          rowHovered: inspected,
+          rowFocused: focused,
+          stockpileMaxAbs,
+        });
+        drawn[index] = `${look.key}\u0001${mark}`;
+        paintedCells++;
+        x += column.width;
+      }
+      if (rank > 0) {
+        drawRankContent(item, layout.scrollable ? 0 : -bounds.left, y, uniformRowHeight);
+        picture.ranks[index] = `${rankSignature(item)}\u0001${mark}`;
+      }
       dirtyRows.add(index);
       drew = true;
     }
 
     let x = rank - bounds.left;
-    for (let colIndex = 0; colIndex < effectiveColumns.length; colIndex++) {
-      const column = effectiveColumns[colIndex]!;
-      const slotWidth = trackSlotWidth(column);
+    for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
+      const column = layout.columns[colIndex]!;
       let drawn = picture.cells.get(column.key);
       if (!drawn) picture.cells.set(column.key, drawn = []);
       for (let index = first; index < last; index++) {
-        if (skipRow[index - first]) continue;
+        if (skipRow[index - first] || fullRepaintRows.has(index)) continue;
         const item = rows[index]!;
         if (item.kind !== 'data') continue;
         const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
-        const look = computeLook(item, column, slotWidth);
+        const look = computeLook(item, column);
         const cellSig = `${look.key}\u0001${mark}`;
-        if (picture.rowKeys[index] === item.key && picture.rowMarks[index] === mark && drawn[index] === cellSig) continue;
-        const y = index * rowHeight - scrollTop;
-        paintRowGround(ctx, theme, x, y, column.width, rowHeight, index % 2 === 1, inspectedKey === item.key, selectedKey === item.key, true);
-        drawSingleCell(item, column, colIndex, x, y, slotWidth, look.fraction, look.fill, look.icon, look.iconPending, look.formatted, look.missingName);
+        if (drawn[index] === cellSig) continue;
+        const y = index * uniformRowHeight - scrollTop;
+        paintCellSliceGround(ctx, theme, x, y, column.width, uniformRowHeight, rowWidth, item.level > 1, isLastChildRow(rows, index));
+        drawApprovedCell(renderCtx, {
+          item,
+          column,
+          colIndex,
+          x,
+          y,
+          rowHeight: uniformRowHeight,
+          paintModel: look.paintModel,
+          formatted: look.formatted,
+          fraction: look.fraction,
+          fill: look.fill,
+          rowHovered: false,
+          rowFocused: false,
+          stockpileMaxAbs,
+        });
         drawn[index] = cellSig;
         dirtyRows.add(index);
         paintedCells++;
@@ -633,49 +665,28 @@ export function drawFamilyTable(
 
     if (rank > 0) {
       for (let index = first; index < last; index++) {
-        if (skipRow[index - first]) continue;
+        if (skipRow[index - first] || fullRepaintRows.has(index)) continue;
         const item = rows[index]!;
         if (item.kind !== 'data') continue;
         const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
         const rSig = `${rankSignature(item)}\u0001${mark}`;
         if (picture.ranks[index] === rSig && !dirtyRows.has(index)) continue;
-        drawRank(item, index, layout.scrollable ? 0 : -bounds.left, index * rowHeight - scrollTop);
+        const rx = layout.scrollable ? 0 : -bounds.left;
+        const y = index * uniformRowHeight - scrollTop;
+        paintCellSliceGround(ctx, theme, rx, y, rank, uniformRowHeight, rowWidth, item.level > 1, isLastChildRow(rows, index));
+        drawRankContent(item, rx, y, uniformRowHeight);
         picture.ranks[index] = rSig;
         dirtyRows.add(index);
         drew = true;
       }
     }
 
-    if (layout.scrollable && dirtyRows.size > 0 && layout.columns.length > 0) {
-      const col0 = layout.columns[0]!;
-      const pinnedWidth = rank + col0.width;
-      const slot0 = trackSlotWidth(col0);
+    if (dirtyRows.size > 0 && layout.scrollable && layout.pinnedWidth > 0) {
       for (const index of dirtyRows) {
         const item = rows[index]!;
         if (item.kind !== 'data') continue;
-        const y = index * rowHeight - scrollTop;
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(0, y, pinnedWidth, rowHeight);
-        ctx.clip();
-        paintRowGround(ctx, theme, rank, y, col0.width, rowHeight, index % 2 === 1, inspectedKey === item.key, selectedKey === item.key, true);
-        const look0 = computeLook(item, col0, slot0);
-        drawSingleCell(item, col0, 0, rank, y, slot0, look0.fraction, look0.fill, look0.icon, look0.iconPending, look0.formatted, look0.missingName);
-        if (rank > 0) drawRank(item, index, 0, y);
-        ctx.restore();
-        const edge = ctx.createLinearGradient(pinnedWidth - 1, 0, pinnedWidth + 12, 0);
-        edge.addColorStop(0, theme.surface);
-        edge.addColorStop(1, 'transparent');
-        ctx.fillStyle = edge;
-        ctx.fillRect(pinnedWidth - 1, y, 13, rowHeight);
+        paintPinnedOverlayForRow(item, index, index * uniformRowHeight - scrollTop, uniformRowHeight);
       }
-    }
-
-    for (const index of dirtyRows) {
-      const item = rows[index]!;
-      if (item.kind !== 'data') continue;
-      const y = index * rowHeight - scrollTop;
-      paintRowEdges(ctx, theme, 0, y, rowWidth, rowHeight, inspectedKey === item.key, selectedKey === item.key, focusedKey === item.key);
     }
 
     for (let index = first; index < last; index++) {
@@ -728,98 +739,95 @@ export function drawFamilyTable(
   ctx.rect(0, 0, width, height);
   ctx.clip();
 
+  const topAt = (index: number) => (variableHeights ? rowGeom.tops[index]! : index * uniformRowHeight);
+  const heightAt = (index: number) => (variableHeights ? rowGeom.heights[index]! : uniformRowHeight);
   const rowY = (item: FlatTableRow, index: number) =>
-    index * rowHeight - scrollTop + (glideDuration > 0 && item.kind === 'data' ? glideOffset(glide.get(item.key), now, glideDuration) : 0);
+    topAt(index) - scrollTop + (moving && item.kind === 'data' ? glideOffset(glide.get(item.key), now, glideDuration) : 0);
 
   const visibleIndices: number[] = [];
   if (moving) {
     for (let index = 0; index < rows.length; index++) {
       const y = rowY(rows[index]!, index);
-      if (y + rowHeight > 0 && y < height) visibleIndices.push(index);
+      if (y + heightAt(index) > 0 && y < height) visibleIndices.push(index);
     }
   } else {
     for (let index = first; index < last; index++) visibleIndices.push(index);
   }
 
-  const paintBody = (pinned = false) => {
-    let x = pinned ? rank : rank - bounds.left;
-    for (let colIndex = 0; colIndex < effectiveColumns.length; colIndex++) {
-      const column = effectiveColumns[colIndex]!;
-      const isPinned = pinned && colIndex === 0;
-      if (isPinned) x = rank;
-      const slotWidth = trackSlotWidth(column);
-      let drawn = picture?.cells.get(column.key);
-      if (picture && !drawn) picture.cells.set(column.key, drawn = []);
-      for (let vi = 0; vi < visibleIndices.length; vi++) {
-        const index = visibleIndices[vi]!;
-        const item = rows[index]!;
-        const y = rowY(item, index);
-        if (item.kind === 'group-header') {
-          if (colIndex === 0) {
-            drawGroupHeaderRow(item, y);
-            if (picture && !pinned) {
-              picture.rowKeys[index] = item.key;
-              picture.rowRefs[index] = undefined;
-              picture.rowMarks[index] = `g:${item.label}`;
-            }
-          }
-          continue;
-        }
-        const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
-        const look = computeLook(item, column, slotWidth);
-        if (drawn && !pinned) {
-          drawn[index] = `${look.key}\u0001${mark}`;
-          picture!.rowKeys[index] = item.key;
-          picture!.rowRefs[index] = item.row;
-          picture!.rowMarks[index] = mark;
-        }
-        paintRowGround(ctx, theme, x, y, column.width, rowHeight, index % 2 === 1, inspectedKey === item.key, selectedKey === item.key, true);
-        drawSingleCell(item, column, colIndex, x, y, slotWidth, look.fraction, look.fill, look.icon, look.iconPending, look.formatted, look.missingName);
-        if (!pinned) paintedCells++;
-      }
-      if (isPinned) break;
-      x += column.width;
-    }
-  };
-
-  const paintRanks = (x: number) => {
-    if (rank <= 0) return;
+  const paintPass = (pinnedOnly: boolean) => {
+    const startCol = 0;
+    const endCol = pinnedOnly ? Math.min(layout.pinnedCount, layout.columns.length) : layout.columns.length;
     for (let vi = 0; vi < visibleIndices.length; vi++) {
       const index = visibleIndices[vi]!;
       const item = rows[index]!;
-      if (item.kind !== 'data') continue;
-      drawRank(item, index, x, rowY(item, index));
-      if (picture) picture.ranks[index] = `${rankSignature(item)}\u0001${rowMarkState(item.key, inspectedKey, selectedKey, focusedKey)}`;
+      const y = rowY(item, index);
+      const rowH = heightAt(index);
+      if (item.kind === 'group-header') {
+        if (!pinnedOnly) {
+          drawGroupHeaderRow(item, y, rowH);
+          if (picture) {
+            picture.rowKeys[index] = item.key;
+            picture.rowRefs[index] = undefined;
+            picture.rowMarks[index] = `g:${item.label}`;
+          }
+        }
+        continue;
+      }
+      const inspected = inspectedKey === item.key;
+      const selected = selectedKey === item.key;
+      const focused = focusedKey === item.key;
+      const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
+      paintRowBackground(ctx, theme, rowWidth, y, rowH, item.level > 1, inspected, selected, focused, isLastChildRow(rows, index));
+      if (rank > 0) {
+        drawRankContent(item, pinnedOnly ? 0 : -bounds.left, y, rowH);
+        if (picture && !pinnedOnly) picture.ranks[index] = `${rankSignature(item)}\u0001${mark}`;
+      }
+      let x = pinnedOnly ? rank : rank - bounds.left;
+      for (let colIndex = startCol; colIndex < endCol; colIndex++) {
+        const column = layout.columns[colIndex]!;
+        const look = computeLook(item, column);
+        drawApprovedCell(renderCtx, {
+          item,
+          column,
+          colIndex,
+          x,
+          y,
+          rowHeight: rowH,
+          paintModel: look.paintModel,
+          formatted: look.formatted,
+          fraction: look.fraction,
+          fill: look.fill,
+          rowHovered: inspected,
+          rowFocused: focused,
+          stockpileMaxAbs,
+        });
+        if (!pinnedOnly) {
+          paintedCells++;
+          if (picture) {
+            let drawn = picture.cells.get(column.key);
+            if (!drawn) picture.cells.set(column.key, drawn = []);
+            drawn[index] = `${look.key}\u0001${mark}`;
+          }
+        }
+        x += column.width;
+      }
+      if (picture && !pinnedOnly) {
+        picture.rowKeys[index] = item.key;
+        picture.rowRefs[index] = item.row;
+        picture.rowMarks[index] = mark;
+      }
     }
   };
 
-  paintBody(false);
-  if (layout.scrollable) {
-    const pinnedWidth = rank + (layout.columns[0]?.width ?? 0);
+  paintPass(false);
+
+  if (layout.scrollable && layout.pinnedWidth > 0) {
     ctx.save();
     ctx.beginPath();
-    ctx.rect(0, 0, pinnedWidth, height);
+    ctx.rect(0, 0, layout.pinnedWidth, height);
     ctx.clip();
-    ctx.fillStyle = theme.surface;
-    ctx.fillRect(0, 0, pinnedWidth, height);
-    paintBody(true);
-    paintRanks(0);
+    paintPass(true);
     ctx.restore();
-    const edge = ctx.createLinearGradient(pinnedWidth - 1, 0, pinnedWidth + 12, 0);
-    edge.addColorStop(0, theme.surface);
-    edge.addColorStop(1, 'transparent');
-    ctx.fillStyle = edge;
-    ctx.fillRect(pinnedWidth - 1, 0, 13, height);
-  } else {
-    paintRanks(-bounds.left);
-  }
-
-  const rowWidth = Math.max(width, layout.totalWidth);
-  for (let vi = 0; vi < visibleIndices.length; vi++) {
-    const index = visibleIndices[vi]!;
-    const item = rows[index]!;
-    if (item.kind !== 'data') continue;
-    paintRowEdges(ctx, theme, 0, rowY(item, index), rowWidth, rowHeight, inspectedKey === item.key, selectedKey === item.key, focusedKey === item.key);
   }
 
   ctx.restore();
@@ -838,16 +846,32 @@ export function hitFamilyTable(
   glide?: ReadonlyMap<string, GlideOffset>,
   now?: number,
   glideDuration?: number,
-): { readonly kind: 'row' | 'empty'; readonly rowKey?: string; readonly column?: string; readonly toggle?: boolean } {
+  rowGeom?: RowLayoutGeometry | null,
+): { readonly kind: 'row' | 'empty'; readonly rowKey?: string; readonly column?: string; readonly toggle?: boolean; readonly action?: boolean } {
   let item: FlatTableRow | undefined;
-  if (glide && glide.size > 0 && glideDuration && glideDuration > 0 && now !== undefined) {
+  const useGlide = Boolean(glide && glide.size > 0 && glideDuration && glideDuration > 0 && now !== undefined);
+  if (useGlide) {
     for (let i = rows.length - 1; i >= 0; i--) {
       const candidate = rows[i]!;
-      const y = i * rowHeight - scrollTop + (candidate.kind === 'data' ? glideOffset(glide.get(candidate.key), now, glideDuration) : 0);
-      if (point.y >= y && point.y < y + rowHeight) {
+      const top = rowGeom ? rowGeom.tops[i]! : i * rowHeight;
+      const h = rowGeom ? rowGeom.heights[i]! : rowHeight;
+      const y = top - scrollTop + (candidate.kind === 'data' ? glideOffset(glide!.get(candidate.key), now!, glideDuration) : 0);
+      if (point.y >= y && point.y < y + h) {
         item = candidate;
         break;
       }
+    }
+  } else if (rowGeom) {
+    const absY = point.y + scrollTop;
+    let lo = 0;
+    let hi = rows.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (rowGeom.tops[mid]! + rowGeom.heights[mid]! <= absY) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo < rows.length && absY >= rowGeom.tops[lo]! && absY < rowGeom.tops[lo]! + rowGeom.heights[lo]!) {
+      item = rows[lo];
     }
   } else {
     const index = Math.floor((point.y + scrollTop) / rowHeight);
@@ -855,15 +879,15 @@ export function hitFamilyTable(
   }
   if (!item || item.kind !== 'data') return { kind: 'empty' };
   const rank = rankShown ? rankWidth : 0;
-  const firstWidth = layout.columns[0]?.width ?? 0;
-  const pinned = layout.scrollable && point.x < rank + firstWidth;
+  const pinned = layout.scrollable && point.x < layout.pinnedWidth;
   const bodyX = pinned ? point.x : point.x + scrollLeft;
   let x = rank;
   for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
     const col = layout.columns[colIndex]!;
     if (bodyX >= x && bodyX < x + col.width) {
-      const toggle = colIndex === 0 && item.isTreeGroup && bodyX - x <= CELL_INSET + (item.level - 1) * TREE_INDENT_PX + TREE_CHEVRON_LANE + 6;
-      return { kind: 'row', rowKey: item.key, column: col.key, toggle };
+      const toggle = colIndex === 0 && item.isTreeGroup && bodyX - x <= CELL_INSET + (item.level - 1) * TREE_INDENT_PX + TREE_CHEVRON_LANE + 8;
+      const action = col.cellKind === 'action';
+      return { kind: 'row', rowKey: item.key, column: col.key, toggle, action };
     }
     x += col.width;
   }
@@ -872,7 +896,7 @@ export function hitFamilyTable(
 
 export function collectVisibleCellIcons(
   rows: readonly FlatTableRow[],
-  columns: readonly Pick<FamilyColumnLayout, 'key' | 'display'>[],
+  columns: readonly Pick<FamilyColumnLayout, 'key' | 'display' | 'skillIcon'>[],
   hour: number,
   first: number,
   last: number,
@@ -880,16 +904,28 @@ export function collectVisibleCellIcons(
   const urls = new Set<string>();
   const start = Math.max(0, first);
   const end = Math.min(rows.length, last);
+  for (let c = 0; c < columns.length; c++) {
+    const col = columns[c]!;
+    if (col.skillIcon) urls.add(col.skillIcon);
+  }
   for (let i = start; i < end; i++) {
     const item = rows[i]!;
     if (item.kind !== 'data') continue;
     for (let c = 0; c < columns.length; c++) {
       const col = columns[c]!;
-      if (!showsIcon(col.display)) continue;
       const cell = item.row.cells[col.key];
-      if (!cell?.iconSlot) continue;
-      const resolved = resolveCellAtHour(cell, hour);
-      if (resolved.icon) urls.add(resolved.icon);
+      if (!cell) continue;
+      if (cell.flags) {
+        for (const fl of cell.flags) if (fl.icon) urls.add(fl.icon);
+      }
+      if (cell.icons) {
+        for (const ic of cell.icons) if (ic.url) urls.add(ic.url);
+      }
+      if (cell.icon) urls.add(cell.icon);
+      if (cell.iconSlot && showsIcon(col.display)) {
+        const resolved = resolveCellAtHour(cell, hour);
+        if (resolved.icon) urls.add(resolved.icon);
+      }
     }
   }
   return [...urls];
@@ -902,6 +938,8 @@ export function collectCellIcons(rows: readonly FlatTableRow[]): string[] {
     for (const key in item.row.cells) {
       const cell = item.row.cells[key]!;
       if (cell.icon) urls.add(cell.icon);
+      if (cell.flags) for (const fl of cell.flags) if (fl.icon) urls.add(fl.icon);
+      if (cell.icons) for (const ic of cell.icons) if (ic.url) urls.add(ic.url);
       if (cell.looks) for (const look of cell.looks) if (look.flag) urls.add(look.flag);
     }
   }
