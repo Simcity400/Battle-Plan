@@ -177,7 +177,7 @@ test('special projects follow the product’s order: running with progress and s
     reads: [], presentations: [info('Support Ships', 1), info('Radar', 0), info('Cruiser Submarine', 0)],
     people: [{ assigned: false, id: null, name: null, portrait: null, missing: null }, { assigned: null, id: null, name: null, portrait: null, missing: 'The program read was not recorded' }],
     iterationTexts: {}, unavailable: null, warnings: [],
-    shown: { through: hour, running: [0], completed: [{ project: 1, date: hour - 196 * DAY }, { project: 2, date: null }], undated: 1 },
+    shown: { through: hour, running: [0], unknown: [], completed: [{ project: 1, date: hour - 196 * DAY }, { project: 2, date: null }], undated: 1 },
   };
   const model = specialProjectsProjection.project(view(hour, reply), {});
   assertCardModelValid(model, hour);

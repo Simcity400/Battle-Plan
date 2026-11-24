@@ -46,22 +46,25 @@ export const specialProjectsProjection: CardProjection<Record<string, never>> = 
       return { hour, rows: [], columns: COLUMNS, rowHeight: 36, empty: 'Special projects were not recorded at this date.', emptyKind: 'unavailable', ...warnings };
     }
     const rows: CardRow[] = [];
-    if (reply.shown.running.length) rows.push({ kind: 'section', key: '__running', label: 'In progress', count: reply.shown.running.length });
-    for (const index of reply.shown.running) {
-      const project = reply.projects[index]!;
-      const run = runAt(project, hour);
-      if (!run) continue;
-      const info = reply.presentations[run.presentation]!;
-      const extra = run.state === 'paused' ? 'Paused' : run.state === 'unknown' ? 'State unknown' : undefined;
-      const fraction: Value<number> = run.progress <= 0 ? { kind: 'zero', value: 0 } : knownValue(run.progress / 100);
-      rows.push({
-        kind: 'item',
-        key: `running:${project.id}`,
-        subject: project.id,
-        ...base(readView, reply, info, extra),
-        meter: { fraction, text: `${run.progress}%` },
-      });
-    }
+    const progressRows = (indexes: readonly number[], section: string, label: string, extraOf: (state: string) => string | undefined) => {
+      if (indexes.length) rows.push({ kind: 'section', key: section, label, count: indexes.length });
+      for (const index of indexes) {
+        const project = reply.projects[index]!;
+        const run = runAt(project, hour);
+        if (!run) continue;
+        const info = reply.presentations[run.presentation]!;
+        const fraction: Value<number> = run.progress <= 0 ? { kind: 'zero', value: 0 } : knownValue(run.progress / 100);
+        rows.push({
+          kind: 'item',
+          key: `running:${project.id}`,
+          subject: project.id,
+          ...base(readView, reply, info, extraOf(run.state)),
+          meter: { fraction, text: `${run.progress}%` },
+        });
+      }
+    };
+    progressRows(reply.shown.running, '__running', 'In progress', state => (state === 'paused' ? 'Paused' : undefined));
+    progressRows(reply.shown.unknown, '__unknown', 'State not recorded', () => undefined);
     const completed = reply.shown.completed;
     const dated = completed.length - reply.shown.undated;
     if (completed.length) rows.push({ kind: 'section', key: '__completed', label: 'Completed', count: completed.length });

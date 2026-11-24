@@ -213,6 +213,8 @@ pub struct ShownCompleted {
 pub struct ProjectsShown {
     pub through: Option<i32>,
     pub running: Vec<u32>,
+    #[doc = " Projects whose state was read but not understood: neither in progress nor completed."]
+    pub unknown: Vec<u32>,
     pub completed: Vec<ShownCompleted>,
     pub undated: u32,
 }
@@ -224,14 +226,25 @@ pub(crate) fn shown_at(projects: &[ProjectRecord], presentations: &[ProjectPrese
     }
     let name = |run: &ProjectStatus| presentations.get(run.presentation as usize).map_or("", |info| info.name.as_str());
     let mut running = Vec::new();
+    let mut unknown = Vec::new();
     let mut dated = Vec::new();
     let mut undated = Vec::new();
     for (index, project) in projects.iter().enumerate() {
-        let Some(run) = project.statuses.iter().find(|run| run.first_hour <= hour && hour <= run.last_hour) else { continue };
+        let Some(at) = project.statuses.iter().position(|run| run.first_hour <= hour && hour <= run.last_hour) else { continue };
+        let run = &project.statuses[at];
         match run.state {
             ProjectState::Cancelled => {}
+            ProjectState::Unknown => unknown.push((name(run), project.id.as_str(), index as u32)),
             ProjectState::Completed => {
-                let date = project.entries.iter().filter(|entry| entry.completion && entry.counted && entry.date <= hour && entry.read_hour <= hour).map(|entry| entry.date).max();
+                let attempt = at.checked_sub(1).map(|before| &project.statuses[before]).filter(|before| matches!(before.state, ProjectState::Running | ProjectState::Paused));
+                let date = attempt.and_then(|before| {
+                    project
+                        .entries
+                        .iter()
+                        .filter(|entry| entry.completion && entry.counted && entry.date > before.last_hour && entry.date <= run.first_hour && entry.read_hour <= hour)
+                        .map(|entry| entry.date)
+                        .max()
+                });
                 match date {
                     Some(date) => dated.push((date, name(run), project.id.as_str(), index as u32)),
                     None => undated.push((name(run), project.id.as_str(), index as u32)),
@@ -243,7 +256,9 @@ pub(crate) fn shown_at(projects: &[ProjectRecord], presentations: &[ProjectPrese
     running.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(b.2)).then(a.3.cmp(b.3)));
     dated.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)).then(a.2.cmp(b.2)));
     undated.sort();
+    unknown.sort();
     shown.running = running.into_iter().map(|item| item.4).collect();
+    shown.unknown = unknown.into_iter().map(|item| item.2).collect();
     shown.undated = undated.len() as u32;
     shown.completed = dated.into_iter().map(|item| ShownCompleted { project: item.3, date: Some(item.0) }).chain(undated.into_iter().map(|item| ShownCompleted { project: item.2, date: None })).collect();
     shown

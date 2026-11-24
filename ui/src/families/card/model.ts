@@ -137,8 +137,8 @@ export function cardMediaFromIcon(readView: BoundedReadView, url: string | null 
   return { kind: 'art', art: missingArt(missing ?? 'Art missing from the current installation'), ...(name ? { name } : {}) };
 }
 
-export function cardFlag(readView: BoundedReadView, tag: string): { readonly media: CardMedia; readonly name: Value<string> } {
-  const identity = readView.who('country', tag);
+export function cardFlag(readView: BoundedReadView, tag: string, atHour?: number): { readonly media: CardMedia; readonly name: Value<string> } {
+  const identity = readView.who('country', tag, atHour);
   const name: Value<string> = identity.name.status === 'ready'
     ? { kind: 'known', value: identity.name.value }
     : identity.name.status === 'pending'
