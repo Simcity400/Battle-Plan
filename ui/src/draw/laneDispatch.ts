@@ -23,6 +23,16 @@ export function macrotaskSchedule(
   };
 }
 
+export async function cropAll<S, B extends { close(): void }>(sources: readonly S[], make: (source: S) => Promise<B>): Promise<B[]> {
+  const results = await Promise.allSettled(sources.map(make));
+  const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failed) {
+    for (const result of results) if (result.status === 'fulfilled') result.value.close();
+    throw failed.reason;
+  }
+  return results.map(result => (result as PromiseFulfilledResult<B>).value);
+}
+
 export interface LaneSide {
   views(kind: string, wake: (widget: number) => void): LaneView;
   crop: LaneHost<ImageBitmap>['crop'];

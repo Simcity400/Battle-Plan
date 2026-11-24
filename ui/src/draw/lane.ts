@@ -65,7 +65,7 @@ export interface LaneHost<B extends Bitmap> {
   later(run: () => void): void;
   schedule?(run: () => void): void;
   hit?(widget: number, key: string | null): void;
-  served?(frame: { seek: number; target: number; exact: boolean; changed: number; ms: number; costs?: [widget: number, cost: number][] }): void;
+  served?(frame: { seek: number; target: number; exact: boolean; changed: number; ms: number; cancelled?: boolean; costs?: [widget: number, cost: number][] }): void;
   budget?: number;
   earlyBuffer?: number;
   clock?: () => number;
@@ -224,8 +224,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly gone = new Set<number>();
   private readonly failed = new Set<number>();
   private readonly presented = new Map<number, { widget: number; sent: Sent }>();
-  private request: FrameRequest | null = null;
+  private readonly acks: { installed: readonly Ack[]; refused: readonly Refusal[] }[] = [];
+  private exactRequest: FrameRequest | null = null;
+  private exactSynthetic = false;
+  private specRequest: FrameRequest | null = null;
   private lastExact: FrameRequest | null = null;
+  private serving = false;
   private working = false;
   private pacing = false;
   private requests = 0;
@@ -1209,42 +1213,86 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.holdMessage('panels', native, seek, completed ?? data.getInt32(12, true), unbound, completed);
   }
 
+  private hasRequest() { return this.exactRequest !== null || this.specRequest !== null; }
+
+  private applyAcks(installed: readonly Ack[], refused: readonly Refusal[]) {
+    this.acknowledge(installed, refused);
+    for (const id of this.facts.drain()) this.gone.add(id);
+    const bytes = this.freed + this.releasedFacts();
+    this.freed = 0;
+    if (bytes) this.host.release(bytes);
+  }
+
+  private flushAcks() {
+    if (!this.acks.length) return;
+    const batches = this.acks.splice(0);
+    for (const batch of batches) this.acknowledge(batch.installed, batch.refused);
+    for (const id of this.facts.drain()) this.gone.add(id);
+    const bytes = this.freed + this.releasedFacts();
+    this.freed = 0;
+    if (bytes) this.host.release(bytes);
+  }
+
   frame(request: FrameRequest) {
-    this.request = this.request
-      ? { ...request, installed: [...this.request.installed, ...request.installed], refused: [...this.request.refused, ...request.refused] }
-      : request;
-    this.lastExact = request.exact ? { ...request, installed: [], refused: [] } : null;
+    if (request.installed.length || request.refused.length) {
+      if (this.serving) this.acks.push({ installed: request.installed, refused: request.refused });
+      else this.applyAcks(request.installed, request.refused);
+    }
+    const bare: FrameRequest = { ...request, installed: [], refused: [] };
+    if (request.exact) {
+      this.exactRequest = bare;
+      this.exactSynthetic = false;
+      this.specRequest = null;
+      this.lastExact = bare;
+    } else {
+      if (this.exactSynthetic) { this.exactRequest = null; this.exactSynthetic = false; }
+      this.specRequest = bare;
+      this.lastExact = null;
+    }
     this.schedule();
   }
 
   private wake() {
-    if (!this.request && this.lastExact) this.request = { ...this.lastExact, installed: [], refused: [] };
+    if (!this.hasRequest() && this.lastExact) {
+      this.exactRequest = { ...this.lastExact, installed: [], refused: [] };
+      this.exactSynthetic = true;
+    }
     this.schedule();
   }
 
   private schedule() {
-    if (this.working || !this.request) return;
+    if (this.working || !this.hasRequest()) return;
     this.working = true;
     queueMicrotask(() => { void this.run(); });
   }
 
-  private finishRun() {
-    this.working = false;
-    if (this.request) this.schedule();
-    else if (!this.pacing && this.motionWidgets.size > 0) {
+  private armMotion() {
+    if (!this.pacing && this.motionWidgets.size > 0) {
       this.pacing = true;
       this.host.later(() => { this.pacing = false; this.wake(); });
     }
   }
 
+  private finishRun() {
+    this.working = false;
+    if (this.hasRequest()) this.schedule();
+    else this.armMotion();
+  }
+
   private async run() {
-    const request = this.request;
-    this.request = null;
+    const request = this.exactRequest ?? this.specRequest;
+    if (this.exactRequest) { this.exactRequest = null; this.exactSynthetic = false; }
+    else this.specRequest = null;
     const began = this.time();
+    this.serving = true;
     try { if (request) await this.serve(request); }
     catch (error) { this.host.fail(error instanceof Error ? error.message : String(error)); }
     finally {
-      if (this.host.schedule && (this.request || this.time() - began >= (this.host.budget ?? 10))) {
+      this.serving = false;
+      this.flushAcks();
+      const overBudget = this.time() - began >= (this.host.budget ?? 10);
+      if (this.host.schedule && (this.hasRequest() || overBudget)) {
+        if (!this.hasRequest()) this.armMotion();
         this.host.schedule(() => this.finishRun());
       } else {
         this.finishRun();
@@ -1380,12 +1428,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.requests++;
     this.stats.frames++;
     if (this.seekSuperseded(request.seek)) {
-      this.acknowledge(request.installed, request.refused);
+      if (request.installed.length || request.refused.length) this.acknowledge(request.installed, request.refused);
       for (const id of this.facts.drain()) this.gone.add(id);
       const bytes = this.freed + this.releasedFacts();
       this.freed = 0;
       if (bytes) this.host.release(bytes);
-      this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: 0, ms: this.time() - began });
+      this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: 0, ms: this.time() - began, cancelled: true });
       return;
     }
     this.lastTarget = request.target;
@@ -1643,7 +1691,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         this.presented.delete(orig.id);
         if (this.widgets.get(widget.id) === widget) {
           if (widget.inflight?.id === orig.id) widget.inflight = null;
-          if (widget.binding.generation === orig.binding) widget.sent = { ...widget.installed?.contents ?? {} };
+          if (widget.binding.generation === orig.binding) widget.sent = {};
           this.dirtyWidgets.add(widget.id);
           this.syncWindowTracking(widget);
         }
@@ -1658,7 +1706,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const bytes = this.freed + this.releasedFacts();
       this.freed = 0;
       if (bytes) this.host.release(bytes);
-      this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: 0, ms: this.time() - began });
+      this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: 0, ms: this.time() - began, cancelled: true });
       return;
     }
     this.stats.crops += crops.length;

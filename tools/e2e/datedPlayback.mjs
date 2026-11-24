@@ -179,7 +179,9 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const unexplained = commitCount - structural.length - input.length;
     if (unexplained !== 0) reasons.push('React commits without verified structure or input ' + unexplained);
     if (counted.length !== pageCount) reasons.push('React commit audit does not reconcile with the page frame counts');
-    const idle = w.idleCost ? winRecords.filter(r => r.t === 'workerFrame' && r.playing && r.changed === 0 && r.at >= w.idleCost.from && r.at <= w.idleCost.to) : worker.filter(r => r.changed === 0);
+    const idle = w.idleCost
+      ? winRecords.filter(r => r.t === 'workerFrame' && r.playing && r.changed === 0 && !r.cancelled && r.at >= w.idleCost.from && r.at <= w.idleCost.to)
+      : worker.filter(r => r.changed === 0 && !r.cancelled);
     const emptyMs = mean(idle.map(r => r.workMs));
     const changing = worker.filter(r => r.changed > 0);
     const changedWidgetMs = emptyMs === null ? null : mean(changing.map(r => (r.workMs - emptyMs) / r.changed));
@@ -459,7 +461,7 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
     const winRecords = forSession(sorted, bw.session);
     const stats = frameStatsOf(bw, winRecords);
     const worker = bw.from != null && bw.to != null
-      ? winRecords.filter(r => r.t === 'workerFrame' && r.playing && r.at >= bw.from && r.at <= bw.to) : [];
+      ? winRecords.filter(r => r.t === 'workerFrame' && r.playing && !r.cancelled && r.at >= bw.from && r.at <= bw.to) : [];
     const clock = checkCostClock(bw, winRecords);
     const seconds = bw.from != null && bw.to != null && bw.to > bw.from ? (bw.to - bw.from) / 1000 : (bw.seconds ?? 0);
     const sampleReasons = [];

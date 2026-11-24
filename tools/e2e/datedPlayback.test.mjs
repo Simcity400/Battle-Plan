@@ -925,3 +925,27 @@ test('S20: per-picture audit coverage checks every painted picture including own
   );
   assert.equal(costWrongGen.widgets[0].exact, 'fail', 'S20: widget-cost verdict isolates generations in audit keys');
 });
+
+test('cancelled workerFrame with changed 0 is excluded from emptyMs', () => {
+  const presented = Array.from({ length: 61 }, (_, i) => Math.round(i * 1000 / 60));
+  const records = [
+    { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
+    { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
+    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0 })),
+    ...presented.map((at, i) => i === 5
+      ? { t: 'workerFrame', at, playing: true, changed: 0, cancelled: true, workMs: 80 }
+      : { t: 'workerFrame', at, playing: true, changed: 0, workMs: 0.2 }),
+    ...presented.map(at => ({
+      t: 'picture', at, widget: 'w1', surface: 'main', placement: 1, owner: 0,
+      hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page', mode: 'picture',
+    })),
+  ];
+  const window = {
+    page: 'test', from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+    widgets: [{ id: 'w1', title: 'W1', kind: 'k', visible: true, surfaces: ['main'] }],
+    audit: presented.map(at => ({ widget: 'w1', surface: 'main', placement: 1, owner: 0, at, error: null })),
+  };
+  const verdict = datedPlaybackVerdict([window], records, { legacy: true });
+  assert.equal(verdict.metrics[0].emptyFrames, presented.length - 1, 'cancelled frame is excluded from emptyFrames');
+  assert.ok(Math.abs(verdict.metrics[0].emptyMs - 0.2) < 1e-6, `cancelled 80ms frame must not pollute emptyMs, got ${verdict.metrics[0].emptyMs}`);
+});
