@@ -176,7 +176,7 @@ test('a hover over an unchanged model neither re-projects nor re-places, and pai
       const state = new Map<string, unknown>();
       const binding: FamilyTimelineBinding<{ readonly n: number }> = { family: 'timeline', kind: `test-timeline-${count}`, options: { n: count }, sources: {},
         width: 600, height: 240, scrollTop: 0, theme, identitySnapshot: null, selectedKey: null, focusedKey: null, expanded: {}, pauseFlush: 0 };
-      const input = (inspect: string | null): PaintInput => ({ widget: 1, subs: [], pictures: [], hour: FIRST + 6000, speed: 0, now: 0, inspect,
+      const input = (inspect: string | null): PaintInput => ({ widget: 1, subs: [], pictures: [], hour: FIRST + 6000, seek: 0, speed: 0, now: 0, inspect,
         binding: { surfaces: [{ width: 600, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'], model: binding });
       let seq = 0;
       const first = view.paint(input(null), state, () => `c${++seq}`);
