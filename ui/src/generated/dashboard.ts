@@ -5729,7 +5729,7 @@ partial: string | null,
  * Why divisions are unknown at this hour, when they are.
  */
 missing: string | null, warnings: Array<string>, };
-export type DecoratedRank = "medals" | "experience" | "casualtiesTaken";
+export type DecoratedRank = "medals" | "experience" | "casualtiesTaken" | "divisionName" | "countryName";
 export type CountryHours = { tag: string, firstHour: number, lastHour: number, };
 export type DecoratedDivisionsParamsAtHour = DecoratedDivisionsParams & { hour: number };
 export type DivisionEquipmentParams = { branchId: string, country: CountryRef, countFor: ArmyAttribution,
