@@ -144,7 +144,7 @@ export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = re
       warnings: frame.reply.warnings,
     };
   },
-});
+}, 'ciphers');
 
 export const decryptionDeclaration: MeterWidgetDeclaration<DecryptionFilterOptions> = {
   family: 'meters',

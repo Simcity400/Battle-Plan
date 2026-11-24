@@ -9,7 +9,7 @@ import { IdentityIndex } from './identity/index.ts';
 import { createSnapshotIdentityProvider } from './identity/provider.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
 import type { FamilyId } from './plan.ts';
-import { ensureFamilyProjection, familyProjectionFailure, retryFamilyProjection } from './registry.ts';
+import { ensureBoundProjection, familyProjectionFailure, retryFamilyProjection, unknownProjectionReason } from './registry.ts';
 import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload, type SceneProjection, type SceneReaders } from './scene.ts';
 
 export interface LaneBinding<TOptions = unknown> {
@@ -171,7 +171,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     return waker;
   };
   const projectionOf = (binding: TBinding, widget: number) =>
-    ensureFamilyProjection<TModel, unknown>(family.family, binding.kind, binding.view, wakerOf(widget)) as FamilyProjection<TModel, unknown> | 'loading' | 'unknown';
+    ensureBoundProjection<TModel, unknown>(binding, wakerOf(widget)) as FamilyProjection<TModel, unknown> | 'loading' | 'unknown';
   const sameInputs = (held: Held<TBinding, TModel, TLayout>, binding: TBinding, scene: Scene, hour: number): boolean =>
     held.projected !== null
     && held.kind === binding.kind
@@ -256,7 +256,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       if (projection === 'loading') return EMPTY;
       if (projection === 'unknown') {
         const failure = familyProjectionFailure(family.family, binding.kind, binding.view);
-        if (!failure) return { ...EMPTY, mode: 'refused', reason: `Unknown ${family.family} view: ${binding.kind}` };
+        if (!failure) return { ...EMPTY, mode: 'refused', reason: unknownProjectionReason(binding) };
         const failedAt = failedGenerations.get(input.widget);
         if (failedAt !== undefined && failedAt !== input.binding.generation) {
           failedGenerations.delete(input.widget);
@@ -265,7 +265,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           return EMPTY;
         }
         failedGenerations.set(input.widget, input.binding.generation);
-        throw new Error(`The ${binding.kind} view did not load: ${failure}`);
+        throw new Error(unknownProjectionReason(binding));
       }
 
       let held = state.get(stateKey) as Held<TBinding, TModel, TLayout> | undefined;

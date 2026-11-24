@@ -3,7 +3,7 @@ import test from 'node:test';
 import { assertBarsModelValid, deriveBarsAudit, type BarsDataRow } from '../../families/bars/model.ts';
 import { createBoundedReadView, displayedHour, FutureDataError } from '../../families/boundedView.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
-import { boundedEntries } from '../../families/broker.ts';
+import { unitEntries } from '../../families/readUnits.ts';
 import { factoriesDeclaration, factoriesProjection, type FactoriesProjectionOptions } from './factoriesProjection.ts';
 
 function fakeIdentity(names: Record<string, { name: string; color: string }>): IdentityProvider {
@@ -154,7 +154,7 @@ test('a pinned view with split on reads the main and every part source, and the 
     countries: { top: null, all: false, every: ['GER', 'ENG'], tags: ['ENG', 'GER'], membership: null },
   } as unknown as Parameters<typeof factoriesDeclaration.sources>[0];
   const plan = factoriesDeclaration.sources(ctx, { following: false, staticSpan: null });
-  const names = boundedEntries(plan, false, []).map(entry => entry.name);
+  const names = unitEntries(plan, false, []).map(entry => entry.name);
   assert.ok(names.includes('main'));
   assert.ok(names.some(name => name.startsWith('part:')), `pinned reads ${names.join(', ')}`);
   const main = plan.entries[0]!.read;
