@@ -45,7 +45,7 @@ export function shipPicture(ship: YardShip, readView: BoundedReadView): ArtState
 }
 
 export function shipPictureCell(ship: YardShip, picture: ArtState): TableCellExtra {
-  return { artShape: 'counter', ...(ship.class ? { artName: ship.class } : {}), ...(picture.icon ? { icon: picture.icon } : {}), ...(picture.iconPending ? { iconPending: true } : {}) };
+  return { iconSlot: true, artShape: 'counter', ...(ship.class ? { artName: ship.class } : {}), ...(picture.icon ? { icon: picture.icon } : {}), ...(picture.iconPending ? { iconPending: true } : {}) };
 }
 
 export type ShipNameSource = 'recorded' | 'rebuilt' | 'design';
