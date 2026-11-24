@@ -1,27 +1,28 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
+import { dayLabel } from '../../charts/draw';
 import FactionTotalsView from '../../charts/race/FactionTotalsView';
 import AggregateTotalsView, { aggregated } from '../../charts/race/AggregateTotalsView';
 import MeasureRace from '../../charts/race/MeasureRace';
+import Sunburst from '../../charts/sunburst/Sunburst';
+import { useChartTokens } from '../../charts/useChartTokens';
+import { useCountryLooks } from '../../dashboard/countryLooks';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { resolveWindow } from '../../dashboard/model';
+import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { resolveOptions } from '../../dashboard/options';
 import type { OptionValue } from '../../dashboard/options';
-import { useProduct } from '../../dashboard/products';
-import type { GatedHour } from '../../dashboard/regionTime';
-import { productRequest } from '../../dashboard/request.ts';
-import { formatTerritory, measureOf, ruleOf, territoryMeasureLabel, territoryNote, territorySeriesMeasure } from '../../dashboard/territoryMeasure.ts';
+import { AREA_UNIT, formatTerritory, MEASURES, measureOf, ruleOf, territoryMeasureLabel, territoryNote, territorySeriesMeasure } from '../../dashboard/territoryMeasure.ts';
 import type { TerritoryMeasure, TerritoryRule } from '../../dashboard/territoryMeasure';
-import FamilyBreakdownHost from '../../families/breakdown/FamilyBreakdownHost.tsx';
-import { useLaneIdentity } from '../../families/breakdown/useLaneIdentity.ts';
-import type { FamilySourceSubscription } from '../../families/contract.ts';
-import type { TerritoryShareReply } from '../../generated/dashboard';
-import { validateShareReply } from './territoryData.ts';
-import { territoryShareProjection, type TerritoryShareProjectionOptions } from './territoryShareProjection.ts';
+import { toHex } from '../../shell/appearance/color';
+import { shareItems, shareStructure, validateShareReply } from './territoryData.ts';
+import { mapLive } from '../../charts/live.ts';
+import { useShownHour } from '../../dashboard/widgetPerf';
 import { OPTIONS } from './definition';
 import '../../charts/race/countryRace.css';
 
 const NO_WARNINGS: string[] = [];
+const SHARE_SETTINGS = { growth: 'share', labels: true, legend: true, breadcrumb: false, dimming: true } as const;
 
 export default function TerritoryWidget(props: WidgetProps) {
   const options = resolveOptions(OPTIONS, props.widget.options);
@@ -48,87 +49,46 @@ function TerritoryRaceView({ widget, runtime, active, onDiagnostics, options, me
     note={territoryNote(measure)} onWarnings={onWarnings} />;
 }
 
-function TerritoryShareView({ widget, runtime, active, onDiagnostics, setOption, measure, rule }: WidgetProps & Chosen) {
+function TerritoryShareView({ widget, runtime, active, onDiagnostics, measure, rule }: WidgetProps & Chosen) {
+  const tokens = useChartTokens();
+  const shown = useShownHour();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const name = territorySeriesMeasure(measure, rule);
   const count = widget.countries.kind === 'group' && widget.countries.group.type === 'top' ? widget.countries.group.count : 10;
-  const following = widget.time.mode === 'follow';
-
-  const resolvedWin = useMemo(
-    () => !following && track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null,
-    [following, track, widget, runtime.tracks, runtime.clock],
-  );
-  const pinHour = !following && resolvedWin ? Math.floor(resolvedWin.lastHour) : null;
-
-  const staticReq = useMemo(
-    () => !following && track && pinHour !== null
-      ? productRequest({
-          sourceId: track.source.id,
-          revision: track.source.revision,
-          product: 'territory-share',
-          params: { branchId: track.branch.id, hour: pinHour as GatedHour, measure: name },
-        })
-      : null,
-    [following, track?.source.id, track?.source.revision, track?.branch.id, pinHour, name],
-  );
-  const staticRead = useProduct<TerritoryShareReply>(runtime.client, staticReq, active && !following, validateShareReply, track?.source);
-
-  const subscriptions = useMemo<readonly FamilySourceSubscription[]>(() => {
-    if (!following || !track) return [];
-    return [{
-      name: 'share',
-      source: track.source,
-      branch: track.branch.id,
-      offset: track.axisOffset,
-      channel: 'panel',
-      product: 'territory-share',
-      query: { kind: 'territory-share', measure: name },
-    }];
-  }, [following, track, name]);
-
-  const { identitySnapshot, onIdentityDemands } = useLaneIdentity(runtime.client, track, active);
-
-  const projectionOptions = useMemo<TerritoryShareProjectionOptions>(() => ({ measure, rule, count }), [measure, rule, count]);
-  const staticSources = useMemo(() => {
-    if (following || !staticRead.data || pinHour === null) return null;
-    return { panels: { share: staticRead.data }, hour: pinHour };
-  }, [following, staticRead.data, pinHour]);
-
-  const bounds = useMemo<readonly [number, number] | null>(
-    () => track ? [track.branch.firstHour, track.branch.lastHour] : null,
-    [track],
-  );
-
-  const blocked = !track
-    ? <WidgetState kind="empty" icon="map" message="Load a campaign to see its territory." />
-    : !following && staticRead.error
-      ? <WidgetState kind="error" failure={staticRead.error} onRetry={staticRead.retry} />
-      : !following && !staticRead.data
-        ? <WidgetState kind="loading" label="Loading territory share…" />
-        : null;
-
-  return (
-    <FamilyBreakdownHost
-      declaration={territoryShareProjection}
-      options={projectionOptions}
-      view="ring"
-      namesInRing
-      label={`Territory share, ${territoryMeasureLabel(measure, rule)}`}
-      subject="territory share"
-      widget={widget}
-      runtime={runtime}
-      active={active}
-      subscriptions={subscriptions}
-      staticSources={staticSources}
-      offset={track?.axisOffset ?? 0}
-      pin={pinHour}
-      bounds={bounds}
-      identitySnapshot={identitySnapshot}
-      onIdentityDemands={onIdentityDemands}
-      onSetOption={setOption}
-      onDiagnostics={onDiagnostics}
-      blockedState={blocked}
-      loadingLabel="Loading territory share…"
-    />
-  );
+  const share = useHeadProduct(runtime, useGate(runtime, widget), 'territory-share', track ? { measure: name } : null,
+    { active, validate: validateShareReply, structure: reply => shareStructure(reply, count) });
+  const hour = share.at ?? (track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : 0);
+  const shownTags = useMemo(() => share.data?.entries.slice(0, count).map(entry => entry.tag) ?? [], [share.data, count]);
+  const looks = useCountryLooks(runtime.client, track, shownTags, hour, active);
+  const measureName = MEASURES.find(item => item.value === measure)!.label;
+  const look = useCallback((tag: string) => {
+    const colour = looks.color(tag);
+    return { id: JSON.stringify(['entity', tag]), label: looks.name(tag), countryFlag: { flag: looks.flag(tag), flagPending: looks.flagPending(tag), flagReason: looks.flagReason(tag) },
+      ...(colour ? { colour: toHex({ r: colour[0], g: colour[1], b: colour[2] }) } : {}) };
+  }, [looks]);
+  const rest = useMemo(() => ({ id: JSON.stringify(['rest']), label: 'Rest of the world', colour: tokens.muted }), [tokens.muted]);
+  const reading = useMemo(() => share.data ? shareItems(share.data, count, share.live.read(), look, rest) : null, [share.data, share.live, count, look, rest]);
+  const live = useMemo(() => share.data ? mapLive(share.live, values => {
+    shown(share.shownAt());
+    const made = shareItems(share.data!, count, values, look, rest);
+    return { items: made.items, unavailableReason: made.unavailableReason };
+  }) : undefined, [share.data, share.live, share.shownAt, count, look, rest, shown]);
+  useEffect(() => { if (!share.data) shown(null); }, [share.data, shown]);
+  const text = useMemo(() => ({ format: (value: number) => formatTerritory(value), unit: measure === 'area' ? AREA_UNIT : measure === 'victoryPoints' ? 'victory points' : measure,
+    valueLabel: measureName, emptyLabel: 'No share to show.', missingLabel: 'Not recorded' }), [measure, measureName]);
+  const diagnosticKey = JSON.stringify([...(share.data?.warnings ?? []), ...(share.data?.unnamed ? ['Some territory is held by countries no tag names at this hour; it counts in the rest of the world.'] : []),
+    ...(share.reason ? [`Territory share is asked by the fallback clock: ${share.reason}`] : [])]);
+  useEffect(() => {
+    const warnings = JSON.parse(diagnosticKey) as string[];
+    onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
+    return () => onDiagnostics(NO_WARNINGS);
+  }, [diagnosticKey, onDiagnostics]);
+  if (!track) return <WidgetState kind="empty" icon="map" message="Load a campaign to see its territory." />;
+  if (share.error) return <WidgetState kind="error" failure={share.error} onRetry={share.retry} />;
+  return <div className="country-race" ref={share.root}><div className="country-race-chart">
+    {!reading ? <WidgetState kind="loading" label="Loading territory share…" />
+      : <Sunburst label={`Territory share, ${measureName}, ${dayLabel(hour)}`} items={reading.items} root={{ id: 'territory-world', label: measureName }}
+        text={text} settings={SHARE_SETTINGS} summaryNotes rings={1} fold={false} unavailableReason={reading.unavailableReason}
+        active={active} footnote={territoryNote(measure)} live={live} />}
+  </div></div>;
 }

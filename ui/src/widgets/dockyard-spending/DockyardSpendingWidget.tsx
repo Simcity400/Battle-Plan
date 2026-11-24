@@ -1,18 +1,15 @@
 import type { WidgetProps } from '../../dashboard/definitions';
 import { OPTIONS } from './definition';
-import { BANDS, REPAIR_NOTE, dockyardMonth, repairsRead, validateDockyardSpendingReply } from './dockyardData';
-import { PurposeSpendingWidget, type PurposeSpendingKind } from './PurposeSpending';
+import { BANDS, REPAIR_NOTE, dockyardItems, dockyardMonth, repairAmount, repairsRead, validateDockyardSpendingReply } from './dockyardData';
+import { PurposeSpendingWidget } from './PurposeSpending';
+import type { PurposeSpendingKind } from './PurposeSpending';
 
 export const DOCKYARD: PurposeSpendingKind = {
-  name: 'Dockyard spending',
-  measure: 'dockyard IC',
-  mode: 'dockyard',
-  domain: () => 'naval',
-  bands: BANDS,
-  options: OPTIONS,
-  repairs: true,
-  validate: validateDockyardSpendingReply,
-  read: repairsRead,
+  name: 'Dockyard spending', measure: 'dockyard IC',
+  root: { id: 'all', label: 'All dockyard IC' }, bands: BANDS, options: OPTIONS, repairs: true,
+  validate: validateDockyardSpendingReply, read: repairsRead,
+  items: (data, _options, window, colours) => dockyardItems(data, window, colours),
+  other: (data, window) => data.repairs ? repairAmount(data, data.repairs.total, window, window.hour) : { exact: null, reason: 'notRecorded' },
   month: (data, _options, first, last, branchFirst) => dockyardMonth(data, first, last, branchFirst),
   note: REPAIR_NOTE,
 };

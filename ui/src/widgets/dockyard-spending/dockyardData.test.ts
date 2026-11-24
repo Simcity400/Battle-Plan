@@ -4,8 +4,7 @@ import { BANDS, createLiveMonthCache, dockyardItems, dockyardMonth, formatExactI
 import { columnAt } from '../../charts/columns.ts';
 import { plotFrame } from '../../charts/frame.ts';
 import { tokensFromValues } from '../../charts/tokens.ts';
-import { createBoundedReadView, displayedHour } from '../../families/contract.ts';
-import { purposeSpendingProjection } from './purposeSpendingProjection.ts';
+import { sunburstTree } from '../../charts/sunburst/layout.ts';
 import { mergeSpending, spendingRecorded, spendingWidgetGate } from '../production-spending/spendingData.ts';
 import { firstHourOfMonth, gameDate, monthIndex } from '../../dashboard/calendar.ts';
 import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun } from '../../generated/dashboard';
@@ -209,33 +208,30 @@ test('a future repair date never leaks before the hour it appears, while archety
   const at2890 = mergeSpending(windows, 2890)!;
   assert.equal(repairsSince(at2890, 2890), null);
   assert.equal(repairsRead(at2890, 2890), false);
-  const model2890 = purposeSpendingProjection.project(
-    createBoundedReadView({ hour: displayedHour(2890), panels: new Map([['spending', at2890]]) }),
-    { mode: 'dockyard', domain: 'naval', from: null, firstHour: 2880, digits: 2, levels: [true, true, true] },
-  );
-  const new2890 = model2890.parts.find(child => child.key === 'new')!;
-  assert.equal(new2890.notRecorded, undefined);
-  assert.equal(new2890.value, 1000000);
-  const repair2890 = model2890.parts.find(child => child.key === 'repair')!;
-  assert.equal(repair2890.notRecorded, true);
-  assert.ok(!(repair2890.note ?? '').includes('since '), 'future repair start date must not appear at hour 2890');
-  assert.ok((repair2890.missingReason ?? '').includes('Spending not recorded.'));
-  assert.equal(model2890.total.atLeast, true);
+  const items2890 = dockyardItems(at2890, { from: null, hour: 2890, end: 5759 });
+  const tree2890 = sunburstTree(items2890, { id: 'all', label: 'All dockyard IC' });
+  const new2890 = tree2890.children.find(child => child.key === 'new')!;
+  assert.equal(new2890.valueUnknown, false);
+  assert.equal(new2890.exact, 1000000n);
+  const repair2890 = tree2890.children.find(child => child.key === 'repair')!;
+  assert.equal(repair2890.valueUnknown, true);
+  assert.ok(!repair2890.notes.some(note => note.includes('since ')), 'future repair start date must not appear at hour 2890');
+  assert.ok(repair2890.notes.some(note => note.includes('Spending not recorded.')));
+  assert.equal(tree2890.finalUnknown, true, 'Fill stays unknown while campaign end is in the future');
 
   const at3000 = mergeSpending(windows, 3000)!;
   assert.equal(repairsSince(at3000, 3000), 3000);
   assert.equal(repairsRead(at3000, 3000), true);
-  const model3000 = purposeSpendingProjection.project(
-    createBoundedReadView({ hour: displayedHour(3000), panels: new Map([['spending', at3000]]) }),
-    { mode: 'dockyard', domain: 'naval', from: null, firstHour: 2880, digits: 2, levels: [true, true, true] },
-  );
-  const repair3000 = model3000.parts.find(child => child.key === 'repair')!;
-  assert.equal(repair3000.notRecorded, undefined);
-  assert.equal(repair3000.value, 1000);
-  assert.ok((repair3000.note ?? '').includes('since '));
+  const items3000 = dockyardItems(at3000, { from: null, hour: 3000, end: 5759 });
+  const tree3000 = sunburstTree(items3000, { id: 'all', label: 'All dockyard IC' });
+  const repair3000 = tree3000.children.find(child => child.key === 'repair')!;
+  assert.equal(repair3000.valueUnknown, false);
+  assert.equal(repair3000.exact, 1000n);
+  assert.equal(repair3000.exactDenominator ?? 1n, 1n);
+  assert.ok(repair3000.notes.some(note => note.includes('since ')));
 });
 
-test('all purpose and repair designs stay shown individually ordered by amount', () => {
+test('withholding a future final keeps large purpose and repair designs shown instead of folded into Other', () => {
   const leaves: ProductionSpendingLeaf[] = Array.from({ length: 9 }, (_, index) => {
     const id = String(index + 1);
     return leaf({ variant: id, typeKey: `mod_h${id}`, name: `Hull ${id}`, domain: 'naval', purpose: 'new', names: [], runs: [known(100, 171, index === 8 ? '100000000' : '100000')] });
@@ -252,14 +248,13 @@ test('all purpose and repair designs stay shown individually ordered by amount',
     total: [known(100, 171, '100800000')], equipmentTotal: [known(100, 171, '100800000')],
     repairs: { denominator: 24, total: [known(100, 171, '241920000')], parts: repairParts },
   });
-  const model = purposeSpendingProjection.project(
-    createBoundedReadView({ hour: displayedHour(130), panels: new Map([['spending', data]]) }),
-    { mode: 'dockyard', domain: 'naval', from: null, firstHour: 100, digits: 0, levels: [true, true, true] },
-  );
-  const newShips = model.parts.find(child => child.key === 'new')!;
-  assert.equal(newShips.children![0]!.name, 'Hull 9', 'large naval design stays shown first');
-  const repairs = model.parts.find(child => child.key === 'repair')!;
-  assert.equal(repairs.children![0]!.name, 'Repair 9', 'large repair design stays shown first');
+  const tree = sunburstTree(dockyardItems(data, { from: null, hour: 130, end: 171 }), { id: 'all', label: 'All dockyard IC' });
+  const newShips = tree.children.find(child => child.key === 'new')!;
+  assert.ok(newShips.children.some(child => child.key === 'mod_h9' && !child.other), 'large naval design stays shown');
+  assert.equal(newShips.children.find(child => child.key === 'mod_h9')?.finalUnknown, true);
+  const repairs = tree.children.find(child => child.key === 'repair')!;
+  assert.ok(repairs.children.some(child => child.key === 'mod_r9' && !child.other), 'large repair design stays shown');
+  assert.equal(repairs.children.find(child => child.key === 'mod_r9')?.finalUnknown, true);
 });
 
 test('a repair gap withholds the incomplete repair total as on main so Breakdown and By month agree', () => {

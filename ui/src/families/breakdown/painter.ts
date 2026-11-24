@@ -4,7 +4,6 @@ import {
   drawBar,
   drawChevron,
   drawFlagSlot,
-  drawHatchClip,
   drawMissingMark,
   drawPartialTab,
   drawRowFocusRing,
@@ -18,6 +17,7 @@ import {
 import { toFlagSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import type { FamilyTheme } from '../contract.ts';
+import { drawHatchLines } from '../valueCanvas.ts';
 import type { ArtResult } from '../plan.ts';
 import type {
   BreakdownLayout,
@@ -179,7 +179,7 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
 
     if (row.depth === 0) {
       if (row.chevronRect) {
-        drawChevron(ctx, row.chevronRect.x + 2, cy, row.expanded, theme, { size: 5.5 });
+        drawChevron(ctx, row.chevronRect.x - 1, cy, row.expanded, theme);
       }
       let cursorX = row.nameX;
       const flagState = flagStateOf(row.part.flag, row.part.flagArt, hour, theme, artCache);
@@ -421,7 +421,7 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
     ctx.fill();
     if (slice.hatched) {
       ctx.clip();
-      drawHatchClip(ctx, layout.cx - layout.r1o, layout.cy - layout.r1o, layout.r1o * 2, layout.r1o * 2, theme, { alpha: 0.45, spacing: 6 });
+      drawHatchLines(ctx, layout.cx - layout.r1o, layout.cy - layout.r1o, layout.r1o * 2, layout.r1o * 2, theme);
     }
     ctx.restore();
 
@@ -455,7 +455,7 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
     ctx.fill();
     if (slice.hatched) {
       ctx.clip();
-      drawHatchClip(ctx, layout.cx - layout.r2o, layout.cy - layout.r2o, layout.r2o * 2, layout.r2o * 2, theme, { alpha: 0.45, spacing: 6 });
+      drawHatchLines(ctx, layout.cx - layout.r2o, layout.cy - layout.r2o, layout.r2o * 2, layout.r2o * 2, theme);
     }
     ctx.restore();
 
@@ -531,7 +531,7 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
 
       if (row.depth === 0) {
         if (row.chevronRect) {
-          drawChevron(ctx, row.chevronRect.x + 2, cy, row.expanded, theme, { size: 5 });
+          drawChevron(ctx, row.chevronRect.x - 1, cy, row.expanded, theme);
         }
         const swatchX = list.x + 14;
         if (row.part.notRecorded) {
@@ -630,7 +630,7 @@ function drawMosaicTile(
   if (tile.hatched && !tile.isGroup) {
     ctx.save();
     ctx.clip();
-    drawHatchClip(ctx, tile.x, tile.y, tile.width, tile.height, theme, { alpha: 0.4, spacing: 6 });
+    drawHatchLines(ctx, tile.x, tile.y, tile.width, tile.height, theme);
     ctx.restore();
   }
   if (active && !tile.isGroup) {

@@ -1,6 +1,6 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { Coverage, DestructionRun, ExactLossPoint, LossCause, LossDesign, LossLeaf, LossName, LossPoint, LossSource, LossesReply, NavigationKey, ShipListing, UnknownSpan } from '../../generated/dashboard';
-import type { BreakdownLeafItem as SunburstItem, BreakdownLeafTotal as SunburstTotal } from '../../families/breakdown/tree';
+import type { SunburstItem, SunburstTotal } from '../../charts/sunburst/layout';
 import type { LegendItem } from '../../charts/Legend';
 import type { ChartTokens } from '../../charts/tokens';
 import { mix } from '../../shell/appearance/color.ts';

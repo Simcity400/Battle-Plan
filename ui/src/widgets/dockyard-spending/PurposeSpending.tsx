@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
+import Sunburst from '../../charts/sunburst/Sunburst';
+import type { SunburstText, SunburstValues } from '../../charts/sunburst/Sunburst';
+import type { SunburstItem, SunburstKey } from '../../charts/sunburst/layout';
+import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOptions';
 import TimeChart from '../../charts/TimeChart';
 import Legend from '../../charts/Legend';
 import { columnAt } from '../../charts/columns';
@@ -12,185 +16,88 @@ import { icDecimals } from '../../dashboard/icDecimals';
 import { resolveOptions } from '../../dashboard/options';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
-import { UNIT, spendingRecorded, spendingWidgetGate } from '../production-spending/spendingData';
-import type { SpendingData } from '../production-spending/spendingData';
+import { UNIT, formatAppliedIc, noProductionAt, spendingRecorded, spendingWidgetGate } from '../production-spending/spendingData';
+import type { SpendingWindow } from '../production-spending/spendingData';
 import { useSpending } from '../production-spending/useSpending';
+import type { DockyardViewChoice } from './definition';
+import { LEVELS, createLiveMonthCache, formatExactIc, headMonthLayer, monthColumns, monthLabel, monthSpansFor, monthlyHeadKey, reasonLabel, shownMonthBands, visibleMonths } from './dockyardData';
+import type { Exact, PurposeMonth } from './dockyardData';
+import './dockyardSpending.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
-import type { Domain, ProductionSpendingReply } from '../../generated/dashboard';
-import FamilyBreakdownHost from '../../families/breakdown/FamilyBreakdownHost.tsx';
-import { breakdownViewOf, levelsShown } from '../../families/breakdown/options.ts';
-import { dockyardSpendingProjection, militaryFactorySpendingProjection, type PurposeSpendingProjectionOptions } from './purposeSpendingProjection.ts';
-import {
-  LEVELS,
-  createLiveMonthCache,
-  formatExactIc,
-  headMonthLayer,
-  monthColumns,
-  monthLabel,
-  monthSpansFor,
-  monthlyHeadKey,
-  reasonLabel,
-  shownMonthBands,
-  visibleMonths,
-  type Exact,
-  type PurposeMonth,
-} from './dockyardData';
-import './dockyardSpending.css';
+import type { ProductionSpendingReply } from '../../generated/dashboard';
+import type { SpendingData } from '../production-spending/spendingData';
 
 type Options = Readonly<Record<string, OptionValue>>;
 
 export interface PurposeSpendingKind {
   name: string;
   measure: string;
-  mode: 'dockyard' | 'military';
-  domain: (options: Options) => Domain;
+  root: SunburstKey;
   bands: readonly { id: string; label: string }[];
   options: readonly OptionField[];
   repairs: boolean;
   validate: (data: unknown) => ProductionSpendingReply;
   read?: (data: SpendingData, at?: number) => boolean;
+  items: (data: SpendingData, options: Options, window: SpendingWindow, colours: readonly string[]) => SunburstItem[];
+  other?: (data: SpendingData, window: SpendingWindow) => Exact;
   month: (data: SpendingData, options: Options, first: number, last: number, branchFirst: number) => PurposeMonth;
   note?: string;
 }
 
 const NO_WARNINGS: string[] = [];
-const EMPTY_SUBS = [] as const;
+const ZERO: Exact = { exact: 0n, reason: null };
 const sentence = (text: string) => text[0].toUpperCase() + text.slice(1);
 
-export function PurposeSpendingWidget({ kind, widget, runtime, active, onDiagnostics, setOption }: WidgetProps & { kind: PurposeSpendingKind }) {
+export function PurposeSpendingWidget({ kind, widget, runtime, active, onDiagnostics }: WidgetProps & { kind: PurposeSpendingKind }) {
   const options = resolveOptions(kind.options, widget.options);
   const optionsKey = JSON.stringify(options);
-  const isMonths = options.view === 'months';
-  const breakdownView = breakdownViewOf(options);
-  const namesInRing = options.namesInRing !== false;
+  const view: DockyardViewChoice = options.view === 'months' ? 'months' : 'circle';
   const headKey = useRef<(hour: number) => string>(() => '');
   const liveMonthCache = useMemo(() => createLiveMonthCache(kind.month), [kind]);
-  const spending = useSpending(widget, runtime, active, kind.repairs, kind.validate, hour => headKey.current(hour), isMonths);
-  useShownEachFrame(runtime.clock, () => isMonths && spending.data && spending.track ? trackHourOf(widget, spending.track, runtime.tracks, runtime.clock.getHour()) : null);
+  const spending = useSpending(widget, runtime, active, kind.repairs, kind.validate, hour => headKey.current(hour), view === 'months');
+  useShownEachFrame(runtime.clock, () => spending.data && spending.track ? trackHourOf(widget, spending.track, runtime.tracks, runtime.clock.getHour()) : null);
   const { track, tag, data, error, retry, hour, from, end, headAt } = spending;
-  const following = widget.time.mode === 'follow';
   const decimals = data?.decimals ?? 5;
   const digits = icDecimals(options, decimals);
-
   useEffect(() => {
-    if (!isMonths) return;
     onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [isMonths, data, onDiagnostics]);
-
+  }, [data, onDiagnostics]);
   headKey.current = at => {
-    if (!data || !track || end == null) return isMonths ? 'months' : breakdownView;
+    if (!data || !track || end == null) return view;
     const floored = Math.floor(at);
     const read = spendingRecorded(data) || kind.read?.(data, floored) === true;
-    if (isMonths) {
+    if (view === 'months') {
       const date = gameDate(floored);
       const bucket = date ? monthIndex(date) : floored;
       const monthStart = date ? Math.max(from ?? track.branch.firstHour, firstHourOfMonth(bucket)) : floored;
       const current = liveMonthCache(data, options, optionsKey, monthStart, floored, track.branch.firstHour);
       return monthlyHeadKey(bucket, read, kind.bands, current);
     }
-    return read ? '1' : '0';
+    return `${read ? 1 : 0}:${JSON.stringify(emptyAt(kind, data, { from, hour: at, end }))}`;
   };
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
 
   const read = Boolean(data && (spendingRecorded(data) || kind.read?.(data, hour) === true));
-  const gate = spendingWidgetGate({
-    hasTarget: Boolean(track && tag),
-    hasError: Boolean(error),
-    branch: track?.branch,
-    hour,
-    end,
-    hasData: Boolean(data),
-    recorded: read,
-  });
+  const gate = spendingWidgetGate({ hasTarget: Boolean(track && tag), hasError: Boolean(error), branch: track?.branch, hour, end, hasData: Boolean(data), recorded: read });
+  if (gate === 'empty') return <WidgetState kind="empty" icon="sunburst" message={`Load a campaign and choose a country to see its ${kind.name.toLowerCase()}.`} />;
+  if (gate === 'error') return <WidgetState kind="error" failure={error!} onRetry={retry} />;
+  if (gate === 'outside') return <WidgetState kind="outside" />;
+  if (gate === 'loading') return <WidgetState kind="loading" label={`Loading ${kind.name.toLowerCase()}…`} />;
+  if (gate === 'unavailable') return <WidgetState kind="unavailable" message={`${kind.name} wasn’t recorded.`} />;
+  if (view === 'months') return <PurposeMonths kind={kind} data={data!} options={options} optionsKey={optionsKey} liveMonth={liveMonthCache}
+    extent={[from ?? track!.branch.firstHour, widget.time.mode === 'range' ? hour! : track!.branch.lastHour]}
+    last={hour!} playhead={headAt ? hour! : null} headAt={headAt} runtime={runtime}
+    branchStart={track!.branch.firstHour} decimals={decimals} digits={digits} hoursPerSecond={hoursPerSecond} active={active} />;
+  return <PurposeCircle kind={kind} data={data!} window={{ from, hour: hour!, end: end! }} options={options} decimals={decimals} digits={digits}
+    headAt={headAt} runtime={runtime} hoursPerSecond={hoursPerSecond} active={active} />;
+}
 
-  const levelKey = LEVELS.map(level => options[level] !== false).join();
-  const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]);
-  const domain = kind.domain(options);
-
-  const projectionOptions = useMemo<PurposeSpendingProjectionOptions>(() => ({
-    mode: kind.mode,
-    domain,
-    from,
-    firstHour: track?.branch.firstHour ?? 0,
-    digits,
-    levels,
-  }), [kind.mode, domain, from, track?.branch.firstHour, digits, levels]);
-
-  const staticSources = useMemo(() => {
-    if (!data || !track) return null;
-    return {
-      panels: { spending: data },
-      hour: track.branch.firstHour,
-      endHour: track.branch.lastHour,
-    };
-  }, [data, track]);
-
-  const bounds = useMemo<readonly [number, number] | null>(
-    () => track ? [track.branch.firstHour, track.branch.lastHour] : null,
-    [track],
-  );
-
-  if (isMonths) {
-    if (gate === 'empty') return <WidgetState kind="empty" icon="sunburst" message={`Load a campaign and choose a country to see its ${kind.name.toLowerCase()}.`} />;
-    if (gate === 'error') return <WidgetState kind="error" failure={error!} onRetry={retry} />;
-    if (gate === 'outside') return <WidgetState kind="outside" />;
-    if (gate === 'loading') return <WidgetState kind="loading" label={`Loading ${kind.name.toLowerCase()}…`} />;
-    if (gate === 'unavailable') return <WidgetState kind="unavailable" message={`${kind.name} was not recorded.`} />;
-    return (
-      <PurposeMonths
-        kind={kind}
-        data={data!}
-        options={options}
-        optionsKey={optionsKey}
-        liveMonth={liveMonthCache}
-        extent={[from ?? track!.branch.firstHour, widget.time.mode === 'range' ? hour! : track!.branch.lastHour]}
-        last={hour!}
-        playhead={headAt ? hour! : null}
-        headAt={headAt}
-        runtime={runtime}
-        branchStart={track!.branch.firstHour}
-        decimals={decimals}
-        digits={digits}
-        hoursPerSecond={hoursPerSecond}
-        active={active}
-      />
-    );
-  }
-
-  const blocked = gate === 'empty'
-    ? <WidgetState kind="empty" icon="sunburst" message={`Load a campaign and choose a country to see its ${kind.name.toLowerCase()}.`} />
-    : gate === 'error'
-      ? <WidgetState kind="error" failure={error!} onRetry={retry} />
-      : gate === 'outside'
-        ? <WidgetState kind="outside" />
-        : gate === 'loading'
-          ? <WidgetState kind="loading" label={`Loading ${kind.name.toLowerCase()}…`} />
-          : null;
-
-  return (
-    <FamilyBreakdownHost
-      declaration={kind.mode === 'dockyard' ? dockyardSpendingProjection : militaryFactorySpendingProjection}
-      options={projectionOptions}
-      view={breakdownView}
-      namesInRing={namesInRing}
-      label={kind.name}
-      subject={kind.name.toLowerCase()}
-      widget={widget}
-      runtime={runtime}
-      active={active}
-      subscriptions={EMPTY_SUBS}
-      staticSources={staticSources}
-      offset={track?.axisOffset ?? 0}
-      pin={!following && hour != null ? Math.floor(hour) : null}
-      bounds={bounds}
-      onSetOption={setOption}
-      onDiagnostics={onDiagnostics}
-      blockedState={blocked}
-      loadingLabel={`Loading ${kind.name.toLowerCase()}…`}
-    />
-  );
+function emptyAt(kind: PurposeSpendingKind, data: SpendingData, window: SpendingWindow): [boolean, string] {
+  const other = kind.other?.(data, window) ?? ZERO;
+  return [noProductionAt(data, window.hour) && other.exact === 0n,
+    other.exact == null ? reasonLabel(other.reason) : `No ${kind.measure} spent in this view.`];
 }
 
 function usePurposeColours(bands: readonly unknown[]): string[] {
@@ -199,6 +106,34 @@ function usePurposeColours(bands: readonly unknown[]): string[] {
 }
 
 type Runtime = WidgetProps['runtime'];
+
+export function PurposeCircle({ kind, data, window, options, decimals, digits, headAt, runtime, hoursPerSecond, active }: {
+  kind: PurposeSpendingKind; data: SpendingData; window: SpendingWindow; options: Options; decimals: number; digits: number;
+  headAt: ((position: number) => number | null) | null; runtime: Runtime; hoursPerSecond: number | undefined; active: boolean;
+}) {
+  const settings = sunburstSettings(options);
+  const colours = usePurposeColours(kind.bands);
+  const { from, hour, end } = window;
+  const valuesAt = (at: number): SunburstValues => ({
+    items: kind.items(data, options, { from, hour: at, end }, colours),
+  });
+  const build = useRef(valuesAt);
+  build.current = valuesAt;
+  const values = useMemo(() => valuesAt(hour), [kind, data, options, from, hour, end, colours]);
+  const live = useMemo(() => headAt ? liveAt(runtime.clock, position => Math.floor(headAt(position) ?? hour), at => build.current(at)) : undefined,
+    [headAt, runtime.clock, kind, data, options, from, end, colours]);
+  const levelKey = LEVELS.map(level => options[level] !== false).join();
+  const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]);
+  const [empty, emptyLabel] = emptyAt(kind, data, window);
+  const text = useMemo<SunburstText>(() => ({
+    format: (value, exact, denominator) => exact == null ? formatAppliedIc(value, null, decimals, digits)
+      : formatExactIc(exact, denominator ?? 1n, decimals, digits), unit: UNIT, valueLabel: sentence(kind.measure), countLabel: 'Designs',
+    emptyLabel,
+  }), [decimals, digits, emptyLabel, kind.measure]);
+  return empty ? <WidgetState kind="empty" icon="sunburst" message={`No ${kind.measure} spent yet.`} />
+    : <Sunburst label={kind.name} items={values.items} root={kind.root} levels={levels} text={text} settings={settings}
+      live={live} hoursPerSecond={hoursPerSecond} active={active} />;
+}
 
 export function PurposeMonths({ kind, data, options, optionsKey, liveMonth, extent, last, playhead, headAt, runtime, branchStart, decimals, digits, hoursPerSecond, active }: {
   kind: PurposeSpendingKind; data: SpendingData; options: Options; optionsKey?: string;
@@ -239,44 +174,30 @@ export function PurposeMonths({ kind, data, options, optionsKey, liveMonth, exte
     : `${formatExactIc(exact, denominator ?? 1n, decimals, digits)} ${UNIT}`;
   const shownBands = useMemo(() => shownMonthBands(kind.bands, visibleMonths(months, playhead ?? last, monthThrough)),
     [kind.bands, months, playhead, last]);
-  return (
-    <div className="dockyard-months">
-      <Legend label={`${sentence(kind.measure)} spent on`} always items={shownBands.map(({ band, index }) => ({ id: band.id, label: band.label, color: colours[index] }))} />
-      <div className="dockyard-months-chart">
-        <TimeChart
-          label={label}
-          extent={extent}
-          playhead={playhead}
-          liveHead={head}
-          playback="draw-in"
-          branchStart={branchStart}
-          hoursPerSecond={hoursPerSecond}
-          axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}
-          fitValues={shown => shown}
-          layers={layers}
-          keyHours={keyHours}
-          active={active}
-          revision={{ columns, colours, digits }}
-          tooltip={at => {
-            const index = columnAt(columns, Math.floor(at));
-            if (index < 0) return null;
-            const headHour = head?.read() ?? playhead;
-            const flooredHead = headHour == null ? null : Math.floor(headHour);
-            if (flooredHead != null && flooredHead < spans[index].firstHour) return null;
-            const tipBands = shownMonthBands(kind.bands, visibleMonths(months, flooredHead ?? last, monthThrough));
-            const month = flooredHead != null && flooredHead >= spans[index].firstHour && flooredHead <= spans[index].lastHour
-              ? monthThrough(index, flooredHead) : months[index];
-            return {
-              title: monthLabel(month.firstHour),
-              rows: [
-                ...tipBands.map(({ band, index: row }) => ({ label: band.label, swatch: colours[row], value: write(month.bands[row]) })),
-                { label: 'Total', strong: true, divider: true, value: write(month.total) },
-              ],
-              note: [month.note, kind.note].filter(Boolean).join(' ') || undefined,
-            };
-          }}
-        />
-      </div>
+  return <div className="dockyard-months">
+    <Legend label={`${sentence(kind.measure)} spent on`} always items={shownBands.map(({ band, index }) => ({ id: band.id, label: band.label, color: colours[index] }))} />
+    <div className="dockyard-months-chart">
+      <TimeChart label={label} extent={extent} playhead={playhead} liveHead={head} playback="draw-in" branchStart={branchStart}
+        hoursPerSecond={hoursPerSecond} axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}
+        fitValues={shown => shown} layers={layers} keyHours={keyHours} active={active} revision={{ columns, colours, digits }}
+        tooltip={at => {
+          const index = columnAt(columns, Math.floor(at));
+          if (index < 0) return null;
+          const headHour = head?.read() ?? playhead;
+          const flooredHead = headHour == null ? null : Math.floor(headHour);
+          if (flooredHead != null && flooredHead < spans[index].firstHour) return null;
+          const tipBands = shownMonthBands(kind.bands, visibleMonths(months, flooredHead ?? last, monthThrough));
+          const month = flooredHead != null && flooredHead >= spans[index].firstHour && flooredHead <= spans[index].lastHour
+            ? monthThrough(index, flooredHead) : months[index];
+          return {
+            title: monthLabel(month.firstHour),
+            rows: [
+              ...tipBands.map(({ band, index: row }) => ({ label: band.label, swatch: colours[row], value: write(month.bands[row]) })),
+              { label: 'Total', strong: true, divider: true, value: write(month.total) },
+            ],
+            note: [month.note, kind.note].filter(Boolean).join(' ') || undefined,
+          };
+        }} />
     </div>
-  );
+  </div>;
 }

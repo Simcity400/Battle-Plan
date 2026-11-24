@@ -38,6 +38,7 @@ import {
   type FamilyViewportChange,
   type FamilyViewportState,
   type ParsedFamilyHit,
+  reduceInteraction,
 } from './adapter.ts';
 import { createPlanAuditVerifier, type FamilyAuditVerifier, type PlanAuditSnapshot } from './auditBinding.ts';
 import { renderFamilyBodyState } from './FamilyBodyState.tsx';
@@ -253,6 +254,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const installedFieldsRef = useRef<Readonly<Record<string, unknown>>>(EMPTY_FIELDS);
   const navRef = useRef<readonly FamilyNavTuple[]>(EMPTY_NAV);
   const typeaheadRef = useRef({ query: '', until: 0 });
+  const interactionRef = useRef<unknown>(adapter.interaction?.initial);
 
   const lastMirrorKeyRef = useRef('');
   const lastMirrorObjRef = useRef<MirrorModel | null>(null);
@@ -461,6 +463,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       audit: auditId !== undefined,
       auditId,
       pauseFlush: pauseFlushRef.current,
+      ...(curAdapter.interaction ? { interaction: interactionRef.current } : {}),
     });
     if (binding === null) return;
 
@@ -504,6 +507,14 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   const dispatchAction = useCallback((action: InstalledAction) => {
     const cur = latestRef.current;
+    const reduced = reduceInteraction(cur.adapter.interaction, interactionRef.current, action);
+    if (reduced.handled) {
+      if (reduced.state !== interactionRef.current) {
+        interactionRef.current = reduced.state;
+        bindRef.current();
+      }
+      return;
+    }
     if (action.toggle && cur.onToggle) cur.onToggle(action);
     else cur.onActivate?.(action);
   }, []);

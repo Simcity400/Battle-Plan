@@ -1,4 +1,4 @@
-import type { BreakdownLeafItem as SunburstItem, BreakdownLeafTotal as SunburstTotal } from '../../families/breakdown/tree';
+import type { SunburstItem, SunburstTotal } from '../../charts/sunburst/layout';
 import { runAt, sameStretch } from '../../charts/series.ts';
 import { formatIc } from '../../dashboard/icDecimals.ts';
 import { DOMAINS, UNRESOLVED_ARM, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';

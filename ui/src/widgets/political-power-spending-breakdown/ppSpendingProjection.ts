@@ -1,152 +1,95 @@
-import { formatPower } from '../../dashboard/powerDecimals.ts';
-import {
-  categoryLabel,
-  groupAt,
-  powerGain,
-  spendingGapNote,
-  spendingGaps,
-  spendingGroups,
-  type PowerLedger,
-  type SpendingSelection,
-} from '../../dashboard/powerSpending.ts';
-import type { BoundedReadView } from '../../families/contract.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
+import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { formatPower, powerDecimals } from '../../dashboard/powerDecimals.ts';
+import type { BreakdownWidgetSpec } from '../../families/breakdown/declaration.ts';
 import type { BreakdownModel, BreakdownProjection } from '../../families/breakdown/model.ts';
-import { registerBreakdownProjection } from '../../families/breakdown/registry.ts';
-import { buildBreakdownTree, type RawBreakdownLeaf } from '../../families/breakdown/tree.ts';
+import { breakdownParts, breakdownTotal, type BreakdownWords } from '../../families/breakdown/product.ts';
+import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
+import { formatDateOnly } from '../../families/valueFormat.ts';
+import type { PowerSpendingBreakdownReply } from '../../generated/dashboard';
 
-export interface PowerSpendingPanelData {
-  readonly ledgers: readonly PowerLedger[];
-  readonly from: number | null;
-  readonly firstHour: number;
-  readonly selection?: SpendingSelection;
-}
-
-export interface PowerSpendingProjectionOptions {
+export interface PoliticalPowerSpendingOptions {
   readonly digits: number;
-  readonly levels: readonly boolean[];
 }
 
-function shortGapLabel(hours: number): string {
-  if (hours < 48) return `${hours} ${hours === 1 ? 'hour' : 'hours'} not recorded`;
-  const days = Math.floor(hours / 24);
-  return `${days.toLocaleString('en-US')} ${days === 1 ? 'day' : 'days'} not recorded`;
+function validate(raw: unknown): PowerSpendingBreakdownReply {
+  const reply = raw as Partial<PowerSpendingBreakdownReply> | null;
+  if (!reply || typeof reply.hour !== 'number' || typeof reply.through !== 'number' || !reply.breakdown || !Array.isArray(reply.breakdown.parts)) {
+    throw new Error('Invalid political power spending breakdown');
+  }
+  return reply as PowerSpendingBreakdownReply;
 }
 
-export const ppSpendingProjection: BreakdownProjection<PowerSpendingProjectionOptions> = {
+function words(digits: number): BreakdownWords {
+  return { unit: 'PP', verb: 'Spent', format: raw => formatPower(raw, digits) };
+}
+
+export const ppSpendingProjection: BreakdownProjection<PoliticalPowerSpendingOptions> = {
+  family: 'breakdown',
   kind: 'political-power-spending-breakdown',
-  project(readView: BoundedReadView, options: PowerSpendingProjectionOptions): BreakdownModel {
-    const panel = readView.panel<PowerSpendingPanelData>('spending');
+  project(readView: BoundedReadView, options: PoliticalPowerSpendingOptions): BreakdownModel {
     const hour = Math.floor(readView.hour);
-    if (!panel || !panel.ledgers.length) {
-      return {
-        hour,
-        rootLabel: 'Spent',
-        total: { known: false, value: null, text: '0', unit: 'PP', verb: 'Spent' },
-        parts: [],
-        empty: 'No political power spent in this period.',
-      };
-    }
-
-    const { ledgers, from, firstHour, selection } = panel;
-    if (ledgers.every(ledger => !ledger.coverage.length)) {
-      return {
-        hour,
-        rootLabel: 'Spent',
-        total: { known: false, value: null, text: 'Not recorded', unit: 'PP', verb: 'Spent' },
-        parts: [],
-        empty: 'Political power spending was not recorded.',
-        emptyKind: 'unavailable',
-      };
-    }
-
-    const groups = spendingGroups(ledgers, from, selection);
-    const leaves: RawBreakdownLeaf[] = [];
-    let anyUnknownCost = false;
-    let anyUncovered = false;
-
-    for (const group of groups.values()) {
-      const now = groupAt(group, hour);
-      if (!now) continue;
-      const partial = now.unknown > 0 || now.uncovered;
-      if (now.unknown > 0) anyUnknownCost = true;
-      if (now.uncovered) anyUncovered = true;
-      const catName = categoryLabel(group.category.name, group.category.identified);
-      const categoryNode = {
-        key: group.category.id,
-        name: catName,
-        neutral: !group.category.identified,
-      };
-      const path = group.latest.name === null
-        ? [categoryNode]
-        : [categoryNode, {
-            key: group.id,
-            name: group.latest.name,
-            subtitle: `${catName} · ${formatDateOnly(now.latestHour)}`,
-            note: group.latest.unknown ?? undefined,
-            detailRows: group.latest.targetTag
-              ? [{ label: 'Target', value: group.latest.targetName ?? group.latest.targetTag }]
-              : undefined,
-          }];
-      leaves.push({
-        path,
-        value: Number(now.charge),
-        exact: now.charge,
-        count: now.payments,
-        countLabel: 'Payments',
-        partial,
-        partialReason: partial ? 'Some payment costs were not recorded.' : undefined,
-      });
-    }
-
-    const gaps = spendingGaps(ledgers, { from, hour }, selection);
-    const gapNote = spendingGapNote(gaps);
-    const gapHours = gaps.reduce((sum, gap) => sum + (gap.through - gap.from + 1), 0);
-    const startHour = from ?? firstHour;
-    const periodLabel = `Spent since ${formatDateOnly(startHour)}`;
-
-    const gain = powerGain(ledgers, { from, hour }, selection);
-    const comparison = gain
-      ? {
-          label: 'Gained',
-          value: `${formatPower(gain.gained, options.digits)} PP`,
-          ...(gain.lost > 0n ? { note: `${formatPower(gain.lost, options.digits)} PP lost at cap.` } : {}),
-        }
-      : undefined;
-
-    if (!leaves.length) {
-      return {
-        hour,
-        rootLabel: 'Spent',
-        periodLabel,
-        comparison,
-        total: { known: true, value: 0, text: '0', unit: 'PP', verb: 'Spent' },
-        parts: [],
-        empty: 'No political power spent in this period.',
-        emptyDetail: gapNote ?? undefined,
-      };
-    }
-
-    const { parts, total } = buildBreakdownTree({
-      leaves,
-      levels: options.levels,
-      formatValue: (value, exact) => formatPower(exact ?? BigInt(Math.round(value)), options.digits),
-      unit: 'PP',
-      verb: 'Spent',
-      partialReason: gapNote ?? (anyUnknownCost ? 'Some payment costs were not recorded.' : anyUncovered ? 'Some payments may be missing.' : undefined),
-      shortReason: gapHours > 0 ? shortGapLabel(gapHours) : (anyUnknownCost ? 'Some costs not recorded' : undefined),
-    });
-
-    return {
+    const said = words(options.digits);
+    const reply = readView.panel<PowerSpendingBreakdownReply>('main');
+    if (!reply) return { hour, rootLabel: 'Spent', total: { known: false, value: null, text: '', unit: said.unit, verb: said.verb }, parts: [] };
+    const total = breakdownTotal(reply.breakdown, said);
+    const parts = breakdownParts(reply.breakdown, said);
+    const lost = reply.lostAtCapRaw === null ? null : BigInt(reply.lostAtCapRaw);
+    const model: BreakdownModel = {
       hour,
       rootLabel: 'Spent',
-      periodLabel,
-      comparison,
+      periodLabel: `Spent since ${formatDateOnly(reply.from)}`,
+      comparison: {
+        label: 'Gained',
+        value: reply.gainedRaw === null ? 'Not recorded' : `${formatPower(BigInt(reply.gainedRaw), options.digits)} PP`,
+        ...(reply.gainedRaw === null && reply.gainedReason
+          ? { note: reply.gainedReason }
+          : lost !== null && lost > 0n ? { note: `${formatPower(lost, options.digits)} PP lost at the cap.` } : {}),
+      },
       total,
       parts,
-      warnings: [...new Set(ledgers.flatMap(l => l.warnings))],
+      ...(reply.warnings.length ? { warnings: reply.warnings } : {}),
     };
+    if (parts.length) return model;
+    if (reply.breakdown.total.state === 'NotRecorded') {
+      return { ...model, empty: 'Not recorded at this time.', emptyDetail: total.reason ?? 'Political power spending was not recorded.', emptyKind: 'unavailable' };
+    }
+    return { ...model, empty: 'No spending at this date.' };
   },
 };
 
-registerBreakdownProjection(ppSpendingProjection);
+export const ppSpendingBreakdown: BreakdownWidgetSpec<PoliticalPowerSpendingOptions> = {
+  kind: 'political-power-spending-breakdown',
+  label: 'Political power spending breakdown',
+  subject: 'political power spending',
+  emptyCampaign: 'Load a campaign to see political power spending.',
+  icon: 'sunburst',
+  countries: { mode: 'single', choose: 'Choose a country to see its political power spending.' },
+  projection: ppSpendingProjection,
+  projectionOptions: ctx => ({ digits: powerDecimals(ctx.options) }),
+  sources: (ctx: FamilyPlanContext): SourcePlan => {
+    const tag = ctx.countryTag;
+    return {
+      owner: `political-power-spending-breakdown:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${tag ?? ''}`,
+      entries: tag ? [{
+        name: 'main',
+        source: ctx.track.source,
+        branch: ctx.branch.id,
+        offset: ctx.track.axisOffset,
+        read: {
+          shape: 'point',
+          channel: 'followed',
+          coverage: { mode: 'population', form: 'parts' },
+          product: 'power-spending-breakdown',
+          followQuery: null,
+          params: { branchId: ctx.branch.id, country: countryFromKey(tag), currency: 'Political', from: ctx.branch.firstHour },
+          hourParam: 'hour',
+          provenInterval: (data, hour) => {
+            const reply = data as PowerSpendingBreakdownReply;
+            return reply.hour <= hour && hour <= reply.through ? [reply.hour, reply.through] : [hour, hour];
+          },
+          validate,
+        },
+      }] : [],
+    };
+  },
+};

@@ -24,9 +24,9 @@ const source: DashboardSource = { id: 'short', path: 'C:/recordings/short.battle
   name: 'short', format: 1, captureMode: 'full', campaignKey: 'c0ffee', branches: [{ id: '1', sessionId: '1', firstHour: 100, lastHour: 109,
     main: true, fork: null, joins: [], sampleBoundary: 'Sample origin unknown', gaps: [] }],
   countries: [], playerCountryId: null, contentVerified: false, partial: null, warnings: [], buildWarnings: [] } };
-const host = globalThis as typeof globalThis & { __losses?: LossesReply; __breakdownHost?: { bounds: readonly [number, number] | null; pin: number | null } | null };
+const host = globalThis as typeof globalThis & { __losses?: LossesReply; __lossHead?: { outside: boolean }; __sunburst?: number };
 
-test('Equipment losses binds the breakdown host with branch bounds so hours past the track end resolve outside the recording', async () => {
+test('Equipment losses following playback past its track\'s end keeps no earlier total as current: the current losses are outside the recording', async () => {
   const tracks = bindTracks({ version: 1, name: 'Short', alignment: 'calendar', widgets: [], layouts: {}, roles: [{ id: 'short', label: 'short', selectedTag: 'GER' }],
     tracks: [{ id: 'short', roleId: 'short', label: 'short', branchIndex: 0, anchorOffset: null }] }, new Map([['short', source]]));
   const clock = new PlaybackController();
@@ -37,14 +37,14 @@ test('Equipment losses binds the breakdown host with branch bounds so hours past
     '/widgets/equipment-losses/lossesSource.ts': `export const stretchWindow = (_reply, window) => ({ ...window, since: null }); export const exactLossHour = () => true;
       export const useLossHistory = () => ({ data: globalThis.__losses, retry() {}, onSummaryView() {}, onHover() {}, navigate() {}, exactAt: async () => undefined });`,
     '/dashboard/headProduct.ts': `const live = { read: () => ({ get: () => undefined, missing: () => 'Not recorded' }), subscribe: () => () => {} };
-      export const useHeadProduct = () => ({ outside: false, data: undefined, root() {}, live, at: null, atNow: () => null, shownAt: () => null, current: () => undefined, read: 'off', hour: null, retry() {} });`,
+      export const useHeadProduct = () => ({ ...globalThis.__lossHead, data: undefined, root() {}, live, at: null, atNow: () => null, shownAt: () => null, current: () => undefined, read: 'off', hour: null, retry() {} });`,
     '/dashboard/useCountryGroups.ts': `const data = { countryIdentities: [{ tag: 'GER', identities: [{ slot: 1, countryId: 1, firstHour: 100, lastHour: 109 }] }] };
       export const useCountryGroups = () => ({ data, retry() {} });`,
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({ labelAt: () => () => ({ name: 'Germany' }) });`,
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#808080'] }); export const useViewportHeight = () => 800;`,
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/charts/drill/DrillHost.tsx': 'export default props => props.main;',
-    '/families/breakdown/FamilyBreakdownHost.tsx': 'export default props => { globalThis.__breakdownHost = { bounds: props.bounds, pin: props.pin }; return null; };',
+    '/charts/sunburst/Sunburst.tsx': 'export default () => { globalThis.__sunburst = (globalThis.__sunburst ?? 0) + 1; return null; };',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'equipment-losses-fixture', enforce: 'pre',
@@ -55,10 +55,18 @@ test('Equipment losses binds the breakdown host with branch bounds so hours past
     widget.time = { mode: 'follow' };
     widget.countries = { kind: 'tags', tags: ['GER'] };
     const runtime = { tracks, clock, client: {}, addWidgetBelow() {} };
-    clock.seek(109);
-    host.__breakdownHost = null;
-    renderToStaticMarkup(createElement(Widget, { widget, runtime, active: true, countrySlot: null, onDiagnostics() {} }));
-    assert.deepEqual(host.__breakdownHost, { bounds: [100, 109], pin: null });
+    const render = (hour: number, outside: boolean) => {
+      clock.seek(hour);
+      host.__lossHead = { outside };
+      host.__sunburst = 0;
+      const markup = renderToStaticMarkup(createElement(Widget, { widget, runtime, active: true, countrySlot: null, onDiagnostics() {} }));
+      return { markup, sunburst: host.__sunburst };
+    };
+    const inside = render(109, false);
+    assert.ok(inside.sunburst === 1 && /Losses: /.test(inside.markup), `inside its track, the current losses are drawn: ${inside.markup}`);
+    const past = render(110, true);
+    assert.ok(past.sunburst === 0 && !/Losses: |Subtotal: /.test(past.markup) && past.markup.includes('This time is outside the recording.'),
+      `past its track's end, no total read at 109 is shown as the losses at 110: ${past.markup}`);
   } finally {
     await vite.close();
   }

@@ -3,7 +3,6 @@ import type { BreakdownViewMode } from './options.ts';
 import {
   formatShare,
   inkOnColour,
-  orderPartsForDisplay,
   partColour,
   resolveExpandedMap,
   resolveRingOpenKey,
@@ -330,7 +329,7 @@ function layoutPartsView(input: BreakdownLayoutInput): PartsViewLayout {
 
     const segments: PartsSegment[] = [];
     if (hasChildren && !isExpanded && barFillWidth > 0 && part.children) {
-      const orderedChildren = orderPartsForDisplay(part.children);
+      const orderedChildren = part.children;
       let childSum = 0;
       for (const ch of orderedChildren) {
         if (!ch.notRecorded && ch.value !== null && ch.value > 0) childSum += ch.value;
@@ -396,7 +395,7 @@ function layoutPartsView(input: BreakdownLayoutInput): PartsViewLayout {
     rowY += PARTS_ROW_HEIGHT;
 
     if (isExpanded && part.children) {
-      const children = orderPartsForDisplay(part.children);
+      const children = part.children;
       for (let ci = 0; ci < children.length; ci++) {
         const ch = children[ci]!;
         const chFillWidth = !ch.notRecorded && ch.value !== null && maxValue > 0
@@ -655,7 +654,7 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
     });
 
     if (part.children && part.children.length > 0 && w2 >= 6) {
-      const positiveChildren = orderPartsForDisplay(part.children).filter(ch => !ch.notRecorded && ch.value !== null && ch.value > 0);
+      const positiveChildren = part.children.filter(ch => !ch.notRecorded && ch.value !== null && ch.value > 0);
       let childSum = 0;
       for (const ch of positiveChildren) childSum += ch.value!;
       if (childSum > 0) {
@@ -726,7 +725,7 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
       });
       ry += RING_SIDE_ROW_HEIGHT;
       if (isExpanded && part.children) {
-        const children = orderPartsForDisplay(part.children);
+        const children = part.children;
         for (let ci = 0; ci < children.length; ci++) {
           const ch = children[ci]!;
           const chColor = ci % 2 === 0 ? tintColour(color, 0.12) : tintColour(color, 0.30);
@@ -820,7 +819,7 @@ function worstAspect(row: readonly SquarifyItem[], rowSum: number, shortSide: nu
 }
 
 function squarify(items: readonly SquarifyItem[], bounds: Rect, gap: number): SquarifyRect[] {
-  const positive = items.filter(i => i.weight > 0).sort((a, b) => b.weight - a.weight);
+  const positive = items.filter(i => i.weight > 0);
   if (!positive.length || bounds.width <= 0 || bounds.height <= 0) return [];
   const totalWeight = positive.reduce((s, i) => s + i.weight, 0);
   if (totalWeight <= 0) return [];
@@ -926,7 +925,7 @@ function layoutMosaicView(input: BreakdownLayoutInput): MosaicViewLayout {
     const baseColor = partColour(part, theme);
     const shareText = hatchedAll ? '' : formatShare(part.share);
     const positiveChildren = part.children
-      ? orderPartsForDisplay(part.children).filter(ch => !ch.notRecorded && ch.value !== null && ch.value > 0)
+      ? part.children.filter(ch => !ch.notRecorded && ch.value !== null && ch.value > 0)
       : [];
     const showGroup = positiveChildren.length > 0 && rect.width > 70 && rect.height > 60;
 

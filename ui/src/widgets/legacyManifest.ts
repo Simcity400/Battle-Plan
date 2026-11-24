@@ -82,7 +82,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'operatives-roster', load: () => import('./operatives-roster') },
   { kind: 'peace-deals', load: () => import('./peace-deals') },
   { kind: 'political-power-spending', load: () => import('./political-power-spending') },
-  { kind: 'political-power-spending-breakdown', load: () => import('./political-power-spending-breakdown') },
   { kind: 'production-licences', load: () => import('./production-licences') },
   { kind: 'production-lines', load: () => import('./production-lines') },
   { kind: 'production-spending', load: () => import('./production-spending') },

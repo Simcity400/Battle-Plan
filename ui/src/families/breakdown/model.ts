@@ -24,6 +24,7 @@ export interface BreakdownPart {
   readonly notRecorded?: boolean;
   readonly missingReason?: string;
   readonly partial?: boolean;
+  readonly atLeast?: boolean;
   readonly partialReason?: string;
   readonly count?: number;
   readonly countLabel?: string;
@@ -77,7 +78,7 @@ export interface BreakdownModel {
 }
 
 export interface BreakdownProjection<TOptions = unknown> {
-  readonly family?: 'breakdown';
+  readonly family: 'breakdown';
   readonly kind: string;
   project(readView: BoundedReadView, options: TOptions): BreakdownModel;
   nextChange?(readView: BoundedReadView, options: TOptions): number;
@@ -137,16 +138,6 @@ export function rgbHex(r: number, g: number, b: number): string {
   return toHex({ r, g, b });
 }
 
-export function orderPartsForDisplay(parts: readonly BreakdownPart[]): BreakdownPart[] {
-  const recorded: BreakdownPart[] = [];
-  const missing: BreakdownPart[] = [];
-  for (const part of parts) {
-    if (part.notRecorded || part.value === null) missing.push(part);
-    else recorded.push(part);
-  }
-  return [...recorded, ...missing];
-}
-
 export function resolveDrillLevel(model: BreakdownModel, drillPath: readonly string[]): ResolvedBreakdownLevel {
   let parts = model.parts;
   let total = model.total;
@@ -171,7 +162,7 @@ export function resolveDrillLevel(model: BreakdownModel, drillPath: readonly str
       shortReason: model.total.shortReason,
     };
   }
-  return { parts: orderPartsForDisplay(parts), total, crumbs, parentPart };
+  return { parts, total, crumbs, parentPart };
 }
 
 export function computeDefaultExpanded(
@@ -183,10 +174,8 @@ export function computeDefaultExpanded(
   if (narrow) return expanded;
   let budget = visibleRows - parts.length;
   if (budget < 3) return expanded;
-  const candidates = parts
-    .filter(part => !part.notRecorded && part.children && part.children.length > 0)
-    .sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
-  for (const candidate of candidates) {
+  for (const candidate of parts) {
+    if (candidate.notRecorded || !candidate.children?.length) continue;
     if (budget < 3) break;
     expanded[candidate.key] = true;
     budget -= candidate.children!.length;
@@ -217,12 +206,7 @@ export function resolveRingOpenKey(
     const match = parts.find(part => part.key === userOpenKey && part.children && part.children.length > 0);
     if (match) return match.key;
   }
-  let best: BreakdownPart | null = null;
-  for (const part of parts) {
-    if (part.notRecorded || !part.children || !part.children.length) continue;
-    if (!best || (part.value ?? 0) > (best.value ?? 0)) best = part;
-  }
-  return best?.key ?? null;
+  return parts.find(part => !part.notRecorded && part.children?.length)?.key ?? null;
 }
 
 export function findBreakdownPart(
@@ -309,27 +293,6 @@ export function buildBreakdownTooltip(
   if (part.detailRows) {
     for (const row of part.detailRows) items.push(row);
   }
-  if (!parent && part.children && part.children.length > 0 && !part.notRecorded) {
-    const topChildren = orderPartsForDisplay(part.children).slice(0, 6);
-    for (let i = 0; i < topChildren.length; i++) {
-      const child = topChildren[i]!;
-      items.push({
-        label: child.name,
-        ...(child.notRecorded || child.value === null
-          ? { missingReason: child.missingReason ?? 'Not recorded' }
-          : { value: unit ? `${child.text} ${unit}` : child.text }),
-        indent: true,
-        ...(i === 0 ? { divider: true } : {}),
-      });
-    }
-    if (part.children.length > topChildren.length) {
-      items.push({
-        label: `… and ${part.children.length - topChildren.length} more`,
-        tone: 'muted',
-        indent: true,
-      });
-    }
-  }
   const subtitle = part.subtitle ?? (parent ? parent.name : undefined);
   const note = [part.note, level.total.atLeast ? level.total.reason : undefined]
     .filter((entry): entry is string => Boolean(entry && entry.trim()))
@@ -343,9 +306,19 @@ export function buildBreakdownTooltip(
   });
 }
 
+export type BreakdownAct = 'toggle' | 'ring' | 'drill';
+
+export interface BreakdownActionMeta {
+  readonly act: BreakdownAct;
+  readonly open: boolean;
+}
+
+const ACT_BY_VIEW: Readonly<Record<string, BreakdownAct>> = { parts: 'toggle', ring: 'ring', mosaic: 'drill' };
+
 export function deriveBreakdownNavAndMirror(
   level: ResolvedBreakdownLevel,
   expanded: Readonly<Record<string, boolean>>,
+  view: string,
 ): { readonly nav: readonly FamilyNavTuple[]; readonly mirror: readonly ListboxMirrorItem[] } {
   const nav: FamilyNavTuple[] = [];
   const mirror: ListboxMirrorItem[] = [];
@@ -357,7 +330,8 @@ export function deriveBreakdownNavAndMirror(
     const valueSpoken = part.notRecorded || part.value === null
       ? `not recorded${part.missingReason ? `: ${part.missingReason}` : ''}`
       : `${part.exact ?? part.text}${unit ? ` ${unit}` : ''}${!level.total.atLeast && part.share != null ? `, ${formatShare(part.share)}` : ''}`;
-    nav.push([part.key, part.name, index, hasChildren ? (isOpen ? 1 : 0) : -1, '', part.meta ?? null]);
+    const meta: BreakdownActionMeta | null = hasChildren ? { act: ACT_BY_VIEW[view] ?? 'toggle', open: isOpen } : null;
+    nav.push([part.key, part.name, index, hasChildren ? (isOpen ? 1 : 0) : -1, '', meta]);
     mirror.push({
       key: part.key,
       spoken: `${part.name}, ${valueSpoken}`,
@@ -365,11 +339,11 @@ export function deriveBreakdownNavAndMirror(
     });
     index++;
     if (isOpen && part.children) {
-      for (const child of orderPartsForDisplay(part.children)) {
+      for (const child of part.children) {
         const childSpoken = child.notRecorded || child.value === null
           ? `not recorded${child.missingReason ? `: ${child.missingReason}` : ''}`
           : `${child.exact ?? child.text}${unit ? ` ${unit}` : ''}${!level.total.atLeast && child.share != null ? `, ${formatShare(child.share)}` : ''}`;
-        nav.push([child.key, child.name, index, -1, part.key, child.meta ?? null]);
+        nav.push([child.key, child.name, index, -1, part.key, null]);
         mirror.push({
           key: child.key,
           spoken: `${part.name}, ${child.name}, ${childSpoken}`,

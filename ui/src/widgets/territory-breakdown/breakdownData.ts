@@ -1,4 +1,4 @@
-import type { BreakdownLeafItem as SunburstItem, BreakdownLeafKey as SunburstKey } from '../../families/breakdown/tree';
+import type { SunburstItem, SunburstKey } from '../../charts/sunburst/layout';
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import { NO_ROW } from '../../dashboard/follow/liveCells.ts';

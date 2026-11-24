@@ -1,3 +1,4 @@
 .equipment-losses, .equipment-losses-main { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.equipment-losses-main > .sunburst-host { flex: 1; min-height: 0; }
 .equipment-losses-main > .button { align-self: flex-start; margin: var(--space-2) var(--space-3); }
 .equipment-losses-table { display: flex; flex: 1; min-height: 0; }

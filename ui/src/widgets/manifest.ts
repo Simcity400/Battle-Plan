@@ -23,21 +23,11 @@ export interface FamilyViewUiLoader {
 
 export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'apm-table': { load: () => import('./apm-table') },
-  'bombing-damage-breakdown': { load: () => import('./bombing-damage-breakdown'), slots: ['render', 'countryChip'] },
-  'casualties-breakdown': { load: () => import('./casualties-breakdown') },
-  'construction-spending': { load: () => import('./construction-spending') },
   'division-template': { load: () => import('./division-template') },
-  'dockyard-spending': { load: () => import('./dockyard-spending') },
-  'equipment-losses': { load: () => import('./equipment-losses'), slots: ['render', 'countryChip'] },
   'game-score': { load: () => import('./game-score') },
-  'military-factory-spending': { load: () => import('./military-factory-spending') },
   'occupied-states': { load: () => import('./occupied-states') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
-  'political-power-spending-breakdown': { load: () => import('./political-power-spending-breakdown') },
-  'production-spending': { load: () => import('./production-spending') },
   'scoreboard': { load: () => import('./scoreboard') },
-  'territory': { load: () => import('./territory') },
-  'territory-breakdown': { load: () => import('./territory-breakdown') },
 };
 
 const familyByKind = new Map<string, FamilyViewEntry[]>();

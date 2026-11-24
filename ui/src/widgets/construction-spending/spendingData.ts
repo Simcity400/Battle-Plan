@@ -1,5 +1,5 @@
 import { isConstructionType, isMissingSpan, isSpendingGap, isStateName, placeName, stateNamesOf, typeName } from '../../dashboard/construction.ts';
-import type { BreakdownLeafItem as SunburstItem } from '../../families/breakdown/tree';
+import type { SunburstItem } from '../../charts/sunburst/layout';
 import { formatIc } from '../../dashboard/icDecimals.ts';
 import type { ConstructionSpendingReply, SpendingLeaf, SpendingUnknown, SpentStep } from '../../generated/dashboard';
 

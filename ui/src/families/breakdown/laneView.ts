@@ -13,7 +13,7 @@ import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import { nextLookChange } from '../looks.ts';
 import type { ArtProvider, EntityKind, IdentityProvider } from '../plan.ts';
-import type { BreakdownViewMode } from './options.ts';
+import type { BreakdownViewOptions } from './declaration.ts';
 import {
   buildBreakdownTooltip,
   deriveBreakdownAudit,
@@ -25,13 +25,19 @@ import {
 } from './model.ts';
 import { hitTestBreakdown, layoutBreakdown, type BreakdownLayout } from './layout.ts';
 import { drawBreakdown } from './painter.ts';
-import { breakdownProjection, ensureBreakdownProjection } from './registry.ts';
+import { ensureBreakdownProjection } from './registry.ts';
 
-export interface FamilyBreakdownBinding<TOptions = unknown> {
+export interface BreakdownInteraction {
+  readonly drill: readonly string[];
+  readonly expanded: Readonly<Record<string, boolean>>;
+  readonly ringOpen?: string | null;
+}
+
+export const NO_INTERACTION: BreakdownInteraction = { drill: [], expanded: {} };
+
+export interface FamilyBreakdownBinding<TOptions extends BreakdownViewOptions = BreakdownViewOptions> {
   readonly family: 'breakdown';
   readonly kind: string;
-  readonly view: BreakdownViewMode;
-  readonly namesInRing: boolean;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
@@ -41,9 +47,7 @@ export interface FamilyBreakdownBinding<TOptions = unknown> {
   readonly scrollTop: number;
   readonly theme?: FamilyTheme;
   readonly identitySnapshot?: IdentitySnapshot;
-  readonly drillPath: readonly string[];
-  readonly userExpanded: Readonly<Record<string, boolean>>;
-  readonly ringOpenKey?: string | null;
+  readonly interaction: BreakdownInteraction;
   readonly selectedKey?: string | null;
   readonly focusedKey?: string | null;
   readonly audit?: boolean;
@@ -218,8 +222,9 @@ export function familyBreakdownLaneView(
     next(scene: Scene, hour: number, state?: Map<string, unknown>): number {
       const bound = scene.model;
       if (!isFamilyBreakdownBinding(bound)) return Infinity;
-      const projection = breakdownProjection(bound.kind, bound.view);
-      if (!projection) return Infinity;
+      const projection = ensureBreakdownProjection(bound.kind, bound.options.view, () => wake(scene.widget));
+      if (projection === 'loading') return hour + 1;
+      if (projection === 'unknown') return Infinity;
       let soonest = nextLookChange(bound.theme?.countryLooks, hour);
       const held = state?.get('familyBreakdown') as HeldBreakdown | undefined;
       if (held?.cachedModel && held.cachedModelKind === bound.kind && held.cachedModel.nextChangeAt !== undefined) {
@@ -245,9 +250,9 @@ export function familyBreakdownLaneView(
       const bound = input.model;
       const surface = input.binding.surfaces[0];
       if (!isFamilyBreakdownBinding(bound) || !surface) return { surfaces: [], fields: {}, motion: false };
-      const projection = ensureBreakdownProjection(bound.kind, bound.view, () => wake(input.widget));
+      const projection = ensureBreakdownProjection(bound.kind, bound.options.view, () => wake(input.widget));
       if (projection === 'loading') {
-        return { surfaces: [], fields: {}, motion: false };
+        return { surfaces: [], fields: {}, motion: false, nextChangeAt: input.hour + 1 };
       }
       if (projection === 'unknown') {
         return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown breakdown declaration: ${bound.kind}` };
@@ -375,7 +380,7 @@ export function familyBreakdownLaneView(
         held.art.requestVisible(held.demandedArtUrls);
       }
 
-      const level = resolveDrillLevel(model, bound.drillPath);
+      const level = resolveDrillLevel(model, bound.interaction.drill);
       held.cachedLevel = level;
 
       const measure = (text: string, font: string) => {
@@ -397,32 +402,30 @@ export function familyBreakdownLaneView(
       let layout: BreakdownLayout | null = null;
       if (bound.theme) {
         layout = layoutBreakdown({
-          view: bound.view,
+          view: bound.options.view,
           level,
           periodLabel: model.periodLabel,
           comparison: model.comparison,
           width: bound.width,
           height: bound.height,
           theme: bound.theme,
-          namesInRing: bound.namesInRing,
-          userExpanded: bound.userExpanded,
-          ringOpenKey: bound.ringOpenKey,
+          namesInRing: bound.options.namesInRing,
+          userExpanded: bound.interaction.expanded,
+          ringOpenKey: bound.interaction.ringOpen,
           measure,
         });
         held.cachedLayout = layout;
 
         const paintSig = JSON.stringify([
-          bound.view,
-          bound.namesInRing,
+          bound.options.view,
+          bound.options.namesInRing,
           bound.width,
           bound.height,
           bound.scrollTop,
           inspectedKey,
           selectedKey,
           focusedKey,
-          bound.drillPath,
-          bound.userExpanded,
-          bound.ringOpenKey ?? null,
+          bound.interaction,
           model.hour,
           model.total.text,
           model.total.atLeast ?? false,
@@ -467,7 +470,7 @@ export function familyBreakdownLaneView(
       };
       fields.meta = { value: metaVal, content: cachedField(held, 'meta', JSON.stringify(metaVal), content) };
 
-      const { nav, mirror } = deriveBreakdownNavAndMirror(level, layout?.expanded ?? {});
+      const { nav, mirror } = deriveBreakdownNavAndMirror(level, layout?.expanded ?? {}, bound.options.view);
       fields.nav = { value: nav, content: cachedField(held, 'nav', JSON.stringify(nav), content) };
       fields.mirror = { value: mirror, content: cachedField(held, 'mirror', JSON.stringify(mirror), content) };
 
@@ -485,7 +488,7 @@ export function familyBreakdownLaneView(
       }
 
       if (bound.audit) {
-        const auditRows = deriveBreakdownAudit(model, bound.drillPath);
+        const auditRows = deriveBreakdownAudit(model);
         const auditVal = { id: bound.auditId ?? -1, rows: auditRows };
         fields.audit = { value: auditVal, content: cachedField(held, 'audit', JSON.stringify(auditVal), content) };
       }
