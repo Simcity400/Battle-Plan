@@ -4,6 +4,8 @@ import type { BoundedReadView } from './contract.ts';
 import { createLaneView, type LaneBinding, type LaneFamily } from './laneRuntime.ts';
 import { assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas, LANE_THEME as THEME } from './laneRuntime.fixture.ts';
 import { bindFamilyManifest, registerFamilyProjection } from './registry.ts';
+import { IdentityIndex } from './identity/index.ts';
+import type { IdentitySnapshot } from './identity/types.ts';
 
 type Row = { readonly key: string; readonly v: number };
 type Options = { readonly order: 'up' | 'down'; readonly name?: string };
@@ -152,7 +154,7 @@ test('the shared quiet-frame check: no drawing or new field between boundaries, 
 
 const settle = async () => { for (let i = 0; i < 8; i++) await null; };
 
-test('a cold projection load walks no history, keeps one waiter per placement, and a failed import is refused by name, not retried', async () => {
+test('a cold projection load walks no history, keeps one waiter per placement, and a failed import fails by name until the host’s retry re-binds it', async () => {
   let release: (value: unknown) => void = () => {};
   let loads = 0;
   bindFamilyManifest([
@@ -175,13 +177,32 @@ test('a cold projection load walks no history, keeps one waiter per placement, a
     const broken = { ...binding(rowsAt([])), kind: 'broken' };
     lane.paint({ label: 'broken', binding: broken, hour: 10 });
     await settle();
-    for (let i = 0; i < 5; i++) {
-      const refused = lane.paint({ label: 'broken', binding: broken, hour: 10 });
-      assert.equal(refused.mode, 'refused');
-      assert.match(refused.reason ?? '', /chunk missing/);
-    }
+    for (let i = 0; i < 5; i++) assert.throws(() => lane.paint({ label: 'broken', binding: broken, hour: 10 }), /chunk missing/);
     assert.equal(loads, 2, 'a failed import is not retried on every paint');
+    assert.equal(view.next!({ widget: 1, subs: [], pictures: [], model: broken }, 10, lane.state), Infinity);
+    assert.equal(lane.paint({ label: 'retried', binding: broken, hour: 10, generation: 2 }).surfaces.length, 0, 'a re-bind clears the failure and loads again');
+    assert.equal(loads, 3);
   } finally {
+    recording.restore();
+  }
+});
+
+test('next() builds no identity index, and one snapshot is indexed once for every placement in the worker', () => {
+  const recording = installRecordingCanvas();
+  const original = IdentityIndex.fromSnapshot;
+  let built = 0;
+  IdentityIndex.fromSnapshot = snapshot => { built++; return original.call(IdentityIndex, snapshot); };
+  try {
+    const snapshot: IdentitySnapshot = { scope: { sourceId: 's', revision: 'r', branchId: 'b', content: 1 } };
+    const bound = { ...binding(rowsAt([{ key: 'A', v: 1 }])), identitySnapshot: snapshot };
+    const views = [createLaneView(family, () => {}), createLaneView(family, () => {})];
+    const lanes = views.map(view => driveLane(view, recording.canvases));
+    for (const lane of lanes) lane.paint({ label: 'placed', binding: bound, hour: 12 });
+    assert.equal(built, 1, 'two placements share one index for one snapshot');
+    for (let hour = 12; hour < 400; hour++) for (const [at, view] of views.entries()) view.next!({ widget: 1, subs: [], pictures: [], model: bound }, hour, lanes[at]!.state);
+    assert.equal(built, 1, 'next() never indexes a snapshot');
+  } finally {
+    IdentityIndex.fromSnapshot = original;
     recording.restore();
   }
 });

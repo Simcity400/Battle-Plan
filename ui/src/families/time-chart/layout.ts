@@ -1,10 +1,11 @@
 import { ellipsise, layoutEndLabels } from '../../charts/labels.ts';
+import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { MeasureText } from '../../charts/textWidth.ts';
 import { linearTicks } from '../../charts/valueAxis.ts';
 import { monthNames } from '../../dashboard/calendar.ts';
 import { computeTimeAxisTicks } from '../../draw/kit.ts';
 import type { BoundedSeries } from '../plan.ts';
-import { formatCompactScalar, formatDateOnly } from '../valueFormat.ts';
+import { formatCompactScalar, formatDateOnly, formatScalar } from '../valueFormat.ts';
 import type {
   ChartColumnModel,
   ChartGap,
@@ -24,21 +25,17 @@ export function formatChartAxisValue(value: number, format: ChartValueFormat): s
   if (format === 'percent') return `${Math.round(value)}%`;
   if (format === 'signed1') {
     if (Math.abs(value) < 1e-9) return '0';
-    const text = Math.abs(value).toFixed(1).replace(/\.0$/, '');
-    return `${value < 0 ? '\u2212' : '+'}${text}`;
+    return formatScalar(value, { decimals: 0, maxDecimals: 1, signed: true });
   }
   if (format === 'compact') {
     if (value === 0) return '0';
     return formatCompactScalar(Math.round(value), 'integer').text;
   }
   if (format === 'power') {
-    const abs = Math.abs(value);
-    if (abs >= 1e4) return formatCompactScalar(Math.round(value), 'integer').text;
-    const sign = value < 0 ? '\u2212' : '';
-    return `${sign}${Math.round(abs).toLocaleString('en-US')}`;
+    if (Math.abs(value) >= 1e4) return formatCompactScalar(Math.round(value), 'integer').text;
+    return formatScalar(value, { decimals: 0, maxDecimals: 0 });
   }
-  const sign = value < 0 ? '\u2212' : '';
-  return `${sign}${Math.round(Math.abs(value)).toLocaleString('en-US')}`;
+  return formatScalar(value, { decimals: 0, maxDecimals: 0 });
 }
 
 export interface PlacedEndLabel {
@@ -459,14 +456,14 @@ export function layoutTimeChart(
         id: s.id,
         seriesId: s.id,
         anchorVal: end.value,
-        color: isNegative ? '#ff6b6f' : s.color,
+        color: isNegative ? CHART_MEASURE_COLOURS.shortInk : s.color,
         faded: hoveredSeriesId != null && hoveredSeriesId !== s.id,
         flag: s.endLabel.flag,
         icon: s.endLabel.icon,
         name: nameText,
         fullName: s.endLabel.fullName ?? s.name,
         value: s.endLabel.value,
-        valueColor: isNegative ? '#ff6b6f' : s.endLabel.valueColor,
+        valueColor: isNegative ? CHART_MEASURE_COLOURS.shortInk : s.endLabel.valueColor,
         valueMuted: s.endLabel.valueMuted,
         estWidth,
       });
@@ -519,7 +516,7 @@ export function layoutTimeChart(
           id: '__total__',
           seriesId: '__total__',
           anchorVal: tv,
-          color: model.stack.total.color ?? '#f5f5f5',
+          color: model.stack.total.color ?? CHART_MEASURE_COLOURS.lightInk,
           faded: false,
           icon: el.icon,
           name: null,

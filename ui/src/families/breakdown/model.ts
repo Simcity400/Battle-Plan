@@ -1,11 +1,12 @@
 import { colour } from '../../charts/palette.ts';
 import type { TooltipContent } from '../../charts/tooltip.ts';
-import { mix, toHex } from '../../shell/appearance/color.ts';
+import { tintColour } from '../../shell/appearance/color.ts';
 import type { AuditRow } from '../../draw/notifications';
 import type { BoundedReadView, FamilyTheme, MirrorModel, MirrorRow } from '../contract.ts';
 import type { ArtResult } from '../plan.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import { buildTooltipContent, type FamilyTooltipPayload, type TooltipListItem } from '../host/tooltips.ts';
+import { formatScalar, formatShare } from '../valueFormat.ts';
 
 export interface BreakdownPart {
   readonly key: string;
@@ -79,32 +80,10 @@ export interface ResolvedBreakdownLevel {
 
 const TOOLTIP_PARTS = 8;
 
-export function formatShare(share: number | null | undefined): string {
-  if (share == null || !Number.isFinite(share) || share < 0) return '';
-  const pct = share * 100;
-  if (pct === 0) return '0%';
-  if (pct < 0.05) return '<0.1%';
-  if (pct >= 99.95) return '100%';
-  if (pct >= 10) return `${Math.round(pct)}%`;
-  return `${pct.toFixed(1)}%`;
-}
-
 export function partColour(part: BreakdownPart, theme: FamilyTheme): string {
   if (part.color) return part.color;
   if (part.neutral) return theme.grey;
   return colour(theme.surface, part.ordinal);
-}
-
-export function tintColour(hex: string, amount: number): string {
-  return mix(hex, '#ffffff', amount);
-}
-
-export function shadeColour(hex: string, amount: number): string {
-  return mix(hex, '#000000', amount);
-}
-
-export function rgbHex(r: number, g: number, b: number): string {
-  return toHex({ r, g, b });
 }
 
 export function breakdownLevel(model: BreakdownModel): ResolvedBreakdownLevel {
@@ -217,7 +196,7 @@ export function buildBreakdownTooltip(
     if (part.count !== undefined && part.count > 0) {
       items.push({
         label: part.countLabel ?? 'Count',
-        value: part.count.toLocaleString('en-US'),
+        value: formatScalar(part.count, 'integer'),
       });
     }
   }

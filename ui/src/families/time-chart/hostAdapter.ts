@@ -196,9 +196,6 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
     }
 
     return {
-      family: 'time-chart',
-      kind: ctx.kind,
-      viewId: ctx.view,
       options: ctx.options,
       sources: ctx.sources,
       extent: ctx.extent,
@@ -207,7 +204,7 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
       theme: ctx.theme,
       identitySnapshot: ctx.identitySnapshot,
       ...(ctx.artResolutions ? { artResolutions: ctx.artResolutions } : {}),
-      ...(ctx.viewport.zoomWindow ? { view: { x: ctx.viewport.zoomWindow } } : {}),
+      ...(ctx.viewport.zoomWindow ? { zoom: { x: ctx.viewport.zoomWindow } } : {}),
       ...(tiledLines.length ? { tiledLines } : {}),
       keepTiled,
       tiledBySource,

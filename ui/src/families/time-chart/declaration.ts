@@ -3,14 +3,14 @@ import type { MarkSummary } from '../../charts/markSummary';
 import type { Run } from '../../charts/series';
 import type { IconName } from '../../components/Icons';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
-import type { OptionField } from '../../dashboard/options';
 import type { MissingSpan, TilePart } from '../../generated/dashboard';
 import type { ArtResolution } from '../art/types.ts';
 import type { FamilyProjection, FamilyTheme } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import {
   DEFAULT_VIEW,
-  ensureFamilyProjection,
+  ensureBoundProjection,
+  type BoundProjectionKey,
   familyProjection,
   registerFamilyProjection,
   registeredFamilyProjections,
@@ -61,7 +61,6 @@ export interface TimeChartWidgetDeclaration<TProjectionOptions = Record<string, 
   readonly subject: string;
   readonly emptyCampaign: string;
   readonly icon?: IconName;
-  readonly optionFields?: readonly OptionField[];
   readonly countries: CountryPolicy;
   readonly aux?: AuxProductSpec<TAux>;
   readonly sources: (ctx: FamilyPlanContext<TAux>, view: FamilyViewportRequest) => SourcePlan;
@@ -77,7 +76,7 @@ export interface TimeChartWidgetDeclaration<TProjectionOptions = Record<string, 
 export interface TimeChartBinding<TOptions = unknown> {
   readonly family: 'time-chart';
   readonly kind: string;
-  readonly viewId?: string;
+  readonly view?: string;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly extent: readonly [number, number];
@@ -86,7 +85,7 @@ export interface TimeChartBinding<TOptions = unknown> {
   readonly theme?: FamilyTheme;
   readonly identitySnapshot?: IdentitySnapshot | null;
   readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
-  readonly view?: { readonly x?: readonly [number, number] | null; readonly y?: readonly [number, number] | null };
+  readonly zoom?: { readonly x?: readonly [number, number] | null; readonly y?: readonly [number, number] | null };
   readonly tiledLines?: readonly SerializedTiledLine[];
   readonly keepTiled?: readonly number[];
   readonly tiledBySource?: Readonly<Record<string, Readonly<Record<string, number>>>>;
@@ -125,11 +124,10 @@ export function timeChartProjection(kind: string, view?: string): TimeChartProje
 }
 
 export function ensureTimeChartProjection(
-  kind: string,
-  view: string | undefined,
+  binding: BoundProjectionKey,
   onReady: () => void,
 ): TimeChartProjection | 'loading' | 'unknown' {
-  return ensureFamilyProjection<TimeChartModel, any>('time-chart', kind, view, onReady) as TimeChartProjection | 'loading' | 'unknown';
+  return ensureBoundProjection<TimeChartModel, any>(binding, onReady) as TimeChartProjection | 'loading' | 'unknown';
 }
 
 export function registeredTimeCharts(): readonly string[] {

@@ -45,6 +45,7 @@ export type TableCellKind =
   | 'status'
   | 'action'
   | 'twoWay'
+  | 'shaded'
   | 'kind';
 
 export type TableHeaderGroup =
@@ -822,11 +823,11 @@ export interface CellPaintModel {
 }
 
 const scaledColumn = (column: Pick<FamilyColumnLayout, 'display' | 'tone' | 'barEligible' | 'cellKind'>): boolean =>
-  column.cellKind === 'twoWay' || measuresColumn(column);
+  column.cellKind === 'twoWay' || column.cellKind === 'shaded' || measuresColumn(column);
 
 function scaleNumber(column: Pick<FamilyColumnLayout, 'cellKind'>, value: Value): number | undefined {
   const num = valueNumber(value);
-  return num !== undefined && column.cellKind === 'twoWay' ? Math.abs(num) : num;
+  return num !== undefined && (column.cellKind === 'twoWay' || column.cellKind === 'shaded') ? Math.abs(num) : num;
 }
 
 export function updateColumnMaximaIncremental(
@@ -946,7 +947,7 @@ export function resolveCellPaintModel(
     ? resolveCellAtHour(cell, hour)
     : { value: notRecorded('Not recorded'), icon: undefined, iconPending: undefined, missingName: false };
   const bar = cell
-    ? barFractionOf(cell, resolved.value, cell.maximum ?? maxima.get(column.key), column.cellKind === 'twoWay')
+    ? barFractionOf(cell, resolved.value, cell.maximum ?? maxima.get(column.key), column.cellKind === 'twoWay' || column.cellKind === 'shaded')
     : { fraction: null, alert: false };
   const tone = cell?.tone ?? column.tone ?? null;
   const country = cell?.country ?? null;
@@ -1328,7 +1329,7 @@ export interface DeclarativeColumnSpec<TRow, TOptions = unknown> extends TableCo
 }
 
 export type TableCellExtra = Partial<Pick<TableCell,
-  'secondaryValue' | 'subtext' | 'inlinePrefix' | 'inlineSubtext' | 'unitSuffix' | 'unitIcon' | 'unitIconPending' | 'missingFigure' | 'boundedDate' | 'splitBar' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'icon' | 'iconPending' | 'shortage' | 'blank' | 'actionLabel' | 'statusKind'>>;
+  'secondaryValue' | 'subtext' | 'inlinePrefix' | 'inlineSubtext' | 'unitSuffix' | 'unitIcon' | 'unitIconPending' | 'missingFigure' | 'boundedDate' | 'splitBar' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'icon' | 'iconSlot' | 'iconPending' | 'shortage' | 'blank' | 'actionLabel' | 'statusKind'>>;
 
 export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
   readonly kind: string;

@@ -79,26 +79,29 @@ function extractCssImports(source) {
   return out;
 }
 
-function astLang(filePath) {
+export function astLang(filePath) {
   if (filePath.endsWith('.tsx')) return 'tsx';
   if (filePath.endsWith('.ts') || filePath.endsWith('.mts')) return 'ts';
   return 'js';
 }
 
-function walkAst(rootNode, visitor) {
-  const stack = [rootNode];
+export function walkAst(rootNode, visitor) {
+  const stack = [{ node: rootNode, parent: null, key: null }];
   while (stack.length > 0) {
-    const node = stack.pop();
+    const item = stack.pop();
+    const { node } = item;
     if (!node || typeof node !== 'object') continue;
-    visitor(node);
-    for (const value of Object.values(node)) {
+    visitor(node, item.parent, item.key);
+    for (const [childKey, value] of Object.entries(node)) {
       if (Array.isArray(value)) {
         for (let i = value.length - 1; i >= 0; i -= 1) {
-          const item = value[i];
-          if (item && typeof item === 'object' && typeof item.type === 'string') stack.push(item);
+          const el = value[i];
+          if (el && typeof el === 'object' && typeof el.type === 'string') {
+            stack.push({ node: el, parent: node, key: childKey });
+          }
         }
       } else if (value && typeof value === 'object' && typeof value.type === 'string') {
-        stack.push(value);
+        stack.push({ node: value, parent: node, key: childKey });
       }
     }
   }

@@ -30,8 +30,6 @@ export const meterHostAdapter: FamilyHostAdapter<MeterModel, unknown, FamilyMete
   buildBinding: ctx => {
     if (!ctx.theme) return null;
     return {
-      family: 'meters',
-      kind: ctx.kind,
       options: ctx.options,
       sources: ctx.sources,
       ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),

@@ -12,6 +12,7 @@ import { familyTimelineLaneView, nextDayStart, type FamilyTimelineBinding } from
 import { registerTimelineProjection } from './registry.ts';
 import type { PaintInput } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
+import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
 import { visibleLanes, type TimelineLane, type TimelineModel } from './model.ts';
 import { decodeTimelineHit, encodeTimelineHit, hitTimeline } from './painter.ts';
 
@@ -197,4 +198,32 @@ test('a hover over an unchanged model neither re-projects nor re-places, and pai
   } finally {
     (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = original;
   }
+});
+
+test('a timeline lane equals a fresh paint after a seek back, a correction and an opened lane, and draws once per day while quiet', () => {
+  registerTimelineProjection<Record<string, never>>({
+    kind: 'test-timeline-lane',
+    project(view) {
+      const lanes = view.panel<{ lanes: TimelineLane[] }>('main')?.lanes ?? [];
+      return { hour: view.hour, firstHour: FIRST, lanes, unobserved: [], iconsOnBars: false, labelWidth: 120, warnings: [], nextChangeAt: Infinity };
+    },
+  });
+  const lane = (label: string, open: boolean): TimelineLane => ({ key: 'war', kind: 'item', label, auditValue: label, expandable: true, spans: [{ id: 'a', firstHour: FIRST + 100, lastHour: FIRST + 900, color: '#4f86f7', open }] });
+  const child: TimelineLane = { key: 'front', kind: 'item', label: 'Front', auditValue: 'Front', parentKey: 'war', depth: 1, spans: [{ id: 'b', firstHour: FIRST + 200, lastHour: FIRST + 400, color: '#e5534b', open: false }] };
+  const binding = (lanes: TimelineLane[], expanded: Record<string, boolean> = {}): FamilyTimelineBinding<Record<string, never>> => ({
+    family: 'timeline', kind: 'test-timeline-lane', options: {}, sources: {}, staticPanels: { main: { lanes } }, width: 600, height: 240, scrollTop: 0,
+    theme: LANE_THEME, identitySnapshot: null, selectedKey: null, focusedKey: null, expanded, pauseFlush: 0,
+  });
+  const held = binding([lane('Winter War', true), child]);
+  const surface = { width: 600, height: 240, dpr: 1 };
+  const at = FIRST + 1000 + 5;
+  assert.equal(assertQuietFrames(() => familyTimelineLaneView(() => {}), { label: 'quiet', binding: held, hour: at }, 30, surface), nextDayStart(at));
+  assertFreshPaint(() => familyTimelineLaneView(() => {}), [
+    { label: 'held', binding: held, hour: at, check: true },
+    { label: 'a day later', binding: held, hour: at + 30, speed: 24 },
+    { label: 'seek back', binding: held, hour: at, check: true },
+    { label: 'later in the same day', binding: held, hour: at + 7, check: true },
+    { label: 'correction', binding: binding([lane('Continuation War', true), child]), hour: at, check: true },
+    { label: 'opened', binding: binding([lane('Continuation War', true), child], { war: true }), hour: at, check: true },
+  ], surface);
 });

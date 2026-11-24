@@ -195,9 +195,11 @@ export function compileFollowPlan(
   };
 }
 
-export function primaryStaticEntry(plan: SourcePlan): SourceEntry | null {
-  if (plan.staticEntry !== undefined) return plan.staticEntry;
-  return plan.entries[0] ?? null;
+const NO_ENTRIES: readonly SourceEntry[] = [];
+
+export function readsWithoutFollow(read: SourceTimeShape): boolean {
+  if (read.shape === 'range') return true;
+  return (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point') && read.followQuery === null;
 }
 
 export function primaryExactEntry(plan: SourcePlan): SourceEntry | null {
@@ -335,45 +337,6 @@ export function stabilizeCanvasDimension(
   return Math.max(1, Math.round(measured));
 }
 
-function readsWithoutFollow(read: SourceTimeShape): boolean {
-  if (read.shape === 'range') return true;
-  return (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point') && read.followQuery === null;
-}
-
-function boundedReadable(read: SourceTimeShape): boolean {
-  return read.shape === 'point' || read.shape === 'range' || read.shape === 'branch-to-hour' || read.shape === 'trailing-window';
-}
-
-const NO_ENTRIES: readonly SourceEntry[] = [];
-
-export function boundedEntries(
-  plan: SourcePlan | null,
-  following: boolean,
-  subscriptions: readonly CompiledFollowSubscription[],
-): readonly SourceEntry[] {
-  if (!plan || plan.refused || plan.unavailable) return NO_ENTRIES;
-  const primary = primaryStaticEntry(plan);
-  const out: SourceEntry[] = [];
-  if (!following) {
-    if (primary && boundedReadable(primary.read)) out.push(primary);
-  } else if (primary && subscriptions.length === 0 && !plan.allowEmptyFollow && readsWithoutFollow(primary.read)) {
-    out.push(primary);
-  }
-  const followed = new Set(subscriptions.map(sub => sub.name));
-  for (const entry of plan.entries) {
-    if (entry === primary || followed.has(entry.name) || !readsWithoutFollow(entry.read)) continue;
-    out.push(entry);
-  }
-  return out.length ? out : NO_ENTRIES;
-}
-
-export function needsPlaybackBoundedRead(
-  plan: SourcePlan | null,
-  subscriptions: readonly CompiledFollowSubscription[],
-): boolean {
-  return boundedEntries(plan, true, subscriptions).length > 0;
-}
-
 export interface PlaybackBoundedSpec extends StaticRequestSpec {
   readonly anchorHour: number;
 }
@@ -412,22 +375,9 @@ export function resolvePlaybackProvenInterval(
       ? read.provenInterval?.(data, requested, anchor) ?? null
       : null;
   if (evidence && evidence[0] <= anchor && anchor <= evidence[1]) hi = Math.max(hi, evidence[1]);
-  if (read.shape === 'range' && anchor >= read.lastHour) hi = Infinity;
+  if (read.shape === 'range' && anchor >= read.lastHour) return [read.lastHour, Infinity];
   if (anchor >= endHour) hi = Infinity;
   return [anchor, hi];
-}
-
-export function composeProof(
-  readings: readonly { readonly anchorHour: number; readonly proof: readonly [number, number] }[],
-): readonly [number, number] | null {
-  if (!readings.length) return null;
-  let lo = -Infinity;
-  let hi = Infinity;
-  for (const reading of readings) {
-    lo = Math.max(lo, reading.anchorHour, reading.proof[0]);
-    hi = Math.min(hi, reading.proof[1]);
-  }
-  return lo <= hi ? [lo, hi] : null;
 }
 
 export function playbackIdleInterval(
@@ -440,13 +390,19 @@ export function playbackIdleInterval(
   if (raw < first) return [-Infinity, first - 1];
   const read = entry?.read;
   if (read?.shape === 'range' && raw < read.firstHour) return [-Infinity, read.firstHour - 1];
+  if (read?.shape === 'range' && raw >= read.lastHour) return [read.lastHour, Infinity];
   if (raw > end) return [end + 1, Infinity];
-  if (read?.shape === 'point' && options.gate.recorded(raw) === null) {
-    return options.gate.recordedRun?.(raw) ?? [raw, raw];
+  if (!read) return [-Infinity, Infinity];
+  const gap = options.gate.recorded(raw) === null;
+  const unrecorded = (): readonly [number, number] => (gap ? options.gate.recordedRun?.(raw) : undefined) ?? [raw, raw];
+  if (read.shape === 'point') {
+    if (gap) return unrecorded();
+    return read.params && read.buildExactParams ? [raw, raw] : [-Infinity, Infinity];
   }
-  const hourDependent = (read?.shape === 'trailing-window' && !!options.countriesKnown)
-    || ((read?.shape === 'branch-to-hour' || read?.shape === 'trailing-window' || read?.shape === 'range') && !!read.buildSpanParams);
-  return hourDependent ? [raw, raw] : [-Infinity, Infinity];
+  if (read.shape !== 'branch-to-hour' && read.shape !== 'trailing-window' && read.shape !== 'range') return [-Infinity, Infinity];
+  if (!read.params) return [-Infinity, Infinity];
+  if (read.buildSpanParams || (read.shape === 'trailing-window' && options.countriesKnown)) return [raw, raw];
+  return unrecorded();
 }
 
 export function buildPlaybackBoundedRequest(
@@ -546,44 +502,43 @@ export interface ExactReadOptions {
   readonly art?: ArtProvider;
 }
 
-export async function readPlanExact(
-  plan: SourcePlan,
-  wantedHour: number,
+interface ExactPart {
+  readonly name: string;
+  readonly hour: number;
+  readonly panel?: unknown;
+  readonly live?: ReturnType<ReturnType<typeof repliedCells>['read']>;
+  readonly hover?: unknown;
+}
+
+export function exactEntries(plan: SourcePlan): readonly SourceEntry[] {
+  const primary = primaryExactEntry(plan);
+  if (!primary) return NO_ENTRIES;
+  const out: SourceEntry[] = [primary];
+  for (const entry of plan.entries) {
+    if (entry === primary || entry.name === primary.name || !readsWithoutFollow(entry.read)) continue;
+    out.push(entry);
+  }
+  return out;
+}
+
+async function readEntryExact(
+  entry: SourceEntry,
+  recorded: GatedHour,
   options: ExactReadOptions,
-): Promise<BoundedReadView | null> {
-  const recorded = options.gate.recorded(wantedHour);
-  if (recorded === null) return null;
-  const entry = primaryExactEntry(plan);
-  if (!entry) return null;
+  fetchRaw: (request: ProductRequest) => Promise<unknown>,
+): Promise<ExactPart | null> {
   const read = entry.read;
-
-  const fetchRaw = async (request: ProductRequest): Promise<unknown> => {
-    const load = async () => (await options.client.product(request, new AbortController().signal)).data;
-    return options.exactOnce ? options.exactOnce(JSON.stringify(request), load) : load();
-  };
-
-  const sharedProviders = {
-    ...(options.identity ? { identity: options.identity } : {}),
-    ...(options.art ? { art: options.art } : {}),
-  };
 
   if (read.shape === 'point') {
     const params = producePointParams(read, recorded, 'exact');
     if (!params) return null;
     const product = read.exactProduct ?? read.product;
-    const request = read.channel === 'panel' && !read.exactProduct
+    const forwarded = read.channel === 'panel' && !read.exactProduct;
+    const request = forwarded
       ? forwardRequest(entry.source, product, params)
       : productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product, params });
     const raw = await fetchRaw(request);
-    const live = read.channel === 'panel' && !read.exactProduct
-      ? new Map([[entry.name, repliedCells(raw).read()]])
-      : new Map();
-    return createBoundedReadView({
-      hour: displayedHour(recorded),
-      panels: new Map([[entry.name, raw]]),
-      live,
-      ...sharedProviders,
-    });
+    return { name: entry.name, hour: recorded, panel: raw, ...(forwarded ? { live: repliedCells(raw).read() } : {}) };
   }
 
   if (read.shape === 'branch-to-hour' || read.shape === 'trailing-window') {
@@ -601,33 +556,21 @@ export async function readPlanExact(
         return resolved ? options.gate.span(resolved.first, resolved.last) : null;
       })();
     if (!span) return null;
-    const clampedLast = Math.min(span.lastHour, recorded);
-    const clampedSpan = options.gate.span(span.firstHour, clampedLast);
+    const clampedSpan = options.gate.span(span.firstHour, Math.min(span.lastHour, recorded));
     if (!clampedSpan) return null;
     const params = produceSpanParams(read.params, clampedSpan, read.buildSpanParams);
     if (!params) return null;
     const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
-    const raw = await fetchRaw(request);
-    return createBoundedReadView({
-      hour: displayedHour(clampedSpan.lastHour),
-      panels: new Map([[entry.name, raw]]),
-      ...sharedProviders,
-    });
+    return { name: entry.name, hour: clampedSpan.lastHour, panel: await fetchRaw(request) };
   }
 
   if (read.shape === 'range') {
-    const clampedLast = Math.min(read.lastHour, recorded);
-    const span = options.gate.span(read.firstHour, clampedLast);
+    const span = options.gate.span(read.firstHour, Math.min(read.lastHour, recorded));
     if (!span) return null;
     const params = produceSpanParams(read.params, span, read.buildSpanParams);
     if (!params) return null;
     const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
-    const raw = await fetchRaw(request);
-    return createBoundedReadView({
-      hour: displayedHour(span.lastHour),
-      panels: new Map([[entry.name, raw]]),
-      ...sharedProviders,
-    });
+    return { name: entry.name, hour: span.lastHour, panel: await fetchRaw(request) };
   }
 
   if (read.shape === 'pixel-binned' && read.exactProduct) {
@@ -638,12 +581,7 @@ export async function readPlanExact(
       ? { ...base, reads: reads.map(asked => ({ ...(asked as Record<string, unknown>), hour: recorded })) }
       : { ...base, hour: recorded };
     const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.exactProduct, params });
-    const raw = await fetchRaw(request);
-    return createBoundedReadView({
-      hour: displayedHour(recorded),
-      panels: new Map([[entry.name, raw]]),
-      ...sharedProviders,
-    });
+    return { name: entry.name, hour: recorded, panel: await fetchRaw(request) };
   }
 
   if (read.shape === 'exact-hover') {
@@ -653,15 +591,48 @@ export async function readPlanExact(
       ? { ...read.params, reads: reads.map(asked => ({ ...(asked as Record<string, unknown>), [read.hourParam ?? 'hour']: recorded })) }
       : { ...read.params, [read.hourParam ?? 'hour']: recorded };
     const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
-    const raw = await fetchRaw(request);
-    return createBoundedReadView({
-      hour: displayedHour(recorded),
-      hovers: new Map([[entry.name, { hour: recorded, data: raw }]]),
-      ...sharedProviders,
-    });
+    return { name: entry.name, hour: recorded, hover: await fetchRaw(request) };
   }
 
   return null;
+}
+
+export async function readPlanExact(
+  plan: SourcePlan,
+  wantedHour: number,
+  options: ExactReadOptions,
+): Promise<BoundedReadView | null> {
+  const recorded = options.gate.recorded(wantedHour);
+  if (recorded === null) return null;
+  const entries = exactEntries(plan);
+  if (!entries.length) return null;
+
+  const fetchRaw = async (request: ProductRequest): Promise<unknown> => {
+    const load = async () => (await options.client.product(request, new AbortController().signal)).data;
+    return options.exactOnce ? options.exactOnce(JSON.stringify(request), load) : load();
+  };
+
+  const parts = await Promise.all(entries.map(entry => readEntryExact(entry, recorded, options, fetchRaw)));
+  if (!parts[0]) return null;
+  const panels = new Map<string, unknown>();
+  const live = new Map<string, NonNullable<ExactPart['live']>>();
+  const hovers = new Map<string, { hour: number; data: unknown }>();
+  let hour = recorded as number;
+  for (const part of parts) {
+    if (!part) continue;
+    hour = Math.min(hour, part.hour);
+    if (part.panel !== undefined) panels.set(part.name, part.panel);
+    if (part.live) live.set(part.name, part.live);
+    if (part.hover !== undefined) hovers.set(part.name, { hour: part.hour, data: part.hover });
+  }
+  return createBoundedReadView({
+    hour: displayedHour(hour),
+    ...(panels.size ? { panels } : {}),
+    ...(live.size ? { live } : {}),
+    ...(hovers.size ? { hovers } : {}),
+    ...(options.identity ? { identity: options.identity } : {}),
+    ...(options.art ? { art: options.art } : {}),
+  });
 }
 
 export interface HoverAsk {

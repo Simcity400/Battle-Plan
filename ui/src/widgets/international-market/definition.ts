@@ -3,7 +3,7 @@ import type { OptionField } from '../../dashboard/options';
 import { choiceVariants } from '../../dashboard/options.ts';
 import { columnsControl } from '../../families/settingsControls.ts';
 import type { TableColumnSpec } from '../../families/table/model.ts';
-import { OFFERED, TABLE_SETTINGS_KEY, type TableBase } from '../../families/table/settings.ts';
+import { OFFERED, type TableBase } from '../../families/table/settings.ts';
 import type { MarketTab } from './marketData.ts';
 import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 
@@ -219,10 +219,8 @@ export function marketTableBase(view: MarketTab): TableBase {
   };
 }
 
-export const marketSettingsKey = (view: MarketTab) => `${TABLE_SETTINGS_KEY}:${view}`;
-
 export function marketTableOptions(view: MarketTab): readonly OptionField[] {
-  return [columnsControl(marketColumns(view), marketTableBase(view), { key: marketSettingsKey(view) })];
+  return [columnsControl(marketColumns(view), marketTableBase(view))];
 }
 
 export const OPTIONS: readonly OptionField[] = [
