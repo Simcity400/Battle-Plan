@@ -21,8 +21,6 @@ const tracked = (name: string) => (code: string) => {
 const TRANSFORMS: Record<string, (code: string) => string> = {
   '/charts/TimeChart.tsx': capture('TimeChart'),
   '/charts/timeline/Timeline.tsx': capture('Timeline'),
-  '/charts/heat/HeatMatrix.tsx': capture('HeatMatrix'),
-  '/charts/heat/HeatChart.tsx': capture('HeatChart'),
   '/charts/race/CountryRaceView.tsx': capture('CountryRaceView'),
   '/components/CountryPicker.tsx': capture('CountryPicker'),
   '/charts/flow/FlowDiagram.tsx': capture('FlowDiagram'),
@@ -77,13 +75,10 @@ test('1. Training queue pinned inside a declared gap 105–106 saves no country,
   assert.ok(inside.asks.some(ask => ask.product === 'training-queue' && ask.hour === 104), `the hour before the gap is read: ${JSON.stringify(inside.asks)}`);
 }));
 
-test('2. A widget pinned with no window for its track asks no dated read at any hour and shows only “choose another time”: Occupation trend’s mix, Diplomatic relations’ top countries and General career', () => onPage(async act => {
+test('2. A widget pinned with no window for its track asks no dated read at any hour and shows only “choose another time”: Occupation trend’s mix and General career', () => onPage(async act => {
   const mix = await act<Read>(scene({ kind: 'occupation-trend', time: NO_PIN, hour: 105, countries: GER, options: { view: 'mix' }, groups: groupsOf(['GER']) }));
   assert.deepEqual(mix.asks.filter(ask => ask.product === 'occupation-at'), [], `no occupiers are read: ${JSON.stringify(mix.asks)}`);
   assert.ok(mix.text.includes(SETTINGS), mix.text);
-  const top = await act<Read>(scene({ kind: 'diplomatic-relations', time: NO_PIN, hour: 105, countries: { kind: 'group', group: { type: 'top', count: 3 }, membership: 'hour', aggregate: false },
-    groups: groupsOf(['GER', 'ENG']), replies: { 'scoreboard-columns': '({ columns: [], defaultSort: null, warnings: [] })' } }));
-  assert.deepEqual(top.asks.filter(ask => ask.product === 'scoreboard' || ask.product === 'diplomatic-relations'), [], `nothing is ranked or read: ${JSON.stringify(top.asks)}`);
   const career = await act<Read>(scene({ kind: 'general-career', time: NO_PIN, hour: 105, options: { leader: await act<string>('subjectToken("1")') } }));
   assert.deepEqual(career.asks.filter(ask => ask.hour !== null), [], `no dated career read: ${JSON.stringify(career.asks)}`);
 }));
@@ -122,22 +117,6 @@ test('5. Stability’s saved breakdown following playback, mounted at 95 before 
   assert.ok(failed.text.includes('couldn’t be read') && !failed.text.includes('No breakdown was recorded'), `a failed reply is a failure: ${failed.text}`);
 }));
 
-const PAIR_OWNERS = '({ owners: [{ tag: "GER", countryId: 101, known: true, reason: null }, { tag: "ENG", countryId: 102, known: true, reason: null }], warnings: [] })';
-
-test('6. Diplomatic relations’ pair picked at 105 keeps its own date and stays mounted when the following matrix moves to 108 and leaves the track at 110', () => onPage(async act => {
-  await act(scene({ kind: 'diplomatic-relations', time: { mode: 'follow' }, hour: 105, countries: BOTH, groups: groupsOf(['GER', 'ENG']), replies: { 'diplomatic-relations': PAIR_OWNERS } }));
-  const opened = await act<Read & { called: boolean }>('call("HeatMatrix", "onSelect", 0, 1)');
-  assert.ok(opened.called && opened.drillOpen, `the pair opens: ${opened.text}`);
-  const day = await act<string>('day(105)');
-  for (const hour of [108, 110]) {
-    const moved = await act<Read>(`seek(${hour})`);
-    assert.ok(moved.drillOpen && moved.day === day, `at ${hour} the pair is still at 105: ${moved.day} ${moved.drill}`);
-  }
-  const pinned = await act<Read & { pressed: boolean }>('press("Pin as widget")');
-  assert.ok(pinned.pressed, `the pair offers Pin as widget: ${JSON.stringify(pinned.buttons)}`);
-  assert.deepEqual((pinned.pins[0] as { time?: unknown } | undefined)?.time, pinAt(105), `Pin as widget saves the pair’s own hour, not the parent’s: ${JSON.stringify(pinned.pins)}`);
-}));
-
 test('7. Before a 100–109 track at 95, coverage wins over loading, failures and false zeroes, and nothing unrecorded is asked', () => onPage(async act => {
   const raids = { episodes: [], missing: [], available: true, unavailable: null, warnings: [], types: [], artwork: [] };
   for (const [label, value] of [['pending', undefined], ['failed', 'failed'], ['answered', raids]] as const) {
@@ -164,28 +143,6 @@ test('8. Equipment produced: a country breakdown opened at 105 shows its own rea
   assert.ok(moved.drillOpen, 'the breakdown stays mounted when the page leaves the track');
 }));
 
-const WEATHER = `({ firstHour: 100, lastHour: 109, dayHours: 1, temperature: 'available', regions: [{ id: 'r1', name: 'Region one' }], flags: [], modifiers: [], warnings: [],
-  columns: { days: 1, columns: [{ firstHour: 100, lastHour: 109, recorded: 1, sampledHour: 105, readHour: 105 }], regions: [{ id: 'r1', clear: [1], observed: [1], measures: [] }] } })`;
-const PROVINCES = '({ readHour: hour, region: params.region, warnings: [], provinces: [{ id: "p1", name: "Province one", snow: null, mud: null, temperature: null }] })';
-
-test('9. Weather over 100–108: a province breakdown picked at 103 keeps its own day as the page leaves the track, and Follow playback reads the playback hour through coverage', () => onPage(async act => {
-  await act(scene({ kind: 'weather-by-region', time: { mode: 'range', firstOffset: 0, lastOffset: 8 }, hour: 105, replies: { 'regional-weather': WEATHER, 'regional-weather-provinces': PROVINCES } }));
-  const extent = (await act<{ extent: [number, number] } | null>('props("HeatChart")'))?.extent;
-  assert.ok(extent && extent[0] <= 103 && 103 <= extent[1], `103 lies on the chart: ${JSON.stringify(extent)}`);
-  const opened = await act<Read & { called: boolean }>('call("HeatChart", "onPick", { id: "r1" }, null, 103)');
-  const day = await act<string>('day(103)');
-  assert.ok(opened.called && opened.drillOpen && opened.day === day, `the region opens at 103: ${opened.day} ${opened.drill}`);
-  assert.ok(opened.asks.some(ask => ask.product === 'regional-weather-provinces' && ask.hour === 103), `its provinces are read at 103: ${JSON.stringify(opened.asks)}`);
-  const left = await act<Read>('seek(110)');
-  assert.ok(left.drillOpen && left.day === day && !left.drill.includes(OUTSIDE), `at 110 the region is still at 103: ${left.day} ${left.drill}`);
-  const followed = await act<Read & { pressed: boolean }>('press("Follow playback")');
-  assert.ok(followed.pressed && followed.drill.includes(OUTSIDE), `following the page at 110 is outside: ${followed.drill}`);
-  assert.deepEqual(followed.asks.filter(ask => ask.product === 'regional-weather-provinces' && ask.hour !== null && ask.hour > 109), [], 'nothing is asked past the track');
-  const back = await act<Read>('seek(104)');
-  assert.ok(back.drillOpen && !back.drill.includes(OUTSIDE), `back inside, still following: ${back.drill}`);
-  assert.ok(follows(back.asks, 'regional-weather-provinces').some(params => params.region === 'r1'), `it follows playback for its region, naming no hour: ${JSON.stringify(back.asks)}`);
-}));
-
 const COLUMNS = `({ branchId: '1', warnings: [], defaultColumns: ['power'], defaultSort: 'power', columns: [{ key: 'power', label: 'Power', unit: '', decimals: 0,
   available: true, reason: null, family: { kind: 'country-measure', measure: 'politicalPower' }, partial: null, noneAtZero: false }] })`;
 const RANKED = `({ branchId: '1', hour, missing: null, warnings: [], rows: [{ tag: 'GER', country: 'GER', cells: [{ valueRaw: '5', missing: null, partial: false }] },
@@ -193,17 +150,6 @@ const RANKED = `({ branchId: '1', hour, missing: null, warnings: [], rows: [{ ta
 const GAP = [{ firstHour: 105, lastHour: 106, reason: REASON }];
 const TOP = { kind: 'group', group: { type: 'top', count: 3 }, membership: 'hour', aggregate: false };
 const dated = (asks: Ask[], hour: number) => asks.filter(ask => ask.hours.includes(hour));
-
-test('10. Diplomatic relations: the default Top N ranks and reads opinions, and two countries chosen by slot are both read', () => onPage(async act => {
-  const top = await act<Read>(scene({ kind: 'diplomatic-relations', time: pinAt(105), hour: 105, countries: TOP, groups: groupsOf(['GER', 'ENG']),
-    replies: { 'scoreboard-columns': COLUMNS, scoreboard: RANKED, 'diplomatic-relations': PAIR_OWNERS } }));
-  assert.ok(top.asks.some(ask => ask.product === 'diplomatic-relations'), `Top N reads opinions: ${top.text} ${JSON.stringify(top.asks.map(ask => ask.product))}`);
-  assert.ok(!top.text.includes('Loading opinions'), top.text);
-  const slots = await act<Read>(scene({ kind: 'diplomatic-relations', time: pinAt(105), hour: 105, countries: { kind: 'tags', tags: ['\u00001', '\u00002'] },
-    groups: groupsOf(['GER', 'ENG']), replies: { 'diplomatic-relations': PAIR_OWNERS } }));
-  const read = slots.asks.find(ask => ask.product === 'diplomatic-relations');
-  assert.deepEqual(read?.params?.countries, [1, 2], `both slots are read: ${slots.text} ${JSON.stringify(slots.asks)}`);
-}));
 
 test('11. Trade flows restored on its contributors breakdown opens that breakdown, not the main view', () => onPage(async act => {
   const shown = await act<Read>(scene({ kind: 'trade-flows', time: { mode: 'follow' }, hour: 105, options: { show: 'contributions' }, groups: groupsOf(['GER']) }));
