@@ -16,7 +16,7 @@ import type { FromLane } from '../draw/laneMessages';
 import type { MissingSpan } from '../generated/dashboard';
 import { LaneArtCache } from './art/laneCache.ts';
 import { artUrlForHandle, createLaneArtProvider, flagArtHandle } from './art/provider.ts';
-import { readyArt } from './art/types.ts';
+import { artHandleKey, readyArt } from './art/types.ts';
 import { AuditSnapshotStore } from './audit.ts';
 import {
   BoundedSeriesCursor,
@@ -1165,7 +1165,7 @@ test('ArtHandle discriminated union covers flag, sprite, portrait, path, and url
   const handles: readonly ArtHandle[] = [
     flagArtHandle('GER_fascism', 'shield'),
     { kind: 'sprite', key: 'GFX_pol_power', frame: 0, recorded: 'pol_power', text: true },
-    { kind: 'portrait', key: 'GFX_portrait_ger', owner: 'GER', recorded: 'leader_1' },
+    { kind: 'portrait', leader: '7', hour: 100 },
     { kind: 'path', path: 'gfx/interface/icons/icon.dds', frame: 1, frames: 2 },
     { kind: 'url', url: 'https://art.test/direct.png' },
   ];
@@ -1174,16 +1174,9 @@ test('ArtHandle discriminated union covers flag, sprite, portrait, path, and url
   assert.equal(artUrlForHandle(handles[1]!), null);
 
   const cache = new LaneArtCache();
-  const seenKinds: string[] = [];
-  const artProvider = createLaneArtProvider(cache, {
-    resolveHandle(handle) {
-      seenKinds.push(handle.kind);
-      if (handle.kind === 'sprite' && handle.text) {
-        return readyArt('art://sprite-text');
-      }
-      return { status: 'pending' };
-    },
-  });
+  const resolutions = { [artHandleKey(handles[1]!)]: readyArt('art://sprite-text') };
+  assert.equal(artUrlForHandle(handles[1]!, null, resolutions), 'art://sprite-text');
+  const artProvider = createLaneArtProvider(cache, { resolutions });
   assert.equal(artProvider.demandOwner, 'view');
 
   const identityResolveArgs: number[] = [];
@@ -1221,7 +1214,6 @@ test('ArtHandle discriminated union covers flag, sprite, portrait, path, and url
   const spriteRes = view.art(handles[1]!);
   assert.equal(spriteRes.status, 'pending');
   assert.equal(artDemandCount, 1);
-  assert.deepEqual(seenKinds, ['sprite']);
 
   const portraitRes = view.art(handles[2]!);
   assert.equal(portraitRes.status, 'pending');

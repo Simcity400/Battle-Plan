@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 content-reader-defines.workspace = true
+content-reader-equipment-graphics.workspace = true
 content-reader-gui.workspace = true
 content-reader-key-names.workspace = true
 content-reader-layers.workspace = true
