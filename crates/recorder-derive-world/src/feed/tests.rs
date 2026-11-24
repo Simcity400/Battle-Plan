@@ -61,7 +61,7 @@ fn pack(generation: u64, read_hour: i32, coverage: EventFeedCoverage, events: Ve
         events,
         script_tokens: tokens.to_vec(),
         script_scopes: scopes,
-        windows: Recorded::Value(EventWindows { verdicts: Ok(vec![VerdictEntry { sequence: 2, verdict: WindowVerdict::Requested }]), presentations: Ok(Vec::new()) }),
+        windows: Recorded::Value(EventWindows { verdicts: Ok(vec![VerdictEntry { sequence: 2, verdict: WindowVerdict::Requested }]), presentations: Vec::new(), presentations_unrecorded: None }),
     }
 }
 
@@ -428,11 +428,11 @@ fn a_backlog_read_is_told_apart_from_the_hours_events_and_still_opens_its_cards(
     assert_eq!(cell(3, opener), Some(2), "a choice continues a dispatch listed when the run began");
 }
 
-fn window(read_hour: i32, presentations: Result<Vec<EventPresentation>, Vec<u8>>) -> EventFeedHistoryRow {
+fn window(read_hour: i32, presentations: Vec<EventPresentation>, lost: Option<Vec<u8>>) -> EventFeedHistoryRow {
     let mut sent = dispatched(occurrence(9, 2, read_hour, Source::ScriptEvent, country(0), country(2)), None);
     sent.script = sent.script.map(|script| EventFeedScript { scope_len: 0, ..script });
     let mut row = pack(9, read_hour, EventFeedCoverage::Complete, vec![sent], b"", Vec::new());
-    row.windows = Recorded::Value(EventWindows { verdicts: Ok(Vec::new()), presentations });
+    row.windows = Recorded::Value(EventWindows { verdicts: Ok(Vec::new()), presentations, presentations_unrecorded: lost });
     row
 }
 
@@ -454,15 +454,18 @@ fn a_firing_carries_its_window_decision_and_each_built_window_is_a_row_with_what
         title: Recorded::Value(b"Resolved title".to_vec()),
         description: Recorded::NotRecorded,
         picture: Recorded::Value(None),
-        options: Recorded::Value(vec![OfferedOption { ordinal: Some(1), label: b"Second".to_vec() }]),
+        options: Recorded::Value(vec![OfferedOption { ordinal: Some(1), label: Some(b"Second".to_vec()) }]),
         ..EventPresentation::default()
     };
-    for (presentations, expected) in [(Ok(vec![presented.clone()]), 1), (Err(b"lost".to_vec()), 0)] {
+    for (coverage, lost) in [(EventFeedCoverage::Complete, None), (EventFeedCoverage::Partial, Some(b"lost".to_vec()))] {
         let (mut store, mut writers) = (testing::store(), writers());
-        let lost = presentations.is_err();
+        let expected = 1;
+        let lost_any = lost.is_some();
+        let mut read = window(0, vec![presented.clone()], lost);
+        read.coverage = coverage;
         run(&mut store, &mut writers, 0, |store| {
             world(store, 0);
-            testing::put(store, TableId::EventFeedHistory, &window(0, presentations), TEXTS).unwrap();
+            testing::put(store, TableId::EventFeedHistory, &read, TEXTS).unwrap();
         });
         let rows = feed(&store);
         let firing = rows.iter().find(|row| row.kind == Source::ScriptEvent as u8).unwrap();
@@ -474,7 +477,7 @@ fn a_firing_carries_its_window_decision_and_each_built_window_is_a_row_with_what
             assert_eq!(row.presentation, Recorded::Value(Some(presented.clone())));
         }
         let unrecorded: Vec<_> = rows.iter().filter(|row| row.kind == FeedEventRow::WINDOWS_UNRECORDED).collect();
-        assert_eq!(unrecorded.len(), usize::from(lost));
+        assert_eq!(unrecorded.len(), usize::from(lost_any), "a partial read still publishes its windows beside the named loss");
         if let Some(row) = unrecorded.first() {
             assert_eq!((row.incomplete, row.failure.clone()), (Some(FeedEventRow::PRESENTATIONS_UNRECORDED), b"lost".to_vec()));
         }

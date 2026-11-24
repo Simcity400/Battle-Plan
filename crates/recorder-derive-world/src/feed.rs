@@ -264,9 +264,7 @@ impl Feed {
             }
             self.write(out, &row)?;
         }
-        if complete {
-            self.windows(hour, names, pack, ordinal, out)?;
-        }
+        self.windows(hour, names, pack, ordinal, out)?;
         Ok(())
     }
 
@@ -276,7 +274,7 @@ impl Feed {
         };
         let mut unrecorded = 0;
         let mut failure = Vec::new();
-        for (bit, outcome) in [(FeedEventRow::VERDICTS_UNRECORDED, windows.verdicts.as_ref().err()), (FeedEventRow::PRESENTATIONS_UNRECORDED, windows.presentations.as_ref().err())] {
+        for (bit, outcome) in [(FeedEventRow::VERDICTS_UNRECORDED, windows.verdicts.as_ref().err()), (FeedEventRow::PRESENTATIONS_UNRECORDED, windows.presentations_unrecorded.as_ref())] {
             if let Some(reason) = outcome {
                 unrecorded |= bit;
                 if !failure.is_empty() {
@@ -292,7 +290,7 @@ impl Feed {
                 row.failure = failure;
             })?;
         }
-        for presentation in windows.presentations.as_ref().map_or(&[][..], Vec::as_slice) {
+        for presentation in &windows.presentations {
             let presentation = presentation.clone();
             self.derived(out, hour.hour, ordinal, FeedEventRow::WINDOW_PRESENTED, |row| {
                 row.hour = presentation.native_hour.unwrap_or(pack.read_hour);

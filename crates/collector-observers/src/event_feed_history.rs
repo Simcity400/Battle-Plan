@@ -177,7 +177,7 @@ pub struct Snapshot {
     script_tokens: Vec<u8>,
     script_scopes: Vec<EventFeedScope>,
     verdicts: Vec<replay_data::event_feed_rows::VerdictEntry>,
-    windows: Option<replay_data::event_feed_rows::EventWindows>,
+    windows: Option<crate::event_window_observer::Taken>,
     publication: u64,
     pub required: usize,
 }
@@ -206,6 +206,7 @@ impl Snapshot {
             + self.script_tokens.capacity()
             + self.script_scopes.capacity() * size_of::<EventFeedScope>()
             + self.verdicts.capacity() * size_of::<replay_data::event_feed_rows::VerdictEntry>()
+            + self.windows.as_ref().map_or(0, crate::event_window_observer::Taken::allocated_bytes)
     }
     pub fn grow(&mut self, capacity: usize) -> io::Result<()> {
         let additional = capacity.saturating_sub(self.events.len());
@@ -282,11 +283,19 @@ impl Snapshot {
             },
             events: allocation::copy_vec(&self.events)?,
             windows: Recorded::Value(match &self.windows {
-                Some(windows) => replay_data::value::Value::try_clone(windows)?,
-                None => replay_data::event_feed_rows::EventWindows {
-                    verdicts: Err(b"Event feed interval unavailable".to_vec()),
-                    presentations: Err(b"Event feed interval unavailable".to_vec()),
-                },
+                Some(taken) => taken.windows(&self.verdicts)?,
+                None => {
+                    let reason = self
+                        .boundary
+                        .failure
+                        .unwrap_or("Event feed interval unavailable")
+                        .as_bytes();
+                    replay_data::event_feed_rows::EventWindows {
+                        verdicts: Err(allocation::copy_vec(reason)?),
+                        presentations: Vec::new(),
+                        presentations_unrecorded: Some(allocation::copy_vec(reason)?),
+                    }
+                }
             }),
         };
         row.intern_tokens()?;
@@ -320,6 +329,7 @@ impl Prepared {
             + self.row.script_tokens.capacity()
             + self.row.script_scopes.capacity() * size_of::<EventFeedScope>()
             + self.row.failure.as_ref().map_or(0, Vec::capacity)
+            + replay_data::value::Value::heap_bytes(&self.row.windows)
     }
 
     pub fn row(&self) -> &EventFeedHistoryRow {
@@ -1686,9 +1696,7 @@ impl Store {
         output.counts = self.counts_valid.then_some(self.counts);
         output.outstanding = outstanding;
         output.publication = self.revision;
-        output.windows = Some(crate::event_window_observer::take(std::mem::take(
-            &mut output.verdicts,
-        )));
+        output.windows = Some(crate::event_window_observer::take(boundary.generation));
         self.track_handoff(self.revision, boundary.coverage);
         self.first_interval = boundary.coverage == EventFeedCoverage::Unavailable;
         Ok(())

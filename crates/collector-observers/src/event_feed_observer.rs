@@ -1546,9 +1546,9 @@ pub unsafe fn accepted(pack: &crate::event_feed_history::Prepared) -> std::io::R
 /// # Safety
 /// Caller must be the originating spool or capture recovery path discarding an uncommitted
 /// publication receipt for this session.
-pub unsafe fn discarded(publication: u64) {
+pub unsafe fn discarded(publication: u64, generation: u64) {
     if publication != 0 {
-        crate::event_window_observer::discarded();
+        crate::event_window_observer::discarded(generation);
     }
     resolve(publication, false);
 }
@@ -2458,7 +2458,7 @@ mod tests {
         assert_eq!(ledger(&owner).cells.len(), 64);
         // SAFETY: Unit test holds `test_globals()` and resolves each receipt once in isolation.
         unsafe {
-            discarded(packs[9].publication());
+            discarded(packs[9].publication(), packs[9].row().generation);
             for (index, pack) in packs.iter().enumerate() {
                 if index != 9 {
                     accepted(pack).unwrap();

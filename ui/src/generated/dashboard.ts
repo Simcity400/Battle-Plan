@@ -2967,7 +2967,11 @@ export type EventWindowOption = {
 /**
  * The option's place in the live event's own list; null for the fallback OK button.
  */
-ordinal: number | null, label: string, };
+ordinal: number | null,
+/**
+ * Null when the label's copy was refused; the button was still offered.
+ */
+label: string | null, };
 export type EventWindowPresented = { kind: EventWindowKind,
 /**
  * False when the user's popup settings hid the built window; null when not recorded.

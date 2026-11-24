@@ -97,7 +97,7 @@ fn shown(presentation: &EventPresentation, authored: &EventFeedItem, not_recorde
                 .iter()
                 .map(|option| EventWindowOption {
                     ordinal: option.ordinal,
-                    label: text(&option.label),
+                    label: option.label.as_deref().map(text),
                 })
                 .collect::<Vec<_>>(),
         ),
@@ -106,6 +106,9 @@ fn shown(presentation: &EventPresentation, authored: &EventFeedItem, not_recorde
             None
         }
     };
+    if options.iter().flatten().any(|option| option.label.is_none()) {
+        not_recorded.push("an offered option's label was not recorded".to_owned());
+    }
     if presentation.shown.is_none() {
         not_recorded.push("whether the window was shown was not recorded".to_owned());
     }
@@ -138,8 +141,11 @@ pub(crate) fn presented(
     names: &Names,
     presenter: &Presenter<'_>,
     notices: &mut Notices,
-) -> io::Result<EventFeedRow> {
+) -> io::Result<Option<EventFeedRow>> {
     let actor = tag(names, event.actor.slot, event.hour);
+    if actor.is_none() {
+        notices.sampled("eventWindows", "Event windows", format!("The window built at {} names a country that holds no tag then.", event.hour), 1);
+    }
     let mut row = EventFeedRow {
         id,
         hour: event.hour,
@@ -148,8 +154,8 @@ pub(crate) fn presented(
         exact: event.presentation.as_ref().is_some_and(|presentation| presentation.native_hour.is_some()),
         category: EventFeedKind::EventWindowPresented.category(),
         kind: EventFeedKind::EventWindowPresented,
-        tags: actor.iter().cloned().collect(),
-        participants: Some([actor, None]),
+        tags: actor.into_iter().collect(),
+        participants: None,
         item: None,
         amount: None,
         cause: None,
@@ -165,7 +171,7 @@ pub(crate) fn presented(
             presented: None,
             missing: Some(PRESENTATION_NOT_RECORDED.to_owned()),
         });
-        return Ok(row);
+        return Ok(Some(row));
     };
     let token = match &presentation.token {
         Recorded::Value(bytes) if !bytes.is_empty() => std::str::from_utf8(bytes).ok().map(str::to_owned),
@@ -192,7 +198,7 @@ pub(crate) fn presented(
                 .filter_map(|option| {
                     option.ordinal.map(|ordinal| EventFeedOption {
                         ordinal,
-                        name: Some(option.label.clone()),
+                        name: option.label.clone(),
                     })
                 })
                 .collect()
@@ -206,5 +212,5 @@ pub(crate) fn presented(
         presented: Some(window),
         missing: None,
     });
-    Ok(row)
+    Ok(Some(row))
 }

@@ -124,7 +124,7 @@ impl RowCodec for EventFeedHistoryRow {
         self.validate()
     }
     fn not_recorded_fields(&self) -> u64 {
-        0
+        u64::from(matches!(self.windows, Recorded::NotRecorded)) << 10
     }
     fn visit_nested_field_gaps(&self, _: &mut dyn FnMut(&'static str)) {}
     fn visit_wire(
@@ -223,7 +223,22 @@ impl RowCodec for EventFeedHistoryRow {
         key: u128,
         wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
     ) -> io::Result<Self> {
-        from_wire_encoded(key, Self::SCHEMA.len(), wire)
+        let mut bytes = Vec::new();
+        for index in 0..10 {
+            wire(index)?.encode(&mut bytes)?;
+        }
+        let recorded_fields = match wire(10)? {
+            Field::NotRecorded => 10,
+            windows => {
+                windows.encode(&mut bytes)?;
+                11
+            }
+        };
+        let mut input = Decoder::new(&bytes);
+        input.recorded_fields = recorded_fields;
+        let row = Self::decode_fields(key, &mut input)?;
+        input.finish()?;
+        Ok(row)
     }
     fn decode_fields(key: u128, input: &mut Decoder<'_>) -> io::Result<Self> {
         check_native_key(key, 0)?;
@@ -463,7 +478,8 @@ impl replay_rows::checkpoint::endpoint::sparse::SparseReference for EventFeedHis
                     sequence: 11,
                     verdict: WindowVerdict::Requested,
                 }]),
-                presentations: Ok(vec![]),
+                presentations: Vec::new(),
+                presentations_unrecorded: None,
             }),
         };
         baseline.validate().unwrap();
@@ -497,5 +513,41 @@ impl replay_rows::checkpoint::endpoint::sparse::SparseReference for EventFeedHis
             expected,
             payload,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event_feed_rows::tests::row;
+
+    fn read(fields: &[Vec<u8>], present: usize) -> EventFeedHistoryRow {
+        let schema = <EventFeedHistoryRow as Fields>::SCHEMA;
+        EventFeedHistoryRow::from_wire(0, &mut |index| match fields.get(index).filter(|_| index < present) {
+            Some(bytes) => schema[index].decode(&mut Decoder::new(bytes)),
+            None => Ok(Field::NotRecorded),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_row_written_before_window_capture_reads_with_its_windows_not_recorded() {
+        let written = row();
+        let mut fields = Vec::new();
+        written
+            .visit_wire(&mut |_, field| {
+                let mut bytes = Vec::new();
+                field.encode(&mut bytes)?;
+                fields.push(bytes);
+                Ok(())
+            })
+            .unwrap();
+        let older = read(&fields, 10);
+        assert_eq!(older.windows, Recorded::NotRecorded);
+        assert_eq!(older.events, written.events);
+        assert_eq!(RowCodec::not_recorded_fields(&older), 1 << 10);
+        let current = read(&fields, 11);
+        assert_eq!(current.windows, written.windows);
+        assert_eq!(RowCodec::not_recorded_fields(&current), 0);
     }
 }

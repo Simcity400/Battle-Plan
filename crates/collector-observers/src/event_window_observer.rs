@@ -21,12 +21,14 @@ static PRESENTATIONS_ARMED: AtomicUsize = AtomicUsize::new(0);
 static VERDICT_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static PRESENTATION_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static PRESENTATIONS_PUBLISHED: AtomicU64 = AtomicU64::new(0);
+static PRESENTATIONS_OTHER_WORLD: AtomicU64 = AtomicU64::new(0);
 
 const SECTION_INCOMPLETE: &str = "event window verdict section reached its end without its deciding gate";
 const UNARMED: &str = "event window capture was withheld on this build";
 const LOST: &str = "event window presentations of an earlier interval were discarded unpublished";
 const ALLOCATION: &str = "event window presentation allocation failed";
 const OTHER_WINDOW: &str = "event window build piece belongs to another window";
+const WORLD_CHANGED: &str = "event window build crossed a world change or an unobserved world";
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct Trace {
@@ -183,6 +185,8 @@ fn refuse_verdict(frame: usize, reason: &'static str) {
 #[derive(Default)]
 struct Assembly {
     window: usize,
+    world: Option<u64>,
+    refused: Option<&'static str>,
     rebuild: bool,
     title: Option<Recorded<Vec<u8>>>,
     description: Option<Recorded<Vec<u8>>>,
@@ -191,14 +195,61 @@ struct Assembly {
 }
 
 struct Queue {
-    presentations: Vec<EventPresentation>,
-    failure: Option<&'static str>,
+    presentations: Vec<(u64, EventPresentation)>,
+    failures: Vec<(u64, &'static str)>,
+    overflow: Option<Overflow>,
+    unattributed: Option<&'static str>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Overflow {
+    first: u64,
+    last: u64,
+    reason: &'static str,
+}
+
+impl Queue {
+    fn fail(&mut self, generation: u64, reason: &'static str) {
+        if self.failures.iter().any(|(failed, _)| *failed == generation) {
+            return;
+        }
+        if engine_allocation::reserve(&mut self.failures, 1).is_ok() {
+            self.failures.push((generation, reason));
+        } else {
+            self.overflowed(generation, generation, reason);
+        }
+    }
+
+    fn overflowed(&mut self, first: u64, last: u64, reason: &'static str) {
+        let held = self.overflow.get_or_insert(Overflow { first, last, reason });
+        held.first = held.first.min(first);
+        held.last = held.last.max(last);
+    }
+
+    fn take_failure(&mut self, generation: u64) -> Option<&'static str> {
+        let own = self
+            .failures
+            .iter()
+            .find(|(failed, _)| *failed == generation)
+            .map(|(_, reason)| *reason);
+        self.failures.retain(|(failed, _)| *failed > generation);
+        let overflow = self
+            .overflow
+            .filter(|overflow| (overflow.first..=overflow.last).contains(&generation))
+            .map(|overflow| overflow.reason);
+        if self.overflow.is_some_and(|overflow| overflow.last <= generation) {
+            self.overflow = None;
+        }
+        own.or(overflow).or(self.unattributed.take())
+    }
 }
 
 static ASSEMBLY: Mutex<Option<Assembly>> = Mutex::new(None);
 static QUEUE: Mutex<Queue> = Mutex::new(Queue {
     presentations: Vec::new(),
-    failure: None,
+    failures: Vec::new(),
+    overflow: None,
+    unattributed: None,
 });
 
 fn copy_string(memory: &impl Memory, address: usize) -> Recorded<Vec<u8>> {
@@ -259,22 +310,25 @@ unsafe extern "system-unwind" fn presentation_tap(registers: &Registers, index: 
     match index {
         0 => {
             let window = registers.rbx;
+            let world = crate::world_lifetime::observed_generation();
             let rebuild = RELOADING.with(|cell| cell.replace(0)) == window;
             let title = frame_string(registers, native::TITLE_STRING_FROM_FRAME)
                 .map_or(Recorded::NotRecorded, |at| copy_string(&memory, at));
-            let assembly = window_of(&memory, window).map(|window| Assembly {
+            let refused = window_of(&memory, window).err();
+            if refused.is_some() {
+                PRESENTATION_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            }
+            *ASSEMBLY
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Assembly {
                 window,
+                world,
+                refused,
                 rebuild,
                 title: Some(title),
                 options: Recorded::Value(Vec::new()),
                 ..Assembly::default()
             });
-            if assembly.is_err() {
-                PRESENTATION_REFUSALS.fetch_add(1, Ordering::Relaxed);
-            }
-            *ASSEMBLY
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = assembly.ok();
         }
         1 => {
             let processed = frame_string(registers, native::PICTURE_RESOLVED_FROM_FRAME)
@@ -296,9 +350,13 @@ unsafe extern "system-unwind" fn presentation_tap(registers: &Registers, index: 
             } else {
                 (copy_string(&memory, registers.rcx), None)
             };
+            let label = match label {
+                Recorded::Value(label) => Some(label),
+                Recorded::NotRecorded => None,
+            };
             assembling(window, |assembly| {
-                assembly.options = match (std::mem::replace(&mut assembly.options, Recorded::NotRecorded), label) {
-                    (Recorded::Value(mut options), Recorded::Value(label)) => {
+                assembly.options = match std::mem::replace(&mut assembly.options, Recorded::NotRecorded) {
+                    Recorded::Value(mut options) => {
                         if engine_allocation::reserve(&mut options, 1).is_ok() {
                             options.push(OfferedOption { ordinal, label });
                             Recorded::Value(options)
@@ -307,7 +365,7 @@ unsafe extern "system-unwind" fn presentation_tap(registers: &Registers, index: 
                             Recorded::NotRecorded
                         }
                     }
-                    _ => Recorded::NotRecorded,
+                    Recorded::NotRecorded => Recorded::NotRecorded,
                 };
             });
         }
@@ -341,11 +399,20 @@ fn commit(memory: &impl Memory, registers: &Registers) {
     let assembly = ASSEMBLY
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
-        .filter(|assembly| assembly.window == window);
+        .take();
     let base = BASE.load(Ordering::Acquire);
+    let world = assembly
+        .as_ref()
+        .and_then(|assembly| assembly.world)
+        .or_else(crate::world_lifetime::observed_generation);
     let built = (|| {
-        let assembly = assembly.ok_or(OTHER_WINDOW)?;
+        let assembly = assembly
+            .filter(|assembly| assembly.window == window)
+            .ok_or(OTHER_WINDOW)?;
+        if let Some(reason) = assembly.refused {
+            return Err(reason);
+        }
+        let start = assembly.world.ok_or(WORLD_CHANGED)?;
         let event = field::<u64>(memory, window, native::WINDOW_EVENT)? as usize;
         let (identity, token) = crate::script_event_observer::definition(memory, base, event)?;
         let kind = kind_of(memory, event)?;
@@ -377,59 +444,113 @@ fn commit(memory: &impl Memory, registers: &Registers) {
             picture,
             options: assembly.options,
         })
+        .and_then(|presentation| {
+            if crate::world_lifetime::observed_generation() == Some(start) {
+                Ok(presentation)
+            } else {
+                Err(WORLD_CHANGED)
+            }
+        })
     })();
     let mut queue = QUEUE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    match built {
-        Ok(presentation) => {
+    match (built, world) {
+        (Ok(presentation), Some(world)) => {
             if engine_allocation::reserve(&mut queue.presentations, 1).is_ok() {
-                queue.presentations.push(presentation);
+                queue.presentations.push((world, presentation));
                 PRESENTATIONS_PUBLISHED.fetch_add(1, Ordering::Relaxed);
             } else {
-                queue.failure.get_or_insert(ALLOCATION);
+                queue.fail(world, ALLOCATION);
             }
         }
-        Err(reason) => {
+        (Err(reason), Some(world)) => {
             PRESENTATION_REFUSALS.fetch_add(1, Ordering::Relaxed);
-            queue.failure.get_or_insert(reason);
+            queue.fail(world, reason);
+        }
+        (_, None) => {
+            PRESENTATION_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            queue.unattributed.get_or_insert(WORLD_CHANGED);
         }
     }
 }
 
-pub fn take(verdicts: Vec<VerdictEntry>) -> EventWindows {
-    let reason = |withheld: &Mutex<Option<String>>| {
-        withheld
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_deref()
-            .map_or_else(|| UNARMED.as_bytes().to_vec(), |reason| reason.as_bytes().to_vec())
+#[derive(Default)]
+pub struct Taken {
+    verdicts_armed: bool,
+    presentations_armed: bool,
+    presentations: Vec<(u64, EventPresentation)>,
+    failure: Option<&'static str>,
+}
+
+pub fn take(generation: u64) -> Taken {
+    let mut taken = Taken {
+        verdicts_armed: VERDICTS_ARMED.load(Ordering::Acquire) != 0,
+        presentations_armed: PRESENTATIONS_ARMED.load(Ordering::Acquire) != 0,
+        ..Taken::default()
     };
-    let verdicts = if VERDICTS_ARMED.load(Ordering::Acquire) != 0 {
-        Ok(verdicts)
-    } else {
-        Err(reason(&VERDICT_WITHHELD))
-    };
-    let presentations = if PRESENTATIONS_ARMED.load(Ordering::Acquire) != 0 {
+    if taken.presentations_armed {
         let mut queue = QUEUE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let taken = std::mem::take(&mut queue.presentations);
-        match queue.failure.take() {
-            Some(failure) => Err(failure.as_bytes().to_vec()),
-            None => Ok(taken),
+        taken.presentations = std::mem::take(&mut queue.presentations);
+        if let Some(newer) = taken.presentations.iter().position(|(built, _)| *built > generation) {
+            let later = taken.presentations.len() - newer;
+            if engine_allocation::reserve(&mut queue.presentations, later).is_ok() {
+                queue.presentations.extend(taken.presentations.drain(newer..));
+            } else {
+                for index in newer..taken.presentations.len() {
+                    let world = taken.presentations[index].0;
+                    queue.fail(world, ALLOCATION);
+                }
+                taken.presentations.truncate(newer);
+            }
         }
-    } else {
-        Err(reason(&PRESENTATION_WITHHELD))
-    };
-    EventWindows {
-        verdicts,
-        presentations,
+        let queued = taken.presentations.len();
+        taken.presentations.retain(|(built, _)| *built == generation);
+        PRESENTATIONS_OTHER_WORLD.fetch_add((queued - taken.presentations.len()) as u64, Ordering::Relaxed);
+        taken.failure = queue.take_failure(generation);
+    }
+    taken
+}
+
+impl Taken {
+    pub fn allocated_bytes(&self) -> usize {
+        self.presentations.capacity() * size_of::<(u64, EventPresentation)>()
+            + self
+                .presentations
+                .iter()
+                .map(|(_, presentation)| replay_data::value::Value::heap_bytes(presentation))
+                .sum::<usize>()
+    }
+
+    pub fn windows(&self, verdicts: &[VerdictEntry]) -> std::io::Result<EventWindows> {
+        let copy = |bytes: &[u8]| engine_allocation::copy_vec(bytes);
+        let reason = |withheld: &Mutex<Option<String>>| {
+            let held = withheld.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            copy(held.as_deref().unwrap_or(UNARMED).as_bytes())
+        };
+        let mut presentations = engine_allocation::vec(self.presentations.len())?;
+        for (_, presentation) in &self.presentations {
+            presentations.push(replay_data::value::Value::try_clone(presentation)?);
+        }
+        Ok(EventWindows {
+            verdicts: if self.verdicts_armed {
+                Ok(engine_allocation::copy_vec(verdicts)?)
+            } else {
+                Err(reason(&VERDICT_WITHHELD)?)
+            },
+            presentations,
+            presentations_unrecorded: if self.presentations_armed {
+                self.failure.map(|failure| copy(failure.as_bytes())).transpose()?
+            } else {
+                Some(reason(&PRESENTATION_WITHHELD)?)
+            },
+        })
     }
 }
 
-pub fn discarded() {
+pub fn discarded(generation: u64) {
     QUEUE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .failure
-        .get_or_insert(LOST);
+        .fail(generation, LOST);
 }
 
 pub fn status() -> impl serde::Serialize {
@@ -447,6 +568,7 @@ pub fn status() -> impl serde::Serialize {
         "presentation_withheld": withheld(&PRESENTATION_WITHHELD),
         "presentation_refusals": PRESENTATION_REFUSALS.load(Ordering::Relaxed),
         "presentations": PRESENTATIONS_PUBLISHED.load(Ordering::Relaxed),
+        "presentations_of_an_ended_world": PRESENTATIONS_OTHER_WORLD.load(Ordering::Relaxed),
     })
 }
 

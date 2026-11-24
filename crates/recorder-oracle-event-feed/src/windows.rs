@@ -2,7 +2,7 @@ use content_reader_save::script_events as saved;
 use recorder_oracle_support::report::Report;
 use replay_data::event_feed_rows::{EventFeedHistoryRow, EventFeedSource, WindowVerdict};
 use replay_data::rows::Recorded;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 const GROUP: &str = "EventFeedHistory window decisions";
 
@@ -10,7 +10,6 @@ const GROUP: &str = "EventFeedHistory window decisions";
 pub struct Witness {
     unrecorded: Option<String>,
     decisions: BTreeMap<u32, Result<Option<WindowVerdict>, String>>,
-    presented: BTreeSet<u32>,
 }
 
 impl Witness {
@@ -42,10 +41,6 @@ impl Witness {
                 Err(reason) => Err(String::from_utf8_lossy(reason).into_owned()),
             };
             self.decisions.insert(instance, decision);
-        }
-        if let Ok(presentations) = &windows.presentations {
-            self.presented
-                .extend(presentations.iter().map(|presentation| presentation.instance));
         }
     }
 }
@@ -85,13 +80,8 @@ pub(super) fn compare(witness: &Witness, pending: &[saved::Pending], player: Opt
         };
         let is_player = recipient == player;
         match witness.decisions.get(&instance) {
-            None if is_player => {
-                if !witness.presented.contains(&instance) {
-                    report.difference(&label, "no firing and no window in this branch", "a window reopened after load");
-                }
-            }
             None => report.limitation(
-                "a pending event fired before this branch began holds no firing in it; only the player's reopened windows are witnessed",
+                "a pending event fired before this branch began, or before the recorder attached, holds no firing in it; a load reopens the player's windows, an attach does not",
                 &label,
             ),
             Some(Err(reason)) => report.incomplete(GROUP, format!("{label}: {reason}")),
@@ -160,7 +150,8 @@ mod tests {
     fn verdict(verdict: WindowVerdict) -> Recorded<EventWindows> {
         Recorded::Value(EventWindows {
             verdicts: Ok(vec![VerdictEntry { sequence: 4, verdict }]),
-            presentations: Ok(Vec::new()),
+            presentations: Vec::new(),
+            presentations_unrecorded: None,
         })
     }
 
@@ -181,7 +172,8 @@ mod tests {
         assert!(!judged(verdict(WindowVerdict::Requested), b"ITA"), "this client requests no window for a country it does not play");
         let missing = Recorded::Value(EventWindows {
             verdicts: Ok(Vec::new()),
-            presentations: Ok(Vec::new()),
+            presentations: Vec::new(),
+            presentations_unrecorded: None,
         });
         assert!(!judged(missing, b"GER"), "an armed hour whose firing holds no decision lost it");
     }

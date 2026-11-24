@@ -42,7 +42,7 @@ impl WindowVerdict {
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct OfferedOption {
     pub ordinal: Option<u32>,
-    pub label: Vec<u8>,
+    pub label: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
@@ -89,14 +89,16 @@ pub struct VerdictEntry {
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct EventWindows {
     pub verdicts: Result<Vec<VerdictEntry>, Vec<u8>>,
-    pub presentations: Result<Vec<EventPresentation>, Vec<u8>>,
+    pub presentations: Vec<EventPresentation>,
+    pub presentations_unrecorded: Option<Vec<u8>>,
 }
 
 impl Default for EventWindows {
     fn default() -> Self {
         Self {
             verdicts: Err(Self::NOT_ARMED.to_vec()),
-            presentations: Err(Self::NOT_ARMED.to_vec()),
+            presentations: Vec::new(),
+            presentations_unrecorded: Some(Self::NOT_ARMED.to_vec()),
         }
     }
 }
@@ -110,9 +112,9 @@ fn text_bytes(text: &[u8]) -> io::Result<usize> {
 }
 
 impl Value for OfferedOption {
-    const MINIMUM_ENCODED_BYTES: usize = 5;
+    const MINIMUM_ENCODED_BYTES: usize = 2;
     fn heap_bytes(&self) -> usize {
-        self.label.capacity()
+        self.label.as_ref().map_or(0, Vec::capacity)
     }
     fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
@@ -331,28 +333,30 @@ impl Value for EventWindows {
         side(
             self.verdicts.as_ref().map_or(0, Value::heap_bytes),
             self.verdicts.as_ref().err(),
-        ) + side(
-            self.presentations.as_ref().map_or(0, Value::heap_bytes),
-            self.presentations.as_ref().err(),
-        )
+        ) + side(Value::heap_bytes(&self.presentations), self.presentations_unrecorded.as_ref())
     }
     fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
             verdicts: clone_outcome(&self.verdicts)?,
-            presentations: clone_outcome(&self.presentations)?,
+            presentations: Value::try_clone(&self.presentations)?,
+            presentations_unrecorded: Value::try_clone(&self.presentations_unrecorded)?,
         })
     }
     fn encoded_bytes(&self) -> io::Result<usize> {
-        Ok(outcome_bytes(&self.verdicts)? + outcome_bytes(&self.presentations)?)
+        Ok(outcome_bytes(&self.verdicts)?
+            + Value::encoded_bytes(&self.presentations)?
+            + Value::encoded_bytes(&self.presentations_unrecorded)?)
     }
     fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
         encode_outcome(&self.verdicts, output)?;
-        encode_outcome(&self.presentations, output)
+        self.presentations.encode_reserved(output)?;
+        self.presentations_unrecorded.encode_reserved(output)
     }
     fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
         Ok(Self {
             verdicts: decode_outcome(input)?,
-            presentations: decode_outcome(input)?,
+            presentations: Value::decode(input)?,
+            presentations_unrecorded: Value::decode(input)?,
         })
     }
 }
@@ -393,11 +397,15 @@ mod tests {
             options: Recorded::Value(vec![
                 OfferedOption {
                     ordinal: Some(2),
-                    label: b"Third".to_vec(),
+                    label: Some(b"Third".to_vec()),
+                },
+                OfferedOption {
+                    ordinal: Some(3),
+                    label: None,
                 },
                 OfferedOption {
                     ordinal: None,
-                    label: b"OK".to_vec(),
+                    label: Some(b"OK".to_vec()),
                 },
             ]),
         };
@@ -407,11 +415,13 @@ mod tests {
                 sequence: 11,
                 verdict: WindowVerdict::HiddenOrAiControlled,
             }]),
-            presentations: Err(b"lost".to_vec()),
+            presentations: Vec::new(),
+            presentations_unrecorded: Some(b"lost".to_vec()),
         });
         round_trip(&EventWindows {
             verdicts: Err(EventWindows::NOT_ARMED.to_vec()),
-            presentations: Ok(vec![presentation]),
+            presentations: vec![presentation],
+            presentations_unrecorded: Some(b"an earlier batch was discarded".to_vec()),
         });
         for verdict in WindowVerdict::ALL {
             assert_eq!(WindowVerdict::from_code(u32::from(verdict.code())), Some(verdict));

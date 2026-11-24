@@ -111,3 +111,55 @@ fn a_restricted_player_sees_only_major_events_whose_options_have_no_trigger() {
     assert_eq!(read(&bytes), Ok(Some(WindowVerdict::PlayerRestrictedOptionTrigger)));
     assert!(read(&bytes[..0x400]).is_err(), "an unreadable option refuses rather than guesses");
 }
+
+#[test]
+fn a_seal_takes_only_its_world_and_leaves_a_newer_worlds_builds_and_failure() {
+    let _globals = crate::event_feed_observer::test_globals();
+    let presentation = |instance| EventPresentation { instance, ..EventPresentation::default() };
+    PRESENTATIONS_ARMED.store(1, Ordering::Release);
+    {
+        let mut queue = QUEUE.lock().unwrap();
+        queue.presentations = vec![(1, presentation(10)), (2, presentation(20)), (3, presentation(30))];
+        queue.failures.clear();
+        queue.overflow = None;
+        queue.unattributed = None;
+        queue.fail(3, ALLOCATION);
+        queue.fail(2, LOST);
+    }
+    let taken = take(2);
+    assert_eq!(taken.presentations.iter().map(|(world, p)| (*world, p.instance)).collect::<Vec<_>>(), [(2, 20)]);
+    assert_eq!(taken.failure, Some(LOST), "each world's seal reports its own loss");
+    discarded(2);
+    {
+        let queue = QUEUE.lock().unwrap();
+        assert_eq!(queue.presentations.iter().map(|(world, p)| (*world, p.instance)).collect::<Vec<_>>(), [(3, 30)]);
+        assert!(queue.failures.contains(&(3, ALLOCATION)), "a late discard of an older world keeps the newer failure");
+    }
+    let taken = take(3);
+    assert_eq!(taken.presentations.len(), 1);
+    assert_eq!(taken.failure, Some(ALLOCATION));
+    assert!(QUEUE.lock().unwrap().failures.is_empty(), "a seal clears its own and every older world's failures");
+    PRESENTATIONS_ARMED.store(0, Ordering::Release);
+}
+
+#[test]
+fn an_unstorable_failure_of_a_newer_world_survives_an_older_seal() {
+    let _globals = crate::event_feed_observer::test_globals();
+    let mut queue = Queue {
+        presentations: Vec::new(),
+        failures: Vec::new(),
+        overflow: None,
+        unattributed: None,
+    };
+    queue.overflowed(3, 4, ALLOCATION);
+    assert_eq!(queue.take_failure(2), None, "an older world's seal is complete");
+    assert_eq!(queue.take_failure(3), Some(ALLOCATION));
+    assert_eq!(queue.take_failure(4), Some(ALLOCATION), "every world in the range reports the loss");
+    assert_eq!(queue.take_failure(5), None);
+    queue.overflowed(3, 4, ALLOCATION);
+    assert_eq!(queue.take_failure(5), None, "a world past the range never sealed inside it is complete");
+    assert_eq!(queue.overflow, None, "a range every later seal has passed is cleared");
+    queue.unattributed = Some(WORLD_CHANGED);
+    assert_eq!(queue.take_failure(9), Some(WORLD_CHANGED), "a build of no known world marks the next seal");
+    assert_eq!(queue.take_failure(10), None);
+}

@@ -224,7 +224,8 @@ pub enum EventWindowKind {
 pub struct EventWindowOption {
     #[doc = " The option's place in the live event's own list; null for the fallback OK button."]
     pub ordinal: Option<u32>,
-    pub label: String,
+    #[doc = " Null when the label's copy was refused; the button was still offered."]
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -609,7 +610,7 @@ pub(crate) fn present(event: &FeedEvent, names: &Names, presenter: &Presenter<'_
     let Some(kind) = EventFeedKind::of_code(event.code) else { return Ok(None) };
     let id = event.id();
     if kind == EventFeedKind::EventWindowPresented {
-        return window::presented(event, id, names, presenter, notices).map(Some);
+        return window::presented(event, id, names, presenter, notices);
     }
     if event.derived() {
         return Ok(derived(event, kind, id, names, notices));

@@ -112,6 +112,13 @@ pub(crate) fn coverage(source: &Source, query: &Query<'_>, branch: u64, from: i3
     }
     let losses: Vec<(i32, i32)> = source.replay_ref().event_losses(branch).collect();
     raised_notices(raised, &losses, notices);
+    let windows = reader.select(&[FacetFilter { name: "kind".into(), values: vec![i64::from(FeedEventRow::WINDOWS_UNRECORDED)], ..Default::default() }], query.timeline.first, to)?;
+    let page = reader.page(&windows.patterns, windows.groups.len(), from, to, 0, 3)?;
+    let total = u32::try_from(page.total()).unwrap_or(u32::MAX);
+    for (at, paged) in page.rows.iter().enumerate() {
+        let read = columns.read(&paged.row)?;
+        notices.sampled("eventWindows", "Event windows", format!("Read {}: {}", read.read_hour, String::from_utf8_lossy(&read.failure)), if at == 0 { total } else { 0 });
+    }
     Ok(())
 }
 
