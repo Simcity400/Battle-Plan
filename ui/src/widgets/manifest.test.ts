@@ -60,7 +60,8 @@ test('multi-view widget routes each (kind, view) to its own family or legacy ent
   assert.equal(isFamilyWidgetView('game-score'), true);
   assert.equal(activeFamilyView('game-score')?.family, 'table');
   assert.equal(resolveWidgetActiveView('game-score', { view: 'race' }), 'race');
-  assert.equal(isFamilyWidgetView('game-score', { view: 'race' }), false);
+  assert.equal(isFamilyWidgetView('game-score', { view: 'race' }), true);
+  assert.equal(activeFamilyView('game-score', { view: 'race' })?.family, 'bars');
   assert.equal(resolveWidgetActiveView('game-score', { view: 'lines' }), 'lines');
   assert.equal(isFamilyWidgetView('game-score', { view: 'lines' }), false);
 
@@ -96,7 +97,7 @@ test('playback placeholder gate uses the manifest as its single switch', () => {
     assert.equal(isPlaybackDatedView(entry.kind, opts, meta), true, `(${entry.kind}, ${entry.view ?? DEFAULT_VIEW}) plays back live`);
   }
   assert.equal(isPlaybackDatedView('research', undefined, metaOf('research')), true);
-  assert.equal(isPlaybackDatedView('casualties', undefined, metaOf('casualties')), false);
+  assert.equal(isPlaybackDatedView('map', undefined, metaOf('map')), false);
   assert.equal(isPlaybackDatedView('game-score', { view: 'table' }), true);
   assert.equal(isPlaybackDatedView('game-score', { view: 'race' }), true);
 });
@@ -232,7 +233,7 @@ test('shared data-driven settings controls expose bars-behind, three row heights
     { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName', 'name'] },
     { key: 'factories', label: 'Factories', as: 'faint', offered: ['plain', 'faint'] },
   ];
-  const base: TableBase = { density: 'normal', barsBehind: 'sorted', overflow: 'tooltip', sort: { column: 'factories', direction: 'descending' } };
+  const base: TableBase = { density: 'normal', barsBehind: 'sorted', sort: { column: 'factories', direction: 'descending' } };
   const fields = [
     viewSwitchControl([{ value: 'rows', label: 'Rows' }, { value: 'bars', label: 'Bars' }], 'rows'),
     rowHeightControl('normal'),

@@ -6,7 +6,8 @@ import { partyTags } from '../../dashboard/market.ts';
 import MarketDrill from '../../dashboard/MarketDrill';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
-import DeclaredTableWidget from '../../families/table/DeclaredTableWidget.tsx';
+import type { InstalledAction } from '../../families/contract.ts';
+import { FamilyWidget } from '../../families/host/registry';
 import { resolveOptions } from '../../dashboard/options';
 import { DETAILS, OPTIONS } from './definition';
 import { MARKET_DECLARATIONS } from './internationalMarketProjection.ts';
@@ -37,20 +38,21 @@ export default function InternationalMarketWidget(props: WidgetProps) {
   const drillOpen = drill.breakdown !== null && !!picked;
   const drillAt = useRegionHour(runtime, drillRegion, active && drillOpen);
 
-  const onActivate = useCallback((_key: string, meta?: unknown, hour?: number) => {
+  const onActivate = useCallback(({ meta, hour }: InstalledAction) => {
     const info = meta as { title?: string; tags?: (string | null)[]; selected?: string | null } | undefined;
     if (!info?.tags?.length) return;
     const tagsOf = partyTags(...info.tags);
     if (!tagsOf) return;
-    const atHour = hour ?? track?.branch.lastHour ?? 0;
+    const atHour: number = hour;
     setPick({ owner: pickOwner, title: info.title ?? DETAILS.label, tags: tagsOf, selected: info.selected ?? null });
     dispatch({ type: 'open', breakdown: DETAILS.id, hour: atHour, follow: drillControl.followsAt(atHour) });
-  }, [pickOwner, dispatch, drillControl, track?.branch.lastHour]);
+  }, [pickOwner, dispatch, drillControl]);
 
   const drillDay = drillShown ?? drillAt;
 
   return <div ref={anchor} className="game-window-table">
-    <DeclaredTableWidget
+    <FamilyWidget
+      family="table"
       declaration={declaration}
       {...props}
       onActivate={onActivate}

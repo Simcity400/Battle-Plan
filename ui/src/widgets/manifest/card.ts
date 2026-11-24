@@ -22,6 +22,17 @@ export const CARD_VIEWS: readonly FamilyViewEntry[] = [
     })),
   },
   {
+    kind: 'special-projects',
+    view: 'live',
+    label: 'Current',
+    family: 'card',
+    viewOption: 'view',
+    loadSpec: () => import('../special-projects/specialProjectsProjection.ts').then(m => ({
+      family: 'card', kind: 'special-projects', view: 'live',
+      projection: m.specialProjectsProjection, declaration: m.specialProjectsDeclaration,
+    })),
+  },
+  {
     kind: 'war-goals',
     view: DEFAULT_VIEW,
     family: 'card',

@@ -9,7 +9,7 @@ import { panelAuditRows } from './panelAudit.ts';
 const cols: readonly TableColumnSpec[] = [
   { key: 'v', label: 'Value', as: 'plain', offered: OFFERED.number, priority: 0, numeric: true, format: 'integer' },
 ];
-const settings = tableDefaults(cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'v', direction: 'descending' } });
+const settings = tableDefaults(cols, { density: 'comfortable', sort: { column: 'v', direction: 'descending' } });
 const layouts = buildColumnLayouts(cols, settings);
 
 test('review 4 finding 15: a table reader compares the values shown, not each country with itself', () => {

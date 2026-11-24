@@ -296,6 +296,11 @@ fn product_rejects_exactness_from_truncated_reads_and_keeps_exactness_at_range_s
     assert!(!reply.episodes[0].ended_exact);
     assert_eq!(reply.episodes[0].runs[1].first_exact, false);
     assert_eq!(reply.episodes[0].runs[1].after_hour, Some(10), "lower bound is the raid's last prior read, not the truncated hour");
+    assert!(
+        reply.missing.iter().any(|span| (span.first_hour, span.last_hour) == (11, 11) && span.reason.contains("read only in part")),
+        "an hour whose raids were not read whole is missing, never shown as no raids: {:?}",
+        reply.missing
+    );
 
     let range_run = records(1, vec![
         make_frame(1, 19, countries.clone(), 20, TableView::Complete(TableRows::Raids(vec![raid_row(2, 1, native::PHASE_PREPARING, native::OUTCOME_NONE, None)])), vec![target_row(2, scope.clone(), 40)]),
@@ -317,11 +322,15 @@ fn product_reads_baseline_ended_controller_at_first_ended_hour_and_resolves_raid
     let baseline_ended = records(1, vec![
         make_frame(1, 10, vec![(10, 1, b"ENG"), (20, 2, b"FRA"), (30, 3, b"GER")], 20, TableView::Complete(TableRows::Raids(vec![raid_row(5, 1, native::PHASE_ENDED, native::OUTCOME_SUCCESS, Some(100))])), vec![target_row(5, scope.clone(), 40)]),
         make_frame(1, 11, vec![(10, 1, b"ENG"), (20, 2, b"FRA"), (30, 3, b"GER")], 30, TableView::Complete(TableRows::Raids(vec![raid_row(5, 1, native::PHASE_ENDED, native::OUTCOME_SUCCESS, Some(100))])), vec![target_row(5, scope.clone(), 40)]),
+        make_frame(1, 12, vec![(10, 1, b"ENG"), (20, 2, b"FRA"), (30, 3, b"GER")], 30, TableView::Complete(TableRows::Raids(vec![raid_row(5, 1, native::PHASE_ENDED, native::OUTCOME_SUCCESS, Some(100))])), vec![target_row(5, scope.clone(), 40)]),
     ]);
-    let reply = load_product(&[baseline_ended], "1", None, None);
+    let reply = load_product(std::slice::from_ref(&baseline_ended), "1", None, None);
     assert_eq!(reply.episodes.len(), 1);
     assert_eq!(reply.episodes[0].victim.as_deref(), Some("FRA"), "baseline-ended raid must read controller at first ended hour 10, not later hour 11");
     assert_eq!(reply.episodes[0].victim_source, Some(RaidVictimSource::ControllerAtFirstEndedRead));
+    let ranged = load_product(std::slice::from_ref(&baseline_ended), "1", Some(12), Some(12));
+    assert_eq!(ranged.episodes.len(), 1);
+    assert_eq!(ranged.episodes[0].victim.as_deref(), Some("FRA"), "a ranged query reads the raid's own first ended observation, not the range's baseline hour");
 
     let tag_change = records(1, vec![
         make_frame(1, 10, vec![(10, 1, b"GER"), (20, 2, b"FRA")], 20, TableView::Complete(TableRows::Raids(vec![raid_row(6, 1, native::PHASE_PREPARING, native::OUTCOME_NONE, None)])), vec![target_row(6, scope.clone(), 40)]),
@@ -375,6 +384,7 @@ fn product_prefers_native_end_hour_and_completion_country_and_distinguishes_know
 
     let native_ep = &reply.episodes[0];
     assert_eq!(native_ep.ended_hour, Some(5));
+    assert_eq!(native_ep.ended_seen_hour, Some(20), "the native end date is first seen at the read that found it ended");
     assert!(native_ep.ended_exact, "native end_hour is exact even on a baseline-ended raid");
     assert_eq!(native_ep.ended_source, Some(RaidEndedSource::NativeEndDate));
     assert_eq!(native_ep.victim.as_deref(), Some("POL"), "native completion_country beats current controller GER");

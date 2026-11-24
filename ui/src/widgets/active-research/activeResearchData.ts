@@ -1,5 +1,5 @@
 import type { ResearchHistory, ResearchSlotHistory, ResearchSlotsAt } from '../research/types';
-import { isUnjoinedResearch, researchAt, researchEntryAt } from '../research/researchData.ts';
+import { isUnjoinedResearch, researchEntryAt } from '../research/researchData.ts';
 import { coverageAt } from '../research/researchLayout.ts';
 import type { ResearchDefinitionText, ResearchEntry, ResearchSlotNow } from '../../generated/dashboard';
 
@@ -17,22 +17,46 @@ export const openedResearch = ({ slot, token, databaseIndex, entry, read }: Rese
   ? { slot: slot.index, token, databaseIndex, firstObservedHour: entry.firstObservedHour, readHour: null }
   : { slot: slot.index, token, databaseIndex, firstObservedHour: null, readHour: read.state.firstHour, definition: read.definition };
 
+const slotIndex = new WeakMap<ResearchHistory, readonly ResearchSlotHistory[]>();
+
+function slotsByIndex(history: ResearchHistory): readonly ResearchSlotHistory[] {
+  let held = slotIndex.get(history);
+  if (!held) {
+    held = [...history.slots].sort((a, b) => a.index - b.index);
+    slotIndex.set(history, held);
+  }
+  return held;
+}
+
 export function activeSlots(history: ResearchHistory, now: ResearchSlotsAt): ActiveSlot[] {
   const hour = now.hour;
   const coverage = coverageAt(history.coverage, hour);
   const covered = coverage.some(span => span.firstHour <= hour && hour <= span.lastHour);
   const lastRead = [...coverage].reverse().find(span => span.lastHour < hour)?.lastHour;
   const reads = new Map(now.slots.map(read => [read.index, read]));
-  return researchAt(history, hour).sort((a, b) => a.index - b.index).flatMap((slot): ActiveSlot[] => {
-    if (!covered) return lastRead !== undefined && slot.availability.some(span => span.lastHour === lastRead)
-      ? [{ kind: 'unavailable', slot, reason: 'Not recorded at this hour' }] : [];
-    if (!slot.availability.some(span => span.firstHour <= hour && hour <= span.lastHour)) return [];
+  const out: ActiveSlot[] = [];
+  for (const slot of slotsByIndex(history)) {
+    if (!(slot.availability[0]?.firstHour <= hour)) continue;
+    if (!covered) {
+      if (lastRead !== undefined && slot.availability.some(span => span.lastHour === lastRead)) out.push({ kind: 'unavailable', slot, reason: 'Not recorded at this hour' });
+      continue;
+    }
+    if (!slot.availability.some(span => span.firstHour <= hour && hour <= span.lastHour)) continue;
     const read = reads.get(slot.index);
-    if (!read) return [{ kind: 'unavailable', slot, reason: now.missing ?? 'Not recorded at this hour' }];
-    const full = history.slots.find(owner => owner.index === slot.index) ?? slot;
-    const entry = researchEntryAt(full, read.state, hour);
-    if (!entry && !isUnjoinedResearch(read.state)) return [{ kind: 'idle', slot, read }];
-    if (read.state.token === null || read.state.databaseIndex === null) return [{ kind: 'unavailable', slot, reason: 'The research read names no technology definition' }];
-    return [{ kind: 'researching', slot, read, entry, token: read.state.token, databaseIndex: read.state.databaseIndex }];
-  });
+    if (!read) {
+      out.push({ kind: 'unavailable', slot, reason: now.missing ?? 'Not recorded at this hour' });
+      continue;
+    }
+    const entry = researchEntryAt(slot, read.state, hour);
+    if (!entry && !isUnjoinedResearch(read.state)) {
+      out.push({ kind: 'idle', slot, read });
+      continue;
+    }
+    if (read.state.token === null || read.state.databaseIndex === null) {
+      out.push({ kind: 'unavailable', slot, reason: 'The research read names no technology definition' });
+      continue;
+    }
+    out.push({ kind: 'researching', slot, read, entry, token: read.state.token, databaseIndex: read.state.databaseIndex });
+  }
+  return out;
 }

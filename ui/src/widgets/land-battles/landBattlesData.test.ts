@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deepFreeze } from '../../testFrozen.ts';
+import { deepFreeze } from '../../test-support/frozen.ts';
 import type { CountryGroupReply, LandBattlesManifestReply } from '../../generated/dashboard';
 import type { CountrySelection } from '../../dashboard/model';
 import type { LandBattle, LandBattleRow, LandBattlesWindow } from './landBattlesData.ts';

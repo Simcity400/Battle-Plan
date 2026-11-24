@@ -53,12 +53,6 @@ export interface BreakdownComparison {
   readonly note?: string;
 }
 
-export interface BreakdownEmptyAction {
-  readonly label: string;
-  readonly option: string;
-  readonly value: string;
-}
-
 export interface BreakdownModel {
   readonly hour: number;
   readonly rootLabel: string;
@@ -69,30 +63,18 @@ export interface BreakdownModel {
   readonly empty?: string;
   readonly emptyDetail?: string;
   readonly emptyKind?: 'empty' | 'unavailable';
-  readonly emptyAction?: BreakdownEmptyAction;
-  readonly refused?: string;
   readonly warnings?: readonly string[];
-  readonly footnote?: string;
-  readonly nextChangeAt?: number;
 }
 
 export interface BreakdownProjection<TOptions = unknown> {
   readonly family: 'breakdown';
   readonly kind: string;
   project(readView: BoundedReadView, options: TOptions): BreakdownModel;
-  nextChange?(readView: BoundedReadView, options: TOptions): number;
-}
-
-export interface BreakdownCrumb {
-  readonly key: string;
-  readonly label: string;
 }
 
 export interface ResolvedBreakdownLevel {
   readonly parts: readonly BreakdownPart[];
   readonly total: BreakdownTotal;
-  readonly crumbs: readonly BreakdownCrumb[];
-  readonly parentPart: BreakdownPart | null;
 }
 
 export function formatShare(share: number | null | undefined): string {
@@ -123,31 +105,8 @@ export function rgbHex(r: number, g: number, b: number): string {
   return toHex({ r, g, b });
 }
 
-export function resolveDrillLevel(model: BreakdownModel, drillPath: readonly string[]): ResolvedBreakdownLevel {
-  let parts = model.parts;
-  let total = model.total;
-  let parentPart: BreakdownPart | null = null;
-  const crumbs: BreakdownCrumb[] = [{ key: '', label: model.rootLabel }];
-  for (const step of drillPath) {
-    const found = parts.find(item => item.key === step);
-    if (!found || !found.children || !found.children.length) break;
-    parentPart = found;
-    parts = found.children;
-    crumbs.push({ key: found.key, label: found.name });
-    total = {
-      known: !found.notRecorded && !found.partial && model.total.known && !model.total.atLeast,
-      atLeast: model.total.atLeast || found.notRecorded,
-      partial: found.partial || model.total.partial,
-      value: found.value,
-      text: found.text,
-      exact: found.exact,
-      unit: model.total.unit,
-      verb: model.total.verb,
-      reason: found.partialReason ?? found.missingReason ?? model.total.reason,
-      shortReason: model.total.shortReason,
-    };
-  }
-  return { parts, total, crumbs, parentPart };
+export function breakdownLevel(model: BreakdownModel): ResolvedBreakdownLevel {
+  return { parts: model.parts, total: model.total };
 }
 
 export function computeDefaultExpanded(
@@ -316,9 +275,8 @@ export function deriveBreakdownNavAndMirror(
 
 export function deriveBreakdownAudit(
   model: BreakdownModel,
-  drillPath: readonly string[] = [],
 ): readonly AuditRow[] {
-  const level = resolveDrillLevel(model, drillPath);
+  const level = breakdownLevel(model);
   const rows: AuditRow[] = [];
   const totalVal = level.total.value === null
     ? `notRecorded:${level.total.reason ?? 'Not recorded'}`
