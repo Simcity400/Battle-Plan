@@ -4,9 +4,6 @@ dashboard_base::register_products! {
     INTELLIGENCE_ESPIONAGE_ESPIONAGEOPERATION => crate::products::intelligence::espionage::EspionageOperation,
     INTELLIGENCE_ESPIONAGE_ESPIONAGETYPETOKENS => crate::products::intelligence::espionage::EspionageTypeTokens,
     INTELLIGENCE_ESPIONAGE_ESPIONAGETYPES => crate::products::intelligence::espionage::EspionageTypes,
-    INTELLIGENCE_INTEL_DETAILS_INTELDETAILS => crate::products::intelligence::intel_details::IntelDetails,
-    INTELLIGENCE_ROSTER_OPERATIVETENURES => crate::products::intelligence::roster::OperativeTenures,
-    INTELLIGENCE_ROSTER_OPERATIVESDEPARTED => crate::products::intelligence::roster::OperativesDeparted,
 }
 
 dashboard_base::register_hourly_products! {

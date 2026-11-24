@@ -1,14 +1,14 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { flagArtHandle } from '../../families/art/provider.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artLook, artNameCell, newIdentityBoundary, type IdentityBoundary } from '../../families/table/identityCell.ts';
-import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
+import { artNameCell, artState, identityFlag, identityName, newIdentityBoundary, urlArtHandle, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import type { TableCell, TableCellIconItem, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
+import type { StatusMarkKind } from '../../draw/kit.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
-import type { Country, OperativesRosterReply, RosterOperative } from '../../generated/dashboard';
+import type { Country, OperativesRosterReply, OperativeTrait, RosterOperative } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
 export type RosterProjectionOptions = Record<string, never>;
@@ -28,7 +28,9 @@ function operativeOk(item: unknown, artwork: readonly unknown[]): item is Roster
     && typeof item.experienceRaw === 'string' && /^-?\d{1,20}$/.test(item.experienceRaw) && text(item.experienceText) && finite(item.experienceRatio)
     && text(item.experienceMissing) && integer(item.assignment) && text(item.assignmentName) && text(item.assignmentDuration) && finite(item.assignmentProgress)
     && text(item.assignmentMissing) && art(item.assignmentIcon) && text(item.assignmentIconMissing) && (item.target === null || country(item.target))
-    && typeof item.captured === 'boolean' && (item.capturer === null || country(item.capturer)) && (item.capturedHour === null || integer(item.capturedHour));
+    && typeof item.captured === 'boolean' && (item.capturer === null || country(item.capturer)) && (item.capturedHour === null || integer(item.capturedHour))
+    && text(item.traitsMissing) && Array.isArray(item.traits)
+    && item.traits.every(entry => object(entry) && text(entry.token) && text(entry.name) && art(entry.icon) && text(entry.missing));
 }
 
 export function validateRoster(value: unknown): OperativesRosterReply {
@@ -38,27 +40,45 @@ export function validateRoster(value: unknown): OperativesRosterReply {
   return value as unknown as OperativesRosterReply;
 }
 
-const PRIORITY: Readonly<Record<string, number>> = { operative: 0, skill: 1, state: 2, mission: 3, progress: 4 };
+const PRIORITY: Readonly<Record<string, number>> = { operative: 0, skill: 1, state: 2, mission: 3, progress: 4, traits: 5 };
 export const ROSTER_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(column => ({
   ...column,
   priority: PRIORITY[column.key] ?? 9,
   numeric: column.key === 'skill' || column.key === 'progress',
-  text: column.key === 'operative' || column.key === 'mission' || column.key === 'state',
-  ...(column.key === 'progress' ? { widest: ['100%'] } : {}),
+  text: column.key === 'operative' || column.key === 'mission' || column.key === 'state' || column.key === 'traits',
+  ...(column.key === 'operative' ? { cellKind: 'item' as const, pinned: true } : {}),
+  ...(column.key === 'skill' ? { barEligible: false, format: 'integer' as const, widest: ['9'] } : {}),
+  ...(column.key === 'progress' ? { cellKind: 'track' as const, trackTone: 'accent' as const, widest: ['100%'] } : {}),
+  ...(column.key === 'traits' ? { cellKind: 'icons' as const, sortable: false } : {}),
+  ...(column.key === 'state' ? { cellKind: 'status' as const } : {}),
 }));
 
-const STATE_WORDS: Readonly<Record<number, string>> = { 0: 'Captured', 1: 'Cooling down', 3: 'On mission', 4: 'In operation' };
+const STATES: Readonly<Record<number, { readonly word: string; readonly mark: StatusMarkKind }>> = {
+  0: { word: 'Captured', mark: 'ended' },
+  1: { word: 'Cooling down', mark: 'waiting' },
+  3: { word: 'On mission', mark: 'running' },
+  4: { word: 'In operation', mark: 'running' },
+};
 
 export function operativeName(operative: Pick<RosterOperative, 'name' | 'unnamed' | 'nameMissing'>): Value<string> {
   if (operative.unnamed) return knownValue('Unnamed operative');
   return operative.name ? knownValue(operative.name) : notRecorded(operative.nameMissing ?? 'Name not recorded');
 }
 
-function stateValue(operative: RosterOperative): Value<string> {
-  const word = STATE_WORDS[operative.assignment];
-  if (word) return knownValue(word);
-  if (operative.assignmentName) return knownValue(operative.assignmentName);
-  return notRecorded(operative.assignmentMissing ?? 'State not recorded');
+function stateCell(operative: RosterOperative): TableCell {
+  const state = STATES[operative.assignment];
+  if (state) return { value: knownValue(state.word), statusKind: state.mark };
+  if (operative.assignmentName) return { value: knownValue(operative.assignmentName), statusKind: 'finished' };
+  return { value: notRecorded(operative.assignmentMissing ?? 'State not recorded') };
+}
+
+function traitsCell(readView: BoundedReadView, operative: RosterOperative, artwork: readonly string[]): TableCell {
+  if (operative.traitsMissing !== null) return { value: notRecorded(operative.traitsMissing) };
+  const icons: TableCellIconItem[] = operative.traits.map((entry: OperativeTrait) => {
+    const art = artState(readView, urlArtHandle(entry.icon === null ? null : artwork[entry.icon]));
+    return { name: entry.name ?? entry.token ?? 'Trait not named', ...(art.icon ? { url: art.icon } : {}), ...(art.iconPending ? { pending: true } : {}) };
+  });
+  return { value: knownValue(operative.traits.length), icons, iconStripKind: 'traits' };
 }
 
 function progressCell(operative: RosterOperative): TableCell {
@@ -71,26 +91,13 @@ function progressCell(operative: RosterOperative): TableCell {
 
 function missionCell(readView: BoundedReadView, operative: RosterOperative, boundary: IdentityBoundary): TableCell {
   const name = operative.assignmentName;
-  const missing = operative.assignmentMissing ?? 'Mission not recorded';
+  const value = name ? knownValue(name) : notRecorded(operative.assignmentMissing ?? 'Mission not recorded');
   const tag = operative.target?.tag ?? null;
-  if (tag === null) return { value: name ? knownValue(name) : notRecorded(missing) };
-  const who = readView.who('country', tag);
-  boundary.next = Math.min(boundary.next, who.nextChangeAt);
-  const flag = who.flagChoice?.status === 'ready' ? artLook(readView, flagArtHandle(who.flagChoice.value, 'small'))
-    : who.flagChoice?.status === 'pending' ? { flagPending: true } : {};
-  return {
-    value: name ? knownValue(name) : notRecorded(missing),
-    iconSlot: true,
-    looks: [{ from: Number.MIN_SAFE_INTEGER, name, ...flag, ...(name ? {} : { status: missing }) }],
-    lookHour: Number.MIN_SAFE_INTEGER,
-    country: tag,
-  };
+  return tag === null ? { value } : { value, flags: [identityFlag(readView, tag, { boundary })] };
 }
 
 function targetName(readView: BoundedReadView, tag: string | null | undefined): Value<string> {
-  if (!tag) return notRecorded('Not recorded');
-  const who = readView.who('country', tag);
-  return who.name.status === 'ready' ? knownValue(who.name.value) : who.name.status === 'pending' ? knownValue(tag) : notRecorded(who.name.reason);
+  return tag ? knownValue(identityName(readView, 'country', tag)) : notRecorded('Not recorded');
 }
 
 function rosterExtra(readView: BoundedReadView, operative: RosterOperative): readonly TooltipExtraRow[] {
@@ -129,11 +136,12 @@ export const rosterProjection: TableProjection<RosterProjectionOptions> = regist
         key: JSON.stringify([operative.roster, operative.id]),
         name: name.kind === 'known' ? name.value : operative.id,
         cells: {
-          operative: artNameCell(readView, name.kind === 'known' ? name.value : null, portrait ? { kind: 'url', url: portrait } : null, operative.nameMissing ?? 'Name not recorded'),
-          skill: { value: operative.skill === null ? notRecorded('Skill not recorded') : knownValue(operative.skill), format: 'integer' },
+          operative: artNameCell(readView, name.kind === 'known' ? name.value : null, urlArtHandle(portrait), operative.nameMissing ?? 'Name not recorded', 'portrait'),
+          skill: { value: operative.skill === null ? notRecorded('Skill not recorded') : knownValue(operative.skill) },
           progress: progressCell(operative),
           mission: missionCell(readView, operative, boundary),
-          state: { value: stateValue(operative), status: 'dot', ...(operative.captured ? { tone: 'red' } : {}) },
+          traits: traitsCell(readView, operative, reply.artwork),
+          state: stateCell(operative),
         },
         tooltipExtra: () => rosterExtra(readView, operative),
       };
@@ -142,6 +150,7 @@ export const rosterProjection: TableProjection<RosterProjectionOptions> = regist
       columns: ROSTER_COLUMNS,
       rows,
       hour,
+      rowHeightMode: 'media',
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
       ...(rows.length === 0

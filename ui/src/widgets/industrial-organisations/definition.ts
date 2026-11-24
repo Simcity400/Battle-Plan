@@ -3,14 +3,15 @@ import type { OptionField } from '../../dashboard/options';
 import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../families/table/settings.ts';
 
 export const COLUMNS: readonly TableColumnDefaults[] = [
-  { key: 'organisation', label: 'Organisation', as: 'flagName', offered: ['flagName', 'name'] },
+  { key: 'organisation', label: 'Organisation', as: 'plain', offered: OFFERED.text, hideable: false },
   { key: 'size', label: 'Size', as: 'faint', offered: OFFERED.number },
   { key: 'funds', label: 'Funds', as: 'faint', offered: OFFERED.number },
   { key: 'traits', label: 'Traits', as: 'faint', offered: OFFERED.number },
   { key: 'policy', label: 'Policy', as: 'plain', offered: OFFERED.text },
+  { key: 'view', label: '', as: 'plain', offered: OFFERED.text, hideable: false },
 ];
 export const DEFAULT_SORT = { column: 'size', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'normal', overflow: 'scroll', sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: DEFAULT_SORT };
 export const OPTIONS: readonly OptionField[] = tableFamilyOptions(COLUMNS, TABLE_BASE);
 
 export const definition = {

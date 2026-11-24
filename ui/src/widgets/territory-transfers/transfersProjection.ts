@@ -36,7 +36,10 @@ export const TRANSFER_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(column =
   priority: PRIORITY[column.key] ?? 9,
   numeric: column.key !== 'country',
   text: column.key === 'country',
-  ...(column.key === 'net' || column.key === 'victoryPoints' ? { format: SIGNED, widest: ['+9,999'] } : {}),
+  ...(column.key === 'country' ? { pinned: true } : {}),
+  ...(column.key === 'gained' || column.key === 'lost' ? { barEligible: true } : {}),
+  ...(column.key === 'net' || column.key === 'victoryPoints' ? { format: SIGNED, barEligible: false, widest: ['+9,999'] } : {}),
+  ...(column.key === 'victoryPoints' ? { unit: 'net' } : {}),
 }));
 
 const passes = (filter: DeclaredCountryFilter, tag: string, hour: number): boolean =>
@@ -83,7 +86,7 @@ export const transfersProjection: TableProjection<TransfersProjectionOptions> = 
       hour,
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
-      summaryPill: `${reply.transfers.toLocaleString('en-US')} ${reply.transfers === 1 ? 'transfer' : 'transfers'}`,
+      titleSummary: `${reply.transfers.toLocaleString('en-US')} ${reply.transfers === 1 ? 'transfer' : 'transfers'}`,
       ...(rows.length === 0 ? { empty: 'No territory transfers yet', emptyKind: 'empty' as const } : {}),
       warnings: reply.unobserved.length ? [...reply.warnings, 'Some settlements or ownership were not recorded before this date: the totals may be partial.'] : reply.warnings,
     };

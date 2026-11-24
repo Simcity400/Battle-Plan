@@ -67,7 +67,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'naval-losses', load: () => import('./naval-losses') },
   { kind: 'naval-supremacy', load: () => import('./naval-supremacy') },
   { kind: 'navy-size', load: () => import('./navy-size') },
-  { kind: 'next-elections', load: () => import('./next-elections') },
   { kind: 'nuclear-arsenal', playsBackDated: true, slots: ['render', 'countryChip'], load: () => import('./nuclear-arsenal') },
   { kind: 'occupation-reserve-manpower', load: () => import('./occupation-reserve-manpower') },
   { kind: 'occupation-trend', load: () => import('./occupation-trend') },

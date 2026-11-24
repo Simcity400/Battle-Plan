@@ -168,6 +168,17 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'next-elections',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'next-elections',
+      DEFAULT_VIEW,
+      () => import('../next-elections/electionsProjection.ts'),
+      mod => ({ projection: mod.electionsProjection, declaration: mod.electionsDeclaration }),
+    ),
+  },
+  {
     kind: 'air-missions',
     view: DEFAULT_VIEW,
     family: 'table',
