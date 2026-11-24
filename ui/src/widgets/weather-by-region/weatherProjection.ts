@@ -11,6 +11,7 @@ import {
   type HeatLanesModel,
   type HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
+import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
 import { regionLabel, signedRampColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { regionIds } from '../../families/regionTokens.ts';
@@ -257,6 +258,7 @@ export function projectWeather(readView: BoundedReadView, options: WeatherProjec
     playhead: through,
     gaps: reply.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' })),
     rows,
+    ...(options.show === 'conditions' ? { readoutWidth: LANE_READOUT_MAX_WIDTH } : {}),
     inspect: (rowIndex, at) => {
       const region = regions[rowIndex];
       return region ? inspectColumn(reply, region, rows[rowIndex]!.label, at, options, modifier, colours) : null;
