@@ -26,6 +26,7 @@ import type {
   FamilyStaticSources,
   FamilyViewportChange,
 } from './adapter.ts';
+import { DEFAULT_VIEW, viewOwnedFields } from '../manifest.ts';
 import { renderFamilyStatus } from './FamilyBodyState.tsx';
 import FamilyHost from './FamilyHost.tsx';
 import { useFamilyTheme } from './theme.ts';
@@ -79,6 +80,7 @@ export interface DeclaredFamilyWidgetProps<
 > extends WidgetProps {
   readonly adapter: FamilyHostAdapter<TModel, TProjectionOptions, TBinding>;
   readonly declaration: DeclaredFamilyWidgetDeclaration<TModel, TProjectionOptions, TAux>;
+  readonly view?: string;
   readonly selectedKey?: string | null;
   readonly onActivate?: (action: InstalledAction) => void;
   readonly onToggle?: (action: InstalledAction) => void;
@@ -98,6 +100,7 @@ export default function DeclaredFamilyWidget<
 >({
   adapter,
   declaration,
+  view = DEFAULT_VIEW,
   widget,
   runtime,
   active,
@@ -152,12 +155,16 @@ export default function DeclaredFamilyWidget<
     });
   }, [externalArtDemands]);
 
+  const optionFields = useMemo(
+    () => (declaration.optionFields ? viewOwnedFields(declaration.optionFields, view) : undefined),
+    [declaration.optionFields, view],
+  );
   const plan = useFamilyPlan<TAux>({
     kind: declaration.kind,
     subject: declaration.subject,
     emptyCampaign: declaration.emptyCampaign,
     icon: declaration.icon,
-    optionFields: declaration.optionFields,
+    optionFields,
     countries: declaration.countries,
     aux: declaration.aux,
     sources: declaration.sources,
@@ -275,6 +282,7 @@ export default function DeclaredFamilyWidget<
       key={branchKey}
       adapter={adapter}
       declaration={declaration.projection}
+      view={view}
       options={projectionOptions}
       label={declaration.label}
       subject={declaration.subject}
@@ -284,7 +292,7 @@ export default function DeclaredFamilyWidget<
       active={active}
       subscriptions={plan.subscriptions}
       allowEmptyFollow={plan.allowEmptyFollow}
-      owner={plan.owner}
+      owner={view === DEFAULT_VIEW ? plan.owner : JSON.stringify([plan.owner, view])}
       staticSources={staticSources}
       tiledSeries={hasPixelBinned ? plan.tiledSeries : undefined}
       tiledRevision={hasPixelBinned ? plan.tiledRevision : 0}

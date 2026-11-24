@@ -1,15 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { existsSync, readFileSync } from 'node:fs';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { widgetMetas } from './definitions.ts';
 import { manifestSlotsForKind } from './manifest.ts';
-import { isPlaybackActive, loadWidgetRenderer, preloadAllWidgetRenderers, rendererLoaders, setPlaybackActive } from './rendererLoaders.ts';
+import { buildRendererLoaders, isPlaybackActive, loadWidgetRenderer, preloadAllWidgetRenderers, rendererKinds, setPlaybackActive } from './rendererLoaders.ts';
+import { viewKey } from '../families/manifest.ts';
 
 test('all installed kinds have independent lazy loaders and unknown saved kinds remain unknown', async () => {
-  assert.deepEqual(Object.keys(rendererLoaders).sort(), widgetMetas.map(meta => meta.kind).sort());
+  assert.deepEqual([...rendererKinds()].sort(), widgetMetas.map(meta => meta.kind).sort());
   assert.equal(await loadWidgetRenderer('uninstalled-synthetic-kind'), undefined);
   const registry = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(registry, /import \w+ from ['"]\.\/[^'"]+['"]/);
@@ -60,37 +59,6 @@ test('every widget module loads with its registered lazy body and the catalogue 
       }
       if (renderer.usePresets) assert.equal(registered.usePresets, renderer.usePresets, `${meta.kind} presets are available on first catalogue open`);
     }
-
-  } finally { await vite.close(); }
-});
-
-test('a kind whose views are on two families renders the family of its active view', async () => {
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
-    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
-    plugins: [{ name: 'family-view-ssr', enforce: 'pre',
-      transform(source, id) {
-        if (id.replaceAll('\\', '/').endsWith('/dashboard/follow/useFollowed.ts')) {
-          return source.replace(/export function usePipeline\(/, 'function real_usePipeline(') + '\nexport function usePipeline() { return null; }';
-        }
-      },
-    }] });
-  try {
-    await vite.ssrLoadModule('/ui/src/widgets/index.ts');
-    const { loadWidgetRenderer: load } = await vite.ssrLoadModule('/ui/src/widgets/rendererLoaders.ts');
-    const { loadFamilyViewSpec } = await vite.ssrLoadModule('/ui/src/widgets/manifest.ts');
-    const { widgetDefinition } = await vite.ssrLoadModule('/ui/src/dashboard/definitions.ts');
-    await load('decryption');
-    await loadFamilyViewSpec('decryption', 'ciphers');
-    await loadFamilyViewSpec('decryption', 'matrix');
-    const Body = widgetDefinition('decryption').render;
-    const runtime = { tracks: [], campaignTracks: [], defaultRoleId: null, maps: {}, client: { available: true },
-      clock: { getHour: () => 0, getSnapshot: () => ({ playing: false, hoursPerSecond: 1 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } };
-    const body = (view: string) => renderToStaticMarkup(createElement(Body, {
-      widget: { id: 'd', kind: 'decryption', configVersion: 1, title: 'Decryption', campaign: 'default', trackIds: [], time: { mode: 'follow' }, countries: { kind: 'all' }, options: { view } },
-      runtime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {},
-    }));
-    assert.match(body('ciphers'), /decryption races/, 'the Ciphers view renders its meters view');
-    assert.match(body('matrix'), /who reads whom/, 'the Who reads whom view renders its heat-matrix view');
   } finally { await vite.close(); }
 });
 
@@ -150,4 +118,19 @@ test('idle preloading never runs while playback is active, respects idle budget,
     setPlaybackActive(clock, false);
     stop();
   }
+});
+
+test('two family views of one kind get their own loader, each loading its own declaration', async () => {
+  const declarationA = { name: 'A' };
+  const declarationB = { name: 'B' };
+  const spec = (view: string, declaration: object) => async () => ({ family: 'bars', kind: 'synthetic-two-views', view, projection: {} as never, declaration });
+  const loaders = buildRendererLoaders([], [
+    { kind: 'synthetic-two-views', view: 'shares', family: 'bars', loadSpec: spec('shares', declarationA) },
+    { kind: 'synthetic-two-views', view: 'race', family: 'bars', loadSpec: spec('race', declarationB) },
+  ], {});
+  const shares = loaders.get(viewKey('synthetic-two-views', 'shares'));
+  const race = loaders.get(viewKey('synthetic-two-views', 'race'));
+  assert.ok(shares && race && shares !== race);
+  assert.equal((await shares.load()).default.declaration, declarationA);
+  assert.equal((await race.load()).default.declaration, declarationB);
 });

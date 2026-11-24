@@ -1,57 +1,32 @@
 import type { ComponentType } from 'react';
 import { loadable } from '../components/loadable';
 import WidgetState from '../components/WidgetState';
-import type { WidgetProps, WidgetRenderer } from '../dashboard/definitions';
+import type { FamilyWidgetDeclaration, WidgetProps, WidgetRenderer } from '../dashboard/definitions';
 import { familyHost } from '../families/host/registry';
-import { normalizeView, type FamilyViewModule } from '../families/manifest';
-import { activeFamilyView, loadedFamilyViewSpec, loadFamilyViewSpec } from './manifest';
+import type { FamilyViewModule } from '../families/manifest';
+import type { WidgetSpec } from '../dashboard/model';
+import { resolveWidgetActiveView } from './manifest';
 import { loadedWidgetRenderer, loadWidgetRenderer } from './rendererLoaders';
 
 type Slot = 'render' | 'countryChip';
 const nothing = () => null;
-const specRenderers = new WeakMap<FamilyViewModule, ComponentType<WidgetProps>>();
-const viewRenderers = new Map<string, ComponentType<WidgetProps>>();
-const kindRenderers = new Map<string, ComponentType<WidgetProps>>();
+const declaredRenderers = new WeakMap<object, ComponentType<WidgetProps>>();
 
-function rendererForSpec(spec: FamilyViewModule): ComponentType<WidgetProps> {
-  let held = specRenderers.get(spec);
+function rendererForDeclaration(declaration: FamilyWidgetDeclaration, view: string): ComponentType<WidgetProps> {
+  let held = declaredRenderers.get(declaration);
   if (!held) {
+    const spec: FamilyViewModule = {
+      family: declaration.family,
+      kind: declaration.kind,
+      view,
+      projection: declaration.projection,
+      declaration,
+    };
     held = (props: WidgetProps) => {
       const Host = familyHost(spec.family);
       return Host ? <Host spec={spec} {...props} /> : <WidgetState kind="unavailable" message={`Family host unavailable: ${spec.family}`} />;
     };
-    specRenderers.set(spec, held);
-  }
-  return held;
-}
-
-function familyViewRenderer(kind: string, view: string): ComponentType<WidgetProps> {
-  const key = `${kind}\u0000${view}`;
-  let held = viewRenderers.get(key);
-  if (!held) {
-    held = loadable<WidgetProps>(
-      () => loadFamilyViewSpec(kind, view).then(spec => (spec ? rendererForSpec(spec) : nothing)),
-      () => <WidgetState kind="loading" label="Loading widget…" />,
-      () => {
-        const spec = loadedFamilyViewSpec(kind, view);
-        return spec && rendererForSpec(spec);
-      },
-    );
-    viewRenderers.set(key, held);
-  }
-  return held;
-}
-
-function familyViewsRenderer(kind: string): ComponentType<WidgetProps> {
-  let held = kindRenderers.get(kind);
-  if (!held) {
-    held = (props: WidgetProps) => {
-      const entry = activeFamilyView(kind, props.widget.options);
-      if (!entry) return <WidgetState kind="unavailable" message="Widget renderer unavailable." />;
-      const View = familyViewRenderer(kind, normalizeView(entry.view));
-      return <View {...props} />;
-    };
-    kindRenderers.set(kind, held);
+    declaredRenderers.set(declaration, held);
   }
   return held;
 }
@@ -59,18 +34,30 @@ function familyViewsRenderer(kind: string): ComponentType<WidgetProps> {
 export function lazyWidget(kind: string, slots: readonly Slot[]): WidgetRenderer {
   const renderer: WidgetRenderer = {};
   for (const slot of slots) {
-    const pick = (loaded: WidgetRenderer | undefined) => {
+    const pick = (view: string, loaded: WidgetRenderer | undefined) => {
       if (slot === 'render' && !loaded?.render && loaded?.declaration) {
-        return familyViewsRenderer(kind) as ComponentType<object>;
+        return rendererForDeclaration(loaded.declaration, view) as ComponentType<object>;
       }
       return (loaded?.[slot] as ComponentType<object> | undefined) ?? nothing;
     };
-    const wrapper = loadable<object>(
-      async () => pick(await loadWidgetRenderer(kind)),
-      () => slot === 'render' ? <WidgetState kind="loading" label="Loading widget…" /> : null,
-      () => { const loaded = loadedWidgetRenderer(kind); return loaded && pick(loaded); },
-    );
-    Object.assign(renderer, { [slot]: wrapper });
+    const byView = new Map<string, ComponentType<object>>();
+    const forView = (view: string) => {
+      let held = byView.get(view);
+      if (!held) {
+        held = loadable<object>(
+          async () => pick(view, await loadWidgetRenderer(kind, view)),
+          () => slot === 'render' ? <WidgetState kind="loading" label="Loading widget…" /> : null,
+          () => { const loaded = loadedWidgetRenderer(kind, view); return loaded && pick(view, loaded); },
+        );
+        byView.set(view, held);
+      }
+      return held;
+    };
+    const ViewSlot = (props: { readonly widget?: WidgetSpec }) => {
+      const Slot = forView(resolveWidgetActiveView(kind, props.widget?.options));
+      return <Slot {...props} />;
+    };
+    Object.assign(renderer, { [slot]: ViewSlot });
   }
   return renderer;
 }
