@@ -32,7 +32,10 @@ import {
   buildPlaybackBoundedRequest,
   buildStaticRequest,
   compileFollowPlan,
+  currentHovers,
   FamilySourceBroker,
+  hoverAsks,
+  type HeldHover,
   needsPlaybackBoundedRead,
   planSignature,
   playbackIdleInterval,
@@ -704,39 +707,38 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }, []);
 
   const hoverBrokerRef = useRef<FamilySourceBroker | null>(null);
-  const [hovers, setHovers] = useState<Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>>({});
+  const [heldHovers, setHeldHovers] = useState<Readonly<Record<string, HeldHover>>>({});
+  const asks = useMemo(() => (active && plan ? hoverAsks(plan, hoverHour) : []), [active, plan, hoverHour]);
+  const hovers = useMemo(() => currentHovers(asks, heldHovers), [asks, heldHovers]);
+  const hoverSlotsRef = useRef<ReadonlySet<string>>(new Set());
 
   useEffect(() => {
     if (!hoverBrokerRef.current) hoverBrokerRef.current = new FamilySourceBroker();
     const broker = hoverBrokerRef.current;
-    const entries = active && plan
-      ? plan.entries.filter((e): e is typeof e & { readonly read: Extract<typeof e.read, { shape: 'exact-hover' }> } => e.read.shape === 'exact-hover')
-      : [];
-    if (!entries.length || hoverHour === null || hoverHour === undefined || !Number.isFinite(hoverHour)) {
-      for (const e of entries) broker.cancelSlot(`hover:${e.name}`);
-      setHovers(prev => (Object.keys(prev).length ? {} : prev));
-      return;
-    }
-    const targetHour = Math.floor(hoverHour);
-    for (const entry of entries) {
-      const read = entry.read;
-      if (!read.params) continue;
-      const params = { ...read.params, [read.hourParam ?? 'hour']: targetHour };
-      const req = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
-      const key = `${entry.source.id}|${entry.source.revision}|${entry.branch}|${read.product}|${JSON.stringify(params)}`;
+    const names = new Set(asks.map(ask => ask.name));
+    for (const name of hoverSlotsRef.current) if (!names.has(name)) broker.cancelSlot(`hover:${name}`);
+    hoverSlotsRef.current = names;
+    setHeldHovers(prev => {
+      const gone = Object.keys(prev).filter(name => !names.has(name));
+      if (!gone.length) return prev;
+      const kept = { ...prev };
+      for (const name of gone) delete kept[name];
+      return kept;
+    });
+    for (const ask of asks) {
       broker.runSlot(
-        `hover:${entry.name}`,
-        key,
+        `hover:${ask.name}`,
+        ask.key,
         async signal => {
-          const reply = validateProductReply(await runtime.client.product(req, signal), req);
-          return read.validate ? read.validate(reply.data) : reply.data;
+          const reply = validateProductReply(await runtime.client.product(ask.request, signal), ask.request);
+          return ask.validate ? ask.validate(reply.data) : reply.data;
         },
         data => {
-          setHovers(prev => ({ ...prev, [entry.name]: { hour: targetHour, data } }));
+          setHeldHovers(prev => ({ ...prev, [ask.name]: { key: ask.key, hour: ask.hour, data } }));
         },
       );
     }
-  }, [active, plan, hoverHour, runtime.client]);
+  }, [asks, runtime.client]);
 
   useEffect(() => () => {
     hoverBrokerRef.current?.dispose();
