@@ -238,21 +238,25 @@
 }
 
 .tf-th-parts {
-  display: flex;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
 }
 
 .tf-th-operator {
+  flex: none;
+  width: 8px;
+  margin-left: 2px;
+  text-align: center;
   color: var(--muted);
   font-weight: 400;
-  margin-right: 2px;
 }
 
 .tf-th-part {
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
   min-width: 0;
 }

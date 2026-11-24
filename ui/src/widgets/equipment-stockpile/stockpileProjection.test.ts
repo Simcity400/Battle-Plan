@@ -67,10 +67,10 @@ test('an AI country hatches Need and Balance in the header and has no net column
   assert.equal(parts.columns.find(column => column.key === 'sum')!.cellKind, 'stockpileBalance');
 });
 
-test('the Short or over and Produced − Need = Balance headers are as wide as their words', () => {
+test('the Short or over header is as wide as its words; Produced − Need = Balance takes three equal slots, as the figures do', () => {
   const columns = stockpileColumns('sum', null);
   const settings = tableSettingsOf(undefined, columns, STOCKPILE_BASE);
   const widths = measureFixedColumnWidths(buildColumnLayouts(columns, settings), settings, { font: 'sans-serif', fontSize: { small: 12, body: 13 } }, text => text.length * 10);
   assert.ok(widths.net! >= 'ShortOver'.length * 10, `net ${widths.net}`);
-  assert.ok(widths.sum! >= 'ProducedNeedBalance−='.length * 10, `sum ${widths.sum}`);
+  assert.ok(widths.sum! >= 3 * ('Produced'.length * 10 + 14), `three equal slots, each as wide as the widest word and its operator (${widths.sum})`);
 });

@@ -114,8 +114,7 @@ export function buildColumnLayouts(
   return ordered;
 }
 
-const PART_GAP = 6;
-const OPERATOR_GAP = 6;
+const OPERATOR_SLOT = 14;
 const HEADER_HATCH = 15;
 const SHORT_OVER_GAP = 8;
 
@@ -124,13 +123,12 @@ function headerGroupWidth(column: FamilyColumnLayout, measure: MeasureText, head
   if (!group) return 0;
   const unit = column.unit ? measure(column.unit, unitFont) : 0;
   if (group.kind === 'shortOver') return measure('Short', headFont) + measure('Over', headFont) + SHORT_OVER_GAP * 2 + 1 + CELL_INSET * 2;
-  let main = PART_GAP * Math.max(0, group.parts.length - 1);
-  for (const part of group.parts) {
-    main += measure(part.label, headFont);
-    if (part.operator) main += measure(part.operator, headFont) + OPERATOR_GAP;
-    if (part.notRecordedReason) main += HEADER_HATCH;
-  }
-  return Math.max(main, unit) + CELL_INSET * 2;
+  let slot = 0;
+  group.parts.forEach((part, at) => {
+    const next = group.parts[at + 1];
+    slot = Math.max(slot, measure(part.label, headFont) + (part.notRecordedReason ? HEADER_HATCH : 0) + (next?.operator ? OPERATOR_SLOT : 0));
+  });
+  return Math.max(slot * group.parts.length, unit) + CELL_INSET * 2;
 }
 
 export function measureFixedColumnWidths(

@@ -154,10 +154,10 @@ export function FamilyTableHeader({
     if (item.headerGroup?.kind === 'parts') {
       return <span className="tf-th-text-block">
         <span className="tf-th-main tf-th-parts">
-          {item.headerGroup.parts.map((part, idx) => <span key={idx} className="tf-th-part" title={part.notRecordedReason}>
-            {part.operator && <span className="tf-th-operator" aria-hidden="true">{part.operator}</span>}
+          {item.headerGroup.parts.map((part, idx, parts) => <span key={idx} className="tf-th-part" title={part.notRecordedReason}>
             <span>{part.label}</span>
             {part.notRecordedReason && <span className="tf-th-hatch" aria-hidden="true" />}
+            {parts[idx + 1]?.operator && <span className="tf-th-operator" aria-hidden="true">{parts[idx + 1]!.operator}</span>}
           </span>)}
         </span>
         {item.unit && <span className="tf-th-unit">{item.unit}</span>}

@@ -30,12 +30,12 @@ const NET: TableColumnSpec = { key: 'net', label: 'Short or over', as: 'plain', 
 
 function sumColumn(ai: string | null): TableColumnSpec {
   return {
-    key: 'sum', label: 'Produced − Need = Balance', unit: 'per day', as: 'plain', cellKind: 'stockpileSum', offered: OFFERED.number, priority: 1, sortable: false, hideable: false, numeric: true, minWidth: 174,
+    key: 'sum', label: 'Produced − Need = Balance', unit: 'per day', as: 'plain', cellKind: 'stockpileSum', offered: OFFERED.number, priority: 1, sortable: false, hideable: false, numeric: true, minWidth: 174, grow: 0,
     headerGroup: { kind: 'parts', parts: [{ label: 'Produced' }, { label: 'Need', operator: '−', ...(ai ? { notRecordedReason: ai } : {}) }, { label: 'Balance', operator: '=', ...(ai ? { notRecordedReason: ai } : {}) }] },
   };
 }
 
-const BALANCE: TableColumnSpec = { key: 'sum', label: 'Balance a day', as: 'plain', cellKind: 'stockpileBalance', offered: OFFERED.number, priority: 1, sortable: false, hideable: false, numeric: true, minWidth: 174 };
+const BALANCE: TableColumnSpec = { key: 'sum', label: 'Balance a day', as: 'plain', cellKind: 'stockpileBalance', offered: OFFERED.number, priority: 1, sortable: false, hideable: false, numeric: true, minWidth: 174, grow: 0 };
 
 export function stockpileColumns(layout: StockpileLayout, ai: string | null): TableColumnSpec[] {
   const figures = layout === 'parts' ? BALANCE : sumColumn(ai);
