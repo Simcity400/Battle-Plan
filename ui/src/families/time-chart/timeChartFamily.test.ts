@@ -25,7 +25,7 @@ import { SceneTiles } from '../sceneTiles.ts';
 import { formatChartAxisValue, hoverTimeChartLayout, layoutTimeChart } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
 import { buildLineSubpaths, collectVisibleChartArt, fitTimeChartLegend } from './painter.ts';
-import { parseFollowed } from '../../dashboard/follow/message.ts';
+import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { buildBoundedStack, headReading, headValueOf } from './seriesHelpers.ts';
 import { timeAxisLabels } from '../../draw/kit.ts';
