@@ -121,3 +121,97 @@ fn convoy_health_distinguishes_no_traffic_unknown_traffic_and_full_efficiency() 
         ]
     );
 }
+
+#[test]
+fn witnessed_naval_route_is_proven_even_when_another_client_has_no_route() {
+    use replay_data::rows::{ConvoyClientRow, CountryLinkRow, TableRows};
+    use replay_frame::frame::{Metrics, TableView, not_selected};
+
+    let mut frame = DecodedFrame { branch: 1, hour: 100, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow { id: 10, canonical_slot: 36 }]));
+    *frame.tables[TableId::ConvoyClients.index()] = TableView::Complete(TableRows::ConvoyClients(vec![
+        ConvoyClientRow { category: IMPORT, owner: 10, route_class: 1, route_country: 10, route_other: 2, convoys_assigned: 4, ..Default::default() },
+        ConvoyClientRow { category: IMPORT, owner: 10, route_class: 1, route_country: 10, route_other: 3, convoys_assigned: 6, ..Default::default() },
+    ]));
+    *frame.tables[TableId::ResourceOrigins.index()] = TableView::Complete(TableRows::ResourceOrigins(vec![]));
+    *frame.tables[TableId::TradeRoutes.index()] = TableView::Complete(TableRows::TradeRoutes(vec![
+        TradeRouteRow { country: 10, class: 1, other: 2, kind: NO_ROUTE, ..Default::default() },
+        TradeRouteRow { country: 10, class: 1, other: 3, kind: NAVAL_ROUTE, from: 100, to: 200, path: vec![59], ..Default::default() },
+    ]));
+
+    let proof = traffic_in_frame(&frame, 36);
+    let known = [HourSpan { first_hour: 100, last_hour: 100 }];
+    let cells_r59 = build_region_cells(59, &[], &[(100, 100, proof.clone())], &known, &[], 100, 100);
+    assert_eq!(cells_r59, vec![ConvoyCellRun { first_hour: 100, last_hour: 100, state: ConvoyCellState::Efficiency { value: 100_000 } }]);
+
+    let cells_r99 = build_region_cells(99, &[], &[(100, 100, proof)], &known, &[], 100, 100);
+    assert!(matches!(cells_r99.as_slice(), [ConvoyCellRun { state: ConvoyCellState::NotRecorded { .. }, .. }]));
+}
+
+#[test]
+fn recording_gaps_are_not_mislabelled_as_unheld_tag_hours() {
+    use dashboard_base::{Source, products::Product, test_fixtures::{CAMPAIGN, records, source}};
+    use replay::campaign::Replay;
+    use replay_data::rows::{CountryLinkRow, CountryRow, RegionalConvoyEfficiencyRow, TableSchema};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let make_frame = |hour: i32, has_ger: bool| {
+        let mut frame = source(1, hour, Some(1));
+        let set_complete = |f: &mut DecodedFrame, idx: usize, rows| {
+            *f.tables[idx] = TableView::Complete(rows);
+            f.metrics.table_ns[idx] = 1;
+        };
+        let countries = if has_ger {
+            vec![CountryRow { id: 10, canonical_slot: 1, tag: b"GER".to_vec(), ..Default::default() }]
+        } else {
+            vec![]
+        };
+        let links = if has_ger { vec![CountryLinkRow { id: 10, canonical_slot: 1 }] } else { vec![] };
+        set_complete(&mut frame, TableId::Countries.index(), tables::Countries::wrap(countries));
+        set_complete(&mut frame, TableId::CountryLinks.index(), tables::CountryLinks::wrap(links));
+        set_complete(&mut frame, TableId::RegionalConvoyEfficiency.index(), tables::RegionalConvoyEfficiency::wrap(vec![RegionalConvoyEfficiencyRow { country: 10, region: 17, efficiency: 50_000 }]));
+        set_complete(&mut frame, TableId::ConvoyClients.index(), tables::ConvoyClients::wrap(vec![]));
+        set_complete(&mut frame, TableId::ResourceOrigins.index(), tables::ResourceOrigins::wrap(vec![]));
+        set_complete(&mut frame, TableId::TradeRoutes.index(), tables::TradeRoutes::wrap(vec![]));
+        frame
+    };
+
+    let mut frames = Vec::new();
+    for h in 24..=26 {
+        frames.push(make_frame(h, true));
+    }
+    for h in 40..=42 {
+        frames.push(make_frame(h, true));
+    }
+    for h in 43..=45 {
+        frames.push(make_frame(h, false));
+    }
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let src = Source::from_replay(dashboard_base::SourceKey { source_id: "convoy-gap".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let reply = ConvoyHealth::load(
+        &src,
+        &ConvoyHealthParams {
+            branch_id: "1".into(),
+            view: ConvoyView::Regions,
+            country: Country::Tag("GER".into()),
+            from: Some(24),
+            to: Some(45),
+            regions: Some(vec![17]),
+            pinned_regions: None,
+            hidden_regions: None,
+            top: None,
+        },
+        &LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let region = reply.regions.iter().find(|r| r.region == 17).unwrap();
+    let gap_cell = region.cells.iter().find(|c| c.first_hour <= 30 && 30 <= c.last_hour).unwrap();
+    match &gap_cell.state {
+        ConvoyCellState::NotRecorded { reason } => assert_ne!(reason, "No country holds this tag at this hour", "recording gap must not claim tag unheld"),
+        other => panic!("expected NotRecorded in recording gap, got {other:?}"),
+    }
+    let unheld_cell = region.cells.iter().find(|c| c.first_hour <= 44 && 44 <= c.last_hour).unwrap();
+    assert_eq!(unheld_cell.state, ConvoyCellState::NotRecorded { reason: "No country holds this tag at this hour".into() });
+}
