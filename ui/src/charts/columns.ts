@@ -85,7 +85,7 @@ export function columnsLayer(periods: readonly ColumnPeriod[], colours: readonly
         if (!box) continue;
         const { left, width } = box;
         if (period.unknown) {
-          hatch(left, frame.plotTop, width, frame.toY(Math.max(frame.y[0], Math.min(frame.y[1], 0))) - frame.plotTop);
+          hatch(left, frame.plotTop, width, frame.plotHeight);
           continue;
         }
         let top = zero;

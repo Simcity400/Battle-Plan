@@ -7,7 +7,7 @@ import DrillHost from '../../charts/drill/DrillHost';
 import { useDrill } from '../../charts/drill/useDrill';
 import Legend from '../../charts/Legend';
 import { CATEGORY_LIMIT } from '../../charts/palette';
-import { columnAt, columnStops, columnsLayer } from '../../charts/columns';
+import { columnAt, columnStops } from '../../charts/columns';
 import { liveKey, valuesOf } from '../../charts/live';
 import type { Live, LiveValues } from '../../charts/live';
 import Table from '../../charts/table/Table';
@@ -29,7 +29,7 @@ import { useCountryNameAt } from '../../dashboard/reachedProduct';
 import GateState from '../../dashboard/GateState';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownHour } from '../../dashboard/widgetPerf';
-import { CHANNELS, LEDGERS, LEDGER_LABELS, OTHER, armyName, chartView, designAmount, formatAmount, monthArmies, monthBars, monthLabel, monthOf, monthTooltip,
+import { CHANNELS, LEDGERS, LEDGER_LABELS, OTHER, armyChartPresentation, armyColumnsLayer, armyName, chartView, designAmount, formatAmount, hatchKeyText, measureAvailabilityReason, monthArmies, monthBars, monthLabel, monthOf, monthTooltip,
   monthView, resolveArmyLosses, validateArmyLosses } from './armyLossesData';
 import type { ArmyLossesData, EquipmentStack, Ledger, ManpowerStack, Measure, MonthArmy, MonthBars } from './armyLossesData';
 import type { ArmyLossesReply } from './types';
@@ -40,7 +40,6 @@ import { useRegion, useRegionHourAt } from '../../dashboard/widgetTime.ts';
 
 const armyKey = (row: MonthArmy) => row.army.reference;
 const SORT = { column: 'army', direction: 'ascending' } as const;
-const BAR_STYLE = { spacing: 'proportional', thinBands: true } as const;
 const structureOf = (reply: ArmyLossesReply) => JSON.stringify([reply.absent, reply.armies, reply.manpower.map(row => row.key),
   reply.equipment.map(row => [row.key, row.design]), reply.designs, reply.emptyMonths, reply.unknownMonths, reply.availability]);
 
@@ -80,7 +79,8 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
     let made: { at: number; cells: LiveValues<number>; value: { data: ArmyLossesData; bars: MonthBars } } | null = null;
     return {
       read: () => {
-        const cells = state.live.read(), at = following ? Math.max(structureHour, hourAt(axisAt(runtime.clock.getSnapshot().position)) ?? structureHour) : structureHour;
+        const cells = state.live.read(), liveAt = following ? hourAt(axisAt(runtime.clock.getSnapshot().position)) : null;
+        const at = liveAt == null ? structureHour : Math.floor(liveAt);
         if (!made || made.cells !== cells || made.at !== at) {
           const resolved = resolveArmyLosses(reply, at, cells);
           made = { at, cells, value: { data: resolved, bars: monthBars(resolved, measure, stack, ledger, first, at, CATEGORY_LIMIT) } };
@@ -100,9 +100,9 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   const layers = useMemo<ChartLayer[]>(() => liveData ? [{
     draw: (ctx, frame, theme, drawn) => {
       const now = liveData.read().bars;
-      columnsLayer(now.periods, now.parts.map(part => colour(part.key)), BAR_STYLE).draw(ctx, frame, theme, drawn);
+      armyColumnsLayer(now.periods, now.parts.map(part => colour(part.key))).draw(ctx, frame, theme, drawn);
     },
-    extent: range => { const now = liveData.read().bars; return columnsLayer(now.periods, now.parts.map(part => colour(part.key)), BAR_STYLE).extent?.(range) ?? null; },
+    extent: range => { const now = liveData.read().bars; return armyColumnsLayer(now.periods, now.parts.map(part => colour(part.key))).extent?.(range) ?? null; },
   }] : [], [liveData, colour]);
   const chartData = useMemo(() => liveData ? { revision: () => [liveData.read()], subscribe: liveData.subscribe } : undefined, [liveData]);
   const liveHead = useMemo<LiveHead | undefined>(() => following ? { read: () => hourAt(axisAt(runtime.clock.getSnapshot().position)) ?? Number.NaN, subscribe: runtime.clock.subscribeFrame } : undefined,
@@ -163,22 +163,25 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
         render: row => row.amount === null ? 'Not recorded' : designAmount(String(row.amount)), paint: value => designAmount(String(Math.round(Number(value)))) } satisfies TableColumn<MonthArmy>]),
   ], [measure, caption]);
   if (!following) shown(data ? data.hour : null);
-  let main, charted = false;
+  const unavailableReason = data ? measureAvailabilityReason(data, measure, ledger) : null;
+  const presentation = bars ? armyChartPresentation(bars.periods, unavailableReason) : null;
+  let main, charted = false, chartNote: string | null = null;
   if (!track) main = <WidgetState kind="empty" message="Load a campaign to see army losses." />;
   else if (!gate.open) main = <GateState gate={gate} loading="Loading losses…" choose="Choose a country to see its army losses."
     absent={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
   else if (state.error) main = <WidgetState kind="error" failure={state.error} onRetry={state.retry} />;
-  else if (!data || !bars) main = <WidgetState kind="loading" label="Loading losses…" />;
+  else if (!data || !bars || !presentation) main = <WidgetState kind="loading" label="Loading losses…" />;
   else if (data.absent) main = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
-  else if (data.availability.armies || data.availability.manpower && measure === 'manpower')
-    main = <WidgetState kind="unavailable" message="The combat log wasn’t recorded at this time." detail={nameDetail} />;
-  else if (!bars.periods.some(period => !period.unknown))
+  else if (presentation.kind === 'unavailable')
+    main = <WidgetState kind="unavailable" message={presentation.message} detail={nameDetail} />;
+  else if (presentation.kind === 'empty')
     main = <WidgetState kind="empty" message={`${nameDetail ? 'No recorded army losses' : `${countryName} has no recorded army losses`}${following ? ' yet' : ''}.`} detail={nameDetail} />;
   else {
     charted = true;
+    chartNote = presentation.note;
     main = <div className="army-losses-chart">
       <TimeChart label={`${caption} per month`} extent={[first, widget.time.mode === 'range' && window ? Math.floor(window.lastHour) : track.branch.lastHour]}
-        branchStart={track.branch.firstHour} playhead={pinned ? hour : null} liveHead={liveHead} playback="cursor"
+        branchStart={track.branch.firstHour} playhead={pinned ? hour : null} liveHead={liveHead} playback={pinned ? 'draw-in' : 'cursor'}
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} keyHours={columnStops(bars.periods)} data={chartData}
         fitValues={span => span ? [Math.min(0, span[0]), Math.max(0, span[1])] : null}
         active={active} revision={`${structureHour}:${measure}:${stack}:${ledger}:${tokens.categories.join()}`}
@@ -188,14 +191,15 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
     </div>;
   }
   const legend = bars && bars.parts.length > 1 ? bars.parts.map(part => ({ id: part.key, label: part.label, color: colour(part.key) })) : [];
-  const unrecorded = charted && !!bars?.periods.some(period => period.unknown);
+  const hatchKey = charted && bars ? hatchKeyText(bars.periods) : null;
   return <div ref={rootRef} className="army-losses" data-detail={countryLabel.nameFailure?.message}>{menu.menu}
     <WidgetCaption>{caption} per month</WidgetCaption>
     {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" failure={country.error} onRetry={country.retry} /> : null}
     <DrillHost drill={drillControl} runtime={runtime} subject={month !== null} mode={options.drill === 'popout' ? 'popout' : 'inline'} title={month === null ? 'Month' : monthLabel(month)}
       day={month === null ? '' : monthLabel(month)} canFollow={false} anchor={anchor}
       onClose={() => dispatch({ type: 'close' })} main={<div className="army-losses-body">{main}{legend.length > 0 && <Legend label={caption} items={legend} />}
-        {unrecorded && <p className="army-losses-key"><i aria-hidden="true" style={hatchStyle(tokens)} />Not recorded: these months’ totals are unknown</p>}</div>}>
+        {hatchKey && <p className="army-losses-key"><i aria-hidden="true" style={hatchStyle(tokens)} />{hatchKey}</p>}
+        {chartNote && <p className="army-losses-key" role="status">{chartNote}</p>}</div>}>
       {month !== null && track && <div className="army-losses-drill">
         {drillState.error ? <WidgetState kind="error" failure={drillState.error} onRetry={drillState.retry} />
           : !drillData ? <WidgetState kind="loading" label="Loading the month…" />

@@ -1,5 +1,8 @@
 import { usNumber } from '../../charts/numberFormat.ts';
+import { columnBox, columnsExtent, columnsLayer } from '../../charts/columns.ts';
 import type { ColumnPeriod } from '../../charts/columns';
+import type { PlotFrame } from '../../charts/frame';
+import type { ChartLayer } from '../../charts/TimeChart';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
 import { firstHourOfMonth, formatDate, formatDateTime, gameDate, monthAt, monthIndex, monthNames } from '../../dashboard/calendar.ts';
@@ -73,10 +76,79 @@ const addExact = (left: bigint, right: bigint) => left + right;
 
 export interface Part { key: string; label: string }
 export interface MonthPart { key: string; value: number; raw: bigint }
-export interface MonthPeriod extends ColumnPeriod { key: string; parts: MonthPart[] }
+export interface MonthPeriod extends ColumnPeriod { key: string; parts: MonthPart[]; noRows?: boolean }
 export interface MonthBars { periods: MonthPeriod[]; parts: Part[]; first: number; last: number }
 
+const ARMY_BAR_STYLE = { spacing: 'proportional', thinBands: true } as const;
+const MIN_TERMINAL_BAR_WIDTH = 2;
+
 const plotted = (raw: bigint, measure: Measure) => measure === 'manpower' ? Number(raw) : fixedNumber(String(raw), 5);
+
+export function measureAvailabilityReason(reply: Pick<ArmyLossesData, 'availability'>, measure: Measure, ledger: Ledger): string | null {
+  if (reply.availability.armies !== null) return reply.availability.armies;
+  if (measure === 'manpower') return reply.availability.manpower;
+  return reply.availability.months ?? (ledger === 'enemy' ? reply.availability.enemyEquipment : reply.availability.ownEquipment);
+}
+
+export function availabilityMessage(reason: string): string {
+  const trimmed = reason.trim().replace(/\.+$/, '');
+  return trimmed ? `The combat log wasn’t recorded at this time: ${trimmed}.` : 'The combat log wasn’t recorded at this time.';
+}
+
+export type ArmyChartPresentation =
+  | { kind: 'chart'; note: string | null }
+  | { kind: 'unavailable'; message: string }
+  | { kind: 'empty' };
+
+export function armyChartPresentation(periods: readonly MonthPeriod[], unavailableReason: string | null): ArmyChartPresentation {
+  if (periods.some(period => !period.unknown)) {
+    return { kind: 'chart', note: unavailableReason !== null ? availabilityMessage(unavailableReason) : null };
+  }
+  if (unavailableReason !== null) return { kind: 'unavailable', message: availabilityMessage(unavailableReason) };
+  return { kind: 'empty' };
+}
+
+export function hatchKeyText(periods: readonly MonthPeriod[]): string | null {
+  const hasNoRows = periods.some(period => period.unknown && period.noRows);
+  const hasNotRecorded = periods.some(period => period.unknown && !period.noRows);
+  if (hasNoRows && hasNotRecorded) return 'No loss rows recorded or totals not recorded for these months';
+  if (hasNoRows) return 'No loss rows recorded for this month';
+  if (hasNotRecorded) return 'Not recorded: these months’ totals are unknown';
+  return null;
+}
+
+export function armyColumnsLayer(periods: readonly ColumnPeriod[], colours: readonly string[]): ChartLayer {
+  return {
+    draw(ctx, frame, tokens, state) {
+      const until = Math.min(frame.x[1], state.playhead ?? Infinity);
+      const terminalIndex = periods.findIndex(period =>
+        period.firstHour <= until && until <= period.lastHour
+        && until >= frame.x[0] && until <= frame.x[1]
+        && period.lastHour + 1 > frame.x[1]);
+      if (terminalIndex < 0) {
+        columnsLayer(periods, colours, ARMY_BAR_STYLE).draw(ctx, frame, tokens, state);
+        return;
+      }
+      const terminal = periods[terminalIndex];
+      const normalBox = columnBox(terminal, frame, ARMY_BAR_STYLE.spacing);
+      const minWidth = Math.min(frame.plotWidth, MIN_TERMINAL_BAR_WIDTH);
+      if (normalBox && normalBox.width >= minWidth) {
+        columnsLayer(periods, colours, ARMY_BAR_STYLE).draw(ctx, frame, tokens, state);
+        return;
+      }
+      columnsLayer(periods.slice(0, terminalIndex), colours, ARMY_BAR_STYLE).draw(ctx, frame, tokens, state);
+      const plotRight = frame.plotLeft + frame.plotWidth;
+      const width = Math.max(normalBox?.width ?? 0, minWidth);
+      const left = Math.max(frame.plotLeft, Math.min(normalBox ? normalBox.left : frame.toX(Math.max(terminal.firstHour, frame.x[0])), plotRight - width));
+      const terminalFrame: PlotFrame = {
+        ...frame,
+        toX: hour => hour <= terminal.firstHour ? left : left + width,
+      };
+      columnsLayer([terminal], colours, { spacing: 'pixel', thinBands: true }).draw(ctx, terminalFrame, tokens, state);
+    },
+    extent: range => columnsExtent(periods, range),
+  };
+}
 
 export function monthBars(reply: ArmyLossesData, measure: Measure, stack: ManpowerStack | EquipmentStack, ledger: Ledger,
   firstHour: number, lastHour: number, limit: number): MonthBars {
@@ -135,10 +207,18 @@ export function monthBars(reply: ArmyLossesData, measure: Measure, stack: Manpow
   const parts: Part[] = kept.map(key => ({ key, label: labels.get(key) ?? key }));
   if (folded.size) parts.push({ key: OTHER, label: 'Other' });
   const part = (key: string, raw: bigint): MonthPart => ({ key, value: plotted(raw, measure), raw });
+  const unavailable = measureAvailabilityReason(reply, measure, ledger) !== null;
   const periods: MonthPeriod[] = [];
   for (let month = first; month <= last; month++) {
     const firstOf = firstHourOfMonth(month), lastOf = firstHourOfMonth(month + 1) - 1;
-    if (!known.has(month) || unknown.has(month)) { periods.push({ key: String(month), firstHour: firstOf, lastHour: lastOf, parts: [], values: [], unknown: true }); continue; }
+    if (unknown.has(month) || (!known.has(month) && unavailable)) {
+      periods.push({ key: String(month), firstHour: firstOf, lastHour: lastOf, parts: [], values: [], unknown: true });
+      continue;
+    }
+    if (!known.has(month)) {
+      periods.push({ key: String(month), firstHour: firstOf, lastHour: lastOf, parts: [], values: [], unknown: true, noRows: true });
+      continue;
+    }
     const shown = values.get(month) ?? new Map<string, bigint>();
     let other = 0n;
     for (const [key, value] of shown) if (folded.has(key)) other = sum(other, value);
@@ -165,6 +245,7 @@ export function formatAmount(value: number | bigint, measure: Measure): string {
 export function monthTooltip(period: MonthPeriod, parts: readonly Part[], measure: Measure, caption: string, playhead: number | null,
   colour: (key: string) => string): TooltipContent {
   const title = monthLabel(Number(period.key));
+  if (period.noRows) return { title, subtitle: caption, rows: [{ label: 'No loss rows recorded for this month', tone: 'muted' }] };
   if (period.unknown) return { title, subtitle: caption, rows: [{ label: 'Not recorded', tone: 'muted' }] };
   const labels = new Map(parts.map(part => [part.key, part.label]));
   const rows: TooltipRow[] = period.parts.map(part => ({ label: labels.get(part.key) ?? part.key, swatch: colour(part.key), value: formatAmount(part.raw, measure) }));

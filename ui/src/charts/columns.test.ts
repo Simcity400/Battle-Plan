@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CAP_HEADROOM, columnAt, columnEdges, columnsExtent, columnStops } from './columns.ts';
+import { CAP_HEADROOM, columnAt, columnEdges, columnsExtent, columnsLayer, columnStops } from './columns.ts';
 import type { ColumnPeriod } from './columns';
+import { plotFrame } from './frame.ts';
+import type { ChartTokens } from './tokens';
 
 const periods: ColumnPeriod[] = [
   { firstHour: 0, lastHour: 743, values: [2, 3, 1] },
@@ -55,6 +57,57 @@ test('a period not known at all has no extent, never zero, and stops stay at eve
   const many = Array.from({ length: 5000 }, (_, i) => ({ firstHour: i * 10, lastHour: i * 10 + 9, values: [] }));
   assert.equal(columnAt(many, 49_995), 4999);
   assert.equal(columnAt(many, 12_345), 1234);
+});
+
+const fakeTokens = { muted: '#888', hatchSpacing: 4, lineWidth: { grid: 1, series: 2, emphasis: 3 } } as unknown as ChartTokens;
+
+function recordingCanvas() {
+  const rects: { x: number; y: number; width: number; height: number; fillStyle: string; globalAlpha: number }[] = [];
+  const ctx = {
+    fillStyle: '',
+    strokeStyle: '',
+    globalAlpha: 1,
+    lineWidth: 1,
+    save() {},
+    restore() {},
+    beginPath() {},
+    rect() {},
+    clip() {},
+    moveTo() {},
+    lineTo() {},
+    stroke() {},
+    fillRect(x: number, y: number, width: number, height: number) {
+      rects.push({ x, y, width, height, fillStyle: this.fillStyle, globalAlpha: this.globalAlpha });
+    },
+  };
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, rects };
+}
+
+test('spending all-null months keep main hatched cap and axis headroom; explicit unknown draws full height', () => {
+  const spendingNull: ColumnPeriod = { firstHour: 0, lastHour: 743, values: [null, null, null] };
+  assert.deepEqual(columnsExtent([spendingNull], [0, 743]), [0, 1]);
+  const frame = plotFrame(400, 200, { left: 40, right: 20, top: 20, bottom: 20 }, [0, 744], [-50, 100], false);
+  const spendingCanvas = recordingCanvas();
+  columnsLayer([spendingNull], ['#111', '#222', '#333']).draw(spendingCanvas.ctx, frame, fakeTokens, { playhead: null });
+  const expectedCapHeight = fakeTokens.hatchSpacing * 3;
+  assert.equal(spendingCanvas.rects.length, 1);
+  assert.deepEqual(spendingCanvas.rects[0], {
+    x: frame.plotLeft + 1,
+    y: frame.toY(0) - expectedCapHeight,
+    width: frame.plotWidth - 2,
+    height: expectedCapHeight,
+    fillStyle: fakeTokens.muted,
+    globalAlpha: 0.25,
+  });
+
+  const explicitUnknown: ColumnPeriod = { firstHour: 0, lastHour: 743, values: [], unknown: true };
+  assert.equal(columnsExtent([explicitUnknown], [0, 743]), null);
+  const unknownCanvas = recordingCanvas();
+  columnsLayer([explicitUnknown], ['#111'], { spacing: 'proportional', thinBands: true }).draw(unknownCanvas.ctx, frame, fakeTokens, { playhead: null });
+  assert.equal(unknownCanvas.rects.length, 1);
+  assert.equal(unknownCanvas.rects[0].y, frame.plotTop);
+  assert.equal(unknownCanvas.rects[0].height, frame.plotHeight);
+  assert.ok(unknownCanvas.rects[0].height > frame.toY(0) - frame.plotTop);
 });
 
 
