@@ -44,6 +44,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'decisions': { load: () => import('./decisions') },
   'division-template': { load: () => import('./division-template') },
   'doctrine-mastery': { load: () => import('./doctrine-mastery') },
+  'general-career': { load: () => import('./general-career/family.ts'), views: ['dossier'] },
   'equipment-designs': { load: () => import('./equipment-designs') },
   'equipment-produced': { load: () => import('./equipment-produced/family.tsx') },
   'event-choices': { load: () => import('./event-choices') },
@@ -142,11 +143,24 @@ export function widgetViewOptions(kind: string, storedOptions?: WidgetOptions, v
   return resolved;
 }
 
-export function presetStoredOptions(kind: string, chosen: WidgetOptions): WidgetOptions {
-  const fields = viewOptionFields(kind, resolveWidgetActiveView(kind, chosen));
-  const stored: Record<string, OptionValue> = {};
-  for (const [key, value] of Object.entries(chosen)) stored[fields.find(field => field.key === key)?.storeAs ?? key] = value;
-  return stored;
+export interface PresetWidget { readonly title?: string; readonly options?: WidgetOptions }
+
+const presetWidgets = new WeakMap<PresetWidget, Map<string, PresetWidget>>();
+
+export function presetWidget(kind: string, initial: PresetWidget): PresetWidget {
+  let byKind = presetWidgets.get(initial);
+  if (!byKind) presetWidgets.set(initial, byKind = new Map());
+  let held = byKind.get(kind);
+  if (held) return held;
+  const chosen = initial.options;
+  if (chosen) {
+    const fields = viewOptionFields(kind, resolveWidgetActiveView(kind, chosen));
+    const stored: Record<string, OptionValue> = {};
+    for (const [key, value] of Object.entries(chosen)) stored[fields.find(field => field.key === key)?.storeAs ?? key] = value;
+    held = { ...initial, options: stored };
+  } else held = initial;
+  byKind.set(kind, held);
+  return held;
 }
 
 export function manifestLegacyEntry(kind: string, view?: string): LegacyWidgetEntry | undefined {

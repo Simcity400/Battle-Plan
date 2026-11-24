@@ -3,7 +3,7 @@ import type { Canvas2D } from './textWidth.ts';
 import type { ChartTokens } from './tokens.ts';
 import { dayLabel, drawLine, spanLabel, tracePath } from './draw.ts';
 import { ordinates } from './linePick.ts';
-import { clipToSpans, curveSegments, extentOf, heldSegments, isOrderedSpans, runAt } from './series.ts';
+import { curveSegments, extentOf, heldSegments, isOrderedSpans, runAt } from './series.ts';
 import type { PathCommand, Point, Run } from './series.ts';
 import type { ChartPick } from './TimeChart';
 import { addStackAmount, stackEdges } from './stack.ts';
@@ -47,17 +47,6 @@ export function chartSummaryFrom(value: unknown): ChartSummary | null {
   let summary = decoded.get(value);
   if (summary === undefined) decoded.set(value, summary = decodeSummary(value as WireSummary));
   return summary;
-}
-
-export function chartSummaryRecord(value: unknown): Record<string, ChartSummary> | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const record: Record<string, ChartSummary> = {};
-  for (const [key, raw] of Object.entries(value)) {
-    const summary = chartSummaryFrom(raw);
-    if (!summary) return null;
-    record[key] = summary;
-  }
-  return record;
 }
 
 export type Decoded<L extends { summary: unknown }> = Omit<L, 'summary'> & { summary: ChartSummary };
@@ -444,13 +433,6 @@ export function drawSummaryShape(ctx: Canvas2D, frame: PlotFrame, tokens: ChartT
   });
 }
 
-export function drawBucketStream(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
-  stream: BucketStreamReader, color: string, held = false, to = Infinity,
-  options: SummaryLineOptions = {}, hours?: readonly [number, number], shape?: SummaryShape): Point | null {
-  const resolved = shape ?? buildSummaryShape(stream, held, to);
-  return drawSummaryShape(ctx, frame, tokens, resolved, color, options, hours, { stream, held, to });
-}
-
 export function drawLineSummary(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
   summary: ChartSummary, color: string, held = false, until: number | null = null,
   options: SummaryLineOptions = {}): Point | null {
@@ -595,35 +577,6 @@ export function pickSummaryLines(lines: readonly { key: string; summary: ChartSu
   let nearest = Infinity;
   for (const distance of distances.values()) nearest = Math.min(nearest, distance);
   return [...distances].filter(([, distance]) => distance <= nearest + 2).map(([key]) => key);
-}
-
-export function mergeSummaries(parts: readonly ChartSummary[]): ChartSummary {
-  if (!parts.length) throw new Error('A chart summary join needs a viewport.');
-  const view = parts[0];
-  if (parts.some(part => part.from !== view.from || part.to !== view.to || part.width !== view.width || part.buckets.length !== view.buckets.length))
-    throw new Error('Chart summary aliases belong to different viewports.');
-  const buckets = view.buckets.map((_bucket, column) => {
-    const recorded = parts.flatMap(part => part.buckets[column] ? [part.buckets[column]!] : []).sort((a, b) => a.firstHour - b.firstHour);
-    let merged: ChartBucket | null = null;
-    for (const next of recorded) {
-      if (!merged) { merged = { ...next }; continue; }
-      if (merged.lastHour >= next.firstHour) throw new Error('Chart summary aliases overlap.');
-      const same: boolean = next.lastValueHour === next.firstHour && !next.firstBreak && merged.lastHour + 1 === next.firstHour && next.minValue === next.maxValue && merged.lastValue === next.firstValue;
-      const minimum: ChartBucket = merged.minValue <= next.minValue ? merged : next;
-      const maximum: ChartBucket = merged.maxValue >= next.maxValue ? merged : next;
-      merged = { ...merged, lastHour: next.lastHour, lastValue: next.lastValue,
-        lastValueHour: same ? merged.lastValueHour : next.lastValueHour,
-        minHour: minimum.minHour, minValue: minimum.minValue, maxHour: maximum.maxHour, maxValue: maximum.maxValue,
-        hasBreak: merged.hasBreak || next.hasBreak || next.firstBreak || merged.lastHour + 1 !== next.firstHour };
-    }
-    return merged;
-  });
-  const exact = parts.every(part => exactRuns(part) !== null);
-  const runs = exact ? parts.flatMap(part => [...exactRuns(part)!]).sort((a, b) => a.firstHour - b.firstHour) : undefined;
-  const approximate = clipToSpans([{ firstHour: Math.floor(view.from), lastHour: Math.floor(view.to) }],
-    parts.flatMap(part => part.approximate ?? []));
-  return { from: view.from, to: view.to, width: view.width, buckets, ...(runs ? { runs } : {}),
-    ...(approximate.length ? { approximate } : {}) };
 }
 
 export function summaryStack(parts: readonly ChartSummary[], total?: ChartSummary) {

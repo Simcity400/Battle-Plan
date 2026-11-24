@@ -285,8 +285,8 @@ fn designer_classification_reads_the_designs_recorded_categories_and_refuses_an_
 
     content_reader_script::test_game::with(|game| {
         game.auxiliary(|tables| {
-            tables.category_names = Err(engine_executable::availability::Withheld::new(
-                "equipment categories",
+            tables.category_families = Err(engine_executable::availability::Withheld::new(
+                engine_executable::executable_tables::auxiliary::CATEGORY_FAMILIES,
                 "not decoded from this build",
             ));
         })

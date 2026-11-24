@@ -65,7 +65,7 @@ describe('apm-graph projection', () => {
       nameMissing: null,
       tag: 'ITA',
       hour: H1943,
-      summary: { apm: 100 - i * 8, confirmedApm: 100 - i * 8, orders: '100', pausedOrders: '5', unpausedMinutes: 10, complete: true, gaps: false },
+      summary: { apm: 100 - i * 8, confirmedApm: 100 - i * 8, orders: String((100 - i * 8) * 10), confirmedOrders: String((100 - i * 8) * 10), pausedOrders: '5', unpausedMinutes: 10, unpausedMinutesNum: '10', unpausedMinutesDen: '1', complete: true, gaps: false },
       points: [],
     }));
     const head: ApmReply = { available: true, players: [], series, warnings: [] };
@@ -106,7 +106,7 @@ describe('apm-graph projection', () => {
         nameMissing: null,
         tag: 'ITA',
         hour: H1943,
-        summary: { apm: 42, confirmedApm: 42, orders: '42', pausedOrders: '0', unpausedMinutes: 1, complete: true, gaps: true },
+        summary: { apm: 42, confirmedApm: 42, orders: '42', confirmedOrders: '42', pausedOrders: '0', unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: true },
         points: [],
       }],
       warnings: [],
@@ -120,7 +120,7 @@ describe('apm-graph projection', () => {
         nameMissing: null,
         tag: 'GER',
         hour: H1936 + 1,
-        summary: { apm: 20, confirmedApm: 20, orders: '20', pausedOrders: '0', unpausedMinutes: 1, complete: true, gaps: true },
+        summary: { apm: 20, confirmedApm: 20, orders: '20', confirmedOrders: '20', pausedOrders: '0', unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: true },
         points: [],
       }],
       warnings: [],
@@ -175,7 +175,7 @@ describe('apm-graph projection', () => {
         nameMissing: null,
         tag: 'ITA',
         hour: H1943,
-        summary: { apm: 50, confirmedApm: 50, orders: '50', pausedOrders: '0', unpausedMinutes: 1, complete: true, gaps: false },
+        summary: { apm: 50, confirmedApm: 50, orders: '50', confirmedOrders: '50', pausedOrders: '0', unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: false },
         points: [],
       }],
       warnings: [],
@@ -189,7 +189,7 @@ describe('apm-graph projection', () => {
         nameMissing: null,
         tag: 'GER',
         hour: H1936 + 5,
-        summary: { apm: 30, confirmedApm: 30, orders: '30', pausedOrders: '0', unpausedMinutes: 1, complete: true, gaps: false },
+        summary: { apm: 30, confirmedApm: 30, orders: '30', confirmedOrders: '30', pausedOrders: '0', unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: false },
         points: [],
       }],
       warnings: [],
@@ -253,5 +253,107 @@ describe('apm-graph projection', () => {
     );
     const departed = model.series.find(s => s.id === departedId);
     assert.equal(departed?.name, 'EarlyDepartedName', 'departed player uses dated name <= displayed hour, not future branch-latest name');
+  });
+
+  it('formats derived eAPM from exact recorded operands without float drift or Math.round and shows operands in hover tooltip', () => {
+    const exactId = 'user:exact';
+    const smallId = 'user:small';
+    const halfId = 'user:half';
+    const driftFloat = 3 / (3 / 10);
+    const head = {
+      available: true,
+      players: [],
+      series: [
+        {
+          id: exactId,
+          name: 'Exact',
+          nameMissing: null,
+          tag: 'GER',
+          hour: H1943,
+          summary: {
+            apm: driftFloat,
+            confirmedApm: driftFloat,
+            orders: '3',
+            confirmedOrders: '3',
+            pausedOrders: '0',
+            unpausedMinutes: 3 / 10,
+            unpausedMinutesNum: '3',
+            unpausedMinutesDen: '10',
+            complete: true,
+            gaps: false,
+          },
+          points: [],
+        },
+        {
+          id: halfId,
+          name: 'Half',
+          nameMissing: null,
+          tag: 'ITA',
+          hour: H1943,
+          summary: {
+            apm: 29.5,
+            confirmedApm: 29.5,
+            orders: '59',
+            confirmedOrders: '59',
+            pausedOrders: '0',
+            unpausedMinutes: 2,
+            unpausedMinutesNum: '2',
+            unpausedMinutesDen: '1',
+            complete: true,
+            gaps: false,
+          },
+          points: [],
+        },
+        {
+          id: smallId,
+          name: 'Small',
+          nameMissing: null,
+          tag: 'FRA',
+          hour: H1943,
+          summary: {
+            apm: 1 / 3,
+            confirmedApm: 1 / 3,
+            orders: '1',
+            confirmedOrders: '1',
+            pausedOrders: '0',
+            unpausedMinutes: 3,
+            unpausedMinutesNum: '3',
+            unpausedMinutesDen: '1',
+            complete: true,
+            gaps: false,
+          },
+          points: [],
+        },
+      ],
+      warnings: [],
+    } as unknown as ApmReply;
+    const tiledMap = new Map(head.series.map(s => [s.id, boundTiledSeries(makeTiled(s.id, s.summary.apm!), displayedHour(H1943))]));
+    const readView = createBoundedReadView({
+      hour: H1943,
+      panels: new Map([['head', head]]),
+      series: new Map([['apm', tiledMap]]),
+      hovers: new Map([['hover', { hour: H1943, data: head }]]),
+    });
+    const model = apmGraphProjection.project(readView, {
+      group: 'player',
+      extent: [H1936, H1943],
+      surface: '#111111',
+      gaps: [],
+      yMin: null,
+      yMax: null,
+      available: true,
+    });
+    assert.equal(model.series[0]?.endLabel?.value, '10', '3 actions in 3/10 min is exact 10, not float 9.999999999999998 -> 9');
+    assert.equal(model.series[1]?.endLabel?.value, '29', '59 actions in 2 min (29.5) truncates toward zero to 29, never Math.round 30');
+    assert.equal(model.series[2]?.endLabel?.value, '<1', '1 action in 3 min prints <1, never 0');
+    assert.equal(model.auditRows?.find(r => r.row === exactId)?.value, '10');
+    assert.equal(model.auditRows?.find(r => r.row === halfId)?.value, '29');
+    assert.equal(model.auditRows?.find(r => r.row === smallId)?.value, '<1');
+    const items = model.hoverDetail?.items ?? [];
+    assert.ok(items.some(item => item.label === 'Exact' && item.value === '10'), 'hover rate uses exact operands');
+    assert.ok(items.some(item => item.label === 'Half' && item.value === '29'), 'hover rate truncates toward zero');
+    assert.ok(items.some(item => item.label === 'Small' && item.value === '<1'), 'hover sub-unit rate prints <1');
+    assert.ok(items.some(item => item.label.includes('3 actions') && item.label.includes('0.3 min')), `hover shows recorded operands for Exact: ${JSON.stringify(items)}`);
+    assert.ok(items.some(item => item.label.includes('1 action') && item.label.includes('3 min')), `hover shows recorded operands for Small: ${JSON.stringify(items)}`);
   });
 });
