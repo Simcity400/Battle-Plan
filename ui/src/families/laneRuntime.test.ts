@@ -152,7 +152,7 @@ test('the shared quiet-frame check: no drawing or new field between boundaries, 
 
 const settle = async () => { for (let i = 0; i < 8; i++) await null; };
 
-test('a cold projection load walks no history, keeps one waiter per placement, and a failed import is refused by name, not retried', async () => {
+test('a cold projection load walks no history, keeps one waiter per placement, and a failed import fails by name until the host’s retry re-binds it', async () => {
   let release: (value: unknown) => void = () => {};
   let loads = 0;
   bindFamilyManifest([
@@ -175,12 +175,11 @@ test('a cold projection load walks no history, keeps one waiter per placement, a
     const broken = { ...binding(rowsAt([])), kind: 'broken' };
     lane.paint({ label: 'broken', binding: broken, hour: 10 });
     await settle();
-    for (let i = 0; i < 5; i++) {
-      const refused = lane.paint({ label: 'broken', binding: broken, hour: 10 });
-      assert.equal(refused.mode, 'refused');
-      assert.match(refused.reason ?? '', /chunk missing/);
-    }
+    for (let i = 0; i < 5; i++) assert.throws(() => lane.paint({ label: 'broken', binding: broken, hour: 10 }), /chunk missing/);
     assert.equal(loads, 2, 'a failed import is not retried on every paint');
+    assert.equal(view.next!({ widget: 1, subs: [], pictures: [], model: broken }, 10, lane.state), Infinity);
+    assert.equal(lane.paint({ label: 'retried', binding: broken, hour: 10, generation: 2 }).surfaces.length, 0, 'a re-bind clears the failure and loads again');
+    assert.equal(loads, 3);
   } finally {
     recording.restore();
   }
