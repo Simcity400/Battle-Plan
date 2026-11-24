@@ -28,12 +28,37 @@ export interface ActiveResearchRowMeta {
 
 const nextDayAfter = (hour: number) => (Math.floor(hour / 24) + 1) * 24;
 
+interface ResearchIndex {
+  readonly artwork: ReturnType<typeof researchArtwork>;
+  readonly folders: Map<string, string | undefined>;
+}
+
+const researchIndexes = new WeakMap<ResearchData, ResearchIndex>();
+
+function researchIndex(data: ResearchData): ResearchIndex {
+  let held = researchIndexes.get(data);
+  if (!held) {
+    held = { artwork: researchArtwork(data, EMPTY_ARTWORK), folders: new Map() };
+    researchIndexes.set(data, held);
+  }
+  return held;
+}
+
 function folderNameFor(
   data: ResearchData | undefined,
   token: string,
   databaseIndex: number,
 ): string | undefined {
   if (!data) return undefined;
+  const folders = researchIndex(data).folders;
+  const key = `${token}\u0000${databaseIndex}`;
+  if (folders.has(key)) return folders.get(key);
+  const name = folderNameOf(data, token, databaseIndex);
+  folders.set(key, name);
+  return name;
+}
+
+function folderNameOf(data: ResearchData, token: string, databaseIndex: number): string | undefined {
   let folderKey: string | null | undefined;
   for (const item of data.technologyFolders) {
     if (item.token !== token) continue;
@@ -57,8 +82,7 @@ function techNameOf(
   read: ResearchSlotsReply['slots'][number],
   token: string,
 ): string {
-  const artwork = researchArtwork(data, EMPTY_ARTWORK);
-  const raw = researchReadName(artwork, read);
+  const raw = data ? researchReadName(researchIndex(data).artwork, read) : undefined;
   return contentTitle(raw, token, 'Technology name unavailable');
 }
 
