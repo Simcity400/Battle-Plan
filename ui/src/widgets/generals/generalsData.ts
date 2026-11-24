@@ -1,18 +1,14 @@
 import type { GatedTime, PinnedSpec } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { countryNameDetails } from '../../charts/tooltip.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { clipToSpans } from '../../charts/series.ts';
 import { sortRows } from '../../charts/table/logic.ts';
-import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { stackedSpans } from '../../charts/timeline/layout.ts';
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import { firstHourOfMonth, formatDateTime, gameDate, monthIndex } from '../../dashboard/calendar.ts';
 import { createWidget } from '../../dashboard/model.ts';
-import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
-import { resolveOptions } from '../../dashboard/options.ts';
+import type { BoundTrack, WidgetBase } from '../../dashboard/model';
 import { subjectToken } from '../../dashboard/chosen.ts';
-import { GROW_WITH_PLAYBACK_OPTION } from '../general-career/definition.ts';
 import { DEFAULT_SORT } from './definition.ts';
 import type { TraitDate } from './types';
 import type { LeaderRow as WireRow, CareerBattle, LeaderCareerReply, LeaderHourReply, LeaderKinds, LeaderRole, LeaderSelection, LeaderTrait, LeaderWithheld, UnitLeadersReply } from '../../generated/dashboard';
@@ -25,7 +21,7 @@ function shaped(input: unknown, keys: readonly string[], what: string): void {
   if (typeof input !== 'object' || input === null || !keys.every(key => key in input)) throw new Error(`The ${what} reply is malformed.`);
 }
 export function validateLeaders(input: unknown): UnitLeadersReply {
-  shaped(input, ['leaders', 'traits', 'withheld', 'missing', 'battlesPartialFrom', 'warnings'], 'unit leaders');
+  shaped(input, ['leaders', 'traits', 'withheld', 'missing', 'battlesPartialFrom', 'skillIcons', 'warnings'], 'unit leaders');
   return input as UnitLeadersReply;
 }
 export function validateCareer(input: unknown): LeaderCareerReply {
@@ -85,29 +81,9 @@ export function topLeader(rows: readonly LeaderRow[]): LeaderRow | null {
 export const recordedSince = (firstSeen: number | null, recordingStart: number) => `Battles since ${formatDateTime(firstSeen ?? recordingStart)}`;
 
 export const BATTLE_COUNTS_PARTIAL = 'Battle counts are incomplete: some battles were not recorded.';
-const countRow = (label: string, partial: boolean, text: string, extra: Omit<TooltipRow, 'label' | 'value' | 'valueState'> = {}): TooltipRow => partial
-  ? { ...extra, label, valueState: { kind: 'partial', text, reason: BATTLE_COUNTS_PARTIAL } } : { ...extra, label, value: text };
-const countText = (count: number | null) => count == null ? '—' : String(count);
 
 export function traitDateText(date: TraitDate | null): string {
   return date ? `${DATES[date[1]] ?? 'Held by'} ${formatDateTime(date[0])}` : 'Date not recorded';
-}
-
-export function leaderTooltip(row: LeaderRow, country: { name: string; flag?: string; nameFailure?: Error; nameDetail?: string }): TooltipContent {
-  const names = attributeNames(row.role);
-  const { components } = row.row;
-  return { ...countryNameDetails(country), title: row.name, subtitle: `${country.name} · ${row.role.rank ?? `Rank ${row.role.category}`} · ${formatDateTime(row.hour)}`,
-    rows: [{ label: 'Skill', value: row.row.skill == null ? 'Not recorded' : `${row.row.skill}${row.role.maximumSkill == null ? '' : ` / ${row.role.maximumSkill}`}` },
-      { label: `${names[0]} · ${names[1]}`, value: `${components[0]} · ${components[1]}` },
-      { label: `${names[2]} · ${names[3]}`, value: `${components[2]} · ${components[3]}` },
-      countRow('Battles won / fought', row.foughtPartial, `${countText(row.won)} / ${countText(row.fought)}`, { divider: true }),
-      countRow('Battles lost', row.foughtPartial, countText(row.lost)),
-      countRow('Unresolved battles', row.foughtPartial, countText(row.unresolved)),
-      { label: 'Win rate', value: row.winRate == null ? 'No battles with known results.' : `${Math.round(row.winRate)}%` },
-      ...(row.row.traits === null ? [{ label: 'Traits not recorded', divider: true }] : row.traits.length === 0 ? [{ label: 'Traits', value: 'None recorded', divider: true }]
-        : row.traits.map((trait, i) => ({ label: contentTitle(trait.name, trait.token, 'Trait name unavailable'), icon: trait.icon ?? undefined, divider: i === 0,
-          value: traitDateText(row.row.traitDates[i] ?? null) })))],
-  };
 }
 
 export function careerTotals(career: LeaderCareerReply, hour: number) {
@@ -196,11 +172,10 @@ export function careerLanes(career: LeaderCareerReply, firstHour: number, lastHo
   ];
 }
 
-export function pinnedCareer(source: WidgetSpec, reference: string, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, time: GatedTime): PinnedSpec {
+export function pinnedCareer(source: WidgetBase, growWithPlayback: boolean, reference: string, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, time: GatedTime): PinnedSpec {
   const base = createWidget('general-career', track.id);
-  const options = resolveOptions([GROW_WITH_PLAYBACK_OPTION], source.options);
   return { ...base, campaign: source.campaign, trackIds: [...source.trackIds], countries: source.countries, time,
-    contentScale: source.contentScale, options: { leader: subjectToken(track.source.metadata.campaignKey, reference), growWithPlayback: options.growWithPlayback } };
+    contentScale: source.contentScale, options: { leader: subjectToken(track.source.metadata.campaignKey, reference), growWithPlayback } };
 }
 
 export function leaderRequestSelection(tags: readonly string[] | null): LeaderSelection {

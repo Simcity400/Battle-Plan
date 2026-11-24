@@ -1,5 +1,5 @@
 {
-  "maxLegacyViews": 33,
+  "maxLegacyViews": 32,
   "maxLegacyRendererViews": 6,
-  "maxUnusedExports": 72
+  "maxUnusedExports": 71
 }

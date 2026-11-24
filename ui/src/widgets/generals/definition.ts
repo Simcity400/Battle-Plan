@@ -1,16 +1,32 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
-import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
+import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../families/table/settings.ts';
 import { GROW_WITH_PLAYBACK_OPTION } from '../general-career/definition.ts';
 
-export const SORT_COLUMNS = [{ key: 'skill', label: 'Skill' }, { key: 'won', label: 'Battles won' }, { key: 'lost', label: 'Battles lost' }, { key: 'unresolved', label: 'Unresolved battles' }, { key: 'winRate', label: 'Win rate' }] as const;
+export const COLUMNS: readonly TableColumnDefaults[] = [
+  { key: 'portrait', label: 'Portrait', as: 'plain', offered: ['plain'] },
+  { key: 'country', label: 'Country', as: 'flag', offered: OFFERED.country },
+  { key: 'commander', label: 'Commander', as: 'plain', offered: OFFERED.text, hideable: false },
+  { key: 'skill', label: 'Skill', as: 'plain', offered: ['plain'] },
+  { key: 'attack', label: 'Attack', as: 'plain', offered: ['plain'] },
+  { key: 'defense', label: 'Defense', as: 'plain', offered: ['plain'] },
+  { key: 'third', label: 'Planning', as: 'plain', offered: ['plain'] },
+  { key: 'fourth', label: 'Logistics', as: 'plain', offered: ['plain'] },
+  { key: 'traits', label: 'Traits', as: 'plain', offered: ['plain'] },
+  { key: 'won', label: 'Battles won', as: 'faint', tone: 'grey', offered: OFFERED.number },
+  { key: 'lost', label: 'Battles lost', as: 'faint', tone: 'grey', offered: OFFERED.number },
+  { key: 'winRate', label: 'Win rate', as: 'plain', offered: ['plain'] },
+  { key: 'fought', label: 'Fought', as: 'faint', tone: 'grey', offered: OFFERED.number, defaultHidden: true },
+  { key: 'unresolved', label: 'Unresolved', as: 'faint', tone: 'grey', offered: OFFERED.number, defaultHidden: true },
+];
 export const DEFAULT_SORT = { column: 'skill', direction: 'descending' } as const;
+export const TABLE_BASE: TableBase = { density: 'comfortable', barsBehind: 'all', showRank: false, sort: DEFAULT_SORT };
 export const OPTIONS: readonly OptionField[] = [
-  ...tableSortOptions(SORT_COLUMNS, DEFAULT_SORT),
   { key: 'leaders', section: 'options', label: 'Leaders', kind: 'choice', default: 'all', choices: [
     { value: 'all', label: 'All' }, { value: 'land', label: 'Land' }, { value: 'navy', label: 'Navy' },
-  ] }, ...TABLE_OPTIONS, GROW_WITH_PLAYBACK_OPTION, DRILL_OPTION,
+  ] },
+  ...tableFamilyOptions(COLUMNS, TABLE_BASE),
+  GROW_WITH_PLAYBACK_OPTION,
 ];
 export const definition = {
   kind: 'generals', version: 1, title: 'Generals leaderboard', icon: 'star',

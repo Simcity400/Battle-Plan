@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BATTLE_COUNTS_PARTIAL, careerLanes, careerTotals, leaderRows, leaderTooltip, topLeader, withheldLeaders } from './generalsData.ts';
+import { careerLanes, careerTotals, leaderRows, topLeader, withheldLeaders } from './generalsData.ts';
 import type { CareerBattle, LeaderCareerReply, LeaderRole, LeaderRow, UnitLeadersReply } from '../../generated/dashboard';
 
 const role = (owner: string | null, kind = 1): LeaderRole => ({ owner, kind, category: 0, rank: 'Field Marshal', attributeNames: ['A', 'D', 'P', 'L'], maximumSkill: 9 });
@@ -10,7 +10,7 @@ const row = (reference: string, owner: string | null, skill: number | null, coun
 });
 const reply = (leaders: LeaderRow[], partialFrom: number | null = null): UnitLeadersReply => ({
   leaders, traits: [{ token: 'organizer', name: 'Organizer', icon: null, missing: null }],
-  withheld: [{ reference: '9', owner: 'ITA', kind: 2, name: null, reason: 'not decided' }], missing: null, battlesPartialFrom: partialFrom, resultsMissing: '', warnings: [],
+  withheld: [{ reference: '9', owner: 'ITA', kind: 2, name: null, reason: 'not decided' }], missing: null, battlesPartialFrom: partialFrom, resultsMissing: '', skillIcons: { land: [], navy: [] }, warnings: [],
 });
 
 test('leaderboard rows keep the kind and countries asked, with unresolved battles and a win rate among decided ones', () => {
@@ -29,10 +29,6 @@ test('counts read after the battle log went unrecorded are lower bounds', () => 
   const data = reply([row('1', 'GER', 5, [10, 6, 2])], 150);
   assert.equal(leaderRows(data, 149, null, 'all')[0].foughtPartial, false);
   assert.equal(leaderRows(data, 150, null, 'all')[0].foughtPartial, true);
-  const tip = leaderTooltip(leaderRows(data, 150, null, 'all')[0], { name: 'Germany' });
-  assert.deepEqual(tip.rows.find(r => r.label === 'Battles won / fought')?.valueState,
-    { kind: 'partial', text: '6 / 10', reason: BATTLE_COUNTS_PARTIAL }, 'R2-K7: a partial count keeps its mark and reason without lower-bound words');
-  assert.equal(leaderTooltip(leaderRows(data, 149, null, 'all')[0], { name: 'Germany' }).rows.find(r => r.label === 'Battles lost')?.value, '2');
 });
 
 test('withheld leaders are kept by kind and country', () => {

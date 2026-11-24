@@ -5899,6 +5899,15 @@ traits: Array<number> | null,
  * first observed); none where the logs hold none.
  */
 traitDates: Array<[number, number] | null>, firstSeenHour: number | null, fought: number, won: number, lost: number, };
+export type LeaderSkillIcons = {
+/**
+ * Skill, attack, defense, planning and logistics: the army leader window's sort buttons; none where the installed interface draws none.
+ */
+land: Array<SpriteFrame | null>,
+/**
+ * Skill, attack, defense, maneuvering and coordination: the navy leader window's sort buttons.
+ */
+navy: Array<SpriteFrame | null>, };
 export type UnitLeadersReply = { leaders: Array<LeaderRow>, traits: Array<LeaderTrait>, withheld: Array<LeaderWithheld>,
 /**
  * Why the leaders are not shown at this hour, when they are not.
@@ -5907,7 +5916,11 @@ missing: string | null,
 /**
  * The first hour up to this one the battle log was not recorded: counts are then lower bounds.
  */
-battlesPartialFrom: number | null, resultsMissing: string, warnings: Array<string>, };
+battlesPartialFrom: number | null, resultsMissing: string,
+/**
+ * The leader window's own skill icons, from the installed interface.
+ */
+skillIcons: LeaderSkillIcons, warnings: Array<string>, };
 export type UnitLeadersParamsAtHour = UnitLeadersParams & { hour: number };
 export type LeaderHourParams = { branchId: string, reference?: string, selection?: LeaderSelection, };
 export type LeaderTraining = { key: string, token: string | null, name: string | null, requiredRaw: string | null, };

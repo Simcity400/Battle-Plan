@@ -350,6 +350,17 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'generals',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'generals',
+      DEFAULT_VIEW,
+      () => import('../generals/generalsProjection.ts'),
+      mod => ({ projection: mod.generalsProjection, declaration: mod.generalsDeclaration }),
+    ),
+  },
+  {
     kind: 'most-decorated-divisions',
     view: DEFAULT_VIEW,
     family: 'table',
