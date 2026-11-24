@@ -195,6 +195,13 @@ export function compileFollowPlan(
   };
 }
 
+const NO_ENTRIES: readonly SourceEntry[] = [];
+
+export function readsWithoutFollow(read: SourceTimeShape): boolean {
+  if (read.shape === 'range') return true;
+  return (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point') && read.followQuery === null;
+}
+
 export function primaryExactEntry(plan: SourcePlan): SourceEntry | null {
   if (plan.exactEntry !== undefined) return plan.exactEntry;
   if (plan.staticEntry !== undefined) return plan.staticEntry;
@@ -501,6 +508,13 @@ interface ExactPart {
   readonly panel?: unknown;
   readonly live?: ReturnType<ReturnType<typeof repliedCells>['read']>;
   readonly hover?: unknown;
+}
+
+const NO_ENTRIES: readonly SourceEntry[] = [];
+
+function readsWithoutFollow(read: SourceTimeShape): boolean {
+  if (read.shape === 'range') return true;
+  return (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point') && read.followQuery === null;
 }
 
 export function exactEntries(plan: SourcePlan): readonly SourceEntry[] {

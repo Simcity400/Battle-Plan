@@ -27,6 +27,8 @@ import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { seriesHeadValue, buildBoundedStack } from './seriesHelpers.ts';
 import { sampleSeriesValueAt } from './hitTest.ts';
 import { politicalPowerProjection } from '../../widgets/political-power/politicalPowerProjection.ts';
+import { navyLinesProjection } from '../../widgets/navy-size/navyLinesProjection.ts';
+import { armyLinesProjection } from '../../widgets/army-size/armyLinesProjection.ts';
 import { supplyHealthProjection } from '../../widgets/supply-health/supplyHealthProjection.ts';
 import { rulingPartyProjection } from '../../widgets/ruling-party/rulingPartyProjection.ts';
 import { drawTimeChart } from './painter.ts';
@@ -916,6 +918,53 @@ describe('multi-country order from the product', () => {
     }), { tags: ['GER'], extent: [base, base + 95], gaps: [], surface: '#111111' });
     assert.equal(model.series[0]!.headValue, 22);
     assert.deepEqual(model.auditRows?.map(row => row.value), ['22']);
+  });
+});
+
+describe('several countries, one measure', () => {
+  const base = Math.floor(H1936 / 96) * 96;
+  const hour = base + 50;
+  const tags = ['A01', 'A02', 'A03', 'A04', 'A05', 'A06', 'A07', 'A08', 'A09', 'A10'];
+  const lines = new Map(tags.map((tag, at) => [tag, boundTiledSeries(makeTiledLine(tag, [makeBucket(base, base + 50, (at + 1) * 1000)]),
+    displayedHour(hour), { headValue: knownValue((at + 1) * 1000) })]));
+  const ranked = [...tags].reverse();
+  const rank = parseFollowed(message(10, [{ id: 1, answer: { keys: ranked.map((_, at) => BigInt(at + 1)), columns: 1, values: ranked.map(() => 1n), names: ranked } }])).answers[0]!.answer;
+  const project = (projection: typeof navyLinesProjection, membership: Readonly<Record<string, readonly (readonly [number, number])[]>> | null) =>
+    projection.project(createBoundedReadView({ hour, series: new Map([['main', lines]]), answers: new Map([['rank', rank]]) }),
+      { tags, top: null, membership, decimals: 0, extent: [base, base + 95], gaps: [], surface: '#111111' });
+
+  it('orders by the product ranking, colours eight and keeps the rest a grey tail without end labels', () => {
+    const model = project(navyLinesProjection, null);
+    assert.deepEqual(model.series.map(s => s.id), ranked);
+    assert.equal(model.series.filter(s => s.role === 'primary').length, 8);
+    assert.ok(model.series.slice(8).every(s => s.role === 'tail' && s.endLabel === null));
+    assert.equal(model.series[0]!.endLabel?.value, '10,000');
+  });
+
+  it('gives a country that has left the selection no head and no end label, and army size reads in K and M', () => {
+    const membership: Record<string, readonly (readonly [number, number])[]> = Object.fromEntries(tags.map(tag => [tag, tag === 'A10' ? [[base, base + 20] as const] : [[base, base + 95] as const]]));
+    const model = project(navyLinesProjection, membership);
+    const gone = model.series.find(s => s.id === 'A10')!;
+    assert.equal(gone.headValue, null);
+    assert.equal(gone.endLabel, null);
+    assert.equal(model.series.at(-1)!.id, 'A10', 'not present at the hour: last, never ranked');
+    assert.equal(project(armyLinesProjection, null).series[0]!.endLabel?.value, '10K');
+  });
+
+  it('draws a top of countries as the lines its tiles name, with exact hover readings matched by country', () => {
+    const named = new Map(['A07', 'A01', 'A03'].map(tag => [tag, lines.get(tag)!]));
+    const hovers = new Map([['hover', { hour: base + 10, data: { states: [
+      { country: 'A01', hour: base + 10, run: { valueRaw: '1234' }, missing: null },
+      { country: 'A09', hour: base + 10, run: { valueRaw: '99' }, missing: null },
+      { country: 'A03', hour: base + 10, run: null, missing: 'Country did not exist' },
+    ] } }]]);
+    const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named]]), hovers }),
+      { tags: [], top: 3, membership: null, decimals: 0, extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.deepEqual(model.series.map(s => s.id), ['A07', 'A01', 'A03']);
+    assert.equal(model.series.find(s => s.id === 'A07')!.exact, null);
+    assert.deepEqual(model.series.find(s => s.id === 'A01')!.exact, { hour: base + 10, value: 1234 });
+    assert.deepEqual(model.series.find(s => s.id === 'A03')!.exact, { hour: base + 10, value: null, reason: 'Country did not exist' });
+    assert.equal(model.series[0]!.endLabel?.value, '7,000');
   });
 });
 
