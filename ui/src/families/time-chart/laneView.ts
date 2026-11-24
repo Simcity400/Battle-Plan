@@ -7,7 +7,7 @@ import type { LaneView, Painted, PaintInput } from '../../draw/lane.ts';
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
 import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
-import { PENDING_ART, spriteArtKey, type ArtResolution } from '../art/types.ts';
+import { PENDING_ART, artHandleKey, type ArtResolution } from '../art/types.ts';
 import { BoundedSeriesCursor, createBoundedReadView, type WitnessedPoint } from '../boundedView.ts';
 import type { ArtDemand, ArtHandle, ArtProvider, BoundedSeries, EntityKind, IdentityDemand, IdentityProvider } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
@@ -57,14 +57,6 @@ function hydrateTiledLine(raw: SerializedTiledLine): TiledLine {
     parts: [...raw.parts],
     marks: raw.marks,
   };
-}
-
-export function spriteHandleKey(handle: ArtHandle): string {
-  if (handle.kind === 'sprite') return spriteArtKey(handle.key, handle.frame ?? 0);
-  if (handle.kind === 'portrait') return `portrait:${handle.key}`;
-  if (handle.kind === 'flag') return `flag:${handle.choice}:${handle.size}`;
-  if (handle.kind === 'path') return `path:${handle.path}#${handle.frame ?? 0}`;
-  return `url:${handle.url}#${handle.frame ?? 0}`;
 }
 
 interface HeldTimeChart {
@@ -275,7 +267,7 @@ export function timeChartLaneView(
           index: held.identityIndex,
           resolveHandle: handle => {
             if (handle.kind === 'sprite' && spriteMap) {
-              return spriteMap[spriteHandleKey(handle)] ?? PENDING_ART;
+              return spriteMap[artHandleKey(handle)] ?? PENDING_ART;
             }
             return PENDING_ART;
           },
@@ -300,7 +292,7 @@ export function timeChartLaneView(
       }
 
       const pendingIdentityDemands = new Map<string, readonly [EntityKind, string, number]>();
-      const pendingSpriteDemands = new Map<string, { readonly key: string; readonly frame: number }>();
+      const pendingSpriteDemands = new Map<string, ArtHandle>();
       const demandedArtUrls = new Set<string>();
 
       let model: TimeChartModel;
@@ -323,13 +315,11 @@ export function timeChartLaneView(
           },
           handle => {
             if (handle.kind === 'sprite') {
-              const spriteKey = handle.key;
-              const frame = handle.frame ?? 0;
-              const resolved = binding.spriteResolutions?.[spriteHandleKey(handle)];
+              const resolved = binding.spriteResolutions?.[artHandleKey(handle)];
               if (resolved?.status === 'ready' && resolved.url) {
                 demandedArtUrls.add(resolved.url);
               } else if (!resolved || resolved.status === 'pending') {
-                pendingSpriteDemands.set(spriteHandleKey(handle), { key: spriteKey, frame });
+                pendingSpriteDemands.set(artHandleKey(handle), handle);
               }
               return;
             }
