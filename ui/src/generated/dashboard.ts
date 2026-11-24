@@ -2670,48 +2670,24 @@ projects: Array<ConstructionProject>,
  * The names of the states its lines name.
  */
 states: Array<ConstructionStateName>, warnings: Array<string>, };
-export type ConstructionSpendingParams = { branchId: string, country: CountryRef, };
-export type SpentStep = { knownAt: number,
+export type ConstructionBreakdownParams = { branchId: string, country: CountryRef, hour: number, };
+export type ConstructionBreakdownReply = {
 /**
- * Fixed5; null where the total is not recorded (past what the recording holds).
+ * The branch's first hour: spending is counted from it.
  */
-totalRaw: string | null, };
-export type SpendingUnknown = { knownAt: number, reason: SpendingGap, project: string, until: number | null, };
-export type LeafProject = { project: string, firstRead: number, until: number | null, };
-export type SpendingLeaf = { repair: boolean, kind: ProjectKind,
+from: number, hour: number,
 /**
- * The building type's lexer id ([`ConstructionType::id`]).
+ * The breakdown stands unchanged from `hour` through this hour.
  */
-building: number | null, state: number | null, toState: number | null,
+through: number, breakdown: Breakdown,
 /**
- * In hour order.
+ * Projects whose output before observation began is not counted.
  */
-spent: Array<SpentStep>, unknown: Array<SpendingUnknown>,
+beforeFirstRead: number,
 /**
- * By first read.
+ * Projects whose output no country can be given, not counted.
  */
-projects: Array<LeafProject>, };
-export type ConstructionSpendingReply = { branchId: string, tag: string,
-/**
- * Units per factory output point of a total.
- */
-costScale: number,
-/**
- * Either construction queue was read in the branch.
- */
-recorded: boolean, types: Array<ConstructionType>, repairIcon: string | null, states: Array<ConstructionStateName>,
-/**
- * The tag's lines whose output before observation began is not counted.
- */
-beforeFirstRead: number, leaves: Array<SpendingLeaf>,
-/**
- * Output no country can be given: lines named by output alone with no recorded owner.
- */
-unattributed: Array<SpendingUnknown>,
-/**
- * Hours of the branch the recording does not hold: output then is not counted.
- */
-missing: Array<MissingSpan>, warnings: Array<string>, };
+unattributed: number, warnings: Array<string>, };
 export type DivisionLogParams = { branchId: string, facets: Array<FacetFilter>, from: number | null, to: number, cursor: string | null, pageSize: number, };
 export type DivisionLogTemplate = { id: string, name: string | null, };
 export type DivisionLogGap = { firstHour: number, lastHour: number, reason: string, };
@@ -6502,7 +6478,7 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "politics-state-history", "factory-groups", "air-force-size", "navy-size", "subjects", "diplomatic-pacts", "espionage-types", "raid-log", "production-lines", "production-line-breakdown", "place-names", "strategic-regions", "naval-supremacy", "unit-leader-portraits", "unit-leader-career", "unit-leader-choices", "regional-weather", "focus-card", "idea-history", "party-history", "casualty-breakdown", "casualty-labels", "peace-deals", "territory-transfers", "convoy-health", "trade-flows", "production-spending", "construction-log-manifest", "construction-log", "construction-spending", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "event-feed", "event-choices", "decisions", "event-feed-span", "market-ledger", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-catalogue", "equipment-stockpile-chart", "faction-state", "wars", "war-losses", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced", "equipment-produced-types", "equipment-produced-country", "equipment-produced-at", "power-spending", "power-spending-breakdown", "air-superiority-timeline", "air-superiority-ranking", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "country-people", "territory-breakdown", "game-score", "nuclear-arsenal", "training-queue", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "production-licences", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "minefield-reports", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "regional-weather-provinces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "air-mission-wings", "occupied-states", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "power-day", "faction-goal-rewards"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "politics-state-history", "factory-groups", "air-force-size", "navy-size", "subjects", "diplomatic-pacts", "espionage-types", "raid-log", "production-lines", "production-line-breakdown", "place-names", "strategic-regions", "naval-supremacy", "unit-leader-portraits", "unit-leader-career", "unit-leader-choices", "regional-weather", "focus-card", "idea-history", "party-history", "casualty-breakdown", "casualty-labels", "peace-deals", "territory-transfers", "convoy-health", "trade-flows", "production-spending", "construction-log-manifest", "construction-log", "construction-breakdown", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "event-feed", "event-choices", "decisions", "event-feed-span", "market-ledger", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-catalogue", "equipment-stockpile-chart", "faction-state", "wars", "war-losses", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced", "equipment-produced-types", "equipment-produced-country", "equipment-produced-at", "power-spending", "power-spending-breakdown", "air-superiority-timeline", "air-superiority-ranking", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "country-people", "territory-breakdown", "game-score", "nuclear-arsenal", "training-queue", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "production-licences", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "minefield-reports", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "regional-weather-provinces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "air-mission-wings", "occupied-states", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "power-day", "faction-goal-rewards"] as const;
 /** Products served separately from whole-branch history reads. */
 export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "focus-artwork", "technology-artwork", "country-flags", "doctrines", "sprite-artwork", "country-styles", "log-tail", "espionage-operation", "espionage-ended", "espionage-types", "production-line-breakdown", "place-names", "unit-leader-portraits", "unit-leader-career", "unit-leader-choices", "occupation-reserve-history", "land-battle-terrain", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "war-losses", "combat-log-history", "scoreboard", "equipment-produced-at", "template-roster", "air-statistics", "politics-state", "next-elections", "country-people", "territory-share", "territory-breakdown", "faction-rosters", "game-score", "nuclear-arsenal", "world-tension", "factory-parts", "country-experience", "training-queue", "diplomatic-relations", "casualty-matrix", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "espionage-operations", "occupation-reserve-manpower", "intel-network-coverage", "fuel-branches", "resource-balance", "lend-lease-balance", "production-lines-at", "production-licences", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "minefield-reports", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "regional-weather-provinces", "focus-unavailable", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "air-mission-wings", "occupied-states", "occupation-at", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "equipment-loss-head", "army-losses", "power-day", "faction-goal-rewards"] as const;
 /** Pages that replay recorded tables to their rows' hours: served apart, so no other request waits behind them. */
@@ -6530,9 +6506,9 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "casualty-pairs": {},
   "civil-wars": {},
   "combat-log-history": { "hour": "read", "countries.membership[].firstHour": "start", "countries.membership[].lastHour": "end", "countries.unobserved[].firstHour": "start", "countries.unobserved[].lastHour": "end" },
+  "construction-breakdown": { "hour": "end" },
   "construction-log": {},
   "construction-log-manifest": {},
-  "construction-spending": {},
   "content-entity-stats": { "hour": "read" },
   "convoy-health": { "from": "start", "to": "end" },
   "country-experience": { "hour": "read" },
@@ -6726,9 +6702,9 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "casualty-pairs": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "window": "leaf" },
   "civil-wars": { "branchId": "leaf" },
   "combat-log-history": { "branchId": "leaf", "countries": "node", "countries.countries": "node", "countries.countries[]": "any", "countries.membership": "node", "countries.membership[]": "node", "countries.membership[].firstHour": "leaf", "countries.membership[].lastHour": "leaf", "countries.membership[].tag": "leaf", "countries.unobserved": "node", "countries.unobserved[]": "node", "countries.unobserved[].firstHour": "leaf", "countries.unobserved[].lastHour": "leaf", "hour": "leaf" },
+  "construction-breakdown": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "construction-log": { "branchId": "leaf", "window": "leaf" },
   "construction-log-manifest": { "branchId": "leaf" },
-  "construction-spending": { "branchId": "leaf", "country": "any" },
   "content-entity-stats": { "branchId": "leaf", "hour": "leaf", "kind": "leaf", "token": "leaf" },
   "convoy-health": { "branchId": "leaf", "country": "any", "from": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "to": "leaf", "top": "leaf", "view": "leaf" },
   "country-experience": { "branchId": "leaf", "country": "any", "hour": "leaf" },
@@ -6922,9 +6898,9 @@ export type RequestParams<E, B> = {
   "casualty-pairs": {};
   "civil-wars": {};
   "combat-log-history": { readonly [key: string]: unknown; readonly "countries"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "hour"?: E | null };
+  "construction-breakdown": { readonly [key: string]: unknown; readonly "hour"?: B | null };
   "construction-log": {};
   "construction-log-manifest": {};
-  "construction-spending": {};
   "content-entity-stats": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "convoy-health": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
   "country-experience": { readonly [key: string]: unknown; readonly "hour"?: E | null };
