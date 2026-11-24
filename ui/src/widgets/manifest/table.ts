@@ -8,6 +8,7 @@ import * as DIVISION_EQUIPMENT from '../division-equipment/definition.ts';
 import { MARKET_TABS, VIEWS, marketTableOptions } from '../international-market/definition.ts';
 import { EVENTS_TABLE_OPTIONS, OPTIONS as WORLD_TENSION_OPTIONS } from '../world-tension/definition.ts';
 import { OPTIONS as STOCKPILE_OPTIONS } from '../equipment-stockpile/definition.ts';
+import { LEADERS_OPTION } from '../generals/definition.ts';
 
 const WORLD_TENSION_EVENTS_SCOPED_OPTIONS = [
   ...WORLD_TENSION_OPTIONS.filter(field => field.key === 'view'),
@@ -349,17 +350,19 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.factionGoalsProjection, declaration: mod.factionGoalsDeclaration }),
     ),
   },
-  {
+  ...LEADERS_OPTION.choices.map(choice => ({
     kind: 'generals',
-    view: DEFAULT_VIEW,
-    family: 'table',
+    view: choice.value,
+    label: choice.label,
+    family: 'table' as const,
+    viewOption: LEADERS_OPTION.key,
     loadSpec: tableSpec(
       'generals',
-      DEFAULT_VIEW,
+      choice.value,
       () => import('../generals/generalsProjection.ts'),
       mod => ({ projection: mod.generalsProjection, declaration: mod.generalsDeclaration }),
     ),
-  },
+  })),
   {
     kind: 'most-decorated-divisions',
     view: DEFAULT_VIEW,

@@ -38,12 +38,10 @@ pub fn parse_branch(branch_id: &str) -> Result<u64, &'static str> {
     branch_id.parse::<u64>().map_err(|_| "Invalid branch")
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum LeaderKinds {
-    #[default]
-    All,
     Land,
     Navy,
 }
@@ -51,7 +49,6 @@ pub enum LeaderKinds {
 impl LeaderKinds {
     pub fn includes(self, kind: u8) -> bool {
         match self {
-            Self::All => kind == KIND_ARMY || kind == KIND_NAVY,
             Self::Land => kind == KIND_ARMY,
             Self::Navy => kind == KIND_NAVY,
         }
@@ -576,7 +573,6 @@ pub struct UnitLeaders;
 pub struct UnitLeadersParams {
     pub branch_id: String,
     pub selection: LeaderSelection,
-    #[serde(default)]
     pub leaders: LeaderKinds,
 }
 

@@ -4,10 +4,15 @@ import { createBoundedReadView } from '../../families/boundedView.ts';
 import { artHandleKey, readyArt } from '../../families/art/types.ts';
 import type { ArtHandle, IdentityResult } from '../../families/plan.ts';
 import { resolveTableRows } from '../../families/table/model.ts';
-import { tableDefaults } from '../../families/table/settings.ts';
+import { TABLE_SETTINGS_KEY, tableDefaults } from '../../families/table/settings.ts';
 import type { LeaderRow, UnitLeadersReply } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
-import { generalsProjection, leaderSelection, type GeneralsOptions } from './generalsProjection.ts';
+import { catalogueEntries, widgetGroups } from '../../dashboard/widgetCategories.ts';
+import { followedTitle, resolveOptions } from '../../dashboard/options.ts';
+import type { FamilyPlanContext } from '../../families/plan.ts';
+import '../definitions.ts';
+import { familyViewOptionFields, presetWidget, type PresetWidget, resolveWidgetActiveView, resolveWidgetViewSwitch, widgetOptionFields } from '../manifest.ts';
+import { COLUMNS, definition, TABLE_BASE } from './definition.ts';
+import { generalsDeclaration, generalsProjection, leaderSelection, type GeneralsOptions } from './generalsProjection.ts';
 
 const land = { owner: 'GER', kind: 1, category: 0, rank: 'General', attributeNames: ['Attack', 'Defense', 'Planning', 'Logistics'] as LeaderRow['role']['attributeNames'], maximumSkill: 9 };
 const navy = { ...land, owner: 'ENG', kind: 2, rank: 'Admiral', attributeNames: ['Attack', 'Defense', 'Maneuvering', 'Coordination'] as LeaderRow['role']['attributeNames'] };
@@ -25,7 +30,8 @@ const reply = (leaders: LeaderRow[], partialFrom: number | null = null): UnitLea
   warnings: [],
 });
 
-const OPTIONS: GeneralsOptions = { filter: { passing: null, unrecorded: [], bounds: [] }, kind: 'all' };
+const OPTIONS: GeneralsOptions = { filter: { passing: null, unrecorded: [], bounds: [] }, kind: 'land' };
+const ADMIRALS: GeneralsOptions = { ...OPTIONS, kind: 'navy' };
 
 function view(data: UnitLeadersReply, names: Record<string, [string, number]> = {}) {
   const art = (handle: ArtHandle) => readyArt(`art:${artHandleKey(handle)}`);
@@ -42,23 +48,61 @@ function view(data: UnitLeadersReply, names: Record<string, [string, number]> = 
   });
 }
 
-test('skill cells draw the product’s icons for each leader’s own window; an icon the interface lacks is no icon', () => {
-  const model = generalsProjection.project(view(reply([leader('1', land), leader('2', navy)])), OPTIONS);
-  const [general, admiral] = [model.rows.find(row => row.key === '1')!, model.rows.find(row => row.key === '2')!];
-  assert.equal(general.cells.skill!.art?.status === 'ready' ? general.cells.skill!.art.url : undefined, `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_skill', frame: 0 })}`);
-  assert.equal(general.cells.attack!.art?.status === 'ready' ? general.cells.attack!.art.url : undefined, `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_attack', frame: 0 })}`);
-  assert.equal(general.cells.defense!.art, undefined);
-  assert.equal(admiral.cells.attack!.art?.status === 'ready' ? admiral.cells.attack!.art.url : undefined, `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_naval_attack', frame: 0 })}`);
-  assert.equal(admiral.cells.fourth!.art, undefined);
-  assert.deepEqual(
-    model.columns.filter(column => column.key === 'third' || column.key === 'fourth').map(column => [column.label, column.unit]),
-    [['Planning', '/ Maneuvering'], ['Logistics', '/ Coordination']],
-  );
-  const landOnly = generalsProjection.project(view(reply([leader('1', land)])), { ...OPTIONS, kind: 'land' });
-  assert.deepEqual(
-    landOnly.columns.filter(column => column.key === 'third' || column.key === 'fourth').map(column => [column.label, column.unit]),
-    [['Planning', undefined], ['Logistics', undefined]],
-  );
+test('one kind of leader per table: Generals shows only army leaders and Admirals only navy leaders, each with its own recorded skill names on one line and icons', () => {
+  const mixed: UnitLeadersReply = {
+    ...reply([leader('1', land), leader('2', navy)]),
+    withheld: [{ reference: '8', owner: 'GER', kind: 1, name: null, reason: 'not decided' }, { reference: '9', owner: 'ENG', kind: 2, name: null, reason: 'not decided' }, { reference: '7', owner: 'ENG', kind: 2, name: null, reason: 'not decided' }],
+  };
+  const headers = (model: ReturnType<typeof generalsProjection.project>) =>
+    model.columns.filter(column => ['attack', 'defense', 'third', 'fourth'].includes(column.key)).map(column => [column.label, column.unit]);
+  const url = (art: { readonly status: string; readonly url?: string } | undefined) => (art?.status === 'ready' ? art.url : undefined);
+  const generals = generalsProjection.project(view(mixed), OPTIONS);
+  assert.deepEqual(generals.rows.map(row => row.key), ['1']);
+  assert.deepEqual(headers(generals), [['Attack', undefined], ['Defense', undefined], ['Planning', undefined], ['Logistics', undefined]]);
+  assert.equal(url(generals.rows[0]!.cells.skill!.art), `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_skill', frame: 0 })}`);
+  assert.equal(url(generals.rows[0]!.cells.attack!.art), `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_attack', frame: 0 })}`);
+  assert.equal(generals.rows[0]!.cells.defense!.art, undefined, 'an icon the interface lacks is no icon');
+  assert.deepEqual(generals.notes, ['1 leader of these countries can’t be shown; Details lists why.'], 'the note counts only generals');
+  const admirals = generalsProjection.project(view(mixed), ADMIRALS);
+  assert.deepEqual(admirals.rows.map(row => row.key), ['2']);
+  assert.deepEqual(headers(admirals), [['Attack', undefined], ['Defense', undefined], ['Maneuvering', undefined], ['Coordination', undefined]]);
+  assert.equal(url(admirals.rows[0]!.cells.attack!.art), `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_naval_attack', frame: 0 })}`);
+  assert.equal(admirals.rows[0]!.cells.fourth!.art, undefined);
+  assert.deepEqual(admirals.notes, ['2 leaders of these countries can’t be shown; Details lists why.'], 'the note counts only admirals');
+  const modded = generalsProjection.project(view(reply([leader('3', { ...navy, attributeNames: ['Gunnery', 'Screening', 'Manoeuvre', 'Command'] })])), ADMIRALS);
+  assert.deepEqual(headers(modded).map(([label]) => label), ['Gunnery', 'Screening', 'Manoeuvre', 'Command'], 'a mod’s recorded names are the headers');
+});
+
+test('the header toggle is the manifest view switch, Generals | Admirals, and the stored view is the kind the read asks for', () => {
+  assert.deepEqual(resolveWidgetViewSwitch('generals')?.choices, [{ value: 'land', label: 'Generals' }, { value: 'navy', label: 'Admirals' }]);
+  const asked = (stored: Record<string, string>) => {
+    const shown = resolveWidgetActiveView('generals', stored);
+    const ctx = {
+      options: resolveOptions(familyViewOptionFields('generals', shown), stored),
+      branch: { id: '1' },
+      countries: { filter: { passing: null, unrecorded: [], bounds: [] } },
+      track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
+    } as unknown as FamilyPlanContext<unknown>;
+    const read = generalsDeclaration.sources(ctx, undefined as never).entries[0]!.read as unknown as { readonly params: { readonly leaders: string } };
+    return [shown, read.params.leaders, generalsDeclaration.projectionOptions(ctx as never).kind];
+  };
+  assert.deepEqual(asked({}), ['land', 'land', 'land']);
+  assert.deepEqual(asked({ leaders: 'navy' }), ['navy', 'navy', 'navy']);
+  assert.deepEqual(asked({ leaders: 'land' }), ['land', 'land', 'land']);
+  assert.deepEqual(asked({ leaders: 'all' }), ['land', 'land', 'land'], 'a layout saved with the old mixed table opens as Generals');
+  assert.equal(widgetOptionFields('generals', { leaders: 'navy' }).find(field => field.key === TABLE_SETTINGS_KEY)?.storeAs, `${TABLE_SETTINGS_KEY}@navy`, 'each view keeps its own table settings');
+});
+
+test('the catalogue offers Generals and Admirals, each placing its own view, and the title follows the view', () => {
+  const [group] = catalogueEntries(widgetGroups([definition]), new Map());
+  assert.deepEqual(group!.map(entry => [entry.title, entry.match]), [['Generals', { leaders: 'land' }], ['Admirals', { leaders: 'navy' }]]);
+  const placed = presetWidget('generals', group![1]!.initial as PresetWidget);
+  assert.equal(placed.title, 'Admirals');
+  assert.equal(resolveWidgetActiveView('generals', placed.options), 'navy');
+  const field = definition.options.find(item => item.key === 'leaders');
+  assert.equal(followedTitle(field, 'Generals', definition.title, 'land', 'navy'), 'Admirals');
+  assert.equal(followedTitle(field, 'Admirals', definition.title, 'navy', 'land'), 'Generals');
+  assert.equal(followedTitle(field, 'My navy', definition.title, 'navy', 'land'), 'My navy', 'a title the user wrote is kept');
 });
 
 test('equal-skill leaders keep the product’s order rather than alphabetical tie-breaking', () => {

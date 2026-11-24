@@ -12,7 +12,7 @@ import { listedChoices, widgetDefinition } from '../definitions';
 import type { OptionChoices, WidgetDefinition, WidgetRuntime } from '../definitions';
 import { WIDGET_CONTENT_SCALES } from '../model';
 import type { DashboardTemplate, WidgetSpec } from '../model';
-import { resolveOptions, sectionFields, setOption } from '../options';
+import { followedTitle, resolveOptions, sectionFields, setOption } from '../options';
 import type { OptionSection, OptionValue } from '../options';
 import { SECTION_TITLES, settingsSections } from '../settingsSections';
 import type { SettingsSection } from '../settingsSections';
@@ -58,10 +58,11 @@ function SettingsBody({ widget, template, runtime, onChange, choices, mapOptions
   const setValue = (key: string, value: OptionValue) => {
     const options = setOption(optionFields, widget.options, key, value);
     if (!options) return;
-    const label = (choice: OptionValue) => listedChoices(choices?.[key])?.find(item => item.value === choice)?.label;
     const field = optionFields.find(item => item.key === key);
-    const named = field?.kind === 'content-choice' && field.titleChoice !== false && [definition?.title, label(values[key])].includes(widget.title);
-    const title = named ? label(value) ?? definition?.title ?? widget.title : widget.title;
+    const listed = (choice: OptionValue | undefined) => listedChoices(choices?.[key])?.find(item => item.value === choice)?.label;
+    const title = field?.kind === 'content-choice'
+      ? followedTitle(field, widget.title, definition?.title, values[key], value, listed)
+      : followedTitle(field, widget.title, definition?.title, values[key], value);
     save({ ...widget, options, title });
   };
   const fields = (section: OptionSection) => <OptionFields fields={sectionFields(optionFields, section, values, widget.countries, widget.time.mode)} values={values}

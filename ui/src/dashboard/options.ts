@@ -16,7 +16,7 @@ interface FieldBase {
 }
 export type OptionField = FieldBase & (
   | { kind: 'toggle'; default: boolean }
-  | { kind: 'choice'; choices: readonly { value: string; label: string }[]; default: string }
+  | { kind: 'choice'; choices: readonly { value: string; label: string }[]; default: string; titleChoice?: true }
   | { kind: 'number'; min: number; max: number; step: number; unit?: string; default: number | null }
   | { kind: 'content-choice'; automatic: string; default: ''; titleChoice?: false; catalogue?: boolean }
   | { kind: 'content-set'; automatic: string; default: ''; catalogue?: boolean }
@@ -123,6 +123,13 @@ export function setOption(fields: readonly OptionField[] = [], stored: WidgetOpt
   if (value === field.default) delete next[at];
   else next[at] = value;
   return next;
+}
+
+export function followedTitle(field: OptionField | undefined, title: string, baseTitle: string | undefined, from: OptionValue | undefined, to: OptionValue,
+  label: (value: OptionValue | undefined) => string | undefined = value => (field?.kind === 'choice' ? field.choices.find(choice => choice.value === value)?.label : undefined)): string {
+  const follows = field?.kind === 'content-choice' ? field.titleChoice !== false : field?.kind === 'choice' && field.titleChoice === true;
+  if (!follows || ![baseTitle, label(from)].includes(title)) return title;
+  return label(to) ?? baseTitle ?? title;
 }
 
 export function choiceVariants(field: OptionField | undefined, name: (choice: { value: string; label: string }) => string,
