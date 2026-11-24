@@ -133,9 +133,32 @@ pub struct RaidRow {
     pub air_wing: u64,
     pub travelled: Option<i64>,
     pub preparation_hours: i32,
+    pub end_hour: Option<i32>,
+    pub completion_country: Option<u32>,
+    pub completion_recorded: u8,
+}
+impl RaidRow {
+    pub const END_HOUR_RECORDED: u8 = 1;
+    pub const COMPLETION_COUNTRY_RECORDED: u8 = 2;
+
+    pub const fn end_hour_recorded(&self) -> Recorded<Option<i32>> {
+        if self.completion_recorded & Self::END_HOUR_RECORDED != 0 {
+            Recorded::Value(self.end_hour)
+        } else {
+            Recorded::NotRecorded
+        }
+    }
+
+    pub const fn completion_country_recorded(&self) -> Recorded<Option<u32>> {
+        if self.completion_recorded & Self::COMPLETION_COUNTRY_RECORDED != 0 {
+            Recorded::Value(self.completion_country)
+        } else {
+            Recorded::NotRecorded
+        }
+    }
 }
 typed_codec!(RaidRow, 64, |row| (row.id as u128) << 32 | row.reference_type as u128, |key| Self { id: (key >> 32) as u32, reference_type: key as u32, ..Default::default() },
- { 0 => (parent_slot): U32, 1 => (ordinal): U32, 2 => (phase): I32, 3 => (outcome): I32, 4 => (source.kind): OptionalU32, 5 => (source.kind_present): U8, 6 => (source.province): U32, 7 => (source.ship_reference_type): U32, 8 => (source.ship_reference_id): U32, 9 => (source.country): I32, 10 => (source.building_type): U32, 11 => (source.building_location): I32, 12 => (source.building_country): I32, 13 => (show_for): U32List, 14 => (unit): U64, 15 => (air_wing): U64, 16 => (travelled): OptionalI64, 17 => (preparation_hours): I32 }, |_row| Ok(()));
+ { 0 => (parent_slot): U32, 1 => (ordinal): U32, 2 => (phase): I32, 3 => (outcome): I32, 4 => (source.kind): OptionalU32, 5 => (source.kind_present): U8, 6 => (source.province): U32, 7 => (source.ship_reference_type): U32, 8 => (source.ship_reference_id): U32, 9 => (source.country): I32, 10 => (source.building_type): U32, 11 => (source.building_location): I32, 12 => (source.building_country): I32, 13 => (show_for): U32List, 14 => (unit): U64, 15 => (air_wing): U64, 16 => (travelled): OptionalI64, 17 => (preparation_hours): I32, 18 => (end_hour): OptionalI32, 19 => (completion_country): OptionalU32, 20 => (completion_recorded): U8 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
