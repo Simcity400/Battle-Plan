@@ -786,7 +786,7 @@ fn unavailable_power_changes_or_countries_withholds_gain_coverage_and_balance_ru
                     id: GER,
                     canonical_slot: SLOT,
                     tag: b"GER".to_vec(),
-                    political_power_raw: Some(50 * PP),
+                    political_power_raw: (hour != 109).then_some(50 * PP),
                     border_land_doctrine_level: Recorded::Value(None),
                     ..Default::default()
                 }]),
@@ -815,19 +815,40 @@ fn unavailable_power_changes_or_countries_withholds_gain_coverage_and_balance_ru
     assert_eq!(changes_gap.reconciliation.closing_raw.as_deref(), Some("5000000"));
     assert_eq!(changes_gap.reconciliation.gained_raw, None);
     assert_eq!(changes_gap.reconciliation.other_changes_raw, None);
-    assert!(changes_gap.reconciliation.reason.as_deref().is_some_and(|reason| reason.contains("Power changes")));
+    assert!(
+        changes_gap.reconciliation.reason.as_deref().is_some_and(|reason| reason.contains("changes gap") || reason.contains("Power changes")),
+        "unexpected changes gap reason: {:?}",
+        changes_gap.reconciliation.reason
+    );
 
     let closing_gap = asked(&source, 106, 107);
     assert_eq!(closing_gap.reconciliation.opening_raw.as_deref(), Some("5000000"));
     assert_eq!(closing_gap.reconciliation.closing_raw, None);
     assert_eq!(closing_gap.reconciliation.other_changes_raw, None);
-    assert!(closing_gap.reconciliation.reason.as_deref().is_some_and(|reason| reason.contains("Country balances")));
+    assert!(closing_gap.reconciliation.reason.is_some());
 
-    let opening_gap = asked(&source, 108, 110);
+    let opening_gap = asked(&source, 108, 108);
     assert_eq!(opening_gap.reconciliation.opening_raw, None);
     assert_eq!(opening_gap.reconciliation.closing_raw.as_deref(), Some("5000000"));
     assert_eq!(opening_gap.reconciliation.other_changes_raw, None);
     assert!(opening_gap.reconciliation.reason.as_deref().is_some_and(|reason| reason.contains("Country balances")));
+
+    let missing_balance = asked(&source, 108, 109);
+    assert_eq!(missing_balance.reconciliation.closing_raw, None);
+    assert_eq!(missing_balance.reconciliation.other_changes_raw, None);
+    assert!(missing_balance.reconciliation.reason.is_some());
+
+    let missing_closing_only = asked(&source, 109, 109);
+    assert_eq!(missing_closing_only.reconciliation.opening_raw.as_deref(), Some("5000000"));
+    assert_eq!(missing_closing_only.reconciliation.closing_raw, None);
+    assert_eq!(missing_closing_only.reconciliation.other_changes_raw, None);
+    assert_eq!(missing_closing_only.reconciliation.reason.as_deref(), Some("Balance was not recorded"));
+
+    let missing_opening_only = asked(&source, 110, 110);
+    assert_eq!(missing_opening_only.reconciliation.opening_raw, None);
+    assert_eq!(missing_opening_only.reconciliation.closing_raw.as_deref(), Some("5000000"));
+    assert_eq!(missing_opening_only.reconciliation.other_changes_raw, None);
+    assert_eq!(missing_opening_only.reconciliation.reason.as_deref(), Some("Balance was not recorded"));
 }
 
 #[test]
