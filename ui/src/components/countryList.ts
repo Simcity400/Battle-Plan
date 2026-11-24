@@ -60,8 +60,3 @@ export function revealRow(index: number, scrollTop: number, viewportHeight: numb
   if (top + rowHeight > scrollTop + viewportHeight) return top + rowHeight - viewportHeight;
   return scrollTop;
 }
-
-export function nameAskHour(asked: number | null, wanted: number | null, answered: boolean): number | null {
-  if (wanted === null) return null;
-  return asked === null || answered ? wanted : asked;
-}

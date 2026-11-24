@@ -30,30 +30,7 @@ import { niceStep } from '../charts/valueAxis.ts';
 import { colorCache, contrast, mix, mixRgb, parseColor, parseColorAlpha, rgbaColor } from '../shell/appearance/color.ts';
 import { engineHour, gameDate, HOUR_EPOCH, monthNames } from '../dashboard/calendar.ts';
 
-export type Align = 'left' | 'right' | 'center';
-type Baseline = 'top' | 'middle' | 'bottom' | 'alphabetic';
-export interface LabelStyle { font: string; fill: string; align: Align; baseline: Baseline; squeeze?: boolean }
-
-export type Placement = 'pixel' | 'x' | 'y' | 'xy';
-
-export interface DrawRegion {
-  x: number; y: number; width: number; height: number;
-  clip: [left: number, top: number, right: number, bottom: number];
-}
-
 export type RowDensity = 'compact' | 'normal' | 'comfortable';
-
-export const ROW_DENSITY_HEIGHT: Readonly<Record<RowDensity, number>> = {
-  compact: 28,
-  normal: 36,
-  comfortable: 44,
-};
-
-export const PORTRAIT_DENSITY_HEIGHT: Readonly<Record<RowDensity, number>> = {
-  compact: 40,
-  normal: 48,
-  comfortable: 58,
-};
 
 export const BEHIND_BAR_HEIGHT: Readonly<Record<RowDensity, number>> = {
   compact: 18,

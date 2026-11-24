@@ -11,7 +11,8 @@ test('technical errors stay generic with Retry and Details, named refusals are n
   try {
     const { queryFailure, RefusedError, ShownError } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts');
     const { default: WidgetState } = await vite.ssrLoadModule('/ui/src/components/WidgetState.tsx') as { default: (props: WidgetStateProps) => unknown };
-    const { ValueState, MissingPicture, MissingName, valueStateText } = await vite.ssrLoadModule('/ui/src/components/ValueState.tsx') as typeof import('./ValueState');
+    const { ValueState } = await vite.ssrLoadModule('/ui/src/components/ValueState.tsx') as typeof import('./ValueState');
+    const { valueStateText } = await vite.ssrLoadModule('/ui/src/components/valueStateText.ts') as typeof import('./valueStateText');
     const render = (props: WidgetStateProps) => renderToStaticMarkup(createElement(WidgetState as never, props as never));
 
     const whole = render({ kind: 'error', failure: queryFailure({ kind: 'failed', message: 'The unit leaders reply is malformed.' }), onRetry: () => {} });
@@ -158,7 +159,5 @@ test('technical errors stay generic with Retry and Details, named refusals are n
     assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'missing', reason: 'Gap', narrow: true })), /data-value-state="missing"/);
     assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'missing', reason: 'Gap', narrow: true })), /is-compact/);
     assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'partial', text: '12', reason: '2 countries missing' })), /data-value-state="partial"/);
-    assert.match(renderToStaticMarkup(createElement(MissingPicture, { kind: 'flag', width: 20, height: 14 })), /val-picture-missing/);
-    assert.match(renderToStaticMarkup(createElement(MissingName, { reason: 'Not recorded' })), /Name not recorded/);
   } finally { await vite.close(); }
 });

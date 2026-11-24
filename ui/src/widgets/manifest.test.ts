@@ -42,7 +42,7 @@ import {
   resolveWidgetScopedOptions,
   resolveWidgetViewSwitch,
   familyViewOptionFields,
-  presetStoredOptions,
+  presetWidget,
   widgetOptionFields,
   widgetViewOptions,
 } from './manifest.ts';
@@ -469,11 +469,15 @@ test('two table views of one kind each draw their own projection, and a missing 
   assert.equal(familyProjection('table', 'synthetic-same-family'), undefined, 'a kind with named views has no default view to fall back to');
 });
 
-test('a preset is stored through the mapping of the view it opens, so the view reads what the preset chose (R3-S3)', () => {
-  const stored = presetStoredOptions('world-tension', { values: 'recorded' });
+test('a preset is materialised once through the mapping of the view it opens, and the catalogue preview and the placed widget are that one record (R3-S3, R4-S4)', () => {
+  const initial = { title: 'World tension contributions', options: { values: 'recorded' } };
+  const shown = presetWidget('world-tension', initial);
+  assert.equal(presetWidget('world-tension', initial), shown, 'R4-S4: preview and Add get the same materialised preset');
+  const stored = shown.options!;
+  assert.equal(shown.title, 'World tension contributions');
   assert.equal(resolveWidgetActiveView('world-tension', stored), 'tension');
   assert.equal(widgetViewOptions('world-tension', stored).values, 'recorded', 'the Tension view shows recorded contributions, not its default share');
-  const race = presetStoredOptions('army-size', { view: 'race', countFor: 'host' });
+  const race = presetWidget('army-size', { options: { view: 'race', countFor: 'host' } }).options!;
   assert.equal(widgetViewOptions('army-size', race).countFor, 'host', 'R3-S2: a race preset counting expeditionary forces for the host is what the race view and its detail read');
   assert.equal(viewSlotProps('army-size', { widget: { kind: 'army-size', options: race } as unknown as WidgetSpec }).options.countFor, 'host');
 });
