@@ -1436,7 +1436,7 @@ id: string,
 /**
  * The first and last hour its row lived within the span.
  */
-firstHour: number, firstHourExact: boolean, lastHour: number, raider: string | null, launchedRaider: string | null, endedRaider: string | null, victim: string | null,
+firstHour: number, firstHourExact: boolean, lastHour: number, raider: string | null, raiderSlot: number | null, launchedRaider: string | null, endedRaider: string | null, victim: string | null,
 /**
  * Why the victim is not named, when it is not.
  */
@@ -1458,9 +1458,9 @@ phase: number | null, phaseName: string | null, outcome: number | null, outcomeN
  */
 runs: Array<RaidPhaseRun>, preparation: Array<RaidPreparationRun>, launchedHour: number | null, launchedExact: boolean, launched: boolean, endedHour: number | null, endedExact: boolean, endedSource: RaidEndedSource | null,
 /**
- * The first read that saw it ended: what a later read reveals is never counted before it.
+ * The first read that saw it ended and successful: what a later read reveals is never counted before it.
  */
-endedSeenHour: number | null, disappearedHour: number | null, disappearedExact: boolean, succeeded: boolean, };
+succeededHour: number | null, disappearedHour: number | null, disappearedExact: boolean, };
 export type RaidLogReply = {
 /**
  * False only when the content proves no raid type exists; true once a raid was recorded; none

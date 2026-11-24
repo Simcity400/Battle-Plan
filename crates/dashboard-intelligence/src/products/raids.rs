@@ -107,6 +107,7 @@ pub struct Course {
     pub preparation: Vec<RaidPreparationRun>,
     pub launched: Option<i32>,
     pub ended: Option<i32>,
+    pub succeeded: Option<i32>,
     pub native_end_hour: Option<i32>,
     pub completion_country: Option<Option<u32>>,
     pub raider: Option<u32>,
@@ -152,6 +153,9 @@ impl Course {
             if course.ended.is_none() && phase == native::PHASE_ENDED {
                 course.ended = Some(step.hour);
             }
+            if course.succeeded.is_none() && phase == native::PHASE_ENDED && successful(outcome) {
+                course.succeeded = Some(step.hour);
+            }
             if phase == native::PHASE_ENDED {
                 let recorded = number(COMPLETION_RECORDED).map_or(0, |flags| flags as u8);
                 if course.native_end_hour.is_none() && recorded & RaidRow::END_HOUR_RECORDED != 0 {
@@ -180,10 +184,10 @@ impl Course {
         }
         out
     }
+}
 
-    pub fn succeeded(&self) -> bool {
-        self.ended.is_some() && matches!(self.outcome, Some(native::OUTCOME_SUCCESS | native::OUTCOME_CRITICAL_SUCCESS))
-    }
+fn successful(outcome: i32) -> bool {
+    matches!(outcome, native::OUTCOME_SUCCESS | native::OUTCOME_CRITICAL_SUCCESS)
 }
 
 fn prepare(runs: &mut Vec<RaidPreparationRun>, first: i32, last: i32, value: i32) {
@@ -439,6 +443,7 @@ pub struct RaidEpisode {
     pub first_hour_exact: bool,
     pub last_hour: i32,
     pub raider: Option<String>,
+    pub raider_slot: Option<u32>,
     pub launched_raider: Option<String>,
     pub ended_raider: Option<String>,
     pub victim: Option<String>,
@@ -469,11 +474,10 @@ pub struct RaidEpisode {
     pub ended_hour: Option<i32>,
     pub ended_exact: bool,
     pub ended_source: Option<RaidEndedSource>,
-    #[doc = " The first read that saw it ended: what a later read reveals is never counted before it."]
-    pub ended_seen_hour: Option<i32>,
+    #[doc = " The first read that saw it ended and successful: what a later read reveals is never counted before it."]
+    pub succeeded_hour: Option<i32>,
     pub disappeared_hour: Option<i32>,
     pub disappeared_exact: bool,
-    pub succeeded: bool,
 }
 
 struct Content {
@@ -638,6 +642,7 @@ struct Accumulated {
     outcome: Option<i32>,
     launched_hour: Option<(i32, usize)>,
     ended_hour: Option<(i32, usize)>,
+    succeeded_hour: Option<i32>,
     native_end_hour: Option<i32>,
     deleted_hour: Option<(i32, usize)>,
 }
@@ -734,8 +739,7 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
     let mut undrawn: BTreeMap<String, u64> = BTreeMap::new();
     let mut labels: HashMap<&'static str, Option<String>> = HashMap::new();
     let mut ended_victims = false;
-    let evidence_from = from.saturating_sub(1);
-    for (stretch_idx, stretch) in query.timeline.within(evidence_from, to).enumerate() {
+    for (stretch_idx, stretch) in query.timeline.within(query.timeline.first, to).enumerate() {
         let run = stretch.run;
         let end = stretch.last.min(to);
         let stretch_complete = coalesce_spans(dashboard_query::cost::storage(|| lanes::complete_reads(recording, run, TableId::Raids, stretch.first, end))?);
@@ -744,13 +748,12 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
         stretch_joins.push(stretch.join);
         let lives = dashboard_base::queries::lifetimes(source, run, TableId::Raids)?;
         let stretch_first = query.timeline.at(stretch.first).map_or(stretch.first, |held| held.first);
-        let met: Vec<(u128, i32, i32, i32)> = lives
+        let met: Vec<(u128, i32, i32)> = lives
             .iter()
             .filter_map(|&(key, raw_first, raw_last)| {
                 let raw_first = i32::try_from(raw_first).ok()?.max(stretch_first);
-                let first = raw_first.max(evidence_from);
                 let last = i32::try_from(raw_last).ok()?.min(end);
-                (first <= last).then_some((key, raw_first, first, last))
+                (raw_first <= last).then_some((key, raw_first, last))
             })
             .collect();
         if met.is_empty() {
@@ -758,7 +761,7 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
         }
         let links = dashboard_base::queries::links(source, run)?;
         let keys: Vec<u128> = met.iter().map(|(key, ..)| *key).collect::<BTreeSet<_>>().into_iter().collect();
-        let start = met.iter().map(|(_, raw_first, _, _)| *raw_first).min().unwrap_or(stretch.first);
+        let start = met.iter().map(|(_, raw_first, _)| *raw_first).min().unwrap_or(stretch.first);
         let raids = dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::Raids, &RAID_COLUMNS, Keys::These(&keys), start, end))?;
         let mut ended_rows: HashMap<u128, Vec<log::Row>> = HashMap::new();
         for row in reader.inserted(run, &[(start, end)])? {
@@ -908,7 +911,7 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
             let victim = resolve_completion_victim(row.hour, native_end.unwrap_or(row.hour), completion, completion_slot, fallback);
             (scope, token, state, victim)
         };
-        for &(key, raw_first, _first, last) in &met {
+        for &(key, raw_first, last) in &met {
             let segments = Course::read_segments(steps_of(&raids, key).map_or(&[][..], Vec::as_slice), last, &complete_by_stretch[stretch_idx]);
             for (seg_idx, course) in segments.into_iter().enumerate() {
                 let seg_first = course.runs[0].0;
@@ -936,6 +939,8 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
                 };
                 let native_end_hour = end_number(ends.end_hour).map(|hour| hour as i32).or(course.native_end_hour);
                 let deleted_hour = matching_end.filter(|_| end_kind == Some(RaidEndRow::DELETED)).map(|row| row.hour);
+                let logged_success = matching_end.filter(|_| end_kind == Some(RaidEndRow::ENDED) && end_number(ends.outcome).is_some_and(|outcome| successful(outcome as i32))).map(|row| row.hour);
+                let succeeded_hour = course.succeeded.into_iter().chain(logged_success).min();
                 let stop_hour = ended_hour.unwrap_or(seg_last);
                 let (init_scope, init_token, init_state, init_victim) = if ended_hour == Some(seg_first) {
                     match matching_end.filter(|row| end_kind == Some(RaidEndRow::ENDED) && row.hour == seg_first) {
@@ -1060,6 +1065,7 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
                             outcome: None,
                             launched_hour: None,
                             ended_hour: None,
+                            succeeded_hour: None,
                             native_end_hour: None,
                             deleted_hour: None,
                         });
@@ -1082,6 +1088,7 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
                 entry.raider_slot = entry.raider_slot.or(raider_slot);
                 entry.launched_hour = min_stamped(entry.launched_hour, launched_hour.map(|h| (h, stretch_idx)));
                 entry.ended_hour = min_stamped(entry.ended_hour, ended_hour.map(|h| (h, stretch_idx)));
+                entry.succeeded_hour = entry.succeeded_hour.into_iter().chain(succeeded_hour).min();
                 entry.native_end_hour = entry.native_end_hour.or(native_end_hour);
                 entry.deleted_hour = min_stamped(entry.deleted_hour, deleted_hour.map(|h| (h, stretch_idx)));
                 if !entry.victim_locked {
@@ -1107,6 +1114,9 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
     let mut key_counts: HashMap<u128, usize> = HashMap::new();
     let mut keyed: Vec<(i32, u128, usize, RaidEpisode)> = Vec::with_capacity(accumulated.len());
     for (order, acc) in accumulated.into_iter().enumerate() {
+        let count = key_counts.entry(acc.key).or_insert(0);
+        *count += 1;
+        let id = if *count == 1 { acc.key.to_string() } else { format!("{}#{}", acc.key, *count) };
         if acc.last_hour < from || acc.first_hour > to {
             continue;
         }
@@ -1177,7 +1187,6 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
             _ => (None, false),
         };
         let outcome_missing = outcome_missing(ended_hour.is_some(), disappeared_hour.is_some(), acc.outcome);
-        let succeeded = ended_hour.is_some() && matches!(acc.outcome, Some(native::OUTCOME_SUCCESS | native::OUTCOME_CRITICAL_SUCCESS));
         let mut victims: Vec<RaidVictimAt> = Vec::new();
         let mut before_from: Option<RaidVictimAt> = None;
         for v in acc.victims {
@@ -1204,15 +1213,13 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
         if raider.is_none() {
             warnings.insert("Some raids' raiders are not named: their country holds no tag at the raid's hour.".into());
         }
-        let count = key_counts.entry(acc.key).or_insert(0);
-        *count += 1;
-        let id = if *count == 1 { acc.key.to_string() } else { format!("{}#{}", acc.key, *count) };
         let episode = RaidEpisode {
             id,
             first_hour,
             first_hour_exact,
             last_hour,
             raider,
+            raider_slot: acc.raider_slot,
             launched_raider,
             ended_raider,
             victim: summary_victim.tag,
@@ -1238,10 +1245,9 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
             ended_hour,
             ended_exact,
             ended_source,
-            ended_seen_hour: acc.ended_hour.map(|(hour, _)| hour),
+            succeeded_hour: acc.succeeded_hour.filter(|_| ended_hour.is_some()),
             disappeared_hour,
             disappeared_exact,
-            succeeded,
         };
         keyed.push((first_hour, acc.key, order, episode));
     }
@@ -1454,7 +1460,7 @@ impl Product for RaidLog {
             types,
             artwork: artwork.into_values().collect(),
             episodes,
-            missing: missing(&query, from, to)?,
+            missing: if params.catalogue { Vec::new() } else { missing(&query, from, to)? },
             warnings: warnings.into_iter().collect(),
         };
         dashboard_base::products::check_reply_budget(&reply)?;
