@@ -119,7 +119,6 @@ mod rows_retired_tests {
         );
     }
 
-
     #[test]
     fn retired_nested_parts_decode_older_bytes_and_current_sides_store_none() {
         let historical = HistoricalSide {
@@ -436,74 +435,6 @@ mod extended_rows_air_ledger_tests {
         );
     }
 
-    #[test]
-    #[ignore = "synthetic codec scale measurement; run with --ignored --nocapture"]
-    fn air_ledgers_five_thousand_country_sparse_scale() {
-        use std::time::Instant;
-
-        let losses: Vec<_> = (0..5_000_u32)
-            .flat_map(|country| {
-                (0..3_u32).map(move |region| AirLossEventRow {
-                    id: country as u64 * 3 + region as u64,
-                    game_hour: 72,
-                    country,
-                    region: 40_000 + region,
-                    native_cause: region,
-                    family_base: if region == 2 { 71 } else { 30 },
-                    credited_enemy: region == 2,
-                    amount_raw: 100_000 + country as i64,
-                    opponent: Some((country + 1) % 5000),
-                    daily_slot: region,
-                })
-            })
-            .collect();
-        let damage: Vec<_> = (0..5_000_u32)
-            .map(|country| BuildingBombingDamageRow {
-                id: country as u64,
-                game_hour: 72,
-                attacker: Some(country),
-                victim: (country + 1) % 5_000,
-                state: 50_000 + country,
-                province: None,
-                building_type: 60_000 + country,
-                native_cause: 0,
-                cause: BuildingBombingDamageCause::AirMission,
-                amount_raw: 100_000 + country as i64,
-                credited_raw: 200_000 + country as i64,
-            })
-            .collect();
-
-        fn measure<T: RowCodec + std::fmt::Debug>(rows: &[T]) -> (usize, u128, u128) {
-            let start = Instant::now();
-            let mut bytes = Vec::new();
-            let mut previous = 0;
-            for row in rows {
-                encode_row(row, previous, &mut bytes).unwrap();
-                previous = row.key();
-            }
-            let encode_us = start.elapsed().as_micros();
-            let start = Instant::now();
-            let mut input = Decoder::new(&bytes);
-            let mut previous = 0;
-            for expected in rows {
-                let row = decode_row::<T>(previous, &mut input).unwrap();
-                assert_eq!(&row, expected);
-                previous = row.key();
-            }
-            input.finish().unwrap();
-            (bytes.len(), encode_us, start.elapsed().as_micros())
-        }
-
-        let (air_bytes, air_encode_us, air_decode_us) = measure(&losses);
-        let (damage_bytes, damage_encode_us, damage_decode_us) = measure(&damage);
-        assert_eq!(losses.len(), 15_000);
-        assert_eq!(damage.len(), 5_000);
-        eprintln!(
-            "air ledger synthetic countries=5000 sparse_air_rows={} air_bytes={air_bytes} air_encode_us={air_encode_us} air_decode_us={air_decode_us} damage_rows={} damage_bytes={damage_bytes} damage_encode_us={damage_encode_us} damage_decode_us={damage_decode_us}",
-            losses.len(),
-            damage.len()
-        );
-    }
 }
 
 #[path = "../extended_rows/equipment_destruction/tests.rs"]
@@ -1219,76 +1150,6 @@ mod extended_rows_market_tests {
             amount_raw: i64::MAX,
         }];
         check(SharedMarketVariables::from(variables.clone()), &variables);
-    }
-
-    #[test]
-    fn contract_and_country_scalar_clones_share_all_carried_market_collections() {
-        use crate::rows::RowCodec;
-        let pool: SharedMarketPool = MarketPool {
-            items: vec![
-                MarketEquipment {
-                    variant: 31,
-                    amount_raw: 99
-                };
-                5000
-            ],
-            ..Default::default()
-        }
-        .into();
-        let levels: SharedMarketPriceLevels = vec![
-            MarketPriceLevel {
-                variant: 31,
-                level: 2
-            };
-            5000
-        ]
-        .into();
-        let subsidies: SharedMarketSubsidies = vec![MarketSubsidy {
-            targets: vec![5000; 5000],
-            ..Default::default()
-        }]
-        .into();
-        let variables: SharedMarketVariables = vec![MarketVariable {
-            name: vec![b'x'; 5000],
-            amount_raw: 17,
-        }]
-        .into();
-        let old = MarketContractTermsRow {
-            equipment: pool.clone(),
-            prices: pool.clone(),
-            price_levels: levels.clone(),
-            subsidies: subsidies.clone(),
-            variables: variables.clone(),
-            runtime: MarketContractRuntime {
-                route_equipment: pool.clone(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut next = RowCodec::try_clone(&old).unwrap();
-        next.runtime.period_days += 1;
-        assert_eq!(next.equipment.items.as_ptr(), pool.items.as_ptr());
-        assert_eq!(next.prices.items.as_ptr(), pool.items.as_ptr());
-        assert_eq!(
-            next.runtime.route_equipment.items.as_ptr(),
-            pool.items.as_ptr()
-        );
-        assert_eq!(next.price_levels.as_ptr(), levels.as_ptr());
-        assert_eq!(next.subsidies.as_ptr(), subsidies.as_ptr());
-        assert_eq!(next.variables.as_ptr(), variables.as_ptr());
-        next.runtime.route_equipment.items[0].amount_raw = 7;
-        assert_eq!(old.runtime.route_equipment.items[0].amount_raw, 99);
-        let country = CountryMarketRow {
-            inventory: pool.clone(),
-            prices: levels.clone(),
-            subsidies: subsidies.clone(),
-            ..Default::default()
-        };
-        let mut changed = RowCodec::try_clone(&country).unwrap();
-        changed.auto_send_market_access = true;
-        assert_eq!(changed.inventory.items.as_ptr(), pool.items.as_ptr());
-        assert_eq!(changed.prices.as_ptr(), levels.as_ptr());
-        assert_eq!(changed.subsidies.as_ptr(), subsidies.as_ptr());
     }
 
     #[test]

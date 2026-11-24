@@ -144,8 +144,8 @@ pub unsafe fn prepare(memory: &impl Memory, base: usize, countries: usize) {
         return;
     };
     BUILDINGS.store(buildings, Ordering::Release);
-    if let Some(demand) = buildings.checked_add(countries) {
-        LEDGER.prepare(demand);
+    if buildings.checked_add(countries).is_some() {
+        LEDGER.prepare(countries.max(256));
     } else {
         LEDGER.refuse_preparation("building bombing preparation population size overflow");
     }

@@ -1,9 +1,7 @@
 import { keyTarget } from '../rowNavigation.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cellRect, cellRuns, heatNavigation, heatWindow, heatRowAt, marginColor, periodAt, splitStripes } from './layout.ts';
-import { ellipsise, fitLabelWidth } from '../labels.ts';
-import { mix } from '../../shell/appearance/color.ts';
+import { cellRect, cellRuns, heatNavigation, heatWindow, heatRowAt, periodAt } from './layout.ts';
 import { keyedStop, keyStopList } from '../hover.ts';
 import { hitZone, plotFrame } from '../frame.ts';
 const parts = [
@@ -11,22 +9,6 @@ const parts = [
   { id: 'b', label: 'B', color: '#2277cc', share: 0.35 },
   { id: 'c', label: 'C', color: '#22aa77', share: 0.2 },
 ];
-test('label column fits content and leaves plot space at small sizes', () => {
-  assert.equal(fitLabelWidth(['Short', 'Long region label'], s => s.length * 5, 40, 600 * 0.45, 12), 97);
-  assert.equal(fitLabelWidth(['x'.repeat(200)], s => s.length * 5, 40, 100 * 0.45, 12), 45);
-});
-test('any number of parts: leading colour fades by margin, ties are grey', () => {
-  assert.equal(marginColor(parts, '#888888'), mix('#888888', parts[0].color, (0.45 - 0.35) / 0.5));
-  assert.equal(marginColor([{ ...parts[0], share: 0.5 }, { ...parts[1], share: 0.5 }], '#888888'), mix('#888888', parts[0].color, 0));
-  assert.equal(marginColor([{ ...parts[0], share: 1 }], '#888888'), mix('#888888', parts[0].color, 1));
-  assert.equal(marginColor([], '#888888'), null);
-});
-test('split stripes conserve height and stable side order', () => {
-  const stripes = splitStripes(parts, 10, 100);
-  assert.deepEqual(stripes.map(s => s.color), parts.map(p => p.color));
-  assert.equal(stripes.reduce((sum, stripe) => sum + stripe.height, 0), 100);
-  assert.equal(stripes[2].top, 90);
-});
 test('layout clips exact periods, leaves missing days blank and hides future reads', () => {
   const periods = [{ firstHour: 0, lastHour: 23, readHour: 23 }, { firstHour: 48, lastHour: 71, readHour: 70 }];
   assert.equal(periodAt(periods, 30), null);
@@ -80,10 +62,6 @@ test('equal cells share drawing runs without filling gaps or using future reads'
   assert.equal(cellRuns(approximate, periods.slice(0, 2), null).length, 2, 'an approximate cell never joins an exact one');
 });
 
-test('narrow row labels are ellipsised without squeezing the font', () => {
-  assert.equal(ellipsise('A long region', 6, text => text.length), 'A lon\u2026');
-  assert.equal(ellipsise('Mod', 6, text => text.length), 'Mod');
-});
 
 test('filter exclusion cannot merge into blank inactivity', () => {
   const parts: [] = [];

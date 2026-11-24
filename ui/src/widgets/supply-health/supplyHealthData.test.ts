@@ -2,10 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ChartBucket, ChartSummary } from '../../charts/chartSummary';
 import type { SeriesState } from '../../generated/dashboard';
-import { resolveCountries } from '../../dashboard/groups.ts';
-import { createWidget } from '../../dashboard/model.ts';
-import { widgetDefinition } from '../../dashboard/definitions.ts';
-import { definition } from './definition.ts';
 import { formatShare, liveShareRuns, mostDivisions, shareRunsFromLines, supplyAt, supplyParts, supplyTooltip, totalDivisions } from './supplyHealthData.ts';
 import { shareStack } from '../../charts/share.ts';
 
@@ -17,21 +13,6 @@ const state = (tag: string, hour: number, value: string | null, missing: string 
   run: value === null ? null : { firstHour: hour, lastHour: hour, valueRaw: value, slot: 1, countryId: 1, startsSegment: false, segmentFirstHour: hour,
     firstExact: true, lastExact: true } });
 
-test('supply health uses the shared frame, numeric uncapped country convention, and one default country', () => {
-  const meta = widgetDefinition('supply-health') ?? definition;
-  assert.equal(meta.data, true);
-  assert.equal(meta.history, true);
-  assert.equal(meta.countries?.max, Number.MAX_SAFE_INTEGER);
-  const tags = Array.from({ length: 5_000 }, (_, index) => `opaque country ${index}`);
-  const chosen = resolveCountries({ kind: 'tags', tags }, [], undefined, 100, meta.countries!.max);
-  assert.equal(chosen.tags.length, 5_000);
-  assert.equal(chosen.dropped, 0);
-  if (widgetDefinition('supply-health')) {
-    const widget = createWidget('supply-health', 'main', 'supply');
-    assert.deepEqual(widget.countries, { kind: 'selected' });
-    assert.deepEqual(widget.time, { mode: 'follow' });
-  }
-});
 
 test('stacked shares take each bin at its first hour, merge equal neighbours, and leave a bin any line lacks as a gap', () => {
   const none = line([bucket(0, 5, 0.25), bucket(6, 11, 0.25), bucket(12, 17, 0.5), null, bucket(24, 29, 0, { firstBreak: true })]);

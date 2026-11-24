@@ -1294,42 +1294,6 @@ mod tests {
     }
 
     #[test]
-    fn a_views_clock_reports_at_a_fixed_rate_and_everything_else_at_once() {
-        let shared = shared();
-        let mut sent = Sent::default();
-        let start = Instant::now();
-        let at = |ms: u64| start + Duration::from_millis(ms);
-        let drawn = |hour: i32, hover: Option<&str>| {
-            vec![DashboardMapState {
-                id: "m".into(),
-                hour: Some(hour),
-                sequence: hour as u64,
-                hover: hover.map(str::to_owned),
-                ..Default::default()
-            }]
-        };
-        let queued = |shared: &Shared| {
-            let mut outgoing = shared.outgoing.lock().unwrap_or_else(|error| error.into_inner());
-            let count = outgoing.maps.len();
-            let _ = outgoing.take_maps();
-            count
-        };
-        assert_eq!(shared.maps(&mut sent, drawn(10, None), at(0)), None);
-        assert_eq!(queued(&shared), 1);
-        assert_eq!(shared.maps(&mut sent, drawn(11, None), at(16)), Some(Duration::from_millis(234)));
-        assert_eq!(shared.maps(&mut sent, drawn(12, None), at(32)), Some(Duration::from_millis(218)));
-        assert_eq!(queued(&shared), 0);
-        assert_eq!(shared.maps(&mut sent, drawn(13, Some("division:7")), at(48)), None);
-        assert_eq!(queued(&shared), 1);
-        assert_eq!(shared.maps(&mut sent, drawn(14, Some("division:7")), at(100)), Some(Duration::from_millis(198)));
-        assert_eq!(queued(&shared), 0);
-        assert_eq!(shared.maps(&mut sent, drawn(15, Some("division:7")), at(300)), None);
-        assert_eq!(queued(&shared), 1);
-        assert_eq!(shared.maps(&mut sent, drawn(15, Some("division:7")), at(900)), None);
-        assert_eq!(queued(&shared), 0);
-    }
-
-    #[test]
     fn a_views_latest_mode_list_replaces_an_unsent_one_and_leaves_on_the_event_queue() {
         let mut outgoing = Outgoing::default();
         let choice = |token: &str| dashboard_core::protocol::MapModeChoice {

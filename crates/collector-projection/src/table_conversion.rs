@@ -165,9 +165,11 @@ fn iter_rows<S: TableSchema, T>(
             if rows.len() != len {
                 return unavailable("walker row count exceeds allocated buffer");
             }
-            rows.sort_unstable_by_key(RowCodec::key);
-            if rows.windows(2).any(|rows| rows[0].key() == rows[1].key()) {
-                return unavailable("walker produced duplicate engine ids");
+            if !rows.windows(2).all(|pair| pair[0].key() < pair[1].key()) {
+                rows.sort_unstable_by_key(RowCodec::key);
+                if rows.windows(2).any(|rows| rows[0].key() == rows[1].key()) {
+                    return unavailable("walker produced duplicate engine ids");
+                }
             }
             let rows = TableRows::from_rows::<S>(rows);
             match outcome {

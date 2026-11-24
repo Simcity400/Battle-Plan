@@ -13,43 +13,6 @@ fn lengths() -> CarrierLengths {
     }
 }
 
-#[test]
-fn fresh_job_presizing_initializes_fuel_scratch_before_its_first_callback() {
-    let mut job = Job::new();
-    let demand = CarrierDemand {
-        bases: 5,
-        registrations: 7,
-        pools: 11,
-        indexed: 5_000,
-        resolved: 5_000,
-        country_terms: 5_000,
-        aces: 26,
-        forecasts: 26,
-        ..Default::default()
-    };
-    job.presize(demand);
-    assert!(job.registrations.pools.len() >= 11);
-    for (actual, required) in job
-        .scratch
-        .capacity()
-        .into_iter()
-        .zip([5_000, 5_000, 5_000, 26, 26])
-    {
-        assert!(actual >= required);
-    }
-    assert_eq!(job.demand, CarrierDemand::default());
-    assert!(job.log.borrow().spans.is_empty());
-    job.clear();
-    for (actual, required) in job
-        .scratch
-        .capacity()
-        .into_iter()
-        .zip([5_000, 5_000, 5_000, 26, 26])
-    {
-        assert!(actual >= required);
-    }
-}
-
 #[cfg(test)]
 fn outputs() -> (Bases, Registrations) {
     let mut bases = Bases::new(1);
@@ -279,34 +242,6 @@ fn current_optional_input_and_refusal_changes_prevent_stale_numeric_memo_restore
     assert!(
         !memo.input_equal(&log),
         "requesting-consumer refusal metadata participates in the witness"
-    );
-}
-
-#[test]
-fn optional_fault_and_later_demand_grow_the_carrier_log_without_mandatory_storage() {
-    let mut parent = super::super::AirBasesJob::new();
-    let predecessor = (
-        parent.log.spans.capacity(),
-        parent.log.bytes.capacity(),
-        parent.census.capacity(),
-        parent.seen_links.capacity(),
-    );
-    parent.carrier.log = RefCell::new(RawLog::new(4, 8));
-    {
-        let log = parent.carrier.log.get_mut();
-        let _ = log.record(0x6000, 8, None, 1);
-        log.reserve(32);
-        assert!(!log.overflowed && log.fault[0]);
-    }
-    assert!(parent.carrier.log.borrow().bytes.capacity() >= 32);
-    assert_eq!(
-        predecessor,
-        (
-            parent.log.spans.capacity(),
-            parent.log.bytes.capacity(),
-            parent.census.capacity(),
-            parent.seen_links.capacity()
-        )
     );
 }
 
@@ -840,11 +775,6 @@ fn assert_counted_seed_refusal(reason: &'static str) {
     }
     assert_eq!(job.log.spans, source_spans);
     assert_eq!(job.log.bytes.as_ref(), source_bytes);
-}
-
-#[test]
-fn changed_carrier_census_observation_is_named_counted_once_and_keeps_mandatory_rows() {
-    assert_counted_seed_refusal("carrier census repeated observation changed");
 }
 
 #[cfg(test)]

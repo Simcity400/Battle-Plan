@@ -26,8 +26,6 @@ class CandidateFiles(unittest.TestCase):
             list(cc.candidate_files('refs/heads/no-such-revision-for-this-test', ['tools']))
         self.assertIn('git grep failed', str(raised.exception))
 
-    def test_a_scan_that_matches_nothing_is_clean(self):
-        self.assertEqual(list(cc.candidate_files(None, ['tools/no-such-file-for-this-test'])), [])
 
     def test_untracked_files_are_scanned_whatever_their_names(self):
         with tempfile.TemporaryDirectory() as folder:

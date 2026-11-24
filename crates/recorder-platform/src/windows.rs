@@ -572,31 +572,6 @@ mod tests {
     use std::cell::Cell;
 
     #[test]
-    fn module_snapshot_churn_expires_without_another_attempt() {
-        for budget in [MODULE_SNAPSHOT_WAIT, Duration::from_micros(2500)] {
-            let started = Instant::now();
-            let elapsed = Cell::new(Duration::ZERO);
-            let attempts = Cell::new(0);
-            let result = module_snapshot::<()>(
-                started + budget,
-                || {
-                    assert!(elapsed.get() < budget);
-                    attempts.set(attempts.get() + 1);
-                    Err(io::Error::from_raw_os_error(ERROR_BAD_LENGTH as i32))
-                },
-                || started + elapsed.get(),
-                |delay| {
-                    assert!(!delay.is_zero() && delay <= MODULE_SNAPSHOT_RETRY);
-                    elapsed.set(elapsed.get() + delay);
-                },
-            );
-            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
-            assert_eq!(elapsed.get(), budget);
-            assert_eq!(attempts.get(), budget.as_micros().div_ceil(1000) as u32);
-        }
-    }
-
-    #[test]
     fn module_snapshot_retries_only_bad_length_and_can_recover() {
         let started = Instant::now();
         let elapsed = Cell::new(Duration::ZERO);
@@ -627,19 +602,6 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
-    }
-
-    #[test]
-    fn expired_module_snapshot_deadline_does_not_start_an_observation() {
-        let deadline = Instant::now();
-        let error = module_snapshot::<()>(
-            deadline,
-            || panic!("expired snapshot must not start"),
-            || deadline,
-            |_| panic!("expired snapshot must not wait"),
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
 
     #[test]

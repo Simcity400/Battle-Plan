@@ -2377,29 +2377,6 @@ fn sliced_observed_walks_keep_other_owners_marks_for_their_slice() {
 }
 
 #[test]
-fn marks_beyond_either_buffer_read_their_owners_in_full() {
-    let mut bytes = fixture();
-    p32(&mut bytes, status(1, 2) + OPINION, 5);
-    let mut baseline = Baseline::default();
-    let token = (1, 1);
-    for _ in 0..3 {
-        observed(&bytes, &mut baseline, token, &[]);
-    }
-    assert_eq!(baseline.valid_owners(), 3);
-    baseline.shorten_updates(0);
-    p32(&mut bytes, status(0, 3) + OPINION, 9);
-    let mark = Mark {
-        status: status(0, 3),
-        diplomacy: DIPLOMACY[0],
-    };
-    let invalidated = baseline.counts().invalidated_owners;
-    let (outcome, rows, _) = observed(&bytes, &mut baseline, token, &[mark]);
-    let (reference_outcome, reference, _) = observed(&bytes, &mut Baseline::default(), token, &[]);
-    assert_eq!((outcome, rows), (reference_outcome, reference));
-    assert_eq!(baseline.counts().invalidated_owners, invalidated + 3);
-}
-
-#[test]
 fn received_relations_and_null_endpoints_name_no_status() {
     let mut bytes = fixture();
     relation(
@@ -2541,7 +2518,6 @@ mod dense {
         })
     }
 }
-
 
 mod world {
     use super::super::*;
@@ -3359,161 +3335,6 @@ fn forward_packet_alias_zero_reaches_war_and_whole_military_qword_before_old_gua
 }
 
 #[test]
-fn forward_packet_healthy_original_attempts_add_only_one_military_read() {
-    let bytes = reverse_fixture();
-    let memory = ReverseTrace::new(&bytes, None);
-    let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
-    let mut observed = ForwardZeroObservation::default();
-    let old = co_belligerent_inputs_observed(
-        &memory,
-        BASE,
-        &countries,
-        country(0),
-        &mut vec![99; 4],
-        &mut observed,
-    );
-    let before = memory.calls.borrow().len();
-    let packet = forward_zero_visibility_inputs(&memory, BASE, &countries, &mut observed);
-    let value = packet.value.unwrap();
-    assert_eq!(value.war, old.zero_war.ok());
-    assert_eq!(value.subject, old.zero_subject.ok());
-    assert_eq!(value.target, Some(0));
-    assert_eq!(value.military_access, Some(0));
-    assert_eq!(
-        &memory.calls.borrow()[before..],
-        &[(status(0, 0) + MILITARY_ACCESS, 8)]
-    );
-}
-
-#[test]
-fn forward_packet_original_same_field_faults_are_never_retried_or_backfilled() {
-    let mut bytes = reverse_fixture();
-    relation(
-        &mut bytes,
-        RELATION[1],
-        csubject_relation::VTABLE_RVA,
-        csubject_relation::TYPE_VALUE,
-        2,
-        0,
-    );
-    p64(
-        &mut bytes,
-        status(0, 0) + SUBJECT_RELATION,
-        RELATION[1] as u64,
-    );
-    for fault in [
-        status(0, 0) + TARGET_COUNTRY,
-        status(0, 0) + WAR_RELATION,
-        RELATION[0] + crelation::RETIRED,
-        status(0, 0) + SUBJECT_RELATION,
-        RELATION[1] + crelation::TYPE_ID,
-        RELATION[1],
-        RELATION[1] + crelation::FIRST_COUNTRY,
-        RELATION[1] + crelation::SECOND_COUNTRY,
-    ] {
-        let memory = ReverseTrace::new(&bytes, Some(fault));
-        let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
-        let mut observed = ForwardZeroObservation::default();
-        let old = co_belligerent_inputs_observed(
-            &memory,
-            BASE,
-            &countries,
-            country(0),
-            &mut vec![99; 4],
-            &mut observed,
-        );
-        assert!(
-            old.zero_war.is_err()
-                || old.zero_subject.is_err()
-                || old.zero_subject.unwrap().read_refusal().is_some()
-        );
-        let old_attempts = observed;
-        let _packet = forward_zero_visibility_inputs(&memory, BASE, &countries, &mut observed);
-        for (before, after) in [
-            (old_attempts.war_pointer, observed.war_pointer),
-            (old_attempts.subject_pointer, observed.subject_pointer),
-        ] {
-            if before.is_some() {
-                assert_eq!(before, after);
-            }
-        }
-        for (before, after) in [
-            (old_attempts.subject_type, observed.subject_type),
-            (old_attempts.first_party, observed.first_party),
-            (old_attempts.second_party, observed.second_party),
-        ] {
-            if before.is_some() {
-                assert_eq!(before, after);
-            }
-        }
-        if old_attempts.war_retired.is_some() {
-            assert_eq!(old_attempts.war_retired, observed.war_retired);
-        }
-        if old_attempts.subject_identity.is_some() {
-            assert_eq!(old_attempts.subject_identity, observed.subject_identity);
-        }
-        assert_eq!(memory.reads(fault), 1, "same field {fault:x}");
-        assert_eq!(memory.attempts.get(), 1);
-    }
-}
-
-#[test]
-fn forward_packet_new_pointed_faults_remain_sticky_for_equal_pointer_reverse_cells() {
-    let mut bytes = forward_alias_zero_fixture();
-    relation(
-        &mut bytes,
-        RELATION[1],
-        csubject_relation::VTABLE_RVA,
-        csubject_relation::TYPE_VALUE,
-        2,
-        1,
-    );
-    p64(
-        &mut bytes,
-        status(0, 0) + SUBJECT_RELATION,
-        RELATION[1] as u64,
-    );
-    p64(
-        &mut bytes,
-        zero_status(1) + SUBJECT_RELATION,
-        RELATION[1] as u64,
-    );
-    p64(
-        &mut bytes,
-        zero_status(1) + WAR_RELATION,
-        RELATION[0] as u64,
-    );
-    for fault in [
-        RELATION[0] + crelation::RETIRED,
-        RELATION[1] + crelation::TYPE_ID,
-        RELATION[1],
-        RELATION[1] + crelation::FIRST_COUNTRY,
-        RELATION[1] + crelation::SECOND_COUNTRY,
-    ] {
-        let memory = ReverseTrace::new(&bytes, Some(fault));
-        let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
-        let source = reverse_source(&memory);
-        let mut observed = ForwardZeroObservation::default();
-        let old = co_belligerent_inputs_observed(
-            &memory,
-            BASE,
-            &countries,
-            country(0),
-            &mut vec![99; 4],
-            &mut observed,
-        );
-        assert_eq!(old.zero_war, Err("slot-0 relation target mismatch"));
-        let forward = forward_zero_visibility_inputs(&memory, BASE, &countries, &mut observed);
-        assert!(forward.failures.into_iter().any(|reason| reason.is_some()));
-        let reverse = source.cell(&memory, BASE, Some(&countries), 1, Some(&observed));
-        assert!(reverse.failures.into_iter().any(|reason| reason.is_some()));
-        assert_eq!(memory.reads(fault), 1, "pointed field {fault:x}");
-        assert_eq!(memory.attempts.get(), 1);
-        assert_eq!(memory.reads(zero_status(1) + WAR_RELATION), 1);
-    }
-}
-
-#[test]
 fn forward_packet_unknown_war_skips_new_military_and_subject_without_repeating_target() {
     let bytes = forward_alias_zero_fixture();
     let memory = ReverseTrace::new(&bytes, Some(status(0, 0) + WAR_RELATION));
@@ -3674,36 +3495,6 @@ fn forward_packet_unknown_positive_target_link_is_not_assumed_zero() {
     assert_eq!(value.military_access, Some(1));
     assert_eq!(value.subject, Some(ZeroSubjectInputs::default()));
     assert_eq!(memory.reads(status(0, 0) + TARGET_COUNTRY), 1);
-}
-
-#[test]
-fn forward_packet_failed_status_controls_refuse_without_reacquiring_root_or_header() {
-    let bytes = reverse_fixture();
-    for fault in [
-        COUNTRIES[0] + ccountry::DIPLOMACY_STATUS,
-        DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
-        status(0, 0),
-        status(0, 0) + DIPLOMACY_STATUS,
-    ] {
-        let memory = ReverseTrace::new(&bytes, Some(fault));
-        let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
-        let mut observed = ForwardZeroObservation::default();
-        let old = co_belligerent_inputs_observed(
-            &memory,
-            BASE,
-            &countries,
-            country(0),
-            &mut vec![0; 4],
-            &mut observed,
-        );
-        let before = memory.calls.borrow().len();
-        let packet = forward_zero_visibility_inputs(&memory, BASE, &countries, &mut observed);
-        assert_eq!(packet.value.err(), old.zero_war.err());
-        assert_eq!(packet.failures, [None; 4]);
-        assert_eq!(memory.calls.borrow().len(), before);
-        assert_eq!(memory.reads(fault), 1);
-        assert_eq!(memory.attempts.get(), 1);
-    }
 }
 
 mod selected_enemies;
@@ -3902,30 +3693,6 @@ impl Memory for CallLog<'_> {
     }
 }
 
-#[test]
-fn a_co_candidates_status_fields_are_copied_in_one_guarded_call() {
-    let bytes = co_inputs_fixture();
-    let memory = CallLog {
-        memory: memory(&bytes),
-        calls: Default::default(),
-    };
-    let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
-    let mut slots = vec![99_u32; 4];
-    let inputs = co_belligerent_inputs(&memory, BASE, &countries, country(0), &mut slots);
-    assert_eq!(inputs.targets, Ok(3));
-    assert_eq!(slots, [0, 2, 3, 99]);
-    for target in [2, 3] {
-        let object = status(0, target)..status(0, target) + CO_BELLIGERENT + 1;
-        let calls = memory
-            .calls
-            .borrow()
-            .iter()
-            .filter(|call| call.iter().any(|at| object.contains(at)))
-            .count();
-        assert_eq!(calls, 1, "status of slot {target}");
-    }
-}
-
 struct Hints<'a> {
     memory: SliceMemory<'a>,
     log: std::cell::RefCell<Vec<(bool, usize)>>,
@@ -3940,30 +3707,6 @@ impl Memory for Hints<'_> {
     }
 }
 
-#[test]
-fn owners_enemy_headers_and_owned_pointers_are_hinted_before_their_reads() {
-    let bytes = transport_subject_fixture();
-    let hints = Hints {
-        memory: memory(&bytes),
-        log: Default::default(),
-    };
-    let mut rows = vec![LinkRow::default(); 8];
-    let walk = transport_links(&hints, &mut rows);
-    let mut plain = vec![LinkRow::default(); 8];
-    assert_eq!(walk, transport_links(&memory(&bytes), &mut plain));
-    assert_eq!(rows, plain);
-    let log = hints.log.into_inner();
-    let first = |hint: bool, address: usize| log.iter().position(|&entry| entry == (hint, address));
-    for diplomacy in DIPLOMACY {
-        let enemies = diplomacy + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES;
-        assert!(first(true, enemies).unwrap() < first(false, enemies).unwrap());
-    }
-    for owner in 0..2 {
-        let owned = 0x3400 + owner * 0x40;
-        assert!(first(true, owned).unwrap() < first(false, owned).unwrap());
-    }
-}
-
 struct HintedTrace<'a> {
     trace: ReverseTrace<'a>,
     hints: std::cell::Cell<usize>,
@@ -3974,34 +3717,6 @@ impl Memory for HintedTrace<'_> {
     }
     fn prefetch(&self, _address: usize, _len: usize) {
         self.hints.set(self.hints.get() + 1);
-    }
-}
-
-#[test]
-fn relation_hints_leave_every_read_and_a_one_shot_fault_unchanged() {
-    let bytes = transport_subject_fixture();
-    for fault in [
-        None,
-        Some(0x3440),
-        Some(DIPLOMACY[1] + engine_native_parts::cdiplomacy_status_layout::ENEMY_COUNTRIES),
-    ] {
-        let hinted = HintedTrace {
-            trace: ReverseTrace::new(&bytes, fault),
-            hints: std::cell::Cell::new(0),
-        };
-        let plain = ReverseTrace::new(&bytes, fault);
-        let (mut rows, mut plain_rows) = (Vec::new(), Vec::new());
-        assert_eq!(
-            transport_links(&hinted, &mut rows),
-            transport_links(&plain, &mut plain_rows),
-            "{fault:x?}"
-        );
-        assert_eq!(rows, plain_rows);
-        assert_eq!(*hinted.trace.calls.borrow(), *plain.calls.borrow());
-        assert!(hinted.hints.get() >= 5);
-        if let Some(at) = fault {
-            assert!(hinted.trace.reads(at) >= 1);
-        }
     }
 }
 

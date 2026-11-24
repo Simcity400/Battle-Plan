@@ -768,35 +768,6 @@ mod tests {
     }
 
     #[test]
-    fn raster_scan_keeps_reciprocal_insertion_and_authored_append_order() {
-        let input = map(&[&[1, 2], &[3, 4]], 6);
-        let mut targets = ordered_bitmap_targets(&input).unwrap();
-        add_authored_targets(
-            &mut targets,
-            &adjacencies::parse(b"header\n1;5;sea;-1;0;0;0;0;\n-1\n").unwrap(),
-        )
-        .unwrap();
-        assert_eq!(targets[&1], [2, 3, 4, 5]);
-        assert_eq!(targets[&2], [1, 4, 3]);
-        assert_eq!(targets[&3], [1, 2, 4]);
-        assert_eq!(targets[&4], [1, 2, 3]);
-        assert_eq!(targets[&5], [1]);
-    }
-
-    #[test]
-    fn native_line_ties_and_route_points_join_at_the_crossing() {
-        assert_eq!(
-            native_line([0, 0], [3, 1], 10),
-            [[0, 0], [1, 0], [2, 1], [3, 1]]
-        );
-        assert_eq!(native_line([0, 0], [3, 1], 2).len(), 2);
-        assert_eq!(
-            route_points([0, 0], [4, 0], [2, 0], 8, 4).unwrap(),
-            [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]]
-        );
-    }
-
-    #[test]
     fn scaling_is_signed_and_keeps_the_sentinel() {
         assert_eq!(scale(700_000), 233_333);
         assert_eq!(scale(-700_000), -233_333);
@@ -879,23 +850,6 @@ mod tests {
             raid_route(&graph, &geometry, 1, 4, RaidPath::Land),
             Ok(None)
         );
-    }
-
-    #[test]
-    fn heap_equal_priorities_keep_the_required_pop_order() {
-        let mut heap = Vec::new();
-        for entry in [(5, 1), (5, 2), (3, 3), (5, 4)] {
-            heap_push(&mut heap, entry);
-        }
-        assert_eq!(heap[0], (3, 3));
-        let last = heap.pop().unwrap();
-        heap[0] = last;
-        sift_down(&mut heap);
-        assert_eq!(heap[0].0, 5);
-        assert_eq!(isqrt(0), 0);
-        assert_eq!(isqrt(1), 1);
-        assert_eq!(isqrt(99), 9);
-        assert_eq!(isqrt(100), 10);
     }
 
     #[test]

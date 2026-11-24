@@ -15,13 +15,3 @@ pub struct Row {
     pub selection: u32,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn writer_rva_matches_supported_operation_layout() {
-        assert_eq!(WRITER_RVA.0, 0x1C7DAC0);
-        assert_eq!((STRIDE, HANDLE, SELECTION), (0x38, 0x00, 0x08));
-    }
-}

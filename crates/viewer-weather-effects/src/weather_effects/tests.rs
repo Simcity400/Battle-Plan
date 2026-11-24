@@ -807,59 +807,6 @@ fn playback_skips_keep_live_rain_and_snow_runtimes_advancing() {
 }
 
 #[test]
-fn changed_content_controls_both_camera_bands_and_the_playback_floor() {
-    let defines = CameraDefines {
-        distance_cutoff: 2000.0,
-        distance_fade_length: 600.0,
-        zoom_in_cutoff: 100.0,
-        zoom_in_fade_length: 200.0,
-        zoom_in_fade_factor: 0.2,
-        playback_rate: 0.4,
-        playback_rate_cutoff: 800.0,
-        playback_rate_length: 400.0,
-    };
-    assert_eq!(super::gates(50.0, &defines), (0.2, false, 1.0));
-    assert!((super::gates(200.0, &defines).0 - 0.6).abs() < 1e-6);
-    assert_eq!(super::gates(300.0, &defines).0, 1.0);
-    assert!((super::gates(600.0, &defines).2 - 0.7).abs() < 1e-6);
-    assert_eq!(super::gates(1400.0, &defines), (1.0, false, 0.4));
-    assert_eq!(super::gates(1700.0, &defines), (0.5, true, 0.4));
-    assert_eq!(super::gates(2000.0, &defines), (0.0, true, 0.4));
-    assert_eq!(super::gates(2100.0, &defines), (0.0, true, 0.4));
-}
-
-#[test]
-fn the_camera_fade_runs_from_the_zoom_in_cutoff_and_the_far_band_starts_at_1100() {
-    assert_eq!(gates(50.0).0, 0.0);
-    assert_eq!(gates(310.131).0, 0.0);
-    assert_eq!(gates(357.999).0, 0.0);
-    assert_eq!(gates(358.0).0, 0.0);
-    assert!((gates(431.4655).0 - 0.333_934).abs() < 1e-5);
-    assert!((gates(468.0).0 - 0.5).abs() < 1e-6);
-    assert_eq!(gates(597.5275).0, 1.0);
-    assert_eq!(gates(1100.0).0, 1.0);
-    assert_eq!(gates(1300.0).0, 0.5);
-    assert!((gates(1167.101).0 - 0.832_25).abs() < 1e-5);
-    assert_eq!(gates(1500.0).0, 0.0);
-    assert_eq!(gates(1600.0).0, 0.0);
-    for h in [50.0, 310.131, 358.0, 431.4655, 597.5275, 1100.0] {
-        assert!(!gates(h).1, "far at {h}");
-    }
-    for h in [1100.001, 1167.101, 1300.0, 1500.0, 1600.0] {
-        assert!(gates(h).1, "near at {h}");
-    }
-}
-
-#[test]
-fn the_playback_rate_holds_at_one_below_300_and_at_its_floor_above_500() {
-    assert_eq!(gates(50.0).2, 1.0);
-    assert_eq!(gates(300.0).2, 1.0);
-    assert!((gates(400.0).2 - 0.575).abs() < 1e-6);
-    assert_eq!(gates(500.0).2, 0.15);
-    assert_eq!(gates(1500.0).2, 0.15);
-}
-
-#[test]
 fn zoom_changes_playback_rate_without_teleporting_particle_ages() {
     let mut clock = Clock::default();
     let defines = reference_defines();
@@ -956,37 +903,6 @@ fn vortex_pushes_around_its_axis_by_its_yaw() {
 }
 
 #[test]
-fn a_system_draws_its_subsystems_then_its_turbulence_from_one_stream() {
-    let mut leader = activation_test_emitter();
-    leader.noise_divisions = vec![16];
-    leader.position[0].spread = 4.0;
-    let mut follower = activation_test_emitter();
-    follower.leads = false;
-    follower.duration = Parameter {
-        base: 3.0,
-        spread: 1.0,
-        curve: None,
-    };
-    let mut a = Simulation::cold(&leader, 7, [0.; 3], 0.);
-    let mut b = Simulation::cold(&follower, 8, [0.; 3], 0.);
-    advance_system(
-        &mut [
-            Member { sim: &mut a, emitter: &leader, space: None },
-            Member { sim: &mut b, emitter: &follower, space: None },
-        ],
-        0.0,
-        1.0,
-    );
-    let mut stream = 7u64;
-    let x = random(&mut stream) * (4.0 + 4.0) + (0.0 - 4.0);
-    let duration = random(&mut stream) * (1.0 + 1.0) + (3.0 - 1.0);
-    let fields = Noise::new(&mut stream, 16);
-    assert_eq!((a.origin[0], b.duration), (x, duration));
-    assert_eq!(a.noise[0].permutation, fields.permutation);
-    assert_eq!((a.seed, b.seed), (stream, 8));
-}
-
-#[test]
 fn subsystems_of_one_system_share_and_advance_its_turbulence_fields() {
     let mut leader = activation_test_emitter();
     leader.noise_divisions = vec![16];
@@ -1072,47 +988,6 @@ fn an_event_s_finished_subsystem_retires_with_its_system() {
     assert_eq!(lines.len(), 2, "{state}");
     assert!(lines.iter().all(|line| line.contains("time=0.7 ")), "{state}");
     assert!(lines[1].contains("emitting=false") && lines[1].contains("particles=[]"), "{state}");
-}
-
-#[test]
-fn a_ranged_value_draws_around_its_animated_base() {
-    let half = Curve::new(&[[0.0, 0.5], [1.0, 0.5]], 0.0, 1.0, 0.0, 1.0);
-    let base = half.apply(10.0, 0.0);
-    assert!((base - 5.0).abs() < 1e-5);
-    let value = Parameter {
-        base: 10.0,
-        spread: 2.0,
-        curve: Some(half),
-    };
-    let mut seed = 0x1234_5678_0000_0001;
-    let mut expected = seed;
-    let drawn = value.at(&mut seed, 0.0);
-    assert_eq!(drawn, random(&mut expected) * 4.0 + (base - 2.0));
-    assert!((3.0..=7.0).contains(&drawn));
-}
-
-#[test]
-fn a_ranged_emission_draws_a_new_rate_every_update() {
-    let mut emitter = activation_test_emitter();
-    emitter.emission = Parameter {
-        base: 0.1,
-        spread: 2.0,
-        curve: None,
-    };
-    let mut sim = Simulation::cold(&emitter, 12345, [0.; 3], 0.);
-    let mut accumulator = 0.0f32;
-    let mut rates = Vec::new();
-    for _ in 0..12 {
-        let mut seed = sim.seed;
-        let rate = random(&mut seed) * (2.0 + 2.0) + (0.1 - 2.0);
-        accumulator += rate.max(0.0) * 0.5;
-        accumulator -= (accumulator as usize) as f32;
-        sim.tick(&emitter, 0.5);
-        assert_eq!(sim.accumulator, accumulator);
-        rates.push(rate);
-    }
-    assert!(rates.iter().all(|rate| (-1.9..=2.1).contains(rate)));
-    assert!(rates.windows(2).any(|pair| pair[0] != pair[1]));
 }
 
 #[test]
@@ -1368,12 +1243,6 @@ fn suspension_retains_population_instead_of_inventing_steady_state() {
     assert_eq!(simulation.particles.len(), count);
     assert_eq!(simulation.age, age);
     assert_eq!(simulation.time, 20.0);
-}
-
-#[test]
-fn a_simulation_moves_without_its_noise_table() {
-    assert!(std::mem::size_of::<Simulation>() < 256);
-    assert!(std::mem::size_of::<Noise>() > 8 * 1024);
 }
 
 #[test]

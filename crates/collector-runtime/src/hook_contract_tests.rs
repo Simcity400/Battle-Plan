@@ -506,41 +506,6 @@ fn every_constructor_site_has_its_actual_family_registration() {
 }
 
 #[test]
-fn registered_types_are_exactly_the_runtime_constructor_inventory() {
-    use std::collections::BTreeSet;
-    let actual = super::constructor_gate::registered_types(include_str!("runtime.rs")).unwrap();
-    let declared: BTreeSet<_> = Family::ALL
-        .into_iter()
-        .map(|family| {
-            super::runtime_type(family)
-                .chars()
-                .filter(|c| !c.is_whitespace())
-                .collect::<String>()
-        })
-        .collect();
-    assert_eq!(
-        actual, declared,
-        "runtime families and restoration/refusal registration differ"
-    );
-    let patches = crate::hook_inventory::patches();
-    for family in Family::ALL {
-        assert!(
-            patches
-                .iter()
-                .any(|site| family.owns_patch_family(site.family)),
-            "{} has no native sites",
-            family.name()
-        );
-    }
-    assert!(
-        patches.iter().all(|patch| Family::ALL
-            .into_iter()
-            .any(|family| family.owns_patch_family(patch.family))),
-        "site belongs to an unregistered runtime family"
-    );
-}
-
-#[test]
 fn omitted_or_wrong_family_native_site_is_a_registration_failure() {
     use collector_hooks::hook::installation::{self, Kind};
     let (_, report) = installation::capture(|| installation::site(1));

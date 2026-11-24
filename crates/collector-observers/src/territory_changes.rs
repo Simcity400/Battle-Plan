@@ -445,11 +445,9 @@ macro_rules! callback {
         ) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::TerritoryChanges);
             let _occupation = (7..=11).contains(&$site).then(|| {
-                (
-                    crate::occupation_changes::changed(first),
-                    crate::occupation_changes::changed(
-                        first.wrapping_add(engine_native::cstate::COUNTRY_MODIFIERS),
-                    ),
+                crate::occupation_changes::changed_pair(
+                    first,
+                    first.wrapping_add(engine_native::cstate::COUNTRY_MODIFIERS),
                 )
             });
             let _marks = DOMAIN.notify($site, target(MUTATIONS[$site].1, first));
@@ -488,11 +486,9 @@ unsafe extern "system-unwind" fn state_owner(
 ) -> usize {
     const SITE: usize = 7;
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::TerritoryChanges);
-    let _occupation = (
-        crate::occupation_changes::changed(first),
-        crate::occupation_changes::changed(
-            first.wrapping_add(engine_native::cstate::COUNTRY_MODIFIERS),
-        ),
+    let _occupation = crate::occupation_changes::changed_pair(
+        first,
+        first.wrapping_add(engine_native::cstate::COUNTRY_MODIFIERS),
     );
     let _marks = DOMAIN.notify(SITE, target(MUTATIONS[SITE].1, first));
     let _inputs = crate::country_input_changes::forwarded_territory(SITE, first, second);

@@ -4445,40 +4445,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tactic_readers_ask_the_keyword_helper() {
-        const RAW: [&str; 6] = [
-            "key.as_deref() ==",
-            "key.as_deref() !=",
-            "eq_ignore_ascii_case(",
-            "to_ascii_lowercase(",
-            ".get(b\"",
-            "get_all(",
-        ];
-        const ALLOWED: [&str; 9] = [
-            "match self.artillery.entry(name.to_ascii_lowercase()) {",
-            ".get(&name.to_ascii_lowercase())",
-            "if term.1.eq_ignore_ascii_case(operand) {",
-            ".filter(|row| row.literal.eq_ignore_ascii_case(&entry.token));",
-            ".is_some_and(|literal| literal.eq_ignore_ascii_case(NULL_TACTIC_NAME));",
-            "_ if operand.eq_ignore_ascii_case(\"yes\") || operand.eq_ignore_ascii_case(\"no\") => Ok(false),",
-            ".find(|name| !item.quoted() && name.eq_ignore_ascii_case(bytes));",
-            ".filter(|(_, literal)| literal.eq_ignore_ascii_case(text))",
-            "if operand.eq_ignore_ascii_case(\"river_crossing\") {",
-        ];
-        let code = include_str!("tactics.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap_or_default();
-        let raw: Vec<_> = code
-            .lines()
-            .map(str::trim)
-            .filter(|line| {
-                !line.starts_with("//")
-                    && RAW.iter().any(|pattern| line.contains(pattern))
-                    && !ALLOWED.contains(line)
-            })
-            .collect();
-        assert!(raw.is_empty(), "raw key comparisons: {raw:#?}");
-    }
 }

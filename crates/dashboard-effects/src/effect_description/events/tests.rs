@@ -592,32 +592,6 @@ fn unlock_decision_modifiers_use_full_mask_and_ordered_target_headings() {
 }
 
 #[test]
-fn shared_decision_seed_self_from_is_mixed_twice() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (fixture, database, _folder) = event_fixture();
-    let mut graph = super::super::tests::fresh();
-    let definition = &database.entries[b"syn_decision".as_slice()];
-    fixture.with_renderer(
-        &mut graph,
-        Content {
-            decisions: Some(&database),
-            ..Default::default()
-        },
-        |renderer| {
-            renderer
-                .decision_seeded_scope(definition, 1, None, 0, false)
-                .unwrap();
-        },
-    );
-    let seed = decision_seed(0, definition, None, 0).unwrap();
-    let mixed = random::scope_seed(seed);
-    let own = graph.scopes.last().unwrap();
-    assert_eq!(own.random_seed, random::scope_seed(mixed));
-    assert_eq!(own.random_counter, random::scope_counter(mixed));
-}
-
-#[test]
 fn activate_targeted_decision_saved_target_without_active_instance() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");

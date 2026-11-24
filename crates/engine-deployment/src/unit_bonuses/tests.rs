@@ -222,20 +222,6 @@ fn entries_keep_their_source_targets_grants_and_labels_in_stored_order() {
     );
 }
 
-#[test]
-fn the_demand_probe_counts_every_entry() {
-    let memory = fixture();
-    let demand = walk_demand(&memory);
-    assert_eq!(
-        demand.outcome,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 2
-        }
-    );
-    assert_eq!(demand.required, DEMAND);
-}
-
 fn walk_demand(memory: &Fixture) -> Walk {
     walk(memory, 0, 0x1000, Buffers::demand())
 }

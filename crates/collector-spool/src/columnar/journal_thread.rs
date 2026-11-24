@@ -5,7 +5,7 @@ use std::{
     fs, io,
     path::PathBuf,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard, PoisonError,
+        Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
@@ -34,6 +34,7 @@ pub(crate) struct JournalThread {
 struct Shared {
     state: Mutex<State>,
     changed: Condvar,
+    pipeline: OnceLock<engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline>>,
 }
 
 struct State {
@@ -55,8 +56,9 @@ pub(super) struct Hour {
     pub hour: i32,
     pub(crate) ends_segment: bool,
     pub witness: Option<Witness>,
-    pub(crate) manifest: Vec<u8>,
-    pub(crate) sections: Vec<Vec<u8>>,
+    pub manifest: Vec<u8>,
+    pub section_bytes: Vec<u8>,
+    pub section_ends: Vec<u32>,
 }
 
 pub(super) enum Op {
@@ -355,15 +357,14 @@ fn write(
     }
     let mut sections: [&[u8]; replay_data::rows::TABLE_COUNT] =
         [&[][..]; replay_data::rows::TABLE_COUNT];
-    for (at, section) in hour.sections.iter().enumerate() {
-        sections[at] = section;
+    let mut start = 0usize;
+    for (at, &end) in hour.section_ends.iter().enumerate() {
+        let end = end as usize;
+        sections[at] = &hour.section_bytes[start..end];
+        start = end;
     }
     journal
-        .hour(
-            hour.witness,
-            &hour.manifest,
-            &sections[..hour.sections.len()],
-        )
+        .hour(hour.witness, &hour.manifest, &sections[..hour.section_ends.len()])
         .map_err(|error| (APPEND, error))?;
     if hour.ends_segment {
         let ended = journal
@@ -395,6 +396,7 @@ impl JournalThread {
                 timing: Timing::new(),
             }),
             changed: Condvar::new(),
+            pipeline: OnceLock::new(),
         });
         let worker = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
@@ -402,7 +404,20 @@ impl JournalThread {
             .stack_size(STACK_BYTES)
             .spawn(move || {
                 collector_workers::private_heap::off_hold_path();
-                serve(&worker)
+                // SAFETY: This dedicated journal writer thread registers and clears its own role.
+                unsafe {
+                    collector_workers::thread_cpu::register(
+                        collector_workers::thread_cpu::Role::JournalWriter,
+                    );
+                }
+                serve(&worker);
+                // SAFETY: This dedicated journal writer thread clears its own role before exit.
+                unsafe {
+                    collector_workers::thread_cpu::register_id(
+                        collector_workers::thread_cpu::Role::JournalWriter,
+                        0,
+                    );
+                }
             })?;
         Ok(Arc::new(Self {
             shared,
@@ -410,6 +425,22 @@ impl JournalThread {
             #[cfg(test)]
             refuse: AtomicUsize::new(0),
         }))
+    }
+
+    pub(crate) fn attach_priority(
+        &self,
+        pipeline: engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline>,
+    ) {
+        let _ = self.shared.pipeline.set(pipeline);
+        self.shared.changed.notify_all();
+    }
+
+    pub(crate) fn thread_id(&self) -> Option<u32> {
+        use std::os::windows::io::AsRawHandle;
+        let handle = self.thread.as_ref()?.as_raw_handle();
+        // SAFETY: `self.thread` stays alive for the duration of this query.
+        let id = unsafe { windows_sys::Win32::System::Threading::GetThreadId(handle as _) };
+        (id != 0).then_some(id)
     }
 
     pub(super) fn queue(&self, lane: &Arc<Lane>, op: Op) {
@@ -478,10 +509,23 @@ impl Drop for JournalThread {
 
 fn serve(shared: &Shared) {
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Journal);
+    let mut own = collector_workers::priority::OwnPriority::new();
     // SAFETY: The owning worker adjusts only its own thread's priority.
-    unsafe { collector_workers::priority::OwnPriority::new().follow(false) };
+    unsafe { own.follow(false) };
+    let mut managed = None;
     let mut state = shared.lock();
     loop {
+        if let Some(pipeline) = shared.pipeline.get() {
+            // SAFETY: This owned worker updates its priority from its session's own pipeline.
+            unsafe {
+                managed
+                    .get_or_insert_with(|| collector_workers::priority::OwnPriority::frame_pipeline())
+                    .follow_pipeline(
+                        pipeline,
+                        collector_workers::frame_priority::Role::JournalWriter,
+                    );
+            }
+        }
         let Some((lane, op)) = state.work.pop_front() else {
             if state.stop {
                 return;

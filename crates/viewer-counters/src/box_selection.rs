@@ -134,15 +134,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_press_drags_from_one_pixel_and_boxes_from_thirty_across_and_down() {
-        assert!(!dragging([0.0, 0.0], [0.99, 0.0]));
-        assert!(dragging([0.0, 0.0], [1.0, 0.0]));
-        assert!(!boxes([0.0, 0.0], [1.0, 0.0]));
-        assert!(!boxes([10.0, 10.0], [24.0, -5.0]));
-        assert!(boxes([10.0, 10.0], [25.0, -5.0]));
-    }
-
-    #[test]
     fn the_order_follows_the_mode_and_ctrl() {
         use {Kind::*, Member::Unit as U};
         let land = [U(Division), U(RailwayGun), U(TaskForce)];

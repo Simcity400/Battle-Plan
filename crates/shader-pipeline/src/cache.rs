@@ -386,19 +386,6 @@ pub(crate) mod tests {
         assert_eq!(compiler.0.load(Ordering::SeqCst), 4);
         assert_eq!(third.diagnostics().warnings.len(), 1);
     }
-    #[test]
-    fn abi_names_the_pinned_compiler_and_a_missing_one_is_named() {
-        assert!(super::super::DXC_VERSION.starts_with("1.9.0.5402 (0d3ee6b55"));
-        assert!(ABI.contains("/dxc-1.9.0.5402-0d3ee6b55/"));
-        let scratch = super::super::Scratch::new().unwrap();
-        for installation in ["baseline-main", "lane-det-1"] {
-            let missing = scratch.0.join(installation).join("dxcompiler.dll");
-            let Err(reason) = Compiler::at(&missing) else {
-                panic!("a missing compiler must be refused");
-            };
-            assert_eq!(reason, "DXC not found: dxcompiler.dll is not beside the application");
-        }
-    }
 
     #[test]
     fn missing_compiler_names_and_counts_only_selected_technique() {

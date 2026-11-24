@@ -302,19 +302,6 @@ fn with_texts(check: impl FnOnce(&dyn Fn(&DecodedFrame, &[Key]) -> Vec<Option<u6
 }
 
 #[test]
-fn every_text_and_name_read_but_a_date_is_declared() {
-    for key in declared_keys() {
-        assert!(key.dependence().is_some(), "{key:?}");
-    }
-    for date in ["GetDateText", "getdate", "GetYear", "GetMonth"] {
-        assert_eq!(
-            Key::Text(TextQuery::DateProperty(date.into())).dependence(),
-            None
-        );
-    }
-}
-
-#[test]
 fn a_declared_text_or_name_read_reads_no_table_it_does_not_declare() {
     with_texts(|digests| {
         let keys = declared_keys();

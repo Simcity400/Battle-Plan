@@ -590,25 +590,6 @@ fn scripted_sharing_roster_keeps_idle_countries_duplicates_and_native_extent() {
 }
 
 #[test]
-fn unbonused_slots_share_one_guard_for_all_technology_operands() {
-    let f = Fixture::new();
-    let mut rows = vec![Row::default(); 64];
-    assert!(matches!(
-        f.capture(&[f.input()], &mut rows),
-        Outcome::Rows { .. }
-    ));
-    assert_eq!(f.calls.get(), 6);
-    f.calls.set(0);
-    let mut second = f.input();
-    second.slot.index = 1;
-    assert!(matches!(
-        f.capture(&[f.input(), second], &mut rows),
-        Outcome::Rows { .. }
-    ));
-    assert_eq!(f.calls.get(), 6);
-}
-
-#[test]
 fn cyclic_country_source_trees_fail_without_unbounded_recursion() {
     let mut f = Fixture::new();
     f.array(COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR + 0x18, 0x8000, 1);

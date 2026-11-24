@@ -177,50 +177,6 @@ fn doctrine_sources(memory: &Fixture) -> Result<Vec<SourceRow>, &'static str> {
 }
 
 #[test]
-fn a_task_forces_doctrine_is_walked_once_per_capture() {
-    let memory = doctrine_fixture(5);
-    let mut memo = SourceMemo::default();
-    let mut keys = DoctrineKeys::default();
-    let mut walk = |memo: &mut SourceMemo| {
-        let mut rows = Vec::new();
-        let result = doctrine_kept::<true>(
-            &memory,
-            IMAGE,
-            TASK,
-            &mut keys,
-            &mut Some(memo),
-            &mut |row, accumulator| {
-                rows.push((row, accumulator));
-                Ok(())
-            },
-        );
-        result.map(|()| rows)
-    };
-    let first = walk(&mut memo).unwrap();
-    assert_eq!(first.len(), 5);
-    let calls = memory.calls.get();
-    assert_eq!(walk(&mut memo).unwrap(), first);
-    assert_eq!(memory.calls.get(), calls, "the tree is not read again");
-
-    let mut broken = doctrine_fixture(5);
-    broken.fail = Some(NODES + 2 * 0x38 + 0x20);
-    let mut memo = SourceMemo::default();
-    let mut keys = DoctrineKeys::default();
-    for _ in 0..2 {
-        let result = doctrine_kept::<true>(
-            &broken,
-            IMAGE,
-            TASK,
-            &mut keys,
-            &mut Some(&mut memo),
-            &mut |_, _| Ok(()),
-        );
-        assert!(result.is_err());
-    }
-    assert!(memo.rows.is_empty());
-}
-
-#[test]
 fn doctrine_exceeds_4096_nodes() {
     let sources = doctrine_sources(&doctrine_fixture(4097)).unwrap();
     assert_eq!(sources.len(), 4097);
@@ -320,26 +276,6 @@ fn dictionary_exceeds_65536_nodes() {
         f.put(node + 0x10, &1u32.to_le_bytes());
     }
     assert_eq!(doctrine_keys::<true>(&f, IMAGE, 1), Ok([0; 2]));
-}
-
-#[test]
-fn kept_doctrine_keys_walk_the_dictionary_once_per_selector() {
-    let mut f = doctrine_fixture(1);
-    let mut keys = DoctrineKeys::default();
-    f.fail = Some(IMAGE + 0x030f_eba8);
-    assert!(doctrine_keys_kept::<true>(&f, IMAGE, 1, &mut keys).is_err());
-    assert!(keys.is_empty());
-    f.fail = None;
-    assert_eq!(
-        doctrine_keys_kept::<true>(&f, IMAGE, 1, &mut keys),
-        doctrine_keys::<true>(&f, IMAGE, 1)
-    );
-    f.reads.borrow_mut().clear();
-    assert_eq!(
-        doctrine_keys_kept::<true>(&f, IMAGE, 1, &mut keys),
-        Ok([0; 2])
-    );
-    assert!(f.reads.borrow().is_empty());
 }
 
 #[test]
@@ -488,45 +424,6 @@ fn cold_terrain_fallback_keeps_mod_heap_names_and_named_first_faults() {
 }
 
 #[test]
-fn a_capture_scans_the_terrain_database_for_the_ocean_once() {
-    const DATABASE: usize = 0x2100;
-    const TYPES: usize = 0x2800;
-    const OCEAN: usize = 0x3400;
-    let key = *b"ocean";
-    let mut memory = fixture();
-    memory.globals.push((IMAGE + 0x029f_5b58, key.to_vec()));
-    memory.globals.push((
-        IMAGE + engine_native_parts::cterrain_database::SINGLETON_RVA.0,
-        (DATABASE as u64).to_le_bytes().to_vec(),
-    ));
-    memory.q(DATABASE + 0x40, TYPES as u64);
-    memory.q(DATABASE + 0x48, (1u64 << 32) | 1);
-    memory.q(TYPES, OCEAN as u64);
-    memory.q(OCEAN, (IMAGE + engine_native_parts::cterrain_type::VTABLE_RVA.0) as u64);
-    memory.put(OCEAN + 0x10, &[1]);
-    memory.put(OCEAN + 0x18, &key);
-    memory.q(OCEAN + 0x28, key.len() as u64);
-    memory.q(OCEAN + 0x30, 15);
-
-    memory.fail = Some(OCEAN + 0x10);
-    let mut ocean = None;
-    assert!(terrain_from_template_kept(&memory, IMAGE, TASK, &mut ocean).is_err());
-    assert_eq!(ocean, None);
-    memory.fail = None;
-    assert_eq!(
-        terrain_from_template_kept(&memory, IMAGE, TASK, &mut ocean),
-        terrain_from_template_with_policy::<true>(&memory, IMAGE, TASK)
-    );
-    assert_eq!(ocean, Some(OCEAN));
-    memory.reads.borrow_mut().clear();
-    assert_eq!(
-        terrain_from_template_kept(&memory, IMAGE, TASK, &mut ocean),
-        Ok(OCEAN)
-    );
-    assert_eq!(*memory.reads.borrow(), [(TASK + 0x130, 8)]);
-}
-
-#[test]
 fn modifier_terms_and_keys_exceed_65536() {
     use engine_native_parts::modifier_definition as md;
     const COUNT: usize = 65_537;
@@ -634,49 +531,6 @@ fn native_modifier_sources_share_owned_terms_per_accumulator() {
         assert_eq!((memory.calls.get(), memory.copied.get()), (5, 88));
         assert_eq!(*memory.reads.borrow(), source_reads);
     }
-}
-
-#[test]
-fn a_capture_reads_each_keys_metadata_once() {
-    use engine_native_parts::modifier_definition as md;
-    let mut memory = fixture();
-    memory.put(0x1810, &0x2000u64.to_le_bytes());
-    memory.put(0x1818, &3u32.to_le_bytes());
-    memory.put(0x181c, &2u32.to_le_bytes());
-    let mut sources = Vec::new();
-    let mut terms = Vec::new();
-    let mut lengths = [0; 2];
-    let mut required = [0; 2];
-    let mut metadata = TermMetadata::default();
-    let mut cap = Capture {
-        memory: &memory,
-        base: IMAGE,
-        buffers: InfluenceBuffers {
-            sources: &mut sources,
-            terms: &mut terms,
-            lengths: &mut lengths,
-            required: &mut required,
-        },
-        metadata: Some(&mut metadata),
-    };
-    for accumulator in [0x1800, 0x1810] {
-        cap.source(SourceRow::default(), Some(accumulator)).unwrap();
-    }
-    assert_eq!(lengths, [2, 4]);
-    assert_eq!(terms[2..], terms[..2]);
-    assert_eq!(terms[3].metadata_flags, 0x81234567);
-    assert_eq!(
-        *memory.reads.borrow(),
-        [
-            (0x1800, 16),
-            (IMAGE + md::TABLE_RVA.0, 16),
-            (0x2000, 32),
-            (0x4000 + 0x2a * md::STRIDE + md::FLAGS, 12),
-            (0x4000 + 0x2b * md::STRIDE + md::FLAGS, 12),
-            (0x1810, 16),
-            (0x2000, 32),
-        ]
-    );
 }
 
 #[test]

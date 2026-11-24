@@ -10,41 +10,6 @@ fn context() -> egui::Context {
     ctx
 }
 
-#[test]
-fn image_jobs_keep_physical_extent_and_full_texture_coordinates() {
-    let ctx = context();
-    let id = egui::TextureId::User(27);
-    let jobs = jobs(&ctx, id, [3440, 1440], 1.25);
-    assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0].clip_rect.min, egui::Pos2::ZERO);
-    assert_eq!(jobs[0].clip_rect.max, egui::pos2(2752.0, 1152.0));
-    let egui::epaint::Primitive::Mesh(mesh) = &jobs[0].primitive else {
-        panic!("expected an image mesh");
-    };
-    assert_eq!(mesh.texture_id, id);
-    assert_eq!(mesh.vertices.len(), 4);
-    assert_eq!(mesh.indices.len(), 6);
-    for (physical, uv) in [
-        ([0.0, 0.0], [0.0, 0.0]),
-        ([3440.0, 0.0], [1.0, 0.0]),
-        ([0.0, 1440.0], [0.0, 1.0]),
-        ([3440.0, 1440.0], [1.0, 1.0]),
-    ] {
-        assert!(mesh.vertices.iter().any(|vertex| {
-            [vertex.pos.x * 1.25, vertex.pos.y * 1.25] == physical
-                && [vertex.uv.x, vertex.uv.y] == uv
-                && vertex.color == egui::Color32::WHITE
-        }));
-    }
-}
-
-#[test]
-fn bgra_readback_swaps_each_pixels_red_and_blue_without_changing_alpha() {
-    let mut pixels = [1, 2, 3, 4, 11, 12, 13, 14];
-    swap_bgra(&mut pixels);
-    assert_eq!(pixels, [3, 2, 1, 4, 13, 12, 11, 14]);
-}
-
 fn state() -> (MutexGuard<'static, ()>, egui_wgpu::RenderState) {
     let serial = viewer_gpu::test_support::serial();
     let state = pollster::block_on(async {

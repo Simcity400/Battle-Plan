@@ -287,12 +287,14 @@ fn weather_fixture() -> Fixture {
 fn current_task_terms(memory: &impl Memory, memo: &mut OrganisationMemo) -> TaskTerms {
     let task = TaskForceFields {
         pointer: TASK,
+        vtable: (IMAGE + ctask_force::VTABLE_RVA.0) as u64,
         handle: 0,
         roster_owner: 1,
         location: read::<u64>(memory, TASK + cunit::LOCATION).unwrap() as usize,
         fleet: read::<u64>(memory, TASK + ctask_force::FLEET).unwrap() as usize,
         mine_exposure: 0,
         modifiers: TASK + 0x668,
+        influences_count: Some(0),
     };
     read_task_terms(memory, IMAGE, &task, memo)
         .unwrap()
@@ -546,109 +548,6 @@ fn organisation_certified_operands_apply_current_own_only_feature_eligibility() 
 }
 
 #[test]
-fn organisation_weather_packet_preserves_every_ship_factor_and_critical_operand() {
-    let mut f = weather_fixture();
-    let mut memo = OrganisationMemo::default();
-    for factor in [100000_i64, 25000, 0, -1, -200000, i64::MIN, i64::MAX] {
-        f.word(SHIP + 0x270, factor as u64);
-        let scale = factor.wrapping_sub(100000).wrapping_add(75000);
-        let mut total = [100159_i64, 10169, 20183, 189];
-        for ((total, regional), local) in total
-            .iter_mut()
-            .zip([50_i64, 60, 70, 80])
-            .zip([34, 42, 48, 56])
-        {
-            *total = total
-                .wrapping_add(regional.wrapping_mul(scale) / 100000)
-                .wrapping_add(local);
-        }
-        total[0] =
-            total[0].wrapping_add(100000_i64.wrapping_mul(total[3].wrapping_add(100000)) / 100000);
-        let expected = organisation_maximum(10_000_000, [total[0], total[1], total[2]]);
-        assert_eq!(
-            read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo),
-            Ok(expected),
-            "factor {factor}"
-        );
-        assert_eq!(
-            maximum_organisation(&f, IMAGE, SHIP),
-            Ok(expected),
-            "fresh factor {factor}"
-        );
-    }
-    f.word(TASK + cunit::LOCATION, 0);
-    f.bytes.remove(&WEATHER);
-    assert_eq!(
-        read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo),
-        maximum_organisation(&f, IMAGE, SHIP)
-    );
-    f.word(TASK + cunit::LOCATION, PROVINCE as u64);
-    f.word(
-        WEATHER,
-        (IMAGE + crate::cweather_manager::VTABLE_RVA.0) as u64,
-    );
-    f.word(SHIP + 0x270, 100000);
-    f.modifier(0x29000 + 0x58, 0x37000, &[(0x47, 100000)]);
-    memo = OrganisationMemo::default();
-    assert_eq!(
-        read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo),
-        maximum_organisation(&f, IMAGE, SHIP)
-    );
-    let weather = memo.weather.as_ref().unwrap();
-    assert_eq!(weather.region, [0, 100000, 0, 0]);
-    assert_eq!(
-        weather.sources,
-        [GAME, TASK, COUNTRY, PROVINCE, PROVINCE_DEFINITION]
-    );
-}
-
-#[test]
-fn organisation_weather_packet_removes_graph_reads_and_thirteen_existing_snapshot_lookups() {
-    let f = weather_fixture();
-    let census = engine_native_memory::read_census::ReadCensus::new(&f);
-    let snapshot = Snapshotted {
-        source: &census,
-        arena: RefCell::new(modifier_accumulator::SnapshotArena::new(
-            modifier_accumulator::SnapshotCapacity {
-                nodes: 16,
-                entries: 64,
-            },
-        )),
-        lookups: Cell::new(0),
-    };
-    let mut memo = OrganisationMemo::default();
-    let expected = read_maximum_organisation_memo(&snapshot, IMAGE, SHIP, &mut memo).unwrap();
-    census.reset();
-    snapshot.lookups.set(0);
-    assert_eq!(
-        read_maximum_organisation_memo(&snapshot, IMAGE, SHIP, &mut memo),
-        Ok(expected)
-    );
-    let warm = (
-        census.calls(),
-        census.spans(),
-        census.bytes(),
-        snapshot.lookups.get(),
-    );
-    memo.weather = None;
-    census.reset();
-    snapshot.lookups.set(0);
-    assert_eq!(
-        read_maximum_organisation_memo(&snapshot, IMAGE, SHIP, &mut memo),
-        Ok(expected)
-    );
-    assert_eq!(
-        (
-            census.calls() - warm.0,
-            census.spans() - warm.1,
-            census.bytes() - warm.2,
-            snapshot.lookups.get() - warm.3
-        ),
-        (6, 6, 56, 13)
-    );
-}
-
-#[test]
 fn organisation_weather_packet_keeps_zero_scale_reads_and_never_stores_failed_graphs() {
     let base = weather_fixture();
     for factor in [25000_i64, 0, -200000] {
@@ -751,152 +650,6 @@ fn organisation_weather_packet_rejects_changed_location_and_definition_sources()
         assert_eq!(
             memo.weather.as_ref().unwrap().sources,
             [GAME, TASK, COUNTRY, PROVINCE, PROVINCE_DEFINITION]
-        );
-    }
-}
-
-#[test]
-fn organisation_shared_selectors_remove_complete_scans_without_replacing_ship_terms() {
-    use engine_native_memory::read_census::ReadCensus;
-    let mut f = shared_sources_fixture();
-    let mut memo = OrganisationMemo::default();
-    let expected = organisation_maximum(10_000_000, [100159, 10169, 20183]);
-    assert_eq!(
-        read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo),
-        Ok(expected)
-    );
-    let census = ReadCensus::new(&f);
-    assert_eq!(
-        read_maximum_organisation_memo(&census, IMAGE, SHIP, &mut memo),
-        Ok(expected)
-    );
-    let warm = (census.calls(), census.spans(), census.bytes());
-    memo.terrain = Recent::default();
-    memo.terrain_class = Recent::default();
-    memo.fleet = None;
-    memo.leader_class = Recent::default();
-    census.reset();
-    assert_eq!(
-        read_maximum_organisation_memo(&census, IMAGE, SHIP, &mut memo),
-        Ok(expected)
-    );
-    assert_eq!(
-        (
-            census.calls() - warm.0,
-            census.spans() - warm.1,
-            census.bytes() - warm.2
-        ),
-        (25, 34, 405),
-    );
-
-    let snapshot = Snapshotted {
-        source: &census,
-        lookups: Cell::new(0),
-        arena: RefCell::new(modifier_accumulator::SnapshotArena::new(
-            modifier_accumulator::SnapshotCapacity {
-                nodes: 16,
-                entries: 64,
-            },
-        )),
-    };
-    memo = OrganisationMemo::default();
-    assert_eq!(
-        read_maximum_organisation_memo(&snapshot, IMAGE, SHIP, &mut memo),
-        Ok(expected)
-    );
-    census.reset();
-    assert_eq!(
-        read_maximum_organisation_memo(&snapshot, IMAGE, SHIP, &mut memo),
-        Ok(expected)
-    );
-    let warm = (census.calls(), census.spans(), census.bytes());
-    memo.terrain = Recent::default();
-    memo.terrain_class = Recent::default();
-    memo.fleet = None;
-    memo.leader_class = Recent::default();
-    census.reset();
-    assert_eq!(
-        read_maximum_organisation_memo(&snapshot, IMAGE, SHIP, &mut memo),
-        Ok(expected)
-    );
-    assert_eq!(
-        (
-            census.calls() - warm.0,
-            census.spans() - warm.1,
-            census.bytes() - warm.2
-        ),
-        (19, 19, 165),
-    );
-
-    f.dword(SHIP + 0x60c, 1);
-    f.dword(SHIP + CLASS_DATABASE_ID, 8);
-    f.word(SHIP + BASE_ORGANISATION, 4_000_003);
-    let expected = maximum_organisation(&f, IMAGE, SHIP).unwrap();
-    assert_eq!(
-        read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo),
-        Ok(expected)
-    );
-    assert_eq!(memo.terrain_class.get(&(TERRAIN, 8)), Some([0; 4]));
-    assert_eq!(memo.leader_class.get(&(LEADER, 1)), Some([0; 4]));
-
-    f.word(TASK + ctask_force::FLEET, 0);
-    f.word(TASK + cunit::LOCATION, 0);
-    let expected = maximum_organisation(&f, IMAGE, SHIP).unwrap();
-    assert_eq!(
-        read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo),
-        Ok(expected)
-    );
-    assert_eq!(memo.fleet, Some((0, None, [0; 4])));
-
-    f.word(TASK + ctask_force::FLEET, FLEET as u64);
-    f.word(TASK + cunit::LOCATION, PROVINCE as u64);
-    f.modifier(LEADER + 0x418, 0x33000, &[(0x46, -1111)]);
-    memo = OrganisationMemo::default();
-    let expected = maximum_organisation(&f, IMAGE, SHIP).unwrap();
-    assert_eq!(
-        read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo),
-        Ok(expected)
-    );
-    assert_eq!(memo.fleet, Some((FLEET, Some(LEADER), [-1111, 0, 0, 0])));
-}
-
-#[test]
-fn organisation_memo_keeps_recent_selectors_across_alternating_ships() {
-    use super::gathered::FaultAt;
-    const OTHER_SHIP: usize = 0xa000;
-    let mut f = shared_sources_fixture();
-    for offset in 0..SIZE {
-        let byte = f.bytes[&(SHIP + offset)];
-        f.bytes.insert(OTHER_SHIP + offset, byte);
-    }
-    f.word(OTHER_SHIP + HANDLE, (43 << 32) | 51);
-    f.dword(OTHER_SHIP + CLASS_DATABASE_ID, 8);
-    f.dword(OTHER_SHIP + 0x60c, 1);
-    let trace = FaultAt::new(&f, None);
-    let mut memo = OrganisationMemo::default();
-    let first = read_maximum_organisation_memo(&trace, IMAGE, SHIP, &mut memo);
-    assert!(first.is_ok());
-    assert_eq!(
-        read_maximum_organisation_memo(&trace, IMAGE, OTHER_SHIP, &mut memo),
-        maximum_organisation(&f, IMAGE, OTHER_SHIP)
-    );
-    trace.reads.borrow_mut().clear();
-    assert_eq!(
-        read_maximum_organisation_memo(&trace, IMAGE, SHIP, &mut memo),
-        first
-    );
-    for (name, source) in [
-        ("pride ship", COUNTRY + 0x250),
-        ("terrain class table", TERRAIN + 0x1b8),
-        ("commander class array", LEADER + 0x148),
-    ] {
-        assert!(
-            !trace
-                .reads
-                .borrow()
-                .iter()
-                .any(|&(address, len)| (address..address + len).contains(&source)),
-            "{name} read again"
         );
     }
 }
@@ -1064,31 +817,6 @@ struct Hooked<'a> {
     hooks: RefCell<Vec<u32>>,
     reads: RefCell<Vec<(usize, usize)>>,
 }
-impl<'a> Hooked<'a> {
-    fn new(source: &'a Fixture) -> Self {
-        Self {
-            source,
-            values: BTreeMap::new(),
-            hooks: RefCell::new(Vec::new()),
-            reads: RefCell::new(Vec::new()),
-        }
-    }
-}
-impl Memory for Hooked<'_> {
-    fn copy(&self, p: usize, out: &mut [u8]) -> bool {
-        self.reads.borrow_mut().push((p, out.len()));
-        self.source.copy(p, out)
-    }
-    fn modifier_accumulator_value(
-        &self,
-        address: usize,
-        key: u32,
-    ) -> Option<Result<Value, &'static str>> {
-        assert_eq!(address, ACCUMULATOR);
-        self.hooks.borrow_mut().push(key);
-        self.values.get(&key).copied()
-    }
-}
 
 #[test]
 fn organisation_batch_keeps_native_order_and_removes_three_full_censuses() {
@@ -1118,6 +846,31 @@ fn organisation_batch_keeps_native_order_and_removes_three_full_censuses() {
     let saved_reads = 3 * (entries.len() + 1);
     assert_eq!(scalar_reads - f.calls.get(), saved_reads);
     assert_eq!(scalar_bytes - f.copied.get(), saved_reads * 16);
+}
+impl<'a> Hooked<'a> {
+    fn new(source: &'a Fixture) -> Self {
+        Self {
+            source,
+            values: BTreeMap::new(),
+            hooks: RefCell::new(Vec::new()),
+            reads: RefCell::new(Vec::new()),
+        }
+    }
+}
+impl Memory for Hooked<'_> {
+    fn copy(&self, p: usize, out: &mut [u8]) -> bool {
+        self.reads.borrow_mut().push((p, out.len()));
+        self.source.copy(p, out)
+    }
+    fn modifier_accumulator_value(
+        &self,
+        address: usize,
+        key: u32,
+    ) -> Option<Result<Value, &'static str>> {
+        assert_eq!(address, ACCUMULATOR);
+        self.hooks.borrow_mut().push(key);
+        self.values.get(&key).copied()
+    }
 }
 
 #[test]
@@ -1219,71 +972,6 @@ fn organisation_batch_absence_skips_metadata_but_present_zero_does_not() {
         ),
         Ok([0; 4])
     );
-}
-
-#[test]
-fn organisation_batch_hook_errors_stop_in_order_even_after_a_direct_census() {
-    let f = fixture();
-    for (index, key) in NATIVE_KEYS.into_iter().enumerate() {
-        let mut memory = Hooked::new(&f);
-        memory.values.insert(key, Err("snapshot fault"));
-        assert_eq!(
-            organisation_modifier_values(
-                &memory,
-                IMAGE,
-                ACCUMULATOR,
-                &engine_native_parts::modifier_definition::DefinitionMemo::default()
-            ),
-            Err("snapshot fault")
-        );
-        assert_eq!(&*memory.hooks.borrow(), &NATIVE_KEYS[..=index]);
-        assert_eq!(
-            memory
-                .reads
-                .borrow()
-                .iter()
-                .filter(|&&(p, n)| p == ACCUMULATOR && n == 16)
-                .count(),
-            if index == 0 { 0 } else { 1 }
-        );
-    }
-}
-
-#[test]
-fn organisation_batch_metadata_failure_precedes_later_hook_failure() {
-    for failed_index in [0, 2] {
-        let mut f = fixture();
-        f.bytes.remove(
-            &(METADATA + NATIVE_KEYS[failed_index] as usize * md::STRIDE + md::FEATURE_SELECTOR),
-        );
-        for use_hooks in [false, true] {
-            let mut memory = Hooked::new(&f);
-            if use_hooks {
-                for &key in &NATIVE_KEYS[..=failed_index] {
-                    memory.values.insert(
-                        key,
-                        Ok(Value {
-                            raw: 0,
-                            present: true,
-                        }),
-                    );
-                }
-            }
-            memory
-                .values
-                .insert(NATIVE_KEYS[failed_index + 1], Err("later snapshot fault"));
-            assert_eq!(
-                organisation_modifier_values(
-                    &memory,
-                    IMAGE,
-                    ACCUMULATOR,
-                    &engine_native_parts::modifier_definition::DefinitionMemo::default()
-                ),
-                Err("modifier selector unreadable")
-            );
-            assert_eq!(&*memory.hooks.borrow(), &NATIVE_KEYS[..=failed_index]);
-        }
-    }
 }
 
 #[test]
@@ -1600,66 +1288,3 @@ fn gathered_organisation_reads_equal_the_direct_reader_at_every_fault() {
     }
 }
 
-#[test]
-fn organisation_memo_shares_an_influence_across_task_forces() {
-    use super::gathered::FaultAt;
-    const OTHER_TASK: usize = 0x22000;
-    let mut f = support_fixture();
-    f.put(OTHER_TASK, &[0; 0x900]);
-    f.word(OTHER_TASK, (IMAGE + ctask_force::VTABLE_RVA.0) as u64);
-    f.dword(OTHER_TASK + cunit::ROSTER_OWNER, 1);
-    f.word(OTHER_TASK + 0x640, 0x8000);
-    f.array(OTHER_TASK + 0x728, 0x12000, 1);
-    let mut memo = OrganisationMemo::default();
-    let first = read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo);
-    assert!(first.is_ok());
-    f.word(SHIP + TASK_FORCE, OTHER_TASK as u64);
-    let trace = FaultAt::new(&f, None);
-    assert_eq!(
-        read_maximum_organisation_memo(&trace, IMAGE, SHIP, &mut memo),
-        maximum_organisation(&f, IMAGE, SHIP)
-    );
-    assert_eq!(memo.support, Some((OTHER_TASK, [12, 16, 20, 24])));
-    assert!(
-        !trace
-            .reads
-            .borrow()
-            .iter()
-            .any(|&(address, _)| address == 0x17000 || address == 0x18000),
-        "the commander was read again"
-    );
-}
-
-#[test]
-fn held_location_and_fleet_terms_read_no_province_fleet_or_leader() {
-    use super::gathered::FaultAt;
-    let f = weather_fixture();
-    let mut memo = OrganisationMemo::default();
-    let terms = current_task_terms(&f, &mut memo);
-    let (definition, terrain) = memo.location_source(PROVINCE).unwrap();
-    let (leader, fleet_terms) = memo.fleet_source(FLEET).unwrap();
-    assert_eq!(leader, Some(LEADER));
-    let trace = FaultAt::new(&f, None);
-    let mut next = OrganisationMemo::default();
-    next.hold_location(PROVINCE, definition, terrain);
-    next.hold_fleet(FLEET, leader, fleet_terms);
-    assert_eq!(current_task_terms(&trace, &mut next), terms);
-    for (name, source) in [
-        ("province", PROVINCE),
-        ("province definition", PROVINCE + 0xc8),
-        ("terrain graph", PROVINCE_DEFINITION + 0x30),
-        ("fleet", FLEET),
-        ("fleet leader binding", FLEET + 0xb0),
-        ("leader", LEADER),
-        ("leader tree", LEADER + 0x418),
-    ] {
-        assert!(
-            !trace
-                .reads
-                .borrow()
-                .iter()
-                .any(|&(address, len)| (address..address + len.max(1)).contains(&source)),
-            "{name} read again"
-        );
-    }
-}

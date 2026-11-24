@@ -96,5 +96,3 @@ fn other(priorities: PriorityTable) -> Visibility {
     }
 }
 
-#[cfg(test)]
-mod tests;

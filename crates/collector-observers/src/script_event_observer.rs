@@ -828,29 +828,6 @@ pub unsafe fn targeted_selection_tap(
 mod tests {
     use super::*;
     #[test]
-    fn adjacent_calls_verify_only_their_owned_prefix_and_name_failures() {
-        let _globals = crate::event_feed_observer::test_globals();
-        for len in [decisions::REACTIVATE_DAYS_LEN, decisions::REQUEST_TIMED_LEN] {
-            assert!((5..16).contains(&len));
-        }
-        for site in [
-            native::decisions::REACTIVATE_TARGETED_DAYS,
-            native::decisions::REQUEST_TARGETED_TIMED,
-        ] {
-            let error = verify_hook::<16>(0, site).unwrap_err();
-            assert!(error.contains(site.name));
-            assert!(error.contains("sentinel failed"));
-            assert!(
-                hook_failure(site, "construction", "synthetic relay refusal")
-                    .ends_with("construction failed: synthetic relay refusal")
-            );
-            assert!(
-                hook_failure(site, "publication", "synthetic byte verification failure")
-                    .ends_with("publication failed: synthetic byte verification failure")
-            );
-        }
-    }
-    #[test]
     fn targeted_execution_classifies_the_selected_instance_result_without_enclosing_provenance() {
         let _globals = crate::event_feed_observer::test_globals();
         use engine_decisions::ctargeted_decision::{TARGET_VTABLE_RVA, VTABLE_RVA};

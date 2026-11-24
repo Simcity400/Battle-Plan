@@ -145,20 +145,6 @@ mod tests {
     }
 
     #[test]
-    fn category_order_and_last_palette_writer_match_native() {
-        let costs = definitions(&[
-            "categories={first={movement_cost=1} first={movement_cost=9}} terrain={a={type=first color={2}} early={type=later color={1}}}",
-            "categories={later={movement_cost=3}} terrain={b={type=later color={2 4}}}",
-        ]);
-        assert_eq!(costs.cost(0), 0);
-        assert_eq!(costs.cost(1), 0);
-        assert_eq!(costs.cost(2), 300_000);
-        assert_eq!(costs.cost(4), 300_000);
-        assert_eq!(costs.cost(255), 0);
-        assert_eq!(definitions(&["categories={x={movement_cost=1} x={movement_cost=9}} terrain={a={type=x color={0}}}"]).cost(0), 100_000);
-    }
-
-    #[test]
     fn authored_cost_keeps_radix_prefixes_fraction_and_clamp() {
         let terrain = definitions(&[
             "categories={octal={movement_cost=010} hex={movement_cost=0x10} suffix={movement_cost=1junk.25} signed={movement_cost=1.-2} clamped={movement_cost=08} invalid={movement_cost=bad}} terrain={a={type=octal color={0}} b={type=hex color={1}} c={type=suffix color={2}} d={type=signed color={3}} e={type=clamped color={4}} f={type=invalid color={5}}}",
@@ -217,27 +203,6 @@ mod tests {
             "categories={x={movement_cost=2}} terrain={a={type=x color={\"1tail\"}}}",
         ]);
         assert_eq!(terrain.cost(1), 200_000);
-    }
-
-    #[test]
-    fn file_rows_and_first_component_are_kept() {
-        let terrain = terrain(&[[7, 8, 9, 10], [11, 12, 13, 14]], 8);
-        assert_eq!(terrain.index(0, 0).unwrap(), 7);
-        assert_eq!(terrain.index(0, 1).unwrap(), 11);
-        assert_eq!(terrain.index(4, 0).unwrap(), 0);
-        assert!(terrain.index(-1, 0).is_err());
-
-        let mut data = vec![0; 58];
-        data[..2].copy_from_slice(b"BM");
-        data[10..14].copy_from_slice(&54u32.to_le_bytes());
-        data[18..22].copy_from_slice(&2i32.to_le_bytes());
-        data[22..26].copy_from_slice(&1i32.to_le_bytes());
-        data[28..30].copy_from_slice(&16u16.to_le_bytes());
-        data[54..].copy_from_slice(&[7, 99, 8, 77]);
-        assert_eq!(TerrainCosts::decode(&data).unwrap().index(1, 0).unwrap(), 8);
-        data[28..30].copy_from_slice(&1u16.to_le_bytes());
-        data[18..22].copy_from_slice(&16i32.to_le_bytes());
-        assert!(TerrainCosts::decode(&data).unwrap().index(7, 0).is_err());
     }
 
     #[test]

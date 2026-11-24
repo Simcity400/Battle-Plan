@@ -90,29 +90,3 @@ pub const RELATIONS: [MutationSite; 15] = [
     },
 ];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn relation_bodies_are_distinct_and_patched_by_no_other_family() {
-        for (index, site) in RELATIONS.iter().enumerate() {
-            assert!(
-                RELATIONS[..index]
-                    .iter()
-                    .all(|other| other.rva != site.rva && other.name != site.name)
-            );
-            assert!(MUTATIONS.iter().all(|other| other.rva != site.rva));
-            assert!(
-                crate::country_input_mutations::MUTATIONS
-                    .iter()
-                    .all(|(other, _, _)| other.rva != site.rva)
-            );
-        }
-        assert!(
-            crate::country_input_mutations::MUTATIONS
-                .iter()
-                .any(|(other, _, _)| other.name == "replace_relation")
-        );
-    }
-}

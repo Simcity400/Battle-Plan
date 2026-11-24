@@ -1842,6 +1842,22 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(country)
     }
 
+    pub fn verify_canonical_pointer(&self, pointer: usize, id: u32) -> Option<Country> {
+        if id == 0 {
+            return (self.pointer_at(0).ok()? == pointer).then_some(Country {
+                pointer,
+                canonical_slot: 0,
+                id: 0,
+            });
+        }
+        let canonical_slot = self.canonical(id).ok()?;
+        (self.pointer_at(canonical_slot).ok()? == pointer).then_some(Country {
+            pointer,
+            canonical_slot,
+            id,
+        })
+    }
+
     pub fn of_pointer(&self, pointer: usize) -> Result<Country, &'static str> {
         if pointer == 0 {
             return Err("country pointer is null");
@@ -2095,28 +2111,38 @@ fn movement_active_war(
     Ok(movement_field::<u8>(memory, war, crate::crelation::RETIRED)? == 0)
 }
 
-pub fn movement_friendly(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MovementRelation {
+    Friendly,
+    Enemy,
+    Neither,
+}
+
+pub fn movement_relation_with(
     memory: &impl Memory,
     base: usize,
-    state: usize,
+    countries: &Reader<'_, impl Memory>,
     owner_raw: u32,
     target_raw: u32,
-) -> Result<bool, &'static str> {
-    let countries = Reader::new(memory, base, state)?;
+) -> Result<MovementRelation, &'static str> {
     let owner = countries.resolve(owner_raw)?;
-    if movement_equal(&countries, owner.id, target_raw)? {
-        return Ok(true);
+    if movement_equal(countries, owner.id, target_raw)? {
+        return Ok(MovementRelation::Friendly);
     }
     let diplomacy = movement_diplomacy(memory, base, owner.pointer)?;
-    let tuple = movement_tuple(memory, base, &countries, diplomacy, target_raw)?;
+    let tuple = movement_tuple(memory, base, countries, diplomacy, target_raw)?;
     if tuple == 0 {
         return Err("movement friendly relation is null");
     }
     if movement_active_war(memory, base, tuple)? {
-        return Ok(false);
+        return Ok(if (owner.id as i32) <= 0 {
+            MovementRelation::Neither
+        } else {
+            MovementRelation::Enemy
+        });
     }
     if movement_pointer(memory, tuple, 0x2a0)? != 0 {
-        return Ok(true);
+        return Ok(MovementRelation::Friendly);
     }
     let faction = movement_pointer(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::FACTION)?;
     if faction != 0 {
@@ -2133,29 +2159,45 @@ pub fn movement_friendly(
         let target_diplomacy = movement_diplomacy(memory, base, target)?;
         if faction == movement_pointer(memory, target_diplomacy, engine_native_parts::cdiplomacy_status_layout::FACTION)?
         {
-            return Ok(true);
+            return Ok(MovementRelation::Friendly);
         }
     }
     let subject = movement_pointer(memory, tuple, crate::crelation::status::SUBJECT_RELATION)?;
     if subject == 0 {
-        return Ok(false);
+        return Ok(MovementRelation::Neither);
     }
     if movement_field::<u32>(memory, subject, crate::crelation::subject::TYPE_ID)?
         != crate::crelation::subject::TYPE_VALUE
     {
-        return Ok(false);
+        return Ok(MovementRelation::Neither);
     }
     movement_auth(memory, base, subject, crate::crelation::subject::VTABLE_RVA)?;
     let target = movement_field(memory, tuple, crate::crelation::status::TARGET_COUNTRY)?;
-    Ok(movement_equal(
-        &countries,
+    if movement_equal(
+        countries,
         movement_field(memory, subject, crate::crelation::subject::OVERLORD)?,
         target,
     )? || movement_equal(
-        &countries,
+        countries,
         movement_field(memory, subject, crate::crelation::subject::SUBJECT)?,
         target,
-    )?)
+    )? {
+        Ok(MovementRelation::Friendly)
+    } else {
+        Ok(MovementRelation::Neither)
+    }
+}
+
+pub fn movement_friendly(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    owner_raw: u32,
+    target_raw: u32,
+) -> Result<bool, &'static str> {
+    let countries = Reader::new(memory, base, state)?;
+    Ok(movement_relation_with(memory, base, &countries, owner_raw, target_raw)?
+        == MovementRelation::Friendly)
 }
 
 pub fn river_crossing_against(
@@ -2223,12 +2265,22 @@ pub fn movement_enemy(
     target_raw: u32,
 ) -> Result<bool, &'static str> {
     let countries = Reader::new(memory, base, state)?;
+    movement_enemy_with(memory, base, &countries, owner_raw, target_raw)
+}
+
+pub fn movement_enemy_with(
+    memory: &impl Memory,
+    base: usize,
+    countries: &Reader<'_, impl Memory>,
+    owner_raw: u32,
+    target_raw: u32,
+) -> Result<bool, &'static str> {
     let owner = countries.resolve(owner_raw)?;
-    if movement_equal(&countries, owner.id, target_raw)? || (owner.id as i32) <= 0 {
+    if movement_equal(countries, owner.id, target_raw)? || (owner.id as i32) <= 0 {
         return Ok(false);
     }
     let diplomacy = movement_diplomacy(memory, base, owner.pointer)?;
-    let tuple = movement_tuple(memory, base, &countries, diplomacy, target_raw)?;
+    let tuple = movement_tuple(memory, base, countries, diplomacy, target_raw)?;
     if tuple == 0 {
         return Ok(false);
     }
@@ -2300,61 +2352,277 @@ fn movement_capital_area(
     Ok(best)
 }
 
+#[derive(Clone, Copy)]
+struct MovementHash {
+    data: usize,
+    mask: u32,
+    sentinel: usize,
+    wide: bool,
+}
+
+impl MovementHash {
+    fn read(memory: &impl Memory, object: usize, wide: bool) -> Result<Self, &'static str> {
+        if object == 0 {
+            return Err("movement supply hash is null");
+        }
+        let (data, mask, max_probe) = if let Some(at) = object.checked_add(0x28)
+            && let Some(header) = read::<[u8; 17]>(memory, at)
+        {
+            (
+                u64::from_le_bytes(header[0..8].try_into().unwrap()) as usize,
+                i32::from_le_bytes(header[12..16].try_into().unwrap()),
+                header[16] as usize,
+            )
+        } else {
+            (
+                movement_pointer(memory, object, 0x28)?,
+                movement_field::<i32>(memory, object, 0x34)?,
+                movement_field::<u8>(memory, object, 0x38)? as usize,
+            )
+        };
+        if mask < 0 || !(mask as u32 + 1).is_power_of_two() || data == 0 {
+            return Err("movement supply hash header invalid");
+        }
+        let sentinel = (mask as usize)
+            .checked_add(max_probe)
+            .and_then(|n| n.checked_add(1))
+            .ok_or("movement supply hash bound overflow")?;
+        Ok(Self {
+            data,
+            mask: mask as u32,
+            sentinel,
+            wide,
+        })
+    }
+
+    fn lookup(&self, memory: &impl Memory, key: u32) -> Result<Option<i64>, &'static str> {
+        let mut hash = (key ^ (key >> 16)).wrapping_mul(0x045d_9f3b);
+        hash = (hash ^ (hash >> 16)).wrapping_mul(0x045d_9f3b);
+        let index = ((hash ^ (hash >> 16)) & self.mask) as usize;
+        let (stride, marker, key_offset, value_offset) = if self.wide {
+            (0x18_usize, 4, 8, 0x10)
+        } else {
+            (0x0c, 0, 4, 8)
+        };
+        for distance in 1..=256_usize {
+            let slot = index
+                .checked_add(distance - 1)
+                .filter(|&n| n <= self.sentinel)
+                .ok_or("movement supply hash probe outside allocation")?;
+            let bucket = slot
+                .checked_mul(stride)
+                .and_then(|n| self.data.checked_add(n))
+                .ok_or("movement supply hash address overflow")?;
+            if self.wide {
+                if let Some(raw) = read::<[u8; 0x18]>(memory, bucket) {
+                    let occupied = raw[4] as usize;
+                    if distance > occupied {
+                        return Ok(None);
+                    }
+                    if u32::from_le_bytes(raw[8..12].try_into().unwrap()) == key {
+                        if slot == self.sentinel {
+                            return Ok(None);
+                        }
+                        return Ok(Some(i64::from_le_bytes(raw[0x10..0x18].try_into().unwrap())));
+                    }
+                    if distance == 255 {
+                        return Err("movement supply hash probe distance overflow");
+                    }
+                    continue;
+                }
+            } else if let Some(raw) = read::<[u8; 0x0c]>(memory, bucket) {
+                let occupied = raw[0] as usize;
+                if distance > occupied {
+                    return Ok(None);
+                }
+                if u32::from_le_bytes(raw[4..8].try_into().unwrap()) == key {
+                    if slot == self.sentinel {
+                        return Ok(None);
+                    }
+                    return Ok(Some(i64::from(i32::from_le_bytes(
+                        raw[8..12].try_into().unwrap(),
+                    ))));
+                }
+                if distance == 255 {
+                    return Err("movement supply hash probe distance overflow");
+                }
+                continue;
+            }
+            let occupied = movement_field::<u8>(memory, bucket, marker)? as usize;
+            if distance > occupied {
+                return Ok(None);
+            }
+            if movement_field::<u32>(memory, bucket, key_offset)? == key {
+                if slot == self.sentinel {
+                    return Ok(None);
+                }
+                return if self.wide {
+                    movement_field(memory, bucket, value_offset).map(Some)
+                } else {
+                    movement_field::<i32>(memory, bucket, value_offset).map(|n| Some(i64::from(n)))
+                };
+            }
+            if distance == 255 {
+                return Err("movement supply hash probe distance overflow");
+            }
+        }
+        Err("movement supply hash probe did not terminate")
+    }
+}
+
+#[cfg(test)]
 fn movement_hash_value(
     memory: &impl Memory,
     object: usize,
     key: u32,
     wide: bool,
 ) -> Result<Option<i64>, &'static str> {
-    if object == 0 {
-        return Err("movement supply hash is null");
-    }
-    let data = movement_pointer(memory, object, 0x28)?;
-    let mask = movement_field::<i32>(memory, object, 0x34)?;
-    let max_probe = movement_field::<u8>(memory, object, 0x38)? as usize;
-    if mask < 0 || !(mask as u32 + 1).is_power_of_two() || data == 0 {
-        return Err("movement supply hash header invalid");
-    }
-    let mut hash = (key ^ (key >> 16)).wrapping_mul(0x045d_9f3b);
-    hash = (hash ^ (hash >> 16)).wrapping_mul(0x045d_9f3b);
-    let index = ((hash ^ (hash >> 16)) & mask as u32) as usize;
-    let (stride, marker, key_offset, value_offset) = if wide {
-        (0x18_usize, 4, 8, 0x10)
-    } else {
-        (0x0c, 0, 4, 8)
-    };
-    let sentinel = (mask as usize)
-        .checked_add(max_probe)
-        .and_then(|n| n.checked_add(1))
-        .ok_or("movement supply hash bound overflow")?;
-    for distance in 1..=256_usize {
-        let slot = index
-            .checked_add(distance - 1)
-            .filter(|&n| n <= sentinel)
-            .ok_or("movement supply hash probe outside allocation")?;
-        let bucket = slot
-            .checked_mul(stride)
-            .and_then(|n| data.checked_add(n))
-            .ok_or("movement supply hash address overflow")?;
-        let occupied = movement_field::<u8>(memory, bucket, marker)? as usize;
-        if distance > occupied {
-            return Ok(None);
+    MovementHash::read(memory, object, wide)?.lookup(memory, key)
+}
+
+struct CachedOwnerSupply {
+    raw: u32,
+    owner: Result<Country, &'static str>,
+    capital_area: Result<usize, &'static str>,
+    companion_ptr: Option<Result<usize, &'static str>>,
+    companion_hash: Option<Result<MovementHash, &'static str>>,
+}
+
+pub struct CoreSupplyAccessCache<'a, M: Memory> {
+    memory: &'a M,
+    base: usize,
+    state: usize,
+    countries: &'a Reader<'a, M>,
+    provinces: Result<Array, &'static str>,
+    systems: Option<Result<crate::ccountry_supply_system::world::Reader<'a, M>, &'static str>>,
+    anchors_ptr: Option<Result<usize, &'static str>>,
+    anchors_hash: Option<Result<MovementHash, &'static str>>,
+    owner: Option<CachedOwnerSupply>,
+}
+
+impl<'a, M: Memory> CoreSupplyAccessCache<'a, M> {
+    pub fn new(
+        memory: &'a M,
+        base: usize,
+        state: usize,
+        countries: &'a Reader<'a, M>,
+    ) -> Self {
+        let provinces = movement_array(memory, state, cgame_state::PROVINCES);
+        Self {
+            memory,
+            base,
+            state,
+            countries,
+            provinces,
+            systems: None,
+            anchors_ptr: None,
+            anchors_hash: None,
+            owner: None,
         }
-        if movement_field::<u32>(memory, bucket, key_offset)? == key {
-            if slot == sentinel {
-                return Ok(None);
+    }
+
+    pub fn has_access(&mut self, owner_raw: u32, area: usize) -> Result<bool, &'static str> {
+        if let Some(result) =
+            self.memory
+                .core_supply_access(self.base, self.state, owner_raw, area)
+        {
+            return result;
+        }
+        let provinces = self.provinces;
+        let cached = match &mut self.owner {
+            Some(cached) if cached.raw == owner_raw => cached,
+            slot => {
+                let owner = self.countries.resolve(owner_raw);
+                let capital_area = owner.and_then(|owner| {
+                    let provinces = provinces?;
+                    movement_capital_area(
+                        self.memory,
+                        self.base,
+                        self.state,
+                        self.countries,
+                        owner,
+                        provinces,
+                    )
+                });
+                slot.insert(CachedOwnerSupply {
+                    raw: owner_raw,
+                    owner,
+                    capital_area,
+                    companion_ptr: None,
+                    companion_hash: None,
+                })
             }
-            return if wide {
-                movement_field(memory, bucket, value_offset).map(Some)
-            } else {
-                movement_field::<i32>(memory, bucket, value_offset).map(|n| Some(i64::from(n)))
-            };
+        };
+        let owner = cached.owner?;
+        let provinces = provinces?;
+        let capital_area = cached.capital_area?;
+        if area == capital_area {
+            return Ok(true);
         }
-        if distance == 255 {
-            return Err("movement supply hash probe distance overflow");
+        if area == 0 {
+            return Ok(false);
         }
+        movement_auth(self.memory, self.base, area, engine_native_parts::ccontroller_area::VTABLE_RVA)?;
+        let memory = self.memory;
+        let base = self.base;
+        let state = self.state;
+        let systems = self
+            .systems
+            .get_or_insert_with(|| crate::ccountry_supply_system::world::Reader::new(memory, base, state));
+        let companion_ptr = *cached.companion_ptr.get_or_insert_with(|| {
+            let systems = systems.as_ref().map_err(|reason| *reason)?;
+            let system = systems
+                .at(owner.canonical_slot)?
+                .ok_or("movement country supply is absent")?;
+            movement_pointer(
+                memory,
+                system.pointer,
+                crate::ccountry_supply_system::COMPANION,
+            )
+        });
+        let companion_ptr = companion_ptr?;
+        let members = movement_array(memory, area, 0xb0)?;
+        let anchors_ptr = *self
+            .anchors_ptr
+            .get_or_insert_with(|| movement_pointer(memory, state, cgame_state::STRATEGIC_NAVY_MANAGER));
+        let anchors_ptr = anchors_ptr?;
+        if members.count == 0 {
+            return Ok(false);
+        }
+        let anchors_hash = *self
+            .anchors_hash
+            .get_or_insert_with(|| MovementHash::read(memory, anchors_ptr, true));
+        let mut i = 0u32;
+        let mut raw = [0u8; 64 * 8];
+        while i < members.count {
+            let remaining = (members.count - i) as usize;
+            let batch = remaining.min(64);
+            let chunk_ok = batch >= 4
+                && members
+                    .element(i, 8)
+                    .is_some_and(|at| memory.copy(at, &mut raw[..batch * 8]));
+            let step = if chunk_ok { batch } else { 1 };
+            for offset in 0..step {
+                let province = if chunk_ok {
+                    let at = offset * 8;
+                    u64::from_le_bytes(raw[at..at + 8].try_into().unwrap()) as usize
+                } else {
+                    movement_element(memory, members, i + offset as u32)?
+                };
+                let id = movement_province(memory, base, provinces, province)?;
+                if anchors_hash?.lookup(memory, id)?.is_some_and(|n| n != 0) {
+                    let companion_hash = *cached
+                        .companion_hash
+                        .get_or_insert_with(|| MovementHash::read(memory, companion_ptr, false));
+                    if companion_hash?.lookup(memory, id)?.is_some_and(|n| n >= 0) {
+                        return Ok(true);
+                    }
+                }
+            }
+            i += step as u32;
+        }
+        Ok(false)
     }
-    Err("movement supply hash probe did not terminate")
 }
 
 pub fn has_core_supply_access(
@@ -2399,13 +2667,20 @@ pub fn has_core_supply_access_direct(
     )?;
     let members = movement_array(memory, area, 0xb0)?;
     let anchors = movement_pointer(memory, state, cgame_state::STRATEGIC_NAVY_MANAGER)?;
+    if members.count == 0 {
+        return Ok(false);
+    }
+    let anchors_hash = MovementHash::read(memory, anchors, true);
+    let mut companion_hash = None;
     for i in 0..members.count {
         let province = movement_element(memory, members, i)?;
         let id = movement_province(memory, base, provinces, province)?;
-        if movement_hash_value(memory, anchors, id, true)?.is_some_and(|n| n != 0)
-            && movement_hash_value(memory, companion, id, false)?.is_some_and(|n| n >= 0)
-        {
-            return Ok(true);
+        if anchors_hash?.lookup(memory, id)?.is_some_and(|n| n != 0) {
+            let companion_hash =
+                *companion_hash.get_or_insert_with(|| MovementHash::read(memory, companion, false));
+            if companion_hash?.lookup(memory, id)?.is_some_and(|n| n >= 0) {
+                return Ok(true);
+            }
         }
     }
     Ok(false)
@@ -2814,7 +3089,6 @@ pub struct SentVolunteerRow {
 pub fn count_sent_volunteers(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_sent_volunteers_buffer(memory, base, game_state, Buffer::Count)
 }
-
 
 pub fn walk_sent_volunteers_buffer(
     memory: &impl Memory,
@@ -3618,7 +3892,6 @@ pub mod synthetic {
 
 #[cfg(test)]
 mod tests {
-    use engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
     use super::*;
     use engine_native_memory::memory::SliceMemory;
 
@@ -3656,84 +3929,6 @@ mod tests {
             counter_entries(&values, &AIR_COMBAT_MODIFIER_KEYS),
             AIR_COMBAT_MODIFIER_KEYS.map(|key| Some(i64::from(key)))
         );
-    }
-
-    #[test]
-    fn air_projection_reuses_the_complete_counter_accumulator_read() {
-        use engine_native_parts::{modifier_accumulator, modifier_entry};
-        use engine_native_memory::read_census::ReadCensus;
-        let country = 0x100;
-        let data = 0x1000;
-        let mut bytes = vec![0_u8; 0x2000];
-        let mut keys = COUNTER_MODIFIER_KEYS.to_vec();
-        keys.push(0x400);
-        put(
-            &mut bytes,
-            country + MODIFIER_ACCUMULATOR,
-            &(data as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            country + MODIFIER_ACCUMULATOR + modifier_accumulator::CAPACITY,
-            &(keys.len() as u32).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            country + MODIFIER_ACCUMULATOR + modifier_accumulator::COUNT,
-            &(keys.len() as u32).to_le_bytes(),
-        );
-        for (index, &key) in keys.iter().enumerate() {
-            let at = data + index * modifier_entry::STRIDE;
-            put(&mut bytes, at + modifier_entry::KEY, &key.to_le_bytes());
-            put(
-                &mut bytes,
-                at + modifier_entry::VALUE,
-                &(-i64::from(key)).to_le_bytes(),
-            );
-        }
-        let memory = SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        };
-        let census = ReadCensus::new(&memory);
-        let mut old_keys: Vec<_> = MOVEMENT_MODIFIER_KEYS
-            .into_iter()
-            .chain(ATTACK_MODIFIER_KEYS)
-            .collect();
-        old_keys.sort_unstable();
-        let mut old = vec![engine_native_memory::modifier_cache::Value::default(); old_keys.len()];
-        modifier_accumulator::lookup_many(&census, country, &old_keys, &mut old).unwrap();
-        let old_cost = (census.calls(), census.bytes());
-        census.reset();
-        let mut all = [engine_native_memory::modifier_cache::Value::default(); COUNTER_MODIFIER_KEYS.len()];
-        modifier_accumulator::lookup_many(&census, country, &COUNTER_MODIFIER_KEYS, &mut all)
-            .unwrap();
-        assert_eq!((census.calls(), census.bytes()), old_cost);
-        let raw = all.map(|entry| entry.present.then_some(entry.raw));
-        assert_eq!(
-            counter_entries(&raw, &AIR_COMBAT_MODIFIER_KEYS),
-            AIR_COMBAT_MODIFIER_KEYS.map(|key| Some(-i64::from(key)))
-        );
-        assert_eq!(
-            counter_entries(&raw, &AIR_MODIFIER_KEYS),
-            AIR_MODIFIER_KEYS.map(|key| Some(-i64::from(key)))
-        );
-        assert_eq!(
-            counter_entries(&raw, &[engine_executable::modifier_keys::NAVAL_MINES_EFFECT_REDUCTION]),
-            [Some(-i64::from(
-                engine_executable::modifier_keys::NAVAL_MINES_EFFECT_REDUCTION
-            ))]
-        );
-        assert_eq!(
-            counter_entries(&raw, &[engine_executable::modifier_keys::NAVAL_DETECTION]),
-            [Some(-i64::from(engine_executable::modifier_keys::NAVAL_DETECTION))]
-        );
-        for (at, key) in old_keys.into_iter().enumerate() {
-            assert_eq!(
-                all[COUNTER_MODIFIER_KEYS.binary_search(&key).unwrap()],
-                old[at]
-            );
-        }
     }
 
     struct ReservedMemory<'a> {
@@ -5265,90 +5460,6 @@ mod tests {
     }
 
     #[test]
-    fn core_supply_optional_sharing_preserves_fallback_and_direct_verification() {
-        use std::cell::Cell;
-        struct Hook<'a> {
-            bytes: &'a [u8],
-            result: Option<Result<bool, &'static str>>,
-            calls: Cell<usize>,
-            reads: Cell<usize>,
-        }
-        impl Memory for Hook<'_> {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                self.reads.set(self.reads.get() + 1);
-                SliceMemory {
-                    base: 0,
-                    bytes: self.bytes,
-                }
-                .copy(address, destination)
-            }
-            fn core_supply_access(
-                &self,
-                base: usize,
-                state: usize,
-                owner: u32,
-                area: usize,
-            ) -> Option<Result<bool, &'static str>> {
-                assert_eq!((base, state, owner, area), (0, 0x1000, 1, 0));
-                self.calls.set(self.calls.get() + 1);
-                self.result
-            }
-        }
-        let bytes = movement_fixture();
-        assert_eq!(
-            has_core_supply_access_direct(
-                &SliceMemory {
-                    base: 0,
-                    bytes: &bytes
-                },
-                0,
-                0x1000,
-                1,
-                0
-            ),
-            Ok(true)
-        );
-        for result in [
-            None,
-            Some(Ok(true)),
-            Some(Ok(false)),
-            Some(Err("supply snapshot fault")),
-        ] {
-            let memory = Hook {
-                bytes: &bytes,
-                result,
-                calls: Cell::new(0),
-                reads: Cell::new(0),
-            };
-            assert_eq!(
-                has_core_supply_access(&memory, 0, 0x1000, 1, 0),
-                result.unwrap_or(Ok(true))
-            );
-            assert_eq!(memory.calls.get(), 1);
-            assert_eq!(memory.reads.get() == 0, result.is_some());
-            assert_eq!(
-                has_core_supply_access_direct(&memory, 0, 0x1000, 1, 0),
-                Ok(true)
-            );
-            assert_eq!(memory.calls.get(), 1);
-            assert!(memory.reads.get() > 0);
-        }
-        assert!(
-            has_core_supply_access_direct(
-                &SliceMemory {
-                    base: 0,
-                    bytes: &bytes
-                },
-                0,
-                0x1000,
-                0,
-                0
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
     fn movement_capital_area_uses_largest_controlled_count_and_native_ties() {
         let mut bytes = movement_fixture();
         movement_test_array(&mut bytes, 0x1000 + cgame_state::PROVINCES, 0xc000, 4);
@@ -5485,76 +5596,6 @@ mod tests {
             );
         }
         bytes
-    }
-
-    #[test]
-    #[ignore = "unit-scale guarded sent-volunteer reader cost; run release"]
-    fn sent_volunteers_unit_scale() {
-        use engine_native_memory::memory::{CountedMemory, LiveMemory, ReadCounts};
-        let stress = std::env::var("BATTLEPLAN_UNIT_SHAPE").or_else(|_| std::env::var("HOI4_UNIT_SHAPE")).as_deref() == Ok("stress");
-        let (countries, divisions) = if stress {
-            (5_000, 100_000)
-        } else {
-            (1_500, 50_000)
-        };
-        let mut world = synthetic::World::new(0, countries, SENT_VOLUNTEERS + 16);
-        let mut pointers = vec![
-            synthetic::START + cgame_state::COUNTRIES,
-            synthetic::START + cgame_state::COUNTRY_LINKS,
-        ];
-        for slot in 1..=countries {
-            let begin = (slot - 1) as usize * divisions / countries as usize;
-            let end = slot as usize * divisions / countries as usize;
-            let data = world.alloc((end - begin) * 8);
-            world.array(
-                world.object(slot) + SENT_VOLUNTEERS,
-                data,
-                (end - begin) as u32,
-            );
-            pointers.extend([
-                synthetic::START + 0x1000 + slot as usize * 8,
-                world.object(slot) + SENT_VOLUNTEERS,
-            ]);
-            for (ordinal, id) in (begin..end).enumerate() {
-                world.u64(data + ordinal * 8, id as u64 + 1);
-            }
-        }
-        let address = world.bytes.as_ptr() as usize;
-        for pointer in pointers {
-            let offset = pointer - synthetic::START;
-            let old = u64::from_le_bytes(world.bytes[offset..offset + 8].try_into().unwrap());
-            world.u64(pointer, (address + old as usize - synthetic::START) as u64);
-        }
-        // SAFETY: the fixture is fully allocated and its pointers relocated; it retains every pointee
-        // and stays immutable through the walk.
-        let memory = CountedMemory::new(unsafe { LiveMemory::new() });
-        let mut rows = vec![SentVolunteerRow::default(); divisions];
-        ReadCounts::take_current();
-        assert_eq!(
-            walk_sent_volunteers_buffer(&memory, 0, address, engine_native_memory::walk::Buffer::Growing(&mut rows)),
-            Outcome::Rows { len: divisions }
-        );
-        let counts = ReadCounts::take_current();
-        assert_eq!(rows.last().unwrap().division, divisions as u64);
-        let mut times = Vec::new();
-        for _ in 0..25 {
-            let start = std::time::Instant::now();
-            assert_eq!(
-                walk_sent_volunteers_buffer(&memory, 0, address, engine_native_memory::walk::Buffer::Growing(&mut rows)),
-                Outcome::Rows { len: divisions }
-            );
-            times.push(start.elapsed().as_secs_f64() * 1000.0);
-        }
-        times.sort_by(f64::total_cmp);
-        println!(
-            "SENT_VOLUNTEERS countries={countries} references={divisions} min_ms={:.6} median_ms={:.6} calls={} read_bytes={} output_bytes={} fixture_bytes={}",
-            times[0],
-            times[12],
-            counts.copy_calls + counts.scattered_calls + counts.record_calls + counts.plan_calls,
-            counts.bytes,
-            rows.capacity() * size_of::<SentVolunteerRow>(),
-            world.bytes.len()
-        );
     }
 
     #[test]

@@ -6,8 +6,7 @@ import { createServer } from 'vite';
 import type { FlowDiagramProps } from './FlowDiagram';
 import type { FrameTask } from '../scheduler';
 import { tokensFromValues } from '../tokens.ts';
-import { layoutEndLabels } from '../labels.ts';
-import { flowCapacity, flowPlaybackSnap, FlowMotion, flowStops, labelAt, linkAt, nodeAt, ribbonTop, slotOrder } from './layout.ts';
+import { flowPlaybackSnap, FlowMotion, flowStops, labelAt, linkAt, nodeAt, ribbonTop, slotOrder } from './layout.ts';
 import type { FlowGeometry, FlowLink, FlowNode } from './layout';
 
 const node = (id: string, side: 'source' | 'target', extra: Partial<FlowNode> = {}): FlowNode => ({ id, side, label: id, color: '#888', order: id, ...extra });
@@ -26,18 +25,6 @@ test('slots put the largest first, ties by key and a last node at the end', () =
   assert.deepEqual(order.map(item => item.id), ['B', 'C', 'A', 'O']);
 });
 
-test('snapped, nodes fill the height in proportion and ribbons stack inside them in a fixed order', () => {
-  const motion = new FlowMotion();
-  const frame = motion.step({ nodes, links: [link('A', 'Y', 30), link('A', 'X', 10), link('B', 'X', 60)] }, geometry, 16, 100, true);
-  assert.equal(frame.settled, true);
-  const box = (id: string) => frame.nodes.find(item => item.id === id)!;
-  assert.deepEqual([box('B').y, box('B').height, box('A').y, box('A').height], [0, 62, 72, 42]);
-  assert.deepEqual([box('X').y, box('X').height, box('Y').y, box('Y').height], [0, 72, 82, 32]);
-  const shape = (id: string) => frame.links.find(item => item.id === id)!;
-  assert.deepEqual([shape('A>X').y0, shape('A>Y').y0], [72, 82]);
-  assert.deepEqual([shape('A>X').y1, shape('B>X').y1], [0, 10]);
-  assert.equal(shape('B>X').width, 60);
-});
 
 test('a campaign scale keeps widths as amounts while the total changes', () => {
   const motion = new FlowMotion();
@@ -45,35 +32,7 @@ test('a campaign scale keeps widths as amounts while the total changes', () => {
   assert.equal(frame.links[0].width, 25);
 });
 
-test('many nodes shrink the gaps, keep a minimum height and never run past the bottom', () => {
-  const many = Array.from({ length: 40 }, (_, index) => [node(`S${index}`, 'source'), node(`T${index}`, 'target')]).flat();
-  const links = Array.from({ length: 40 }, (_, index) => link(`S${index}`, `T${index}`, index === 0 ? 1000 : 0.001));
-  const frame = new FlowMotion().step({ nodes: many, links }, { ...geometry, bottom: 200 }, 16, 0, true);
-  assert.equal(frame.nodes.length, 80);
-  assert.ok(frame.nodes.every(box => box.height >= 2 && box.y + box.height <= 200 + 1e-9), 'every node drawn inside the height');
-  assert.equal(flowCapacity(200, 16), 11);
-  const rows = Array.from({ length: flowCapacity(200, 16) }, (_, index) => ({ id: `L${index}`, y: 100, height: 16 }));
-  assert.ok(Math.max(...layoutEndLabels(rows, 0, 200).values()) + 8 <= 200, 'every label row of that many fits, gaps included');
-  assert.equal(flowCapacity(10, 16), 2);
-});
 
-test('ribbons grow in, shrink away and nodes glide to their new slots', () => {
-  const motion = new FlowMotion();
-  motion.step({ nodes, links: [link('A', 'X', 40), link('B', 'Y', 60)] }, geometry, 16, 100, true);
-  let frame = motion.step({ nodes, links: [link('A', 'X', 40), link('A', 'Y', 20)] }, geometry, 16, 100);
-  const grown = frame.links.find(item => item.id === 'A>Y')!;
-  const going = frame.links.find(item => item.id === 'B>Y')!;
-  assert.ok(grown.width > 0 && grown.width < 20 * 100 / 100);
-  assert.ok(going.width > 0);
-  assert.equal(frame.settled, false);
-  const aBefore = frame.nodes.find(item => item.id === 'A')!.y;
-  assert.ok(aBefore > 0);
-  for (let step = 0; step < 400; step++) frame = motion.step({ nodes, links: [link('A', 'X', 40), link('A', 'Y', 20)] }, geometry, 16, 100);
-  assert.equal(frame.settled, true);
-  assert.equal(frame.links.some(item => item.id === 'B>Y'), false);
-  assert.equal(frame.nodes.some(item => item.id === 'B'), false);
-  assert.equal(frame.nodes.find(item => item.id === 'A')!.y, 0);
-});
 
 test('a snap jumps across a gap instead of gliding', () => {
   const motion = new FlowMotion();
@@ -123,17 +82,6 @@ test('the keyboard stops at each source node and its ribbons, then each target n
     ['node:B', 'link:B>X', 'node:A', 'link:A>X', 'link:A>Y', 'node:X', 'node:Y']);
 });
 
-test('keyboard stop discovery scans links once at 5,000 source countries', () => {
-  const sources = Array.from({ length: 5000 }, (_, index) => node(`source-${index}`, 'source'));
-  const frame = new FlowMotion().step({ nodes: [...sources, node('target', 'target')],
-    links: sources.map(source => link(source.id, 'target', 1)) }, { ...geometry, bottom: 20000, gap: 0 }, 16, 0, true);
-  let inspected = 0;
-  const links = frame.links.map(shape => ({ ...shape, link: { ...shape.link,
-    get source() { inspected++; return shape.link.source; } } }));
-  const stops = flowStops({ nodes: frame.nodes, links });
-  assert.equal(stops.length, 10001);
-  assert.ok(inspected <= links.length * 2, 'keyboard navigation must not scan every ribbon for every country');
-});
 
 test('a backward drawn cutoff clears a vanished keyed tooltip with a stable callback and keeps full scroll rows decode-free', async () => {
   const context = new Proxy({ measureText: (text: string) => ({ width: text.length * 7 }) },

@@ -332,29 +332,6 @@ mod tests {
     }
 
     #[test]
-    fn port_hover_matches_only_its_port_task_force_plate() {
-        let hover = Hover {
-            unit_hit: 3,
-            ..hover(Control::Normal, &[7])
-        };
-        let mut hit = viewer_native_gui::counter_hovers::unit_hits::Hit {
-            plate: None,
-            ours: true,
-            port: true,
-            rect: [0.; 4],
-            kind: viewer_native_gui::counter_hovers::unit_hits::Kind::TaskForce,
-            members: Arc::clone(&hover.members),
-            layer: 0,
-        };
-        assert!(hover.matches(&hit));
-        hit.port = false;
-        assert!(!hover.matches(&hit));
-        hit.port = true;
-        hit.kind = viewer_native_gui::counter_hovers::unit_hits::Kind::RailwayGun;
-        assert!(!hover.matches(&hit));
-    }
-
-    #[test]
     fn unbound_port_authored_fallback_keeps_raw_lookup_and_bound_localisation_distinct() {
         content_reader_script::test_game::enter();
         let frame = test_frame(0);

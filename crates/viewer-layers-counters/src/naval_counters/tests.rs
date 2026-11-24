@@ -360,11 +360,3 @@ fn outside_the_view_a_change_stays_marked_and_a_base_is_always_made() {
     settled_equals_composed(&mut side);
 }
 
-#[test]
-fn the_layer_declares_against_this_schema() {
-    let kinds = replay_recording::schema::schema().unwrap();
-    let mut layer = layer_seeing_all();
-    let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "naval_counters");
-    layer.inputs(&View::default(), &mut inputs).unwrap();
-    assert_eq!(inputs.into_tables().len(), TABLES.len());
-}

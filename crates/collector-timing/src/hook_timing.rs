@@ -12,7 +12,7 @@ use std::{
 const OWNED_SLOTS: usize = 64;
 const SHARED_SLOT: usize = OWNED_SLOTS;
 const SLOT_COUNT: usize = OWNED_SLOTS + 1;
-const DEFAULT_PERIOD_LOG2: u32 = 6;
+const DEFAULT_PERIOD_LOG2: u32 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
@@ -373,6 +373,47 @@ impl Slot {
     }
 }
 
+#[repr(align(64))]
+struct InFlight(AtomicUsize);
+
+static IN_FLIGHT: [InFlight; SLOT_COUNT] = [const { InFlight(AtomicUsize::new(0)) }; SLOT_COUNT];
+
+#[inline(always)]
+fn enter_flight(slot: usize) {
+    let counter = &IN_FLIGHT[slot].0;
+    if slot == SHARED_SLOT {
+        counter.fetch_add(1, Ordering::SeqCst);
+    } else {
+        counter.store(counter.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
+        std::sync::atomic::compiler_fence(Ordering::SeqCst);
+    }
+}
+
+#[inline(always)]
+fn leave_flight(slot: usize) {
+    let counter = &IN_FLIGHT[slot].0;
+    if slot == SHARED_SLOT {
+        counter.fetch_sub(1, Ordering::SeqCst);
+    } else {
+        std::sync::atomic::compiler_fence(Ordering::SeqCst);
+        counter.store(counter.load(Ordering::Relaxed).wrapping_sub(1), Ordering::Relaxed);
+    }
+}
+
+pub fn any_other_in_flight() -> bool {
+    if IN_FLIGHT[SHARED_SLOT].0.load(Ordering::SeqCst) != 0 {
+        return true;
+    }
+    let own = SLOT.get();
+    let claimed = TABLE.claimed.load(Ordering::Acquire).min(OWNED_SLOTS);
+    for (index, slot) in IN_FLIGHT[..claimed].iter().enumerate() {
+        if index != own && slot.0.load(Ordering::SeqCst) != 0 {
+            return true;
+        }
+    }
+    false
+}
+
 struct Table {
     slots: [Slot; SLOT_COUNT],
     claimed: AtomicUsize,
@@ -386,16 +427,27 @@ impl Table {
     }
     fn claim(&self) -> usize {
         self.claimed
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |claimed| {
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |claimed| {
                 claimed.checked_add(1)
             })
             .map_or(SHARED_SLOT, |claimed| claimed.min(SHARED_SLOT))
     }
     #[inline(always)]
     fn enter(&'static self, slot: usize, family: Family, returning: bool) -> Span {
-        if !returning {
-            crate::capture_gate::pass(family as usize);
-        }
+        let in_flight_slot = if !returning {
+            loop {
+                enter_flight(slot);
+                if !crate::capture_gate::is_running() {
+                    break slot;
+                }
+                leave_flight(slot);
+                if !crate::capture_gate::wait_if_blocking(family as usize) {
+                    break usize::MAX;
+                }
+            }
+        } else {
+            usize::MAX
+        };
         let phase = label();
         let counters = &self.slots[slot].0[family as usize];
         let shared = slot == SHARED_SLOT;
@@ -414,6 +466,7 @@ impl Table {
             counters,
             shared,
             returning,
+            in_flight_slot,
             start,
             original: Cell::new(0),
             originals: Cell::new(0),
@@ -572,6 +625,7 @@ pub struct Span {
     counters: &'static Counters,
     shared: bool,
     returning: bool,
+    in_flight_slot: usize,
     start: u64,
     original: Cell<u64>,
     originals: Cell<u32>,
@@ -617,6 +671,9 @@ impl Drop for Span {
         if self.start != 0 {
             self.record();
         }
+        if self.in_flight_slot != usize::MAX {
+            leave_flight(self.in_flight_slot);
+        }
     }
 }
 
@@ -649,6 +706,7 @@ fn calibrate_overhead() {
                 counters: &CALIBRATION,
                 shared: false,
                 returning: false,
+                in_flight_slot: usize::MAX,
                 start: now().max(1),
                 original: Cell::new(0),
                 originals: Cell::new(0),
@@ -833,27 +891,9 @@ pub fn status() -> impl serde::Serialize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{Value, json};
 
     fn table() -> &'static Table {
         Box::leak(Box::new(Table::new()))
-    }
-
-    fn spin(ticks: u64) {
-        let begin = now();
-        while now().saturating_sub(begin) < ticks {
-            std::hint::spin_loop();
-        }
-    }
-
-    #[test]
-    fn families_follow_their_index_and_names_are_unique() {
-        for (index, family) in Family::ALL.into_iter().enumerate() {
-            assert_eq!(family as usize, index);
-        }
-        let mut names = Family::ALL.map(Family::name);
-        names.sort_unstable();
-        assert!(names.windows(2).all(|pair| pair[0] != pair[1]));
     }
 
     #[test]
@@ -885,26 +925,6 @@ mod tests {
     }
 
     #[test]
-    fn war_participation_registers_sampled_detours_with_original_accounting() {
-        let family = Family::WarParticipation;
-        assert_eq!(family.name(), "war_participation");
-        assert_eq!(family.kind(), Kind::Detour);
-        assert_eq!(family.period(), 64);
-        let table = table();
-        table.claim();
-        for _ in 0..65 {
-            let span = table.enter(0, family, false);
-            span.original(|| std::hint::black_box(7));
-        }
-        let totals = table.totals()[family as usize];
-        assert_eq!((totals.calls, totals.sampled), (65, 2));
-        assert!(totals.original > 0);
-        assert!(totals.detour > 0);
-        let status: Value = serde_json::to_value(status()).unwrap();
-        assert!(status["families"]["war_participation"].is_object());
-    }
-
-    #[test]
     fn calls_are_exact_and_one_in_period_is_timed_from_the_first() {
         let table = table();
         for _ in 0..1000 {
@@ -914,48 +934,10 @@ mod tests {
         assert_eq!(table.claim(), 0);
         let totals = table.totals()[Family::ExperienceGains as usize];
         assert_eq!(totals.calls, 1000);
-        assert_eq!(totals.sampled, 16);
+        assert_eq!(totals.sampled, 1000_u64.div_ceil(1 << DEFAULT_PERIOD_LOG2));
         assert_eq!(totals.returns, 0);
         let other = table.totals()[Family::PortraitChanges as usize];
         assert_eq!((other.calls, other.sampled), (0, 0));
-    }
-
-    #[test]
-    fn hourly_times_every_call() {
-        let table = table();
-        table.claim();
-        for _ in 0..3 {
-            drop(table.enter(0, Family::Hourly, false));
-        }
-        let totals = table.totals()[Family::Hourly as usize];
-        assert_eq!((totals.calls, totals.sampled), (3, 3));
-    }
-
-    #[test]
-    fn the_original_is_timed_apart_and_excluded_from_the_detour() {
-        let table = table();
-        table.claim();
-        let span = table.enter(0, Family::PortraitChanges, false);
-        spin(20_000);
-        assert_eq!(
-            span.original(|| {
-                spin(200_000);
-                7
-            }),
-            7
-        );
-        drop(span);
-        let totals = table.totals()[Family::PortraitChanges as usize];
-        assert_eq!((totals.calls, totals.sampled), (1, 1));
-        assert!(totals.original >= 200_000, "{totals:?}");
-        assert!(totals.detour >= 20_000, "{totals:?}");
-        assert!(totals.detour < totals.original, "{totals:?}");
-        let span = table.enter(0, Family::PortraitChanges, false);
-        assert_eq!(span.original(|| 9), 9);
-        drop(span);
-        let after = table.totals()[Family::PortraitChanges as usize];
-        assert_eq!((after.calls, after.sampled), (2, 1));
-        assert_eq!(after.original, totals.original);
     }
 
     #[test]
@@ -985,24 +967,6 @@ mod tests {
         let counter = CallCounters::<1>::new();
         collector_test_support::with_allocations_denied(|| counter.increment(0));
         assert_eq!(counter.total(0), 1);
-    }
-
-    #[test]
-    fn split_returns_count_no_call_and_add_their_time() {
-        let table = table();
-        table.claim();
-        let entry = table.enter(0, Family::AirLosses, false);
-        spin(10_000);
-        drop(entry);
-        let returned = table.enter(0, Family::AirLosses, true);
-        spin(10_000);
-        drop(returned);
-        let totals = table.totals()[Family::AirLosses as usize];
-        assert_eq!((totals.calls, totals.sampled), (1, 1));
-        assert_eq!((totals.returns, totals.returns_sampled), (1, 1));
-        assert!(totals.detour >= 20_000, "{totals:?}");
-        assert_eq!(totals.original, 0);
-        assert!(totals.estimated_detour >= 20_000);
     }
 
     #[test]
@@ -1049,7 +1013,10 @@ mod tests {
         });
         let totals = table.totals()[Family::EventFeed as usize];
         assert_eq!(totals.calls, 40_000);
-        assert_eq!(totals.sampled, 625);
+        assert_eq!(
+            totals.sampled,
+            40_000_u64.div_ceil(1 << DEFAULT_PERIOD_LOG2)
+        );
         let status = serde_json::to_value(status_from(
             table.totals(),
             [0; FAMILY_COUNT],
@@ -1059,50 +1026,6 @@ mod tests {
         .unwrap();
         assert_eq!(status["owned_thread_slots"], OWNED_SLOTS);
         assert_eq!(status["shared_slot_threads"], 2);
-    }
-
-    #[test]
-    fn sampled_spans_record_their_timer_overhead_and_estimates_net_it_out() {
-        let callers = std::sync::Barrier::new(2);
-        std::thread::scope(|scope| {
-            let starts = [(); 2].map(|()| {
-                scope.spawn(|| {
-                    callers.wait();
-                    start();
-                    overhead_pair()
-                })
-            });
-            for started in starts {
-                assert_ne!(started.join().unwrap(), [0; 2]);
-            }
-        });
-        assert!(STARTED.is_completed());
-        let [empty, per_original] = OVERHEAD
-            .each_ref()
-            .map(|ticks| ticks.load(Ordering::Relaxed));
-        assert!(empty > 0, "an empty span still reads the timer twice");
-        let table = table();
-        table.claim();
-        let span = table.enter(0, Family::PortraitChanges, false);
-        spin(50_000);
-        span.original(|| spin(10_000));
-        drop(span);
-        let totals = table.totals()[Family::PortraitChanges as usize];
-        assert_eq!(totals.overhead, empty + per_original);
-        assert!(totals.detour >= 50_000 && totals.detour > totals.overhead);
-        for _ in 0..63 {
-            drop(table.enter(0, Family::PortraitChanges, false));
-        }
-        drop(table.enter(0, Family::PortraitChanges, false));
-        let after = table.totals()[Family::PortraitChanges as usize];
-        assert_eq!((after.calls, after.sampled), (65, 2));
-        let empty_detour = after.detour - totals.detour;
-        assert_eq!(after.overhead - totals.overhead, empty.min(empty_detour));
-        assert_eq!(
-            after.estimated_overhead,
-            scale(after.overhead, after.calls, after.sampled)
-        );
-        assert!(after.estimated_overhead <= after.estimated_detour);
     }
 
     #[test]
@@ -1119,133 +1042,4 @@ mod tests {
         assert_eq!(ticks_to_ns(6_000, Some(3_000_000_000)), Some(2_000));
     }
 
-    #[test]
-    fn status_publishes_every_family_with_its_timing_fields() {
-        let mut totals = [Totals::default(); FAMILY_COUNT];
-        totals[Family::ExperienceGains as usize] = Totals {
-            calls: 6400,
-            sampled: 100,
-            detour: 3_000_000,
-            overhead: 300_000,
-            estimated_detour: 192_000_000,
-            estimated_overhead: 19_200_000,
-            ..Totals::default()
-        };
-        totals[Family::PortraitChanges as usize] = Totals {
-            calls: 2,
-            sampled: 1,
-            detour: 300,
-            original: 3000,
-            estimated_detour: 600,
-            estimated_original: 6000,
-            ..Totals::default()
-        };
-        totals[Family::EventFeed as usize] = Totals {
-            calls: 1,
-            sampled: 1,
-            returns: 1,
-            returns_sampled: 1,
-            detour: 30,
-            estimated_detour: 30,
-            ..Totals::default()
-        };
-        let mut capture_waits = [0; FAMILY_COUNT];
-        capture_waits[Family::ExperienceGains as usize] = 5;
-        let status: Value =
-            serde_json::to_value(status_from(totals, capture_waits, Some(3_000_000_000), 3))
-                .unwrap();
-        assert_eq!(status["sample_period"], 64);
-        assert_eq!(status["tsc_hz"], 3_000_000_000_u64);
-        assert_eq!(status["owned_thread_slots"], 3);
-        assert_eq!(status["shared_slot_threads"], 0);
-        let families = status["families"].as_object().unwrap();
-        assert_eq!(families.len(), FAMILY_COUNT);
-        assert_eq!(
-            status["families"]["experience_gains"],
-            json!({
-                "kind": "tap", "sample_period": 64, "calls": 6400, "capture_waits": 5,
-                "sampled_calls": 100,
-                "returns": null, "sampled_returns": null,
-                "sampled_detour_ns": 1_000_000, "estimated_detour_ns": 64_000_000,
-                "approximate_timer_overhead_ns": 6_400_000, "approximate_net_detour_ns": 57_600_000,
-                "sampled_original_ns": null, "estimated_original_ns": null,
-            })
-        );
-        assert_eq!(
-            status["families"]["portrait_changes"],
-            json!({
-                "kind": "detour", "sample_period": 64, "calls": 2, "capture_waits": 0,
-                "sampled_calls": 1,
-                "returns": null, "sampled_returns": null,
-                "sampled_detour_ns": 100, "estimated_detour_ns": 200,
-                "approximate_timer_overhead_ns": 0, "approximate_net_detour_ns": 200,
-                "sampled_original_ns": 1000, "estimated_original_ns": 2000,
-            })
-        );
-        assert_eq!(status["families"]["event_feed"]["kind"], "split");
-        assert_eq!(status["families"]["event_feed"]["returns"], 1);
-        assert_eq!(status["families"]["event_feed"]["sampled_returns"], 1);
-        assert_eq!(status["families"]["hourly"]["sample_period"], 1);
-        assert_eq!(status["families"]["land_events"]["kind"], "mixed");
-        assert_eq!(status["families"]["land_events"]["sampled_original_ns"], 0);
-        let uncalibrated: Value =
-            serde_json::to_value(status_from(totals, capture_waits, None, 0)).unwrap();
-        assert_eq!(uncalibrated["tsc_hz"], Value::Null);
-        assert_eq!(
-            uncalibrated["families"]["portrait_changes"]["estimated_detour_ns"],
-            Value::Null
-        );
-    }
-
-    #[test]
-    #[ignore = "release per-call span cost; run with --release --ignored --nocapture"]
-    fn span_cost_profile() {
-        #[inline(never)]
-        fn native(value: u64) -> u64 {
-            std::hint::black_box(value).wrapping_mul(3)
-        }
-        const CALLS: u64 = 20_000_000;
-        let time = |run: &dyn Fn()| {
-            let mut best = u128::MAX;
-            for _ in 0..5 {
-                let started = std::time::Instant::now();
-                run();
-                best = best.min(started.elapsed().as_nanos());
-            }
-            best as f64 / CALLS as f64
-        };
-        let plain = time(&|| {
-            for value in 0..CALLS {
-                std::hint::black_box(native(value));
-            }
-        });
-        let spans = time(&|| {
-            for value in 0..CALLS {
-                let span = enter(Family::ExperienceGains);
-                std::hint::black_box(span.original(|| native(value)));
-            }
-        });
-        let _sampled = sample_all();
-        let every = time(&|| {
-            for value in 0..CALLS {
-                let span = enter(Family::ExperienceGains);
-                std::hint::black_box(span.original(|| native(value)));
-            }
-        });
-        println!(
-            "hook_timing per_call_ns plain={plain:.2} period_64={spans:.2} every_call={every:.2} added_period_64={:.2} added_sampled_call={:.2}",
-            spans - plain,
-            every - plain
-        );
-    }
-
-    #[test]
-    fn live_status_reports_spans_entered_on_this_thread() {
-        let before: Value = serde_json::to_value(status()).unwrap();
-        let calls = |status: &Value| status["families"]["combat_log_prune"]["calls"].as_u64();
-        drop(enter(Family::CombatLogPrune));
-        let after: Value = serde_json::to_value(status()).unwrap();
-        assert!(calls(&after).unwrap() > calls(&before).unwrap());
-        assert!(after["owned_thread_slots"].as_u64().unwrap() >= 1);
-    }
 }

@@ -83,44 +83,85 @@ pub fn walk_buffer(
         let countries = ccountry::Reader::new(memory, base, game)?;
         let mut len = 0usize;
         let mut found = false;
-        for slot in 1..countries.count() {
-            let Some(country) = countries.at(slot)? else {
-                continue;
-            };
-            found = true;
-            let status = status::from_country(memory, base, country, &countries)?;
-            let programs = status::programs(memory, status)?;
-            output.ensure(
-                len.checked_add(programs.count as usize)
-                    .ok_or("raid facility row count overflow")?,
-            )?;
-            for ordinal in 0..programs.count {
-                if let Some(out) = output.get_mut(len) {
-                    let pointer = programs
-                        .element(ordinal, 8)
-                        .and_then(|at| read::<u64>(memory, at))
-                        .and_then(|pointer| usize::try_from(pointer).ok())
-                        .ok_or("raid facility pointer unreadable")?;
-                    *out = row(memory, base, pointer, country.id, ordinal)?;
-                    let owner = countries.resolve(out.owner)?;
-                    if let Some(token) = out.active_project {
-                        let owner_status = status::from_country(memory, base, owner, &countries)?;
-                        if let Some((definition, project_owner)) =
-                            crate::nproject_cproject_pool::active_definition(
-                                memory,
-                                base,
-                                owner_status,
-                                token,
-                            )?
-                        {
-                            if countries.resolve(project_owner)?.pointer != owner.pointer {
-                                return Err("active project owner differs from pool owner");
+        let mut batch_countries = [engine_native_memory::country_identity::Country {
+            pointer: 0,
+            canonical_slot: 0,
+            id: 0,
+        }; status::BATCH];
+        let mut statuses = [status::BatchedStatus::EMPTY; status::BATCH];
+        let mut slot = 1_u32;
+        while slot < countries.count() {
+            let mut n = 0_usize;
+            let mut batch_err = None;
+            while slot < countries.count() && n < status::BATCH {
+                let cur = slot;
+                slot += 1;
+                let country = match countries.at(cur) {
+                    Ok(Some(country)) => country,
+                    Ok(None) => continue,
+                    Err(err) => {
+                        batch_err = Some(err);
+                        break;
+                    }
+                };
+                found = true;
+                batch_countries[n] = country;
+                n += 1;
+            }
+            if n > 0 {
+                let (ok_len, status_err) = status::read_batch(
+                    memory,
+                    base,
+                    &countries,
+                    &batch_countries[..n],
+                    &mut statuses,
+                );
+                for entry in &statuses[..ok_len] {
+                    let country = entry.country;
+                    let programs = match &entry.block {
+                        Some(block) => status::programs_from_block(block)?,
+                        None => status::programs(memory, entry.status)?,
+                    };
+                    output.ensure(
+                        len.checked_add(programs.count as usize)
+                            .ok_or("raid facility row count overflow")?,
+                    )?;
+                    for ordinal in 0..programs.count {
+                        if let Some(out) = output.get_mut(len) {
+                            let pointer = programs
+                                .element(ordinal, 8)
+                                .and_then(|at| read::<u64>(memory, at))
+                                .and_then(|pointer| usize::try_from(pointer).ok())
+                                .ok_or("raid facility pointer unreadable")?;
+                            *out = row(memory, base, pointer, country.id, ordinal)?;
+                            let owner = countries.resolve(out.owner)?;
+                            if let Some(token) = out.active_project {
+                                let owner_status =
+                                    status::from_country(memory, base, owner, &countries)?;
+                                if let Some((definition, project_owner)) =
+                                    crate::nproject_cproject_pool::active_definition(
+                                        memory,
+                                        base,
+                                        owner_status,
+                                        token,
+                                    )?
+                                {
+                                    if countries.resolve(project_owner)?.pointer != owner.pointer {
+                                        return Err("active project owner differs from pool owner");
+                                    }
+                                    out.project_definition = Some(definition);
+                                }
                             }
-                            out.project_definition = Some(definition);
                         }
+                        len = len.checked_add(1).ok_or("raid facility count overflow")?;
                     }
                 }
-                len = len.checked_add(1).ok_or("raid facility count overflow")?;
+                if let Some(err) = status_err {
+                    return Err(err);
+                }
+            }
+            if let Some(err) = batch_err {
+                return Err(err);
             }
         }
         if !found {
@@ -281,34 +322,5 @@ mod tests {
         bytes[0x54] = 2;
         assert!(read_row(&bytes).is_err());
         assert!(read_row(&bytes[..0x54]).is_err());
-    }
-    #[test]
-    #[ignore = "synthetic acquisition cost; release, affinity 0xF"]
-    fn acquisition_cost() {
-        let countries = std::env::var("BATTLEPLAN_RAID_SCORE_COUNTRIES").or_else(|_| std::env::var("HOI4_RAID_SCORE_COUNTRIES"))
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1500);
-        let (bytes, _) = fixture(countries);
-        let memory = SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        };
-        let mut rows = vec![Row::default(); countries * 2];
-        let mut samples = Vec::new();
-        for _ in 0..40 {
-            let start = std::time::Instant::now();
-            let result = walk(&memory, 0, 0x1000, &mut rows);
-            samples.push(start.elapsed().as_secs_f64() * 1000.0);
-            assert!(matches!(result, Outcome::Rows { .. }));
-            std::hint::black_box(&rows);
-        }
-        samples.sort_by(f64::total_cmp);
-        println!(
-            "raid_facilities countries={countries} median_ms={} max_ms={} output_bytes={}",
-            samples[20],
-            samples[39],
-            std::mem::size_of_val(rows.as_slice())
-        );
     }
 }

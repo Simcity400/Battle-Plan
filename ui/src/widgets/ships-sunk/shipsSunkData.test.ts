@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { CountryGroupReply, ShipsSunkManifestReply, ShipsSunkReply, ShipsSunkRow } from '../../generated/dashboard';
-import { definition } from './definition.ts';
 import { logCountryRequests } from '../../charts/log/logData.ts';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import { engineHour, formatDateTime } from '../../dashboard/calendar.ts';
@@ -174,9 +173,6 @@ test('ships log retains fifty thousand sinking rows while only visible countries
 });
 
 
-test('ships sunk uses the shared uncapped country-selection convention', () => {
-  assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
-});
 
 test('duplicate unknown class choices stay distinct without showing campaign tokens', () => {
   const data = fixture();

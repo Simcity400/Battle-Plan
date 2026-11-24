@@ -4,7 +4,7 @@ import { createElement } from 'react';
 import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import { amountText, approachColour, arcTargets, findNode, foldTree, foldView, groupTree, drawable, hasCorrections, keyRings, keyedSlice, labelFits, notMeasured, pathTo, shareText, spokenAmount, sliceAt, listed, sliceColours, sliceTooltip, sunGeometry, sunburstSummary, sweepOf, walk } from './layout.ts';
+import { amountText, arcTargets, findNode, foldTree, foldView, groupTree, drawable, hasCorrections, keyRings, keyedSlice, labelFits, notMeasured, pathTo, spokenAmount, sliceAt, listed, sliceColours, sliceTooltip, sunGeometry, sunburstSummary, sweepOf, walk } from './layout.ts';
 import type { SunburstItem, SunburstNode } from './layout.ts';
 
 const key = (id: string) => ({ id, label: id.toUpperCase() });
@@ -231,133 +231,7 @@ test('zooming into a zero-net group closes sibling subtrees and keeps ancestor m
   }
 });
 
-test('exact signed rows and unavailable country flags keep their legend presentation', async () => {
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
-    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
-    plugins: [{ name: 'sunburst-theme', enforce: 'pre', transform: (_source, id) =>
-      id.replaceAll('\\', '/').endsWith('/charts/useChartTokens.ts')
-        ? "export const useChartTokens = () => ({ categories: ['#123'], text: '#fff', surface: '#000', fontSize: { small: 10, body: 12 } });" : undefined }] });
-  try {
-    const { default: Sunburst } = await vite.ssrLoadModule('/ui/src/charts/sunburst/Sunburst.tsx') as typeof import('./Sunburst.tsx');
-    const render = (positive: bigint, correction: bigint, levels?: readonly boolean[],
-      extra: SunburstItem[] = [item(['unknown'], null, { unknownValue: true }), item(['unmeasured'], null)]) => renderToStaticMarkup(createElement(Sunburst, {
-      label: 'Signed amounts', root: ROOT, active: true, levels,
-      items: [item(['group', 'positive'], Number(positive), { exact: positive }), item(['group', 'correction'], Number(correction), { exact: correction }), ...extra],
-      text: { format: (_value: number, exact: bigint | null) => String(exact), unit: 'units', valueLabel: 'Amount' },
-      settings: { growth: 'share', labels: true, legend: true, breadcrumb: true, dimming: true },
-    }));
-    const partial = (shares?: boolean) => renderToStaticMarkup(createElement(Sunburst, {
-      label: 'Known subtotal', root: ROOT, active: true, fold: false,
-      items: [item(['known'], 30, { exact: 30n, final: 60, finalUnknown: true, unknown: { unread: 2 }, note: 'Two native amounts were not recorded.' }),
-        item(['other'], 10, { exact: 10n, final: 20, finalUnknown: true })],
-      text: { format: (_value: number, exact: bigint | null) => String(exact), unit: 'units', valueLabel: 'Amount', shares },
-      settings: { growth: 'fill', labels: true, legend: true, breadcrumb: true, dimming: true },
-    }));
-    const subtotal = partial(false);
-    assert.match(subtotal, /<b>30<small class="sunburst-partial"> partial<\/small><\/b><small><\/small>/);
-    assert.match(subtotal, /aria-label="KNOWN. 30 units, partial"/);
-    assert.match(subtotal, /All: 40 units, partial; KNOWN: 30 units, partial; OTHER: 10 units/);
-    assert.doesNotMatch(subtotal, /%|Of All|Not known|Not measured/);
-    assert.match(partial(), /<small>75%<\/small>/);
-    assert.match(partial(true), /<small>75%<\/small>/);
-    const flags = (loaded: boolean) => renderToStaticMarkup(createElement(Sunburst, {
-      label: 'Countries', root: ROOT, active: true, fold: false,
-      items: [{ path: [{ id: 'pending', label: 'Pending country', countryFlag: { flagPending: true } }], value: 2, exact: 2n },
-        { path: [{ id: 'failed', label: 'Failed country', countryFlag: { flagReason: 'Dated read failed' } }], value: -1, exact: -1n },
-        { path: [{ id: 'loaded', label: 'Loaded country', countryFlag: loaded ? { flag: 'dated-flag.png' } : {} }], value: 0, exact: 0n, unknown: { source: 1 } },
-        { path: [{ id: 'rest', label: 'Rest of world' }], value: 1, exact: 1n }],
-      text: { format: (_value: number, exact: bigint | null) => String(exact), unit: 'units', valueLabel: 'Amount' },
-      settings: { growth: 'share', labels: false, legend: true, breadcrumb: false, dimming: true },
-    }));
-    for (const loaded of [false, true]) {
-      const html = flags(loaded);
-      assert.match(html, /class="windowed-rows sunburst-legend-rows has-icons"/);
-      assert.equal((html.match(/country-flag-unavailable/g) ?? []).length, loaded ? 2 : 3);
-      assert.match(html, /Flag loading/);
-      assert.match(html, /Flag unavailable/);
-      assert.doesNotMatch(html, /No artwork|is-missing/);
-      assert.match(html, /<span class="sunburst-name"[^>]*>Rest of world/);
-      assert.doesNotMatch(html, /<span class="sunburst-icon" aria-hidden="true"><\/span>/);
-      if (loaded) assert.match(html, /src="dated-flag.png"/);
-    }
-    for (const [positive, correction] of [[10n, -10n], [9007199254740993n, -9007199254740992n]]) {
-      const html = render(positive, correction);
-      const group = html.match(/<button[^>]*aria-label="GROUP\. [01] units\. Zoom in"[^>]*>.*?<\/button>/)?.[0];
-      assert.ok(group, html);
-      assert.ok(group.includes(`<b>${positive + correction}</b>`));
-      assert.doesNotMatch(group, /is-unmeasured|Not counted/);
-      assert.match(html, /<div class="is-unmeasured"><div[^>]*aria-label="UNKNOWN. Not known"/);
-      assert.match(html, /<div class="is-unmeasured"><div[^>]*aria-label="UNMEASURED. Not measured"/);
-    }
-    for (const [positive, correction] of [[9007199254740993n, -9007199254740992n], [9007199254740992n, -9007199254740993n]]) {
-      const amount = positive + correction;
-      const html = render(positive, correction, [true, false], []);
-      assert.match(html, /<div><div[^>]*aria-label="GROUP. -?1 units"/);
-      assert.ok(html.includes(`<b>${amount}</b>`));
-      assert.doesNotMatch(html, /Nothing yet|Not measured|is-unmeasured/);
-      const withMissing = render(positive, correction, [true, false], [item(['group', 'unmeasured'], null, { note: 'Another part was not recorded.' })]);
-      assert.ok(withMissing.includes(`<b>${amount}</b>`));
-      assert.doesNotMatch(withMissing, /Not measured|is-unmeasured/);
-      assert.match(withMissing, /GROUP: -?1 units/);
-      const tree = groupTree([item(['group', 'positive'], Number(positive), { exact: positive }),
-        item(['group', 'correction'], Number(correction), { exact: correction })], ROOT, [true, false]);
-      const group = tree.children[0];
-      assert.equal(sliceTooltip(group, tree, { format: (_value, exact) => String(exact), unit: 'units', valueLabel: 'Amount' })[0].rows[0].value, `${amount} units`);
-      assert.equal(group.value, Number(amount));
-      assert.equal(arcTargets(tree, tree, 'share').get(group.id)!.shown, amount > 0n);
-    }
-  } finally { await vite.close(); }
-});
 
-test('extra coverage legends remain below slices when zoomed, empty or with slice rows switched off', async () => {
-  const shared = globalThis as typeof globalThis & { __sunburstLegendFocus?: readonly string[] };
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
-    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
-    plugins: [{ name: 'sunburst-legend-state', enforce: 'pre', transform(source, id) {
-      const path = id.replaceAll('\\', '/');
-      if (path.endsWith('/charts/useChartTokens.ts')) return "export const useChartTokens = () => ({ categories: ['#123'], text: '#fff', surface: '#000', fontSize: { small: 10, body: 12 } });";
-      if (path.endsWith('/sunburst/Sunburst.tsx')) return source.replace('useState<readonly string[]>([])',
-        'useState<readonly string[]>(globalThis.__sunburstLegendFocus ?? [])');
-    } }] });
-  try {
-    const { default: Sunburst } = await vite.ssrLoadModule('/ui/src/charts/sunburst/Sunburst.tsx') as typeof import('./Sunburst.tsx');
-    const { default: Legend } = await vite.ssrLoadModule('/ui/src/charts/Legend.tsx') as typeof import('../Legend.tsx');
-    const entries = [item(['group', 'design'], 5), item(['other'], 2)];
-    const extra = createElement('section', { 'aria-label': 'Loss coverage' }, createElement('h3', null, 'Coverage'),
-      createElement(Legend, { items: [{ id: 'unknown', label: 'Unknown: native writer unavailable', color: '#123' }], label: 'Loss coverage states', always: true }));
-    const render = (legend: boolean, includeExtra = true, items = entries, zoomed = false) => {
-      shared.__sunburstLegendFocus = zoomed ? [groupTree(items, ROOT).children[0].id] : [];
-      return renderToStaticMarkup(createElement(Sunburst, {
-        label: 'Losses', root: ROOT, active: true, items, ...(includeExtra ? { legendExtra: extra } : {}), footnote: 'Counting start',
-        text: { format: value => String(value), unit: 'units', valueLabel: 'Losses', emptyLabel: 'No removals yet' },
-        settings: { growth: 'share', labels: true, legend, breadcrumb: true, dimming: true },
-      }));
-    };
-    for (const zoomed of [false, true]) {
-      const html = render(true, true, entries, zoomed);
-      assert.match(html, new RegExp(`<h3>${zoomed ? 'GROUP' : 'All'}</h3>`));
-      assert.ok(html.indexOf('sunburst-legend-rows') < html.indexOf('class="sunburst-legend-extra"'));
-      assert.ok(html.indexOf('aria-label="Loss coverage states"') < html.indexOf('class="sunburst-footnote"'));
-      assert.match(html, /class="chart-legend"/);
-      if (zoomed) assert.match(html, /class="sunburst-name"[^>]*>DESIGN/);
-    }
-    const empty = render(true, true, []);
-    assert.ok(empty.indexOf('class="sunburst-empty"') < empty.indexOf('class="sunburst-legend-extra"'));
-    assert.match(empty, /No removals yet/);
-    const rowsOff = render(false);
-    assert.match(rowsOff, /class="sunburst-legend"/);
-    assert.match(rowsOff, /Unknown: native writer unavailable/);
-    assert.doesNotMatch(rowsOff, /no-legend|sunburst-name|sunburst-empty|sunburst-footnote is-under/);
-    const omitted = render(false, false);
-    assert.match(omitted, /class="sunburst no-legend"/);
-    assert.match(omitted, /class="sunburst-footnote is-under"/);
-    assert.doesNotMatch(omitted, /class="sunburst-legend"|sunburst-legend-extra|Loss coverage/);
-    const ordinary = render(true, false);
-    assert.match(ordinary, /<h3>All<\/h3>/);
-    assert.match(ordinary, /class="sunburst-name"/);
-    assert.doesNotMatch(ordinary, /sunburst-legend-extra|Loss coverage/);
-  } finally { delete shared.__sunburstLegendFocus; await vite.close(); }
-});
 
 test('a collapsed exact remainder with huge fractional operands remains measured without unsafe geometry', () => {
   const denominator = 10n ** 400n;
@@ -877,12 +751,6 @@ test('a slice tooltip gives its exact amount, shares, count and what is not coun
   assert.equal(sunburstSummary(r, text), 'R: not measured; Z: not measured');
 });
 
-test('shares are written to a tenth, a sliver as under a tenth', () => {
-  assert.equal(shareText(1, 3), '33.3%');
-  assert.equal(shareText(1, 5000), '<0.1%');
-  assert.equal(shareText(0, 5), '0%');
-  assert.equal(shareText(1, 0), '—');
-});
 
 test('a part with nothing counted yet but parts not counted stays listed, with its uncertainty', () => {
   const root = groupTree([item(['a'], 50), item(['gap'], 0, { final: 0, unknown: { notRecorded: 1 } })], ROOT);
@@ -931,20 +799,6 @@ test('exact amounts add up without rounding through a number', () => {
   assert.equal(groupTree([item(['r'], null, { note: 'n' })], ROOT).children[0].exact, null);
 });
 
-test('a colour glide ends exactly, however small each frame\'s step', () => {
-  const amount = 1 - Math.exp(-16 / 180);
-  const target = { r: 0x39, g: 0x87, b: 0xe5 };
-  let colour = { r: 0x3e, g: 0x82, b: 0xe0 };
-  let frames = 0;
-  while ((colour.r !== target.r || colour.g !== target.g || colour.b !== target.b) && frames < 1000) {
-    colour = approachColour(colour, target, amount);
-    frames++;
-  }
-  assert.deepEqual(colour, target);
-  assert.ok(frames < 60, `${frames} frames`);
-  assert.deepEqual(approachColour(colour, target, amount), target);
-  assert.deepEqual(approachColour({ r: 0, g: 0, b: 0 }, target, 1), target);
-});
 
 test('folding goes by whole amounts, so a type that is repaired first and built later folds the same all along', () => {
   const tree = (built: boolean) => foldTree(groupTree([

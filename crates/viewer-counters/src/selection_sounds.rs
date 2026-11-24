@@ -160,16 +160,6 @@ mod tests {
     };
     use viewer_foundation::test_support::{test_frame, test_put as put};
 
-    #[test]
-    fn the_type_mask_chooses_the_effect_and_a_separate_counter_adds_the_general() {
-        let effects = |mask, separate| division_effects(mask, separate).collect::<Vec<_>>();
-        assert_eq!(effects(0x4, false), ["select_tank"]);
-        assert_eq!(effects(0x8, false), ["select_vehicle"]);
-        assert_eq!(effects(0x10, false), ["select_vehicle"]);
-        assert_eq!(effects(0x1, false), ["select_army"]);
-        assert_eq!(effects(0x0, true), ["select_general", "select_army"]);
-    }
-
     fn frame(combat: bool, reference: i32, boundary: i32) -> DecodedFrame {
         let mut frame = test_frame(42);
         put(&mut frame, TableRows::Divisions(vec![

@@ -1,4 +1,4 @@
-use crate::cpu_sets::{away_from_game, prepare, select};
+use crate::cpu_sets::{prepare, select};
 use std::{
     os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle},
     sync::{
@@ -13,8 +13,9 @@ use windows_sys::Win32::System::Threading::{
     CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateEventW, CreateWaitableTimerExW,
     GetCurrentThreadId, OpenThread, SetEvent, SetThreadPriority, SetWaitableTimer,
     THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_IDLE,
-    THREAD_PRIORITY_NORMAL, THREAD_QUERY_LIMITED_INFORMATION, THREAD_SET_INFORMATION,
-    THREAD_SET_LIMITED_INFORMATION, TIMER_ALL_ACCESS, WaitForMultipleObjects,
+    THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_NORMAL, THREAD_QUERY_LIMITED_INFORMATION,
+    THREAD_SET_INFORMATION, THREAD_SET_LIMITED_INFORMATION, TIMER_ALL_ACCESS,
+    WaitForMultipleObjects,
 };
 
 #[derive(Clone, Copy)]
@@ -23,9 +24,11 @@ pub enum Role {
     Spool,
     Sizing,
     Builder,
+    SpoolWriter,
+    JournalWriter,
     Helper(usize),
 }
-const FIXED_ROLES: usize = 4;
+const FIXED_ROLES: usize = 6;
 const SLOTS: usize = FIXED_ROLES + crate::spool_helper::MAX_HELPERS;
 impl Role {
     const fn slot(self) -> usize {
@@ -34,6 +37,8 @@ impl Role {
             Role::Spool => 1,
             Role::Sizing => 2,
             Role::Builder => 3,
+            Role::SpoolWriter => 4,
+            Role::JournalWriter => 5,
             Role::Helper(helper) => FIXED_ROLES + helper,
         }
     }
@@ -41,6 +46,7 @@ impl Role {
 const UNKNOWN: u32 = 3;
 const TICK: u32 = 4;
 const TICK_PRESSED: u32 = 5;
+const TICK_DECODE: u32 = 6;
 const TICKING: u32 = 1 << 8;
 const PRESSED: u32 = 1 << 9;
 const NO_PROCESSOR: u32 = u32::MAX;
@@ -49,9 +55,9 @@ const REST_NS: u64 = 1_000_000;
 const RETRY: Duration = Duration::from_millis(1);
 
 fn level(free: usize) -> u32 {
-    if free <= 1 {
+    if free == 0 {
         2
-    } else if free == 2 {
+    } else if free == 1 {
         1
     } else {
         0
@@ -60,18 +66,19 @@ fn level(free: usize) -> u32 {
 fn priority(level: u32) -> i32 {
     match level {
         TICK => THREAD_PRIORITY_IDLE,
+        TICK_DECODE => THREAD_PRIORITY_LOWEST,
         TICK_PRESSED => THREAD_PRIORITY_NORMAL,
         2 => THREAD_PRIORITY_HIGHEST,
         1 => THREAD_PRIORITY_ABOVE_NORMAL,
-        _ => THREAD_PRIORITY_NORMAL,
+        _ => THREAD_PRIORITY_LOWEST,
     }
 }
 fn for_role(pressure: u32, role: usize) -> u32 {
     if pressure & TICKING != 0 {
-        return if role == Role::Sizing.slot() {
-            0
-        } else if pressure & PRESSED != 0 {
+        return if pressure & PRESSED != 0 {
             TICK_PRESSED
+        } else if role == Role::Decode.slot() {
+            TICK_DECODE
         } else {
             TICK
         };
@@ -155,6 +162,7 @@ pub struct Pipeline {
     callbacks: AtomicUsize,
     ticking: AtomicU32,
     applying: AtomicU32,
+    last_game: AtomicU32,
     targets: [OnceLock<Target>; SLOTS],
     event: OnceLock<OwnedHandle>,
     stopping: AtomicBool,
@@ -172,6 +180,7 @@ impl Pipeline {
             callbacks: AtomicUsize::new(0),
             ticking: AtomicU32::new(0),
             applying: AtomicU32::new(0),
+            last_game: AtomicU32::new(0),
             targets: [const { OnceLock::new() }; SLOTS],
             event: OnceLock::new(),
             stopping: AtomicBool::new(false),
@@ -202,7 +211,7 @@ impl Pipeline {
             return 0;
         }
         if self.ticking.load(Ordering::SeqCst) != 0 {
-            return if self.free_count() <= 1 {
+            return if self.free_count() == 0 {
                 TICKING | PRESSED
             } else {
                 TICKING
@@ -226,18 +235,31 @@ impl Pipeline {
         let word = match processor {
             None => 0,
             Some(processor) => {
+                if let Some(processor) = processor {
+                    self.last_game
+                        .store(processor.saturating_add(1), Ordering::Relaxed);
+                }
                 processor.map_or(NO_PROCESSOR, |processor| processor.saturating_add(1))
             }
         };
         self.ticking.store(word, Ordering::SeqCst);
         self.refresh();
     }
-    fn tick_sets(&self) -> Option<&[u32]> {
-        let word = self.applying.load(Ordering::SeqCst);
-        if word == 0 || word == NO_PROCESSOR {
-            return None;
+    fn desired_away(&self, value: u32) -> u32 {
+        if self.stopping.load(Ordering::Acquire) || value == 2 {
+            return 0;
         }
-        away_from_game(Some(word - 1))
+        let word = self.applying.load(Ordering::SeqCst);
+        let word = if word != 0 && word != NO_PROCESSOR {
+            word
+        } else {
+            self.last_game.load(Ordering::Relaxed)
+        };
+        if word == 0 || word == NO_PROCESSOR {
+            return 0;
+        }
+        let narrow = value == 0 || value == TICK || value == TICK_DECODE;
+        (word << 1) | u32::from(narrow)
     }
     pub fn callback(&self) -> Callback<'_> {
         self.callbacks.fetch_add(1, Ordering::SeqCst);
@@ -332,9 +354,9 @@ impl Pipeline {
                 continue;
             };
             let value = for_role(wanted, role);
-            let ticking = value == TICK || value == TICK_PRESSED;
+            let away = self.desired_away(value);
             if target.applied.load(Ordering::SeqCst) == value
-                && (!ticking || target.selected.load(Ordering::SeqCst) == word)
+                && target.selected.load(Ordering::SeqCst) == away
             {
                 continue;
             }
@@ -389,35 +411,38 @@ fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
     let handle = target.handle.as_raw_handle();
     // SAFETY: the reconciler alone writes these retained collector-owned handles.
     let mut applied = unsafe { SetThreadPriority(handle, priority(value)) != 0 };
-    let sets = if value == TICK || value == TICK_PRESSED {
-        pipeline.tick_sets()
-    } else {
-        None
-    };
-    if sets.is_some() {
-        // SAFETY: The reconciler owns these retained collector worker handles and applies session policy.
-        let selected = unsafe { select(target.handle.as_handle(), sets) };
-        if selected {
-            target.confined.store(true, Ordering::SeqCst);
-            target
-                .selected
-                .store(pipeline.applying.load(Ordering::SeqCst), Ordering::SeqCst);
+    let away = pipeline.desired_away(value);
+    if away != target.selected.load(Ordering::SeqCst) {
+        let processor = away >> 1;
+        let narrow = away & 1 != 0;
+        let sets = (processor != 0 && processor != NO_PROCESSOR)
+            .then(|| {
+                if narrow {
+                    crate::cpu_sets::background_away_from_game(Some(processor - 1))
+                } else {
+                    crate::cpu_sets::away_from_game(Some(processor - 1))
+                }
+            })
+            .flatten();
+        if sets.is_some() {
+            // SAFETY: The reconciler owns these retained collector worker handles and applies session policy.
+            let selected = unsafe { select(target.handle.as_handle(), sets) };
+            if selected {
+                target.confined.store(true, Ordering::SeqCst);
+                target.selected.store(away, Ordering::SeqCst);
+            }
+            applied &= selected;
+        } else if target.confined.load(Ordering::SeqCst) {
+            // SAFETY: The reconciler owns these retained collector worker handles and clears session affinity.
+            let cleared = unsafe { select(target.handle.as_handle(), None) };
+            if cleared {
+                target.confined.store(false, Ordering::SeqCst);
+                target.selected.store(0, Ordering::SeqCst);
+            }
+            applied &= cleared;
+        } else {
+            target.selected.store(away, Ordering::SeqCst);
         }
-        applied &= selected;
-    } else if target.confined.load(Ordering::SeqCst) {
-        // SAFETY: The reconciler owns these retained collector worker handles and clears session affinity.
-        let cleared = unsafe { select(target.handle.as_handle(), None) };
-        if cleared {
-            target.confined.store(false, Ordering::SeqCst);
-        }
-        applied &= cleared;
-    }
-    if applied && value != TICK && value != TICK_PRESSED {
-        target.selected.store(0, Ordering::SeqCst);
-    } else if applied && sets.is_none() {
-        target
-            .selected
-            .store(pipeline.applying.load(Ordering::SeqCst), Ordering::SeqCst);
     }
     applied
 }

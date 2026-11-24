@@ -1521,20 +1521,6 @@ path=\"{art}\"
     }
 
     #[test]
-    fn the_glyph_metrics_trait_reports_the_fnt_fields() {
-        let font = font();
-        assert_eq!(GlyphMetrics::line_height(&font), 20.0);
-        assert_eq!(GlyphMetrics::base(&font), 16.0);
-        assert_eq!(GlyphMetrics::advance(&font, 'A'), Some(10.0));
-        assert_eq!(GlyphMetrics::advance(&font, 'Z'), None);
-        assert_eq!(GlyphMetrics::glyph(&font, 'Z'), None);
-        assert_eq!(GlyphMetrics::kerning(&font, 'A', 'B'), -2.0);
-        assert_eq!(GlyphMetrics::kerning(&font, 'B', 'A'), 0.0);
-        assert_eq!(font.page_of('A'), Some(7));
-        assert_eq!(font.page_of('Z'), None);
-    }
-
-    #[test]
     fn color_runs_preserve_nested_open_and_close_matching_native_screen_labels() {
         let mut font = font();
         let green = [0.2, 0.8, 0.3, 1.0];

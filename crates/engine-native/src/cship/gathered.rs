@@ -340,12 +340,14 @@ impl Heap {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskForceFields {
     pub pointer: usize,
+    pub vtable: u64,
     pub handle: u64,
     pub roster_owner: u32,
     pub location: usize,
     pub fleet: usize,
     pub mine_exposure: u64,
     pub modifiers: usize,
+    pub influences_count: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -553,13 +555,24 @@ impl ShipFields {
             |index: usize| u64::from_le_bytes(self.task.bytes[index][..8].try_into().unwrap());
         (self.task.pointer != 0 && self.task.completed == TASK.len()).then(|| TaskForceFields {
             pointer: self.task.pointer,
+            vtable: word(0),
             handle: word(1),
             roster_owner: u32::from_le_bytes(self.task.bytes[2][..4].try_into().unwrap()),
             location: word(3) as usize,
             fleet: word(4) as usize,
             mine_exposure: word(5),
             modifiers: self.task.pointer.saturating_add(TASK_MODIFIERS),
+            influences_count: Array::from_header(
+                self.task.bytes[6][..16].try_into().unwrap(),
+                8,
+            )
+            .map(|array| array.count),
         })
+    }
+
+    pub fn game_state(&self) -> Option<usize> {
+        (self.globals.pointer != 0 && self.globals.completed == GLOBALS.len())
+            .then(|| self.globals.word(0))
     }
 
     pub fn held(&self) -> HeldShip {

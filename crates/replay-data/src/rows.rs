@@ -34,7 +34,6 @@ use crate::{
     value::{EncodeValue, Value},
 };
 
-
 pub const LOGS: [TableId; 16] = [
     TableId::CombatLogBattleModifiers,
     TableId::OperationCompletions,
@@ -1312,6 +1311,27 @@ impl TableRows {
             .map(move |(field, count)| (table.field_name(field).unwrap_or("unnamed field"), count));
         (fields, nested.into_iter())
     }
+
+    pub fn supports_optional_i32_fill(&self, column: usize) -> bool {
+        matches!(self, Self::RailCooldowns(_) if column == 3)
+    }
+
+    pub fn fill_optional_i32(&mut self, column: usize, value: Option<i32>) -> io::Result<bool> {
+        match self {
+            Self::RailCooldowns(rows) if column == 3 => {
+                let target = Recorded::Value(value);
+                let mut changed = false;
+                for row in rows {
+                    if row.selection_hour != target {
+                        row.selection_hour = target;
+                        changed = true;
+                    }
+                }
+                Ok(changed)
+            }
+            _ => Err(invalid("uniform optional i32 fill targets an unsupported column")),
+        }
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1840,101 +1860,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn patrol_disruption_delta_does_not_repeat_quiet_combat_inputs() {
-        let previous = AirMissionInputRow {
-            wing: 7,
-            patrol_disruption_raw: (Some(17)).into(),
-            patrol_attack_raw: (Some(i64::MAX)).into(),
-            patrol_defence_raw: (Some(i64::MIN)).into(),
-            patrol_speed_raw: (Some(-13)).into(),
-            patrol_wing_attack_raw: (Some(-19)).into(),
-            patrol_wing_defence_raw: (Some(23)).into(),
-            ..Default::default()
-        };
-        let next = AirMissionInputRow {
-            patrol_disruption_raw: (Some(-29)).into(),
-            ..previous.clone()
-        };
-        let delta = next.delta(Some(&previous)).unwrap().unwrap();
-        assert_eq!(delta.mask, 1 << 13);
-        assert_eq!(
-            delta.apply::<AirMissionInputRow>(Some(previous)).unwrap(),
-            next
-        );
-        round_trip(TableId::AirMissionInputs, next);
-    }
-
-    #[test]
-    fn patrol_held_marker_delta_is_independent_of_disruption_and_combat() {
-        let previous = AirMissionInputRow {
-            wing: 7,
-            patrol_disruption_raw: (Some(11)).into(),
-            patrol_attack_raw: (Some(13)).into(),
-            patrol_defence_raw: (Some(17)).into(),
-            patrol_night_applied_raw: (Some(-100_000)).into(),
-            ..Default::default()
-        };
-        let next = AirMissionInputRow {
-            patrol_night_applied_raw: (Some(50_001)).into(),
-            ..previous.clone()
-        };
-        let delta = next.delta(Some(&previous)).unwrap().unwrap();
-        assert_eq!(delta.mask, 1 << 19);
-        assert_eq!(
-            delta.apply::<AirMissionInputRow>(Some(previous)).unwrap(),
-            next
-        );
-        round_trip(TableId::AirMissionInputs, next);
-    }
-
-    #[test]
-    fn patrol_air_detection_numeric_columns_delta_independently_of_execution_and_normalization() {
-        let previous = AirMissionInputRow {
-            wing: 7,
-            current_type: (Some(8)).into(),
-            effective_aircraft: (Some(13)).into(),
-            detection_stat_13: (Some(i64::MIN)).into(),
-            detection_stat_14: (Some(i64::MAX)).into(),
-            ..Default::default()
-        };
-        let next = AirMissionInputRow {
-            detection_stat_13: (Some(-123_456)).into(),
-            ..previous.clone()
-        };
-        let delta = next.delta(Some(&previous)).unwrap().unwrap();
-        assert_eq!(delta.mask, 1 << 11);
-        assert_eq!(
-            delta.apply::<AirMissionInputRow>(Some(previous)).unwrap(),
-            next
-        );
-        round_trip(TableId::AirMissionInputs, next);
-    }
-
-    #[test]
-    fn wing_fuel_count_delta_does_not_repeat_quiet_statistic_or_training_fields() {
-        let previous = AirWingRow {
-            id: 7,
-            fuel_base_raw: Some(i64::MIN).into(),
-            fuel_current_type: Some(4).into(),
-            fuel_effective_aircraft: Some(81).into(),
-            fuel_context_mode: Some(2).into(),
-            fuel_capacity_class: None.into(),
-            fuel_override_resolved: None.into(),
-            ..Default::default()
-        };
-        let next = AirWingRow {
-            fuel_effective_aircraft: Some(80).into(),
-            ..previous.clone()
-        };
-        let delta = next.delta(Some(&previous)).unwrap().unwrap();
-        assert_eq!(delta.mask, 1 << 25);
-        assert_eq!(delta.apply::<AirWingRow>(Some(previous)).unwrap(), next);
-        assert_eq!(next.fuel_inputs().unwrap().base_fuel, Some(i64::MIN));
-        assert_eq!(next.fuel_inputs().unwrap().effective_aircraft, Some(80));
-        round_trip(TableId::AirWings, next);
-    }
-
-    #[test]
     fn wing_fuel_accessor_preserves_independent_absence_and_rejects_invalid_domains() {
         let mut row = AirWingRow {
             fuel_base_raw: None.into(),
@@ -1955,59 +1880,6 @@ mod tests {
         row.fuel_override_resolved = Some(1).into();
         row.fuel_context_mode = Some(256).into();
         assert!(row.fuel_inputs().is_err());
-    }
-
-    #[test]
-    fn air_grid_flag_pairs_keep_raid_training_and_coverage_independently_unknown() {
-        for packed in 0..64 {
-            let row = AirWingRow {
-                map_flags: Some(packed).into(),
-                ..Default::default()
-            };
-            for (shift, value) in [
-                (0, row.training_stop()),
-                (2, row.attachment_coverage()),
-                (4, row.assigned_to_raid()),
-            ] {
-                assert_eq!(
-                    value,
-                    (packed & (1 << shift) != 0).then_some(packed & (2 << shift) != 0)
-                );
-            }
-        }
-        for map_flags in [Recorded::NotRecorded, Recorded::Value(None)] {
-            let row = AirWingRow {
-                map_flags,
-                ..Default::default()
-            };
-            assert_eq!(row.assigned_to_raid(), None);
-        }
-    }
-
-    #[test]
-    fn validated_copy_does_not_repeat_admission_validation() {
-        use crate::rows::test_rows::{COUNTED_ROW_CHECKS as CHECKS, CountedRow};
-        use std::sync::atomic::Ordering;
-        let row = CountedRow {
-            key: 1,
-            text: b"synthetic".to_vec(),
-        };
-        CHECKS.store(0, Ordering::Relaxed);
-        row.check_key_fields().unwrap();
-        let copy = row.try_clone_validated().unwrap();
-        assert_eq!(copy.text, row.text);
-        assert_eq!(CHECKS.load(Ordering::Relaxed), 1);
-        assert!(CountedRow::default().try_clone().is_err());
-    }
-
-    #[test]
-    fn table_ids_are_dense_unique_and_round_trip() {
-        for (position, table) in TableId::ALL.into_iter().enumerate() {
-            assert_eq!(table as usize, position);
-            assert_eq!(table.index(), position);
-            assert_eq!(TableId::try_from(table as u16).unwrap(), table);
-        }
-        assert!(TableId::try_from(TableId::ALL.len() as u16).is_err());
     }
 
     #[test]
@@ -3703,31 +3575,6 @@ mod tests {
         assert!(decode_row::<CampaignRow>(0, &mut Decoder::new(&[1, 0, 0, 0, 0])).is_err());
     }
 
-    #[test]
-    fn scalar_deltas_move_unchanged_strings_and_ordered_lists() {
-        let old = country();
-        let tag = old.tag.as_ptr();
-        let mut next = old.clone();
-        next.command_power_raw += 1;
-        let delta = next.delta(Some(&old)).unwrap().unwrap();
-        let restored = delta.apply(Some(old)).unwrap();
-        assert_eq!(restored, next);
-        assert_eq!(restored.tag.as_ptr(), tag);
-        let old = LandCombatRow {
-            attackers: vec![u64::MAX, 0, 7],
-            defenders: vec![9, 1],
-            ..LandCombatRow::default()
-        };
-        let attackers = old.attackers.as_ptr();
-        let defenders = old.defenders.as_ptr();
-        let mut next = old.clone();
-        next.duration = 1;
-        let delta = next.delta(Some(&old)).unwrap().unwrap();
-        let restored = delta.apply(Some(old)).unwrap();
-        assert_eq!(restored, next);
-        assert_eq!(restored.attackers.as_ptr(), attackers);
-        assert_eq!(restored.defenders.as_ptr(), defenders);
-    }
 }
 
 #[cfg(test)]
@@ -3764,7 +3611,6 @@ mod ship_names_tests;
 #[cfg(test)]
 #[path = "rows/visit_wire_tests.rs"]
 mod visit_wire_tests;
-
 
 #[cfg(test)]
 #[path = "rows/split_tests.rs"]

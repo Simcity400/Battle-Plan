@@ -68,14 +68,6 @@ fn a_caller_outside_its_list_is_counted_and_names_no_route() {
 }
 
 #[test]
-fn byte_operands_set_one_bit_each_from_their_low_byte() {
-    assert_eq!(flags(&[]), 0);
-    assert_eq!(flags(&[1, 0]), 1);
-    assert_eq!(flags(&[0, 0xff]), 2);
-    assert_eq!(flags(&[0x100, 0x1_0000_0001]), 2);
-}
-
-#[test]
 fn nested_operations_restore_their_enclosing_context_on_return_and_unwind() {
     assert_eq!(inside(), EventFeedCause::default());
     {

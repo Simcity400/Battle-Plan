@@ -80,8 +80,8 @@ impl UnitInputs {
     }
 }
 
-pub const MAX_PARTS: usize = 4;
-const PART_ENTRIES: usize = 1_500;
+pub const MAX_PARTS: usize = 6;
+const PART_ENTRIES: usize = 350;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct JoinCapacity {
@@ -571,14 +571,15 @@ impl Census {
     }
 
     pub fn join_capacity(&self) -> JoinCapacity {
+        let with_headroom = |n: usize| n.saturating_add(n.div_ceil(4)).saturating_add(64);
         JoinCapacity {
-            entries: self.entries.len().saturating_mul(2),
-            roster_slots: self
-                .unit_inputs
-                .as_ref()
-                .map_or(0, |inputs| inputs.roster_slots.len())
-                .saturating_mul(2),
-            countries: self.slot_ends.len().saturating_mul(2),
+            entries: with_headroom(self.entries.len()),
+            roster_slots: with_headroom(
+                self.unit_inputs
+                    .as_ref()
+                    .map_or(0, |inputs| inputs.roster_slots.len()),
+            ),
+            countries: with_headroom(self.slot_ends.len()),
         }
     }
 

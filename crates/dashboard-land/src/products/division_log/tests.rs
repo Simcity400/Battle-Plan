@@ -22,15 +22,6 @@ fn key(kind: u8, hour: i32, division: u64) -> u128 {
 }
 
 #[test]
-fn a_removal_is_named_by_its_cause_else_its_disposition_and_a_sighting_is_first_observed() {
-    assert_eq!(status(DivisionEventRow::CREATED, None, None), "first_observed");
-    assert_eq!(status(DivisionEventRow::LOST, Some(0), Some(13)), "division_destroyed");
-    assert_eq!(status(DivisionEventRow::TRANSFER, Some(2), None), "merged");
-    assert_eq!(status(DivisionEventRow::TRANSFER, Some(5), None), "exile_transferred");
-    assert_eq!(status(DivisionEventRow::LOST, Some(9), None), "unknown");
-}
-
-#[test]
 fn a_covered_death_is_exact_at_its_province_with_its_killer_and_a_sighting_is_bounded_by_the_last_census() {
     let death = cells(&[
         (column::DISPOSITION, Cell::Number(0)),

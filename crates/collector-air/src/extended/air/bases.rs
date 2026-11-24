@@ -74,11 +74,12 @@ pub struct AirBasesJob {
     pub registration_work: collector_observers::air_base_carry_changes::Work,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeldSegment {
     pub handle: u64,
     pub pointer: usize,
     pub id: u64,
+    pub carried_raw: Option<std::sync::Arc<super::registration_store::CarriedRaw>>,
 }
 
 #[derive(Clone, Copy)]
@@ -289,6 +290,7 @@ pub struct AirBasesMemo {
     pub(super) spans: Vec<collector_raw::raw::Span>,
     pub(super) bytes: Vec<u8>,
     pub(super) has_bulk: bool,
+    pub(super) segments: Vec<(u64, usize, u64)>,
     pub(super) bases: Vec<cair_base::Row>,
     pub(super) aces: Vec<cace::Row>,
     pub(super) names: Vec<u8>,
@@ -315,6 +317,7 @@ impl AirBasesMemo {
             spans: Vec::new(),
             bytes: Vec::new(),
             has_bulk: false,
+            segments: Vec::new(),
             bases: Vec::new(),
             aces: Vec::new(),
             names: Vec::new(),
@@ -339,7 +342,8 @@ impl AirBasesMemo {
             payload_vectors: vector_bytes(&self.spans)
                 + vector_bytes(&self.bytes)
                 + self.carrier.bytes().0,
-            auxiliary_vectors: vector_bytes(&self.bases)
+            auxiliary_vectors: vector_bytes(&self.segments)
+                + vector_bytes(&self.bases)
                 + vector_bytes(&self.aces)
                 + vector_bytes(&self.names)
                 + self.registrations.capacity_bytes()
@@ -378,6 +382,17 @@ impl AirBasesMemo {
             job.roster.reserved_observation(base, job.game_state),
         ));
         true
+    }
+
+    pub(super) fn segments_equal(&self, segments: &[HeldSegment]) -> bool {
+        self.segments.len() == segments.len()
+            && self
+                .segments
+                .iter()
+                .zip(segments)
+                .all(|(&(handle, pointer, id), segment)| {
+                    handle == segment.handle && pointer == segment.pointer && id == segment.id
+                })
     }
 
     pub(super) fn input_equal(&self, log: &RawLog<AIR_BASES_N>) -> bool {
@@ -452,7 +467,8 @@ impl AirBasesMemo {
             && job.log.spans.iter().all(|span| span.ok);
         if report.eligible && self.key == key {
             report.compared = true;
-            report.hit = self.input_equal(&job.log)
+            report.hit = self.segments_equal(&job.segments)
+                && self.input_equal(&job.log)
                 && self.carrier.input_equal(&job.carrier.log.borrow())
                 && self.roster_equal(job, ctx.base);
         }
@@ -522,6 +538,7 @@ impl AirBasesMemo {
         if report.eligible && air.bases_memo_complete() && fog.registrations_memo_complete() {
             if reserve_to(&mut self.spans, job.log.spans.len()).is_err()
                 || reserve_to(&mut self.bytes, job.log.bytes.len()).is_err()
+                || reserve_to(&mut self.segments, job.segments.len()).is_err()
                 || reserve_to(&mut self.bases, air.bases.outcome.len()).is_err()
                 || (job.aces_active
                     && (reserve_to(&mut self.aces, air.aces.outcome.len()).is_err()
@@ -536,6 +553,9 @@ impl AirBasesMemo {
             self.bytes.clear();
             self.bytes.extend_from_slice(job.log.bytes.as_ref());
             self.has_bulk = job.log.has_bulk;
+            self.segments.clear();
+            self.segments
+                .extend(job.segments.iter().map(|s| (s.handle, s.pointer, s.id)));
             self.bases.clear();
             self.bases
                 .extend_from_slice(&air.bases.rows[..air.bases.outcome.len()]);
@@ -1010,121 +1030,216 @@ fn copy_air_base_row(
     })
 }
 
-fn copy_air_aces_country(
-    log: &mut RawLog<AIR_BASES_N>,
-    memory: &impl engine_native_memory::Memory,
-    base: usize,
-    pointer: usize,
-    slot: u32,
-) -> bool {
-    let header = match bspan(
-        log,
-        memory,
-        pointer.checked_add(ccountry::ACES),
-        16,
-        AIR_ACES_MASK,
-    ) {
-        Some(start) => start,
-        None => return false,
-    };
-    let mut raw = [0u8; 16];
-    raw.copy_from_slice(&log.bytes[header..header + 16]);
-    let roster = match Array::from_header(raw, 8) {
-        Some(array) => array,
-        None => return false,
-    };
-    for ordinal in 0..roster.count {
-        if !copy_air_ace(log, memory, base, pointer, slot, &roster, ordinal) {
-            return false;
-        }
-        if log.overflowed {
-            return false;
-        }
-    }
-    true
-}
+const ACE_BATCH: usize = 64;
 
-fn copy_air_ace(
+const COUNTRY_ACES_FIELDS: [engine_native_memory::memory::RecordField; 1] = [
+    engine_native_memory::memory::RecordField {
+        source_offset: ccountry::ACES,
+        destination_offset: 0,
+        len: 16,
+    },
+];
+const COUNTRY_ACES_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&COUNTRY_ACES_FIELDS, 16)
+        .expect("valid country aces record layout");
+
+const ACE_REQUIRED_FIELDS: [engine_native_memory::memory::RecordField; 7] = [
+    engine_native_memory::memory::RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 16,
+    },
+    engine_native_memory::memory::RecordField {
+        source_offset: cace::AIRCRAFT_TYPE_MASK,
+        destination_offset: 16,
+        len: 4,
+    },
+    engine_native_memory::memory::RecordField {
+        source_offset: cace::OWNER_COUNTRY,
+        destination_offset: 20,
+        len: 16,
+    },
+    engine_native_memory::memory::RecordField {
+        source_offset: cace::NAME,
+        destination_offset: 36,
+        len: 96,
+    },
+    engine_native_memory::memory::RecordField {
+        source_offset: cace::ALIVE,
+        destination_offset: 132,
+        len: 1,
+    },
+    engine_native_memory::memory::RecordField {
+        source_offset: cace::KILL_TYPE,
+        destination_offset: 133,
+        len: 4,
+    },
+    engine_native_memory::memory::RecordField {
+        source_offset: cace::HANDLED,
+        destination_offset: 137,
+        len: 1,
+    },
+];
+const ACE_REQUIRED_STRIDE: usize = 138;
+const ACE_REQUIRED_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&ACE_REQUIRED_FIELDS, ACE_REQUIRED_STRIDE)
+        .expect("valid ace required record layout");
+
+const ACE_PRESENTATION_FIELDS: [engine_native_memory::memory::RecordField; 2] = [
+    engine_native_memory::memory::RecordField {
+        source_offset: cace::PORTRAIT_GENDER,
+        destination_offset: 0,
+        len: 8,
+    },
+    engine_native_memory::memory::RecordField {
+        source_offset: cace::TYPE_DEFINITION,
+        destination_offset: 8,
+        len: 8,
+    },
+];
+const ACE_PRESENTATION_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&ACE_PRESENTATION_FIELDS, 16)
+        .expect("valid ace presentation record layout");
+
+fn copy_air_aces_roster(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native_memory::Memory,
     base: usize,
     country_pointer: usize,
     slot: u32,
     roster: &Array,
-    ordinal: u32,
 ) -> bool {
-    let addr = roster.element(ordinal, 8);
-    let entry = match bspan(log, memory, addr, 8, AIR_ACES_MASK) {
-        Some(start) => start,
-        None => return false,
-    };
-    let pointer = match usize::try_from(bases_pool_u64(log, entry))
-        .ok()
-        .filter(|&pointer| pointer != 0)
-    {
-        Some(pointer) => pointer,
-        None => return false,
-    };
-    let identity = bspan(log, memory, Some(pointer), 16, AIR_ACES_MASK);
-    let mask = bspan(
-        log,
-        memory,
-        pointer.checked_add(cace::AIRCRAFT_TYPE_MASK),
-        4,
-        AIR_ACES_MASK,
-    );
-    let owner = bspan(
-        log,
-        memory,
-        pointer.checked_add(cace::OWNER_COUNTRY),
-        16,
-        AIR_ACES_MASK,
-    );
-    let strings = bspan(
-        log,
-        memory,
-        pointer.checked_add(cace::NAME),
-        96,
-        AIR_ACES_MASK,
-    );
-    let alive = bspan(
-        log,
-        memory,
-        pointer.checked_add(cace::ALIVE),
-        1,
-        AIR_ACES_MASK,
-    );
-    let kill_type = bspan(
-        log,
-        memory,
-        pointer.checked_add(cace::KILL_TYPE),
-        4,
-        AIR_ACES_MASK,
-    );
-    let handled = bspan(
-        log,
-        memory,
-        pointer.checked_add(cace::HANDLED),
-        1,
-        AIR_ACES_MASK,
-    );
-    let (Some(identity), Some(_), Some(owner), Some(strings), Some(alive), Some(_), Some(handled)) =
-        (identity, mask, owner, strings, alive, kill_type, handled)
-    else {
-        return false;
-    };
-    let expected = match engine_sites::at(base, cace::VTABLE_RVA) {
-        Some(expected) => expected as u64,
-        None => return false,
-    };
-    if bases_pool_u64(log, identity) != expected
-        || bases_pool_u64(log, identity + 8) == 0
-        || bases_pool_u64(log, owner) != country_pointer as u64
-        || log.bytes[alive] > 1
-        || log.bytes[handled] > 1
-    {
-        return false;
+    if roster.count == 0 {
+        return true;
     }
+    let Some(expected) = engine_sites::at(base, cace::VTABLE_RVA).map(|v| v as u64) else {
+        return false;
+    };
+    let mut pointers = [0usize; ACE_BATCH];
+    let mut first = 0u32;
+    while first < roster.count {
+        let chunk = ((roster.count - first) as usize).min(ACE_BATCH);
+        let Some(addr) = roster.element(first, 8) else {
+            return false;
+        };
+        let Some((ptr_start, copied_ptrs)) =
+            log.take_array_chunk(memory, addr, 8, chunk, AIR_ACES_MASK)
+        else {
+            return false;
+        };
+        if log.overflowed {
+            return false;
+        }
+        let mut valid_ptrs = 0usize;
+        for i in 0..copied_ptrs {
+            let Some(pointer) = usize::try_from(bases_pool_u64(log, ptr_start + i * 8))
+                .ok()
+                .filter(|&p| p != 0)
+            else {
+                break;
+            };
+            pointers[valid_ptrs] = pointer;
+            valid_ptrs += 1;
+        }
+        let mut validation_failed = false;
+        let mut full_req = 0usize;
+        if valid_ptrs != 0 {
+            let Some((req_start, req_completed)) = log.take_records(
+                memory,
+                engine_native_memory::memory::RecordSources::Pointers(&pointers[..valid_ptrs]),
+                &ACE_REQUIRED_LAYOUT,
+                AIR_ACES_MASK,
+            ) else {
+                return false;
+            };
+            if log.overflowed {
+                return false;
+            }
+            full_req = req_completed / ACE_REQUIRED_FIELDS.len();
+            let mut valid_aces = full_req;
+            for i in 0..full_req {
+                let rec = req_start + i * ACE_REQUIRED_STRIDE;
+                if bases_pool_u64(log, rec) != expected
+                    || bases_pool_u64(log, rec + 8) == 0
+                    || bases_pool_u64(log, rec + 20) != country_pointer as u64
+                    || log.bytes[rec + 132] > 1
+                    || log.bytes[rec + 137] > 1
+                {
+                    valid_aces = i;
+                    validation_failed = true;
+                    break;
+                }
+            }
+            let (pres_start, full_pres) = if valid_aces != 0 {
+                match log.take_records(
+                    memory,
+                    engine_native_memory::memory::RecordSources::Pointers(&pointers[..valid_aces]),
+                    &ACE_PRESENTATION_LAYOUT,
+                    AIR_ACES_MASK,
+                ) {
+                    Some((start, completed)) => (start, completed / ACE_PRESENTATION_FIELDS.len()),
+                    None => return false,
+                }
+            } else {
+                (0, 0)
+            };
+            if log.overflowed {
+                return false;
+            }
+            for i in 0..valid_aces {
+                let pointer = pointers[i];
+                let rec = req_start + i * ACE_REQUIRED_STRIDE;
+                let strings = rec + 36;
+                let alive = rec + 132;
+                let (portrait, selected) = if i < full_pres {
+                    let pres = pres_start + i * 16;
+                    (Some(pres), Some(pres + 8))
+                } else {
+                    (None, None)
+                };
+                if !copy_air_ace_tail(
+                    log,
+                    memory,
+                    base,
+                    country_pointer,
+                    slot,
+                    pointer,
+                    strings,
+                    alive,
+                    portrait,
+                    selected,
+                ) {
+                    return false;
+                }
+                if log.overflowed {
+                    return false;
+                }
+            }
+        }
+        if validation_failed || full_req < valid_ptrs || valid_ptrs < chunk || copied_ptrs < chunk {
+            return false;
+        }
+        first += chunk as u32;
+    }
+    true
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "batched air-ace tail reuses already-copied span offsets from the required and presentation record batches"
+)]
+fn copy_air_ace_tail(
+    log: &mut RawLog<AIR_BASES_N>,
+    memory: &impl engine_native_memory::Memory,
+    base: usize,
+    country_pointer: usize,
+    slot: u32,
+    pointer: usize,
+    strings: usize,
+    alive: usize,
+    batched_portrait: Option<usize>,
+    batched_selected: Option<usize>,
+) -> bool {
     if log.bytes[alive] == 0
         && bspan(
             log,
@@ -1146,20 +1261,25 @@ fn copy_air_ace(
             return false;
         }
     }
-    let portrait = bspan(
-        log,
-        memory,
-        pointer.checked_add(cace::PORTRAIT_GENDER),
-        8,
-        AIR_ACES_MASK,
-    );
-    if let Some(selected) = bspan(
-        log,
-        memory,
-        pointer.checked_add(cace::TYPE_DEFINITION),
-        8,
-        AIR_ACES_MASK,
-    ) {
+    let portrait = batched_portrait.or_else(|| {
+        bspan(
+            log,
+            memory,
+            pointer.checked_add(cace::PORTRAIT_GENDER),
+            8,
+            AIR_ACES_MASK,
+        )
+    });
+    let selected = batched_selected.or_else(|| {
+        bspan(
+            log,
+            memory,
+            pointer.checked_add(cace::TYPE_DEFINITION),
+            8,
+            AIR_ACES_MASK,
+        )
+    });
+    if let Some(selected) = selected {
         let definition = bases_pool_u64(log, selected) as usize;
         if definition != 0
             && let Some(head) = bspan(
@@ -1455,12 +1575,19 @@ struct CarryPass<'a> {
 }
 
 impl CarryPass<'_> {
-    fn segment(&mut self, handle: u64, pointer: usize, id: u64) {
+    fn segment(
+        &mut self,
+        handle: u64,
+        pointer: usize,
+        id: u64,
+        carried_raw: Option<std::sync::Arc<super::registration_store::CarriedRaw>>,
+    ) {
         if allocation::advisory(|| allocation::reserve(self.segments, 1)).is_ok() {
             self.segments.push(HeldSegment {
                 handle,
                 pointer,
                 id,
+                carried_raw,
             });
         }
     }
@@ -1574,19 +1701,17 @@ fn registrations(
     store.visit();
     let planned = slots.run.dense;
     if let Some(held) = store.carryable(handle, pointer, certificate, planned) {
-        let (rows, segment) = (held.demand, held.segment);
-        let spliced = (held.spans.len(), held.bytes.len());
+        let (rows, segment, raw) = (held.demand, held.segment, held.raw);
         let resolved = held.links.iter().all(|&(country, slot)| {
             resolve_link(log, memory, links, seen, seen_index, countries, country) == Some(slot)
                 && !log.overflowed
         });
-        if resolved && log.splice(held.spans, held.bytes) {
+        if resolved {
             *demand = demand.and_then(|[read, wings]| {
                 Some([read.checked_add(rows[0])?, wings.checked_add(rows[1])?])
             });
             store.carried();
-            carry.work.splice(spliced.0, spliced.1);
-            carry.segment(handle, pointer, segment);
+            carry.segment(handle, pointer, segment, Some(raw));
             carry.work.note(Work::CARRIED, started);
             return true;
         }
@@ -1642,7 +1767,7 @@ fn registrations(
         };
         store.hold(handle, pointer, certificate, planned, &fresh);
         if let Some(segment) = store.segment(handle) {
-            carry.segment(handle, pointer, segment);
+            carry.segment(handle, pointer, segment, None);
         }
     }
     carry.work.note(Work::FRESH, started);
@@ -2065,15 +2190,46 @@ fn copy_air_bases_pass_with_context(
     let _reads = read_accounting::table(TableId::AirAces);
     let aces_started = qpc();
     let mut ace_index = 0;
+    let mut country_ptrs = [0usize; ACE_BATCH];
     while ace_index < job.census.len() {
-        let (pointer, slot) = job.census[ace_index];
-        ace_index += 1;
-        if !copy_air_aces_country(&mut job.log, memory, base, pointer, slot) {
-            break;
+        let chunk = (job.census.len() - ace_index).min(ACE_BATCH);
+        for (dst, &(pointer, _)) in country_ptrs[..chunk]
+            .iter_mut()
+            .zip(&job.census[ace_index..ace_index + chunk])
+        {
+            *dst = pointer;
         }
+        let Some((hdr_start, completed)) = job.log.take_records(
+            memory,
+            engine_native_memory::memory::RecordSources::Pointers(&country_ptrs[..chunk]),
+            &COUNTRY_ACES_LAYOUT,
+            AIR_ACES_MASK,
+        ) else {
+            break;
+        };
         if job.log.overflowed {
             break;
         }
+        let mut failed = completed < chunk;
+        for i in 0..completed {
+            let (pointer, slot) = job.census[ace_index + i];
+            let mut raw = [0u8; 16];
+            raw.copy_from_slice(&job.log.bytes[hdr_start + i * 16..hdr_start + i * 16 + 16]);
+            let Some(roster) = Array::from_header(raw, 8) else {
+                failed = true;
+                break;
+            };
+            if !copy_air_aces_roster(&mut job.log, memory, base, pointer, slot, &roster)
+                || job.log.overflowed
+            {
+                failed = true;
+                break;
+            }
+        }
+        if failed {
+            break;
+        }
+        ace_index += chunk;
     }
     ticks[2] += elapsed(aces_started);
 }

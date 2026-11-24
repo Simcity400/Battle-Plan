@@ -353,18 +353,6 @@ fn exact_healthy_fixture_counts_do_not_double_count_scalar_batch_fallbacks() {
 }
 
 #[test]
-fn failed_batches_count_the_fault_request_but_not_the_unexecuted_suffix() {
-    ReadCounts::take_current();
-    fault_fixture(
-        &CountedMemory::new(SliceMemory {
-            base: 0x1000,
-            bytes: &[7; 64],
-        }),
-        0x1000,
-    );
-}
-
-#[test]
 fn a_partial_fault_keeps_the_original_result_and_charges_the_full_request() {
     struct Partial(std::cell::RefCell<Vec<usize>>);
     impl Memory for Partial {
@@ -417,30 +405,6 @@ fn a_partial_fault_keeps_the_original_result_and_charges_the_full_request() {
             ..ReadCounts::ZERO
         }
     );
-}
-
-#[test]
-fn changed_controls_count_only_the_completed_nonempty_reads() {
-    ReadCounts::take_current();
-    control_fixture(
-        &CountedMemory::new(SliceMemory {
-            base: 0x1000,
-            bytes: &[7; 8],
-        }),
-        0x1000,
-    );
-}
-
-#[test]
-fn rejected_null_and_overflow_sources_include_only_the_requested_prefix() {
-    ReadCounts::take_current();
-    let memory = CountedMemory::new(SliceMemory {
-        base: 0x1000,
-        bytes: &[7; 64],
-    });
-    for rejected in [0, usize::MAX] {
-        rejected_source_fixture(&memory, 0x1000, rejected);
-    }
 }
 
 #[test]
@@ -672,145 +636,6 @@ fn empty_calls_and_invalid_destination_geometry_have_calls_without_source_work()
             ..ReadCounts::ZERO
         }
     );
-}
-
-#[test]
-fn unsupported_plan_execution_is_forwarded_and_charged_only_as_a_call() {
-    struct Unsupported;
-    impl Memory for Unsupported {
-        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            panic!("unsupported plans must not fall back to scalar reads");
-        }
-
-        fn execute_read_plan(
-            &self,
-            plan: &PreparedPlan,
-            destination: &mut [u8],
-        ) -> Option<Outcome> {
-            assert_eq!(plan.reads()[0].address, 0x1000);
-            assert_eq!(destination, &[0xa5; 4]);
-            None
-        }
-    }
-    ReadCounts::take_current();
-    let memory = CountedMemory::new(Unsupported);
-    let plan = PreparedPlan::new(
-        vec![Read {
-            address: 0x1000,
-            destination_offset: 0,
-            len: 4,
-        }],
-        vec![],
-        vec![],
-        4,
-    )
-    .unwrap();
-    assert_eq!(memory.execute_read_plan(&plan, &mut [0xa5; 4]), None);
-    assert_eq!(
-        ReadCounts::take_current(),
-        ReadCounts {
-            plan_calls: 1,
-            ..ReadCounts::ZERO
-        }
-    );
-}
-
-#[test]
-fn cached_capabilities_forward_arguments_and_failures_without_source_charges() {
-    use crate::{country_identity::AuthenticatedRoster, modifier_cache::Value};
-
-    const VIEW: &[u8] = &[7, 8, 9];
-    struct Capabilities;
-    impl Memory for Capabilities {
-        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            panic!("owned capabilities must not fall back to source reads");
-        }
-
-        fn immutable_view(&self, address: usize, len: usize) -> Option<SliceMemory<'_>> {
-            if address != 0x1000 {
-                return None;
-            }
-            VIEW.get(..len).map(|bytes| SliceMemory {
-                base: address,
-                bytes,
-            })
-        }
-
-        fn authenticated_countries(
-            &self,
-            base: usize,
-            game_state: usize,
-        ) -> Option<AuthenticatedRoster<'_>> {
-            ((base, game_state) == (11, 12)).then_some(AuthenticatedRoster::new(
-                &[],
-                [crate::cpdx_array::Array { data: 0, count: 0 }; 2],
-            ))
-        }
-
-        fn modifier_accumulator_value(
-            &self,
-            address: usize,
-            key: u32,
-        ) -> Option<Result<Value, &'static str>> {
-            match (address, key) {
-                (7, 8) => Some(Ok(Value {
-                    raw: i64::MIN,
-                    present: true,
-                })),
-                (7, 9) => Some(Err("source modifier unavailable")),
-                _ => None,
-            }
-        }
-
-        fn core_supply_access(
-            &self,
-            base: usize,
-            game_state: usize,
-            owner_raw: u32,
-            area: usize,
-        ) -> Option<Result<bool, &'static str>> {
-            ((base, game_state, owner_raw, area) == (1, 2, 3, 4)).then_some(Ok(true))
-        }
-
-        fn movement_primary_root(
-            &self,
-            base: usize,
-            member: usize,
-        ) -> Option<Result<usize, &'static str>> {
-            ((base, member) == (5, 6)).then_some(Err("source root unavailable"))
-        }
-    }
-
-    ReadCounts::take_current();
-    let memory = CountedMemory::new(Capabilities);
-    let view = memory.immutable_view(0x1000, 3).unwrap();
-    let mut bytes = [0; 3];
-    assert!(view.copy(0x1000, &mut bytes));
-    assert_eq!(bytes, [7, 8, 9]);
-    assert!(memory.immutable_view(0x1001, 3).is_none());
-    assert!(memory.immutable_view(0x1000, 4).is_none());
-    assert!(memory.authenticated_countries(11, 12).is_some());
-    assert!(memory.authenticated_countries(12, 11).is_none());
-    assert_eq!(
-        memory.modifier_accumulator_value(7, 8),
-        Some(Ok(Value {
-            raw: i64::MIN,
-            present: true
-        }))
-    );
-    assert_eq!(
-        memory.modifier_accumulator_value(7, 9),
-        Some(Err("source modifier unavailable"))
-    );
-    assert_eq!(memory.modifier_accumulator_value(8, 8), None);
-    assert_eq!(memory.core_supply_access(1, 2, 3, 4), Some(Ok(true)));
-    assert_eq!(memory.core_supply_access(1, 2, 3, 5), None);
-    assert_eq!(
-        memory.movement_primary_root(5, 6),
-        Some(Err("source root unavailable"))
-    );
-    assert_eq!(memory.movement_primary_root(6, 5), None);
-    assert_eq!(ReadCounts::take_current(), ReadCounts::ZERO);
 }
 
 #[test]

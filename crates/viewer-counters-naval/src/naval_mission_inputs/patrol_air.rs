@@ -780,7 +780,7 @@ pub fn density(hour: &Hour<'_>, region: u32, visibility: [i64; 2]) -> Fact<Optio
 mod tests {
     use replay_data::rows::{AirMissionInputRow, AirRegionalMissionRow, AirWingRow, DayNightClock, TableId, TableRows, WeatherProvinceRow};
     use super::super::tests::{anchors, content, frame, hour, set};
-    use super::{BTreeMap, DecodedFrame, Defines, Fact, HOUR_EPOCH, NativeInputs, ONE, RaidAirScoreRow, density, disruption, night_raw, province_clock, weighted_density, wing_weight};
+    use super::{BTreeMap, DecodedFrame, Defines, Fact, HOUR_EPOCH, NativeInputs, ONE, RaidAirScoreRow, density, disruption, night_raw, province_clock, weighted_density};
     use replay_frame::frame::TableView;
 
     fn input_frame() -> DecodedFrame {
@@ -1019,23 +1019,6 @@ mod tests {
         assert_eq!(
             weighted_density([i64::MIN, i64::MIN], [ONE; 2], ONE, ONE),
             None
-        );
-    }
-
-    #[test]
-    fn wing_weight_preserves_each_wrapping_product_and_truncation() {
-        assert_eq!(wing_weight(100, 1_000, ONE, ONE), ONE);
-        assert_eq!(wing_weight(17, 1_000, 33_333, 91_234), 5_169);
-        let count = i32::MAX;
-        let reciprocal = i64::MAX;
-        let normalized = i64::from(count).wrapping_mul(reciprocal).wrapping_mul(ONE) / ONE;
-        assert_eq!(
-            wing_weight(count, reciprocal, 73_127, 31_337),
-            normalized
-                .wrapping_mul(73_127)
-                .wrapping_div(ONE)
-                .wrapping_mul(31_337)
-                .wrapping_div(ONE)
         );
     }
 

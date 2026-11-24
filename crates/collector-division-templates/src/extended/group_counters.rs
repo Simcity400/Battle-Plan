@@ -2,6 +2,8 @@ use collector_primitives::{
     clock::qpc,
     table_capture::{CaptureRows, grow_capacity, grow_vec},
 };
+use collector_projection::projection::{Projection, project_table};
+#[cfg(test)]
 use collector_projection::table_conversion::table;
 use engine_allocation::{default_vec, owned_vec};
 use engine_native_memory::{Memory, walk::Outcome};
@@ -10,6 +12,8 @@ use replay_data::{
     rows::CommanderAttackStats, rows::CommanderMovementStats, rows::OrdersGroupCounterInputRow,
     rows::Recorded, rows::TableId, rows::Witnessed, rows::tables,
 };
+use replay_frame::frame::TableInput;
+#[cfg(test)]
 use replay_frame::frame::TableView;
 use std::mem::size_of;
 #[cfg(test)]
@@ -55,6 +59,7 @@ pub struct Captured {
     rows: CaptureRows<corders_group::CounterInputsRow>,
     roots: Vec<corders_group::Root>,
     commanders: Vec<(u64, Option<Option<carmy_leader::AttackStats>>)>,
+    commander_pool: Vec<carmy_leader::AttackStats>,
     required: usize,
     templates: templates::Store,
     refresh_templates: bool,
@@ -65,6 +70,7 @@ fn commander(
     memory: &impl Memory,
     base: usize,
     root: corders_group::Root,
+    pool: &mut Vec<carmy_leader::AttackStats>,
 ) -> Option<Option<carmy_leader::AttackStats>> {
     let leader = root
         .pointer()
@@ -74,9 +80,16 @@ fn commander(
     if leader == 0 {
         return Some(None);
     }
-    carmy_leader::attack_stats(memory, base, leader)
-        .ok()
-        .map(Some)
+    let mut stats = pool.pop().unwrap_or_default();
+    match carmy_leader::attack_stats_into(memory, base, leader, &mut stats) {
+        Ok(()) => Some(Some(stats)),
+        Err(_) => {
+            stats.terrain.clear();
+            stats.movement_terrain.clear();
+            pool.push(stats);
+            None
+        }
+    }
 }
 
 fn recorded(commander: &carmy_leader::AttackStats) -> CommanderAttackStats {
@@ -105,17 +118,27 @@ impl Captured {
             rows: CaptureRows::new(capacity.rows),
             roots: owned_vec(default_vec(capacity.rows)),
             commanders: Vec::new(),
+            commander_pool: Vec::new(),
             required: 0,
             templates: templates::Store::default(),
             refresh_templates: false,
             owned_pending: false,
         }
     }
+    fn recycle_commanders(&mut self) {
+        for (_, entry) in self.commanders.drain(..) {
+            if let Some(Some(mut stats)) = entry {
+                stats.terrain.clear();
+                stats.movement_terrain.clear();
+                self.commander_pool.push(stats);
+            }
+        }
+    }
     pub fn reset(&mut self) {
         self.decode_owned();
         self.rows.reset();
         self.roots.fill(Default::default());
-        self.commanders.clear();
+        self.recycle_commanders();
         self.required = 0;
     }
     pub fn prepare_hour(&mut self, force: bool) {
@@ -131,6 +154,14 @@ impl Captured {
                 .commanders
                 .iter()
                 .filter_map(|(_, commander)| commander.as_ref()?.as_ref())
+                .map(|commander| {
+                    (commander.terrain.capacity() + commander.movement_terrain.capacity()) * 8
+                })
+                .sum::<usize>()
+            + self.commander_pool.capacity() * size_of::<carmy_leader::AttackStats>()
+            + self
+                .commander_pool
+                .iter()
                 .map(|commander| {
                     (commander.terrain.capacity() + commander.movement_terrain.capacity()) * 8
                 })
@@ -183,7 +214,7 @@ impl Captured {
             self.templates.forget();
         }
         self.rows.outcome = self.read(memory, base, state);
-        self.commanders.clear();
+        self.recycle_commanders();
         let len = self.rows.outcome.len();
         crate::template_changes::record_hq_groups(len);
         for (row, root) in self.rows.rows[..len].iter().zip(&self.roots) {
@@ -191,7 +222,7 @@ impl Captured {
                 .templates
                 .read(memory, base, *root, &crate::template_changes::Observer);
             self.commanders
-                .push((row.group, commander(memory, base, *root)));
+                .push((row.group, commander(memory, base, *root, &mut self.commander_pool)));
         }
         if matches!(self.rows.outcome, Outcome::Rows { .. }) {
             self.templates.prune(&self.roots[..len]);
@@ -211,28 +242,97 @@ impl Captured {
         [self.rows.outcome]
     }
 
-    fn commander_attack(&self, group: u64) -> Option<Option<CommanderAttackStats>> {
+    fn commander_entry(
+        &self,
+        group: u64,
+    ) -> Option<Option<&carmy_leader::AttackStats>> {
         let at = self
             .commanders
             .binary_search_by_key(&group, |(group, _)| *group)
             .ok()?;
-        self.commanders[at]
-            .1
-            .as_ref()
-            .map(|commander| commander.as_ref().map(recorded))
+        self.commanders[at].1.as_ref().map(|c| c.as_ref())
+    }
+
+    fn commander_attack(&self, group: u64) -> Option<Option<CommanderAttackStats>> {
+        self.commander_entry(group)
+            .map(|commander| commander.map(recorded))
     }
 
     fn commander_movement(&self, group: u64) -> Option<Option<CommanderMovementStats>> {
-        let at = self
-            .commanders
-            .binary_search_by_key(&group, |(group, _)| *group)
-            .ok()?;
-        self.commanders[at]
-            .1
-            .as_ref()
-            .map(|commander| commander.as_ref().map(recorded_movement))
+        self.commander_entry(group)
+            .map(|commander| commander.map(recorded_movement))
     }
 
+    fn row_equal(
+        &self,
+        r: &corders_group::CounterInputsRow,
+        previous: &OrdersGroupCounterInputRow,
+    ) -> bool {
+        if previous.group != r.group
+            || previous.withdrawing != r.withdrawing
+            || previous.attack != Recorded::Value(Witnessed(None))
+            || previous.hq_distance != Recorded::Value(r.hq_distance)
+            || previous.leader_enroute_days != Recorded::Value(r.leader_enroute_days)
+            || previous.border_war_presence != Recorded::Value(r.border_war_presence)
+            || previous.invasion_source_distance != Recorded::Value(r.invasion_source_distance)
+            || previous.hq_nearest_front != Recorded::Value(r.hq_nearest_front)
+        {
+            return false;
+        }
+        let commander_eq = match (
+            self.commander_entry(r.group),
+            &previous.commander_attack,
+            &previous.commander_movement,
+        ) {
+            (Some(Some(c)), Recorded::Value(Some(Some(pa))), Recorded::Value(Some(Some(pm)))) => {
+                pa.leader == c.leader
+                    && pa.fort == c.fort
+                    && pa.river == c.river
+                    && pa.snow == c.snow
+                    && pa.night == c.night
+                    && pa.terrain == c.terrain
+                    && pm.terrain == c.movement_terrain
+            }
+            (Some(None), Recorded::Value(Some(None)), Recorded::Value(Some(None))) => true,
+            (None, Recorded::Value(None), Recorded::Value(None)) => true,
+            _ => false,
+        };
+        if !commander_eq {
+            return false;
+        }
+        match (self.templates.value_ref(r.group), &previous.template_context) {
+            (Some(cur), Recorded::Value(Some(prev))) => {
+                std::sync::Arc::ptr_eq(cur, prev) || cur == prev
+            }
+            (None, Recorded::Value(None)) => true,
+            _ => false,
+        }
+    }
+
+    pub fn table_inputs(&self, projection: Option<&mut Projection<'_>>) -> [TableInput; N] {
+        [project_table::<tables::OrdersGroupCounterInputs, _>(
+            projection,
+            self.outcomes()[0],
+            &self.rows.rows,
+            |r| u128::from(r.group),
+            |r, previous| self.row_equal(r, previous),
+            |r| OrdersGroupCounterInputRow {
+                group: r.group,
+                attack: Recorded::Value(Witnessed(None)),
+                commander_attack: Recorded::Value(self.commander_attack(r.group)),
+                commander_movement: Recorded::Value(self.commander_movement(r.group)),
+                withdrawing: r.withdrawing,
+                hq_distance: Recorded::Value(r.hq_distance),
+                leader_enroute_days: Recorded::Value(r.leader_enroute_days),
+                border_war_presence: Recorded::Value(r.border_war_presence),
+                invasion_source_distance: Recorded::Value(r.invasion_source_distance),
+                hq_nearest_front: Recorded::Value(r.hq_nearest_front),
+                template_context: Recorded::Value(self.templates.value(r.group)),
+            },
+        )]
+    }
+
+    #[cfg(test)]
     pub fn tables(&self) -> [TableView; N] {
         [table::<tables::OrdersGroupCounterInputs, _>(
             self.outcomes()[0],

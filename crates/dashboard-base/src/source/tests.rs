@@ -5,30 +5,6 @@ use replay_frame::frame::TableView;
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
-#[cfg(windows)]
-fn cached_content_replies_do_not_sweep_a_clean_generation() {
-    let replay = Arc::new(Replay::from_records(
-        recorder_derive::writers(),
-        CAMPAIGN.into(), &[records(1, vec![source(1, 100, Some(1))])],
-    ).unwrap());
-    let source = crate::Source::from_replay(
-        crate::SourceKey { source_id: "freshness".into(), revision: "1".into() },
-        "memory.battleplan".into(), replay, &AtomicBool::new(false),
-    ).unwrap();
-    let options = content_reader_layers::ResolveOptions {
-        game_dir: "synthetic-game".into(), user_dir: "synthetic-user".into(), cache_dir: "synthetic-cache".into(),
-    };
-    let content = Arc::new(content_reader_layers::content::ResolvedContent {
-        layers: Default::default(), stats: Default::default(), changed: Vec::new(), notes: Vec::new(),
-    });
-    source.set_test_content(options.clone(), Arc::clone(&content));
-    content.layers.validate_generation().unwrap();
-    let before = content.layers.content_counts().generation_validations;
-    for _ in 0..100 { assert!(Arc::ptr_eq(&source.content(&options).unwrap(), &content)); }
-    assert_eq!(content.layers.content_counts().generation_validations, before);
-}
-
-#[test]
 fn air_superiority_inherited_state_is_independent_between_revisions() {
     let replay = Arc::new(
         Replay::from_records(

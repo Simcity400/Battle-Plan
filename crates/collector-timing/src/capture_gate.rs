@@ -65,10 +65,24 @@ pub unsafe fn exempt(slot: usize, exempt: bool) {
 }
 
 #[inline(always)]
+pub fn is_running() -> bool {
+    STATE.load(Ordering::Relaxed) == RUNNING
+}
+
+#[inline(always)]
 pub fn pass(slot: usize) {
     if STATE.load(Ordering::Relaxed) == RUNNING {
         wait(slot);
     }
+}
+
+#[cold]
+pub fn wait_if_blocking(slot: usize) -> bool {
+    if READER.get() || EXEMPT[slot.min(SLOTS - 1)].load(Ordering::SeqCst) {
+        return false;
+    }
+    wait_out(slot);
+    true
 }
 
 pub fn hold(slot: usize) {

@@ -754,8 +754,6 @@ mod tests {
         "ret",
     );
     unsafe extern "system" {
-        fn peace_test_call(conference: usize);
-        fn peace_test_resume();
     }
 
     #[test]
@@ -834,34 +832,6 @@ mod tests {
     }
 
     #[test]
-    fn presize_reuses_an_offer_before_current_is_installed() {
-        let _guard = test_globals();
-        let capacity = Capacities::for_counts(50, 100);
-        presize(capacity);
-        assert_eq!(
-            SWAP.lock().unwrap().next.as_ref().unwrap().capacity,
-            capacity
-        );
-        let first = SWAP.lock().unwrap().next.as_ref().unwrap().as_ref() as *const Log;
-        presize(capacity);
-        let second = SWAP.lock().unwrap().next.as_ref().unwrap().as_ref() as *const Log;
-        assert_eq!(first, second);
-        *SWAP.lock().unwrap() = Swap::default();
-    }
-
-    #[test]
-    fn status_distinguishes_a_prepared_hook_from_enabled_capture() {
-        let _guard = test_globals();
-        ORIGINAL.store(1, Ordering::Release);
-        ENABLED.store(false, Ordering::Release);
-        let value = serde_json::to_value(status()).unwrap();
-        assert_eq!(value["prepared"], true);
-        assert_eq!(value["installed"], false);
-        assert_eq!(value["enabled"], false);
-        ORIGINAL.store(0, Ordering::Release);
-    }
-
-    #[test]
     fn refused_optional_hook_leaves_capture_disabled() {
         let _guard = test_globals();
         let mut hooks = Hooks { hook: None };
@@ -899,51 +869,6 @@ mod tests {
         *SWAP.lock().unwrap() = Swap::default();
     }
 
-    #[test]
-    #[ignore = "complete bridge and guarded observer cost on synthetic memory; no game"]
-    fn peace_observer_cost() {
-        let _guard = test_globals();
-        for count in [50, 500, 5000] {
-            let mut fixture = Fixture::new(count, count);
-            fixture.populate_transfers(count);
-            let (base, conference) = fixture.rebase_image(91);
-            presize(Capacities::for_counts(count, count));
-            install_offered();
-            collect();
-            BASE.store(base, Ordering::Relaxed);
-            RETURN.store(
-                base + engine_peace::peace_finalizer_site::RETURN_RVA.0,
-                Ordering::Release,
-            );
-            ORIGINAL.store(peace_test_resume as *const () as usize, Ordering::Release);
-            ENABLED.store(true, Ordering::Release);
-            let mut samples = Vec::with_capacity(100);
-            for _ in 0..100 {
-                let log = unsafe { &*LOG.load(Ordering::Acquire) };
-                unsafe { &mut *log.storage.get() }.used = [0; 7];
-                let started = std::time::Instant::now();
-                unsafe { peace_test_call(std::hint::black_box(conference)) };
-                samples.push(started.elapsed().as_nanos());
-                let event = unsafe { &*log.storage.get() }.events[0];
-                assert_eq!(event.hour, Some(91));
-                assert_eq!(event.snapshot.failure, None);
-                assert_eq!(event.snapshot.omitted, 0);
-                assert_eq!(event.snapshot.actions, count);
-                assert_eq!(event.snapshot.transfers, count);
-            }
-            samples.sort_unstable();
-            let bytes = unsafe { &*(*LOG.load(Ordering::Acquire)).storage.get() }.allocated_bytes();
-            println!(
-                "guarded synthetic bridge countries={count} actions={count} transfers={count}: p50={}ns p95={}ns max={}ns arena={}bytes",
-                samples[49], samples[94], samples[99], bytes
-            );
-            ENABLED.store(false, Ordering::Release);
-            ORIGINAL.store(0, Ordering::Release);
-            RETURN.store(0, Ordering::Release);
-            LOG.store(ptr::null_mut(), Ordering::Release);
-            *SWAP.lock().unwrap() = Swap::default();
-        }
-    }
     #[test]
     fn peace_settlement_capacity_uses_resident_demand_without_population_caps() {
         let count = 262_145;

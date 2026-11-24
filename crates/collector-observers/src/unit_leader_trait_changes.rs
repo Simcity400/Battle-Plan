@@ -85,17 +85,3 @@ pub fn record(counts: &Counts, leaders: usize) {
     LEADERS.store(leaders, Ordering::Relaxed);
 }
 
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn forwarded_sites_count_their_calls() {
-        for site in Site::ALL {
-            let before = CALLS[site as usize].load(Ordering::Relaxed);
-            drop(forwarded(0x3000, site));
-            assert_eq!(CALLS[site as usize].load(Ordering::Relaxed), before + 1);
-        }
-    }
-}

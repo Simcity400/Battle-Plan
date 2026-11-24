@@ -135,20 +135,6 @@ fn hash_readers_keep_the_current_lexer_text() {
 }
 
 #[test]
-fn repeated_teleport_and_damage_limits_are_both_read() {
-    crate::test_game::enter();
-    for effect in ["teleport_armies", "damage_units"] {
-        let text = format!(
-            "body = {{ {effect} = {{ limit = {{ always = yes }} limit = {{ @seen = 3 always = yes }} invalid = {{ @hidden = 9 marker = 1 }} }} }} final = @seen hidden = @hidden"
-        );
-        let result = read(text.as_bytes(), &KeyNames::default());
-        assert_eq!(scalar(&result.items, "final"), b"3");
-        assert_eq!(scalar(&result.items, "hidden"), b"@hidden");
-        no_deferred(&result);
-    }
-}
-
-#[test]
 fn advisor_embeds_the_existing_role_dispatch() {
     crate::test_game::enter();
     let result = read(

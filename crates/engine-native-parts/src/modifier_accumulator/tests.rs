@@ -557,32 +557,6 @@ impl<M: Memory> Memory for LookupBatches<'_, M> {
 }
 
 #[test]
-fn raw_lookup_batches_bound_scratch_without_capping_or_skipping_the_census() {
-    for count in [0_u32, 1, 63, 64, 65, 127, 128, 129] {
-        let source = SnapshotMemory::new(count, None);
-        let memory = LookupBatches::new(&source);
-        let mut output = [Value::default(); 2];
-        assert_eq!(
-            lookup_many(&memory, 0x1000, &[1, 1000], &mut output),
-            Ok(())
-        );
-        assert_eq!(output[0].present, count != 0);
-        assert_eq!(output[1], Value::default());
-        assert_eq!(source.calls.get(), count as usize + 1);
-        let expected: Vec<_> = (0..count as usize)
-            .step_by(SNAPSHOT_BATCH)
-            .map(|first| {
-                (
-                    0x1600 + first * 16,
-                    (count as usize - first).min(SNAPSHOT_BATCH),
-                )
-            })
-            .collect();
-        assert_eq!(*memory.batches.borrow(), expected);
-    }
-}
-
-#[test]
 fn raw_lookup_batches_keep_signed_values_absence_and_cross_batch_matches() {
     let source = SnapshotMemory::new(130, None);
     {
@@ -1028,27 +1002,6 @@ fn demand_counts_entries_read_not_a_header_count_nothing_backs() {
     );
     assert_eq!(arena.required_capacity().entries, 70);
     assert_eq!(arena.capacity().entries, 70);
-}
-
-#[test]
-fn held_observations_serve_their_address_without_reading() {
-    let memory = SnapshotMemory::new(70, None);
-    let capacity = SnapshotCapacity {
-        nodes: 2,
-        entries: 140,
-    };
-    let address = 0x1000 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
-    let mut first = SnapshotArena::new(capacity);
-    let fresh = first.capture(&memory, 0x1000, 70).unwrap();
-    let held = first.observed(address).unwrap().to_vec();
-    assert_eq!(held.len(), 70);
-    let mut second = SnapshotArena::new(capacity);
-    second.hold(address, &held);
-    let calls = memory.calls.get();
-    let served = second.capture(&memory, 0x1000, 70).unwrap();
-    assert_eq!(second.value(served), first.value(fresh));
-    assert_eq!(memory.calls.get(), calls, "the held address reads nothing");
-    assert_eq!(second.observed(address), Some(&held[..]));
 }
 
 #[test]

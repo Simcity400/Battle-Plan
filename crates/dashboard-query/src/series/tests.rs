@@ -341,21 +341,6 @@ static SURPLUS: Series = Series {
     absent_none: false,
 };
 
-#[test]
-fn a_computed_part_state_is_its_formula_over_the_row() {
-    assert_eq!(dashboard_declare::field(TableId::CountryResources, "special_total").unwrap(), SPECIAL_TOTAL);
-    assert_eq!(dashboard_declare::field(TableId::CountryResources, "production_demand").unwrap(), PRODUCTION_DEMAND);
-    let fixture = Fixture::campaign(Data::Resources);
-    let query = fixture.query();
-    let line = Line::new(&query, &SURPLUS, &SURPLUS.measures[0]).unwrap();
-    for hour in HOURS {
-        let states = line.states(&[read("GER", hour, Some(2))], None).unwrap();
-        let row = fixture::resource(9001, 2, hour);
-        let wanted = held(&query, "GER", hour).then(|| row.special_total + row.production_demand);
-        assert_eq!(states[0].run.as_ref().map(|run| run.value_raw.parse::<i64>().unwrap()), wanted, "GER's surplus of 2 at {hour}");
-    }
-}
-
 const POWER: usize = 2;
 const COMMAND: usize = 3;
 

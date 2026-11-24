@@ -192,6 +192,7 @@ impl Captured {
             part.swap(self);
             part.begin(&mut naval_missions);
             crate::acquisition_jobs::OrdinaryPartRequest {
+                workers: Default::default(),
                 countries: engine_allocation::SharedBox::clone(countries),
                 base,
                 game_state: state,
@@ -729,13 +730,16 @@ impl Captured {
         self.swap_raid_state(&mut packs);
         packs.ticks = [0; TABLE_COUNT];
         crate::acquisition_jobs::RaidStateRequest {
+            workers: Default::default(),
             countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
             hour,
             force_full,
             packs,
-            stores,
+            states_store: Some(stores.states),
+            buildings_store: Some(stores.buildings),
+            routes_store: stores.routes,
         }
     }
 
@@ -745,7 +749,15 @@ impl Captured {
         completed: bool,
     ) -> RaidStateStores {
         let mut packs = request.packs;
-        let mut stores = request.stores;
+        let mut stores = RaidStateStores {
+            states: request
+                .states_store
+                .unwrap_or_else(|| Box::new(collector_certificates::slicing::SliceFingerprints::new())),
+            buildings: request
+                .buildings_store
+                .unwrap_or_else(|| Box::new(collector_certificates::slicing::SliceFingerprints::new())),
+            routes: request.routes_store,
+        };
         if !completed {
             packs.fail(
                 request.hour,
@@ -962,6 +974,7 @@ impl Captured {
         rail_store: Option<Box<naval_history::RailStore>>,
     ) -> crate::acquisition_jobs::ScoresRailsRequest {
         crate::acquisition_jobs::ScoresRailsRequest {
+            workers: Default::default(),
             countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
@@ -1307,6 +1320,92 @@ pub(crate) struct OrdinaryNavyPacks {
     naval_missions: Option<NavalMissionLoan>,
     ticks: [u64; TABLE_COUNT],
     failure: Option<&'static str>,
+}
+
+pub(crate) struct NaviesBegin {
+    navies: country_counters::Navies,
+    launch: super::country_naval_movement_inputs::Launch,
+}
+
+impl NaviesBegin {
+    pub(crate) fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+    ) {
+        let _allocation_phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
+        let mut reader = self
+            .navies
+            .begin(memory, base, game_state, hour, &mut self.launch);
+        reader.clear();
+    }
+}
+
+impl OrdinaryNavyPacks {
+    pub(crate) fn take_navies(&mut self) -> NaviesBegin {
+        let navies = self
+            .navies
+            .take()
+            .expect("the navy part holds the physical navy pass");
+        let launch = std::mem::replace(
+            &mut self.launch,
+            super::country_naval_movement_inputs::Launch::new(Default::default()),
+        );
+        NaviesBegin { navies, launch }
+    }
+
+    pub(crate) fn has_fingerprints(&self) -> bool {
+        self.naval_missions
+            .as_ref()
+            .is_some_and(|missions| missions.fingerprints.is_some())
+    }
+
+    pub(crate) fn force_full(&self) -> bool {
+        self.naval_missions
+            .as_ref()
+            .is_some_and(|missions| missions.force_full)
+    }
+
+    pub(crate) fn finish_navies<M: Memory>(
+        &mut self,
+        memory: &M,
+        base: usize,
+        game_state: usize,
+        mut begin: NaviesBegin,
+        walk_result: Result<(bool, u64), &'static str>,
+    ) {
+        let _allocation_phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
+        let mut ticks = [0; TABLE_COUNT];
+        let naval_missions = self.naval_missions.get_or_insert_with(Default::default);
+        scatter(
+            &naval_mission_inputs::TABLES,
+            self.naval_mission_inputs.finish_with_navies(
+                memory,
+                base,
+                game_state,
+                naval_missions.force_full,
+                naval_missions.fingerprints.as_deref_mut(),
+                begin.navies.holder(),
+                collector_missions::navy_ledger_changes::Skip::current(),
+                walk_result,
+            ),
+            &mut ticks,
+        );
+        collector_missions::navy_ledger_changes::record(self.naval_mission_inputs.ledger_counts());
+        begin.navies.finish();
+        ticks[country_counters::TABLES[0].index()] += begin.navies.ticks();
+        self.navies = Some(begin.navies);
+        self.launch = begin.launch;
+        self.ticks = ticks;
+    }
+
+    pub(crate) fn fail_navies(&mut self, reason: &'static str) {
+        self.navies = Some(country_counters::Navies::vacant());
+        self.ticks = [0; TABLE_COUNT];
+        self.failure.get_or_insert(reason);
+    }
 }
 
 impl OrdinaryPart {
@@ -1910,6 +2009,18 @@ impl RaidStatePacks {
         .ok()
     }
 
+    pub fn record_ticks(
+        &mut self,
+        state: [u64; raid_state_inputs::N],
+        resource: [u64; resource_map::N],
+    ) {
+        let mut ticks = [0; TABLE_COUNT];
+        scatter(&raid_state_inputs::TABLES, state, &mut ticks);
+        scatter(&resource_map::TABLES, resource, &mut ticks);
+        self.ticks = ticks;
+    }
+
+    #[cfg(test)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -1921,8 +2032,7 @@ impl RaidStatePacks {
     ) {
         let _allocation_phase =
             collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
-        let mut ticks = [0; TABLE_COUNT];
-        let cost = self.raid_state_inputs.capture_sliced(
+        let state = self.raid_state_inputs.capture_sliced(
             memory,
             base,
             game_state,
@@ -1934,8 +2044,7 @@ impl RaidStatePacks {
                 changes: &collector_observers::raid_changes::Observer,
             }),
         );
-        scatter(&raid_state_inputs::TABLES, cost, &mut ticks);
-        let cost = self.resource_map.capture_deferred(
+        let resource = self.resource_map.capture_deferred(
             memory,
             base,
             game_state,
@@ -1946,8 +2055,7 @@ impl RaidStatePacks {
                 changes: &collector_observers::raid_changes::Observer,
             }),
         );
-        scatter(&resource_map::TABLES, cost, &mut ticks);
-        self.ticks = ticks;
+        self.record_ticks(state, resource);
     }
 }
 

@@ -1,7 +1,7 @@
 use engine_native_memory::{Memory, msvc_string, read_slice};
 use crate::allocation;
 
-const INLINE: usize = 512;
+const INLINE: usize = 64;
 
 #[derive(Debug, PartialEq, Eq)]
 #[allow(

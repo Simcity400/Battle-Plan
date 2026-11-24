@@ -865,35 +865,92 @@ pub fn walk_stationed_buffers(
     let mut required_provinces = 0_usize;
     let reader = Reader { memory, base };
     let result = (|| {
+        const STATIONED_THEATRE_FIELDS: [RecordField; 2] = [
+            RecordField {
+                source_offset: 0,
+                destination_offset: 0,
+                len: 16,
+            },
+            RecordField {
+                source_offset: VOLUNTEERS_THEATRE,
+                destination_offset: 16,
+                len: 4,
+            },
+        ];
+        const STATIONED_THEATRE_STRIDE: usize = 20;
+        const STATIONED_THEATRE_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&STATIONED_THEATRE_FIELDS, STATIONED_THEATRE_STRIDE)
+                .expect("valid stationed theatre layout");
+        const BATCH: usize = 32;
+        let expected_vtable = engine_sites::at(base, VTABLE_RVA)
+            .ok_or("module address overflow")? as u64;
+        let mut pointers = [0_usize; BATCH];
+        let mut raw = [0_u8; BATCH * 8];
+        let mut records = [0_u8; BATCH * STATIONED_THEATRE_STRIDE];
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
                 continue;
             };
             let theatres = reader.array(country.pointer, ccountry::THEATRES)?;
-            for ordinal in 0..theatres.count {
-                let theatre = reader.pointer(theatres, ordinal)?;
-                let id = reader.identity(theatre, VTABLE_RVA, REFERENCE_TYPE)?;
-                if reader.field::<i32>(theatre, VOLUNTEERS_THEATRE)? <= 0 {
-                    continue;
+            let mut ordinal = 0;
+            while ordinal < theatres.count {
+                let count = ((theatres.count - ordinal) as usize).min(BATCH);
+                let batched = reader
+                    .pointer_batch_named(
+                        theatres,
+                        ordinal,
+                        &mut pointers[..count],
+                        &mut raw,
+                        "theatre vector pointer unreadable or null",
+                    )
+                    .is_ok()
+                    && memory.copy_records(
+                        RecordSources::Pointers(&pointers[..count]),
+                        &STATIONED_THEATRE_LAYOUT,
+                        &mut records[..count * STATIONED_THEATRE_STRIDE],
+                    ) == count * STATIONED_THEATRE_FIELDS.len();
+                for offset in 0..count {
+                    let (theatre, id, volunteers) = if batched {
+                        let record = &records
+                            [offset * STATIONED_THEATRE_STRIDE..(offset + 1) * STATIONED_THEATRE_STRIDE];
+                        if u64::from_le_bytes(record[..8].try_into().unwrap()) != expected_vtable {
+                            return Err("theatre object vtable mismatch");
+                        }
+                        let id = u64::from_le_bytes(record[8..16].try_into().unwrap());
+                        if id as u32 != REFERENCE_TYPE {
+                            return Err("theatre object reference type mismatch");
+                        }
+                        let volunteers = i32::from_le_bytes(record[16..20].try_into().unwrap());
+                        (pointers[offset], id, volunteers)
+                    } else {
+                        let theatre = reader.pointer(theatres, ordinal + offset as u32)?;
+                        let id = reader.identity(theatre, VTABLE_RVA, REFERENCE_TYPE)?;
+                        let volunteers = reader.field::<i32>(theatre, VOLUNTEERS_THEATRE)?;
+                        (theatre, id, volunteers)
+                    };
+                    if volunteers <= 0 {
+                        continue;
+                    }
+                    if buffers.areas_active && area_failure.is_none() {
+                        area_failure = reader
+                            .areas(
+                                theatre,
+                                id,
+                                &mut buffers,
+                                &mut counts[0],
+                                &mut provinces_len,
+                                &mut required_provinces,
+                            )
+                            .err();
+                    }
+                    if unit_failure.is_none() {
+                        unit_failure = reader
+                            .stationed_units(theatre, id, &mut buffers, &mut counts[1])
+                            .err();
+                    }
                 }
-                if buffers.areas_active && area_failure.is_none() {
-                    area_failure = reader
-                        .areas(
-                            theatre,
-                            id,
-                            &mut buffers,
-                            &mut counts[0],
-                            &mut provinces_len,
-                            &mut required_provinces,
-                        )
-                        .err();
-                }
-                if unit_failure.is_none() {
-                    unit_failure = reader
-                        .stationed_units(theatre, id, &mut buffers, &mut counts[1])
-                        .err();
-                }
+                ordinal += count as u32;
             }
         }
         Ok::<_, &'static str>(())
@@ -1027,6 +1084,23 @@ impl<M: Memory> Reader<'_, M> {
         output: &mut [usize],
         bytes: &mut [u8],
     ) -> Result<(), &'static str> {
+        self.pointer_batch_named(
+            array,
+            first,
+            output,
+            bytes,
+            "controller area province pointer unreadable or null",
+        )
+    }
+
+    fn pointer_batch_named(
+        &self,
+        array: Array,
+        first: u32,
+        output: &mut [usize],
+        bytes: &mut [u8],
+        error: &'static str,
+    ) -> Result<(), &'static str> {
         let window = array
             .slice(first, output.len() as u32, 8)
             .map_err(|_| "theatre vector window outside its own count")?;
@@ -1034,14 +1108,14 @@ impl<M: Memory> Reader<'_, M> {
             .get_mut(..output.len() * 8)
             .ok_or("theatre vector window exceeds its batch buffer")?;
         if !engine_native_memory::read_slice(self.memory, window.data, bytes) {
-            return Err("controller area province pointer unreadable or null");
+            return Err(error);
         }
         for (destination, source) in output.iter_mut().zip(bytes.chunks_exact(8)) {
             *destination =
                 usize::try_from(u64::from_le_bytes(source.try_into().expect("eight bytes")))
                     .ok()
                     .filter(|pointer| *pointer != 0)
-                    .ok_or("controller area province pointer unreadable or null")?;
+                    .ok_or(error)?;
         }
         Ok(())
     }
@@ -1066,6 +1140,21 @@ impl<M: Memory> Reader<'_, M> {
         buffers: &mut StationedStorage<'_>,
         count: &mut Count,
     ) -> Result<(), &'static str> {
+        const UNIT_FIELDS: [RecordField; 2] = [
+            RecordField {
+                source_offset: 0,
+                destination_offset: 0,
+                len: 8,
+            },
+            RecordField {
+                source_offset: cunit::HANDLE,
+                destination_offset: 8,
+                len: 8,
+            },
+        ];
+        const UNIT_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&UNIT_FIELDS, 16).expect("valid stationed unit layout");
+        const BATCH: usize = 32;
         let units = self.array(theatre, STATIONED_UNIT_DATA)?;
         buffers.units.ensure(
             count
@@ -1073,32 +1162,59 @@ impl<M: Memory> Reader<'_, M> {
                 .checked_add(units.count as usize)
                 .ok_or("stationed unit demand overflow")?,
         )?;
-        for ordinal in 0..units.count {
-            let unit = self
-                .pointer(units, ordinal)
-                .map_err(|_| "stationed unit pointer unreadable or null")?;
-            let vtable = read::<u64>(self.memory, unit);
-            if ![carmy::VTABLE_RVA, ctask_force::VTABLE_RVA]
-                .into_iter()
-                .any(|rva| {
-                    engine_sites::at(self.base, rva)
-                        .is_some_and(|expected| vtable == Some(expected as u64))
-                })
-            {
-                return Err("stationed unit is neither a division nor a task force");
-            }
-            let handle = self.field::<u64>(unit, cunit::HANDLE)?;
-            if handle == 0 {
-                return Err("stationed unit has a null reference handle");
-            }
-            count.push(
-                &mut buffers.units,
-                StationedUnitRow {
-                    theatre: id,
+        let army_vtable = engine_sites::at(self.base, carmy::VTABLE_RVA).map(|p| p as u64);
+        let task_vtable = engine_sites::at(self.base, ctask_force::VTABLE_RVA).map(|p| p as u64);
+        let mut pointers = [0_usize; BATCH];
+        let mut raw = [0_u8; BATCH * 8];
+        let mut records = [0_u8; BATCH * 16];
+        let mut ordinal = 0;
+        while ordinal < units.count {
+            let chunk = ((units.count - ordinal) as usize).min(BATCH);
+            let batched = self
+                .pointer_batch_named(
+                    units,
                     ordinal,
-                    unit: handle,
-                },
-            )?;
+                    &mut pointers[..chunk],
+                    &mut raw,
+                    "stationed unit pointer unreadable or null",
+                )
+                .is_ok()
+                && self.memory.copy_records(
+                    RecordSources::Pointers(&pointers[..chunk]),
+                    &UNIT_LAYOUT,
+                    &mut records[..chunk * 16],
+                ) == chunk * UNIT_FIELDS.len();
+            for offset in 0..chunk {
+                let handle = if batched {
+                    let record = &records[offset * 16..(offset + 1) * 16];
+                    let vtable = Some(u64::from_le_bytes(record[..8].try_into().unwrap()));
+                    if vtable != army_vtable && vtable != task_vtable {
+                        return Err("stationed unit is neither a division nor a task force");
+                    }
+                    u64::from_le_bytes(record[8..16].try_into().unwrap())
+                } else {
+                    let unit = self
+                        .pointer(units, ordinal + offset as u32)
+                        .map_err(|_| "stationed unit pointer unreadable or null")?;
+                    let vtable = read::<u64>(self.memory, unit);
+                    if vtable.is_none() || (vtable != army_vtable && vtable != task_vtable) {
+                        return Err("stationed unit is neither a division nor a task force");
+                    }
+                    self.field::<u64>(unit, cunit::HANDLE)?
+                };
+                if handle == 0 {
+                    return Err("stationed unit has a null reference handle");
+                }
+                count.push(
+                    &mut buffers.units,
+                    StationedUnitRow {
+                        theatre: id,
+                        ordinal: ordinal + offset as u32,
+                        unit: handle,
+                    },
+                )?;
+            }
+            ordinal += chunk as u32;
         }
         Ok(())
     }

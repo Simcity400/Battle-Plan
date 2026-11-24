@@ -458,7 +458,7 @@ fn land_only_transport_demand_never_allocates_and_later_refusals_keep_sources() 
     let growths = engine_allocation::growths();
     let result = collector_test_support::with_allocations_denied(|| {
         for mover in &capture.movers {
-            append_transport_demand(&mut demand, &capture.route, &capture.provinces, mover)?;
+            append_transport_demand(&mut demand, &capture.route, &capture.provinces, &[], mover)?;
         }
         Ok::<(), &'static str>(())
     });
@@ -473,14 +473,14 @@ fn land_only_transport_demand_never_allocates_and_later_refusals_keep_sources() 
     };
     demand.push((7, 42));
     assert_eq!(
-        append_transport_demand(&mut demand, &capture.route, &capture.provinces, &mover),
+        append_transport_demand(&mut demand, &capture.route, &capture.provinces, &[], &mover),
         Ok(1)
     );
     assert_eq!(demand, [(7, 42), (1, 16), (1, 48)]);
     mover.logical = None;
     let established = demand.clone();
     assert_eq!(
-        append_transport_demand(&mut demand, &capture.route, &capture.provinces, &mover),
+        append_transport_demand(&mut demand, &capture.route, &capture.provinces, &[], &mover),
         Ok(2)
     );
     assert_eq!(demand, established);
@@ -708,7 +708,7 @@ fn transfer_partial_route_keeps_readable_prefix_and_suffix_regions_without_roste
         .collect();
     let mut demand = vec![(7, 77)];
     assert_eq!(
-        append_transport_demand(&mut demand, &path, &provinces, &mover),
+        append_transport_demand(&mut demand, &path, &provinces, &[], &mover),
         Ok(2)
     );
     assert_eq!(demand, [(7, 77), (1, 16), (1, 32), (1, 48)]);
@@ -914,7 +914,7 @@ fn known_sea_transport_demand_does_not_require_transfer_membership() {
         .collect();
     let mut demand = vec![];
     assert_eq!(
-        append_transport_demand(&mut demand, &path, &provinces, &mover),
+        append_transport_demand(&mut demand, &path, &provinces, &[], &mover),
         Ok(1)
     );
     assert_eq!(demand, [(1, 16)]);
@@ -979,7 +979,8 @@ fn first_self_edge_keeps_land_and_transfer_speed_demand() {
             &mut demand,
             &capture.route,
             &capture.provinces,
-            &capture.movers[0]
+            &[],
+            &capture.movers[0],
         ),
         Ok(0)
     );

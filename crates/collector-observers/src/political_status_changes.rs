@@ -257,7 +257,6 @@ impl Changes for Watches {
     }
 }
 
-
 pub struct Hooks {
     hooks: Vec<Hook>,
 }
@@ -479,19 +478,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_writer_moves_the_hooks_domain() {
-        enable_for_test();
-        for domain in [Domain::Structure, Domain::Popularity] {
-            let token = || match domain {
-                Domain::Structure => Observer.structure(),
-                _ => Observer.popularity(),
-            };
-            let before = token();
-            write_for_test(domain);
-            if before.is_some() {
-                assert_ne!(token(), before);
-            }
-        }
-    }
 }

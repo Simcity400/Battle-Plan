@@ -366,6 +366,7 @@ impl Store {
         let mut table = crate::faction_goals::writable(&mut self.rows, &mut self.spares, || {
             TableRows::FactionAccounts(Vec::new())
         })?;
+        self.spares.retain(|value| Arc::strong_count(value) > 1);
         let rows = Arc::get_mut(&mut table)
             .unwrap()
             .rows_mut::<tables::FactionAccounts>()

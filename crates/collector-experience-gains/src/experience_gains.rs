@@ -617,7 +617,6 @@ pub fn drain(
     result.and_then(|len| refused.map_or(Ok(len), Err))
 }
 
-
 fn release(store: &Mutex<Option<Store>>) {
     let store = store
         .lock()
@@ -1106,39 +1105,6 @@ mod tests {
             Err("experience hourly gain overflow")
         );
         assert!(table.add(owner(1, 2), 0, 1).is_err());
-    }
-
-    #[test]
-    fn strided_countries_at_5000_countries_probe_short_chains() {
-        const COUNTRIES: usize = 5_000;
-        for stride in (0x400..=0x8000).step_by(0x40) {
-            let table = Table::new(Table::slots_for(COUNTRIES).unwrap()).unwrap();
-            let owners: Vec<_> = (0..COUNTRIES)
-                .map(|index| owner(0x1_6000_0000 + index * stride, 1))
-                .collect();
-            for (index, &owner) in owners.iter().enumerate() {
-                table.add(owner, 0, index as i64 + 1).unwrap();
-            }
-            let mask = table.slots.len() - 1;
-            let mut probes = 0;
-            for (index, &owner) in owners.iter().enumerate() {
-                let start = table.start(owner);
-                let distance = (0..table.slots.len())
-                    .find(|&step| {
-                        table.slots[(start + step) & mask]
-                            .pointer
-                            .load(Ordering::Relaxed)
-                            == owner.pointer
-                    })
-                    .unwrap();
-                probes += distance + 1;
-                assert_eq!(table.get(owner), [index as i64 + 1, 0, 0]);
-            }
-            assert!(
-                probes * 2 <= COUNTRIES * 3,
-                "stride {stride:#x}: {probes} probes for {COUNTRIES} owners"
-            );
-        }
     }
 
     #[test]

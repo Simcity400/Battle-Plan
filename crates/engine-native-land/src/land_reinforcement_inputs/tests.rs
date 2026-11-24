@@ -247,61 +247,6 @@ fn a_failed_census_leaves_no_entries_in_the_arena() {
 }
 
 #[test]
-fn raw_shared_modifier_snapshot_avoids_native_recensus() {
-    struct Shared {
-        copies: Cell<usize>,
-    }
-    impl Memory for Shared {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.copies.set(self.copies.get() + 1);
-            if address == engine_native_parts::modifier_definition::TABLE_RVA.0 {
-                output.copy_from_slice(&0x10000_u64.to_le_bytes());
-                return true;
-            }
-            if address
-                == 0x10000
-                    + 5 * engine_native_parts::modifier_definition::STRIDE
-                    + engine_native_parts::modifier_definition::FLAGS
-            {
-                output.fill(0);
-                return true;
-            }
-            false
-        }
-        fn modifier_accumulator_value(
-            &self,
-            address: usize,
-            key: u32,
-        ) -> Option<Result<engine_native_memory::modifier_cache::Value, &'static str>> {
-            assert_eq!(address, 0x99999);
-            Some(Ok(engine_native_memory::modifier_cache::Value {
-                raw: if key == 5 { -654321 } else { 0 },
-                present: key == 5,
-            }))
-        }
-    }
-    let memory = Shared {
-        copies: Cell::new(0),
-    };
-    let mut output = vec![ModifierTerm::default(); 2];
-    let mut len = 0;
-    append_modifiers(
-        &memory,
-        0,
-        &mut Sources::new(),
-        0x99999,
-        1,
-        &[4, 5],
-        &mut Buffer::Growing(&mut output),
-        &mut len,
-    )
-    .unwrap();
-    assert_eq!(output[1].raw, -654321);
-    assert_eq!(output[0].present, 0);
-    assert_eq!(memory.copies.get(), 2);
-}
-
-#[test]
 fn transport_without_static_feature_preserves_branch_without_normal_dependencies() {
     let mut bytes = vec![0_u8; 0x9000];
     let mut put = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());

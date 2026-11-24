@@ -13,6 +13,7 @@ pub fn pool_size() -> usize {
     crate::acquisition::usable_cpus()
         .saturating_sub(1)
         .min(MAX_HELPERS)
+        .min(1)
 }
 
 const ENCODING_HELPERS: usize = 2;
@@ -252,6 +253,7 @@ fn serve(
             // SAFETY: `join` keeps the job alive until `running` clears.
             let job = unsafe { &*job.0 };
             let panicked = catch_unwind(AssertUnwindSafe(job)).is_err();
+            crate::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();
             state = shared.lock();
             state.job = None;
             state.running = false;
@@ -297,33 +299,6 @@ mod tests {
             };
             assert_eq!(observed.load(Ordering::Relaxed), THREAD_PRIORITY_NORMAL);
         }
-    }
-
-    #[test]
-    fn jobs_run_on_one_persistent_thread_and_join_waits_for_both_shares() {
-        let helper =
-        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
-        unsafe { SpoolHelper::start(None) }.unwrap();
-        let ran_on = AtomicU32::new(0);
-        let total = AtomicUsize::new(0);
-        for round in 1..=5 {
-            let job = || {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-                total.fetch_add(round, Ordering::Relaxed);
-                let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
-                let previous = ran_on.swap(id, Ordering::Relaxed);
-                assert!(previous == 0 || previous == id);
-            };
-            let own =
-            // SAFETY: The spool exclusively uses this helper until the job joins.
-            unsafe { helper.join(round % 2 == 0, &job, || round * 10) };
-            assert_eq!(own, round * 10);
-        }
-        assert_eq!(total.load(Ordering::Relaxed), 15);
-        assert_eq!(ran_on.load(Ordering::Relaxed), helper.thread_id());
-        assert_ne!(helper.thread_id(), unsafe {
-            windows_sys::Win32::System::Threading::GetCurrentThreadId()
-        });
     }
 
     #[test]

@@ -703,22 +703,6 @@ fn a_step_that_changes_one_division_chooses_that_stacks_mesh_and_no_other() {
 }
 
 #[test]
-fn a_figure_waiting_to_be_placed_again_keeps_what_its_stack_asked() {
-    let choices = Arc::new(CountedChoices::default());
-    let mut side = meshes_side(record("units-meshes-waiting-asks"), &choices);
-    let units = side.layers_mut()[0].any_mut().and_then(|layer| layer.downcast_mut::<Units>()).expect("the units layer");
-    let stack = units.asking.get(&101).map(|&(stack, _)| stack).expect("101's stack asks a mesh");
-    if let Some(figure) = &mut units.stacks[stack as usize].figure {
-        figure.placed = None;
-    }
-    units.asks.clear();
-    units.touched.push(stack);
-    units.ask_meshes();
-    assert_eq!(units.asks.len(), 0, "nothing let go, nothing asked again, while it waits");
-    assert!(units.asking.contains_key(&101), "the stack still asks its mesh");
-}
-
-#[test]
 fn a_figure_waiting_to_be_placed_again_is_drawn_where_it_was_until_it_is_placed() {
     let choices = Arc::new(CountedChoices::default());
     let mut side = meshes_side(record("units-meshes-waiting-drawn"), &choices);

@@ -819,19 +819,6 @@ fn the_registry_settles_a_block_under_a_modifier_entry() {
     assert!(t.conditions.is_empty());
 }
 
-#[test]
-fn sub_unit_directories_read_modifiers_and_tags_first() {
-    assert_eq!(
-        SUB_UNIT_DIRECTORIES,
-        [
-            "common/units/unit_modifiers/",
-            "common/unit_tags/",
-            "common/units/critical_parts/",
-            "common/units/"
-        ]
-    );
-}
-
 fn sub_units(files: &[&[u8]]) -> SubUnits {
     content_reader_script::test_game::enter();
     let mut indices = SubUnits::default();

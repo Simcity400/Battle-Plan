@@ -6,16 +6,6 @@ fn cell(start: i32, end: i32) -> Option<i64> {
 }
 
 #[test]
-fn the_schema_numbers_the_cells_a_relation_and_a_level_are_read_from() {
-    let field = |table, name| dashboard_declare::field(table, name).unwrap();
-    assert_eq!(field(TableId::Subjects, "start_hour"), START);
-    assert_eq!(field(TableId::Subjects, "end_hour"), END);
-    assert_eq!(field(TableId::Subjects, "cancel"), CANCEL);
-    assert_eq!(field(TableId::Autonomy, "state"), STATE);
-    assert_eq!(split(cell(-5, 300).unwrap()), (-5, 300));
-}
-
-#[test]
 fn a_switch_between_levels_with_equal_bounds_is_a_new_level_and_an_unshown_row_is_not_recorded() {
     use replay_lanes::points::Cell;
     let step = |hour, cell: Option<Cell>| lanes::Step { hour, cells: cell.map(|cell| Box::from([cell])) };

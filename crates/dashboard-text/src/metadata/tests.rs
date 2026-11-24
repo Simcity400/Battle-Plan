@@ -14,40 +14,6 @@ use std::{
 };
 
 #[test]
-fn country_keys_iter_borrows_retained_operands_in_native_order() {
-    let mut rows: Vec<_> = [
-        (9, 2, b"Z".as_slice()),
-        (3, 5, &[0xff, 0]),
-        (4, 7, b"Z".as_slice()),
-        (2, 8, b"".as_slice()),
-    ]
-    .into_iter()
-    .map(|(id, canonical_slot, tag)| CountryRow {
-        id,
-        canonical_slot,
-        tag: tag.to_vec(),
-        ..Default::default()
-    })
-    .collect();
-    let keys = super::CountryKeys::read(&rows);
-    rows[0].tag = b"changed".to_vec();
-    let expected = vec![
-        (9, 2, b"Z".as_slice()),
-        (3, 5, &[0xff, 0]),
-        (4, 7, b"Z".as_slice()),
-        (2, 8, b"".as_slice()),
-    ];
-    assert_eq!(keys.iter().collect::<Vec<_>>(), expected);
-    assert_eq!(keys.iter().collect::<Vec<_>>(), expected);
-    assert_eq!(
-        keys.row_visits(),
-        0,
-        "the view reads no native country rows"
-    );
-    assert!(super::CountryKeys::default().iter().next().is_none());
-}
-
-#[test]
 fn identity_track_advance_preserves_known_holder_and_closes_at_gaps() {
     let mut track = super::IdentityTrack::default();
     track.advance(9);

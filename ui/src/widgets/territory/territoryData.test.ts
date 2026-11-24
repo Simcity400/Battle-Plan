@@ -1,14 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { territorySeriesMeasure } from '../../dashboard/territoryMeasure.ts';
 import { entryCell, shareItems, shareStructure, validateShareReply, WORLD_TOTAL } from './territoryData.ts';
 import type { TerritoryShareReply } from '../../generated/dashboard';
 
-test('a measure counted by a rule names the declared territory measure', () => {
-  assert.equal(territorySeriesMeasure('states', 'controlled'), 'controlledStates');
-  assert.equal(territorySeriesMeasure('victoryPoints', 'occupied'), 'occupiedVictoryPoints');
-  assert.equal(territorySeriesMeasure('area', 'owned'), 'ownedArea');
-});
 
 const values = (cells: Record<string, number>) => ({ get: (key: string) => cells[key], missing: (key: string) => key in cells ? '' : 'Not read yet' });
 

@@ -1,11 +1,21 @@
 
-use crate::{columnar_file::{RestartState, referenced_ids}, native_columns::{self, RowCells, TableHour, TableInput as Native}};
+use crate::{
+    columnar_file::{RestartState, referenced_ids},
+    native_columns::{self, Pair, RowCells, TableHour, TableInput as Native},
+};
+use replay_data::{
+    format::FormatVersion,
+    rows::{ChangedRows, Field, List, Opaque, RowCodec, RowsPairVisit, RowsVisit, TABLE_COUNT, TableId, TableRows},
+    scope::{self, CaptureMode},
+};
+use replay_frame::frame::{
+    FrameEncoder, FrameInput, Metrics, TRUNCATED_KEYFRAME_REASON, TableInput, TableView,
+};
 use replay_recording::schema::LAST_COMPLETE;
-use replay_frame::frame::{FrameEncoder, FrameInput, Metrics, TRUNCATED_KEYFRAME_REASON, TableInput, TableView};
-use replay_data::{format::FormatVersion, rows::{ChangedRows, RowCodec, RowsPairVisit, RowsVisit, TABLE_COUNT, TableId, TableRows}, scope::{self, CaptureMode}};
 use replay_columnar::{
     manifest::{self, Manifest, Section, Status},
     restart::Last,
+    state::Cell,
     writer::{Dictionary, Prepared, Sample, Strings, Sweep, TableWriter},
 };
 use replay_data::{BranchId, sliced::SliceUpdate};
@@ -19,6 +29,7 @@ use std::{
 };
 
 const DENSE_HOURS: i32 = 24;
+const INTERN_COOLDOWN_HOURS: i32 = 24;
 
 #[cfg(test)]
 mod tests;
@@ -53,7 +64,7 @@ impl Lanes for OneThread {
 struct Lane {
     cells: RowCells,
     removed: Vec<u128>,
-    pairs: Vec<(u32, Option<u32>)>,
+    pairs: Vec<Pair>,
 }
 
 pub struct FrameWriter {
@@ -64,7 +75,7 @@ pub struct FrameWriter {
     absent: Vec<Option<String>>,
     starting: bool,
     poisoned: bool,
-    since_restart: Vec<Box<[u8]>>,
+    since_restart_from: u32,
     pending: bool,
     table_ns: Vec<u64>,
     shared: Vec<Option<Arc<TableRows>>>,
@@ -76,13 +87,61 @@ pub struct FrameWriter {
     owners: Vec<Option<Owners>>,
     last: Option<(BranchId, i32)>,
     dense: Vec<AtomicI32>,
+    intern_until: Vec<i32>,
+    quiet_hours: Vec<u8>,
 }
 
-type Owners = Vec<(u32, Vec<u128>)>;
+enum Owners {
+    U64(Vec<u64>),
+    U128(Vec<u128>),
+}
+
+impl Owners {
+    fn from_keys(id: TableId, count: usize, keys: impl Iterator<Item = u128>) -> io::Result<Self> {
+        if id.key_bits() <= 64 {
+            let mut narrow = engine_allocation::vec(count)?;
+            let mut wide = None;
+            for key in keys {
+                if let Some(wide) = wide.as_mut() {
+                    engine_allocation::reserve(wide, 1)?;
+                    wide.push(key);
+                } else if let Ok(small) = u64::try_from(key) {
+                    engine_allocation::reserve(&mut narrow, 1)?;
+                    narrow.push(small);
+                } else {
+                    let mut promoted = engine_allocation::vec(count.max(narrow.len() + 1))?;
+                    promoted.extend(narrow.iter().copied().map(u128::from));
+                    promoted.push(key);
+                    narrow = Vec::new();
+                    wide = Some(promoted);
+                }
+            }
+            if let Some(wide) = wide {
+                Ok(Self::U128(wide))
+            } else {
+                Ok(Self::U64(narrow))
+            }
+        } else {
+            let mut wide = engine_allocation::vec(count)?;
+            for key in keys {
+                engine_allocation::reserve(&mut wide, 1)?;
+                wide.push(key);
+            }
+            Ok(Self::U128(wide))
+        }
+    }
+
+    fn sort_unstable(&mut self) {
+        match self {
+            Self::U64(keys) => keys.sort_unstable(),
+            Self::U128(keys) => keys.sort_unstable(),
+        }
+    }
+}
 
 struct Slice {
     owners: Vec<u32>,
-    keys: Vec<u128>,
+    keys: Owners,
 }
 
 pub struct FrameHour {
@@ -93,7 +152,6 @@ pub struct FrameHour {
     slices: Vec<Option<Slice>>,
     statuses: Vec<Status>,
     read: Vec<u64>,
-    appends: Vec<Box<[u8]>>,
     pub manifest: Vec<u8>,
 }
 
@@ -179,7 +237,7 @@ impl FrameWriter {
             absent,
             starting: true,
             poisoned: false,
-            since_restart: Vec::new(),
+            since_restart_from: 0,
             pending: false,
             table_ns: engine_allocation::filled(TABLE_COUNT, 0)?,
             shared: engine_allocation::default_vec(TABLE_COUNT)?,
@@ -193,6 +251,8 @@ impl FrameWriter {
             dense: engine_allocation::collect_vec(
                 (0..TABLE_COUNT).map(|_| AtomicI32::new(i32::MIN)),
             )?,
+            intern_until: engine_allocation::filled(TABLE_COUNT, i32::MIN)?,
+            quiet_hours: engine_allocation::filled(TABLE_COUNT, 0)?,
         })
     }
 
@@ -271,6 +331,7 @@ impl FrameWriter {
             retried,
             owners,
             dense,
+            intern_until,
             ..
         } = self;
         let part = Part {
@@ -293,6 +354,7 @@ impl FrameWriter {
             let lane_wall = if on_lane.is_some() { walls[index] } else { 0 };
             if matches!(on_lane, Some(Err(_))) {
                 retried[index] += 1;
+                intern_until[index] = input.hour.saturating_add(INTERN_COOLDOWN_HOURS);
             }
             let mut prepared = match on_lane {
                 Some(Ok(hour)) => hour,
@@ -342,23 +404,32 @@ impl FrameWriter {
             }
             tables.push(prepared);
             shared.push(match table {
-                TableInput::SharedComplete(rows) => Some(Arc::clone(rows)),
+                TableInput::SharedComplete(rows) if Arc::strong_count(rows) > 1 => {
+                    Some(Arc::clone(rows))
+                }
                 _ => None,
             });
             slices.push(match table {
-                TableInput::SliceUpdate { update, .. } if owner_slice(update) => Some(Slice {
-                    owners: engine_allocation::copy_vec(update.owners())?,
-                    keys: engine_allocation::collect_vec(
-                        update.rows().iter().map(|row| row.key()),
-                    )?,
-                }),
+                TableInput::SliceUpdate { update, .. }
+                    if owner_slice(update) && previous.get(index).copied().flatten().is_none() =>
+                {
+                    let id = TableId::ALL[index];
+                    Some(Slice {
+                        owners: engine_allocation::copy_vec(update.owners())?,
+                        keys: Owners::from_keys(
+                            id,
+                            update.rows().len(),
+                            update.rows().iter().map(|row| row.key()),
+                        )?,
+                    })
+                }
                 _ => None,
             });
             let wall = lane_wall + started.elapsed().as_nanos() as u64;
             costs[index] = wall;
             table_ns[index] += wall;
         }
-        let appends = dictionary.take_appended();
+        let appended = dictionary.take_appended_range();
         let held_statuses = engine_allocation::copy_vec(&statuses)?;
         let held_read = engine_allocation::copy_vec(&read)?;
         let Metrics {
@@ -378,7 +449,9 @@ impl FrameWriter {
             total_ns,
             pool_bytes,
             dropped_frames,
-            appends: engine_allocation::collect_vec(appends.iter().map(|bytes| &**bytes))?,
+            appends: engine_allocation::collect_vec(
+                appended.filter_map(|id| dictionary.get(id)),
+            )?,
             statuses,
             read,
             samples,
@@ -393,7 +466,6 @@ impl FrameWriter {
             slices,
             statuses: held_statuses,
             read: held_read,
-            appends,
             manifest,
         })
     }
@@ -427,6 +499,7 @@ impl FrameWriter {
             shared: held,
             owners,
             dense,
+            intern_until,
             starting,
             prepared,
             walls,
@@ -447,35 +520,42 @@ impl FrameWriter {
             starting: *starting,
             keyframe,
         };
-        let turns = engine_allocation::collect_vec(
-            writers
-                .iter_mut()
-                .zip(prepared.iter_mut())
-                .zip(walls.iter_mut())
-                .map(|((writer, hour), wall)| Mutex::new((writer, hour, wall))),
-        )?;
-        let buffers = engine_allocation::collect_vec(buffers.iter_mut().map(Mutex::new))?;
+        let writers = Disjoint::new(writers);
+        let prepared = Disjoint::new(prepared);
+        let walls = Disjoint::new(walls);
+        let buffers = Disjoint::new(buffers);
         let (next, lane) = (AtomicUsize::new(0), AtomicUsize::new(0));
-        let (dictionary, order) = (&*dictionary, &**order);
+        let (dictionary, order, intern_until) = (&*dictionary, &**order, &**intern_until);
         let job = || {
-            let Some(buffers) = buffers.get(lane.fetch_add(1, Ordering::Relaxed)) else {
+            let lane_index = lane.fetch_add(1, Ordering::Relaxed);
+            if lane_index >= buffers.len {
                 return;
-            };
-            let mut buffers = lock(buffers);
+            }
+            // SAFETY: each worker claims a distinct `lane_index < buffers.len`.
+            let buffers = unsafe { buffers.get_mut(lane_index) };
             while lanes.proceeds() {
                 let Some(&index) = order.get(next.fetch_add(1, Ordering::Relaxed)) else {
                     break;
                 };
-                let mut turn = lock(&turns[index]);
-                let (writer, hour, wall) = &mut *turn;
+                if input.hour < intern_until[index] {
+                    continue;
+                }
+                // SAFETY: `order` is a permutation of `0..TABLE_COUNT`, so each `index` is claimed once.
+                let (writer, hour, wall) = unsafe {
+                    (
+                        writers.get_mut(index),
+                        prepared.get_mut(index),
+                        walls.get_mut(index),
+                    )
+                };
                 let started = Instant::now();
-                **hour = Some(part.table(
+                *hour = Some(part.table(
                     index,
                     writer,
                     Strings::Reading(dictionary),
-                    &mut buffers,
+                    buffers,
                 ));
-                **wall = started.elapsed().as_nanos() as u64;
+                *wall = started.elapsed().as_nanos() as u64;
             }
         };
         lanes.run(&job);
@@ -496,17 +576,12 @@ impl FrameWriter {
         if self.poisoned {
             return Err(invalid("A failed hour ended this columnar run"));
         }
-        if let Err(error) = engine_allocation::reserve(&mut self.since_restart, hour.appends.len()) {
-            self.poisoned = true;
-            return Err(error);
-        }
         let FrameHour {
             branch,
             hour: at,
             tables: hours,
             shared,
             slices,
-            appends,
             ..
         } = hour;
         if let Err(error) = self.apply(at, hours, shared, slices, lanes) {
@@ -514,18 +589,28 @@ impl FrameWriter {
             return Err(error);
         }
         self.last = Some((branch, at));
-        self.since_restart.extend(appends);
         self.starting = false;
         self.pending = false;
+        for lane in &mut self.lanes {
+            lane.cells.release_scratch();
+            lane.removed.clear();
+            if lane.removed.capacity().saturating_mul(size_of::<u128>()) > 32 * 1024 {
+                lane.removed = Vec::new();
+            }
+            lane.pairs.clear();
+            if lane.pairs.capacity().saturating_mul(size_of::<Pair>()) > 32 * 1024 {
+                lane.pairs = Vec::new();
+            }
+        }
         Ok(())
     }
 
     fn apply(
         &mut self,
         at: i32,
-        hours: Vec<TableHour>,
-        shared: Vec<Option<Arc<TableRows>>>,
-        slices: Vec<Option<Slice>>,
+        mut hours: Vec<TableHour>,
+        mut shared: Vec<Option<Arc<TableRows>>>,
+        mut slices: Vec<Option<Slice>>,
         lanes: &dyn Lanes,
     ) -> io::Result<()> {
         let Self {
@@ -536,59 +621,84 @@ impl FrameWriter {
             order,
             costs,
             table_ns,
+            quiet_hours,
             ..
         } = self;
-        let turns = engine_allocation::collect_vec(
-            writers
-                .iter_mut()
-                .zip(held.iter_mut().zip(owners.iter_mut()))
-                .zip(walls.iter_mut())
-                .zip(hours.into_iter().zip(shared).zip(slices))
-                .map(|(((writer, held), wall), hour)| Mutex::new((writer, held, wall, Some(hour)))),
-        )?;
         let failed = Mutex::new(None);
-        let next = AtomicUsize::new(0);
-        let order = &**order;
-        let commit = |index: usize| {
-            let mut turn = lock(&turns[index]);
-            let (writer, (held, owners), wall, hour) = &mut *turn;
-            let Some(((hour, shared), slice)) = hour.take() else {
-                return;
-            };
-            let started = Instant::now();
-            let kept = hour.prepared.is_none() && hour.evidence.status == Status::Complete;
-            let committed = writer.commit(hour.prepared, hour.evidence, at).and_then(|()| {
-                **held = shared;
-                let id = TableId::ALL[index];
-                **owners = match (slice, owners.take()) {
-                    (Some(slice), Some(mut known)) => {
-                        hold_slice(&mut known, &slice, id)?;
-                        Some(known)
-                    }
-                    (Some(_), None) => Some(held_owners(&**writer, id)?),
-                    (None, known) => known.filter(|_| kept),
+        {
+            let writers = Disjoint::new(writers);
+            let held = Disjoint::new(held);
+            let owners = Disjoint::new(owners);
+            let wall_slots = Disjoint::new(walls);
+            let quiet_slots = Disjoint::new(quiet_hours);
+            let hours = Disjoint::new(&mut hours);
+            let shared = Disjoint::new(&mut shared);
+            let slices = Disjoint::new(&mut slices);
+            let next = AtomicUsize::new(0);
+            let order = &**order;
+            let commit = |index: usize| {
+                // SAFETY: `order` is a permutation of `0..TABLE_COUNT`, so each `index` is claimed once.
+                let (writer, held, owners, wall, quiet, hour, shared, slice) = unsafe {
+                    (
+                        writers.get_mut(index),
+                        held.get_mut(index),
+                        owners.get_mut(index),
+                        wall_slots.get_mut(index),
+                        quiet_slots.get_mut(index),
+                        hours.get_mut(index),
+                        shared.get_mut(index),
+                        slices.get_mut(index),
+                    )
                 };
-                Ok(())
-            });
-            if let Err(error) = committed {
-                lock(&failed).get_or_insert(error);
-            }
-            **wall = started.elapsed().as_nanos() as u64;
-        };
-        if lanes.count() > 1 {
-            lanes.run(&|| {
-                while lanes.proceeds() {
-                    let Some(&index) = order.get(next.fetch_add(1, Ordering::Relaxed)) else {
-                        break;
+                let prepared = hour.prepared.take();
+                let evidence = hour.evidence;
+                let timed = prepared.is_some();
+                let sectioned = prepared
+                    .as_ref()
+                    .is_some_and(|prepared| prepared.section.is_some());
+                let started = timed.then(Instant::now);
+                let kept = !timed && evidence.status == Status::Complete;
+                let committed = writer.commit(prepared, evidence, at).and_then(|()| {
+                    *held = shared.take();
+                    let id = TableId::ALL[index];
+                    *owners = match (slice.take(), owners.take()) {
+                        (Some(slice), Some(mut known)) => {
+                            hold_slice(&mut known, &slice, id)?;
+                            Some(known)
+                        }
+                        (Some(_), None) => Some(held_owners(&*writer, id)?),
+                        (None, known) => known.filter(|_| kept),
                     };
-                    commit(index);
+                    if sectioned {
+                        *quiet = 0;
+                    } else {
+                        let streak = quiet.saturating_add(1);
+                        *quiet = streak;
+                        if streak == 2 {
+                            writer.drop_scratch();
+                        }
+                    }
+                    Ok(())
+                });
+                if let Err(error) = committed {
+                    lock(&failed).get_or_insert(error);
                 }
-            });
+                *wall = started.map_or(0, |started| started.elapsed().as_nanos() as u64);
+            };
+            if lanes.count() > 1 {
+                lanes.run(&|| {
+                    while lanes.proceeds() {
+                        let Some(&index) = order.get(next.fetch_add(1, Ordering::Relaxed)) else {
+                            break;
+                        };
+                        commit(index);
+                    }
+                });
+            }
+            while let Some(&index) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
+                commit(index);
+            }
         }
-        while let Some(&index) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
-            commit(index);
-        }
-        drop(turns);
         if let Some(error) = failed.into_inner().unwrap_or_else(PoisonError::into_inner) {
             return Err(error);
         }
@@ -620,7 +730,9 @@ impl FrameWriter {
                 ids,
             });
         }
-        Ok((std::mem::take(&mut self.since_restart), tables))
+        let appends = self.dictionary.slice_from(self.since_restart_from)?;
+        self.since_restart_from = self.dictionary.len() as u32;
+        Ok((appends, tables))
     }
 
     pub fn hour_with(
@@ -653,6 +765,59 @@ impl FrameWriter {
 
     pub fn tables(&self) -> &[TableWriter] {
         &self.tables
+    }
+
+    pub fn materialize_complete(&self, id: TableId) -> io::Result<Option<TableRows>> {
+        let writer = &self.tables[id.index()];
+        if writer.status() != Status::Complete {
+            return Ok(None);
+        }
+        let table = writer.table();
+        let mut keyed = engine_allocation::vec(table.live().count())?;
+        for slot in table.live().ones() {
+            let key = table
+                .key(slot)
+                .ok_or_else(|| invalid("A live columnar slot holds no row key"))?;
+            keyed.push((key, slot));
+        }
+        keyed.sort_unstable();
+        let keys = engine_allocation::collect_vec(keyed.iter().map(|&(key, _)| key))?;
+        let format = FormatVersion::CURRENT.version();
+        let dictionary = &self.dictionary;
+        let rows = id.rows_from_wire_fields(&keys, id.full_mask(), &mut |at, column| {
+            let slot = keyed[at].1;
+            if id.column_withheld_at(column, format) || !table.recorded(column, slot) {
+                return Ok(Field::NotRecorded);
+            }
+            let cell = table
+                .column(column)
+                .and_then(|values| values.cell(slot))
+                .ok_or_else(|| invalid("A live columnar slot has no cell"))?;
+            Ok(match cell {
+                Cell::U8(value) => Field::U8(value),
+                Cell::I8(value) => Field::I8(value),
+                Cell::U16(value) => Field::U16(value),
+                Cell::I16(value) => Field::I16(value),
+                Cell::U32(value) => Field::U32(value),
+                Cell::I32(value) => Field::I32(value),
+                Cell::U64(value) => Field::U64(value),
+                Cell::I64(value) => Field::I64(value),
+                Cell::Bool(value) => Field::Bool(value),
+                Cell::OptionalI32(value) => Field::OptionalI32(value),
+                Cell::OptionalU32(value) => Field::OptionalU32(value),
+                Cell::OptionalI64(value) => Field::OptionalI64(value),
+                Cell::OptionalU64(value) => Field::OptionalU64(value),
+                Cell::Bytes(string_id) => Field::Bytes(
+                    dictionary
+                        .get(string_id)
+                        .ok_or_else(|| invalid("A text cell names a string not in the dictionary"))?,
+                ),
+                Cell::U32List(values) => Field::U32List(List::Native(values)),
+                Cell::U64List(values) => Field::U64List(List::Native(values)),
+                Cell::Opaque(bytes) => Field::Opaque(Opaque::Encoded(bytes, format)),
+            })
+        })?;
+        Ok(Some(rows))
     }
 
     pub fn with_staging(staging: native_columns::Staging) -> io::Result<Self> {
@@ -703,12 +868,15 @@ impl Part<'_> {
             let at = self.changed.binary_search_by_key(&index, |(table, _)| *table).ok()?;
             Some(&self.changed[at].1)
         });
-        if let TableInput::SliceUpdate { update, .. } = input
+        if let TableInput::SliceUpdate { update, .. }
+        | TableInput::UniformOptionalI32 { update, .. } = input
             && written.is_none()
+            && previous.is_none()
         {
             removed(id, writer, update, self.owners[index].as_ref(), &mut lane.removed)?;
         }
-        let carried = source.is_none()
+        let carried_complete = source.is_none()
+            && !self.starting
             && matches!(input, TableInput::Sampled(TableView::Unavailable { reason })
                 if reason == replay_data::cadence::SKIPPED_REASON)
             && replay_data::cadence::is_staggered(id)
@@ -745,12 +913,12 @@ impl Part<'_> {
             && let Some(last) = previous
         {
             return match written {
-                Some(written) => Self::written(rows, last, held, written),
+                Some(written) => Self::written(rows, last, held, written, &mut lane.pairs),
                 None => self.diff(index, rows, last, held, &mut lane.pairs, &mut lane.removed),
             };
         }
         match input {
-            _ if carried => held.same(),
+            _ if carried_complete => held.same(),
             TableInput::ComparedEqual(_) => held.same(),
             TableInput::Sampled(view) => held.view(view),
             TableInput::SharedComplete(rows)
@@ -762,7 +930,7 @@ impl Part<'_> {
             }
             TableInput::SharedComplete(rows) => {
                 if let (Some(last), Some(written)) = (previous, written) {
-                    return Self::written(rows, last, held, written);
+                    return Self::written(rows, last, held, written, &mut lane.pairs);
                 }
                 let last = self.held[index].as_deref().filter(|_| known).or(previous);
                 match last {
@@ -787,8 +955,42 @@ impl Part<'_> {
                 None => rows.visit(held.with(Form::Changes(&[]))),
             },
             TableInput::SliceUpdate { update, .. } => match (previous, written) {
-                (Some(last), Some(written)) => Self::written(&update.rows, last, held, written),
-                _ => update.rows.visit(held.with(Form::Changes(&lane.removed))),
+                (Some(last), Some(written)) => {
+                    Self::written(&update.rows, last, held, written, &mut lane.pairs)
+                }
+                (Some(last), None) => Self::slice_diff(
+                    id,
+                    update,
+                    last,
+                    held,
+                    &mut lane.pairs,
+                    &mut lane.removed,
+                    None,
+                ),
+                (None, _) => update.rows.visit(held.with(Form::Changes(&lane.removed))),
+            },
+            TableInput::UniformOptionalI32 {
+                column,
+                value,
+                update,
+                ..
+            } => match previous {
+                Some(last) => Self::slice_diff(
+                    id,
+                    update,
+                    last,
+                    held,
+                    &mut lane.pairs,
+                    &mut lane.removed,
+                    Some((*column, *value)),
+                ),
+                None => Self::changes_uniform(
+                    &update.rows,
+                    held,
+                    &mut lane.pairs,
+                    &lane.removed,
+                    (*column, *value),
+                ),
             },
         }
     }
@@ -800,11 +1002,27 @@ impl Part<'_> {
         last: &TableRows,
         held: Visit<'_>,
         written: &ChangedRows,
+        pairs: &mut Vec<Pair>,
     ) -> io::Result<TableHour> {
-        match rows.visit_pair(last, Written { held, written }) {
+        match rows.visit_pair(last, Written { held, written, pairs }) {
             Ok(hour) => hour,
             Err(Written { held, .. }) => rows.visit(held.with(Form::Complete)),
         }
+    }
+
+    fn changes_uniform(
+        rows: &TableRows,
+        held: Visit<'_>,
+        pairs: &mut Vec<Pair>,
+        removed: &[u128],
+        uniform: (usize, Option<i32>),
+    ) -> io::Result<TableHour> {
+        rows.visit(ChangesUniform {
+            held,
+            pairs,
+            removed,
+            uniform,
+        })
     }
 
     fn diff(
@@ -813,7 +1031,7 @@ impl Part<'_> {
         rows: &TableRows,
         last: &TableRows,
         held: Visit<'_>,
-        pairs: &mut Vec<(u32, Option<u32>)>,
+        pairs: &mut Vec<Pair>,
         removed: &mut Vec<u128>,
     ) -> io::Result<TableHour> {
         let diff = Diff {
@@ -828,6 +1046,57 @@ impl Part<'_> {
             Err(Diff { held, .. }) => rows.visit(held.with(Form::Complete)),
         }
     }
+
+    fn slice_diff(
+        id: TableId,
+        update: &SliceUpdate,
+        last: &TableRows,
+        held: Visit<'_>,
+        pairs: &mut Vec<Pair>,
+        removed: &mut Vec<u128>,
+        uniform_optional_i32: Option<(usize, Option<i32>)>,
+    ) -> io::Result<TableHour> {
+        let diff = SliceDiff {
+            id,
+            update,
+            held,
+            pairs,
+            removed,
+            uniform_optional_i32,
+        };
+        match update.rows.visit_pair(last, diff) {
+            Ok(hour) => hour,
+            Err(_) => Err(invalid("slice update rows differ from baseline type")),
+        }
+    }
+}
+
+struct Disjoint<'a, T> {
+    ptr: *mut T,
+    len: usize,
+    _marker: std::marker::PhantomData<&'a mut [T]>,
+}
+
+// SAFETY: callers partition indices into disjoint positions so no two threads ever
+// alias the same element.
+unsafe impl<T: Send> Sync for Disjoint<'_, T> {}
+
+impl<T> Disjoint<'_, T> {
+    fn new(slice: &mut [T]) -> Self {
+        Self {
+            ptr: slice.as_mut_ptr(),
+            len: slice.len(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// # Safety
+    /// `index < self.len` and no other reference to element `index` exists concurrently.
+    #[allow(clippy::mut_from_ref, reason = "disjoint per-index access across workers")]
+    unsafe fn get_mut(&self, index: usize) -> &mut T {
+        debug_assert!(index < self.len);
+        unsafe { &mut *self.ptr.add(index) }
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -835,50 +1104,84 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn owner_slice(update: &SliceUpdate) -> bool {
-    update.ranges.is_empty() && update.keys.is_empty()
+    !update.owners.is_empty() && update.ranges.is_empty() && update.keys.is_empty()
 }
 
 fn owner_of(id: TableId, key: u128) -> u32 {
     (key >> id.key_bits().saturating_sub(32)) as u32
 }
 
+fn owner_of_u64(id: TableId, key: u64) -> u32 {
+    (key >> id.key_bits().saturating_sub(32)) as u32
+}
+
 fn held_owners(writer: &TableWriter, id: TableId) -> io::Result<Owners> {
     let table = writer.table();
-    let mut keys = Vec::new();
-    for slot in 0..table.slots() as u32 {
-        if let Some(key) = table.key(slot) {
-            engine_allocation::reserve(&mut keys, 1)?;
-            keys.push(key);
-        }
-    }
+    let mut keys = Owners::from_keys(
+        id,
+        table.live().count(),
+        table.live().ones().filter_map(|slot| table.key(slot)),
+    )?;
     keys.sort_unstable();
-    let mut owners = Vec::new();
-    for run in keys.chunk_by(|a, b| owner_of(id, *a) == owner_of(id, *b)) {
-        engine_allocation::reserve(&mut owners, 1)?;
-        owners.push((owner_of(id, run[0]), engine_allocation::copy_vec(run)?));
+    Ok(keys)
+}
+
+fn merge_slice_keys<T: Copy>(
+    owners: &mut Vec<T>,
+    slice_owners: &[u32],
+    slice_keys: &[T],
+    owner_of_key: impl Fn(T) -> u32,
+) -> io::Result<()> {
+    let mut old_at = 0usize;
+    let mut replaced_old = 0usize;
+    for &owner in slice_owners {
+        let start = owners[old_at..].partition_point(|&key| owner_of_key(key) < owner) + old_at;
+        let end = owners[start..].partition_point(|&key| owner_of_key(key) <= owner) + start;
+        replaced_old += end - start;
+        old_at = end;
     }
-    Ok(owners)
+    let final_len = owners.len() - replaced_old + slice_keys.len();
+    let mut out = engine_allocation::vec(final_len)?;
+    old_at = 0;
+    let mut keys = slice_keys;
+    for &owner in slice_owners {
+        let start = owners[old_at..].partition_point(|&key| owner_of_key(key) < owner) + old_at;
+        let end = owners[start..].partition_point(|&key| owner_of_key(key) <= owner) + start;
+        out.extend_from_slice(&owners[old_at..start]);
+        let (own, rest) = keys.split_at(keys.partition_point(|&key| owner_of_key(key) <= owner));
+        keys = rest;
+        out.extend_from_slice(own);
+        old_at = end;
+    }
+    out.extend_from_slice(&owners[old_at..]);
+    *owners = out;
+    Ok(())
 }
 
 fn hold_slice(owners: &mut Owners, slice: &Slice, id: TableId) -> io::Result<()> {
-    let mut keys = &slice.keys[..];
-    for &owner in &slice.owners {
-        let (own, rest) = keys.split_at(keys.partition_point(|&key| owner_of(id, key) <= owner));
-        keys = rest;
-        match owners.binary_search_by_key(&owner, |(held, _)| *held) {
-            Ok(at) => {
-                let held = &mut owners[at].1;
-                held.clear();
-                engine_allocation::reserve(held, own.len())?;
-                held.extend_from_slice(own);
-            }
-            Err(at) => {
-                engine_allocation::reserve(owners, 1)?;
-                owners.insert(at, (owner, engine_allocation::copy_vec(own)?));
-            }
+    match (owners, &slice.keys) {
+        (Owners::U64(known), Owners::U64(incoming)) => {
+            merge_slice_keys(known, &slice.owners, incoming, |key| owner_of_u64(id, key))
+        }
+        (Owners::U128(known), Owners::U128(incoming)) => {
+            merge_slice_keys(known, &slice.owners, incoming, |key| owner_of(id, key))
+        }
+        (Owners::U128(known), Owners::U64(incoming)) => {
+            let widened = engine_allocation::collect_vec(incoming.iter().copied().map(u128::from))?;
+            merge_slice_keys(known, &slice.owners, &widened, |key| owner_of(id, key))
+        }
+        (slot @ Owners::U64(_), Owners::U128(incoming)) => {
+            let Owners::U64(old) = std::mem::replace(slot, Owners::U128(Vec::new())) else {
+                unreachable!();
+            };
+            let mut widened = engine_allocation::collect_vec(old.into_iter().map(u128::from))?;
+            merge_slice_keys(&mut widened, &slice.owners, incoming, |key| {
+                owner_of(id, key)
+            })?;
+            *slot = Owners::U128(widened);
+            Ok(())
         }
     }
-    Ok(())
 }
 
 fn removed(
@@ -889,15 +1192,48 @@ fn removed(
     out: &mut Vec<u128>,
 ) -> io::Result<()> {
     out.clear();
+    if update.owners.is_empty() && update.keys.is_empty() && update.ranges.is_empty() {
+        return Ok(());
+    }
+    if !update.keys.is_empty() && update.owners.is_empty() && update.ranges.is_empty() {
+        let table = writer.table();
+        for &key in &update.keys {
+            if !update.rows.contains_key(key) && table.slot(key).is_some() {
+                engine_allocation::reserve(out, 1)?;
+                out.push(key);
+            }
+        }
+        return Ok(());
+    }
     if let Some(owners) = owners.filter(|_| owner_slice(update)) {
-        for &owner in update.owners() {
-            let Ok(at) = owners.binary_search_by_key(&owner, |(held, _)| *held) else {
-                continue;
-            };
-            for &key in &owners[at].1 {
-                if !update.rows.contains_key(key) {
-                    engine_allocation::reserve(out, 1)?;
-                    out.push(key);
+        match owners {
+            Owners::U64(keys) => {
+                for &owner in update.owners() {
+                    let start = keys.partition_point(|&key| owner_of_u64(id, key) < owner);
+                    for &key in &keys[start..] {
+                        if owner_of_u64(id, key) != owner {
+                            break;
+                        }
+                        let wide = u128::from(key);
+                        if !update.rows.contains_key(wide) {
+                            engine_allocation::reserve(out, 1)?;
+                            out.push(wide);
+                        }
+                    }
+                }
+            }
+            Owners::U128(keys) => {
+                for &owner in update.owners() {
+                    let start = keys.partition_point(|&key| owner_of(id, key) < owner);
+                    for &key in &keys[start..] {
+                        if owner_of(id, key) != owner {
+                            break;
+                        }
+                        if !update.rows.contains_key(key) {
+                            engine_allocation::reserve(out, 1)?;
+                            out.push(key);
+                        }
+                    }
                 }
             }
         }
@@ -1002,8 +1338,9 @@ impl<'a> Visit<'a> {
         self,
         rows: &[R],
         previous: &[R],
-        pairs: &[(u32, Option<u32>)],
+        pairs: &[Pair],
         removed: &[u128],
+        uniform_optional_i32: Option<(usize, Option<i32>)>,
     ) -> io::Result<TableHour> {
         let read = self.read;
         self.write(Native::Paired {
@@ -1011,6 +1348,7 @@ impl<'a> Visit<'a> {
             previous,
             pairs,
             removed,
+            uniform_optional_i32,
             read,
             sample: Sample::FromReadBit,
         })
@@ -1061,11 +1399,47 @@ impl RowsVisit for Rows<'_, '_> {
     }
 }
 
+#[inline]
+fn row_diff<R: RowCodec>(row: &R, previous: &R, narrow: bool) -> Option<u64> {
+    if narrow {
+        let diff = row.differing_fields(previous);
+        (diff != 0).then_some(diff)
+    } else {
+        (row != previous).then_some(u64::MAX)
+    }
+}
+
+struct ChangesUniform<'a> {
+    held: Visit<'a>,
+    pairs: &'a mut Vec<Pair>,
+    removed: &'a [u128],
+    uniform: (usize, Option<i32>),
+}
+
+impl RowsVisit for ChangesUniform<'_> {
+    type Output = io::Result<TableHour>;
+
+    fn rows<R: RowCodec>(self, rows: &[R]) -> io::Result<TableHour> {
+        let Self {
+            held,
+            pairs,
+            removed,
+            uniform,
+        } = self;
+        pairs.clear();
+        engine_allocation::reserve(pairs, rows.len())?;
+        for at in 0..rows.len() {
+            pairs.push(Pair::new(index(at)?, None));
+        }
+        held.paired(rows, &[], pairs, removed, Some(uniform))
+    }
+}
+
 struct Diff<'a> {
     held: Visit<'a>,
     hour: i32,
     dense: &'a AtomicI32,
-    pairs: &'a mut Vec<(u32, Option<u32>)>,
+    pairs: &'a mut Vec<Pair>,
     removed: &'a mut Vec<u128>,
 }
 
@@ -1094,6 +1468,7 @@ impl RowsPairVisit for Diff<'_> {
         if hour < dense.load(Ordering::Relaxed) {
             return dense_rows(held);
         }
+        let narrow = held.writer.kinds().len() <= 64;
         let limit = rows.len().max(last.len()) / 4 * 3;
         pairs.clear();
         removed.clear();
@@ -1124,21 +1499,25 @@ impl RowsPairVisit for Diff<'_> {
             let (row, previous) = (index(at)?, index(before)?);
             match (current, held_key) {
                 (Some(_), Some(_)) => {
-                    if rows[at] != last[before] {
-                        engine_allocation::reserve(pairs, 1)?;
-                        pairs.push((row, Some(previous)));
+                    if let Some(diff) = row_diff(&rows[at], &last[before], narrow) {
+                        push_item(
+                            pairs,
+                            Pair {
+                                row,
+                                previous: Some(previous),
+                                diff,
+                            },
+                        )?;
                     }
                     at += 1;
                     before += 1;
                 }
                 (Some(_), None) => {
-                    engine_allocation::reserve(pairs, 1)?;
-                    pairs.push((row, None));
+                    push_item(pairs, Pair::new(row, None))?;
                     at += 1;
                 }
                 (None, Some(old)) => {
-                    engine_allocation::reserve(removed, 1)?;
-                    removed.push(old);
+                    push_item(removed, old)?;
                     before += 1;
                 }
                 (None, None) => unreachable!("one side has a row"),
@@ -1148,21 +1527,205 @@ impl RowsPairVisit for Diff<'_> {
                 return dense_rows(held);
             }
         }
-        held.paired(rows, last, pairs, removed)
+        held.paired(rows, last, pairs, removed, None)
     }
 }
 
 struct Written<'a> {
     held: Visit<'a>,
     written: &'a ChangedRows,
+    pairs: &'a mut Vec<Pair>,
 }
 
 impl RowsPairVisit for Written<'_> {
     type Output = io::Result<TableHour>;
 
     fn rows<R: RowCodec>(self, rows: &[R], last: &[R]) -> io::Result<TableHour> {
-        let Self { held, written } = self;
-        held.paired(rows, last, &written.pairs, &written.removed)
+        let Self {
+            held,
+            written,
+            pairs,
+        } = self;
+        pairs.clear();
+        engine_allocation::reserve(pairs, written.pairs.len())?;
+        pairs.extend(
+            written
+                .pairs
+                .iter()
+                .map(|&(row, previous)| Pair::new(row, previous)),
+        );
+        held.paired(rows, last, pairs, &written.removed, None)
+    }
+}
+
+#[inline]
+fn push_item<T>(values: &mut Vec<T>, value: T) -> io::Result<()> {
+    if values.len() == values.capacity() {
+        engine_allocation::reserve(values, 1)?;
+    }
+    values.push(value);
+    Ok(())
+}
+
+fn gallop<R>(rows: &[R], holds: impl Fn(&R) -> bool) -> usize {
+    let mut low = 0;
+    let mut high = 1;
+    while high <= rows.len() && holds(&rows[high - 1]) {
+        low = high;
+        high = high.saturating_mul(2);
+    }
+    low + rows[low..high.min(rows.len())].partition_point(holds)
+}
+
+fn merge_slice_diff<R: RowCodec>(
+    rows: &[R],
+    new_span: std::ops::Range<usize>,
+    last: &[R],
+    old_span: std::ops::Range<usize>,
+    narrow: bool,
+    pairs: &mut Vec<Pair>,
+    removed: &mut Vec<u128>,
+) -> io::Result<()> {
+    let mut at = new_span.start;
+    let mut before = old_span.start;
+    while at < new_span.end && before < old_span.end {
+        match rows[at].key().cmp(&last[before].key()) {
+            std::cmp::Ordering::Equal => {
+                if let Some(diff) = row_diff(&rows[at], &last[before], narrow) {
+                    push_item(
+                        pairs,
+                        Pair {
+                            row: index(at)?,
+                            previous: Some(index(before)?),
+                            diff,
+                        },
+                    )?;
+                }
+                at += 1;
+                before += 1;
+            }
+            std::cmp::Ordering::Less => {
+                push_item(pairs, Pair::new(index(at)?, None))?;
+                at += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                push_item(removed, last[before].key())?;
+                before += 1;
+            }
+        }
+    }
+    while at < new_span.end {
+        push_item(pairs, Pair::new(index(at)?, None))?;
+        at += 1;
+    }
+    while before < old_span.end {
+        push_item(removed, last[before].key())?;
+        before += 1;
+    }
+    Ok(())
+}
+
+struct SliceDiff<'a> {
+    id: TableId,
+    update: &'a SliceUpdate,
+    held: Visit<'a>,
+    pairs: &'a mut Vec<Pair>,
+    removed: &'a mut Vec<u128>,
+    uniform_optional_i32: Option<(usize, Option<i32>)>,
+}
+
+impl RowsPairVisit for SliceDiff<'_> {
+    type Output = io::Result<TableHour>;
+
+    fn rows<R: RowCodec>(self, rows: &[R], last: &[R]) -> io::Result<TableHour> {
+        let Self {
+            id,
+            update,
+            held,
+            pairs,
+            removed,
+            uniform_optional_i32,
+        } = self;
+        let narrow = held.writer.kinds().len() <= 64;
+        pairs.clear();
+        removed.clear();
+        if !update.ranges.is_empty() {
+            let (mut old_cursor, mut new_cursor) = (0, 0);
+            for range in &update.ranges {
+                let old_start =
+                    old_cursor + gallop(&last[old_cursor..], |row| row.key() < range.start);
+                let old_end = old_start + gallop(&last[old_start..], |row| row.key() < range.end);
+                old_cursor = old_end;
+                let new_start =
+                    new_cursor + gallop(&rows[new_cursor..], |row| row.key() < range.start);
+                let new_end = new_start + gallop(&rows[new_start..], |row| row.key() < range.end);
+                new_cursor = new_end;
+                merge_slice_diff(
+                    rows,
+                    new_start..new_end,
+                    last,
+                    old_start..old_end,
+                    narrow,
+                    pairs,
+                    removed,
+                )?;
+            }
+        } else if !update.keys.is_empty() {
+            let (mut old_cursor, mut new_cursor) = (0, 0);
+            for &key in &update.keys {
+                old_cursor += gallop(&last[old_cursor..], |row| row.key() < key);
+                let before =
+                    (old_cursor < last.len() && last[old_cursor].key() == key).then_some(old_cursor);
+                new_cursor += gallop(&rows[new_cursor..], |row| row.key() < key);
+                let at =
+                    (new_cursor < rows.len() && rows[new_cursor].key() == key).then_some(new_cursor);
+                match (at, before) {
+                    (Some(at), Some(before)) => {
+                        if let Some(diff) = row_diff(&rows[at], &last[before], narrow) {
+                            push_item(
+                                pairs,
+                                Pair {
+                                    row: index(at)?,
+                                    previous: Some(index(before)?),
+                                    diff,
+                                },
+                            )?;
+                        }
+                    }
+                    (Some(at), None) => {
+                        push_item(pairs, Pair::new(index(at)?, None))?;
+                    }
+                    (None, Some(_)) => {
+                        push_item(removed, key)?;
+                    }
+                    (None, None) => {}
+                }
+            }
+        } else if !update.owners.is_empty() {
+            let (mut old_cursor, mut new_cursor) = (0, 0);
+            for &owner in &update.owners {
+                let old_start = old_cursor
+                    + gallop(&last[old_cursor..], |row| owner_of(id, row.key()) < owner);
+                let old_end = old_start
+                    + gallop(&last[old_start..], |row| owner_of(id, row.key()) <= owner);
+                old_cursor = old_end;
+                let new_start = new_cursor
+                    + gallop(&rows[new_cursor..], |row| owner_of(id, row.key()) < owner);
+                let new_end = new_start
+                    + gallop(&rows[new_start..], |row| owner_of(id, row.key()) <= owner);
+                new_cursor = new_end;
+                merge_slice_diff(
+                    rows,
+                    new_start..new_end,
+                    last,
+                    old_start..old_end,
+                    narrow,
+                    pairs,
+                    removed,
+                )?;
+            }
+        }
+        held.paired(rows, last, pairs, removed, uniform_optional_i32)
     }
 }
 
@@ -1173,7 +1736,7 @@ fn index(at: usize) -> io::Result<u32> {
 struct Compared<'a> {
     held: Visit<'a>,
     indices: &'a [usize],
-    pairs: &'a mut Vec<(u32, Option<u32>)>,
+    pairs: &'a mut Vec<Pair>,
 }
 
 impl RowsPairVisit for Compared<'_> {
@@ -1191,9 +1754,9 @@ impl RowsPairVisit for Compared<'_> {
         pairs.clear();
         engine_allocation::reserve(pairs, rows.len())?;
         for (at, &before) in indices.iter().enumerate() {
-            pairs.push((index(at)?, Some(index(before)?)));
+            pairs.push(Pair::new(index(at)?, Some(index(before)?)));
         }
-        held.paired(rows, last, pairs, &[])
+        held.paired(rows, last, pairs, &[], None)
     }
 }
 

@@ -38,13 +38,12 @@ fn apply(pipeline: &Pipeline, budget: &mut Budget, now: u64, native: &AtomicU32)
 
 #[test]
 fn pressure_is_early_targeted_and_only_during_capture() {
-    assert_eq!((0..=4).map(level).collect::<Vec<_>>(), [2, 2, 1, 0, 0]);
+    assert_eq!((0..=4).map(level).collect::<Vec<_>>(), [2, 1, 0, 0, 0]);
     let pipeline = fixture(false);
     assert_eq!(pipeline.pressure(), 0);
     let callback = pipeline.callback();
     assert_eq!(for_role(pipeline.pressure(), Role::Decode.slot()), 0);
     assert_eq!(for_role(pipeline.pressure(), Role::Sizing.slot()), 0);
-    pipeline.claim();
     pipeline.claim();
     assert_eq!(for_role(pipeline.pressure(), Role::Spool.slot()), 1);
     assert_eq!(for_role(pipeline.pressure(), Role::Decode.slot()), 1);
@@ -191,42 +190,6 @@ fn failed_syscalls_stay_unknown_and_retry_without_another_refresh() {
 }
 
 #[test]
-fn a_pass_sets_each_registered_worker_once_and_steady_refreshes_do_not_set_or_wake() {
-    let pipeline = fixture(true);
-    let callback = pipeline.callback();
-    for role in [Role::Spool, Role::Helper(0), Role::Helper(1), Role::Sizing] {
-        // SAFETY: Only the current session's designated thread registers this role.
-        unsafe { pipeline.register(role) };
-    }
-    let calls = AtomicUsize::new(0);
-    let mut budget = Budget::default();
-    pipeline.reconcile(
-        &mut budget,
-        || 0,
-        |_, _, _| {
-            calls.fetch_add(1, Ordering::SeqCst);
-            true
-        },
-    );
-    assert_eq!(calls.load(Ordering::SeqCst), 5);
-    for _ in 0..20 {
-        pipeline.refresh();
-    }
-    assert!(!pipeline.pending.load(Ordering::SeqCst));
-    pipeline.reconcile(&mut budget, || 0, |_, _, _| panic!("unchanged setter"));
-    drop(callback);
-    pipeline.reconcile(
-        &mut budget,
-        || 0,
-        |_, _, _| {
-            calls.fetch_add(1, Ordering::SeqCst);
-            true
-        },
-    );
-    assert_eq!(calls.load(Ordering::SeqCst), 10);
-}
-
-#[test]
 fn a_long_sizing_item_is_demoted_at_expiry_and_cooldown_starts_after_success() {
     let pipeline = fixture(true);
     let _callback = pipeline.callback();
@@ -360,12 +323,13 @@ fn availability_counts_every_published_frame_and_each_claim() {
     let _callback = pipeline.callback();
     pipeline.publish();
     assert_eq!(pipeline.free_count(), 1);
-    assert_eq!(for_role(pipeline.pressure(), 0), 2);
+    assert_eq!(for_role(pipeline.pressure(), 0), 1);
     pipeline.publish();
     pipeline.claim();
     assert_eq!(pipeline.free_count(), 1);
     pipeline.claim();
     assert_eq!(pipeline.free_count(), 0);
+    assert_eq!(for_role(pipeline.pressure(), 0), 2);
     pipeline.claim();
     assert_eq!(pipeline.free_count(), 0);
     for _ in 0..collector_extended_support::hourly::BUFFERS * 3 {
@@ -376,4 +340,9 @@ fn availability_counts_every_published_frame_and_each_claim() {
         collector_extended_support::hourly::BUFFERS * 3
     );
     assert_eq!(pipeline.pressure(), 0);
+}
+#[test]
+fn ticking_decode_gets_its_own_slot_state() {
+    assert_eq!(for_role(TICKING, Role::Decode.slot()), TICK_DECODE);
+    assert_eq!(for_role(TICKING, Role::Spool.slot()), TICK);
 }

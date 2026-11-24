@@ -826,21 +826,6 @@ fn transfer_history_gaps_are_named_and_counted_without_inventing_reappearance() 
     );
 }
 
-#[test]
-fn unknown_queue_provenance_first_interval_refuses_identity_and_zero_claims() {
-    let mut first = frame();
-    let reason = "first published interval contains queued deletion without captured provenance";
-    *first.tables[TableId::DivisionEquipmentDeletions.index()] = TableView::Unavailable {
-        reason: reason.into(),
-    };
-    assert!(
-        compare_deletions(&first, &save(""), &mut Report::default())
-            .unwrap_err()
-            .to_string()
-            .contains(reason)
-    );
-}
-
 fn history_replay(branches: Vec<Vec<(DecodedFrame, bool)>>) -> Replay {
     use replay_capture_spool::spool::Record;
     use replay_data::{

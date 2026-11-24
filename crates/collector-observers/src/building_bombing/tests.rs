@@ -492,55 +492,6 @@ fn assembly_wrapper_has_real_unwind_metadata_for_native_call_stack() {
 }
 
 #[test]
-#[ignore = "synthetic production guarded pre/post callback timing; run release --ignored --nocapture"]
-fn building_bombing_scale_bench() {
-    let _owner = ObservationOwner::new();
-    let mut world = World::new(false);
-    for countries in [1500, 5000] {
-        let mut samples = Vec::new();
-        let mut drains = Vec::new();
-        for _ in 0..21 {
-            setup(countries, world.base);
-            ready();
-            let mut elapsed = std::time::Duration::ZERO;
-            for country in 1..=countries {
-                world.health(2, 4_000_000);
-                world.dword(WING + cair_wing::COUNTRY_OVERRIDE, country as u32);
-                let started = Instant::now();
-                let token = world.pre(world.at(SOURCE), 1, native::Cause::AirMission);
-                elapsed += started.elapsed();
-                world.health(1, 0);
-                world.word(OUTPUT, 1);
-                let started = Instant::now();
-                world.post(token);
-                elapsed += started.elapsed();
-            }
-            unsafe { boundary(clock(3, 4)) };
-            let mut output = vec![Entry::default(); countries];
-            let started = Instant::now();
-            assert_eq!(unsafe { drain(&mut output) }.unwrap(), countries);
-            drains.push(started.elapsed().as_secs_f64() * 1e6);
-            assert_eq!(output.last().unwrap().attacker, Some(countries as u32));
-            assert_eq!(LEDGER.lost_events.load(Ordering::Relaxed), 0);
-            black_box(&output);
-            samples.push(elapsed.as_secs_f64() * 1e6);
-        }
-        samples.sort_by(f64::total_cmp);
-        drains.sort_by(f64::total_cmp);
-        eprintln!(
-            "building bombing countries={countries} events={countries} callback_us p50={:.1} p95={:.1} drain_us p50={:.1} p95={:.1} event_bytes={} writer_ticks={} max_hour_writer_ticks={}",
-            samples[10],
-            samples[19],
-            drains[10],
-            drains[19],
-            std::mem::size_of::<Entry>(),
-            WRITER_TICKS.load(Ordering::Relaxed),
-            MAX_HOUR_TICKS.load(Ordering::Relaxed)
-        );
-    }
-}
-
-#[test]
 fn game_root_change_refuses_the_event_and_withholds_the_interval() {
     let _owner = ObservationOwner::new();
     let mut world = World::new(false);

@@ -341,7 +341,7 @@ impl LeaderCache {
         } else {
             self.current.clear();
         }
-        self.previous.clear();
+        self.previous = Held::default();
         collector_observers::character_changes::record(Table::CountryLeaderRoles, &self.counts);
     }
 

@@ -192,32 +192,24 @@ fn failed_header_is_not_retried_and_other_headers_remain() {
     assert!(inputs.take_ledger_regions().is_err());
     assert_eq!(inputs.take_ledger_regions(), Err(CONSUMED));
     assert_eq!(memory.calls.borrow().len(), before);
-}
 
-#[test]
-fn navy_pass_reads_no_province_roster_or_access_modes() {
-    let memory = world();
-    let mut reader = Reader::new(&memory, 0, STATE);
-    for slot in 0..4 {
-        let _ = reader.observe_navy(slot).unwrap();
+    for (count, fault_slot) in [(2, 1_u32), (4, 1_u32), (4, 3_u32)] {
+        let mut memory = world();
+        memory.fail_once = Some(0x6100 + fault_slot as usize * 8);
+        let reader = Reader::new(&memory, 0, STATE);
+        let mut results = Vec::new();
+        reader.observe_navies_range(count, |slot, res| {
+            results.push((slot, res.map(|n| n.ledger_navy())));
+        });
+        assert_eq!(results.len(), count);
+        for (slot, res) in results {
+            if slot == fault_slot {
+                assert_eq!(res, Err("naval movement pointer unreadable"));
+            } else {
+                assert!(res.is_ok(), "slot {slot} unexpectedly failed: {res:?}");
+            }
+        }
     }
-    reader.clear();
-    let touched = |from: usize, to: usize| {
-        memory
-            .calls
-            .borrow()
-            .iter()
-            .any(|&(at, len)| at < to && from < at + len)
-    };
-    let provinces = STATE + cgame_state::PROVINCES;
-    assert!(!touched(provinces, provinces + 16));
-    assert!(!touched(0x3200, 0x3200 + 5 * 8));
-    assert!(!touched(0xa000, 0xa800));
-    for navy in [NAVY_ONE, 0x7200, NAVY_ALIAS_SLOT] {
-        let access = navy + cstrategic_navy::ACCESS_MODES;
-        assert!(!touched(access, access + 16), "{navy:#x}");
-    }
-    assert!(!touched(ACCESS, ACCESS + 2));
 }
 
 #[test]

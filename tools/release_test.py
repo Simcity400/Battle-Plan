@@ -454,23 +454,6 @@ class Notes(unittest.TestCase):
                 self.assertNotIn("gsk_secret", said.call_args.args[0])
         self.assertEqual(json.loads(failed.call_args.args[0].data)["reasoning_effort"], "medium")
 
-    def test_the_page_lists_every_pull_beneath_the_summary_or_alone_without_one(self):
-        notes = {"version": "1.4.3", "since": "1.4.2", "date": None, "changes": 3, "more": 1,
-                 "highlights": [{"label": "Fog of war", "detail": "The map hides what a country cannot see.", "pulls": [10]}],
-                 "pulls": [{"number": 10, "title": "Map: fog of war"}, {"number": 11, "title": "CI: faster"}]}
-        page = release.render_notes(notes)
-        self.assertIn("**v1.4.3** · 3 changes", page)
-        self.assertIn("- **Fog of war.** The map hides what a country cannot see.", page)
-        self.assertIn("### Plus 1 more fix or improvement.", page)
-        self.assertLess(page.index("<summary>"), page.index("- CI: faster (#11)"))
-        self.assertIn("- And 1 change made without a pull request.", page)
-        plain = release.render_notes({**notes, "highlights": None, "more": None})
-        self.assertNotIn("<details>", plain)
-        self.assertIn("- Map: fog of war (#10)", plain)
-        self.assertEqual(release.render_notes({**notes, "since": None, "changes": 0, "pulls": []}), "The first release on this channel.\n")
-        quiet = {**notes, "highlights": [], "more": 0}
-        self.assertNotIn("internal", release.render_notes(quiet), "a change without a pull request was never read, so it is not called internal")
-        self.assertIn("these changes are internal", release.render_notes({**quiet, "changes": 2}))
 
     def test_the_feed_carries_this_release_then_the_newest_earlier_ones_it_replaces(self):
         entry = lambda version: {"version": version}

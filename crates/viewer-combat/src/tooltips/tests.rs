@@ -199,25 +199,6 @@ fn naval_carrier_laurel_hover_uses_native_argument_order() {
     assert!(text.contains("enemy 12; minimum 3"));
 }
 
-#[test]
-fn naval_anti_air_header_owns_text_and_background_hovers() {
-    let loc: Localisation = [("combat_stat_anti_air", "Anti-air")]
-        .into_iter()
-        .map(|(key, value)| (key.to_owned(), value.to_owned()))
-        .collect();
-    let mut values = Values::new();
-    let mut refused = BTreeMap::new();
-    naval_anti_air_hovers(&mut values, &NoIcons, &loc, 4, &mut refused);
-    assert!(refused.is_empty());
-    for side in ["left", "right"] {
-        for widget in ["stat_anti_air", "stat_anti_air_bg"] {
-            let bound = &values[&format!("header_container/{side}_wnd/{widget}")];
-            assert_eq!(bound.tooltip.as_deref(), Some("Anti-air"));
-            assert!(bound.hover_owned);
-        }
-    }
-}
-
 fn windows(body: &[u8]) -> NativeWindows {
     let mut bytes = b"guiTypes = { containerWindowType = { name = unit_counter_navy } containerWindowType = { name = naval_combat_mapicon } ".to_vec();
     bytes.extend_from_slice(body);

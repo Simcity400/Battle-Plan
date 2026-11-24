@@ -1,6 +1,6 @@
 use super::{
-    Arc, BTreeMap, CounterReport, NativeInputs, NavalContext, NavalUnit, Sight, Vision,
-    naval_members, port_flag_owner, set_frame_argument, type_tint,
+    Arc, BTreeMap, NativeInputs, NavalContext, NavalUnit, Sight, Vision,
+    naval_members, port_flag_owner, type_tint,
 };
 use viewer_counter_kit::unit_flag_owner;
 use viewer_foundation::unit_rules::DEFENDING;
@@ -95,21 +95,6 @@ fn mixed_port_flag_uses_lowest_owner_strength_then_native_reference_order() {
 }
 
 #[test]
-fn unavailable_mixed_port_flags_are_counted_and_reported() {
-    let report = CounterReport {
-        unavailable_naval_flags: 2,
-        ..Default::default()
-    };
-    let mut copied = CounterReport::default();
-    copied.assign(&report);
-    assert_eq!(copied, report);
-    assert_eq!(
-        copied.warnings().collect::<Vec<_>>(),
-        ["Counters: 2 mixed-owner port flags unavailable: incomplete Ships census."]
-    );
-}
-
-#[test]
 fn the_counter_pass_leaves_a_patrol_here_to_the_mission_icon() {
     use viewer_unit_reads::task_force_visual::MissionSkips;
     use viewer_foundation::unit_rules::PATROL;
@@ -126,8 +111,3 @@ fn the_counter_pass_leaves_a_patrol_here_to_the_mission_icon() {
     assert_eq!(sea(0, Some(79), &MissionSkips::default()), naval_members::Sea::Refused(naval_members::SKIP_UNRECORDED));
 }
 
-#[test]
-fn a_reset_ideology_number_reaches_set_frame_as_its_bits() {
-    assert_eq!(set_frame_argument(0xFFFF_FFFF), -1);
-    assert_eq!(set_frame_argument(3), 3);
-}

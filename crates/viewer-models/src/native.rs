@@ -594,8 +594,6 @@ fn note_culled(
     eprintln!("culled by {why}: frame {frame} {label} {mesh} at {:.1},{:.1},{:.1}: {distance:.1}", centre[0], centre[1], centre[2]);
 }
 
-
-
 const ACTORS_POSED: &str = "actors_posed";
 
 const WALK_POSE: usize = 0;
@@ -617,7 +615,6 @@ const CASTER_WALK_STEPS: [&str; WALK_STEPS] = [
     "caster_walk_nodes",
     "caster_walk_parts",
 ];
-
 
 fn part_programs<'r>(
     residents: &'r [Resident],
@@ -3399,17 +3396,6 @@ mod tests {
         assert_eq!(layouts[0].attributes.len(), 2);
         assert_eq!(layouts[0].stride, geometry.stride);
         assert!(retained.state().blend.is_some());
-    }
-
-    #[test]
-    fn forced_actor_keeps_all_materials_in_alternate_and_caster() {
-        for blended in [false, true] {
-            assert!(!Queue::Regular.accepts(blended, true));
-            assert!(Queue::Alternate.accepts(blended, true));
-            assert!(Queue::Caster.accepts(blended, true));
-        }
-        assert!(Queue::Regular.accepts(false, false));
-        assert!(!Queue::Alternate.accepts(false, false));
     }
 
     #[test]

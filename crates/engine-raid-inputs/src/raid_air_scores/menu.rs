@@ -1,4 +1,4 @@
-use super::{BATCH, Memory, RecordField, RecordLayout, field};
+use super::{BATCH, FULL_ENTRY, Memory, RecordField, RecordLayout, field};
 pub use game_model::air_power::{Contribution, Menu};
 use engine_allocation as allocation;
 use engine_native_memory::{
@@ -10,9 +10,7 @@ use std::sync::Arc;
 
 const COVERAGE: usize = 0x10;
 const REDUCTIONS: usize = 0x30;
-const FIELDS: [RecordField; 2] = [field(COVERAGE, 0, 8), field(REDUCTIONS, 8, 64)];
-const LAYOUT: RecordLayout<'static> =
-    RecordLayout::new(&FIELDS, 72).expect("valid air power menu layout");
+const MAP_HEADERS: usize = REDUCTIONS + 32;
 const SENTINEL_FIELDS: [RecordField; 1] = [field(0, 0, 26)];
 const SENTINEL_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&SENTINEL_FIELDS, 26).expect("valid air power map sentinel layout");
@@ -32,10 +30,40 @@ struct Pending {
     contribution: Contribution,
 }
 
+pub(super) struct BatchBuffers {
+    pub(super) addresses: [usize; BATCH],
+    pub(super) full: [u8; BATCH * FULL_ENTRY],
+    pub(super) scales: [Option<i64>; BATCH],
+    pub(super) menu_ok: [bool; BATCH],
+    heads: [usize; BATCH * 2],
+    gathered: [usize; BATCH * 2],
+    sentinels: [u8; BATCH * 2 * 26],
+    valid: [bool; BATCH * 2],
+    pub(super) active: [usize; BATCH],
+}
+
+impl Default for BatchBuffers {
+    fn default() -> Self {
+        Self {
+            addresses: [0; BATCH],
+            full: [0; BATCH * FULL_ENTRY],
+            scales: [None; BATCH],
+            menu_ok: [false; BATCH],
+            heads: [0; BATCH * 2],
+            gathered: [usize::MAX; BATCH * 2],
+            sentinels: [0; BATCH * 2 * 26],
+            valid: [false; BATCH * 2],
+            active: [0; BATCH],
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Scratch {
     contributions: [Vec<Contribution>; 2],
     stack: Vec<Pending>,
+    buffers: Option<Box<BatchBuffers>>,
+    reads: Vec<Read>,
 }
 
 impl Scratch {
@@ -45,100 +73,147 @@ impl Scratch {
             .map(|rows| rows.capacity() * size_of::<Contribution>())
             .sum::<usize>()
             + self.stack.capacity() * size_of::<Pending>()
+            + self
+                .buffers
+                .as_ref()
+                .map_or(0, |_| size_of::<BatchBuffers>())
+            + self.reads.capacity() * size_of::<Read>()
+    }
+
+    pub(super) fn buffers(&mut self) -> &mut BatchBuffers {
+        self.buffers
+            .get_or_insert_with(|| Box::new(BatchBuffers::default()))
+    }
+
+    pub(super) fn take_reads(&mut self) -> Vec<Read> {
+        let mut reads = std::mem::take(&mut self.reads);
+        reads.clear();
+        reads
+    }
+
+    pub(super) fn return_reads(&mut self, mut reads: Vec<Read>) {
+        reads.clear();
+        self.reads = reads;
     }
 }
 
-pub(super) fn read(
+pub(super) fn read_selected_entries(
     memory: &impl Memory,
-    addresses: &[usize],
+    stride: usize,
+    active_len: usize,
+    all_menus: bool,
     held: &[Option<&Arc<Menu>>],
     scratch: &mut Scratch,
-) -> [Read; BATCH] {
-    let mut bytes = [0_u8; BATCH * 72];
-    let mut complete = [false; BATCH];
-    gather_records(
-        memory,
-        addresses,
-        &LAYOUT,
-        &mut bytes[..addresses.len() * 72],
-        &mut complete[..addresses.len()],
-    );
-    let mut heads = [0_usize; BATCH * 2];
-    let mut gathered = [usize::MAX; BATCH * 2];
+    out: &mut Vec<Read>,
+) {
+    out.clear();
+    if active_len == 0 {
+        return;
+    }
+    let Scratch {
+        contributions,
+        stack,
+        buffers,
+        ..
+    } = scratch;
+    let buffers = buffers.get_or_insert_with(|| Box::new(BatchBuffers::default()));
     let mut nonempty = 0;
-    for index in 0..addresses.len() {
-        if !complete[index] {
+    for pos in 0..active_len {
+        let index = buffers.active[pos];
+        buffers.gathered[pos * 2] = usize::MAX;
+        buffers.gathered[pos * 2 + 1] = usize::MAX;
+        if !all_menus && !buffers.menu_ok[index] {
             continue;
         }
+        let base = index * stride + MAP_HEADERS;
         for side in 0..2 {
-            let at = index * 72 + 40 + side * 16;
-            if let Ok((head, count)) = node::Cursor::header(bytes[at..at + 16].try_into().unwrap())
-                && count != 0
+            let at = base + side * 16;
+            if let Ok((head, map_count)) =
+                node::Cursor::header(buffers.full[at..at + 16].try_into().unwrap())
+                && map_count != 0
             {
-                gathered[index * 2 + side] = nonempty;
-                heads[nonempty] = head;
+                buffers.gathered[pos * 2 + side] = nonempty;
+                buffers.heads[nonempty] = head;
                 nonempty += 1;
             }
         }
     }
-    let mut sentinels = [0_u8; BATCH * 2 * 26];
-    let mut valid = [false; BATCH * 2];
     if nonempty != 0 {
+        buffers.valid[..nonempty].fill(false);
         gather_records(
             memory,
-            &heads[..nonempty],
+            &buffers.heads[..nonempty],
             &SENTINEL_LAYOUT,
-            &mut sentinels[..nonempty * 26],
-            &mut valid[..nonempty],
+            &mut buffers.sentinels[..nonempty * 26],
+            &mut buffers.valid[..nonempty],
         );
     }
-    let sentinel = |map: usize| -> Result<Option<[u8; 26]>, ()> {
-        match gathered[map] {
-            usize::MAX => Ok(None),
-            at if valid[at] => Ok(Some(sentinels[at * 26..(at + 1) * 26].try_into().unwrap())),
-            _ => Err(()),
+    out.reserve(active_len);
+    for pos in 0..active_len {
+        let index = buffers.active[pos];
+        if !all_menus && !buffers.menu_ok[index] {
+            out.push(Read::Unavailable);
+            continue;
         }
-    };
-    std::array::from_fn(|index| {
-        if index >= addresses.len() || !complete[index] {
-            return Read::Unavailable;
-        }
-        let (Ok(first), Ok(second)) = (sentinel(index * 2), sentinel(index * 2 + 1)) else {
-            return Read::Unavailable;
+        let sentinel = |map: usize| -> Result<Option<[u8; 26]>, ()> {
+            match buffers.gathered[map] {
+                usize::MAX => Ok(None),
+                at if buffers.valid[at] => Ok(Some(
+                    buffers.sentinels[at * 26..(at + 1) * 26].try_into().unwrap(),
+                )),
+                _ => Err(()),
+            }
         };
-        decode(
+        let (Ok(first), Ok(second)) = (sentinel(pos * 2), sentinel(pos * 2 + 1)) else {
+            out.push(Read::Unavailable);
+            continue;
+        };
+        let entry = &buffers.full[index * stride..(index + 1) * stride];
+        let coverage = i64::from_le_bytes(entry[COVERAGE..COVERAGE + 8].try_into().unwrap());
+        let reductions = std::array::from_fn(|i| {
+            i64::from_le_bytes(
+                entry[REDUCTIONS + i * 8..REDUCTIONS + (i + 1) * 8]
+                    .try_into()
+                    .unwrap(),
+            )
+        });
+        let headers = [
+            entry[MAP_HEADERS..MAP_HEADERS + 16].try_into().unwrap(),
+            entry[MAP_HEADERS + 16..MAP_HEADERS + 32]
+                .try_into()
+                .unwrap(),
+        ];
+        let read = decode_parts(
             memory,
-            &bytes[index * 72..(index + 1) * 72],
+            coverage,
+            reductions,
+            headers,
             [first, second],
-            held.get(index).copied().flatten(),
-            scratch,
+            held.get(pos).copied().flatten(),
+            contributions,
+            stack,
         )
-        .unwrap_or(Read::Unavailable)
-    })
+        .unwrap_or(Read::Unavailable);
+        out.push(read);
+    }
 }
 
-fn decode(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "borrows split scratch buffers alongside decoded entry header parts"
+)]
+fn decode_parts(
     memory: &impl Memory,
-    bytes: &[u8],
+    coverage: i64,
+    reductions: [i64; 4],
+    headers: [[u8; 16]; 2],
     sentinels: [Option<[u8; 26]>; 2],
     held: Option<&Arc<Menu>>,
-    scratch: &mut Scratch,
+    contributions: &mut [Vec<Contribution>; 2],
+    stack: &mut Vec<Pending>,
 ) -> Result<Read, &'static str> {
-    let value = |at| i64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
-    let coverage = value(0);
-    let reductions: [i64; 4] = std::array::from_fn(|index| value(8 + index * 8));
-    let Scratch {
-        contributions,
-        stack,
-    } = scratch;
     for (side, rows) in contributions.iter_mut().enumerate() {
-        read_map(
-            memory,
-            bytes[40 + side * 16..56 + side * 16].try_into().unwrap(),
-            sentinels[side],
-            stack,
-            rows,
-        )?;
+        read_map(memory, headers[side], sentinels[side], stack, rows)?;
     }
     if let Some(held) = held
         && held.coverage == coverage

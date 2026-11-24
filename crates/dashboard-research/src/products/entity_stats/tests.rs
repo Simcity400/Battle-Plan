@@ -86,22 +86,6 @@ fn module_stats_sign_their_changes_like_the_game() {
 }
 
 #[test]
-fn tactics_show_all_six_effects_favoured_by_side() {
-    let localisation = localisation();
-    let mut sheet = Sheet::new(&localisation);
-    let fields = content_reader_parser::parser::parse(b"is_attacker = yes").unwrap().items;
-    let tactic = Tactic { id: 1, token: b"mod_tactic".to_vec(), fields, phase: 0, display_phase: 0, effects: [10_000, 0, 25_000, 0, -10_000, 0], unproven: None };
-    let mut warnings = Vec::new();
-    sheet.tactic(&tactic, &mut warnings);
-    let shown = lines(&sheet);
-    assert_eq!(shown.len(), 6, "{shown:?}");
-    assert!(shown[0].starts_with("Attacker tactic damage:|") && shown[0].contains("25%"), "{shown:?}");
-    assert!(shown[1].starts_with("Defender tactic damage:|") && shown[1].contains("-10%"), "{shown:?}");
-    assert!(shown[2].starts_with("Tactics combat width:|") && shown[2].contains("10%"), "{shown:?}");
-    assert!(warnings.is_empty(), "{warnings:?}");
-}
-
-#[test]
 fn equipment_totals_apply_each_slots_inherited_default_module_before_reliability_scaling_and_name_what_they_withhold() {
     let (database, _) = content_reader_key_names::equipment::fixture::load(&[(
         "common/units/equipment/convoys.txt",

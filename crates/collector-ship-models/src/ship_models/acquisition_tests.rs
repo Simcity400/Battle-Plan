@@ -328,7 +328,12 @@ fn an_empty_modifier_arena_grows_in_the_pass_and_keeps_current_values() {
         capture.allocated_bytes(),
         capture.rows.allocated_bytes()
             + capture.seeds.capacity() * std::mem::size_of::<Seed>()
+            + capture.row_versions.capacity() * std::mem::size_of::<u64>()
             + capture.modifiers.borrow().allocated_bytes()
+            + capture.model.allocated_bytes()
+            + capture.store.allocated_bytes()
+            + capture.air_capacity.allocated_bytes()
+            + capture.naval_power.allocated_bytes()
             + capture
                 .extra
                 .iter()
@@ -882,6 +887,77 @@ struct Fleet {
     hits: Cell<usize>,
 }
 
+#[test]
+fn ship_model_details_equal_the_direct_readers_in_under_half_their_guarded_calls() {
+    let world = Fleet::new();
+    let mut capture = Captured::with_capacities(&Capacities {
+        rows: fleet::SHIPS,
+        modifiers: SnapshotCapacity {
+            nodes: 64,
+            entries: 64,
+        },
+    });
+    capture.begin_sources();
+    for index in 0..fleet::SHIPS {
+        capture.visit_source(fleet::ship(index), &fleet::census(index));
+    }
+    capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
+    capture.capture_owned(&world, CaptureContext::new(fleet::IMAGE));
+    assert_eq!(capture.outcomes(), [Outcome::Rows { len: fleet::SHIPS }]);
+    let gathered = world.calls.replace(0);
+    let mut direct = Captured::part(&capacities(64, 64));
+    direct.begin_details();
+    let mut rows = Vec::new();
+    for index in 0..fleet::SHIPS {
+        let ship = fleet::ship(index);
+        let census = fleet::census(index);
+        let (mut row, selected) = {
+            let memory = ModifierMemory {
+                inner: &world,
+                arena: &direct.modifiers,
+                held_task: None,
+            };
+            let (mut row, selected) = cship::read_model_with_selection(
+                &memory,
+                fleet::IMAGE,
+                ship,
+                &census,
+                &mut direct.model,
+            )
+            .unwrap();
+            row.maximum_organisation = cship::read_maximum_organisation_memo(
+                &memory,
+                fleet::IMAGE,
+                ship,
+                &mut direct.doctrine,
+            )
+            .unwrap();
+            row.has_criticals = direct
+                .doctrine
+                .organisation_operands(ship)
+                .map(|own| u32::from(own.has_criticals()));
+            (row, selected)
+        };
+        direct.capture_model_suffixes(
+            &world,
+            fleet::IMAGE,
+            ship,
+            &census,
+            selected.as_ref(),
+            &mut row,
+        );
+        rows.push(row);
+    }
+    let read = world.calls.get();
+    assert_eq!(capture.rows.rows[..fleet::SHIPS], rows[..]);
+    assert_eq!(rows[11].maximum_organisation, 11_100_000);
+    assert_eq!(rows[2].subunit_index, Some(2));
+    assert!(
+        gathered * 2 < read,
+        "{gathered} guarded calls through gathered fields, {read} directly"
+    );
+}
+
 impl Fleet {
     fn new() -> Self {
         Self::with_ships(fleet::SHIPS)
@@ -962,77 +1038,6 @@ impl Memory for Fleet {
         self.calls.set(calls);
         completed
     }
-}
-
-#[test]
-fn ship_model_details_equal_the_direct_readers_in_under_half_their_guarded_calls() {
-    let world = Fleet::new();
-    let mut capture = Captured::with_capacities(&Capacities {
-        rows: fleet::SHIPS,
-        modifiers: SnapshotCapacity {
-            nodes: 64,
-            entries: 64,
-        },
-    });
-    capture.begin_sources();
-    for index in 0..fleet::SHIPS {
-        capture.visit_source(fleet::ship(index), &fleet::census(index));
-    }
-    capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
-    capture.capture_owned(&world, CaptureContext::new(fleet::IMAGE));
-    assert_eq!(capture.outcomes(), [Outcome::Rows { len: fleet::SHIPS }]);
-    let gathered = world.calls.replace(0);
-    let mut direct = Captured::part(&capacities(64, 64));
-    direct.begin_details();
-    let mut rows = Vec::new();
-    for index in 0..fleet::SHIPS {
-        let ship = fleet::ship(index);
-        let census = fleet::census(index);
-        let (mut row, selected) = {
-            let memory = ModifierMemory {
-                inner: &world,
-                arena: &direct.modifiers,
-                held_task: None,
-            };
-            let (mut row, selected) = cship::read_model_with_selection(
-                &memory,
-                fleet::IMAGE,
-                ship,
-                &census,
-                &mut direct.model,
-            )
-            .unwrap();
-            row.maximum_organisation = cship::read_maximum_organisation_memo(
-                &memory,
-                fleet::IMAGE,
-                ship,
-                &mut direct.doctrine,
-            )
-            .unwrap();
-            row.has_criticals = direct
-                .doctrine
-                .organisation_operands(ship)
-                .map(|own| u32::from(own.has_criticals()));
-            (row, selected)
-        };
-        direct.capture_model_suffixes(
-            &world,
-            fleet::IMAGE,
-            ship,
-            &census,
-            selected.as_ref(),
-            &mut row,
-        );
-        rows.push(row);
-    }
-    let read = world.calls.get();
-    assert_eq!(capture.rows.rows[..fleet::SHIPS], rows[..]);
-    assert_eq!(rows[11].maximum_organisation, 11_100_000);
-    assert_eq!(rows[2].subunit_index, Some(2));
-    assert!(
-        gathered * 2 < read,
-        "{gathered} guarded calls through gathered fields, {read} directly"
-    );
 }
 
 #[test]
@@ -1155,12 +1160,14 @@ fn held_fleet_terms_follow_the_leader_binding_and_tree_certificates() {
     let world = Fleet::new();
     let task = cship::TaskForceFields {
         pointer: TASK,
+        vtable: 0,
         handle: 7,
         roster_owner: 1,
         location: 0,
         fleet: FLEET,
         mine_exposure: 0,
         modifiers: TASK + 0x668,
+        influences_count: Some(0),
     };
     let certificate = || {
         (
@@ -1199,6 +1206,7 @@ fn held_fleet_terms_follow_the_leader_binding_and_tree_certificates() {
             terms: None,
             terms_identity: 0,
             quiet: None,
+            variant_quiet: None,
             guard_fallback: false,
             revalidated: false,
         };
@@ -1620,222 +1628,16 @@ fn held_country_terms_are_not_read_again() {
     assert!(world.hits.get() > 0, "a touched country is read again");
 }
 
-#[test]
-#[ignore]
-fn ship_model_compute_bench() {
-    use crate::ship_model_changes::Watches;
-    const HOURS: usize = 200;
-    const SHIPS: usize = 2048;
-    for (label, per_task, afresh, model_carry, touched) in [
-        ("read afresh", 1024, true, true, false),
-        ("rows carried", 1024, false, true, false),
-        ("three per task force, read afresh", 3, true, true, false),
-        ("three per task force, rows carried", 3, false, true, false),
-        (
-            "three per task force, no model carry",
-            3,
-            false,
-            false,
-            false,
-        ),
-        (
-            "three per task force, every ship touched",
-            3,
-            false,
-            true,
-            true,
-        ),
-    ] {
-        let world = Fleet::in_tasks(SHIPS, per_task);
-        let census: Vec<_> = (0..SHIPS)
-            .map(|index| fleet::census_in(index, per_task))
-            .collect();
-        let watches = Watches::enabled(4 * SHIPS);
-        let mut capture = Captured::with_capacities(&Capacities {
-            rows: SHIPS,
-            modifiers: SnapshotCapacity {
-                nodes: 4 * SHIPS,
-                entries: 4 * SHIPS,
-            },
-        });
-        super::MODEL_CARRY_OFF.set(!model_carry);
-        let mut samples: Vec<f64> = (0..HOURS)
-            .map(|_| {
-                capture.begin_sources();
-                for (index, source) in census.iter().enumerate() {
-                    capture.visit_source(fleet::ship(index), source);
-                }
-                capture.finish_sources(Outcome::Rows { len: SHIPS });
-                if touched {
-                    for index in 0..SHIPS {
-                        drop(watches.notify(fleet::ship(index), 0));
-                    }
-                }
-                if afresh {
-                    capture.forget_stores();
-                }
-                let started = std::time::Instant::now();
-                capture.capture_carrying(&world, CaptureContext::new(fleet::IMAGE), &watches);
-                assert_eq!(capture.outcomes(), [Outcome::Rows { len: SHIPS }]);
-                started.elapsed().as_nanos() as f64 / SHIPS as f64
-            })
-            .collect();
-        super::MODEL_CARRY_OFF.set(false);
-        samples.sort_by(f64::total_cmp);
-        println!(
-            "BENCH ship models, {label}: median {:.0} ns per ship",
-            samples[HOURS / 2]
-        );
-    }
-}
-
-#[test]
-#[ignore]
-fn ship_model_phase_bench() {
-    const HOURS: usize = 200;
-    const SHIPS: usize = 2048;
-    let world = Fleet::with_ships(SHIPS);
-    let census: Vec<_> = (0..SHIPS).map(fleet::census).collect();
-    let median = |mut samples: Vec<f64>| {
-        samples.sort_by(f64::total_cmp);
-        samples[samples.len() / 2]
-    };
-    let mut direct = Captured::part(&capacities(4 * SHIPS, 4 * SHIPS));
-    let mut phase = |depth: u8| {
-        median(
-            (0..HOURS)
-                .map(|_| {
-                    direct.begin_details();
-                    let mut fields = cship::ShipFields::new(fleet::IMAGE);
-                    let started = std::time::Instant::now();
-                    for (index, source) in census.iter().enumerate() {
-                        let ship = fleet::ship(index);
-                        fields.visit(&world, ship);
-                        if depth == 0 {
-                            continue;
-                        }
-                        let gathered = fields.memory(&world);
-                        let memory = ModifierMemory {
-                            inner: &gathered,
-                            arena: &direct.modifiers,
-                            held_task: None,
-                        };
-                        let model = cship::read_model_with_selection(
-                            &memory,
-                            fleet::IMAGE,
-                            ship,
-                            source,
-                            &mut direct.model,
-                        );
-                        assert!(model.is_ok());
-                        if depth == 2 {
-                            assert!(
-                                cship::read_maximum_organisation_memo(
-                                    &memory,
-                                    fleet::IMAGE,
-                                    ship,
-                                    &mut direct.doctrine,
-                                )
-                                .is_ok()
-                            );
-                        }
-                    }
-                    started.elapsed().as_nanos() as f64 / SHIPS as f64
-                })
-                .collect(),
-        )
-    };
-    let gather = phase(0);
-    let model = phase(1);
-    let organisation = phase(2);
-    let mut capture = Captured::with_capacities(&Capacities {
-        rows: SHIPS,
-        modifiers: SnapshotCapacity {
-            nodes: 4 * SHIPS,
-            entries: 4 * SHIPS,
-        },
-    });
-    let whole = median(
-        (0..HOURS)
-            .map(|_| {
-                capture.begin_sources();
-                for (index, source) in census.iter().enumerate() {
-                    capture.visit_source(fleet::ship(index), source);
-                }
-                capture.finish_sources(Outcome::Rows { len: SHIPS });
-                let started = std::time::Instant::now();
-                capture.capture_owned(&world, CaptureContext::new(fleet::IMAGE));
-                started.elapsed().as_nanos() as f64 / SHIPS as f64
-            })
-            .collect(),
-    );
-    println!(
-        "BENCH ship model phases, ns per ship: gather {gather:.0}, + model reader {model:.0}, + organisation reader {organisation:.0}, whole capture without a store {whole:.0}"
-    );
-}
-
-#[test]
-#[ignore]
-fn ship_model_quiet_bench() {
-    use crate::ship_model_changes::{Changes, Watches};
-    const HOURS: usize = 200;
-    const SHIPS: usize = 2048;
-    let world = Fleet::in_tasks(SHIPS, 3);
-    let census: Vec<_> = (0..SHIPS).map(|index| fleet::census_in(index, 3)).collect();
-    let watches = Watches::enabled(4 * SHIPS);
-    let mut capture = Captured::with_capacities(&Capacities {
-        rows: SHIPS,
-        modifiers: SnapshotCapacity {
-            nodes: 4 * SHIPS,
-            entries: 4 * SHIPS,
-        },
-    });
-    let median = |mut samples: Vec<f64>| {
-        samples.sort_by(f64::total_cmp);
-        samples[samples.len() / 2]
-    };
-    let per_ship = |started: std::time::Instant| started.elapsed().as_nanos() as f64 / SHIPS as f64;
-    let (mut census_ns, mut capture_ns, mut certificate_ns) = (Vec::new(), Vec::new(), Vec::new());
-    for _ in 0..HOURS {
-        let started = std::time::Instant::now();
-        capture.begin_sources();
-        for (index, source) in census.iter().enumerate() {
-            capture.visit_source(fleet::ship(index), source);
-        }
-        capture.finish_sources(Outcome::Rows { len: SHIPS });
-        census_ns.push(per_ship(started));
-        let started = std::time::Instant::now();
-        capture.capture_carrying(&world, CaptureContext::new(fleet::IMAGE), &watches);
-        capture_ns.push(per_ship(started));
-        let started = std::time::Instant::now();
-        for index in 0..SHIPS {
-            std::hint::black_box(watches.certificate([fleet::ship(index), 0, 0]));
-        }
-        certificate_ns.push(per_ship(started));
-    }
-    println!(
-        "BENCH ship models quiet hour, ns per ship: census {:.0}, certificate take {:.0}, capture {:.0}",
-        median(census_ns),
-        median(certificate_ns),
-        median(capture_ns)
-    );
-}
-
 mod carry_cost_bench {
     use super::*;
     use crate::ship_model_changes::Watches;
     use engine_native::{ccountry, cgame_state, cprovince, cunit, cweather_manager};
     use engine_native_parts::cterrain_type;
     use std::{
-        hint::black_box,
         sync::atomic::{AtomicUsize, Ordering},
-        time::Instant,
-    };
+        };
 
     const PER_TASK: usize = 3;
-    const SAMPLES: usize = 31;
-    const EVICTION_BYTES: usize = 128 * 1024 * 1024;
-    const MEMORY_BUDGET: usize = 2 * 1024 * 1024 * 1024;
 
     struct World {
         memory: Fleet,
@@ -1944,30 +1746,6 @@ mod carry_cost_bench {
         }
     }
 
-    struct Borrowed<'a>(&'a Fleet);
-    impl Memory for Borrowed<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.0.copy(address, output)
-        }
-
-        fn copy_scattered<const N: usize>(
-            &self,
-            addresses: [usize; N],
-            destinations: &mut [&mut [u8]; N],
-        ) -> usize {
-            self.0.copy_scattered(addresses, destinations)
-        }
-
-        fn copy_records(
-            &self,
-            sources: RecordSources<'_>,
-            layout: &RecordLayout<'_>,
-            destination: &mut [u8],
-        ) -> usize {
-            self.0.copy_records(sources, layout, destination)
-        }
-    }
-
     struct CountedChanges<'a> {
         inner: &'a Watches,
         sequences: AtomicUsize,
@@ -2009,44 +1787,6 @@ mod carry_cost_bench {
         }
     }
 
-    #[derive(Clone, Copy)]
-    enum Path {
-        Carried,
-        Moved,
-        Revalidated,
-        Fresh,
-    }
-
-    impl Path {
-        fn label(self) -> &'static str {
-            match self {
-                Self::Carried => "rows carried",
-                Self::Moved => "task force moved",
-                Self::Revalidated => "writer touched unchanged bytes",
-                Self::Fresh => "read afresh",
-            }
-        }
-
-        fn prepare(
-            self,
-            world: &mut World,
-            watches: &Watches,
-            capture: &mut Captured,
-            hour: usize,
-        ) {
-            match self {
-                Self::Moved => world.move_tasks(hour),
-                Self::Revalidated => {
-                    for index in 0..world.census.len() {
-                        drop(watches.notify(fleet::ship(index), 0));
-                    }
-                }
-                Self::Fresh => capture.forget_stores(),
-                Self::Carried => {}
-            }
-        }
-    }
-
     fn capture(ships: usize) -> Captured {
         Captured::part(&Capacities {
             rows: ships,
@@ -2055,141 +1795,6 @@ mod carry_cost_bench {
                 entries: 4 * ships,
             },
         })
-    }
-
-    fn evict(buffer: &mut [u64]) {
-        let mut total = 0_u64;
-        for word in buffer {
-            *word = word.wrapping_add(1);
-            total = total.wrapping_add(*word);
-        }
-        black_box(total);
-    }
-
-    fn median(mut samples: Vec<f64>) -> f64 {
-        samples.sort_by(f64::total_cmp);
-        samples[samples.len() / 2]
-    }
-
-    fn check_budget(world: &World, capture: &Captured, eviction: &[u64]) {
-        let owned = world.memory.low.capacity()
-            + world.census.capacity() * std::mem::size_of::<cship::Row>()
-            + world.tasks.capacity() * std::mem::size_of::<usize>()
-            + capture.allocated_bytes()
-            + std::mem::size_of_val(eviction);
-        assert!(
-            owned < MEMORY_BUDGET,
-            "ship-model benchmark exceeded two GiB: {owned}"
-        );
-    }
-
-    fn account(world: &World, capture: &mut Captured, watches: &Watches, path: Path) {
-        let changes = CountedChanges {
-            inner: watches,
-            sequences: AtomicUsize::new(0),
-            trees: AtomicUsize::new(0),
-            certificates: AtomicUsize::new(0),
-        };
-        let accounting = crate::read_accounting::Capture::new();
-        let memory = engine_native_memory::memory::CountedMemory::new(Borrowed(&world.memory));
-        capture.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &changes);
-        let reads = accounting.finish()[TableId::ShipModels.index()];
-        assert!(reads.copy_calls + reads.scattered_calls + reads.record_calls != 0);
-        assert_eq!(
-            capture.outcomes(),
-            [Outcome::Rows {
-                len: world.census.len()
-            }]
-        );
-        let ships = world.census.len() as f64;
-        println!(
-            "ACCOUNT ship models {} countries, {}: guarded calls/ship {:.2}, requested native bytes/ship {:.2}, sequence queries/ship {:.2}, tree lookups/ship {:.2}, certificate calls/ship {:.2}",
-            world.tasks.len(),
-            path.label(),
-            (reads.copy_calls + reads.scattered_calls + reads.record_calls + reads.plan_calls)
-                as f64
-                / ships,
-            reads.bytes as f64 / ships,
-            changes.sequences.load(Ordering::Relaxed) as f64 / ships,
-            changes.trees.load(Ordering::Relaxed) as f64 / ships,
-            changes.certificates.load(Ordering::Relaxed) as f64 / ships,
-        );
-        let cost = CARRY_COST.get();
-        println!(
-            "ACCOUNT carried-state operations: ship-index searches {}, cold HeldShip bytes exposed {}, organisation packet bytes read {}, cold terms bytes compared {}, variant comparisons {}, task-term comparisons {}, row clones {}; hot record {} B",
-            cost.searches,
-            cost.cold_ship_bytes,
-            cost.cold_organisation_bytes,
-            cost.cold_terms_bytes,
-            cost.variant_compares,
-            cost.terms_compares,
-            cost.row_clones,
-            std::mem::size_of::<Hot>()
-        );
-    }
-
-    fn terms_hour(memory: &impl Memory, held: &[cship::HeldShip], capture: &mut Captured) -> u128 {
-        capture.begin_details();
-        let mut fields = cship::ShipFields::new(fleet::IMAGE);
-        let mut elapsed = 0_u128;
-        for held in held {
-            let task = fields
-                .task_force_of(memory, held)
-                .expect("complete task-force gather");
-            let gathered = fields.memory(memory);
-            let memory = ModifierMemory {
-                inner: &gathered,
-                arena: &capture.modifiers,
-                held_task: None,
-            };
-            let timer = Instant::now();
-            let terms = cship::read_task_terms(&memory, fleet::IMAGE, &task, &mut capture.doctrine);
-            elapsed += timer.elapsed().as_nanos();
-            black_box(
-                terms
-                    .expect("valid task-force terms")
-                    .expect("complete task-force terms"),
-            );
-        }
-        elapsed
-    }
-
-    fn task_terms(world: &World, eviction: &mut [u64], cold: bool) {
-        let mut fields = cship::ShipFields::new(fleet::IMAGE);
-        let held: Vec<_> = (0..world.tasks.len())
-            .map(|index| {
-                fields.visit(&world.memory, fleet::ship(index * PER_TASK));
-                fields.held()
-            })
-            .collect();
-        let mut capture = capture(world.census.len());
-        let mut samples = Vec::with_capacity(SAMPLES);
-        for hour in 0..=SAMPLES {
-            if cold {
-                evict(eviction);
-            }
-            let elapsed = terms_hour(&world.memory, &held, &mut capture);
-            if hour != 0 {
-                samples.push(elapsed as f64 / world.census.len() as f64);
-            }
-            check_budget(world, &capture, eviction);
-        }
-        let outer = engine_native_memory::memory::ReadCounts::take_current();
-        let counted = engine_native_memory::memory::CountedMemory::new(Borrowed(&world.memory));
-        terms_hour(&counted, &held, &mut capture);
-        let reads = engine_native_memory::memory::ReadCounts::take_current();
-        outer.add_current();
-        let ns = median(samples);
-        println!(
-            "BENCH ship models {} countries, {} cache, task terms read: median {ns:.0} ns per ship ({:.0} ns per task force); guarded calls/task {:.2}, requested native bytes/task {:.2} (including task gathers, timers exclude gathers)",
-            world.tasks.len(),
-            if cold { "cold" } else { "warm" },
-            ns * PER_TASK as f64,
-            (reads.copy_calls + reads.scattered_calls + reads.record_calls + reads.plan_calls)
-                as f64
-                / world.tasks.len() as f64,
-            reads.bytes as f64 / world.tasks.len() as f64,
-        );
     }
 
     fn hour(world: &World, capture: &mut Captured, changes: &dyn Changes) -> Vec<cship::ModelRow> {
@@ -2211,66 +1816,6 @@ mod carry_cost_bench {
     ) -> Vec<cship::ModelRow> {
         capture.forget_stores();
         hour(world, capture, changes)
-    }
-
-    #[test]
-    fn quiet_task_arrays_share_ownership_through_roster_changes() {
-        let mut world = World::new(4);
-        let mut fields = cship::ShipFields::new(fleet::IMAGE);
-        for index in 0..world.tasks.len() {
-            fields.visit(&world.memory, fleet::ship(index * PER_TASK));
-            let task = fields.task_force().unwrap();
-            let entry = task.pointer + 0x780;
-            let offset = task.modifiers - fleet::LOW;
-            world.memory.low[offset..offset + 8].copy_from_slice(&(entry as u64).to_le_bytes());
-            world.memory.low[offset + 8..offset + 16]
-                .copy_from_slice(&0x0000_0001_0000_0001_u64.to_le_bytes());
-            let offset = entry - fleet::LOW;
-            world.memory.low[offset..offset + 4].copy_from_slice(&1_u32.to_le_bytes());
-            world.memory.low[offset + 8..offset + 16]
-                .copy_from_slice(&(index as i64 + 1).to_le_bytes());
-        }
-        let watches = Watches::enabled(4 * world.census.len());
-        let mut captured = capture(world.census.len());
-        let fresh = hour(&world, &mut captured, &watches);
-        let arrays: Vec<_> = captured
-            .store
-            .tasks
-            .iter()
-            .map(|task| {
-                (
-                    task.pointer,
-                    Arc::clone(task.modifiers.as_ref().expect("task modifiers observed")),
-                )
-            })
-            .collect();
-        for _ in 0..3 {
-            assert_eq!(hour(&world, &mut captured, &watches), fresh);
-            for (pointer, entries) in &arrays {
-                assert!(!entries.is_empty());
-                let held = captured
-                    .store
-                    .task(*pointer)
-                    .unwrap()
-                    .modifiers
-                    .as_ref()
-                    .unwrap();
-                assert!(
-                    Arc::ptr_eq(entries, held),
-                    "equal task arrays must not be copied"
-                );
-            }
-        }
-        let all = world.census.clone();
-        world.census.truncate(2 * PER_TASK);
-        let deleted = hour(&world, &mut captured, &watches);
-        assert_eq!(captured.store.tasks.len(), 2);
-        let mut direct = capture(all.len());
-        assert_eq!(deleted, fresh_hour(&world, &mut direct, &watches));
-        world.census = all;
-        let added = hour(&world, &mut captured, &watches);
-        assert_eq!(added, fresh_hour(&world, &mut direct, &watches));
-        assert_eq!(captured.store.tasks.len(), 4);
     }
 
     #[test]
@@ -2318,97 +1863,6 @@ mod carry_cost_bench {
         );
         let mut fresh = capture(world.census.len());
         assert_eq!(recovered, fresh_hour(&world, &mut fresh, &watches));
-    }
-
-    #[test]
-    #[ignore = "ship-model organisation-only revalidation benchmark"]
-    fn organisation_only_model_carry_bench() {
-        let mut expected = None;
-        for model_carry in [false, true] {
-            let mut world = World::new(1500);
-            let ships = world.census.len();
-            let watches = Watches::enabled(4 * ships);
-            let mut held = capture(ships);
-            hour(&world, &mut held, &watches);
-            super::MODEL_CARRY_OFF.set(!model_carry);
-            let mut samples = Vec::with_capacity(SAMPLES);
-            let mut calls = 0;
-            for sample in 0..SAMPLES {
-                for index in 0..ships {
-                    let at = fleet::ship(index) + cship::BASE_ORGANISATION - fleet::LOW;
-                    world.memory.low[at..at + 8]
-                        .copy_from_slice(&(30_000_000_i64 + sample as i64).to_le_bytes());
-                    drop(watches.notify(fleet::ship(index), 0));
-                }
-                world.seed(&mut held);
-                let before = world.memory.calls.get();
-                let timer = Instant::now();
-                held.capture_carrying(&world.memory, CaptureContext::new(fleet::IMAGE), &watches);
-                samples.push(timer.elapsed().as_nanos() as f64 / ships as f64);
-                calls += world.memory.calls.get() - before;
-                assert_eq!(held.outcomes(), [Outcome::Rows { len: ships }]);
-            }
-            super::MODEL_CARRY_OFF.set(false);
-            assert!(!watches.poisoned());
-            let rows = &held.rows.rows[..ships];
-            if let Some(expected) = &expected {
-                assert_eq!(rows, expected);
-            } else {
-                expected = Some(rows.to_vec());
-            }
-            println!(
-                "BENCH organisation-only ship writers, model carry {model_carry}: median {:.0} ns/ship, {:.2} native copies/ship",
-                median(samples),
-                calls as f64 / (ships * SAMPLES) as f64,
-            );
-        }
-    }
-
-    #[test]
-    fn hot_carried_rows_avoid_cold_records_and_ship_searches() {
-        let countries = 12;
-        let world = World::new(countries);
-        let watches = Watches::enabled(4 * world.census.len());
-        let mut capture = capture(world.census.len());
-        let before_fresh = world.memory.calls.get();
-        let fresh = hour(&world, &mut capture, &watches);
-        let fresh_calls = world.memory.calls.get() - before_fresh;
-        let changes = CountedChanges {
-            inner: &watches,
-            sequences: AtomicUsize::new(0),
-            trees: AtomicUsize::new(0),
-            certificates: AtomicUsize::new(0),
-        };
-        world.seed(&mut capture);
-        let before = world.memory.calls.get();
-        capture.capture_carrying(&world.memory, CaptureContext::new(fleet::IMAGE), &changes);
-        assert_eq!(capture.rows.rows[..world.census.len()], fresh);
-        let cost = CARRY_COST.get();
-        assert_eq!(cost.searches, 0);
-        assert_eq!(cost.cold_ship_bytes, 0);
-        assert_eq!(cost.cold_organisation_bytes, 0);
-        assert_eq!(cost.cold_terms_bytes, 0);
-        assert_eq!(cost.row_clones, 0);
-        assert_eq!(cost.variant_compares, 1, "one shared variant");
-        assert_eq!(
-            cost.terms_compares, countries,
-            "one comparison per task force"
-        );
-        assert_eq!(changes.certificates.load(Ordering::Relaxed), 0);
-        assert_eq!(
-            changes.sequences.load(Ordering::Relaxed),
-            3 * countries,
-            "task-force and two weather-region certificate queries per task force"
-        );
-        let carried_calls = world.memory.calls.get() - before;
-        assert!(
-            carried_calls > 0,
-            "shared sources remain current-hour reads"
-        );
-        assert!(
-            carried_calls < fresh_calls,
-            "{carried_calls} carried guarded calls, {fresh_calls} fresh"
-        );
     }
 
     #[test]
@@ -3349,7 +2803,7 @@ mod carry_cost_bench {
             assert!(store.next_hot.is_empty());
             assert!(store.next_tasks.is_empty());
             assert!(store.next_variants.is_empty());
-            assert!(store.next_variant_index.is_empty());
+            assert!(store.next_variant_head.is_empty());
             assert_eq!(store.quiet, None);
             assert_eq!(store.generation, 0);
             assert_eq!(store.rows, None);
@@ -3527,75 +2981,5 @@ mod carry_cost_bench {
         }
     }
 
-    pub(super) fn run(countries: usize) {
-        if !ship_model_changes::CARRY {
-            panic!("benchmark requires ship_model_changes");
-        }
-        let mut world = World::new(countries);
-        let ships = world.census.len();
-        let mut eviction = vec![1_u64; EVICTION_BYTES / std::mem::size_of::<u64>()];
-        println!(
-            "BENCH ship-model packets: HeldShip {} B, ModelRow {} B, TaskTerms {} B; {countries} distinct country slots/objects and task forces, {ships} ships, {SAMPLES} samples, {} MiB eviction outside capture timers",
-            std::mem::size_of::<cship::HeldShip>(),
-            std::mem::size_of::<cship::ModelRow>(),
-            std::mem::size_of::<cship::TaskTerms>(),
-            EVICTION_BYTES / (1024 * 1024),
-        );
-        for cold in [false, true] {
-            for path in [Path::Carried, Path::Moved, Path::Revalidated, Path::Fresh] {
-                world.move_tasks(0);
-                let watches = Watches::enabled(4 * ships);
-                let mut capture = capture(ships);
-                for _ in 0..2 {
-                    world.seed(&mut capture);
-                    capture.capture_carrying(
-                        &world.memory,
-                        CaptureContext::new(fleet::IMAGE),
-                        &watches,
-                    );
-                    assert_eq!(capture.outcomes(), [Outcome::Rows { len: ships }]);
-                }
-                let mut samples = Vec::with_capacity(SAMPLES);
-                for hour in 1..=SAMPLES {
-                    path.prepare(&mut world, &watches, &mut capture, hour);
-                    world.seed(&mut capture);
-                    if cold {
-                        evict(&mut eviction);
-                    }
-                    let timer = Instant::now();
-                    capture.capture_carrying(
-                        &world.memory,
-                        CaptureContext::new(fleet::IMAGE),
-                        &watches,
-                    );
-                    samples.push(timer.elapsed().as_nanos() as f64 / ships as f64);
-                    assert_eq!(capture.outcomes(), [Outcome::Rows { len: ships }]);
-                    assert!(!watches.poisoned());
-                    check_budget(&world, &capture, &eviction);
-                }
-                println!(
-                    "BENCH ship models {countries} countries, {ships} ships, {} cache, {}: median {:.0} ns per ship",
-                    if cold { "cold" } else { "warm" },
-                    path.label(),
-                    median(samples),
-                );
-                path.prepare(&mut world, &watches, &mut capture, SAMPLES + 1);
-                world.seed(&mut capture);
-                account(&world, &mut capture, &watches, path);
-            }
-            task_terms(&world, &mut eviction, cold);
-        }
-    }
 }
 
-#[test]
-#[ignore = "release ship-model carry-cost benchmark"]
-fn ship_model_carry_cost_bench_1500_countries() {
-    carry_cost_bench::run(1500);
-}
-
-#[test]
-#[ignore = "release ship-model carry-cost benchmark"]
-fn ship_model_carry_cost_bench_5000_countries() {
-    carry_cost_bench::run(5000);
-}

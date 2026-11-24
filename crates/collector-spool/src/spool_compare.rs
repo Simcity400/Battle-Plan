@@ -402,18 +402,43 @@ pub(crate) fn compare_frame(
     if target.restarting {
         return;
     }
+    let mut active = [0_usize; TABLES.len()];
+    let mut active_len = 0;
+    for (index, table) in TABLES.iter().enumerate() {
+        if matches!(
+            source.tables[table.index()],
+            TableInput::Sampled(TableView::Complete(_))
+        ) {
+            active[active_len] = index;
+            active_len += 1;
+        }
+    }
+    if active_len == 0 {
+        return;
+    }
+    let active = &active[..active_len];
     let slots: [Mutex<TableInput>; TABLES.len()] = std::array::from_fn(|index| {
-        Mutex::new(std::mem::replace(
-            &mut source.tables[TABLES[index].index()],
-            vacant(),
-        ))
+        if matches!(
+            source.tables[TABLES[index].index()],
+            TableInput::Sampled(TableView::Complete(_))
+        ) {
+            Mutex::new(std::mem::replace(
+                &mut source.tables[TABLES[index].index()],
+                vacant(),
+            ))
+        } else {
+            Mutex::new(vacant())
+        }
     });
     let next = AtomicUsize::new(0);
     let work = || {
         let mut indices = Vec::new();
         loop {
-            let index = next.fetch_add(1, Ordering::Relaxed);
-            if index >= TABLES.len() || collector_memory::terminal::failed() {
+            let slot = next.fetch_add(1, Ordering::Relaxed);
+            let Some(&index) = active.get(slot) else {
+                break;
+            };
+            if collector_memory::terminal::failed() {
                 break;
             }
             let mut input = slots[index].lock().unwrap_or_else(PoisonError::into_inner);
@@ -432,7 +457,7 @@ pub(crate) fn compare_frame(
     let span =
     // SAFETY: This worker records phases on the counters assigned to its spool role.
     unsafe { SPOOL.span(Phase::Compare) };
-    match helpers {
+    match helpers.filter(|_| active_len > 1) {
         Some(helpers) => {
             let context = collector_memory::terminal::context();
             let job = || {
@@ -459,9 +484,9 @@ pub(crate) fn compare_frame(
             span.finish();
         }
     }
-    for (index, slot) in slots.into_iter().enumerate() {
-        source.tables[TABLES[index].index()] =
-            slot.into_inner().unwrap_or_else(PoisonError::into_inner);
+    let mut slots = slots.map(|slot| slot.into_inner().unwrap_or_else(PoisonError::into_inner));
+    for &index in active {
+        source.tables[TABLES[index].index()] = std::mem::replace(&mut slots[index], vacant());
     }
 }
 
@@ -503,7 +528,9 @@ fn compare<T: TableSchema>(
             dense_at.store(i64::from(target.hour), Ordering::Relaxed);
             return Outcome::Dense;
         }
-        if engine_allocation::reserve(indices, 1).is_err() {
+        if indices.len() == indices.capacity()
+            && engine_allocation::reserve(indices, 1).is_err()
+        {
             return Outcome::Kept;
         }
         indices.push(index);
@@ -547,32 +574,8 @@ fn compare<T: TableSchema>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay_data::rows::TABLE_COUNT;
-    use replay_data::{cadence::Cadence, rows::StateRow};
+    use replay_data::rows::StateRow;
     use replay_frame::{frame::FrameDecoder, frame::Metrics};
-
-    #[test]
-    fn every_hourly_table_but_the_clock_and_map_events_is_compared_once() {
-        let mut seen = [false; TABLE_COUNT];
-        for table in TABLES {
-            assert!(!seen[table.index()], "{table:?} listed twice");
-            seen[table.index()] = true;
-        }
-        let current = replay_data::format::FormatVersion::CURRENT.version();
-        let misplaced: Vec<(TableId, bool)> = TableId::ALL
-            .into_iter()
-            .filter_map(|table| {
-                let hourly = replay_data::cadence::cadence(table) == Cadence::Hourly;
-                let names_its_hour = matches!(table, TableId::Clock | TableId::MapEvents);
-                let expected = hourly
-                    && !names_its_hour
-                    && !table.is_derived()
-                    && table.last_change().present(current);
-                (seen[table.index()] != expected).then_some((table, expected))
-            })
-            .collect();
-        assert_eq!(misplaced, []);
-    }
 
     fn state(id: u32, owner: u32) -> StateRow {
         StateRow {

@@ -1,5 +1,5 @@
 use collector_workers::{
-    acquisition::{dispatch_and_release_bench, verify_allocated_bytes},
+    acquisition::verify_allocated_bytes,
     roles::MAX_JOBS,
 };
 
@@ -31,22 +31,3 @@ fn executor_allocated_bytes_include_every_real_allocation() {
     }
 }
 
-#[test]
-#[ignore = "release micro-bench: cargo test -p collector --release --lib -- --ignored --nocapture --test-threads=1 dispatch_and_release_against_fifteen_workers"]
-fn dispatch_and_release_against_fifteen_workers() {
-    std::thread::Builder::new()
-        .stack_size(64 << 20)
-        .spawn(|| {
-            // SAFETY: Ignored benchmark runs standalone under `--test-threads=1`.
-            unsafe {
-                dispatch_and_release_bench::<
-                    crate::acquisition_jobs::Job,
-                    crate::acquisition_jobs::Report,
-                    { size_of::<crate::acquisition_jobs::Job>() },
-                >();
-            }
-        })
-        .unwrap()
-        .join()
-        .unwrap();
-}

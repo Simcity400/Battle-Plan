@@ -143,6 +143,26 @@ pub fn after(
     game: usize,
     before: &Snapshot,
 ) -> Result<Change, &'static str> {
+    after_with_singleton(memory, base, None, game, before)
+}
+
+pub fn after_checked(
+    memory: &impl Memory,
+    base: usize,
+    singleton: usize,
+    game: usize,
+    before: &Snapshot,
+) -> Result<Change, &'static str> {
+    after_with_singleton(memory, base, Some(singleton), game, before)
+}
+
+fn after_with_singleton(
+    memory: &impl Memory,
+    base: usize,
+    singleton: Option<usize>,
+    game: usize,
+    before: &Snapshot,
+) -> Result<Change, &'static str> {
     let mut change = Change {
         country: before.country,
         region: before.region,
@@ -154,13 +174,44 @@ pub fn after(
     let (slot, fields) = if before.history != 0 {
         let mut slot = [0; 4];
         let mut record = [0; 8];
+        let mut field0 = [0; 8];
+        let mut field1 = [0; 8];
         const UNREADABLE: &str = "air loss writer field unreadable or address overflow";
         let at = |offset| before.window.checked_add(offset).ok_or(UNREADABLE);
-        let addresses = [
-            at(loop_history_window::CURRENT_SLOT)?,
-            at(loop_history_window::RECORD_FIELDS)?,
-        ];
-        if memory.copy_scattered(addresses, &mut [&mut slot[..], &mut record[..]]) != 2 {
+        let slot_addr = at(loop_history_window::CURRENT_SLOT)?;
+        let record_addr = at(loop_history_window::RECORD_FIELDS)?;
+        if let Some(singleton) = singleton {
+            let mut root = [0; 8];
+            if memory.copy_scattered(
+                [
+                    singleton,
+                    slot_addr,
+                    record_addr,
+                    before.addresses[0],
+                    before.addresses[1],
+                ],
+                &mut [
+                    &mut root[..],
+                    &mut slot[..],
+                    &mut record[..],
+                    &mut field0[..],
+                    &mut field1[..],
+                ],
+            ) != 5
+            {
+                if read::<u64>(memory, singleton) != Some(game as u64) {
+                    return Err("air loss game root changed during native call");
+                }
+                return Err(UNREADABLE);
+            }
+            if u64::from_le_bytes(root) != game as u64 {
+                return Err("air loss game root changed during native call");
+            }
+        } else if memory.copy_scattered(
+            [slot_addr, record_addr, before.addresses[0], before.addresses[1]],
+            &mut [&mut slot[..], &mut record[..], &mut field0[..], &mut field1[..]],
+        ) != 4
+        {
             return Err(UNREADABLE);
         }
         let slot = u32::from_le_bytes(slot);
@@ -168,8 +219,16 @@ pub fn after(
         if record != before.record || slot != before.slot {
             return Err("air loss writer current record changed during call");
         }
-        (slot, words(memory, before.addresses)?)
+        (
+            slot,
+            [i64::from_le_bytes(field0), i64::from_le_bytes(field1)],
+        )
     } else {
+        if let Some(singleton) = singleton
+            && read::<u64>(memory, singleton) != Some(game as u64)
+        {
+            return Err("air loss game root changed during native call");
+        }
         if owner(memory, base, game, before.receiver)? != before.country {
             return Err("air loss writer country changed during call");
         }

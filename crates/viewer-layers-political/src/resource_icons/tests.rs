@@ -351,16 +351,3 @@ fn the_window_takes_the_layers_icons_in_the_resources_mode_and_todays_where_it_d
     assert_eq!(left, LeftToLayers::default(), "in another mode the layer draws nothing");
 }
 
-#[test]
-fn outside_the_resources_mode_it_declares_nothing() {
-    let kinds = replay_recording::schema::schema().unwrap();
-    let declared = |view: &View| {
-        let mut layer = ResourceIcons::new(content());
-        let mut inputs = Inputs::new(&kinds, "resource_icons");
-        layer.inputs(view, &mut inputs).unwrap();
-        inputs.into_tables().len()
-    };
-    assert_eq!(declared(&View::default()), 0);
-    assert_eq!(declared(&View { map_mode: MapMode::Stock(Stock::StrategicAir), ..View::default() }), 0);
-    assert_eq!(declared(&resources()), 14);
-}

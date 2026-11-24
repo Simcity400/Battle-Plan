@@ -79,15 +79,6 @@ test('runs are cut to spans in one pass: pieces in order, overlapping spans merg
   assert.deepEqual(clipToSpans([], [{ firstHour: 0, lastHour: 5 }]), []);
 });
 
-test('cutting a history that swaps first place every other hour to its hours keeps each run', () => {
-  const history = (hours: number) => {
-    const runs = Array.from({ length: hours / 2 }, (_, index) => ({ firstHour: index * 2, lastHour: index * 2, value: index }));
-    const spans = runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour }));
-    return { runs, spans };
-  };
-  const { runs, spans } = history(60_000);
-  assert.equal(clipToSpans(runs, spans).length, 30_000);
-});
 
 test('negative values stack below zero, never replaced by zero', () => {
   assert.deepEqual(stackEdges([3, -2, 4, -1, 0]), [

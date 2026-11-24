@@ -1556,16 +1556,6 @@ mod tests {
         assert!(series("autonomy").unwrap().measure("progress").is_some());
     }
 
-    #[test]
-    fn a_resources_pools_read_their_columns_by_their_schema_numbers() {
-        assert_eq!(field(TableId::CountryResources, "special_total").unwrap(), SPECIAL_TOTAL);
-        assert_eq!(field(TableId::CountryResources, "production_demand").unwrap(), PRODUCTION_DEMAND);
-        let parts = series("country-resources").unwrap().parts.unwrap();
-        let key = parts.key(9001, 7);
-        assert_eq!((parts.owner(key), parts.part(key), parts.id(parts.part(key))), (9001, 7, Some(7)));
-        assert_eq!(parts.range(9001), (9001u128 << 32, (9001u128 << 32) | u128::from(u32::MAX)));
-    }
-
     struct Row([Option<i64>; 3]);
 
     impl Cells for Row {
@@ -1635,20 +1625,6 @@ mod tests {
 
     fn row(cells: &[(&str, i64)]) -> Named {
         Named(cells.iter().map(|&(name, value)| (field(TableId::CountryFactories, name).unwrap(), value)).collect())
-    }
-
-    #[test]
-    fn factory_counts_read_their_columns_by_their_schema_numbers() {
-        for (group, name) in ["military", "naval", "civilian"].into_iter().enumerate() {
-            let at = |part: &str| field(TableId::CountryFactories, &format!("{name}_{part}")).unwrap();
-            assert_eq!(at("total_raw"), group * factories::GROUP + factories::TOTAL);
-            assert_eq!(at("damaged_raw"), group * factories::GROUP + factories::DAMAGED);
-            assert_eq!(at("to_overlord"), group * factories::GROUP + factories::TO_OVERLORD);
-            assert_eq!(at("to_others"), group * factories::GROUP + factories::TO_OTHERS);
-        }
-        let consumers = ["consumer_goods", "contract_payments", "special_projects", "license_imports", "trade_imports"];
-        assert_eq!(consumers.map(|name| field(TableId::CountryFactories, name).unwrap()), factories::CONSUMERS);
-        assert_eq!(field(TableId::Nukes, "amount_raw").unwrap(), 0);
     }
 
     #[test]

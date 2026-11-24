@@ -63,8 +63,76 @@ fn signal(
     Some(Certificate { key, own, parent })
 }
 
+struct Entry {
+    division: u64,
+    taken: bool,
+    leaf: Leaf,
+}
+
+fn take_leaf(
+    leaves: &mut [Entry],
+    lookup: &mut Vec<(u64, u32)>,
+    lookup_built: &mut bool,
+    shift: &mut isize,
+    index: usize,
+    division: u64,
+) -> Leaf {
+    if let Some(at) = index.checked_add_signed(*shift)
+        && let Some(entry) = leaves.get_mut(at)
+        && !entry.taken
+        && entry.division == division
+    {
+        entry.taken = true;
+        return std::mem::take(&mut entry.leaf);
+    }
+    for delta in [1isize, -1, 2, -2, 3, -3, 4, -4] {
+        if let Some(at) = index.checked_add_signed(*shift + delta)
+            && let Some(entry) = leaves.get_mut(at)
+            && !entry.taken
+            && entry.division == division
+        {
+            entry.taken = true;
+            *shift = at as isize - index as isize;
+            return std::mem::take(&mut entry.leaf);
+        }
+    }
+    if !*lookup_built && !leaves.is_empty() {
+        *lookup_built = true;
+        let ok = engine_allocation::advisory(|| {
+            if lookup.capacity() < leaves.len() {
+                engine_allocation::reserve(lookup, leaves.len())
+            } else {
+                Ok(())
+            }
+        })
+        .is_ok();
+        if ok {
+            lookup.extend(
+                leaves
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, entry)| !entry.taken)
+                    .map(|(at, entry)| (entry.division, at as u32)),
+            );
+            lookup.sort_unstable_by_key(|entry| entry.0);
+        }
+    }
+    if let Ok(pos) = lookup.binary_search_by_key(&division, |entry| entry.0) {
+        let at = lookup[pos].1 as usize;
+        let entry = &mut leaves[at];
+        if !entry.taken && entry.division == division {
+            entry.taken = true;
+            *shift = at as isize - index as isize;
+            return std::mem::take(&mut entry.leaf);
+        }
+    }
+    Leaf::default()
+}
+
 pub(super) struct Cache {
-    leaves: Vec<Leaf>,
+    leaves: Vec<Entry>,
+    next: Vec<Entry>,
+    lookup: Vec<(u64, u32)>,
     #[cfg(feature = "order_membership_oracle")]
     oracle: MembershipPacket,
 }
@@ -72,6 +140,8 @@ impl Default for Cache {
     fn default() -> Self {
         Self {
             leaves: Vec::new(),
+            next: Vec::new(),
+            lookup: Vec::new(),
             #[cfg(feature = "order_membership_oracle")]
             oracle: MembershipPacket::vacant(),
         }
@@ -79,7 +149,8 @@ impl Default for Cache {
 }
 impl Cache {
     pub fn allocated_bytes(&self) -> usize {
-        let bytes = self.leaves.capacity() * std::mem::size_of::<Leaf>();
+        let bytes = (self.leaves.capacity() + self.next.capacity()) * std::mem::size_of::<Entry>()
+            + self.lookup.capacity() * std::mem::size_of::<(u64, u32)>();
         #[cfg(feature = "order_membership_oracle")]
         let bytes = bytes + self.oracle.allocated_bytes();
         bytes
@@ -100,15 +171,17 @@ impl Cache {
             .position(|unit| unit.failure.is_some())
             .unwrap_or(packet.units.len());
         let mut available = signals.available();
+        self.next.clear();
+        self.lookup.clear();
         if available {
-            let additional = count.saturating_sub(self.leaves.len());
             available = engine_allocation::advisory(|| {
-                engine_allocation::reserve(&mut self.leaves, additional)
+                if self.next.capacity() < count {
+                    engine_allocation::reserve(&mut self.next, count)
+                } else {
+                    Ok(())
+                }
             })
             .is_ok();
-            if available {
-                self.leaves.resize_with(count, Leaf::default);
-            }
         }
         let key_at = |index: usize, unit: &StatusUnitInputs| -> Result<Key, &'static str> {
             Ok(Key {
@@ -124,23 +197,41 @@ impl Cache {
                 authenticated: super::status_parts::census_authenticated(&seeds[index]),
             })
         };
+        let mut lookup_built = false;
+        let mut shift: isize = 0;
+        let leaves = &mut self.leaves;
+        let next = &mut self.next;
+        let lookup = &mut self.lookup;
         for index in 0..count {
             let key = key_at(index, &packet.units[index])?;
             packet.units[index].has_order = None;
             packet.units[index].membership = usize::MAX;
             if available {
-                let leaf = &mut self.leaves[index];
-                match leaf
+                let mut leaf = take_leaf(
+                    leaves,
+                    lookup,
+                    &mut lookup_built,
+                    &mut shift,
+                    index,
+                    key.division,
+                );
+                let carried = match leaf
                     .value
                     .begin(|value| signal(signals, key, value, &mut leaf.slots))
                 {
-                    Decision::Carried(value) => {
-                        packet.units[index].has_order = Some(Ok(value.has_order));
-                        #[cfg(feature = "order_membership_oracle")]
-                        CARRIED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        continue;
-                    }
-                    Decision::Read => {}
+                    Decision::Carried(value) => Some(value.has_order),
+                    Decision::Read => None,
+                };
+                next.push(Entry {
+                    division: key.division,
+                    taken: false,
+                    leaf,
+                });
+                if let Some(has_order) = carried {
+                    packet.units[index].has_order = Some(Ok(has_order));
+                    #[cfg(feature = "order_membership_oracle")]
+                    CARRIED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    continue;
                 }
             }
             if key.authenticated {
@@ -160,7 +251,7 @@ impl Cache {
             if available {
                 let key = key_at(index, &packet.units[index])?;
                 let parent = packet.membership.parent(query);
-                let leaf = &mut self.leaves[index];
+                let leaf = &mut next[index].leaf;
                 let _ = leaf.value.finish(
                     |value| signal(signals, key, value, &mut leaf.slots),
                     |value| {
@@ -174,6 +265,10 @@ impl Cache {
                     },
                 );
             }
+        }
+        if available {
+            std::mem::swap(&mut self.leaves, &mut self.next);
+            self.next.clear();
         }
         #[cfg(feature = "order_membership_oracle")]
         {

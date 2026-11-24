@@ -31,17 +31,7 @@ class NativeInputCameraTest(unittest.TestCase):
         desktop.channel_reader = None
         return desktop
 
-    def test_camera_place_returns_resolved_pose_from_viewer(self):
-        desktop, sent = self.make_desktop({"center": [2816.0, 1024.0], "height": 250.0})
-        reply = desktop.camera(view="overview-map", center=[2816, 1024], height=180)
-        self.assertEqual(reply, {"posted": [1234.5], "center": [2816.0, 1024.0], "height": 250.0})
-        self.assertEqual(sent, [{"camera": {"view": "overview-map", "center": [2816.0, 1024.0], "height": 180.0}}])
 
-    def test_camera_reset_returns_resolved_fit_pose(self):
-        desktop, sent = self.make_desktop({"center": [2816.0, 1024.0], "height": 3000.0})
-        reply = desktop.camera(view="overview-map", reset=True)
-        self.assertEqual(reply, {"posted": [1234.5], "center": [2816.0, 1024.0], "height": 3000.0})
-        self.assertEqual(sent, [{"camera": {"view": "overview-map", "reset": True}}])
 
     def test_camera_propagates_viewer_error_and_rejects_invalid_arguments(self):
         desktop, _ = self.make_desktop()

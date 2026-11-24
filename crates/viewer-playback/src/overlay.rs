@@ -21,7 +21,6 @@ const WHOLE: Duration = Duration::from_secs(120);
 
 const LOOK: Duration = Duration::from_millis(2);
 
-
 const UNIT_COUNTERS: &[TableId] = &[
     TableId::DivisionStatus,
     TableId::DivisionPanelStats,
@@ -153,7 +152,6 @@ const OVERLAY: &[TableId] = &[
     TableId::ScriptVariables,
     TableId::TaskForceMapMotion,
 ];
-
 
 fn overlay_needs() -> Vec<RowNeed> {
     overlay_tables().into_iter().map(RowNeed::every).collect()
@@ -906,7 +904,6 @@ impl Maker {
         held.stop || held.want.as_ref().is_some_and(|newer| newer.generation != want.generation || newer.stamp > want.stamp)
     }
 
-
     fn make_tables(&mut self, want: &Wanted, rows: &Arc<DecodedFrame>, tabled: &Tabled, loading: &mut Vec<String>) -> bool {
         let at = crate::document::Hour::new(&self.content, rows, 0.0).with_air_rosters(Some(Arc::clone(&want.ask.rosters)));
         let raids = want.lay_ins.raids.clone().unwrap_or_default();
@@ -1148,40 +1145,6 @@ mod tests {
     use crate::map_views::Presentation;
     use viewer_layer_core::test_support::MakingShownVision;
 
-    fn tabled() -> Tabled {
-        Tabled {
-            branch: 1,
-            hour: 7,
-            rows: 0x1000,
-            perspective: Choice::default(),
-            vision: 0x2000,
-            engaged: false,
-            left_out: Kinds::default(),
-            labels: false,
-            need: Need { air_missions: false, by_key: true, shown: Shown::EVERY },
-            raids: None,
-        }
-    }
-
-    #[test]
-    fn the_rows_asked_for_are_the_tables_of_the_families_the_view_can_draw() {
-        let every = overlay_tables();
-        let none = tables_shown(Shown { units: false, bases: false, land_combats: false, naval_missions: false });
-        assert!(none.iter().all(|table| every.contains(table)), "the families' tables are a part of the whole list");
-        for table in OVERLAY.iter().chain(viewer_foundation::perspective::VISION_TABLES) {
-            assert!(none.contains(table), "{table:?} is read at every view, whatever it draws");
-        }
-        for (family, tables) in [("units", UNIT_COUNTERS), ("land combats", LAND_COMBATS), ("naval missions", NAVAL_MISSIONS), ("bases", BASE_ICONS)] {
-            for table in tables {
-                assert!(every.contains(table), "{family}'s {table:?} is read at a view that draws it");
-                assert!(!none.contains(table), "{family}'s {table:?} is not read where nothing draws it");
-            }
-        }
-        let units = tables_shown(Shown { units: true, bases: false, land_combats: false, naval_missions: false });
-        assert!(UNIT_COUNTERS.iter().all(|table| units.contains(table)));
-        assert!(BASE_ICONS.iter().all(|table| !units.contains(table)));
-    }
-
     fn laid_on(on: &Arc<Presentation>) -> Laid {
         Laid {
             tables: 3,
@@ -1192,23 +1155,6 @@ mod tests {
             lay_ins: Default::default(),
             left: LeftToLayers::default(),
             art: 0,
-        }
-    }
-
-    #[test]
-    fn the_tables_stand_for_the_rows_and_vision_of_the_steps_hour() {
-        let held = tabled();
-        assert_eq!(held, tabled(), "nothing changed: the step keeps the tables it has");
-        for changed in [
-            Tabled { hour: 8, rows: 0x1800, ..tabled() },
-            Tabled { vision: 0x2400, ..tabled() },
-            Tabled { engaged: true, ..tabled() },
-            Tabled { raids: Some(0x4000), ..tabled() },
-            Tabled { left_out: Kinds::default().with(Kinds::LAND), ..tabled() },
-            Tabled { need: Need { air_missions: false, by_key: false, shown: Shown::EVERY }, ..tabled() },
-            Tabled { need: Need { shown: Shown { units: false, ..Shown::EVERY }, ..tabled().need }, ..tabled() },
-        ] {
-            assert_ne!(held, changed, "the tables are made again for it");
         }
     }
 

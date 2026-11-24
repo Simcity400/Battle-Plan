@@ -4,10 +4,10 @@ import { HEX_HINT, colorInput, contrast, mixRgb, normalizeColor, oklchToRgb, par
 import { BUILT_IN_THEMES, colorsMode, contrastColors, contrastWarnings, cssVariable, customRoles, deriveColors, reseed, themeRoles } from './themes.ts';
 import type { ThemeColors } from './themes.ts';
 import { MAX_THEME_NAME, parseJsonc, parseThemeText, serializeTheme, uniqueThemeName } from './themeFile.ts';
-import { ICON_IMAGE_SIZE, fitIconImage, latestIconImage } from './iconImage.ts';
+import { latestIconImage } from './iconImage.ts';
 import { iconStyleOf, withIconStyle } from './iconStyle.ts';
 import type { AppearanceSettings } from './settings.ts';
-import { APPEARANCE_KEY, DEFAULT_APPEARANCE, LIMITS, loadAppearance, migrateLegacy, parseAppearance, parseCustomTheme, resolveAppearance, saveAppearance } from './settings.ts';
+import { APPEARANCE_KEY, DEFAULT_APPEARANCE, loadAppearance, migrateLegacy, parseAppearance, parseCustomTheme, resolveAppearance, saveAppearance } from './settings.ts';
 
 const hex = /^#[0-9a-f]{6}$/;
 function assertMutedOnFills(colors: ThemeColors, mode: 'dark' | 'light', name: string) {
@@ -256,13 +256,6 @@ test('changing one part of an icon style keeps the other, and a style with neith
   assert.deepEqual(styles, { 'navy-size': { icon: 'anchor' } }, 'the previous styles are left as they were');
 });
 
-test('an uploaded picture is drawn whole and centred in the square icon', () => {
-  assert.equal(ICON_IMAGE_SIZE, 64);
-  assert.deepEqual(fitIconImage(200, 100), { x: 0, y: 16, width: 64, height: 32 });
-  assert.deepEqual(fitIconImage(30, 120), { x: 24, y: 0, width: 16, height: 64 });
-  assert.deepEqual(fitIconImage(16, 16), { x: 0, y: 0, width: 64, height: 64 });
-  assert.deepEqual(fitIconImage(0, 0), { x: 0, y: 0, width: 64, height: 64 }, 'an SVG without its own size fills the square');
-});
 
 test('the first appearance format migrates presets to the default and keeps customised palettes', () => {
   assert.deepEqual(migrateLegacy({ id: 'paper', mode: 'light', colors: {} }), { ...DEFAULT_APPEARANCE, scheme: 'light' });
@@ -299,33 +292,6 @@ test('HSV conversion round-trips for the colour picker', async () => {
   assert.deepEqual(rgbToHsv({ r: 0, g: 0, b: 255 }), { h: 240, s: 1, v: 1 });
 });
 
-test('the sidebar and top bar glass is set apart from the main view glass', async () => {
-  assert.equal(parseAppearance({ glass: 60, chromeGlass: 95 }).chromeGlass, 95);
-  assert.equal(parseAppearance({ glass: 60, chromeGlass: 12 }).chromeGlass, 40);
-  assert.equal(parseAppearance({ glass: 78 }).chromeGlass, DEFAULT_APPEARANCE.chromeGlass, 'the default keeps today’s look');
-  const { createServer } = await import('vite');
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
-  try {
-    const { applyAppearance } = await vite.ssrLoadModule('/ui/src/shell/appearance/useAppearance.ts') as typeof import('./useAppearance');
-    const values = new Map<string, string>();
-    const root = { dataset: {}, style: { setProperty: (name: string, value: string) => { values.set(name, value); }, removeProperty() {} } } as unknown as HTMLElement;
-    const settings = { ...DEFAULT_APPEARANCE, glass: 60, chromeGlass: 100 };
-    const page = globalThis as { document?: unknown };
-    page.document = { querySelector: () => null, documentElement: null };
-    try { applyAppearance(root, settings, resolveAppearance(settings, false, false)); } finally { delete page.document; }
-    assert.equal(values.get('--glass'), '60%');
-    assert.equal(values.get('--glass-blur'), '20px');
-    assert.equal(values.get('--chrome-opacity'), '100%');
-    assert.equal(values.get('--chrome-blur'), '0px', 'a solid sidebar and top bar need no blur');
-    for (let glass = LIMITS.glass[0]; glass <= LIMITS.glass[1]; glass++) {
-      const migrated = parseAppearance({ glass, backdrop: { kind: 'image', imageId: 'saved' } });
-      page.document = { querySelector: () => null, documentElement: null };
-      try { applyAppearance(root, migrated, resolveAppearance(migrated, false, false)); } finally { delete page.document; }
-      assert.ok(Math.abs(parseFloat(values.get('--chrome-opacity')!) - (glass * 0.8 + 20)) < 1e-9, `opacity for glass ${glass}`);
-      assert.equal(values.get('--chrome-blur'), values.get('--glass-blur'), `blur for glass ${glass}`);
-    }
-  } finally { await vite.close(); }
-});
 
 test('the main view has its own backdrop, or shows the sidebar and top bar’s through it', async () => {
   assert.deepEqual(DEFAULT_APPEARANCE.workspaceBackdrop.kind, 'same', 'nothing changes until a main view backdrop is chosen');

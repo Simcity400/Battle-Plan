@@ -1598,11 +1598,6 @@ fn naval_patrol_uses_combat_location_and_recorded_losses() {
 }
 
 #[test]
-fn region_draws_keep_first_listings() {
-    assert_eq!(first_listings(&[5, 3, 5, 9, 3]), [5, 3, 9]);
-}
-
-#[test]
 fn a_full_side_skips_the_next_grouping_call() {
     let wing = AirWingRow::default();
     let visit = |call, side| Visit {

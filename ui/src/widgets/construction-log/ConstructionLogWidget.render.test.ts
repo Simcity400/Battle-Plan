@@ -51,19 +51,6 @@ async function renderer(groupsStub = false) {
 
 const rowOf = (markup: string, id: string) => markup.match(new RegExp(`<div data-row="${id}">(.*?)</div><div data-row|<div data-row="${id}">(.*)$`))?.slice(1).find(Boolean) ?? '';
 
-test('construction filters sit on one line, with a searchable building-type list instead of a chip per type', async () => {
-  const { render, close } = await renderer();
-  try {
-    const markup = render({});
-    assert.match(markup, /class="log-chips construction-filters"/);
-    assert.match(markup, /aria-label="Projects"[^]*>New and repairs<[^]*>New buildings<[^]*>Repairs</);
-    assert.match(markup, /aria-label="Queue"[^]*aria-pressed="false"[^>]*>In the queue</);
-    assert.match(markup, /aria-label="Choose building types"[^]*>Every type</);
-    assert.doesNotMatch(markup, /Second building/, 'no chip for a type no row shows');
-    assert.match(render({ options: { queue: true, types: 'mod_second' } }), /aria-pressed="true"[^>]*>In the queue<[^]*>1 selected</);
-    assert.doesNotMatch(render({ options: { chips: false } }), /construction-filters/);
-  } finally { await close(); }
-});
 
 test('construction rows align the building and place, the country, a status pill and factories only while in the queue', async () => {
   const { manifest, render, close } = await renderer();

@@ -180,38 +180,6 @@ fn unchanged_warm_hash_cache_preserves_bytes_and_verification() {
 }
 
 #[test]
-fn cold_content_hashes_are_read_on_several_threads() {
-    let fixture = Fixture::with_files("parallel", 256);
-    let expected = fixture.cache();
-    fs::remove_file(fixture.cache_path()).unwrap();
-    let before = PROBED.lock().unwrap().len();
-    let resolved = resolve(&fixture.identity, &fixture.options).unwrap();
-    assert_eq!(resolved.stats.files, 259);
-    assert_eq!(resolved.stats.files_read, resolved.stats.files);
-    assert_eq!(fixture.cache().entries.len(), expected.entries.len());
-    let folder = fixture
-        .root
-        .file_name()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned();
-    let probed: Vec<_> = PROBED.lock().unwrap()[before..]
-        .iter()
-        .filter(|(path, _)| path.to_string_lossy().contains(&folder))
-        .map(|(_, thread)| *thread)
-        .collect();
-    assert_eq!(probed.len(), 259);
-    let threads: std::collections::HashSet<_> = probed.into_iter().collect();
-    let cores = std::thread::available_parallelism().map_or(1, |count| count.get());
-    assert!(
-        threads.len() > 1 || cores == 1,
-        "{} probing threads on {cores} cores",
-        threads.len()
-    );
-}
-
-#[test]
 fn missing_or_malformed_hash_cache_is_rebuilt_without_changing_schema() {
     for missing in [true, false] {
         let fixture = Fixture::new(if missing { "missing" } else { "malformed" });

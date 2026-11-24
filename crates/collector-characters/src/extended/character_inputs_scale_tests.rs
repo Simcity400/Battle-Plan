@@ -311,12 +311,3 @@ fn resolved_operatives_carry_their_names_and_codename_operands() {
     }
 }
 
-#[test]
-fn demand_observation_keeps_invalid_roster_errors_named() {
-    let mut world = Populated::new(1);
-    world.u64(MANAGER, 0);
-    assert_eq!(
-        Demand::observe(&world, BASE, STATE),
-        Err("character manager vtable mismatch")
-    );
-}

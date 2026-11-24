@@ -249,41 +249,6 @@ fn ship_hours_land_in_the_walkers_columns() {
     table.holds(&[read[0].clone(), census[1].clone()]);
 }
 
-#[test]
-fn shared_history_rows_keep_their_strings_and_lists() {
-    let mut table = Table1::<SharedDivisionHistoryRow>::new();
-    let row = |division: u64, name: &[u8], provinces: &[u32]| {
-        Arc::new(DivisionHistoryRow {
-            division,
-            name: name.to_vec(),
-            reason: b"order".to_vec(),
-            provinces: provinces.to_vec(),
-            medal_token: Some(-2),
-            ..Default::default()
-        })
-    };
-    let first = [row(1, b"First", &[3, 1]), row(2, b"Second", &[])];
-    table.hour(TableInput::Snapshot {
-        rows: &first,
-        partial: None,
-        read: true,
-        sample: READ,
-    });
-    table.holds(&first);
-    let renamed = [row(1, b"Renamed", &[3, 1, 4]), first[1].clone()];
-    let changes = table
-        .hour(TableInput::Snapshot {
-            rows: &renamed,
-            partial: None,
-            read: true,
-            sample: READ,
-        })
-        .unwrap();
-    assert_eq!(changes.changed.len(), 1);
-    table.holds(&renamed);
-    assert_eq!(table.strings.len(), 5);
-}
-
 struct Both<R> {
     columns: Table1<R>,
     rows: Table1<R>,
@@ -482,4 +447,94 @@ fn an_hour_written_again_after_a_refusal_writes_what_it_would_have() {
             assert_eq!(table.writer.restart().unwrap(), restart, "{staging:?}");
         }
     }
+}
+
+#[test]
+fn paired_and_aligned_sparse_staging_matches_row_staging() {
+    let mut ships = Both::<ShipRow>::new();
+    let h1 = [
+        ship(7, 100_000, Recorded::NotRecorded, Some(b"Ark".as_slice())),
+        ship(8, 0, Some(4).into(), None),
+        ship(10, 50, Some(9).into(), Some(b"Hood".as_slice())),
+    ];
+    ships.hour(|| snapshot(&h1)).unwrap();
+
+    let h2 = [
+        ship(7, 100_000, Recorded::NotRecorded, Some(b"Ark".as_slice())),
+        ship(8, 77, Some(4).into(), None),
+        ship(10, 50, Recorded::NotRecorded, Some(b"Hood".as_slice())),
+    ];
+    ships
+        .hour(|| TableInput::Aligned {
+            rows: &h2,
+            previous: &h1,
+            read: true,
+            sample: READ,
+        })
+        .unwrap();
+    ships.columns.holds(&h2);
+
+    assert!(
+        ships
+            .hour(|| TableInput::Aligned {
+                rows: &h2,
+                previous: &h2,
+                read: true,
+                sample: READ,
+            })
+            .is_none()
+    );
+
+    let h3 = [
+        ship(7, 100_000, Some(12).into(), Some(b"Ark Royal".as_slice())),
+        ship(8, 77, Some(4).into(), None),
+        ship(11, 9, Recorded::NotRecorded, Some(b"New".as_slice())),
+    ];
+    let pairs = [Pair::new(0u32, Some(0u32)), Pair::new(2u32, None)];
+    let removed = [RowCodec::key(&h2[2])];
+    ships
+        .hour(|| TableInput::Paired {
+            rows: &h3,
+            previous: &h2,
+            pairs: &pairs,
+            removed: &removed,
+            uniform_optional_i32: None,
+            read: true,
+            sample: READ,
+        })
+        .unwrap();
+    ships.columns.holds(&h3);
+
+    let mut histories = Both::<SharedDivisionHistoryRow>::new();
+    let row = |division: u64, amount: i32, name: &[u8], provinces: &[u32]| {
+        Arc::new(DivisionHistoryRow {
+            division,
+            amount,
+            name: name.to_vec(),
+            reason: b"order".to_vec(),
+            provinces: provinces.to_vec(),
+            medal_token: Some(-2),
+            ..Default::default()
+        })
+    };
+    let a = [row(1, 1, b"First", &[3, 1]), row(2, 2, b"Second", &[])];
+    histories.hour(|| snapshot(&a)).unwrap();
+    let b = [
+        row(1, 5, b"First", &[3, 1, 9]),
+        a[1].clone(),
+        row(3, 7, b"Third", &[4]),
+    ];
+    let pairs = [Pair::new(0u32, Some(0u32)), Pair::new(2u32, None)];
+    histories
+        .hour(|| TableInput::Paired {
+            rows: &b,
+            previous: &a,
+            pairs: &pairs,
+            removed: &[],
+            uniform_optional_i32: None,
+            read: true,
+            sample: READ,
+        })
+        .unwrap();
+    histories.columns.holds(&b);
 }

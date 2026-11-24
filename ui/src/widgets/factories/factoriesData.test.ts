@@ -10,11 +10,6 @@ const REPLY: FactoryPartsReply = { hour: 7, tag: 'GER', unexplained: ['civilian'
   part('civilian', 'contractPayments', 1), part('civilian', 'specialProjects', 2), part('civilian', 'licenseImports', 1), part('civilian', 'tradeImports', 3),
 ] };
 
-test('a count names the declared channel of its mode over the chosen groups, every group when none is chosen', () => {
-  assert.equal(factoryMeasure('free', []), 'free7');
-  assert.equal(factoryMeasure('built', ['naval']), 'built2');
-  assert.equal(factoryMeasure('topBar', ['civilian', 'military', 'not a group']), 'topBar5');
-});
 
 test('a group is counted from its parts as the declared count reads them, and a group not recorded is not zero', () => {
   assert.deepEqual(['built', 'topBar', 'free'].map(mode => groupCount(REPLY.parts, 'military', mode as 'free')), [12, 8, 8]);

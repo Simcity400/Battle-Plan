@@ -109,6 +109,47 @@ impl<'a> Projection<'a> {
             .observed_comparison_baseline::<S>(self.branch, self.hour, self.force)
     }
 
+    pub fn slice_baseline_rows<S: TableSchema>(
+        &self,
+    ) -> Option<(replay_frame::frame::BaselineToken, &'a [S::Row])> {
+        let (token, previous) =
+            self.encoder
+                .slice_baseline(S::ID, self.branch, self.hour, self.force)?;
+        Some((token, previous.rows::<S>()?))
+    }
+
+    pub fn current_stamp(&self) -> (u64, BranchId, Hour) {
+        (self.encoder.identity(), self.branch, self.hour)
+    }
+
+    pub fn take_custom<T: Send + 'static>(&self, table: TableId) -> Option<Box<T>> {
+        self.scratch
+            .table(table)
+            .ledger
+            .take()
+            .and_then(|state| state.downcast().ok())
+    }
+
+    pub fn put_custom<T: Send + 'static>(&self, table: TableId, state: Box<T>) {
+        self.scratch.table(table).ledger = Some(state);
+    }
+
+    pub fn note_compared(&self, table: TableId, updated_rows: Option<usize>) {
+        let mut order = self.scratch.table(table);
+        order.compared = order.compared.saturating_add(1);
+        match updated_rows {
+            None => order.reused = order.reused.saturating_add(1),
+            Some(rows) => {
+                order.updated = order.updated.saturating_add(1);
+                order.updated_rows = order.updated_rows.saturating_add(rows as u64);
+            }
+        }
+    }
+
+    pub fn timed<R>(&self, table: TableId, work: impl FnOnce() -> R) -> R {
+        crate::table_clock::timed(table, work)
+    }
+
     pub fn new(
         encoder: &'a FrameEncoder,
         branch: BranchId,
@@ -136,15 +177,50 @@ impl<'a> Projection<'a> {
         {
             return None;
         }
-        let (token, _) =
+        let (token, committed_hour) =
             self.encoder
-                .comparison_baseline::<S>(self.branch, self.hour, self.force)?;
-        if self.encoder.committed::<S>()?.0 != held.hour {
+                .republish_token(S::ID, self.branch, self.hour, self.force)?;
+        if committed_hour != held.hour {
             return None;
         }
         held.hour = self.hour;
         order.republished = order.republished.saturating_add(1);
         Some(TableInput::ComparedEqual(token))
+    }
+
+    pub fn republish_uniform_optional_i32<S: TableSchema>(
+        &self,
+        witness: Option<Witness>,
+        column: usize,
+        value: Option<i32>,
+    ) -> Option<TableInput> {
+        let witness = witness?;
+        let mut order = self.scratch.table(S::ID);
+        let order = &mut *order;
+        let held = order.held.as_mut()?;
+        if held.branch != self.branch
+            || held.hour.checked_add(1) != Some(self.hour)
+            || held.witness != Some(witness)
+        {
+            return None;
+        }
+        let (token, _) =
+            self.encoder
+                .slice_baseline(S::ID, self.branch, self.hour, self.force)?;
+        if self.encoder.committed::<S>()?.0 != held.hour {
+            return None;
+        }
+        held.hour = self.hour;
+        order.republished = order.republished.saturating_add(1);
+        Some(TableInput::UniformOptionalI32 {
+            token,
+            column,
+            value,
+            update: std::sync::Arc::new(replay_data::sliced::SliceUpdate::keyed(
+                Vec::new(),
+                S::wrap(Vec::new()),
+            )),
+        })
     }
 
     pub fn retain(&self, table: TableId, witness: Option<Witness>, input: &TableInput) {
@@ -155,6 +231,7 @@ impl<'a> Projection<'a> {
                 | TableInput::ComparedEqual(_)
                 | TableInput::ComparedChanges { .. }
                 | TableInput::SliceUpdate { .. }
+                | TableInput::UniformOptionalI32 { .. }
         );
         let mut order = self.scratch.table(table);
         order.held_converted = order.held_converted.saturating_add(1);
@@ -179,8 +256,8 @@ impl<'a> Projection<'a> {
         let mut scratch = self.scratch.table(S::ID);
         let baseline = self
             .encoder
-            .slice_baseline(S::ID, self.branch, self.hour, self.force);
-        let previous = self.encoder.committed::<S>().map(|(hour, _)| hour);
+            .slice_meta(S::ID, self.branch, self.hour, self.force);
+        let previous = self.encoder.committed_hour(S::ID);
         let input = if let (Some((token, _)), Some((branch, hour, revision))) =
             (baseline, scratch.certified)
             && branch == self.branch
@@ -346,8 +423,8 @@ impl<'a> Projection<'a> {
                         return false;
                     }
                     if !equal(current, previous) {
-                        if indices.is_empty()
-                            && engine_allocation::reserve_exact(&mut indices, source.len()).is_err()
+                        if indices.len() == indices.capacity()
+                            && engine_allocation::reserve(&mut indices, 1).is_err()
                         {
                             allocation_failed = true;
                             return false;
@@ -478,10 +555,14 @@ impl Projection<'_> {
             let mut keys = Vec::new();
             let mut rows = Vec::new();
             let mut edit = |key: u128, row: Option<S::Row>| {
-                engine_allocation::reserve(&mut keys, 1)?;
+                if keys.len() == keys.capacity() {
+                    engine_allocation::reserve(&mut keys, 1)?;
+                }
                 keys.push(key);
                 if let Some(row) = row {
-                    engine_allocation::reserve(&mut rows, 1)?;
+                    if rows.len() == rows.capacity() {
+                        engine_allocation::reserve(&mut rows, 1)?;
+                    }
                     rows.push(row);
                 }
                 Ok::<_, std::io::Error>(())
@@ -575,8 +656,11 @@ pub struct Record<'a> {
 }
 
 impl Record<'_> {
+    #[inline]
     fn room(&mut self, len: usize) -> bool {
-        self.failed = self.failed || self.bytes.try_reserve(len).is_err();
+        if !self.failed && self.bytes.capacity() - self.bytes.len() < len {
+            self.failed = self.bytes.try_reserve(len).is_err();
+        }
         !self.failed
     }
 
@@ -606,7 +690,20 @@ impl Record<'_> {
 
     pub fn ids(&mut self, data: Option<&[u32]>) {
         self.run(data.map(<[u32]>::len), 4, |out| {
-            for value in data.unwrap_or_default() {
+            let values = data.unwrap_or_default();
+            #[cfg(target_endian = "little")]
+            {
+                // SAFETY: &[u32] is contiguous initialized memory with little-endian layout.
+                let raw = unsafe {
+                    std::slice::from_raw_parts(
+                        values.as_ptr().cast::<u8>(),
+                        std::mem::size_of_val(values),
+                    )
+                };
+                out.extend_from_slice(raw);
+            }
+            #[cfg(not(target_endian = "little"))]
+            for value in values {
                 out.extend_from_slice(&value.to_le_bytes());
             }
         });
@@ -614,7 +711,20 @@ impl Record<'_> {
 
     pub fn words(&mut self, data: Option<&[i64]>) {
         self.run(data.map(<[i64]>::len), 8, |out| {
-            for value in data.unwrap_or_default() {
+            let values = data.unwrap_or_default();
+            #[cfg(target_endian = "little")]
+            {
+                // SAFETY: &[i64] is contiguous initialized memory with little-endian layout.
+                let raw = unsafe {
+                    std::slice::from_raw_parts(
+                        values.as_ptr().cast::<u8>(),
+                        std::mem::size_of_val(values),
+                    )
+                };
+                out.extend_from_slice(raw);
+            }
+            #[cfg(not(target_endian = "little"))]
+            for value in values {
                 out.extend_from_slice(&value.to_le_bytes());
             }
         });
@@ -659,6 +769,9 @@ impl<C> Ledger<C> {
 struct Ledgers<C> {
     held: Ledger<C>,
     next: Ledger<C>,
+    seen: Vec<bool>,
+    edits: Vec<(u128, Option<usize>)>,
+    index: std::collections::HashMap<u128, usize, foldhash::fast::FixedState>,
 }
 
 impl<C> Default for Ledgers<C> {
@@ -666,6 +779,9 @@ impl<C> Default for Ledgers<C> {
         Self {
             held: Ledger::default(),
             next: Ledger::default(),
+            seen: Vec::new(),
+            edits: Vec::new(),
+            index: std::collections::HashMap::with_hasher(foldhash::fast::FixedState::default()),
         }
     }
 }
@@ -686,7 +802,7 @@ impl Projection<'_> {
             .take()
             .and_then(|ledger| ledger.downcast().ok());
         let encoder = self.encoder;
-        let shared = encoder.slice_baseline(S::ID, self.branch, self.hour, self.force);
+        let shared = encoder.slice_meta(S::ID, self.branch, self.hour, self.force);
         let complete = matches!(outcome, Outcome::Rows { .. })
             && !replay_data::cadence::is_staggered(S::ID)
             && source.len() >= outcome.len();
@@ -712,15 +828,41 @@ impl Projection<'_> {
                 Err(_) => return unavailable("collector allocation failed").into(),
             },
         };
-        let next = &mut ledgers.next;
+        let aligned_eligible = matches!(
+            shared,
+            Some((token, previous_len))
+                if ledgers.held.stamp == Some(token.baseline())
+                    && previous_len.is_none_or(|len| len == ledgers.held.keys.len())
+        );
+        let Ledgers {
+            held,
+            next,
+            seen,
+            edits,
+            index,
+        } = &mut *ledgers;
         next.clear();
+        let bytes_need = held.bytes.len();
         let reserved = engine_allocation::reserve(&mut next.keys, source.len())
             .and_then(|_| engine_allocation::reserve(&mut next.fixed, source.len()))
-            .and_then(|_| engine_allocation::reserve(&mut next.ends, source.len()));
+            .and_then(|_| engine_allocation::reserve(&mut next.ends, source.len()))
+            .and_then(|_| {
+                if next.bytes.capacity() < bytes_need {
+                    engine_allocation::reserve(&mut next.bytes, bytes_need)
+                } else {
+                    Ok(())
+                }
+            });
         if reserved.is_err() {
             return unavailable("collector allocation failed").into();
         }
+        let mut aligned = aligned_eligible;
+        let mut first_unaligned = 0;
+        if aligned {
+            edits.clear();
+        }
         for (at, row) in source.iter().enumerate() {
+            let start = next.bytes.len();
             let mut writer = Record {
                 bytes: &mut next.bytes,
                 failed: false,
@@ -729,16 +871,59 @@ impl Projection<'_> {
             if writer.failed {
                 return unavailable("collector allocation failed").into();
             }
-            next.keys.push(key(row));
+            let end = next.bytes.len();
+            let row_key = key(row);
+            if aligned {
+                if held.keys.get(at) == Some(&row_key) {
+                    if !(fixed.is_some()
+                        && fixed == held.fixed[at]
+                        && &next.bytes[start..end] == held.span(at))
+                    {
+                        if edits.len() == edits.capacity()
+                            && engine_allocation::reserve(edits, 1).is_err()
+                        {
+                            return unavailable("collector allocation failed").into();
+                        }
+                        edits.push((row_key, Some(at)));
+                    }
+                } else {
+                    aligned = false;
+                    first_unaligned = at;
+                }
+            }
+            next.keys.push(row_key);
             next.fixed.push(fixed);
-            next.ends.push(next.bytes.len());
+            next.ends.push(end);
         }
         let input = match shared {
-            Some((token, previous))
-                if ledgers.held.stamp == Some(token.baseline())
-                    && previous.len() == ledgers.held.keys.len() =>
+            Some((token, previous_len))
+                if held.stamp == Some(token.baseline())
+                    && previous_len.is_none_or(|len| len == held.keys.len()) =>
             {
-                match ledger_update::<S, T, C>(&ledgers.held, &ledgers.next, source, &convert) {
+                let result = if aligned {
+                    if source.len() < held.keys.len() {
+                        let tail = held.keys.len() - source.len();
+                        if engine_allocation::reserve(edits, tail).is_err() {
+                            return unavailable("collector allocation failed").into();
+                        }
+                        for &removed in &held.keys[source.len()..] {
+                            edits.push((removed, None));
+                        }
+                    }
+                    finalize_ledger_edits::<S, T>(edits, source, &convert)
+                } else {
+                    ledger_update::<S, T, C>(
+                        held,
+                        next,
+                        seen,
+                        edits,
+                        index,
+                        first_unaligned,
+                        source,
+                        &convert,
+                    )
+                };
+                match result {
                     Ok(None) => TableInput::ComparedEqual(token),
                     Ok(Some(update)) => TableInput::SliceUpdate {
                         token,
@@ -761,9 +946,32 @@ impl Projection<'_> {
                 | TableInput::SliceUpdate { .. }
                 | TableInput::SharedComplete(_)
         ) {
-            let Ledgers { held, next } = &mut *ledgers;
+            let Ledgers {
+                held,
+                next,
+                seen,
+                edits,
+                index,
+            } = &mut *ledgers;
             std::mem::swap(held, next);
             held.stamp = Some((encoder.identity(), self.branch, self.hour));
+            if next.keys.capacity() * size_of::<u128>()
+                + next.fixed.capacity() * size_of::<Option<C>>()
+                + next.ends.capacity() * size_of::<usize>()
+                + next.bytes.capacity()
+                > 65_536
+            {
+                *next = Ledger::default();
+            }
+            if seen.capacity() > 4096 {
+                *seen = Vec::new();
+            }
+            if edits.capacity() > 1024 {
+                *edits = Vec::new();
+            }
+            if index.capacity() > 1024 {
+                *index = std::collections::HashMap::with_hasher(foldhash::fast::FixedState::default());
+            }
             let mut order = self.scratch.table(S::ID);
             match &input {
                 TableInput::ComparedEqual(_) => {
@@ -785,33 +993,72 @@ impl Projection<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments, reason = "internal ledger diffing helper")]
 fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
     held: &Ledger<C>,
     next: &Ledger<C>,
+    seen: &mut Vec<bool>,
+    edits: &mut Vec<(u128, Option<usize>)>,
+    index: &mut std::collections::HashMap<u128, usize, foldhash::fast::FixedState>,
+    first_unaligned: usize,
     source: &[T],
     convert: impl Fn(&T) -> S::Row,
 ) -> Result<Option<replay_data::sliced::SliceUpdate>, &'static str> {
     const DUPLICATE: &str = "walker produced duplicate engine ids";
     const ALLOCATION: &str = "collector allocation failed";
-    let mut seen = Vec::new();
-    engine_allocation::reserve(&mut seen, held.keys.len()).map_err(|_| ALLOCATION)?;
+    seen.clear();
+    let need = held.keys.len().saturating_sub(seen.capacity());
+    if need > 0 {
+        engine_allocation::reserve(seen, need).map_err(|_| ALLOCATION)?;
+    }
     seen.resize(held.keys.len(), false);
-    let mut index: Option<std::collections::HashMap<u128, usize>> = None;
-    let mut added = std::collections::HashSet::new();
-    let mut edits: Vec<(u128, Option<usize>)> = Vec::new();
-    let mut matched = 0;
-    for (at, &key) in next.keys.iter().enumerate() {
-        let old = if held.keys.get(at) == Some(&key) {
-            Some(at)
-        } else {
-            if index.is_none() {
-                let mut held_at = std::collections::HashMap::new();
-                engine_allocation::reserve_map(&mut held_at, held.keys.len())
-                    .map_err(|_| ALLOCATION)?;
-                held_at.extend(held.keys.iter().enumerate().map(|(at, &key)| (key, at)));
-                index = Some(held_at);
+    seen[..first_unaligned].fill(true);
+    let held_sorted = held.keys.windows(2).all(|pair| pair[0] < pair[1]);
+    let mut shift: isize = 0;
+    let mut index_ready = false;
+    let mut added: std::collections::HashSet<u128, foldhash::fast::FixedState> =
+        std::collections::HashSet::default();
+    let mut matched = first_unaligned;
+    for (offset, &key) in next.keys[first_unaligned..].iter().enumerate() {
+        let at = first_unaligned + offset;
+        let base = at as isize + shift;
+        let probed = usize::try_from(base)
+            .ok()
+            .filter(|&cand| held.keys.get(cand) == Some(&key))
+            .or_else(|| {
+                for delta in [1_isize, -1, 2, -2, 3, -3, 4, -4] {
+                    if let Ok(cand) = usize::try_from(base + delta)
+                        && held.keys.get(cand) == Some(&key)
+                    {
+                        shift = cand as isize - at as isize;
+                        return Some(cand);
+                    }
+                }
+                None
+            });
+        let old = if probed.is_some() {
+            probed
+        } else if held_sorted {
+            let found = held.keys.binary_search(&key).ok();
+            if let Some(cand) = found {
+                shift = cand as isize - at as isize;
             }
-            index.as_ref().and_then(|index| index.get(&key).copied())
+            found
+        } else {
+            if !index_ready {
+                index.clear();
+                let need = held.keys.len().saturating_sub(index.capacity());
+                if need > 0 {
+                    engine_allocation::reserve_map(index, need).map_err(|_| ALLOCATION)?;
+                }
+                index.extend(held.keys.iter().enumerate().map(|(at, &key)| (key, at)));
+                index_ready = true;
+            }
+            let found = index.get(&key).copied();
+            if let Some(cand) = found {
+                shift = cand as isize - at as isize;
+            }
+            found
         };
         match old {
             Some(old) => {
@@ -833,24 +1080,39 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
                 }
             }
         }
-        engine_allocation::reserve(&mut edits, 1).map_err(|_| ALLOCATION)?;
+        if edits.len() == edits.capacity() {
+            engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
+        }
         edits.push((key, Some(at)));
     }
     if matched < held.keys.len() {
-        for (old, _) in seen.iter().enumerate().filter(|(_, seen)| !**seen) {
-            engine_allocation::reserve(&mut edits, 1).map_err(|_| ALLOCATION)?;
+        for (old, _) in seen.iter().enumerate().filter(|(_, was_seen)| !**was_seen) {
+            if edits.len() == edits.capacity() {
+                engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
+            }
             edits.push((held.keys[old], None));
         }
     }
+    finalize_ledger_edits::<S, T>(edits, source, convert)
+}
+
+fn finalize_ledger_edits<S: TableSchema, T>(
+    edits: &mut [(u128, Option<usize>)],
+    source: &[T],
+    convert: impl Fn(&T) -> S::Row,
+) -> Result<Option<replay_data::sliced::SliceUpdate>, &'static str> {
+    const ALLOCATION: &str = "collector allocation failed";
     if edits.is_empty() {
         return Ok(None);
     }
-    edits.sort_unstable_by_key(|edit| edit.0);
+    if !edits.windows(2).all(|pair| pair[0].0 < pair[1].0) {
+        edits.sort_unstable_by_key(|edit| edit.0);
+    }
     let mut keys = Vec::new();
     let mut rows = Vec::new();
     engine_allocation::reserve(&mut keys, edits.len()).map_err(|_| ALLOCATION)?;
     engine_allocation::reserve(&mut rows, edits.len()).map_err(|_| ALLOCATION)?;
-    for (key, at) in edits {
+    for &(key, at) in edits.iter() {
         keys.push(key);
         if let Some(at) = at {
             rows.push(convert(&source[at]));
@@ -1113,38 +1375,6 @@ mod tests {
             let actual: DecodedFrame = projected_decoder.apply(&actual).unwrap();
             assert_eq!(actual, ordinary_decoder.apply(&expected).unwrap());
         }
-    }
-
-    #[test]
-    fn a_membership_change_compares_each_row_at_most_once() {
-        let mut encoder = FrameEncoder::new();
-        let scratch = ProjectionScratch::default();
-        let compared = Cell::new(0);
-        let state = |id| StateRow {
-            id,
-            owner: 2,
-            controller: 3,
-            movement_infrastructure: 0,
-            ..Default::default()
-        };
-        let capture = |encoder: &FrameEncoder, hour, rows: &[StateRow]| {
-            project_table::<tables::States, _>(
-                Some(&mut Projection::new(encoder, 1, hour, false, &scratch)),
-                Outcome::Rows { len: rows.len() },
-                rows,
-                |row| u128::from(row.id),
-                |row, previous| {
-                    compared.set(compared.get() + 1);
-                    row == previous
-                },
-                Clone::clone,
-            )
-        };
-        let first = capture(&encoder, 0, &[state(1), state(2), state(3)]);
-        encoder.encode_input(input(0, first), false).unwrap();
-        let moved = capture(&encoder, 1, &[state(1), state(2), state(4)]);
-        assert!(matches!(moved, TableInput::Sampled(TableView::Complete(_))));
-        assert_eq!(compared.get(), 2);
     }
 
     #[test]

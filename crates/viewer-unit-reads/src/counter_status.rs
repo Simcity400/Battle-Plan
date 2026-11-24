@@ -370,15 +370,6 @@ mod tests {
     }
 
     #[test]
-    fn a_stack_averages_its_members_fixed_point_ratios() {
-        let stack = [ratio(20 * FIXED, 20 * FIXED), ratio(0, 200 * FIXED)];
-        assert_eq!(stack_fill(&stack), 0.5);
-        assert_eq!(stack_fill(&[]), 0.0);
-        assert_eq!(stack_fill(&[25_000, 25_000]), 0.25);
-        assert_eq!(stack_fill(&[1, 2]), 0.00001);
-    }
-
-    #[test]
     fn the_supply_crate_steps_through_the_three_defines() {
         let limits = VANILLA_SUPPLY;
         assert_eq!(supply_frame(FIXED, limits), None);

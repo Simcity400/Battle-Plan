@@ -1,5 +1,9 @@
 
-use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native_memory::{
+    Memory, cpdx_array::Array,
+    memory::{RecordField, RecordLayout, RecordSources},
+    read, read_slice, walk::Outcome,
+};
 use engine_native::{ccharacter, ccountry};
 use crate::{cscientist, scientist_roster_entry, scientist_skill_entry};
 
@@ -136,6 +140,107 @@ pub fn walk_with_injury(
     walk_buffer_with_injury(memory, base, game_state, &mut buffers, injury)
 }
 
+const BATCH: usize = 64;
+const COUNTRY_ROSTER_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: ccountry::SCIENTIST_ROSTER,
+    destination_offset: 0,
+    len: 8,
+}];
+const COUNTRY_ROSTER_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&COUNTRY_ROSTER_FIELDS, 8).expect("valid country scientist roster layout");
+const ROSTER_ENTRIES_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: ENTRIES,
+    destination_offset: 0,
+    len: 16,
+}];
+const ROSTER_ENTRIES_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&ROSTER_ENTRIES_FIELDS, 16).expect("valid scientist roster entries layout");
+const ENTRY_CHAR_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: scientist_roster_entry::CHARACTER,
+    destination_offset: 0,
+    len: 8,
+}];
+const ENTRY_CHAR_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&ENTRY_CHAR_FIELDS, 8).expect("valid scientist entry layout");
+
+const CHAR_FIELDS: [RecordField; 2] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 16,
+    },
+    RecordField {
+        source_offset: ccharacter::SCIENTIST,
+        destination_offset: 16,
+        len: 8,
+    },
+];
+const CHAR_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&CHAR_FIELDS, 24).expect("valid scientist character layout");
+
+const SCIENTIST_BASE_FIELDS: [RecordField; 4] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: cscientist::TRAIT_COUNT,
+        destination_offset: 8,
+        len: 4,
+    },
+    RecordField {
+        source_offset: cscientist::SKILLS,
+        destination_offset: 12,
+        len: 16,
+    },
+    RecordField {
+        source_offset: cscientist::ACTIVE,
+        destination_offset: 28,
+        len: 1,
+    },
+];
+const SCIENTIST_BASE_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&SCIENTIST_BASE_FIELDS, SCIENTIST_STRIDE)
+        .expect("valid scientist base layout");
+
+const SCIENTIST_INJURY_FIELDS: [RecordField; 6] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: cscientist::TRAIT_COUNT,
+        destination_offset: 8,
+        len: 4,
+    },
+    RecordField {
+        source_offset: cscientist::SKILLS,
+        destination_offset: 12,
+        len: 16,
+    },
+    RecordField {
+        source_offset: cscientist::ACTIVE,
+        destination_offset: 28,
+        len: 1,
+    },
+    RecordField {
+        source_offset: cscientist::VISIBILITY_TEMPLATE,
+        destination_offset: 32,
+        len: 8,
+    },
+    RecordField {
+        source_offset: cscientist::INJURY_DAYS,
+        destination_offset: 40,
+        len: 4,
+    },
+];
+const SCIENTIST_STRIDE: usize = 44;
+const SCIENTIST_INJURY_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&SCIENTIST_INJURY_FIELDS, SCIENTIST_STRIDE)
+        .expect("valid scientist injury layout");
+
 fn walk_buffer_with_injury(
     memory: &impl Memory,
     base: usize,
@@ -148,95 +253,346 @@ fn walk_buffer_with_injury(
     let failure = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let reader = Reader { memory, base };
-        for slot in 1..countries.count() {
-            let Some(country) = countries.at(slot)? else {
-                continue;
-            };
-            let roster = reader.optional(country.pointer, ccountry::SCIENTIST_ROSTER)?;
-            if roster == 0 {
+        let expected_character = engine_sites::at(base, ccharacter::VTABLE_RVA)
+            .ok_or("module address overflow")? as u64;
+        let expected_scientist = engine_sites::at(base, cscientist::VTABLE_RVA)
+            .ok_or("module address overflow")? as u64;
+        let mut entry_bytes = [0_u8; BATCH * 8];
+        let mut entry_ptrs = [0_usize; BATCH];
+        let mut char_ptr_bytes = [0_u8; BATCH * 8];
+        let mut char_ptrs = [0_usize; BATCH];
+        let mut char_records = [0_u8; BATCH * 24];
+        let mut sci_ptrs = [0_usize; BATCH];
+        let mut sci_records = [0_u8; BATCH * SCIENTIST_STRIDE];
+        let mut skill_bytes = [0_u8; 32 * scientist_skill_entry::STRIDE];
+        let mut country_slots = [engine_native_memory::country_identity::Country {
+            pointer: 0,
+            canonical_slot: 0,
+            id: 0,
+        }; BATCH];
+        let mut country_ptrs = [0_usize; BATCH];
+        let mut roster_ptr_bytes = [0_u8; BATCH * 8];
+        let mut roster_ptrs = [0_usize; BATCH];
+        let mut roster_map = [u8::MAX; BATCH];
+        let mut roster_headers = [0_u8; BATCH * 16];
+        let mut next = 1_u32;
+        while next < countries.count() {
+            let end = countries.count().min(next + BATCH as u32);
+            let mut present = 0_usize;
+            for slot in next..end {
+                if let Some(country) = countries.at(slot)? {
+                    country_slots[present] = country;
+                    country_ptrs[present] = country.pointer;
+                    present += 1;
+                }
+            }
+            next = end;
+            if present == 0 {
                 continue;
             }
-            let entries = roster
-                .checked_add(ENTRIES)
-                .and_then(|address| Array::read(memory, address, 8))
+            let rosters_copied = memory.copy_records(
+                RecordSources::Pointers(&country_ptrs[..present]),
+                &COUNTRY_ROSTER_LAYOUT,
+                &mut roster_ptr_bytes[..present * 8],
+            );
+            let mut live = 0_usize;
+            roster_map[..present].fill(u8::MAX);
+            for index in 0..rosters_copied.min(present) {
+                let ptr = u64::from_le_bytes(
+                    roster_ptr_bytes[index * 8..(index + 1) * 8]
+                        .try_into()
+                        .unwrap(),
+                );
+                if let Ok(ptr) = usize::try_from(ptr)
+                    && ptr != 0
+                {
+                    roster_map[index] = live as u8;
+                    roster_ptrs[live] = ptr;
+                    live += 1;
+                }
+            }
+            let headers_copied = if live == 0 {
+                0
+            } else {
+                memory.copy_records(
+                    RecordSources::Pointers(&roster_ptrs[..live]),
+                    &ROSTER_ENTRIES_LAYOUT,
+                    &mut roster_headers[..live * 16],
+                )
+            };
+            for index in 0..present {
+                let country = country_slots[index];
+                let roster = if index < rosters_copied {
+                    usize::try_from(u64::from_le_bytes(
+                        roster_ptr_bytes[index * 8..(index + 1) * 8]
+                            .try_into()
+                            .unwrap(),
+                    ))
+                    .map_err(|_| "scientist pointer overflow")?
+                } else {
+                    reader.optional(country.pointer, ccountry::SCIENTIST_ROSTER)?
+                };
+                if roster == 0 {
+                    continue;
+                }
+                let entries = if roster_map[index] != u8::MAX
+                    && (roster_map[index] as usize) < headers_copied
+                {
+                    let at = roster_map[index] as usize * 16;
+                    Array::from_header(roster_headers[at..at + 16].try_into().unwrap(), 8)
+                } else {
+                    roster
+                        .checked_add(ENTRIES)
+                        .and_then(|address| Array::read(memory, address, 8))
+                }
                 .ok_or("scientist roster vector unreadable or invalid")?;
-            for ordinal in 0..entries.count {
-                let entry = entries
-                    .element(ordinal, 8)
-                    .and_then(|address| read::<u64>(memory, address))
-                    .and_then(|value| usize::try_from(value).ok())
-                    .filter(|&pointer| pointer != 0)
-                    .ok_or("scientist roster entry unreadable or null")?;
-                let character = reader.optional(entry, scientist_roster_entry::CHARACTER)?;
-                if character == 0 {
-                    return Err("scientist roster entry has a null character");
+            let mut first = 0_u32;
+            while first < entries.count {
+                let count = ((entries.count - first) as usize).min(BATCH);
+                let span = entries
+                    .slice(first, count as u32, 8)
+                    .map_err(|_| "scientist roster entry unreadable or null")?;
+                if !read_slice(memory, span.data, &mut entry_bytes[..count * 8]) {
+                    return Err("scientist roster entry unreadable or null");
                 }
-                let id = reader.character(character)?;
-                let scientist = reader.optional(character, ccharacter::SCIENTIST)?;
-                if scientist == 0 {
-                    return Err("rostered scientist character has no scientist role");
+                for (dst, chunk) in entry_ptrs[..count]
+                    .iter_mut()
+                    .zip(entry_bytes[..count * 8].chunks_exact(8))
+                {
+                    let ptr = usize::try_from(u64::from_le_bytes(chunk.try_into().unwrap()))
+                        .ok()
+                        .filter(|&p| p != 0)
+                        .ok_or("scientist roster entry unreadable or null")?;
+                    *dst = ptr;
                 }
-                reader.vtable(
-                    scientist,
-                    cscientist::VTABLE_RVA,
-                    "scientist vtable mismatch",
-                )?;
-                let trait_count = reader.field::<i32>(scientist, cscientist::TRAIT_COUNT)?;
-                let skills = scientist
-                    .checked_add(cscientist::SKILLS)
-                    .and_then(|address| Array::read(memory, address, scientist_skill_entry::STRIDE))
-                    .ok_or("scientist specialization vector unreadable or invalid")?;
-                let skill_count =
-                    i32::try_from(skills.count).map_err(|_| "scientist skill count overflow")?;
-                if trait_count < 0 {
-                    return Err("scientist trait count is negative");
+                let char_ptrs_copied = memory.copy_records(
+                    RecordSources::Pointers(&entry_ptrs[..count]),
+                    &ENTRY_CHAR_LAYOUT,
+                    &mut char_ptr_bytes[..count * 8],
+                );
+                for (index, dst) in char_ptrs[..count].iter_mut().enumerate() {
+                    let character = if index < char_ptrs_copied {
+                        usize::try_from(u64::from_le_bytes(
+                            char_ptr_bytes[index * 8..(index + 1) * 8]
+                                .try_into()
+                                .unwrap(),
+                        ))
+                        .map_err(|_| "scientist pointer overflow")?
+                    } else {
+                        reader.optional(entry_ptrs[index], scientist_roster_entry::CHARACTER)?
+                    };
+                    if character == 0 {
+                        return Err("scientist roster entry has a null character");
+                    }
+                    *dst = character;
                 }
-                let visibility = injury
-                    .then(|| {
-                        cscientist::visibility(
-                            memory,
-                            base,
-                            scientist,
-                            &mut output.names,
-                            &mut names_used,
+                let chars_copied = memory.copy_records(
+                    RecordSources::Pointers(&char_ptrs[..count]),
+                    &CHAR_LAYOUT,
+                    &mut char_records[..count * 24],
+                ) / CHAR_FIELDS.len();
+                let mut char_ids = [0_u32; BATCH];
+                for index in 0..count {
+                    let (id, scientist) = if index < chars_copied {
+                        let rec = &char_records[index * 24..(index + 1) * 24];
+                        if u64::from_le_bytes(rec[..8].try_into().unwrap()) != expected_character {
+                            return Err("scientist character vtable mismatch");
+                        }
+                        let reference_type = u32::from_le_bytes(
+                            rec[ccharacter::TYPE..ccharacter::ID].try_into().unwrap(),
+                        );
+                        if reference_type != ccharacter::REFERENCE_TYPE {
+                            return Err("scientist character handle type mismatch");
+                        }
+                        let id = u32::from_le_bytes(
+                            rec[ccharacter::ID..ccharacter::ID + 4].try_into().unwrap(),
+                        );
+                        if id == 0 {
+                            return Err("scientist character handle id is zero");
+                        }
+                        let scientist = usize::try_from(u64::from_le_bytes(
+                            rec[16..24].try_into().unwrap(),
+                        ))
+                        .map_err(|_| "scientist pointer overflow")?;
+                        (id, scientist)
+                    } else {
+                        let character = char_ptrs[index];
+                        (
+                            reader.character(character)?,
+                            reader.optional(character, ccharacter::SCIENTIST)?,
                         )
-                    })
-                    .and_then(Result::ok);
-                counts[0].push(
-                    &mut output.scientists,
-                    Row {
-                        country: country.id,
-                        ordinal,
-                        character: id,
-                        trait_count,
-                        skill_count,
-                        active: reader.field(scientist, cscientist::ACTIVE).ok(),
-                        template_visibility: visibility.map(|(state, _)| state),
-                        template_origin: visibility.and_then(|(_, origin)| origin),
-                        injury_days: injury
-                            .then(|| reader.field(scientist, cscientist::INJURY_DAYS).ok())
-                            .flatten(),
-                    },
-                )?;
-                for index in 0..skills.count {
-                    let record = skills
-                        .element(index, scientist_skill_entry::STRIDE)
-                        .ok_or("scientist specialization record out of range")?;
-                    let token = reader.field::<u32>(record, scientist_skill_entry::TOKEN)?;
-                    let level = reader.field::<i32>(record, scientist_skill_entry::LEVEL)?;
-                    let experience_raw =
-                        reader.field::<i64>(record, scientist_skill_entry::EXPERIENCE)?;
-                    counts[1].push(
-                        &mut output.skills,
-                        SkillRow {
+                    };
+                    if scientist == 0 {
+                        return Err("rostered scientist character has no scientist role");
+                    }
+                    char_ids[index] = id;
+                    sci_ptrs[index] = scientist;
+                }
+                let (sci_layout, sci_fields) = if injury {
+                    (&SCIENTIST_INJURY_LAYOUT, SCIENTIST_INJURY_FIELDS.len())
+                } else {
+                    (&SCIENTIST_BASE_LAYOUT, SCIENTIST_BASE_FIELDS.len())
+                };
+                let scis_copied = memory.copy_records(
+                    RecordSources::Pointers(&sci_ptrs[..count]),
+                    sci_layout,
+                    &mut sci_records[..count * SCIENTIST_STRIDE],
+                ) / sci_fields;
+                for index in 0..count {
+                    let ordinal = first + index as u32;
+                    let id = char_ids[index];
+                    let scientist = sci_ptrs[index];
+                    let (trait_count, skills, active, injury_days, visibility_template) =
+                        if index < scis_copied {
+                            let rec = &sci_records
+                                [index * SCIENTIST_STRIDE..(index + 1) * SCIENTIST_STRIDE];
+                            if u64::from_le_bytes(rec[..8].try_into().unwrap())
+                                != expected_scientist
+                            {
+                                return Err("scientist vtable mismatch");
+                            }
+                            let trait_count =
+                                i32::from_le_bytes(rec[8..12].try_into().unwrap());
+                            let skills = Array::from_header(
+                                rec[12..28].try_into().unwrap(),
+                                scientist_skill_entry::STRIDE,
+                            )
+                            .ok_or("scientist specialization vector unreadable or invalid")?;
+                            let active = Some(rec[28]);
+                            let visibility_template = injury.then(|| {
+                                u64::from_le_bytes(rec[32..40].try_into().unwrap())
+                            });
+                            let injury_days = injury
+                                .then(|| i32::from_le_bytes(rec[40..44].try_into().unwrap()));
+                            (trait_count, skills, active, injury_days, visibility_template)
+                        } else {
+                            reader.vtable(
+                                scientist,
+                                cscientist::VTABLE_RVA,
+                                "scientist vtable mismatch",
+                            )?;
+                            let trait_count =
+                                reader.field::<i32>(scientist, cscientist::TRAIT_COUNT)?;
+                            let skills = scientist
+                                .checked_add(cscientist::SKILLS)
+                                .and_then(|address| {
+                                    Array::read(memory, address, scientist_skill_entry::STRIDE)
+                                })
+                                .ok_or(
+                                    "scientist specialization vector unreadable or invalid",
+                                )?;
+                            let active = reader.field(scientist, cscientist::ACTIVE).ok();
+                            let injury_days = injury
+                                .then(|| reader.field(scientist, cscientist::INJURY_DAYS).ok())
+                                .flatten();
+                            (trait_count, skills, active, injury_days, None)
+                        };
+                    let skill_count = i32::try_from(skills.count)
+                        .map_err(|_| "scientist skill count overflow")?;
+                    if trait_count < 0 {
+                        return Err("scientist trait count is negative");
+                    }
+                    let visibility = if injury {
+                        if visibility_template == Some(0) {
+                            Some((0, None))
+                        } else {
+                            cscientist::visibility(
+                                memory,
+                                base,
+                                scientist,
+                                &mut output.names,
+                                &mut names_used,
+                            )
+                            .ok()
+                        }
+                    } else {
+                        None
+                    };
+                    counts[0].push(
+                        &mut output.scientists,
+                        Row {
+                            country: country.id,
+                            ordinal,
                             character: id,
-                            ordinal: index,
-                            token,
-                            level,
-                            experience_raw,
+                            trait_count,
+                            skill_count,
+                            active,
+                            template_visibility: visibility.map(|(state, _)| state),
+                            template_origin: visibility.and_then(|(_, origin)| origin),
+                            injury_days,
                         },
                     )?;
+                    let skill_total = skills.count as usize;
+                    if skill_total != 0
+                        && skill_total <= 32
+                        && skills
+                            .slice(0, skills.count, scientist_skill_entry::STRIDE)
+                            .is_ok_and(|s| {
+                                read_slice(
+                                    memory,
+                                    s.data,
+                                    &mut skill_bytes[..skill_total * scientist_skill_entry::STRIDE],
+                                )
+                            })
+                    {
+                        for skill_index in 0..skill_total {
+                            let rec = &skill_bytes[skill_index * scientist_skill_entry::STRIDE
+                                ..(skill_index + 1) * scientist_skill_entry::STRIDE];
+                            let token = u32::from_le_bytes(
+                                rec[scientist_skill_entry::TOKEN
+                                    ..scientist_skill_entry::TOKEN + 4]
+                                    .try_into()
+                                    .unwrap(),
+                            );
+                            let level = i32::from_le_bytes(
+                                rec[scientist_skill_entry::LEVEL
+                                    ..scientist_skill_entry::LEVEL + 4]
+                                    .try_into()
+                                    .unwrap(),
+                            );
+                            let experience_raw = i64::from_le_bytes(
+                                rec[scientist_skill_entry::EXPERIENCE
+                                    ..scientist_skill_entry::EXPERIENCE + 8]
+                                    .try_into()
+                                    .unwrap(),
+                            );
+                            counts[1].push(
+                                &mut output.skills,
+                                SkillRow {
+                                    character: id,
+                                    ordinal: skill_index as u32,
+                                    token,
+                                    level,
+                                    experience_raw,
+                                },
+                            )?;
+                        }
+                    } else {
+                        for skill_index in 0..skills.count {
+                            let record = skills
+                                .element(skill_index, scientist_skill_entry::STRIDE)
+                                .ok_or("scientist specialization record out of range")?;
+                            let token =
+                                reader.field::<u32>(record, scientist_skill_entry::TOKEN)?;
+                            let level =
+                                reader.field::<i32>(record, scientist_skill_entry::LEVEL)?;
+                            let experience_raw =
+                                reader.field::<i64>(record, scientist_skill_entry::EXPERIENCE)?;
+                            counts[1].push(
+                                &mut output.skills,
+                                SkillRow {
+                                    character: id,
+                                    ordinal: skill_index,
+                                    token,
+                                    level,
+                                    experience_raw,
+                                },
+                            )?;
+                        }
+                    }
                 }
+                first += count as u32;
+            }
             }
         }
         Ok(())

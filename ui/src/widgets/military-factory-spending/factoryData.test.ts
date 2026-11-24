@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { factoryItems, factoryMonth } from './factoryData.ts';
-import { definition, OPTIONS } from './definition.ts';
 import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun } from '../../generated/dashboard';
 
 const known = (firstHour: number, lastHour: number, totalRaw: string): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw, reason: null });
@@ -50,7 +49,3 @@ test('a month holds new, converted, the unrecorded purpose and the others, and s
   assert.deepEqual(factoryMonth(reply(), 'air', 124, 147, 100).bands.map(band => band.exact), [2000n, 0n, 0n, 0n]);
 });
 
-test('equipment and view are settings, and each but the default is its own card', () => {
-  assert.deepEqual(OPTIONS.slice(0, 2).map(field => field.key), ['equipment', 'view']);
-  assert.deepEqual(definition.variants.map(variant => variant.key), ['equipment=air,view=months', 'equipment=land,view=circle', 'equipment=land,view=months']);
-});

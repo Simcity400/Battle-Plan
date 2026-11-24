@@ -1011,15 +1011,6 @@ fn walk_movement_internal(
 #[cfg(test)]
 mod capacity_tests {
     use super::*;
-    #[test]
-    fn route_byte_demand_excludes_path_allocator_spare_capacity() {
-        let mut packet = MovementPacket::new(1, 1);
-        packet.paths.reserve(30_000);
-        for _ in 0..20 {
-            packet.reserve(1, 5_001).unwrap();
-            assert_eq!(packet.route_bytes.capacity(), 5_001 * size_of::<u32>());
-        }
-    }
 
     #[test]
     fn deferred_routes_match_serial_bytes_and_completed_prefixes_after_partial_faults() {

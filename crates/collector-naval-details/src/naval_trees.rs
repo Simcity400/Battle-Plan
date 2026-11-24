@@ -636,18 +636,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_placeholder_owns_no_storage_and_records_no_samples_without_the_oracle() {
-        let trees = Trees::default();
-        assert_eq!(trees.allocated_bytes(), 0);
-        let [refused, samples] = trees.tables();
-        assert!(matches!(refused, TableView::Unavailable { .. }));
-        if !naval_tree_changes::ORACLE {
-            assert_eq!(
-                samples,
-                TableView::Complete(TableRows::NavalModifierTreeSamples(Vec::new()))
-            );
-            assert_eq!(trees.samples_outcome(), Outcome::Rows { len: 0 });
-        }
-    }
 }

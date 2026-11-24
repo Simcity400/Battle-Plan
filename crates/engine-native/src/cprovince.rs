@@ -2683,41 +2683,44 @@ pub fn movement_province(
     })
 }
 
-const MOVEMENT_PROVINCE_ID_FIELDS: [RecordField; 1] = [RecordField {
-    source_offset: ID,
-    destination_offset: 0,
-    len: 4,
-}];
-const MOVEMENT_PROVINCE_ID_LAYOUT: RecordLayout<'static> =
-    RecordLayout::new(&MOVEMENT_PROVINCE_ID_FIELDS, 4).expect("valid record layout");
-const MOVEMENT_PROVINCE_FIELDS: [RecordField; 5] = [
+const MOVEMENT_PROVINCE_FIELDS: [RecordField; 7] = [
     RecordField {
-        source_offset: DEFINITION,
+        source_offset: 0,
         destination_offset: 0,
         len: 8,
     },
     RecordField {
-        source_offset: STATE,
+        source_offset: ID,
         destination_offset: 8,
-        len: 8,
-    },
-    RecordField {
-        source_offset: CONTROLLER,
-        destination_offset: 16,
         len: 4,
     },
     RecordField {
-        source_offset: CONTROLLER_AREA,
+        source_offset: DEFINITION,
+        destination_offset: 16,
+        len: 8,
+    },
+    RecordField {
+        source_offset: STATE,
         destination_offset: 24,
         len: 8,
     },
     RecordField {
-        source_offset: STRATEGIC_REGION,
+        source_offset: CONTROLLER,
         destination_offset: 32,
+        len: 4,
+    },
+    RecordField {
+        source_offset: CONTROLLER_AREA,
+        destination_offset: 40,
+        len: 8,
+    },
+    RecordField {
+        source_offset: STRATEGIC_REGION,
+        destination_offset: 48,
         len: 8,
     },
 ];
-const MOVEMENT_PROVINCE_BYTES: usize = 40;
+const MOVEMENT_PROVINCE_BYTES: usize = 56;
 const MOVEMENT_PROVINCE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&MOVEMENT_PROVINCE_FIELDS, MOVEMENT_PROVINCE_BYTES)
         .expect("valid record layout");
@@ -2807,6 +2810,156 @@ impl MovementRows {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StaticMovementProvince {
+    pub pointer: usize,
+    pub state: usize,
+    pub strategic_region: usize,
+    pub terrain_flags: Result<u8, &'static str>,
+}
+
+const CONTROLLER_FIELDS: [RecordField; 2] = [
+    RecordField {
+        source_offset: CONTROLLER,
+        destination_offset: 0,
+        len: 4,
+    },
+    RecordField {
+        source_offset: CONTROLLER_AREA,
+        destination_offset: 8,
+        len: 8,
+    },
+];
+const CONTROLLER_BYTES: usize = 16;
+const CONTROLLER_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&CONTROLLER_FIELDS, CONTROLLER_BYTES).expect("valid record layout");
+const CONTROLLER_ONLY_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: CONTROLLER,
+    destination_offset: 0,
+    len: 4,
+}];
+const CONTROLLER_ONLY_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&CONTROLLER_ONLY_FIELDS, 4).expect("valid record layout");
+const CONTROLLER_AREA_ONLY_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: CONTROLLER_AREA,
+    destination_offset: 0,
+    len: 8,
+}];
+const CONTROLLER_AREA_ONLY_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&CONTROLLER_AREA_ONLY_FIELDS, 8).expect("valid record layout");
+
+pub fn movement_province_controllers_only(
+    memory: &impl Memory,
+    pointers: &[usize],
+    out: &mut [Result<u32, &'static str>],
+) {
+    debug_assert_eq!(pointers.len(), out.len());
+    for (chunk_pointers, chunk_out) in pointers
+        .chunks(BATCH_ROWS)
+        .zip(out.chunks_mut(BATCH_ROWS))
+    {
+        let mut payload = [0u8; BATCH_ROWS * 4];
+        let mut failed = [false; BATCH_ROWS];
+        gather_rows(
+            memory,
+            chunk_pointers,
+            &CONTROLLER_ONLY_LAYOUT,
+            &mut payload[..chunk_pointers.len() * 4],
+            |slot| failed[slot] = true,
+        );
+        for slot in 0..chunk_pointers.len() {
+            if failed[slot] {
+                chunk_out[slot] = chunk_pointers[slot]
+                    .checked_add(CONTROLLER)
+                    .and_then(|address| engine_native_memory::read::<u32>(memory, address))
+                    .ok_or("movement province controller unreadable");
+            } else {
+                chunk_out[slot] = Ok(u32::from_le_bytes(
+                    payload[slot * 4..slot * 4 + 4].try_into().unwrap(),
+                ));
+            }
+        }
+    }
+}
+
+pub fn movement_province_controller_areas(
+    memory: &impl Memory,
+    pointers: &[usize],
+    out: &mut [Result<usize, &'static str>],
+) {
+    debug_assert_eq!(pointers.len(), out.len());
+    for (chunk_pointers, chunk_out) in pointers
+        .chunks(BATCH_ROWS)
+        .zip(out.chunks_mut(BATCH_ROWS))
+    {
+        let mut payload = [0u8; BATCH_ROWS * 8];
+        let mut failed = [false; BATCH_ROWS];
+        gather_rows(
+            memory,
+            chunk_pointers,
+            &CONTROLLER_AREA_ONLY_LAYOUT,
+            &mut payload[..chunk_pointers.len() * 8],
+            |slot| failed[slot] = true,
+        );
+        for slot in 0..chunk_pointers.len() {
+            if failed[slot] {
+                chunk_out[slot] = chunk_pointers[slot]
+                    .checked_add(CONTROLLER_AREA)
+                    .and_then(|address| engine_native_memory::read::<u64>(memory, address))
+                    .map(|value| value as usize)
+                    .ok_or("movement province field unreadable");
+            } else {
+                chunk_out[slot] = Ok(u64::from_le_bytes(
+                    payload[slot * 8..slot * 8 + 8].try_into().unwrap(),
+                ) as usize);
+            }
+        }
+    }
+}
+
+pub fn movement_province_controllers(
+    memory: &impl Memory,
+    pointers: &[usize],
+    out: &mut [(Result<u32, &'static str>, Result<usize, &'static str>)],
+) {
+    debug_assert_eq!(pointers.len(), out.len());
+    for (chunk_pointers, chunk_out) in pointers
+        .chunks(BATCH_ROWS)
+        .zip(out.chunks_mut(BATCH_ROWS))
+    {
+        let mut payload = [0u8; BATCH_ROWS * CONTROLLER_BYTES];
+        let mut failed = [false; BATCH_ROWS];
+        gather_rows(
+            memory,
+            chunk_pointers,
+            &CONTROLLER_LAYOUT,
+            &mut payload[..chunk_pointers.len() * CONTROLLER_BYTES],
+            |slot| failed[slot] = true,
+        );
+        for slot in 0..chunk_pointers.len() {
+            if failed[slot] {
+                let pointer = chunk_pointers[slot];
+                let controller = pointer
+                    .checked_add(CONTROLLER)
+                    .and_then(|address| engine_native_memory::read::<u32>(memory, address))
+                    .ok_or("movement province controller unreadable");
+                let controller_area = pointer
+                    .checked_add(CONTROLLER_AREA)
+                    .and_then(|address| engine_native_memory::read::<u64>(memory, address))
+                    .map(|value| value as usize)
+                    .ok_or("movement province field unreadable");
+                chunk_out[slot] = (controller, controller_area);
+            } else {
+                let record = &payload[slot * CONTROLLER_BYTES..][..CONTROLLER_BYTES];
+                let controller = u32::from_le_bytes(record[0..4].try_into().unwrap());
+                let controller_area =
+                    u64::from_le_bytes(record[8..16].try_into().unwrap()) as usize;
+                chunk_out[slot] = (Ok(controller), Ok(controller_area));
+            }
+        }
+    }
+}
+
 pub fn movement_provinces(
     memory: &impl Memory,
     base: usize,
@@ -2814,10 +2967,23 @@ pub fn movement_provinces(
     ids: &[u32],
     mut each: impl FnMut(u32, Result<MovementProvince, &'static str>),
 ) {
+    movement_provinces_with_pointers(memory, base, provinces, ids, |id, _, result| {
+        each(id, result);
+    });
+}
+
+pub fn movement_provinces_with_pointers(
+    memory: &impl Memory,
+    base: usize,
+    provinces: Array,
+    ids: &[u32],
+    mut each: impl FnMut(u32, Option<usize>, Result<MovementProvince, &'static str>),
+) {
     const MISMATCH: &str = "movement province identity mismatch";
     let vtable = engine_sites::at(base, VTABLE_RVA).map(|pointer| pointer as u64);
     for ids in ids.chunks(BATCH_ROWS) {
         let mut results: MovementResults = [const { None }; BATCH_ROWS];
+        let mut pointers = [None; BATCH_ROWS];
         let alone = |row: usize| movement_province(memory, base, provinces, ids[row]);
         let mut open = MovementRows::EMPTY;
         for (row, &id) in ids.iter().enumerate() {
@@ -2833,16 +2999,6 @@ pub fn movement_provinces(
                 Err(_) => Err("movement province entry unreadable"),
             }
         });
-        open.gather(memory, &POINTER_LAYOUT, &mut results, &alone, |_, pointer, word| {
-            (Some(word) == vtable).then_some(pointer).ok_or(MISMATCH)
-        });
-        open.gather(
-            memory,
-            &MOVEMENT_PROVINCE_ID_LAYOUT,
-            &mut results,
-            &alone,
-            |row, pointer, id| (id == u64::from(ids[row])).then_some(pointer).ok_or(MISMATCH),
-        );
         let mut payload = [0u8; BATCH_ROWS * MOVEMENT_PROVINCE_BYTES];
         let rows = &open.rows;
         gather_rows(
@@ -2860,15 +3016,22 @@ pub fn movement_provinces(
             }
             let record = &payload[slot * MOVEMENT_PROVINCE_BYTES..][..MOVEMENT_PROVINCE_BYTES];
             let word = |at: usize| u64::from_le_bytes(record[at..at + 8].try_into().unwrap());
+            let found_id = u32::from_le_bytes(record[8..12].try_into().unwrap());
+            if Some(word(0)) != vtable || found_id != ids[row] {
+                results[row] = Some(Err(MISMATCH));
+                continue;
+            }
+            pointers[row] = Some(open.sources[slot]);
+            let definition = word(16);
             results[row] = Some(Ok(MovementProvince {
-                state: Ok(word(8) as usize),
-                controller: Ok(u32::from_le_bytes(record[16..20].try_into().unwrap())),
-                controller_area: Ok(word(24) as usize),
-                strategic_region: Ok(word(32) as usize),
+                state: Ok(word(24) as usize),
+                controller: Ok(u32::from_le_bytes(record[32..36].try_into().unwrap())),
+                controller_area: Ok(word(40) as usize),
+                strategic_region: Ok(word(48) as usize),
                 terrain_flags: Err("movement province definition flags unreadable"),
             }));
-            if word(0) != 0 {
-                defined.push(row, word(0) as usize);
+            if definition != 0 {
+                defined.push(row, definition as usize);
             }
         }
         let (mut flags, mut unreadable) = ([0u8; BATCH_ROWS], [false; BATCH_ROWS]);
@@ -2887,7 +3050,11 @@ pub fn movement_provinces(
             }
         }
         for (row, result) in results.into_iter().enumerate().take(ids.len()) {
-            each(ids[row], result.expect("every province has an outcome"));
+            each(
+                ids[row],
+                pointers[row],
+                result.expect("every province has an outcome"),
+            );
         }
     }
 }
@@ -2911,9 +3078,6 @@ mod tests;
 
 #[cfg(test)]
 mod direct_combat_tests;
-
-#[cfg(all(test, windows, target_env = "msvc", target_arch = "x86_64"))]
-mod bench;
 
 pub fn invasion_provinces(memory: &impl Memory, game_state: usize) -> Result<Array, &'static str> {
     game_state

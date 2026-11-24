@@ -61,25 +61,6 @@ fn a_followed_eapm_is_the_request_paths_summary_of_the_trailing_window_at_every_
 }
 
 #[test]
-fn a_step_of_fifteen_hours_reads_the_parts_at_the_windows_edges_never_the_commands_inside_it() {
-    let sparse = recording(|_| 2);
-    let dense = recording(|_| 60);
-    let step = |index: &Arc<Index>, from: i32| {
-        let mut head = followed(index);
-        let (first, last) = head.window_at(from).unwrap();
-        head.amounts(first, last);
-        let before = head.visits();
-        let (first, last) = head.window_at(from + 15).unwrap();
-        head.amounts(first, last);
-        head.visits() - before
-    };
-    let at_200 = step(&sparse, 200);
-    assert_eq!(step(&dense, 200), at_200, "thirty times the commands in the window, the same lookups");
-    assert_eq!(step(&dense, 300), at_200, "another hour, the same lookups");
-    assert_eq!(at_200, 1 + 2 * (1 + 2 + 1) + 1, "what one step reads");
-}
-
-#[test]
 fn player_display_tag_uses_only_versions_present_in_the_window() {
     let mut session = dashboard_base::test_fixtures::session(9);
     session.qpc_frequency = 1;

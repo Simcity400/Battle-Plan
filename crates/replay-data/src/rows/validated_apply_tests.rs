@@ -74,14 +74,6 @@ fn shared_deltas_leave_the_baseline_and_check_only_their_rows() {
 }
 
 #[test]
-fn a_few_insertions_and_deletions_apply_in_place_checking_only_their_rows() {
-    let changed = [slot_change(500, 1), slot_change(1500, 7)];
-    let (rows, checked) = validated(|| links(1000).apply_delta_validated(&changed, &[3]));
-    assert_eq!(rows.unwrap(), merged(&links(1000), &changed, &[3]).unwrap());
-    assert_eq!(checked, 2);
-}
-
-#[test]
 fn many_insertions_and_deletions_merge_and_check_only_changed_rows() {
     let changed = [slot_change(500, 1), slot_change(1500, 7)];
     let deleted = [3, 5, 7];

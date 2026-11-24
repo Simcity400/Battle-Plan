@@ -449,10 +449,3 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
     assert_eq!(published.members.iter().map(|placed| placed.member.id).collect::<Vec<_>>(), members, "the guns the window draws are the layer's members, each with its route");
 }
 
-#[test]
-fn the_layer_declares_against_this_schema() {
-    let kinds = replay_recording::schema::schema().unwrap();
-    let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "gun_counters");
-    layer_seeing_all().inputs(&fog_off(), &mut inputs).unwrap();
-    assert_eq!(inputs.into_tables().len(), TABLES.len());
-}

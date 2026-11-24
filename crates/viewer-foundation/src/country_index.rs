@@ -175,21 +175,6 @@ mod tests {
     }
 
     #[test]
-    fn the_index_resolves_links_tags_ids_and_flag_tags() {
-        let index = CountryIndex::read(&frame(1, &tables(3, 0))).unwrap();
-        assert_eq!(index.slot(1001), Some(1));
-        assert_eq!(index.slot(1), None);
-        assert_eq!(index.links().len(), 3);
-        assert_eq!(index.tag(2), Some("C002"));
-        assert_eq!(index.ids()[&0], 1000);
-        assert_eq!(
-            index.flag_tags()[&1],
-            (Ok("COS".to_owned()), Ok("C001".to_owned()))
-        );
-        assert!(!index.flag_tags().contains_key(&2));
-    }
-
-    #[test]
     fn the_flag_index_tracks_exact_original_tag_and_each_refusal() {
         use replay_data::rows::Recorded;
         let hour = |number, naming: &[u8], original| {

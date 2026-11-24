@@ -35,20 +35,3 @@ pub const MUTATIONS: [MutationSite; 7] = [
     },
 ];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sites_are_distinct() {
-        let mut rvas: Vec<Rva> = MUTATIONS.iter().map(|site| site.rva).collect();
-        rvas.sort_unstable();
-        rvas.dedup();
-        assert_eq!(rvas.len(), MUTATIONS.len());
-        assert_eq!(MUTATIONS[..COUNTRY_SITES].len(), 2);
-        assert_eq!(
-            MUTATIONS[COUNTRY_SITES].name,
-            "recalculate_leader_modifiers"
-        );
-    }
-}

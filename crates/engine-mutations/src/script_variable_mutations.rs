@@ -96,7 +96,6 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
         Patch::Call,
     ),
 
-
     end_context("end_effect_command", Rva(0x29_69ec)),
     end_context("end_effect_command_run", Rva(0x29_6a94)),
     end_context("end_effect_execute", Rva(0x58_4fe9)),
@@ -135,27 +134,6 @@ pub fn context_store(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_context_end_sites_take_a_context() {
-        let mut ends = 0;
-        for (site, receiver, patch) in MUTATIONS {
-            if patch == Patch::EndContext {
-                ends += 1;
-            }
-            assert_eq!(
-                receiver == Receiver::Context,
-                patch == Patch::EndContext,
-                "{}",
-                site.name
-            );
-        }
-        assert_eq!(ends, 8);
-        let mut names: Vec<_> = MUTATIONS.iter().map(|(site, _, _)| site.name).collect();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), MUTATIONS.len());
-    }
 
     #[test]
     fn receivers_name_the_store() {

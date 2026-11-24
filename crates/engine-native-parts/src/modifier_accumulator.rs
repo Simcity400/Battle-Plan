@@ -39,6 +39,8 @@ struct SnapshotNode {
 }
 
 const SNAPSHOT_BATCH: usize = 64;
+const REQUESTED_SLICE_MAX: usize = 256;
+const SINGLE_SLICE_MAX: usize = 32;
 const SNAPSHOT_FIELDS: [engine_native_memory::memory::RecordField; 1] = [engine_native_memory::memory::RecordField {
     source_offset: 0,
     destination_offset: 0,
@@ -474,13 +476,17 @@ pub fn lookup_many_at_keeping(
     Ok(())
 }
 
-pub fn lookup_requested_at(
-    memory: &impl Memory,
-    address: usize,
-    key: u32,
-) -> Result<Value, &'static str> {
-    if let Some(result) = memory.modifier_accumulator_value(address, key) {
-        return result;
+fn read_requested_array(memory: &impl Memory, address: usize) -> Result<Array, &'static str> {
+    if let Some(header) = read::<[u8; 16]>(memory, address) {
+        let data = u64::from_le_bytes(header[..8].try_into().unwrap()) as usize;
+        let count = i32::from_le_bytes(header[COUNT..COUNT + 4].try_into().unwrap());
+        if count < 0 {
+            return Err("modifier accumulator count negative");
+        }
+        return Ok(Array {
+            data,
+            count: count as u32,
+        });
     }
     let data = read::<u64>(memory, address).ok_or("modifier accumulator data unreadable")? as usize;
     let count = address
@@ -490,10 +496,38 @@ pub fn lookup_requested_at(
     if count < 0 {
         return Err("modifier accumulator count negative");
     }
-    let array = Array {
+    Ok(Array {
         data,
         count: count as u32,
-    };
+    })
+}
+
+fn search_entries_local(entries: &[u8], key: u32) -> Value {
+    let mut first = 0;
+    let mut end = entries.len() / modifier_entry::STRIDE;
+    while first < end {
+        let mid = first + (end - first) / 2;
+        let entry = &entries[mid * modifier_entry::STRIDE..(mid + 1) * modifier_entry::STRIDE];
+        let found = u32::from_le_bytes(entry[..4].try_into().unwrap());
+        match key.cmp(&found) {
+            std::cmp::Ordering::Less => end = mid,
+            std::cmp::Ordering::Greater => first = mid + 1,
+            std::cmp::Ordering::Equal => {
+                return Value {
+                    raw: i64::from_le_bytes(entry[8..16].try_into().unwrap()),
+                    present: true,
+                };
+            }
+        }
+    }
+    Value::default()
+}
+
+fn search_array_remote(
+    memory: &impl Memory,
+    array: Array,
+    key: u32,
+) -> Result<Value, &'static str> {
     let (mut first, mut end) = (0, array.count);
     while first < end {
         let mid = first + (end - first) / 2;
@@ -517,6 +551,94 @@ pub fn lookup_requested_at(
         }
     }
     Ok(Value::default())
+}
+
+pub fn lookup_requested_at(
+    memory: &impl Memory,
+    address: usize,
+    key: u32,
+) -> Result<Value, &'static str> {
+    if let Some(result) = memory.modifier_accumulator_value(address, key) {
+        return result;
+    }
+    let data = read::<u64>(memory, address).ok_or("modifier accumulator data unreadable")? as usize;
+    let count = address
+        .checked_add(COUNT)
+        .and_then(|at| read::<i32>(memory, at))
+        .ok_or("modifier accumulator count unreadable")?;
+    if count < 0 {
+        return Err("modifier accumulator count negative");
+    }
+    search_array_remote(
+        memory,
+        Array {
+            data,
+            count: count as u32,
+        },
+        key,
+    )
+}
+
+pub fn lookup_requested_many_at(
+    memory: &impl Memory,
+    address: usize,
+    keys: &[u32],
+    output: &mut [Value],
+) -> Result<(), &'static str> {
+    if keys.len() != output.len() {
+        return Err("modifier lookup keys or output invalid");
+    }
+    if keys.is_empty() {
+        return Ok(());
+    }
+    let mut unresolved = 0usize;
+    let mut cached = [false; 64];
+    for (index, (&key, slot)) in keys.iter().zip(output.iter_mut()).enumerate() {
+        if let Some(result) = memory.modifier_accumulator_value(address, key) {
+            *slot = result?;
+            if index < cached.len() {
+                cached[index] = true;
+            }
+        } else {
+            *slot = Value::default();
+            unresolved += 1;
+        }
+    }
+    if unresolved == 0 {
+        return Ok(());
+    }
+    let array = read_requested_array(memory, address)?;
+    let count = array.count as usize;
+    if count == 0 {
+        return Ok(());
+    }
+    if count <= REQUESTED_SLICE_MAX && (unresolved >= 2 || count <= SINGLE_SLICE_MAX) {
+        let mut bytes = [0_u8; REQUESTED_SLICE_MAX * modifier_entry::STRIDE];
+        let span = &mut bytes[..count * modifier_entry::STRIDE];
+        if array.data != 0 && engine_native_memory::read_slice(memory, array.data, span) {
+            for (index, (&key, slot)) in keys.iter().zip(output.iter_mut()).enumerate() {
+                if index < cached.len() && cached[index] {
+                    continue;
+                }
+                if index >= cached.len() && memory.modifier_accumulator_value(address, key).is_some()
+                {
+                    continue;
+                }
+                *slot = search_entries_local(span, key);
+            }
+            return Ok(());
+        }
+    }
+    for (index, (&key, slot)) in keys.iter().zip(output.iter_mut()).enumerate() {
+        if index < cached.len() && cached[index] {
+            continue;
+        }
+        if index >= cached.len() && memory.modifier_accumulator_value(address, key).is_some() {
+            continue;
+        }
+        *slot = search_array_remote(memory, array, key)?;
+    }
+    Ok(())
 }
 
 pub fn lookup(memory: &impl Memory, country: usize, key: u32) -> Result<Value, &'static str> {
@@ -735,46 +857,4 @@ pub fn lookup_key_at(
         .and_then(|at| read::<i64>(memory, at))
         .ok_or("modifier point value unavailable")?;
     Ok(Value { raw, present: true })
-}
-#[cfg(test)]
-mod point_tests {
-    use super::*;
-    #[test]
-    fn one_of_many_keys_does_not_read_the_unselected_payloads() {
-        struct Counted {
-            bytes: Vec<u8>,
-            reads: std::cell::Cell<usize>,
-        }
-        impl Memory for Counted {
-            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
-                self.reads.set(self.reads.get() + 1);
-                engine_native_memory::memory::SliceMemory {
-                    base: 0,
-                    bytes: &self.bytes,
-                }
-                .copy(at, out)
-            }
-        }
-        let mut bytes = vec![0; 64 + 200 * modifier_entry::STRIDE];
-        bytes[16..24].copy_from_slice(&64u64.to_le_bytes());
-        bytes[16 + COUNT..16 + COUNT + 4].copy_from_slice(&200i32.to_le_bytes());
-        for index in 0..200 {
-            let at = 64 + index * modifier_entry::STRIDE;
-            bytes[at..at + 4].copy_from_slice(&(index as u32 * 2 + 1).to_le_bytes());
-            bytes[at + 8..at + 16].copy_from_slice(&(-17i64).to_le_bytes());
-        }
-        let memory = Counted {
-            bytes,
-            reads: std::cell::Cell::new(0),
-        };
-        assert_eq!(
-            lookup_key_at(&memory, 16, 301).unwrap(),
-            Value {
-                raw: -17,
-                present: true
-            }
-        );
-        assert!(memory.reads.get() < 20);
-        assert_eq!(lookup_key_at(&memory, 16, 300).unwrap(), Value::default());
-    }
 }

@@ -16,8 +16,6 @@ pub use skills::{Component, Skills};
 pub use sub_units::{AirWings, SubUnit, SubUnits, sub_unit_files, sub_units};
 
 use content_reader_script::sub_units::identity;
-#[cfg(test)]
-use sub_units::SUB_UNIT_DIRECTORIES;
 
 const DIRECTORY: &str = "common/unit_leader/";
 
@@ -596,8 +594,6 @@ fn undisplayed_field(keyword: &[u8]) -> bool {
 }
 
 const DEFAULT_TOKEN_KEY: &str = "none";
-
-
 
 fn unknown(key: &Item) -> String {
     format!(

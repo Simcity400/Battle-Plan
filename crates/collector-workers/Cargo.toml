@@ -47,7 +47,7 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 collector-extended-support = { workspace = true, features = ["test-support"] }
-collector-workers = { workspace = true, features = ["default", "test-support"] }
+collector-workers = { workspace = true, features = ["default", "executor_join_help", "test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
 engine-native-land = { workspace = true, features = ["test-support"] }

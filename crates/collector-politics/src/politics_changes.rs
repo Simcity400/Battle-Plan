@@ -64,16 +64,21 @@ impl<T> Deref for Padded<T> {
         &self.0
     }
 }
-static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
-
+static ACTIVE_GATE: collector_primitives::asymmetric::FlightGate =
+    collector_primitives::asymmetric::FlightGate::new(0);
 pub fn active() -> usize {
-    ACTIVE.load(Ordering::SeqCst)
+    ACTIVE_GATE.active()
 }
 static LOG_SERIAL: AtomicU64 = AtomicU64::new(1);
 static LOG: AtomicUsize = AtomicUsize::new(0);
 static OFFERED: AtomicUsize = AtomicUsize::new(0);
 #[allow(clippy::vec_box)]
 static LOGS: Mutex<Vec<Box<[Log]>>> = Mutex::new(Vec::new());
+#[allow(
+    clippy::vec_box,
+    reason = "superseded logs stay boxed until dropped off the capture path"
+)]
+static RETIRED_LOGS: Mutex<Vec<Box<[Log]>>> = Mutex::new(Vec::new());
 static UNHOOKED: OnceLock<String> = OnceLock::new();
 static COUNTERS: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
 const FAILURE_NAMES: [&str; 41] = [
@@ -374,6 +379,7 @@ struct Log {
     cursor: Padded<AtomicU64>,
     consumed: AtomicU64,
     consumed_epoch: AtomicU64,
+    drained: AtomicBool,
 }
 unsafe impl Sync for Log {}
 impl Log {
@@ -403,16 +409,14 @@ impl Log {
     ) -> io::Result<Self> {
         let entries = entries.max(1);
         let keys = keys.max(1);
-        let shared = SharedLane::new(entries.div_ceil(lanes.max(1)).max(shared), keys)?;
+        let secondary = entries.div_ceil(lanes.max(1)).min(8);
+        let shared_initial = entries.div_ceil(lanes.max(1)).min(32);
+        let shared = SharedLane::new(shared_initial.max(shared), keys)?;
         let mut storage = allocation::vec(lanes)?;
         for n in 0..lanes {
             storage.push(Lane::new(
-                (if n == 0 {
-                    entries
-                } else {
-                    entries.div_ceil(lanes)
-                })
-                .max(required.get(n).copied().unwrap_or(0)),
+                (if n == 0 { entries } else { secondary })
+                    .max(required.get(n).copied().unwrap_or(0)),
                 keys,
             )?);
         }
@@ -431,6 +435,7 @@ impl Log {
             cursor: Padded(AtomicU64::new(0)),
             consumed: AtomicU64::new(0),
             consumed_epoch: AtomicU64::new(EPOCH.load(Ordering::Acquire)),
+            drained: AtomicBool::new(false),
         })
     }
     fn frontier(&self) -> u64 {
@@ -538,27 +543,25 @@ fn cached_lane(log: &Log) -> Option<&Lane> {
     })
 }
 
-struct Call;
+struct Call(Option<collector_primitives::asymmetric::FlightGuard<'static>>);
 impl Call {
     #[inline(always)]
     fn enter() -> Self {
-        DEPTH.with(|depth| {
-            if depth.get() == 0 {
-                ACTIVE.fetch_add(1, Ordering::SeqCst);
-            }
-            depth.set(depth.get() + 1);
+        let guard = DEPTH.with(|depth| {
+            let current = depth.get();
+            depth.set(current + 1);
+            (current == 0).then(|| ACTIVE_GATE.enter(false))
         });
-        Self
+        Self(guard)
     }
 }
 impl Drop for Call {
+    #[inline(always)]
     fn drop(&mut self) {
         DEPTH.with(|depth| {
             depth.set(depth.get() - 1);
-            if depth.get() == 0 {
-                ACTIVE.fetch_sub(1, Ordering::SeqCst);
-            }
         });
+        drop(self.0.take());
     }
 }
 /// # Safety
@@ -649,12 +652,32 @@ fn resize_storage(entries: usize, keys: usize) {
     }
 }
 fn resize_checked(entries: usize, keys: usize) -> io::Result<()> {
+    let retired = {
+        let mut retired = RETIRED_LOGS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut *retired)
+    };
+    drop(retired);
     let mut logs = LOGS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let offered = OFFERED.load(Ordering::Acquire) as *const Log;
+    let current_ptr = LOG.load(Ordering::Acquire);
+    let offered_ptr = OFFERED.load(Ordering::Acquire);
+    if active() == 0 {
+        logs.retain(|entry| {
+            let ptr = entry.as_ptr() as usize;
+            if ptr == current_ptr || ptr == offered_ptr {
+                return true;
+            }
+            let log = &entry[0];
+            !(log.publishers.load(Ordering::Acquire) == usize::MAX
+                && log.drained.load(Ordering::Acquire))
+        });
+    }
+    let offered = offered_ptr as *const Log;
     let offered = (!offered.is_null()).then(|| unsafe { &*offered });
-    let current = log();
+    let current = (current_ptr != 0).then(|| unsafe { &*(current_ptr as *const Log) });
     let sources = [current, offered];
     let entries = entries
         .max(
@@ -749,13 +772,17 @@ pub unsafe fn prepare() {
 /// The caller has disabled hooks, checked their executable ranges and ACTIVE,
 /// and joined all workers that can call drain/resize/status.
 pub unsafe fn release() {
-    if ENABLED.load(Ordering::SeqCst) || ACTIVE.load(Ordering::SeqCst) != 0 {
+    if ENABLED.load(Ordering::SeqCst) || active() != 0 {
         COUNTERS[8].fetch_add(1, Ordering::Relaxed);
         return;
     }
     LOG.store(0, Ordering::Release);
     OFFERED.store(0, Ordering::Release);
     LOGS.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+    RETIRED_LOGS
+        .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
     CONSERVATION
@@ -1103,6 +1130,7 @@ pub struct Handoff {
     cursor: u64,
     lanes: usize,
     shared_rejected: u64,
+    final_for_log: bool,
 }
 pub(crate) fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
     handoff_buffer(engine_native_memory::walk::Buffer::Growing(cursors))
@@ -1114,25 +1142,26 @@ fn handoff_buffer(
         return Err("politics hooks unavailable");
     }
     let log = log().ok_or("politics staging unavailable")?;
-    if ACTIVE.load(Ordering::SeqCst) != 0 {
-        return handoff_from_buffer(log, cursors);
+    if active() != 0 {
+        return handoff_from_buffer(log, cursors, false);
     }
+    retire_drained_logs();
     if !cursors.ensure(log.lanes.len())? {
-        return handoff_from_buffer(log, cursors);
+        return handoff_from_buffer(log, cursors, false);
     }
     let offered = OFFERED.load(Ordering::Acquire) as *const Log;
     if offered.is_null() {
-        return handoff_from_buffer(log, cursors);
+        return handoff_from_buffer(log, cursors, false);
     }
     let offered = unsafe { &*offered };
     if !cursors.ensure(offered.lanes.len())? {
-        return handoff_from_buffer(log, cursors);
+        return handoff_from_buffer(log, cursors, false);
     }
     if !close_for_handoff(log, offered) {
-        return handoff_from_buffer(log, cursors);
+        return handoff_from_buffer(log, cursors, false);
     }
     offered.base_cursor.store(log.frontier(), Ordering::Release);
-    let sealed = handoff_from_buffer(log, cursors);
+    let sealed = handoff_from_buffer(log, cursors, true);
     LOG.store(offered as *const Log as usize, Ordering::Release);
     let _ = OFFERED.compare_exchange(
         offered as *const Log as usize,
@@ -1142,6 +1171,34 @@ fn handoff_buffer(
     );
     sealed
 }
+fn retire_drained_logs() {
+    let Ok(mut logs) = LOGS.try_lock() else {
+        return;
+    };
+    if logs.len() <= 1 {
+        return;
+    }
+    let Ok(mut retired) = RETIRED_LOGS.try_lock() else {
+        return;
+    };
+    let current_ptr = LOG.load(Ordering::Acquire);
+    let offered_ptr = OFFERED.load(Ordering::Acquire);
+    let mut index = 0;
+    while index < logs.len() {
+        let ptr = logs[index].as_ptr() as usize;
+        let done = ptr != current_ptr
+            && ptr != offered_ptr
+            && logs[index][0].publishers.load(Ordering::Acquire) == usize::MAX
+            && logs[index][0].drained.load(Ordering::Acquire);
+        if done && retired.try_reserve(1).is_ok() {
+            let entry = logs.swap_remove(index);
+            retired.push(entry);
+        } else {
+            index += 1;
+        }
+    }
+}
+
 fn close_for_handoff(log: &Log, offered: &Log) -> bool {
     offered
         .consumed_epoch
@@ -1155,6 +1212,7 @@ fn close_for_handoff(log: &Log, offered: &Log) -> bool {
 fn handoff_from_buffer(
     log: &Log,
     mut cursors: engine_native_memory::walk::Buffer<'_, LaneCursor>,
+    final_for_log: bool,
 ) -> Result<Handoff, &'static str> {
     let count = log.registered.load(Ordering::Acquire).min(log.lanes.len());
     if !cursors.ensure(count)? {
@@ -1172,6 +1230,7 @@ fn handoff_from_buffer(
         cursor: log.frontier(),
         lanes: count,
         shared_rejected,
+        final_for_log,
     })
 }
 impl Handoff {
@@ -1202,7 +1261,7 @@ impl Handoff {
         bytes: &mut [u8],
     ) -> Result<Drained, &'static str> {
         let log = unsafe { &*(self.log as *const Log) };
-        drain_until(
+        let drained = drain_until(
             log,
             Bound {
                 epoch: self.epoch,
@@ -1212,7 +1271,11 @@ impl Handoff {
             &cursors[..self.lanes],
             output,
             bytes,
-        )
+        );
+        if self.final_for_log {
+            log.drained.store(true, Ordering::Release);
+        }
+        drained
     }
 }
 
@@ -2476,20 +2539,6 @@ fn upkeep_identity_with(memory: &impl Memory, record: usize) -> Identity {
     }
     identity
 }
-#[cfg(test)]
-#[inline(always)]
-pub(crate) fn bench_identity(kind: PowerDailyCostKind, receiver: usize) -> Identity {
-    if kind == PowerDailyCostKind::Relation {
-        relation_identity(receiver)
-    } else {
-        mio_identity(receiver)
-    }
-}
-#[cfg(test)]
-#[inline(always)]
-pub(crate) fn bench_upkeep_identity(record: usize) -> Identity {
-    upkeep_identity(record)
-}
 
 /// # Safety
 /// The original passed here is a live function with the hooked function's ABI that accepts these
@@ -3277,7 +3326,11 @@ impl StagingFixture {
     /// Keep `self` alive and unmoved at its current address for every subsequent call on the
     /// returned [`Handoff`].
     pub unsafe fn handoff(&self, cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
-        handoff_from_buffer(&self.0, engine_native_memory::walk::Buffer::Growing(cursors))
+        handoff_from_buffer(
+            &self.0,
+            engine_native_memory::walk::Buffer::Growing(cursors),
+            false,
+        )
     }
     pub fn registered_lanes(&self) -> usize {
         self.0.registered.load(Ordering::Acquire)
@@ -3295,357 +3348,6 @@ pub fn stage_fixture(events: &[Event], memory: &impl Memory) -> (Drained, Vec<Ev
     let drain = drain_from(&log, &mut output, &mut bytes).unwrap();
     bytes.truncate(drain.bytes);
     (drain, output, bytes)
-}
-#[cfg(test)]
-pub(crate) unsafe fn bench_begin(base: usize, entries: usize, keys: usize) {
-    BASE.store(base, Ordering::Relaxed);
-    // SAFETY: Caller holds `staging_test()` and owns the global politics staging log.
-    unsafe { resize(entries, keys) };
-    ENABLED.store(true, Ordering::SeqCst);
-    let mut cursors = vec![LaneCursor::default(); thread_slots()];
-    let _ = handoff_buffer(engine_native_memory::walk::Buffer::Growing(&mut cursors));
-    let log = log().unwrap();
-    for lane in &log.lanes {
-        lane.consumed
-            .store(lane.published.load(Ordering::Acquire), Ordering::Release);
-    }
-    log.consumed
-        .store(log.cursor.load(Ordering::SeqCst), Ordering::Release);
-    log.consumed_epoch
-        .store(EPOCH.load(Ordering::SeqCst), Ordering::SeqCst);
-}
-
-#[cfg(test)]
-#[inline(always)]
-pub(crate) fn bench_scope(f: impl FnOnce()) {
-    let _active = Call::enter();
-    DAILY_HOUR.set(event_hour());
-    f();
-    DAILY_HOUR.set(None);
-}
-#[cfg(test)]
-#[inline(always)]
-pub(crate) fn bench_observe(event: Event) {
-    let _active = Call::enter();
-    append_record(fixture_record(&event), event.identity.keys);
-}
-
-#[cfg(test)]
-pub(crate) fn bench_daily_country(country: u32, receivers: &[usize]) {
-    let owner = native::Owner {
-        country,
-        instance: 0,
-        pointer: 0,
-        politics: None,
-    };
-    bench_scope(|| {
-        let emit_cost = |kind, identity: Identity| {
-            let _active = Call::enter();
-            append_operands(
-                cost_record(
-                    owner,
-                    kind,
-                    1,
-                    PowerCause::NotIdentified,
-                    PowerSite::NotIdentified,
-                    identity,
-                ),
-                identity.keys,
-            );
-        };
-        emit_cost(
-            PowerDailyCostKind::PoliticalPowerCostModifier,
-            Identity::default(),
-        );
-        for (n, receiver) in receivers[..6].iter().enumerate() {
-            let kind = if n < 4 {
-                PowerDailyCostKind::Relation
-            } else if n == 4 {
-                PowerDailyCostKind::MioResearch
-            } else {
-                PowerDailyCostKind::MioProduction
-            };
-            emit_cost(kind, bench_identity(kind, *receiver));
-        }
-        emit_cost(PowerDailyCostKind::Blockade, Identity::default());
-        {
-            let _active = Call::enter();
-            daily(owner, 10, 8, 2);
-        }
-        for currency in [PowerCurrency::Political, PowerCurrency::Command] {
-            let _active = Call::enter();
-            append_operands(
-                power_record(
-                    owner,
-                    currency,
-                    PowerOperation::Add,
-                    PowerCause::DailyGain,
-                    PowerSite::NotIdentified,
-                    0,
-                    2,
-                    Some(2),
-                    Identity::default(),
-                ),
-                [native::Literal::default(); 3],
-            );
-        }
-        for (n, receiver) in receivers[6..].iter().enumerate() {
-            let _active = Call::enter();
-            let identity = upkeep_identity(*receiver);
-            append_operands(
-                power_record(
-                    owner,
-                    PowerCurrency::Command,
-                    PowerOperation::Add,
-                    PowerCause::AbilityUpkeep,
-                    PowerSite::NotIdentified,
-                    2 - n as i64,
-                    1 - n as i64,
-                    Some(-1),
-                    identity,
-                ),
-                identity.keys,
-            );
-        }
-    });
-}
-
-#[cfg(test)]
-pub(crate) fn bench_daily_taps(status: usize, modifier_frame: usize, rate_frame: usize) {
-    let mut registers: Registers = unsafe { std::mem::zeroed() };
-    registers.r13 = status;
-    registers.rbp = modifier_frame;
-    bench_scope(|| unsafe {
-        tap(&registers, 7);
-        registers.rbp = rate_frame;
-        registers.rdi = 10;
-        registers.rax = 2;
-        registers.r15 = 1;
-        tap(&registers, 6);
-    });
-}
-
-#[cfg(test)]
-pub(crate) unsafe fn bench_drain(events: &mut [Event], bytes: &mut [u8]) -> Drained {
-    drain_from(log().unwrap(), events, bytes).unwrap()
-}
-
-#[cfg(test)]
-pub(crate) unsafe fn bench_staging_parts(events: &[Event]) {
-    use std::{hint::black_box, time::Instant};
-    let packed: Vec<_> = events
-        .iter()
-        .map(|e| (fixture_record(e), e.identity.keys))
-        .collect();
-    for mode in ["guard", "direct_lane", "append_record", "expanded_fixture"] {
-        let mut times = Vec::new();
-        for _ in 0..100 {
-            // SAFETY: Caller holds `staging_test()` for the duration of this benchmark.
-            unsafe { bench_begin(base(), events.len(), 32) };
-            let log = log().unwrap();
-            let index = lane_index(log).unwrap();
-            let start = Instant::now();
-            bench_scope(|| match mode {
-                "guard" => {
-                    for _ in &packed {
-                        let active = Call::enter();
-                        black_box(&active);
-                    }
-                }
-                "direct_lane" => {
-                    for (raw, keys) in &packed {
-                        append_raw_lane(log, index, *raw, *keys, &memory());
-                    }
-                }
-                "append_record" => {
-                    for (raw, keys) in &packed {
-                        append_record(*raw, *keys);
-                    }
-                }
-                _ => {
-                    for event in events {
-                        bench_observe(*event);
-                    }
-                }
-            });
-            times.push(start.elapsed().as_nanos());
-        }
-        times.sort();
-        println!(
-            "staging_part={mode} events={} median_p95_ns=({}, {})",
-            events.len(),
-            times[50],
-            times[95]
-        );
-    }
-}
-#[cfg(test)]
-pub(crate) fn bench_end() {
-    ENABLED.store(false, Ordering::SeqCst);
-}
-
-#[cfg(test)]
-pub(crate) unsafe fn bench_midnight_parts(receivers: &[usize]) {
-    use std::{hint::black_box, time::Instant};
-    let count = receivers.len() / 8;
-    let owners: Vec<_> = receivers.chunks_exact(8).map(|r| r[0] - 0x2200).collect();
-    let events: Vec<_> = receivers
-        .chunks_exact(8)
-        .flat_map(|r| {
-            let mut v = vec![(Record::default(), [native::Literal::default(); 3]); 13];
-            for (n, p) in r.iter().enumerate() {
-                let i = if n < 4 {
-                    relation_identity(*p)
-                } else if n < 6 {
-                    mio_identity(*p)
-                } else {
-                    upkeep_identity(*p)
-                };
-                v[n].0.identify(i);
-                v[n].1 = i.keys;
-            }
-            v
-        })
-        .collect();
-    let log = log().unwrap();
-    let index = lane_index(log).unwrap();
-    let stack = [black_box(base() + native::DAILY_PP_CALLER.0); 128];
-    for mode in [
-        "owner_status",
-        "owner_country",
-        "stack_scalar",
-        "clock",
-        "relation",
-        "mio",
-        "upkeep_identity",
-        "literal_copy",
-        "tls_slot",
-        "record_empty",
-        "record_populated",
-        "record_api",
-        "country_batch",
-        "nested_guard",
-    ] {
-        let mut times = Vec::new();
-        for iteration in 0..110 {
-            // SAFETY: Caller holds `staging_test()` for the duration of this benchmark.
-            unsafe { bench_begin(base(), events.len(), 32) };
-            let start = Instant::now();
-            bench_scope(|| match mode {
-                "owner_status" => {
-                    for p in &owners {
-                        black_box(
-                            native::status_owner(&operand_memory(), base(), p + 0x2000).unwrap(),
-                        );
-                    }
-                }
-                "owner_country" => {
-                    for p in &owners {
-                        black_box(native::command_owner(&operand_memory(), base(), *p).unwrap());
-                    }
-                }
-                "stack_scalar" => {
-                    for _ in &events {
-                        black_box(operand::<u64>(stack.as_ptr() as usize));
-                    }
-                }
-                "clock" => {
-                    for _ in &owners {
-                        black_box(operand_hour());
-                    }
-                }
-                "relation" => {
-                    for r in receivers.chunks_exact(8) {
-                        for p in &r[..4] {
-                            black_box(relation_identity(*p));
-                        }
-                    }
-                }
-                "mio" => {
-                    for r in receivers.chunks_exact(8) {
-                        for p in &r[4..6] {
-                            black_box(mio_identity(*p));
-                        }
-                    }
-                }
-                "upkeep_identity" => {
-                    for r in receivers.chunks_exact(8) {
-                        for p in &r[6..] {
-                            black_box(upkeep_identity(*p));
-                        }
-                    }
-                }
-                "literal_copy" => {
-                    let mut buf = [0; 32];
-                    for (_, keys) in &events {
-                        for key in keys {
-                            if key.len != 0 {
-                                key.copy(&operand_memory(), &mut buf).unwrap();
-                                black_box(&buf);
-                            }
-                        }
-                    }
-                }
-                "tls_slot" => {
-                    for _ in &events {
-                        black_box(cached_lane(log));
-                    }
-                }
-                "record_empty" => {
-                    for (raw, _) in &events {
-                        append_raw_lane(
-                            log,
-                            index,
-                            *raw,
-                            [native::Literal::default(); 3],
-                            &memory(),
-                        );
-                    }
-                }
-                "record_populated" => {
-                    for (raw, keys) in &events {
-                        append_raw_lane(log, index, *raw, *keys, &operand_memory());
-                    }
-                }
-                "record_api" => {
-                    for (raw, keys) in &events {
-                        append_operands(*raw, *keys);
-                    }
-                }
-                "country_batch" => {
-                    for (n, r) in receivers.chunks_exact(8).enumerate() {
-                        bench_daily_country(n as u32 + 1, r);
-                    }
-                }
-                _ => {
-                    for _ in &events {
-                        black_box(Call::enter());
-                    }
-                }
-            });
-            if iteration >= 10 {
-                times.push(start.elapsed().as_nanos());
-            }
-        }
-        times.sort();
-        let operations = match mode {
-            "owner_status" | "owner_country" | "clock" => count,
-            "relation" => count * 4,
-            "mio" | "upkeep_identity" | "literal_copy" => count * 2,
-            _ => events.len(),
-        };
-        println!(
-            "midnight_part={mode} countries={count} operations={operations} batch_p50_p95_ns=({}, {}) per_op_p50_p95_ns=({:.2}, {:.2})",
-            times[50],
-            times[95],
-            times[50] as f64 / operations as f64,
-            times[95] as f64 / operations as f64
-        );
-    }
-    println!(
-        "raw_record_bytes={} events_per_country=13 native_operand_backend=SEH_guarded; guarded_spans: status_owner=5 command_owner=1 stack=1 clock=2 relation=2 mio=2 upkeep_identity=4 literal_inline_copy=1",
-        std::mem::size_of::<Record>()
-    );
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -4199,89 +3901,17 @@ mod tests {
             ..Default::default()
         };
         CONTEXT.set(previous);
-        let before = ACTIVE.load(Ordering::SeqCst);
+        let before = active();
         assert_eq!(unsafe { callback(1, 2, 3, 4, 0xabcdef00) }, 0xabcdef0a);
         assert_eq!(CONTEXT.get().government, previous.government);
         let epoch = EPOCH.load(Ordering::SeqCst);
         let result = std::panic::catch_unwind(|| unsafe { callback(usize::MAX, 0, 0, 0, 0) });
         assert!(result.is_err());
-        assert_eq!(ACTIVE.load(Ordering::SeqCst), before);
+        assert_eq!(active(), before);
         assert_eq!(CONTEXT.get().government, previous.government);
         assert_ne!(EPOCH.load(Ordering::SeqCst), epoch);
         ENABLED.store(false, Ordering::SeqCst);
         CONTEXT.set(Context::default());
-    }
-
-    #[test]
-    #[ignore = "release per-call production shared dispatcher shim profile; no game"]
-    fn politics_shared_call_profile() {
-        let _guard = staging_test();
-        let index = 10
-            + native::SCOPES
-                .iter()
-                .position(|site| site.name == "OnAction")
-                .unwrap();
-        use windows_sys::Win32::System::{
-            Diagnostics::Debug::FlushInstructionCache,
-            Memory::{
-                MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_READWRITE,
-                VirtualAlloc, VirtualFree, VirtualProtect,
-            },
-            Threading::GetCurrentProcess,
-        };
-        let code = unsafe {
-            VirtualAlloc(
-                std::ptr::null(),
-                4096,
-                MEM_COMMIT | MEM_RESERVE,
-                PAGE_READWRITE,
-            )
-        };
-        assert!(!code.is_null());
-        unsafe {
-            std::ptr::write_bytes(code, 0x90, 16);
-            *code.cast::<u8>().add(16) = 0xc3;
-        }
-        let mut previous = 0;
-        assert_ne!(
-            unsafe { VirtualProtect(code, 4096, PAGE_EXECUTE_READ, &mut previous) },
-            0
-        );
-        assert_ne!(
-            unsafe { FlushInstructionCache(GetCurrentProcess(), code, 17) },
-            0
-        );
-        let mut hook = unsafe { Hook::new(code as usize, callbacks()[index], [0x90; 16]) }.unwrap();
-        ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
-        let function: NativeFunction = unsafe { std::mem::transmute(code) };
-        for mode in ["unhooked", "shim_disabled", "shim_observed"] {
-            ENABLED.store(mode == "shim_observed", Ordering::SeqCst);
-            if mode == "shim_disabled" {
-                assert!(hook.set_enabled(true).unwrap());
-            }
-            let mut times = Vec::new();
-            for iteration in 0..110 {
-                let start = std::time::Instant::now();
-                for _ in 0..100_000 {
-                    std::hint::black_box(unsafe { function(1, 2, 3, 4, 5) });
-                }
-                if iteration >= 10 {
-                    times.push(start.elapsed().as_nanos());
-                }
-            }
-            times.sort();
-            println!(
-                "shared_call={mode} function=OnAction callers=70 calls=100000 per_call_p50_p95_ns=({:.2},{:.2})",
-                times[50] as f64 / 100_000.,
-                times[95] as f64 / 100_000.
-            );
-        }
-        ENABLED.store(false, Ordering::SeqCst);
-        assert!(hook.set_enabled(false).unwrap());
-        drop(hook);
-        unsafe {
-            VirtualFree(code, 0, MEM_RELEASE);
-        }
     }
 
     #[test]
@@ -4600,45 +4230,6 @@ mod tests {
     }
 
     #[test]
-    fn the_event_feed_detours_own_their_politics_entries_once() {
-        let sites = entry_sites();
-        assert_eq!(sites.len(), ENTRY_COUNT);
-        assert_eq!(
-            sites[SET_POWER_ENTRY].name,
-            native::SET_POLITICAL_POWER_EFFECT.name
-        );
-        assert_eq!(
-            SCOPE_ORDER[TARGETED_DECISION_ENTRY - 10],
-            Scope::TargetedDecision
-        );
-        for (index, site) in sites.iter().enumerate() {
-            assert!(sites[..index].iter().all(|other| other.rva != site.rva));
-        }
-        assert!(
-            TAPS.iter()
-                .any(|tap| tap.rva == native::SET_POLITICAL_POWER.rva)
-        );
-    }
-
-    #[test]
-    fn scope_entries_follow_the_native_scope_order() {
-        assert_eq!(SCOPE_ORDER.len(), native::SCOPES.len());
-        for (scope, site) in SCOPE_ORDER.iter().zip(native::SCOPES) {
-            assert_eq!(format!("{scope:?}"), site.name);
-        }
-        let started = SCOPE_ORDER
-            .iter()
-            .filter(|scope| scope.provenance().is_some())
-            .count();
-        assert_eq!(started, 7);
-        assert_eq!(Scope::AddIdea.provenance(), None);
-        assert_eq!(
-            Scope::OnAction.provenance(),
-            Some(crate::war_provenance::PoliticsScope::OnAction)
-        );
-    }
-
-    #[test]
     fn caller_classification_is_exact_and_does_not_use_time_or_country_control() {
         let key = |address| engine_sites::reference(0, address);
         assert_eq!(caller_cause(key(0x76fe2e)), PowerCause::Decision);
@@ -4703,7 +4294,12 @@ mod tests {
         assert!(COUNTERS[11].load(Ordering::Relaxed) >= shared_threads + 3);
         assert!(REQUIRED_LANES.load(Ordering::Relaxed) >= 5);
         let mut cursors = vec![LaneCursor::default(); 2];
-        let handoff = handoff_from_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut cursors)).unwrap();
+        let handoff = handoff_from_buffer(
+            &log,
+            engine_native_memory::walk::Buffer::Growing(&mut cursors),
+            false,
+        )
+        .unwrap();
         assert_eq!(handoff.pending(), 20);
         let mut output = [Event::default(); 20];
         let mut bytes = [0; 20 * 16];

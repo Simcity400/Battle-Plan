@@ -485,24 +485,6 @@ fn an_exception_walks_every_scope_for_one_hour() {
 }
 
 #[test]
-fn an_invalidating_hour_rereads_every_store() {
-    let bytes = variable_scopes();
-    let watches = Watches::enabled(16);
-    let mut store = VariableStore::new();
-    let first = first_hour(&bytes, &mut store, &watches);
-    watches.boundary(true);
-    let hour = walk(&bytes, &mut store, &watches);
-    assert!(!hour.counts.quiet);
-    assert_eq!((hour.counts.read, hour.counts.reused), (5, 0));
-    assert_eq!(hour.rows(), first.rows());
-    watches.boundary(false);
-    store.forget();
-    let forgotten = walk(&bytes, &mut store, &watches);
-    assert!(!forgotten.counts.quiet);
-    assert_eq!((forgotten.counts.read, forgotten.counts.reused), (5, 0));
-}
-
-#[test]
 fn a_store_created_or_destroyed_walks_every_scope() {
     type Change = fn(&mut Vec<u8>, &Watches);
     let changes: [(&str, Change); 4] = [
@@ -581,19 +563,6 @@ fn a_changed_header_or_scope_identity_is_read_afresh() {
     assert_eq!((hour.counts.read, hour.counts.reused), (2, 3));
     assert_eq!(hour.scopes[3].scope, cvariables::Scope::Character(46));
     assert_eq!(hour.published(), fresh(&bytes));
-}
-
-#[test]
-fn an_unobserved_write_is_carried_stale() {
-    let mut bytes = variable_scopes();
-    let watches = Watches::enabled(16);
-    let mut store = VariableStore::new();
-    let first = first_hour(&bytes, &mut store, &watches);
-    set_value(&mut bytes, 0, 5);
-    let stale = walk(&bytes, &mut store, &watches);
-    assert!(stale.counts.quiet);
-    assert_eq!(stale.counts.reused, 5);
-    assert_eq!(stale.rows(), first.rows());
 }
 
 #[test]

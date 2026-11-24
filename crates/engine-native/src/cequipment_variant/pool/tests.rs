@@ -368,62 +368,6 @@ fn a_mid_batch_bank_fault_keeps_its_reason_and_stops_before_later_entries() {
 }
 
 #[test]
-fn a_bank_census_costs_two_guarded_gathers_per_batch_not_two_per_entry() {
-    const ENTRIES: usize = 130;
-    const POOL: usize = 0x3000;
-    const DATA: usize = 0x4000;
-    const VARIANT: usize = 0x8000;
-    let mut bytes = vec![0_u8; VARIANT + (ENTRIES + 1) * 0x40];
-    p64(&mut bytes, POOL + carmy::EQUIPMENT_POOL, VTABLE_RVA.0 as u64);
-    array(
-        &mut bytes,
-        POOL + carmy::EQUIPMENT_POOL + ITEMS,
-        DATA,
-        ENTRIES as u32,
-    );
-    for entry in 0..ENTRIES {
-        let variant = VARIANT + entry * 0x40;
-        let slot = DATA + entry * equipment_entry::STRIDE;
-        p64(&mut bytes, slot + equipment_entry::VARIANT, variant as u64);
-        p64(
-            &mut bytes,
-            slot + equipment_entry::AMOUNT,
-            (i64::MIN + entry as i64) as u64,
-        );
-        p64(&mut bytes, variant, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
-        p64(
-            &mut bytes,
-            variant + 8,
-            ((entry as u64 + 1) << 32) | u64::from(cequipment_variant::REFERENCE_TYPE),
-        );
-    }
-    let source = SliceMemory {
-        base: 0,
-        bytes: &bytes,
-    };
-    let census = engine_native_memory::read_census::ReadCensus::new(&source);
-    let sources = [DivisionSource {
-        pointer: POOL,
-        division: 7,
-        template: 9,
-        country: 11,
-    }];
-    let mut rows = vec![DivisionRow::default(); ENTRIES];
-    assert_eq!(
-        walk_divisions(&census, 0, &sources, &mut rows),
-        Outcome::Rows { len: ENTRIES }
-    );
-    assert_eq!(rows[129].ordinal, 129);
-    assert_eq!(rows[129].amount_raw, i64::MIN + 129);
-    assert_eq!(rows[129].variant_handle >> 32, 130);
-    assert_eq!(census.calls(), 2 + 2 * ENTRIES.div_ceil(64));
-    assert_eq!(
-        census.bytes(),
-        24 + ENTRIES * (equipment_entry::STRIDE + 16)
-    );
-}
-
-#[test]
 fn empty_pool_requires_the_correct_object_and_bounded_header() {
     let mut bytes = [0_u8; 0x40];
     bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());

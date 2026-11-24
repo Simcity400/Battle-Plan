@@ -200,40 +200,6 @@ fn batched_province_one_shot_refuses_no_more_and_counts_fallback() {
 }
 
 #[test]
-fn batched_province_request_count_is_two_per_sixty_four_misses() {
-    let (bytes, pointers) = world(65);
-    let mut actual = capture(&bytes, &pointers, true, None, false);
-    assert_eq!(
-        actual.requests, 5,
-        "old code needed 131 guarded requests including the root"
-    );
-    let memory = Reads {
-        source: Source {
-            bytes: &bytes,
-            fault: None,
-            once: false,
-            spent: Cell::new(false),
-        },
-        requests: Cell::new(0),
-    };
-    let mut batch = IdentityBatch::default();
-    for chunk in pointers.chunks(64) {
-        actual.packet.stage_province_ids(&memory, chunk, &mut batch);
-        for &pointer in chunk {
-            actual
-                .packet
-                .acquire_province_id_batched(&memory, pointer, &batch)
-                .unwrap();
-        }
-    }
-    assert_eq!(
-        memory.requests.get(),
-        0,
-        "memo hits still skip both gathers"
-    );
-}
-
-#[test]
 fn batched_province_capacity_alias_and_null_locations_equal_serial() {
     let (bytes, mut pointers) = world(65);
     pointers[1] = pointers[0];

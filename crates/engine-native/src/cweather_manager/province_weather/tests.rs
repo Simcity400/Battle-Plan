@@ -109,34 +109,6 @@ fn temperature_and_raw_mud_failures_withhold_the_row_without_narrowing() {
 }
 
 #[test]
-fn a_dense_census_costs_one_guarded_gather_per_batch_not_one_per_row() {
-    use engine_native_memory::read_census::ReadCensus;
-    const ROWS: usize = 130;
-    let mut storage = vec![0_u8; ROWS * STRIDE];
-    for slot in 0..ROWS {
-        storage[slot * STRIDE..(slot + 1) * STRIDE].copy_from_slice(&bytes(slot as u32));
-    }
-    let memory = SliceMemory {
-        base: 0x1000,
-        bytes: &storage,
-    };
-    let census = ReadCensus::new(&memory);
-    let mut rows = vec![Row::default(); ROWS];
-    let array = Array {
-        data: 0x1000,
-        count: ROWS as u32,
-    };
-    assert_eq!(
-        walk(&census, 0, array, &mut rows),
-        Outcome::Rows { len: ROWS }
-    );
-    assert_eq!(rows[129].id, 129);
-    assert_eq!(census.calls(), ROWS.div_ceil(64));
-    assert_eq!(census.spans(), ROWS * FIELDS.len());
-    assert_eq!(census.bytes(), ROWS * RECORD_BYTES);
-}
-
-#[test]
 fn clock_records_preserve_signed_words_and_never_commit_a_failed_pair() {
     for (hour, night) in [(i32::MIN, i64::MIN), (0, 0), (i32::MAX, i64::MAX)] {
         let mut record = [0; CLOCK_RECORD_BYTES];

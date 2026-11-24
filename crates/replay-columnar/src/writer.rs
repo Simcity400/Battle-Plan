@@ -1,15 +1,18 @@
 
+#[cfg(test)]
+use crate::section::Changes;
 use crate::{
     invalid_static,
     leaf::varint_len,
     manifest::{self, Status},
     restart::{self, Acquisition, Last, Restored},
-    section::{self, Changes, Op, PatchItems, Patches, Run, Scratch, TableHour},
+    section::{self, Op, PatchItems, Patches, Run, TableHour},
     state::{Bits, Bools, Cell, Column, Kind, Lists, Paged, PagedBits, Table, Values},
 };
 use std::{
     cmp::Reverse,
-    collections::{BinaryHeap, HashMap},
+    collections::BinaryHeap,
+    hash::BuildHasher,
     io,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -24,12 +27,24 @@ static WRITERS: AtomicU64 = AtomicU64::new(1);
 const FILL_MINIMUM: usize = 16;
 
 const NEW: u32 = u32::MAX;
+const EMPTY: u32 = u32::MAX;
+const INSERT_SCRATCH_LIMIT: usize = 0;
+const HOUR_SCRATCH_LIMIT: usize = 2 * 1024;
+const SECTION_SCRATCH_LIMIT: usize = 0;
+
+fn drop_over<T>(values: &mut Vec<T>, limit_bytes: usize) {
+    values.clear();
+    if values.capacity().saturating_mul(size_of::<T>()) > limit_bytes {
+        *values = Vec::new();
+    }
+}
 
 #[derive(Default)]
 pub struct Dictionary {
-    ids: HashMap<Box<[u8]>, u32, Hasher>,
+    table: Vec<u32>,
+    hasher: Hasher,
     len: u32,
-    appended: Vec<Box<[u8]>>,
+    appended_from: u32,
     bytes: Vec<u8>,
     ends: Vec<usize>,
 }
@@ -54,34 +69,92 @@ impl Dictionary {
         Some(&self.bytes[start..end])
     }
 
+    fn find(&self, bytes: &[u8]) -> Option<u32> {
+        if self.table.is_empty() {
+            return None;
+        }
+        let mask = self.table.len() - 1;
+        let mut slot = self.hasher.hash_one(bytes) as usize & mask;
+        loop {
+            let id = self.table[slot];
+            if id == EMPTY {
+                return None;
+            }
+            if self.get(id) == Some(bytes) {
+                return Some(id);
+            }
+            slot = (slot + 1) & mask;
+        }
+    }
+
+    fn place(table: &mut [u32], hasher: &Hasher, bytes: &[u8], id: u32) {
+        let mask = table.len() - 1;
+        let mut slot = hasher.hash_one(bytes) as usize & mask;
+        while table[slot] != EMPTY {
+            slot = (slot + 1) & mask;
+        }
+        table[slot] = id;
+    }
+
     pub fn intern(&mut self, bytes: &[u8]) -> io::Result<u32> {
-        if let Some(&id) = self.ids.get(bytes) {
+        if let Some(id) = self.find(bytes) {
             return Ok(id);
         }
         let id = self.len;
         let next = id
             .checked_add(1)
             .ok_or_else(|| invalid_static("Dictionary ids exceed 32 bits"))?;
-        let mut owned = engine_allocation::vec(bytes.len())?;
-        owned.extend_from_slice(bytes);
-        let owned = engine_allocation::boxed_slice(owned)?;
-        let mut copy = engine_allocation::vec(bytes.len())?;
-        copy.extend_from_slice(bytes);
-        let copy = engine_allocation::boxed_slice(copy)?;
-        engine_allocation::reserve_map(&mut self.ids, 1)?;
-        engine_allocation::reserve(&mut self.appended, 1)?;
+        let mut grown = if self.table.is_empty() || (next as usize).saturating_mul(2) > self.table.len()
+        {
+            let capacity = self.table.len().saturating_mul(2).max(16);
+            let mut table = engine_allocation::filled(capacity, EMPTY)?;
+            for existing in 0..self.len {
+                if let Some(entry) = self.get(existing) {
+                    Self::place(&mut table, &self.hasher, entry, existing);
+                }
+            }
+            Some(table)
+        } else {
+            None
+        };
         engine_allocation::reserve(&mut self.bytes, bytes.len())?;
         engine_allocation::reserve(&mut self.ends, 1)?;
-        self.ids.insert(owned, id);
-        self.appended.push(copy);
+        if let Some(table) = grown.take() {
+            self.table = table;
+        }
+        Self::place(&mut self.table, &self.hasher, bytes, id);
         self.bytes.extend_from_slice(bytes);
         self.ends.push(self.bytes.len());
         self.len = next;
         Ok(id)
     }
 
+    pub fn take_appended_range(&mut self) -> std::ops::Range<u32> {
+        let from = self.appended_from;
+        self.appended_from = self.len;
+        from..self.len
+    }
+
+    pub fn slice_from(&self, from: u32) -> io::Result<Vec<Box<[u8]>>> {
+        let count = self.len.saturating_sub(from) as usize;
+        let mut out = engine_allocation::vec(count)?;
+        for id in from..self.len {
+            let bytes = self.get(id).unwrap_or(&[]);
+            let copy = engine_allocation::copy_vec(bytes)?;
+            out.push(engine_allocation::boxed_slice(copy)?);
+        }
+        Ok(out)
+    }
+
     pub fn take_appended(&mut self) -> Vec<Box<[u8]>> {
-        std::mem::take(&mut self.appended)
+        let range = self.take_appended_range();
+        let mut out = Vec::with_capacity(range.len());
+        for id in range {
+            if let Some(bytes) = self.get(id) {
+                out.push(bytes.to_vec().into_boxed_slice());
+            }
+        }
+        out
     }
 }
 
@@ -95,9 +168,7 @@ impl Strings<'_> {
         match self {
             Self::Interning(dictionary) => dictionary.intern(bytes),
             Self::Reading(dictionary) => dictionary
-                .ids
-                .get(bytes)
-                .copied()
+                .find(bytes)
                 .ok_or_else(|| invalid_static("A new string is interned in table order")),
         }
     }
@@ -170,6 +241,7 @@ pub struct Work {
 
 #[derive(Default)]
 struct Cells {
+    rows: Vec<u32>,
     words: Vec<u64>,
     present: Vec<u64>,
     u32s: Vec<u32>,
@@ -188,6 +260,7 @@ fn optional(kind: Kind) -> bool {
 
 impl Cells {
     fn clear(&mut self) {
+        self.rows.clear();
         self.words.clear();
         self.present.clear();
         self.u32s.clear();
@@ -195,6 +268,17 @@ impl Cells {
         self.bytes.clear();
         self.unrecorded.clear();
         self.kept.clear();
+    }
+
+    fn release_scratch(&mut self, limit_bytes: usize) {
+        drop_over(&mut self.rows, limit_bytes);
+        drop_over(&mut self.words, limit_bytes);
+        drop_over(&mut self.present, limit_bytes);
+        drop_over(&mut self.u32s, limit_bytes);
+        drop_over(&mut self.u64s, limit_bytes);
+        drop_over(&mut self.bytes, limit_bytes);
+        drop_over(&mut self.unrecorded, limit_bytes);
+        drop_over(&mut self.kept, limit_bytes);
     }
 
     fn end(&self, kind: Kind) -> u64 {
@@ -253,11 +337,22 @@ pub struct Batch {
     kinds: Vec<Kind>,
     keys: Vec<u128>,
     columns: Vec<Cells>,
+    sparse: bool,
+    uniform_optional_i32: Option<(usize, Option<i32>)>,
 }
 
 impl Batch {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn release_scratch(&mut self) {
+        drop_over(&mut self.keys, SECTION_SCRATCH_LIMIT);
+        for cells in &mut self.columns {
+            cells.release_scratch(SECTION_SCRATCH_LIMIT);
+        }
+        self.sparse = false;
+        self.uniform_optional_i32 = None;
     }
 
     pub fn begin(&mut self, kinds: &[Kind], rows: usize) -> io::Result<()> {
@@ -266,21 +361,56 @@ impl Batch {
                 cells.clear();
             }
         }
+        self.sparse = false;
+        self.uniform_optional_i32 = None;
         self.keys.clear();
         if self.columns.len() < kinds.len() {
             engine_allocation::resize_default(&mut self.columns, kinds.len())?;
         }
         self.kinds.clear();
         extend(&mut self.kinds, kinds)?;
-        engine_allocation::reserve(&mut self.keys, rows)?;
+        if self.keys.capacity() < rows {
+            engine_allocation::reserve(&mut self.keys, rows)?;
+        }
         if rows > 0 {
+            let present_words = rows.div_ceil(64);
             for (cells, &kind) in self.columns.iter_mut().zip(kinds) {
-                engine_allocation::reserve(&mut cells.words, rows)?;
-                if optional(kind) {
-                    engine_allocation::reserve(&mut cells.present, rows.div_ceil(64))?;
+                if cells.words.capacity() < rows {
+                    engine_allocation::reserve(&mut cells.words, rows)?;
+                }
+                if optional(kind) && cells.present.capacity() < present_words {
+                    engine_allocation::reserve(&mut cells.present, present_words)?;
                 }
             }
         }
+        Ok(())
+    }
+
+    pub fn begin_sparse(&mut self, kinds: &[Kind], rows: usize) -> io::Result<()> {
+        if !self.keys.is_empty() {
+            for cells in self.columns.iter_mut().take(self.kinds.len()) {
+                cells.clear();
+            }
+        }
+        self.sparse = true;
+        self.uniform_optional_i32 = None;
+        self.keys.clear();
+        if self.columns.len() < kinds.len() {
+            engine_allocation::resize_default(&mut self.columns, kinds.len())?;
+        }
+        self.kinds.clear();
+        extend(&mut self.kinds, kinds)?;
+        if self.keys.capacity() < rows {
+            engine_allocation::reserve(&mut self.keys, rows)?;
+        }
+        Ok(())
+    }
+
+    pub fn fill_optional_i32(&mut self, column: usize, value: Option<i32>) -> io::Result<()> {
+        if self.kinds.get(column).copied() != Some(Kind::OptionalI32) {
+            return Err(invalid_static("A uniform fill targets another column kind"));
+        }
+        self.uniform_optional_i32 = Some((column, value));
         Ok(())
     }
 
@@ -304,6 +434,21 @@ impl Batch {
             return Err(invalid_static("A batch cell's kind is not its column's"));
         }
         let cells = &mut self.columns[column];
+        if self.sparse {
+            let entry = cells.words.len();
+            if cells
+                .rows
+                .last()
+                .copied()
+                .is_some_and(|last| last as usize >= row)
+            {
+                return Err(invalid_static(
+                    "A batch row carries other than one cell per column",
+                ));
+            }
+            push(&mut cells.rows, row as u32)?;
+            return Ok((cells, entry));
+        }
         if cells.words.len() != row {
             return Err(invalid_static(
                 "A batch row carries other than one cell per column",
@@ -515,19 +660,45 @@ struct Staged<'s> {
     pending: &'s mut Pending,
     unrecord: &'s mut Vec<u32>,
     dirty: bool,
+    has_new: bool,
 }
 
 impl Staged<'_> {
+    #[inline]
+    fn all_recorded(&self) -> bool {
+        self.cells.unrecorded.is_empty()
+            && self.cells.kept.is_empty()
+            && self.marked.is_none()
+            && !self.has_new
+    }
+
     #[inline]
     fn each(
         &mut self,
         mut change: impl FnMut(&mut Pending, usize, u32, bool) -> io::Result<bool>,
     ) -> io::Result<()> {
-        let mut skipped = self.cells.unrecorded.iter().copied().peekable();
-        let mut kept = self.cells.kept.iter().copied().peekable();
+        let unrecorded = self.cells.unrecorded.as_slice();
+        let kept = self.cells.kept.as_slice();
+        let mut unrecorded_at = 0usize;
+        let mut kept_at = 0usize;
+        let mut next_unrecorded = unrecorded.first().copied().unwrap_or(u32::MAX);
+        let mut next_kept = kept.first().copied().unwrap_or(u32::MAX);
         for (row, &slot) in (0u32..).zip(self.slots) {
-            let recorded = skipped.next_if_eq(&row).is_none();
-            if kept.next_if_eq(&row).is_some() || slot == NEW {
+            let recorded = if next_unrecorded == row {
+                unrecorded_at += 1;
+                next_unrecorded = unrecorded.get(unrecorded_at).copied().unwrap_or(u32::MAX);
+                false
+            } else {
+                true
+            };
+            let is_kept = if next_kept == row {
+                kept_at += 1;
+                next_kept = kept.get(kept_at).copied().unwrap_or(u32::MAX);
+                true
+            } else {
+                false
+            };
+            if is_kept || slot == NEW {
                 continue;
             }
             let was = !self.marked.is_some_and(|bits| bits.get(slot));
@@ -544,6 +715,20 @@ impl Staged<'_> {
     }
 
     fn scalars<T: Word>(&mut self, held: &Paged<T>) -> io::Result<()> {
+        if self.all_recorded() {
+            for (&slot, &new) in self.slots.iter().zip(&self.cells.words) {
+                let value = *held
+                    .get(slot as usize)
+                    .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+                if value.word() == new {
+                    continue;
+                }
+                self.dirty = true;
+                self.pending
+                    .change(slot, T::plain(new), Some(T::plain(value.word())))?;
+            }
+            return Ok(());
+        }
         let cells = self.cells;
         self.each(|pending, row, slot, was| {
             let value = *held
@@ -559,6 +744,20 @@ impl Staged<'_> {
     }
 
     fn bools(&mut self, held: &Bools) -> io::Result<()> {
+        if self.all_recorded() {
+            for (&slot, &new) in self.slots.iter().zip(&self.cells.words) {
+                let value = *held
+                    .get(slot as usize)
+                    .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+                if value.word() == new {
+                    continue;
+                }
+                self.dirty = true;
+                self.pending
+                    .change(slot, bool::plain(new), Some(bool::plain(value.word())))?;
+            }
+            return Ok(());
+        }
         let cells = self.cells;
         self.each(|pending, row, slot, was| {
             let value = *held
@@ -574,6 +773,23 @@ impl Staged<'_> {
     }
 
     fn optionals<T: Present>(&mut self, held: &Paged<T>, presence: &PagedBits) -> io::Result<()> {
+        if self.all_recorded() {
+            let cells = self.cells;
+            for (row, (&slot, &word)) in self.slots.iter().zip(&cells.words).enumerate() {
+                let value = *held
+                    .get(slot as usize)
+                    .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+                let old = presence.get(slot).then(|| value.word());
+                let new = cells.present(row).then_some(word);
+                if old == new {
+                    continue;
+                }
+                self.dirty = true;
+                self.pending
+                    .change(slot, T::optional(new), Some(T::optional(old)))?;
+            }
+            return Ok(());
+        }
         let cells = self.cells;
         self.each(|pending, row, slot, was| {
             let value = *held
@@ -590,12 +806,200 @@ impl Staged<'_> {
     }
 
     fn lists<T: Items>(&mut self, held: &Lists<T>, items: &[T]) -> io::Result<()> {
+        if self.all_recorded() {
+            let mut start = 0usize;
+            for (&slot, &end) in self.slots.iter().zip(&self.cells.words) {
+                let end = end as usize;
+                let value = held
+                    .get(slot as usize)
+                    .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+                let new = &items[start..end];
+                start = end;
+                if *value == *new {
+                    continue;
+                }
+                self.dirty = true;
+                self.pending
+                    .change(slot, T::cell(new), Some(T::cell(value)))?;
+            }
+            return Ok(());
+        }
         let cells = self.cells;
         self.each(|pending, row, slot, was| {
             let value = held
                 .get(slot as usize)
                 .ok_or_else(|| invalid_static("A held slot is past its column"))?;
             let new = &items[cells.span(row)];
+            if was && *value == *new {
+                return Ok(false);
+            }
+            let held = was.then(|| T::cell(value));
+            pending.change(slot, T::cell(new), held).map(|()| true)
+        })
+    }
+
+    #[inline]
+    fn sparse_all_recorded(&self) -> bool {
+        self.cells.unrecorded.is_empty() && self.marked.is_none() && !self.has_new
+    }
+
+    #[inline]
+    fn each_sparse(
+        &mut self,
+        mut change: impl FnMut(&mut Pending, usize, u32, bool) -> io::Result<bool>,
+    ) -> io::Result<()> {
+        let unrecorded = self.cells.unrecorded.as_slice();
+        let mut unrecorded_at = 0usize;
+        let mut next_unrecorded = unrecorded.first().copied().unwrap_or(u32::MAX);
+        for (entry, &row) in (0u32..).zip(&self.cells.rows) {
+            let recorded = if next_unrecorded == entry {
+                unrecorded_at += 1;
+                next_unrecorded = unrecorded.get(unrecorded_at).copied().unwrap_or(u32::MAX);
+                false
+            } else {
+                true
+            };
+            let slot = self.slots[row as usize];
+            if slot == NEW {
+                continue;
+            }
+            let was = !self.marked.is_some_and(|bits| bits.get(slot));
+            if !recorded {
+                if was {
+                    self.dirty = true;
+                    push(&mut *self.unrecord, slot)?;
+                }
+                continue;
+            }
+            self.dirty |= change(&mut *self.pending, entry as usize, slot, was)?;
+        }
+        Ok(())
+    }
+
+    fn sparse_scalars<T: Word>(&mut self, held: &Paged<T>) -> io::Result<()> {
+        if self.sparse_all_recorded() {
+            for (&row, &new) in self.cells.rows.iter().zip(&self.cells.words) {
+                let slot = self.slots[row as usize];
+                let value = *held
+                    .get(slot as usize)
+                    .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+                if value.word() == new {
+                    continue;
+                }
+                self.dirty = true;
+                self.pending
+                    .change(slot, T::plain(new), Some(T::plain(value.word())))?;
+            }
+            return Ok(());
+        }
+        let cells = self.cells;
+        self.each_sparse(|pending, entry, slot, was| {
+            let value = *held
+                .get(slot as usize)
+                .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+            let new = cells.words[entry];
+            if was && value.word() == new {
+                return Ok(false);
+            }
+            let held = was.then(|| T::plain(value.word()));
+            pending.change(slot, T::plain(new), held).map(|()| true)
+        })
+    }
+
+    fn sparse_bools(&mut self, held: &Bools) -> io::Result<()> {
+        if self.sparse_all_recorded() {
+            for (&row, &new) in self.cells.rows.iter().zip(&self.cells.words) {
+                let slot = self.slots[row as usize];
+                let value = *held
+                    .get(slot as usize)
+                    .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+                if value.word() == new {
+                    continue;
+                }
+                self.dirty = true;
+                self.pending
+                    .change(slot, bool::plain(new), Some(bool::plain(value.word())))?;
+            }
+            return Ok(());
+        }
+        let cells = self.cells;
+        self.each_sparse(|pending, entry, slot, was| {
+            let value = *held
+                .get(slot as usize)
+                .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+            let new = cells.words[entry];
+            if was && value.word() == new {
+                return Ok(false);
+            }
+            let held = was.then(|| bool::plain(value.word()));
+            pending.change(slot, bool::plain(new), held).map(|()| true)
+        })
+    }
+
+    fn sparse_optionals<T: Present>(
+        &mut self,
+        held: &Paged<T>,
+        presence: &PagedBits,
+    ) -> io::Result<()> {
+        if self.sparse_all_recorded() {
+            let cells = self.cells;
+            for (entry, (&row, &word)) in cells.rows.iter().zip(&cells.words).enumerate() {
+                let slot = self.slots[row as usize];
+                let value = *held
+                    .get(slot as usize)
+                    .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+                let old = presence.get(slot).then(|| value.word());
+                let new = cells.present(entry).then_some(word);
+                if old == new {
+                    continue;
+                }
+                self.dirty = true;
+                self.pending
+                    .change(slot, T::optional(new), Some(T::optional(old)))?;
+            }
+            return Ok(());
+        }
+        let cells = self.cells;
+        self.each_sparse(|pending, entry, slot, was| {
+            let value = *held
+                .get(slot as usize)
+                .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+            let old = presence.get(slot).then(|| value.word());
+            let new = cells.present(entry).then(|| cells.words[entry]);
+            if was && old == new {
+                return Ok(false);
+            }
+            let held = was.then(|| T::optional(old));
+            pending.change(slot, T::optional(new), held).map(|()| true)
+        })
+    }
+
+    fn sparse_lists<T: Items>(&mut self, held: &Lists<T>, items: &[T]) -> io::Result<()> {
+        if self.sparse_all_recorded() {
+            let mut start = 0usize;
+            for (&row, &end) in self.cells.rows.iter().zip(&self.cells.words) {
+                let slot = self.slots[row as usize];
+                let end = end as usize;
+                let value = held
+                    .get(slot as usize)
+                    .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+                let new = &items[start..end];
+                start = end;
+                if *value == *new {
+                    continue;
+                }
+                self.dirty = true;
+                self.pending
+                    .change(slot, T::cell(new), Some(T::cell(value)))?;
+            }
+            return Ok(());
+        }
+        let cells = self.cells;
+        self.each_sparse(|pending, entry, slot, was| {
+            let value = held
+                .get(slot as usize)
+                .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+            let new = &items[cells.span(entry)];
             if was && *value == *new {
                 return Ok(false);
             }
@@ -633,14 +1037,28 @@ fn span(start: usize, len: usize) -> io::Result<(u32, u32)> {
     Ok((start as u32, (end - start) as u32))
 }
 
+#[inline]
+fn reserve<T>(values: &mut Vec<T>, additional: usize) -> io::Result<()> {
+    if values.capacity() - values.len() < additional {
+        engine_allocation::reserve(values, additional)?;
+    }
+    Ok(())
+}
+
+#[inline]
 fn push<T>(values: &mut Vec<T>, value: T) -> io::Result<()> {
-    engine_allocation::reserve(values, 1)?;
+    if values.len() == values.capacity() {
+        engine_allocation::reserve(values, 1)?;
+    }
     values.push(value);
     Ok(())
 }
 
+#[inline]
 fn extend<T: Copy>(values: &mut Vec<T>, items: &[T]) -> io::Result<()> {
-    engine_allocation::reserve(values, items.len())?;
+    if values.capacity() - values.len() < items.len() {
+        engine_allocation::reserve(values, items.len())?;
+    }
     values.extend_from_slice(items);
     Ok(())
 }
@@ -754,13 +1172,19 @@ fn hunks<T: Items>(
     if added > MATCH_FLOOR {
         MATCHER.with(|matcher| {
             let mut matcher = matcher.borrow_mut();
-            let found = matcher.find(held, new, (prefix, suffix), &items)?;
-            if found < cost && found * 2 <= whole {
-                edits.truncate(start);
-                extend(edits, &matcher.edits)?;
-                cost = found;
-            }
-            Ok::<_, io::Error>(())
+            let result = (|| {
+                let found = matcher.find(held, new, (prefix, suffix), &items)?;
+                if found < cost && found * 2 <= whole {
+                    edits.truncate(start);
+                    extend(edits, &matcher.edits)?;
+                    cost = found;
+                }
+                Ok::<_, io::Error>(())
+            })();
+            drop_over(&mut matcher.heads, 64 << 10);
+            drop_over(&mut matcher.next, 64 << 10);
+            drop_over(&mut matcher.edits, 64 << 10);
+            result
         })?;
     }
     Ok(cost < whole)
@@ -778,7 +1202,8 @@ thread_local! {
 
 #[derive(Default)]
 struct Matcher {
-    heads: Vec<u32>,
+    heads: Vec<(u32, u32)>,
+    generation: u32,
     next: Vec<u32>,
     edits: Vec<(u32, u32, u32)>,
 }
@@ -797,24 +1222,44 @@ impl Matcher {
         let windows = (held_end - start + 1).saturating_sub(probe);
         let bits = windows.next_power_of_two().trailing_zeros().max(4);
         let bucket = |key: u64| (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - bits)) as usize;
-        self.heads.clear();
-        engine_allocation::resize(&mut self.heads, 1 << bits, NO_POSITION)?;
-        self.next.clear();
-        engine_allocation::resize(&mut self.next, windows, NO_POSITION)?;
+        let table_len = 1_usize << bits;
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.heads.fill((0, NO_POSITION));
+            self.generation = 1;
+        }
+        if self.heads.len() < table_len {
+            engine_allocation::resize(&mut self.heads, table_len, (0, NO_POSITION))?;
+        }
+        let generation = self.generation;
+        if self.next.len() < windows {
+            engine_allocation::resize(&mut self.next, windows, NO_POSITION)?;
+        }
         for at in (start..start + windows).rev() {
             let head = &mut self.heads[bucket(T::probe(&held[at..at + probe]))];
-            self.next[at - start] = *head;
-            *head = at as u32;
+            let previous = if head.0 == generation {
+                head.1
+            } else {
+                NO_POSITION
+            };
+            self.next[at - start] = previous;
+            *head = (generation, at as u32);
         }
         let (mut cursor, mut at, mut unmatched, mut kept, mut inserted) =
             (start, start, start, prefix, 0);
         while at + probe <= new_end {
             let head = &mut self.heads[bucket(T::probe(&new[at..at + probe]))];
-            let mut position = *head;
+            let mut position = if head.0 == generation {
+                head.1
+            } else {
+                NO_POSITION
+            };
             while position != NO_POSITION && (position as usize) < cursor {
                 position = self.next[position as usize - start];
             }
-            *head = position;
+            if head.0 == generation {
+                head.1 = position;
+            }
             let (mut from, mut length) = (0, 0);
             for _ in 0..MATCH_PROBES {
                 if position == NO_POSITION {
@@ -877,6 +1322,21 @@ impl Pending {
         self.uniform = false;
     }
 
+    fn release_scratch(&mut self, limit_bytes: usize) {
+        drop_over(&mut self.at, limit_bytes);
+        drop_over(&mut self.words, limit_bytes);
+        drop_over(&mut self.present, limit_bytes);
+        drop_over(&mut self.spans, limit_bytes);
+        drop_over(&mut self.u32s, limit_bytes);
+        drop_over(&mut self.u64s, limit_bytes);
+        drop_over(&mut self.bytes, limit_bytes);
+        drop_over(&mut self.ops, limit_bytes);
+        drop_over(&mut self.deltas, limit_bytes);
+        drop_over(&mut self.hunks, limit_bytes);
+        drop_over(&mut self.edits, limit_bytes);
+        self.uniform = false;
+    }
+
     fn len(&self) -> usize {
         self.at.len()
     }
@@ -898,9 +1358,9 @@ impl Pending {
             _ => {}
         }
         let (word, present) = word(cell);
-        engine_allocation::reserve(&mut self.at, 1)?;
-        engine_allocation::reserve(&mut self.words, 1)?;
-        engine_allocation::reserve(&mut self.present, 1)?;
+        reserve(&mut self.at, 1)?;
+        reserve(&mut self.words, 1)?;
+        reserve(&mut self.present, 1)?;
         self.at.push(at);
         self.words.push(word);
         self.present.push(present);
@@ -990,6 +1450,20 @@ impl Out {
         self.count = 0;
     }
 
+    fn release_scratch(&mut self, limit_bytes: usize) {
+        drop_over(&mut self.u8s, limit_bytes);
+        drop_over(&mut self.i8s, limit_bytes);
+        drop_over(&mut self.u16s, limit_bytes);
+        drop_over(&mut self.i16s, limit_bytes);
+        drop_over(&mut self.u32s, limit_bytes);
+        drop_over(&mut self.i32s, limit_bytes);
+        drop_over(&mut self.u64s, limit_bytes);
+        drop_over(&mut self.i64s, limit_bytes);
+        drop_over(&mut self.present, limit_bytes);
+        drop_over(&mut self.ends, limit_bytes);
+        self.count = 0;
+    }
+
     fn push(&mut self, kind: Kind, pending: &Pending, words: &[u64], at: usize) -> io::Result<()> {
         let word = words[at];
         match kind {
@@ -1032,6 +1506,18 @@ impl Out {
                     .ok_or_else(|| invalid_static("Cell items exceed 32 bits"))?;
                 push(&mut self.ends, end)?;
             }
+        }
+        self.count += 1;
+        Ok(())
+    }
+
+    fn push_optional_i32(&mut self, value: Option<i32>) -> io::Result<()> {
+        if self.count % 64 == 0 {
+            push(&mut self.present, 0)?;
+        }
+        if let Some(value) = value {
+            self.present[self.count / 64] |= 1 << (self.count % 64);
+            push(&mut self.i32s, value)?;
         }
         self.count += 1;
         Ok(())
@@ -1146,6 +1632,20 @@ impl Runs {
         self.deltas.clear();
         self.hunks.clear();
         self.edits.clear();
+    }
+
+    fn release_scratch(&mut self, limit_bytes: usize) {
+        drop_over(&mut self.order, limit_bytes);
+        self.fill = false;
+        drop_over(&mut self.except, limit_bytes);
+        drop_over(&mut self.set_positions, limit_bytes);
+        drop_over(&mut self.add_positions, limit_bytes);
+        drop_over(&mut self.patch_positions, limit_bytes);
+        drop_over(&mut self.noop_positions, limit_bytes);
+        self.values.release_scratch(limit_bytes);
+        self.deltas.release_scratch(limit_bytes);
+        drop_over(&mut self.hunks, limit_bytes);
+        drop_over(&mut self.edits, limit_bytes);
     }
 }
 
@@ -1273,10 +1773,37 @@ fn see(seen: &mut [u64], visited: &mut Vec<u32>, slot: u32) -> io::Result<()> {
     if *word & bit != 0 {
         return Err(invalid_static("An hour visits a row twice"));
     }
-    engine_allocation::reserve(visited, 1)?;
+    reserve(visited, 1)?;
     *word |= bit;
     visited.push(slot);
     Ok(())
+}
+
+struct ColumnScratch {
+    updates: Vec<Pending>,
+    unrecord: Vec<Vec<u32>>,
+    noops: Vec<Vec<u32>>,
+    inserts: Vec<Pending>,
+    insert_unrecorded: Vec<Vec<u32>>,
+    runs: Vec<Runs>,
+    insert_outs: Vec<Out>,
+    unrecorded: Vec<Vec<u32>>,
+}
+
+impl ColumnScratch {
+    fn new(columns: usize) -> io::Result<Box<Self>> {
+        let many = |count: usize| engine_allocation::collect_vec((0..count).map(|_| Vec::new()));
+        engine_allocation::boxed(Self {
+            updates: engine_allocation::collect_vec((0..columns).map(|_| Pending::default()))?,
+            unrecord: many(columns)?,
+            noops: many(columns)?,
+            inserts: engine_allocation::collect_vec((0..columns).map(|_| Pending::default()))?,
+            insert_unrecorded: many(columns)?,
+            runs: engine_allocation::collect_vec((0..columns).map(|_| Runs::default()))?,
+            insert_outs: engine_allocation::collect_vec((0..columns).map(|_| Out::default()))?,
+            unrecorded: many(columns)?,
+        })
+    }
 }
 
 pub struct TableWriter {
@@ -1294,18 +1821,16 @@ pub struct TableWriter {
     poisoned: bool,
     seen: Vec<u64>,
     visited: Vec<u32>,
-    updates: Vec<Pending>,
-    unrecord: Vec<Vec<u32>>,
-    noops: Vec<Vec<u32>>,
+    columns: Option<Box<ColumnScratch>>,
     touched: Vec<u32>,
     removed: Vec<u128>,
     new_keys: Vec<u128>,
-    inserts: Vec<Pending>,
-    insert_unrecorded: Vec<Vec<u32>>,
-    runs: Vec<Runs>,
-    insert_outs: Vec<Out>,
-    scratch: Scratch,
+    #[cfg(test)]
     changes: Changes,
+    #[cfg(test)]
+    fill_merge_slots: Vec<u32>,
+    #[cfg(test)]
+    fill_merge_masks: Vec<u64>,
     texts: Box<[usize]>,
     slots: Vec<u32>,
     insert_rows: Vec<u32>,
@@ -1315,12 +1840,14 @@ pub struct TableWriter {
     dirty: Vec<u64>,
     sweep: Sweep,
     work: Work,
+    uniform_optional_i32: Option<(usize, Option<i32>)>,
 }
 
 #[derive(Default)]
 struct Order {
-    keys: Vec<u128>,
     slots: Vec<u32>,
+    len: usize,
+    identity: bool,
     held: bool,
 }
 
@@ -1336,12 +1863,37 @@ struct Parts {
     keys: Vec<u128>,
     insert_order: Vec<u32>,
     changed: Vec<u32>,
-    unrecorded: Vec<Vec<u32>>,
+    apply_slots: Vec<u32>,
     runs: Vec<Run<'static>>,
     inserts: Vec<Values<'static>>,
     unrecorded_runs: Vec<(usize, &'static [u32])>,
     columns: Vec<u64>,
     section: Vec<u8>,
+}
+
+impl Parts {
+    fn release_scratch(&mut self) {
+        drop_over(&mut self.deleted, HOUR_SCRATCH_LIMIT);
+        drop_over(&mut self.read, HOUR_SCRATCH_LIMIT);
+        drop_over(&mut self.sorted_keys, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.by_index, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.by_slot, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.popped, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.inserted, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.keys, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.insert_order, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.changed, HOUR_SCRATCH_LIMIT);
+        drop_over(&mut self.apply_slots, HOUR_SCRATCH_LIMIT);
+        drop_over(&mut self.runs, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.inserts, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.unrecorded_runs, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.columns, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.section, SECTION_SCRATCH_LIMIT);
+    }
+
+    fn drop_all(&mut self) {
+        *self = Self::default();
+    }
 }
 
 impl TableWriter {
@@ -1351,7 +1903,6 @@ impl TableWriter {
 
     fn with_table(kinds: &[Kind], table: Table) -> io::Result<Self> {
         let columns = kinds.len();
-        let many = |count: usize| engine_allocation::collect_vec((0..count).map(|_| Vec::new()));
         let texts = engine_allocation::collect_vec(
             (0..columns).filter(|&column| kinds[column] == Kind::Bytes),
         )?;
@@ -1372,30 +1923,26 @@ impl TableWriter {
             poisoned: false,
             seen: Vec::new(),
             visited: Vec::new(),
-            updates: engine_allocation::collect_vec((0..columns).map(|_| Pending::default()))?,
-            unrecord: many(columns)?,
-            noops: many(columns)?,
+            columns: None,
             touched: Vec::new(),
             removed: Vec::new(),
             new_keys: Vec::new(),
-            inserts: engine_allocation::collect_vec((0..columns).map(|_| Pending::default()))?,
-            insert_unrecorded: many(columns)?,
-            runs: engine_allocation::collect_vec((0..columns).map(|_| Runs::default()))?,
-            insert_outs: engine_allocation::collect_vec((0..columns).map(|_| Out::default()))?,
-            scratch: Scratch::default(),
+            #[cfg(test)]
             changes: Changes::default(),
+            #[cfg(test)]
+            fill_merge_slots: Vec::new(),
+            #[cfg(test)]
+            fill_merge_masks: Vec::new(),
             texts: engine_allocation::boxed_slice(texts)?,
             slots: Vec::new(),
             insert_rows: Vec::new(),
             cursors: Vec::new(),
             order: Order::default(),
-            parts: Parts {
-                unrecorded: many(columns)?,
-                ..Parts::default()
-            },
+            parts: Parts::default(),
             dirty: engine_allocation::filled(columns.div_ceil(64), 0_u64)?,
             sweep: Sweep::Touched,
             work: Work::default(),
+            uniform_optional_i32: None,
         })
     }
 
@@ -1497,32 +2044,30 @@ impl TableWriter {
         self.visited.clear();
         engine_allocation::resize_default(&mut self.seen, self.table.slots().div_ceil(64))?;
         let columns = self.kinds.len();
+        if self.columns.is_none() {
+            self.columns = Some(ColumnScratch::new(columns)?);
+            self.dirty.fill(0);
+        }
         if unfinished || self.sweep == Sweep::Every {
             mark_all_dirty(&mut self.dirty, columns);
         }
         let Self {
             dirty,
-            updates,
-            inserts,
-            unrecord,
-            noops,
-            insert_unrecorded,
-            runs,
-            insert_outs,
-            parts,
+            columns: scratch,
             work,
             ..
         } = &mut *self;
+        let scratch = scratch.as_mut().expect("column scratch initialized");
         work.columns += dirty_count(dirty.as_slice());
         for column in dirty_columns(dirty.as_slice()) {
-            updates[column].clear();
-            inserts[column].clear();
-            unrecord[column].clear();
-            noops[column].clear();
-            insert_unrecorded[column].clear();
-            runs[column].clear();
-            insert_outs[column].clear();
-            parts.unrecorded[column].clear();
+            scratch.updates[column].clear();
+            scratch.inserts[column].clear();
+            scratch.unrecord[column].clear();
+            scratch.noops[column].clear();
+            scratch.insert_unrecorded[column].clear();
+            scratch.runs[column].clear();
+            scratch.insert_outs[column].clear();
+            scratch.unrecorded[column].clear();
         }
         dirty.fill(0);
         if self.sweep == Sweep::Every {
@@ -1531,6 +2076,7 @@ impl TableWriter {
         self.touched.clear();
         self.new_keys.clear();
         self.removed.clear();
+        self.uniform_optional_i32 = None;
         if let Coverage::Changes { removed } = coverage {
             engine_allocation::reserve(&mut self.removed, removed.len())?;
             self.removed.extend_from_slice(removed);
@@ -1572,60 +2118,187 @@ impl TableWriter {
             ..
         } = self;
         order.held = false;
-        order.slots.clear();
-        engine_allocation::reserve(&mut order.slots, slots.len())?;
-        let mut inserted = parts.by_index.iter().copied();
-        for &slot in slots.iter() {
-            order.slots.push(match slot {
-                NEW => inserted
-                    .next()
-                    .ok_or_else(|| invalid_static("A batch's new row has no slot"))?,
-                slot => slot,
-            });
+        order.identity = false;
+        order.len = 0;
+        let len = slots.len();
+        let mut identity = true;
+        {
+            let mut inserted = parts.by_index.iter().copied();
+            for (expected, &slot) in (0u32..).zip(slots.iter()) {
+                let resolved = match slot {
+                    NEW => inserted
+                        .next()
+                        .ok_or_else(|| invalid_static("A batch's new row has no slot"))?,
+                    slot => slot,
+                };
+                if table.key(resolved).is_none() {
+                    return Err(invalid_static("A batch's row is not held"));
+                }
+                if resolved != expected {
+                    identity = false;
+                }
+            }
         }
-        order.keys.clear();
-        engine_allocation::reserve(&mut order.keys, order.slots.len())?;
-        for &slot in &order.slots {
-            let key = table
-                .key(slot)
-                .ok_or_else(|| invalid_static("A batch's row is not held"))?;
-            order.keys.push(key);
+        if identity {
+            order.slots = Vec::new();
+            order.identity = true;
+        } else {
+            order.slots.clear();
+            if order.slots.capacity() < len {
+                engine_allocation::reserve_exact(&mut order.slots, len)?;
+            }
+            let mut inserted = parts.by_index.iter().copied();
+            for &slot in slots.iter() {
+                order.slots.push(match slot {
+                    NEW => inserted
+                        .next()
+                        .ok_or_else(|| invalid_static("A batch's new row has no slot"))?,
+                    slot => slot,
+                });
+            }
         }
+        order.len = len;
         order.held = true;
         Ok(())
     }
 
-    fn apply(&mut self, bytes: &[u8], truncated: bool) -> io::Result<()> {
-        let extent = self.table.slots();
-        section::apply(
-            bytes,
-            &self.kinds,
-            truncated,
-            &mut self.table,
-            &mut self.scratch,
-            &mut self.changes,
-        )?;
-        let changes = &self.changes;
-        for &slot in &changes.inserted {
-            if slot as usize >= extent || changes.deleted.binary_search(&slot).is_ok() {
+    fn apply_prepared(&mut self, truncated: bool) -> io::Result<()> {
+        let Self {
+            kinds,
+            table,
+            free,
+            columns,
+            parts,
+            dirty,
+            #[cfg(test)]
+            changes,
+            #[cfg(test)]
+            fill_merge_slots,
+            #[cfg(test)]
+            fill_merge_masks,
+            ..
+        } = self;
+        let ColumnScratch {
+            runs,
+            insert_outs,
+            unrecorded,
+            ..
+        } = &**columns.as_ref().expect("column scratch prepared");
+        #[cfg(test)]
+        {
+            changes.fill_slots.clear();
+            changes.fill_masks.clear();
+        }
+        let extent = table.slots();
+        table.delete(&parts.deleted)?;
+        if !parts.inserted.is_empty() {
+            table.insert_keys(&parts.inserted, &parts.keys)?;
+            for (column, &kind) in kinds.iter().enumerate() {
+                table.set(column, &parts.inserted, insert_outs[column].values(kind))?;
+            }
+        }
+        let apply_slots = &mut parts.apply_slots;
+        let changed = parts.changed.as_slice();
+        for column in dirty_columns(dirty.as_slice()) {
+            let kind = kinds[column];
+            let column_runs = &runs[column];
+            if column_runs.fill {
+                table.fill(
+                    column,
+                    &column_runs.except,
+                    column_runs.values.values(kind),
+                    apply_slots,
+                )?;
+                if truncated
+                    && apply_slots.iter().any(|slot| {
+                        parts.read.binary_search(slot).is_err()
+                            && parts.inserted.binary_search(slot).is_err()
+                    })
+                {
+                    return Err(invalid_static(
+                        "A partly read table fills a slot it did not read",
+                    ));
+                }
+                #[cfg(test)]
+                section::union(
+                    &mut changes.fill_slots,
+                    &mut changes.fill_masks,
+                    apply_slots,
+                    section::column_bit(column),
+                    fill_merge_slots,
+                    fill_merge_masks,
+                )?;
+            }
+            if !column_runs.set_positions.is_empty() {
+                apply_slots.clear();
+                reserve(apply_slots, column_runs.set_positions.len())?;
+                apply_slots.extend(
+                    column_runs
+                        .set_positions
+                        .iter()
+                        .map(|&position| changed[position as usize]),
+                );
+                table.set(column, apply_slots, column_runs.values.values(kind))?;
+            }
+            if !column_runs.patch_positions.is_empty() {
+                apply_slots.clear();
+                reserve(apply_slots, column_runs.patch_positions.len())?;
+                apply_slots.extend(
+                    column_runs
+                        .patch_positions
+                        .iter()
+                        .map(|&position| changed[position as usize]),
+                );
+                table.patch(
+                    column,
+                    apply_slots,
+                    Patches {
+                        hunks: &column_runs.hunks,
+                        edits: &column_runs.edits,
+                        items: column_runs.deltas.patch_items(kind),
+                    },
+                )?;
+            }
+            if !column_runs.add_positions.is_empty() {
+                apply_slots.clear();
+                reserve(apply_slots, column_runs.add_positions.len())?;
+                apply_slots.extend(
+                    column_runs
+                        .add_positions
+                        .iter()
+                        .map(|&position| changed[position as usize]),
+                );
+                table.add(
+                    column,
+                    apply_slots,
+                    column_runs.deltas.values(section::base(kind)?),
+                )?;
+            }
+        }
+        for column in dirty_columns(dirty.as_slice()) {
+            if !unrecorded[column].is_empty() {
+                table.unrecord(column, &unrecorded[column])?;
+            }
+        }
+        for &slot in &parts.inserted {
+            if slot as usize >= extent || parts.deleted.binary_search(&slot).is_ok() {
                 continue;
             }
-            if self.free.pop() != Some(Reverse(slot)) {
+            if free.pop() != Some(Reverse(slot)) {
                 return Err(invalid_static(
                     "Inserted slots are not the lowest free ones",
                 ));
             }
         }
-        let freed = changes.deleted.len();
-        if freed > self.free.capacity() - self.free.len() {
+        let freed = parts.deleted.len();
+        if freed > free.capacity() - free.len() {
             engine_allocation::allocation_attempt()?;
-            self.free
-                .try_reserve(freed)
+            free.try_reserve(freed)
                 .map_err(|_| engine_allocation::oom())?;
         }
-        for &slot in &changes.deleted {
-            if changes.inserted.binary_search(&slot).is_err() {
-                self.free.push(Reverse(slot));
+        for &slot in &parts.deleted {
+            if parts.inserted.binary_search(&slot).is_err() {
+                free.push(Reverse(slot));
             }
         }
         Ok(())
@@ -1669,8 +2342,8 @@ impl TableWriter {
         if self.keeps {
             Last::before(&mut self.last, &self.table, evidence.status)?;
         }
-        if let Some(bytes) = &written
-            && let Err(error) = self.apply(bytes, truncated)
+        if written.is_some()
+            && let Err(error) = self.apply_prepared(truncated)
         {
             self.poisoned = true;
             return Err(error);
@@ -1705,19 +2378,23 @@ impl TableWriter {
         self.status = evidence.status;
         self.view.clear();
         if truncated {
-            let changes = &self.changes;
             let live = self.table.live();
             let reserved = engine_allocation::reserve(
                 &mut self.view,
-                changes.read.len() + changes.inserted.len(),
+                self.parts.read.len() + self.parts.inserted.len(),
             );
             if let Err(error) = reserved {
                 self.poisoned = true;
                 return Err(error);
             }
-            self.view
-                .extend(changes.read.iter().copied().filter(|&slot| live.get(slot)));
-            self.view.extend_from_slice(&changes.inserted);
+            self.view.extend(
+                self.parts
+                    .read
+                    .iter()
+                    .copied()
+                    .filter(|&slot| live.get(slot)),
+            );
+            self.view.extend_from_slice(&self.parts.inserted);
             self.view.sort_unstable();
             self.view.dedup();
         }
@@ -1727,14 +2404,70 @@ impl TableWriter {
                 return Err(error);
             }
         } else if written.is_some()
-            && !(self.changes.inserted.is_empty() && self.changes.deleted.is_empty())
+            && !(self.parts.inserted.is_empty() && self.parts.deleted.is_empty())
         {
             self.order.held = false;
         }
         if let Some(bytes) = written {
             self.parts.section = bytes;
         }
+        if sectioned
+            || !self.visited.is_empty()
+            || !self.slots.is_empty()
+            || !self.new_keys.is_empty()
+        {
+            self.release_scratch();
+        }
         Ok(())
+    }
+
+    pub fn drop_scratch(&mut self) {
+        if self.finished != self.generation {
+            return;
+        }
+        self.columns = None;
+        self.dirty.fill(0);
+        self.seen = Vec::new();
+        self.visited = Vec::new();
+        self.touched = Vec::new();
+        self.removed = Vec::new();
+        self.new_keys = Vec::new();
+        self.slots = Vec::new();
+        self.insert_rows = Vec::new();
+        self.cursors = Vec::new();
+        self.parts.drop_all();
+    }
+
+    fn release_scratch(&mut self) {
+        if self.visited.capacity().saturating_mul(size_of::<u32>()) > HOUR_SCRATCH_LIMIT {
+            for &slot in &self.visited {
+                self.seen[slot as usize / 64] &= !(1 << (slot % 64));
+            }
+            self.visited = Vec::new();
+        }
+        drop_over(&mut self.touched, HOUR_SCRATCH_LIMIT);
+        drop_over(&mut self.removed, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.new_keys, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.slots, HOUR_SCRATCH_LIMIT);
+        drop_over(&mut self.insert_rows, INSERT_SCRATCH_LIMIT);
+        drop_over(&mut self.cursors, INSERT_SCRATCH_LIMIT);
+        if let Some(scratch) = self.columns.as_deref_mut() {
+            if !self.parts.inserted.is_empty() {
+                for column in 0..self.kinds.len() {
+                    scratch.inserts[column].release_scratch(INSERT_SCRATCH_LIMIT);
+                    scratch.insert_outs[column].release_scratch(INSERT_SCRATCH_LIMIT);
+                    drop_over(&mut scratch.insert_unrecorded[column], INSERT_SCRATCH_LIMIT);
+                }
+            }
+            for column in dirty_columns(self.dirty.as_slice()) {
+                scratch.updates[column].release_scratch(HOUR_SCRATCH_LIMIT);
+                scratch.runs[column].release_scratch(HOUR_SCRATCH_LIMIT);
+                drop_over(&mut scratch.unrecord[column], HOUR_SCRATCH_LIMIT);
+                drop_over(&mut scratch.noops[column], HOUR_SCRATCH_LIMIT);
+                drop_over(&mut scratch.unrecorded[column], HOUR_SCRATCH_LIMIT);
+            }
+        }
+        self.parts.release_scratch();
     }
 }
 
@@ -1828,8 +2561,12 @@ impl Hour<'_> {
                     match cell {
                         None if recorded => {
                             mark_dirty(&mut self.writer.dirty, column);
-                            engine_allocation::reserve(&mut self.writer.unrecord[column], 1)?;
-                            self.writer.unrecord[column].push(slot);
+                            let scratch = self
+                                .writer
+                                .columns
+                                .as_deref_mut()
+                                .expect("column scratch prepared");
+                            push(&mut scratch.unrecord[column], slot)?;
                         }
                         None => {}
                         Some(cell) => {
@@ -1841,7 +2578,12 @@ impl Hour<'_> {
                             if !recorded || held != Some(cell) {
                                 let held = held.filter(|_| recorded);
                                 mark_dirty(&mut self.writer.dirty, column);
-                                self.writer.updates[column].change(slot, cell, held)?;
+                                let scratch = self
+                                    .writer
+                                    .columns
+                                    .as_deref_mut()
+                                    .expect("column scratch prepared");
+                                scratch.updates[column].change(slot, cell, held)?;
                             }
                         }
                     }
@@ -1849,22 +2591,24 @@ impl Hour<'_> {
             }
             None => {
                 let index = self.inserted;
-                engine_allocation::reserve(&mut self.writer.new_keys, 1)?;
-                self.writer.new_keys.push(key);
+                push(&mut self.writer.new_keys, key)?;
                 mark_all_dirty(&mut self.writer.dirty, cells.len());
                 for (column, &input) in cells.iter().enumerate() {
-                    let cell = match self.resolve(column, input)? {
+                    let resolved = self.resolve(column, input)?;
+                    let kind = self.writer.kinds[column];
+                    let scratch = self
+                        .writer
+                        .columns
+                        .as_deref_mut()
+                        .expect("column scratch prepared");
+                    let cell = match resolved {
                         Some(cell) => cell,
                         None => {
-                            engine_allocation::reserve(
-                                &mut self.writer.insert_unrecorded[column],
-                                1,
-                            )?;
-                            self.writer.insert_unrecorded[column].push(index);
-                            placeholder(self.writer.kinds[column])
+                            push(&mut scratch.insert_unrecorded[column], index)?;
+                            placeholder(kind)
                         }
                     };
-                    self.writer.inserts[column].push(index, cell)?;
+                    scratch.inserts[column].push(index, cell)?;
                 }
                 self.inserted = index
                     .checked_add(1)
@@ -1882,40 +2626,78 @@ impl Hour<'_> {
             table,
             seen,
             visited,
-            updates,
-            unrecord,
+            columns: scratch,
             removed,
             new_keys,
-            inserts,
-            insert_unrecorded,
             texts,
             slots,
             insert_rows,
             cursors,
             order,
             dirty,
+            uniform_optional_i32,
             ..
         } = &mut *self.writer;
+        let ColumnScratch {
+            updates,
+            unrecord,
+            inserts,
+            insert_unrecorded,
+            ..
+        } = scratch.as_deref_mut().expect("column scratch prepared");
         let rows = batch.keys.len();
         if batch.kinds.as_slice() != &**kinds {
             return Err(invalid_static("A batch's columns differ from its table's"));
+        }
+        if let Some((column, value)) = batch.uniform_optional_i32 {
+            if matches!(self.coverage, Coverage::Partial) {
+                return Err(invalid_static("A partly read table cannot take a uniform fill"));
+            }
+            if kinds.get(column).copied() != Some(Kind::OptionalI32) {
+                return Err(invalid_static("A uniform fill targets another column kind"));
+            }
+            *uniform_optional_i32 = Some((column, value));
+            mark_dirty(dirty, column);
         }
         if u32::try_from(rows).is_err() {
             return Err(invalid_static("A batch holds more than 2^32 rows"));
         }
         let columns = &batch.columns[..kinds.len()];
-        if rows > 0 && columns.iter().any(|cells| cells.words.len() != rows) {
+        if batch.sparse {
+            if rows > 0 && columns.iter().any(|cells| cells.words.len() != cells.rows.len()) {
+                return Err(invalid_static(
+                    "A batch row carries other than one cell per column",
+                ));
+            }
+        } else if rows > 0 && columns.iter().any(|cells| cells.words.len() != rows) {
             return Err(invalid_static(
                 "A batch row carries other than one cell per column",
             ));
         }
         slots.clear();
         insert_rows.clear();
-        if complete && order.held && order.keys == batch.keys {
-            extend(slots, &order.slots)?;
+        if complete
+            && order.held
+            && order.len == rows
+            && if order.identity {
+                table.keys_match_prefix(&batch.keys)
+            } else {
+                order
+                    .slots
+                    .iter()
+                    .zip(&batch.keys)
+                    .all(|(&slot, &key)| table.key(slot) == Some(key))
+            }
+        {
+            if order.identity {
+                reserve(slots, rows)?;
+                slots.extend(0..rows as u32);
+            } else {
+                extend(slots, &order.slots)?;
+            }
             self.ordered = true;
         } else {
-            engine_allocation::reserve(slots, rows)?;
+            reserve(slots, rows)?;
             for (row, &key) in (0u32..).zip(&batch.keys) {
                 if !removed.is_empty() && removed.binary_search(&key).is_ok() {
                     return Err(invalid_static("A row key is both changed and removed"));
@@ -1938,12 +2720,144 @@ impl Hour<'_> {
         if rows == 0 {
             return Ok(());
         }
-        if !insert_rows.is_empty() {
+        let has_new = !insert_rows.is_empty();
+        if has_new {
             mark_all_dirty(dirty, kinds.len());
         }
         let slots = slots.as_slice();
+        if batch.sparse {
+            for (column, (&kind, cells)) in kinds.iter().zip(columns).enumerate() {
+                if !has_new && cells.rows.is_empty() {
+                    continue;
+                }
+                if has_new && cells.rows.len() < insert_rows.len() {
+                    return Err(kept_insert());
+                }
+                if kind == Kind::Bytes {
+                    let mut next_unrecorded = 0usize;
+                    let mut next_insert = 0usize;
+                    for (entry, &row) in (0u32..).zip(&cells.rows) {
+                        let recorded = cells.unrecorded.get(next_unrecorded) != Some(&entry);
+                        if !recorded {
+                            next_unrecorded += 1;
+                        }
+                        let slot = slots[row as usize];
+                        let text = &cells.bytes[cells.span(entry as usize)];
+                        if slot == NEW {
+                            if insert_rows.get(next_insert) != Some(&row) {
+                                return Err(kept_insert());
+                            }
+                            let index = next_insert as u32;
+                            next_insert += 1;
+                            let cell = if recorded {
+                                Cell::Bytes(dictionary.intern(text)?)
+                            } else {
+                                push(&mut insert_unrecorded[column], index)?;
+                                placeholder(Kind::Bytes)
+                            };
+                            inserts[column].push(index, cell)?;
+                            continue;
+                        }
+                        let held = match table.column(column) {
+                            Some(Column::Bytes(ids)) => ids.get(slot as usize).copied(),
+                            _ => None,
+                        }
+                        .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+                        let was = table.recorded(column, slot);
+                        if !recorded {
+                            if was {
+                                mark_dirty(dirty, column);
+                                push(&mut unrecord[column], slot)?;
+                            }
+                        } else if !was || dictionary.dictionary().get(held) != Some(text) {
+                            let id = dictionary.intern(text)?;
+                            let held = was.then_some(Cell::Bytes(held));
+                            mark_dirty(dirty, column);
+                            updates[column].change(slot, Cell::Bytes(id), held)?;
+                        }
+                    }
+                    if next_insert != insert_rows.len() {
+                        return Err(kept_insert());
+                    }
+                    continue;
+                }
+                let skip_existing = batch
+                    .uniform_optional_i32
+                    .is_some_and(|(col, _)| col == column);
+                if !skip_existing {
+                    let held = table
+                        .column(column)
+                        .ok_or_else(|| invalid_static("A batch names a column past the table"))?;
+                    let marked = table.unrecorded_bits(column).filter(|bits| {
+                        let words = bits.words();
+                        words.len() > cells.rows.len() || words.iter().any(|&word| word != 0)
+                    });
+                    let mut staged = Staged {
+                        slots,
+                        cells,
+                        marked,
+                        pending: &mut updates[column],
+                        unrecord: &mut unrecord[column],
+                        dirty: false,
+                        has_new,
+                    };
+                    let compared = match held {
+                        Column::U8(values) => staged.sparse_scalars(values),
+                        Column::I8(values) => staged.sparse_scalars(values),
+                        Column::U16(values) => staged.sparse_scalars(values),
+                        Column::I16(values) => staged.sparse_scalars(values),
+                        Column::U32(values) => staged.sparse_scalars(values),
+                        Column::I32(values) => staged.sparse_scalars(values),
+                        Column::U64(values) => staged.sparse_scalars(values),
+                        Column::I64(values) => staged.sparse_scalars(values),
+                        Column::Bool(values) => staged.sparse_bools(values),
+                        Column::OptionalI32(values, presence) => {
+                            staged.sparse_optionals(values, presence)
+                        }
+                        Column::OptionalU32(values, presence) => {
+                            staged.sparse_optionals(values, presence)
+                        }
+                        Column::OptionalI64(values, presence) => {
+                            staged.sparse_optionals(values, presence)
+                        }
+                        Column::OptionalU64(values, presence) => {
+                            staged.sparse_optionals(values, presence)
+                        }
+                        Column::U32List(values) => staged.sparse_lists(values, &cells.u32s),
+                        Column::U64List(values) => staged.sparse_lists(values, &cells.u64s),
+                        Column::Opaque(values) => staged.sparse_lists(values, &cells.bytes),
+                        Column::Bytes(_) => Ok(()),
+                    };
+                    if staged.dirty {
+                        mark_dirty(dirty, column);
+                    }
+                    compared?;
+                }
+                if has_new {
+                    let mut entry = 0usize;
+                    for (index, &ins_row) in (0u32..).zip(insert_rows.iter()) {
+                        while cells.rows.get(entry).is_some_and(|&r| r < ins_row) {
+                            entry += 1;
+                        }
+                        if cells.rows.get(entry) != Some(&ins_row) {
+                            return Err(kept_insert());
+                        }
+                        let cell = match cells.cell(kind, entry as u32) {
+                            Some(cell) => cell,
+                            None => {
+                                push(&mut insert_unrecorded[column], index)?;
+                                placeholder(kind)
+                            }
+                        };
+                        inserts[column].push(index, cell)?;
+                        entry += 1;
+                    }
+                }
+            }
+            return Ok(());
+        }
         for (column, (&kind, cells)) in kinds.iter().zip(columns).enumerate() {
-            if kind == Kind::Bytes {
+            if kind == Kind::Bytes || (!has_new && cells.kept.len() == rows) {
                 continue;
             }
             let held = table
@@ -1960,6 +2874,7 @@ impl Hour<'_> {
                 pending: &mut updates[column],
                 unrecord: &mut unrecord[column],
                 dirty: false,
+                has_new,
             };
             let compared = match held {
                 Column::U8(values) => staged.scalars(values),
@@ -2000,7 +2915,9 @@ impl Hour<'_> {
                 inserts[column].push(index, cell)?;
             }
         }
-        if texts.is_empty() {
+        if texts.is_empty()
+            || (!has_new && texts.iter().all(|&column| columns[column].kept.len() == rows))
+        {
             return Ok(());
         }
         cursors.clear();
@@ -2068,9 +2985,12 @@ impl Hour<'_> {
             return Err(invalid_static("NOOP names a column past the schema"));
         }
         mark_dirty(&mut self.writer.dirty, column);
-        engine_allocation::reserve(&mut self.writer.noops[column], 1)?;
-        self.writer.noops[column].push(slot);
-        Ok(())
+        let scratch = self
+            .writer
+            .columns
+            .as_deref_mut()
+            .expect("column scratch prepared");
+        push(&mut scratch.noops[column], slot)
     }
 
     pub fn touch(&mut self, key: u128) -> io::Result<()> {
@@ -2081,9 +3001,7 @@ impl Hour<'_> {
         let slot = self
             .held_slot(key)
             .ok_or_else(|| invalid_static("Touch names a row key that is not held"))?;
-        engine_allocation::reserve(&mut self.writer.touched, 1)?;
-        self.writer.touched.push(slot);
-        Ok(())
+        push(&mut self.writer.touched, slot)
     }
 
     pub fn finish(self) -> io::Result<Prepared> {
@@ -2102,8 +3020,8 @@ impl Hour<'_> {
         }
         let columns = writer.kinds.len();
         writer.work.columns += dirty_count(&writer.dirty);
-        let seen =
-            |slot: u32| ordered || writer.seen[slot as usize / 64] >> (slot % 64) & 1 != 0;
+        let is_seen =
+            |seen: &[u64], slot: u32| ordered || seen[slot as usize / 64] >> (slot % 64) & 1 != 0;
         let partial = matches!(coverage, Coverage::Partial);
         let Parts {
             deleted,
@@ -2116,25 +3034,29 @@ impl Hour<'_> {
             keys,
             insert_order,
             changed,
-            unrecorded: unrecorded_slots,
             runs: run_list,
             inserts: insert_list,
             unrecorded_runs,
             columns: spare_columns,
             section: spare_section,
+            ..
         } = &mut writer.parts;
+        let scratch = writer
+            .columns
+            .as_deref_mut()
+            .expect("column scratch prepared");
         deleted.clear();
         match coverage {
             Coverage::Complete if !ordered => {
                 for slot in writer.table.live().ones() {
-                    if !seen(slot) {
+                    if !is_seen(&writer.seen, slot) {
                         push(deleted, slot)?;
                     }
                 }
             }
             Coverage::Complete | Coverage::Partial => {}
             Coverage::Changes { .. } => {
-                engine_allocation::reserve(deleted, writer.removed.len())?;
+                reserve(deleted, writer.removed.len())?;
                 for &key in &writer.removed {
                     let slot = writer
                         .table
@@ -2151,7 +3073,7 @@ impl Hour<'_> {
             read.sort_unstable();
         }
         sorted_keys.clear();
-        engine_allocation::reserve(sorted_keys, writer.new_keys.len())?;
+        reserve(sorted_keys, writer.new_keys.len())?;
         sorted_keys.extend(
             writer
                 .new_keys
@@ -2170,12 +3092,12 @@ impl Hour<'_> {
             return Err(invalid_static("Row slots exceed 32 bits"));
         }
         by_index.clear();
-        engine_allocation::reserve(by_index, inserted as usize)?;
+        reserve(by_index, inserted as usize)?;
         by_index.resize(inserted as usize, 0);
         by_slot.clear();
-        engine_allocation::reserve(by_slot, sorted_keys.len())?;
+        reserve(by_slot, sorted_keys.len())?;
         popped.clear();
-        engine_allocation::reserve(popped, sorted_keys.len())?;
+        reserve(popped, sorted_keys.len())?;
         {
             let mut reused = deleted.iter().copied().peekable();
             let mut next = extent;
@@ -2209,37 +3131,132 @@ impl Hour<'_> {
         }
         by_slot.sort_unstable_by_key(|entry| entry.0);
         inserted_slots.clear();
-        engine_allocation::reserve(inserted_slots, by_slot.len())?;
+        reserve(inserted_slots, by_slot.len())?;
         inserted_slots.extend(by_slot.iter().map(|entry| entry.0));
         keys.clear();
-        engine_allocation::reserve(keys, by_slot.len())?;
+        reserve(keys, by_slot.len())?;
         keys.extend(by_slot.iter().map(|entry| entry.1));
         insert_order.clear();
-        engine_allocation::reserve(insert_order, by_slot.len())?;
+        reserve(insert_order, by_slot.len())?;
         insert_order.extend(by_slot.iter().map(|entry| entry.2));
         let mut live_after = None;
+        let mut direct_fill = None;
+        if let Some((col, value)) = writer.uniform_optional_i32 {
+            let live = *live_after.get_or_insert_with(|| {
+                writer.table.live().count() - deleted.len() + inserted_slots.len()
+            });
+            let runs = &mut scratch.runs[col];
+            runs.clear();
+            if live > 0 {
+                let Some(Column::OptionalI32(held_vals, held_presence)) = writer.table.column(col)
+                else {
+                    return Err(invalid_static("A uniform fill targets another column kind"));
+                };
+                let marked = writer.table.unrecorded_bits(col).filter(|bits| {
+                    bits.words().iter().any(|&word| word != 0)
+                });
+                let mut del = deleted.iter().copied().peekable();
+                let mut held = writer
+                    .table
+                    .live()
+                    .ones()
+                    .filter(|&slot| {
+                        while del.next_if(|&gone| gone < slot).is_some() {}
+                        del.next_if_eq(&slot).is_none()
+                    })
+                    .peekable();
+                let mut ins = inserted_slots.iter().copied().peekable();
+                let mut changing = 0usize;
+                loop {
+                    match (held.peek().copied(), ins.peek().copied()) {
+                        (Some(kept), Some(new)) if new < kept => {
+                            ins.next();
+                            push(&mut runs.except, new)?;
+                        }
+                        (Some(kept), _) => {
+                            held.next();
+                            let was = !marked.is_some_and(|bits| bits.get(kept));
+                            let old = held_presence.get(kept).then(|| {
+                                *held_vals
+                                    .get(kept as usize)
+                                    .expect("live slot is within column")
+                            });
+                            if was && old == value {
+                                push(&mut runs.except, kept)?;
+                            } else {
+                                changing += 1;
+                            }
+                        }
+                        (None, Some(new)) => {
+                            ins.next();
+                            push(&mut runs.except, new)?;
+                        }
+                        (None, None) => break,
+                    }
+                }
+                if changing == 0 {
+                    runs.except.clear();
+                } else if changing >= FILL_MINIMUM && changing * 2 >= live {
+                    runs.fill = true;
+                    direct_fill = Some((col, value, changing));
+                } else {
+                    runs.except.clear();
+                    let mut del = deleted.iter().copied().peekable();
+                    for kept in writer.table.live().ones() {
+                        while del.next_if(|&gone| gone < kept).is_some() {}
+                        if del.next_if_eq(&kept).is_some() {
+                            continue;
+                        }
+                        let was = !marked.is_some_and(|bits| bits.get(kept));
+                        let old = held_presence.get(kept).then(|| {
+                            *held_vals
+                                .get(kept as usize)
+                                .expect("live slot is within column")
+                        });
+                        if was && old == value {
+                            continue;
+                        }
+                        if writer.seen[kept as usize / 64] >> (kept % 64) & 1 == 0 {
+                            see(&mut writer.seen, &mut writer.visited, kept)?;
+                        }
+                        scratch.updates[col].change(
+                            kept,
+                            Cell::OptionalI32(value),
+                            was.then_some(Cell::OptionalI32(old)),
+                        )?;
+                    }
+                }
+            }
+        }
         for column in dirty_columns(&writer.dirty) {
-            let (pending, runs) = (&writer.updates[column], &mut writer.runs[column]);
-            let noops = &mut writer.noops[column];
+            if direct_fill.is_some_and(|(col, _, _)| col == column) {
+                continue;
+            }
+            let (pending, runs) = (&scratch.updates[column], &mut scratch.runs[column]);
+            let noops = &mut scratch.noops[column];
             runs.clear();
             if pending.len() == 0 && noops.is_empty() {
                 continue;
             }
-            engine_allocation::reserve(&mut runs.order, pending.len())?;
+            reserve(&mut runs.order, pending.len())?;
             runs.order.extend(0..pending.len() as u32);
-            runs.order
-                .sort_unstable_by_key(|&entry| pending.at[entry as usize]);
+            if !pending.at.windows(2).all(|pair| pair[0] < pair[1]) {
+                runs.order
+                    .sort_unstable_by_key(|&entry| pending.at[entry as usize]);
+            }
             let slot_of = |entry: &u32| pending.at[*entry as usize];
-            noops.sort_unstable();
-            noops.dedup();
-            noops.retain(|slot| runs.order.binary_search_by_key(slot, slot_of).is_err());
+            if !noops.is_empty() {
+                noops.sort_unstable();
+                noops.dedup();
+                noops.retain(|slot| runs.order.binary_search_by_key(slot, slot_of).is_err());
+            }
             if pending.uniform && pending.len() >= FILL_MINIMUM {
                 let live = *live_after.get_or_insert_with(|| {
                     writer.table.live().count() - deleted.len() + inserted_slots.len()
                 });
                 if pending.len() * 2 >= live {
                     runs.fill = true;
-                    engine_allocation::reserve(&mut runs.except, live - pending.len())?;
+                    reserve(&mut runs.except, live - pending.len())?;
                     exceptions(
                         writer.table.live(),
                         deleted.as_slice(),
@@ -2252,27 +3269,33 @@ impl Hour<'_> {
         }
         changed.clear();
         for column in dirty_columns(&writer.dirty) {
-            let set = if writer.runs[column].fill {
+            let set = if scratch.runs[column].fill {
                 &[][..]
             } else {
-                &writer.updates[column].at[..]
+                &scratch.updates[column].at[..]
             };
-            engine_allocation::reserve(
+            reserve(
                 changed,
-                set.len() + writer.unrecord[column].len() + writer.noops[column].len(),
+                set.len() + scratch.unrecord[column].len() + scratch.noops[column].len(),
             )?;
             changed.extend_from_slice(set);
-            changed.extend_from_slice(&writer.unrecord[column]);
-            changed.extend_from_slice(&writer.noops[column]);
+            changed.extend_from_slice(&scratch.unrecord[column]);
+            changed.extend_from_slice(&scratch.noops[column]);
         }
-        changed.sort_unstable();
-        changed.dedup();
-        if changed.iter().any(|&slot| !seen(slot)) {
+        if !changed.windows(2).all(|pair| pair[0] < pair[1]) {
+            changed.sort_unstable();
+            changed.dedup();
+        }
+        if changed.iter().any(|&slot| !is_seen(&writer.seen, slot)) {
             return Err(invalid_static(
                 "A row has a NOOP but was not visited this hour",
             ));
         }
-        if writer.touched.iter().any(|&slot| !seen(slot)) {
+        if writer
+            .touched
+            .iter()
+            .any(|&slot| !is_seen(&writer.seen, slot))
+        {
             return Err(invalid_static(
                 "A row is touched but was not visited this hour",
             ));
@@ -2280,23 +3303,56 @@ impl Hour<'_> {
         if partial && !deleted.is_empty() {
             return Err(invalid_static("A partial read deletes no row"));
         }
-        writer.touched.sort_unstable();
-        writer.touched.dedup();
+        if !writer.touched.is_empty() {
+            writer.touched.sort_unstable();
+            writer.touched.dedup();
+        }
         let changed = changed.as_slice();
-        let position = |slot: u32| changed.binary_search(&slot).expect("changed slot") as u32;
+        let next_position = |pos: &mut usize, slot: u32| -> u32 {
+            if changed.get(*pos) == Some(&slot) {
+                let found = *pos as u32;
+                *pos += 1;
+                return found;
+            }
+            let mut step = 1usize;
+            while *pos + step < changed.len() && changed[*pos + step] < slot {
+                *pos += step;
+                step <<= 1;
+            }
+            let end = (*pos + step + 1).min(changed.len());
+            *pos += changed[*pos..end]
+                .binary_search(&slot)
+                .expect("changed slot");
+            let found = *pos as u32;
+            *pos += 1;
+            found
+        };
         let mut census = Census::default();
         for column in dirty_columns(&writer.dirty) {
             let kind = writer.kinds[column];
-            let (pending, runs) = (&writer.updates[column], &mut writer.runs[column]);
+            let (pending, runs) = (&scratch.updates[column], &mut scratch.runs[column]);
             if runs.fill {
-                runs.values.push(kind, pending, &pending.words, 0)?;
-                census.fills += 1;
-                census.fill_slots += pending.len() as u64;
-                census.fill_exceptions += runs.except.len() as u64;
+                if let Some((_, value, changing)) =
+                    direct_fill.filter(|&(col, _, _)| col == column)
+                {
+                    runs.values.push_optional_i32(value)?;
+                    census.fills += 1;
+                    census.fill_slots += changing as u64;
+                    census.fill_exceptions += runs.except.len() as u64;
+                } else {
+                    runs.values.push(kind, pending, &pending.words, 0)?;
+                    census.fills += 1;
+                    census.fill_slots += pending.len() as u64;
+                    census.fill_exceptions += runs.except.len() as u64;
+                }
             } else {
                 let uniform = pending.uniform && pending.len() > 1;
+                let mut pos = 0usize;
                 for &entry in &runs.order {
-                    let (entry, at) = (entry as usize, position(pending.at[entry as usize]));
+                    let (entry, at) = (
+                        entry as usize,
+                        next_position(&mut pos, pending.at[entry as usize]),
+                    );
                     let op = if uniform { Op::Set } else { pending.ops[entry] };
                     match op {
                         Op::Add => {
@@ -2322,17 +3378,21 @@ impl Hour<'_> {
                 census.add += runs.add_positions.len() as u64;
                 census.patch += runs.patch_positions.len() as u64;
             }
-            engine_allocation::reserve(&mut runs.noop_positions, writer.noops[column].len())?;
-            runs.noop_positions
-                .extend(writer.noops[column].iter().map(|&slot| position(slot)));
+            let noops = &scratch.noops[column];
+            if !noops.is_empty() {
+                reserve(&mut runs.noop_positions, noops.len())?;
+                let mut noop_pos = 0usize;
+                runs.noop_positions
+                    .extend(noops.iter().map(|&slot| next_position(&mut noop_pos, slot)));
+            }
             let order = insert_order.as_slice();
-            writer.insert_outs[column].fill(kind, &writer.inserts[column], order)?;
+            scratch.insert_outs[column].fill(kind, &scratch.inserts[column], order)?;
         }
         let mut runs: Vec<Run<'_>> = recycle(std::mem::take(run_list));
         for column in dirty_columns(&writer.dirty) {
             let kind = writer.kinds[column];
-            let column_runs = &writer.runs[column];
-            engine_allocation::reserve(&mut runs, 5)?;
+            let column_runs = &scratch.runs[column];
+            reserve(&mut runs, 5)?;
             if column_runs.fill {
                 runs.push(Run {
                     column,
@@ -2390,32 +3450,33 @@ impl Hour<'_> {
         }
         let mut inserts: Vec<Values<'_>> = recycle(std::mem::take(insert_list));
         if !inserted_slots.is_empty() {
-            engine_allocation::reserve(&mut inserts, columns)?;
+            reserve(&mut inserts, columns)?;
             inserts.extend(
-                (0..columns).map(|column| writer.insert_outs[column].values(writer.kinds[column])),
+                (0..columns).map(|column| scratch.insert_outs[column].values(writer.kinds[column])),
             );
         }
         for column in dirty_columns(&writer.dirty) {
-            let slots = &mut unrecorded_slots[column];
+            let slots = &mut scratch.unrecorded[column];
             slots.clear();
-            engine_allocation::reserve(
-                slots,
-                writer.unrecord[column].len() + writer.insert_unrecorded[column].len(),
-            )?;
-            slots.extend_from_slice(&writer.unrecord[column]);
+            let needed = scratch.unrecord[column].len() + scratch.insert_unrecorded[column].len();
+            if needed == 0 {
+                continue;
+            }
+            reserve(slots, needed)?;
+            slots.extend_from_slice(&scratch.unrecord[column]);
             slots.extend(
-                writer.insert_unrecorded[column]
+                scratch.insert_unrecorded[column]
                     .iter()
                     .map(|&index| by_index[index as usize]),
             );
             slots.sort_unstable();
         }
-        let unrecorded_slots = &*unrecorded_slots;
+        let unrecorded_slots = &scratch.unrecorded;
         let mut unrecorded: Vec<(usize, &[u32])> = recycle(std::mem::take(unrecorded_runs));
         let marked = dirty_columns(&writer.dirty)
             .filter(|&column| !unrecorded_slots[column].is_empty())
             .count();
-        engine_allocation::reserve(&mut unrecorded, marked)?;
+        reserve(&mut unrecorded, marked)?;
         for column in dirty_columns(&writer.dirty) {
             if !unrecorded_slots[column].is_empty() {
                 unrecorded.push((column, unrecorded_slots[column].as_slice()));
@@ -2423,7 +3484,7 @@ impl Hour<'_> {
         }
         let mut column_bits = std::mem::take(spare_columns);
         column_bits.clear();
-        engine_allocation::reserve(&mut column_bits, columns.div_ceil(64))?;
+        reserve(&mut column_bits, columns.div_ceil(64))?;
         column_bits.resize(columns.div_ceil(64), 0);
         for run in &runs {
             column_bits[run.column / 64] |= 1 << (run.column % 64);

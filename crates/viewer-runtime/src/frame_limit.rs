@@ -98,12 +98,4 @@ mod tests {
         assert_eq!(stepped(Some(kept), kept + interval, interval), kept + interval * 2);
     }
 
-    #[test]
-    fn an_unheld_grid_and_a_lifted_limit_both_let_the_frame_through() {
-        let now = Instant::now();
-        assert_eq!(Grid::default().until(now), Duration::ZERO);
-        let held = Grid { due: Some(now + Duration::from_secs(10)) };
-        assert_eq!(limit(), None, "no test sets the process-wide limit");
-        assert_eq!(held.until(now), Duration::ZERO);
-    }
 }

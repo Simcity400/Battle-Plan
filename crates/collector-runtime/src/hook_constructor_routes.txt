@@ -73,6 +73,7 @@ call:collector_equipment_destruction::equipment_destruction::release
 call:collector_experience_gains::experience_gains::prepare
 call:collector_extended_support::outcomes::records_any
 call:collector_fuel_awards::fuel_awards::capacities
+call:collector_fuel_awards::fuel_awards::drained_capacities
 call:collector_fuel_awards::fuel_awards::install_offered
 call:collector_fuel_awards::fuel_awards::presize
 call:collector_fuel_awards::fuel_awards::release
@@ -245,6 +246,7 @@ method:as_deref
 method:as_micros
 method:as_mut
 method:as_ref
+method:attach_priority
 method:build_warning
 method:builder_id
 method:busy_sites
@@ -297,6 +299,7 @@ method:map_or
 method:map_refusals
 method:matches
 method:max
+method:min
 method:moved
 method:name
 method:naval_counters_mut
@@ -370,3 +373,4 @@ method:wake_spool
 method:with_file_name
 method:withheld
 method:without_history
+method:writer_thread_ids

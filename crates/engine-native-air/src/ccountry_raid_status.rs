@@ -400,30 +400,4 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore]
-    fn bench_type_token_memo_by_definition_count() {
-        for count in [36, 300, 2_000] {
-            let (bytes, addresses) = definitions(count);
-            let memory = engine_native_memory::memory::SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            };
-            let mut memo = TypeTokens::with_definitions(count);
-            let lookups = 20_000;
-            let started = std::time::Instant::now();
-            for round in 0..20 {
-                memo.slots.fill((0, 0));
-                memo.len = 0;
-                for lookup in 0..lookups {
-                    let definition = addresses[(lookup * 7 + round) % count];
-                    std::hint::black_box(memo.token(&memory, 0, definition).unwrap());
-                }
-            }
-            let per_walk = started.elapsed() / 20;
-            println!(
-                "type token memo {count} definitions, {lookups} lookups per walk: {per_walk:?}"
-            );
-        }
-    }
 }

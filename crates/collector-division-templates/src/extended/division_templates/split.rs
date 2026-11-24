@@ -89,7 +89,7 @@ impl WalkPart {
             slot.set(country.canonical_slot);
             let _reads = collector_memory::read_accounting::table(TABLES[2]);
             let visit = country_store.observe(memory, base, state, country, changes, scratch);
-            if engine_allocation::reserve(visits, 1).is_ok() {
+            if visits.len() < visits.capacity() || engine_allocation::reserve(visits, 1).is_ok() {
                 visits.push(visit);
             } else {
                 lost_visit = true;
@@ -144,7 +144,9 @@ impl WalkPart {
                 )
                 .ok()
                 .map(|()| (start, self.speed_keys.len() - start));
-                if engine_allocation::reserve(&mut self.speed_spans, 1).is_err() {
+                if self.speed_spans.len() == self.speed_spans.capacity()
+                    && engine_allocation::reserve(&mut self.speed_spans, 1).is_err()
+                {
                     self.incomplete = true;
                     break;
                 }
@@ -214,7 +216,9 @@ struct Observed<'a> {
 
 impl Observed<'_> {
     fn record(&mut self, event: Event) {
-        if engine_allocation::reserve(&mut *self.events, 1).is_ok() {
+        if self.events.len() < self.events.capacity()
+            || engine_allocation::reserve(&mut *self.events, 1).is_ok()
+        {
             self.events.push(event);
         } else {
             self.incomplete = true;

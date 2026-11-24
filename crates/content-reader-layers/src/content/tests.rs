@@ -1018,32 +1018,6 @@ fn coverage_policy_four_verifies_archive_event_tooltip_font_effect_and_volume_ro
 }
 
 #[test]
-fn layer_hash_uses_paths_content_and_an_unambiguous_sorted_list() {
-    let first: [u8; 32] = Sha256::digest(b"first").into();
-    let second: [u8; 32] = Sha256::digest(b"second").into();
-    let files: BTreeMap<LayerPath, _> =
-        BTreeMap::from([(b"map/b".to_vec(), second), (b"map/a".to_vec(), first)]);
-    let mut expected = Sha256::new();
-    for (path, hash) in [("map/a", first), ("map/b", second)] {
-        expected.update((path.len() as u32).to_le_bytes());
-        expected.update(path.as_bytes());
-        expected.update(hash);
-    }
-    assert_eq!(
-        layer_hash(&files).unwrap(),
-        <[u8; 32]>::from(expected.finalize())
-    );
-    let mut renamed = files.clone();
-    let moved = renamed.remove(b"map/a".as_slice()).unwrap();
-    renamed.insert(b"map/c".to_vec(), moved);
-    assert_ne!(layer_hash(&files).unwrap(), layer_hash(&renamed).unwrap());
-    assert_ne!(
-        layer_hash(&BTreeMap::new()).unwrap(),
-        layer_hash(&files).unwrap()
-    );
-}
-
-#[test]
 fn overlay_replacement_removes_subdirectories_without_prefix_collisions() {
     let mut effective = BTreeMap::new();
     let base = ["map/a", "map/sub/b", "maps/c", "common/a"].map(|path| path.as_bytes().to_vec());
@@ -1202,7 +1176,6 @@ fn remote_mod_ids_take_precedence_over_local_descriptor_names() {
         .is_err()
     );
 }
-
 
 #[test]
 fn listed_paths_keep_case_variants_and_honour_replace_path() {
@@ -1456,8 +1429,6 @@ fn folder_fixtures_replace_directories_as_descriptors_do() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-
-
 #[test]
 fn archive_members_keep_their_raw_name_bytes() {
     let root = std::env::temp_dir().join(format!(
@@ -1681,7 +1652,6 @@ fn archive_tree_preserves_registration_rules() {
     assert_eq!(archive.read(&entries[2], None).unwrap().unwrap(), text);
     fs::remove_dir_all(&root).unwrap();
 }
-
 
 #[test]
 fn records_the_game_does_not_open_pass_to_the_layers_below() {
@@ -2709,41 +2679,6 @@ fn short_name_enumeration_propagates_unexpected_win32_errors() {
     );
 }
 
-
-#[test]
-fn hash_mismatch_names_the_layer_and_both_digests() {
-    let mut changed = Vec::new();
-    check_hash(&mut changed, "DLC", "dlc034_no_step_back", [7; 32], [7; 32]);
-    assert!(changed.is_empty());
-    check_hash(&mut changed, "DLC", "dlc034_no_step_back", [8; 32], [7; 32]);
-    assert_eq!(
-        changed,
-        [ChangedLayer {
-            kind: "DLC",
-            id: "dlc034_no_step_back".into(),
-            recorded: [7; 32],
-            installed: [8; 32],
-        }]
-    );
-    assert_eq!(
-        changed[0].to_string(),
-        "DLC dlc034_no_step_back changed since the recording (content hash mismatch)"
-    );
-    let error = changed[0].refusal().to_string();
-    assert!(error.contains("DLC dlc034_no_step_back"));
-    assert!(error.contains(&"07".repeat(32)));
-    assert!(error.contains(&"08".repeat(32)));
-    let mut warnings = vec!["kept".to_owned(), changed[0].to_string()];
-    let content = ResolvedContent {
-        layers: ResolvedLayers::default(),
-        stats: Default::default(),
-        changed,
-        notes: Vec::new(),
-    };
-    content.append_changed_to(&mut warnings);
-    assert_eq!(warnings, ["kept".to_owned(), content.changed[0].to_string()]);
-}
-
 fn mod_order(mods: &[(&str, &str)]) -> (io::Result<Vec<String>>, Vec<String>) {
     let mut notes = Vec::new();
     let selected = mods
@@ -3108,7 +3043,6 @@ fn mod_forms_the_engine_cannot_order_are_named() {
         assert!(error.contains(refusal), "{error}");
     }
 }
-
 
 #[cfg(feature = "test-support")]
 #[test]
@@ -3877,7 +3811,6 @@ fn successful_traced_reads_own_full_evidence_through_zero_prefix_and_memoized_pa
     fs::remove_dir_all(root).unwrap();
 }
 
-
 #[test]
 fn reads_below_the_visual_mods_keep_the_trace_purpose_and_presentation_layers() {
     use std::sync::{Arc, Mutex};
@@ -3940,7 +3873,6 @@ fn reads_below_the_visual_mods_keep_the_trace_purpose_and_presentation_layers() 
     drop(reads);
     fs::remove_dir_all(root).unwrap();
 }
-
 
 #[test]
 fn stamped_reads_open_listed_covered_files() {

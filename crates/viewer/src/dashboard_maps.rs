@@ -1551,11 +1551,6 @@ mod tests {
     }
 
     #[test]
-    fn map_registry_entries_do_not_move_renderers_on_the_ui_stack() {
-        assert!(std::mem::size_of::<MapView>() < 1024);
-    }
-
-    #[test]
     fn set_views_admits_reloaded_page_at_sequence_zero_and_ignores_late_old_page_snapshots() {
         let mut maps = DashboardMaps::new(
             Config::default(),

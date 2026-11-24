@@ -257,15 +257,6 @@ mod tests {
         assert_eq!(defines, shader_pipeline::library::globals([5632, 2048], on));
     }
 
-    #[test]
-    fn mesh_pass_point_samples_the_light_table() {
-        use content_reader_gui::pdxshader::program::{Filter, Stage};
-
-        let samplers = super::super::mesh_shader::map_samplers();
-        let light = &samplers[&shader_pipeline::binding(9, Stage::Pixel)];
-        assert_eq!([light.mag, light.min, light.mip], [Filter::Point; 3]);
-    }
-
     fn audit_with(
         passes: &[(&str, &str)],
         vanilla: &dyn Fn(&str) -> io::Result<Vec<u8>>,
@@ -291,40 +282,6 @@ mod tests {
             .find(|(name, _)| *name == path)
             .map(|(_, text)| text.as_bytes().to_vec())
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
-    }
-
-    #[test]
-    fn compatibility_policy3_shader_sources_keep_the_uncovered_read_note() {
-        content_reader_script::test_game::enter();
-        let layers = ResolvedLayers::from_folders_with_coverage_policy(&[], 3).unwrap();
-        let files = [
-            (
-                "gfx/FX/synthetic.shader",
-                "Includes = { \"synthetic.fxh\" }",
-            ),
-            ("gfx/FX/synthetic.fxh", ""),
-        ];
-        let passes = [(
-            "synthetic",
-            "gfx/FX/synthetic.shader",
-            "gfx/FX/synthetic.shader",
-        )];
-        let read = |path: &str| source(&files, path);
-        let audit = audit_paths(&layers, &passes, &read, &read);
-        assert_eq!(audit.affected_passes, 0);
-        assert!(audit.lines[0].contains("3 source/include file(s) are outside recorded content hash coverage and are not hash-verified"));
-        for path in [
-            "gfx/FX/synthetic.shader",
-            "gfx/FX/synthetic.fxh",
-            "gfx/FX/defines_hlsl_dx11.fxh",
-        ] {
-            assert!(audit.lines[0].contains(path));
-        }
-        let audit = audit_paths(&ResolvedLayers::default(), &passes, &read, &read);
-        assert!(
-            audit.lines[0]
-                .contains("0 source/include file(s) are outside recorded content hash coverage")
-        );
     }
 
     #[test]

@@ -195,7 +195,6 @@ mod tests {
     use super::*;
     use engine_native::{ccountry, cgame_state};
     use engine_native_memory::{memory::SliceMemory, msvc_string};
-    use engine_native_politics::cdiplomacy_status;
     use std::cell::RefCell;
 
     const GS: usize = 0x1000;

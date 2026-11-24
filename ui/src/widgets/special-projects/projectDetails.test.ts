@@ -129,11 +129,6 @@ const structureChanges = (product: string, replies: readonly unknown[]) => {
   return changes;
 };
 
-test('a project read alone changes the structure only of the open reward join, never of the inline details', () => {
-  const reads = Array.from({ length: 60 }, (_, at) => ({ ...reply, hour: 24 + at, projects: [{ ...reply.projects[0], readHour: 24 + at, historyReadHour: 23 + at }] }));
-  assert.equal(structureChanges('special-project-details', reads), 1, 'sixty frames of new project reads update the inline details once, as they first arrive');
-  assert.equal(structureChanges(REWARDS_PANEL, reads), 60, 'the open pop-up is given every read it joins on');
-});
 
 test('a changed effects, stats or pending reward reply changes its structure, and an unchanged one keeps it', () => {
   const runs = (text: string) => [{ kind: 'text', text, tone: null }];

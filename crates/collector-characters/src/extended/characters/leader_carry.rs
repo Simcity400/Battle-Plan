@@ -437,9 +437,16 @@ impl<R: Held> LeaderCarry<R> {
             return Err(());
         }
         if self.added.is_empty() && self.entries.iter().all(|entry| entry.seen) {
+            self.added = Vec::new();
+            self.added_rows = Vec::new();
+            self.added_text = Vec::new();
             return Ok(());
         }
-        self.restructure().map_err(|_| ())
+        let result = self.restructure().map_err(|_| ());
+        self.added = Vec::new();
+        self.added_rows = Vec::new();
+        self.added_text = Vec::new();
+        result
     }
 
     fn restructure(&mut self) -> std::io::Result<()> {

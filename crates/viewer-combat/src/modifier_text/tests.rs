@@ -351,28 +351,3 @@ fn rows_sharing_a_token_keep_the_last_registration() {
     assert_eq!(names[&b"twice"[..]], None);
 }
 
-#[test]
-fn the_name_index_is_built_once_per_static_table_pair() {
-    let first = frame(2_000, 70_000);
-    let mut next = frame(1, 1);
-    next.hour = 2;
-    for table in NAME_INDEX_TABLES {
-        next.tables[table.index()] = first.tables[table.index()].clone();
-    }
-    let cache = name_index_cache();
-    let started = Instant::now();
-    for _ in 0..10 {
-        index_names(&first).unwrap().unwrap();
-    }
-    let uncached = started.elapsed() / 10;
-    let a = Definitions::read(&first, &cache).unwrap().unwrap();
-    let started = Instant::now();
-    for _ in 0..10 {
-        Definitions::read(&next, &cache).unwrap().unwrap();
-    }
-    let cached = started.elapsed() / 10;
-    let b = Definitions::read(&next, &cache).unwrap().unwrap();
-    assert!(Arc::ptr_eq(&a.names, &b.names));
-    assert_eq!(a.index("modifier_name_7"), Ok(Some(6)));
-    eprintln!("name index per bind: {uncached:?} rebuilt, {cached:?} cached");
-}

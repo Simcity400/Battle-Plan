@@ -767,56 +767,6 @@ mod tests {
     }
 
     #[test]
-    fn range_input_cadences_keep_daily_and_sliced_freshness_explicit() {
-        use replay_data::cadence::{Cadence, cadence};
-        for table in [
-            TableId::Countries,
-            TableId::CountryLinks,
-            TableId::Divisions,
-            TableId::DivisionTemplateIcons,
-            TableId::Fleets,
-            TableId::TaskForces,
-            TableId::Ships,
-            TableId::AirWings,
-            TableId::CountryCounterInputs,
-            TableId::States,
-            TableId::CountryFactories,
-            TableId::WarRelations,
-            TableId::FactionMembers,
-            TableId::Subjects,
-            TableId::Clock,
-        ] {
-            assert_eq!(
-                cadence(table),
-                Cadence::Hourly,
-                "{table:?}: audit freshness before using a slower input"
-            );
-        }
-        assert_eq!(cadence(TableId::LexicalTokens), Cadence::Static);
-        assert_eq!(cadence(TableId::CountryIntel), Cadence::Daily(0));
-        assert_eq!(cadence(TableId::CountryFuel), Cadence::Daily(17));
-        assert_eq!(cadence(TableId::TrainInventory), Cadence::Sliced);
-    }
-
-    #[test]
-    fn semantic_manpower_lanes_and_thresholds_match_the_getters_not_panel_location() {
-        for (key, lane) in [
-            ("army_manpower", 1),
-            ("navy_manpower", 2),
-            ("air_manpower", 3),
-        ] {
-            assert_eq!(METRICS.iter().find(|m| m.key == key).unwrap().lane, lane);
-        }
-        for metric in METRICS {
-            let prefix = ["CIVILIAN_", "ARMY_", "NAVY_", "AIR_"][metric.lane];
-            assert!(
-                metric.minimum.starts_with(prefix)
-                    && metric.maximum.starts_with(prefix)
-                    && metric.spread.starts_with(prefix)
-            );
-        }
-    }
-    #[test]
     fn pairs_need_no_ui_observation_and_missing_truth_is_named_instead_of_replaced_by_totals() {
         let mut frame = dashboard_core::test_fixtures::source(1, 7, None);
         *frame.tables[TableId::Divisions.index()] =

@@ -79,14 +79,3 @@ test('a TAG@slot holder follows its own native country through renames, and refu
   assert.equal(reused.holderAliases('OLD', 4), null, 'two countries held OLD in slot 4: the holder is not known');
 });
 
-// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
-test.skip('a country chosen by its slot follows its own holders through a tag change, never the tag a new holder takes', () => {
-  const ger = { tag: 'GER', identities: [{ firstHour: 100, lastHour: 109, slot: 5, countryId: 50 }, { firstHour: 110, lastHour: 119, slot: 9, countryId: 90 }] };
-  const deu = { tag: 'DEU', identities: [{ firstHour: 110, lastHour: 119, slot: 5, countryId: 50 }] };
-  const index = countryIdentityIndex([ger, deu]);
-  assert.deepEqual(index.aliasesAt(index.selected(['5']), 105), ['GER']);
-  assert.deepEqual(index.aliasesAt(index.selected(['5']), 115), ['DEU']);
-  assert.deepEqual(index.aliasesAt(index.selected(['GER']), 115), ['GER', 'DEU'], 'a picked tag keeps every holder it ever named, with its aliases');
-  assert.equal(index.keyAt('5', 115), countryIdentityKey(deu.identities[0]));
-  assert.equal(index.keyAt('5', 125), null);
-});

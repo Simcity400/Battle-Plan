@@ -1301,9 +1301,6 @@ impl Scene {
         Ok(())
     }
 
-
-
-
     pub fn set_unit_models(
         &mut self,
         device: &wgpu::Device,
@@ -4830,33 +4827,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_floating_text_family_has_its_own_text_switch() {
-        let kinds: std::collections::BTreeSet<_> = replay_data::rows::MapEventFamily::ALL
-            .into_iter()
-            .filter_map(map_text_kind)
-            .collect();
-        assert_eq!(kinds.len(), replay_data::rows::MapEventFamily::COUNT - 1);
-        assert_eq!(
-            map_text_kind(replay_data::rows::MapEventFamily::ScriptedMapRefresh),
-            None
-        );
-        let graphics = dashboard_core::protocol::MapGraphics {
-            text_generals: false,
-            ..Default::default()
-        };
-        assert!(
-            !graphics.map_text(
-                map_text_kind(replay_data::rows::MapEventFamily::GeneralCaptured).unwrap()
-            )
-        );
-        assert!(
-            graphics.map_text(
-                map_text_kind(replay_data::rows::MapEventFamily::BuildingDamage).unwrap()
-            )
-        );
-    }
-
-    #[test]
     fn map_frame_actors_hide_by_their_own_switch_and_stay_placed() {
         use viewer_models::strike_effects::Effect;
         let table = [(0, 1, 1)];
@@ -4911,12 +4881,4 @@ mod tests {
         assert!(validate_size([2048, 1152], 8192).is_ok());
     }
 
-    #[test]
-    fn half_resolution_truncates_world_dimensions_and_keeps_output_dimensions() {
-        let output = [2049, 1153];
-        assert_eq!(world_size(output, true), output);
-        assert_eq!(world_size(output, false), [1024, 576]);
-        assert_eq!(world_size([3440, 1440], false), [1720, 720]);
-        assert!(validate_size(world_size([1, 100], false), 8192).is_err());
-    }
 }

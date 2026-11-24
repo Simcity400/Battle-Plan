@@ -91,8 +91,52 @@ thread_local! {
     static CONTEXT: Cell<Option<Context>> = const { Cell::new(None) };
     static JOB: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
     static BACKGROUND: Cell<bool> = const { Cell::new(false) };
+    static BACKGROUND_CORE: Cell<Option<Processors>> = const { Cell::new(None) };
     static CONFINED: Cell<Option<Processors>> = const { Cell::new(None) };
     static LEVEL: Cell<Option<(Level, bool)>> = const { Cell::new(None) };
+}
+
+static BACKGROUND_CORE_TARGET: std::sync::OnceLock<Option<Processors>> =
+    std::sync::OnceLock::new();
+
+fn background_core_target() -> Option<Processors> {
+    *BACKGROUND_CORE_TARGET.get_or_init(|| {
+        if !Processors::one_group() {
+            return None;
+        }
+        let process = Processors::process()?;
+        let mut list: Vec<usize> = cores(process.group)
+            .into_iter()
+            .map(|core| core & process.mask)
+            .filter(|core| *core != 0)
+            .collect();
+        if list.len() < 6 {
+            return None;
+        }
+        list.sort_unstable();
+        Some(Processors {
+            mask: *list.last()?,
+            group: process.group,
+        })
+    })
+}
+
+pub fn confine_background_core(confine: bool) {
+    if confine {
+        if BACKGROUND_CORE.get().is_some() {
+            return;
+        }
+        let Some(target) = background_core_target() else {
+            return;
+        };
+        let Some(previous) = Processors::current() else {
+            return;
+        };
+        BACKGROUND_CORE.set(Some(previous));
+        target.enter();
+    } else if let Some(previous) = BACKGROUND_CORE.take() {
+        previous.enter();
+    }
 }
 
 pub fn follow() {

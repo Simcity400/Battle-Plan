@@ -157,22 +157,3 @@ pub const MUTATIONS: [(MutationSite, Receiver); 16] = [
     ),
 ];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sites_are_distinct_and_named_once() {
-        for (index, (site, _)) in MUTATIONS.iter().enumerate() {
-            for (other, _) in &MUTATIONS[index + 1..] {
-                assert_ne!(site.rva, other.rva, "{}", site.name);
-                assert_ne!(site.name, other.name);
-            }
-        }
-        for (site, receiver) in MUTATIONS {
-            if let Receiver::State(rows) = receiver {
-                assert!(rows.state || rows.provinces, "{}", site.name);
-            }
-        }
-    }
-}

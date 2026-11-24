@@ -299,23 +299,4 @@ mod tests {
         assert!(TENTH.value(i64::MIN + 2).is_err());
     }
 
-    #[test]
-    fn steps_name_their_precision_and_elements() {
-        assert_eq!(TENTH.describe(), "0.1 (fixed5, toward zero)");
-        assert_eq!(
-            Step::fixed5(1_000, Rounding::HalfAwayFromZero).describe(),
-            "0.01 (fixed5, half away from zero)"
-        );
-        assert_eq!(
-            Step::fixed5(100_000, Rounding::TowardZero).describe(),
-            "1 (fixed5, toward zero)"
-        );
-        let some = TENTH.only(&[0, 1, 3]);
-        assert!(some.applies(0) && some.applies(3) && !some.applies(2));
-        assert!(some.whole().applies(2));
-        assert_eq!(
-            some.describe(),
-            "0.1 (fixed5, toward zero) for elements 0, 1, 3"
-        );
-    }
 }

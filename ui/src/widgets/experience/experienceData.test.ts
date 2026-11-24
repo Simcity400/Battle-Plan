@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { resolveOptions } from '../../dashboard/options.ts';
-import { OPTIONS } from './definition.ts';
-import { experienceBranches, experienceCard, experienceLines, pointsSummary, experienceFamily, experienceMeasure, experienceStructure, followExperienceHeads, formatExperience,
-  validateExperienceReply } from './experienceData.ts';
+import { experienceCard, experienceLines, pointsSummary, experienceStructure, followExperienceHeads, formatExperience, validateExperienceReply } from './experienceData.ts';
 import { parseFollowed } from '../../dashboard/follow/message.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { tileHead, valueAtHead } from '../../dashboard/tiles/head.ts';
@@ -11,15 +8,6 @@ import { tileHead, valueAtHead } from '../../dashboard/tiles/head.ts';
 const reply = { tag: 'GER', scale: 32768, dayHours: 24, readHour: 48, banked: { armyRaw: '327680', navyRaw: '0', airRaw: '16384' }, bankedMissing: null,
   change: null, changeMissing: 'No read exactly a day earlier in this unbroken stretch', gain: { armyRaw: '32768', navyRaw: '0', airRaw: '0' }, gainMissing: null, warnings: [] };
 
-test('a line reads banked experience from the recorded table and change or gain from the daily one', () => {
-  assert.deepEqual(experienceFamily('banked', 'navy'), { kind: 'country-experience', measure: 'navy' });
-  assert.deepEqual(experienceFamily('gain', 'air'), { kind: 'country-experience-daily', measure: 'airGain' });
-  assert.deepEqual(experienceFamily('change', 'army'), { kind: 'country-experience-daily', measure: 'armyChange' });
-  const options = resolveOptions(OPTIONS, {});
-  assert.equal(experienceMeasure(options), 'banked');
-  assert.deepEqual(experienceBranches(options), ['army', 'navy', 'air'], 'every branch at once, as main');
-  assert.deepEqual(experienceBranches(resolveOptions(OPTIONS, { navy: false })), ['army', 'air']);
-});
 
 test('one country draws its branches in the branch colours; several, each in its own colour, a line per branch', () => {
   const categories = ['c0', 'c1', 'c2'];

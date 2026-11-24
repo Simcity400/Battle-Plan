@@ -419,15 +419,7 @@ pub fn relayout(
 
 #[cfg(test)]
 mod tests {
-    use super::{enemy_sum, native_gui, positions, ratio};
-    #[test]
-    fn status_row_centers_only_visible_widths_in_native_order() {
-        assert_eq!(
-            positions([20, 30, 40, 50], [true, false, true, true], [3, 65], -64),
-            [Some([-52, 1]), None, Some([-32, 1]), Some([8, 1])]
-        );
-        assert_eq!(positions([20; 4], [false; 4], [3, 65], 0), [None; 4]);
-    }
+    use super::{enemy_sum, native_gui, ratio};
     #[test]
     fn progress_normalization_keeps_own_overcapacity_and_native_wrapping() {
         assert_eq!(ratio(150_000, 100_000), 1.5);

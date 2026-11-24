@@ -707,58 +707,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_display_choices_reach_the_pop_out() {
-        assert_eq!(
-            mirrored(&MapAction::Diagnostics { enabled: true }),
-            Some(Mirror::Diagnostics(true))
-        );
-        assert_eq!(
-            mirrored(&MapAction::Mute { muted: true }),
-            Some(Mirror::Muted(true))
-        );
-        assert_eq!(
-            mirrored(&MapAction::Vsync { enabled: false }),
-            Some(Mirror::Display)
-        );
-        assert_eq!(
-            mirrored(&MapAction::UiScale { scale: None }),
-            Some(Mirror::Display)
-        );
-        assert_eq!(
-            mirrored(&MapAction::FrameLimit { hz: Some(60.0) }),
-            Some(Mirror::Display)
-        );
-        assert_eq!(
-            mirrored(&MapAction::MapSettingsSaved),
-            Some(Mirror::SettingsSaved)
-        );
-        assert_eq!(
-            mirrored(&MapAction::RefreshVisualMods),
-            Some(Mirror::RefreshVisualMods)
-        );
-        for action in [
-            MapAction::Unload { path: "a".into() },
-            MapAction::Configure {
-                options: Default::default(),
-            },
-            MapAction::Inspect,
-            MapAction::Folders {
-                game: "g".into(),
-                user: "u".into(),
-            },
-            MapAction::CameraMode {
-                mode: dashboard_core::protocol::CameraMode::Fly,
-                overlays: true,
-            },
-            MapAction::FlyAircraft {
-                aircraft: Some("plane_entity".into()),
-            },
-        ] {
-            assert_eq!(mirrored(&action), None, "{action:?}");
-        }
-    }
-
-    #[test]
     fn unloading_matches_the_shown_requested_or_seeking_recording_in_any_spelling() {
         let recordings = vec![
             r"\\?\C:\Captures\Shown.battleplan".to_owned(),

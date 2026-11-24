@@ -6,6 +6,4 @@ The capture can republish a retained CharacterRoleTraits table without taking it
 
 Operative links use a separate unit-leader witness. An unobserved domain cannot certify a link. A valid witness permits reuse of the resolved name, codename and assigned traits. If the read refused a name, the link is retried the next time without needing a mutation notice. The resolved operative type determines the name group layout independently of the stored category operand. Regression `722e92182e` covers this distinction.
 
-The role-store test compares retained and fresh frames at 13,200 characters. Run its `role_traits_hour_costs_at_late_war_scale` benchmark in a release test build with `--ignored --nocapture`.
-
 [Role-store tests](../../crates/collector-characters/src/extended/character_inputs/role_store_tests.rs) · [Operative fixtures](../../crates/collector-characters/src/extended/character_inputs_scale_tests.rs)
