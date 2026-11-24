@@ -1,3 +1,4 @@
+import { serialize } from 'node:v8';
 import { laneDispatch } from '../../draw/laneDispatch.ts';
 import { fieldsView } from '../../draw/views/fields.ts';
 import { drawnViews } from '../../draw/views/drawn.ts';
@@ -10,7 +11,9 @@ import type { LaneView } from '../../draw/lane';
 
 export const NATIVE = 3;
 
-function lane(views: (kind: string) => LaneView | undefined, onClose?: () => void): LaneWorker & { close(): void } {
+export interface Posted { readonly type: ToLane['type']; readonly bytes: number; readonly message: ToLane }
+
+function lane(views: (kind: string) => LaneView | undefined, onClose?: () => void, posted?: Posted[]): LaneWorker & { close(): void } {
   const fields = fieldsView(() => undefined);
   let closed = false;
   let lanePort: MessagePort | null = null;
@@ -18,6 +21,7 @@ function lane(views: (kind: string) => LaneView | undefined, onClose?: () => voi
     onmessage: null,
     postMessage(message: ToLane, transfer: Transferable[] = []) {
       if (closed) return;
+      if (posted && message.type !== 'init') posted.push({ type: message.type, bytes: serialize(message).byteLength, message });
       const copy = structuredClone(message, { transfer: transfer as Transferable[] });
       if (copy.type === 'init') {
         lanePort = copy.port;
@@ -93,7 +97,8 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, followCl
   const clock = new PlaybackController();
   clock.setBounds({ firstHour: 0, lastHour: 100_000 });
   const channels = new Map<MessagePort, boolean>();
-  const workers = Array.from({ length: lanes }, () => lane(views));
+  const posted: Posted[] = [];
+  const workers = Array.from({ length: lanes }, () => lane(views, undefined, posted));
   const host: PipelineHost = { lanes: workers, open: list => client.openFollow!(list),
     channel: () => {
       const made = new MessageChannel(), shut = made.port2.close.bind(made.port2);
@@ -126,7 +131,7 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, followCl
       for (const port of target) port.postMessage({ kind: 'failure', reason } satisfies FromPull);
     });
   };
-  return { pipeline, clock, client, send, fail, source, asked, settle, channels, close: () => { closed = true; pipeline.close(); for (const port of ports) port.close(); ports = []; } };
+  return { pipeline, clock, client, send, fail, source, asked, settle, channels, posted, close: () => { closed = true; pipeline.close(); for (const port of ports) port.close(); ports = []; } };
 }
 
 export function managedInProcess({ lanes = 1, views = () => undefined, follow, followClock, gate, open }: {

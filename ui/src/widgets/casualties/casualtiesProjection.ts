@@ -1,104 +1,85 @@
-import { seriesStateProvenInterval, validateRankReply } from '../../charts/race/measureRaceData.ts';
+import { rankProvenInterval, rankReading, validateRankReply } from '../../charts/race/measureRaceData.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsValueField } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import type { BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/contract.ts';
-import { inHourRanges, nextMembershipChange, type HourRanges } from '../../families/holders.ts';
+import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
+import { groupSelection } from '../../families/groupSelection.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
-import type { SeriesState } from '../../generated/dashboard';
+import type { GroupSelection, SeriesState } from '../../generated/dashboard';
 
 export const FAMILY = 'casualty-totals';
 const RANK = 'dealtAndTaken';
 const MEASURES = ['dealt', 'taken', 'unknown', 'partial'] as const;
 type Measure = typeof MEASURES[number];
 const MOST = 1500;
-const PARTIAL = 'Some casualties were recorded without their full detail: at least this many.';
+const PARTIAL = 'Some casualties were recorded without their full detail.';
 
 export interface CasualtiesOptions {
   readonly view: 'butterfly' | 'race';
   readonly includeUnknown: boolean;
-  readonly chosen: readonly string[] | null;
-  readonly membership: Readonly<Record<string, HourRanges>> | null;
+  readonly group: boolean;
 }
 
 interface Base {
   readonly branchId: string;
   readonly measure: string;
-  readonly ranked: boolean;
+  readonly measures: readonly string[];
   readonly top: number | null;
   readonly countries: readonly string[];
-  readonly membership: Readonly<Record<string, HourRanges>> | null;
-}
-
-function membersAt(countries: readonly string[], membership: Readonly<Record<string, HourRanges>> | null, hour: number): readonly string[] {
-  return membership ? countries.filter(tag => inHourRanges(membership[tag], hour)) : countries;
+  readonly group: GroupSelection | null;
 }
 
 function exactParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
   const cfg = base as unknown as Base;
-  const family = { kind: FAMILY, measure: cfg.measure };
-  if (cfg.ranked && cfg.top != null) return { branchId: cfg.branchId, family, hour, top: cfg.top };
-  const countries = membersAt(cfg.countries, cfg.membership, hour);
-  if (!countries.length) return null;
-  const reads = countries.map(tag => ({ country: countryFromKey(tag), hour }));
-  return cfg.ranked ? { branchId: cfg.branchId, family, reads, top: countries.length } : { branchId: cfg.branchId, family, reads };
+  const asked = { branchId: cfg.branchId, family: { kind: FAMILY, measure: cfg.measure }, measures: cfg.measures, hour };
+  if (cfg.top != null) return { ...asked, top: cfg.top };
+  if (cfg.group) return { ...asked, group: cfg.group };
+  return cfg.countries.length ? { ...asked, countries: cfg.countries.map(countryFromKey) } : null;
 }
 
-function entry(ctx: FamilyPlanContext, name: string, base: Base): SourceEntry {
-  const top = ctx.countries.top;
-  return {
-    name,
-    source: ctx.track.source,
-    branch: ctx.branch.id,
-    offset: ctx.track.axisOffset,
-    read: {
-      shape: 'point',
-      channel: 'followed',
-      coverage: top != null && base.ranked
-        ? { mode: 'population', form: 'top', limit: top }
-        : ctx.countries.all || top != null ? { mode: 'population', form: 'all' } : { mode: 'keyed', keys: ctx.countries.tags },
-      product: 'series-state',
-      exactProduct: 'series-state',
-      followQuery: null,
-      params: base as unknown as Readonly<Record<string, unknown>>,
-      buildExactParams: exactParams,
-      dynamicKeys: ['hour', 'reads'],
-      ...(base.ranked && base.top != null ? {} : { provenInterval: seriesStateProvenInterval }),
-      validate: validateRankReply,
-    },
-  };
+function viewMeasures(view: 'butterfly' | 'race'): readonly Measure[] {
+  return view === 'race' ? ['unknown', 'partial'] : MEASURES;
 }
 
 function casualtySources(ctx: FamilyPlanContext, view: 'butterfly' | 'race'): SourcePlan {
   const top = ctx.countries.top;
   const keyed = !ctx.countries.all && top == null;
-  const countries = keyed ? ctx.countries.tags : ctx.countries.every;
-  const rankTop = keyed ? null : top ?? MOST;
-  const membership = keyed ? ctx.countries.membership : null;
+  const group = keyed ? groupSelection(ctx.widget.countries) : null;
+  const base: Base = {
+    branchId: ctx.branch.id,
+    measure: view === 'race' ? 'taken' : RANK,
+    measures: viewMeasures(view),
+    top: keyed ? null : top ?? MOST,
+    countries: keyed && !group ? ctx.countries.tags : [],
+    group,
+  };
   return {
     owner: `casualties:${view}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
-    entries: [
-      entry(ctx, 'rank', { branchId: ctx.branch.id, measure: view === 'race' ? 'taken' : RANK, ranked: true, top: rankTop, countries, membership }),
-      ...viewMeasures(view).map(measure => entry(ctx, measure, { branchId: ctx.branch.id, measure, ranked: false, top: null, countries, membership })),
-    ],
+    entries: [{
+      name: 'rank',
+      source: ctx.track.source,
+      branch: ctx.branch.id,
+      offset: ctx.track.axisOffset,
+      read: {
+        shape: 'point',
+        channel: 'followed',
+        coverage: top != null ? { mode: 'population', form: 'top', limit: top } : ctx.countries.all || group ? { mode: 'population', form: 'all' } : { mode: 'keyed', keys: ctx.countries.tags },
+        product: 'series-rank',
+        exactProduct: 'series-rank',
+        followQuery: null,
+        params: base as unknown as Readonly<Record<string, unknown>>,
+        buildExactParams: exactParams,
+        dynamicKeys: ['hour', 'countries'],
+        provenInterval: rankProvenInterval,
+        validate: validateRankReply,
+      },
+    }],
   };
 }
 
-function viewMeasures(view: 'butterfly' | 'race'): readonly Measure[] {
-  return view === 'race' ? ['taken', 'unknown', 'partial'] : MEASURES;
-}
-
-type Held = ReadonlyMap<string, SeriesState>;
-
-function held(readView: BoundedReadView, name: string): Held | null {
-  const panel = readView.panel(name);
-  if (panel === undefined) return null;
-  return new Map(validateRankReply(panel).states.map(state => [countryKey(state.country), state]));
-}
-
-function raw(state: SeriesState | undefined): bigint | null {
+function raw(state: SeriesState | null): bigint | null {
   return state?.run ? BigInt(state.run.valueRaw) : null;
 }
 
@@ -113,74 +94,35 @@ function project(readView: BoundedReadView, options: CasualtiesOptions): BarsMod
   const base = butterfly
     ? { form: 'two-sided' as const, hour: readView.hour, animateOrder: true, leftHeader: 'Casualties taken', rightHeader: 'Casualties dealt' }
     : { form: 'ordered' as const, hour: readView.hour, animateOrder: true, showAxis: true, scaleUnit: 'Casualties taken' };
-  const chosen = options.chosen ? membersAt(options.chosen, options.membership, readView.hour) : null;
-  if (chosen && !chosen.length) return { ...base, rows: [], empty: 'No country of this group at this date.', emptyKind: 'empty' };
   const refused = readView.refused('rank');
   if (refused) return { ...base, rows: [], empty: refused, emptyKind: 'unavailable' };
-  const rankPanel = readView.panel('rank');
-  if (rankPanel === undefined) return { ...base, rows: [] };
-  const ranked = validateRankReply(rankPanel).states;
-  const measures = Object.fromEntries(MEASURES.map(measure => [measure, held(readView, measure)])) as Record<Measure, Held | null>;
-  if (viewMeasures(options.view).some(measure => measures[measure] === null)) return { ...base, rows: [] };
-  const rows: BarsDataRow[] = [];
-  const seen = new Set<string>();
-  const missingRows: BarsDataRow[] = [];
-  for (const state of ranked) {
-    const tag = countryKey(state.country);
-    if (seen.has(tag)) continue;
-    seen.add(tag);
+  const panel = readView.panel('rank');
+  if (panel === undefined) return { ...base, rows: [] };
+  const reply = validateRankReply(panel);
+  if (!reply.rows.length && reply.refused) return { ...base, rows: [], empty: reply.refused, emptyKind: 'unavailable' };
+  const rows: BarsDataRow[] = reply.rows.map(rankRow => {
+    const tag = countryKey(rankRow.country);
     const pres = countryRowPresentation(readView, tag);
-    const reasonOf = (measure: Measure) => measures[measure]?.get(tag)?.missing ?? state.missing ?? 'Casualties were not recorded at this hour.';
-    const partial = raw(measures.partial?.get(tag));
+    const reading = (measure: Measure) => rankReading(reply, rankRow, measure);
+    const reasonOf = (measure: Measure) => reading(measure)?.missing ?? 'Casualties were not recorded at this hour.';
+    const partial = raw(reading('partial'));
     const atLeast = partial !== null && partial !== 0n;
-    const knownTaken = raw(measures.taken?.get(tag));
-    const unknown = raw(measures.unknown?.get(tag));
+    const knownTaken = raw(reading('taken'));
+    const unknown = raw(reading('unknown'));
     const taken = options.includeUnknown ? (knownTaken === null || unknown === null ? null : knownTaken + unknown) : knownTaken;
     const takenField = field(taken, atLeast, options.includeUnknown && unknown === null ? reasonOf('unknown') : reasonOf('taken'));
-    const row: BarsDataRow = butterfly
-      ? (() => {
-          const dealtField = field(raw(measures.dealt?.get(tag)), atLeast, reasonOf('dealt'));
-          return {
-            kind: 'data', key: tag, subject: tag, label: pres.label, labelMissing: pres.labelMissing, media: pres.media,
-            ...(pres.color ? { color: pres.color } : {}),
-            left: { value: takenField.field, numeric: takenField.numeric },
-            right: { value: dealtField.field, numeric: dealtField.numeric },
-          };
-        })()
-      : {
-          kind: 'data', key: tag, subject: tag, label: pres.label, labelMissing: pres.labelMissing, media: pres.media,
-          ...(pres.color ? { color: pres.color } : {}),
-          value: { ...takenField.field, label: 'Casualties taken' },
-          numeric: takenField.numeric,
-        };
-    if (state.run) rows.push(row);
-    else missingRows.push(row);
-  }
-  if (chosen) {
-    for (const tag of chosen) {
-      if (seen.has(tag)) continue;
-      const pres = countryRowPresentation(readView, tag);
-      const value = notRecorded('This country was not recorded at this hour.');
-      missingRows.push(butterfly
-        ? { kind: 'data', key: tag, subject: tag, label: pres.label, labelMissing: pres.labelMissing, media: pres.media, ...(pres.color ? { color: pres.color } : {}),
-            left: { value: { value }, numeric: null }, right: { value: { value }, numeric: null } }
-        : { kind: 'data', key: tag, subject: tag, label: pres.label, labelMissing: pres.labelMissing, media: pres.media, ...(pres.color ? { color: pres.color } : {}),
-            value: { value }, numeric: null });
-    }
-  }
-  const all = [...rows, ...missingRows];
-  return { ...base, rows: all, ...(all.length ? {} : { empty: 'No casualties at this date.', emptyKind: 'empty' as const }) };
-}
-
-function nextChange(readView: BoundedReadView, options: CasualtiesOptions): number {
-  return nextMembershipChange(options.membership, readView.hour);
+    const shared = { kind: 'data' as const, key: tag, subject: tag, label: pres.label, labelMissing: pres.labelMissing, media: pres.media, ...(pres.color ? { color: pres.color } : {}) };
+    if (!butterfly) return { ...shared, value: { ...takenField.field, label: 'Casualties taken' }, numeric: takenField.numeric };
+    const dealtField = field(raw(reading('dealt')), atLeast, reasonOf('dealt'));
+    return { ...shared, left: { value: takenField.field, numeric: takenField.numeric }, right: { value: dealtField.field, numeric: dealtField.numeric } };
+  });
+  return { ...base, rows, ...(rows.length ? {} : { empty: options.group ? 'No country of this group at this date.' : 'No casualties at this date.', emptyKind: 'empty' as const }) };
 }
 
 const options = (ctx: FamilyPlanContext, view: 'butterfly' | 'race'): CasualtiesOptions => ({
   view,
   includeUnknown: ctx.options.includeUnknown === true,
-  chosen: !ctx.countries.all && ctx.countries.top == null ? ctx.countries.tags : null,
-  membership: !ctx.countries.all && ctx.countries.top == null ? ctx.countries.membership : null,
+  group: !ctx.countries.all && ctx.countries.top == null && groupSelection(ctx.widget.countries) !== null,
 });
 
 const countries = {
@@ -188,16 +130,14 @@ const countries = {
   labels: true,
   colours: true,
   allowSlots: true,
-  everyOnTop: true,
-  requireGroupsWhen: (widget: FamilyPlanContext['widget']) => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
 };
 
 export const casualtiesButterflyProjection: BarsProjection<CasualtiesOptions> = registerFamilyProjection({
-  kind: 'casualties', family: 'bars', nextChange, project,
+  kind: 'casualties', family: 'bars', nextChange: () => Infinity, project,
 }, 'butterfly');
 
 export const casualtiesRaceProjection: BarsProjection<CasualtiesOptions> = registerFamilyProjection({
-  kind: 'casualties', family: 'bars', nextChange, project,
+  kind: 'casualties', family: 'bars', nextChange: () => Infinity, project,
 }, 'race');
 
 export const casualtiesButterflyDeclaration: BarsWidgetDeclaration<CasualtiesOptions> = {

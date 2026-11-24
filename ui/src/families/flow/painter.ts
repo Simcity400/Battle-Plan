@@ -245,7 +245,7 @@ function drawNodeLabel(ctx: Canvas2D, box: FlowNodeBox, layout: FlowLayout, them
   ctx.font = `${VALUE_WEIGHT} ${fontSize}px ${theme.font}`;
   const figure = node.figure;
   const figureW = figure ? textWidth(ctx, figure) : 0;
-  const flagW = node.others !== undefined ? 0 : FLAG_SLOT_WIDTH;
+  const flagW = node.others !== undefined || node.unknown !== undefined ? 0 : FLAG_SLOT_WIDTH;
   const room = Math.max(10, layout.labelWidth - figureW - (flagW ? flagW + FLAG_GAP : 0) - 12);
   ctx.font = `${LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
   const name = ellipsise(node.label, room, s => textWidth(ctx, s));

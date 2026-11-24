@@ -1,4 +1,7 @@
+import { auditRow } from '../../families/auditRow.ts';
+import { liveKey } from '../../charts/live.ts';
 import { categoricalPalette, CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
+import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
@@ -9,8 +12,9 @@ import {
 } from '../../families/time-chart/declaration.ts';
 import type { ChartGap, ChartInlinePoint, TimeChartModel, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
-import type { WorldTensionStackReply } from '../../generated/dashboard';
-import { validateWorldTensionStack } from './worldTensionProjection.ts';
+import { formatRecordedPercent } from '../../families/valueFormat.ts';
+import type { WorldTensionReply, WorldTensionStackReply } from '../../generated/dashboard';
+import { validateWorldTensionHover, validateWorldTensionStack } from './worldTensionProjection.ts';
 
 const TOP_NAMED = 8;
 
@@ -21,8 +25,7 @@ export interface WorldTensionLinesOptions {
 }
 
 function formatContributionPct(value: number): string {
-  const rounded = Math.round(value * 10) / 10;
-  return `${Number.isInteger(rounded) ? Math.round(rounded) : rounded.toFixed(1)}%`;
+  return formatRecordedPercent(value);
 }
 
 function resolveLineColors(rawColors: readonly (string | null)[], surface: string): string[] {
@@ -97,10 +100,12 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
         empty: { message: 'No threat contribution recorded in this view.', kind: 'empty' },
       };
     }
-    const endHour = reply.endHour ?? hour;
+    const endHour = reply.endHour;
+    const labelHour = endHour ?? hour;
+    const hasNegative = reply.bands.some(band => band.values.some(v => v !== null && v < 0));
     const infos = reply.bands.map(band => {
       if (!band.tag) return { name: 'Unknown', fullName: 'Unknown country', color: null, flagChoice: null };
-      const id = readView.who('country', band.tag, endHour);
+      const id = readView.who('country', band.tag, labelHour);
       const baseName = id.name.status === 'ready' ? id.name.value : band.tag;
       return {
         name: baseName,
@@ -109,6 +114,13 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
         flagChoice: id.flagChoice?.status === 'ready' ? id.flagChoice.value : null,
       };
     });
+    const hover = readView.hover<WorldTensionReply>('hover');
+    const exactHover = hover && hover.hour <= hour && hover.data ? { hour: hover.hour, data: hover.data } : null;
+    const hoverCells = exactHover ? repliedCells(exactHover.data).read() : null;
+    const hoverContribMissing = exactHover
+      ? (exactHover.data.warnings.find(w => w.startsWith('Country contributions are not known at this hour')) ?? null)
+      : null;
+    const hoverSlots = exactHover ? new Set(exactHover.data.contributions.map(c => c.slot)) : null;
     const topColors = resolveLineColors(infos.slice(0, TOP_NAMED).map(info => info.color), options.surface);
     const series: TimeChartSeriesModel[] = reply.bands.map((band, rank) => {
       const isTop = rank < TOP_NAMED;
@@ -120,9 +132,35 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
       for (let i = 0; i < reply.hours.length; i++) {
         const h = reply.hours[i]!;
         if (h > hour) break;
-        points.push({ hour: h, value: band.values[i] ?? null });
+        const val = band.values[i] ?? null;
+        const min = reply.downsampled ? (band.minValues?.[i] ?? val) : undefined;
+        const max = reply.downsampled ? (band.maxValues?.[i] ?? val) : undefined;
+        points.push({
+          hour: h,
+          value: val,
+          ...(reply.downsampled ? { min, max, approximate: min !== max } : {}),
+        });
       }
-      const headValue = band.endValue;
+      const headValue = endHour !== null && band.endValue !== null && Number.isFinite(band.endValue) ? band.endValue : null;
+      let exact: TimeChartSeriesModel['exact'] = null;
+      if (exactHover && hoverCells) {
+        if (hoverContribMissing) {
+          exact = { hour: exactHover.hour, value: null, reason: hoverContribMissing };
+        } else if (hoverSlots?.has(band.slot)) {
+          const key = liveKey(String(band.slot), 'value');
+          const rawVal = hoverCells.get(key);
+          if (rawVal === undefined) {
+            exact = { hour: exactHover.hour, value: null, reason: hoverCells.missing(key) };
+          } else {
+            const pct = Number(rawVal) / exactHover.data.contributionScale;
+            exact = Number.isFinite(pct)
+              ? { hour: exactHover.hour, value: pct }
+              : { hour: exactHover.hour, value: null, reason: hoverCells.missing(key) };
+          }
+        } else {
+          exact = { hour: exactHover.hour, value: 0 };
+        }
+      }
       return {
         id: band.tag ?? `slot:${band.slot}`,
         key: band.tag ?? `slot:${band.slot}`,
@@ -132,7 +170,8 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
         step: true,
         points,
         headValue,
-        headHour: endHour,
+        headHour: labelHour,
+        ...(exact ? { exact } : {}),
         ...(flag ? { flag } : {}),
         rank,
         endLabel: isTop && headValue !== null
@@ -147,14 +186,14 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
     });
     const auditRows = series
       .filter(s => s.role === 'primary' && s.headValue !== null && s.headValue !== undefined)
-      .map(s => ({ row: s.name, key: s.id, value: formatContributionPct(s.headValue!) }));
+      .map(s => (auditRow(s.id, formatContributionPct(s.headValue!))));
     return {
       kind: 'world-tension',
       measureTitle: 'Contribution to world tension',
       mode: 'lines',
       hour,
       extent: options.extent,
-      yAxis: { format: 'percent', fixed: null, min: 0 },
+      yAxis: { format: 'percent', fixed: null, ...(hasNegative ? {} : { min: 0 }) },
       series,
       ...(gaps.length > 0 ? { gaps } : {}),
       warnings: reply.warnings,
@@ -181,31 +220,45 @@ export const worldTensionLinesDeclaration: TimeChartWidgetDeclaration<WorldTensi
     const width = Math.max(240, Math.min(2400, Math.ceil(view.width ?? 1024)));
     return {
       owner: `world-tension-lines:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
-      entries: [{
-        name: 'main',
-        source: ctx.track.source,
-        branch: ctx.branch.id,
-        offset: ctx.track.axisOffset,
-        read: {
-          shape: 'branch-to-hour',
-          coverage: { mode: 'population', form: 'all' },
-          product: 'world-tension-stack',
-          followQuery: null,
-          params: {
-            branchId: ctx.branch.id,
-            layers,
-            values: 'recorded',
-            countries,
-            width,
-          },
-          dynamicKeys: ['firstHour', 'lastHour', 'width'],
-          validate: validateWorldTensionStack,
-          provenInterval: (data, _requested, hour) => {
-            const reply = data as WorldTensionStackReply;
-            return reply.nextChangeHour !== null ? [hour, reply.nextChangeHour - 1] : [hour, Infinity];
+      entries: [
+        {
+          name: 'main',
+          source: ctx.track.source,
+          branch: ctx.branch.id,
+          offset: ctx.track.axisOffset,
+          read: {
+            shape: 'branch-to-hour',
+            coverage: { mode: 'population', form: 'all' },
+            product: 'world-tension-stack',
+            followQuery: null,
+            params: {
+              branchId: ctx.branch.id,
+              layers,
+              values: 'recorded',
+              countries,
+              width,
+            },
+            dynamicKeys: ['firstHour', 'lastHour', 'width'],
+            validate: validateWorldTensionStack,
+            provenInterval: (data, _requested, hour) => {
+              const reply = data as WorldTensionStackReply;
+              return reply.nextChangeHour !== null ? [hour, reply.nextChangeHour - 1] : [hour, Infinity];
+            },
           },
         },
-      }],
+        {
+          name: 'hover',
+          source: ctx.track.source,
+          branch: ctx.branch.id,
+          offset: ctx.track.axisOffset,
+          read: {
+            shape: 'exact-hover',
+            product: 'world-tension',
+            params: { branchId: ctx.branch.id },
+            validate: validateWorldTensionHover,
+          },
+        },
+      ],
     };
   },
   projection: worldTensionLinesProjection,

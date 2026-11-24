@@ -261,6 +261,7 @@ fn facts(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
     let folders = flag_folders(source, context.content.as_ref())?.map_err(|reason| CountryFlagChoice {
         keys: [None, None, None],
         reasons: [Some(reason.clone()), Some(reason.clone()), Some(reason)],
+        searched: Default::default(),
     });
     let (mut names, mut reasons) = (Dictionary::default(), Dictionary::default());
     let mut flags: Vec<CountryFlagChoice> = Vec::new();
@@ -473,6 +474,7 @@ impl Product for CountryStyles {
         let folders = flag_folders(source, context.content.as_ref())?.map_err(|reason| CountryFlagChoice {
             keys: [None, None, None],
             reasons: [Some(reason.clone()), Some(reason.clone()), Some(reason)],
+            searched: Default::default(),
         });
         let stretch = query.timeline.at(params.hour).copied().ok_or_else(|| invalid("The timeline holds no such hour"))?;
         let run = crate::products::styles::cached_looks(source, stretch.run)?;

@@ -13,7 +13,6 @@ import type { Failure } from '../dashboard/queryError';
 import type { CountryHolder } from '../dashboard/reachedCountry';
 import type { BoundWindow, GatedHour, Outside } from '../dashboard/regionTime';
 import type { DeclaredProduct } from '../dashboard/request';
-import type { AuditRow } from '../draw/notifications';
 import type {
   ArtFrame as GeneratedArtFrame,
   ArtOrigin as GeneratedArtOrigin,
@@ -25,7 +24,7 @@ import type {
 } from '../generated/dashboard';
 import type { FamilyFactionRun, HolderRun, HourRanges } from './holders.ts';
 import type { CountryLooksMap } from './looks.ts';
-import type { DatedLogRow, LogTailQuery, TableRowSource } from './table/rowSource.ts';
+import type { DatedLogRow, LogTailQuery, RowWindow, TableRowSource, TailReply } from './table/rowSource.ts';
 import type { Value } from './value.ts';
 
 export type FamilyId = string;
@@ -114,7 +113,7 @@ export interface PixelBinnedSourceRead {
   readonly headQuery?: Readonly<Record<string, unknown>> | null;
   readonly exactProduct?: DeclaredProduct;
   readonly params?: Readonly<Record<string, unknown>> | null;
-  readonly top?: { readonly n: number; readonly least?: boolean };
+  readonly top?: { readonly n: number; readonly least?: boolean; readonly by?: string };
 }
 
 export interface ExactHoverSourceRead {
@@ -130,6 +129,7 @@ export interface PagedRowsSourceRead {
   readonly tailQuery: LogTailQuery;
   readonly pageSize?: number;
   readonly followQuery: Readonly<Record<string, unknown>> | null;
+  readonly validate?: (raw: unknown, readAt?: number) => TailReply<DatedLogRow>;
 }
 
 export type SourceTimeShape =
@@ -261,10 +261,16 @@ export type ArtHandle =
 export type ArtOrigin = GeneratedArtOrigin;
 export type ArtFrame = GeneratedArtFrame;
 export type ArtProvenance = GeneratedArtProvenance;
-export type ArtResolution = GeneratedArtResolution;
+declare const lookedUp: unique symbol;
+
+export type ProductArtResolution = GeneratedArtResolution;
+
+export type ArtResolution =
+  | Exclude<GeneratedArtResolution, { readonly status: 'confirmedMissing' }>
+  | (Extract<GeneratedArtResolution, { readonly status: 'confirmedMissing' }> & { readonly [lookedUp]: true });
 
 export type ArtResult<TBitmap = ImageBitmap> =
-  | Extract<ArtResolution, { readonly status: 'noArtExpected' | 'pending' | 'confirmedMissing' | 'refused' }>
+  | Extract<ArtResolution, { readonly status: 'noArtExpected' | 'pending' | 'confirmedMissing' | 'unavailable' | 'refused' }>
   | (Extract<ArtResolution, { readonly status: 'ready' }> & { readonly bitmap?: TBitmap })
   | (Extract<ArtResolution, { readonly status: 'failed' }> & { readonly retry?: () => void });
 
@@ -285,6 +291,7 @@ export interface BoundedReadView {
   readonly hour: DisplayedHour;
   readonly validInterval: readonly [lo: number, hi: number];
   readonly revisions: Readonly<Record<string, number>>;
+  readonly rowWindow?: RowWindow;
   panel<T = unknown>(name: string): T | undefined;
   answer(name: string): FollowedAnswer | undefined;
   live(name: string): LiveValues<number | bigint | string> | null | undefined;
@@ -345,7 +352,6 @@ export interface InstalledPicture {
   readonly actionKeys: ReadonlyMap<string, InstalledActionTarget>;
   readonly accessibleDescription: string | null;
   readonly auditId?: number;
-  readonly auditRows?: readonly AuditRow[];
 }
 
 export interface FamilyViewportRequest {
@@ -404,6 +410,7 @@ export interface AuxProductSpec<TAux = unknown> {
     track: BoundTrack,
     options: Readonly<Record<string, OptionValue>>,
     country: string | null,
+    subject: string | null,
   ) => Record<string, unknown> | null;
   readonly validate: (raw: unknown) => TAux;
   readonly when?: (options: Readonly<Record<string, OptionValue>>) => boolean;
@@ -418,6 +425,7 @@ export interface FamilyPlanContext<TAux = unknown> {
   readonly following: boolean;
   readonly aux: TAux | undefined;
   readonly countryTag: string | null;
+  readonly countrySubject: string | null;
   readonly countryName: string;
   readonly countries: DeclaredCountryState;
   readonly gateSpan: (first: number, last: number) => BoundWindow | null;

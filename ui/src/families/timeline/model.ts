@@ -1,4 +1,5 @@
-import type { AuditRow } from '../../draw/notifications';
+import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
+import type { LegendStripEntry } from '../../draw/kit.ts';
 import type { HourSpan } from '../../generated/dashboard';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 import type { ArtHandle, BoundedReadView, DisplayedHour, FamilyProjection } from '../contract.ts';
@@ -35,6 +36,7 @@ export interface TimelineLane {
   readonly defaultOpen?: boolean;
   readonly parentKey?: string;
   readonly spans: readonly TimelineSpan[];
+  readonly openedMarker?: { readonly hour: number; readonly label: string };
   readonly ruleColor?: string;
   readonly endText?: string;
   readonly auditValue: string;
@@ -46,6 +48,7 @@ export interface TimelineModel {
   readonly firstHour: number;
   readonly lanes: readonly TimelineLane[];
   readonly unobserved: readonly HourSpan[];
+  readonly legend?: readonly LegendStripEntry[];
   readonly iconsOnBars: boolean;
   readonly labelWidth: number;
   readonly summaryText?: string | null;
@@ -85,12 +88,12 @@ export function visibleLanes(
   return lanes.filter(lane => !lane.parentKey || !closed.has(lane.parentKey));
 }
 
-export function deriveTimelineAudit(model: TimelineModel): AuditRow[] {
-  const rows: AuditRow[] = [];
-  if (model.summaryText) rows.push({ row: '__summary__', key: '__summary__', value: model.summaryText });
+export function deriveTimelineAudit(model: TimelineModel): FamilyAuditRow[] {
+  const rows: FamilyAuditRow[] = [];
+  if (model.summaryText) rows.push(auditRow('__summary__', model.summaryText));
   for (const lane of model.lanes) {
     const spans = lane.spans.map(spanAudit).join(',');
-    rows.push({ row: lane.key, key: lane.key, value: `${lane.auditValue}|${lane.flagTag ?? ''}|${spans}` });
+    rows.push(auditRow(lane.key, `${lane.auditValue}|${lane.flagTag ?? ''}|${spans}`));
   }
   return rows;
 }

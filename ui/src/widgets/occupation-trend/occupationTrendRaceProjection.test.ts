@@ -61,11 +61,14 @@ test('occupation-trend race preserves Rust top order, formats average percent, a
     hour: displayedHour(500),
     panels: new Map([['main', {
       branchId: '1',
-      measure: 'resistance',
-      decimals: 5,
-      states: [
-        { country: 'GER', hour: 500, run: { valueRaw: '2450000', firstHour: 490, lastHour: 510 }, missing: null },
-        { country: 'ITA', hour: 500, run: { valueRaw: '1200000', firstHour: 490, lastHour: 510 }, missing: null },
+      hour: 500,
+      from: 500,
+      until: 500,
+      refused: null,
+      measures: [{ name: 'resistance', decimals: 5 }],
+      rows: [
+        { country: 'GER', readings: [{ country: 'GER', hour: 500, run: { valueRaw: '2450000', firstHour: 490, lastHour: 510 }, missing: null }] },
+        { country: 'ITA', readings: [{ country: 'ITA', hour: 500, run: { valueRaw: '1200000', firstHour: 490, lastHour: 510 }, missing: null }] },
       ],
     }]]),
     identity,
@@ -92,10 +95,13 @@ test('occupation-trend race switches label to compliance and keeps missing as no
     hour: displayedHour(300),
     panels: new Map([['main', {
       branchId: '1',
-      measure: 'compliance',
-      decimals: 5,
-      states: [
-        { country: 'GER', hour: 300, run: null, missing: 'Occupation not recorded' },
+      hour: 300,
+      from: 300,
+      until: 300,
+      refused: 'Occupation not recorded',
+      measures: [{ name: 'compliance', decimals: 5 }],
+      rows: [
+        { country: 'GER', readings: [{ country: 'GER', hour: 300, run: null, missing: 'Occupation not recorded' }] },
       ],
     }]]),
     identity,

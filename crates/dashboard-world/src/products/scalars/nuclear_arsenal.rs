@@ -139,7 +139,7 @@ pub(super) fn rerank(rank: &mut serde_json::Value, rows: &[NukeRow], country: u3
 
 impl AtHour for NuclearArsenal {
     const KEY: &'static str = "nuclear-arsenal";
-    const CLOCK_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     const TITLE: &'static str = "Nuclear arsenal";
     const CONTENT_DEPENDENT: bool = true;
     type Params = NuclearArsenalParams;

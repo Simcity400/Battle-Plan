@@ -1,7 +1,7 @@
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
-import type { AuditRow } from '../../draw/notifications';
+import type { FamilyAuditRow } from '../auditRow.ts';
 import type { ArtResolution } from '../art/types.ts';
 import type {
   ArtHandle,
@@ -17,6 +17,7 @@ import type { OptionValue } from '../../dashboard/options';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { FamilyPlanContext } from '../plan.ts';
 import { normalizeView } from '../manifest.ts';
+import type { PagedRowsSnapshot } from '../table/rowSource.ts';
 import type { FamilyNavTuple } from './keyboard.ts';
 import { parseDefaultRowHit } from './pointer.ts';
 
@@ -82,9 +83,14 @@ export type FamilyArtDemand = ArtHandle;
 export interface FamilyStaticSources {
   readonly panels?: Readonly<Record<string, unknown>>;
   readonly answers?: Readonly<Record<string, FollowedAnswer>>;
+  readonly shifts?: Readonly<Record<string, number>>;
   readonly hour: number;
   readonly follows?: boolean;
-  readonly provenInterval?: readonly [lo: number, hi: number];
+}
+
+export interface FamilyStaticProof {
+  read(): { readonly hour: number; readonly proof: readonly [lo: number, hi: number] } | null;
+  subscribe(changed: () => void): () => void;
 }
 
 export interface ParsedFamilyHit {
@@ -154,8 +160,7 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly options: TOptions;
   readonly settings: TSettings | undefined;
   readonly sources: Readonly<Record<string, number>>;
-  readonly staticPanels?: Readonly<Record<string, unknown>>;
-  readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
+  readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
@@ -164,13 +169,13 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly viewport: FamilyViewportState;
   readonly theme: FamilyTheme | undefined;
   readonly reducedMotion: boolean;
-  readonly identitySnapshot: IdentitySnapshot | null;
   readonly selectedKey: string | null;
   readonly focusedKey: string | null;
   readonly expanded: Readonly<Record<string, boolean>>;
   readonly audit: boolean;
   readonly auditId: number | undefined;
   readonly pauseFlush: number;
+  readonly window?: FamilyRowWindow | null;
 }
 
 export interface FamilyAuditContext<TSettings = unknown> {
@@ -236,6 +241,7 @@ export interface FamilyBaseBinding<TOptions = unknown> extends FamilyBindingIden
   readonly audit: boolean;
   readonly auditId?: number;
   readonly pauseFlush: number;
+  readonly window?: FamilyRowWindow;
 }
 
 export type FamilyBindingExtras<TBinding> = Omit<TBinding, keyof FamilyBaseBinding>;
@@ -253,22 +259,31 @@ export function familyBinding<TOptions, TBinding, TSettings>(
     view: normalizeView(ctx.view),
     options: ctx.options,
     sources: ctx.sources,
-    ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-    ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
     width: ctx.viewport.width,
     height: ctx.viewport.height,
     scrollTop: ctx.viewport.scrollTop,
     scrollLeft: ctx.viewport.scrollLeft,
     theme: ctx.theme,
-    ...(ctx.identitySnapshot ? { identitySnapshot: ctx.identitySnapshot } : {}),
     ...(ctx.artResolutions ? { artResolutions: ctx.artResolutions } : {}),
     selectedKey: ctx.selectedKey,
     focusedKey: ctx.focusedKey,
     audit: ctx.audit,
     ...(ctx.auditId !== undefined ? { auditId: ctx.auditId } : {}),
     pauseFlush: ctx.pauseFlush,
+    ...(ctx.window ? { window: ctx.window } : {}),
   };
   return { ...base, ...extras } as TBinding & FamilyBaseBinding<TOptions>;
+}
+
+export function requestedRowWindow<TSettings>(
+  adapter: Pick<FamilyHostAdapter<any, any, any, TSettings>, 'rowWindow'>,
+  plan: SourcePlan | null,
+  viewport: FamilyViewportState,
+  settings: TSettings | undefined,
+  fields: Readonly<Record<string, unknown>>,
+): FamilyRowWindow | null {
+  if (!adapter.rowWindow || !plan || !plan.entries.some(entry => entry.read.shape === 'paged-rows')) return null;
+  return adapter.rowWindow(viewport, settings, fields);
 }
 
 export function parseFamilyHit(adapter: Pick<FamilyHostAdapter, 'parseHit'>, hitKey: string | null): ParsedFamilyHit | null {
@@ -292,6 +307,7 @@ export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBindin
   readonly chromeState?: (fields: Readonly<Record<string, unknown>>, previous: unknown) => unknown;
   readonly auditOwnerId?: number;
   readonly defaultSize?: readonly [width: number, height: number];
+  readonly rowWindow?: (viewport: FamilyViewportState, settings: TSettings | undefined, fields: Readonly<Record<string, unknown>>) => FamilyRowWindow | null;
   readonly buildBinding?: (ctx: FamilyBindingContext<TOptions, TSettings>) => FamilyBindingExtras<TBinding> | null;
   readonly parseHit?: (hitKey: string | null) => ParsedFamilyHit | null;
   readonly inspectToken?: (key: string) => string;
@@ -300,7 +316,7 @@ export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBindin
   readonly getGridMetrics?: (fields: Readonly<Record<string, unknown>>) => FamilyGridMetrics | null;
   readonly parseGridKey?: (key: string | null) => { readonly row: number; readonly column: number } | null;
   readonly formatGridKey?: (row: number, column: number) => string;
-  readonly deriveAuditRows?: (model: TModel, hour: number, context: FamilyAuditContext<TSettings>) => readonly AuditRow[];
+  readonly deriveAuditRows?: (model: TModel, hour: number, context: FamilyAuditContext<TSettings>) => readonly FamilyAuditRow[];
   readonly auditOrdered?: boolean;
   readonly gestures?: FamilyGestureHandlers;
   readonly exclusiveExpansion?: (fields: Readonly<Record<string, unknown>>) => boolean;

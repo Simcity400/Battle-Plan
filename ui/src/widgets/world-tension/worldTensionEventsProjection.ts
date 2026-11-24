@@ -7,10 +7,10 @@ import {
   type TableColumnSpec,
   type TableProjection,
 } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue } from '../../families/value.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
+import { knownValue, notRecorded, type Value } from '../../families/value.ts';
+import { formatDateOnly, formatRecordedPercent } from '../../families/valueFormat.ts';
 import type { TensionStackEvent, WorldTensionStackReply } from '../../generated/dashboard';
 import { EVENTS_TABLE_BASE } from './definition.ts';
 import { validateWorldTensionStack } from './worldTensionProjection.ts';
@@ -37,13 +37,24 @@ function parseEvents(raw: unknown): ParsedEvents {
   };
 }
 
-function formatAddedPercent(raw: string, scale: number): string {
+function scaleDecimals(scale: number): number | null {
+  if (!Number.isInteger(scale) || scale <= 0) return null;
+  let d = 0;
+  let v = scale;
+  while (v > 1 && v % 10 === 0) {
+    v /= 10;
+    d++;
+  }
+  return v === 1 ? d : null;
+}
+
+function formatAddedPercent(raw: string, scale: number): Value<string> {
+  if (!/^-?\d+$/.test(raw) || scale <= 0) return notRecorded('Tension amount not recorded');
+  const decimals = scaleDecimals(scale);
+  if (decimals !== null) return knownValue(formatRecordedPercent(BigInt(raw), { decimals, signed: true }));
   const num = Number(raw);
-  if (!Number.isFinite(num) || scale <= 0) return '0%';
-  const pct = num / scale;
-  const sign = pct > 0 ? '+' : pct < 0 ? '\u2212' : '';
-  const abs = Math.abs(pct).toFixed(2).replace(/\.?0+$/, '');
-  return `${sign}${abs}%`;
+  if (!Number.isFinite(num)) return notRecorded('Tension amount not recorded');
+  return knownValue(formatRecordedPercent(num / scale, { signed: true }));
 }
 
 export function worldTensionEventsColumns(): readonly TableColumnSpec[] {
@@ -56,7 +67,7 @@ export function worldTensionEventsColumns(): readonly TableColumnSpec[] {
   ];
 }
 
-export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOptions> = registerTableProjection(
+export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOptions> = registerFamilyProjection(
   declareTableProjection<ParsedEvents, TensionStackEvent, WorldTensionEventsOptions>({
     kind: 'world-tension',
     validate: parseEvents,
@@ -86,8 +97,11 @@ export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOpt
             ...spec,
             country: 'tag',
             lookHour: (row, hour) => Math.min(row.firstRead, hour),
-            value: row => knownValue(formatAddedPercent(row.addedRaw, parsed.scale)),
-            sortValue: row => knownValue(Number(row.addedRaw) / Math.max(1, parsed.scale)),
+            value: row => formatAddedPercent(row.addedRaw, parsed.scale),
+            sortValue: row => {
+              const num = Number(row.addedRaw);
+              return Number.isFinite(num) && parsed.scale > 0 ? knownValue(num / parsed.scale) : notRecorded('Tension amount not recorded');
+            },
           };
         }
         return {

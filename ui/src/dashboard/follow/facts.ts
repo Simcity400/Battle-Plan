@@ -562,15 +562,17 @@ export class Facts<V> {
   }
 }
 
-export function changeWindow(window: Window, target: number, next: (hour: number) => number, from?: number): Window {
+export function changeWindow(window: Window, target: number, next: (hour: number) => number | null, from?: number): Window {
   const [lo, hi] = window;
   let start = from !== undefined && from >= lo && from <= target ? from : lo;
   if (!Number.isFinite(start)) return window;
-  for (let after = next(start); after <= target; after = next(start)) {
+  let after = next(start);
+  while (after !== null && after <= target) {
     if (!(after > start)) throw new Error(`A change hour ${after} does not follow ${start}`);
     start = after;
+    after = next(start);
   }
-  return [start, Math.min(hi, next(start) - 1)];
+  return after === null ? [target, hi] : [start, Math.min(hi, after - 1)];
 }
 
 export interface Component<V> { picture: Picture<V>; window: Window }

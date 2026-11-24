@@ -11,10 +11,9 @@ const sprite = (value: unknown) => value === null || !!value && typeof value ===
 
 export function validateAirMissions(value: unknown): AirMissionsReply {
   const reply = value as AirMissionsReply;
-  if (!reply || typeof reply !== 'object' || !hour(reply.readHour) || !optionalText(reply.missing) || !optionalText(reply.theatresMissing) || !strings(reply.warnings)
+  if (!reply || typeof reply !== 'object' || !hour(reply.readHour) || !optionalText(reply.missing) || !strings(reply.warnings)
     || !Array.isArray(reply.missions) || !reply.missions.every(mission => mission && text(mission.id) && text(mission.name) && sprite(mission.icon))
-    || !Array.isArray(reply.regions) || !reply.regions.every(region => region && text(region.region) && optionalText(region.name) && optionalText(region.missing) && strings(region.missions))
-    || !(reply.theatres === null || Array.isArray(reply.theatres) && reply.theatres.every(theatre => theatre && text(theatre.id) && text(theatre.name) && strings(theatre.regions))))
+    || !Array.isArray(reply.regions) || !reply.regions.every(region => region && text(region.region) && optionalText(region.name) && optionalText(region.missing) && strings(region.missions)))
     throw new Error('The air missions reply is malformed.');
   return reply;
 }

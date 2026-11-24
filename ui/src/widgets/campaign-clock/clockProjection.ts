@@ -3,10 +3,10 @@ import type { CampaignClockReply } from '../../generated/dashboard';
 import type { ClockSummaryData } from '../../draw/kit.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, type TableBase } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, valueFromNullable, wireFloat, wireWhole, type Value } from '../../families/value.ts';
-import { formatDateOnly, formatValueState } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatShare, formatValueState } from '../../families/valueFormat.ts';
 import { CLOCK_NOTE, OVERLAP_REASON, OVERLAP_WARNING, UNCLASSIFIED, clockWarnings, validateClock } from './clockData.ts';
 
 interface ClockRow { readonly id: string; readonly label: string; readonly value: Value; readonly note: string }
@@ -77,15 +77,15 @@ function buildClockSummary(parsed: ParsedClock, hour: number, firstHour?: number
     pausedText: clockText(parsed.paused),
     playingFraction,
     pausedFraction,
-    playingPct: playingFraction !== null ? `${Math.round(playingFraction * 100)}%` : null,
-    pausedPct: pausedFraction !== null ? `${Math.round(pausedFraction * 100)}%` : null,
+    playingPct: playingFraction !== null ? formatShare(playingFraction) : null,
+    pausedPct: pausedFraction !== null ? formatShare(pausedFraction) : null,
     complete: parsed.complete,
     coverageLabel: parsed.complete ? 'Every hour recorded' : 'Gaps excluded',
     spanText,
   };
 }
 
-export const campaignClockProjection: TableProjection<CampaignClockProjectionOptions> = registerTableProjection(
+export const campaignClockProjection: TableProjection<CampaignClockProjectionOptions> = registerFamilyProjection(
   declareTableProjection<ParsedClock, ClockRow, CampaignClockProjectionOptions>({
     kind: 'campaign-clock',
     validate: parseReply,

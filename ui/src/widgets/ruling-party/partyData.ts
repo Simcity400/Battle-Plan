@@ -1,22 +1,22 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { EventBadge } from '../../charts/badges';
-import { formatFixed } from '../../charts/valueAxis.ts';
 import { GREY_CHROMA } from '../../charts/palette.ts';
 import { oklchToRgb, parseColor, rgbToOklch, toHex } from '../../shell/appearance/color.ts';
-import type { HourSpan, LeaderRun, PartyHistoryReply } from '../../generated/dashboard';
+import type { HourSpan, LeaderRun, PartOwnership, PartyHistoryReply } from '../../generated/dashboard';
 import type { SeriesKey } from '../../dashboard/keyedSeriesData';
 
 export const POPULARITY_FAMILY = { kind: 'party-popularity', measure: 'popularity' } as const;
 export const POPULARITY_PART_BITS = 32;
 
-export interface Band { token: string; name: string; color: string; keys: SeriesKey[] }
+export interface Band { readonly token: string; readonly name: string; readonly color: string; readonly owned: readonly PartOwnership[] }
 
 export function validatePartyHistoryReply(data: unknown): PartyHistoryReply {
   const reply = data as PartyHistoryReply;
   const ok = typeof reply === 'object' && reply != null && Number.isInteger(reply.decimals) && Array.isArray(reply.parties)
     && reply.parties.every(party => typeof party.token === 'string' && Array.isArray(party.parts)
-      && party.parts.every(part => Number.isInteger(part) && part >= 0))
-    && Array.isArray(reply.ruling) && Array.isArray(reply.elections) && Array.isArray(reply.ideologies) && Array.isArray(reply.warnings)
+      && party.parts.every(owned => Number.isInteger(owned.part) && owned.part >= 0 && owned.firstHour <= owned.lastHour))
+    && Array.isArray(reply.ruling) && Array.isArray(reply.elections)
+    && reply.elections.every(election => Number.isInteger(election.hour) && election.hour <= election.witnessed) && Array.isArray(reply.ideologies) && Array.isArray(reply.warnings)
     && Array.isArray(reply.people) && Array.isArray(reply.ideologyTypes) && Array.isArray(reply.leaders)
     && reply.leaders.every((run, index) => typeof run.ideology === 'string' && run.firstHour <= run.lastHour
       && (run.person == null || (Number.isInteger(run.person) && run.person >= 0 && run.person < reply.people.length))
@@ -29,21 +29,30 @@ export function validatePartyHistoryReply(data: unknown): PartyHistoryReply {
   return reply;
 }
 
-export function bands(reply: PartyHistoryReply, tag: string, palette: readonly string[]): Band[] {
-  const order = new Map(reply.ideologies.map((ideology, index) => [ideology.token, index]));
-  const sorted = [...reply.parties].sort((a, b) => (order.get(a.token) ?? Infinity) - (order.get(b.token) ?? Infinity) || a.token.localeCompare(b.token));
+export function bands(reply: PartyHistoryReply, palette: readonly string[]): Band[] {
   const tone = paletteTone(palette);
   let fallback = 0;
-  return sorted.map(series => {
+  return reply.parties.map(series => {
     const ideology = reply.ideologies.find(item => item.token === series.token);
     const color = ideology?.color ? ideologyColour(ideology.color, tone) : palette[fallback++ % Math.max(1, palette.length)]!;
     return {
       token: series.token,
       name: contentTitle(ideology?.name, series.token, 'Ideology name unavailable'),
       color,
-      keys: series.parts.map(part => ({ tag, part: String(part) })),
+      owned: series.parts,
     };
   });
+}
+
+export function ownedPartAt(band: Band, hour: number): number | null {
+  for (const owned of band.owned) if (owned.firstHour <= hour && hour <= owned.lastHour) return owned.part;
+  return null;
+}
+
+export function bandKeys(list: readonly Band[], subject: string): SeriesKey[] {
+  const parts = new Set<number>();
+  for (const band of list) for (const owned of band.owned) parts.add(owned.part);
+  return [...parts].sort((a, b) => a - b).map(part => ({ tag: subject, part: String(part) }));
 }
 
 export function paletteTone(palette: readonly string[]): { l: number; c: number } | null {
@@ -59,22 +68,11 @@ export function ideologyColour([r, g, b]: readonly [number, number, number], ton
   return toHex(oklchToRgb({ l: tone.l, c: source.c < GREY_CHROMA ? source.c : Math.min(source.c, tone.c), h: source.h }));
 }
 
-export function rulingFirst(list: readonly Band[], ruling: string | null): Band[] {
-  const index = list.findIndex(band => band.token === ruling);
-  return index <= 0 ? [...list] : [list[index]!, ...list.slice(0, index), ...list.slice(index + 1)];
-}
-
-export const bandKeys = (list: readonly Band[]): SeriesKey[] => list.flatMap(band => band.keys);
-
-export const formatPopularity = (raw: string, decimals: number) => `${formatFixed(raw, decimals, 1)}%`;
-
-export const formatShare = (value: number) => `${value.toFixed(1)}%`;
-
 export function rulingAt(reply: PartyHistoryReply, hour: number): string | null {
   return reply.ruling.find(run => run.firstHour <= hour && hour <= run.lastHour)?.token ?? null;
 }
 
-export function partyBadges(reply: PartyHistoryReply, name: (token: string) => string, leaders = false): EventBadge[] {
+export function partyBadges(reply: PartyHistoryReply, name: (token: string) => string, hour: number, leaders = false): EventBadge[] {
   const hidden = (hour: number, unobserved: readonly HourSpan[]) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
   const badges: EventBadge[] = [];
   reply.ruling.forEach((run, index) => {
@@ -83,7 +81,7 @@ export function partyBadges(reply: PartyHistoryReply, name: (token: string) => s
       badges.push({ hour: run.firstHour, glyph: '⇆', label: `${name(run.token)} took power from ${name(previous.token)}` });
     }
   });
-  for (const hour of reply.elections) badges.push({ hour, glyph: '✓', label: 'Election held' });
+  for (const election of reply.elections) if (election.witnessed <= hour) badges.push({ hour: election.hour, glyph: '✓', label: 'Election held' });
   if (leaders) {
     reply.leaders.forEach((run, index) => {
       const previous = reply.leaders[index - 1];

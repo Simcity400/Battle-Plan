@@ -1,14 +1,11 @@
 import type { LogRow } from '../../charts/log/logData';
-import type { LogReplyRow } from '../../charts/log/logSource';
-import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import { formatDateTime } from '../../dashboard/calendar.ts';
-import { beforeBreak, breakAfter, dayOf, daysBetween, daysText, edgesAt, occurrenceItem, occurrenceMatches, occurrenceOf } from '../event-feed/scriptOccurrences.ts';
+import { beforeBreak, breakAfter, dayOf, daysBetween, daysText, edgesAt, occurrenceItem, occurrenceMatches } from '../event-feed/scriptOccurrences.ts';
 import type { RecordingBreak } from '../event-feed/scriptOccurrences';
-import { plainScripted, reasonRows } from '../event-feed/scriptedGaps.ts';
+import { plainScripted } from '../event-feed/scriptedGaps.ts';
 import type { EventFeedItem, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
 
-export const TITLE_UNAVAILABLE = 'Title not recorded';
-export const OPTION_UNAVAILABLE = 'Option text not recorded';
+const TITLE_UNAVAILABLE = 'Title not recorded';
+const OPTION_UNAVAILABLE = 'Option text not recorded';
 
 export interface ChoiceCard {
   occurrence: ScriptOccurrence;
@@ -40,12 +37,6 @@ export function choiceCard(occurrence: ScriptOccurrence | null): ChoiceCard | nu
   const country = fired ? roles[1] : roles[0];
   const sender = fired && roles[0] !== null && roles[0] !== country ? roles[0] : null;
   return { occurrence, item: occurrenceItem(occurrence), first, fired, country, sender };
-}
-
-export function choiceRow(reply: LogReplyRow): LogRow<ChoiceCard | null> {
-  const card = choiceCard(occurrenceOf(reply));
-  return { key: reply.key, id: card?.occurrence.id ?? reply.key, hour: card?.first.row.hour ?? reply.hour, revealedHour: card?.first.row.readHour ?? reply.hour,
-    by: false, item: card };
 }
 
 export function choiceAt(row: LogRow<ChoiceCard | null>, hour: number, breaks: readonly RecordingBreak[], awaiting: boolean,
@@ -97,50 +88,3 @@ export function awaitingText(at: ChoiceAt): string {
 }
 
 export const noChoiceText = (at: ChoiceAt) => at.pause ? 'No choice recorded' : 'No option chosen yet';
-
-export function choiceDescription(at: ChoiceAt, name: (tag: string, hour: number) => string): string {
-  const country = at.card.country === null ? 'A country not identified' : name(at.card.country, at.card.first.row.nameHour);
-  const chosen = optionLines(at).find(line => line.chosen);
-  return `${country}: ${choiceText(at.card)}, ${choiceDates(at)}${at.choice ? `, ${chosen?.letter ? `${chosen.letter}. ` : ''}${plainScripted(chosen?.text ?? '')}`
-    : isOpen(at) ? `, ${awaitingText(at)}` : `, ${noChoiceText(at)}`}`;
-}
-
-export function choiceTooltip(at: ChoiceAt, name: (tag: string, hour: number) => string): TooltipContent[] {
-  const { card, choice } = at;
-  const fired = card.first.row.nameHour;
-  const who = (tag: string | null, hour: number) => tag === null ? 'Not identified' : name(tag, hour);
-  const rows: TooltipRow[] = [{ label: 'Country', value: who(card.country, fired) }];
-  if (card.sender) rows.push({ label: 'From', value: name(card.sender, fired) });
-  rows.push(card.fired ? { label: 'Fired', value: formatDateTime(card.fired.row.hour) } : { label: 'Fired', value: 'Not recorded', tone: 'muted' });
-  if (choice) {
-    rows.push({ label: 'Chosen', value: formatDateTime(choice.row.hour) });
-    const chooser = choice.row.participants?.[0] ?? null;
-    if (chooser !== card.country) rows.push({ label: 'Chosen by', value: who(chooser, choice.row.nameHour) });
-    const line = optionLines(at).find(line => line.chosen);
-    if (line) rows.push({ label: 'Option taken', value: `${line.letter ? `${line.letter}. ` : ''}${plainScripted(line.text)}`, tone: line.missing || !line.letter ? 'muted' : undefined });
-  } else if (at.pause) {
-    rows.push({ label: 'Chosen', value: 'Not recorded', tone: 'muted' });
-    rows.push({ label: 'Recording paused', value: `${formatDateTime(at.pause.firstHour)} to ${formatDateTime(at.pause.lastHour)}`, tone: 'muted' });
-  } else rows.push({ label: 'Chosen', value: 'Not yet', tone: 'muted' });
-  if (card.item?.token) rows.push({ label: 'Content identity', value: card.item.token });
-  rows.push(...reasonRows(card.item));
-  if (card.item?.description) rows.push({ label: plainScripted(card.item.description) });
-  return [{ title: choiceText(card), icon: card.item?.icon ?? undefined, rows }];
-}
-
-export const choiceJumps = (at: ChoiceAt): number[] => [...new Set([at.card.fired?.row.hour, at.choice?.row.hour]
-  .filter((hour): hour is number => hour !== undefined))];
-
-export function choiceDiagnostics(cards: readonly ChoiceCard[]): string[] {
-  const titles = new Map<string, number>(), options = new Map<string, number>();
-  const count = (map: Map<string, number>, key: string) => map.set(key, (map.get(key) ?? 0) + 1);
-  for (const card of cards) {
-    const name = card.item?.token ?? 'an event not identified';
-    if (!card.item?.name) count(titles, name);
-    const chosen = card.occurrence.edges.filter(isChoice).at(-1)?.option ?? null;
-    if (!card.item?.options || card.item.options.some(option => option.name === null)
-      || (chosen !== null && !card.item.options.some(option => option.ordinal === chosen))) count(options, name);
-  }
-  const line = (label: string, map: Map<string, number>) => map.size ? [`${label}: ${[...map.keys()].sort().join(', ')} (${[...map.values()].reduce((a, b) => a + b, 0).toLocaleString()} counted)`] : [];
-  return [...line('Event title unavailable', titles), ...line('Event option text unavailable', options)];
-}

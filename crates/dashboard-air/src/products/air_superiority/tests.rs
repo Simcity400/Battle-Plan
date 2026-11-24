@@ -300,3 +300,27 @@ fn ordered_air_superiority_ranks_regions_and_registers_live_totals() {
     let named_ids: Vec<u32> = named_reply.regions.iter().map(|region| region.id).collect();
     assert_eq!(named_ids, [10, 11, 12], "name ordering retains inactive regions");
 }
+
+#[test]
+fn the_user_s_regions_lead_in_their_order_and_a_hidden_region_leaves_the_automatic_set() {
+    let rows = vec![score(1, 10, 900, 0), score(3, 10, 100, 0), score(1, 11, 300, 0), score(3, 11, 280, 0), score(1, 13, 50, 0)];
+    let mut chosen = params(AirMode::Sides);
+    chosen.order = Some(AirRegionOrder::Contested);
+    chosen.pinned_regions = Some(vec![12, 10]);
+    chosen.hidden_regions = Some(vec![11, 10]);
+    let (reply, _) = moment_of(&frame(rows, true), &chosen);
+    let shown: Vec<(u32, bool)> = reply.regions.iter().map(|region| (region.id, region.pinned)).collect();
+    assert_eq!(shown, [(12, true), (10, true), (13, false)], "an inactive pick still shows; hiding a pick does not remove it");
+}
+
+#[test]
+fn a_truncated_wings_read_keeps_each_witnessed_count_and_says_why_unlisted_regions_are_unknown() {
+    let mut truncated = frame(scores(), true);
+    *truncated.tables[TableId::AirRegionWings.index()] = TableView::Truncated { rows: TableRows::AirRegionWings(vec![AirRegionWingRow { region: 10, wings: 3 }]), missing: 2 };
+    let (reply, _) = moment_of(&truncated, &params(AirMode::Sides));
+    let wings = |id: u32| reply.regions.iter().find(|region| region.id == id).map(|region| region.wings);
+    assert_eq!((wings(10), wings(11)), (Some(AirWings::Live), Some(AirWings::Unknown)), "the witnessed count stays; an unread region's wings are unknown, never none");
+    assert!(reply.unlisted.as_deref().is_some_and(|why| why.contains("read only in part")), "{:?}", reply.unlisted);
+    let (whole, _) = moment_of(&frame(scores(), true), &params(AirMode::Sides));
+    assert_eq!((whole.unlisted, whole.regions.iter().find(|region| region.id == 11).map(|region| region.wings)), (None, Some(AirWings::None)));
+}

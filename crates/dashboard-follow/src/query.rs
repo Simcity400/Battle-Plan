@@ -30,7 +30,7 @@ pub struct Identity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeriesMode {
     Keyed(CoverageScope),
-    Top { n: usize, least: bool },
+    Top { n: usize, least: bool, population: bool },
     Parts { top: Option<usize> },
     NavalLosses { attribution: u8, kinds: &'static [u8], top: Option<usize> },
 }
@@ -155,13 +155,13 @@ impl Query {
 
     pub fn series_top(series: &'static Series, measure: &'static Measure, n: usize, identity: Identity) -> Self {
         let countries = identity.holders.tags.keys().map(Country::from).collect();
-        Self::Series { series, measure, countries, mode: SeriesMode::Top { n, least: false }, identity }
+        Self::Series { series, measure, countries, mode: SeriesMode::Top { n, least: false, population: true }, identity }
     }
 
     pub fn least(self) -> Self {
         match self {
-            Self::Series { series, measure, countries, mode: SeriesMode::Top { n, .. }, identity } => {
-                Self::Series { series, measure, countries, mode: SeriesMode::Top { n, least: true }, identity }
+            Self::Series { series, measure, countries, mode: SeriesMode::Top { n, population, .. }, identity } => {
+                Self::Series { series, measure, countries, mode: SeriesMode::Top { n, least: true, population }, identity }
             }
             other => other,
         }

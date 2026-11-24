@@ -10,7 +10,7 @@ use dashboard_base::{
     catalogue::{self, Catalogue},
     products::{
         Country, LoadContext,
-        at_hour::{At, AtHour, Owner, Read},
+        at_hour::{At, AtHour, Clock, Owner, Read},
     },
 };
 use dashboard_query::coverage::population;
@@ -85,7 +85,7 @@ impl AtHour for ArmyAt {
     const KEY: &'static str = "army-at";
     const TITLE: &'static str = "Army size";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK_DEPENDENT: bool = false;
+    const CLOCK: Clock = Clock::InputsOnly;
     type Params = ArmyAtParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, countFor, "countries[]"];
     type Reply = ForceAtReply;

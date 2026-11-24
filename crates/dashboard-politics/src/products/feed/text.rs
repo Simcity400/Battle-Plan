@@ -392,6 +392,10 @@ impl<'q> Presenter<'q> {
         Ok(read)
     }
 
+    pub fn picture(&self, token: &str, key: &str, notices: &mut Notices) -> Option<String> {
+        draw_picture(notices, self.catalogue.as_deref()?, token, key)
+    }
+
     pub fn item(&self, event: &FeedEvent, kind: EventFeedKind, token: Option<String>, notices: &mut Notices) -> io::Result<EventFeedItem> {
         let mut item = EventFeedItem { token, ..Default::default() };
         let Some(catalogue) = self.catalogue.as_deref() else {

@@ -16,6 +16,7 @@ const OPTS: AirSuperiorityProjectionOptions = {
 
 const REPLY: AirSuperiorityReply = {
   missing: null,
+  unlisted: null,
   sides: [
     { key: 'f:7', faction: '7', colourFaction: '7', factions: ['7'], tag: null, leader: 'ENG', coBelligerents: 1, anchor: { tag: 'ENG', hour: 0 }, name: 'Allies', color: [34, 197, 94] },
     { key: 'f:10', faction: '10', colourFaction: '10', factions: ['10'], tag: null, leader: 'GER', coBelligerents: 0, anchor: { tag: 'GER', hour: 0 }, name: 'Axis', color: [239, 68, 68] },
@@ -28,6 +29,7 @@ const REPLY: AirSuperiorityReply = {
       name: 'English Channel',
       nameMissing: null,
       active: true,
+      pinned: true,
       wings: 'live',
       cell: {
         kind: 'sides',
@@ -47,6 +49,7 @@ const REPLY: AirSuperiorityReply = {
       name: 'Northern France',
       nameMissing: null,
       active: true,
+      pinned: false,
       wings: 'unknown',
       cell: {
         kind: 'sides',
@@ -84,8 +87,11 @@ test('air superiority projection preserves Rust region order, computes shares fr
   assertBarsModelValid(model, 400);
   assert.equal(model.form, 'share');
 
+  assert.deepEqual(model.rows.map(r => [r.kind, r.key]), [
+    ['section', '__section:picked'], ['data', '11'], ['section', '__section:auto'], ['data', '12'], ['add-region', '__add-region'],
+  ], "the user's regions first, then the most active, then Add region");
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
-  assert.deepEqual(rows.map(r => r.key), ['11', '12']);
+  assert.deepEqual(rows.map(r => [r.key, r.region, r.group]), [['11', 11, 'picked'], ['12', 12, 'auto']]);
   assert.equal(rows[0]!.readout?.primary, '90 air wings');
   assert.deepEqual(rows[0]!.segments?.map(s => [s.label, Math.round(s.share * 100), s.inlineLabel]), [
     ['Allies', 41, 'Allies 41%'],
@@ -111,7 +117,7 @@ test('air superiority projection shows missing when live total is absent and rej
 
   const model = airSuperiorityRegionProjection.project(view, OPTS);
   assertBarsModelValid(model, 120);
-  const first = model.rows[0] as BarsDataRow;
+  const first = model.rows.find(row => row.key === '11') as BarsDataRow;
   assert.equal(first.value?.value.kind, 'notRecorded');
   assert.equal(first.readout?.primary, '1 air wing');
   assert.throws(() => view.who('country', 'ENG', displayedHour(121)), FutureDataError);

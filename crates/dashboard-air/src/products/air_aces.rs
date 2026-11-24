@@ -48,9 +48,12 @@ pub struct AirAceDeath {
     pub last_alive: Option<i32>,
     #[doc = " The first read that saw it dead after one that saw it alive."]
     pub by_hour: Option<i32>,
+    #[doc = " The first read that saw it dead: the hour its killer's country is named at."]
+    pub seen_dead: Option<i32>,
     pub killer_ace: Option<String>,
     #[doc = " The killer's name when the killer is on the roster at the hour."]
     pub killer_name: Option<String>,
+    #[doc = " The killer's country tag at `seen_dead`; none when that hour is not known."]
     pub killer_tag: Option<String>,
 }
 
@@ -339,7 +342,8 @@ pub(crate) fn roster(frame: &DecodedFrame, history: &History, cat: Option<&Catal
                 by_hour: death.and_then(|death| death.dead_by),
                 killer_ace: killer.map(|death| death.killer_ace).filter(|id| *id != 0).map(|id| id.to_string()),
                 killer_name: killer.and_then(|death| names_by_id.get(&death.killer_ace).cloned().flatten()),
-                killer_tag: killer.and_then(|death| history.tag(links, death.killer_country, hour)),
+                seen_dead: death.map(|death| death.from),
+                killer_tag: killer.zip(death).and_then(|(killed, death)| history.tag(links, killed.killer_country, death.from)),
             }
         });
         let wing_name = wing_names.get(&row.assigned_wing).and_then(|bytes| match cat {
@@ -419,6 +423,7 @@ impl AtHour for AirAcesAt {
     const KEY: &'static str = "air-aces";
     const TITLE: &'static str = "Aces";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = AirAcesParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = AirAcesReply;

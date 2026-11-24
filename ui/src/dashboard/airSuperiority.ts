@@ -3,6 +3,7 @@ import { airChoiceKey } from './airOptions.ts';
 import { countryFromKey } from './countryKey.ts';
 import { contentKey, contentSet, type OptionValue } from './options.ts';
 import { int, object } from './validation.ts';
+import { readRegionChoice, regionParams } from '../families/regions/regionChoice.ts';
 import type { AirChoicesReply, AirSide, AirSuperiorityReply } from '../generated/dashboard';
 
 export function airMode(options: Readonly<Record<string, OptionValue>>, campaign: string, currentCountry: string | null) {
@@ -11,7 +12,7 @@ export function airMode(options: Readonly<Record<string, OptionValue>>, campaign
   const viewpoint = mode !== 'viewpoint' ? '' : chosen ? contentKey(chosen).startsWith('country:') ? contentKey(chosen) : airChoiceKey(campaign, chosen) ?? ''
     : currentCountry ? `country:${currentCountry}` : '';
   return { mode, viewpoint, sides: contentSet(options.sides).flatMap(value => airChoiceKey(campaign, value) ?? []),
-    regions: contentSet(options.regions).map(value => Number(contentKey(value).slice(2))).filter(Number.isInteger),
+    regions: readRegionChoice(options.regions),
     theatres: contentSet(options.theatres).flatMap(value => airChoiceKey(campaign, value) ?? []) };
 }
 export type AirModeSettings = ReturnType<typeof airMode>;
@@ -19,7 +20,7 @@ export type AirModeSettings = ReturnType<typeof airMode>;
 export function airParams(mode: AirModeSettings) {
   return { mode: mode.mode, ...(mode.viewpoint ? { viewpoint: mode.viewpoint.startsWith('country:') ? countryFromKey(mode.viewpoint.slice(8)) : mode.viewpoint,
     ...(mode.viewpoint.startsWith('country:') ? { viewpointCountry: true } : {}) } : {}),
-    ...(mode.sides.length ? { sides: mode.sides } : {}), ...(mode.regions.length ? { regions: mode.regions } : {}),
+    ...(mode.sides.length ? { sides: mode.sides } : {}), ...regionParams(mode.regions),
     ...(mode.theatres.length ? { theatres: mode.theatres } : {}) };
 }
 
@@ -62,7 +63,7 @@ export function validateAirSuperiority(value: unknown): AirSuperiorityReply {
   const sides = value.sides.length;
   if (!(value.viewpoint === null || natural(value.viewpoint) && value.viewpoint < sides) || !validCell(value.fallback, sides)) return invalid();
   for (const region of value.regions) {
-    if (!object(region) || !natural(region.id) || !optionalText(region.name) || !optionalText(region.nameMissing) || typeof region.active !== 'boolean'
+    if (!object(region) || !natural(region.id) || !optionalText(region.name) || !optionalText(region.nameMissing) || typeof region.active !== 'boolean' || typeof region.pinned !== 'boolean'
       || !['live', 'none', 'unknown'].includes(region.wings as string) || !validCell(region.cell, sides)) return invalid();
   }
   return value as AirSuperiorityReply;
@@ -70,7 +71,7 @@ export function validateAirSuperiority(value: unknown): AirSuperiorityReply {
 
 export function validateAirChoices(value: unknown): AirChoicesReply {
   const choice = (item: unknown) => object(item) && text(item.id) && text(item.name);
-  if (!object(value) || !Array.isArray(value.regions) || !value.regions.every(choice) || !Array.isArray(value.theatres) || !value.theatres.every(choice)
+  if (!object(value) || !Array.isArray(value.theatres) || !value.theatres.every(choice)
     || !Array.isArray(value.sides) || !value.sides.every(validSide) || !optionalText(value.theatresMissing) || !Array.isArray(value.countries)
     || !value.countries.every(text) || !Array.isArray(value.warnings) || !value.warnings.every(text)) throw new Error('Invalid air-superiority-choices reply');
   return value as AirChoicesReply;

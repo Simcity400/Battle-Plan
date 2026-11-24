@@ -315,7 +315,7 @@ impl AtHour for GameScore {
     }
 
 
-    const CLOCK_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
 
     fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
         advance_keeps(frame, params, at.holders, edits, live, data.get("top"))
@@ -374,7 +374,7 @@ impl AtHour for GameScore {
         if let Some(ask) = &params.top { reply.top = Some(top(&scored, &unplaced, ask)); }
         reply.rows.sort_unstable_by(|a, b| a.tag.cmp(&b.tag));
         if unheld > 0 {
-            reply.warnings.push(format!("{unheld} scored countries are held by no tag at this hour and are not shown"));
+            reply.warnings.push(format!("{unheld} scored countries have no resolved tag at this hour and are not shown"));
         }
         Ok(reply)
     }

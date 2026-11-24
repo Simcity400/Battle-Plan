@@ -7,7 +7,7 @@ import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../famili
 import { urlArtHandle } from '../../families/art/provider.ts';
 import { artNameCell, identityFlags, identityName, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import type { LeaseTerms, MarketItem, MarketLendLeaseReply } from '../../generated/dashboard';
@@ -69,15 +69,18 @@ interface AgreementMeta {
   readonly variant: string | null;
 }
 
+interface Lookups {
+  readonly variants: ReadonlyMap<string, MarketLendLeaseReply['variants'][number]>;
+  readonly images: ReadonlyMap<string, string>;
+}
+
 function agreementRows(
   readView: BoundedReadView,
-  reply: MarketLendLeaseReply,
+  { variants, images }: Lookups,
   terms: LeaseTerms,
   live: LiveValues<number | bigint | string> | null,
   boundary: ReturnType<typeof newIdentityBoundary>,
 ): TableRow[] {
-  const variants = new Map(reply.variants.map(variant => [variant.id, variant]));
-  const images = new Map(reply.icons.map(icon => [icon.key, icon.image]));
   const monthly = amounts(terms.monthly);
   const percentage = amounts(terms.percentage);
   const once = amounts(terms.once);
@@ -145,7 +148,7 @@ function agreementRows(
   return rows;
 }
 
-export const agreementsProjection: TableProjection<AgreementsProjectionOptions> = registerTableProjection({
+export const agreementsProjection: TableProjection<AgreementsProjectionOptions> = registerFamilyProjection({
   kind: 'lend-lease-agreements',
   family: 'table',
   nextChange: (readView: BoundedReadView, options: AgreementsProjectionOptions) => filterNext(options.filter, readView.hour),
@@ -162,9 +165,10 @@ export const agreementsProjection: TableProjection<AgreementsProjectionOptions> 
     const live = readView.live('main') ?? null;
     const boundary = newIdentityBoundary();
     const rows: TableRow[] = [];
+    const lookups: Lookups = { variants: new Map(reply.variants.map(variant => [variant.id, variant])), images: new Map(reply.icons.map(icon => [icon.key, icon.image])) };
     for (const terms of reply.agreements) {
       if (!passes(options.filter, options.direction === 'sent' ? terms.giver : terms.receiver, hour)) continue;
-      rows.push(...agreementRows(readView, reply, terms, live, boundary));
+      rows.push(...agreementRows(readView, lookups, terms, live, boundary));
     }
     const membership = unrecordedAt(options.filter, hour);
     const side = options.direction === 'sent' ? 'givers' : 'receivers';

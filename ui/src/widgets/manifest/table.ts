@@ -369,6 +369,50 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.worldTensionEventsProjection, declaration: mod.worldTensionEventsDeclaration }),
     ),
   },
+  {
+    kind: 'market-ledger',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'market-ledger',
+      DEFAULT_VIEW,
+      () => import('../market-ledger/marketLedgerProjection.ts'),
+      mod => ({ projection: mod.marketLedgerProjection, declaration: mod.marketLedgerDeclaration }),
+    ),
+  },
+  {
+    kind: 'decisions',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'decisions',
+      DEFAULT_VIEW,
+      () => import('../decisions/decisionsProjection.ts'),
+      mod => ({ projection: mod.decisionsProjection, declaration: mod.decisionsDeclaration }),
+    ),
+  },
+  {
+    kind: 'event-choices',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'event-choices',
+      DEFAULT_VIEW,
+      () => import('../event-choices/eventChoicesProjection.ts'),
+      mod => ({ projection: mod.eventChoicesProjection, declaration: mod.eventChoicesDeclaration }),
+    ),
+  },
+  {
+    kind: 'event-feed',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'event-feed',
+      DEFAULT_VIEW,
+      () => import('../event-feed/eventFeedProjection.ts'),
+      mod => ({ projection: mod.eventFeedProjection, declaration: mod.eventFeedDeclaration }),
+    ),
+  },
 ];
 
 export const tableFamilyManifest: FamilyManifestModule = {

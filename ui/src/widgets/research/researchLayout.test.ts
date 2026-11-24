@@ -1,132 +1,234 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ResearchHistory, ResearchSlotHistory } from './types';
+import { liveKey } from '../../charts/live.ts';
+import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
-import { researchAt, researchFolderList, researchFolderLooks } from './researchData.ts';
-import { completedTooltip, coverageAt, recordedResearchLanes, researchDateRange, researchItemDate, researchLanes, researchLanesAt, researchRows } from './researchLayout.ts';
-import type { ResearchEntry, ResearchSlotState } from '../../generated/dashboard';
+import { setToken } from '../../dashboard/options.ts';
+import { createBoundedReadView } from '../../families/boundedView.ts';
+import type { ResearchEntry, ResearchSlotState, ResearchSlotsReply } from '../../generated/dashboard';
+import { completedRow, coverageAt, coverageGaps } from './researchLayout.ts';
+import { researchProjection } from './researchProjection.ts';
+import type { ResearchData, ResearchHistory, ResearchSlotHistory } from './types';
 
-const base = HOUR_EPOCH + 1944 * 8760 + 12;
+const base = HOUR_EPOCH + 1936 * 8760 + 12;
 const day = (n: number) => base + n * 24;
-const entry = (token: string, first: number, end: number | null, outcome: ResearchEntry['outcome'] = 'completed', startedAfter: number | null = first - 24): ResearchEntry => ({
-  token, technologyHandle: token.charCodeAt(0), databaseIndex: token.charCodeAt(0), continuityStartHour: day(0), level: 0, firstObservedHour: first, startedAfterHour: startedAfter,
-  lastObservedHour: end === null ? first : end - 24, endedByHour: end, outcomeObservedHour: null, outcome,
+
+const entry = (
+  token: string,
+  first: number,
+  end: number | null,
+  outcome: ResearchEntry['outcome'] = 'completed',
+  startedAfter: number | null = first - 24,
+): ResearchEntry => ({
+  token,
+  technologyHandle: token.charCodeAt(0),
+  databaseIndex: token.charCodeAt(0),
+  continuityStartHour: day(0),
+  level: 0,
+  firstObservedHour: first,
+  startedAfterHour: startedAfter,
+  lastObservedHour: end === null ? first : end - 24,
+  endedByHour: end,
+  outcomeObservedHour: null,
+  outcome,
 });
+
 const slot = (index: number, availability: { firstHour: number; lastHour: number }[], entries: ResearchEntry[], states: ResearchSlotState[] = []): ResearchSlotHistory => ({
-  index, availability, entries, states, progress: [],
-});
-const read = (token: string, firstHour: number, lastHour: number, entryFirstObservedHour: number): ResearchSlotState => ({ firstHour, lastHour, token, databaseIndex: token.charCodeAt(0),
-  entryFirstObservedHour, speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0', details: null });
-const lanesAt = (history: ResearchHistory, hour: number) => researchLanes(researchAt(history, hour), coverageAt(history.coverage, hour), hour);
-const kinds = (history: ResearchHistory, hour: number) => lanesAt(history, hour).map(lane => lane.items.map(item => item.kind));
-
-test('indexed lanes match clipped histories through gaps, late confirmations and slot changes in either playback direction', () => {
-  const history: ResearchHistory = { coverage: [{ firstHour: 0, lastHour: 40 }, { firstHour: 60, lastHour: 100 }], slots: [
-    slot(0, [{ firstHour: 0, lastHour: 40 }, { firstHour: 60, lastHour: 100 }], [
-      { ...entry('A', 0, 10), outcomeObservedHour: 30 }, entry('B', 10, 25, 'switched'), entry('C', 25, 35),
-      entry('D', 60, 70), entry('E', 70, null, 'active'),
-    ]),
-    slot(1, [{ firstHour: 20, lastHour: 40 }, { firstHour: 60, lastHour: 80 }], [entry('G', 20, 30), entry('H', 30, 38, 'switched')]),
-    slot(2, [{ firstHour: 60, lastHour: 100 }], [entry('F', 65, 80)]),
-  ] };
-  const project = (lanes: ReturnType<typeof researchLanes>) => lanes.map(lane => ({ index: lane.slot.index, appeared: lane.appeared,
-    offset: lane.offset, items: lane.items.map(item => { const { slot: _slot, ...value } = item as typeof item & { slot?: ResearchSlotHistory }; return value; }) }));
-  const presented = researchLanesAt(history, 80);
-  const rewound = recordedResearchLanes(history, 19);
-  assert.notDeepEqual(project(presented), project(rewound));
-  assert.deepEqual(rewound.map(l => l.items.map(item => item.kind)), [[]]);
-  const hours = Array.from({ length: 104 }, (_, at) => at - 1);
-  for (const hour of [...hours, ...[...hours].reverse()]) assert.deepEqual(project(researchLanesAt(history, hour)), project(lanesAt(history, hour)), `hour ${hour}`);
-  assert.deepEqual(researchLanesAt(history, NaN), []);
+  index,
+  availability,
+  entries,
+  states,
+  progress: [],
 });
 
-test('5000 indexed completion rows retain their identities between observed changes', () => {
-  const history: ResearchHistory = { coverage: [{ firstHour: 0, lastHour: 20000 }], slots: [slot(0, [{ firstHour: 0, lastHour: 20000 }],
-    Array.from({ length: 5000 }, (_, at) => ({ ...entry(`tech${at}`, at * 3, at * 3 + 1), outcomeObservedHour: at * 3 + 2 })))] };
-  const before = researchLanesAt(history, 15001), items = before[0].items;
-  assert.equal(items.length, 5000);
-  assert.equal(researchLanesAt(history, 15002), before);
-  assert.equal(researchLanesAt(history, 15002)[0].items, items);
-  assert.equal(researchLanesAt(history, 1)[0].items.length, 0, 'a later completion confirmation stays hidden');
-  assert.equal(researchLanesAt(history, 2)[0].items.length, 1);
-  assert.equal(researchLanesAt(history, 15002)[0].items[0], items[0], 'rewind preserves each indexed row');
+const dataOf = (history: ResearchHistory): ResearchData => ({
+  history,
+  artwork: [
+    { token: 'radio', name: 'Radio', description: 'Enables radio sets.', baseDurationDays: 100, icon: null },
+    { token: 'mech', name: 'Mechanical Computing', description: null, baseDurationDays: 120, icon: null },
+    { token: 'sub', name: 'Improved Submarine', description: 'Modern hull.', baseDurationDays: 150, icon: null },
+    { token: 'tank', name: 'Basic Medium Tank', description: null, baseDurationDays: 160, icon: null },
+  ],
+  folders: [
+    { key: 'electronics_folder', name: 'Electronics' },
+    { key: 'naval_folder', name: 'Naval' },
+  ],
+  technologyFolders: [
+    { token: 'radio', databaseIndex: null, folder: 'electronics_folder' },
+    { token: 'mech', databaseIndex: null, folder: 'electronics_folder' },
+    { token: 'sub', databaseIndex: null, folder: 'naval_folder' },
+  ],
+  definitions: [],
+  warnings: [],
 });
 
-test('each slot lists only its completions, packed, and a slot that opened later starts at the row the others had reached', () => {
-  const history: ResearchHistory = { coverage: [{ firstHour: day(0), lastHour: day(200) }], slots: [
-    slot(0, [{ firstHour: day(0), lastHour: day(200) }], [entry('A', day(0), day(50)), entry('B', day(50), day(150), 'switched'), entry('C', day(150), null, 'active')]),
-    slot(1, [{ firstHour: day(0), lastHour: day(200) }], [entry('D', day(0), day(120)), entry('E', day(120), day(160)), entry('F', day(160), null, 'active')]),
-    slot(2, [{ firstHour: day(130), lastHour: day(200) }], [entry('G', day(130), day(145)), entry('H', day(145), null, 'active')]),
-  ] };
-  const lanes = lanesAt(history, day(200));
-  assert.deepEqual(lanes.map(lane => lane.offset), [0, 0, 1], 'slot 3 starts below the most any slot had finished when it opened');
-  assert.deepEqual(kinds(history, day(200)), [['completed'], ['completed', 'completed'], ['opened', 'completed']]);
-  assert.equal(researchItemDate(lanes[2].items[0] as Extract<typeof lanes[2]['items'][number], { kind: 'opened' }>), 'Opened by 11 May 1944');
-  assert.deepEqual(lanesAt(history, day(100)).map(lane => lane.slot.index), [0, 1]);
+const slotsReply = (hour: number): ResearchSlotsReply => ({
+  tag: 'USA',
+  readHour: hour,
+  missing: null,
+  slots: [
+    {
+      index: 0,
+      state: {
+        firstHour: hour,
+        lastHour: hour,
+        token: 'sub',
+        databaseIndex: 's'.charCodeAt(0),
+        entryFirstObservedHour: day(120),
+        speedMultiplierRaw: '100000',
+        bankedDaysRaw: '0',
+        appliedDaysRaw: '0',
+        aheadReductionYearsRaw: '0',
+        details: { remainingDays: 29, estimateRaw: '2900000', modifiers: null, bonuses: null },
+      },
+      progress: {
+        firstHour: hour,
+        lastHour: hour,
+        entryFirstObservedHour: day(120),
+        baseDaysRaw: '10000000',
+        progressRaw: '8100000',
+      },
+      definition: null,
+    },
+    {
+      index: 1,
+      state: {
+        firstHour: hour,
+        lastHour: hour,
+        token: null,
+        databaseIndex: null,
+        entryFirstObservedHour: null,
+        speedMultiplierRaw: '100000',
+        bankedDaysRaw: '1250000',
+        appliedDaysRaw: '0',
+        aheadReductionYearsRaw: null,
+        details: null,
+      },
+      progress: null,
+      definition: null,
+    },
+  ],
+  grants: { nextId: null, grants: [], unavailable: null },
+  warnings: [],
 });
 
-test('a recording gap appears only in the slots whose sequence spans it, and closing and late first sightings are marked', () => {
-  const history: ResearchHistory = { coverage: [{ firstHour: day(0), lastHour: day(99) }, { firstHour: day(120), lastHour: day(200) }], slots: [
-    slot(0, [{ firstHour: day(0), lastHour: day(99) }, { firstHour: day(120), lastHour: day(200) }], [entry('X', day(0), day(40)), entry('Y', day(120), day(160), 'completed', null)]),
-    slot(1, [{ firstHour: day(0), lastHour: day(60) }], [entry('Z', day(0), day(30))]),
-    slot(2, [{ firstHour: day(120), lastHour: day(200) }], []),
-  ] };
-  const lanes = lanesAt(history, day(200));
-  assert.deepEqual(lanes.map(lane => lane.items.map(item => item.kind)), [['completed', 'gap', 'completed'], ['completed', 'closed'], ['opened']]);
-  const gap = lanes[0].items[1];
-  assert.equal(gap.kind === 'gap' && researchDateRange(gap.hour, gap.lastHour), '10 Apr – 1 May 1944');
-  const opened = lanes[2].items[0];
-  assert.equal(opened.kind === 'opened' && opened.known, false, 'first listed after a gap: when it opened is not recorded');
-  assert.equal(opened.kind === 'opened' && researchItemDate(opened), 'Recorded from 1 May 1944');
-  const closed = lanes[1].items[1];
-  assert.equal(closed.kind === 'closed' && researchItemDate(closed), 'Closed by 2 Mar 1944');
-  assert.deepEqual(researchRows(lanes, researchAt(history, day(200)), coverageAt(history.coverage, day(200))).map(row => row.kind),
-    ['completed', 'completed', 'gap', 'completed']);
+test('research timeline projects slot lanes clipped to the playhead, with coverage gaps, head note, folder dimming, and tooltips', () => {
+  const history: ResearchHistory = {
+    coverage: [{ firstHour: day(0), lastHour: day(60) }, { firstHour: day(80), lastHour: day(200) }],
+    slots: [
+      slot(0, [{ firstHour: day(0), lastHour: day(60) }, { firstHour: day(80), lastHour: day(200) }], [
+        entry('radio', day(0), day(40), 'completed', null),
+        entry('mech', day(40), day(90), 'switched'),
+        entry('sub', day(120), day(220), 'completed'),
+      ]),
+      slot(1, [{ firstHour: day(100), lastHour: day(200) }], [
+        entry('tank', day(110), day(150), 'completed'),
+      ]),
+      slot(2, [{ firstHour: day(180), lastHour: day(200) }], []),
+    ],
+  };
+
+  const at = day(160);
+  const data = dataOf(history);
+  const liveMap = new Map([[liveKey('0', 'progress'), 0.81]]);
+  const view = createBoundedReadView({
+    hour: at,
+    panels: new Map<string, unknown>([['main', data], ['slots', slotsReply(at)]]),
+    live: new Map([['slots', { get: (key: string) => liveMap.get(key), missing: () => '' }]]),
+  });
+  const opt = { folders: '', firstHour: day(0), surface: '#161616' };
+  const model = researchProjection.project(view, opt);
+
+  assert.equal(model.lanes.length, 2, 'slot 3 opens at day 180 and stays hidden at day 160');
+  assert.deepEqual(model.lanes.map(l => l.label), ['Slot 1', 'Slot 2']);
+  assert.equal(model.lanes[0]!.openedMarker, undefined, 'slot open at coverage start carries no opened marker');
+  assert.deepEqual(model.lanes[1]!.openedMarker, { hour: day(100), label: 'opened' }, 'slot opening inside recorded coverage carries opened marker');
+  assert.deepEqual(model.legend?.map(entry => [entry.label, entry.swatch ?? null]), [
+    ['Completed', 'square'],
+    ['In progress', 'square'],
+    ['Idle', null],
+    ['Not recorded', null],
+  ]);
+  assert.equal(model.summaryText, '2 completed');
+  assert.deepEqual(model.unobserved, [{ firstHour: day(60) + 1, lastHour: day(80) - 1 }]);
+  assert.deepEqual(model.notes, ['Head: 1 in progress · Improved Submarine 81%, 29 days left']);
+
+  const [radio, mech, sub] = model.lanes[0]!.spans;
+  assert.equal(radio!.label, 'Radio');
+  assert.equal(radio!.open, false);
+  assert.equal(radio!.heldBefore, true);
+  assert.equal(radio!.endUnseen, undefined, 'daily-sampled completion inside recorded coverage has solid right edge');
+  assert.equal(radio!.color, CHART_MEASURE_COLOURS.intelCoverage);
+  assert.equal(mech!.color, CHART_MEASURE_COLOURS.mutedFallback, 'switched entries use muted colour');
+  assert.equal(sub!.label, 'Improved Submarine');
+  assert.equal(sub!.open, true, 'completion at day 220 is future at day 160 so span stays open');
+  assert.equal(sub!.lastHour, at);
+
+  const activeTip = researchProjection.tooltip!(model, { kind: 'span', laneKey: 'slot:0', spanId: sub!.id, hour: at }, view, opt)!;
+  assert.equal(activeTip.title, 'Improved Submarine');
+  assert.equal(activeTip.subtitle, 'Naval · Slot 1');
+  assert.ok(activeTip.items?.some(item => item.label === 'Progress' && item.value === '81%'));
+  assert.ok(activeTip.items?.some(item => item.label === 'Days left' && item.value === '29'));
+
+  const completedTip = researchProjection.tooltip!(model, { kind: 'span', laneKey: 'slot:0', spanId: radio!.id, hour: day(20) }, view, opt)!;
+  assert.equal(completedTip.title, 'Radio');
+  assert.equal(completedTip.description, 'Enables radio sets.');
+  assert.ok(completedTip.items?.some(item => item.label === 'Completed'));
+
+  const unopenedTip = researchProjection.tooltip!(model, { kind: 'lane', laneKey: 'slot:1', hour: day(20) }, view, opt)!;
+  assert.ok(unopenedTip.items?.some(item => item.label === 'Status' && item.value === 'Not yet opened'));
+
+  const gapTip = researchProjection.tooltip!(model, { kind: 'lane', laneKey: 'slot:0', hour: day(70) }, view, opt)!;
+  assert.ok(gapTip.items?.some(item => item.label === 'Status' && item.value === 'Not recorded'));
+
+  const filtered = researchProjection.project(view, { ...opt, folders: setToken('naval_folder') });
+  assert.equal(filtered.lanes[0]!.spans[0]!.color, CHART_MEASURE_COLOURS.other, 'non-matching folder dimmed');
+  assert.equal(filtered.lanes[0]!.spans[2]!.color, CHART_MEASURE_COLOURS.intelCoverage, 'matching folder stays highlighted');
+  assert.equal(filtered.summaryText, '0 completed');
+
+  const noGapData = dataOf({
+    coverage: [{ firstHour: day(0), lastHour: day(200) }],
+    slots: [slot(0, [{ firstHour: day(0), lastHour: day(200) }], [])],
+  });
+  const noGapModel = researchProjection.project(createBoundedReadView({ hour: day(100), panels: new Map<string, unknown>([['main', noGapData]]) }), opt);
+  assert.deepEqual(noGapModel.legend?.map(entry => entry.label), ['Completed', 'In progress', 'Idle']);
+
+  const afterGapData = dataOf({
+    coverage: [{ firstHour: day(0), lastHour: day(60) }, { firstHour: day(80), lastHour: day(200) }],
+    slots: [
+      slot(0, [{ firstHour: day(0), lastHour: day(60) }, { firstHour: day(80), lastHour: day(200) }], []),
+      slot(1, [{ firstHour: day(80), lastHour: day(200) }], []),
+    ],
+  });
+  const afterGapModel = researchProjection.project(createBoundedReadView({ hour: day(120), panels: new Map<string, unknown>([['main', afterGapData]]) }), opt);
+  assert.equal(afterGapModel.lanes[1]!.openedMarker, undefined, 'slot first seen right after a gap has unrecorded opening and omits marker');
 });
 
-function movedHistory(progress: string): ResearchHistory {
-  const opening = read('T', day(10), day(40) - 1, day(10));
-  return { coverage: [{ firstHour: day(0), lastHour: day(200) }], slots: [
-    { ...slot(0, [{ firstHour: day(0), lastHour: day(200) }], [entry('U', day(0), day(5), 'completed', null), entry('T', day(10), day(40), 'switched')], [opening]),
-      progress: [{ firstHour: day(10), lastHour: day(11) - 1, entryFirstObservedHour: day(10), baseDaysRaw: '10000000', progressRaw: progress }] },
+test('coverage helpers and completedRow preserve cross-slot start date and duration', () => {
+  assert.deepEqual(coverageAt([{ firstHour: day(0), lastHour: day(100) }], day(40)), [{ firstHour: day(0), lastHour: day(40) }]);
+  assert.deepEqual(coverageGaps([{ firstHour: day(0), lastHour: day(20) }, { firstHour: day(40), lastHour: day(60) }]), [{ firstHour: day(20) + 1, lastHour: day(40) - 1 }]);
+
+  const opening: ResearchSlotState = {
+    firstHour: day(10),
+    lastHour: day(40) - 1,
+    token: 'T',
+    databaseIndex: 'T'.charCodeAt(0),
+    entryFirstObservedHour: day(10),
+    speedMultiplierRaw: '100000',
+    bankedDaysRaw: '0',
+    appliedDaysRaw: '0',
+    aheadReductionYearsRaw: '0',
+    details: null,
+  };
+  const slots: ResearchSlotHistory[] = [
+    {
+      ...slot(0, [{ firstHour: day(0), lastHour: day(200) }], [entry('T', day(10), day(40), 'switched')], [opening]),
+      progress: [{ firstHour: day(10), lastHour: day(11) - 1, entryFirstObservedHour: day(10), baseDaysRaw: '10000000', progressRaw: '0' }],
+    },
     slot(1, [{ firstHour: day(0), lastHour: day(200) }], [entry('T', day(40), day(90))]),
-  ] };
-}
-const completedRows = (history: ResearchHistory) => researchRows(lanesAt(history, day(200)), researchAt(history, day(200)), history.coverage);
-const names = { name: (token: string) => `Tech ${token}`, icon: () => undefined, folder: () => undefined };
-
-test('a completion takes its start and time from its first assignment, including earlier slots', () => {
-  const rows = completedRows(movedHistory('0'));
-  const t = rows.find(row => row.kind === 'completed' && row.token === 'T');
-  const u = rows.find(row => row.kind === 'completed' && row.token === 'U');
-  assert.ok(t?.kind === 'completed' && u?.kind === 'completed');
-  assert.deepEqual([t.started, t.startSlot, t.tookHours], [{ hour: day(10), known: true }, 0, day(90) - day(10)]);
-  assert.deepEqual([u.started, u.startSlot, u.tookHours], [{ hour: day(0), known: false }, null, null], 'a start before the first read is unknown');
-  assert.deepEqual(completedTooltip(t, names).rows.map(row => [row.label, row.value]), [
-    ['Completed', 'by 1 Apr 1944 · 13:00'], ['Still researching on', '31 Mar 1944 · 13:00'], ['Started', '11 Jan 1944'],
-    ['Took', '80 days'], ['Slot', '2 · started in slot 1'],
-  ]);
-});
-
-test('resumed research with earlier progress claims no start and no time taken', () => {
-  const t = completedRows(movedHistory('3000000')).find(row => row.kind === 'completed' && row.token === 'T');
-  assert.ok(t?.kind === 'completed');
-  assert.deepEqual([t.started, t.startSlot, t.tookHours], [{ hour: day(10), known: false }, 0, null]);
-  assert.deepEqual(completedTooltip(t, names).rows.map(row => [row.label, row.value]), [
-    ['Completed', 'by 1 Apr 1944 · 13:00'], ['Still researching on', '31 Mar 1944 · 13:00'], ['Started', 'by 11 Jan 1944'],
-    ['Slot', '2 · started in slot 1'],
-  ]);
-});
-
-test('folder colours follow the content order of the folders a history shows, repeating past the palette', () => {
-  const reply = { folders: [{ key: 'inf', name: 'Infantry' }, { key: 'air', name: 'Air' }, { key: 'nav', name: null }, { key: 'unused', name: 'Unused' }],
-    technologyFolders: [{ token: 't3', folder: 'nav' }, { token: 't1', folder: 'air' }, { token: 't2', folder: 'inf' }, { token: 't4', folder: null }] };
-  const looks = researchFolderLooks(reply, ['t3', 't1', 't2', 't4'], ['red', 'blue']);
-  assert.deepEqual(researchFolderList(looks).map(look => [look.key, look.name, look.colour]),
-    [['inf', 'Infantry', 'red'], ['air', 'Air', 'blue'], ['nav', 'Folder name unavailable', 'red']]);
-  assert.equal(looks.get('t3')?.colour, 'red');
-  assert.equal(looks.has('t4'), false, 'a technology in no shown folder has no look');
-  assert.equal(researchDateRange(day(90), day(92)), '1–3 Apr 1944');
-  assert.equal(researchDateRange(day(90), day(90)), '1 Apr 1944');
-  assert.equal(researchDateRange(day(364), day(366)), '31 Dec 1944 – 2 Jan 1945');
+  ];
+  const row = completedRow(slots, slots[1]!, slots[1]!.entries[0]!, day(90));
+  assert.equal(row.startSlot, 0);
+  assert.equal(row.started.hour, day(10));
+  assert.equal(row.tookHours, day(90) - day(10));
 });

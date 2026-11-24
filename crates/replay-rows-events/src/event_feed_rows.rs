@@ -6,6 +6,9 @@ use replay_rows::{
 };
 use engine_allocation as allocation;
 pub use replay_rows::event_feed_values::{EventFeedScope, EventFeedText};
+pub use replay_rows::event_window_values::{
+    EventPresentation, EventWindows, OfferedOption, VerdictEntry, WindowKind, WindowVerdict,
+};
 use replay_rows::event_feed_values::{compact_len, compact_read, compact_write, signed_value, signed_word};
 use std::io;
 pub mod columns;
@@ -836,6 +839,7 @@ pub struct EventFeedHistoryRow {
     pub events: Vec<EventFeedEvent>,
     pub script_tokens: Vec<u8>,
     pub script_scopes: Vec<EventFeedScope>,
+    pub windows: Recorded<EventWindows>,
 }
 
 impl EventFeedHistoryRow {
@@ -1067,6 +1071,7 @@ impl Value for EventFeedHistoryRow {
             + Value::heap_bytes(&self.events)
             + Value::heap_bytes(&self.script_tokens)
             + Value::heap_bytes(&self.script_scopes)
+            + Value::heap_bytes(&self.windows)
     }
     const MINIMUM_ENCODED_BYTES: usize = 36;
     fn encoded_bytes(&self) -> io::Result<usize> {
@@ -1078,7 +1083,14 @@ impl Value for EventFeedHistoryRow {
             replay_rows::value::EncodeValue::encoded_bytes(&columns::Batch(self))?,
         )?;
         let size = allocation::add(size, self.script_tokens.encoded_bytes()?)?;
-        allocation::add(size, self.script_scopes.encoded_bytes()?)
+        let size = allocation::add(size, self.script_scopes.encoded_bytes()?)?;
+        allocation::add(
+            size,
+            1 + match &self.windows {
+                Recorded::Value(windows) => windows.encoded_bytes()?,
+                Recorded::NotRecorded => 0,
+            },
+        )
     }
     fn try_clone(&self) -> io::Result<Self> {
         self.validate()?;
@@ -1093,6 +1105,7 @@ impl Value for EventFeedHistoryRow {
             events: self.events.try_clone()?,
             script_tokens: self.script_tokens.try_clone()?,
             script_scopes: self.script_scopes.try_clone()?,
+            windows: self.windows.try_clone()?,
         })
     }
     fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
@@ -1106,7 +1119,17 @@ impl Value for EventFeedHistoryRow {
         self.script_refusals.encode_reserved(output)?;
         replay_rows::value::EncodeValue::encode_value(&columns::Batch(self), output)?;
         self.script_tokens.encode_reserved(output)?;
-        self.script_scopes.encode_reserved(output)
+        self.script_scopes.encode_reserved(output)?;
+        match &self.windows {
+            Recorded::Value(windows) => {
+                output.push(1);
+                windows.encode_reserved(output)
+            }
+            Recorded::NotRecorded => {
+                output.push(0);
+                Ok(())
+            }
+        }
     }
     fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
         let mut row = Self {
@@ -1120,10 +1143,18 @@ impl Value for EventFeedHistoryRow {
             events: Vec::new(),
             script_tokens: Vec::new(),
             script_scopes: Vec::new(),
+            windows: Recorded::NotRecorded,
         };
         row.events = columns::decode(&row, input)?;
         row.script_tokens = Vec::decode(input)?;
         row.script_scopes = Vec::decode(input)?;
+        if input.format >= replay_rows::rows::compatibility::EVENT_WINDOWS_FORMAT {
+            row.windows = match input.u8()? {
+                0 => Recorded::NotRecorded,
+                1 => Recorded::Value(EventWindows::decode(input)?),
+                _ => return Err(invalid("Event feed windows tag differs")),
+            };
+        }
         row.validate()?;
         Ok(row)
     }
@@ -1196,6 +1227,7 @@ pub mod tests {
                     ..Default::default()
                 }),
             }],
+            windows: Default::default(),
         }
     }
 

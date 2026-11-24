@@ -3,7 +3,7 @@ import type { BoundedReadView } from '../../families/contract.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { identityCell, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
@@ -53,9 +53,9 @@ function filterNext(filter: DeclaredCountryFilter, hour: number): number {
 }
 
 const whole = (value: number): Value => (value === 0 ? zeroValue(0) : knownValue(value));
-const observed = (value: number, partial: string | null): Value => (partial === null ? whole(value) : partialValue(value, partial, { atLeast: true }));
+const observed = (value: number, partial: string | null): Value => (partial === null ? whole(value) : partialValue(value, partial));
 
-export const transfersProjection: TableProjection<TransfersProjectionOptions> = registerTableProjection({
+export const transfersProjection: TableProjection<TransfersProjectionOptions> = registerFamilyProjection({
   kind: 'territory-transfers',
   family: 'table',
   nextChange: (readView: BoundedReadView, options: TransfersProjectionOptions) => filterNext(options.filter, readView.hour),
@@ -89,7 +89,7 @@ export const transfersProjection: TableProjection<TransfersProjectionOptions> = 
       hour,
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
-      titleSummary: `${reply.partial === null ? '' : 'At least '}${formatScalar(reply.transfers, 'integer')} ${reply.transfers === 1 ? 'transfer' : 'transfers'}`,
+      titleSummary: `${formatScalar(reply.transfers, 'integer')} ${reply.transfers === 1 ? 'transfer' : 'transfers'}`,
       ...(reply.partial !== null ? { titleSummaryPartial: reply.partial } : {}),
       ...(rows.length === 0
         ? reply.partial === null

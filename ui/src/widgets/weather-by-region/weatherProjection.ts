@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, colour, readableColour } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, identityColour, readableColour } from '../../charts/palette.ts';
 import { contentKey } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
@@ -11,9 +11,11 @@ import {
   type HeatLanesModel,
   type HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
+import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
 import { regionLabel, signedRampColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
-import { regionIds } from '../../families/regionTokens.ts';
+import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
+import { regionLanes } from '../../families/regions/regionRows.ts';
 import { formatDateOnly, formatDateParts, formatScalar } from '../../families/valueFormat.ts';
 import type {
   RegionalWeatherColumn,
@@ -26,7 +28,6 @@ import { type WeatherShow } from './definition.ts';
 
 export const WEATHER_WINDOW_HOURS = 7 * 24;
 export const WEATHER_TOP = 7;
-const FIXED = 100_000;
 const WIDTH_STEP = 256;
 
 export interface WeatherProjectionOptions {
@@ -39,12 +40,14 @@ export function weatherShow(options: Readonly<Record<string, unknown>>): Weather
   return options.show === 'temperature' || options.show === 'modifiers' ? options.show : 'conditions';
 }
 
-export function temperatureText(raw: number): string {
-  return formatScalar(raw / FIXED, { decimals: 0, maxDecimals: 1, fixedDecimals: true, unit: '°C' });
+export function temperatureText(raw: number | bigint): string {
+  const fixed = typeof raw === 'bigint' ? raw : BigInt(Math.trunc(raw));
+  return formatScalar(fixed, { decimals: 5, maxDecimals: 1, fixedDecimals: true, unit: '°C' });
 }
 
-export function modifierText(raw: number): string {
-  return formatScalar((raw / FIXED) * 100, { decimals: 0, maxDecimals: 1, percent: true, signed: true });
+export function modifierText(raw: number | bigint): string {
+  const fixed = typeof raw === 'bigint' ? raw : BigInt(Math.trunc(raw));
+  return formatScalar(fixed, { decimals: 5, percent: true, signed: true });
 }
 
 interface Palette {
@@ -57,7 +60,7 @@ interface Palette {
 
 function palette(reply: RegionalWeatherReply, surface: string): Palette {
   const flag = new Map<string, string>();
-  reply.flags.forEach((item, ordinal) => flag.set(item.id, colour(surface, ordinal)));
+  reply.flags.forEach((item, ordinal) => flag.set(item.id, identityColour(surface, 'weather', item.id, ordinal)));
   return {
     flag,
     track: surfaceMix(surface, 0.04),
@@ -124,13 +127,14 @@ function valueCell(
     return { key: 'missing', cell: { kind: 'missing', reason }, items: [], missing: reason };
   }
   const mean = Number(stats[1]) / days;
+  const meanFixed = BigInt(stats[1]) / BigInt(days);
   const [low, high] = reply.extrema ? [Number(reply.extrema[0]), Number(reply.extrema[1])] : [mean, mean];
   const color = show === 'temperature'
     ? signedRampColour(mean, low, high, colours.track, colours.cold, colours.warm)
     : signedRampColour(mean, -Math.max(Math.abs(low), Math.abs(high)), Math.max(Math.abs(low), Math.abs(high)), colours.track, colours.ramp, colours.ramp);
   const text = show === 'temperature' ? temperatureText : modifierText;
   const label = show === 'temperature' ? 'Temperature' : reply.modifiers.find(item => item.id === modifier)?.name ?? 'Modifier';
-  const value = days > 1 ? `${text(mean)} (${text(Number(stats[0]))} to ${text(Number(stats[2]))})` : text(mean);
+  const value = days > 1 ? `${text(meanFixed)} (${text(BigInt(stats[0]))} to ${text(BigInt(stats[2]))})` : text(meanFixed);
   return { key: `v:${color}`, cell: { kind: 'solid', color }, items: [{ label, value, swatch: color }] };
 }
 
@@ -150,8 +154,9 @@ function readoutOf(readout: WeatherReadout | undefined, show: WeatherShow, modif
       audit: since ? `${readout.name} ${sinceWord.toLowerCase()} ${since}` : readout.name,
     };
   }
+  const rawFixed = BigInt(readout.value);
   const raw = Number(readout.value);
-  const text = show === 'temperature' ? temperatureText(raw) : modifierText(raw);
+  const text = show === 'temperature' ? temperatureText(rawFixed) : modifierText(rawFixed);
   const [low, high] = reply.extrema ? [Number(reply.extrema[0]), Number(reply.extrema[1])] : [raw, raw];
   const swatch = show === 'temperature'
     ? signedRampColour(raw, low, high, colours.track, colours.cold, colours.warm)
@@ -245,6 +250,7 @@ export function projectWeather(readView: BoundedReadView, options: WeatherProjec
       label,
       ...(nameMissing ? { nameMissing } : {}),
       pinned: region.pinned,
+      region: Number(region.id),
       runs: lane(reply, region, through, options, modifier, colours),
       ...(readout ? { readout } : {}),
     };
@@ -257,6 +263,8 @@ export function projectWeather(readView: BoundedReadView, options: WeatherProjec
     playhead: through,
     gaps: reply.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' })),
     rows,
+    ...(options.show === 'conditions' ? { readoutWidth: LANE_READOUT_MAX_WIDTH } : {}),
+    regions: regionLanes(null, 'Most active this week'),
     inspect: (rowIndex, at) => {
       const region = regions[rowIndex];
       return region ? inspectColumn(reply, region, rows[rowIndex]!.label, at, options, modifier, colours) : null;
@@ -283,7 +291,7 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
   sources: (ctx, view): SourcePlan => {
     const show = weatherShow(ctx.options);
     const modifier = show === 'modifiers' && ctx.options.modifier ? contentKey(String(ctx.options.modifier)) : null;
-    const pinned = regionIds(ctx.options.regions);
+    const chosen = regionParams(readRegionChoice(ctx.options.regions));
     const firstHour = ctx.branch.firstHour;
     const width = Math.ceil(Math.max(1, view.width ?? WIDTH_STEP) / WIDTH_STEP) * WIDTH_STEP;
     const params = {
@@ -292,11 +300,11 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
       show: show === 'modifiers' ? 'modifier' : show,
       modifier,
       regions: null,
-      ...(pinned.length ? { pinnedRegions: pinned } : {}),
+      ...chosen,
       top: WEATHER_TOP,
     };
     return {
-      owner: `weather-by-region:${ctx.branch.id}:${show}:${modifier ?? ''}:${pinned.join(',')}:${width}`,
+      owner: `weather-by-region:${ctx.branch.id}:${show}:${modifier ?? ''}:${JSON.stringify(chosen)}:${width}`,
       entries: [{
         name: 'weather',
         source: ctx.track.source,

@@ -23,6 +23,20 @@ fn name(raw: u32) -> Option<&'static str> {
 }
 
 #[test]
+fn a_region_total_and_its_rank_need_every_owner_there_known() {
+    let sea = BTreeSet::from([3, 4]);
+    let rows = vec![witness(1, 10), amount(1, 3, 100), amount(1, 4, 900), witness(2, 4)];
+    let fold = fold(&rows, name, |_| true, false, &sea);
+    assert_eq!(fold.mined.iter().map(|region| (region.region, region.unknown_owners)).collect::<Vec<_>>(), [(3, 0), (4, 1)],
+        "a proven total of 100 ranks before a partial sum of 900 beside ENG, whose read does not reach region 4");
+    assert_eq!(fold.proven, BTreeSet::from([3]));
+    let cells = dashboard_follow::live::Cells::default();
+    register_live(&fold, &cells).unwrap();
+    let summed: Vec<u128> = cells.finish().groups.into_iter().filter(|group| group.scope == dashboard_query::coverage::CoverageScope::Table).flat_map(|group| group.keys).collect();
+    assert_eq!(summed, [u128::from(1u32) << 33 | 1 << 32 | 3], "only the proven region has a total, so no share is drawn beside an unknown owner");
+}
+
+#[test]
 fn a_witness_proves_regions_below_it_empty_and_everything_else_stays_unknown() {
     let sea = BTreeSet::from([3, 5, 12, 15]);
     let fold = fold(&rows(), name, |_| true, false, &sea);
@@ -42,7 +56,9 @@ fn owners_not_asked_are_not_shown_and_lost_rows_leave_every_region_unknown() {
     let sea = BTreeSet::from([3]);
     let fold = fold(&rows(), name, |tag| tag == "GER", true, &sea);
     assert_eq!(fold.mined[0].owners.len(), 1);
-    assert_eq!(fold.mined[0].unknown_owners, 2, "the unnamed owner and the rows the hour lost");
+    assert_eq!(fold.mined[0].unknown_owners, 1, "the unnamed owner; how many owners the lost rows hid is not known, so never counted");
+    assert_eq!(fold.mined[0].missing.as_deref(), Some(UNREAD), "the lost rows are named as such instead");
+    assert!(fold.proven.is_empty(), "a region with an unknown owner has no total");
     let empty = super::fold(&[witness(1, 10)], name, |_| true, false, &BTreeSet::from([3]));
     assert_eq!(empty, Fold::default(), "a complete witness with no rows is no mines and nothing unknown");
 }
@@ -97,4 +113,20 @@ fn truncated_minefields_keep_witnessed_owners_live_and_refuse_region_total_with_
     let kinds: Vec<&str> = json11["kinds"].as_array().unwrap().iter().map(|k| k["id"].as_str().unwrap()).collect();
     assert!(kinds.contains(&"GER"), "witnessed owner cell remains registered");
     assert!(kinds.contains(&"total"), "region total remains registered under Table scope so UI shows the truncation reason");
+}
+
+#[test]
+fn chosen_regions_lead_in_order_with_unknown_and_empty_picks_and_hidden_regions_leave() {
+    let sea = BTreeSet::from([3, 5, 12, 15]);
+    let mut chosen = fold(&rows(), name, |_| true, false, &sea);
+    let rank = choose(&mut chosen, &[7, 5, 12], &[3, 12], false);
+    chosen.mined.sort_by_key(|region| rank.get(&region.region).copied().unwrap_or(usize::MAX));
+    let shown: Vec<(u32, bool, u32)> = chosen.mined.iter().map(|region| (region.region, region.pinned, region.unknown_owners)).collect();
+    assert_eq!(shown, [(7, true, 0), (5, true, 2), (12, true, 2)], "hiding a pick keeps it; the hidden mined region leaves");
+    assert_eq!(chosen.unknown, [UnknownRegion { region: 15, unknown_owners: 3 }], "a pick is not also listed unknown");
+    assert!(chosen.cells.iter().all(|(region, ..)| *region != 3));
+
+    let mut lost = fold(&rows(), name, |_| true, true, &BTreeSet::new());
+    choose(&mut lost, &[40], &[], true);
+    assert!(lost.mined.iter().find(|region| region.region == 40).is_some_and(|region| region.missing.is_some()), "an unread pick is not shown as no mines");
 }

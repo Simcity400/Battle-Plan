@@ -16,7 +16,7 @@ import type { LabelAt } from '../charts/race/lines';
 import type { TooltipContent } from '../charts/tooltip';
 import type { SunburstText } from '../charts/sunburst/layout';
 
-export type MilitaryAirLedger = Omit<MilitaryAirReply, 'window' | 'notes' | 'countedFrom' | 'openings'>
+export type MilitaryAirLedger = Omit<MilitaryAirReply, 'window' | 'notes' | 'countedFrom' | 'openings' | 'unjoined'>
   & { countedFrom?: number | null; openings?: MilitaryAirOpening[] };
 
 const signed128 = (value: bigint) => value >= -(1n << 127n) && value < (1n << 127n);

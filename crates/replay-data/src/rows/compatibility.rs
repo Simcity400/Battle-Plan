@@ -3787,6 +3787,46 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             },
         ],
     );
+    let windows: [(TableId, &'static [AppendedField]); 2] = [
+        (
+            TableId::EventFeedHistory,
+            &[AppendedField {
+                index: 10,
+                name: "windows",
+                introduced: EVENT_WINDOWS_FORMAT,
+            }],
+        ),
+        (
+            TableId::FeedEvents,
+            &[
+                AppendedField {
+                    index: 42,
+                    name: "window",
+                    introduced: EVENT_WINDOWS_FORMAT,
+                },
+                AppendedField {
+                    index: 43,
+                    name: "presentation",
+                    introduced: EVENT_WINDOWS_FORMAT,
+                },
+            ],
+        ),
+    ];
+    let mut appended = 0;
+    while appended < windows.len() {
+        let (id, fields) = windows[appended];
+        let earlier = history[id.index()];
+        history[id.index()] = LastChange {
+            introduced: earlier.introduced,
+            layout_since: if matches!(earlier.kind, ChangeKind::AppendedOnly) {
+                earlier.layout_since
+            } else {
+                earlier.format
+            },
+            ..appended_at(id, EVENT_WINDOWS_FORMAT, "event window verdicts and presentations", fields)
+        };
+        appended += 1;
+    }
     history
 };
 
@@ -4131,6 +4171,9 @@ mod tests {
             if format < RAID_COMPLETION_FIELDS_FORMAT {
                 fewer.extend([(TableId::Raids, 18), (TableId::RaidEnds, 24)]);
             }
+            if format < EVENT_WINDOWS_FORMAT {
+                fewer.extend([(TableId::EventFeedHistory, 10), (TableId::FeedEvents, 42)]);
+            }
             if format < CONSTRUCTION_OUTPUT_OWNER_FORMAT {
                 fewer.push((TableId::ConstructionLineOutput, 15));
             }
@@ -4388,7 +4431,10 @@ mod tests {
     fn event_feed_occurrence_deltas_refuse_every_earlier_batch_by_name() {
         let table = TableId::EventFeedHistory;
         let history = table.last_change();
-        assert_eq!(history.format, EVENT_FEED_OCCURRENCE_DELTAS_FORMAT);
+        assert_eq!(history.format, EVENT_WINDOWS_FORMAT);
+        assert_eq!(history.layout_since, EVENT_FEED_OCCURRENCE_DELTAS_FORMAT);
+        assert_eq!(history.fields(table, EVENT_FEED_OCCURRENCE_DELTAS_FORMAT), 10);
+        assert_eq!(history.fields(table, EVENT_WINDOWS_FORMAT), 11);
         for format in [
             EVENT_FEED_COLUMNS_FORMAT,
             EVENT_FEED_OWNER_REFUSALS_FORMAT,
@@ -4710,7 +4756,8 @@ mod tests {
         assert_eq!(EQUIPMENT_DESTRUCTION_STARTUP_FORMAT, 145);
         assert_eq!(ENGAGED_REFRESH_WITNESS_FORMAT, 146);
         assert_eq!(RAID_COMPLETION_FIELDS_FORMAT, 147);
-        assert_eq!(FORMAT_VERSION, RAID_COMPLETION_FIELDS_FORMAT);
+        assert_eq!(EVENT_WINDOWS_FORMAT, 148);
+        assert_eq!(FORMAT_VERSION, EVENT_WINDOWS_FORMAT);
         let refreshes = TableId::CombatEngagementRefreshes.last_change();
         assert_eq!(refreshes.introduced, ENGAGED_REFRESH_WITNESS_FORMAT);
         assert_eq!(refreshes.format, ENGAGED_REFRESH_WITNESS_FORMAT);

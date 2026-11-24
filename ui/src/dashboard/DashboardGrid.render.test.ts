@@ -397,16 +397,13 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
     assert.match(fallbackHtml, /data-state="loading"/, 'lazy widget fallback renders WidgetState loading');
     assert.doesNotMatch(fallbackHtml, /dash-empty|role="status"/);
 
-    const { default: Research } = await realVite.ssrLoadModule('/ui/src/widgets/research/ResearchWidget.tsx');
     const { default: ActiveResearch } = await realVite.ssrLoadModule('/ui/src/widgets/active-research/ActiveResearchView.tsx');
     const emptyRuntime = { tracks: [], campaignTracks: [], defaultRoleId: null, maps: {}, client: { available: true },
       clock: { getHour: () => 0, getSnapshot: () => ({ playing: false, hoursPerSecond: 1 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } } as unknown as WidgetRuntime;
-    const baseWidget = { id: 'r', kind: 'research', configVersion: 1, title: 'Research', campaign: 'default', trackIds: [], time: { mode: 'follow' }, countries: { kind: 'all' }, options: {} } as WidgetSpec;
-    for (const [name, Component] of [['research', Research], ['active-research', ActiveResearch]] as const) {
-      const html = renderToStaticMarkup(createElement(Component as never, { widget: baseWidget, runtime: emptyRuntime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} } as never));
-      assert.match(html, /data-state="empty"/, `${name} routes empty state through WidgetState`);
-      assert.doesNotMatch(html, /dash-empty/, `${name} does not render raw dash-empty`);
-    }
+    const baseWidget = { id: 'r', kind: 'active-research', configVersion: 1, title: 'Active research', campaign: 'default', trackIds: [], time: { mode: 'follow' }, countries: { kind: 'all' }, options: {} } as WidgetSpec;
+    const html = renderToStaticMarkup(createElement(ActiveResearch as never, { widget: baseWidget, runtime: emptyRuntime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} } as never));
+    assert.match(html, /data-state="empty"/, 'active-research routes empty state through WidgetState');
+    assert.doesNotMatch(html, /dash-empty/, 'active-research does not render raw dash-empty');
 
     const { default: WidgetViewSwitch } = await realVite.ssrLoadModule('/ui/src/dashboard/WidgetViewSwitch.tsx');
     const roSwitch = renderToStaticMarkup(createElement(WidgetViewSwitch as never, {
@@ -421,14 +418,15 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
       transform(_source, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/dashboard/products.ts')) {
-          return `export const useProduct = () => globalThis.__sbAux;
+          return `export const useProduct = (_client, request) => request?.product === 'scoreboard-columns' ? globalThis.__sbAux : { data: undefined, error: undefined, retry() {} };
             export const useFollowedProduct = () => ({ data: undefined, error: undefined, retry() {} });`;
         }
         if (path.endsWith('/dashboard/useCountryGroups.ts')) {
           return `export const useCountryGroups = () => ({ data: { countryIdentities: [{ tag: 'GER' }], warnings: [] }, error: undefined, retry() {} });`;
         }
-        if (path.endsWith('/dashboard/countrySlots.ts')) {
-          return `export const useSlotTagsState = () => ({ slots: { runsForKey: () => [], tagRuns: () => [] }, error: undefined, retry() {} });`;
+        if (path.endsWith('/families/identity/react.ts')) {
+          return _source.replace(/export function useSlotIndex\(/, 'function realUseSlotIndex(')
+            + '\nexport function useSlotIndex() { return { slots: { runsForKey: () => [], tagRuns: () => [] }, revision: 1, failure: undefined, retry() {} }; }';
         }
         if (path.endsWith('/dashboard/countryFlagsAt.ts')) {
           return `export const useCountryLabelsAt = () => ({ labelAt: () => () => ({ known: true, name: 'Germany' }), exactAt: () => () => ({ known: true, name: 'Germany' }) });`;
@@ -444,7 +442,7 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
           return `export const useGate = () => ({ open: true, follow: q => q, checkFollow: q => globalThis.__sbFollowCheck(q), hour: 100, hourAt: () => 100, recorded: h => h, span: (a, b) => ({ firstHour: a, lastHour: b }) });`;
         }
         if (path.endsWith('/dashboard/widgetTime.ts')) {
-          return `export const useRegion = () => ({}); export const useRegionCoverage = () => ({ outside: null });`;
+          return `export const useRegion = () => ({}); export const useRegionCoverage = () => ({ outside: null }); export const useOutsideRecording = () => null;`;
         }
         if (path.endsWith('/families/host/FamilyHost.tsx')) {
           return `export default ({ blockedState }) => blockedState ?? null;`;

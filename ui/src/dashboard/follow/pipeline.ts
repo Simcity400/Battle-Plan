@@ -5,7 +5,7 @@ import type { PlaybackController, PlaybackSnapshot } from '../playback';
 import { canonical } from './canonical.ts';
 import { Page, type PageMessage, type PageSurface, type RebindChange, type WidgetView } from './page.ts';
 import type { Channel } from './facts';
-import type { Binding } from '../../draw/lane';
+import type { Binding, Dated } from '../../draw/lane';
 import type { FromLane, ToLane } from '../../draw/laneMessages';
 import { auditing, noteFrame, recordPicture } from '../pulled.ts';
 import { perfLog } from '../../shell/perf.ts';
@@ -42,7 +42,13 @@ interface RouteState {
 interface WidgetState {
   id: number; lane: number; kind?: string; cost: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
   installListeners: Set<() => void>; dateListeners: Set<() => void>; binding: Binding; surfaces: readonly PageSurface<ImageBitmap>[];
-  held: Map<string, unknown>; error?: Failure;
+  held: Map<string, unknown>; error?: Failure; identity: number | null;
+}
+
+export interface SupplyChange {
+  readonly statics?: { readonly staticPanels?: unknown; readonly staticAnswers?: unknown; readonly staticShifts?: unknown } | null;
+  readonly identity?: object | null;
+  readonly dated?: Dated | null;
 }
 
 export interface MountOptions { offset: number; pin: number | null; owner?: string; bounds?: readonly [number, number] | null; view?: string; model?: unknown; key?: string; widget?: string; kind?: string }
@@ -72,6 +78,8 @@ export class Pipeline {
   private readonly costLoads: number[];
   private readonly kindCost = new Map<string, number>();
   private readonly placed = new Map<string, number>();
+  private readonly identities: Map<object, { readonly id: number; users: number }>[];
+  private nextIdentity = 1;
   private readonly nextSub: number[];
   private nextWidget = 1;
   private nextRoute = 1;
@@ -94,6 +102,7 @@ export class Pipeline {
     this.loads = Array.from({ length: count }, () => 0);
     this.costLoads = Array.from({ length: count }, () => 0);
     this.nextSub = Array.from({ length: count }, () => 1);
+    this.identities = Array.from({ length: count }, () => new Map());
     this.page = new Page<ImageBitmap>({ lanes: count, seek: clock.getSnapshot().seekSequence, post: (lane, message) => this.post(lane, message) });
     host.lanes.forEach((lane, index) => { lane.onmessage = ({ data }) => this.receive(index, data); });
     const channels = host.lanes.map(() => host.channel());
@@ -121,6 +130,7 @@ export class Pipeline {
     perfLog?.dropGeneration(this.generation);
     this.widgets.clear(); this.shared.clear(); this.subs.clear(); this.byId.clear(); this.routes.clear();
     this.dateWatchers.clear(); this.placed.clear(); this.kindCost.clear();
+    for (const held of this.identities) held.clear();
     this.audits.clear(); this.answered.clear(); this.hits.clear(); this.changed.clear(); this.redated.clear();
   }
 
@@ -292,9 +302,9 @@ export class Pipeline {
       const told = this.hits.get(message.widget)?.shift();
       const pageWidget = this.page.widgets.get(message.widget);
       const staleOwner = message.owner !== undefined && pageWidget?.owner !== undefined && message.owner !== pageWidget.owner;
-      const staleInstall = message.installedId !== undefined && told?.installed !== undefined && message.installedId !== told.installed;
+      const staleInstall = told !== undefined && message.installedId !== told.installed;
       const acceptedKey = staleOwner || staleInstall ? null : message.key;
-      if (!staleOwner && !staleInstall) {
+      if (!staleOwner && !staleInstall && pageWidget?.installed?.id === message.installedId) {
         this.page.inspect(message.widget, acceptedKey);
         this.flush();
       }
@@ -353,7 +363,7 @@ export class Pipeline {
     this.loads[lane]!++;
     this.costLoads[lane]! += cost;
     const widget: WidgetState = { id, lane, kind, cost, subs: new Map(), view: options.view ?? 'fields', model: options.model, mounted: false, route: null,
-      installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, ...(options.owner !== undefined ? { owner: options.owner } : {}), surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map() };
+      installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, ...(options.owner !== undefined ? { owner: options.owner } : {}), surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map(), identity: null };
     this.widgets.set(id, widget);
     this.page.mount(id, { route: 0, lane, ...(options.owner !== undefined ? { owner: options.owner } : {}), offset: options.offset, pin: options.pin, bounds: options.bounds, surfaces: [], changed: () => this.changed.add(widget),
       dated: () => this.redated.add(widget) });
@@ -385,6 +395,7 @@ export class Pipeline {
     this.hits.delete(id);
     this.dateWatchers.delete(widget);
     for (const sub of widget.subs.values()) this.release(sub, id);
+    this.releaseIdentity(widget);
     this.widgets.delete(id);
     this.loads[widget.lane]!--;
     this.costLoads[widget.lane] = Math.max(0, this.costLoads[widget.lane]! - widget.cost);
@@ -558,6 +569,57 @@ export class Pipeline {
     widget.binding = this.timed(widget, widget.binding);
     this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding });
     this.flush();
+  }
+
+  supply(id: number, change: SupplyChange) {
+    if (this.closed) return;
+    const widget = this.widgets.get(id);
+    if (!widget) return;
+    let identity: number | null | undefined;
+    if (change.identity !== undefined) {
+      const snapshot = change.identity;
+      const lane = this.identities[widget.lane]!;
+      let held = snapshot === null ? undefined : lane.get(snapshot);
+      if (held && held.id === widget.identity) return this.supplyRest(widget, change, undefined);
+      if (snapshot !== null && !held) {
+        lane.set(snapshot, held = { id: this.nextIdentity++, users: 0 });
+        this.host.lanes[widget.lane]!.postMessage({ type: 'identity', id: held.id, snapshot });
+      }
+      if (held) held.users++;
+      this.releaseIdentity(widget);
+      widget.identity = identity = held?.id ?? null;
+    }
+    this.supplyRest(widget, change, identity);
+  }
+
+  private supplyRest(widget: WidgetState, change: SupplyChange, identity: number | null | undefined) {
+    if (change.dated !== undefined) {
+      const { dated: _, ...rest } = widget.binding;
+      widget.binding = change.dated ? { ...rest, dated: change.dated } : rest;
+    }
+    if (change.statics === undefined && identity === undefined && change.dated === undefined) return;
+    this.host.lanes[widget.lane]!.postMessage({
+      type: 'supply',
+      widget: widget.id,
+      ...change.statics !== undefined ? { statics: change.statics } : {},
+      ...identity !== undefined ? { identity } : {},
+      ...change.dated !== undefined ? { dated: change.dated } : {},
+    });
+  }
+
+  private releaseIdentity(widget: WidgetState) {
+    const id = widget.identity;
+    if (id === null) return;
+    widget.identity = null;
+    const lane = this.identities[widget.lane]!;
+    for (const [snapshot, held] of lane) {
+      if (held.id !== id) continue;
+      if (--held.users <= 0) {
+        lane.delete(snapshot);
+        if (!this.closed) this.host.lanes[widget.lane]!.postMessage({ type: 'identity', id, snapshot: null });
+      }
+      return;
+    }
   }
 
   held<T>(id: number, kind: string, make: () => T): T | null {

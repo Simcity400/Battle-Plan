@@ -7,8 +7,6 @@ import { createLaneView, type LaneBinding, type LaneFamily, type LaneRuntimeOpti
 import type { BreakdownViewOptions } from './declaration.ts';
 import {
   buildBreakdownTooltip,
-  deriveBreakdownAudit,
-  deriveBreakdownNavAndMirror,
   breakdownLevel,
   type BreakdownModel,
   type BreakdownPart,
@@ -16,6 +14,7 @@ import {
 } from './model.ts';
 import { hitTestBreakdown, layoutBreakdown, type BreakdownLayout } from './layout.ts';
 import { drawBreakdown } from './painter.ts';
+import { deriveBreakdownAudit, deriveBreakdownNavAndMirror } from './structure.ts';
 
 export interface FamilyBreakdownBinding<TOptions extends BreakdownViewOptions = BreakdownViewOptions> extends LaneBinding<TOptions> {
   readonly family: 'breakdown';
@@ -62,15 +61,8 @@ const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, Breakdow
       userExpanded: binding.expanded,
       measure: canvasMeasureText(measure),
     });
-    const contentHeight = layout.view === 'ring' ? (layout.sideList?.contentHeight ?? surface.height) : layout.contentHeight;
-    const derived = deriveBreakdownNavAndMirror(level, layout.expanded ?? {});
-    const rows = layout.view === 'parts' ? layout.rows : layout.view === 'ring' ? layout.sideList?.rows ?? [] : [];
-    const placed = new Map(rows.map(row => [row.key, row] as const));
-    const nav = derived.nav.map((entry): FamilyNavTuple => {
-      const row = placed.get(entry[0]);
-      return row ? [entry[0], entry[1], entry[2], entry[3], entry[4], entry[5], row.y, row.height] : entry;
-    });
-    return { level, layout, contentHeight, nav, mirror: derived.mirror };
+    const { nav, mirror } = deriveBreakdownNavAndMirror(layout, level.total);
+    return { level, layout, contentHeight: layout.contentHeight, nav, mirror };
   },
   paint(ctx, frame) {
     drawBreakdown(ctx, {
@@ -105,7 +97,7 @@ const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, Breakdow
     };
   },
   mirror: frame => frame.layout.mirror,
-  audit: frame => deriveBreakdownAudit(frame.model),
+  audit: frame => deriveBreakdownAudit(frame.model, frame.layout.layout),
   visibleArt: frame => collectArtUrls(walkBreakdownArt(frame.model.parts, [])),
 };
 

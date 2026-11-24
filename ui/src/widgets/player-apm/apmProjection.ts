@@ -4,14 +4,14 @@ import { contentKey, contentSet } from '../../dashboard/options.ts';
 import type { FamilyPlanContext } from '../../families/contract.ts';
 import { overlapsHourRanges } from '../../families/holders.ts';
 import { nextWindowRangesChange, type HourRanges, type TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { lookAt, type CountryLooksMap } from '../../families/looks.ts';
+import { lookAt, nextLookChange, type CountryLooksMap } from '../../families/looks.ts';
 import {
   declareTableProjection,
   type DeclarativeColumnSpec,
   type TableColumnSpec,
   type TableProjection,
 } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, wireFloat, wireWhole, type NullableMeaning, type Value } from '../../families/value.ts';
 import type { ApmReply, ApmSeries, ApmValue } from '../../generated/dashboard';
@@ -140,13 +140,13 @@ export function apmTableColumns(players: boolean, showPaused: boolean): TableCol
   ];
 }
 
-export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = registerTableProjection(
+export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = registerFamilyProjection(
   declareTableProjection<ParsedApm, DisplayApmRow, ApmTableProjectionOptions>({
     kind: 'apm-table',
     validate: parseReply,
     fromAnswer: parseAnswer,
     nextChange: (readView, opt) => (
-      opt.staticSpan ? Infinity : nextWindowRangesChange(opt.unobserved, opt.windowHours ?? TRAILING_HOURS, readView.hour)
+      Math.min(nextLookChange(opt.labels, readView.hour), opt.staticSpan ? Infinity : nextWindowRangesChange(opt.unobserved, opt.windowHours ?? TRAILING_HOURS, readView.hour))
     ),
     rank: true,
     rankMarkers: opt => opt.rankMarkers,

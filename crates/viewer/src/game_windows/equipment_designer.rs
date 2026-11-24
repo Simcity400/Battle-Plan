@@ -761,6 +761,29 @@ pub struct RenderContext<'a> {
     pub extra_warnings: Vec<String>,
 }
 
+pub(super) fn script_tables() -> Result<(), String> {
+    use engine_executable::executable_tables::auxiliary_part;
+    auxiliary_part(|tables| &tables.category_names).map_err(ToString::to_string)?;
+    auxiliary_part(|tables| &tables.stat_metadata).map_err(ToString::to_string)?;
+    Ok(())
+}
+
+pub(super) fn designer_database(
+    layers: &ResolvedLayers,
+    equipment_key: &str,
+) -> Result<Arc<Database>, GameWindowError> {
+    script_tables().map_err(|withheld| {
+        GameWindowError::refused(format!(
+            "The designer for '{equipment_key}' cannot be shown: equipment scripts are read through the recording's executable tables, and {withheld}."
+        ))
+    })?;
+    Database::shared(layers).map_err(|error| {
+        GameWindowError::failed(format!(
+            "Could not load recorded equipment definitions: {error}"
+        ))
+    })
+}
+
 fn cached_resource_db(layers: &ResolvedLayers) -> Result<Arc<ResourceDatabase>, String> {
     #[derive(Default)]
     struct Cached(
@@ -986,21 +1009,16 @@ pub fn render(
         Err(error) => Err(error.to_string()),
     };
 
-    let equipment_db = Database::shared(layers).map_err(|error| {
-        GameWindowError::failed(format!(
-            "Could not load recorded equipment definitions: {error}"
-        ))
-    })?;
-    let resource_db = cached_resource_db(layers).map_err(|error| {
-        GameWindowError::failed(format!(
-            "Could not load recorded resource definitions: {error}"
-        ))
-    })?;
-
     let equipment_key = spell(lexical, definition.equipment_token).ok_or_else(|| {
         GameWindowError::refused(format!(
             "Equipment design {} has an unknown equipment token {}.",
             target.variant, definition.equipment_token
+        ))
+    })?;
+    let equipment_db = designer_database(layers, &equipment_key)?;
+    let resource_db = cached_resource_db(layers).map_err(|error| {
+        GameWindowError::failed(format!(
+            "Could not load recorded resource definitions: {error}"
         ))
     })?;
     let equipment = equipment_db.named(&equipment_key).ok_or_else(|| {

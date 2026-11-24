@@ -26,39 +26,13 @@ import {
   notRecordedLabel,
 } from '../families/valueFormat.ts';
 import { CHART_MEASURE_COLOURS } from '../charts/palette.ts';
-import { luminance, mix, parseColor, rgbaColor } from '../shell/appearance/color.ts';
+import { niceStep } from '../charts/valueAxis.ts';
+import { contrast, mix, mixRgb, parseColor, parseColorAlpha, rgbaColor } from '../shell/appearance/color.ts';
 import { engineHour, gameDate, HOUR_EPOCH, monthNames } from '../dashboard/calendar.ts';
-import type { KitRaster, PathBuilder, PathPaint } from './path';
 
 export type Align = 'left' | 'right' | 'center';
 type Baseline = 'top' | 'middle' | 'bottom' | 'alphabetic';
 export interface LabelStyle { font: string; fill: string; align: Align; baseline: Baseline; squeeze?: boolean }
-
-export interface Kit {
-  begin(width: number, height: number, background?: string): void;
-  rect(x: number, y: number, width: number, height: number, fill: string, radius?: number): void;
-  rule(x0: number, y0: number, x1: number, y1: number, stroke: string, width?: number): void;
-  area(xs: ArrayLike<number>, highs: ArrayLike<number>, lows: ArrayLike<number>, count: number, fill: string, outline?: string): void;
-  line(xs: ArrayLike<number>, ys: ArrayLike<number>, count: number, stroke: string, width: number): void;
-  label(text: string, x: number, y: number, style: LabelStyle, maxWidth?: number): number;
-  measure(text: string, font: string): number;
-  icon(key: string, x: number, y: number, width: number, height: number): boolean;
-  fade(alpha: number): void;
-  dashed(pattern: readonly number[]): void;
-  desaturate(): void;
-  clip(x: number, y: number, width: number, height: number): void;
-  newPath(): PathBuilder;
-  clipPath(path: PathBuilder): void;
-  path(path: PathBuilder, paint: PathPaint): void;
-  erase(x: number, y: number, width: number, height: number): void;
-  raster(raster: KitRaster, sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number): void;
-  readonly pixelRatio: number;
-  save(): void;
-  restore(): void;
-  place?(axes: Placement): void;
-  when?(span: readonly [number, number] | null): void;
-  pulse?(x: number, y: number, size: number, fill: string): void;
-}
 
 export type Placement = 'pixel' | 'x' | 'y' | 'xy';
 
@@ -161,6 +135,7 @@ export function resolveKitTokens(
     hoverTabBg: theme.hoverTabBg ?? theme.text,
     hoverTabText: theme.hoverTabText ?? theme.surface,
     textSecondary: dark ? '#d4d4d4' : theme.muted,
+    autoName: mix(theme.text, theme.surface, 0.25),
     childText: dark ? '#d4d4d4' : theme.text,
     barNeutral: dark ? '#cfcfcf' : '#64748b',
     trackGrey: dark ? '#c4c4c4' : '#64748b',
@@ -826,12 +801,14 @@ export function drawLegendEntry(
     readonly dash?: readonly number[];
     readonly hatch?: boolean;
     readonly outlined?: boolean;
+    readonly swatch?: 'line' | 'square';
     readonly flag?: FlagSlotState;
     readonly maxWidth?: number;
     readonly muted?: boolean;
   },
 ): { readonly width: number; readonly label: FittedLabel } {
-  const swatchW = options?.dash?.length ? 14 : options?.hatch ? 10 : options?.outlined ? 9 : 12;
+  const isSquare = options?.swatch === 'square' && !options?.hatch && !options?.outlined && !options?.dash?.length;
+  const swatchW = options?.dash?.length ? 14 : options?.hatch ? 10 : options?.outlined || isSquare ? 9 : 12;
   const gap = 6;
   let cursor = x;
   ctx.save();
@@ -856,6 +833,12 @@ export function drawLegendEntry(
     ctx.lineTo(cursor + swatchW, middleY);
     ctx.stroke();
     ctx.setLineDash([]);
+    cursor += swatchW + gap;
+  } else if (color && isSquare) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.roundRect(cursor, Math.round(middleY - 4.5), swatchW, 9, 2);
+    ctx.fill();
     cursor += swatchW + gap;
   } else if (color) {
     ctx.fillStyle = color;
@@ -1109,10 +1092,19 @@ export function drawDateTab(
   return { x, y, width, height };
 }
 
+const DARK_FILL_INK = 'rgba(17, 17, 17, 0.88)';
+const LIGHT_FILL_INK = 'rgba(255, 255, 255, 0.96)';
+const DARK_FILL_INK_RGB = { r: 17, g: 17, b: 17 };
+const LIGHT_FILL_INK_RGB = { r: 255, g: 255, b: 255 };
+
 export function contrastInkForFill(fill: string, theme: FamilyTheme): string {
-  const rgb = parseColor(fill);
-  if (!rgb) return theme.text;
-  return luminance(rgb) > 0.32 ? 'rgba(17, 17, 17, 0.88)' : 'rgba(255, 255, 255, 0.96)';
+  const parsed = parseColorAlpha(fill);
+  if (!parsed) return theme.text;
+  const surface = parsed.alpha < 1 ? parseColor(theme.surface) : null;
+  const bg = surface && parsed.alpha < 1 ? mixRgb(surface, parsed.rgb, parsed.alpha) : parsed.rgb;
+  return contrast(bg, DARK_FILL_INK_RGB) >= contrast(bg, LIGHT_FILL_INK_RGB)
+    ? DARK_FILL_INK
+    : LIGHT_FILL_INK;
 }
 
 export function drawChevron(
@@ -1248,14 +1240,30 @@ export function computeTimeAxisTicks(startHour: number, endHour: number, plotWid
   const start = gameDate(Math.floor(startHour));
   const end = gameDate(Math.floor(endHour));
   const ticks: TimeAxisTick[] = [];
-  if (!start || !end || spanHours <= 62 * hoursPerDay) {
+  if (!start || !end) {
+    const spanDays = Math.max(1, (spanHours + 1) / hoursPerDay);
+    const fit = Math.max(2, Math.floor(plotWidth / 64));
+    const step = Math.max(1, Math.round(niceStep(spanDays, fit)));
+    const firstDay = Math.floor((startHour - HOUR_EPOCH) / hoursPerDay);
+    const lastDay = Math.floor((endHour - HOUR_EPOCH) / hoursPerDay);
+    const firstTickDay = Math.ceil(firstDay / step) * step;
+    for (let day = firstTickDay; day <= lastDay && ticks.length < 256; day += step) {
+      const hour = HOUR_EPOCH + day * hoursPerDay;
+      if (hour <= startHour || hour > endHour) continue;
+      const parts = formatDateParts(hour);
+      const date = gameDate(hour);
+      ticks.push({ hour, label: parts?.dayMonth ?? formatDateOnly(hour), major: date ? date.day === 1 : false });
+    }
+    return ticks;
+  }
+  if (spanHours <= 62 * hoursPerDay) {
     const spanDays = Math.max(1, (spanHours + 1) / hoursPerDay);
     const fit = Math.max(2, Math.floor(plotWidth / 64));
     const step = [1, 2, 3, 5, 7, 14].find(candidate => Math.ceil(spanDays / candidate) <= fit) ?? 14;
     const firstDay = Math.floor((startHour - HOUR_EPOCH) / hoursPerDay);
     const lastDay = Math.floor((endHour - HOUR_EPOCH) / hoursPerDay);
-    for (let day = firstDay; day <= lastDay; day++) {
-      if (((day % step) + step) % step !== 0) continue;
+    const firstTickDay = Math.ceil(firstDay / step) * step;
+    for (let day = firstTickDay; day <= lastDay && ticks.length < 256; day += step) {
       const hour = HOUR_EPOCH + day * hoursPerDay;
       if (hour <= startHour || hour > endHour) continue;
       const parts = formatDateParts(hour);
@@ -1265,36 +1273,45 @@ export function computeTimeAxisTicks(startHour: number, endHour: number, plotWid
     return ticks;
   }
   if (spanHours < 2 * 365 * hoursPerDay) {
-    const months = (end.year - start.year) * 12 + (end.month - start.month) + 1;
-    const fit = Math.max(2, Math.floor(plotWidth / 56));
-    const step = [1, 2, 3, 6, 12].find(candidate => Math.ceil(months / candidate) <= fit) ?? 12;
     let year = start.year;
     let month = start.month;
     if (start.day > 15) {
       month++;
       if (month > 12) { month = 1; year++; }
     }
+    let hasLabel = false;
     while (year < end.year || (year === end.year && month <= end.month)) {
-      if ((month - 1) % step === 0) {
-        const rawHour = engineHour({ year, month, day: 1, hour: 1 });
-        const hour = rawHour !== null && rawHour < startHour && year === start.year && month === start.month && start.day <= 15
-          ? startHour
-          : rawHour;
-        if (hour !== null && hour >= startHour && hour <= endHour) {
-          const major = month === 1;
-          ticks.push({ hour, label: major ? String(year) : monthNames[month - 1]!.slice(0, 3), major });
+      const rawHour = engineHour({ year, month, day: 1, hour: 1 });
+      const hour = rawHour !== null && rawHour < startHour && year === start.year && month === start.month && start.day <= 15
+        ? startHour
+        : rawHour;
+      if (hour !== null && hour >= startHour && hour <= endHour) {
+        const major = month === 1;
+        const quarter = month === 4 || month === 7 || month === 10;
+        let label = major ? String(year) : quarter ? monthNames[month - 1]!.slice(0, 3) : '';
+        if (label && !hasLabel && !major) {
+          label = `${label} ${year}`;
         }
+        if (label) hasLabel = true;
+        ticks.push({ hour, label, major });
       }
       month++;
       if (month > 12) { month = 1; year++; }
+    }
+    if (!hasLabel && ticks.length > 0) {
+      const first = ticks[0]!;
+      const date = gameDate(Math.floor(first.hour));
+      if (date) {
+        ticks[0] = { ...first, label: `${monthNames[date.month - 1]!.slice(0, 3)} ${date.year}` };
+      }
     }
     return ticks;
   }
   const years = end.year - start.year + 1;
   const fit = Math.max(2, Math.floor(plotWidth / 48));
-  const step = [1, 2, 5, 10, 20, 50].find(candidate => Math.ceil(years / candidate) <= fit) ?? 100;
-  for (let year = start.year; year <= end.year; year++) {
-    if (year % step !== 0) continue;
+  const step = [1, 2, 5, 10, 20, 50].find(candidate => Math.ceil(years / candidate) <= fit) ?? Math.max(100, Math.round(niceStep(years, fit)));
+  const firstYear = Math.ceil(start.year / step) * step;
+  for (let year = firstYear; year <= end.year && ticks.length < 256; year += step) {
     const rawHour = engineHour({ year, month: 1, day: 1, hour: 1 });
     const hour = rawHour !== null && rawHour < startHour && year === start.year && start.month === 1 && start.day <= 15
       ? startHour
@@ -1309,9 +1326,11 @@ export interface TimeAxisFrame {
   readonly plotRight: number;
   readonly startHour: number;
   readonly endHour: number;
+  readonly toX?: (hour: number) => number;
 }
 
 export function timeAxisX(frame: TimeAxisFrame, hour: number): number {
+  if (frame.toX) return frame.toX(hour);
   const span = Math.max(1, frame.endHour - frame.startHour);
   return frame.plotLeft + ((hour - frame.startHour) / span) * (frame.plotRight - frame.plotLeft);
 }
@@ -1330,6 +1349,7 @@ export function drawTimeAxisGrid(
   ctx.lineWidth = 1;
   ctx.beginPath();
   for (const tick of ticks) {
+    if (!tick.label) continue;
     const x = Math.floor(timeAxisX(frame, tick.hour)) + 0.5;
     if (x <= frame.plotLeft + 1 || x >= frame.plotRight - 1) continue;
     ctx.moveTo(x, top);
@@ -1348,6 +1368,8 @@ export interface TimeAxisOptions extends TimeAxisFrame {
   readonly playheadLineTop?: number | null;
   readonly hairline?: 'normal' | 'strong' | 'band' | 'none';
   readonly tickMarks?: boolean;
+  readonly tickColor?: string;
+  readonly firstLabelOnly?: boolean;
   readonly tabBounds?: { readonly left: number; readonly right: number };
   readonly tabY?: number;
   readonly labelY?: number;
@@ -1380,25 +1402,29 @@ export function drawTimeAxis(ctx: Canvas2D, ticks: readonly TimeAxisTick[], opti
     const left = Math.max(tabBounds.left, Math.min(tabBounds.right - tabW, Math.round(hx - tabW / 2)));
     keepOut.push([left - 6, left + tabW + 6]);
   }
-  ctx.fillStyle = theme.muted;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.strokeStyle = tokens.hairlineStrong;
+  ctx.strokeStyle = options.tickColor ?? tokens.hairlineStrong;
   ctx.lineWidth = 1;
   let lastRight = -Infinity;
+  let shownFirst = false;
   for (const tick of ticks) {
     const x = timeAxisX(options, tick.hour);
-    const half = textWidth(ctx, tick.label) / 2;
     if (showTicks) {
       ctx.beginPath();
       ctx.moveTo(Math.floor(x) + 0.5, axisTop);
-      ctx.lineTo(Math.floor(x) + 0.5, axisTop + (tick.major === false ? 3 : 4));
+      ctx.lineTo(Math.floor(x) + 0.5, axisTop + (tick.major === false ? 3 : 5));
       ctx.stroke();
     }
+    if (!tick.label) continue;
+    if (options.firstLabelOnly && shownFirst) continue;
+    const half = textWidth(ctx, tick.label) / 2;
     if (x - half < plotLeft - 4 || x + half > plotRight + 4) continue;
     if (keepOut.some(([l, r]) => x + half > l && x - half < r)) continue;
     if (x - half < lastRight + 8) continue;
+    ctx.fillStyle = tick.major !== false ? tokens.textSecondary : theme.muted;
     ctx.fillText(tick.label, x, labelY);
+    shownFirst = true;
     lastRight = x + half;
   }
   ctx.restore();
@@ -1886,6 +1912,7 @@ export interface LegendStripEntry {
   readonly dash?: readonly number[];
   readonly hatch?: boolean;
   readonly outlined?: boolean;
+  readonly swatch?: 'line' | 'square';
   readonly flag?: FlagSlotState;
   readonly muted?: boolean;
 }
@@ -1934,6 +1961,7 @@ export function drawLegendStrip(
         ...(entry.dash?.length ? { dash: entry.dash } : {}),
         ...(entry.hatch ? { hatch: true } : {}),
         ...(entry.outlined ? { outlined: true } : {}),
+        ...(entry.swatch ? { swatch: entry.swatch } : {}),
         ...(entry.flag ? { flag: entry.flag } : {}),
         ...(entry.muted ?? (entry.hatch || entry.outlined) ? { muted: true } : {}),
         maxWidth: room,
@@ -1956,4 +1984,93 @@ export function drawLegendStrip(
   if (spec.hairline) {
     drawRowHairline(ctx, x, x + width, y + height - 1, theme, 'normal');
   }
+}
+
+export const ROW_SECTION_HEIGHT = 20;
+export const ROW_REMOVE_SIZE = 22;
+export const ROW_GRIP_WIDTH = 8;
+export const ROW_GRIP_HEIGHT = 12;
+
+export function drawRowSectionLabel(ctx: Canvas2D, x: number, y: number, height: number, label: string, theme: FamilyTheme): void {
+  ctx.save();
+  ctx.font = `${LABEL_WEIGHT} 11px ${theme.font}`;
+  ctx.fillStyle = theme.muted;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, x, y + height / 2);
+  ctx.restore();
+}
+
+export function rowGripBox(nameX: number, middleY: number): { readonly x: number; readonly y: number; readonly width: number; readonly height: number } {
+  return { x: Math.max(0, nameX - ROW_GRIP_WIDTH - 1), y: Math.round(middleY - ROW_GRIP_HEIGHT / 2), width: ROW_GRIP_WIDTH, height: ROW_GRIP_HEIGHT };
+}
+
+export function drawRowGrip(ctx: Canvas2D, nameX: number, middleY: number, theme: FamilyTheme): void {
+  const box = rowGripBox(nameX, middleY);
+  ctx.save();
+  ctx.fillStyle = theme.muted;
+  for (let column = 0; column < 2; column++) {
+    for (let line = 0; line < 3; line++) {
+      ctx.fillRect(box.x + 1 + column * 4, box.y + 1 + line * 4, 2, 2);
+    }
+  }
+  ctx.restore();
+}
+
+export function rowRemoveBox(right: number, middleY: number): { readonly x: number; readonly y: number; readonly width: number; readonly height: number } {
+  return { x: right - ROW_REMOVE_SIZE, y: Math.round(middleY - ROW_REMOVE_SIZE / 2), width: ROW_REMOVE_SIZE, height: ROW_REMOVE_SIZE };
+}
+
+export function drawRowRemoveButton(ctx: Canvas2D, right: number, middleY: number, theme: FamilyTheme): void {
+  const box = rowRemoveBox(right, middleY);
+  ctx.save();
+  ctx.fillStyle = mix(theme.surface, theme.text, 0.08);
+  ctx.beginPath();
+  ctx.roundRect(box.x, box.y, box.width, box.height, 4);
+  ctx.fill();
+  ctx.fillStyle = theme.text;
+  ctx.font = `500 10px ${theme.font}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('\u00d7', box.x + box.width / 2, middleY + 0.5);
+  ctx.restore();
+}
+
+export function drawAddRow(
+  ctx: Canvas2D,
+  nameX: number,
+  middleY: number,
+  lineLeft: number,
+  lineRight: number,
+  label: string,
+  theme: FamilyTheme,
+): void {
+  const tokens = resolveKitTokens(theme);
+  const plus = 12;
+  const cx = nameX + plus / 2;
+  const cy = Math.round(middleY) + 0.5;
+  ctx.save();
+  ctx.strokeStyle = theme.accent;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(cx - plus / 2 + 1, cy);
+  ctx.lineTo(cx + plus / 2 - 1, cy);
+  ctx.moveTo(cx, cy - plus / 2 + 1);
+  ctx.lineTo(cx, cy + plus / 2 - 1);
+  ctx.stroke();
+  ctx.font = `500 12px ${theme.font}`;
+  ctx.fillStyle = theme.accent;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, nameX + plus + 6, middleY);
+  if (lineRight > lineLeft) {
+    ctx.strokeStyle = tokens.hairlineStrong;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(lineLeft, cy);
+    ctx.lineTo(lineRight, cy);
+    ctx.stroke();
+  }
+  ctx.restore();
 }

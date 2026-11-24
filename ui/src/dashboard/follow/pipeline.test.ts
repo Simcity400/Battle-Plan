@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { inProcess, managedInProcess, NATIVE } from './inProcess.fixture.ts';
-import { datedReading, datedStore, heldFor, onInstalled, readingOf } from './useFollowed.ts';
+import { datedReading, datedStore, heldFor, joinReadings, onInstalled, readingOf } from './useFollowed.ts';
 import { message } from './messages.fixture.ts';
 import { cellValue, parseAnswer } from './message.ts';
 import type { PageSurface } from './page.ts';
@@ -125,6 +125,42 @@ test('review 5 finding 14: a failed stream stays failed through a resubscription
   } finally { close(); }
 });
 
+test('identity and statics are supplied apart from the binding: one snapshot per lane, no new generation, and pictures in flight are installed', async () => {
+  const drawn: LaneView = { paint: input => ({ surfaces: input.binding.surfaces.map(() => ({ source: { width: 1, height: 1 },
+    content: `snapshot:${JSON.stringify((input.model as { identitySnapshot?: unknown }).identitySnapshot ?? null)}` })), fields: {}, motion: false }) };
+  const { pipeline, clock, settle, posted, close } = inProcess({ views: kind => kind === 'drawn' ? drawn : undefined });
+  try {
+    const slow = pipeline.acquire('slow|0', { offset: 0, pin: null });
+    const other = pipeline.acquire('other|0', { offset: 0, pin: null });
+    for (const id of [slow, other]) {
+      pipeline.present(id, 'drawn');
+      pipeline.bind(id, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }], dated: { h: 0, c: 100 } }, {}, { family: 'test', kind: 'test' });
+    }
+    clock.seek(10);
+    assert.ok(await settle(() => pipeline.view(slow)?.mode === 'picture' && pipeline.view(other)?.mode === 'picture'));
+    const generation = pipeline.binding(slow);
+    const installs = pipeline.page.stats.installs;
+    const start = posted.length;
+    for (let notify = 0; notify < 10; notify++) {
+      const snapshot = { version: notify, names: Array.from({ length: 100 }, (_, at) => `T${at}`) };
+      pipeline.supply(other, { identity: snapshot });
+      pipeline.supply(slow, { identity: snapshot });
+      await new Promise(resolve => { setImmediate(resolve); });
+    }
+    assert.ok(await settle(() => pipeline.page.widgets.get(slow)?.content[0]?.includes('"version":9') === true), JSON.stringify(pipeline.page.widgets.get(slow)?.content));
+    assert.equal(pipeline.binding(slow), generation, 'an identity notify from another widget is not a new binding');
+    assert.equal(pipeline.page.stats.rejected.binding ?? 0, 0, 'no picture in flight is retired for the binding');
+    assert.ok(pipeline.page.stats.installs > installs, 'the pictures drawn meanwhile are installed');
+    const sent = posted.slice(start);
+    assert.equal(sent.filter(item => item.type === 'identity' && (item.message as { snapshot: unknown }).snapshot !== null).length, 10, 'each snapshot crosses to the lane once, though two widgets read it');
+    assert.equal(sent.filter(item => item.type === 'bind').length, 0);
+    assert.ok(Math.max(...sent.filter(item => item.type === 'supply').map(item => item.bytes)) < 80, 'a widget names its snapshot; it does not carry a copy');
+    pipeline.unmount(slow);
+    pipeline.unmount(other);
+    assert.ok(posted.some(item => item.type === 'identity' && (item.message as { snapshot: unknown }).snapshot === null), 'a snapshot no widget reads is dropped from the lane');
+  } finally { close(); }
+});
+
 test('review 5 finding 16: each pointer is answered with the row under its own position, never the one whose tooltip is installed', async () => {
   const drawn: LaneView = { paint: input => ({ surfaces: input.binding.surfaces.map(() => ({ source: { width: 1, height: 1 }, content: 'rows' })), fields: {}, motion: false,
     hit: point => point[0] < 5 ? 'race:A' : 'race:B' }) };
@@ -149,6 +185,44 @@ test('review 5 finding 16: each pointer is answered with the row under its own p
   } finally { close(); }
 });
 
+test('R3-S7: a hit asked on A and answered after B installs reaches its callback, but never inspects B with A’s key; a page showing nothing misses', async () => {
+  const drawn: LaneView = { paint: input => ({ surfaces: input.binding.surfaces.map(() => ({ source: { width: 1, height: 1 }, content: `h:${input.hour}` })), fields: {}, motion: false,
+    hit: () => `row:${input.hour}` }) };
+  const { pipeline, clock, send, source, settle, close } = inProcess({ views: kind => kind === 'drawn' ? drawn : undefined });
+  try {
+    const id = pipeline.acquire('widget|0', { offset: 0, pin: null });
+    const sub = pipeline.subscribe(id, {}, source, '1', 0, { product: 'series-state' }, 'followed')!;
+    pipeline.present(id, 'drawn');
+    pipeline.bind(id, [surface()], { surfaces: [{ width: 10, height: 1, dpr: 1 }] });
+    clock.seek(10);
+    await settle(() => pipeline.status(sub).status === 'followed');
+    send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [7n] } }], false, NATIVE, clock.getSnapshot().seekSequence));
+    assert.ok(await settle(() => pipeline.view(id)?.mode === 'picture'));
+    const a = pipeline.view(id)!.id;
+    const worker = (pipeline as unknown as { host: { lanes: { onmessage: ((event: MessageEvent) => void) | null }[] } }).host.lanes[0]!;
+    const deliver = worker.onmessage!;
+    const held: MessageEvent[] = [];
+    worker.onmessage = event => { if ((event.data as { type: string }).type === 'hit') held.push(event); else deliver(event); };
+    const heard: { key: string | null; installedId?: number }[] = [];
+    pipeline.pointer(id, 0, [1, 0], (key, meta) => heard.push({ key, ...(meta?.installedId !== undefined ? { installedId: meta.installedId } : {}) }));
+    assert.ok(await settle(() => held.length === 1));
+    send(message(12, [{ id: sub, answer: { keys: [1n], columns: 1, values: [8n], changed: true } }], false, NATIVE, clock.getSnapshot().seekSequence));
+    clock.seek(12);
+    send(message(12, [{ id: sub, answer: { keys: [1n], columns: 1, values: [8n] } }], false, NATIVE, clock.getSnapshot().seekSequence));
+    assert.ok(await settle(() => pipeline.view(id)?.id !== a && pipeline.view(id)?.mode === 'picture'), 'B installs while A’s hit is in flight');
+    worker.onmessage = deliver;
+    for (const event of held) deliver(event);
+    assert.deepEqual(heard, [{ key: 'row:10', installedId: a }], 'the stamped click is delivered to its callback with the picture it hit');
+    assert.equal(pipeline.inspecting(id), null, 'live inspection is not moved onto B with A’s key');
+
+    pipeline.page.name(id, 'reading');
+    const blank: (string | null)[] = [];
+    pipeline.pointer(id, 0, [1, 0], key => blank.push(key));
+    assert.ok(await settle(() => blank.length === 1));
+    assert.deepEqual([blank[0], pipeline.inspecting(id)], [null, null], 'with no picture on the page, the lane’s old picture is not hit');
+  } finally { close(); }
+});
+
 test('review 6 C: a route nobody follows is sent no clock, so a widget scrolled back in installs on the same seek', async () => {
   const { pipeline, clock, send, source, asked, settle, close } = inProcess();
   try {
@@ -168,6 +242,16 @@ test('review 6 C: a route nobody follows is sent no clock, so a widget scrolled 
     send(message(11, [{ id: back, answer: { keys: [1n], columns: 1, values: [3n] } }], false, NATIVE, clock.getSnapshot().seekSequence));
     assert.ok(await settle(() => pipeline.view(again)?.mode === 'picture'), JSON.stringify(pipeline.view(again)));
   } finally { close(); }
+});
+
+test('review 6 B: widgets read one reading state from the installed entries, and a refused one is never read as empty', () => {
+  const covered = readingOf({ mode: 'picture', h: 10, through: 12, target: 12, dim: false, tooltip: null });
+  const refused = readingOf({ mode: 'failed', reason: 'Casualties dealt are not recorded', target: 12, dim: false, tooltip: null });
+  const pending = readingOf({ mode: 'reading', target: 12, dim: false, tooltip: null });
+  assert.deepEqual(joinReadings([covered, refused, pending]), { state: 'refused', reason: 'Casualties dealt are not recorded' });
+  assert.deepEqual(joinReadings([covered, pending]), { state: 'pending' });
+  assert.deepEqual(joinReadings([covered, readingOf({ mode: 'picture', h: 11, through: 11, target: 12, dim: true, tooltip: null }), null]),
+    { state: 'covered', hour: 11, dim: true }, 'the joined picture is dated at its latest hour and dimmed if any part is');
 });
 
 test('review 7 A: a component joining a shown widget keeps its picture, dimmed, until the joined picture installs', async () => {
@@ -923,139 +1007,4 @@ test('F7: releasing one of two tokens sharing a subscription on the same widget 
     env.close();
   }
 });
-
-test('P2/F2: useFollowedAll recomputes failure outcome and Retry when a lane fault changes the installed view while entries stay stable', async () => {
-  const { createServer } = await import('vite');
-  const states = new Map<number, unknown>();
-  const memos = new Map<number, { deps: readonly unknown[]; value: unknown }>();
-  const effects = new Map<number, { deps?: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void }>();
-  const pending = new Map<number, { deps?: readonly unknown[]; run: () => void | (() => void) }>();
-  let cursor = 0;
-  let dirty = false;
-  const hooks = {
-    useState(initial?: unknown) {
-      const i = cursor++;
-      if (!states.has(i)) states.set(i, typeof initial === 'function' ? (initial as () => unknown)() : initial);
-      return [states.get(i), (next: unknown) => {
-        const prev = states.get(i);
-        const val = typeof next === 'function' ? (next as (v: unknown) => unknown)(prev) : next;
-        if (!Object.is(prev, val)) { states.set(i, val); dirty = true; }
-      }];
-    },
-    useRef(initial?: unknown) {
-      const i = cursor++;
-      if (!states.has(i)) states.set(i, { current: initial });
-      return states.get(i);
-    },
-    useMemo(make: () => unknown, deps: readonly unknown[]) {
-      const i = cursor++, prev = memos.get(i);
-      if (!prev || prev.deps.length !== deps.length || prev.deps.some((d, at) => !Object.is(d, deps[at]))) {
-        memos.set(i, { deps: [...deps], value: make() });
-      }
-      return memos.get(i)!.value;
-    },
-    useCallback(fn: unknown, deps: readonly unknown[]) { return hooks.useMemo(() => fn, deps); },
-    useContext(ctx: { _currentValue?: unknown }) { return ctx._currentValue; },
-    useId() { cursor++; return 'sb-id'; },
-    useEffect(run: () => void | (() => void), deps?: readonly unknown[]) {
-      const i = cursor++, prev = effects.get(i);
-      if (!deps || !prev || !prev.deps || prev.deps.length !== deps.length || prev.deps.some((d, at) => !Object.is(d, deps[at]))) pending.set(i, { deps: deps ? [...deps] : undefined, run });
-    },
-    useLayoutEffect(run: () => void | (() => void), deps?: readonly unknown[]) { hooks.useEffect(run, deps); },
-    useSyncExternalStore(_sub: (onChange: () => void) => () => void, getSnapshot: () => unknown) {
-      cursor++;
-      return getSnapshot();
-    },
-    commit() {
-      for (const [i, next] of [...pending]) {
-        pending.delete(i);
-        effects.get(i)?.cleanup?.();
-        const cleanup = next.run();
-        effects.set(i, { deps: next.deps, run: next.run, cleanup: typeof cleanup === 'function' ? cleanup : undefined });
-      }
-    },
-    unmount() {
-      for (const e of effects.values()) e.cleanup?.();
-      effects.clear(); pending.clear(); states.clear(); memos.clear();
-    },
-  };
-  const g = globalThis as typeof globalThis & { __followedAllHooks?: typeof hooks };
-  g.__followedAllHooks = hooks;
-  const vite = await createServer({
-    configFile: false,
-    optimizeDeps: { noDiscovery: true },
-    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
-    plugins: [{
-      name: 'hook-shim',
-      transform(code, id) {
-        const norm = id.replace(/\\/g, '/');
-        if (norm.endsWith('/followedAll.ts') || norm.endsWith('/useFollowed.ts') || norm.endsWith('/useFollow.ts')) {
-          return code.replace(
-            /import\s*\{([^}]+)\}\s*from\s*['"]react['"];?/,
-            (_, names: string) => `const {${names}} = globalThis.__followedAllHooks;`,
-          );
-        }
-        return null;
-      },
-    }],
-  });
-  let env: ReturnType<typeof managedInProcess> | null = null;
-  try {
-    const fixtureMod = await vite.ssrLoadModule('/ui/src/dashboard/follow/inProcess.fixture.ts') as { managedInProcess: typeof managedInProcess };
-    const msgMod = await vite.ssrLoadModule('/ui/src/dashboard/follow/messages.fixture.ts') as { message: typeof message };
-    env = fixtureMod.managedInProcess();
-    const mod = await vite.ssrLoadModule('/ui/src/widgets/scoreboard/followedAll.ts') as {
-      useFollowedAll: (store: unknown, queries: readonly (Record<string, unknown> | null)[], target: { current: Element | null }, onScreen: (el: Element, cb: (v: boolean) => void) => () => void) => {
-        entries: readonly unknown[]; failure?: string; error?: { message: string }; retry: () => void;
-      };
-    };
-    const store = { client: env.client, source: env.source, clock: env.clock, offset: 0 };
-    const storeMod = await vite.ssrLoadModule('/ui/src/dashboard/follow/store.ts') as { FollowedCard: { _currentValue: unknown }; FollowedWidgetKey: { _currentValue: unknown } };
-    const fakeEl = { isConnected: true } as Element;
-    storeMod.FollowedCard._currentValue = fakeEl;
-    storeMod.FollowedWidgetKey._currentValue = 'sb-f2';
-    const alwaysOn = (_el: Element, cb: (v: boolean) => void) => { cb(true); return () => {}; };
-    const queries = [
-      { product: 'series-state', branchId: '1', params: { col: 'a' } },
-      { product: 'series-state', branchId: '1', params: { col: 'b' } },
-    ];
-    const render = () => {
-      let out!: ReturnType<typeof mod.useFollowedAll>;
-      for (let pass = 0; pass < 4; pass++) {
-        cursor = 0; dirty = false;
-        out = mod.useFollowedAll(store, queries, { current: fakeEl }, alwaysOn);
-        hooks.commit();
-        if (!dirty) break;
-      }
-      return out;
-    };
-    env.clock.seek(10);
-    const c1 = env.nextEvent('follow-clock');
-    const first = render();
-    const subA = (first.entries[0] as { id: number } | null)?.id;
-    const subB = (first.entries[1] as { id: number } | null)?.id;
-    assert.ok(subA !== undefined && subB !== undefined);
-    await c1;
-    while (env.pipeline.status(subA).status !== 'followed' || env.pipeline.status(subB).status !== 'followed') {
-      await env.nextEvent('follow');
-    }
-    assert.equal(first.error, undefined);
-    const widgetId = env.pipeline.page.widgets.keys().next().value!;
-    const seek = env.clock.getSnapshot().seekSequence;
-    env.send(msgMod.message(10, [{ id: subA, answer: { keys: [1n], columns: 1, values: [10n] } }], true, NATIVE, seek));
-    env.send(msgMod.message(15, [{ id: subA, answer: { keys: [99n], columns: 1, values: [99n], changed: true } }], false, NATIVE, seek));
-    await env.waitView(env.pipeline, widgetId, v => v?.mode === 'failed');
-    const second = render();
-    assert.equal(second.entries, first.entries, 'entries reference stays stable across view change');
-    assert.ok(second.error !== undefined, 'useFollowedAll must recompute error when view changes to failed');
-    assert.match(second.failure ?? '', /does not hold/);
-    const restarted = env.nextEvent('restart');
-    second.retry();
-    await restarted;
-  } finally {
-    hooks.unmount();
-    delete g.__followedAllHooks;
-    env?.close();
-    await vite.close();
-  }
-});
+

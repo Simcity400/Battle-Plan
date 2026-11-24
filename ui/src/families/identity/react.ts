@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
+import type { Failure } from '../../dashboard/queryError.ts';
 import type { PlaybackController } from '../../dashboard/playback';
 import type { CountryFlagChoice, CountryFlagSize } from '../../generated/dashboard';
 import { flagEntryToArt } from '../art/adapters.ts';
 import type { ArtResolution } from '../art/types.ts';
-import { PENDING_ART, missingArt } from '../art/types.ts';
+import { NO_ART, PENDING_ART, unavailableArt } from '../art/types.ts';
 import { identityBrokerFor } from './broker.ts';
 import { IdentityIndex } from './index.ts';
 import {
@@ -23,6 +24,40 @@ import {
 } from './types.ts';
 
 const NO_SUBSCRIBE = () => () => {};
+const NO_ASKS: readonly IdentityAsk[] = [];
+
+export function useSlotIndex(
+  client: DashboardClient,
+  recording: DashboardSource | null | undefined,
+  scope: IdentityScope | null,
+  active: boolean,
+  branchBounds?: HourInterval,
+): { readonly slots: IdentityIndex | undefined; readonly revision: number; readonly failure: Failure | undefined; readonly retry: () => void } {
+  const broker = identityBrokerFor(client);
+  const [owner] = useState(() => ({}));
+  const boundsKey = branchBounds ? `${branchBounds[0]}:${branchBounds[1]}` : '';
+  const bounds = useMemo(() => branchBounds, [boundsKey]);
+  const on = active && scope !== null;
+  const subscribe = useCallback(
+    (changed: () => void) => (on ? broker.subscribe(scope!, changed, recording ?? undefined, bounds) : NO_SUBSCRIBE()),
+    [broker, on, scope, recording, bounds],
+  );
+  const read = useCallback(() => (on ? broker.indexOf(scope!, recording ?? undefined, bounds).slotRevision() : -1), [broker, on, scope, recording, bounds]);
+  const revision = useSyncExternalStore(subscribe, read, read);
+  useEffect(() => {
+    if (!on) return;
+    broker.setDemand(owner, scope!, { asks: NO_ASKS, needIdentities: true }, recording ?? undefined, bounds);
+    return () => { broker.setDemand(owner, scope!, null); };
+  }, [broker, owner, on, scope, recording, bounds]);
+  const retry = useCallback(() => { if (scope) broker.retry(scope); }, [broker, scope]);
+  const index = on ? broker.indexOf(scope!, recording ?? undefined, bounds) : null;
+  return {
+    slots: index?.hasRead('identities') ? index : undefined,
+    revision,
+    failure: index?.readFailure('identities'),
+    retry,
+  };
+}
 
 export function useIdentityScope(
   client: DashboardClient,
@@ -102,12 +137,12 @@ export function useIdentity<K extends IdentityKey>(
           flag = broker.flagFor(scope, flagSize, country.flagChoice.value);
           flagArt = flagEntryToArt(flag);
         } else if (country.flagChoice.kind === 'missing') {
-          flagArt = missingArt(country.flagChoice.reason);
+          flagArt = unavailableArt(country.flagChoice.reason);
         } else if (country.flagChoice.kind === 'failed') {
           flagArt = { status: 'failed', reason: country.flagChoice.failure.message, retryable: true };
         }
       } else if (country.kind === 'absent') {
-        flagArt = missingArt(country.reason);
+        flagArt = NO_ART;
       } else if (country.kind === 'failed') {
         flagArt = { status: 'failed', reason: country.failure.message, retryable: true };
       }
@@ -298,6 +333,29 @@ export function readIdentityAtHeadHour(
   const hour = last.kind === 'resolved' && last.scope === scope && last.hour >= valid[0] && last.hour <= valid[1] ? last.hour : at;
   held.current = { kind: 'resolved', hour, scope, keys, index, revision: index.resolveRevision(), valid };
   return hour;
+}
+
+export function pickerDating(
+  broker: ReturnType<typeof identityBrokerFor>,
+  clock: Pick<PlaybackController, 'getHour'>,
+  scope: IdentityScope | null,
+  selectedSlot: number | null,
+  selectedTag: string | null | undefined,
+  trackHour: (clockHour: number) => number | null,
+  recording: DashboardSource | null | undefined,
+  bounds: HourInterval | undefined,
+): (tags: readonly string[]) => number | null {
+  const held: { current: HeldHeadHour } = { current: UNHELD_HEAD_HOUR };
+  let text: string | null = null;
+  let keys: readonly IdentityKey[] = [];
+  return tags => {
+    const next = tags.join('\u0001');
+    if (next !== text) {
+      text = next;
+      keys = countryPickerKeys(selectedSlot, selectedTag, tags);
+    }
+    return readIdentityAtHeadHour(broker, clock, scope, true, keys, trackHour, recording, bounds, held);
+  };
 }
 
 export function useIdentityAtHead(

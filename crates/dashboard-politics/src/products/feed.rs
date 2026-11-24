@@ -9,9 +9,10 @@ pub mod scope;
 mod text;
 #[cfg(test)]
 mod tests;
+mod window;
 
 pub use cards::{
-    Decisions, DecisionsTail, EventChoices, EventChoicesTail, ScriptOccurrenceTailReply,
+    DecisionsTail, EventChoicesTail, ScriptOccurrenceTailReply,
     decisions_dated_panel, event_choices_dated_panel,
 };
 pub use decision_state::{
@@ -93,9 +94,10 @@ pub enum EventFeedKind {
     DecisionCompletionEffect,
     DecisionTimeoutEffect,
     DecisionDurationChanged,
+    EventWindowPresented,
 }
 
-const CODES: [(u8, EventFeedKind); 25] = {
+const CODES: [(u8, EventFeedKind); 26] = {
     use EventFeedKind::*;
     [
         (0, WarDeclared),
@@ -123,6 +125,7 @@ const CODES: [(u8, EventFeedKind); 25] = {
         (23, DecisionDurationChanged),
         (FeedEventRow::CEASED_TO_EXIST, CeasedToExist),
         (FeedEventRow::GUARANTEE_GRANTED, GuaranteeGranted),
+        (FeedEventRow::WINDOW_PRESENTED, EventWindowPresented),
     ]
 };
 
@@ -183,6 +186,83 @@ pub struct EventFeedRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub decision_state: Option<DecisionLifecycleState>,
+    #[doc = " A fired event's window decision, or a presented window's recorded content; absent for"]
+    #[doc = " every other kind."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub window: Option<EventFeedWindow>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum EventWindowDecision {
+    Requested,
+    AiControlled,
+    HiddenOrAiControlled,
+    NotViewingCountry,
+    SenderExcluded,
+    PlayerRestrictedNotMajor,
+    PlayerRestrictedOptionTrigger,
+    ExistingInstance,
+    AlreadyOpen,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum EventWindowKind {
+    Normal,
+    News,
+    Leader,
+    Operative,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EventWindowOption {
+    #[doc = " The option's place in the live event's own list; null for the fallback OK button."]
+    pub ordinal: Option<u32>,
+    #[doc = " Null when the label's copy was refused; the button was still offered."]
+    pub label: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EventWindowPresented {
+    pub kind: EventWindowKind,
+    #[doc = " False when the user's popup settings hid the built window; null when not recorded."]
+    pub shown: Option<bool>,
+    #[doc = " Built again by an interface reload, with the same scope."]
+    pub rebuilt: bool,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    #[doc = " The resolved picture key; null with `pictureHidden` when the window showed none."]
+    pub picture: Option<String>,
+    pub picture_hidden: bool,
+    #[doc = " The offered options in button order."]
+    pub options: Option<Vec<EventWindowOption>>,
+    #[doc = " The event's options the window did not offer, from the recorded content; null when"]
+    #[doc = " the offered options or the content's option list could not prove it."]
+    pub not_offered: Option<Vec<EventFeedOption>>,
+    #[doc = " Each field the recording does not hold, with why."]
+    pub not_recorded: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedWindow {
+    #[doc = " The native pending instance joining a firing to the window built for it."]
+    pub instance: Option<u32>,
+    #[doc = " On a fired event: whether this client asked for a window, or the gate that refused it."]
+    pub decision: Option<EventWindowDecision>,
+    #[doc = " On a presented window: what it showed."]
+    pub presented: Option<EventWindowPresented>,
+    #[doc = " Why `decision` or `presented` is null where the kind carries one."]
+    pub missing: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -263,25 +343,6 @@ pub struct EventFeedUnavailable {
     pub count: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct FeedPageParams {
-    pub branch_id: String,
-    #[serde(default)]
-    pub facets: Vec<FacetFilter>,
-    #[doc = " The timeline's first hour when none."]
-    pub from: Option<f64>,
-    pub to: f64,
-    #[doc = " The ordinal the page starts at, counted from the timeline's first hour."]
-    pub cursor: Option<String>,
-    pub page_size: u32,
-    #[doc = " The countries a row must name (actor, target or an ally joining with it), each tag over the"]
-    #[doc = " hours it counts; every row when none. Ordinals and totals count the rows it keeps."]
-    #[serde(default)]
-    pub scope: Option<Vec<dashboard_world::products::groups::MembershipRun>>,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -298,25 +359,6 @@ pub struct EventFeedPageRow {
     pub cells: Vec<logs::LogCell>,
     pub row: Option<EventFeedRow>,
 }
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct EventFeedPage {
-    pub branch_id: String,
-    pub log: String,
-    pub columns: Vec<String>,
-    pub first_ordinal: String,
-    pub total: String,
-    pub cursor: Option<String>,
-    pub rows: Vec<EventFeedPageRow>,
-    pub missing: Vec<MissingSpan>,
-    #[doc = " What the page's rows could not show, each reason once with its count."]
-    pub unavailable: Vec<EventFeedUnavailable>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(EventFeedPage);
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -422,10 +464,6 @@ pub(crate) fn content_from(resolved: &Result<Arc<Catalogue>, String>, notices: &
     }
 }
 
-fn content(source: &Source, context: &LoadContext, notices: &mut Notices) -> Option<Arc<Catalogue>> {
-    content_from(&resolve_content(source, context), notices)
-}
-
 fn content_refusals(presenter: &Presenter<'_>, notices: &mut Notices) -> io::Result<()> {
     if let Some(catalogue) = presenter.catalogue() {
         for (reason, count) in catalogue.refusal_entries() {
@@ -443,29 +481,6 @@ pub(crate) struct Paged {
     pub ordinal: u64,
     pub own: u64,
     pub tag: Option<dashboard_base::products::Country>,
-}
-
-pub(crate) fn page(source: &Source, query: &Query<'_>, params: &FeedPageParams) -> io::Result<(log::Page, Vec<Paged>, Vec<MissingSpan>)> {
-    if let Some(runs) = &params.scope {
-        return scope::page(source, query, params, runs);
-    }
-    let asked = logs::LogPageParams {
-        branch_id: params.branch_id.clone(),
-        log: LOG.to_owned(),
-        facets: params.facets.clone(),
-        from: params.from,
-        to: params.to,
-        cursor: params.cursor.clone(),
-        page_size: params.page_size,
-        columns: None,
-    };
-    let columns = Columns::new()?;
-    let (page, rows, missing) = logs::page(query, &asked, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned()))?;
-    let rows = rows
-        .into_iter()
-        .map(|(row, ordinal, own, tag)| Ok(Paged { event: columns.read(&row)?, hour: row.hour, key: row.key, ordinal, own, tag }))
-        .collect::<io::Result<_>>()?;
-    Ok((page, rows, missing))
 }
 
 pub(crate) fn tail_rows(
@@ -523,8 +538,15 @@ pub(crate) fn present_all(query: &Query<'_>, events: &[&FeedEvent], names: &Name
 }
 
 pub(crate) fn present(event: &FeedEvent, names: &Names, presenter: &Presenter<'_>, notices: &mut Notices) -> io::Result<Option<EventFeedRow>> {
+    if event.code == FeedEventRow::WINDOWS_UNRECORDED {
+        notices.unavailable("eventWindows", "Event windows", format!("From read {}: {}", event.read_hour, String::from_utf8_lossy(&event.failure)), Some(1));
+        return Ok(None);
+    }
     let Some(kind) = EventFeedKind::of_code(event.code) else { return Ok(None) };
     let id = event.id();
+    if kind == EventFeedKind::EventWindowPresented {
+        return window::presented(event, id, names, presenter, notices);
+    }
     if event.derived() {
         return Ok(derived(event, kind, id, names, notices));
     }
@@ -584,6 +606,7 @@ pub(crate) fn present(event: &FeedEvent, names: &Names, presenter: &Presenter<'_
         cause: cause::words(event, ally.flatten()),
         strike: None,
         decision_state: None,
+        window: window::decided(event, kind),
     }))
 }
 
@@ -603,6 +626,7 @@ fn derived(event: &FeedEvent, kind: EventFeedKind, id: String, names: &Names, no
         cause: None,
         strike: None,
         decision_state: None,
+        window: None,
     };
     match kind {
         EventFeedKind::CeasedToExist => {
@@ -626,95 +650,6 @@ fn derived(event: &FeedEvent, kind: EventFeedKind, id: String, names: &Names, no
             let hour = if exact { start } else { event.read_hour };
             Some(row(hour, hour, exact, vec![guarantor, guaranteed]))
         }
-    }
-}
-
-pub struct EventFeed;
-
-impl Product for EventFeed {
-    const KEY: &'static str = "event-feed";
-    const CONTENT_DEPENDENT: bool = true;
-    const REPLAYS: bool = true;
-    type Params = FeedPageParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
-        branchId,
-        facets,
-        from: Start,
-        to: End,
-        cursor,
-        pageSize,
-        "scope[].firstHour": Start,
-        "scope[].lastHour": End,
-        "facets[].countries[]",
-        "facets[].values[]",
-        "facets[].membership[].country",
-        "facets[].membership[].firstHour": Start,
-        "facets[].membership[].lastHour": End,
-        "facets[].unobserved[].firstHour": Start,
-        "facets[].unobserved[].lastHour": End
-    ];
-    type Reply = EventFeedPage;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![
-            FeedPageParams::decl(),
-            EventFeedCategory::decl(),
-            EventFeedKind::decl(),
-            EventFeedOption::decl(),
-            EventFeedItem::decl(),
-            EventFeedCause::decl(),
-            DecisionLifecycleState::decl(),
-            EventFeedRow::decl(),
-            EventFeedStrike::decl(),
-            EventFeedUnavailable::decl(),
-            EventFeedPageRow::decl(),
-            EventFeedPage::decl(),
-        ]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        branch(&params.branch_id)
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| invalid("Invalid branch"))?)?;
-        let (page, rows, missing) = page(source, &query, params)?;
-        let names = Names::new(&query.holders);
-        let mut notices = Notices::default();
-        let presenter = Presenter::new(&query, content(source, context, &mut notices), kept_naming(source));
-        let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
-        let events: Vec<&FeedEvent> = rows.iter().map(|paged| &paged.event).collect();
-        let presented = present_all(&query, &events, &names, &presenter, &mut notices, cancelled)?;
-        let out: Vec<EventFeedPageRow> = rows
-            .into_iter()
-            .zip(presented)
-            .map(|(paged, row)| EventFeedPageRow {
-                hour: paged.hour,
-                key: paged.key.to_string(),
-                ordinal: paged.ordinal.to_string(),
-                country: paged.tag,
-                own_ordinal: tagged.then(|| paged.own.to_string()),
-                cells: Vec::new(),
-                row,
-            })
-            .collect();
-        content_refusals(&presenter, &mut notices)?;
-        let reply = EventFeedPage {
-            branch_id: params.branch_id.clone(),
-            log: LOG.to_owned(),
-            columns: Vec::new(),
-            first_ordinal: page.first.to_string(),
-            total: page.total().to_string(),
-            cursor: page.cursor().map(|cursor| cursor.to_string()),
-            rows: out,
-            missing,
-            unavailable: notices.into_list(),
-            warnings: Vec::new(),
-        };
-        dashboard_base::products::check_reply_budget(&reply)?;
-        Ok(reply)
     }
 }
 
@@ -781,7 +716,25 @@ impl Product for EventFeedTail {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![FeedTailParams::decl(), EventFeedTailReply::decl()]
+        vec![
+            FeedTailParams::decl(),
+            EventFeedCategory::decl(),
+            EventFeedKind::decl(),
+            EventFeedOption::decl(),
+            EventFeedItem::decl(),
+            EventFeedCause::decl(),
+            DecisionLifecycleState::decl(),
+            EventWindowDecision::decl(),
+            EventWindowKind::decl(),
+            EventWindowOption::decl(),
+            EventWindowPresented::decl(),
+            EventFeedWindow::decl(),
+            EventFeedRow::decl(),
+            EventFeedStrike::decl(),
+            EventFeedUnavailable::decl(),
+            EventFeedPageRow::decl(),
+            EventFeedTailReply::decl(),
+        ]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

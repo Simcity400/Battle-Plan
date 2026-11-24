@@ -41,18 +41,35 @@ fn a_months_witness_reads_its_own_arrays_run_of_the_hours_rows() {
 }
 
 #[test]
-fn a_view_holds_the_measure_drawn_or_every_part_of_one_month() {
+fn a_view_is_read_from_the_request_as_manpower_equipment_ledgers_or_one_month() {
     use super::{ArmyLossesParams, LossView};
     let equipment = LossView::Equipment { ledgers: vec![1, 2, 3] };
-    assert!(LossView::Manpower.manpower(5) && !LossView::Manpower.ledger(0, 5));
-    assert!(!equipment.manpower(5) && equipment.ledger(2, 5) && !equipment.ledger(0, 5) && !equipment.ledger(super::ENEMY_LEDGER, 5));
-    let month = LossView::Month { month: 5 };
-    assert!(month.manpower(5) && month.ledger(0, 5) && month.ledger(super::ENEMY_LEDGER, 5));
-    assert!(!month.manpower(6) && !month.ledger(0, 6));
+    let month = LossView::Month { month: 5, ledgers: None };
+    let month_eq = LossView::Month { month: 5, ledgers: Some(vec![1, 2, 3]) };
     let asked = |json: serde_json::Value| serde_json::from_value::<ArmyLossesParams>(json).unwrap().view;
     assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER" })), LossView::Manpower);
     assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER", "view": { "kind": "equipment", "ledgers": [1, 2, 3] } })), equipment);
     assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER", "view": { "kind": "month", "month": 5 } })), month);
+    assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER", "view": { "kind": "month", "month": 5, "ledgers": [1, 2, 3] } })), month_eq);
+}
+
+#[test]
+fn month_detail_sums_selected_ledgers_and_reports_table_unavailability_in_rust() {
+    let cells = dashboard_follow::live::Cells::default();
+    let mut ledgers = BTreeMap::new();
+    ledgers.insert(1, MonthLedgerAcc { kept: true, missing: None, total: 100_000, cells: Vec::new(), designs: Vec::new() });
+    ledgers.insert(2, MonthLedgerAcc { kept: true, missing: None, total: 250_000, cells: Vec::new(), designs: Vec::new() });
+    ledgers.insert(3, MonthLedgerAcc { kept: true, missing: Some(NO_READ_YET.into()), total: 0, cells: Vec::new(), designs: Vec::new() });
+    let (sum_ok, _, miss_ok) = summarize_selected_ledgers("army1", Some(&[1, 2]), None, &ledgers, &cells);
+    assert_eq!(sum_ok.as_deref(), Some("350000"));
+    assert_eq!(miss_ok, None);
+    let (sum_bad, _, miss_bad) = summarize_selected_ledgers("army1", Some(&[1, 2, 3]), None, &ledgers, &cells);
+    assert_eq!(sum_bad, None);
+    assert_eq!(miss_bad.as_deref(), Some(NO_READ_YET));
+    let avail = ArmyLossesAvailability { own_equipment: Some("incomplete read".into()), ..ArmyLossesAvailability::default() };
+    assert_eq!(month_detail_missing(&avail, Some(&[0])).as_deref(), Some("incomplete read"));
+    assert_eq!(month_detail_missing(&avail, Some(&[ENEMY_LEDGER])), None);
+    assert_eq!(month_detail_missing(&avail, None), None);
 }
 
 #[test]

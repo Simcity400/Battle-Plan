@@ -14,19 +14,38 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-const OVERVIEW: [TableId; 11] = [
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::CountryAppearance,
-    TableId::LexicalTokens,
-    TableId::VariantDefinitions,
-    TableId::DivisionTemplates,
-    TableId::DivisionTemplateIcons,
-    TableId::DivisionEquipmentCounts,
-    TableId::DivisionEquipmentByType,
-    TableId::DivisionEquipmentByDesign,
-    TableId::DivisionEquipmentByTemplate,
-];
+const NAMING: [TableId; 4] = [TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance, TableId::LexicalTokens];
+const TYPES: [TableId; 4] = [TableId::VariantDefinitions, TableId::DivisionEquipmentCounts, TableId::DivisionEquipmentByType, TableId::DivisionEquipmentByDesign];
+const TEMPLATES: [TableId; 4] = [TableId::DivisionTemplates, TableId::DivisionTemplateIcons, TableId::DivisionEquipmentCounts, TableId::DivisionEquipmentByTemplate];
+const UNCLASSIFIED: &str = "unclassified";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum DivisionEquipmentView {
+    Types,
+    Templates,
+}
+
+impl DivisionEquipmentView {
+    fn operands(self) -> &'static [TableId] {
+        match self {
+            Self::Types => &TYPES,
+            Self::Templates => &TEMPLATES,
+        }
+    }
+
+    fn withheld_by(self) -> &'static [TableId] {
+        match self {
+            Self::Types => &[TableId::DivisionEquipmentCounts, TableId::DivisionEquipmentByType, TableId::DivisionEquipmentByDesign],
+            Self::Templates => &[TableId::DivisionEquipmentCounts, TableId::DivisionEquipmentByTemplate],
+        }
+    }
+}
+
+pub(super) fn type_key(token: Option<u32>) -> String {
+    token.map_or_else(|| UNCLASSIFIED.to_owned(), |token| token.to_string())
+}
 
 
 pub struct DivisionEquipment;
@@ -38,6 +57,8 @@ pub struct DivisionEquipmentParams {
     pub branch_id: String,
     pub country: Country,
     pub count_for: ArmyAttribution,
+    #[doc = " The view whose tables are read and returned: the other view's are neither read nor withheld for."]
+    pub view: DivisionEquipmentView,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -53,7 +74,10 @@ pub struct EquipmentVariant {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentType {
-    #[doc = " None is the unclassified bucket, not a content key."]
+    #[doc = " The recorded type token, the row's identity; `unclassified` for equipment whose design names no type."]
+    pub key: String,
+    pub unclassified: bool,
+    #[doc = " The type's content key; none when unclassified or when its token's spelling was not read (`name_missing` says which)."]
     pub archetype: Option<String>,
     pub name: Option<String>,
     pub name_missing: Option<String>,
@@ -121,8 +145,9 @@ impl AtHour for DivisionEquipment {
     const KEY: &'static str = "division-equipment";
     const TITLE: &'static str = "Division equipment";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = DivisionEquipmentParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, countFor];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, countFor, view];
     type Reply = DivisionEquipmentReply;
     type Context = EquipmentContext;
 
@@ -134,6 +159,7 @@ impl AtHour for DivisionEquipment {
             EquipmentVariant::decl(),
             EquipmentType::decl(),
             EquipmentTemplate::decl(),
+            DivisionEquipmentView::decl(),
         ]
     }
 
@@ -146,9 +172,10 @@ impl AtHour for DivisionEquipment {
         Some(&params.country)
     }
 
-    fn tables(_params: &Self::Params) -> Vec<TableId> {
-        let mut tables = OVERVIEW.to_vec();
+    fn tables(params: &Self::Params) -> Vec<TableId> {
+        let mut tables = [&NAMING[..], params.view.operands()].concat();
         tables.sort_unstable();
+        tables.dedup();
         tables
     }
 
@@ -162,26 +189,27 @@ impl AtHour for DivisionEquipment {
                 let (template_lo, template_hi) = slot_side_range(owner.slot, side);
                 let types = slot << 41 | side128 << 33;
                 let designs = slot << 74 | side128 << 66;
-                vec![
-                    Read::all(TableId::Countries),
-                    Read::all(TableId::CountryLinks),
-                    Read::all(TableId::CountryAppearance),
-                    Read::all(TableId::LexicalTokens),
-                    Read::these(TableId::DivisionEquipmentCounts, [slot << 8 | side128]),
-                    Read { table: TableId::DivisionEquipmentByType, keys: Keys::Range(types, types | ((1 << 33) - 1)) },
-                    Read { table: TableId::DivisionEquipmentByDesign, keys: Keys::Range(designs, designs | ((1 << 66) - 1)) },
-                    Read { table: TableId::DivisionEquipmentByTemplate, keys: Keys::Range(template_lo, template_hi) },
-                ]
+                let mut reads: Vec<Read> = NAMING.into_iter().map(Read::all).collect();
+                reads.push(Read::these(TableId::DivisionEquipmentCounts, [slot << 8 | side128]));
+                match params.view {
+                    DivisionEquipmentView::Types => reads.extend([
+                        Read { table: TableId::DivisionEquipmentByType, keys: Keys::Range(types, types | ((1 << 33) - 1)) },
+                        Read { table: TableId::DivisionEquipmentByDesign, keys: Keys::Range(designs, designs | ((1 << 66) - 1)) },
+                    ]),
+                    DivisionEquipmentView::Templates => reads.push(Read { table: TableId::DivisionEquipmentByTemplate, keys: Keys::Range(template_lo, template_hi) }),
+                }
+                reads
             }
-            1 => {
-                let templates = held.complete::<tables::DivisionEquipmentByTemplate>().map(|rows| rows.iter().map(|row| u128::from(row.template)).collect::<Vec<_>>()).unwrap_or_default();
-                let designs = held.complete::<tables::DivisionEquipmentByDesign>().map(|rows| rows.iter().filter_map(|row| row.variant).map(|id| u128::from(design_handle(id))).collect::<Vec<_>>()).unwrap_or_default();
-                vec![
-                    Read::these(TableId::DivisionTemplates, templates.clone()),
-                    Read::these(TableId::DivisionTemplateIcons, templates),
-                    Read::these(TableId::VariantDefinitions, designs),
-                ]
-            }
+            1 => match params.view {
+                DivisionEquipmentView::Templates => {
+                    let templates = held.complete::<tables::DivisionEquipmentByTemplate>().map(|rows| rows.iter().map(|row| u128::from(row.template)).collect::<Vec<_>>()).unwrap_or_default();
+                    vec![Read::these(TableId::DivisionTemplates, templates.clone()), Read::these(TableId::DivisionTemplateIcons, templates)]
+                }
+                DivisionEquipmentView::Types => {
+                    let designs = held.complete::<tables::DivisionEquipmentByDesign>().map(|rows| rows.iter().filter_map(|row| row.variant).map(|id| u128::from(design_handle(id))).collect::<Vec<_>>()).unwrap_or_default();
+                    vec![Read::these(TableId::VariantDefinitions, designs)]
+                }
+            },
             _ => Vec::new(),
         }
     }
@@ -297,8 +325,7 @@ fn overview(frame: &DecodedFrame, params: &DivisionEquipmentParams, tag: String,
         templates: Vec::new(),
         warnings: Vec::new(),
     };
-    let tables = [TableId::DivisionEquipmentCounts, TableId::DivisionEquipmentByType, TableId::DivisionEquipmentByDesign, TableId::DivisionEquipmentByTemplate];
-    if let Some(why) = tables.iter().find_map(|&id| unavailable(frame, id)) {
+    if let Some(why) = params.view.withheld_by().iter().find_map(|&id| unavailable(frame, id)) {
         reply.missing = Some(format!("Division equipment was not recorded at this hour: {why}"));
         return Ok(reply);
     }
@@ -322,6 +349,10 @@ fn overview(frame: &DecodedFrame, params: &DivisionEquipmentParams, tag: String,
     if counts.stock_hour.is_none() {
         refusals.note("National equipment stockpile was not read within a day of this hour");
     }
+    if params.view == DivisionEquipmentView::Templates {
+        templates(frame, &mine, content, refusals, &mut reply)?;
+        return Ok(reply);
+    }
     let designs: Vec<&DivisionEquipmentDesignRow> = frame.complete::<tables::DivisionEquipmentByDesign>()?.iter().filter(|row| mine(row.slot, row.side)).collect();
     for row in frame.complete::<tables::DivisionEquipmentByType>()?.iter().filter(|row: &&DivisionEquipmentTypeRow| mine(row.slot, row.side)) {
         let (key, name, name_missing) = archetype(frame, content, row.archetype, refusals);
@@ -332,6 +363,8 @@ fn overview(frame: &DecodedFrame, params: &DivisionEquipmentParams, tag: String,
             .collect();
         let stock = text(&row.stock);
         reply.types.push(EquipmentType {
+            key: type_key(row.archetype),
+            unclassified: row.archetype.is_none(),
             archetype: key,
             name,
             name_missing,
@@ -346,6 +379,10 @@ fn overview(frame: &DecodedFrame, params: &DivisionEquipmentParams, tag: String,
             variants,
         });
     }
+    Ok(reply)
+}
+
+fn templates(frame: &DecodedFrame, mine: &impl Fn(u32, u8) -> bool, content: &Content, refusals: &mut Refusals, reply: &mut DivisionEquipmentReply) -> io::Result<()> {
     for row in frame.complete::<tables::DivisionEquipmentByTemplate>()?.iter().filter(|row: &&DivisionEquipmentTemplateRow| mine(row.slot, row.side)) {
         let divisions = times(&row.divisions);
         if row.required == Recorded::NotRecorded {
@@ -375,5 +412,5 @@ fn overview(frame: &DecodedFrame, params: &DivisionEquipmentParams, tag: String,
             unknown_divisions: count(&row.unknown),
         });
     }
-    Ok(reply)
+    Ok(())
 }

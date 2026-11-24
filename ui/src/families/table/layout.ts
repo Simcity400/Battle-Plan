@@ -48,6 +48,12 @@ const SHARE_PARTIAL_TAB = 11;
 const SORT_ARROW_WIDTH = 16;
 const KIND_COLUMN_ART = 32;
 const DEFAULT_TEXT_MIN_WIDTH = 128;
+export const TREE_CHEVRON_LANE = 18;
+
+export function treeColumnOf(columns: readonly Pick<FamilyColumnLayout, 'cellKind'>[]): number {
+  const at = columns.findIndex(col => col.cellKind !== 'kind');
+  return at < 0 ? 0 : at;
+}
 const DEFAULT_TEXT_MAX_WIDTH = 260;
 
 const fontString = (theme: Pick<TableTheme, 'font'>, size: number, weight: number) => `${weight} ${size}px ${theme.font}`;
@@ -135,6 +141,10 @@ export function measureFixedColumnWidths(
       out[column.key] = column.minWidth ?? KIND_COLUMN_ART + CELL_INSET * 2;
       continue;
     }
+    if (column.cellKind === 'item' && !column.widest?.length) {
+      out[column.key] = Math.ceil(Math.max(column.minWidth ?? 160, hideHeader ? 0 : measure(column.label, headFont) + CELL_INSET * 2));
+      continue;
+    }
     if (column.cellKind === 'stockpileSum') {
       out[column.key] = column.minWidth ?? 210;
       continue;
@@ -175,8 +185,8 @@ export function measureFixedColumnWidths(
       continue;
     }
     if (column.cellKind === 'share') {
-      const track = settings.sort.column === column.key ? SHARE_TRACK_WIDTH + SHARE_TRACK_GAP : 0;
-      const shareW = Math.max(column.minWidth ?? 0, headerWidth, SHARE_FIGURE_SLOT + SHARE_PARTIAL_TAB + track + CELL_INSET * 2);
+      const track = settings.sort.column === column.key ? SHARE_TRACK_WIDTH : 0;
+      const shareW = Math.max(column.minWidth ?? 0, SHARE_FIGURE_SLOT + SHARE_PARTIAL_TAB + CELL_INSET * 2) + track;
       out[column.key] = Math.ceil(column.maxWidth !== undefined ? Math.min(column.maxWidth, shareW) : shareW);
       continue;
     }

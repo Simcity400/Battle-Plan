@@ -3,6 +3,7 @@ use dashboard_base::products::{Country, validate_country};
 use dashboard_base::{products::{LoadContext, Product, at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt}}, queries::country_ids::{Names, RunLinks}};
 use dashboard_base::{Source, catalogue::{self, Catalogue}, span::HourSpan};
 use dashboard_query::{
+    Query,
     identity::{Holder, Holders},
     read,
     timeline::{Join, Stretch},
@@ -268,6 +269,7 @@ impl AtHour for DiplomaticRelations {
     const KEY: &'static str = "diplomatic-relations";
     const TITLE: &'static str = "Diplomatic relations";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads country appearance looks and faction name/membership runs from branch history context at at.hour");
     type Params = DiplomaticRelationsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", top, order];
     type Reply = DiplomaticRelationsReply;
@@ -484,6 +486,8 @@ pub struct DiplomaticPacts;
 pub struct DiplomaticPactsParams {
     pub branch_id: String,
     pub country: Country,
+    #[doc = " The hour answered: nothing recorded after it is read into the reply."]
+    pub hour: i32,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -509,13 +513,13 @@ pub struct DiplomacyPact {
     #[doc = " The hours the relation began and ends as the game dates them; null where not written."]
     pub start_hour: Option<i32>,
     pub end_hour: Option<i32>,
-    #[doc = " The first and last hour the chosen country's row held it."]
+    #[doc = " The first and last hour the chosen country's row held it, never after the reply's hour."]
     pub first_seen: i32,
     pub last_seen: i32,
-    #[doc = " The hour its row was gone: a read of the chosen country no longer listed it."]
+    #[doc = " The hour by which its row was gone: a read of the chosen country no longer listed it."]
     pub gone_by: Option<i32>,
-    #[doc = " Held at the timeline's last hour."]
-    pub present_at_end: bool,
+    #[doc = " Held at the reply's hour."]
+    pub held: bool,
     #[doc = " Its row's hours ended at a gap in the recording: whether it ended then is not known."]
     pub ended_by: bool,
 }
@@ -524,6 +528,12 @@ pub struct DiplomacyPact {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DiplomacyPactsReply {
+    #[doc = " The hour answered, never after the branch's last hour."]
+    pub hour: i32,
+    #[doc = " The first hour after `hour` at which a pact, its end, a partner's tag or an unread stretch changes; null"]
+    #[doc = " when none does."]
+    pub next_change: Option<i32>,
+    #[doc = " Every relation the pacts by the hour name, with its count by then."]
     pub kinds: Vec<DiplomacyKind>,
     pub pacts: Vec<DiplomacyPact>,
     pub unobserved: Vec<HourSpan>,
@@ -543,13 +553,13 @@ fn tag_ids(holders: &Holders, tag: &Country) -> Vec<(u32, i32, i32)> {
         .collect()
 }
 
-pub(crate) fn pacts(stretches: &[Stretch], held: &HashMap<u32, (Arc<RunPacts>, Arc<RunLinks>)>, names: &Names, ids: &[(u32, i32, i32)], timeline_last: i32) -> (Vec<DiplomacyPact>, BTreeMap<String, u32>) {
+pub(crate) fn pacts(stretches: &[Stretch], held: &HashMap<u32, (Arc<RunPacts>, Arc<RunLinks>)>, names: &Names, ids: &[(u32, i32, i32)], hour: i32) -> (Vec<DiplomacyPact>, BTreeMap<String, u32>) {
     let mut out: Vec<DiplomacyPact> = Vec::new();
-    for (index, stretch) in stretches.iter().enumerate() {
+    for (index, stretch) in stretches.iter().enumerate().take_while(|(_, stretch)| stretch.first <= hour) {
         let Some((pacts, links)) = held.get(&stretch.run) else { continue };
-        let next_breaks = stretches.get(index + 1).is_none_or(|next| next.join == Join::Break);
+        let next_breaks = stretches.get(index + 1).is_none_or(|next| next.join == Join::Break || next.first > hour);
         for &(id, held_first, held_last) in ids {
-            let (from, to) = (held_first.max(stretch.first), held_last.min(stretch.last));
+            let (from, to) = (held_first.max(stretch.first), held_last.min(stretch.last).min(hour));
             if from > to {
                 continue;
             }
@@ -563,14 +573,13 @@ pub(crate) fn pacts(stretches: &[Stretch], held: &HashMap<u32, (Arc<RunPacts>, A
                     }
                     let start_hour = (run.dates.0 > 0).then_some(run.dates.0);
                     let end_hour = (run.dates.1 > run.dates.0).then_some(run.dates.1);
-                    let at_end = b == stretch.last;
-                    let present_at_end = at_end && b == timeline_last;
-                    let ended_by = at_end && !present_at_end && next_breaks;
+                    let held_now = b == hour;
+                    let ended_by = b == stretch.last && !held_now && next_breaks;
                     let proved = !pacts.unproven.iter().any(|&(first, last)| first <= b + 1 && b + 1 <= last);
-                    let gone_by = (b == run.last && b < stretch.last && proved).then_some(b + 1);
+                    let gone_by = (b == run.last && b < stretch.last && b < hour && proved).then_some(b + 1);
                     let first = names.tag_at(links, run.endpoints.0, b).map(str::to_owned);
                     let second = names.tag_at(links, run.endpoints.1, b).map(str::to_owned);
-                    out.push(DiplomacyPact { kind: kind.clone(), first, second, start_hour, end_hour, first_seen: a, last_seen: b, gone_by, present_at_end, ended_by });
+                    out.push(DiplomacyPact { kind: kind.clone(), first, second, start_hour, end_hour, first_seen: a, last_seen: b, gone_by, held: held_now, ended_by });
                 }
             }
         }
@@ -587,7 +596,7 @@ pub(crate) fn pacts(stretches: &[Stretch], held: &HashMap<u32, (Arc<RunPacts>, A
                 held.last_seen = pact.last_seen;
                 held.end_hour = pact.end_hour;
                 held.gone_by = pact.gone_by;
-                held.present_at_end = pact.present_at_end;
+                held.held = pact.held;
                 held.ended_by = pact.ended_by;
             }
             _ => joined.push(pact),
@@ -600,6 +609,38 @@ pub(crate) fn pacts(stretches: &[Stretch], held: &HashMap<u32, (Arc<RunPacts>, A
     let mut out = joined;
     out.sort_by(|a, b| (a.first_seen, &a.kind, &a.first, &a.second).cmp(&(b.first_seen, &b.kind, &b.first, &b.second)));
     (out, counts)
+}
+
+fn next_change(query: &Query<'_>, held: &HashMap<u32, (Arc<RunPacts>, Arc<RunLinks>)>, ids: &[(u32, i32, i32)], unobserved: &[HourSpan], hour: i32) -> Option<i32> {
+    let mut next = i32::MAX;
+    let mut after = |at: i32| {
+        if at > hour && at < next {
+            next = at;
+        }
+    };
+    for gap in unobserved {
+        after(gap.first_hour);
+        after(gap.last_hour.saturating_add(1));
+    }
+    for runs in query.holders.tags.values() {
+        for run in runs {
+            after(run.first);
+            after(run.last.saturating_add(1));
+        }
+    }
+    for stretch in &query.timeline.stretches {
+        after(stretch.first);
+        after(stretch.last.saturating_add(1));
+        let Some((pacts, _)) = held.get(&stretch.run) else { continue };
+        for &(id, _, _) in ids {
+            let mine = |key: u128| (key >> 80) as u32 == id || (key >> 48) as u32 == id;
+            for run in pacts.rows.iter().filter(|(key, _)| mine(*key)).flat_map(|(_, runs)| runs) {
+                after(run.first.max(stretch.first));
+                after(run.last.min(stretch.last).saturating_add(1));
+            }
+        }
+    }
+    (next != i32::MAX).then_some(next)
 }
 
 pub(crate) fn unproven(stretches: &[Stretch], held: &HashMap<u32, (Arc<RunPacts>, Arc<RunLinks>)>) -> Vec<HourSpan> {
@@ -646,7 +687,7 @@ impl Product for DiplomaticPacts {
     const KEY: &'static str = "diplomatic-pacts";
     const CONTENT_DEPENDENT: bool = true;
     type Params = DiplomaticPactsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read];
     type Reply = DiplomacyPactsReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -673,7 +714,8 @@ impl Product for DiplomaticPacts {
             }
         }
         let ids = tag_ids(&query.holders, &params.country);
-        let (pacts, counts) = pacts(&query.timeline.stretches, &held, &names, &ids, query.timeline.last);
+        let hour = params.hour.min(query.timeline.last);
+        let (pacts, counts) = pacts(&query.timeline.stretches, &held, &names, &ids, hour);
         let tokens: HashMap<&str, u32> = held.values().flat_map(|(run, _)| run.kinds.iter().map(|(token, kind)| (kind.as_str(), *token))).collect();
         let catalogue = context.content.as_ref().map(|options| catalogue::catalogue(source, options)).transpose().map_err(|error| error.to_string());
         let (kinds, mut warnings) = kind_titles(counts, &tokens, catalogue.as_ref().map(|held| held.as_deref()).map_err(Clone::clone));
@@ -683,7 +725,9 @@ impl Product for DiplomaticPacts {
         let mut unobserved = dashboard_world::products::subjects::unknown_hours(&query);
         unobserved.extend(unproven(&query.timeline.stretches, &held));
         let unobserved = dashboard_world::products::subjects::settle(unobserved);
-        Ok(DiplomacyPactsReply { kinds, pacts, unobserved, warnings })
+        let next_change = next_change(&query, &held, &ids, &unobserved, hour);
+        let unobserved = unobserved.into_iter().filter(|gap| gap.first_hour <= hour).map(|gap| HourSpan { first_hour: gap.first_hour, last_hour: gap.last_hour.min(hour) }).collect();
+        Ok(DiplomacyPactsReply { hour, next_change, kinds, pacts, unobserved, warnings })
     }
 }
 

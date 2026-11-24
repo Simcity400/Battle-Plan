@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { Page, type Bitmap, type PageMessage } from '../dashboard/follow/page.ts';
+import { Lane } from '../draw/lane.ts';
 import type { BoundedReadView, FamilyProjection } from './contract.ts';
 import { createLaneView, type LaneBinding, type LaneFamily } from './laneRuntime.ts';
 import { assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas, LANE_THEME as THEME } from './laneRuntime.fixture.ts';
@@ -65,8 +67,9 @@ const family: LaneFamily<Binding, Model, Layout> = {
 
 const rowsAt = (rows: readonly Row[]) => ({ main: { rows } });
 const DOWN: Options = { order: 'down' };
+const NO_SOURCES = {};
 const binding = (staticPanels: Readonly<Record<string, unknown>>, options: Options = DOWN, extra: Partial<Binding> = {}): Binding => ({
-  family: 'test-lane', kind: 'fixture', options, sources: {}, staticPanels, scrollTop: 0, theme: THEME, ...extra,
+  family: 'test-lane', kind: 'fixture', options, sources: NO_SOURCES, staticPanels, scrollTop: 0, theme: THEME, ...extra,
 });
 
 test('a projection’s identity demands are published by the paint that ran it', () => {
@@ -146,6 +149,34 @@ test('after a seek back, a same-hour correction and a reorder the picture equals
   ]);
 });
 
+test('a previous frame is supplied only for continuous forward playback of the same placement', () => {
+  const seen: (number | null)[] = [];
+  const watching: LaneFamily<Binding, Model, Layout> = { ...family, paint: (ctx, frame) => { seen.push(frame.before?.hour ?? null); return family.paint(ctx, frame); } };
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(watching, () => {}), recording.canvases);
+    const rows = binding(rowsAt([{ key: 'A', v: 1 }, { key: 'B', v: 2 }]));
+    const swapped = binding(rowsAt([{ key: 'B', v: 3 }, { key: 'A', v: 1 }]));
+    const paint = (step: Partial<Parameters<typeof lane.paint>[0]> & { readonly hour: number }) => {
+      seen.length = 0;
+      lane.paint({ label: 'step', binding: rows, speed: 24, seek: 1, owner: 'a', ...step });
+      return seen.at(-1);
+    };
+    paint({ hour: 12 });
+    assert.equal(paint({ hour: 20 }), 12, 'playing on into the next proven interval glides from the frame drawn before');
+    assert.equal(paint({ hour: 10, seek: 2 }), null, 'a seek back gives none');
+    assert.equal(paint({ hour: 25, seek: 3 }), null, 'a seek forward gives none');
+    assert.equal(paint({ hour: 30, seek: 3, speed: 0 }), null, 'a paused frame gives none');
+    assert.equal(paint({ hour: 40, seek: 3 }), null, 'nor does the first playing frame after it');
+    assert.equal(paint({ hour: 50, seek: 3, owner: 'b' }), null, 'another owner gives none');
+    assert.equal(paint({ hour: 60, seek: 3, owner: 'b', binding: binding(rowsAt([{ key: 'A', v: 1 }, { key: 'B', v: 2 }]), { order: 'up' }) }), null, 'another selection gives none');
+    assert.equal(paint({ hour: 55, seek: 3, owner: 'b', binding: swapped }), null, 'an earlier hour on the same seek gives none');
+    assert.equal(paint({ hour: 70, seek: 3, owner: 'b', binding: swapped }), 55, 'playing on again glides');
+  } finally {
+    recording.restore();
+  }
+});
+
 test('the shared quiet-frame check: no drawing or new field between boundaries, and a playing chart’s next hour is a real boundary', () => {
   assert.equal(assertQuietFrames(() => createLaneView(family, () => {}), { label: 'fixture', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 12 }), 20);
   const hourly: LaneFamily<Binding, Model, Layout> = { ...family, redraw: (_model, hour) => hour + 1 };
@@ -168,7 +199,7 @@ test('a cold projection load walks no history, keeps one waiter per placement, a
     const lane = driveLane(view, recording.canvases);
     const cold = { ...binding(rowsAt([])), kind: 'cold' };
     const scene = { widget: 1, subs: [], pictures: [], model: cold };
-    for (let hour = 0; hour < 1000; hour++) assert.equal(view.next!(scene, hour, lane.state), Infinity, 'loading answers no boundary, so the lane walks no history');
+    for (let hour = 0; hour < 1000; hour++) assert.equal(view.next!(scene, hour, lane.state), null, 'loading locates no change, so the lane walks no history and paints the target');
     for (let i = 0; i < 5; i++) assert.equal(lane.paint({ label: 'loading', binding: cold, hour: 10 }).surfaces.length, 0);
     release({ projection: { kind: 'cold', family: 'test-lane', project: (view: BoundedReadView) => ({ hour: view.hour, bucket: 0, rows: [], name: '' }) } });
     await settle();
@@ -179,9 +210,40 @@ test('a cold projection load walks no history, keeps one waiter per placement, a
     await settle();
     for (let i = 0; i < 5; i++) assert.throws(() => lane.paint({ label: 'broken', binding: broken, hour: 10 }), /chunk missing/);
     assert.equal(loads, 2, 'a failed import is not retried on every paint');
-    assert.equal(view.next!({ widget: 1, subs: [], pictures: [], model: broken }, 10, lane.state), Infinity);
+    assert.equal(view.next!({ widget: 1, subs: [], pictures: [], model: broken }, 10, lane.state), null);
     assert.equal(lane.paint({ label: 'retried', binding: broken, hour: 10, generation: 2 }).surfaces.length, 0, 'a re-bind clears the failure and loads again');
     assert.equal(loads, 3);
+  } finally {
+    recording.restore();
+  }
+});
+
+registerFamilyProjection<FamilyProjection<Model, Options>>({
+  kind: 'unbounded',
+  family: 'test-lane',
+  project: (view: BoundedReadView): Model => ({ hour: view.hour, bucket: view.hour, rows: [{ key: 'A', v: view.hour }], name: '' }),
+});
+
+test('a seek to an hour the held proof cannot locate paints at that hour, through Lane.frame', async () => {
+  const flushed = () => new Promise<void>(resolve => setImmediate(resolve));
+  const hourly: LaneFamily<Binding, Model, Layout> = { ...family, boundary: (_model, hour) => hour + 1 };
+  const recording = installRecordingCanvas();
+  try {
+    const page = new Page<Bitmap & { content: string }>({ lanes: 1, post: (_lane, m: PageMessage) => { if (m.type === 'frame') lane.frame(m); } });
+    const lane: Lane<Bitmap & { content: string }> = new Lane({
+      lane: 0, lanes: 1,
+      views: () => createLaneView(hourly, () => {}),
+      crop: async sources => sources.map(() => ({ content: 'x', width: 1, height: 1, close() {} })),
+      present: presentation => page.offer(presentation),
+      release: () => {}, fail: () => {}, later: () => {},
+    });
+    const bound = { ...binding(rowsAt([])), kind: 'unbounded' };
+    lane.mount(1, [], 'chart', bound);
+    page.mount(1, { route: 1, lane: 0, offset: 0, pin: null, surfaces: [{ install: () => {}, clear: () => {} }] });
+    lane.bind(1, { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: Infinity } });
+    page.publish(100, { playing: false, seek: true });
+    await flushed(); await flushed(); page.frame(); await flushed(); await flushed();
+    assert.deepEqual([page.view(1).mode, page.view(1).painted, page.view(1).fields?.mirror], ['picture', 100, ['A 100']], 'the first reply paints the target, not the fourth hour walked from the window start');
   } finally {
     recording.restore();
   }
@@ -203,6 +265,49 @@ test('next() builds no identity index, and one snapshot is indexed once for ever
     assert.equal(built, 1, 'next() never indexes a snapshot');
   } finally {
     IdentityIndex.fromSnapshot = original;
+    recording.restore();
+  }
+});
+
+test('the previous layout is given only while the same placement plays forward, never across a seek or a pause', () => {
+  const recording = installRecordingCanvas();
+  try {
+    const seen: (number | null)[] = [];
+    const remembering: LaneFamily<Binding, Model, Layout> = {
+      ...family,
+      layout(model, binding, surface, theme, measure, hour, step) {
+        seen.push(step.previous ? step.previous.hour : null);
+        return family.layout(model, binding, surface, theme, measure, hour, step);
+      },
+    };
+    const lane = driveLane(createLaneView(remembering, () => {}), recording.canvases);
+    lane.paint({ label: 'first', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 10, speed: 24 });
+    lane.paint({ label: 'forward', binding: binding(rowsAt([{ key: 'A', v: 2 }])), hour: 12, speed: 24 });
+    lane.paint({ label: 'seek back', binding: binding(rowsAt([{ key: 'A', v: 3 }])), hour: 5, speed: 24 });
+    lane.paint({ label: 'paused, same hour', binding: binding(rowsAt([{ key: 'A', v: 4 }])), hour: 5, speed: 0 });
+    lane.paint({ label: 'paused jump', binding: binding(rowsAt([{ key: 'A', v: 5 }])), hour: 9, speed: 0 });
+    assert.deepEqual(seen, [null, 10, null, null, null], 'only continuous forward playback supplies it');
+  } finally {
+    recording.restore();
+  }
+});
+
+test('a drawing that expires at a wall-clock time arms the one timer, even while paused, and redraws when it passes', () => {
+  const recording = installRecordingCanvas();
+  const set: number[] = [];
+  const timers = { set: (_fn: () => void, ms: number) => { set.push(ms); return set.length as unknown as ReturnType<typeof setTimeout>; }, clear: () => {} };
+  try {
+    let draws = 0;
+    const holding: LaneFamily<Binding, Model, Layout> = { ...family, paint: (ctx, frame) => { draws++; family.paint(ctx, frame); return frame.now + 500; } };
+    const lane = driveLane(createLaneView(holding, () => {}, { timers }), recording.canvases);
+    const bound = binding(rowsAt([{ key: 'A', v: 1 }]));
+    lane.paint({ label: 'held', binding: bound, hour: 12, speed: 0 });
+    assert.deepEqual([draws, set], [1, [500]], 'one timer for the expiry while paused');
+    lane.paint({ label: 'still held', binding: bound, hour: 12, speed: 0 });
+    assert.deepEqual([draws, set.length], [1, 1], 'no redraw and no second timer before it passes');
+    lane.paint({ label: 'expired', binding: bound, hour: 12, speed: 0, now: 1600 });
+    assert.equal(draws, 2, 'the expired drawing is redrawn');
+  } finally {
     recording.restore();
   }
 });

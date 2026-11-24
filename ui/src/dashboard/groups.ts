@@ -320,15 +320,6 @@ export function worldRequestTags(selection: CountrySelection, fallback: string[]
   return { tags: resolved.tags, ready: reason === null && resolved.tags.length > 0, reason };
 }
 
-export function countryScope(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number,
-  firstHour?: number): MembershipRun[] | null {
-  const filter = countryMatchFilter(selection, fallback, groups, lastHour, undefined, firstHour);
-  if (!filter.membership) return null;
-  const runs = [...filter.membership].sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag));
-  const hidden = [...filter.unobserved].sort((a, b) => a.firstHour - b.firstHour);
-  return hidden.length ? withoutHours(runs, hidden) : runs;
-}
-
 export function countryMatchFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number,
   index?: CountryIdentityIndex | null, firstHour = -2147483648): {
     tags: string[] | null; membership: MembershipRun[] | null; unobserved: HourSpan[];

@@ -1,17 +1,18 @@
 import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
-import { seriesStateProvenInterval, validateRankReply } from '../../charts/race/measureRaceData.ts';
+import { rankProvenInterval, validateRankReply } from '../../charts/race/measureRaceData.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { contentSet } from '../../dashboard/options.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import { countryRowPresentation, formatBarsValueField, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
-import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourceEntry, SourcePlan } from '../../families/contract.ts';
-import { holderTagAt, inHourRanges, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
+import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
+import { groupSelection } from '../../families/groupSelection.ts';
+import { holderTagAt, nextHoldersChange, type HolderRun } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded, valueFromRawBigInt, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
-import type { FactoryGroupsReply, SeriesState, SeriesStateReply } from '../../generated/dashboard';
+import type { FactoryGroupsReply, GroupSelection, SeriesRankReply, SeriesState } from '../../generated/dashboard';
 import { COUNT_MODES, FACTORY_GROUPS, chosenGroups, countMode, damagedMeasure, factoryMeasure, groupName, validateFactoryGroups, type CountMode } from './factoriesData.ts';
 
 const PART_SURFACE = DEFAULT_CARD_SURFACE;
@@ -31,8 +32,7 @@ export interface FactoriesProjectionOptions {
   readonly parts: readonly FactoryPartSpec[];
   readonly damagedSource?: string;
   readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
-  readonly membership?: Readonly<Record<string, HourRanges>> | null;
-  readonly unobserved?: HourRanges;
+  readonly group: boolean;
   readonly top: number | null;
 }
 
@@ -44,66 +44,42 @@ export interface FactoriesRowMeta {
 interface FactoriesExactBase {
   readonly branchId: string;
   readonly measure: string;
+  readonly measures: readonly string[];
   readonly top: number | null;
   readonly tags: readonly string[];
-  readonly membership: Readonly<Record<string, HourRanges>> | null;
+  readonly group: GroupSelection | null;
 }
-
-function partSourceKey(id: string): string {
-  return `part:${id}`;
-}
-
-function damagedSourceKey(id: string): string {
-  return `damaged:${id}`;
-}
-
-const DAMAGED_SOURCE = 'damaged';
 
 function partSpecs(mode: CountMode, types: readonly string[], groups: FactoryGroupsReply | undefined): FactoryPartSpec[] {
   return chosenGroups(types).map(group => ({
     id: group.value,
     label: groupName(group.value, groups),
-    source: partSourceKey(group.value),
-    ...(mode === 'built' ? { damagedSource: damagedSourceKey(group.value) } : {}),
+    source: `${mode}${group.bit}`,
+    ...(mode === 'built' ? { damagedSource: `damaged${group.bit}` } : {}),
     color: colour(PART_SURFACE, FACTORY_GROUPS.indexOf(group)),
   }));
 }
 
-function activeTags(cfg: FactoriesExactBase, hour: number): readonly string[] {
-  return cfg.membership
-    ? cfg.tags.filter(tag => inHourRanges(cfg.membership![tag], hour))
-    : cfg.tags;
-}
-
 function buildFactoriesExactParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
   const cfg = base as unknown as FactoriesExactBase;
-  const family = { kind: 'country-factories', measure: cfg.measure };
-  if (cfg.top != null) return { branchId: cfg.branchId, family, hour, top: cfg.top };
-  const tags = activeTags(cfg, hour);
-  if (!tags.length) return null;
-  return { branchId: cfg.branchId, family, reads: tags.map(tag => ({ country: countryFromKey(tag), hour })), top: tags.length };
-}
-
-function buildPartParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
-  const cfg = base as unknown as FactoriesExactBase;
-  const family = { kind: 'country-factories', measure: cfg.measure };
-  const tags = activeTags(cfg, hour);
-  if (!tags.length) return null;
-  return { branchId: cfg.branchId, family, reads: tags.map(tag => ({ country: countryFromKey(tag), hour })) };
+  const asked = { branchId: cfg.branchId, family: { kind: 'country-factories', measure: cfg.measure }, measures: cfg.measures, hour };
+  if (cfg.top != null) return { ...asked, top: cfg.top };
+  if (cfg.group) return { ...asked, group: cfg.group };
+  return cfg.tags.length ? { ...asked, countries: cfg.tags.map(countryFromKey) } : null;
 }
 
 const PART_NOT_READ = 'Not recorded at this hour';
 
 type PanelIndex = (source: string) => ReadonlyMap<string, SeriesState> | null;
 
-function panelIndex(readView: BoundedReadView): PanelIndex {
+function panelIndex(reply: SeriesRankReply): PanelIndex {
   const held = new Map<string, ReadonlyMap<string, SeriesState> | null>();
-  return source => {
-    let index = held.get(source);
+  return measure => {
+    let index = held.get(measure);
     if (index === undefined) {
-      const panel = readView.panel(source);
-      index = panel === undefined ? null : new Map(validateRankReply(panel).states.map(state => [countryKey(state.country), state]));
-      held.set(source, index);
+      const at = reply.measures.findIndex(asked => asked.name === measure);
+      index = at < 0 ? null : new Map(reply.rows.map(row => [countryKey(row.country), row.readings[at]!]));
+      held.set(measure, index);
     }
     return index;
   };
@@ -132,7 +108,7 @@ function scalarOf(raw: bigint | number): Value<bigint | number> {
 }
 
 function countText(amount: number): string {
-  return formatScalar(amount, { decimals: 0 });
+  return formatScalar(amount, 'integer');
 }
 
 function segment(key: string, label: string, amount: number, total: number, color: string, hatched = false): BarsSegment {
@@ -246,11 +222,7 @@ export const factoriesProjection: BarsProjection<FactoriesProjectionOptions> = r
   family: 'bars',
   nextChange(readView, options) {
     const hour = readView.hour;
-    return Math.min(
-      nextHoldersChange(options.holders, hour),
-      nextRangesChange(options.unobserved, hour),
-      nextMembershipChange(options.membership, hour),
-    );
+    return nextHoldersChange(options.holders, hour);
   },
   project(readView: BoundedReadView, options: FactoriesProjectionOptions): BarsModel {
     const hour = readView.hour;
@@ -263,42 +235,26 @@ export const factoriesProjection: BarsProjection<FactoriesProjectionOptions> = r
       scaleFormat: { decimals: 0 },
     };
 
-    if (options.top == null && options.unobserved?.some(([first, last]) => first <= hour && hour <= last)) {
-      return {
-        ...baseModel,
-        rows: [],
-        empty: 'Group membership is unavailable at this time.',
-        emptyKind: 'unavailable',
-      };
-    }
-
-    if (options.top == null && options.membership && !Object.values(options.membership).some(ranges => inHourRanges(ranges, hour))) {
-      return { ...baseModel, rows: [], empty: 'No country of this group at this date.', emptyKind: 'empty' };
-    }
-
     const panel = readView.panel('main');
     if (panel !== undefined) {
-      const reply: SeriesStateReply = validateRankReply(panel);
-      const index = panelIndex(readView);
+      const reply = validateRankReply(panel);
+      if (!reply.rows.length && reply.refused) return { ...baseModel, rows: [], empty: reply.refused, emptyKind: 'unavailable' };
+      const index = panelIndex(reply);
       const rows: BarsDataRow[] = [];
-      for (const state of reply.states) {
-        const key = countryKey(state.country);
+      for (const row of reply.rows) {
+        const state = row.readings[0]!;
+        const key = countryKey(row.country);
         const displayTag = options.holders ? (holderTagAt(options.holders[key], hour) ?? key) : key;
-        if (options.top == null && options.membership) {
-          const inMember = inHourRanges(options.membership[key], hour) || inHourRanges(options.membership[displayTag], hour);
-          if (!inMember) continue;
-        }
         const value = valueFromRawBigInt(
           state.run?.valueRaw ?? null,
           { kind: 'notRecorded', reason: state.missing ?? 'Not recorded at this hour' },
         );
         rows.push(makeRow(readView, index, key, displayTag, key, value, options));
       }
-      const ordered = [...rows.filter(row => row.numeric != null), ...rows.filter(row => row.numeric == null)];
       return {
         ...baseModel,
-        rows: ordered,
-        ...(!ordered.length ? { empty: 'No factories recorded at this date.', emptyKind: 'empty' as const } : {}),
+        rows,
+        ...(!rows.length ? { empty: options.group ? 'No country of this group at this date.' : 'No factories recorded at this date.', emptyKind: 'empty' as const } : {}),
       };
     }
     const refused = readView.refused('main');
@@ -314,42 +270,36 @@ function factoriesSources(ctx: FamilyPlanContext<FactoryGroupsReply>): SourcePla
   const top = ctx.countries.top;
   const split = ctx.options.split === true;
   const owner = `factories:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${measureName}:${split ? 1 : 0}`;
+  const group = top != null ? null : groupSelection(ctx.widget.countries);
   const coverage: SourceCoverage = top != null
     ? { mode: 'population', form: 'top', limit: top }
-    : { mode: 'keyed', keys: ctx.countries.tags };
-  const tags = top != null ? ctx.countries.every : ctx.countries.tags;
-  const membership = top != null ? null : ctx.countries.membership;
-  const read = (name: string, base: FactoriesExactBase, build: typeof buildFactoriesExactParams): SourceEntry => ({
-    name,
-    source: ctx.track.source,
-    branch: ctx.branch.id,
-    offset: ctx.track.axisOffset,
-    read: {
-      shape: 'point',
-      channel: 'followed',
-      coverage,
-      product: 'series-state',
-      exactProduct: 'series-state',
-      followQuery: null,
-      params: base as unknown as Readonly<Record<string, unknown>>,
-      buildExactParams: build,
-      dynamicKeys: ['hour', 'reads'],
-      ...(base.top == null ? { provenInterval: seriesStateProvenInterval } : {}),
-      validate: validateRankReply,
-    },
-  });
-  const main = read('main', { branchId: ctx.branch.id, measure: measureName, top, tags, membership }, buildFactoriesExactParams);
-  const entries: SourceEntry[] = [main];
-  const part = (name: string, measure: string) => read(name, { branchId: ctx.branch.id, measure, top: null, tags, membership }, buildPartParams);
-  if (split) {
-    for (const group of chosenGroups(types)) {
-      entries.push(part(partSourceKey(group.value), `${mode}${group.bit}`));
-      if (mode === 'built') entries.push(part(damagedSourceKey(group.value), `damaged${group.bit}`));
-    }
-  } else if (mode === 'built') {
-    entries.push(part(DAMAGED_SOURCE, damagedMeasure(types)));
-  }
-  return { owner, entries };
+    : group ? { mode: 'population', form: 'all' } : { mode: 'keyed', keys: ctx.countries.tags };
+  const measures = split
+    ? chosenGroups(types).flatMap(group => [`${mode}${group.bit}`, ...(mode === 'built' ? [`damaged${group.bit}`] : [])])
+    : mode === 'built' ? [damagedMeasure(types)] : [];
+  const base: FactoriesExactBase = { branchId: ctx.branch.id, measure: measureName, measures, top, tags: top != null || group ? [] : ctx.countries.tags, group };
+  return {
+    owner,
+    entries: [{
+      name: 'main',
+      source: ctx.track.source,
+      branch: ctx.branch.id,
+      offset: ctx.track.axisOffset,
+      read: {
+        shape: 'point',
+        channel: 'followed',
+        coverage,
+        product: 'series-rank',
+        exactProduct: 'series-rank',
+        followQuery: null,
+        params: base as unknown as Readonly<Record<string, unknown>>,
+        buildExactParams: buildFactoriesExactParams,
+        dynamicKeys: ['hour', 'countries'],
+        provenInterval: rankProvenInterval,
+        validate: validateRankReply,
+      },
+    }],
+  };
 }
 
 export const factoriesDeclaration: BarsWidgetDeclaration<FactoriesProjectionOptions, FactoryGroupsReply> = {
@@ -364,8 +314,6 @@ export const factoriesDeclaration: BarsWidgetDeclaration<FactoriesProjectionOpti
     labels: true,
     colours: true,
     allowSlots: true,
-    everyOnTop: true,
-    requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
   },
   aux: {
     product: 'factory-groups',
@@ -384,15 +332,14 @@ export const factoriesDeclaration: BarsWidgetDeclaration<FactoriesProjectionOpti
       modeLabel: `Factories, ${modeTitle}`,
       split: ctx.options.split === true,
       parts: partSpecs(mode, types, ctx.aux),
-      ...(mode === 'built' ? { damagedSource: DAMAGED_SOURCE } : {}),
+      ...(mode === 'built' ? { damagedSource: damagedMeasure(types) } : {}),
       holders: top == null ? ctx.countries.holders : null,
-      membership: top == null ? ctx.countries.membership : null,
-      unobserved: top == null ? ctx.countries.unobserved : [],
+      group: top == null && groupSelection(ctx.widget.countries) !== null,
       top,
     };
   },
   unavailable: ctx => {
-    if (ctx.countries.top == null && ctx.following && !ctx.countries.tags.length && ctx.countries.membership === null) {
+    if (ctx.countries.top == null && ctx.following && !ctx.countries.tags.length && !groupSelection(ctx.widget.countries)) {
       return 'No countries available for this selection.';
     }
     return null;
