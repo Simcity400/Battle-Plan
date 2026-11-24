@@ -307,7 +307,7 @@ fn army_breakdown_excludes_records_first_seen_after_hour_reports_next_change_and
     assert_eq!(slot9.runs.first().unwrap().first_hour, 120);
     assert_eq!(slot9.runs.first().unwrap().raw, "5");
 
-    let asked = serde_json::to_value(ArmyAtParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], top: None, count_for: ArmyAttribution::Owner }).unwrap();
+    let asked = serde_json::to_value(ArmyAtParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], top: None, group: None, count_for: ArmyAttribution::Owner }).unwrap();
     let panel = dashboard_base::products::at_hour::exact_panel::<ArmyAt>(&src, &ctx, &asked).unwrap();
     let hover115 = (panel.exact().unwrap().cold)(115, &AtomicBool::new(false)).unwrap();
     assert_eq!(hover115["rows"][0]["total"], 3, "earlier hover reads hour 115 rather than playhead total 7");

@@ -32,7 +32,7 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'production-spending', load: () => import('./production-spending') },
   { kind: 'raid-log', load: () => import('./raid-log') },
   { kind: 'raid-tally', load: () => import('./raid-tally') },
-  { kind: 'resource-balance', load: () => import('./resource-balance') },
+  { kind: 'resource-balance', view: 'time', label: 'Time', load: () => import('./resource-balance') },
   { kind: 'ships-sunk', load: () => import('./ships-sunk') },
   { kind: 'territory', load: () => import('./territory') },
 ];
