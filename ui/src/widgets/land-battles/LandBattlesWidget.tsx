@@ -7,6 +7,7 @@ import type { BattleLabels, BattleMeasure, BattleSideSummary } from '../battles/
 import { definition } from './definition';
 import LandBattleList from './LandBattleList';
 import CombatLogDetails from './CombatLogDetails';
+import { peakValue } from './landBattleCourse';
 import { rankedLandBattleRows, landBattleChanges, landBattleRow, landBattleRows, landWindowPlaces, validateLandBattlesReply, validateLandBattlesManifest, validateLandBattlesRanking,
   casualtyRankingNote, landCasualtiesMissing, landCasualtyText, landDivisionText, landLossText } from './landBattlesData.ts';
 import type { LandBattleRow, LandBattlesRanking, LandBattlesWindow } from './landBattlesData';
@@ -19,8 +20,7 @@ const MEASURES: readonly BattleMeasure<LandBattleRow>[] = [
   { label: 'Casualties', title: 'Casualties', value: row => row.casualties,
     format: (value, row) => landCasualtyText(value, row), tooltipFormat: (value, row) => landCasualtyText(value, row, true) },
   { label: 'Peak size', title: 'Peak divisions', hint: 'Most divisions at once, including reserves.',
-    value: row => row.peakUnknown ? { label: 'Peak size', value: null, unknown: 'Roster not recorded' }
-      : { label: 'Peak size', value: row.peak.value, atLeast: row.start?.bound === 'by' || row.end !== null && 'unknown' in row.end },
+    value: peakValue,
     format: value => battleValueText(value), tooltipFormat: (value, row) => value.value === null ? value.unknown : `${battleValueText(value)} at ${formatDateTime(row.peak.hour)}` },
   { label: 'Length', title: 'Length', value: row => row.length, format: value => value.value === null ? value.unknown : `${battleValueText(value)} h` },
 ];

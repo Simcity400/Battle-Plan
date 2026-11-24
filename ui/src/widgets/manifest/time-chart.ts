@@ -1,6 +1,7 @@
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type FamilyViewModule } from '../../families/manifest.ts';
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
+import { LINES_VIEW_OPTIONS } from '../../dashboard/lineChartOptions.ts';
 import { OPTIONS as ARMY_SIZE_OPTIONS } from '../army-size/definition.ts';
 import { OPTIONS as DOCKYARD_OPTIONS } from '../dockyard-spending/definition.ts';
 import { TIME_OPTIONS as STOCKPILE_TIME_OPTIONS } from '../equipment-stockpile/definition.ts';
@@ -33,6 +34,7 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     view: 'lines',
     label: 'Lines',
     family: 'time-chart',
+    options: LINES_VIEW_OPTIONS,
     viewOption: 'view',
     loadSpec: timeChartSpec(
       'air-force-size',
@@ -82,6 +84,7 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     view: 'lines',
     label: 'Lines',
     family: 'time-chart',
+    options: LINES_VIEW_OPTIONS,
     viewOption: 'view',
     loadSpec: timeChartSpec(
       'army-size',
@@ -145,6 +148,7 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     view: 'lines',
     label: 'Lines',
     family: 'time-chart',
+    options: LINES_VIEW_OPTIONS,
     viewOption: 'view',
     loadSpec: timeChartSpec(
       'factories',
@@ -183,6 +187,7 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     view: 'lines',
     label: 'Lines',
     family: 'time-chart',
+    options: LINES_VIEW_OPTIONS,
     viewOption: 'view',
     loadSpec: timeChartSpec(
       'navy-size',
@@ -210,6 +215,7 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     view: 'lines',
     label: 'Lines',
     family: 'time-chart',
+    options: LINES_VIEW_OPTIONS,
     viewOption: 'view',
     loadSpec: timeChartSpec(
       'occupation-trend',
