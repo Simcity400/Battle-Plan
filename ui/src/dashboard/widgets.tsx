@@ -11,6 +11,7 @@ import { scopeReason } from './widgetAvailability';
 import { DEFAULT_MAP_OPTIONS } from './mapPicker';
 import { RegionContext, useRegion, useRegionScope } from './widgetTime';
 import DeclaredTableWidget from '../families/table/DeclaredTableWidget';
+import DeclaredTimelineWidget from '../families/timeline/DeclaredTimelineWidget';
 
 export type { WidgetRuntime } from './definitions';
 
@@ -47,8 +48,11 @@ export function WidgetBody({ widget, runtime, active = true, mapOptions, headerS
       {Render
         ? <Render widget={resolved} runtime={runtime} active={active} mapOptions={mapOptions ?? DEFAULT_MAP_OPTIONS} headerSlot={headerSlot ?? null} countrySlot={countrySlot ?? null}
             onDiagnostics={onDiagnostics ?? noDiagnostics} setOption={setOption} setOptions={setOptions} />
-        : <DeclaredTableWidget declaration={declaration!} widget={resolved} runtime={runtime} active={active} mapOptions={mapOptions ?? DEFAULT_MAP_OPTIONS} headerSlot={headerSlot ?? null} countrySlot={countrySlot ?? null}
-            onDiagnostics={onDiagnostics ?? noDiagnostics} setOption={setOption} setOptions={setOptions} />}
+        : declaration!.family === 'timeline'
+          ? <DeclaredTimelineWidget declaration={declaration!} widget={resolved} runtime={runtime} active={active} mapOptions={mapOptions ?? DEFAULT_MAP_OPTIONS} headerSlot={headerSlot ?? null} countrySlot={countrySlot ?? null}
+              onDiagnostics={onDiagnostics ?? noDiagnostics} setOption={setOption} setOptions={setOptions} />
+          : <DeclaredTableWidget declaration={declaration!} widget={resolved} runtime={runtime} active={active} mapOptions={mapOptions ?? DEFAULT_MAP_OPTIONS} headerSlot={headerSlot ?? null} countrySlot={countrySlot ?? null}
+              onDiagnostics={onDiagnostics ?? noDiagnostics} setOption={setOption} setOptions={setOptions} />}
     </WidgetBoundary>
   </RegionContext.Provider>;
 }

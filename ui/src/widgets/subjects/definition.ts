@@ -9,14 +9,13 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'ended', section: 'options', label: 'Former subjects', kind: 'choice', default: 'shown',
     choices: [{ value: 'shown', label: 'Shown' }, { value: 'hidden', label: 'Hidden' }] },
   { key: 'names', section: 'options', label: 'Level names in bars', kind: 'toggle', default: true },
-  { key: 'legend', section: 'options', label: 'Level colours above the timeline', kind: 'toggle', default: true },
-  { key: 'grow', section: 'axes', label: 'Grow with playback', kind: 'toggle', default: false },
 ];
 
 export const definition = {
   kind: 'subjects', version: 1, title: 'Subjects', icon: 'hierarchy',
   description: 'Every overlord and its subjects over time, coloured by subject level.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
+  playsBackDated: true,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 8, h: 10 },
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   options: OPTIONS,

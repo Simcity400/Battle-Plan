@@ -1,5 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import { useFactionChoices } from '../../dashboard/factionChoice';
-import FactionUpgradesWidget from './FactionUpgradesWidget';
+import FactionUpgradesView from './FactionUpgradesView';
 
-export default { render: FactionUpgradesWidget, useOptionChoices: useFactionChoices } satisfies WidgetRenderer;
+export default { render: FactionUpgradesView } satisfies WidgetRenderer;

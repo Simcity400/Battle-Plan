@@ -22,7 +22,8 @@ import {
   NOT_APPLICABLE_LABEL,
   notRecordedLabel,
 } from '../families/valueFormat.ts';
-import { parseColor } from '../shell/appearance/color.ts';
+import { isDark, mix, parseColor } from '../shell/appearance/color.ts';
+import { formatDay, gameDate, monthNames, engineHour } from '../dashboard/calendar.ts';
 import type { KitRaster, PathBuilder, PathPaint } from './path';
 
 export type Align = 'left' | 'right' | 'center';
@@ -969,4 +970,460 @@ export function drawDateTab(
   ctx.fillText(text, x + width / 2, y + height / 2);
   ctx.restore();
   return { x, y, width, height };
+}
+
+export const TIMELINE_BAR_ICON_MIN_WIDTH = 22;
+export const TIMELINE_AXIS_HEIGHT = 22;
+export const TIMELINE_NOTCH_DEPTH = 6;
+export const TIMELINE_FADE_WIDTH = 12;
+
+export function contrastInkForFill(fill: string, theme: FamilyTheme): string {
+  const rgb = parseColor(fill);
+  if (!rgb) return theme.text;
+  return isDark(rgb) ? '#f4f6f9' : '#0f141c';
+}
+
+export function drawChevron(
+  ctx: Canvas2D,
+  x: number,
+  middleY: number,
+  open: boolean,
+  color: string,
+  size = 10,
+): void {
+  const half = size * 0.28;
+  const cx = x + size / 2;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.4;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  if (open) {
+    ctx.moveTo(cx - half, middleY - half * 0.55);
+    ctx.lineTo(cx, middleY + half * 0.65);
+    ctx.lineTo(cx + half, middleY - half * 0.55);
+  } else {
+    ctx.moveTo(cx - half * 0.55, middleY - half);
+    ctx.lineTo(cx + half * 0.65, middleY);
+    ctx.lineTo(cx - half * 0.55, middleY + half);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+export interface TimelineSpanBarOptions {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly fill: string;
+  readonly theme: FamilyTheme;
+  readonly openAtPlayhead?: boolean;
+  readonly heldBefore?: boolean;
+  readonly fadedStart?: boolean;
+  readonly fadedEnd?: boolean;
+  readonly ended?: boolean;
+  readonly radius?: number;
+  readonly icon?: ArtSlotState;
+  readonly iconSize?: number;
+  readonly label?: string;
+  readonly hatched?: boolean;
+}
+
+export function drawTimelineSpanBar(
+  ctx: Canvas2D,
+  options: TimelineSpanBarOptions,
+): { readonly showedIcon: boolean; readonly showedLabel: boolean } {
+  const { x, y, width, height, theme } = options;
+  if (width <= 0 || height <= 0) return { showedIcon: false, showedLabel: false };
+  const radius = options.radius ?? 2.5;
+  const effectiveFill = options.ended ? mix(options.fill, theme.surface, 0.5) : options.fill;
+  const notch = options.heldBefore && width >= TIMELINE_NOTCH_DEPTH + 2 ? Math.min(TIMELINE_NOTCH_DEPTH, height * 0.42) : 0;
+  const rLeft = notch > 0 || options.fadedStart ? 0 : Math.min(radius, width / 2, height / 2);
+  const rRight = options.openAtPlayhead || options.fadedEnd ? 0 : Math.min(radius, width / 2, height / 2);
+
+  if (options.hatched) {
+    drawHatchRect(ctx, x, y, width, height, Math.max(rLeft, rRight), theme);
+    return { showedIcon: false, showedLabel: false };
+  }
+
+  const tracePath = () => {
+    ctx.beginPath();
+    if (notch > 0) {
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + width - rRight, y);
+      if (rRight > 0) ctx.quadraticCurveTo(x + width, y, x + width, y + rRight);
+      ctx.lineTo(x + width, y + height - rRight);
+      if (rRight > 0) ctx.quadraticCurveTo(x + width, y + height, x + width - rRight, y + height);
+      ctx.lineTo(x, y + height);
+      ctx.lineTo(x + notch, y + height / 2);
+      ctx.closePath();
+    } else {
+      ctx.roundRect(x, y, width, height, [rLeft, rRight, rRight, rLeft]);
+    }
+  };
+
+  ctx.save();
+  tracePath();
+  if ((options.fadedStart || options.fadedEnd) && width > 2) {
+    const grad = ctx.createLinearGradient(x, 0, x + width, 0);
+    const fadeW = Math.min(TIMELINE_FADE_WIDTH, width * 0.45);
+    const leftStop = options.fadedStart ? fadeW / width : 0;
+    const rightStop = options.fadedEnd ? 1 - fadeW / width : 1;
+    if (options.fadedStart) {
+      grad.addColorStop(0, rgba(effectiveFill, 0, 'rgba(0,0,0,0)'));
+      grad.addColorStop(Math.max(0.01, Math.min(0.99, leftStop)), effectiveFill);
+    } else {
+      grad.addColorStop(0, effectiveFill);
+    }
+    if (options.fadedEnd) {
+      grad.addColorStop(Math.max(0.01, Math.min(0.99, rightStop)), effectiveFill);
+      grad.addColorStop(1, rgba(effectiveFill, 0, 'rgba(0,0,0,0)'));
+    } else {
+      grad.addColorStop(1, effectiveFill);
+    }
+    ctx.fillStyle = grad;
+  } else {
+    ctx.fillStyle = effectiveFill;
+  }
+  ctx.fill();
+
+  let showedIcon = false;
+  let showedLabel = false;
+  if (width >= TIMELINE_BAR_ICON_MIN_WIDTH) {
+    const padLeft = notch > 0 ? notch + 5 : 4;
+    let cursor = x + padLeft;
+    const rightLimit = x + width - 4;
+    if (options.icon && options.icon.kind !== 'none') {
+      const iconSize = Math.min(options.iconSize ?? height, height);
+      const drawSize = options.icon.kind === 'missing' ? Math.min(14, iconSize) : iconSize;
+      if (cursor + drawSize <= rightLimit + 2) {
+        drawArtSlot(ctx, cursor, y + (height - drawSize) / 2, drawSize, drawSize, options.icon, theme, { radius: 2 });
+        cursor += drawSize + 6;
+        showedIcon = true;
+      }
+    }
+    if (options.label && rightLimit - cursor >= 14) {
+      const fontSize = Math.min(11.5, Math.max(9.5, height - 3));
+      const font = `500 ${fontSize}px ${theme.font}`;
+      ctx.font = font;
+      const avail = rightLimit - cursor;
+      const fitted = ellipsise(options.label, avail, s => textWidth(ctx, s));
+      if (fitted && fitted !== '\u2026') {
+        ctx.fillStyle = contrastInkForFill(effectiveFill, theme);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(fitted, cursor, y + height / 2 + 0.5);
+        showedLabel = true;
+      }
+    }
+  }
+  ctx.restore();
+  return { showedIcon, showedLabel };
+}
+
+export interface SplitWarBarOptions {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly topFill: string;
+  readonly bottomFill: string;
+  readonly theme: FamilyTheme;
+  readonly openAtPlayhead?: boolean;
+  readonly expanded?: boolean;
+  readonly ended?: boolean;
+}
+
+export function drawSplitWarBar(ctx: Canvas2D, options: SplitWarBarOptions): { readonly diamond: boolean } {
+  const { x, y, width, height, theme } = options;
+  if (height <= 0) return { diamond: false };
+  const topColor = options.ended ? mix(options.topFill, theme.surface, 0.45) : options.topFill;
+  const bottomColor = options.ended ? mix(options.bottomFill, theme.surface, 0.45) : options.bottomFill;
+  const midY = y + height / 2;
+
+  ctx.save();
+  if (options.expanded) {
+    const ruleW = Math.max(2, width);
+    ctx.fillStyle = topColor;
+    ctx.globalAlpha = 0.65;
+    ctx.fillRect(x, Math.round(midY) - 1, ruleW, 2);
+    ctx.restore();
+    return { diamond: false };
+  }
+
+  if (width < 12) {
+    const r = 6;
+    const cx = x + Math.max(0, width) / 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, midY - r);
+    ctx.lineTo(cx + r, midY);
+    ctx.lineTo(cx - r, midY);
+    ctx.closePath();
+    ctx.fillStyle = topColor;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(cx - r, midY);
+    ctx.lineTo(cx + r, midY);
+    ctx.lineTo(cx, midY + r);
+    ctx.closePath();
+    ctx.fillStyle = bottomColor;
+    ctx.fill();
+    ctx.restore();
+    return { diamond: true };
+  }
+
+  const gap = 1;
+  const halfH = Math.max(2, Math.floor((Math.min(13, height) - gap) / 2));
+  const topY = Math.round(midY - halfH - gap / 2);
+  const botY = topY + halfH + gap;
+  const rr = options.openAtPlayhead ? [2, 0, 0, 2] : [2, 2, 2, 2];
+
+  ctx.fillStyle = topColor;
+  ctx.beginPath();
+  ctx.roundRect(x, topY, width, halfH, rr);
+  ctx.fill();
+
+  ctx.fillStyle = bottomColor;
+  ctx.beginPath();
+  ctx.roundRect(x, botY, width, halfH, rr);
+  ctx.fill();
+
+  ctx.restore();
+  return { diamond: false };
+}
+
+export interface BottomTimeAxisTick {
+  readonly hour: number;
+  readonly label: string;
+}
+
+export function computeTimelineTicks(startHour: number, endHour: number, plotWidth: number): BottomTimeAxisTick[] {
+  const spanHours = Math.max(1, endHour - startHour);
+  const start = gameDate(Math.floor(startHour));
+  const end = gameDate(Math.floor(endHour));
+  if (!start || !end || plotWidth <= 20) return [];
+  const ticks: BottomTimeAxisTick[] = [];
+  const twoYearsHours = 2 * 365 * 24;
+  if (spanHours < twoYearsHours) {
+    const monthsSpan = Math.max(1, (end.year - start.year) * 12 + (end.month - start.month) + 1);
+    const maxLabels = Math.max(2, Math.floor(plotWidth / 58));
+    const step = monthsSpan <= maxLabels ? 1 : monthsSpan <= maxLabels * 3 ? 3 : 6;
+    let y = start.year;
+    let m = start.month;
+    while (y < end.year || (y === end.year && m <= end.month)) {
+      const h = engineHour({ year: y, month: m, day: 1, hour: 1 });
+      if (h !== null && h >= startHour && h <= endHour) {
+        const short = monthNames[m - 1]!.slice(0, 3);
+        const label = m === 1 || ticks.length === 0 ? `${short} ${y}` : short;
+        ticks.push({ hour: h, label });
+      }
+      m += step;
+      while (m > 12) { m -= 12; y++; }
+    }
+    return ticks;
+  }
+  const yearsSpan = Math.max(1, end.year - start.year + 1);
+  const maxLabels = Math.max(2, Math.floor(plotWidth / 48));
+  const step = yearsSpan <= maxLabels ? 1 : yearsSpan <= maxLabels * 2 ? 2 : yearsSpan <= maxLabels * 5 ? 5 : 10;
+  const firstYear = start.month === 1 && start.day === 1 ? start.year : start.year + 1;
+  for (let y = firstYear; y <= end.year; y += step) {
+    const h = engineHour({ year: y, month: 1, day: 1, hour: 1 });
+    if (h !== null && h >= startHour && h <= endHour) {
+      ticks.push({ hour: h, label: String(y) });
+    }
+  }
+  return ticks;
+}
+
+export interface BottomTimeAxisOptions {
+  readonly plotLeft: number;
+  readonly plotRight: number;
+  readonly plotTop: number;
+  readonly axisTop: number;
+  readonly startHour: number;
+  readonly endHour: number;
+  readonly playheadHour: number | null;
+  readonly theme: FamilyTheme;
+  readonly drawGridlines?: boolean;
+}
+
+export function drawBottomTimeAxis(
+  ctx: Canvas2D,
+  options: BottomTimeAxisOptions,
+): { readonly ticks: readonly BottomTimeAxisTick[]; readonly playheadX: number | null } {
+  const { plotLeft, plotRight, plotTop, axisTop, startHour, endHour, playheadHour, theme } = options;
+  const plotWidth = Math.max(1, plotRight - plotLeft);
+  const span = Math.max(1, endHour - startHour);
+  const toX = (hour: number) => plotLeft + ((hour - startHour) / span) * plotWidth;
+  const tokens = resolveKitTokens(theme);
+  const ticks = computeTimelineTicks(startHour, endHour, plotWidth);
+
+  ctx.save();
+  if (options.drawGridlines !== false) {
+    ctx.strokeStyle = tokens.gridLine;
+    ctx.lineWidth = 1;
+    for (const tick of ticks) {
+      const x = Math.floor(toX(tick.hour)) + 0.5;
+      if (x <= plotLeft + 1 || x >= plotRight - 1) continue;
+      ctx.beginPath();
+      ctx.moveTo(x, plotTop);
+      ctx.lineTo(x, axisTop);
+      ctx.stroke();
+    }
+  }
+
+  drawRowHairline(ctx, plotLeft, plotRight, axisTop, theme, 'strong');
+
+  ctx.font = `400 10.5px ${theme.font}`;
+  ctx.fillStyle = theme.muted;
+  ctx.textBaseline = 'middle';
+  const labelY = axisTop + TIMELINE_AXIS_HEIGHT / 2 + 1;
+
+  let playheadX: number | null = null;
+  let tabLeft = Infinity;
+  let tabRight = -Infinity;
+  let tabText = '';
+  let tabW = 0;
+
+  if (playheadHour !== null && playheadHour >= startHour && playheadHour <= endHour) {
+    playheadX = toX(playheadHour);
+    tabText = formatDay(Math.floor(playheadHour));
+    ctx.font = `600 11px ${theme.font}`;
+    tabW = Math.ceil(textWidth(ctx, tabText) + 12);
+    const clampedX = Math.max(plotLeft, Math.min(plotRight - tabW, Math.round(playheadX - tabW / 2)));
+    tabLeft = clampedX - 4;
+    tabRight = clampedX + tabW + 4;
+  }
+
+  ctx.font = `400 10.5px ${theme.font}`;
+  ctx.fillStyle = theme.muted;
+  ctx.textAlign = 'center';
+  for (const tick of ticks) {
+    const x = toX(tick.hour);
+    const halfW = textWidth(ctx, tick.label) / 2;
+    if (x - halfW < plotLeft - 2 || x + halfW > plotRight + 2) continue;
+    if (x + halfW > tabLeft && x - halfW < tabRight) continue;
+    ctx.fillText(tick.label, x, labelY);
+  }
+
+  if (playheadX !== null) {
+    const px = Math.floor(playheadX) + 0.5;
+    ctx.strokeStyle = tokens.dark ? 'rgba(255, 255, 255, 0.55)' : 'rgba(15, 23, 42, 0.55)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(px, plotTop);
+    ctx.lineTo(px, axisTop);
+    ctx.stroke();
+
+    const tabH = 16;
+    const tabX = Math.max(plotLeft, Math.min(plotRight - tabW, Math.round(playheadX - tabW / 2)));
+    const tabY = Math.round(axisTop + (TIMELINE_AXIS_HEIGHT - tabH) / 2);
+    ctx.fillStyle = tokens.dark ? '#1e1e1e' : tokens.raised;
+    ctx.beginPath();
+    ctx.roundRect(tabX, tabY, tabW, tabH, 3);
+    ctx.fill();
+    ctx.strokeStyle = tokens.hairlineStrong;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(tabX + 0.5, tabY + 0.5, Math.max(0, tabW - 1), tabH - 1, 3);
+    ctx.stroke();
+    ctx.font = `600 11px ${theme.font}`;
+    ctx.fillStyle = theme.text;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(tabText, tabX + tabW / 2, tabY + tabH / 2 + 0.5);
+  }
+
+  ctx.restore();
+  return { ticks, playheadX };
+}
+
+export function drawThresholdMeter(
+  ctx: Canvas2D,
+  x: number,
+  middleY: number,
+  width: number,
+  height: number,
+  fraction: number | null,
+  fill: string,
+  theme: FamilyTheme,
+): void {
+  if (width <= 0 || height <= 0) return;
+  const tokens = resolveKitTokens(theme);
+  const y = Math.round(middleY - height / 2);
+  ctx.save();
+  if (fraction === null) {
+    drawHatchRect(ctx, x, y, width, height, 2, theme);
+  } else {
+    const clamped = Math.max(0, Math.min(1, fraction));
+    ctx.fillStyle = tokens.barTrack;
+    ctx.beginPath();
+    ctx.roundRect(x, y, width, height, 2);
+    ctx.fill();
+    if (clamped > 0) {
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.roundRect(x, y, Math.max(2, width * clamped), height, 2);
+      ctx.fill();
+    }
+  }
+  const tickExtend = 2.5;
+  ctx.strokeStyle = tokens.hairlineStrong;
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(x + 0.6, y - tickExtend);
+  ctx.lineTo(x + 0.6, y + height + tickExtend);
+  ctx.moveTo(x + width - 0.6, y - tickExtend);
+  ctx.lineTo(x + width - 0.6, y + height + tickExtend);
+  ctx.stroke();
+  ctx.restore();
+}
+
+export function drawSparkline(
+  ctx: Canvas2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  points: readonly (number | null)[],
+  color: string,
+  theme: FamilyTheme,
+): void {
+  if (width <= 4 || height <= 4 || points.length < 2) return;
+  const tokens = resolveKitTokens(theme);
+  ctx.save();
+  ctx.strokeStyle = tokens.hairline;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x, y + height - 0.5);
+  ctx.lineTo(x + width, y + height - 0.5);
+  ctx.stroke();
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.4;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  let drawing = false;
+  const step = width / (points.length - 1);
+  for (let i = 0; i < points.length; i++) {
+    const v = points[i];
+    if (v === null || v === undefined || !Number.isFinite(v)) {
+      drawing = false;
+      continue;
+    }
+    const px = x + i * step;
+    const py = y + (1 - Math.max(0, Math.min(1, v))) * (height - 2) + 1;
+    if (!drawing) {
+      ctx.moveTo(px, py);
+      drawing = true;
+    } else {
+      ctx.lineTo(px, py);
+    }
+  }
+  ctx.stroke();
+  ctx.restore();
 }

@@ -12,6 +12,9 @@ import type { Failure } from './queryError';
 import type { PinnedSpec } from './regionTime';
 import type { DeclaredProduct } from './request';
 import type { AnyTableWidgetDeclaration } from '../families/table/declaration';
+import type { AnyTimelineWidgetDeclaration } from '../families/timeline/declaration';
+
+export type AnyWidgetDeclaration = AnyTableWidgetDeclaration | AnyTimelineWidgetDeclaration;
 
 export interface WidgetRuntime {
   campaignTracks: TrackSpec[];
@@ -100,7 +103,7 @@ export type WidgetCountryChipProps = Pick<WidgetProps, 'widget' | 'runtime' | 'a
 
 export interface WidgetDefinition extends WidgetMeta {
   render?: ComponentType<WidgetProps>;
-  declaration?: AnyTableWidgetDeclaration;
+  declaration?: AnyWidgetDeclaration;
   usePresets?: (definition: WidgetMeta, runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean) => WidgetPresets;
   useOptionChoices?: (widget: WidgetSpec, runtime: WidgetRuntime) => OptionChoices;
   countryChip?: ComponentType<WidgetCountryChipProps>;

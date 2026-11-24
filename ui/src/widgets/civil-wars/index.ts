@@ -1,4 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import CivilWarsWidget from './CivilWarsWidget';
+import { civilWarsDeclaration } from './civilWarsProjection';
 
-export default { render: CivilWarsWidget } satisfies WidgetRenderer;
+export default { declaration: civilWarsDeclaration } satisfies WidgetRenderer;
