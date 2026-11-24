@@ -480,10 +480,15 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
     assert.equal(first.motion, false);
     const auditField = first.fields.audit?.value as { id: number; rows: readonly { row: string; key: string; value?: string }[] };
     assert.equal(auditField.id, 7);
-    const exact = (scrollTop: number) => barsHostAdapter.deriveAuditRows!({ form: 'ordered', hour: h, rows: rows1500 }, h, {
-      viewport: { width: 480, height: 240, dpr: 1, scrollLeft: 0, scrollTop, zoomWindow: null }, settings: undefined, expanded: {}, theme: THEME, fields: {},
+    const painted = Object.fromEntries(Object.entries(first.fields).map(([slot, field]) => [slot, (field as { value: unknown }).value]));
+    const exact = (scrollTop: number, height = 240) => barsHostAdapter.deriveAuditRows!({ form: 'ordered', hour: h, rows: rows1500 }, h, {
+      viewport: { width: 480, height, dpr: 1, scrollLeft: 0, scrollTop, zoomWindow: null }, settings: undefined, expanded: {}, theme: THEME, fields: painted,
     });
     assert.deepEqual(auditField.rows, exact(0), 'the installed window and the exact read at the same scroll agree');
+    assert.deepEqual(exact(0, 400), auditField.rows, 'the exact audit reads the painted geometry; it never lays the chart out again');
+    assert.deepEqual(barsHostAdapter.deriveAuditRows!({ form: 'ordered', hour: h, rows: rows1500 }, h, {
+      viewport: { width: 480, height: 240, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null }, settings: undefined, expanded: {}, theme: THEME, fields: {},
+    }), [], 'with no installed picture nothing is certified as painted');
     assert.ok(new Set(auditField.rows.map(row => row.row)).size < 20, 'a ten-row viewport audits its visible rows, not 1,500 countries');
     assert.notDeepEqual(exact(600), auditField.rows, 'a picture scrolled to the wrong window fails its audit');
     const mirror = deriveBarsMirror({ form: 'ordered', hour: h, rows: rows1500 }, { first: 0, count: 10 });
@@ -712,6 +717,37 @@ test('a measure list sits left of the butterfly: the body moves right, a list ro
   assert.deepEqual(pickNav(pickList).map(item => item[0]), ['pick:one', 'pick:two']);
   assert.ok(pickAudit(pickList).some(row => row.row === 'pick:two' && JSON.parse(row.value as string)[3] === true));
   assert.equal(layoutFamilyBars(model, 500, 320).pickWidth, 0, 'too narrow for the list: the butterfly alone');
+
+  registerFamilyProjection({ kind: 'test-bars-pick', family: 'bars', project: readView => ({ ...model, hour: readView.hour }), nextChange: () => Infinity });
+  const origOffscreen = globalThis.OffscreenCanvas;
+  class FakeOffscreenCanvas {
+    width: number;
+    height: number;
+    private readonly fake = makeFakeCtx();
+    constructor(width: number, height: number) { this.width = width; this.height = height; }
+    getContext() { return this.fake.ctx; }
+  }
+  (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
+  try {
+    for (const width of [500, 1600]) {
+      const view = createLaneView(barsLane, () => {});
+      let seq = 0;
+      const binding = new LaneTransport().carry({ family: 'bars', kind: 'test-bars-pick', options: {}, sources: {}, width, height: 320, scrollTop: 0, theme: THEME, audit: true, auditId: 3 } satisfies FamilyBarsBinding<Record<string, never>>);
+      const paint = view.paint({ widget: 1, subs: [], pictures: [], hour: 10, seek: 0, speed: 1, now: 0, inspect: null,
+        binding: { generation: 1, surfaces: [{ width, height: 320, dpr: 1 }], offset: 0, pin: null }, model: binding }, new Map(), () => `c${++seq}`);
+      const lane = (paint.fields.audit?.value as { rows: readonly { row: string }[] }).rows;
+      const fields = Object.fromEntries(Object.entries(paint.fields).map(([slot, field]) => [slot, (field as { value: unknown }).value]));
+      const exact = barsHostAdapter.deriveAuditRows!(model, 10, {
+        viewport: { width, height: 320, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null }, settings: undefined, expanded: {}, theme: THEME, fields,
+      });
+      const picks = (rows: readonly { row: string }[]) => rows.filter(row => row.row.startsWith('pick:')).length;
+      const shown = width === 1600 ? 2 : 0;
+      assert.equal(picks(lane), shown, `the lane audits the picker only where it is painted (${width} px)`);
+      assert.equal(picks(exact), shown, `the exact audit follows the installed picker (${width} px)`);
+    }
+  } finally {
+    (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = origOffscreen;
+  }
 });
 
 test('at the deepest scroll the extent allows, the last row sits above the axis, not under it', () => {
