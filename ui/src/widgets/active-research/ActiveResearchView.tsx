@@ -1,26 +1,25 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
-import type { WidgetProps } from '../../dashboard/definitions';
-import type { WidgetSpec } from '../../dashboard/model';
+import type { FamilyViewProps } from '../../dashboard/definitions';
+import type { WidgetBase } from '../../dashboard/model';
 import { openedOn } from '../../dashboard/gameWindows';
 import { useGate } from '../../dashboard/regionGate';
 import type { InstalledAction } from '../../families/contract.ts';
 import { DetailWindowHost } from '../../families/host/index.ts';
-import DeclaredFamilyWidget from '../../families/host/DeclaredFamilyWidget.tsx';
-import { meterHostAdapter } from '../../families/meter/hostAdapter.ts';
 import { useArtResolutions } from '../../families/art/react.ts';
 import type { ArtHandle } from '../../families/plan.ts';
 import { researchAt } from '../research/researchData';
 import ResearchExplanation from '../research/ResearchExplanation';
 import { TechnologyEffects } from '../research/TechnologyWindow';
 import { useResearchReply } from '../research/useResearch';
-import { activeResearchDeclaration, type ActiveResearchRowMeta } from './activeResearchProjection.ts';
+import type { ActiveResearchRowMeta } from './activeResearchProjection.ts';
 import '../research/research.css';
 import '../../components/Dossier.css';
+import { FamilyWidget } from '../../families/host/registry.tsx';
 
 const NO_HANDLES: readonly ArtHandle[] = [];
 
-export default function ActiveResearchView(props: WidgetProps) {
+export default function ActiveResearchView(props: FamilyViewProps) {
   const { widget, runtime, active } = props;
   const hostRef = useRef<HTMLDivElement>(null);
   const history = useResearchReply(widget, runtime, active);
@@ -40,7 +39,7 @@ export default function ActiveResearchView(props: WidgetProps) {
   }, [track, tag]);
 
   const shown = track && tag && opened?.on === openedOn(track, tag) ? opened : null;
-  const detailWidget = useMemo<WidgetSpec>(() => {
+  const detailWidget = useMemo<WidgetBase>(() => {
     if (!shown || !track) return widget;
     const offset = shown.hour - track.branch.firstHour;
     return { ...widget, time: { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } } };
@@ -63,13 +62,12 @@ export default function ActiveResearchView(props: WidgetProps) {
   const detailIcon = detailArt?.status === 'ready' ? detailArt.url : undefined;
 
   return <div ref={hostRef} className="fh-detail-anchor">
-    <DeclaredFamilyWidget
+    {props.manifestDeclaration ? <FamilyWidget
       {...props}
-      adapter={meterHostAdapter}
-      declaration={activeResearchDeclaration}
+      family={props.manifestDeclaration.family} declaration={props.manifestDeclaration}
       selectedKey={shown?.key ?? null}
       onActivate={onActivate}
-    />
+    /> : null}
     <DetailWindowHost
       open={Boolean(shown && track && tag)}
       subject={shown ? `${tag}:${shown.meta.token}` : null}

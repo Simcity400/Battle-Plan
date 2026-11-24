@@ -1,6 +1,6 @@
 import { useCampaignGate } from '../../dashboard/regionGate';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { OptionChoices, WidgetRenderer, WidgetRuntime } from '../../dashboard/definitions';
+import type { OptionChoices, FamilyViewRenderer, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { setToken } from '../../dashboard/options';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
@@ -29,4 +29,4 @@ function useDoctrineChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionC
   return { folders: (data?.folders ?? []).map(folder => ({ value: setToken(folder.id), label: folderName(folder), icon: iconOf(folder.icon) })) };
 }
 
-export default { render: DoctrineMasteryView, useOptionChoices: useDoctrineChoices } satisfies WidgetRenderer;
+export default { render: DoctrineMasteryView, useOptionChoices: useDoctrineChoices } satisfies FamilyViewRenderer;
