@@ -1015,6 +1015,8 @@ export type DeclarativeNullable<TRow, TOptions> =
   | { readonly kind: 'notRecorded' | 'notApplicable'; readonly reason: string; readonly reasonField?: string }
   | ((row: TRow, options: TOptions) => NullableMeaning);
 
+export type DeclaredCellExtra = Partial<Pick<TableCell, 'subtext' | 'secondaryValue' | 'artShape' | 'artName' | 'flags' | 'icons' | 'iconStripKind' | 'statusKind' | 'shortage'>>;
+
 export interface DeclarativeColumnSpec<TRow, TOptions = unknown> extends TableColumnSpec {
   readonly path?: string;
   readonly field?: keyof TRow & string;
@@ -1029,11 +1031,14 @@ export interface DeclarativeColumnSpec<TRow, TOptions = unknown> extends TableCo
   readonly whenNull?: DeclarativeNullable<TRow, TOptions>;
   readonly partial?: (row: TRow, live: LiveValues<number | bigint | string> | null, options: TOptions) => string | null;
   readonly icon?: (row: TRow, options: TOptions) => string | undefined;
+  readonly iconPending?: (row: TRow, options: TOptions) => boolean;
   readonly iconSlot?: boolean;
   readonly country?: string | ((row: TRow, options: TOptions) => string | null);
   readonly looks?: (row: TRow, options: TOptions) => readonly CountryLook[] | undefined;
   readonly lookHour?: (row: TRow, hour: number, options: TOptions) => number;
   readonly status?: (row: TRow, options: TOptions) => 'dot' | 'outline' | 'fill' | undefined;
+  readonly cellTone?: (row: TRow, options: TOptions) => string | undefined;
+  readonly cellExtra?: (row: TRow, options: TOptions) => DeclaredCellExtra | undefined;
   readonly bar?: (row: TRow, live: LiveValues<number | bigint | string> | null, options: TOptions) => TableCellBar | null | undefined;
   readonly maximum?: number;
   readonly sortValue?: (row: TRow, live: LiveValues<number | bigint | string> | null, hour: number, options: TOptions) => Value;
@@ -1372,11 +1377,14 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
         value: cellValue,
         ...(col.format ? { format: col.format } : {}),
         ...(col.icon ? { icon: col.icon(row, options) } : {}),
+        ...(col.iconPending?.(row, options) ? { iconPending: true } : {}),
         ...(iconSlot ? { iconSlot: true } : {}),
         ...(looks ? { looks } : {}),
         ...(cellLookHour !== undefined ? { lookHour: cellLookHour } : {}),
         ...(countryTag ? { country: countryTag } : {}),
         ...(col.status ? { status: col.status(row, options) } : {}),
+        ...(col.cellTone ? { tone: col.cellTone(row, options) } : {}),
+        ...col.cellExtra?.(row, options),
         ...(bar !== undefined ? { bar } : {}),
         ...(col.maximum !== undefined ? { maximum: col.maximum } : {}),
         ...(sortValue ? { sortValue } : {}),
@@ -1387,6 +1395,7 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
       value: cellValue,
       ...(col.format ? { format: col.format } : {}),
       ...(col.icon ? { icon: col.icon(row, options) } : {}),
+      ...(col.iconPending?.(row, options) ? { iconPending: true } : {}),
       ...(iconSlot ? { iconSlot: true } : {}),
       ...(looks ? { looks } : {}),
       ...(countryTag ? { country: countryTag } : {}),

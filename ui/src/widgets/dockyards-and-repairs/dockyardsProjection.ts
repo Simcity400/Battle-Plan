@@ -31,7 +31,7 @@ const DOCK_COLUMNS: readonly DeclarativeColumnSpec<DockRow, Record<string, never
     value: row => row.kind === 'port'
       ? valueFromNullable(row.port.priority, { kind: 'notRecorded', reason: 'Repair priority not recorded' })
       : notApplicable(ON_PORT) },
-  { ...DOCKYARDS!, priority: 3, numeric: true, format: 'integer', widest: ['99'], hint: 'repairing',
+  { ...DOCKYARDS!, priority: 3, numeric: true, format: 'integer', widest: ['99'], unit: 'repairing',
     value: row => row.kind === 'port'
       ? valueFromNullable(row.port.dockyards, { kind: 'notRecorded', reason: 'Dockyards repairing not recorded' })
       : notApplicable(ON_PORT) },

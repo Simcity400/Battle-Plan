@@ -35,7 +35,7 @@ function missionColumn(mission: AirMissionChoice, at: number): DeclarativeColumn
     numeric: true,
     format: 'integer',
     widest: ['9,999'],
-    hint: 'aircraft',
+    unit: 'aircraft',
     value: (row, live) => row.flown.has(mission.id) ? valueFromLive(live, liveKey(row.region.region, field)) : zeroValue(0),
   };
 }

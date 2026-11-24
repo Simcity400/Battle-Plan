@@ -60,7 +60,7 @@ const TYPE_SPEC: readonly DeclarativeColumnSpec<EquipmentType, Record<string, ne
   { ...HELD!, priority: 3, numeric: true, format: 'integer', widest: ['999,999'], value: row => amount(row.heldRaw, 'Holdings not recorded') },
   { ...NEEDED!, priority: 2, numeric: true, format: 'integer', widest: ['999,999'], value: row => amount(row.neededRaw, 'Need not recorded') },
   { ...MISSING!, priority: 1, numeric: true, format: 'integer', widest: ['−999,999'], value: row => missingValue(row.missingRaw),
-    cellTone: row => row.missingRaw !== null && BigInt(row.missingRaw) / FIXED > 0n ? 'red' : undefined,
+    cellExtra: row => (row.missingRaw !== null && BigInt(row.missingRaw) / FIXED > 0n ? { shortage: true } : undefined),
     sortValue: row => row.missingRaw === null ? notRecorded('Shortfall not recorded') : knownValue(BigInt(row.missingRaw)) },
   { ...TYPE_FILL!, priority: 4, numeric: true, format: PERCENT, widest: ['100%'],
     value: row => share(row.filledRaw, row.neededRaw, 'Fill not recorded'),

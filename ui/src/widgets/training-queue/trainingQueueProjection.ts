@@ -50,13 +50,21 @@ export function equipmentShare(division: TrainingDivision): Value<number> {
 
 const fraction = (value: Value<number>): Value<number> => value.kind === 'known' ? knownValue(value.value / 100) : value;
 const count = (value: number) => value.toLocaleString('en-US');
-const outOf = (have: number, need: number): Value<string> => knownValue(`${count(have)} / ${count(need)}`);
+const manpower = (have: number): Value<number> => have === 0 ? zeroValue(0) : knownValue(have);
+
+function orderLine(order: TrainingOrder): string {
+  const parts = [`${count(order.divisions.length)} ${order.divisions.length === 1 ? 'division' : 'divisions'}`];
+  if (order.locationName?.trim()) parts.push(order.locationName);
+  if (order.priorityName?.trim()) parts.push(order.priorityName);
+  return parts.join(' · ');
+}
 
 const [DIVISION, TRAINING, EQUIPMENT, MANPOWER] = COLUMNS;
 
 const QUEUE_COLUMNS: readonly DeclarativeColumnSpec<QueueRow, Record<string, never>>[] = [
   { ...DIVISION!, priority: 0, text: true, hideable: false, widest: ['Motorized Infantry Division 1941 B'], iconSlot: true,
     icon: row => row.kind === 'order' ? row.icon : undefined,
+    cellExtra: row => row.kind === 'order' ? { subtext: orderLine(row.order) } : undefined,
     value: row => row.kind === 'order'
       ? textValue(row.order.templateName, row.order.templateMissing ?? 'Template name unavailable')
       : textValue(row.division.name, row.division.nameMissing ?? 'Division name unavailable') },
@@ -66,9 +74,9 @@ const QUEUE_COLUMNS: readonly DeclarativeColumnSpec<QueueRow, Record<string, nev
   { ...EQUIPMENT!, priority: 2, numeric: true, format: PERCENT, widest: ['100%'],
     value: row => row.kind === 'division' ? equipmentShare(row.division) : notApplicable(ON_DIVISION),
     bar: row => row.kind === 'division' ? { fraction: fraction(equipmentShare(row.division)) } : null },
-  { ...MANPOWER!, priority: 3, numeric: true, widest: ['999,999 / 999,999'], hint: 'available / needed',
-    value: row => row.kind === 'order' ? outOf(row.order.manpower, row.order.manpowerNeeded) : outOf(row.division.manpower, row.division.manpowerNeeded),
-    sortValue: row => knownValue(row.kind === 'order' ? row.order.manpower : row.division.manpower) },
+  { ...MANPOWER!, priority: 3, numeric: true, cellKind: 'outOf', format: 'integer', widest: ['999,999 / 999,999'],
+    value: row => manpower(row.kind === 'order' ? row.order.manpower : row.division.manpower),
+    cellExtra: row => ({ secondaryValue: knownValue(count(row.kind === 'order' ? row.order.manpowerNeeded : row.division.manpowerNeeded)) }) },
 ];
 
 function orderIcon(order: TrainingOrder, readView: BoundedReadView): string | undefined {
