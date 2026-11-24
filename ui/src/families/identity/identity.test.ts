@@ -17,7 +17,7 @@ import { artHandleKey } from '../art/types.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { ArtHandle } from '../plan.ts';
 import { IdentityBroker, type IdentityTransport } from './broker.ts';
-import { createBrokerIdentityProvider, createSnapshotIdentityProvider } from './provider.ts';
+import { createBrokerIdentityProvider, createSnapshotIdentityProvider, parseEntityKey } from './provider.ts';
 import { readIdentityAtHeadHour, subscribeIdentityAtHead } from './react.ts';
 import {
   IdentityIndex,
@@ -678,4 +678,43 @@ test('coalesced sparse identity runs stay missing on unrecorded gaps outside kno
   assert.equal(at30.kind, 'known');
   assert.deepEqual(at30.tag, { kind: 'known', value: 'GER' });
   assert.deepEqual(at30.valid, [30, 30]);
+});
+
+test('a country the lane asks for and the snapshot lacks becomes a broker demand and returns in the next snapshot', async () => {
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: () => deferred<CountryIdentitiesReply>().promise,
+    loadGroups: () => deferred<CountryGroupReply>().promise,
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size, choices) => ({
+      size,
+      flags: choices.map((choice, flag) => ({ flag, asset: `${choice.keys[0]}.tga`, key: `${choice.keys[0]}:${size}`, width: 41, height: 26, png: `flag://${choice.keys[0]}` })),
+      unavailable: [],
+      warnings: [],
+    }),
+  };
+  const broker = new IdentityBroker({ transport });
+  const owner = {};
+  const laneView = (snapshot: ReturnType<IdentityBroker['snapshotOf']>, demands: [string, string, number][]) => createBoundedReadView({
+    hour: 200,
+    identity: createSnapshotIdentityProvider(IdentityIndex.fromSnapshot(structuredClone(snapshot))),
+    onIdentityDemand: (kind, key, atHour) => { demands.push([kind, key, atHour]); },
+  });
+
+  const demands: [string, string, number][] = [];
+  const first = laneView(broker.snapshotOf(SCOPE, undefined, [0, 500]), demands);
+  assert.equal(first.who('country', 'ALP', 120).name.status, 'pending');
+  assert.deepEqual(demands, [['country', 'ALP', 120]]);
+
+  broker.setDemand(owner, SCOPE, { asks: demands.map(([kind, key, hour]) => ({ key: parseEntityKey(kind as 'country', key), hour })), needFlags: true, flagSize: 'panel' }, undefined, [0, 500]);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+
+  const after: [string, string, number][] = [];
+  const second = laneView(broker.snapshotOf(SCOPE, undefined, [0, 500]), after);
+  const alp = second.who('country', 'ALP', 120);
+  assert.deepEqual(alp.name, { status: 'ready', value: 'Alpha' });
+  assert.equal(alp.flagChoice?.status, 'ready');
+  assert.equal(artUrlForHandle(flagArtHandle(alp.flagChoice!.status === 'ready' ? alp.flagChoice!.value : '', 'panel'), IdentityIndex.fromSnapshot(broker.snapshotOf(SCOPE))), 'flag://GER_a');
+  broker.dispose();
 });

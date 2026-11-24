@@ -47,11 +47,7 @@ export function lanesFor(reply: IdeaHistoryReply, category: CategoryInfo): IdeaL
   for (const slot of category.slots) {
     const label = contentTitle(slot.name, slot.token, 'Slot name unavailable');
     const held = reply.spans.filter(item => (item.slot ?? infos.get(item.token)?.slot) === slot.token).sort((a, b) => a.firstHour - b.firstHour);
-    if (!slot.character) {
-      lanes.push({ id: slot.token, label, slot: slot.token, spans: held.map(item => span(item)) });
-      continue;
-    }
-    const seats: { spans: IdeaLaneSpan[]; last: IdeaSpan | null }[] = Array.from({ length: Math.max(1, slot.seats) }, () => ({ spans: [], last: null }));
+    const seats: { spans: IdeaLaneSpan[]; last: IdeaSpan | null }[] = Array.from({ length: slot.character ? Math.max(1, slot.seats) : 1 }, () => ({ spans: [], last: null }));
     const endings = new Set(held.flatMap(other => other.character ? [`${other.character.id}#${other.lastHour + 1}`] : []));
     const continues = (item: IdeaSpan) => item.character != null && endings.has(`${item.character.id}#${item.firstHour}`);
     const order = held.map(item => ({ item, first: continues(item) ? 0 : 1 }))
@@ -63,7 +59,7 @@ export function lanesFor(reply: IdeaHistoryReply, category: CategoryInfo): IdeaL
       seat.spans.push(span(item));
       seat.last = item;
     }
-    seats.forEach(({ spans }, index) => lanes.push({ id: `${slot.token}#${index}`, label, slot: slot.token, spans }));
+    seats.forEach(({ spans }, index) => lanes.push({ id: slot.character || index > 0 ? `${slot.token}#${index}` : slot.token, label, slot: slot.token, spans }));
   }
   return lanes;
 }
