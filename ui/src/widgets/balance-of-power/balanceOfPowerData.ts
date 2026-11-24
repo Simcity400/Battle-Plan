@@ -139,34 +139,6 @@ export function balanceAbsence(known: readonly HourSpan[], at: number, limit: nu
   return { kind: 'none', recorded: unknown.some(span => span.firstHour <= limit) };
 }
 
-interface BalanceMemberRef { tag: string }
-interface BalanceRow {
-  key: string;
-  token: string;
-  name: string | null;
-  range: BalanceRange | null;
-  trending: BalanceSide | null;
-  members: BalanceMemberRef[];
-}
-interface BalanceRowsView {
-  rows: BalanceRow[];
-  untagged: number;
-  membership: string | null;
-}
-
-export function balanceRows(reply: Pick<PoliticsStateAt, 'balances' | 'hour'>, matches: (tag: string, hour: number) => boolean,
-  unrecorded: (hour: number) => string | null = () => null): BalanceRowsView {
-  const rows: BalanceRow[] = [];
-  let untagged = 0, membership: string | null = null;
-  for (const record of reply.balances) {
-    const members = record.members.flatMap(member => member.tag === null ? [] : [{ tag: member.tag }]);
-    untagged += record.members.length - members.length;
-    if (!members.some(member => matches(member.tag, reply.hour))) { membership ??= unrecorded(reply.hour); continue; }
-    rows.push({ key: String(record.ordinal), token: record.token, name: record.name, range: record.range, trending: record.trending, members });
-  }
-  return { rows, untagged, membership };
-}
-
 export function recordFor(reply: Pick<PoliticsStateAt, 'balances' | 'current'>, token: string | null, tag: string): BalanceRecord | null {
   const current = reply.current?.find(entry => entry.tag === tag);
   const own = current ? reply.balances.find(record => record.ordinal === current.record) ?? null : null;

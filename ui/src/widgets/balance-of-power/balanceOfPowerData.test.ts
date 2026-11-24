@@ -6,7 +6,6 @@ import {
   SIDE_UNAVAILABLE,
   balanceAbsence,
   balanceAxis,
-  balanceRows,
   chooseBalance,
   countryHolder,
   holderRecord,
@@ -106,7 +105,6 @@ test('validators accept optional refusal reasons on sides, ranges, and records, 
   assert.equal(recordFor(stateReply, null, 'MOD')?.token, 'guild');
   assert.equal(holderRecord({ ...stateReply, hour: 100 }, holder('1', [[0, 'MOD']], [guild]), 'guild')?.ordinal, 0);
   assert.equal(sumWeeklyDrift(stateReply.balances[0]!), 140n);
-  assert.equal(balanceRows({ ...stateReply, hour: 100 }, tag => tag === 'OTH').rows.length, 1);
 });
 
 test('balance-of-power time-chart projection renders pre-first-reading hatched gap, causal side overlays, and hover refusal reasons', () => {

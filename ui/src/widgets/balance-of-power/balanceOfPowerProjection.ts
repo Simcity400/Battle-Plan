@@ -53,7 +53,7 @@ import {
   valueText,
 } from './balanceOfPowerData.ts';
 
-export interface BalanceOfPowerOptions {
+interface BalanceOfPowerOptions {
   readonly tag: string | null;
   readonly extent: readonly [number, number];
   readonly branchFirstHour: number;
