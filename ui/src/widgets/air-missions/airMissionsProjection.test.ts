@@ -4,10 +4,12 @@ import { liveKey, valuesOf } from '../../charts/live.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import type { AirMissionsReply } from '../../generated/dashboard';
-import { airMissionsProjection } from './airMissionsProjection.ts';
+import { airMissionsDeclaration, airMissionsProjection } from './airMissionsProjection.ts';
+import { encodeTableSettings, tableSettingsOf, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
+import { TABLE_BASE } from './definition.ts';
 
 const reply: AirMissionsReply = {
-  readHour: 6, missing: null, theatresMissing: null, warnings: [], theatres: null,
+  readHour: 6, missing: null, warnings: [],
   missions: [{ id: '0', name: 'Air Superiority', icon: null }, { id: '4', name: 'Air Recon', icon: null }],
   regions: [{ region: '10', name: 'Eastern Poland', missing: null, missions: ['0', '4'] }, { region: '11', name: null, missing: 'Region 11 has no localised name', missions: ['4'] }],
 };
@@ -23,6 +25,17 @@ test('one column per mission the recording holds, in its order; a mission no win
   assert.deepEqual(poland!.cells.m4!.value, notRecorded('Not in the answer'));
   assert.deepEqual(other!.cells.m0!.value, zeroValue(0));
   assert.deepEqual(other!.cells.region!.value, notRecorded('Region 11 has no localised name'));
+});
+
+test('a stored sort by a mission column and its width survive settings, which decode against the same keys the table paints', () => {
+  const columns = airMissionsDeclaration.columns as Parameters<typeof tableSettingsOf>[1];
+  const defaults = tableSettingsOf(undefined, columns, TABLE_BASE);
+  assert.equal(defaults.sort.column, 'wings', 'the default sort names a column the settings know');
+  const stored = encodeTableSettings({ ...defaults, sort: { column: 'm4', direction: 'ascending' }, columns: { ...defaults.columns, m4: { ...defaults.columns.m4!, width: 140 } } });
+  const resolved = tableSettingsOf(stored, columns, TABLE_BASE);
+  assert.deepEqual([resolved.sort, resolved.columns.m4?.width], [{ column: 'm4', direction: 'ascending' }, 140]);
+  const painted = project(reply, new Map()).columns.map(column => column.key);
+  assert.ok(painted.every(key => key in resolved.columns), `${painted} are all settings keys (${TABLE_SETTINGS_KEY})`);
 });
 
 test('missions not recorded at the hour are the body’s unavailable state', () => {

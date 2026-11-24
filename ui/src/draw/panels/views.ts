@@ -8,7 +8,6 @@ import { validateResearchSlots } from '../../widgets/research/researchData.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { technologyEffectsStructure, validateTechnologyEffects } from '../../widgets/research/technologyEffects.ts';
 import { entityStatsStructure, validateEntityStats } from '../../widgets/research/entityStats.ts';
-import { HISTORY_PANEL, historyStructure, validateSpecialProjectsReply } from '../../widgets/special-projects/specialProjectsData.ts';
 
 function recordView<T extends object>(validate: (raw: unknown) => T, shapeOf: (record: T) => string,
   fields: (record: T, values: LiveValues<number>, hour: number) => Map<string, string>, geometry: PanelGeometry, nextChange?: (reply: T, hour: number) => number) {
@@ -46,7 +45,6 @@ const logTailStructure = (raw: unknown): string => {
 const tableStructures: Readonly<Record<string, (raw: unknown, hour: number) => string>> = {
   'technology-effects': raw => technologyEffectsStructure(validateTechnologyEffects(raw)),
   'content-entity-stats': raw => entityStatsStructure(validateEntityStats(raw)),
-  [HISTORY_PANEL]: (raw, hour) => historyStructure(validateSpecialProjectsReply(raw), hour),
   'log-tail': logTailStructure,
   'market-ledger-tail': logTailStructure,
 };

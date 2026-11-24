@@ -1,3 +1,4 @@
+import { countryFromKey } from '../dashboard/countryKey.ts';
 import type { DashboardClient, DashboardSource, ProductRequest } from '../dashboard/client';
 import { canonical } from '../dashboard/follow/canonical.ts';
 import type { Channel } from '../dashboard/follow/facts';
@@ -759,14 +760,20 @@ export interface HeldHover {
   readonly data: unknown;
 }
 
-export function hoverAsks(plan: SourcePlan, hoverHour: number | null | undefined): readonly HoverAsk[] {
+export function hoverAsks(
+  plan: SourcePlan,
+  hoverHour: number | null | undefined,
+  displayed: (entry: string) => readonly string[] | undefined = () => undefined,
+): readonly HoverAsk[] {
   if (hoverHour === null || hoverHour === undefined || !Number.isFinite(hoverHour)) return NO_HOVER_ASKS;
   const hour = Math.floor(hoverHour);
   const asks: HoverAsk[] = [];
   for (const entry of plan.entries) {
     const read = entry.read;
     if (read.shape !== 'exact-hover' || !read.params) continue;
-    const reads = (read.params as { reads?: unknown }).reads;
+    const shown = read.readsOf === undefined ? null : displayed(read.readsOf);
+    if (shown !== null && !shown?.length) continue;
+    const reads = shown ? shown.map(key => ({ country: countryFromKey(key) })) : (read.params as { reads?: unknown }).reads;
     const params = Array.isArray(reads)
       ? { ...read.params, reads: reads.map(asked => ({ ...(asked as Record<string, unknown>), [read.hourParam ?? 'hour']: hour })) }
       : { ...read.params, [read.hourParam ?? 'hour']: hour };

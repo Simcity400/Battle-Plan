@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { countryValueAt, countryValueEntries, countryValueMix,
+import { countryValueAt, countryValueMix,
   countryValuePartsReply, countryValuesModel, countryValueSegmentAt, rankCountryValues,
   validCountryValues } from './countryValues.ts';
 import type { CountryValuesReply } from './countryValues';
-import { countryRaceItems } from './countryRace.ts';
 
 const REPLY: CountryValuesReply = {
   types: [{ key: 'mod group', name: 'Mod group' }, { key: '?unresolved', name: null }],
@@ -72,16 +71,9 @@ test('mix retains gaps, identities, and member/range boundaries', () => {
     [{ firstHour: 8, lastHour: 8, value: 5, breakBefore: true }]]);
 });
 
-test('split races hatch unknown attribution while preserving the independently exact total', () => {
-  const model = countryValuesModel(REPLY);
-  const entries = countryValueEntries(model, rankCountryValues(model, model.tags, 6, 1), true, String);
-  assert.deepEqual(entries[0].parts, [{ id: 'mod group', value: 7 }, { id: '', value: 0, hatched: 5 }]);
-  assert.equal(entries[0].value, 12);
-  const items = countryRaceItems(entries, new Map([['mod group', 'type']]), () => 'country', 'unknown');
-  assert.equal(items[0].segments.reduce((sum, part) => sum + part.value + (part.hatched ?? 0), 0), 12);
+test('totals-only replies validate without mix runs', () => {
   const totalsOnly = { ...REPLY, types: [], series: REPLY.series.map(series => ({ ...series, mix: undefined })) };
   assert.equal(validCountryValues(totalsOnly), true);
-  assert.equal(countryValueEntries(countryValuesModel(totalsOnly), rankCountryValues(countryValuesModel(totalsOnly), ['a'], 1, 1), true, String)[0].parts, undefined);
 });
 
 test('compact hourly totals and separate composition preserve exact reads, groups and identity breaks', () => {
@@ -107,8 +99,6 @@ test('a missing separate group read keeps the exact total and hatches its unknow
   const at = countryValueAt(model, 'country', 2)!;
   assert.equal(at.total, 4);
   assert.deepEqual(at.values, [null]);
-  assert.deepEqual(countryValueEntries(model, [{ tag: 'country', at: { ...at, total: 4 } }], true, String)[0].parts,
-    [{ id: '', value: 0, hatched: 4 }]);
 });
 
 test('the parts race shape joins boundaries without filling gaps or expanding hours', () => {

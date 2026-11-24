@@ -107,7 +107,7 @@ test('apm-table resolves country at row observation hour including hour 0, gives
   const reply: ApmReply = {
     available: true,
     warnings: [],
-    players: [{ id: 'p1', name: 'RenamedLater', nameMissing: null, tags: ['GER'] }],
+    players: [{ id: 'p1', name: 'RenamedLater', nameMissing: null, tags: ['GER'], runs: [{ firstHour: 0, lastHour: 200, tag: 'GER', name: 'RenamedLater', nameMissing: null }] }],
     series: [
       {
         id: 'p1',

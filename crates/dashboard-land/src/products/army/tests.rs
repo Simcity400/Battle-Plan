@@ -186,9 +186,19 @@ fn army_at_ranks_and_splits_battalion_groups_at_an_hour() {
     assert_eq!(reply["missing"], serde_json::Value::Null);
     let rows = reply["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0]["tag"], "ITA");
+    assert_eq!(rows[0]["tag"], "GER");
     assert_eq!(rows[0]["total"], 9);
-    assert_eq!(rows[0]["partsMissing"], serde_json::Value::Null);
-    let sum: i64 = rows[0]["values"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap_or(0)).sum();
+    assert_eq!(rows[1]["tag"], "ITA");
+    assert_eq!(rows[1]["total"], 9);
+    assert_eq!(rows[1]["partsMissing"], serde_json::Value::Null);
+    let sum: i64 = rows[1]["values"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap_or(0)).sum();
     assert_eq!(sum, 9);
+
+    let after = (panel.exact().unwrap().cold)(1_900, &AtomicBool::new(false)).unwrap();
+    let after_rows = after["rows"].as_array().unwrap();
+    assert_eq!(after_rows.len(), 2);
+    assert_eq!(after_rows[0]["tag"], "ITA");
+    assert_eq!(after_rows[0]["total"], 9);
+    assert_eq!(after_rows[1]["tag"], "GER");
+    assert_eq!(after_rows[1]["total"], 3);
 }

@@ -1,5 +1,4 @@
 import type { CountryIdentityRun } from '../../generated/dashboard';
-import type { CountryRaceEntry } from './countryRace';
 import { shownRuns } from './lines.ts';
 import type { Run, Span } from '../series';
 import { isOrderedSpans, runAt, runIndexAt, spansCovered, stretchStarts } from '../series.ts';
@@ -163,15 +162,4 @@ export function countryValueRuns(model: CountryValuesModel, tag: string, part?: 
 
 export function countryValueMix(model: CountryValuesModel, tag: string, membership: readonly Span[] | null, range: Span): Run[][] {
   return model.reply.types.map((_, index) => shownRuns(countryValueRuns(model, tag, index), membership, range));
-}
-
-export function countryValueEntries(model: CountryValuesModel, ranked: readonly { tag: string; at: CountryValueAt & { total: number } }[],
-  split: boolean, format: (value: number) => string): CountryRaceEntry[] {
-  return ranked.map(({ tag, at }) => {
-    const entry = { tag, value: at.total, label: format(at.total), stretch: at.stretch };
-    if (!split || !model.reply.types.length) return entry;
-    const parts = model.reply.types.flatMap((type, index) => at.values[index] == null ? [] : [{ id: type.key, value: at.values[index]! }]);
-    const unknown = at.values.some(value => value === null) ? Math.max(0, at.total - parts.reduce((sum, part) => sum + part.value, 0)) : 0;
-    return { ...entry, parts: unknown ? [...parts, { id: '', value: 0, hatched: unknown }] : parts };
-  });
 }

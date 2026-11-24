@@ -16,12 +16,6 @@ export function subjectHandle(campaignKey: string, value: string): string | null
   return key.startsWith(prefix) ? key.slice(prefix.length) : null;
 }
 
-export const storedChoices = (source: ChoiceSource): ChoiceSource => ({
-  lines: token => source.lines(contentKey(token)),
-  name: token => source.name(contentKey(token)),
-  noun: source.noun,
-});
-
 export type ChipAction = { value: string } | { reason: string };
 
 export function largestToken(items: readonly { token: string; size: bigint; recorded: boolean }[]): string | null {

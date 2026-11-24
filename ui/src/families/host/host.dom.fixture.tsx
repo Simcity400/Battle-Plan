@@ -223,6 +223,8 @@ pipeline.onInstall = ((id: number, listener: () => void) => origOnInstall(id, ()
 let container: HTMLDivElement | null = null;
 let commits = 0;
 let bindCount = 0;
+let staticCommits = 0;
+let staticSupplies: { readonly id: number; readonly statics: boolean }[] = [];
 let lastBoundModel: unknown = null;
 let activated: string[] = [];
 let currentState = {
@@ -233,6 +235,7 @@ let currentState = {
   genericMounted: false,
   genericBlocked: false,
   genericBodyFocus: false,
+  statics: null as { readonly panels: Readonly<Record<string, unknown>>; readonly hour: number } | null,
 };
 
 const origBind = pipeline.bind.bind(pipeline);
@@ -242,10 +245,17 @@ pipeline.bind = ((...args: Parameters<typeof pipeline.bind>) => {
   return origBind(...args);
 }) as typeof pipeline.bind;
 
+const origSupply = pipeline.supply.bind(pipeline);
+pipeline.supply = ((...args: Parameters<typeof pipeline.supply>) => {
+  staticSupplies.push({ id: args[0], statics: args[1].statics !== undefined });
+  return origSupply(...args);
+}) as typeof pipeline.supply;
+
 const perf = new PerfRecorder();
 measureWith(perf);
 
 const NO_EXACT = async () => null;
+const NO_SUBSCRIPTIONS: ReturnType<typeof makeSubs> = [];
 const BOUNDS: readonly [number, number] = [0, 2000];
 const RUNTIME_BY_SOURCE = new Map<DashboardSource, WidgetRuntime>([
   [sourceA, makeRuntime(sourceA)],
@@ -336,6 +346,30 @@ function renderApp() {
                   onActivate={action => { genericActivated.push(action); }}
                   blockedState={currentState.genericBlocked ? <div data-blocked="true">Not yet</div> : null}
                   onViewportChange={viewport => { genericViewports.push(viewport.width); }}
+                />
+              </div>
+            </Profiler>
+          )}
+          {currentState.statics && (
+            <Profiler id="static-host" onRender={() => { staticCommits++; }}>
+              <div data-slot="static" style={{ width: '460px', height: '240px', display: 'flex', flexDirection: 'column' }}>
+                <FamilyHost
+                  adapter={tableHostAdapter}
+                  chrome={TableChrome}
+                  settings={SETTINGS}
+                  declaration={scoreboardProjection}
+                  view="default"
+                  options={OPTIONS}
+                  label="Scoreboard Static"
+                  subject="scoreboard"
+                  widget={widget}
+                  runtime={rt}
+                  active
+                  subscriptions={NO_SUBSCRIPTIONS}
+                  staticSources={currentState.statics}
+                  offset={0}
+                  pin={null}
+                  bounds={BOUNDS}
                 />
               </div>
             </Profiler>
@@ -681,6 +715,42 @@ window.hostDom = {
       viewId: view?.id ?? null,
       viewHour: view?.painted ?? null,
     };
+  },
+
+  async testStaticPanelsReplaced() {
+    const frames = async (count: number) => {
+      for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    };
+    currentState = { ...currentState, statics: { panels: { main: { round: 0 } }, hour: 40 } };
+    renderApp();
+    let pipeS = -1;
+    await until(() => {
+      const canvas = container!.querySelector<HTMLCanvasElement>('[data-slot="static"] canvas.fh-canvas');
+      if (!canvas?.dataset.placement) return false;
+      pipeS = Number(canvas.dataset.placement);
+      return pipeS > 0;
+    });
+    await frames(4);
+    const generation = pipeline.binding(pipeS);
+    staticCommits = 0;
+    bindCount = 0;
+    staticSupplies = [];
+    const rounds = 10;
+    for (let round = 1; round <= rounds; round++) {
+      currentState = { ...currentState, statics: { panels: { main: { round } }, hour: 40 } };
+      renderApp();
+      await frames(2);
+    }
+    const result = {
+      rounds,
+      commits: staticCommits,
+      binds: bindCount,
+      staticsSupplied: staticSupplies.filter(item => item.id === pipeS && item.statics).length,
+      generationKept: pipeline.binding(pipeS) === generation,
+    };
+    currentState = { ...currentState, statics: null };
+    renderApp();
+    return result;
   },
 
   async testF12DualPlacementAndTypeahead() {

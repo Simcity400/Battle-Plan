@@ -121,6 +121,7 @@ export interface ExactHoverSourceRead {
   readonly product: DeclaredProduct;
   readonly params: Readonly<Record<string, unknown>> | null;
   readonly hourParam?: string;
+  readonly readsOf?: string;
   readonly validate?: (raw: unknown) => unknown;
 }
 

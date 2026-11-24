@@ -34,10 +34,6 @@ export type LogColumns<T> = string | ((row: LogRow<T>) => string);
 export const logRowColumns = <T>(columns: LogColumns<T>, row: LogRow<T>): string => typeof columns === 'string' ? columns : columns(row);
 
 export interface CountryRequest { readonly hour: number; readonly tag: string }
-export const NO_COUNTRY_REQUESTS: readonly CountryRequest[] = [];
-export function sameCountryRequests(held: readonly CountryRequest[], next: readonly CountryRequest[]): boolean {
-  return held.length === next.length && held.every((item, index) => item.hour === next[index].hour && item.tag === next[index].tag);
-}
 
 export function logCountryRequests<T>(rows: readonly LogRow<T>[], countries: (row: LogRow<T>) => { hour: number; tags: readonly (string | null)[] }): CountryRequest[] {
   const wanted = new Map<number, Set<string>>();

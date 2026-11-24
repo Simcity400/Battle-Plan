@@ -39,6 +39,7 @@ export const armySizeMixProjection: BarsProjection<ArmySizeMixOptions> = registe
       decimals: 0,
       valueFormat: { decimals: 0 },
       valueLabel: 'Battalions',
+      unit: 'Battalions',
       partsLabel: 'Battalions by unit group',
       emptyMessage: 'No battalion mix recorded at this date.',
     });

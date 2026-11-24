@@ -1,4 +1,3 @@
-import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import {
@@ -32,7 +31,10 @@ import {
   missingSpansOf,
   rankEntry,
   rankedOrder,
-  seriesHeadAt,
+  auditReading,
+  headReading,
+  headValueOf,
+  type HeadReading,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 import { breakdownRows, linesPerMeasure, type Measure } from './stabilityData.ts';
@@ -99,30 +101,28 @@ function markerPriority(m: StabilityMarker): number {
   return 0;
 }
 
-interface MarkerDay {
-  readonly key: number;
+interface MarkerHour {
   readonly hour: number;
   readonly markers: readonly StabilityMarker[];
 }
 
-const markerDayCache = new WeakMap<readonly StabilityMarker[], readonly MarkerDay[]>();
+const markerHourCache = new WeakMap<readonly StabilityMarker[], readonly MarkerHour[]>();
 
-function markerDays(raw: readonly StabilityMarker[]): readonly MarkerDay[] {
-  const held = markerDayCache.get(raw);
+function markerHours(raw: readonly StabilityMarker[]): readonly MarkerHour[] {
+  const held = markerHourCache.get(raw);
   if (held) return held;
-  const byDay = new Map<number, StabilityMarker[]>();
+  const byHour = new Map<number, StabilityMarker[]>();
   for (const m of raw) {
-    const key = Math.floor(m.hour / 24);
-    let list = byDay.get(key);
-    if (!list) byDay.set(key, list = []);
-    list.push(m);
+    const list = byHour.get(m.hour);
+    if (list) list.push(m);
+    else byHour.set(m.hour, [m]);
   }
-  const days = [...byDay.entries()].map(([key, list]) => {
-    list.sort((a, b) => markerPriority(b) - markerPriority(a) || a.hour - b.hour || a.title.localeCompare(b.title));
-    return { key, hour: list[0]!.hour, markers: list };
+  const hours = [...byHour].map(([hour, list]) => {
+    list.sort((a, b) => markerPriority(b) - markerPriority(a));
+    return { hour, markers: list };
   }).sort((a, b) => a.hour - b.hour);
-  markerDayCache.set(raw, days);
-  return days;
+  markerHourCache.set(raw, hours);
+  return hours;
 }
 
 export const stabilityProjection: TimeChartProjection<StabilityOptions> = registerFamilyProjection({
@@ -141,11 +141,21 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
     const rowOf = new Map(tags.map((tag, row) => [tag, row]));
     const stabByTag = new Map<string, number | null>();
     const warByTag = new Map<string, number | null>();
+    const readings: [string, HeadReading | null][] = [];
     for (let i = 0; i < tags.length; i++) {
       const tag = tags[i]!;
       const member = memberAt(options.membership, tag, hour);
-      if (options.showStability) stabByTag.set(tag, member ? seriesHeadAt(readView, 'stability', tag, i, 5, 100) : null);
-      if (options.showWarSupport) warByTag.set(tag, member ? seriesHeadAt(readView, 'warSupport', tag, i, 5, 100) : null);
+      if (!member) continue;
+      if (options.showStability) {
+        const reading = headReading(readView, 'stability', { tag }, 5, 100);
+        readings.push([single ? 'stability' : `${tag}:stability`, reading]);
+        stabByTag.set(tag, headValueOf(reading));
+      }
+      if (options.showWarSupport) {
+        const reading = headReading(readView, 'warSupport', { tag }, 5, 100);
+        readings.push([single ? 'warSupport' : `${tag}:warSupport`, reading]);
+        warByTag.set(tag, headValueOf(reading));
+      }
     }
 
     const present = tags.filter(tag => memberAt(options.membership, tag, hour));
@@ -235,8 +245,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
     const markers: ChartMarker[] = [];
     const recorded = single ? readView.panel<StabilityMarkersReply>('markers')?.markers ?? [] : [];
     if (recorded.length > 0) {
-      const days = markerDays(recorded);
-      for (const day of days) {
+      for (const day of markerHours(recorded)) {
         if (day.hour > hour) break;
         if (day.hour < options.extent[0]) continue;
         const iconSlot = (m: StabilityMarker): ChartArtSlot | undefined => {
@@ -249,7 +258,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
           icon: iconSlot(m),
         }));
         markers.push({
-          id: `stab-m:${day.key}:${day.markers[0]!.id}`,
+          id: `stab-m:${day.hour}:${day.markers[0]!.id}`,
           hour: day.hour,
           title: items[0]!.title,
           icon: items[0]!.icon,
@@ -280,9 +289,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
       empty: !options.showStability && !options.showWarSupport
         ? { message: 'Both lines are switched off in the settings.' }
         : null,
-      auditRows: series.slice(0, 8).flatMap(s =>
-        s.endLabel ? [auditRow(s.id, s.endLabel.value)] : [],
-      ),
+      auditRows: readings.map(([row, reading]) => auditReading(row, reading, formatRecordedPercent)),
     };
   },
 });

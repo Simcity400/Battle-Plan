@@ -1,4 +1,4 @@
-import { textWidth, type Canvas2D } from './textWidth.ts';
+import { measureCanvasText, type Canvas2D } from './textWidth.ts';
 
 export interface EndLabel { id: string; y: number; height: number }
 
@@ -255,7 +255,8 @@ export function drawFittedLabel(
   measure?: (text: string) => number,
 ): FittedLabel {
   if (style.font) ctx.font = style.font;
-  const measureFn = measure ?? (value => textWidth(ctx, value));
+  const font = style.font ?? ctx.font;
+  const measureFn = measure ?? (value => measureCanvasText(ctx, value, font));
   const fitted = fitLabel(text, width, measureFn, {
     maxLines: style.maxLines,
     rowHeight: style.rowHeight,
