@@ -247,3 +247,17 @@ fn recording_gaps_are_not_mislabelled_as_unheld_tag_hours() {
     let unheld_cell = region.cells.iter().find(|c| c.first_hour <= 44 && 44 <= c.last_hour).unwrap();
     assert_eq!(unheld_cell.state, ConvoyCellState::NotRecorded { reason: "No country holds this tag at this hour".into() });
 }
+
+#[test]
+fn the_most_strained_regions_are_a_rank_only_where_every_hour_is_recorded() {
+    let cell = |first_hour: i32, last_hour: i32, state: ConvoyCellState| ConvoyCellRun { first_hour, last_hour, state };
+    let region = |region: u32, cells: Vec<ConvoyCellRun>| (region, ConvoyRegion { region, name: None, missing: None, pinned: false, cells, readout: None, efficiency: Vec::new() });
+    let efficiency = |value: i64| ConvoyCellState::Efficiency { value };
+    let recorded = BTreeMap::from([region(1, vec![cell(0, 9, efficiency(50_000))]), region(2, vec![cell(0, 9, efficiency(90_000))])]);
+    assert_eq!(most_strained(&recorded, |_| true, Some(1), true), (vec![1], None));
+    let unread = BTreeMap::from([region(1, vec![cell(0, 9, efficiency(50_000))]), region(2, vec![cell(0, 4, ConvoyCellState::NotRecorded { reason: "Regional convoy efficiency was not recorded".into() }), cell(5, 9, efficiency(90_000))])]);
+    assert_eq!(most_strained(&unread, |_| true, Some(1), true), (Vec::new(), Some("Regional convoy efficiency was not recorded".to_owned())),
+        "region 2's unknown hours could hold the worst efficiency: no top, and why");
+    let (_, missing) = most_strained(&recorded, |_| true, Some(1), false);
+    assert!(missing.is_some(), "an unrecorded stretch of the view leaves every region's strain unknown, so no convoys is never claimed");
+}

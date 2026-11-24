@@ -1,4 +1,4 @@
-.market-detail { display: flex; flex-direction: column; gap: var(--space-3); font-size: var(--type-sm); }
+.market-detail { display: flex; width: min(480px, 80vw); flex-direction: column; gap: var(--space-3); font-size: var(--type-sm); }
 .market-detail h4 { margin: 0 0 var(--space-1); font-size: var(--type-xs); color: var(--muted); font-weight: 600; }
 .market-detail dl { margin: 0; }
 .market-detail dl > div { display: flex; justify-content: space-between; gap: var(--space-3); padding: 2px 0; font-variant-numeric: tabular-nums; }

@@ -306,7 +306,8 @@ fn world_tension_stack_computes_exact_shares_folds_other_and_clips_future() {
         3 => Some(("ITA".to_owned(), false)),
         _ => None,
     };
-    let out = compute_stack(&input, 10, 25, 2, TensionValueMode::Share, None, 200, tag_of);
+    let no_change = |_: u32, _: i32| None;
+    let out = compute_stack(&input, 10, 25, 2, TensionValueMode::Share, None, 200, tag_of, no_change);
     assert_eq!(out.end_hour, Some(25));
     assert_eq!(out.capped_end_tension, Some(100.0));
     assert!(!out.downsampled);
@@ -322,7 +323,7 @@ fn world_tension_stack_computes_exact_shares_folds_other_and_clips_future() {
     assert!((other.end_value.unwrap() - 100.0 / 6.0).abs() < 1e-9);
     assert_eq!(out.next_change_hour, Some(30));
 
-    let rec = compute_stack(&input, 10, 25, 2, TensionValueMode::Recorded, None, 200, tag_of);
+    let rec = compute_stack(&input, 10, 25, 2, TensionValueMode::Recorded, None, 200, tag_of, no_change);
     assert_eq!(rec.total, [Some(25.0), Some(120.0)]);
     assert_eq!(rec.bands[0].end_value, Some(60.0));
     assert_eq!(rec.bands[1].end_value, Some(40.0));
@@ -351,7 +352,8 @@ fn world_tension_stack_preserves_negative_contributions_independent_coverage_and
         _ => None,
     };
 
-    let out = compute_stack(&input, 10, 19, 5, TensionValueMode::Recorded, None, 200, tag_of);
+    let no_change = |_: u32, _: i32| None;
+    let out = compute_stack(&input, 10, 19, 5, TensionValueMode::Recorded, None, 200, tag_of, no_change);
     assert_eq!(out.total, [Some(6.5)]);
     assert_eq!(out.bands.len(), 3);
     assert_eq!(out.bands[0].end_value, Some(4.0));
@@ -360,20 +362,20 @@ fn world_tension_stack_preserves_negative_contributions_independent_coverage_and
     assert_eq!(out.bands[2].end_raw.as_deref(), Some("-50000"));
     assert!(out.other.is_none());
 
-    let out2 = compute_stack(&input, 10, 19, 2, TensionValueMode::Recorded, None, 200, tag_of);
+    let out2 = compute_stack(&input, 10, 19, 2, TensionValueMode::Recorded, None, 200, tag_of, no_change);
     assert_eq!(out2.total, [Some(6.5)]);
     assert_eq!(out2.bands.len(), 2);
     let other2 = out2.other.unwrap();
     assert_eq!(other2.count, 1);
     assert_eq!(other2.end_value, Some(-0.5));
 
-    let share = compute_stack(&input, 10, 19, 2, TensionValueMode::Share, None, 200, tag_of);
+    let share = compute_stack(&input, 10, 19, 2, TensionValueMode::Share, None, 200, tag_of, no_change);
     assert_eq!(share.total, [Some(6.5)]);
     assert!((share.bands[0].end_value.unwrap() - 4.0).abs() < 1e-9);
     assert!((share.bands[1].end_value.unwrap() - 3.0).abs() < 1e-9);
     assert!((share.other.unwrap().end_value.unwrap() - (-0.5)).abs() < 1e-9);
 
-    let rec_25 = compute_stack(&input, 10, 25, 5, TensionValueMode::Recorded, None, 200, tag_of);
+    let rec_25 = compute_stack(&input, 10, 25, 5, TensionValueMode::Recorded, None, 200, tag_of, no_change);
     assert_eq!(rec_25.end_hour, Some(25));
     assert_eq!(rec_25.capped_end_tension, None);
     assert_eq!(rec_25.total.last().copied().flatten(), None);
@@ -382,7 +384,7 @@ fn world_tension_stack_preserves_negative_contributions_independent_coverage_and
     assert_eq!(rec_25.bands[1].end_raw, None);
     assert_eq!(rec_25.bands[2].end_value, None);
 
-    let gap = compute_stack(&input, 10, 32, 2, TensionValueMode::Recorded, None, 200, tag_of);
+    let gap = compute_stack(&input, 10, 32, 2, TensionValueMode::Recorded, None, 200, tag_of, no_change);
     assert_eq!(gap.end_hour, None);
     assert_eq!(gap.capped_end_tension, None);
     assert_eq!(gap.total.last().copied().flatten(), None);
@@ -406,9 +408,17 @@ fn downsampled_world_tension_stack_preserves_band_min_max_bounds() {
     slots.insert(1, runs);
     let complete = [(0, 79)];
     let input = StackInput { tension: &[], sum: &sum, slots: &slots, aggregates_complete: &complete, missing: &[] };
-    let out = compute_stack(&input, 0, 79, 5, TensionValueMode::Recorded, None, 4, |slot, _| {
-        (slot == 1).then(|| ("GER".to_owned(), false))
-    });
+    let out = compute_stack(
+        &input,
+        0,
+        79,
+        5,
+        TensionValueMode::Recorded,
+        None,
+        4,
+        |slot, _| (slot == 1).then(|| ("GER".to_owned(), false)),
+        |_, _| None,
+    );
     assert!(out.downsampled);
     let band = &out.bands[0];
     assert_eq!(band.min_values.len(), band.values.len());
@@ -422,4 +432,54 @@ fn downsampled_world_tension_stack_preserves_band_min_max_bounds() {
         band.min_values.iter().zip(&band.max_values).any(|(lo, hi)| lo < hi),
         "at least one downsampled bucket carries distinct min/max interval bounds",
     );
+}
+
+#[test]
+fn world_tension_stack_resolves_slot_identity_at_drawn_hour_and_bounds_holder_transitions() {
+    use super::Named;
+    use dashboard_query::identity::{Holder, HolderRun, Holders};
+    use std::collections::BTreeMap;
+    use world_tension_stack::{StackInput, TensionValueMode, compute_stack};
+
+    let holders = Holders::new(
+        BTreeMap::from([
+            ("GER".to_owned(), vec![HolderRun { first: 10, last: 25, holder: Holder::Found { slot: 1, id: 1 }, starts_segment: true }]),
+            ("D01".to_owned(), vec![HolderRun { first: 26, last: 50, holder: Holder::Found { slot: 1, id: 2 }, starts_segment: true }]),
+        ]),
+        Vec::new(),
+    );
+    let mut slots = BTreeMap::new();
+    slots.insert(1, vec![(10, 19, Some(400_000))]);
+    let complete = [(10, 19)];
+    let input = StackInput { tension: &[], sum: &[(10, 19, 400_000)], slots: &slots, aggregates_complete: &complete, missing: &[] };
+
+    let named_20 = Named::new(&holders, 20);
+    assert_eq!(named_20.next_change(1, 20), Some(26));
+    let out_20 = compute_stack(
+        &input,
+        10,
+        20,
+        5,
+        TensionValueMode::Recorded,
+        None,
+        200,
+        |slot, hour| named_20.slot(slot, hour).map(|(tag, rem)| (tag.to_owned(), rem)),
+        |slot, hour| named_20.next_change(slot, hour),
+    );
+    assert_eq!(out_20.bands[0].tag.as_deref(), Some("GER"));
+    assert_eq!(out_20.next_change_hour, Some(26), "holder transition at hour 26 must bound validity");
+
+    let named_30 = Named::new(&holders, 30);
+    let out_30 = compute_stack(
+        &input,
+        10,
+        30,
+        5,
+        TensionValueMode::Recorded,
+        None,
+        200,
+        |slot, hour| named_30.slot(slot, hour).map(|(tag, rem)| (tag.to_owned(), rem)),
+        |slot, hour| named_30.next_change(slot, hour),
+    );
+    assert_eq!(out_30.bands[0].tag.as_deref(), Some("D01"), "slot identity resolves at drawn hour 30, not rank_hour 19");
 }
