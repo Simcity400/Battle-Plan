@@ -1,8 +1,8 @@
-import { coloursIn, lookStarts, type CountryTimeline } from '../dashboard/countryTimeline.ts';
 import type { CountrySelection } from '../dashboard/model';
 import type { Gate } from '../dashboard/regionGate';
-import type { CountryGroupReply, HourSpan } from '../generated/dashboard';
+import type { CountryFlagChoice, CountryGroupReply, HourSpan } from '../generated/dashboard';
 import { nextFactionsChange, type FamilyFactionRun, type HourRanges } from './holders.ts';
+import { countryTagKey, type DrawnFlagEntry, type IdentityIndex } from './identity/index.ts';
 import type { CountryLook, CountryLooksMap } from './looks.ts';
 
 export { nextFactionsChange };
@@ -154,31 +154,67 @@ export function colourStringFromPacked(packed: number | undefined): string | und
   return `rgb(${(packed >> 16) & 255}, ${(packed >> 8) & 255}, ${packed & 255})`;
 }
 
-export function buildDatedCountryLooks(
-  timeline: CountryTimeline | undefined,
+export function colourStringFromRgb(rgb: readonly [number, number, number]): string {
+  return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+}
+
+export function buildCountryLooksFromIdentity(
+  index: IdentityIndex | null,
   tags: readonly string[],
   firstHour: number,
   lastHour: number,
-  exactAt: (hour: number) => (tag: string) => { readonly known?: boolean; readonly name: string; readonly flag?: string } | undefined,
+  flagFor: (choice: CountryFlagChoice) => DrawnFlagEntry | undefined,
   includeColours: boolean,
 ): CountryLooksMap {
+  if (!index || firstHour > lastHour) return {};
   const out: Record<string, CountryLook[]> = {};
   for (const tag of tags) {
-    const starts = lookStarts(timeline, tag, firstHour, lastHour);
+    const key = countryTagKey(tag);
     const runs: CountryLook[] = [];
-    for (const [at, held] of starts) {
-      const look = held ? exactAt(at)(tag) : undefined;
-      const packed = held && includeColours && timeline ? coloursIn(timeline, at, [tag])?.get(tag) : undefined;
-      const color = colourStringFromPacked(packed);
-      runs.push({
-        from: at,
-        name: look?.known ? look.name : null,
-        ...(look?.flag ? { flag: look.flag } : {}),
-        ...(color ? { color } : {}),
-        ...(look && !look.known ? { status: look.name } : {}),
-      });
+    let cursor = Math.floor(firstHour);
+    const limit = Math.floor(lastHour);
+    while (cursor <= limit) {
+      const res = index.resolve(key, cursor);
+      if (res.kind === 'known') {
+        const name = res.name.kind === 'known' ? res.name.value : null;
+        const status = res.name.kind === 'missing'
+          ? res.name.reason
+          : res.name.kind === 'failed'
+            ? res.name.failure.message
+            : res.name.kind === 'pending'
+              ? 'Loading…'
+              : undefined;
+        const color = includeColours && res.color.kind === 'known' ? colourStringFromRgb(res.color.value) : undefined;
+        let flag: string | undefined;
+        let flagPending = false;
+        if (res.flagChoice.kind === 'known') {
+          const drawn = flagFor(res.flagChoice.value);
+          if (!drawn) flagPending = true;
+          else if (drawn.url) flag = drawn.url;
+        } else if (res.flagChoice.kind === 'pending') {
+          flagPending = true;
+        }
+        runs.push({
+          from: cursor,
+          name,
+          ...(flag ? { flag } : {}),
+          ...(flagPending ? { flagPending: true } : {}),
+          ...(color ? { color } : {}),
+          ...(status ? { status } : {}),
+        });
+        cursor = Number.isFinite(res.nextBoundary) && res.nextBoundary > cursor ? res.nextBoundary : limit + 1;
+      } else if (res.kind === 'absent') {
+        runs.push({ from: cursor, name: null, status: res.reason });
+        cursor = Number.isFinite(res.nextBoundary) && res.nextBoundary > cursor ? res.nextBoundary : limit + 1;
+      } else if (res.kind === 'failed') {
+        runs.push({ from: cursor, name: null, status: res.failure.message });
+        break;
+      } else {
+        runs.push({ from: cursor, name: null, flagPending: true, status: 'Loading…' });
+        break;
+      }
     }
-    out[tag] = runs;
+    if (runs.length) out[tag] = runs;
   }
   return out;
 }

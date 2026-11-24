@@ -7,8 +7,12 @@ import type {
 
 export type {
   ArtDemand,
+  ArtFrame,
   ArtHandle,
+  ArtOrigin,
+  ArtProvenance,
   ArtProvider,
+  ArtResolution,
   ArtResult,
   AuxProductSpec,
   BoundedHover,

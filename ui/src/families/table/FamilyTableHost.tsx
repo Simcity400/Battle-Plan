@@ -12,7 +12,8 @@ import { holdElement } from '../../draw/bitmapSurface.ts';
 import { perfLog } from '../../shell/perf.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { auditIdOf } from '../audit.ts';
-import type { BoundedReadView, FamilySourceSubscription, MirrorModel } from '../contract.ts';
+import type { BoundedReadView, EntityKind, FamilySourceSubscription, MirrorModel } from '../contract.ts';
+import type { IdentitySnapshot } from '../identity/types.ts';
 import {
   attachAuditWatch,
   bindFamilyPointer,
@@ -108,6 +109,8 @@ export interface FamilyTableHostProps<TOptions> {
   readonly bounds?: readonly [number, number] | null;
   readonly countryColours?: ReadonlyMap<string, string>;
   readonly countryLooks?: CountryLooksMap;
+  readonly identitySnapshot?: IdentitySnapshot | null;
+  readonly onIdentityDemands?: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
   readonly selectedKey?: string | null;
   readonly onActivate?: (key: string, meta?: unknown, hour?: number) => void;
   readonly contextMenuItems?: (key: string | null, name: string | null, hour: number) => MenuItem[];
@@ -169,6 +172,8 @@ export default function FamilyTableHost<TOptions>({
   bounds,
   countryColours,
   countryLooks,
+  identitySnapshot = null,
+  onIdentityDemands,
   selectedKey = null,
   onActivate,
   contextMenuItems,
@@ -323,6 +328,8 @@ export default function FamilyTableHost<TOptions>({
     reducedMotion,
     staticSources,
     exactReadView,
+    identitySnapshot,
+    onIdentityDemands,
     selectedKey,
     onActivate,
     contextMenuItems,
@@ -342,6 +349,8 @@ export default function FamilyTableHost<TOptions>({
     reducedMotion,
     staticSources,
     exactReadView,
+    identitySnapshot,
+    onIdentityDemands,
     selectedKey,
     onActivate,
     contextMenuItems,
@@ -421,6 +430,7 @@ export default function FamilyTableHost<TOptions>({
       scrollLeft: sl,
       scrollTop: st,
       theme: cur.theme,
+      ...(cur.identitySnapshot ? { identitySnapshot: cur.identitySnapshot } : {}),
       selectedKey: cur.selectedKey,
       focusedKey: focusInsideRef.current ? focusedKeyRef.current : null,
       expanded: expandedRef.current,
@@ -601,6 +611,11 @@ export default function FamilyTableHost<TOptions>({
             columns: rawMeta?.columns?.length ? rawMeta.columns : prev.columns,
           }));
         }
+      }
+
+      const demandsField = shown?.fields?.identityDemands as readonly (readonly [EntityKind, string, number])[] | undefined;
+      if (demandsField && latestRef.current.onIdentityDemands) {
+        latestRef.current.onIdentityDemands(demandsField);
       }
 
       if (!visible || !shown?.fields) {
@@ -799,7 +814,7 @@ export default function FamilyTableHost<TOptions>({
 
   useLayoutEffect(() => {
     if (pipe !== null && enabled) bind();
-  }, [pipe, enabled, bind, options, settings, theme, reducedMotion, staticSources, selectedKey, expanded, subsReady, auditable, exactReadView, audit.captureActive]);
+  }, [pipe, enabled, bind, options, settings, theme, reducedMotion, staticSources, identitySnapshot, selectedKey, expanded, subsReady, auditable, exactReadView, audit.captureActive]);
 
   useFamilyPauseFlush(runtime.clock, () => {
     if (!pipeline || pipe === null) return;

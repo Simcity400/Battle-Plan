@@ -4,14 +4,19 @@ import { CountryFlagUrl } from '../components/CountryFlag';
 import { Icon } from '../components/Icons';
 import { useCampaignSettings } from './campaignSettings';
 import { resolveWindow } from './model';
-import { useAtHead } from './atHead.ts';
-import { groupLabel } from './groups';
-import { useCountryGroups } from './useCountryGroups';
 import { resolveWidgetCampaign } from './campaigns';
 import { selectedCountryKeys } from './countrySelection';
 import type { WidgetCountryChipProps } from './definitions';
+import {
+  factionKey,
+  useIdentityAtHead,
+  useIdentityScope,
+  type FactionIdentityResult,
+  type IdentityKey,
+} from '../families/identity/react.ts';
 
 const NO_KEYS: readonly string[] = [];
+const NO_IDENTITY_KEYS: readonly IdentityKey[] = [];
 
 export function PartsCountryChip(props: WidgetCountryChipProps) {
   return props.widget.options?.show === 'breakdown' ? <span className="dash-widget-country-slot" ref={props.onSlot} /> : <CountryChip {...props} />;
@@ -21,7 +26,6 @@ export default function CountryChip({ widget, runtime, active, compact = false }
   const settings = useCampaignSettings();
   const effective = resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId);
   const track = runtime.tracks.find(item => item.id === effective.trackIds[0]);
-  const groups = useCountryGroups(runtime, track, widget.countries.kind === 'group');
   const overrides = settings.campaigns[track?.source.metadata.campaignKey ?? '']?.factions;
   const tags = selectedCountryKeys(widget.countries, track);
   const shownHour = (clockHour: number) => track ? resolveWindow(effective, track, runtime.tracks, clockHour)?.lastHour ?? Number.NaN : Number.NaN;
@@ -29,10 +33,44 @@ export default function CountryChip({ widget, runtime, active, compact = false }
   const shownKeys = useMemo(() => war !== null ? [war] : tags.slice(0, 3), [war, JSON.stringify(tags)]);
   const labels = useKeyLabelsAt(runtime, track, war !== null || widget.countries.kind === 'tags' || widget.countries.kind === 'selected' ? shownKeys : NO_KEYS,
     shownHour, widget.time.mode === 'follow', active);
-  const name = () => chipName(labels[0]);
-  const faction = widget.countries.kind === 'group' && widget.countries.group.type === 'faction';
-  const label = useAtHead(runtime.clock, active && widget.time.mode === 'follow' && faction, clockHour => widget.countries.kind === 'group'
-    ? groupLabel(widget.countries.group, groups.data, name, track ? shownHour(clockHour) : undefined, overrides) : '');
+  const factionGroupId = widget.countries.kind === 'group' && widget.countries.group.type === 'faction' ? widget.countries.group.id : null;
+  const factionScope = useIdentityScope(runtime.client, track?.source, track?.branch.id, active && factionGroupId !== null);
+  const factionKeys = useMemo<readonly IdentityKey[]>(
+    () => (factionGroupId !== null ? [factionKey(factionGroupId)] : NO_IDENTITY_KEYS),
+    [factionGroupId],
+  );
+  const branchBounds = useMemo(
+    () => (track ? [track.branch.firstHour, track.branch.lastHour] as const : undefined),
+    [track?.branch.firstHour, track?.branch.lastHour],
+  );
+  const factionAtHead = useIdentityAtHead(
+    runtime.client,
+    track?.source,
+    factionGroupId !== null ? factionScope : null,
+    runtime.clock,
+    factionKeys,
+    clockHour => {
+      const h = shownHour(clockHour);
+      return Number.isFinite(h) ? h : null;
+    },
+    { active: active && factionGroupId !== null, follow: widget.time.mode === 'follow', branchBounds },
+  );
+  const label = (() => {
+    if (widget.countries.kind !== 'group') return '';
+    switch (widget.countries.group.type) {
+      case 'humans': return 'Human players';
+      case 'war': return `At war with ${chipName(labels[0])}`;
+      case 'top': return `Top ${widget.countries.group.count}`;
+      case 'faction': {
+        const override = overrides?.[widget.countries.group.id]?.name;
+        if (override) return override;
+        const resolved = factionAtHead.results[0] as FactionIdentityResult | undefined;
+        if (!resolved || resolved.kind === 'pending') return 'Loading faction…';
+        if (resolved.kind === 'known' && resolved.name.kind === 'known') return resolved.name.value;
+        return 'Unnamed faction';
+      }
+    }
+  })();
   if (track && widget.countries.kind === 'all') return <span className="dash-widget-country" data-tooltip={compact ? 'All countries' : undefined}><Icon name="globe" /><span>All countries</span></span>;
   if (track && widget.countries.kind === 'factions') {
     const text = widget.countries.count === Number.MAX_SAFE_INTEGER ? 'All factions' : `Top ${widget.countries.count} factions`;
