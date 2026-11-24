@@ -1,16 +1,18 @@
 import { formatNativeFixed5 } from '../../charts/valueAxis.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options.ts';
 import type { FamilyTheme } from '../contract.ts';
+import type { BarsBehindMode } from '../settingsControls.ts';
 
 export type TableSortDirection = 'ascending' | 'descending';
 export type TableOverflow = 'tooltip' | 'scroll';
-export type TableDensity = 'comfortable' | 'compact';
+export type TableDensity = 'compact' | 'normal' | 'comfortable';
 export type TableTone = 'blue' | 'red' | 'amber' | 'green' | 'grey' | 'country' | 'value-good' | 'value-bad';
 export type TableDisplay = 'plain' | 'faint' | 'track' | 'meterAfter' | 'meterBefore' | 'underline' | 'dot' | 'outline' | 'filled' | 'text'
   | 'flagName' | 'name' | 'flag' | 'icon';
 
 export interface TableSettings {
   density: TableDensity;
+  barsBehind?: BarsBehindMode;
   overflow: TableOverflow;
   order: string[];
   columns: Record<string, { show: boolean; as: TableDisplay; tone?: TableTone; width: number | null }>;
@@ -27,6 +29,7 @@ export interface TableColumnDefaults {
 
 export interface TableBase {
   density: TableDensity;
+  barsBehind?: BarsBehindMode;
   overflow: TableOverflow;
   sort: TableSettings['sort'];
 }
@@ -70,7 +73,7 @@ export const TABLE_SETTINGS_KEY = 'tableSettings';
 export const TABLE_SETTINGS_VERSION = 1;
 
 export const HEADER_CARET_LANE = 28;
-export const ROW_HEIGHT = { comfortable: 28, compact: 22 } as const;
+export const ROW_HEIGHT: Readonly<Record<TableDensity, number>> = { compact: 28, normal: 36, comfortable: 44 };
 export const METER_HEIGHT = 4;
 export const TRACK_HEIGHT = 6;
 export const SORT_GLIDE_MS = 160;
@@ -176,6 +179,7 @@ const columnDefault = (column: TableColumnDefaults): ColumnSetting =>
 export function tableDefaults(columns: readonly TableColumnDefaults[], base: TableBase): TableSettings {
   return {
     density: base.density,
+    ...(base.barsBehind !== undefined ? { barsBehind: base.barsBehind } : {}),
     overflow: base.overflow,
     order: columns.map(column => column.key),
     columns: Object.fromEntries(columns.map(column => [column.key, columnDefault(column)])),
@@ -188,6 +192,8 @@ const displays = new Set<TableDisplay>([
   'dot', 'outline', 'filled', 'text', 'flagName', 'name', 'flag', 'icon',
 ]);
 const tones = new Set<TableTone>(['blue', 'red', 'amber', 'green', 'grey', 'country', 'value-good', 'value-bad']);
+const densities = new Set<TableDensity>(['compact', 'normal', 'comfortable']);
+const barsBehindModes = new Set<BarsBehindMode>(['off', 'sorted', 'all']);
 const own = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const validWidth = (width: unknown): width is number | null => width === null || typeof width === 'number' && Number.isFinite(width) && width >= 40 && width <= 1000;
 const validTone = (tone: unknown): tone is TableTone | undefined => tone === undefined || typeof tone === 'string' && tones.has(tone as TableTone);
@@ -202,10 +208,13 @@ export function tableSettingsOf(value: unknown, columns: readonly TableColumnDef
   if (typeof value !== 'string' || !value) return result;
   let parsed: unknown;
   try { parsed = JSON.parse(value); } catch { return result; }
-  if (!own(parsed) || parsed.v !== TABLE_SETTINGS_VERSION || (parsed.density !== 'comfortable' && parsed.density !== 'compact')
+  if (!own(parsed) || parsed.v !== TABLE_SETTINGS_VERSION || typeof parsed.density !== 'string' || !densities.has(parsed.density as TableDensity)
     || (parsed.overflow !== 'tooltip' && parsed.overflow !== 'scroll') || !Array.isArray(parsed.order) || !own(parsed.columns) || !own(parsed.sort)
     || typeof parsed.sort.column !== 'string' || !['ascending', 'descending'].includes(String(parsed.sort.direction))) return result;
-  result.density = parsed.density;
+  result.density = parsed.density as TableDensity;
+  if (typeof parsed.barsBehind === 'string' && barsBehindModes.has(parsed.barsBehind as BarsBehindMode)) {
+    result.barsBehind = parsed.barsBehind as BarsBehindMode;
+  }
   result.overflow = parsed.overflow;
   const known = new Map(columns.map(column => [column.key, column]));
   for (const [key, stored] of Object.entries(parsed.columns)) {
@@ -240,6 +249,7 @@ export function encodeTableSettings(settings: TableSettings): string {
   return JSON.stringify({
     v: TABLE_SETTINGS_VERSION,
     density: settings.density,
+    ...(settings.barsBehind !== undefined ? { barsBehind: settings.barsBehind } : {}),
     overflow: settings.overflow,
     order: settings.order,
     columns: settings.columns,
@@ -254,6 +264,7 @@ export function tableSettingValue(settings: TableSettings): OptionValue {
 export function cloneTableSettings(settings: TableSettings): TableSettings {
   return {
     density: settings.density,
+    ...(settings.barsBehind !== undefined ? { barsBehind: settings.barsBehind } : {}),
     overflow: settings.overflow,
     order: [...settings.order],
     columns: Object.fromEntries(Object.entries(settings.columns).map(([key, value]) => [key, { ...value }])),

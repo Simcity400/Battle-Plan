@@ -3,6 +3,7 @@ import test from 'node:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'vite';
 import { widgetMetas } from './definitions.ts';
+import { manifestSlotsForKind } from './manifest.ts';
 import { isPlaybackActive, loadWidgetRenderer, preloadAllWidgetRenderers, rendererLoaders, setPlaybackActive } from './rendererLoaders.ts';
 
 test('all installed kinds have independent lazy loaders and unknown saved kinds remain unknown', async () => {
@@ -10,19 +11,18 @@ test('all installed kinds have independent lazy loaders and unknown saved kinds 
   assert.equal(await loadWidgetRenderer('uninstalled-synthetic-kind'), undefined);
   const registry = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(registry, /import \w+ from ['"]\.\/[^'"]+['"]/);
-  assert.match(registry, /'map': lazyWidget\('map', \['render'\]\)/);
+  assert.deepEqual(manifestSlotsForKind('map'), ['render']);
 });
 
 test('every installed widget registers its body and all declared lazy slots', () => {
-  const registry = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
   for (const meta of widgetMetas) {
-    const slots = registry.match(new RegExp(`'${meta.kind}': lazyWidget\\('${meta.kind}', \\[([^\\]]*)\\]\\)`))?.[1];
-    assert.ok(slots?.includes("'render'"), `${meta.kind} must mount its body`);
+    const slots = manifestSlotsForKind(meta.kind);
+    assert.ok(slots.includes('render'), `${meta.kind} must mount its body`);
     const entry = ['index.ts', 'index.tsx'].map(name => new URL(`./${meta.kind}/${name}`, import.meta.url)).find(existsSync);
     assert.ok(entry, `${meta.kind} must provide an index.ts or index.tsx entry`);
     const source = readFileSync(entry, 'utf8');
-    for (const slot of ['countryChip']) {
-      if (new RegExp(`\\b${slot}\\s*[:,]`).test(source)) assert.ok(slots?.includes(`'${slot}'`), `${meta.kind} must retain ${slot}`);
+    for (const slot of ['countryChip'] as const) {
+      if (new RegExp(`\\b${slot}\\s*[:,]`).test(source)) assert.ok(slots.includes(slot), `${meta.kind} must retain ${slot}`);
     }
   }
 });

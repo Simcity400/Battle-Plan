@@ -4,7 +4,7 @@ import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
 import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
-import { tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
+import { ROW_HEIGHT, tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
 import { nextLookChange } from '../looks.ts';
 import { resolveHeadSpan } from './declaration.ts';
 import { familyTableLaneView, liveAdapter } from './laneView.ts';
@@ -1431,7 +1431,7 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
 
     page.mount(2, { route: 0, lane: 0, surfaces: [{ install() {}, clear() {} }] });
     lane.mount(2, [], 'table');
-    const viewportHeight20Rows = 20 * 28;
+    const viewportHeight20Rows = 20 * ROW_HEIGHT[settings.density];
     lane.bind(2, { generation: 1, surfaces: [{ width: 320, height: viewportHeight20Rows, dpr: 1 }], offset: 0, pin: null, dated: { h: 120, c: 120 } }, {
       family: 'table', kind: 'test-r5-art-1500', options: {}, settings, sources: {}, width: 320, height: viewportHeight20Rows, scrollLeft: 0, scrollTop: 0,
     });
