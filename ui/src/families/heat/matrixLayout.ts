@@ -126,15 +126,13 @@ export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout
   const totalWidth = Math.max(width, gridLeft + input.columns.length * cellWidth + trailingWidth + marginWidth);
   const totalHeight = Math.max(height, gridTop + input.rows.length * cellHeight);
 
-  const scrollLeft = Math.max(0, input.scrollLeft);
-  const scrollTop = Math.max(0, input.scrollTop);
-  const visibleW = Math.max(0, width - gridLeft - marginWidth);
-  const visibleH = Math.max(0, height - gridTop);
-
-  const firstCol = Math.max(0, Math.floor(scrollLeft / cellWidth) - 1);
-  const endCol = Math.min(input.columns.length, Math.ceil((scrollLeft + visibleW) / cellWidth) + 1);
-  const firstRow = Math.max(0, Math.floor(scrollTop / cellHeight) - 1);
-  const endRow = Math.min(input.rows.length, Math.ceil((scrollTop + visibleH) / cellHeight) + 1);
+  const { firstRow, endRow, firstCol, endCol } = matrixWindow(
+    { width, height, gridLeft, gridTop, marginWidth, cellWidth, cellHeight },
+    input.scrollLeft,
+    input.scrollTop,
+    input.rows.length,
+    input.columns.length,
+  );
 
   return {
     width,
@@ -163,6 +161,36 @@ export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout
     endCol,
     rowGroups,
     colGroups,
+  };
+}
+
+export interface MatrixGeometry {
+  readonly width: number;
+  readonly height: number;
+  readonly gridLeft: number;
+  readonly gridTop: number;
+  readonly marginWidth: number;
+  readonly cellWidth: number;
+  readonly cellHeight: number;
+}
+
+export interface MatrixWindow {
+  readonly firstRow: number;
+  readonly endRow: number;
+  readonly firstCol: number;
+  readonly endCol: number;
+}
+
+export function matrixWindow(geometry: MatrixGeometry, scrollLeftRaw: number, scrollTopRaw: number, rows: number, columns: number): MatrixWindow {
+  const scrollLeft = Math.max(0, scrollLeftRaw);
+  const scrollTop = Math.max(0, scrollTopRaw);
+  const visibleW = Math.max(0, geometry.width - geometry.gridLeft - geometry.marginWidth);
+  const visibleH = Math.max(0, geometry.height - geometry.gridTop);
+  return {
+    firstCol: Math.max(0, Math.floor(scrollLeft / geometry.cellWidth) - 1),
+    endCol: Math.min(columns, Math.ceil((scrollLeft + visibleW) / geometry.cellWidth) + 1),
+    firstRow: Math.max(0, Math.floor(scrollTop / geometry.cellHeight) - 1),
+    endRow: Math.min(rows, Math.ceil((scrollTop + visibleH) / geometry.cellHeight) + 1),
   };
 }
 

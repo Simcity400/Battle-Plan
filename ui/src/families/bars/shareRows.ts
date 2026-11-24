@@ -2,13 +2,14 @@ import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 import { REGION_ADD_KEY, type RegionRowRef, type RegionRowsField } from '../regions/regionRows.ts';
 import type { Value } from '../value.ts';
 import type { ValueFormat } from '../valueFormat.ts';
-import type { BarsDataRow, BarsModel, BarsRow, BarsSegment } from './model.ts';
+import type { BarsDataRow, BarsLegendItem, BarsModel, BarsRow, BarsRowMedia, BarsSegment } from './model.ts';
 
 export interface ShareRowEntry {
   readonly key: string;
   readonly subject?: string;
   readonly label: string;
   readonly labelMissing?: boolean;
+  readonly media?: BarsRowMedia;
   readonly group?: 'picked' | 'auto';
   readonly region?: number;
   readonly segments: readonly BarsSegment[];
@@ -28,6 +29,7 @@ export interface ShareRowsInput {
   readonly automaticHeading?: string;
   readonly addRegionLabel?: string | null;
   readonly summaryText?: string;
+  readonly legend?: readonly BarsLegendItem[];
   readonly empty?: string;
   readonly emptyDetail?: string;
   readonly emptyKind?: 'empty' | 'unavailable';
@@ -43,6 +45,7 @@ function toShareDataRow(entry: ShareRowEntry, group?: 'picked' | 'auto'): BarsDa
     subject: entry.subject ?? entry.key,
     label: entry.label,
     labelMissing: entry.labelMissing,
+    ...(entry.media ? { media: entry.media } : {}),
     group: entry.group ?? group,
     ...(entry.region !== undefined ? { region: entry.region } : {}),
     segments: entry.segments,
@@ -76,6 +79,7 @@ export function buildShareRowsModel(input: ShareRowsInput): BarsModel {
     rows,
     showAxis: false,
     ...(input.summaryText !== undefined ? { summaryText: input.summaryText } : {}),
+    ...(input.legend?.length ? { legend: input.legend } : {}),
     ...(input.empty !== undefined ? { empty: input.empty } : {}),
     ...(input.emptyDetail !== undefined ? { emptyDetail: input.emptyDetail } : {}),
     ...(input.emptyKind !== undefined ? { emptyKind: input.emptyKind } : {}),

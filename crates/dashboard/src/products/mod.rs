@@ -69,6 +69,7 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_land::registrations::ARMY_LOSSES_ARMYLOSSES,
     dashboard_land::registrations::FORCES_AIRFORCEAT,
     dashboard_land::registrations::FORCES_NAVYAT,
+    dashboard_land::registrations::ARMY_ARMYAT,
 ];
 
 const OWN: &[Registered] = &[
@@ -96,8 +97,6 @@ const OWN: &[Registered] = &[
     dashboard_wars::registrations::FACTIONS_FACTIONLINES,
     dashboard_world::registrations::SCALARS_WORLDTENSIONSTACK,
     dashboard_world::registrations::SCALARS_FACTORYGROUPS,
-    dashboard_land::registrations::FORCES_AIRFORCESIZE,
-    dashboard_land::registrations::FORCES_NAVYSIZE,
     dashboard_world::registrations::SUBJECTS_SUBJECTS,
     dashboard_wars::registrations::DIPLOMACY_DIPLOMATICPACTS,
     dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGELOG,
@@ -200,8 +199,6 @@ const MOVED_OWN: &[&str] = &[
     dashboard_wars::registrations::FACTIONS_FACTIONLINES.key,
     dashboard_world::registrations::SCALARS_WORLDTENSIONSTACK.key,
     dashboard_world::registrations::SCALARS_FACTORYGROUPS.key,
-    dashboard_land::registrations::FORCES_AIRFORCESIZE.key,
-    dashboard_land::registrations::FORCES_NAVYSIZE.key,
     dashboard_world::registrations::SUBJECTS_SUBJECTS.key,
     dashboard_wars::registrations::DIPLOMACY_DIPLOMATICPACTS.key,
     dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGELOG.key,

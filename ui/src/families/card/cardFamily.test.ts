@@ -110,46 +110,45 @@ test('war goals keep the product’s order and states, show a missing expiry by 
   assert.ok(deriveCardAudit(model).some(row => row.key === 'state' && String(row.value).endsWith(':Expired')));
 });
 
-test('national spirits list only what is held at the displayed hour, with since dates from the recording', () => {
+test('national spirits list the product’s membership at the displayed hour, in its order, with since dates and unclassified items kept', () => {
   const first = 100 * DAY;
-  const reply = {
-    branchId: '1', tag: 'AAA', asked: 'AAA',
-    spans: [
-      { token: 'mod_spirit_a', firstHour: first, lastHour: first + 500 * DAY, slot: null, character: null },
-      { token: 'mod_spirit_b', firstHour: first + 10 * DAY, lastHour: first + 500 * DAY, slot: null, character: null },
-      { token: 'mod_spirit_c', firstHour: first + 40 * DAY, lastHour: first + 500 * DAY, slot: null, character: null },
-    ],
-    ideas: ['mod_spirit_a', 'mod_spirit_b', 'mod_spirit_c'].map(token => ({ token, category: 'spirits', slot: null, law: false, designer: false, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null })),
-    artwork: [
-      { token: 'mod_spirit_a', name: 'Invented Spirit A', description: null, baseDurationDays: null, icon: 'asset://spirit-a.png' },
-      { token: 'mod_spirit_b', name: 'Invented Spirit B', description: null, baseDurationDays: null, icon: null },
-      { token: 'mod_spirit_c', name: 'Invented Spirit C', description: null, baseDurationDays: null, icon: null },
-    ],
-    holders: [], categories: [{ token: 'spirits', name: 'Spirits', kind: 'national_spirit', hidden: false, politicsTab: false, slots: [] }],
-    unobserved: [{ firstHour: first + 60 * DAY, lastHour: first + 61 * DAY }], identityStarts: [], modifiers: [], texts: [], warnings: [],
-  } as unknown as IdeaHistoryReply;
+  const looks = ['mod_spirit_a', 'mod_spirit_b', 'mod_spirit_c', 'mod_law'].map((token, at) => ({
+    info: { token, category: at === 3 ? 'laws' : at === 2 ? null : 'spirits', slot: null, law: at === 3, designer: false, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: at === 2 ? 'Invented reason the idea has no category' : null, nameMissing: null },
+    artwork: { token, name: `Invented ${token}`, description: null, baseDurationDays: null, icon: at === 0 ? 'asset://spirit-a.png' : null },
+  }));
+  const categories = [{ token: 'spirits', name: 'Spirits', kind: 'national_spirit', hidden: false, politicsTab: false, slots: [] }, { token: 'laws', name: 'Laws', kind: null, hidden: false, politicsTab: true, slots: [] }];
+  const held = (look: number, firstHour: number, hour: number, start: string) => ({ token: looks[look]!.info.token, firstHour, lastHour: hour, start, end: { kind: 'held' }, slot: null, character: null, look });
+  const replyAt = (hour: number, holdings: ReturnType<typeof held>[], nextChange: number | null, unrecorded: string | null = null) => ({
+    branchId: '1', tag: 'AAA', asked: 'AAA', hour, nextChange, unrecorded, holdings, held: holdings.map((_, at) => at).reverse(), looks, categories,
+    unobserved: [], modifiers: [], texts: [], warnings: [],
+  } as unknown as IdeaHistoryReply);
   const hour = first + 20 * DAY;
-  const model = nationalSpiritsProjection.project(view(hour, reply), { branchFirst: first });
+  const reply = replyAt(hour, [held(0, first, hour, 'heldBefore'), held(1, first + 10 * DAY, hour, 'seen'), held(3, first, hour, 'seen')], first + 40 * DAY);
+  const model = nationalSpiritsProjection.project(view(hour, reply), {});
   const rows = items(model);
-  assert.deepEqual(rows.map(row => row.key), ['mod_spirit_a', 'mod_spirit_b'], 'a spirit gained after the displayed hour is not shown');
-  assert.match(String(rows[0]!.figure?.value.kind === 'known' && rows[0]!.figure.value.value), /^Held before /);
-  assert.match(String(rows[1]!.figure?.value.kind === 'known' && rows[1]!.figure.value.value), /^Since /);
-  assert.equal(rows[1]!.art?.art.status, 'confirmedMissing');
+  assert.deepEqual(rows.map(row => row.key), ['mod_spirit_b', 'mod_spirit_a'], 'the product decides the order; a law is not a spirit');
+  assert.match(String(rows[1]!.figure?.value.kind === 'known' && rows[1]!.figure.value.value), /^Held before /);
+  assert.match(String(rows[0]!.figure?.value.kind === 'known' && rows[0]!.figure.value.value), /^Since /);
+  assert.equal(rows[0]!.art?.art.status, 'confirmedMissing');
   assert.equal(model.nextChangeAt, first + 40 * DAY);
-  const unseen = nationalSpiritsProjection.project(view(first + 60 * DAY, reply), { branchFirst: first });
+  const gained = first + 45 * DAY;
+  const later = replyAt(gained, [held(0, first, gained, 'heldBefore'), held(1, first + 10 * DAY, gained, 'seen'), held(2, first + 41 * DAY, gained, 'firstObserved')], null);
+  const unclassified = items(nationalSpiritsProjection.project(view(gained, later), {})).find(row => row.key === 'mod_spirit_c')!;
+  assert.match(String(unclassified.figure?.value.kind === 'known' && unclassified.figure.value.value), /^First observed /, 'first seen after a gap is a bound, not a start');
+  assert.ok(unclassified.tooltip?.items?.some(item => item.label === 'Category' && 'missingReason' in item), 'an unclassified idea is kept with its reason');
+  const unseen = nationalSpiritsProjection.project(view(first + 60 * DAY, replyAt(first + 60 * DAY, [], null, 'Invented unread reason')), {});
   assert.equal(unseen.emptyKind, 'unavailable');
 
   registerFamilyProjection(nationalSpiritsProjection);
-  const options = { branchFirst: first };
+  const options = {};
   const lane = (panel: unknown) => ({ family: 'card', kind: 'national-spirits', options, sources: {}, staticPanels: { main: panel }, scrollTop: 0, theme: LANE_THEME, width: 420, height: 160 });
-  const held = lane(reply);
-  const renamed = { ...reply, artwork: reply.artwork.map(entry => (entry.token === 'mod_spirit_b' ? { ...entry, name: 'Invented Spirit Renamed' } : entry)) } as IdeaHistoryReply;
+  const renamed = { ...reply, looks: reply.looks.map(entry => (entry.artwork.token === 'mod_spirit_b' ? { ...entry, artwork: { ...entry.artwork, name: 'Invented Spirit Renamed' } } : entry)) } as IdeaHistoryReply;
   const surface = { width: 420, height: 160, dpr: 1 };
-  assert.equal(assertQuietFrames(() => familyCardLaneView(() => {}), { label: 'spirits', binding: held, hour }, 24, surface), first + 40 * DAY);
+  assert.equal(assertQuietFrames(() => familyCardLaneView(() => {}), { label: 'spirits', binding: lane(reply), hour }, 24, surface), first + 40 * DAY);
   assertFreshPaint(() => familyCardLaneView(() => {}), [
-    { label: 'held', binding: held, hour, check: true },
-    { label: 'a spirit gained', binding: held, hour: first + 45 * DAY, speed: 24 },
-    { label: 'seek back', binding: held, hour, check: true },
+    { label: 'held', binding: lane(reply), hour, check: true },
+    { label: 'a spirit gained', binding: lane(later), hour: gained, speed: 24 },
+    { label: 'seek back', binding: lane(reply), hour, check: true },
     { label: 'same-hour correction', binding: lane(renamed), hour, check: true },
   ], surface);
 });

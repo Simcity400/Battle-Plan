@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
-import { deriveMatrixAudit, deriveMatrixTooltip, matrixCellAt } from '../../families/heat/matrixModel.ts';
+import { deriveMatrixAudit, deriveMatrixMirror, deriveMatrixTooltip, matrixCellAt } from '../../families/heat/matrixModel.ts';
 import type { OperativeMatrixReply } from '../../generated/dashboard';
 import { projectOperativeMatrix, projectOperativePairs } from './whoSpiesProjection.ts';
 
@@ -51,9 +51,11 @@ test('spy matrix: counter-intelligence on the diagonal, unknown pairs hatched ne
   assert.equal(tip?.title, 'ENG has 3 operatives in GER');
   assert.equal(tip?.hour, HOUR - 12, 'dated by the census read hour');
   assert.deepEqual(deriveMatrixTooltip(model, 0, model.columns.length)?.items, [{ label: 'Active / maximum', value: '7 / 7' }]);
-  const audit = deriveMatrixAudit(model);
-  assert.ok(audit.some(row => row.key === 'ENG->ENG' && row.value === '2'));
-  assert.ok(audit.some(row => row.key === 'ITA->rest' && String(row.value).startsWith('Not recorded')));
+  const audit = deriveMatrixAudit(model, { firstRow: 0, endRow: model.rows.length, firstCol: 0, endCol: model.columns.length });
+  assert.ok(audit.some(row => row.key === 'ENG:ENG' && row.row === 'ENG' && row.value === '2'));
+  assert.ok(audit.some(row => row.key.startsWith('ITA:') && String(row.value).startsWith('Not recorded')));
+  assert.ok(audit.some(row => row.key === 'ENG:margin' && row.value === '7 / 7'), 'the capacity margin is audited');
+  assert.equal(deriveMatrixMirror(model, 0, 1, 0, model.columns.length).rows[0]!.cells.at(-1)!.column, model.margin!.header, 'and spoken in the mirror');
 });
 
 test('spy matrix: a spy with an operative on an unrecorded target does not know its own home cell either', () => {

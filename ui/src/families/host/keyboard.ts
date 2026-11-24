@@ -110,12 +110,12 @@ export function handleFamilyKeyDown(event: ReactKeyboardEvent | KeyboardEvent, o
     else options.onActivate(target);
     return;
   }
-  if (event.key === 'ArrowRight' && entry && entry[3] === 0 && options.onToggleTree) {
+  if (event.key === 'ArrowRight' && hasExplicitFocus && entry && entry[3] === 0 && options.onToggleTree) {
     event.preventDefault();
     options.onToggleTree(entry[0]);
     return;
   }
-  if (event.key === 'ArrowLeft' && entry) {
+  if (event.key === 'ArrowLeft' && hasExplicitFocus && entry) {
     if (entry[3] === 1 && options.onToggleTree) {
       event.preventDefault();
       options.onToggleTree(entry[0]);
