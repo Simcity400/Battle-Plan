@@ -10,6 +10,7 @@ dashboard_base::register_products! {
     FOCUS_FOCUSHOURPRODUCT => crate::products::focus::FocusHourProduct,
     FOCUS_FOCUSORDERPAGEPRODUCT => crate::products::focus::FocusOrderPageProduct,
     FOCUS_FOCUSCOMPLETIONSPRODUCT => crate::products::focus::FocusCompletionsProduct,
+    FOCUS_CARD_FOCUSCARD => crate::products::focus_card::FocusCard,
     IDEAS_IDEAHISTORY => crate::products::ideas::IdeaHistory,
     PARTY_HISTORY_PARTYHISTORY => crate::products::party_history::PartyHistory,
     FEED_EVENTFEED => crate::products::feed::EventFeed,

@@ -44,6 +44,27 @@ pub struct WargoalEntry {
     pub states: Vec<u32>,
     pub liberate: Vec<String>,
     pub puppets: Vec<String>,
+    pub state: WargoalState,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum WargoalState {
+    AtWar,
+    Ready,
+    InUse,
+    Expired,
+}
+pub fn goal_state(at_war: bool, available: bool, expires: Option<i32>, hour: i32) -> WargoalState {
+    if at_war {
+        WargoalState::AtWar
+    } else if expires.is_some_and(|expires| expires <= hour) {
+        WargoalState::Expired
+    } else if available {
+        WargoalState::Ready
+    } else {
+        WargoalState::InUse
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -151,6 +172,7 @@ impl AtHour for Wargoals {
             WargoalsReply::decl(),
             WargoalPair::decl(),
             WargoalStanding::decl(),
+            WargoalState::decl(),
             WargoalStateName::decl(),
         ]
     }
@@ -474,6 +496,7 @@ fn inventory(
                 .into_iter()
                 .map(|v| tag(v as u32))
                 .collect::<io::Result<_>>()?,
+            state: WargoalState::InUse,
         });
     }
     let mut just = Vec::new();
@@ -518,6 +541,15 @@ fn inventory(
         .chain(just.iter().map(|r| (r.actor.clone(), r.recipient.clone())))
         .collect::<BTreeSet<_>>();
     let standings = standings(frame, &pairs);
+    let at_war: BTreeSet<(&str, &str)> = standings
+        .iter()
+        .filter(|pair| pair.standing == Some(WargoalStanding::AtWar))
+        .map(|pair| (pair.actor.as_str(), pair.recipient.as_str()))
+        .collect();
+    for goal in &mut out {
+        goal.state = goal_state(at_war.contains(&(goal.actor.as_str(), goal.recipient.as_str())), goal.available, goal.expires, p.hour);
+    }
+    out.sort_by_key(|goal| goal.state);
     Ok(WargoalsReply {
         branch_id: p.branch_id.clone(),
         tag: p.tag.clone(),
@@ -606,6 +638,7 @@ mod tests {
             reply.goals[0].available,
             "daily-stale expiry cannot remove native membership"
         );
+        assert_eq!(reply.goals[0].state, WargoalState::AtWar, "a goal against a country at war is at war, its expiry passed or not");
         assert_eq!(reply.goals[0].states, [50, 51, 50]);
         assert_eq!(reply.goals[0].liberate, ["THREE"]);
         assert_eq!(reply.goals[0].puppets, ["TWO"]);
@@ -697,6 +730,17 @@ mod tests {
         assert!(localised_goal_name(&frame, &loc, b"custom_goal", 1, 2).is_err());
     }
 
+    #[test]
+    fn a_goal_state_puts_war_before_readiness_and_expiry_before_both_unless_at_war() {
+        assert_eq!(goal_state(true, true, Some(10), 20), WargoalState::AtWar);
+        assert_eq!(goal_state(false, true, Some(20), 20), WargoalState::Expired, "a goal is expired from its expiry hour");
+        assert_eq!(goal_state(false, true, Some(21), 20), WargoalState::Ready);
+        assert_eq!(goal_state(false, true, None, 20), WargoalState::Ready, "no recorded expiry is not an expiry");
+        assert_eq!(goal_state(false, false, None, 20), WargoalState::InUse);
+        let mut states = [WargoalState::Expired, WargoalState::InUse, WargoalState::Ready, WargoalState::AtWar];
+        states.sort();
+        assert_eq!(states, [WargoalState::AtWar, WargoalState::Ready, WargoalState::InUse, WargoalState::Expired]);
+    }
     #[test]
     fn inventory_pair_standing_uses_live_wars_and_nonzero_factions_only() {
         let mut frame = super::super::war_fixtures::recorded(100);

@@ -25,9 +25,12 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'apm-table': { load: () => import('./apm-table') },
   'division-template': { load: () => import('./division-template') },
   'game-score': { load: () => import('./game-score') },
+  'national-focus': { load: () => import('./national-focus') },
+  'national-spirits': { load: () => import('./national-spirits') },
   'occupied-states': { load: () => import('./occupied-states') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'scoreboard': { load: () => import('./scoreboard') },
+  'war-goals': { load: () => import('./war-goals') },
 };
 
 const familyByKind = new Map<string, FamilyViewEntry[]>();

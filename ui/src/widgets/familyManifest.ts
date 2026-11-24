@@ -1,5 +1,7 @@
 import { DEFAULT_VIEW, type FamilyViewEntry, type FamilyViewModule } from '../families/manifest.ts';
 import { bindFamilyManifest } from '../families/registry.ts';
+import type { AnyCardWidgetDeclaration } from '../families/card/declaration.ts';
+import type { CardProjection } from '../families/card/model.ts';
 import type { AnyTableWidgetDeclaration } from '../families/table/declaration.ts';
 import type { TableProjection } from '../families/table/model.ts';
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../families/time-chart/declaration.ts';
@@ -26,6 +28,17 @@ function timeChartSpec<TModule>(
   return () => load().then(mod => {
     const { projection, declaration } = pick(mod);
     return { family: 'time-chart', kind, view, projection, declaration };
+  });
+}
+
+function cardSpec<TModule>(
+  kind: string,
+  load: () => Promise<TModule>,
+  pick: (mod: TModule) => { readonly projection: CardProjection<any>; readonly declaration: AnyCardWidgetDeclaration },
+): () => Promise<FamilyViewModule> {
+  return () => load().then(mod => {
+    const { projection, declaration } = pick(mod);
+    return { family: 'card', kind, view: DEFAULT_VIEW, projection, declaration };
   });
 }
 
@@ -112,6 +125,27 @@ export const FAMILY_VIEWS: readonly FamilyViewEntry[] = [
       () => import('./political-power/politicalPowerProjection.ts'),
       mod => ({ projection: mod.politicalPowerProjection, declaration: mod.politicalPowerDeclaration }),
     ),
+  },
+  {
+    kind: 'national-focus',
+    view: DEFAULT_VIEW,
+    family: 'card',
+    loadSpec: cardSpec('national-focus', () => import('./national-focus/nationalFocusProjection.ts'),
+      mod => ({ projection: mod.nationalFocusProjection, declaration: mod.nationalFocusDeclaration })),
+  },
+  {
+    kind: 'national-spirits',
+    view: DEFAULT_VIEW,
+    family: 'card',
+    loadSpec: cardSpec('national-spirits', () => import('./national-spirits/nationalSpiritsProjection.ts'),
+      mod => ({ projection: mod.nationalSpiritsProjection, declaration: mod.nationalSpiritsDeclaration })),
+  },
+  {
+    kind: 'war-goals',
+    view: DEFAULT_VIEW,
+    family: 'card',
+    loadSpec: cardSpec('war-goals', () => import('./war-goals/warGoalsProjection.ts'),
+      mod => ({ projection: mod.warGoalsProjection, declaration: mod.warGoalsDeclaration })),
   },
 ];
 

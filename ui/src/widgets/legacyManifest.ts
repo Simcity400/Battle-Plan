@@ -2,7 +2,6 @@ import type { LegacyWidgetEntry } from '../families/manifest.ts';
 
 export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'apm-graph', load: () => import('./apm-graph') },
-  { kind: 'war-goals', load: () => import('./war-goals') },
   { kind: 'next-elections', load: () => import('./next-elections') },
   { kind: 'balance-of-power', load: () => import('./balance-of-power') },
   { kind: 'governments-in-exile', load: () => import('./governments-in-exile') },
@@ -10,7 +9,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'event-choices', load: () => import('./event-choices') },
   { kind: 'decisions', load: () => import('./decisions') },
   { kind: 'map', load: () => import('./map') },
-  { kind: 'national-focus', load: () => import('./national-focus') },
   { kind: 'research', playsBackDated: true, load: () => import('./research') },
   { kind: 'active-research', playsBackDated: true, load: () => import('./active-research') },
   { kind: 'political-power-spending', load: () => import('./political-power-spending') },
@@ -19,7 +17,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'command-power-spending', load: () => import('./command-power-spending') },
   { kind: 'stability', slots: ['render', 'countryChip'], load: () => import('./stability') },
   { kind: 'idea-timeline', load: () => import('./idea-timeline') },
-  { kind: 'national-spirits', load: () => import('./national-spirits') },
   { kind: 'spirit-history', load: () => import('./spirit-history') },
   { kind: 'ruling-party', load: () => import('./ruling-party') },
   { kind: 'resource-balance', load: () => import('./resource-balance') },

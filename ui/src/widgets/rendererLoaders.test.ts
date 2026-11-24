@@ -46,7 +46,7 @@ test('every widget module loads with its registered lazy body and the catalogue 
       const registered = widgetDefinition(meta.kind);
       const renderer = await load(meta.kind);
       assert.ok(
-        typeof renderer.render === 'function' || renderer.declaration?.family === 'table',
+        typeof renderer.render === 'function' || typeof renderer.declaration?.family === 'string',
         `${meta.kind} body or family declaration loads`,
       );
       if (renderer.declaration) {
