@@ -4,7 +4,6 @@ import type { FamilyTheme } from '../contract.ts';
 import type { BarsBehindMode } from '../settingsControls.ts';
 
 export type TableSortDirection = 'ascending' | 'descending';
-export type TableOverflow = 'tooltip' | 'scroll';
 export type TableDensity = 'compact' | 'normal' | 'comfortable';
 export type TableBarsMode = BarsBehindMode;
 export type TableTone = 'blue' | 'red' | 'amber' | 'green' | 'grey' | 'country' | 'value-good' | 'value-bad';
@@ -22,7 +21,6 @@ export interface TableColumnSetting {
 export interface TableSettings {
   density: TableDensity;
   barsBehind?: BarsBehindMode;
-  overflow: TableOverflow;
   showRank: boolean;
   order: string[];
   columns: Record<string, TableColumnSetting>;
@@ -43,7 +41,6 @@ export interface TableColumnDefaults {
 export interface TableBase {
   density: TableDensity;
   barsBehind?: BarsBehindMode;
-  overflow: TableOverflow;
   showRank?: boolean;
   sort: TableSettings['sort'];
 }
@@ -67,7 +64,6 @@ export interface TableColumnLayout {
 
 export interface TableLayout {
   columns: TableColumnLayout[];
-  hidden: string[];
   totalWidth: number;
   scrollable: boolean;
   pinnedWidth: number;
@@ -217,7 +213,6 @@ export function tableDefaults(columns: readonly TableColumnDefaults[], base: Tab
   return {
     density: base.density ?? 'normal',
     barsBehind: base.barsBehind ?? 'all',
-    overflow: base.overflow ?? 'scroll',
     showRank: base.showRank ?? false,
     order: columns.map(column => column.key),
     columns: Object.fromEntries(columns.map(column => [column.key, columnDefault(column)])),
@@ -255,16 +250,12 @@ export function tableSettingsOf(value: unknown, columns: readonly TableColumnDef
   try { parsed = JSON.parse(value); } catch { return result; }
   if (!own(parsed) || parsed.v !== TABLE_SETTINGS_VERSION
     || typeof parsed.density !== 'string' || !densities.has(parsed.density as TableDensity)
-    || (parsed.overflow !== 'tooltip' && parsed.overflow !== 'scroll')
     || !Array.isArray(parsed.order) || !own(parsed.columns) || !own(parsed.sort)
     || typeof parsed.sort.column !== 'string' || !['ascending', 'descending'].includes(String(parsed.sort.direction))) return result;
   result.density = parsed.density as TableDensity;
   if (typeof parsed.barsBehind === 'string' && barsBehindModes.has(parsed.barsBehind as BarsBehindMode)) {
     result.barsBehind = parsed.barsBehind as BarsBehindMode;
-  } else if (typeof parsed.bars === 'string' && barsBehindModes.has(parsed.bars as BarsBehindMode)) {
-    result.barsBehind = parsed.bars as BarsBehindMode;
   }
-  result.overflow = parsed.overflow;
   result.showRank = typeof parsed.showRank === 'boolean' ? parsed.showRank : (base.showRank ?? false);
   const known = new Map(columns.map(column => [column.key, column]));
   for (const [key, stored] of Object.entries(parsed.columns)) {
@@ -304,7 +295,6 @@ export function encodeTableSettings(settings: TableSettings): string {
     v: TABLE_SETTINGS_VERSION,
     density: settings.density,
     ...(settings.barsBehind !== undefined ? { barsBehind: settings.barsBehind } : {}),
-    overflow: settings.overflow,
     showRank: settings.showRank,
     order: settings.order,
     columns: settings.columns,
@@ -320,7 +310,6 @@ export function cloneTableSettings(settings: TableSettings): TableSettings {
   return {
     density: settings.density,
     ...(settings.barsBehind !== undefined ? { barsBehind: settings.barsBehind } : {}),
-    overflow: settings.overflow,
     showRank: settings.showRank,
     order: [...settings.order],
     columns: Object.fromEntries(Object.entries(settings.columns).map(([key, value]) => [key, { ...value }])),

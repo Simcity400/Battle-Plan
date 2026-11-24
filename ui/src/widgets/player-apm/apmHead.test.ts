@@ -188,7 +188,7 @@ test('apm-table resolves country at row observation hour including hour 0, gives
   assert.deepEqual(followedModel.rows.find(r => r.key === 'user:deadbeef')!.cells.name!.value, { kind: 'notRecorded', reason: 'Player name is not valid UTF-8.' });
 
   const cols = apmTableColumns(true, true);
-  const tip = deriveTableTooltip(resolveTableRows(model, tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'apm', direction: 'descending' } })), 'p1', cols, new Set(), 400)!;
+  const tip = deriveTableTooltip(resolveTableRows(model, tableSettingsOf(undefined, cols, { density: 'comfortable', sort: { column: 'apm', direction: 'descending' } })), 'p1', cols, 400)!;
   assert.equal(tip.rows.find(r => r.label === 'Country')?.valueState?.text, 'Weimar');
 
   const followOpts = { ...opts, staticSpan: null };

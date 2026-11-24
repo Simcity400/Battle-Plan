@@ -21,7 +21,7 @@ import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { ArtHandle, DisplayedHour } from '../plan.ts';
 import { IdentityBroker, type IdentityTransport } from './broker.ts';
 import { createBrokerIdentityProvider, createSnapshotIdentityProvider, parseEntityKey } from './provider.ts';
-import { UNHELD_HEAD_HOUR, readIdentityAtHeadHour, subscribeIdentityAtHead, type HeldHeadHour } from './react.ts';
+import { UNHELD_HEAD_HOUR, countryPickerKeys, readIdentityAtHeadHour, subscribeIdentityAtHead, type HeldHeadHour } from './react.ts';
 import {
   IdentityIndex,
   countrySlotKey,
@@ -667,6 +667,36 @@ test('a lane flag at a size other than the default is demanded, drawn at that si
   broker.dispose();
 });
 
+test('the playback picker dates every shown row by the displayed hour and moves at the earliest boundary among them', async () => {
+  const facts = sampleFacts();
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => facts,
+    loadIdentities: async () => sampleIdentities(),
+    loadGroups: async () => sampleGroups(),
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size) => ({ size, flags: [], unavailable: [], warnings: [] }),
+  };
+  const broker = new IdentityBroker({ transport });
+  broker.setDemand({}, SCOPE, { asks: [{ key: countryTagKey('ALP'), hour: 0 }], needFlags: false, flagSize: 'panel' }, undefined, [0, 500]);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  let clockHour = 25;
+  const clock = { getHour: () => clockHour };
+  const held: { current: HeldHeadHour } = { current: UNHELD_HEAD_HOUR };
+  const keys = countryPickerKeys(null, 'ALP', ['ALP', 'GER']);
+  const read = () => readIdentityAtHeadHour(broker, clock, SCOPE, true, keys, h => h, null, [0, 500], held);
+  assert.equal(read(), 25);
+  clockHour = 160;
+  const at = read();
+  assert.equal(at, 160, 'a shown row renamed at 150 moves the picker although the selection did not change');
+  assert.equal(broker.resolve(SCOPE, countryTagKey('GER'), at!).kind === 'known' && (broker.resolve(SCOPE, countryTagKey('GER'), at!) as { name: { value?: string } }).name.value, 'Later Empire');
+  clockHour = 20;
+  assert.equal(read(), 20, 'a seek back is read at the displayed hour, never a later one');
+  assert.deepEqual(countryPickerKeys(null, null, ['GER']).length, 1, 'an empty selection still dates the shown rows');
+  assert.deepEqual(countryPickerKeys(3, 'ALP', []), [countrySlotKey(3)], 'a selected slot stays first, so it is the header');
+  broker.dispose();
+});
+
 test('an identity key and an art handle keep their whole identity from demand to the drawn picture', () => {
   const index = new IdentityIndex(SCOPE, [0, 500]);
   index.setFacts(sampleFacts(), true);
@@ -828,11 +858,44 @@ test('a country the lane asks for and the snapshot lacks becomes a broker demand
   broker.dispose();
 });
 
+test('a failed branch read is not restarted by later demands: a transient failure waits for its backoff, a refusal for an explicit retry', async () => {
+  let now = 0;
+  const timers: { at: number; run: () => void }[] = [];
+  let identityReads = 0;
+  let groupReads = 0;
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: async () => { identityReads++; throw new RefusedError('Unsupported identity table'); },
+    loadGroups: async () => { groupReads++; throw new TypeError('connection reset'); },
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size) => ({ size, flags: [], unavailable: [], warnings: [] }),
+  };
+  const broker = new IdentityBroker({ transport, clock: { now: () => now, after: (ms, run) => { timers.push({ at: now + ms, run }); return () => {}; } } });
+  const owner = {};
+  for (let hour = 100; hour < 160; hour++) {
+    broker.setDemand(owner, SCOPE, { asks: [{ key: countryTagKey('GER'), hour }], needFlags: false, needGroups: true, flagSize: 'panel' });
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+  }
+  assert.equal(identityReads, 1, 'a refused read is asked once');
+  assert.equal(groupReads, 1, 'a transient failure waits for its backoff');
+  assert.equal(timers.length, 1);
+  now = timers[0]!.at;
+  timers[0]!.run();
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.equal(groupReads, 2, 'the backoff asks again');
+  assert.equal(identityReads, 1);
+  broker.retry(SCOPE);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.equal(identityReads, 2, 'an explicit retry asks a refused read again');
+  broker.dispose();
+});
+
 test('a status is carried, not rebuilt: unresolved holders, failures across the worker snapshot, retried flags and refused art', async () => {
   const index = new IdentityIndex(SCOPE, [0, 500]);
   index.setFacts(sampleFacts(), true);
   index.setIdentities({ ...sampleIdentities(), countries: [{ tag: 'GER', identities: [], unresolved: [{ firstHour: 0, lastHour: 500 }] }] });
-  index.setGroupsFailure(new RefusedError('Unsupported faction table'));
+  index.setReadFailure('groups', new RefusedError('Unsupported faction table'));
   const worker = createSnapshotIdentityProvider(IdentityIndex.fromSnapshot(structuredClone(index.exportSnapshot())));
   const ger = worker.resolve('country', 'GER', 100 as DisplayedHour);
   assert.deepEqual(ger.tag, { status: 'ready', value: 'GER' });

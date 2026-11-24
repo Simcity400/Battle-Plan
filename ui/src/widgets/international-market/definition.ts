@@ -214,7 +214,6 @@ export function marketTableBase(view: MarketTab): TableBase {
   return {
     density: 'normal',
     barsBehind: 'all',
-    overflow: 'scroll',
     showRank: false,
     sort: SORTS[view],
   };

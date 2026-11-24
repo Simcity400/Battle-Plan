@@ -377,5 +377,19 @@ class Against(unittest.TestCase):
             repository.close()
 
 
+class FamilyKitPatterns(unittest.TestCase):
+    def test_local_contrast_ink_is_refused_in_families_and_projections(self):
+        code, out = check({}, {
+            "ui/src/families/bars/painter.ts": "function inkOnFill(fill: string) { return fill; }\nconst x = readableText(rgb);\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("local-contrast-ink", out)
+        self.assertIn("contrastInkForFill", out)
+        self.assertEqual(check({}, {
+            "ui/src/draw/kit.ts": "export function contrastInkForFill(fill: string) { return fill; }\n",
+            "ui/src/families/bars/barsFamily.test.ts": "function inkOnFill() {}\n",
+        })[0], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

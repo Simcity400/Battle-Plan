@@ -6,9 +6,9 @@ import { activeTracks, rewardUnlocked, trackMarks, trackRatio, unlockedRewards, 
 const sub = { id: 'sub_a', name: 'Sub A', icon: null };
 const reply: DoctrineMasteryReply = validateDoctrineMastery({
   folders: [{ ordinal: 0, id: 'land', name: 'Land', icon: null, grand: { id: 'mobile', name: 'Mobile warfare', icon: null }, completed: [sub], tracks: [
-    { ordinal: 0, name: 'Infantry', sub, unlocked: 1, rewards: [
+    { ordinal: 0, name: 'Infantry', sub, unlocked: 1, rewardsUnknown: null, rewards: [
       { id: 'r1', name: 'First', threshold: '5000000' }, { id: 'r2', name: 'Second', threshold: '25000000' }, { id: 'r3', name: 'Last', threshold: '10000000' }] },
-    { ordinal: 1, name: 'Armour', sub: null, unlocked: 0, rewards: [] }] }],
+    { ordinal: 1, name: 'Armour', sub: null, unlocked: 0, rewardsUnknown: null, rewards: [] }] }],
   warnings: [],
 });
 

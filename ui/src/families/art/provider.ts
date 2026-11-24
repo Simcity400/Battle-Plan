@@ -50,7 +50,7 @@ function directUrlOf(handle: ArtHandle): string | null {
 export type ArtResolutions = Readonly<Record<string, ArtResolution>>;
 
 export function needsArtResolution(handle: ArtHandle): boolean {
-  return handle.kind === 'sprite' || handle.kind === 'portrait' || (handle.kind === 'path' && !isDirectUrl(handle.path));
+  return handle.kind === 'sprite' || handle.kind === 'portrait' || handle.kind === 'technology' || (handle.kind === 'path' && !isDirectUrl(handle.path));
 }
 
 export function artUrlForHandle(handle: ArtHandle, index?: IdentityIndex | null, resolutions?: ArtResolutions): string | null {

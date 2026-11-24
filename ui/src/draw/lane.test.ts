@@ -172,6 +172,7 @@ test('addendum 3: a widget of two subscriptions installs their join, or waits wh
   assert.equal(page.view(2).mode, 'reading', 'a followed widget whose static read was asked at 28 shows nothing at 26');
   await step(29);
   assert.equal(page.view(2).mode, 'picture', 'and installs once the clock reaches the hour that read answered');
+  assert.deepEqual([page.view(2).h, page.view(2).through], [28, 28], 'the picture claims only the hours both its static read and its followed stream prove');
 });
 
 const at: LaneView = {
