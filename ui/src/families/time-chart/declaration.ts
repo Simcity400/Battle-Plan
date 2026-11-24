@@ -5,7 +5,9 @@ import type { IconName } from '../../components/Icons';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { OptionField } from '../../dashboard/options';
 import type { MissingSpan, TilePart } from '../../generated/dashboard';
+import type { ArtResolution } from '../art/types.ts';
 import type { FamilyProjection, FamilyTheme } from '../contract.ts';
+import type { IdentitySnapshot } from '../identity/types.ts';
 import type {
   AuxProductSpec,
   BoundedReadView,
@@ -14,9 +16,10 @@ import type {
   FamilyViewportRequest,
   SourcePlan,
 } from '../plan.ts';
-import type { ChartArtRef, TimeChartModel } from './model.ts';
+import type { TimeChartModel } from './model.ts';
 
 export type TimeChartVariant = 'line' | 'dual-line-gap' | 'stacked-area' | 'rate-with-ceiling' | 'columns';
+export type TimeChartJoinMode = 'join' | 'step';
 
 export interface SerializedTiledLine {
   readonly rev: number;
@@ -38,15 +41,10 @@ export interface SerializedTiledLine {
 export interface TimeChartProjection<TOptions = unknown> extends FamilyProjection<TimeChartModel, TOptions> {
   readonly family: 'series';
   readonly variant: TimeChartVariant;
+  readonly joinMode?: TimeChartJoinMode;
   readonly measureTitle: string;
   project(readView: BoundedReadView, options: TOptions): TimeChartModel;
   nextChange?(readView: BoundedReadView, options: TOptions): number;
-}
-
-export interface TimeChartSpriteSpec {
-  readonly id: string;
-  readonly key: string;
-  readonly frame: number;
 }
 
 export interface TimeChartWidgetDeclaration<TProjectionOptions = Record<string, never>, TAux = unknown> {
@@ -59,12 +57,11 @@ export interface TimeChartWidgetDeclaration<TProjectionOptions = Record<string, 
   readonly optionFields?: readonly OptionField[];
   readonly countries: CountryPolicy;
   readonly aux?: AuxProductSpec<TAux>;
-  readonly sprites?: readonly TimeChartSpriteSpec[];
   readonly sources: (ctx: FamilyPlanContext<TAux>, view: FamilyViewportRequest) => SourcePlan;
   readonly projection: TimeChartProjection<TProjectionOptions>;
   readonly projectionOptions: (
     ctx: FamilyPlanContext<TAux>,
-    extra: { readonly extent: readonly [number, number]; readonly sprites: Readonly<Record<string, ChartArtRef>>; readonly surface: string },
+    extra: { readonly extent: readonly [number, number]; readonly surface: string },
   ) => TProjectionOptions;
   readonly unavailable?: (ctx: FamilyPlanContext<TAux>, moment: number) => string | null;
   readonly warnings?: (ctx: FamilyPlanContext<TAux>, followRefused: string | null) => readonly string[];
@@ -79,6 +76,8 @@ export interface TimeChartBinding<TOptions = unknown> {
   readonly width: number;
   readonly height: number;
   readonly theme?: FamilyTheme;
+  readonly identitySnapshot?: IdentitySnapshot | null;
+  readonly spriteResolutions?: Readonly<Record<string, ArtResolution>>;
   readonly view?: { readonly x?: readonly [number, number] | null; readonly y?: readonly [number, number] | null };
   readonly tiledLines?: readonly SerializedTiledLine[];
   readonly keepTiled?: readonly number[];

@@ -5,7 +5,7 @@ import { useViewportHeight } from '../../charts/useChartTokens.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
 import { holdElement } from '../../draw/bitmapSurface.ts';
-import type { FamilySourceSubscription } from '../contract.ts';
+import type { EntityKind, FamilySourceSubscription } from '../contract.ts';
 import { renderFamilyBodyState } from '../host/FamilyBodyState.tsx';
 import { bindFamilyPointer } from '../host/pointer.ts';
 import {
@@ -50,6 +50,8 @@ export interface FamilyTimeChartHostProps<TOptions> {
   readonly extraWarnings?: readonly string[];
   readonly onViewportWidth?: (width: number) => void;
   readonly onHoverHour?: (hour: number | null) => void;
+  readonly onIdentityDemands?: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
+  readonly onArtDemands?: (demands: readonly { readonly key: string; readonly frame: number }[]) => void;
   readonly onActivate?: (inspectKey: string) => void;
   readonly onDiagnostics?: (warnings: string[]) => void;
   readonly loadingLabel?: string;
@@ -76,6 +78,8 @@ export default function FamilyTimeChartHost<TOptions>({
   extraWarnings,
   onViewportWidth,
   onHoverHour,
+  onIdentityDemands,
+  onArtDemands,
   onActivate,
   onDiagnostics,
   loadingLabel,
@@ -131,6 +135,8 @@ export default function FamilyTimeChartHost<TOptions>({
     buildBinding,
     onViewportWidth,
     onHoverHour,
+    onIdentityDemands,
+    onArtDemands,
     onActivate,
     viewportHeight,
     contextMenu,
@@ -143,6 +149,8 @@ export default function FamilyTimeChartHost<TOptions>({
     buildBinding,
     onViewportWidth,
     onHoverHour,
+    onIdentityDemands,
+    onArtDemands,
     onActivate,
     viewportHeight,
     contextMenu,
@@ -234,6 +242,15 @@ export default function FamilyTimeChartHost<TOptions>({
       if (sig !== metaSigRef.current) {
         metaSigRef.current = sig;
         setMeta(nextMeta);
+      }
+
+      const idDemands = shown?.fields?.identityDemands as readonly (readonly [EntityKind, string, number])[] | undefined;
+      if (idDemands && latestRef.current.onIdentityDemands) {
+        latestRef.current.onIdentityDemands(idDemands);
+      }
+      const artDemands = shown?.fields?.artDemands as readonly { readonly key: string; readonly frame: number }[] | undefined;
+      if (artDemands && latestRef.current.onArtDemands) {
+        latestRef.current.onArtDemands(artDemands);
       }
 
       if (!visible || !shown?.fields) {

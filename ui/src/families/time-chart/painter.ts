@@ -1,3 +1,4 @@
+import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { Canvas2D } from '../../charts/textWidth.ts';
 import {
   drawArtSlot,
@@ -9,21 +10,14 @@ import {
   drawPlayheadLine,
   drawSeriesMissingStrip,
   resolveKitTokens,
-  type ArtSlotState,
-  type FlagSlotState,
 } from '../../draw/kit.ts';
 import { parseColor } from '../../shell/appearance/color.ts';
-import type { FamilyArtBitmap } from '../artLoader.ts';
+import { toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import { parseChartInspect, sampleSeriesValueAt } from './hitTest.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
-import {
-  CHART_MEASURE_COLOURS,
-  type ChartArtRef,
-  type TimeChartModel,
-  type TimeChartSeriesModel,
-} from './model.ts';
+import type { ChartArtSlot, TimeChartModel, TimeChartSeriesModel } from './model.ts';
 
 const DEFAULT_THEME: FamilyTheme = {
   surface: '#111111',
@@ -48,53 +42,34 @@ const DEFAULT_THEME: FamilyTheme = {
   hatchSpacing: 5,
 };
 
-function artSlotState(art: ChartArtRef | undefined, bitmaps: ReadonlyMap<string, FamilyArtBitmap | null>): ArtSlotState {
-  if (!art || art.state === 'none') return { kind: 'none' };
-  if (art.state === 'missing') return { kind: 'missing', resolvedName: art.label ?? art.tag };
-  if (art.state === 'refused') return { kind: 'refused', reason: art.reason };
-  if (art.state === 'failed') return { kind: 'failed', reason: art.reason };
-  if (art.url) {
-    const bmp = bitmaps.get(art.url);
-    if (bmp) return { kind: 'ready', bitmap: bmp as unknown as CanvasImageSource, width: bmp.width, height: bmp.height };
-  }
-  return { kind: 'pending' };
-}
-
-function flagSlotState(art: ChartArtRef | undefined, bitmaps: ReadonlyMap<string, FamilyArtBitmap | null>): FlagSlotState {
-  if (!art || art.state === 'pending' || art.state === 'none') return { kind: 'pending' };
-  if (art.state === 'missing') return { kind: 'missing', tag: art.tag ?? art.label };
-  if (art.state === 'failed' || art.state === 'refused') return { kind: 'failed' };
-  if (art.url) {
-    const bmp = bitmaps.get(art.url);
-    if (bmp) return { kind: 'ready', bitmap: bmp as unknown as CanvasImageSource, width: bmp.width, height: bmp.height };
-  }
-  return { kind: 'pending' };
+function artUrl(slot: ChartArtSlot | undefined): string | null {
+  return slot?.art.status === 'ready' && slot.art.url ? slot.art.url : null;
 }
 
 export function collectVisibleChartArt(model: TimeChartModel, layout: TimeChartLayout): string[] {
   const urls = new Set<string>();
+  const add = (slot: ChartArtSlot | undefined) => {
+    const url = artUrl(slot);
+    if (url) urls.add(url);
+  };
   for (const label of layout.endLabels) {
-    if (label.flag?.url && label.flag.state !== 'missing') urls.add(label.flag.url);
-    if (label.icon?.url && label.icon.state !== 'missing') urls.add(label.icon.url);
+    add(label.flag);
+    add(label.icon);
   }
   for (const m of layout.markers) {
-    if (m.kind === 'flag' && m.marker.flag?.url && m.marker.flag.state !== 'missing') urls.add(m.marker.flag.url);
-    if (m.kind === 'icon' && m.marker.icon?.url && m.marker.icon.state !== 'missing') urls.add(m.marker.icon.url);
+    if (m.kind === 'flag') add(m.marker.flag);
+    if (m.kind === 'icon') add(m.marker.icon);
   }
   if (model.legend) {
-    for (const item of model.legend) {
-      if (item.flag?.url && item.flag.state !== 'missing') urls.add(item.flag.url);
-    }
+    for (const item of model.legend) add(item.flag);
   }
   if (model.overlays) {
-    for (const ov of model.overlays) {
-      if (ov.icon?.url && ov.icon.state !== 'missing') urls.add(ov.icon.url);
-    }
+    for (const ov of model.overlays) add(ov.icon);
   }
   return [...urls];
 }
 
-function buildLineSubpaths(
+export function buildLineSubpaths(
   series: TimeChartSeriesModel,
   layout: TimeChartLayout,
   until: number,
@@ -116,16 +91,34 @@ function buildLineSubpaths(
         const x0 = layout.toX(Math.max(run.firstHour, layout.xDomain[0]));
         const x1 = layout.toX(Math.min(run.lastHour, layout.xDomain[1]));
         const y = layout.toY(run.value);
-        if (!cur.length) cur.push([x0, y]);
-        else if (step) cur.push([x0, cur[cur.length - 1]![1]], [x0, y]);
-        else cur.push([x0, y]);
-        if (x1 > x0) cur.push([x1, y]);
-        end = [x1, y];
+        if (!cur.length) {
+          cur.push([x0, y]);
+          if (step && x1 > x0) cur.push([x1, y]);
+        } else if (step) {
+          cur.push([x0, cur[cur.length - 1]![1]], [x0, y]);
+          if (x1 > x0) cur.push([x1, y]);
+        } else {
+          cur.push([x0, y]);
+        }
+        end = [step && x1 > x0 ? x1 : x0, y];
       }
       if (cur.length) subpaths.push(cur);
     } else {
       let cur: [number, number][] = [];
       let prevLastHour = -Infinity;
+      const pushPoint = (h: number, v: number) => {
+        const x = layout.toX(Math.max(layout.xDomain[0], Math.min(layout.xDomain[1], h)));
+        const y = layout.toY(v);
+        if (!cur.length) {
+          cur.push([x, y]);
+        } else {
+          const prev = cur[cur.length - 1]!;
+          if (prev[0] === x && prev[1] === y) return;
+          if (step) cur.push([x, prev[1]], [x, y]);
+          else cur.push([x, y]);
+        }
+        end = [x, y];
+      };
       for (const b of bounded.buckets) {
         if (!b || b.lastHour < layout.xDomain[0] || b.firstHour > layout.xDomain[1]) continue;
         const disconnected = cur.length > 0 && (b.firstBreak || b.firstHour > prevLastHour + Math.max(1, bounded.binHours));
@@ -133,26 +126,43 @@ function buildLineSubpaths(
           subpaths.push(cur);
           cur = [];
         }
-        const pushPoint = (h: number, v: number) => {
-          const x = layout.toX(Math.max(layout.xDomain[0], Math.min(layout.xDomain[1], h)));
-          const y = layout.toY(v);
-          if (!cur.length) cur.push([x, y]);
-          else if (step) cur.push([x, cur[cur.length - 1]![1]], [x, y]);
-          else cur.push([x, y]);
-          end = [x, y];
-        };
-        pushPoint(b.firstHour, b.firstValue);
-        if (b.minValue !== b.firstValue || b.maxValue !== b.firstValue) {
-          if (b.minHour <= b.maxHour) {
-            if (b.minValue !== b.firstValue) pushPoint(b.minHour, b.minValue);
-            if (b.maxValue !== b.minValue) pushPoint(b.maxHour, b.maxValue);
-          } else {
-            if (b.maxValue !== b.firstValue) pushPoint(b.maxHour, b.maxValue);
-            if (b.minValue !== b.maxValue) pushPoint(b.minHour, b.minValue);
+        if (step) {
+          pushPoint(b.firstHour, b.firstValue);
+          if (b.minValue !== b.firstValue || b.maxValue !== b.firstValue) {
+            if (b.minHour <= b.maxHour) {
+              if (b.minValue !== b.firstValue) pushPoint(b.minHour, b.minValue);
+              if (b.maxValue !== b.minValue) pushPoint(b.maxHour, b.maxValue);
+            } else {
+              if (b.maxValue !== b.firstValue) pushPoint(b.maxHour, b.maxValue);
+              if (b.minValue !== b.maxValue) pushPoint(b.minHour, b.minValue);
+            }
           }
-        }
-        if (b.lastHour !== b.firstHour || b.lastValue !== b.firstValue) {
-          pushPoint(b.lastHour, b.lastValue);
+          if (b.lastHour !== b.firstHour || b.lastValue !== b.firstValue) {
+            pushPoint(b.lastHour, b.lastValue);
+          }
+        } else {
+          pushPoint(b.firstHour, b.firstValue);
+          const loEnd = Math.min(b.firstValue, b.lastValue);
+          const hiEnd = Math.max(b.firstValue, b.lastValue);
+          const hasLower = b.minValue < loEnd;
+          const hasHigher = b.maxValue > hiEnd;
+          if (hasLower && hasHigher) {
+            if (b.minHour <= b.maxHour) {
+              pushPoint(b.minHour, b.minValue);
+              pushPoint(b.maxHour, b.maxValue);
+            } else {
+              pushPoint(b.maxHour, b.maxValue);
+              pushPoint(b.minHour, b.minValue);
+            }
+          } else if (hasLower) {
+            pushPoint(b.minHour, b.minValue);
+          } else if (hasHigher) {
+            pushPoint(b.maxHour, b.maxValue);
+          }
+          const endHour = b.lastValueHour >= b.firstHour ? b.lastValueHour : b.lastHour;
+          if (endHour > b.firstHour || b.lastValue !== b.firstValue) {
+            pushPoint(endHour, b.lastValue);
+          }
         }
         prevLastHour = b.lastHour;
       }
@@ -209,7 +219,6 @@ export function drawTimeChart(
   model: TimeChartModel,
   layout: TimeChartLayout,
   themeInput: FamilyTheme | undefined,
-  bitmaps: ReadonlyMap<string, FamilyArtBitmap | null>,
   inspectKey: string | null | undefined,
   dpr: number,
 ): void {
@@ -241,7 +250,7 @@ export function drawTimeChart(
       const drawn = drawLegendEntry(ctx, lx, ly, item.label, item.color ?? '', theme, {
         dash: item.dash,
         hatch: item.hatch,
-        flag: item.flag ? flagSlotState(item.flag, bitmaps) : undefined,
+        flag: item.flag ? toFlagSlotState(item.flag.art, item.flag.tag ?? item.flag.label) : undefined,
       });
       lx += drawn.width + 14;
     }
@@ -493,11 +502,11 @@ export function drawTimeChart(
       ctx.fill();
       cursorX += 9;
     }
-    if (label.flag && label.flag.state !== 'none') {
-      drawFlagSlot(ctx, cursorX, label.y - 6, flagSlotState(label.flag, bitmaps), theme, { width: 18, height: 12 });
+    if (label.flag && label.flag.art.status !== 'noArtExpected') {
+      drawFlagSlot(ctx, cursorX, label.y - 6, toFlagSlotState(label.flag.art, label.flag.tag ?? label.flag.label), theme, { width: 18, height: 12 });
       cursorX += 24;
-    } else if (label.icon && label.icon.state !== 'none') {
-      drawArtSlot(ctx, cursorX, label.y - 7.5, 16, 15, artSlotState(label.icon, bitmaps), theme, { radius: 0 });
+    } else if (label.icon && label.icon.art.status !== 'noArtExpected') {
+      drawArtSlot(ctx, cursorX, label.y - 7.5, 16, 15, toArtSlotState(label.icon.art, label.icon.label), theme, { radius: 0 });
       cursorX += 22;
     }
     if (label.name) {
@@ -548,10 +557,10 @@ export function drawTimeChart(
   }
 
   for (const m of layout.markers) {
-    if (m.kind === 'flag') {
-      drawFlagSlot(ctx, m.x - 8, m.y - 5, flagSlotState(m.marker.flag, bitmaps), theme, { width: 16, height: 10 });
-    } else if (m.kind === 'icon') {
-      drawArtSlot(ctx, m.x - 9, m.y - 9, 18, 18, artSlotState(m.marker.icon, bitmaps), theme, { radius: 0 });
+    if (m.kind === 'flag' && m.marker.flag) {
+      drawFlagSlot(ctx, m.x - 8, m.y - 5, toFlagSlotState(m.marker.flag.art, m.marker.flag.tag ?? m.marker.flag.label), theme, { width: 16, height: 10 });
+    } else if (m.kind === 'icon' && m.marker.icon) {
+      drawArtSlot(ctx, m.x - 9, m.y - 9, 18, 18, toArtSlotState(m.marker.icon.art, m.marker.icon.label), theme, { radius: 0 });
     } else {
       ctx.save();
       ctx.strokeStyle = m.marker.tickColor ?? (tokens.dark ? 'rgba(245, 245, 245, 0.42)' : 'rgba(15, 23, 42, 0.42)');

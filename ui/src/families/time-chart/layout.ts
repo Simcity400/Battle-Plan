@@ -479,9 +479,9 @@ export function layoutTimeChart(
       if (!end || Math.abs(end.hour - model.hour) > 48) continue;
       const showName = !!(s.endLabel.name && (!small || (!s.endLabel.flag && !s.endLabel.icon)));
       const nameText = showName ? ellipsise(s.endLabel.name!, END_LABEL_MAX_NAME_PX, measureName) : null;
-      const artW = s.endLabel.flag && s.endLabel.flag.state !== 'none'
+      const artW = s.endLabel.flag && s.endLabel.flag.art.status !== 'noArtExpected'
         ? 24
-        : s.endLabel.icon && s.endLabel.icon.state !== 'none'
+        : s.endLabel.icon && s.endLabel.icon.art.status !== 'noArtExpected'
           ? 22
           : 0;
       const nameW = nameText ? measure(nameText, labelNameFont) + 6 : 0;
@@ -518,7 +518,7 @@ export function layoutTimeChart(
         const showName = !!(band.endLabel.name && (!small || !band.endLabel.flag));
         const nameText = showName ? ellipsise(band.endLabel.name!, END_LABEL_MAX_NAME_PX, measureName) : null;
         const barW = 9;
-        const artW = band.endLabel.flag && band.endLabel.flag.state !== 'none' ? 24 : 0;
+        const artW = band.endLabel.flag && band.endLabel.flag.art.status !== 'noArtExpected' ? 24 : 0;
         const nameW = nameText ? measure(nameText, labelNameFont) + 6 : 0;
         const valW = measure(band.endLabel.value, labelValueFont);
         rawEndLabels.push({
@@ -539,7 +539,7 @@ export function layoutTimeChart(
       if (model.stack.total?.endLabel) {
         const tv = model.stack.total.values[lastIdx] ?? acc;
         const el = model.stack.total.endLabel;
-        const artW = el.icon && el.icon.state !== 'none' ? 22 : 0;
+        const artW = el.icon && el.icon.art.status !== 'noArtExpected' ? 22 : 0;
         const valW = measure(el.value, labelValueFont);
         rawEndLabels.push({
           id: '__total__',
@@ -630,8 +630,8 @@ export function layoutTimeChart(
     for (let i = 0; i < sorted.length; i++) {
       const m = sorted[i]!;
       const x = toX(m.hour);
-      const hasFlag = !!(m.flag && m.flag.state !== 'none');
-      const hasIcon = !!(m.icon && m.icon.state !== 'none');
+      const hasFlag = !!(m.flag && m.flag.art.status !== 'noArtExpected');
+      const hasIcon = !!(m.icon && m.icon.art.status !== 'noArtExpected');
       if ((hasFlag || hasIcon) && markerLaneHeight >= 20 && x - lastIconX >= MARKER_MIN_ICON_GAP) {
         placedMarkers.push({ index: i, marker: m, x, y: ly, kind: hasFlag ? 'flag' : 'icon', size: 18 });
         lastIconX = x;

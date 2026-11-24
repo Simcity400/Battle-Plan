@@ -1,7 +1,9 @@
-import { colour, nudgeApart, readableColour } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, colour, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
-import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
+import { flagArtHandle } from '../../families/art/provider.ts';
+import { missingArt, PENDING_ART } from '../../families/art/types.ts';
+import type { ArtHandle, BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { holderTagAt, type HolderRun } from '../../families/holders.ts';
 import {
   registerTimeChart,
@@ -9,12 +11,11 @@ import {
   type TimeChartWidgetDeclaration,
 } from '../../families/time-chart/declaration.ts';
 import { formatChartAxisValue } from '../../families/time-chart/layout.ts';
-import {
-  CHART_MEASURE_COLOURS,
-  type ChartArtRef,
-  type ChartGap,
-  type ChartMarker,
-  type TimeChartSeriesModel,
+import type {
+  ChartArtSlot,
+  ChartGap,
+  ChartMarker,
+  TimeChartSeriesModel,
 } from '../../families/time-chart/model.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 
@@ -22,10 +23,11 @@ export interface PoliticalPowerOptions {
   readonly tags: readonly string[];
   readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly extent: readonly [number, number];
-  readonly measureIcon?: ChartArtRef;
   readonly gaps: readonly ChartGap[];
   readonly surface: string;
 }
+
+const PP_ICON_HANDLE: ArtHandle = { scope: 'sprite', choice: 'GFX_pol_power', sprite: 'GFX_pol_power', frame: 0 };
 
 function formatEndAmount(value: number): string {
   if (Math.abs(value) >= 10_000) return formatChartAxisValue(value, 'power');
@@ -37,6 +39,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
   kind: 'political-power',
   family: 'series',
   variant: 'line',
+  joinMode: 'join',
   measureTitle: 'Political power',
   project(readView: BoundedReadView, options: PoliticalPowerOptions) {
     const hour = readView.hour;
@@ -52,7 +55,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       const bounded = seriesMap?.get(tag);
       const decimals = bounded?.decimals ?? 5;
       const liveVal = answer ? rowAmount(answer, i, decimals) : undefined;
-      if (liveVal !== undefined && Number.isFinite(liveVal)) {
+      if (liveVal !== undefined && liveVal !== null && Number.isFinite(liveVal)) {
         headByTag.set(tag, liveVal);
       } else if (bounded?.headValue && (bounded.headValue.kind === 'known' || bounded.headValue.kind === 'zero' || bounded.headValue.kind === 'partial')) {
         headByTag.set(tag, Number(bounded.headValue.value));
@@ -90,6 +93,10 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       topTags.forEach((tag, idx) => colourMap.set(tag, toHex(distinct[idx]!)));
     }
 
+    const measureIcon: ChartArtSlot | undefined = single
+      ? { art: readView.art(PP_ICON_HANDLE), label: 'Political power' }
+      : undefined;
+
     const spendHoursSet = new Set<number>();
     const series: TimeChartSeriesModel[] = ordered.map((tag, rank) => {
       const isTail = !single && rank >= 8;
@@ -97,13 +104,13 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       const identityTag = holderTagAt(options.holders?.[tag], hour) ?? tag;
       const who = readView.who('country', identityTag);
       const name = who.name.status === 'ready' ? who.name.value : identityTag;
-      const flag: ChartArtRef | undefined = single
+      const flag: ChartArtSlot | undefined = single
         ? undefined
         : who.flagChoice?.status === 'ready'
-          ? { state: 'ready', url: who.flagChoice.value, tag: identityTag }
+          ? { art: readView.art(flagArtHandle(who.flagChoice.value, 'panel')), tag: identityTag }
           : who.flagChoice?.status === 'absent'
-            ? { state: 'missing', tag: identityTag, reason: who.flagChoice.reason }
-            : { state: 'pending', tag: identityTag };
+            ? { art: missingArt(who.flagChoice.reason), tag: identityTag }
+            : { art: PENDING_ART, tag: identityTag };
       const color = isTail ? 'rgba(245, 245, 245, 0.22)' : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.politicalPower);
       const headValue = headByTag.get(tag) ?? null;
 
@@ -134,13 +141,13 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
         headValue,
         headHour: hour,
         flag,
-        icon: single ? options.measureIcon : undefined,
+        icon: single ? measureIcon : undefined,
         missingSpans,
         rank,
         endLabel: isTail || headValue === null
           ? null
           : {
-              ...(single ? { icon: options.measureIcon } : { flag }),
+              ...(single ? { icon: measureIcon } : { flag }),
               name: single ? null : name,
               fullName: name,
               value: formatEndAmount(headValue),
@@ -174,17 +181,14 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
   },
 });
 
-const PP_SPRITES = [{ id: 'measure', key: 'GFX_pol_power', frame: 0 }] as const;
-
 export const politicalPowerDeclaration: TimeChartWidgetDeclaration<PoliticalPowerOptions> = {
   family: 'series',
   kind: 'political-power',
   label: 'Political power',
   subject: 'political power',
   emptyCampaign: 'Load a campaign to see political power.',
-  icon: 'sparkle',
+  icon: 'chart-line',
   countries: { mode: 'multi', labels: true, colours: true, allowSlots: true },
-  sprites: PP_SPRITES,
   sources(ctx: FamilyPlanContext): SourcePlan {
     const tags = ctx.countries.tags;
     const withinEntries = ctx.countries.membership
@@ -244,7 +248,7 @@ export const politicalPowerDeclaration: TimeChartWidgetDeclaration<PoliticalPowe
     };
   },
   projection: politicalPowerProjection,
-  projectionOptions(ctx, { extent, sprites, surface }) {
+  projectionOptions(ctx, { extent, surface }) {
     const rawGaps = (ctx.branch as { gaps?: readonly { firstHour: number; lastHour: number; reason?: string }[] }).gaps;
     const gaps: ChartGap[] = rawGaps?.length
       ? rawGaps.map(g => ({ firstHour: g.firstHour, lastHour: g.lastHour, reason: g.reason ?? 'Recording gap' }))
@@ -253,7 +257,6 @@ export const politicalPowerDeclaration: TimeChartWidgetDeclaration<PoliticalPowe
       tags: ctx.countries.tags,
       holders: ctx.countries.holders,
       extent,
-      measureIcon: sprites.measure,
       gaps,
       surface,
     };

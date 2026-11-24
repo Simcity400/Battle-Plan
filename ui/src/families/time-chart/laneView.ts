@@ -5,10 +5,14 @@ import { rowAmount } from '../../dashboard/follow/painters.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import type { LaneView, Painted, PaintInput } from '../../draw/lane.ts';
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
-import { FamilyArtLoader, type FamilyArtBitmap, type FamilyArtFetcher } from '../artLoader.ts';
+import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
+import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
+import { PENDING_ART, type ArtResolution } from '../art/types.ts';
 import { BoundedSeriesCursor, createBoundedReadView, type WitnessedPoint } from '../boundedView.ts';
-import { countryLooksIdentityProvider } from '../looks.ts';
-import type { BoundedSeries } from '../plan.ts';
+import type { ArtDemand, ArtHandle, ArtProvider, BoundedSeries, EntityKind, IdentityDemand, IdentityProvider } from '../contract.ts';
+import { IdentityIndex } from '../identity/index.ts';
+import { createSnapshotIdentityProvider } from '../identity/provider.ts';
+import type { IdentitySnapshot } from '../identity/types.ts';
 import { knownValue } from '../value.ts';
 import {
   isTimeChartBinding,
@@ -55,11 +59,21 @@ function hydrateTiledLine(raw: SerializedTiledLine): TiledLine {
   };
 }
 
+export function spriteHandleKey(handle: ArtHandle): string {
+  const key = handle.sprite ?? handle.choice;
+  return `${key}#${handle.frame ?? 0}`;
+}
+
 interface HeldTimeChart {
   canvas: OffscreenCanvas;
   ctx: Canvas2D;
   measure: MeasureText;
-  art: FamilyArtLoader<FamilyArtBitmap>;
+  art: LaneArtCache;
+  identitySnapshot: IdentitySnapshot | null | undefined;
+  identityIndex: IdentityIndex | null;
+  identityProvider: IdentityProvider | undefined;
+  spriteResolutions: Readonly<Record<string, ArtResolution>> | undefined;
+  artProvider: ArtProvider;
   tiledByRev: Map<number, TiledLine>;
   cursors: Map<string, BoundedSeriesCursor>;
   content: string;
@@ -71,10 +85,14 @@ interface HeldTimeChart {
   lastTipContent: string;
   lastMetaText: string;
   lastMetaContent: string;
+  lastIdentityDemandsText: string;
+  lastIdentityDemandsContent: string;
+  lastArtDemandsText: string;
+  lastArtDemandsContent: string;
 }
 
 export interface TimeChartLaneOptions {
-  readonly fetchBitmap?: FamilyArtFetcher<FamilyArtBitmap>;
+  readonly fetchBitmap?: LaneArtFetcher;
   readonly createCanvas?: (width: number, height: number) => { readonly canvas: OffscreenCanvas; readonly ctx: Canvas2D };
 }
 
@@ -89,6 +107,8 @@ function buildReadView(
   input: PaintInput,
   binding: TimeChartBinding,
   held: HeldTimeChart,
+  onIdentityDemand: IdentityDemand,
+  onArtDemand: ArtDemand,
 ) {
   const answers = new Map<string, FollowedAnswer | undefined>();
   const panels = new Map<string, unknown>();
@@ -172,7 +192,10 @@ function buildReadView(
     refused,
     series: seriesBySource,
     hovers,
-    identity: countryLooksIdentityProvider(binding.theme?.countryLooks),
+    ...(held.identityProvider ? { identity: held.identityProvider } : {}),
+    onIdentityDemand,
+    art: held.artProvider,
+    onArtDemand,
   });
 }
 
@@ -198,7 +221,7 @@ export function timeChartLaneView(
       let held = state.get('time-chart') as HeldTimeChart | undefined;
       if (!held) {
         const created = makeCanvas(backingWidth, backingHeight);
-        const art = new FamilyArtLoader<FamilyArtBitmap>({
+        const art = new LaneArtCache({
           ...(options?.fetchBitmap ? { fetchBitmap: options.fetchBitmap } : {}),
         });
         held = {
@@ -206,6 +229,11 @@ export function timeChartLaneView(
           ctx: created.ctx,
           measure: canvasMeasureText(created.ctx),
           art,
+          identitySnapshot: undefined,
+          identityIndex: null,
+          identityProvider: undefined,
+          spriteResolutions: undefined,
+          artProvider: createLaneArtProvider(art),
           tiledByRev: new Map(),
           cursors: new Map(),
           content: content(),
@@ -217,14 +245,40 @@ export function timeChartLaneView(
           lastTipContent: content(),
           lastMetaText: '',
           lastMetaContent: content(),
+          lastIdentityDemandsText: '',
+          lastIdentityDemandsContent: content(),
+          lastArtDemandsText: '',
+          lastArtDemandsContent: content(),
         };
         const slot = held;
-        art.setOnLoad(() => {
+        art.setOnSettle(() => {
           slot.artRevision++;
           wake?.(input.widget);
         });
         state.set('time-chart', held);
       }
+
+      const snapshotChanged = held.identitySnapshot !== binding.identitySnapshot;
+      const spritesChanged = held.spriteResolutions !== binding.spriteResolutions;
+      if (snapshotChanged || spritesChanged) {
+        if (snapshotChanged) {
+          held.identitySnapshot = binding.identitySnapshot;
+          held.identityIndex = binding.identitySnapshot ? IdentityIndex.fromSnapshot(binding.identitySnapshot) : null;
+          held.identityProvider = held.identityIndex ? createSnapshotIdentityProvider(held.identityIndex) : undefined;
+        }
+        held.spriteResolutions = binding.spriteResolutions;
+        const spriteMap = binding.spriteResolutions;
+        held.artProvider = createLaneArtProvider(held.art, {
+          index: held.identityIndex,
+          resolveHandle: handle => {
+            if (handle.scope === 'sprite' && spriteMap) {
+              return spriteMap[spriteHandleKey(handle)] ?? PENDING_ART;
+            }
+            return PENDING_ART;
+          },
+        });
+      }
+
       if (held.canvas.width !== backingWidth) held.canvas.width = backingWidth;
       if (held.canvas.height !== backingHeight) held.canvas.height = backingHeight;
 
@@ -242,6 +296,10 @@ export function timeChartLaneView(
         }
       }
 
+      const pendingIdentityDemands = new Map<string, readonly [EntityKind, string, number]>();
+      const pendingSpriteDemands = new Map<string, { readonly key: string; readonly frame: number }>();
+      const demandedArtUrls = new Set<string>();
+
       let model: TimeChartModel;
       if (binding.directModel) {
         model = binding.directModel;
@@ -250,11 +308,52 @@ export function timeChartLaneView(
         if (!proj) {
           return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown time-chart kind: ${binding.kind}` };
         }
-        const readView = buildReadView(input, binding, held);
+        const readView = buildReadView(
+          input,
+          binding,
+          held,
+          (kind, key, atHour) => {
+            pendingIdentityDemands.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]);
+          },
+          handle => {
+            if (handle.scope === 'sprite') {
+              const spriteKey = handle.sprite ?? handle.choice;
+              const frame = handle.frame ?? 0;
+              const resolved = binding.spriteResolutions?.[spriteHandleKey(handle)];
+              if (resolved?.status === 'ready' && resolved.url) {
+                demandedArtUrls.add(resolved.url);
+              } else if (!resolved || resolved.status === 'pending') {
+                pendingSpriteDemands.set(spriteHandleKey(handle), { key: spriteKey, frame });
+              }
+              return;
+            }
+            const url = artUrlForHandle(handle, held!.identityIndex);
+            if (url) demandedArtUrls.add(url);
+          },
+        );
         model = proj.project(readView, binding.options);
       }
 
       const fields: Record<string, { value: unknown; content: string }> = {};
+      if (pendingIdentityDemands.size > 0) {
+        const list = [...pendingIdentityDemands.values()];
+        const text = JSON.stringify(list);
+        if (text !== held.lastIdentityDemandsText) {
+          held.lastIdentityDemandsText = text;
+          held.lastIdentityDemandsContent = content();
+        }
+        fields.identityDemands = { value: list, content: `id:${held.lastIdentityDemandsContent}` };
+      }
+      if (pendingSpriteDemands.size > 0) {
+        const list = [...pendingSpriteDemands.values()];
+        const text = JSON.stringify(list);
+        if (text !== held.lastArtDemandsText) {
+          held.lastArtDemandsText = text;
+          held.lastArtDemandsContent = content();
+        }
+        fields.artDemands = { value: list, content: `art:${held.lastArtDemandsContent}` };
+      }
+
       if (model.empty) {
         const metaPayload = {
           empty: model.empty.message,
@@ -287,8 +386,8 @@ export function timeChartLaneView(
         hoveredSeriesId,
       );
 
-      const visibleArt = collectVisibleChartArt(model, layout);
-      held.art.requestVisible(visibleArt);
+      for (const url of collectVisibleChartArt(model, layout)) demandedArtUrls.add(url);
+      held.art.requestVisible(demandedArtUrls);
 
       const sig = JSON.stringify([
         model.kind,
@@ -301,10 +400,13 @@ export function timeChartLaneView(
         layout.yDomain,
         model.series.map(s => [
           s.id,
+          s.step === true ? 1 : 0,
           s.bounded?.buckets.length ?? 0,
           s.bounded?.straddling ?? '',
           s.headValue ?? null,
           s.endLabel?.value ?? null,
+          s.endLabel?.icon?.art.status ?? '',
+          s.endLabel?.flag?.art.status ?? '',
           s.points?.length ?? 0,
         ]),
         model.columns?.months.length ?? 0,
@@ -318,7 +420,7 @@ export function timeChartLaneView(
       ]);
 
       if (sig !== held.lastSig) {
-        drawTimeChart(held.ctx, model, layout, binding.theme, held.art.map, input.inspect, dpr);
+        drawTimeChart(held.ctx, model, layout, binding.theme, input.inspect, dpr);
         held.lastSig = sig;
         held.content = content();
       }

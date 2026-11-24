@@ -1,33 +1,37 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ChartBucket } from '../../charts/chartSummary.ts';
+import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { Canvas2D, MeasureText } from '../../charts/textWidth.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
+import { readyArt } from '../art/types.ts';
 import { boundTiledSeries, displayedHour } from '../boundedView.ts';
-import { countryLooksIdentityProvider } from '../looks.ts';
+import { IdentityIndex } from '../identity/index.ts';
+import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import { knownValue } from '../value.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import { registerTimeChart, type TimeChartBinding } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
 import { timeChartLaneView } from './laneView.ts';
 import { formatChartAxisValue, layoutTimeChart, niceChartTicks } from './layout.ts';
-import { CHART_MEASURE_COLOURS, type ChartMonthSlot, type TimeChartModel } from './model.ts';
+import type { ChartMonthSlot, TimeChartModel } from './model.ts';
+import { buildLineSubpaths } from './painter.ts';
 
 const measure: MeasureText = (text: string) => text.length * 6.5;
 const FONT = 'Segoe UI, sans-serif';
 const H1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
 
-function makeBucket(firstHour: number, lastHour: number, v: number, minV = v, maxV = v): ChartBucket {
+function makeBucket(firstHour: number, lastHour: number, v: number, minV = v, maxV = v, lastV = v, lastValueHour = lastHour): ChartBucket {
   return {
     firstHour,
     lastHour,
     firstValue: v,
-    lastValue: v,
-    lastValueHour: lastHour,
+    lastValue: lastV,
+    lastValueHour,
     minHour: firstHour,
     minValue: minV,
-    maxHour: lastHour,
+    maxHour: lastValueHour,
     maxValue: maxV,
     firstBreak: false,
     hasBreak: false,
@@ -74,23 +78,23 @@ function mockCanvas(width: number, height: number): { readonly canvas: Offscreen
   return { canvas, ctx, ops };
 }
 
-describe('time-chart BoundedSeries integration (Foundation A)', () => {
-  it('consumes already-cut BoundedSeries without reading future buckets', () => {
-    const base = Math.floor(H1936 / 100) * 100;
+describe('time-chart BoundedSeries & Foundation C integration', () => {
+  it('consumes already-cut BoundedSeries without reading future buckets and joins ramps without staircase treads', () => {
+    const base = Math.floor(H1936 / 96) * 96;
     const line: TiledLine = {
       tag: 'GER',
       head: 'h',
       decimals: 0,
       summary: {
         from: base,
-        to: base + 299,
+        to: base + 287,
         width: 300,
         buckets: [
-          makeBucket(base, base + 99, 10, 5, 20),
-          makeBucket(base + 100, base + 199, 999, 10, 999),
-          makeBucket(base + 200, base + 299, 5000, 5000, 5000),
+          makeBucket(base, base + 95, 10, 10, 20, 20, base + 72),
+          makeBucket(base + 96, base + 191, 999, 10, 999, 999, base + 168),
+          makeBucket(base + 192, base + 287, 5000, 5000, 5000, 5000, base + 264),
         ],
-        tiles: { binHours: 100, valueAt: () => null },
+        tiles: { binHours: 96, valueAt: () => null },
       },
       missing: [],
       parts: [],
@@ -107,7 +111,7 @@ describe('time-chart BoundedSeries integration (Foundation A)', () => {
       measureTitle: 'Political power',
       mode: 'lines',
       hour: until,
-      extent: [base, base + 299],
+      extent: [base, base + 287],
       yAxis: { format: 'power' },
       series: [{
         id: 'GER',
@@ -115,6 +119,7 @@ describe('time-chart BoundedSeries integration (Foundation A)', () => {
         name: 'German Reich',
         color: CHART_MEASURE_COLOURS.politicalPower,
         role: 'primary',
+        step: false,
         bounded,
         headValue: 35,
         headHour: until,
@@ -122,21 +127,25 @@ describe('time-chart BoundedSeries integration (Foundation A)', () => {
     };
     const layout = layoutTimeChart(model, 600, 220, FONT, measure);
     assert.ok(layout.yDomain[1] < 100);
+
+    const joined = buildLineSubpaths(model.series[0]!, layout, until);
+    const pts = joined.subpaths[0]!;
+    for (let i = 1; i < pts.length; i++) {
+      assert.notEqual(pts[i]![1], pts[i - 1]![1], 'joined monotonic ramp should have no flat staircase treads');
+    }
+
+    const stepped = buildLineSubpaths({ ...model.series[0]!, step: true }, layout, until);
+    const sPts = stepped.subpaths[0]!;
+    assert.ok(sPts.some((p, i) => i > 0 && p[1] === sPts[i - 1]![1]), 'step mode keeps horizontal holds');
   });
 
-  it('resolves dated country identity through countryLooksIdentityProvider', () => {
-    const provider = countryLooksIdentityProvider({
-      GER: [
-        { from: H1936, name: 'German Reich', color: '#454545', flag: 'flag://ger' },
-        { from: H1936 + 1000, name: 'German Empire', color: '#334455', flag: 'flag://imp' },
-      ],
-    });
-    const early = provider.resolve('country', 'GER', displayedHour(H1936 + 50));
-    assert.deepEqual(early.name, { status: 'ready', value: 'German Reich' });
-    assert.deepEqual(early.colour, { status: 'ready', value: '#454545' });
-    assert.equal(early.nextChangeAt, H1936 + 1000);
-    const late = provider.resolve('country', 'GER', displayedHour(H1936 + 1200));
-    assert.deepEqual(late.name, { status: 'ready', value: 'German Empire' });
+  it('resolves dated country identity through Foundation C IdentityIndex snapshot provider', () => {
+    const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: 'b', contentRevision: 0 }, [H1936, H1936 + 5000]);
+    index.ingestStyle({ tag: 'GER', name: 'German Reich', color: [69, 69, 69], flag: null, missing: null }, H1936);
+    const provider = createSnapshotIdentityProvider(index);
+    const res = provider.resolve('country', 'GER', displayedHour(H1936));
+    assert.deepEqual(res.name, { status: 'ready', value: 'German Reich' });
+    assert.deepEqual(res.colour, { status: 'ready', value: 'rgb(69, 69, 69)' });
   });
 });
 
@@ -225,9 +234,9 @@ describe('time-chart layout & rules C1-C12', () => {
         },
       ],
       markers: [
-        { id: 'm1', hour: h0 + 50 * 24, title: 'Early', icon: { state: 'ready', url: 'icon://1' } },
-        { id: 'm2', hour: h0 + 52 * 24, title: 'Crowded', icon: { state: 'ready', url: 'icon://2' } },
-        { id: 'm3', hour: hPlay + 10 * 24, title: 'Future marker', icon: { state: 'ready', url: 'icon://3' } },
+        { id: 'm1', hour: h0 + 50 * 24, title: 'Early', icon: { art: readyArt('icon://1') } },
+        { id: 'm2', hour: h0 + 52 * 24, title: 'Crowded', icon: { art: readyArt('icon://2') } },
+        { id: 'm3', hour: hPlay + 10 * 24, title: 'Future marker', icon: { art: readyArt('icon://3') } },
       ],
       gaps: [
         { firstHour: h0 + 200 * 24, lastHour: h0 + 210 * 24, reason: 'Game not running' },
@@ -312,38 +321,42 @@ describe('time-chart layout & rules C1-C12', () => {
 });
 
 describe('time-chart laneView integration', () => {
-  it('paints a registered chart over BoundedReadView, hit-tests lines, emits payload tooltip and audit rows', () => {
+  it('paints a registered chart over BoundedReadView with LaneArtCache demands, hit-tests lines, emits tooltip and audit rows', () => {
     registerTimeChart({
       kind: 'test-pp',
       family: 'series',
       variant: 'line',
+      joinMode: 'join',
       measureTitle: 'Political power',
-      project: readView => ({
-        kind: 'test-pp',
-        measureTitle: 'Political power',
-        mode: 'lines',
-        hour: readView.hour,
-        extent: [H1936, H1936 + 100 * 24],
-        yAxis: { format: 'power' },
-        series: [{
-          id: 'ger',
-          key: 'GER',
-          name: 'German Reich',
-          color: CHART_MEASURE_COLOURS.politicalPower,
-          role: 'primary',
-          area: true,
-          negRed: true,
-          points: [
-            { hour: H1936, value: 0 },
-            { hour: H1936 + 100 * 24, value: 120 },
-          ],
-          headValue: 120,
-          headHour: H1936 + 100 * 24,
-          endLabel: { name: null, value: '120' },
-          absentReason: null,
-        }],
-        auditRows: [{ row: 'GER', key: 'GER', value: '120' }],
-      }),
+      project: readView => {
+        const icon = readView.art({ scope: 'sprite', choice: 'GFX_pol_power', sprite: 'GFX_pol_power', frame: 0 });
+        return {
+          kind: 'test-pp',
+          measureTitle: 'Political power',
+          mode: 'lines',
+          hour: readView.hour,
+          extent: [H1936, H1936 + 100 * 24],
+          yAxis: { format: 'power' },
+          series: [{
+            id: 'ger',
+            key: 'GER',
+            name: 'German Reich',
+            color: CHART_MEASURE_COLOURS.politicalPower,
+            role: 'primary',
+            area: true,
+            negRed: true,
+            points: [
+              { hour: H1936, value: 0 },
+              { hour: H1936 + 100 * 24, value: 120 },
+            ],
+            headValue: 120,
+            headHour: H1936 + 100 * 24,
+            endLabel: { icon: { art: icon, label: 'Political power' }, name: null, value: '120' },
+            absentReason: null,
+          }],
+          auditRows: [{ row: 'GER', key: 'GER', value: '120' }],
+        };
+      },
     });
 
     const created = mockCanvas(600, 240);
@@ -376,6 +389,7 @@ describe('time-chart laneView integration', () => {
 
     assert.equal(painted.surfaces.length, 1);
     assert.ok(painted.fields.audit);
+    assert.ok(painted.fields.artDemands);
     assert.ok(created.ops.some(op => op.startsWith('text:120')));
     const hit = painted.hit?.([300, 100]);
     assert.ok(hit && (hit.startsWith('plot:') || hit.startsWith('line:')));

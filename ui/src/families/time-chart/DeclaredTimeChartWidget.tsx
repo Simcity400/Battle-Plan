@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState.tsx';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { TiledLine } from '../../dashboard/tiles/view';
-import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork.ts';
+import { useSpriteArtResolutions } from '../../dashboard/useSpriteArtwork.ts';
+import type { ArtResolution } from '../art/types.ts';
 import { renderFamilyStatus, useFamilyPlan, useFamilyTheme } from '../host/index.ts';
 import type { SerializedTiledLine, TimeChartBinding, TimeChartWidgetDeclaration } from './declaration.ts';
 import FamilyTimeChartHost from './FamilyTimeChartHost.tsx';
-import type { ChartArtRef } from './model.ts';
+import { spriteHandleKey } from './laneView.ts';
 
 let nextTiledRev = 1;
 const tiledRevCache = new WeakMap<TiledLine, { readonly rev: number; readonly serialized: SerializedTiledLine }>();
@@ -36,8 +37,6 @@ function serializeTiledLine(source: string, line: TiledLine): { readonly rev: nu
   return entry;
 }
 
-const NO_SPRITES: readonly { readonly key: string; readonly frame: number }[] = [];
-
 export interface DeclaredTimeChartWidgetProps<TProjectionOptions, TAux> extends WidgetProps {
   readonly declaration: TimeChartWidgetDeclaration<TProjectionOptions, TAux>;
   readonly onActivate?: (inspectKey: string) => void;
@@ -55,7 +54,23 @@ export default function DeclaredTimeChartWidget<TProjectionOptions, TAux>({
   extraWarnings,
 }: DeclaredTimeChartWidgetProps<TProjectionOptions, TAux>) {
   const [hoverHour, setHoverHour] = useState<number | null>(null);
+  const [demandedSprites, setDemandedSprites] = useState<readonly { readonly key: string; readonly frame: number }[]>([]);
+  const demandedSigRef = useRef('');
   const widthRef = useRef(0);
+
+  const onArtDemands = useCallback((demands: readonly { readonly key: string; readonly frame: number }[]) => {
+    const merged = new Map<string, { readonly key: string; readonly frame: number }>();
+    for (const d of demands) merged.set(`${d.key}#${d.frame}`, d);
+    const list = [...merged.values()].sort((a, b) => a.key.localeCompare(b.key) || a.frame - b.frame);
+    const sig = list.map(d => `${d.key}#${d.frame}`).join(',');
+    if (sig === demandedSigRef.current) return;
+    demandedSigRef.current = sig;
+    setDemandedSprites(prev => {
+      const next = new Map(prev.map(d => [`${d.key}#${d.frame}`, d]));
+      for (const d of list) next.set(`${d.key}#${d.frame}`, d);
+      return [...next.values()];
+    });
+  }, []);
 
   const plan = useFamilyPlan<TAux, undefined>({
     kind: declaration.kind,
@@ -75,21 +90,15 @@ export default function DeclaredTimeChartWidget<TProjectionOptions, TAux>({
 
   const { theme } = useFamilyTheme(undefined, plan.displayedCountryLooks);
 
-  const spriteKeys = useMemo(
-    () => (declaration.sprites?.length ? declaration.sprites.map(s => ({ key: s.key, frame: s.frame })) : NO_SPRITES),
-    [declaration.sprites],
-  );
-  const spriteLookup = useSpriteArtwork(runtime, plan.track, spriteKeys, active && spriteKeys.length > 0);
-
-  const sprites = useMemo<Readonly<Record<string, ChartArtRef>>>(() => {
-    if (!declaration.sprites?.length) return {};
-    const out: Record<string, ChartArtRef> = {};
-    for (const s of declaration.sprites) {
-      const url = spriteLookup({ key: s.key, frame: s.frame });
-      out[s.id] = url ? { state: 'ready', url } : { state: 'none' };
+  const resolveSprite = useSpriteArtResolutions(runtime, plan.track, demandedSprites, active && demandedSprites.length > 0);
+  const spriteResolutions = useMemo<Readonly<Record<string, ArtResolution>> | undefined>(() => {
+    if (!demandedSprites.length) return undefined;
+    const out: Record<string, ArtResolution> = {};
+    for (const s of demandedSprites) {
+      out[spriteHandleKey({ scope: 'sprite', choice: s.key, sprite: s.key, frame: s.frame })] = resolveSprite(s);
     }
     return out;
-  }, [declaration.sprites, spriteLookup]);
+  }, [demandedSprites, resolveSprite]);
 
   const extent = useMemo<readonly [number, number]>(() => {
     const span = plan.displayedCtx?.staticSpan;
@@ -101,11 +110,12 @@ export default function DeclaredTimeChartWidget<TProjectionOptions, TAux>({
   const onViewportWidth = useCallback((width: number) => {
     widthRef.current = width;
     if (!plan.track || width <= 0) return;
+    const scale = typeof devicePixelRatio === 'number' && devicePixelRatio > 1 ? Math.min(2, devicePixelRatio) : 1;
     plan.onSeriesViewport({
       from: extent[0],
       to: extent[1],
       end: extent[1],
-      width: Math.max(1, Math.round(width - 60)),
+      width: Math.max(1, Math.round((width - 60) * scale)),
     });
   }, [plan.track, extent, plan.onSeriesViewport]);
 
@@ -128,10 +138,9 @@ export default function DeclaredTimeChartWidget<TProjectionOptions, TAux>({
     if (!plan.displayedCtx) return null;
     return declaration.projectionOptions(plan.displayedCtx, {
       extent,
-      sprites,
       surface: theme?.surface ?? '#111111',
     });
-  }, [plan.displayedCtx, declaration, extent, sprites, theme?.surface]);
+  }, [plan.displayedCtx, declaration, extent, theme?.surface]);
 
   const buildBinding = useCallback((width: number, height: number, sourceIds: Readonly<Record<string, number>>): TimeChartBinding<TProjectionOptions> | null => {
     if (!plan.track || projectionOptions === null) return null;
@@ -159,6 +168,8 @@ export default function DeclaredTimeChartWidget<TProjectionOptions, TAux>({
       width,
       height,
       theme,
+      identitySnapshot: plan.identitySnapshot,
+      ...(spriteResolutions ? { spriteResolutions } : {}),
       ...(tiledLines.length ? { tiledLines } : {}),
       keepTiled,
       tiledBySource,
@@ -166,7 +177,7 @@ export default function DeclaredTimeChartWidget<TProjectionOptions, TAux>({
       ...(plan.staticBundle ? { staticPanels: plan.staticBundle.panels, staticAnswers: plan.staticBundle.answers } : {}),
       ...(Object.keys(plan.hovers).length ? { hovers: plan.hovers } : {}),
     };
-  }, [plan.track, plan.tiledSeries, plan.staticBundle, plan.hovers, projectionOptions, declaration.kind, extent, theme, headSourceBySeries]);
+  }, [plan.track, plan.tiledSeries, plan.staticBundle, plan.hovers, plan.identitySnapshot, spriteResolutions, projectionOptions, declaration.kind, extent, theme, headSourceBySeries]);
 
   const customUnavailable = plan.displayedCtx && declaration.unavailable
     ? declaration.unavailable(plan.displayedCtx, plan.staticBundle?.hour ?? plan.moment)
@@ -184,7 +195,10 @@ export default function DeclaredTimeChartWidget<TProjectionOptions, TAux>({
       ? <WidgetState kind="unavailable" message={customUnavailable} />
       : null;
 
-  const spritesSig = useMemo(() => JSON.stringify(sprites), [sprites]);
+  const spritesSig = useMemo(
+    () => (spriteResolutions ? Object.entries(spriteResolutions).map(([k, r]) => `${k}:${r.status}`).join(',') : ''),
+    [spriteResolutions],
+  );
   const hoversSig = useMemo(() => JSON.stringify(Object.entries(plan.hovers).map(([k, v]) => [k, v.hour])), [plan.hovers]);
 
   return (
@@ -202,11 +216,13 @@ export default function DeclaredTimeChartWidget<TProjectionOptions, TAux>({
       pin={plan.pin}
       bounds={plan.bounds}
       buildBinding={buildBinding}
-      bindingVersion={`${plan.tiledRevision}:${spritesSig}:${hoversSig}:${theme?.surface ?? ''}:${Object.keys(plan.displayedCountryLooks ?? {}).length}`}
+      bindingVersion={`${plan.tiledRevision}:${spritesSig}:${hoversSig}:${theme?.surface ?? ''}:${plan.identitySnapshot ? 1 : 0}:${Object.keys(plan.identitySnapshot?.drawnFlags ?? {}).length}`}
       blockedState={blockedState}
       extraWarnings={combinedWarnings}
       onViewportWidth={onViewportWidth}
       onHoverHour={setHoverHour}
+      onIdentityDemands={plan.onIdentityDemands}
+      onArtDemands={onArtDemands}
       onActivate={onActivate}
       onDiagnostics={onDiagnostics}
       loadingLabel={plan.loadingLabel}

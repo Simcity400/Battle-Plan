@@ -1,31 +1,13 @@
+import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { AuditRow } from '../../draw/notifications.ts';
-import type { BoundedSeries } from '../plan.ts';
+import type { ArtResult, BoundedSeries } from '../plan.ts';
 
-export const CHART_MEASURE_COLOURS = {
-  politicalPower: '#e3a83b',
-  commandPower: '#c76a90',
-  stability: '#7fa6d6',
-  warSupport: '#c98a55',
-  armyExperience: '#6cc46e',
-  navyExperience: '#7d95c4',
-  airExperience: '#d0767a',
-  fuel: '#b5a48c',
-  supplyOk: '#3fae63',
-  supplyStrained: '#e3a83b',
-  supplyNone: '#e5484d',
-  bopLeft: '#c4705a',
-  bopRight: '#4f8fcf',
-  other: '#3e3e3e',
-  short: '#e5484d',
-  shortInk: '#ff6b6f',
-} as const;
+export { CHART_MEASURE_COLOURS };
 
-export interface ChartArtRef {
-  readonly url?: string | null;
-  readonly state: 'none' | 'pending' | 'ready' | 'missing' | 'refused' | 'failed';
+export interface ChartArtSlot {
+  readonly art: ArtResult;
   readonly label?: string;
   readonly tag?: string;
-  readonly reason?: string;
 }
 
 export interface ChartMissingSpan {
@@ -42,8 +24,8 @@ export interface ChartGap {
 
 export interface ChartEndLabel {
   readonly colorBar?: string;
-  readonly flag?: ChartArtRef;
-  readonly icon?: ChartArtRef;
+  readonly flag?: ChartArtSlot;
+  readonly icon?: ChartArtSlot;
   readonly name?: string | null;
   readonly fullName?: string;
   readonly value: string;
@@ -73,8 +55,8 @@ export interface TimeChartSeriesModel {
   readonly headValue?: number | null;
   readonly headHour?: number | null;
   readonly endLabel?: ChartEndLabel | null;
-  readonly flag?: ChartArtRef;
-  readonly icon?: ChartArtRef;
+  readonly flag?: ChartArtSlot;
+  readonly icon?: ChartArtSlot;
   readonly missingSpans?: readonly ChartMissingSpan[];
   readonly absentReason?: string | null;
   readonly rank?: number;
@@ -88,7 +70,7 @@ export interface ChartStackBand {
   readonly opacity?: number;
   readonly values: readonly (number | null)[];
   readonly endLabel?: ChartEndLabel | null;
-  readonly flag?: ChartArtRef;
+  readonly flag?: ChartArtSlot;
 }
 
 export interface ChartStackModel {
@@ -133,8 +115,8 @@ export interface ChartColumnModel {
 export interface ChartMarkerItem {
   readonly title: string;
   readonly detail?: string;
-  readonly icon?: ChartArtRef;
-  readonly flag?: ChartArtRef;
+  readonly icon?: ChartArtSlot;
+  readonly flag?: ChartArtSlot;
 }
 
 export interface ChartMarker {
@@ -142,8 +124,8 @@ export interface ChartMarker {
   readonly hour: number;
   readonly title: string;
   readonly detail?: string;
-  readonly icon?: ChartArtRef;
-  readonly flag?: ChartArtRef;
+  readonly icon?: ChartArtSlot;
+  readonly flag?: ChartArtSlot;
   readonly tickColor?: string;
   readonly items?: readonly ChartMarkerItem[];
 }
@@ -152,7 +134,7 @@ export interface ChartLegendEntry {
   readonly id: string;
   readonly label: string;
   readonly color?: string;
-  readonly flag?: ChartArtRef;
+  readonly flag?: ChartArtSlot;
   readonly dash?: readonly number[];
   readonly hatch?: boolean;
 }
@@ -161,7 +143,7 @@ export interface ChartOverlayLabel {
   readonly position: 'top-right' | 'bottom-right';
   readonly text: string;
   readonly arrow?: 'right' | 'left';
-  readonly icon?: ChartArtRef;
+  readonly icon?: ChartArtSlot;
   readonly color?: string;
 }
 

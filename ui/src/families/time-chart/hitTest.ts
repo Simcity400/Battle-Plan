@@ -193,6 +193,10 @@ function formatExactFigure(value: number, model: TimeChartModel): string {
   return `${sign}${Math.round(abs).toLocaleString('en-US')}`;
 }
 
+function artUrlOf(slot: { readonly art: { readonly status: string; readonly url?: string } } | undefined): string | undefined {
+  return slot?.art.status === 'ready' ? slot.art.url : undefined;
+}
+
 function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListItem[] {
   const entries: { readonly sortVal: number; readonly item: TooltipListItem }[] = [];
   if (model.mode === 'stack' && model.stack && model.stack.hours.length > 0) {
@@ -205,19 +209,22 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
       for (const band of model.stack.bands) {
         const v = band.values[at];
         if (v === null || v === undefined || !Number.isFinite(v)) continue;
+        const flagUrl = artUrlOf(band.flag);
         entries.push({
           sortVal: v,
           item: {
             label: band.name,
             value: formatExactFigure(v, model),
             swatch: band.color,
-            ...(band.flag?.url ? { countryFlag: { flag: band.flag.url } } : {}),
+            ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
           },
         });
       }
     }
   } else {
     for (const s of model.series) {
+      const flagUrl = artUrlOf(s.flag);
+      const iconUrl = artUrlOf(s.icon);
       const missingSpan = s.missingSpans?.find(sp => hour >= sp.firstHour && hour <= sp.lastHour);
       if (missingSpan) {
         entries.push({
@@ -227,7 +234,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
             missingReason: missingSpan.reason,
             swatch: s.color,
             tone: 'muted',
-            ...(s.flag?.url ? { countryFlag: { flag: s.flag.url } } : {}),
+            ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
           },
         });
         continue;
@@ -242,7 +249,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
               missingReason: s.absentReason,
               swatch: s.color,
               tone: 'muted',
-              ...(s.flag?.url ? { countryFlag: { flag: s.flag.url } } : {}),
+              ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
             },
           });
         }
@@ -258,8 +265,8 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
           value: text,
           swatch: s.negRed && sampled.value < 0 ? '#ff6b6f' : s.color,
           tone: s.negRed && sampled.value < 0 ? 'negative' : undefined,
-          ...(s.flag?.url ? { countryFlag: { flag: s.flag.url } } : {}),
-          ...(s.icon?.url ? { icon: s.icon.url } : {}),
+          ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
+          ...(iconUrl ? { icon: iconUrl } : {}),
         },
       });
     }
@@ -350,13 +357,17 @@ export function deriveTimeChartTooltip(
     const placed = layout.markers[parsed.index];
     if (!placed) return null;
     const m = placed.marker;
-    const eventItems: TooltipListItem[] = (m.items && m.items.length > 0 ? m.items : [{ title: m.title, detail: m.detail, icon: m.icon, flag: m.flag }]).map(item => ({
-      label: item.title,
-      ...(item.detail ? { value: item.detail } : {}),
-      ...(item.icon?.url ? { icon: item.icon.url } : {}),
-      ...(item.flag?.url ? { countryFlag: { flag: item.flag.url } } : {}),
-      strong: true,
-    }));
+    const eventItems: TooltipListItem[] = (m.items && m.items.length > 0 ? m.items : [{ title: m.title, detail: m.detail, icon: m.icon, flag: m.flag }]).map(item => {
+      const iconUrl = artUrlOf(item.icon);
+      const flagUrl = artUrlOf(item.flag);
+      return {
+        label: item.title,
+        ...(item.detail ? { value: item.detail } : {}),
+        ...(iconUrl ? { icon: iconUrl } : {}),
+        ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
+        strong: true,
+      };
+    });
     const valueItems = seriesTooltipItemsAt(model, m.hour);
     if (valueItems.length > 0 && eventItems.length > 0) {
       valueItems[0] = { ...valueItems[0]!, divider: true };
