@@ -1014,7 +1014,11 @@ countedFrom: number | null, available: boolean, observed: Array<HourSpan>,
 /**
  * Reads that may miss events: read only in part, or holding a caller whose membership in aircraft bombing is unknown.
  */
-incomplete: Array<HourSpan>, countries: Array<MilitaryAirCountry>, openings: Array<MilitaryAirOpening>, parts: Array<MilitaryAirPart>, regions: Array<MilitaryAirName>, buildings: Array<MilitaryAirName>, notes: Array<MilitaryAirNote>, warnings: Array<string>, };
+incomplete: Array<HourSpan>,
+/**
+ * Hours whose events were read but whose country links were not, so no event can be credited to a country.
+ */
+unjoined: Array<HourSpan>, countries: Array<MilitaryAirCountry>, openings: Array<MilitaryAirOpening>, parts: Array<MilitaryAirPart>, regions: Array<MilitaryAirName>, buildings: Array<MilitaryAirName>, notes: Array<MilitaryAirNote>, warnings: Array<string>, };
 export type MilitaryAirAtParams = { branchId: string, family: MilitaryAirFamily, regions: Array<number>, causes: Array<number>,
 /**
  * A range starts at the events' own game hour; the timeline's first observed hour when absent.
@@ -1265,6 +1269,35 @@ runs: Array<SubjectRun>,
  * next to one of these is a gap, not an end or a start.
  */
 unobserved: Array<HourSpan>, warnings: Array<string>, };
+export type GroupKind = "factions" | "overlords";
+export type GroupCountsParams = { branchId: string, of: GroupKind,
+/**
+ * The hour counted: nothing recorded after it is read into the reply.
+ */
+hour: number, };
+export type GroupCount = { key: string,
+/**
+ * Members (factions) or subjects (overlords) at the hour; null when not known then.
+ */
+count: number | null,
+/**
+ * Why the count is not known at the hour.
+ */
+missing: string | null, };
+export type GroupCountsReply = { branchId: string, of: GroupKind, hour: number,
+/**
+ * The first hour after `hour` at which a count, a group or a reason changes; null when none does.
+ */
+nextChange: number | null,
+/**
+ * Why no count is known at the hour for any group.
+ */
+missing: string | null,
+/**
+ * Every faction begun by the hour, or every overlord holding a subject at it: the most first, then the
+ * earliest, then by key. A group whose count is not known follows them with its reason, unranked.
+ */
+groups: Array<GroupCount>, warnings: Array<string>, };
 export type DiplomaticPactsParams = { branchId: string, country: CountryRef, };
 export type DiplomacyKind = {
 /**
@@ -2718,7 +2751,7 @@ export type ResearchBreakdownSlot = { slot: number, firstObservedHour: number, s
 missing: string | null, };
 export type FeedTailParams = { branchId: string, facets: Array<FacetFilter>, from: number | null, hour?: number, offset?: string, limit: number, countFacets: Array<LogFacetCountAsk>, scope: Array<MembershipRun> | null, };
 export type EventFeedCategory = "warsPeace" | "diplomacy" | "politics" | "milestones";
-export type EventFeedKind = "warStarted" | "warDeclared" | "warJoined" | "civilWarWarTransferred" | "annexed" | "warEnded" | "released" | "stateTransferred" | "peaceConferenceStarted" | "peace" | "capitulated" | "ceasedToExist" | "factionJoined" | "factionLeft" | "becameSubject" | "guaranteeGranted" | "rulingPartyChanged" | "lawChanged" | "advisorHired" | "focusCompleted" | "projectFinished" | "nukesIncreased" | "nuclearStrike" | "scriptEventFired" | "newsEventFired" | "eventOptionSelected" | "decisionSelected" | "decisionRemoved" | "decisionCancelled" | "decisionTimedOut" | "decisionActivated" | "decisionCompleted" | "decisionReenabled" | "decisionRemovalEffect" | "decisionCancellationEffect" | "decisionCompletionEffect" | "decisionTimeoutEffect" | "decisionDurationChanged";
+export type EventFeedKind = "warStarted" | "warDeclared" | "warJoined" | "civilWarWarTransferred" | "annexed" | "warEnded" | "released" | "stateTransferred" | "peaceConferenceStarted" | "peace" | "capitulated" | "ceasedToExist" | "factionJoined" | "factionLeft" | "becameSubject" | "guaranteeGranted" | "rulingPartyChanged" | "lawChanged" | "advisorHired" | "focusCompleted" | "projectFinished" | "nukesIncreased" | "nuclearStrike" | "scriptEventFired" | "newsEventFired" | "eventOptionSelected" | "decisionSelected" | "decisionRemoved" | "decisionCancelled" | "decisionTimedOut" | "decisionActivated" | "decisionCompleted" | "decisionReenabled" | "decisionRemovalEffect" | "decisionCancellationEffect" | "decisionCompletionEffect" | "decisionTimeoutEffect" | "decisionDurationChanged" | "eventWindowPresented";
 export type EventFeedOption = { ordinal: number, name: string | null, };
 export type EventFeedItem = { token: string | null, name: string | null, icon: string | null, description: string | null,
 /**
@@ -2765,6 +2798,60 @@ reason: string | null,
  */
 notes: Array<string>, };
 export type DecisionLifecycleState = { "kind": "active" } | { "kind": "available" } | { "kind": "completed" } | { "kind": "failed", observedHour: number, } | { "kind": "aborted" } | { "kind": "reEnableCooldown" } | { "kind": "unsupported", raw: number, } | { "kind": "notApplicable", reason: string, } | { "kind": "notRecorded", reason: string, };
+export type EventWindowDecision = "requested" | "aiControlled" | "hiddenOrAiControlled" | "notViewingCountry" | "senderExcluded" | "playerRestrictedNotMajor" | "playerRestrictedOptionTrigger" | "existingInstance" | "alreadyOpen";
+export type EventWindowKind = "normal" | "news" | "leader" | "operative";
+export type EventWindowOption = {
+/**
+ * The option's place in the live event's own list; null for the fallback OK button.
+ */
+ordinal: number | null,
+/**
+ * Null when the label's copy was refused; the button was still offered.
+ */
+label: string | null, };
+export type EventWindowPresented = { kind: EventWindowKind,
+/**
+ * False when the user's popup settings hid the built window; null when not recorded.
+ */
+shown: boolean | null,
+/**
+ * Built again by an interface reload, with the same scope.
+ */
+rebuilt: boolean, title: string | null, description: string | null,
+/**
+ * The resolved picture key; null with `pictureHidden` when the window showed none.
+ */
+picture: string | null, pictureHidden: boolean,
+/**
+ * The offered options in button order.
+ */
+options: Array<EventWindowOption> | null,
+/**
+ * The event's options the window did not offer, from the recorded content; null when
+ * the offered options or the content's option list could not prove it.
+ */
+notOffered: Array<EventFeedOption> | null,
+/**
+ * Each field the recording does not hold, with why.
+ */
+notRecorded: Array<string>, };
+export type EventFeedWindow = {
+/**
+ * The native pending instance joining a firing to the window built for it.
+ */
+instance: number | null,
+/**
+ * On a fired event: whether this client asked for a window, or the gate that refused it.
+ */
+decision: EventWindowDecision | null,
+/**
+ * On a presented window: what it showed.
+ */
+presented: EventWindowPresented | null,
+/**
+ * Why `decision` or `presented` is null where the kind carries one.
+ */
+missing: string | null, };
 export type EventFeedRow = { id: string, hour: number,
 /**
  * The read supplying this fact; the head never shows it before this hour.
@@ -2786,7 +2873,12 @@ cause?: EventFeedCause,
 /**
  * A nuclear strike's target and outcome; absent for every other kind.
  */
-strike?: EventFeedStrike, decisionState?: DecisionLifecycleState, };
+strike?: EventFeedStrike, decisionState?: DecisionLifecycleState,
+/**
+ * A fired event's window decision, or a presented window's recorded content; absent for
+ * every other kind.
+ */
+window?: EventFeedWindow, };
 export type EventFeedStrike = { province: number,
 /**
  * None for a province without a state.
@@ -6323,6 +6415,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "focus-card": { "hour": "read" },
   "fuel-branches": { "hour": "read" },
   "game-score": { "hour": "read" },
+  "group-counts": { "hour": "read" },
   "head:campaign-clock": { "firstHour": "start", "lastHour": "end" },
   "head:player-apm": { "firstHour": "start", "lastHour": "end", "membership[].firstHour": "start", "membership[].lastHour": "end" },
   "idea-history": { "hour": "read" },
@@ -6506,6 +6599,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "focus-card": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "fuel-branches": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "game-score": { "branchId": "leaf", "hour": "leaf", "top": "node", "top.by": "leaf", "top.count": "leaf" },
+  "group-counts": { "branchId": "leaf", "hour": "leaf", "of": "leaf" },
   "head:campaign-clock": { "branchId": "leaf", "firstHour": "leaf", "lastHour": "leaf" },
   "head:player-apm": { "branchId": "leaf", "firstHour": "leaf", "group": "leaf", "lastHour": "leaf", "membership": "node", "membership[]": "node", "membership[].firstHour": "leaf", "membership[].lastHour": "leaf", "membership[].tag": "leaf", "players": "node", "players[]": "leaf", "tags": "node", "tags[]": "leaf", "windowHours": "leaf" },
   "idea-history": { "branchId": "leaf", "country": "any", "hour": "leaf" },
@@ -6689,6 +6783,7 @@ export type RequestParams<E, B> = {
   "focus-card": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "fuel-branches": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "game-score": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "group-counts": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "head:campaign-clock": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "head:player-apm": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
   "idea-history": { readonly [key: string]: unknown; readonly "hour"?: E | null };

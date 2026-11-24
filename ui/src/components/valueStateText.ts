@@ -10,7 +10,7 @@ export interface ValueStateProps {
   className?: string;
 }
 
-export function valueStateText({ kind, text, unit, reason, atLeast }: Pick<ValueStateProps, 'kind' | 'text' | 'unit' | 'reason' | 'atLeast'>): string {
+export function valueStateText({ kind, text, unit, reason }: Pick<ValueStateProps, 'kind' | 'text' | 'unit' | 'reason' | 'atLeast'>): string {
   switch (kind) {
     case 'known':
       return unit ? `${text ?? ''} ${unit}` : (text ?? '');
@@ -24,8 +24,7 @@ export function valueStateText({ kind, text, unit, reason, atLeast }: Pick<Value
       return reason ? `Not applicable: ${reason}` : 'Not applicable';
     case 'partial': {
       const figure = unit ? `${text ?? ''} ${unit}` : (text ?? '');
-      const lead = atLeast ? `at least ${figure}` : figure;
-      return reason ? `${lead}, partial: ${reason}` : `${lead}, partial`;
+      return reason ? `${figure}, partial: ${reason}` : `${figure}, partial`;
     }
   }
 }

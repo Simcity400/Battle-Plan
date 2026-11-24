@@ -2050,7 +2050,10 @@ impl Drop for PublicationReceipt {
         if let Some(publication) = &self.0 {
             // SAFETY: Dropping an uncommitted spool receipt discards its publication once.
             unsafe {
-                collector_observers::event_feed_observer::discarded(publication.publication());
+                collector_observers::event_feed_observer::discarded(
+                    publication.publication(),
+                    publication.row().generation,
+                );
             }
         }
     }
@@ -2917,7 +2920,10 @@ impl<S: Schedule> Processor<S> {
             if let Some(publication) = &prepared.event_feed_publication {
                 // SAFETY: Originating spool discards an uncommitted publication on terminal OOM.
                 unsafe {
-                    collector_observers::event_feed_observer::discarded(publication.publication());
+                    collector_observers::event_feed_observer::discarded(
+                    publication.publication(),
+                    publication.row().generation,
+                );
                 }
             }
             return Err(io::ErrorKind::OutOfMemory.into());

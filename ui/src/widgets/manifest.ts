@@ -25,6 +25,7 @@ export interface FamilyViewUiLoader {
 export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'active-research': { load: () => import('./active-research') },
   'agency-comparison': { load: () => import('./agency-comparison') },
+  'air-kills-losses': { load: () => import('./air-kills-losses/family.tsx') },
   'air-superiority-region': { load: () => import('./air-superiority-region') },
   'apm-graph': { load: () => import('./apm-graph') },
   'apm-table': { load: () => import('./apm-table') },
@@ -47,6 +48,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'occupation-reserve-manpower': { load: () => import('./occupation-reserve-manpower/family.tsx') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'production-lines': { load: () => import('./production-lines') },
+  'research': { load: () => import('./research') },
   'scoreboard': { load: () => import('./scoreboard') },
   'special-projects': { load: () => import('./special-projects/current.ts') },
   'stability': { load: () => import('./stability') },

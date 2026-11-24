@@ -16,8 +16,9 @@ impl Fields for EventFeedHistoryRow {
         Kind::Bytes,
         Kind::Opaque,
         Kind::U8,
+        Kind::Opaque,
     ];
-    const STEPS: &'static [Option<Step>] = &[None; 10];
+    const STEPS: &'static [Option<Step>] = &[None; 11];
     const NAMES: &'static [&'static str] = &[
         "generation",
         "read_hour",
@@ -29,13 +30,14 @@ impl Fields for EventFeedHistoryRow {
         "script_tokens",
         "script_scopes",
         "script_refusals",
+        "windows",
     ];
 }
 impl EventFeedHistoryRow {
     pub const fn key(&self) -> u128 {
         0
     }
-    fn with_fields<T>(&self, f: impl FnOnce([Field<'_>; 10]) -> io::Result<T>) -> io::Result<T> {
+    fn with_fields<T>(&self, f: impl FnOnce([Field<'_>; 11]) -> io::Result<T>) -> io::Result<T> {
         let events = Batch(self);
         f([
             self.generation.field(),
@@ -48,11 +50,12 @@ impl EventFeedHistoryRow {
             self.script_tokens.field(),
             self.script_scopes.field(),
             self.script_refusals.field(),
+            self.windows.field(),
         ])
     }
     fn change_mask(&self, previous: Option<&Self>) -> u64 {
         let Some(old) = previous else {
-            return full_mask(10);
+            return full_mask(11);
         };
         let changed = [
             self.generation != old.generation,
@@ -65,6 +68,7 @@ impl EventFeedHistoryRow {
             self.script_tokens != old.script_tokens,
             self.script_scopes != old.script_scopes,
             self.script_refusals != old.script_refusals,
+            self.windows != old.windows,
         ];
         changed
             .into_iter()
@@ -80,7 +84,7 @@ impl EventFeedHistoryRow {
         output: &mut Vec<u8>,
     ) -> io::Result<()> {
         self.with_fields(|fields| {
-            let mut encode = |before: [Field<'_>; 10]| {
+            let mut encode = |before: [Field<'_>; 11]| {
                 for (index, (value, old)) in fields.into_iter().zip(before).enumerate() {
                     if mask & (1 << index) != 0 {
                         value.change(old)?.encode(output)?;
@@ -90,7 +94,7 @@ impl EventFeedHistoryRow {
             };
             match previous {
                 Some(old) => old.with_fields(encode),
-                None => encode([Field::Empty; 10]),
+                None => encode([Field::Empty; 11]),
             }
         })
     }
@@ -120,7 +124,7 @@ impl RowCodec for EventFeedHistoryRow {
         self.validate()
     }
     fn not_recorded_fields(&self) -> u64 {
-        0
+        u64::from(matches!(self.windows, Recorded::NotRecorded)) << 10
     }
     fn visit_nested_field_gaps(&self, _: &mut dyn FnMut(&'static str)) {}
     fn visit_wire(
@@ -143,6 +147,7 @@ impl RowCodec for EventFeedHistoryRow {
             events: Value::try_clone(&self.events)?,
             script_tokens: Value::try_clone(&self.script_tokens)?,
             script_scopes: Value::try_clone(&self.script_scopes)?,
+            windows: Value::try_clone(&self.windows)?,
             ..*self
         })
     }
@@ -203,7 +208,7 @@ impl RowCodec for EventFeedHistoryRow {
             key: 0,
             mask,
             values,
-            recorded_fields: 10,
+            recorded_fields: 11,
         }))
     }
     fn encode_fields_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
@@ -218,7 +223,22 @@ impl RowCodec for EventFeedHistoryRow {
         key: u128,
         wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
     ) -> io::Result<Self> {
-        from_wire_encoded(key, Self::SCHEMA.len(), wire)
+        let mut bytes = Vec::new();
+        for index in 0..10 {
+            wire(index)?.encode(&mut bytes)?;
+        }
+        let recorded_fields = match wire(10)? {
+            Field::NotRecorded => 10,
+            windows => {
+                windows.encode(&mut bytes)?;
+                11
+            }
+        };
+        let mut input = Decoder::new(&bytes);
+        input.recorded_fields = recorded_fields;
+        let row = Self::decode_fields(key, &mut input)?;
+        input.finish()?;
+        Ok(row)
     }
     fn decode_fields(key: u128, input: &mut Decoder<'_>) -> io::Result<Self> {
         check_native_key(key, 0)?;
@@ -235,19 +255,21 @@ impl RowCodec for EventFeedHistoryRow {
         row.script_tokens = read_value(Kind::Bytes, input)?;
         row.script_scopes = read_value(Kind::Opaque, input)?;
         row.script_refusals = read_value(Kind::U8, input)?;
+        row.windows = read_field(10, Kind::Opaque, input)?;
         row.validate()?;
         Ok(row)
     }
     fn apply_delta(delta: &DeltaRow, previous: Option<Self>) -> io::Result<Self> {
         check_native_key(delta.key, 0)?;
-        if delta.recorded_fields != 10 || delta.mask == 0 || delta.mask & !full_mask(10) != 0 {
+        let fields = delta.recorded_fields;
+        if !(10..=11).contains(&fields) || delta.mask == 0 || delta.mask & !full_mask(fields) != 0 {
             return Err(invalid("Event feed delta fields differ"));
         }
         let mut row = if let Some(row) = previous {
             row.validate()?;
             row
         } else {
-            if delta.mask != full_mask(10) {
+            if delta.mask != full_mask(fields) {
                 return Err(invalid("inserted row requires every field"));
             }
             Self::default()
@@ -273,6 +295,10 @@ impl RowCodec for EventFeedHistoryRow {
         apply!(7, script_tokens, Bytes);
         apply!(8, script_scopes, Opaque);
         apply!(9, script_refusals, U8);
+        if fields <= 10 {
+            row.windows = Recorded::NotRecorded;
+        }
+        apply!(10, windows, Opaque);
         input.finish()?;
         row.validate()?;
         Ok(row)
@@ -311,6 +337,9 @@ impl replay_rows::checkpoint::rows::Row for EventFeedHistoryRow {
         if mask & (1 << 9) != 0 {
             Value::encode(&self.script_refusals, output)?;
         }
+        if mask & (1 << 10) != 0 {
+            Value::encode(&self.windows, output)?;
+        }
         Ok(())
     }
     #[inline(never)]
@@ -347,6 +376,9 @@ impl replay_rows::checkpoint::rows::Row for EventFeedHistoryRow {
         if mask & (1 << 9) != 0 {
             row.script_refusals = Value::decode(input)?;
         }
+        if mask & (1 << 10) != 0 {
+            row.windows = Value::decode(input)?;
+        }
         Ok(row)
     }
     #[inline(never)]
@@ -381,6 +413,9 @@ impl replay_rows::checkpoint::rows::Row for EventFeedHistoryRow {
         if mask & (1 << 9) != 0 {
             self.script_refusals = next.script_refusals;
         }
+        if mask & (1 << 10) != 0 {
+            self.windows = next.windows;
+        }
         Ok(())
     }
     fn encode_checkpoint_fields(&self, output: &mut Vec<u8>) -> io::Result<()> {
@@ -407,6 +442,7 @@ impl replay_rows::checkpoint::endpoint::sparse::SparseReference for EventFeedHis
             events: vec![],
             script_tokens: b"old".to_vec(),
             script_scopes: vec![],
+            windows: Recorded::NotRecorded,
         };
         let generation = if field == 6 { 7 } else { 9 };
         let source = Self {
@@ -437,6 +473,14 @@ impl replay_rows::checkpoint::endpoint::sparse::SparseReference for EventFeedHis
                 country: 2,
                 ..Default::default()
             }],
+            windows: Recorded::Value(EventWindows {
+                verdicts: Ok(vec![VerdictEntry {
+                    sequence: 11,
+                    verdict: WindowVerdict::Requested,
+                }]),
+                presentations: Vec::new(),
+                presentations_unrecorded: None,
+            }),
         };
         baseline.validate().unwrap();
         source.validate().unwrap();
@@ -459,6 +503,7 @@ impl replay_rows::checkpoint::endpoint::sparse::SparseReference for EventFeedHis
             7 => assign!(script_tokens),
             8 => assign!(script_scopes),
             9 => assign!(script_refusals),
+            10 => assign!(windows),
             _ => unreachable!(),
         }
         expected.validate().unwrap();
@@ -468,5 +513,41 @@ impl replay_rows::checkpoint::endpoint::sparse::SparseReference for EventFeedHis
             expected,
             payload,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event_feed_rows::tests::row;
+
+    fn read(fields: &[Vec<u8>], present: usize) -> EventFeedHistoryRow {
+        let schema = <EventFeedHistoryRow as Fields>::SCHEMA;
+        EventFeedHistoryRow::from_wire(0, &mut |index| match fields.get(index).filter(|_| index < present) {
+            Some(bytes) => schema[index].decode(&mut Decoder::new(bytes)),
+            None => Ok(Field::NotRecorded),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_row_written_before_window_capture_reads_with_its_windows_not_recorded() {
+        let written = row();
+        let mut fields = Vec::new();
+        written
+            .visit_wire(&mut |_, field| {
+                let mut bytes = Vec::new();
+                field.encode(&mut bytes)?;
+                fields.push(bytes);
+                Ok(())
+            })
+            .unwrap();
+        let older = read(&fields, 10);
+        assert_eq!(older.windows, Recorded::NotRecorded);
+        assert_eq!(older.events, written.events);
+        assert_eq!(RowCodec::not_recorded_fields(&older), 1 << 10);
+        let current = read(&fields, 11);
+        assert_eq!(current.windows, written.windows);
+        assert_eq!(RowCodec::not_recorded_fields(&current), 0);
     }
 }

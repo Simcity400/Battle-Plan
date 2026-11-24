@@ -180,6 +180,15 @@ export function researchReadName(artwork: ResearchArtwork, read: ResearchSlotNow
   return isUnjoinedResearch(read.state) ? read.definition?.name : researchArt(artwork, token, databaseIndex)?.name;
 }
 
+export function historyTokens(history: ResearchHistory): ResearchUse[] {
+  const tokens = new Set<string>(), definitions = new Map<string, Set<number>>();
+  for (const slot of history.slots) {
+    for (const entry of slot.entries) definitions.set(entry.token, (definitions.get(entry.token) ?? new Set<number>()).add(entry.databaseIndex));
+    for (const state of slot.states) if (state.token && !definitions.has(state.token)) tokens.add(state.token);
+  }
+  return [...tokens, ...[...definitions].flatMap(([token, indices]) => [...indices].map(index => [token, index] as const))];
+}
+
 export function researchFolderList(looks: ResearchFolderLooks): ResearchFolderLook[] {
   const seen = new Map<string, ResearchFolderLook>();
   const all = [...looks.values(), ...[...looks.definitions?.values() ?? []].flatMap(byIndex => [...byIndex.values()])];
