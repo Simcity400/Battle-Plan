@@ -8,8 +8,8 @@ import {
   type SourcePlan,
 } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import {
-  registerTimeChart,
   type TimeChartProjection,
   type TimeChartWidgetDeclaration,
 } from '../../families/time-chart/declaration.ts';
@@ -231,7 +231,7 @@ function buildHoverDetail(
   return { hour: hoverHour, items, replacesSeries: true };
 }
 
-export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions> = registerTimeChart({
+export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions> = registerFamilyProjection({
   kind: 'balance-of-power',
   family: 'time-chart',
   variant: 'line',

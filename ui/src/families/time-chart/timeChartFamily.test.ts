@@ -1165,7 +1165,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
       series: [],
       empty: { message: 'Germany has no balance of power in this campaign.', kind: 'empty' },
     };
-    registerTimeChart({
+    registerFamilyProjection({
       kind: 'test-empty',
       family: 'time-chart',
       variant: 'line',
