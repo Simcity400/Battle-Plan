@@ -15,6 +15,7 @@ import {
   missingSpansOf,
   rankEntry,
   rankedOrder,
+  spendMarkerEntry,
   spendMarkersOf,
   withinMapOf,
   auditReading,
@@ -32,7 +33,6 @@ export interface CommandPowerOptions {
   readonly gaps: readonly ChartGap[];
   readonly surface: string;
   readonly showCeiling: boolean;
-  readonly showSpendTicks: boolean;
 }
 
 
@@ -165,9 +165,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       }
     }
 
-    const markers = single && options.showSpendTicks
-      ? spendMarkersOf(mainMap?.get(tags[0]!), 'Command power spent')
-      : [];
+    const spent = spendMarkersOf(readView, 'Command power spent', options.extent[0]);
 
     return {
       kind: 'command-power',
@@ -177,7 +175,8 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       extent: options.extent,
       yAxis: { format: 'power', decimals: 0 },
       series,
-      markers: markers.length > 0 ? markers : undefined,
+      markers: spent.markers.length > 0 ? spent.markers : undefined,
+      ...(spent.warnings.length > 0 ? { warnings: spent.warnings } : {}),
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       auditRows: readings.map(([row, reading]) => auditReading(row, reading, formatEndAmount)),
     };
@@ -211,7 +210,6 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
           family: mainFamily,
           tags,
           ...(within ? { within } : {}),
-          marks: tags.length === 1 && ctx.options.spendTicks !== false,
           headQuery: tags.length
             ? {
                 product: 'series-state',
@@ -234,7 +232,6 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
           family: ceilingFamily,
           tags,
           ...(within ? { within } : {}),
-          marks: false,
           headQuery: tags.length
             ? {
                 product: 'series-state',
@@ -260,8 +257,10 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
     }
     const rank = rankEntry(ctx, mainFamily, tags);
     if (rank) entries.push(rank);
+    const spending = spendMarkerEntry(ctx, 'Command');
+    if (spending) entries.push(spending);
     return {
-      owner: `command-power:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showCeiling ? 1 : 0}:${ctx.following ? 1 : 0}`,
+      owner: `command-power:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showCeiling ? 1 : 0}:${ctx.options.spendTicks !== false ? 1 : 0}:${ctx.following ? 1 : 0}`,
       entries,
     };
   },
@@ -275,7 +274,6 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
       gaps: branchGapsOf(ctx.branch),
       surface,
       showCeiling: ctx.options.ceiling !== false,
-      showSpendTicks: ctx.options.spendTicks !== false,
     };
   },
 };

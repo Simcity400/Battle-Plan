@@ -15,7 +15,7 @@ import {
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
 import type { ChartExactRational, ChartGap, ChartMarker, ChartStackBand, TimeChartModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
-import { formatRational, formatRecordedPercent, formatShare, formatShareRatio } from '../../families/valueFormat.ts';
+import { formatRational, formatRecordedPercent, formatScaledPercent, formatShare, formatShareRatio } from '../../families/valueFormat.ts';
 import type { WorldTensionReply, WorldTensionStackReply } from '../../generated/dashboard';
 
 export interface WorldTensionChartOptions {
@@ -96,9 +96,8 @@ function formatTotalPct(value: number, exact: ChartExactRational | null): string
 }
 
 function formatRawPct(raw: string, scale: number, signed = true): string | null {
-  const parsed = parseRawInt(raw);
-  if (parsed === null || scale <= 0) return null;
-  return formatRational(parsed, BigInt(scale), { maxDecimals: 5, signed, percent: true });
+  if (!/^-?\d+$/.test(raw) || !Number.isSafeInteger(scale) || scale <= 0) return null;
+  return formatScaledPercent(BigInt(raw), BigInt(scale), { signed });
 }
 
 function contributorLabel(

@@ -120,6 +120,10 @@ Let `{Name}` be `table.words()` with its first letter capitalized (for example, 
 | `ui/src/widgets/autonomy/AutonomyWidget.tsx`, `country-measure/MeasureWidget.tsx`, `experience/ExperienceWidget.tsx`, `fuel/FuelWidget.tsx`, `stability/StabilityWidget.tsx`, `supply-health/supplyHead.ts`, `supply-health/supplySeries.ts` | `Row` | Per-country keyed line heads. |
 | `ui/src/widgets/army-size/ArmyBreakdown.tsx`, `player-apm/ApmWidget.tsx`, `special-projects/useProjectHistory.ts` | `Table` | Non-series panel / log-page queries. |
 
+### A lane history at an hour read in part
+
+`replay_lanes::lanes::history` never carries a key's value across an hour whose read did not reach it: the key's step ends there. The history also holds the table's status over the span it read (`History::statuses`, collected by the same walk, so walked blocks cost no extra decode) and the unavailable reasons. `History::reading(key, hour)` is the one lookup: the key's cells where the read reached it (a complete read, or a partial read that witnessed it), absent only where a complete read did not hold it, and unread, with the hour's status, everywhere else (a partial read that did not reach it, an hour not recorded or unavailable, an hour outside the history). `History::readings(key)` gives the same as runs. A product never takes a key's coverage from the table's complete hours alone, never shows the previous hour's value for an unread key, and never drops a partly read hour whole. `dashboard_query::coverage::reading_witness` words an unread reading with the canonical strings above.
+
 ### A rank at an hour
 
 `Line::rank_at(hour, n, least) -> Result<Vec<tag>, reason>` is the one rank of a population at an hour, exact and followed (`dashboard-follow` `SeriesMode::Top { population: true }`) alike. It refuses with a reason, never an empty rank, when the table is not complete, when a row's value is unrecorded (a not-applicable value is not a contender), or when a row belongs to no country known at the hour. A named top (`population: false`) ranks only the named rows, and an unrecorded named row refuses it.

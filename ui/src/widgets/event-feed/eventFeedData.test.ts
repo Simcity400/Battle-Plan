@@ -49,7 +49,7 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
   const strikeRow = row('nuclearStrike', 90, ['USA', 'JAP'], {
     category: 'warsPeace',
     participants: ['USA', 'JAP'],
-    strike: { province: 1, state: null, buildingLevels: null, warSupport: -15, units: 2, manpowerLost: null, equipmentLost: null, notRecorded: ['equipment: writers not forwarded'] },
+    strike: { province: 1, state: null, buildingLevels: null, warSupport: -15, units: 2, manpowerLost: 1234.6, equipmentLost: null, notRecorded: ['equipment: writers not forwarded'] },
   });
   const repeated = Array.from({ length: 5 }, (_, i) => row('warJoined', 48 + i, ['GER', 'SOV'], {
     category: 'warsPeace',
@@ -88,7 +88,12 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
   assert.equal(unknownMeta.countryTag, null, 'missing recipient never substitutes the sender');
   const strikeOut = model.rows.find(r => r.key === 'k2')!;
   assert.equal(strikeOut.cells.detail?.value.kind, 'known');
-  assert.match(String((strikeOut.cells.detail?.value as { value: string }).value), /war support/);
+  assert.match(String((strikeOut.cells.detail?.value as { value: string }).value), /^1,234 casualties · −15% war support · 2 units$/);
+  const strikeTip = (strikeOut as { tooltipExtra?: () => readonly { label: string; value: { value?: unknown } }[] }).tooltipExtra?.() ?? [];
+  assert.deepEqual(strikeTip.filter(r => r.label === 'War support' || r.label === 'Casualties').map(r => [r.label, r.value.value]), [
+    ['Casualties', '1,234'],
+    ['War support', '−15%'],
+  ]);
   assert.match(String((strikeOut.cells.detail?.value as { value: string }).value), /2 units/);
   const foldRow = model.rows.find(r => r.key.startsWith('fold:'))!;
   assert.equal(foldRow.name, '5 events');
