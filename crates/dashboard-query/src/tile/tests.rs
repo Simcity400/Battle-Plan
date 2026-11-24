@@ -452,8 +452,12 @@ fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_
         for at in ranking.from..=ranking.until {
             assert_eq!(line.rank_at(at, 1, false).unwrap().unwrap(), ranked, "the same top through its proven hours ({at} for {hour})");
         }
-        if ranking.from > FIRST && hour - ranking.from < RANK_PROOF_HOURS {
+        let walked_edge = |at: i32| (at - FIRST) % UNIT_HOURS == 0;
+        if ranking.from > FIRST && !walked_edge(ranking.from) {
             assert_ne!(line.rank_at(ranking.from - 1, 1, false).unwrap(), Ok(ranked.clone()), "the hour before the proof is another top");
+        }
+        if ranking.until < LONG_SECOND - GAP - 1 && !walked_edge(ranking.until + 1) {
+            assert_ne!(line.rank_at(ranking.until + 1, 1, false).unwrap(), Ok(ranked.clone()), "the hour after the proof is another top");
         }
         proven += usize::try_from(ranking.until - ranking.from).unwrap();
     }
@@ -473,4 +477,44 @@ fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_
     assert_eq!(by.bins, plain.bins, "the tiles are of the asked measure");
     assert_eq!(by.measure, "commandPower");
     assert!(reply(&other, "1", &serde_json::json!({ "binHours": bin_hours, "index": index, "top": 2, "hour": hour, "rankBy": "noSuchMeasure" })).is_err());
+}
+
+#[test]
+fn quiet_hours_and_many_tiles_of_one_top_share_one_ranking_pass() {
+    let fixture = long_campaign();
+    let query = fixture.query();
+    let line = line(&query);
+    let hour = ITA_FROM + 101;
+    let top = |at: i32, index: i64| reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": index, "top": 2, "hour": at })).unwrap();
+    let first = top(hour, i64::from(hour).div_euclid(BINS as i64));
+    let ranking = first.ranking.clone().unwrap();
+    assert_eq!(ranking.refused, None);
+    assert!(ranking.until - ranking.from >= 40, "a proof of {}..{}", ranking.from, ranking.until);
+    let members: Vec<String> = first.lines.iter().map(|line| line.country.to_string()).collect();
+    let asks: Vec<(i32, i64)> = (ranking.from..=ranking.until).flat_map(|at| (0..4).map(move |tile| (at, i64::from(at).div_euclid(BINS as i64) + tile - 1))).collect();
+    assert!(asks.len() > 150, "{} asks", asks.len());
+    crate::cost::take_calls();
+    for &(at, index) in &asks {
+        let again = top(at, index);
+        let held = again.ranking.unwrap();
+        assert_eq!((held.from, held.until, held.refused), (ranking.from, ranking.until, None), "the same proof at {at}, tile {index}");
+        assert_eq!(again.lines.iter().map(|line| line.country.to_string()).collect::<Vec<_>>(), members);
+    }
+    let topped = crate::cost::take_calls();
+    let named = whole(&members.iter().map(String::as_str).collect::<Vec<_>>());
+    for &(_, index) in &asks {
+        tile(&line, "1", &named, None, 1, index, false).unwrap();
+    }
+    let plain = crate::cost::take_calls();
+    assert_eq!(topped, plain, "quiet hours and tiles of a proven top read nothing beyond their tiles: no ranking pass ({topped} reads against {plain})");
+    let rank = |params: serde_json::Value| -> u64 {
+        let mut request = serde_json::json!({ "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" }, "hour": hour });
+        request.as_object_mut().unwrap().extend(params.as_object().unwrap().clone());
+        crate::cost::take_calls();
+        let reply: crate::series::ranked::SeriesRankReply = serde_json::from_value(crate::series::answer(&query, crate::series::ranked::PRODUCT, &request).unwrap().unwrap()).unwrap();
+        assert_eq!(reply.rows.iter().map(|row| row.country.to_string()).collect::<Vec<_>>(), line.rank_at(hour, 2, false).unwrap().unwrap(), "rows in rank order at the hour");
+        assert!(ranking.from <= reply.from && reply.until <= ranking.until);
+        crate::cost::take_calls()
+    };
+    assert_eq!(rank(serde_json::json!({ "top": 2 })), rank(serde_json::json!({ "countries": members })), "a rank of the proven top reads what a rank of its named countries reads");
 }

@@ -24,6 +24,7 @@ mod tests;
 mod truncated_tests;
 
 pub mod board;
+pub mod proof;
 pub mod ranked;
 pub mod totals;
 
@@ -693,22 +694,6 @@ impl<'q, 'a> Line<'q, 'a> {
         }
         values.sort_unstable_by(order);
         Ok(Ok(values.into_iter().take(n).map(|(_, tag)| tag.to_owned()).collect()))
-    }
-
-    pub(crate) fn rank_holds(&self, hour: i32, n: usize, least: bool, within: (i32, i32), same: impl Fn(&[String]) -> bool) -> io::Result<(i32, i32)> {
-        let timeline = &self.query.timeline;
-        let lo = within.0.max(timeline.first).max(hour.saturating_sub(crate::tile::RANK_PROOF_HOURS));
-        let hi = within.1.min(timeline.last).min(hour.saturating_add(crate::tile::RANK_PROOF_HOURS));
-        let holds = |at: i32| -> io::Result<bool> { Ok(matches!(self.rank_at(at, n, least)?, Ok(ranked) if same(&ranked))) };
-        let mut from = hour;
-        while from > lo && holds(from - 1)? {
-            from -= 1;
-        }
-        let mut until = hour;
-        while until < hi && holds(until + 1)? {
-            until += 1;
-        }
-        Ok((from, until))
     }
 
     pub fn ranked(&self, from: i32, to: i32, width: u32, n: usize) -> io::Result<Vec<RankedLine>> {

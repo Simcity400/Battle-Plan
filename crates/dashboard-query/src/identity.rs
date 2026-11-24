@@ -124,6 +124,7 @@ pub struct Holders {
     pub unknown: Vec<(i32, i32, String)>,
     slots: OnceLock<BTreeMap<u32, SlotHistory>>,
     edges: OnceLock<Vec<i32>>,
+    pub(crate) ranks: crate::series::proof::Proofs,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -134,7 +135,7 @@ struct SlotHistory {
 
 impl Holders {
     pub fn new(tags: BTreeMap<String, Vec<HolderRun>>, unknown: Vec<(i32, i32, String)>) -> Self {
-        Self { tags, unknown, slots: OnceLock::new(), edges: OnceLock::new() }
+        Self { tags, unknown, slots: OnceLock::new(), edges: OnceLock::new(), ranks: crate::series::proof::Proofs::default() }
     }
 
     pub fn next_change(&self, hour: i32) -> Option<i32> {

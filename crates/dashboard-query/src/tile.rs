@@ -46,9 +46,6 @@ struct Params {
     rank_by: Option<String>,
 }
 
-#[doc = " How far the membership of a top is proven on each side of its hour, in hours."]
-pub const RANK_PROOF_HOURS: i32 = 48;
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TileRanking {
@@ -176,15 +173,11 @@ pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value) -
         }
     };
     let ranker = by.as_ref().unwrap_or(line);
-    let (tags, ranking) = match ranker.rank_at(hour, n, params.least)? {
-        Err(reason) => (Vec::new(), TileRanking { hour, from: hour, until: hour, refused: Some(reason) }),
-        Ok(tags) => {
-            let held: std::collections::BTreeSet<&str> = tags.iter().map(String::as_str).collect();
-            let (from, until) = ranker.rank_holds(hour, n, params.least, (i32::MIN, i32::MAX), |ranked| ranked.len() == held.len() && ranked.iter().all(|tag| held.contains(tag.as_str())))?;
-            (tags, TileRanking { hour, from, until, refused: None })
-        }
+    let (tags, ranking) = match ranker.top_at(hour, n, params.least)? {
+        Err(reason) => (None, TileRanking { hour, from: hour, until: hour, refused: Some(reason) }),
+        Ok(proven) => (Some(proven.members), TileRanking { hour, from: proven.from, until: proven.until, refused: None }),
     };
-    let asks: Vec<Ask> = tags.iter().map(|tag| Ask::whole(tag.as_str())).collect();
+    let asks: Vec<Ask> = tags.iter().flat_map(|tags| tags.iter()).map(|tag| Ask::whole(tag.as_str())).collect();
     let mut reply = tile(line, branch_id, &asks, None, params.bin_hours, params.index, params.with_marks)?;
     reply.ranking = Some(ranking);
     Ok(reply)

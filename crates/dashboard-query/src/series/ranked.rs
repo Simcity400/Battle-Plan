@@ -155,15 +155,18 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
             countries.push(country);
         }
     }
-    let (asked, mut refused, top) = match (ask.top, countries.is_empty()) {
+    let (asked, mut refused) = match (ask.top, countries.is_empty()) {
         (Some(_), false) => return Err(invalid("A rank names a top or countries, not both")),
         (None, true) => return Err(invalid("A rank names a top or countries")),
         (Some(0), true) => return Err(invalid(format!("A ranked {} names a top of at least 1", line.series.kind))),
-        (Some(n), true) => match line.rank_at(hour, n as usize, ask.least)? {
-            Ok(tags) => (tags.into_iter().map(Country::from).collect(), None, Some(n as usize)),
-            Err(reason) => (Vec::new(), Some(reason), None),
+        (Some(n), true) => match line.top_at(hour, n as usize, ask.least)? {
+            Ok(proven) => {
+                held = (proven.from, proven.until);
+                (proven.members.iter().cloned().map(Country::from).collect(), None)
+            }
+            Err(reason) => (Vec::new(), Some(reason)),
         },
-        (None, false) => (countries, None, None),
+        (None, false) => (countries, None),
     };
     let mut held_slots = std::collections::HashSet::new();
     let asked: Vec<(Country, Option<u32>)> = asked
@@ -181,14 +184,14 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
         columns.push(detail.states(&reads, None)?);
     }
     let mut order: Vec<usize> = (0..asked.len()).collect();
+    let value = |at: usize| columns[0][at].run.as_ref().and_then(|run| run.value_raw.parse::<i64>().ok());
+    order.sort_by(|&a, &b| match (value(a), value(b)) {
+        (Some(x), Some(y)) => (if ask.least { x.cmp(&y) } else { y.cmp(&x) }).then_with(|| asked[a].to_string().cmp(&asked[b].to_string())),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.cmp(&b),
+    });
     if ask.top.is_none() {
-        let value = |at: usize| columns[0][at].run.as_ref().and_then(|run| run.value_raw.parse::<i64>().ok());
-        order.sort_by(|&a, &b| match (value(a), value(b)) {
-            (Some(x), Some(y)) => (if ask.least { x.cmp(&y) } else { y.cmp(&x) }).then_with(|| asked[a].to_string().cmp(&asked[b].to_string())),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => a.cmp(&b),
-        });
         refused = order.iter().find(|&&at| value(at).is_none()).map(|&at| columns[0][at].missing.clone().unwrap_or_else(|| super::board::measure_unrecorded(&asked[at].to_string(), line.measure.name)));
     }
     for state in columns.iter().flatten() {
@@ -197,13 +200,9 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
             None => (hour, hour),
         };
     }
-    let (from, until) = match (top, &refused) {
-        (Some(n), None) => {
-            let ranked: Vec<String> = asked.iter().map(ToString::to_string).collect();
-            line.rank_holds(hour, n, ask.least, held, |at| at == ranked.as_slice())?
-        }
-        (None, None) => (held.0.min(hour), held.1.max(hour)),
-        _ => (hour, hour),
+    let (from, until) = match &refused {
+        None => (held.0.min(hour), held.1.max(hour)),
+        Some(_) => (hour, hour),
     };
     let mut measures = vec![SeriesRankMeasure { name: line.measure_name().to_owned(), decimals: line.decimals() }];
     measures.extend(details.iter().map(|detail| SeriesRankMeasure { name: detail.measure_name().to_owned(), decimals: detail.decimals() }));
