@@ -1,31 +1,20 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { choiceVariants } from '../../dashboard/options.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
-import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
-import { NARROW_TABLE_OPTION } from '../../charts/table/options.ts';
-
-export const BREAKDOWN = { id: 'stockpile', label: 'Stockpile breakdown' };
+import { tableFamilyOptions } from '../../families/table/settings.ts';
+import { STOCKPILE_BASE, stockpileColumns } from './stockpileProjection.ts';
 
 const overTime = (options: Readonly<Record<string, OptionValue>>) => options.view === 'time';
-
-const tableOnly = (field: OptionField): OptionField => ({ ...field,
-  visibleWhen: (options, context) => !overTime(options) && (field.visibleWhen?.(options, context) ?? true) });
 
 const VIEW_OPTION: OptionField = { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'bars',
   choices: [{ value: 'bars', label: 'Table' }, { value: 'time', label: 'Over time' }] };
 
 export const OPTIONS: readonly OptionField[] = [
-  { key: 'stockpileCountry', section: 'options', label: 'Selected country', kind: 'content-choice', automatic: 'Selected country', default: '', visibleWhen: () => false },
-  tableOnly(breakdownOption([BREAKDOWN], 'Equipment stockpile')), tableOnly(DRILL_OPTION),
-  { key: 'partGroup', section: 'options', label: 'Breakdown equipment', kind: 'content-choice', default: '',
-    automatic: 'Choose an equipment row', visibleWhen: options => !overTime(options) && options.show === BREAKDOWN.id },
   VIEW_OPTION,
-  { key: 'count', section: 'options', label: 'Count', kind: 'choice', default: 'units',
-    hint: 'IC shows output as the IC its lines put in a day. Stock and surplus stay in units: the game gives stock no IC value.',
-    choices: [{ value: 'units', label: 'Units' }, { value: 'ic', label: 'IC' }], visibleWhen: options => !overTime(options) },
-  { ...NARROW_TABLE_OPTION, visibleWhen: options => !overTime(options) },
-  { key: 'included', section: 'options', label: 'Included types', kind: 'content-set',
-    automatic: 'All types', default: '' },
+  { key: 'layout', section: 'options', label: 'Layout', kind: 'choice', default: 'sum',
+    hint: 'Below 470 px wide, Balance and its parts is used',
+    choices: [{ value: 'sum', label: 'Sum' }, { value: 'parts', label: 'Balance and its parts' }], visibleWhen: options => !overTime(options) },
+  ...tableFamilyOptions(stockpileColumns('sum', null), STOCKPILE_BASE).map(field => ({ ...field, visibleWhen: (options: Readonly<Record<string, OptionValue>>) => !overTime(options) })),
 ];
 
 export const TIME_OPTIONS: readonly OptionField[] = [
@@ -44,6 +33,6 @@ export const definition = {
   description: 'What a country holds of each equipment type and model, where the game says it is short, and what it makes a day.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 13 },
-  countries: { max: Number.MAX_SAFE_INTEGER }, options: OPTIONS, viewSwitch: { option: 'count' },
+  countries: { max: Number.MAX_SAFE_INTEGER }, options: OPTIONS,
   variants: choiceVariants(VIEW_OPTION, () => 'Stockpile over time'),
 } as const satisfies WidgetMeta;

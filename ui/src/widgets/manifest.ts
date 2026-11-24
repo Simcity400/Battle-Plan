@@ -21,7 +21,7 @@ export type OptionChoicesHook = NonNullable<WidgetRenderer['useOptionChoices']>;
 
 export const OPTION_CHOICES: Readonly<Record<string, () => Promise<OptionChoicesHook>>> = {
   'air-kills-losses': () => import('../dashboard/useMilitaryAirLedger').then(module => module.useAirLossChoices),
-  'equipment-stockpile': () => import('./equipment-stockpile/useEquipmentStockpile').then(module => module.useStockpileChoices),
+  'equipment-stockpile': () => import('./equipment-stockpile/useStockpileChoices').then(module => module.useStockpileChoices),
 };
 
 export interface FamilyViewUiLoader {

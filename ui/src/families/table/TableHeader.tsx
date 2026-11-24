@@ -151,11 +151,15 @@ export function FamilyTableHeader({
       </span>;
     }
     if (item.headerGroup?.kind === 'parts') {
-      return <span className="tf-th-parts">
-        {item.headerGroup.parts.map((part, idx) => <span key={idx} className="tf-th-part" title={part.notRecordedReason}>
-          {part.notRecordedReason && <span className="tf-th-hatch" aria-hidden="true" />}
-          <span>{part.label}</span>
-        </span>)}
+      return <span className="tf-th-text-block tf-th-parts-block">
+        <span className="tf-th-main tf-th-parts">
+          {item.headerGroup.parts.map((part, idx, parts) => <span key={idx} className="tf-th-part" title={part.notRecordedReason}>
+            <span>{part.label}</span>
+            {part.notRecordedReason && <span className="tf-th-hatch" aria-hidden="true" />}
+            {parts[idx + 1]?.operator && <span className="tf-th-operator" aria-hidden="true">{parts[idx + 1]!.operator}</span>}
+          </span>)}
+        </span>
+        {item.unit && <span className="tf-th-unit">{item.unit}</span>}
       </span>;
     }
     const textBlock = <span className="tf-th-text-block">
@@ -242,7 +246,7 @@ export function FamilyTableHeader({
           >
             {canDrag && GRIP_DOTS}
             {renderLabel(item, active, end, index)}
-          </button> : <span className="tf-th-static" title={title}>{renderLabel(item, false, end, index)}</span>}
+          </button> : <span className={`tf-th-static${item.headerGroup ? ' tf-th-static-fill' : ''}`} title={title}>{renderLabel(item, false, end, index)}</span>}
           {editableColumns && <span
             className="tf-resize"
             title="Drag to resize. Double-click to fit."

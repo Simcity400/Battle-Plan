@@ -448,10 +448,8 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok("Authored occupation-law names and icons checked; occupied state names, garrisons and law assignments require recorded state identities.".into())
         }
         <occupation::detail::OccupationDetail as at_hour::AtHour>::KEY => Ok("No content dependency: occupier totals and collaboration are recorded tables.".into()),
-        key if key == dashboard_production::products::stockpile::EquipmentStockpileCatalogue::KEY
-            || key == dashboard_production::products::stockpile::EquipmentStockpileChart::KEY
+        key if key == dashboard_production::products::stockpile::EquipmentStockpileTypes::KEY
             || key == dashboard_production::products::stockpile::EquipmentStockpileLines::KEY
-            || key == <dashboard_production::products::stockpile::EquipmentStockpileAt as dashboard_base::products::at_hour::AtHour>::KEY
             || key == <dashboard_production::products::stockpile::StockpileArtwork as dashboard_base::products::at_hour::AtHour>::KEY =>
         {
             Ok("Design names, equipment types and pictures need the recorded design, country and best-design candidate operands; unavailable offline.".into())

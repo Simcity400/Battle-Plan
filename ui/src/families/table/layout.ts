@@ -115,6 +115,23 @@ export function buildColumnLayouts(
   return ordered;
 }
 
+const OPERATOR_SLOT = 16;
+const HEADER_HATCH = 16;
+const SHORT_OVER_GAP = 8;
+
+function headerGroupWidth(column: FamilyColumnLayout, measure: MeasureText, headFont: string, unitFont: string): number {
+  const group = column.headerGroup;
+  if (!group) return 0;
+  const unit = column.unit ? measure(column.unit, unitFont) : 0;
+  if (group.kind === 'shortOver') return measure('Short', headFont) + measure('Over', headFont) + SHORT_OVER_GAP * 2 + 1 + CELL_INSET * 2;
+  let slot = 0;
+  group.parts.forEach((part, at) => {
+    const next = group.parts[at + 1];
+    slot = Math.max(slot, measure(part.label, headFont) + (part.notRecordedReason ? HEADER_HATCH : 0) + (next?.operator ? OPERATOR_SLOT : 0));
+  });
+  return Math.max(slot * group.parts.length, unit) + CELL_INSET * 2;
+}
+
 export function measureFixedColumnWidths(
   columns: readonly FamilyColumnLayout[],
   settings: TableSettings,
@@ -146,12 +163,8 @@ export function measureFixedColumnWidths(
       out[column.key] = Math.ceil(Math.max(column.minWidth ?? 160, hideHeader ? 0 : measure(column.label, headFont) + CELL_INSET * 2));
       continue;
     }
-    if (column.cellKind === 'stockpileSum') {
-      out[column.key] = column.minWidth ?? 210;
-      continue;
-    }
-    if (column.cellKind === 'stockpileParts') {
-      out[column.key] = column.minWidth ?? 250;
+    if (column.cellKind === 'stockpileNet' || column.cellKind === 'stockpileSum' || column.cellKind === 'stockpileBalance') {
+      out[column.key] = Math.ceil(Math.max(column.minWidth ?? 174, hideHeader ? 0 : headerGroupWidth(column, measure, headFont, unitFont)));
       continue;
     }
     if (column.cellKind === 'winRate') {

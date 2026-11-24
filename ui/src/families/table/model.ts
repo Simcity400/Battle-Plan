@@ -43,8 +43,9 @@ export type TableCellKind =
   | 'skill'
   | 'icons'
   | 'date'
+  | 'stockpileNet'
   | 'stockpileSum'
-  | 'stockpileParts'
+  | 'stockpileBalance'
   | 'status'
   | 'action'
   | 'twoWay'
@@ -54,7 +55,7 @@ export type TableCellKind =
 
 export type TableHeaderGroup =
   | { readonly kind: 'shortOver' }
-  | { readonly kind: 'parts'; readonly parts: readonly { readonly label: string; readonly notRecordedReason?: string }[] };
+  | { readonly kind: 'parts'; readonly parts: readonly { readonly label: string; readonly operator?: string; readonly notRecordedReason?: string }[] };
 
 export interface TableCellFlag {
   readonly tag: string;
@@ -70,13 +71,14 @@ export interface TableCellIconItem {
 }
 
 export interface TableCellStockpile {
-  readonly balance: number | null;
-  readonly need: number | null;
-  readonly stock: number | null;
-  readonly produced: number | null;
-  readonly balanceMissing?: string | null;
-  readonly needMissing?: string | null;
+  readonly produced: string | null;
+  readonly need: string | null;
+  readonly balance: string | null;
+  readonly short: boolean;
+  readonly share: number | null;
   readonly producedMissing?: string | null;
+  readonly needMissing?: string | null;
+  readonly balanceMissing?: string | null;
   readonly ai?: boolean;
 }
 
@@ -1206,7 +1208,7 @@ export function deriveRowTooltip(
   const title = row.tooltipTitle ?? (firstCol?.cellKind === 'date' ? found.name : (firstText ?? found.name));
   for (let i = 0; i < allColumns.length; i++) {
     const col = allColumns[i]!;
-    if (col.cellKind === 'kind' || col.cellKind === 'action') continue;
+    if (col.cellKind === 'kind' || col.cellKind === 'action' || col.cellKind === 'stockpileNet' || col.cellKind === 'stockpileSum' || col.cellKind === 'stockpileBalance') continue;
     if (!col.label && col.cellKind !== 'date') continue;
     if (i === nameIndex && col.cellKind !== 'date' && (firstText === undefined || firstText === title)) continue;
     const cell = row.cells[col.key];

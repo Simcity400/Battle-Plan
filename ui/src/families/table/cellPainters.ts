@@ -8,11 +8,11 @@ import {
   drawFlagSlot,
   drawIconStrip,
   drawMissingMark,
+  drawNetBar,
   drawOutOfFigure,
   drawSkillFigure,
   drawSplitBar,
   drawStatusMark,
-  drawStockpileSumCell,
   drawTwoWayBar,
   drawTrackBar,
   drawWinRateCell,
@@ -25,7 +25,7 @@ import {
 import { resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { readyArt, type ArtResult } from '../art/types.ts';
-import { formatDateParts, formatScalar, formatValueState } from '../valueFormat.ts';
+import { formatDateParts, formatValueState } from '../valueFormat.ts';
 import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE, PARTIAL_TAB_GAP, PARTIAL_TAB_HEIGHT, PARTIAL_TAB_WIDTH } from '../valueCanvas.ts';
 import { SHARE_FIGURE_SLOT, TREE_CHEVRON_LANE, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, TWO_WAY_GAP, TWO_WAY_SLOT, type FamilyColumnLayout } from './layout.ts';
 import type { CellPaintModel, FlatTableRow, TableCell } from './model.ts';
@@ -38,6 +38,7 @@ import {
   type TableTheme,
 } from './settings.ts';
 
+const CHILD_FLAG_GAP = 6;
 function signedText(text: string, signed: number): string {
   if (signed > 0) return text.startsWith('+') ? text : `+${text}`;
   if (signed < 0) return text.replace(/^-/, '−');
@@ -94,7 +95,6 @@ export interface CellDrawArgs {
   readonly fill: string;
   readonly rowHovered: boolean;
   readonly rowFocused: boolean;
-  readonly stockpileMaxAbs: number;
 }
 
 const fontOf = (theme: TableTheme, size: number, weight: number) => `${weight} ${size}px ${theme.font}`;
@@ -204,7 +204,7 @@ function drawInlineRuns(
 
 export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): void {
   const { ctx, theme, density, measure, fit } = rc;
-  const { item, column, colIndex, x, y, rowHeight, paintModel, formatted, fraction, rowHovered, rowFocused, stockpileMaxAbs } = args;
+  const { item, column, colIndex, x, y, rowHeight, paintModel, formatted, fraction, rowHovered, rowFocused } = args;
   const cell = item.row.cells[column.key];
   const tokens = resolveKitTokens(theme);
   const leftBase = x + CELL_INSET + (column.leadInset ?? 0);
@@ -234,6 +234,10 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     } else {
       left += treeTextStart(item.level, rc.treeLevels);
       if (item.isTreeGroup) drawChevron(ctx, left - TREE_CHEVRON_LANE - 2, middle, item.isOpen, theme);
+      else if (item.level > 1 && cell?.iconSlot && !showsIcon(column.display)) {
+        const state = slotOf(paintModel.art, paintModel.country ?? undefined, rc);
+        drawFlagSlot(ctx, Math.max(x, left - FLAG_SLOT_WIDTH - CHILD_FLAG_GAP), Math.round(middle - FLAG_SLOT_HEIGHT / 2), state, theme);
+      }
     }
   }
 
@@ -294,38 +298,85 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     return;
   }
 
-  if (kind === 'stockpileSum') {
+  if (kind === 'stockpileNet') {
     const sp = cell?.stockpile;
-    if (!sp) {
-      drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: true, muted: item.row.muted }, theme, measure, fit);
-      return;
-    }
-    const missing = sp.balance === null && sp.balanceMissing != null;
-    const text = formatted.kind === 'known' || formatted.kind === 'zero' || formatted.kind === 'partial' ? formatted.text : '0';
-    drawStockpileSumCell(ctx, left, Math.max(0, right - left), y, rowHeight, sp.balance, stockpileMaxAbs, text, theme, { missing });
+    if (!sp || sp.ai) return;
+    drawNetBar(ctx, left, Math.max(0, right - left), y, rowHeight, sp.share, theme);
     return;
   }
 
-  if (kind === 'stockpileParts') {
-    const sp = cell?.stockpile;
-    if (!sp) return;
-    const w = Math.max(0, right - left);
-    const partW = Math.floor(w / 3);
-    const font = fontOf(theme, 13, 500);
+  if (kind === 'stockpileSum' && cell?.stockpile) {
+    const sp = cell.stockpile;
+    const figureFont = fontOf(theme, 13.5, 500);
+    const balanceFont = fontOf(theme, 13.5, 600);
+    const operatorFont = fontOf(theme, 13.5, 400);
+    const slot = Math.floor((right - left) / 3);
     ctx.save();
-    ctx.font = font;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    const producedText = sp.producedMissing ? '' : sp.produced !== null ? `+${formatScalar(sp.produced, 'integer')}/d` : '';
-    ctx.fillStyle = sp.produced && sp.produced > 0 ? theme.text : theme.muted;
-    if (producedText) ctx.fillText(fit(producedText, font, partW - 6), left + partW - 4, middle);
-    if (sp.needMissing == null && sp.need !== null) {
+    const figure = (text: string | null, slotRight: number, font: string, color: string, drawMissing: boolean) => {
+      if (text === null) {
+        if (drawMissing) drawMissingMark(ctx, slotRight - slot + 8, middle, slot - 8, theme, { align: 'right' });
+        return;
+      }
+      ctx.font = font;
+      ctx.fillStyle = color;
+      ctx.fillText(fit(text, font, slot - 18), slotRight, middle);
+    };
+    const operator = (glyph: string, at: number) => {
+      ctx.font = operatorFont;
       ctx.fillStyle = theme.muted;
-      ctx.fillText(fit(formatScalar(sp.need, 'integer'), font, partW - 6), left + partW * 2 - 4, middle);
+      ctx.textAlign = 'center';
+      ctx.fillText(glyph, at, middle);
+      ctx.textAlign = 'right';
+    };
+    const isZero = (text: string | null) => text === '0' || text === '0.0';
+    figure(sp.produced, left + slot - 14, figureFont, isZero(sp.produced) ? theme.muted : theme.text, true);
+    if (!sp.ai) {
+      operator('−', left + slot - 4);
+      figure(sp.need, left + slot * 2 - 14, figureFont, isZero(sp.need) ? theme.muted : theme.text, true);
+      operator('=', left + slot * 2 - 4);
+      figure(sp.balance, right, balanceFont, sp.short ? tokens.shortage : (isZero(sp.balance) ? theme.muted : theme.text), true);
     }
-    if (sp.balanceMissing == null && sp.balance !== null) {
-      ctx.fillStyle = sp.balance < 0 ? tokens.shortage : sp.balance > 0 ? theme.text : theme.muted;
-      ctx.fillText(fit(formatScalar(sp.balance, { decimals: 0, signed: true }), font, partW - 4), right, middle);
+    ctx.restore();
+    return;
+  }
+
+  if (kind === 'stockpileBalance' && cell?.stockpile) {
+    const sp = cell.stockpile;
+    const top = middle - 9;
+    const bottom = middle + 10;
+    const lead = fontOf(theme, 13.5, 600);
+    const word = fontOf(theme, 13.5, 500);
+    const quiet = fontOf(theme, 12.5, 500);
+    const runs = (parts: readonly (readonly [string, string, string])[], at: number) => {
+      let cursor = right;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const [text, font, color] = parts[i]!;
+        ctx.font = font;
+        ctx.fillStyle = color;
+        ctx.fillText(text, cursor, at);
+        cursor -= measure(text, font);
+        if (cursor < left) break;
+      }
+    };
+    ctx.save();
+    const secondary = tokens.dark ? '#d4d4d4' : theme.text;
+    if (sp.ai) {
+      runs(sp.produced === null ? [['Production not recorded', word, theme.muted]] : [[sp.produced, lead, theme.text], [' produced a day', word, theme.muted]], top);
+      const reason = 'Need not recorded';
+      ctx.font = quiet;
+      const w = measure(reason, quiet);
+      runs([[reason, quiet, theme.muted]], bottom);
+      drawHatchRect(ctx, Math.round(right - w - MISSING_BOX_SIZE - 5), Math.round(bottom - MISSING_BOX_SIZE / 2), MISSING_BOX_SIZE, MISSING_BOX_SIZE, 2, theme);
+    } else {
+      runs(sp.balance === null ? [['Balance not recorded', word, theme.muted]] : [[sp.balance, lead, sp.short ? tokens.shortage : theme.text], [' a day', word, theme.text]], top);
+      runs([
+        [sp.produced ?? 'not recorded', quiet, secondary], [' produced · ', quiet, theme.muted],
+        [sp.need ?? 'not recorded', quiet, secondary], [' needed', quiet, theme.muted],
+      ], bottom);
     }
     ctx.restore();
     return;

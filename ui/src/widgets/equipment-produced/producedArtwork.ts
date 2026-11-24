@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products';
-import { validateStockpileArtwork } from '../equipment-stockpile/useStockpileArtwork';
+import { validateStockpileArtwork } from '../equipment-stockpile/stockpileArtwork.ts';
 import type { StockpileArtworkReply } from '../../generated/dashboard';
 import { productRequest } from '../../dashboard/request.ts';
 

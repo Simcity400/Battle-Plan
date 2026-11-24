@@ -3469,62 +3469,60 @@ export type FuelDemandHistoryReply = { tag: string, country: number, window: num
 parts: Array<FuelDemandHistoryPart>, warnings: Array<string>, };
 export type FuelDemandHistoryPart = { key: string, runs: Array<FuelDemandRun>, };
 export type FuelDemandRun = { firstHour: number, lastHour: number, startsSegment: boolean, amountRaw: string | null, reason: string | null, };
-export type StockpileHolder = { country: CountryRef, within?: Array<HourSpan>, };
-export type StockpileCatalogueParams = { branchId: string, holders: Array<StockpileHolder>,
+export type StockpileTypesParams = { branchId: string, country: CountryRef, hour: number, };
+export type StockFigure = {
 /**
- * The types a group counts; empty counts every type.
+ * Scaled by the reply's decimals; null with `missing` where it is not known.
  */
-included: Array<string>, };
-export type StockpileChoicePeak = { raw: string, stockDrawable: boolean, shareDrawable: boolean, };
-export type StockpileCatalogueVariant = {
+raw: string | null, missing: string | null, };
+export type StockVariantRow = { id: string, name: string | null,
 /**
- * Its native handle, as a decimal string.
+ * The tag of the country whose design it is; null where the definition names none.
  */
-id: string,
+origin: string | null, stored: StockFigure, produced: StockFigure, };
+export type StockTypeRow = {
 /**
- * Its equipment token; empty where no read spelled it.
+ * The archetype key, or the unresolved mark and the recorded spelling.
  */
-token: string,
+key: string,
 /**
- * Its type's archetype key; null where the content does not resolve its type.
+ * The localised name; null where the content names none.
  */
-archetype: string | null, names: Array<StockVariantName>,
+name: string | null, stored: StockFigure,
 /**
- * Every design recorded under its handle.
+ * A day.
  */
-designs: Array<string>, };
-export type StockpileCatalogueLogistics = {
+produced: StockFigure,
 /**
- * The archetype key, or the unresolved mark and the recorded token's spelling.
+ * A day, the game's logistics need.
  */
-key: string, nonzero: boolean, };
-export type StockpileCatalogueReply = { branchId: string, countries: Array<CountryRef>, campaignKey: string, decimals: number,
+need: StockFigure,
 /**
- * Every archetype a design or logistics type belongs to, in the equipment database's order.
+ * A day, the game's logistics balance.
  */
-types: Array<StockType>, variants: Array<StockpileCatalogueVariant>, logistics: Array<StockpileCatalogueLogistics>,
+balance: StockFigure,
 /**
- * The hours the stockpile, the production lines and the logistics record were read for the
- * holders within their hours, ascending.
+ * The balance as a share of the need; null without both or with no need.
  */
-reads: Array<number>, lineReads: Array<number>, logisticsReads: Array<number>, stockHours: Array<HourSpan>, lineHours: Array<HourSpan>, balanceHours: Array<HourSpan>,
+share: number | null,
 /**
- * Hours the holder was AI-controlled, so the game computed no balance.
+ * In the product's order: the most stored first.
  */
-aiHours: Array<HourSpan>, needBoundRaw: string,
+variants: Array<StockVariantRow>, };
+export type StockpileTypesReply = { hour: number,
 /**
- * Each group's peak and drawability, by its key (`[kind, key]` as JSON).
+ * Nothing shown changes from `hour` through this hour.
  */
-choices: { [key in string]?: StockpileChoicePeak }, warnings: Array<string>, };
+validUntil: number, decimals: number,
+/**
+ * Why need and balance are not known for this country at this hour; null where they are.
+ */
+needMissing: string | null,
+/**
+ * Shortages first, worst first, then surpluses, largest first, then the rest in the equipment database's order.
+ */
+rows: Array<StockTypeRow>, warnings: Array<string>, };
 export type StockpileMeasure = "stock" | "share" | "need";
-export type StockpileLine = {
-/**
- * The group's key: `[kind, key]` as JSON, a design's key its handle.
- */
-group: string, measure: StockpileMeasure, };
-export type StockpileChartParams = { branchId: string, holders: Array<StockpileHolder>, included: Array<string>, lines: Array<StockpileLine>, from: number, to: number, width: number, };
-export type StockpileChartLine = { group: string, measure: StockpileMeasure, summary: ChartSummary, };
-export type StockpileChartReply = { branchId: string, lines: Array<StockpileChartLine>, warnings: Array<string>, };
 export type StockpileTileFamily = { kind: string, measure: StockpileMeasure, country: CountryRef, included: Array<string>, membership?: Array<HourSpan>, };
 export type StockpileLinesParams = { branchId: string, family: StockpileTileFamily, hour: number, top?: number, };
 export type StockpileLineAt = { key: string,
@@ -6590,58 +6588,6 @@ dayHour: number | null, day: FuelDay | null, leftOut: DayLeftOut | null,
 awardsReason: string | null, continuityStartHour: number | null, };
 export type FuelConsumptionAt = { nativeDailyRaw: [string | null, string | null, string | null], knownDailyRaw: [string | null, string | null, string | null], positiveDailyRaw: [string | null, string | null, string | null], reasons: [string | null, string | null, string | null], };
 export type CountryFuelParamsAtHour = CountryFuelParams & { hour: number };
-export type StockpileAtParams = { branchId: string, country: CountryRef, };
-export type StockType = { key: string,
-/**
- * The localised key; null when the content does not name it.
- */
-name: string | null, domain: Domain,
-/**
- * Why a need cannot be derived for this type without the available operand of its balance
- * write; none for an ordinary type.
- */
-needNote: string | null, };
-export type StockBalance = "player" | "ai" | "unknown";
-export type StockAtVariant = { id: string,
-/**
- * Its equipment token; empty where it has no definition at the hour.
- */
-token: string, archetype: string | null, name: string | null,
-/**
- * False where it has no definition at the hour.
- */
-known: boolean, design: string | null,
-/**
- * It has a stock row (its `stock` cell); a design not held holds none.
- */
-held: boolean,
-/**
- * The military lines making it (each its `l<line>` cells).
- */
-lines: Array<string>,
-/**
- * Why its output a day is not known whatever its lines' cells say; null where they decide.
- */
-outputMissing: string | null, };
-export type StockAtLogistics = {
-/**
- * The archetype key, or the unresolved mark and the recorded token's spelling.
- */
-key: string, };
-export type StockpileAtReply = { tag: string, campaignKey: string, decimals: number,
-/**
- * Every archetype a listed design or logistics row belongs to, in the equipment database's order.
- */
-types: Array<StockType>, variants: Array<StockAtVariant>, logistics: Array<StockAtLogistics>,
-/**
- * Why the stock is not known at the hour; null where it is.
- */
-stockMissing: string | null,
-/**
- * Why the production lines are not known at the hour; null where they are.
- */
-linesMissing: string | null, balance: StockBalance, balanceMissing: string | null, needBoundRaw: string, warnings: Array<string>, };
-export type StockpileAtParamsAtHour = StockpileAtParams & { hour: number };
 export type StockpileArtworkParams = { branchId: string, country: CountryRef,
 /**
  * Designs that need their own pictures, instead of a type's best.
@@ -7103,9 +7049,9 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "army-breakdown", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "military-air-at", "politics-state-history", "factory-groups", "subjects", "country-groups-at", "subjects-at", "diplomatic-pacts", "espionage-types", "raid-log", "raid-log-tail", "raid-tally", "raid-tally-at", "resource-balance-months", "production-line-breakdown", "place-names", "place-name-runs", "strategic-regions", "naval-supremacy", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "regional-weather", "focus-card", "idea-history", "party-history", "stability-markers", "casualty-breakdown", "peace-deals", "territory-transfers", "convoy-health", "production-spending", "production-spending-months", "construction-log-manifest", "construction-log", "construction-breakdown", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "research-history", "event-feed-tail", "event-choices-tail", "decisions-tail", "event-feed-activity", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-catalogue", "equipment-stockpile-chart", "equipment-stockpile-lines", "faction-state", "wars", "war-timeline", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced", "equipment-produced-types", "equipment-produced-country", "equipment-produced-at", "equipment-produced-race", "power-spending-breakdown", "power-spend-markers", "air-superiority-timeline", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "territory-breakdown", "game-score", "nuclear-arsenal", "factory-mix", "autonomy-levels", "training-queue", "trade-flow", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "decorated-divisions", "division-equipment", "research-slots", "air-missions", "occupied-states", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "army-breakdown", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "military-air-at", "politics-state-history", "factory-groups", "subjects", "country-groups-at", "subjects-at", "diplomatic-pacts", "espionage-types", "raid-log", "raid-log-tail", "raid-tally", "raid-tally-at", "resource-balance-months", "production-line-breakdown", "place-names", "place-name-runs", "strategic-regions", "naval-supremacy", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "regional-weather", "focus-card", "idea-history", "party-history", "stability-markers", "casualty-breakdown", "peace-deals", "territory-transfers", "convoy-health", "production-spending", "production-spending-months", "construction-log-manifest", "construction-log", "construction-breakdown", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "research-history", "event-feed-tail", "event-choices-tail", "decisions-tail", "event-feed-activity", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-types", "equipment-stockpile-lines", "faction-state", "wars", "war-timeline", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced", "equipment-produced-types", "equipment-produced-country", "equipment-produced-at", "equipment-produced-race", "power-spending-breakdown", "power-spend-markers", "air-superiority-timeline", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "territory-breakdown", "game-score", "nuclear-arsenal", "factory-mix", "autonomy-levels", "training-queue", "trade-flow", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "decorated-divisions", "division-equipment", "research-slots", "air-missions", "occupied-states", "market-lendlease", "country-fuel", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
 /** Products served separately from whole-branch history reads. */
-export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "technology-artwork", "country-flags", "doctrines", "sprite-artwork", "army-breakdown", "country-styles", "log-tail", "world-tension-stack", "espionage-operation", "espionage-ended", "espionage-types", "raid-log-tail", "raid-tally", "raid-tally-at", "production-line-breakdown", "place-names", "place-name-runs", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "production-spending-months", "occupation-reserve-history", "land-battle-terrain", "naval-losses-at", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "combat-log-history", "scoreboard", "equipment-produced-at", "equipment-produced-race", "template-roster", "air-statistics", "politics-state", "next-elections", "territory-share", "territory-breakdown", "faction-rosters", "faction-totals-at", "game-score", "nuclear-arsenal", "world-tension", "factory-parts", "factory-mix", "autonomy-levels", "training-queue", "diplomatic-relations", "volunteer-flow", "trade-flow", "casualty-matrix", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "espionage-operations", "occupation-reserve-manpower", "intel-network-coverage", "fuel-branches", "resource-balance", "lend-lease-balance", "production-lines-at", "production-licences", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "decorated-divisions", "division-equipment", "research-slots", "air-missions", "occupied-states", "occupation-at", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "equipment-loss-head", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
+export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "technology-artwork", "country-flags", "doctrines", "sprite-artwork", "army-breakdown", "country-styles", "log-tail", "world-tension-stack", "espionage-operation", "espionage-ended", "espionage-types", "raid-log-tail", "raid-tally", "raid-tally-at", "production-line-breakdown", "place-names", "place-name-runs", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "production-spending-months", "occupation-reserve-history", "land-battle-terrain", "naval-losses-at", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "combat-log-history", "scoreboard", "equipment-produced-at", "equipment-produced-race", "template-roster", "air-statistics", "politics-state", "next-elections", "territory-share", "territory-breakdown", "faction-rosters", "faction-totals-at", "game-score", "nuclear-arsenal", "world-tension", "factory-parts", "factory-mix", "autonomy-levels", "training-queue", "diplomatic-relations", "volunteer-flow", "trade-flow", "casualty-matrix", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "espionage-operations", "occupation-reserve-manpower", "intel-network-coverage", "fuel-branches", "resource-balance", "lend-lease-balance", "production-lines-at", "production-licences", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "decorated-divisions", "division-equipment", "research-slots", "air-missions", "occupied-states", "occupation-at", "market-lendlease", "country-fuel", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "equipment-loss-head", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
 /** Pages that replay recorded tables to their rows' hours: served apart, so no other request waits behind them. */
 export const REPLAY_PRODUCTS = ["event-feed-tail", "event-choices-tail", "decisions-tail"] as const;
 export type HourRole = "read" | "start" | "end" | "bucket";
@@ -7170,10 +7116,8 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "equipment-produced-country": {},
   "equipment-produced-race": { "hour": "read" },
   "equipment-produced-types": {},
-  "equipment-stockpile-at": { "hour": "read" },
-  "equipment-stockpile-catalogue": { "holders[].within[].firstHour": "start", "holders[].within[].lastHour": "end" },
-  "equipment-stockpile-chart": { "from": "start", "to": "end", "holders[].within[].firstHour": "start", "holders[].within[].lastHour": "end" },
   "equipment-stockpile-lines": { "hour": "read", "family.membership[].firstHour": "start", "family.membership[].lastHour": "end" },
+  "equipment-stockpile-types": { "hour": "read" },
   "espionage-ended": { "from": "start", "to": "end" },
   "espionage-log": { "from": "start", "to": "end", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end" },
   "espionage-operation": { "hour": "read" },
@@ -7366,10 +7310,8 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "equipment-produced-country": { "branchId": "leaf", "count": "leaf", "country": "any", "measure": "leaf", "refits": "leaf" },
   "equipment-produced-race": { "branchId": "leaf", "count": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "measure": "leaf", "refits": "leaf", "top": "leaf", "types": "node", "types[]": "leaf" },
   "equipment-produced-types": { "branchId": "leaf", "refits": "leaf" },
-  "equipment-stockpile-at": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "equipment-stockpile-catalogue": { "branchId": "leaf", "holders": "node", "holders[]": "node", "holders[].country": "any", "holders[].within": "node", "holders[].within[]": "node", "holders[].within[].firstHour": "leaf", "holders[].within[].lastHour": "leaf", "included": "node", "included[]": "leaf" },
-  "equipment-stockpile-chart": { "branchId": "leaf", "from": "leaf", "holders": "node", "holders[]": "node", "holders[].country": "any", "holders[].within": "node", "holders[].within[]": "node", "holders[].within[].firstHour": "leaf", "holders[].within[].lastHour": "leaf", "included": "node", "included[]": "leaf", "lines": "node", "lines[]": "node", "lines[].group": "leaf", "lines[].measure": "leaf", "to": "leaf", "width": "leaf" },
   "equipment-stockpile-lines": { "branchId": "leaf", "family": "node", "family.country": "any", "family.included": "node", "family.included[]": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "hour": "leaf", "top": "leaf" },
+  "equipment-stockpile-types": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "espionage-ended": { "branchId": "leaf", "from": "leaf", "to": "leaf" },
   "espionage-log": { "branchId": "leaf", "cursor": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "pageSize": "leaf", "to": "leaf" },
   "espionage-operation": { "branchId": "leaf", "hour": "leaf", "id": "leaf" },
@@ -7562,10 +7504,8 @@ export type RequestParams<E, B> = {
   "equipment-produced-country": {};
   "equipment-produced-race": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "equipment-produced-types": {};
-  "equipment-stockpile-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "equipment-stockpile-catalogue": { readonly [key: string]: unknown; readonly "holders"?: readonly ({ readonly [key: string]: unknown; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
-  "equipment-stockpile-chart": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "holders"?: readonly ({ readonly [key: string]: unknown; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "to"?: B | null };
   "equipment-stockpile-lines": { readonly [key: string]: unknown; readonly "family"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "hour"?: E | null };
+  "equipment-stockpile-types": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "espionage-ended": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
   "espionage-log": { readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "to"?: B | null };
   "espionage-operation": { readonly [key: string]: unknown; readonly "hour"?: E | null };

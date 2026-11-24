@@ -1768,25 +1768,20 @@ export function drawActionButton(
   return { x, y, width: w, height: h };
 }
 
-export function drawStockpileSumCell(
+export const NET_BAR_HEIGHT = 12;
+
+export function drawNetBar(
   ctx: Canvas2D,
   x: number,
   width: number,
   rowY: number,
   rowHeight: number,
-  balance: number | null,
-  maxAbs: number,
-  labelText: string,
+  share: number | null,
   theme: FamilyTheme,
-  options?: { readonly missing?: boolean },
 ): void {
   const tokens = resolveKitTokens(theme);
   const middleY = rowY + rowHeight / 2;
-  const figSlot = 68;
-  const barRight = Math.max(x + 24, x + width - figSlot - 8);
-  const barAreaW = Math.max(0, barRight - x);
-  const centerX = Math.floor(x + barAreaW / 2) + 0.5;
-
+  const centerX = Math.floor(x + width / 2) + 0.5;
   ctx.save();
   ctx.strokeStyle = tokens.dark ? 'rgba(255, 255, 255, 0.14)' : 'rgba(15, 23, 42, 0.16)';
   ctx.lineWidth = 1;
@@ -1795,36 +1790,12 @@ export function drawStockpileSumCell(
   ctx.lineTo(centerX, rowY + rowHeight);
   ctx.stroke();
   ctx.restore();
-
-  if (options?.missing) {
-    drawMissingMark(ctx, x + width - figSlot, middleY, figSlot, theme, { align: 'right' });
-    return;
-  }
-
-  if (balance !== null && balance !== 0 && maxAbs > 0 && barAreaW >= 16) {
-    const halfW = Math.max(0, barAreaW / 2 - 4);
-    const frac = Math.min(1, Math.abs(balance) / maxAbs);
-    const barW = Math.min(halfW, Math.max(4, Math.round(halfW * frac)));
-    const barH = 16;
-    const barY = Math.round(middleY - barH / 2);
-    if (balance < 0) {
-      drawBar(ctx, centerX - barW, barY, barW, barH, tokens.shortage, 'left', 0.85);
-    } else {
-      drawBar(ctx, centerX, barY, barW, barH, tokens.dark ? 'rgba(255, 255, 255, 0.28)' : 'rgba(15, 23, 42, 0.24)', 'right', 1);
-    }
-  }
-
-  ctx.save();
-  ctx.font = `500 13.5px ${theme.font}`;
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = balance === null || balance === 0
-    ? theme.muted
-    : balance < 0
-      ? tokens.shortage
-      : theme.text;
-  ctx.fillText(labelText, x + width, middleY);
-  ctx.restore();
+  if (share === null || share === 0) return;
+  const half = Math.max(0, width / 2 - 2);
+  const barW = Math.max(BEHIND_BAR_MIN_WIDTH, Math.round(half * Math.min(1, Math.abs(share))));
+  const barY = Math.round(middleY - NET_BAR_HEIGHT / 2);
+  if (share < 0) drawBar(ctx, centerX - barW, barY, barW, NET_BAR_HEIGHT, tokens.shortage, 'left', 1);
+  else drawBar(ctx, centerX, barY, barW, NET_BAR_HEIGHT, tokens.dark ? 'rgba(255, 255, 255, 0.76)' : 'rgba(15, 23, 42, 0.36)', 'right', 1);
 }
 
 export interface ClockSummaryData {
