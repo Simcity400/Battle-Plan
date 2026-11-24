@@ -1,4 +1,5 @@
 import { LABEL_WEIGHT } from '../../charts/draw.ts';
+import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import {
   drawActionButton,
   drawArtSlot,
@@ -147,8 +148,8 @@ function shouldDrawBehindBar(column: FamilyColumnLayout, rc: CellRenderContext):
 
 function trackFillOf(column: FamilyColumnLayout, theme: TableTheme): string {
   const tokens = resolveKitTokens(theme);
-  if (column.trackTone === 'red' || column.tone === 'red') return '#e5484d';
-  if (column.trackTone === 'grey' || column.tone === 'grey') return tokens.dark ? '#c4c4c4' : '#64748b';
+  if (column.trackTone === 'red' || column.tone === 'red') return CHART_MEASURE_COLOURS.short;
+  if (column.trackTone === 'grey' || column.tone === 'grey') return tokens.trackGrey;
   return theme.accent;
 }
 
@@ -261,7 +262,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const signed = paintModel.value.kind === 'known' || paintModel.value.kind === 'partial' ? Number(paintModel.value.value) : 0;
     const slotRight = right - TWO_WAY_FIGURE;
     if (slotRight - TWO_WAY_SLOT >= left) {
-      const grey = tokens.dark ? 'rgba(245, 245, 245, 0.28)' : 'rgba(15, 23, 42, 0.25)';
+      const grey = tokens.twoWayNeutral;
       const share = fraction === null ? 0 : (signed < 0 ? -fraction : fraction);
       drawTwoWayBar(ctx, slotRight - TWO_WAY_SLOT / 2, middle, TWO_WAY_SLOT / 2, 12, share, grey, grey, theme);
     }
@@ -435,7 +436,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const trackW = Math.min(56, Math.max(18, right - left - numSlot - 8));
     const trackX = right - numSlot - 8 - trackW;
     if (trackW >= 18 && fraction !== null) {
-      const barColor = paintModel.bar.alert ? '#e5484d' : trackFillOf(column, theme);
+      const barColor = paintModel.bar.alert ? CHART_MEASURE_COLOURS.short : trackFillOf(column, theme);
       drawTrackBar(ctx, trackX, middle, trackW, 6, fraction, barColor, theme);
     }
     ctx.save();
@@ -499,7 +500,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   if (kind === 'outOf') {
     const isSorted = column.key === rc.sortedColumn;
     if (shouldDrawBehindBar(column, rc) && fraction !== null && fraction > 0 && formatted.kind !== 'zero') {
-      const barFill = paintModel.countryColor ?? (tokens.dark ? '#cfcfcf' : '#64748b');
+      const barFill = paintModel.countryColor ?? tokens.barNeutral;
       drawBarBehindFigure(ctx, right, middle, fraction, barFill, { density, sorted: isSorted, theme });
     }
     const maxVal = cell?.secondaryValue;
@@ -513,7 +514,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const isSorted = column.key === rc.sortedColumn;
     const isZero = formatted.kind === 'zero';
     if (!isZero && shouldDrawBehindBar(column, rc) && fraction !== null && fraction > 0) {
-      const barFill = paintModel.countryColor ?? (tokens.dark ? '#cfcfcf' : '#64748b');
+      const barFill = paintModel.countryColor ?? tokens.barNeutral;
       drawBarBehindFigure(ctx, right, middle, fraction, barFill, { density, sorted: isSorted, theme });
     }
     const font = fontOf(theme, 13, 500);
@@ -590,7 +591,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   if (subtext && rowHeight >= 36) {
     const titleFont = fontOf(theme, 13.5, isChild ? 500 : 600);
     const subFont = fontOf(theme, 12, 400);
-    const titleColor = item.row.muted ? theme.muted : (isChild ? (tokens.dark ? '#d4d4d4' : theme.text) : theme.text);
+    const titleColor = item.row.muted ? theme.muted : (isChild ? tokens.childText : theme.text);
     drawInlineRuns(rc, formatted.text, textLeft, middle - 8, avail, titleFont, titleColor);
     drawInlineRuns(rc, subtext, textLeft, middle + 9, avail, subFont, theme.muted);
     return;
@@ -600,7 +601,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   const textColor = item.row.muted
     ? theme.muted
     : isChild
-      ? (tokens.dark ? '#d4d4d4' : theme.text)
+      ? tokens.childText
       : theme.text;
   const drawnW = drawInlineRuns(rc, formatted.text, textLeft, middle, avail, textFont, textColor);
   if (cell?.inlineSubtext) {

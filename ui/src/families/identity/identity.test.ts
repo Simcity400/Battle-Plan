@@ -457,7 +457,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
 
   const ger149 = view.who('country', 'GER', 149);
   assert.deepEqual(ger149.name, { status: 'ready', value: 'Early Republic' });
-  assert.deepEqual(ger149.colour, { status: 'ready', value: 'rgb(51, 68, 85)' });
+  assert.deepEqual(ger149.colour, { status: 'ready', value: '#334455' });
   assert.equal(ger149.flagChoice?.status, 'ready');
   assert.deepEqual(ger149.validInterval, [0, 149]);
   assert.equal(ger149.nextChangeAt, 150);
@@ -473,7 +473,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
   const faction = view.who('faction', '7', 100);
   assert.deepEqual(faction.name, { status: 'ready', value: 'Berlin Pact' });
   assert.deepEqual(faction.holder, { status: 'ready', value: 'GER' });
-  assert.deepEqual(faction.colour, { status: 'ready', value: 'rgb(51, 68, 85)' });
+  assert.deepEqual(faction.colour, { status: 'ready', value: '#334455' });
   assert.equal(workerDemands.length, 0);
 
   assert.throws(() => view.who('country', 'GER', 201), FutureDataError);
