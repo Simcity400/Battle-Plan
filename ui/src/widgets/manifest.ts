@@ -7,6 +7,7 @@ import {
   resolveActiveView,
   scopedOptionFields,
   viewKey,
+  viewOwnedFields,
   type FamilyViewEntry,
   type FamilyViewModule,
   type LegacyWidgetEntry,
@@ -85,6 +86,26 @@ export function legacyEntriesForKind(kind: string): readonly LegacyWidgetEntry[]
 
 export function manifestFamilyView(kind: string, view?: string): FamilyViewEntry | undefined {
   return familyByPair.get(viewKey(kind, view));
+}
+
+const viewFields = new Map<string, readonly OptionField[]>();
+
+export function familyViewOptionFields(kind: string, view?: string): readonly OptionField[] {
+  const key = viewKey(kind, view);
+  const held = viewFields.get(key);
+  if (held) return held;
+  const definition = widgetDefinition(kind);
+  const fields = new Map<string, OptionField>();
+  for (const field of definition?.options ?? []) fields.set(field.key, field);
+  for (const field of familyByPair.get(key)?.options ?? []) fields.set(field.key, field);
+  const owned = viewOwnedFields([...fields.values()], view);
+  if (definition) viewFields.set(key, owned);
+  return owned;
+}
+
+export function widgetOptionFields(kind: string, storedOptions?: WidgetOptions): readonly OptionField[] {
+  const view = resolveWidgetActiveView(kind, storedOptions);
+  return familyByPair.has(viewKey(kind, view)) ? familyViewOptionFields(kind, view) : widgetDefinition(kind)?.options ?? [];
 }
 
 export function manifestLegacyEntry(kind: string, view?: string): LegacyWidgetEntry | undefined {

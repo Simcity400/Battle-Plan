@@ -10,7 +10,6 @@ import type {
 } from '../../families/meter/model.ts';
 import { registerMeterProjection } from '../../families/meter/registry.ts';
 import type { CipherPair } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { pairKey, percentOf, progressLabel, workingStatus } from './decryptionData.ts';
 import {
   decryptionFilterOptions,
@@ -153,7 +152,6 @@ export const decryptionDeclaration: MeterWidgetDeclaration<DecryptionFilterOptio
   subject: 'decryption',
   emptyCampaign: 'Load a campaign to see its decryption races.',
   icon: 'lock',
-  optionFields: OPTIONS,
   countries: { mode: 'filter', labels: true, colours: true },
   sources: decryptionSources,
   projection: decryptionProjection,

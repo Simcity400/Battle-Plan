@@ -10,7 +10,6 @@ import {
   type SeriesRaceBaseOptions,
 } from '../../families/bars/seriesRace.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
-import { OPTIONS } from './definition.ts';
 
 const CONTRIBUTIONS_FAMILY = { kind: 'threat-contributions', measure: 'contribution' } as const;
 
@@ -49,7 +48,6 @@ export const worldTensionRaceDeclaration: BarsWidgetDeclaration<WorldTensionRace
   subject: 'world tension',
   emptyCampaign: 'Load a campaign to see world tension.',
   icon: 'alert',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

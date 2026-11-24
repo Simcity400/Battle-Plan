@@ -12,7 +12,6 @@ import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { AirRegion, AirSide, AirSuperiorityReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 
 export type AirRegionOrderOption = 'contested' | 'active' | 'name';
 
@@ -469,7 +468,6 @@ export const airSuperiorityRegionDeclaration: BarsWidgetDeclaration<AirSuperiori
   subject: 'air superiority',
   emptyCampaign: 'Load a campaign to see its air superiority.',
   icon: 'plane',
-  optionFields: OPTIONS,
   countries: { mode: 'none' },
   sources: airSuperioritySources,
   projection: airSuperiorityRegionProjection,

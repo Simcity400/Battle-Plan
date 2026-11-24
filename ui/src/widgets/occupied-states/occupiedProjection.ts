@@ -13,7 +13,7 @@ import {
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { strengthBar, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, partialValue, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
-import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
 import {
   emptyReason,
   garrisonCell,
@@ -222,7 +222,6 @@ export const occupiedStatesDeclaration: TableWidgetDeclaration<OccupiedProjectio
   emptyCampaign: 'Load a campaign to see occupied states.',
   className: 'occupied-states',
   frameClassName: 'occupied-table-surface',
-  optionFields: OPTIONS,
   countries: { mode: 'filter', labels: true, colours: true },
   sources: ctx => ({
     owner: `occupied-states:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,

@@ -7,7 +7,6 @@ import { labelsAtReadings, resolveEntityFromReadView, sequentialRampColour } fro
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { IntelCoverageBasis, IntelCoverageCell, IntelCoverageMeasure, IntelCoverageReply } from '../../generated/dashboard';
 import { surfaceMix } from '../../shell/appearance/color.ts';
-import { OPTIONS } from './definition.ts';
 
 export const INTEL_TOP_DEFAULT = 12;
 const FIXED = 100_000;
@@ -129,7 +128,6 @@ export const intelCoverageDeclaration: HeatMatrixWidgetDeclaration<IntelCoverage
   subject: 'intel networks',
   emptyCampaign: 'Load a campaign to see intel networks.',
   icon: 'eye',
-  optionFields: OPTIONS,
   countries: { mode: 'multi', labels: false, colours: false },
   sources: (ctx): SourcePlan => {
     const measure = measureOf(ctx.options.measure);
