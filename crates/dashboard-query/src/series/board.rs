@@ -6,7 +6,7 @@ use crate::{
 };
 use replay_lanes::lanes::Keys;
 use replay_columnar::{manifest::Status, summary::Computed};
-use std::{collections::HashMap, io};
+use std::io;
 
 pub struct Column<'q, 'a> {
     pub line: Line<'q, 'a>,
@@ -118,15 +118,11 @@ fn values(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: u32) -
             true => None,
             false => Some(crate::cost::storage(|| replay_lanes::lanes::at_keys(recording, run, table, hour, Some(&asked), Keys::These(&wanted)))?),
         };
-        let unrecorded = snapshot.as_ref().and_then(|snapshot| {
-            let reason = match snapshot.status {
-                Status::Unavailable { reason } => snapshot.strings.get(reason).and_then(|text| std::str::from_utf8(text).ok()),
-                _ => None,
-            };
-            table_unrecorded(table, snapshot.status, reason)
+        let status_reason = snapshot.as_ref().and_then(|snapshot| match snapshot.status {
+            Status::Unavailable { reason } => snapshot.strings.get(reason).and_then(|text| std::str::from_utf8(text).ok()),
+            _ => None,
         });
         let view = snapshot.as_ref().map(|snapshot| snapshot.view());
-        let slots: HashMap<u128, u32> = view.iter().flat_map(|view| view.rows().filter_map(move |slot| Some((view.key(slot)?, slot)))).collect();
         for &line in &group {
             let measure = lines[line].measure_name();
             out[line] = Some(
@@ -136,14 +132,16 @@ fn values(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: u32) -
                     .map(|(key, country)| {
                         let key = key.clone()?;
                         let tag = query.holders.name(country, hour);
-                        if let Some(reason) = &unrecorded {
-                            return Err(reason.clone());
+                        let snapshot = snapshot.as_ref().expect("a read table");
+                        let slot = snapshot.rows.binary_search_by_key(&key, |&(k, _)| k).ok().map(|at| snapshot.rows[at].1);
+                        if let crate::coverage::Coverage::NotRecorded(reason) = crate::coverage::row_coverage(table, snapshot.status, status_reason, slot.is_some()) {
+                            return Err(reason);
                         }
-                        let Some(slot) = slots.get(&key) else {
+                        let Some(slot) = slot else {
                             return if lines[line].series().absent_none { Ok(0) } else { Err(measure_unrecorded(&tag, measure)) };
                         };
-                        let view = view.as_ref().expect("a complete read");
-                        match lines[line].source().read(view, *slot) {
+                        let view = view.as_ref().expect("a read view");
+                        match lines[line].source().read(view, slot) {
                             Computed::Value(value) => Ok(value),
                             Computed::NotApplicable(reason) => Err(reason.to_owned()),
                             Computed::Unrecorded => Err(measure_unrecorded(&tag, measure)),

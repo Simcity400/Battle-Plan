@@ -677,7 +677,7 @@ impl<'q, 'a> Line<'q, 'a> {
             Status::Unavailable { reason } => snapshot.strings.get(reason).and_then(|text| std::str::from_utf8(text).ok()),
             _ => None,
         };
-        if let Some(reason) = board::table_unrecorded(self.series.table, snapshot.status, status_reason) {
+        if let Some(reason) = crate::coverage::row_coverage(self.series.table, snapshot.status, status_reason, false).into_missing() {
             return Ok(Err(reason));
         }
         let view = snapshot.view();
