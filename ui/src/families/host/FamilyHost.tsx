@@ -484,11 +484,13 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   const bindRef = useRef(bind);
   bindRef.current = bind;
+  const clearHoverRef = useRef<() => void>(() => {});
 
   const setZoomWindow = useCallback((next: readonly [number, number] | null) => {
     const prev = viewportRef.current.zoomWindow;
     if (prev === next || (prev && next && prev[0] === next[0] && prev[1] === next[1])) return;
     viewportRef.current.zoomWindow = next;
+    clearHoverRef.current();
     notifyViewportChange();
     bindRef.current();
   }, [notifyViewportChange]);
@@ -816,6 +818,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       },
       onContextMenu: (key, clientX, clientY, hit) => openContextMenuFor(key, clientX, clientY, hit ?? null),
     });
+    clearHoverRef.current = stopPointer.clearHover;
 
     const onScroll = scrollMode !== 'none'
       ? () => {
@@ -859,6 +862,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     return () => {
       observer?.disconnect();
       if (onScroll) node.removeEventListener('scroll', onScroll);
+      clearHoverRef.current = () => {};
       stopPointer();
       stopInstall();
       auditWatch.dispose();

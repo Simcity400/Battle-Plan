@@ -671,6 +671,10 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
   });
   assert.equal(tooltipStore.get(), null, 'explicit null tooltip for current token hides immediately');
 
+  stop.clearHover();
+  assert.equal(inspectedTokens.at(-1), null, 'a zoom or pan drops the inspected hour under a still pointer');
+  assert.equal(hoverHits.at(-1), null, 'and publishes no hover hour');
+
   stop();
   tooltips.dispose();
 });

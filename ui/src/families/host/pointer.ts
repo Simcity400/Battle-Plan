@@ -100,7 +100,12 @@ interface PointerDownState {
   dragging: boolean;
 }
 
-export function bindFamilyPointer(options: FamilyPointerBindingOptions): () => void {
+export interface FamilyPointerBinding {
+  (): void;
+  readonly clearHover: () => void;
+}
+
+export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyPointerBinding {
   const {
     bodyNode,
     menuHost,
@@ -390,7 +395,17 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): () => v
   if (onDoubleClick) bodyNode.addEventListener('dblclick', onDoubleClick);
   menuHost.addEventListener('contextmenu', handleContextMenu);
 
-  return () => {
+  const clearHover = () => {
+    tooltips.cancelHoverOpen();
+    lastPointerRef.current = null;
+    if (inspectedKeyRef.current === null && lastHoverKey === null && lastHoverHour === undefined) return;
+    inspectedKeyRef.current = null;
+    notifyHover(null);
+    pipeline.inspect(pipe, null);
+    if (!focusInsideRef.current) tooltips.hideIfUnpinned();
+  };
+
+  return Object.assign(() => {
     if (pointerDown) endDrag(pointerDown);
     pointerDown = null;
     tooltips.cancelTimers();
@@ -410,5 +425,5 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): () => v
     if (onWheel) bodyNode.removeEventListener('wheel', onWheel);
     if (onDoubleClick) bodyNode.removeEventListener('dblclick', onDoubleClick);
     menuHost.removeEventListener('contextmenu', handleContextMenu);
-  };
+  }, { clearHover });
 }
