@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn subjects_closest_to_a_change_come_first_and_an_unread_one_is_last_not_zero() {
-        let mut list = vec![
+        let mut list = [
             subject("MID", Ok(50_000)),
             subject("UNREAD", Err("not recorded")),
             subject("NEARTOP", Ok(97_000)),

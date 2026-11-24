@@ -7,16 +7,12 @@ import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import { forcePartLabel, validateForceAtReply } from '../../families/bars/forceAtRace.ts';
-import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
-import { DeclaredFamilyWidget, DetailWindowHost } from '../../families/host/index.ts';
+import { DetailWindowHost } from '../../families/host/index.ts';
+import { FamilyWidget } from '../../families/host/registry.tsx';
 import type { InstalledAction } from '../../families/plan.ts';
 import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
-import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { ArmyAttribution, ForceAtReply } from '../../generated/dashboard';
-import { armyLinesDeclaration } from './armyLinesProjection.ts';
-import { armySizeMixDeclaration } from './armySizeMixProjection.ts';
-import { armySizeRaceDeclaration } from './armySizeRaceProjection.ts';
 
 function ArmyAtDetail({ runtime, trackId, tag, hour, countFor, active }: {
   readonly runtime: WidgetProps['runtime'];
@@ -62,10 +58,8 @@ function ArmyAtDetail({ runtime, trackId, tag, hour, countFor, active }: {
 }
 
 function ArmySizeFamilyWidget(props: WidgetProps) {
-  const { widget, runtime, active } = props;
-  const rawView = widget.options?.view;
-  const familyView = rawView === 'lines' ? 'lines' : rawView === 'mix' ? 'mix' : 'race';
-  const isLines = familyView === 'lines';
+  const { widget, runtime, active, view, manifestDeclaration } = props;
+  const isLines = manifestDeclaration?.family === 'time-chart';
   const countFor = (widget.options?.countFor === 'host' ? 'host' : 'owner') as ArmyAttribution;
   const anchorRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
@@ -81,33 +75,16 @@ function ArmySizeFamilyWidget(props: WidgetProps) {
 
   return (
     <div ref={anchorRef} className="fh-frame">
-      {isLines ? (
-        <DeclaredFamilyWidget
+      {manifestDeclaration ? (
+        <FamilyWidget
           {...props}
-          adapter={timeChartHostAdapter}
-          view="lines"
-          declaration={armyLinesDeclaration}
+          family={manifestDeclaration.family}
+          view={view}
+          declaration={manifestDeclaration}
+          {...(isLines ? {} : { selectedKey: detail?.key ?? null })}
           onActivate={onActivate}
         />
-      ) : familyView === 'mix' ? (
-        <DeclaredFamilyWidget
-          {...props}
-          adapter={barsHostAdapter}
-          view="mix"
-          declaration={armySizeMixDeclaration}
-          selectedKey={detail?.key ?? null}
-          onActivate={onActivate}
-        />
-      ) : (
-        <DeclaredFamilyWidget
-          {...props}
-          adapter={barsHostAdapter}
-          view="race"
-          declaration={armySizeRaceDeclaration}
-          selectedKey={detail?.key ?? null}
-          onActivate={onActivate}
-        />
-      )}
+      ) : null}
       <DetailWindowHost
         open={detail !== null}
         subject={detail?.tag ?? null}

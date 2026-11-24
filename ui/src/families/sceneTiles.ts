@@ -10,7 +10,7 @@ import type { MissingSpan, TilePart } from '../generated/dashboard';
 import { BoundedSeriesCursor, type WitnessedPoint } from './boundedView.ts';
 import type { BoundedReadView, BoundedSeries } from './contract.ts';
 import { sceneReadView, type SceneSources } from './scene.ts';
-import { knownValue } from './value.ts';
+import { knownValue, valueFromWireCell, type Value } from './value.ts';
 
 export interface SerializedTiledLine {
   readonly rev: number;
@@ -122,13 +122,15 @@ export class SceneTiles {
         let cursor = this.cursors.get(key);
         if (!cursor) this.cursors.set(key, cursor = new BoundedSeriesCursor());
         let headPoint: WitnessedPoint | null = null;
-        let headValue = undefined;
-        const row = answer && head ? headRow(answer, head, tag) : -1;
-        if (answer && head && row >= 0) {
-          const value = rowAmount(answer, row, head.decimals ?? line.decimals);
+        let headValue: Value | undefined;
+        if (answer && head) {
+          const row = headRow(answer, head, tag);
+          const value = row >= 0 ? rowAmount(answer, row, head.decimals ?? line.decimals) : null;
           if (value !== undefined && value !== null && Number.isFinite(value)) {
             headPoint = { hour: Math.floor(hour), value };
             headValue = knownValue(value);
+          } else {
+            headValue = valueFromWireCell(answer, row, 0);
           }
         }
         byTag.set(tag, cursor.advance(line, hour, { headPoint, headValue }));

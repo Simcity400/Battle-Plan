@@ -1269,6 +1269,35 @@ runs: Array<SubjectRun>,
  * next to one of these is a gap, not an end or a start.
  */
 unobserved: Array<HourSpan>, warnings: Array<string>, };
+export type GroupKind = "factions" | "overlords";
+export type GroupCountsParams = { branchId: string, of: GroupKind,
+/**
+ * The hour counted: nothing recorded after it is read into the reply.
+ */
+hour: number, };
+export type GroupCount = { key: string,
+/**
+ * Members (factions) or subjects (overlords) at the hour; null when not known then.
+ */
+count: number | null,
+/**
+ * Why the count is not known at the hour.
+ */
+missing: string | null, };
+export type GroupCountsReply = { branchId: string, of: GroupKind, hour: number,
+/**
+ * The first hour after `hour` at which a count, a group or a reason changes; null when none does.
+ */
+nextChange: number | null,
+/**
+ * Why no count is known at the hour for any group.
+ */
+missing: string | null,
+/**
+ * Every faction begun by the hour, or every overlord holding a subject at it: the most first, then the
+ * earliest, then by key. A group whose count is not known follows them with its reason, unranked.
+ */
+groups: Array<GroupCount>, warnings: Array<string>, };
 export type DiplomaticPactsParams = { branchId: string, country: CountryRef, };
 export type DiplomacyKind = {
 /**
@@ -6406,6 +6435,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "focus-card": { "hour": "read" },
   "fuel-branches": { "hour": "read" },
   "game-score": { "hour": "read" },
+  "group-counts": { "hour": "read" },
   "head:campaign-clock": { "firstHour": "start", "lastHour": "end" },
   "head:player-apm": { "firstHour": "start", "lastHour": "end", "membership[].firstHour": "start", "membership[].lastHour": "end" },
   "idea-history": { "hour": "read" },
@@ -6590,6 +6620,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "focus-card": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "fuel-branches": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "game-score": { "branchId": "leaf", "hour": "leaf", "top": "node", "top.by": "leaf", "top.count": "leaf" },
+  "group-counts": { "branchId": "leaf", "hour": "leaf", "of": "leaf" },
   "head:campaign-clock": { "branchId": "leaf", "firstHour": "leaf", "lastHour": "leaf" },
   "head:player-apm": { "branchId": "leaf", "firstHour": "leaf", "group": "leaf", "lastHour": "leaf", "membership": "node", "membership[]": "node", "membership[].firstHour": "leaf", "membership[].lastHour": "leaf", "membership[].tag": "leaf", "players": "node", "players[]": "leaf", "tags": "node", "tags[]": "leaf", "windowHours": "leaf" },
   "idea-history": { "branchId": "leaf", "country": "any", "hour": "leaf" },
@@ -6774,6 +6805,7 @@ export type RequestParams<E, B> = {
   "focus-card": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "fuel-branches": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "game-score": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "group-counts": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "head:campaign-clock": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "head:player-apm": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
   "idea-history": { readonly [key: string]: unknown; readonly "hour"?: E | null };

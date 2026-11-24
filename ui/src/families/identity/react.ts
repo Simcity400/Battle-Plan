@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
+import type { Failure } from '../../dashboard/queryError.ts';
 import type { PlaybackController } from '../../dashboard/playback';
 import type { CountryFlagChoice, CountryFlagSize } from '../../generated/dashboard';
 import { flagEntryToArt } from '../art/adapters.ts';
@@ -23,6 +24,40 @@ import {
 } from './types.ts';
 
 const NO_SUBSCRIBE = () => () => {};
+const NO_ASKS: readonly IdentityAsk[] = [];
+
+export function useSlotIndex(
+  client: DashboardClient,
+  recording: DashboardSource | null | undefined,
+  scope: IdentityScope | null,
+  active: boolean,
+  branchBounds?: HourInterval,
+): { readonly slots: IdentityIndex | undefined; readonly revision: number; readonly failure: Failure | undefined; readonly retry: () => void } {
+  const broker = identityBrokerFor(client);
+  const [owner] = useState(() => ({}));
+  const boundsKey = branchBounds ? `${branchBounds[0]}:${branchBounds[1]}` : '';
+  const bounds = useMemo(() => branchBounds, [boundsKey]);
+  const on = active && scope !== null;
+  const subscribe = useCallback(
+    (changed: () => void) => (on ? broker.subscribe(scope!, changed, recording ?? undefined, bounds) : NO_SUBSCRIBE()),
+    [broker, on, scope, recording, bounds],
+  );
+  const read = useCallback(() => (on ? broker.indexOf(scope!, recording ?? undefined, bounds).slotRevision() : -1), [broker, on, scope, recording, bounds]);
+  const revision = useSyncExternalStore(subscribe, read, read);
+  useEffect(() => {
+    if (!on) return;
+    broker.setDemand(owner, scope!, { asks: NO_ASKS, needIdentities: true }, recording ?? undefined, bounds);
+    return () => { broker.setDemand(owner, scope!, null); };
+  }, [broker, owner, on, scope, recording, bounds]);
+  const retry = useCallback(() => { if (scope) broker.retry(scope); }, [broker, scope]);
+  const index = on ? broker.indexOf(scope!, recording ?? undefined, bounds) : null;
+  return {
+    slots: index?.hasRead('identities') ? index : undefined,
+    revision,
+    failure: index?.readFailure('identities'),
+    retry,
+  };
+}
 
 export function useIdentityScope(
   client: DashboardClient,
