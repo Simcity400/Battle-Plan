@@ -683,7 +683,10 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     let with_pack = |branch: u64, hour: i32, row: Option<EventFeedHistoryRow>| {
         let mut frame = source(branch, hour, Some(1));
         *frame.tables[TableId::EventFeedHistory.index()] = match row {
-            Some(row) => TableView::Complete(TableRows::EventFeedHistory(vec![row])),
+            Some(row) => {
+                frame.metrics.table_ns[TableId::EventFeedHistory.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
+                TableView::Complete(TableRows::EventFeedHistory(vec![row]))
+            }
             None => TableView::Unavailable { reason: "older recording lacks event feed history".into() },
         };
         frame
@@ -760,7 +763,6 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     assert_eq!(state_of(&feed_b1, "native:1:7"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
     assert_eq!(state_of(&feed_b1, "native:1:8"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
 
-    let cards_b1 = Decisions::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
     let card_end_state = |page: &super::cards::ScriptOccurrencePage, opener_id: &str| {
         page.rows
             .iter()
@@ -769,6 +771,17 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
             .and_then(|occ| occ.edges.last())
             .and_then(|edge| edge.row.decision_state.clone())
     };
+    let cards_b1_at_100 = Decisions::load(
+        &replay_source,
+        &FeedPageParams { branch_id: "1".into(), facets: Vec::new(), from: Some(100.0), to: 100.0, cursor: None, page_size: 64, scope: None },
+        &context,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(card_end_state(&cards_b1_at_100, "native:1:2"), Some(DecisionLifecycleState::Active));
+    assert_eq!(card_end_state(&cards_b1_at_100, "native:1:4"), Some(DecisionLifecycleState::Active));
+
+    let cards_b1 = Decisions::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
     assert_eq!(card_end_state(&cards_b1, "native:1:1"), Some(DecisionLifecycleState::Completed));
     assert_eq!(card_end_state(&cards_b1, "native:1:2"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
     assert_eq!(card_end_state(&cards_b1, "native:1:3"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
