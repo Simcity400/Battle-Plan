@@ -1,4 +1,4 @@
-use super::spending::{ConstructionSpending, ConstructionSpendingParams, ConstructionSpendingReply, SpendingLeaf};
+use super::spending::{ConstructionSpendingParams, ConstructionSpendingReply, SpendingLeaf, history};
 use super::SpendingGap;
 use dashboard_base::products::breakdown::{self, Amount, Breakdown, Leaf, Node, Unrecorded};
 use dashboard_base::products::{Country, LoadContext, Product, validate_country};
@@ -62,7 +62,7 @@ impl Product for ConstructionBreakdown {
         let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
         let whole = ConstructionSpendingParams { branch_id: params.branch_id.clone(), country: params.country.clone() };
         let key = (whole.clone(), query.timeline.first, query.timeline.last);
-        let reply = breakdown::held(source, key, || ConstructionSpending::load(source, &whole, context, cancelled))?;
+        let reply = breakdown::held(source, key, || history(source, &whole, context, cancelled))?;
         Ok(at_hour(&reply, query.timeline.first, params.hour))
     }
 }

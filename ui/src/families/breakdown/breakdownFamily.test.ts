@@ -8,7 +8,7 @@ import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { parseBreakdownHit } from './hostAdapter.ts';
 import { layoutBreakdown, type PartsViewLayout, type RingViewLayout, type MosaicViewLayout } from './layout.ts';
-import { deriveBreakdownAudit, deriveBreakdownNavAndMirror, partColour, resolveDrillLevel, type BreakdownModel } from './model.ts';
+import { deriveBreakdownAudit, deriveBreakdownNavAndMirror, partColour, breakdownLevel, type BreakdownModel } from './model.ts';
 import { breakdownParts, breakdownTotal, type BreakdownWords } from './product.ts';
 
 const THEME: FamilyTheme = {
@@ -113,18 +113,18 @@ test('a partly known whole is drawn as at least, with parts not recorded never a
   assert.equal(read.parts[1]!.value, null);
   assert.equal(read.parts[1]!.missingReason, 'New ships was not recorded');
 
-  const parts = layoutBreakdown({ view: 'parts', level: resolveDrillLevel(read, []), width: 1111, height: 346, theme: THEME, namesInRing: true, userExpanded: {}, measure }) as PartsViewLayout;
+  const parts = layoutBreakdown({ view: 'parts', level: breakdownLevel(read), width: 1111, height: 346, theme: THEME, namesInRing: true, userExpanded: {}, measure }) as PartsViewLayout;
   assert.ok(parts.totalLine.partialTabRect, 'the at-least total carries the partial tab');
   assert.ok(parts.rows.every(row => row.shareText === ''), 'no shares beside a lower bound');
 
-  const ring = layoutBreakdown({ view: 'ring', level: resolveDrillLevel(read, []), width: 1111, height: 346, theme: THEME, namesInRing: true, userExpanded: {}, measure }) as RingViewLayout;
+  const ring = layoutBreakdown({ view: 'ring', level: breakdownLevel(read), width: 1111, height: 346, theme: THEME, namesInRing: true, userExpanded: {}, measure }) as RingViewLayout;
   assert.equal(ring.center.verb, 'At least');
   assert.ok(ring.innerSlices.every(slice => slice.label === null), 'no names on a hatched ring');
   assert.deepEqual(deriveBreakdownAudit(read).map(row => row.value), ['atLeast:211', '211', 'notRecorded:New ships was not recorded', 'notRecorded:Refits was not recorded']);
 });
 
 test('the three views lay out the same parts', () => {
-  const level = resolveDrillLevel(model(spent()), []);
+  const level = breakdownLevel(model(spent()));
   const base = { level, width: 1111, height: 346, theme: THEME, namesInRing: true, userExpanded: {}, measure };
   const parts = layoutBreakdown({ ...base, view: 'parts' }) as PartsViewLayout;
   assert.deepEqual(parts.rows.filter(row => row.depth === 0).map(row => row.key), ['Daily costs', 'Decisions', 'Other']);
@@ -139,7 +139,7 @@ test('the three views lay out the same parts', () => {
 
 test('expanding a part is held by the host, shared by the parts list and the ring list', () => {
   const read = model(spent());
-  const level = resolveDrillLevel(read, []);
+  const level = breakdownLevel(read);
   const base = { level, width: 1111, height: 346, theme: THEME, namesInRing: true, measure };
   const closed = layoutBreakdown({ ...base, view: 'parts', userExpanded: { Decisions: false } }) as PartsViewLayout;
   assert.equal(closed.rows.some(row => row.parentKey === 'Decisions'), false);

@@ -426,7 +426,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             findings.push(Finding::new(Kind::Offline, key, "market listings, contracts, agreements and occurrences need the recorded market tables; unavailable offline"));
             Ok("Equipment names and icons need the recorded variant operands through the content stack; subsidy archetypes are localised from it.".into())
         }
-        construction::log::ConstructionLogManifest::KEY | construction::log::ConstructionLog::KEY | construction::spending::ConstructionSpending::KEY => {
+        construction::log::ConstructionLogManifest::KEY | construction::log::ConstructionLog::KEY | construction::breakdown::ConstructionBreakdown::KEY => {
             content.catalogue()?;
             Ok("Building type names localise the token spellings recorded in LexicalTokens through the recorded buildings; icons and the repair marker are the construction queue's line entry art; state names are the recorded states' name keys. Lines, totals and endings are the recorded ConstructionProjects and ConstructionSpend rows.".into())
         }
