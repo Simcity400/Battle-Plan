@@ -6,6 +6,7 @@ import { SettingLabel } from '../../dashboard/settings/SettingLabel';
 import RegionChooser from './RegionChooser.tsx';
 import { addRegion, AUTOMATIC_REGIONS, isAutomatic, moveRegion, readRegionChoice, removeRegion, writeRegionChoice } from './regionChoice.ts';
 import { useRegionList } from './useRegionList.ts';
+import { formatScalar } from '../valueFormat.ts';
 
 export default function RegionsField({ field, value, onChange, client, track }: {
   readonly field: Extract<OptionField, { kind: 'regions' }>;
@@ -20,7 +21,7 @@ export default function RegionsField({ field, value, onChange, client, track }: 
   const nameOf = (id: number) => (list.kind === 'ready' ? list.regions.find(region => region.id === id)?.label : undefined) ?? `Region ${id} · not in this recording`;
   const inChart = choice.picks.map(id => ({ id, label: nameOf(id) }));
   const hint = isAutomatic(choice) ? field.automatic : choice.hidden.length
-    ? `${choice.hidden.length.toLocaleString()} removed from the most active`
+    ? `${formatScalar(choice.hidden.length)} removed from the most active`
     : field.hint;
   return <div data-setting={field.key} className="setting-row setting-row-stacked">
     <SettingLabel label={field.label} hint={hint} />
