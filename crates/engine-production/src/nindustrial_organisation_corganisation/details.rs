@@ -301,14 +301,19 @@ pub fn capture_selected(
     };
     if fresh.rosters {
         let words = field::<[u8; 16]>(memory, pointer, UNLOCKED)?;
-        let (head, _) = Cursor::header(words)?;
+        let (head, _) =
+            Cursor::header(words).map_err(|_| "organisation unlocked map header invalid")?;
         let mut cursor = Cursor::from_parts(
             words,
             read(memory, head).ok_or("organisation unlocked sentinel unreadable")?,
-        )?;
+        )
+        .map_err(|_| "organisation unlocked map sentinel invalid")?;
         resize(&mut row.unlocked, cursor.count() as usize)?;
         let mut index = 0;
-        while let Some(node) = cursor.next(memory)? {
+        while let Some(node) = cursor
+            .next(memory)
+            .map_err(|_| "organisation unlocked map traversal invalid")?
+        {
             if field::<u64>(memory, node, UNLOCKED_TRAIT_VALUE)?
                 != engine_sites::at(base, TRAIT_ID_VTABLE_RVA)
                     .ok_or("organisation trait module overflow")? as u64
