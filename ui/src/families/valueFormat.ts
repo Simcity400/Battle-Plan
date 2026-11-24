@@ -174,7 +174,7 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
     const divisor = 10n ** BigInt(format.decimals - format.maxDecimals);
     const rounded = ((negative ? -scaled : scaled) + divisor / 2n) / divisor;
     if (rounded === 0n) return `${format.percent ? '0%' : '0'}${suffix}`;
-    return `${negative ? '−' : sign}${amountText(rounded, format.maxDecimals, format.percent)}${suffix}`;
+    return `${negative ? '−' : format.signed ? '+' : ''}${amountText(rounded, format.maxDecimals, format.percent)}${suffix}`;
   }
   if (format.maxDecimals !== undefined && format.decimals === 0) {
     const formatted = formatFixedDecimal(raw, format.maxDecimals, format.fixedDecimals === true, true, '\u2212', format.signed === true);

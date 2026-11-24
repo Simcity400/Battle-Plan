@@ -9,6 +9,7 @@ import {
 } from '../../families/time-chart/declaration.ts';
 import type { ChartGap, ChartInlinePoint, TimeChartModel, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
+import { formatRecordedPercent } from '../../families/valueFormat.ts';
 import type { WorldTensionStackReply } from '../../generated/dashboard';
 import { validateWorldTensionStack } from './worldTensionProjection.ts';
 
@@ -21,8 +22,7 @@ export interface WorldTensionLinesOptions {
 }
 
 function formatContributionPct(value: number): string {
-  const rounded = Math.round(value * 10) / 10;
-  return `${Number.isInteger(rounded) ? Math.round(rounded) : rounded.toFixed(1)}%`;
+  return formatRecordedPercent(value);
 }
 
 function resolveLineColors(rawColors: readonly (string | null)[], surface: string): string[] {

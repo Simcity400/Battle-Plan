@@ -88,13 +88,8 @@ function progressCell(operative: RosterOperative): TableCell {
   const ratio = operative.experienceRatio;
   if (ratio === null && operative.experienceAtCap) return { value: notApplicable(operative.experienceText ?? 'Highest skill level'), bar: null };
   if (ratio === null) return { value: notRecorded(operative.experienceMissing ?? 'Progress not recorded'), bar: null };
-<<<<<<< HEAD
-  const share = Math.max(0, Math.min(1, ratio));
-  return { value: knownValue(formatProgress(share)), sortValue: knownValue(share), bar: { fraction: share === 0 ? zeroValue(0) : knownValue(share) } };
-=======
   const painted = Math.max(0, Math.min(1, ratio));
-  return { value: knownValue(`${Math.floor(ratio * 100)}%`), sortValue: ratio === 0 ? zeroValue(0) : knownValue(ratio), bar: { fraction: painted === 0 ? zeroValue(0) : knownValue(painted) } };
->>>>>>> origin/main
+  return { value: knownValue(formatProgress(ratio)), sortValue: ratio === 0 ? zeroValue(0) : knownValue(ratio), bar: { fraction: painted === 0 ? zeroValue(0) : knownValue(painted) } };
 }
 
 function missionCell(readView: BoundedReadView, operative: RosterOperative, boundary: IdentityBoundary): TableCell {

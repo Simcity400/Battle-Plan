@@ -13,6 +13,7 @@ import {
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
 import type { ChartGap, ChartMarker, ChartStackBand, TimeChartModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
+import { formatRecordedPercent } from '../../families/valueFormat.ts';
 import type { WorldTensionReply, WorldTensionStackReply } from '../../generated/dashboard';
 
 export interface WorldTensionChartOptions {
@@ -52,20 +53,14 @@ export function validateWorldTensionHover(raw: unknown): WorldTensionReply {
   return reply;
 }
 
-function formatPct(value: number, decimals = 0): string {
-  if (!Number.isFinite(value)) return '0%';
-  if (decimals === 0) return `${Math.round(value)}%`;
-  return `${(Math.round(value * 10 ** decimals) / 10 ** decimals).toFixed(decimals).replace(/\.0+$/, '')}%`;
+function formatPct(value: number): string {
+  return Number.isFinite(value) ? formatRecordedPercent(value) : '0%';
 }
 
-function formatRawPct(raw: string, scale: number, decimals = 1): string {
+function formatRawPct(raw: string, scale: number): string {
   const n = Number(raw);
   if (!Number.isFinite(n) || scale <= 0) return '0%';
-  const pct = n / scale;
-  const sign = pct > 0 ? '+' : pct < 0 ? '\u2212' : '';
-  const abs = Math.abs(pct);
-  const rounded = (Math.round(abs * 10 ** decimals) / 10 ** decimals).toFixed(decimals).replace(/\.0+$/, '');
-  return `${sign}${rounded}%`;
+  return formatRecordedPercent(n / scale, { signed: true });
 }
 
 function contributorLabel(
@@ -132,7 +127,7 @@ function buildMarkers(
         : undefined;
       return {
         title: ev.reason,
-        detail: formatRawPct(ev.addedRaw, reply.contributionScale, 1),
+        detail: formatRawPct(ev.addedRaw, reply.contributionScale),
         ...(flag ? { flag } : {}),
       };
     });
@@ -140,7 +135,7 @@ function buildMarkers(
       id: `wt:${evHour}`,
       hour: evHour,
       title: lead.reason,
-      detail: formatRawPct(lead.addedRaw, reply.contributionScale, 1),
+      detail: formatRawPct(lead.addedRaw, reply.contributionScale),
       ...(leadFlag ? { flag: leadFlag } : {}),
       items,
     });
@@ -171,11 +166,11 @@ function buildHoverDetail(
     return { hour: hover.hour, items, replacesSeries: true };
   }
   const tensionPct = Number(tensionVal) / detail.tensionScale;
-  items.push({ label: 'World tension', value: formatPct(tensionPct, 1), strong: true });
+  items.push({ label: 'World tension', value: formatPct(tensionPct), strong: true });
   if (sumVal !== undefined) {
     const sumPct = Number(sumVal) / detail.contributionScale;
     if (Math.abs(sumPct - tensionPct) >= 0.05) {
-      items.push({ label: 'Uncapped sum', value: formatPct(sumPct, 1), tone: 'muted' });
+      items.push({ label: 'Uncapped sum', value: formatPct(sumPct), tone: 'muted' });
     }
   }
   const topContribs = detail.contributions.slice(0, 10);
@@ -186,7 +181,7 @@ function buildHoverDetail(
     items.push({
       label: info.fullName,
       ...(val !== undefined
-        ? { value: formatPct(Number(val) / detail.contributionScale, 1) }
+        ? { value: formatPct(Number(val) / detail.contributionScale) }
         : { missingReason: cells.missing(liveKey(String(c.slot), 'value')), tone: 'muted' as const }),
       ...(flagRes?.status === 'ready' && flagRes.url ? { countryFlag: { flag: flagRes.url } } : {}),
       ...(idx === 0 ? { divider: true } : {}),
@@ -199,7 +194,7 @@ function buildHoverDetail(
   sameHourEvents.forEach((ev, idx) => {
     items.push({
       label: ev.reason,
-      value: formatRawPct(ev.addedRaw, reply.contributionScale, 1),
+      value: formatRawPct(ev.addedRaw, reply.contributionScale),
       strong: true,
       ...(idx === 0 ? { divider: true } : {}),
     });
@@ -284,7 +279,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
               ...(flag ? { flag } : {}),
               name: info.name,
               fullName: info.fullName,
-              value: formatPct(endVal, 1),
+              value: formatPct(endVal),
             }
           : null,
       });
@@ -304,7 +299,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
               name: otherLabel,
               shortName: 'Other',
               fullName: otherLabel,
-              value: formatPct(otherEnd, 1),
+              value: formatPct(otherEnd),
             }
           : null,
       });
