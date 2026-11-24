@@ -1,3 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import RefitsWidget from './RefitsWidget';
-export default { render: RefitsWidget } satisfies WidgetRenderer;
+import { refitsDeclaration } from './refitsProjection';
+
+export default { declaration: refitsDeclaration } satisfies WidgetRenderer;

@@ -1,4 +1,3 @@
-import { countryFromKey } from './countryKey.ts';
 import { useCallback, useEffect, useMemo } from 'react';
 import { useChartTokens } from '../charts/useChartTokens';
 import type { OptionChoices, WidgetProps, WidgetRuntime } from './definitions';
@@ -15,32 +14,16 @@ import { useKeyTagsAt } from './useKeyTagsAt.ts';
 import { countryLineColours } from './countryLineColours.ts';
 import { useHeadProduct } from './headProduct';
 import { useGate } from './regionGate';
-import { airSideName, momentRows, validateAirChoices, validateAirSuperiority } from './airSuperiority';
-import type { AirLooks } from './airSuperiority';
-import { airChoiceKey, airChoiceToken } from './airOptions';
+import { airMode, airParams, airSideName, momentRows, validateAirChoices, validateAirSuperiority } from './airSuperiority';
+import type { AirLooks, AirModeSettings } from './airSuperiority';
+import { airChoiceToken } from './airOptions';
 import type { AirChoicesReply, AirSide, FactionGroup } from '../generated/dashboard';
 import { productRequest } from './request.ts';
 
+export { airMode, airParams, type AirModeSettings };
+
 const NO_WARNINGS: string[] = [];
 const NO_SIDES: AirSide[] = [];
-
-export function airMode(options: Readonly<Record<string, OptionValue>>, campaign: string, currentCountry: string | null) {
-  const mode = options.mode === 'viewpoint' ? 'viewpoint' as const : 'sides' as const;
-  const chosen = options.viewpoint ? String(options.viewpoint) : '';
-  const viewpoint = mode !== 'viewpoint' ? '' : chosen ? contentKey(chosen).startsWith('country:') ? contentKey(chosen) : airChoiceKey(campaign, chosen) ?? ''
-    : currentCountry ? `country:${currentCountry}` : '';
-  return { mode, viewpoint, sides: contentSet(options.sides).flatMap(value => airChoiceKey(campaign, value) ?? []),
-    regions: contentSet(options.regions).map(value => Number(contentKey(value).slice(2))).filter(Number.isInteger),
-    theatres: contentSet(options.theatres).flatMap(value => airChoiceKey(campaign, value) ?? []) };
-}
-export type AirModeSettings = ReturnType<typeof airMode>;
-
-export function airParams(mode: AirModeSettings) {
-  return { mode: mode.mode, ...(mode.viewpoint ? { viewpoint: mode.viewpoint.startsWith('country:') ? countryFromKey(mode.viewpoint.slice(8)) : mode.viewpoint,
-    ...(mode.viewpoint.startsWith('country:') ? { viewpointCountry: true } : {}) } : {}),
-    ...(mode.sides.length ? { sides: mode.sides } : {}), ...(mode.regions.length ? { regions: mode.regions } : {}),
-    ...(mode.theatres.length ? { theatres: mode.theatres } : {}) };
-}
 
 export function useAirChoicesReply(runtime: WidgetRuntime, widget: WidgetSpec, active: boolean) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);

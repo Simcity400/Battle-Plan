@@ -79,6 +79,7 @@ impl AirTimelineParams {
             sides: self.sides.clone(),
             regions: self.regions.clone(),
             theatres: self.theatres.clone(),
+            order: None,
         }
     }
 

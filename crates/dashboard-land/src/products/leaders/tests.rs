@@ -171,3 +171,102 @@ fn a_leader_whose_role_may_have_conditions_reads_its_character_first_and_the_tri
     assert_eq!(first, [TableId::Characters, TableId::LexicalTokens], "the leader's character and the tokens, not every trigger table");
     assert!(UnitLeaders::reads_in(&params, None, 2, &held, &at).is_empty(), "without the content no role is known to have conditions, and no table read would decide one");
 }
+
+#[test]
+fn leader_hour_reads_and_names_the_requested_leader_not_the_first_row_in_a_shared_frame() {
+    use super::{
+        LeadersContext,
+        career::{LeaderHour, LeaderHourParams},
+        handle,
+    };
+    use dashboard_base::products::{
+        LoadContext,
+        at_hour::{At, AtHour, Keys},
+    };
+    use dashboard_base::test_fixtures::{records, source};
+    use replay_data::rows::{CharacterRow, TableId, TableRows, UnitLeaderRow};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+    let first_leader = UnitLeaderRow {
+        id: 1,
+        reference_type: 1,
+        kind: KIND_ARMY,
+        owner: 9001,
+        character_id: 10,
+        visibility_choice: 1,
+        ..Default::default()
+    };
+    let second_leader = UnitLeaderRow {
+        id: 2,
+        reference_type: 1,
+        kind: KIND_ARMY,
+        owner: 9001,
+        character_id: 20,
+        visibility_choice: 1,
+        ..Default::default()
+    };
+    let mut frame = source(1, 100, Some(1_000));
+    frame.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![first_leader.clone(), second_leader.clone()])).into();
+    frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![
+        CharacterRow { id: 10, token: b"ABK_zaitsev".to_vec(), ..Default::default() },
+        CharacterRow { id: 20, token: b"JAP_yamamoto".to_vec(), ..Default::default() },
+    ]))
+    .into();
+    let params = LeaderHourParams {
+        branch_id: "1".into(),
+        reference: handle(&second_leader).to_string(),
+    };
+    let step1 = LeaderHour::reads(&params, None, 1, &frame);
+    assert_eq!(step1.len(), 1);
+    assert_eq!(step1[0].table, TableId::Characters);
+    match &step1[0].keys {
+        Keys::These(keys) => assert_eq!(keys, &[20u128], "must request the asked leader's character_id, not row 0"),
+        other => panic!("expected Keys::These([20]), got {other:?}"),
+    }
+
+    let (_, folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
+        ("hoi4.exe", "test"),
+        ("user/settings.txt", "language=l_english force_pow2_textures=no"),
+        ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#),
+        ("localisation/languages.yml", "\u{feff}l_english:\n l_english: \"English\"\n"),
+        (
+            "localisation/english/characters_l_english.yml",
+            "\u{feff}l_english:\n ABK_zaitsev:0 \"Anatoly Zaitsev\"\n JAP_yamamoto:0 \"Isoroku Yamamoto\"\n",
+        ),
+        (
+            "common/characters/test.txt",
+            "characters = { ABK_zaitsev = { name = ABK_zaitsev } JAP_yamamoto = { name = JAP_yamamoto } }",
+        ),
+        ("common/defines/test.lua", "NDefines = { NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { } } }"),
+    ]);
+    let (content, identity) = dashboard_base::test_fixtures::content_identity(&folder.0);
+    let mut input = records(1, vec![frame.clone()]);
+    if let replay_capture_spool::spool::Record::SessionStart(session) = &mut input[0] {
+        session.identity = identity.clone();
+    }
+    let replay = dashboard_base::test_fixtures::with_facts(&content, &identity, input)
+        .into_timelines(&Default::default())
+        .unwrap();
+    let recording = dashboard_base::Source::from_replay(
+        dashboard_base::SourceKey { source_id: "leader-hour-shared".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let context = LeadersContext::load(&recording, &LoadContext { content: Some(content) }).unwrap();
+    let holders = dashboard_query::identity::Holders::new(Default::default(), Vec::new());
+    let live = dashboard_follow::live::Cells::default();
+    let cancelled = AtomicBool::new(false);
+    let at = At {
+        owner: None,
+        holders: &holders,
+        context: &context,
+        hour: 100,
+        cancelled: &cancelled,
+        live: &live,
+    };
+    let reply = LeaderHour::reply(&frame, &params, &at).unwrap();
+    assert_eq!(reply.name.as_deref(), Some("Isoroku Yamamoto"), "{:?}", reply.warnings);
+}

@@ -152,3 +152,27 @@ fn the_army_composition_from_keyed_runs_equals_the_hour_by_hour_walk() {
     assert_eq!(held[0], &vec![(1_800, 1_800, BTreeMap::from([(10, 3), (11, 1), (12, 4), (13, 1)]))], "ITA hosts its own division and GER's sent one");
     assert_eq!(names.get(&13).map(String::as_str), Some("recon"));
 }
+
+#[test]
+fn unit_group_titles_use_group_title_localisation_key_with_bare_fallback() {
+    let (cat, _folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
+        (
+            "common/units/test_units.txt",
+            "sub_units = { infantry = { group = infantry } mod_tank = { group = mod_armor } }",
+        ),
+        (
+            "localisation/english/unit_l_english.yml",
+            "\u{feff}l_english:\n group_infantry_title:0 \"Infantry\"\n mod_armor:0 \"Mod Armor\"\n",
+        ),
+    ]);
+    let units = content_reader_key_names::unit_leader::sub_units(&cat.content.layers).unwrap();
+    let (key, info, warning) = group_info(Some(&units), Some(&cat), "infantry");
+    assert_eq!(key, "group:infantry");
+    assert_eq!(info.name, "Infantry");
+    assert_eq!(warning, None);
+
+    let (mod_key, mod_info, mod_warning) = group_info(Some(&units), Some(&cat), "mod_tank");
+    assert_eq!(mod_key, "group:mod_armor");
+    assert_eq!(mod_info.name, "Mod Armor");
+    assert_eq!(mod_warning, None);
+}
