@@ -1768,20 +1768,17 @@ fn drain_speculating(
             collector_observers::world_input_changes::prepare_design_mios(walked, true);
         }
         drain_profile_mut().stages_ns[0] = elapsed_ns(stage);
-        for watch in &repairs.watches {
-            sources::suspend(watch.id)?;
-        }
+        sources::suspend_all(&repairs.watches)?;
         let begin = std::time::Instant::now();
         decode_events(&batch, base, output)?;
         drain_profile_mut().events_ns = elapsed_ns(begin);
-        for watch in &repairs.watches {
-            if matches!(
+        sources::resume_all(repairs.watches.iter().filter_map(|watch| {
+            matches!(
                 reads.get(&watch.pointer),
                 Some(snapshots::speculative::Read::Unchanged(_))
-            ) {
-                sources::resume(watch.id)?;
-            }
-        }
+            )
+            .then_some(watch.id)
+        }))?;
         liveness::refresh_context(memory, base, &batch.events)?;
         let stage = std::time::Instant::now();
         engine_allocation::reserve(output, repairs.watches.len())
@@ -1791,12 +1788,18 @@ fn drain_speculating(
             .map_err(|_| "variant repair allocation failed")?;
         let mut kept =
             engine_allocation::advisory(|| engine_allocation::vec(repairs.watches.len())).ok();
+        let mut teams = engine_allocation::vec(repairs.watches.len().saturating_sub(walked))
+            .map_err(|_| "variant repair allocation failed")?;
+        let mut flag_updates = engine_allocation::vec(walked)
+            .map_err(|_| "variant repair allocation failed")?;
         let (mut unchanged, mut lane_walks) = (0, 0);
         for watch in &repairs.watches {
             use snapshots::speculative::Read;
             let (walk, recorded) = match reads.remove(&watch.pointer) {
                 Some(Read::Unchanged(witness)) => {
-                    liveness::change(witness.team.0, witness.team.1)?;
+                    if witness.team.0 != 0 {
+                        teams.push(witness.team);
+                    }
                     if let Some(kept) = kept.as_mut() {
                         kept.push((watch.pointer, witness));
                     }
@@ -1828,7 +1831,7 @@ fn drain_speculating(
             if decoded.value.definition.id != watch.id {
                 return Err("variant repair identity changed without observed replacement");
             }
-            repair::complete(watch, &decoded.value)?;
+            flag_updates.push((watch.pointer, watch.id, repair::flags(&decoded.value)?));
             if let Some(mut recorded) = recorded {
                 let state = decoded
                     .value
@@ -1859,6 +1862,8 @@ fn drain_speculating(
                 std::sync::Arc::new(decoded),
             )?;
         }
+        liveness::change_all(&teams)?;
+        repair::complete_all(&flag_updates)?;
         {
             let mut profile = drain_profile_mut();
             profile.unchanged = unchanged;

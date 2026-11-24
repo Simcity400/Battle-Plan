@@ -1316,3 +1316,66 @@ fn market_route_states_are_separate_from_ports_and_authenticate_against_the_stat
         Err("market route state vtable mismatch")
     );
 }
+
+#[test]
+fn batched_supply_transfers_and_regional_route_dedup_match_scalar_behavior() {
+    let mut f = world();
+    let count = 70_u32;
+    let table_data = 0x10_0000;
+    f.array(0x51000 + SUPPLY_TRANSFERS, table_data, count);
+    for index in 0..count as usize {
+        let entry = table_data + index * SUPPLY_TRANSFER_STRIDE;
+        let client_addr = 0x12_0000 + index * 0x200;
+        f.put(entry, &[0; SUPPLY_TRANSFER_STRIDE]);
+        f.u64(entry + SUPPLY_TRANSFER_CLIENT, client_addr as u64);
+        client(
+            &mut f,
+            client_addr,
+            SUPPLY_VTABLE_RVA.0,
+            200 + index as u32,
+            [100_000, 100_000],
+        );
+        route(&mut f, client_addr + SUPPLY_ROUTE, 0, [0, 0], &[]);
+    }
+    let (outcomes, rows) = walk(&f);
+    assert_eq!(outcomes.clients, Outcome::Rows { len: count as usize + 2 });
+    let supply_rows: Vec<_> = rows
+        .clients
+        .iter()
+        .filter(|row| row.category == SUPPLY_TRANSFER)
+        .collect();
+    assert_eq!(supply_rows.len(), count as usize);
+    for (index, row) in supply_rows.iter().enumerate() {
+        assert_eq!(row.owner_ordinal, Some(index as u32));
+        assert_eq!(row.handle, 200 + index as u32);
+    }
+    f.u64(0x12_0000 + 66 * 0x200, ROUTE_VTABLE_RVA.0 as u64);
+    let (bad_outcomes, _) = walk(&f);
+    assert_eq!(
+        bad_outcomes.clients,
+        Outcome::Unavailable {
+            reason: "convoy client of an unexpected type"
+        }
+    );
+    let f = world();
+    let (_, rows) = walk(&f);
+    let dup_origins = [rows.origins[0], rows.origins[0]];
+    let memory = PathMemory {
+        source: &f,
+        denied: Some(0x20000 + ORIGIN_ROUTE),
+        guards: Default::default(),
+        faults: Default::default(),
+    };
+    let mut out = Vec::new();
+    let outcome = walk_regional(
+        &memory,
+        0,
+        GAME_STATE,
+        &dup_origins,
+        &[],
+        &mut Vec::new(),
+        Buffer::Growing(&mut out),
+    );
+    assert!(matches!(outcome, Outcome::Unavailable { .. }));
+    assert_eq!(memory.faults.get(), 1);
+}

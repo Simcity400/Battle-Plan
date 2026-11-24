@@ -569,6 +569,146 @@ const STATE_RECORD_FIELDS: [RecordField; 2] = [
 const STATE_RECORD_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&STATE_RECORD_FIELDS, STATE_RECORD_STRIDE)
         .expect("valid origin state record layout");
+const CLIENT_BATCH: usize = 64;
+const SUPPLY_PTR_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: SUPPLY_TRANSFER_CLIENT,
+    destination_offset: 0,
+    len: 8,
+}];
+const SUPPLY_PTR_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&SUPPLY_PTR_FIELDS, 8).expect("valid supply transfer pointer layout");
+const SUPPLY_RECORD_STRIDE: usize = 48;
+const SUPPLY_RECORD_FIELDS: [RecordField; 6] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: CLIENT_HANDLE_ID,
+        destination_offset: 8,
+        len: 4,
+    },
+    RecordField {
+        source_offset: CLIENT_CONVOYS,
+        destination_offset: 12,
+        len: 8,
+    },
+    RecordField {
+        source_offset: CLIENT_EFFICIENCY_A,
+        destination_offset: 20,
+        len: 16,
+    },
+    RecordField {
+        source_offset: CLIENT_CONVOYS_BASE,
+        destination_offset: 36,
+        len: 4,
+    },
+    RecordField {
+        source_offset: SUPPLY_ROUTE,
+        destination_offset: 40,
+        len: 8,
+    },
+];
+const SUPPLY_RECORD_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&SUPPLY_RECORD_FIELDS, SUPPLY_RECORD_STRIDE)
+        .expect("valid supply transfer record layout");
+const GIVEN_RECORD_STRIDE: usize = 52;
+const GIVEN_RECORD_FIELDS: [RecordField; 7] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: CLIENT_HANDLE_ID,
+        destination_offset: 8,
+        len: 4,
+    },
+    RecordField {
+        source_offset: CLIENT_CONVOYS,
+        destination_offset: 12,
+        len: 8,
+    },
+    RecordField {
+        source_offset: CLIENT_EFFICIENCY_A,
+        destination_offset: 20,
+        len: 16,
+    },
+    RecordField {
+        source_offset: CLIENT_CONVOYS_BASE,
+        destination_offset: 36,
+        len: 4,
+    },
+    RecordField {
+        source_offset: LEND_LEASE_RECEIVER,
+        destination_offset: 40,
+        len: 4,
+    },
+    RecordField {
+        source_offset: LEND_LEASE_ROUTE,
+        destination_offset: 44,
+        len: 8,
+    },
+];
+const GIVEN_RECORD_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&GIVEN_RECORD_FIELDS, GIVEN_RECORD_STRIDE)
+        .expect("valid lend-lease record layout");
+const CONTRACT_RECORD_STRIDE: usize = 56;
+const CONTRACT_RECORD_FIELDS: [RecordField; 7] = [
+    RecordField {
+        source_offset: CONTRACT_SELLER,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: CONTRACT_CLIENT,
+        destination_offset: 8,
+        len: 8,
+    },
+    RecordField {
+        source_offset: CONTRACT_CLIENT + CLIENT_HANDLE_ID,
+        destination_offset: 16,
+        len: 4,
+    },
+    RecordField {
+        source_offset: CONTRACT_CLIENT + CLIENT_CONVOYS,
+        destination_offset: 20,
+        len: 8,
+    },
+    RecordField {
+        source_offset: CONTRACT_CLIENT + CLIENT_EFFICIENCY_A,
+        destination_offset: 28,
+        len: 16,
+    },
+    RecordField {
+        source_offset: CONTRACT_CLIENT + CLIENT_CONVOYS_BASE,
+        destination_offset: 44,
+        len: 4,
+    },
+    RecordField {
+        source_offset: CONTRACT_CLIENT + CONTRACT_CLIENT_ROUTE,
+        destination_offset: 48,
+        len: 8,
+    },
+];
+const CONTRACT_RECORD_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&CONTRACT_RECORD_FIELDS, CONTRACT_RECORD_STRIDE)
+        .expect("valid market contract record layout");
+const CLIENT_HANDLE_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: CLIENT_HANDLE_ID,
+    destination_offset: 0,
+    len: 4,
+}];
+const CLIENT_HANDLE_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&CLIENT_HANDLE_FIELDS, 4).expect("valid client handle layout");
+const CONTRACT_HANDLE_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: CONTRACT_CLIENT + CLIENT_HANDLE_ID,
+    destination_offset: 0,
+    len: 4,
+}];
+const CONTRACT_HANDLE_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&CONTRACT_HANDLE_FIELDS, 4).expect("valid contract handle layout");
 
 impl<M: Memory> Walk<'_, M> {
     fn id(&self, link: u32) -> Result<u32, &'static str> {
@@ -583,8 +723,8 @@ impl<M: Memory> Walk<'_, M> {
         &self,
         client: usize,
         importer: engine_native_memory::country_identity::Country,
-    ) -> Result<(usize, u32), &'static str> {
-        let (_, ends) = cresource_exchange::authenticate(
+    ) -> Result<([u8; cresource_exchange::SIZE], usize, u32), &'static str> {
+        let (bytes, ends) = cresource_exchange::authenticate(
             self.memory,
             self.base,
             self.countries,
@@ -596,7 +736,7 @@ impl<M: Memory> Walk<'_, M> {
             ends.exporter_resources,
             importer.canonical_slot,
         )?;
-        Ok((route, ends.exporter_country.id))
+        Ok((bytes, route, ends.exporter_country.id))
     }
 
     fn held_route(&self, client: usize, offset: usize) -> Result<usize, &'static str> {
@@ -934,32 +1074,109 @@ impl<M: Memory> Walk<'_, M> {
         output: &mut Buffer<'_, ClientRow>,
     ) -> Result<(), &'static str> {
         let memory = self.memory;
+        let expected_route = vtable(self.base, ROUTE_VTABLE_RVA)? as u64;
         let imports = array(
             memory,
             at(resources, ccountry_resources::IMPORT_ROUTES)?,
             8,
             "import list unreadable",
         )?;
-        for index in 0..imports.count {
-            let client = element(memory, imports, index, 8, "import exchange unreadable")?;
-            if client == 0 {
-                return Err("null exchange in a live import list");
+        let mut ptr_bytes = [0_u8; CLIENT_BATCH * 8];
+        let mut first = 0_u32;
+        while first < imports.count {
+            let count = ((imports.count - first) as usize).min(CLIENT_BATCH);
+            let copied = imports.element(first, 8).map_or(0, |start| {
+                memory.copy_records(
+                    RecordSources::Strided {
+                        base: start,
+                        stride: 8,
+                        count,
+                    },
+                    &ORIGIN_PTR_LAYOUT,
+                    &mut ptr_bytes[..count * 8],
+                )
+            });
+            for offset in 0..count {
+                let client = if offset < copied {
+                    usize::try_from(u64::from_le_bytes(
+                        ptr_bytes[offset * 8..(offset + 1) * 8].try_into().unwrap(),
+                    ))
+                    .map_err(|_| "import exchange unreadable")?
+                } else {
+                    element(
+                        memory,
+                        imports,
+                        first + offset as u32,
+                        8,
+                        "import exchange unreadable",
+                    )?
+                };
+                if client == 0 {
+                    return Err("null exchange in a live import list");
+                }
+                let (bytes, route, exporter) = self.exchange(client, country)?;
+                let key = RouteKey {
+                    class: DELIVERY_ROUTE_CLASS,
+                    country: exporter,
+                    other: country.id,
+                };
+                let handle = u32::from_le_bytes(
+                    bytes[CLIENT_HANDLE_ID..CLIENT_HANDLE_ID + 4]
+                        .try_into()
+                        .unwrap(),
+                );
+                let status = ClientStatus::new(
+                    [
+                        i64::from_le_bytes(
+                            bytes[CLIENT_EFFICIENCY_A..CLIENT_EFFICIENCY_A + 8]
+                                .try_into()
+                                .unwrap(),
+                        ),
+                        i64::from_le_bytes(
+                            bytes[CLIENT_EFFICIENCY_A + 8..CLIENT_EFFICIENCY_A + 16]
+                                .try_into()
+                                .unwrap(),
+                        ),
+                    ],
+                    [
+                        i32::from_le_bytes(
+                            bytes[CLIENT_CONVOYS..CLIENT_CONVOYS + 4]
+                                .try_into()
+                                .unwrap(),
+                        ),
+                        i32::from_le_bytes(
+                            bytes[CLIENT_CONVOYS + 4..CLIENT_CONVOYS + 8]
+                                .try_into()
+                                .unwrap(),
+                        ),
+                    ],
+                    i32::from_le_bytes(
+                        bytes[CLIENT_CONVOYS_BASE..CLIENT_CONVOYS_BASE + 4]
+                            .try_into()
+                            .unwrap(),
+                    ),
+                    self.threshold,
+                );
+                table.push(
+                    output,
+                    ClientRow {
+                        owner_ordinal: None,
+                        other_ordinal: None,
+                        address: client,
+                        handle,
+                        category: IMPORT,
+                        owner: country.id,
+                        other: exporter,
+                        route: key,
+                        bad: status.bad,
+                        convoys: status.convoys,
+                        efficiency: status.efficiency,
+                        convoys_base: status.convoys_base,
+                        route_address: route,
+                    },
+                )?;
             }
-            let (route, exporter) = self.exchange(client, country)?;
-            let key = RouteKey {
-                class: DELIVERY_ROUTE_CLASS,
-                country: exporter,
-                other: country.id,
-            };
-            let row = self.client(
-                client,
-                EXCHANGE_VTABLE_RVA,
-                IMPORT,
-                country.id,
-                exporter,
-                (key, route),
-            )?;
-            table.push(output, row)?;
+            first += count as u32;
         }
         let given = array(
             memory,
@@ -967,30 +1184,148 @@ impl<M: Memory> Walk<'_, M> {
             8,
             "lend-lease list unreadable",
         )?;
-        for index in 0..given.count {
-            let client = element(memory, given, index, 8, "lend-lease exchange unreadable")?;
-            if client == 0 {
-                return Err("null lend-lease exchange in a live list");
+        let expected_given = vtable(self.base, LEND_LEASE_VTABLE_RVA)? as u64;
+        let mut ptrs = [0_usize; CLIENT_BATCH];
+        let mut given_records = [0_u8; CLIENT_BATCH * GIVEN_RECORD_STRIDE];
+        let mut route_ptrs = [0_usize; CLIENT_BATCH];
+        let mut route_vtables = [0_u8; CLIENT_BATCH * 8];
+        let mut first = 0_u32;
+        while first < given.count {
+            let count = ((given.count - first) as usize).min(CLIENT_BATCH);
+            let batch_ok = (|| {
+                let start = given.element(first, 8)?;
+                if memory.copy_records(
+                    RecordSources::Strided {
+                        base: start,
+                        stride: 8,
+                        count,
+                    },
+                    &ORIGIN_PTR_LAYOUT,
+                    &mut ptr_bytes[..count * 8],
+                ) != count
+                {
+                    return None;
+                }
+                for i in 0..count {
+                    let client = usize::try_from(u64::from_le_bytes(
+                        ptr_bytes[i * 8..(i + 1) * 8].try_into().unwrap(),
+                    ))
+                    .ok()?;
+                    if client == 0 || client.checked_add(LEND_LEASE_ROUTE + 8).is_none() {
+                        return None;
+                    }
+                    ptrs[i] = client;
+                }
+                if memory.copy_records(
+                    RecordSources::Pointers(&ptrs[..count]),
+                    &GIVEN_RECORD_LAYOUT,
+                    &mut given_records[..count * GIVEN_RECORD_STRIDE],
+                ) != count * GIVEN_RECORD_FIELDS.len()
+                {
+                    return None;
+                }
+                for i in 0..count {
+                    let rec = &given_records[i * GIVEN_RECORD_STRIDE..(i + 1) * GIVEN_RECORD_STRIDE];
+                    if u64::from_le_bytes(rec[0..8].try_into().unwrap()) != expected_given {
+                        return None;
+                    }
+                    let route = usize::try_from(u64::from_le_bytes(
+                        rec[44..52].try_into().unwrap(),
+                    ))
+                    .ok()?;
+                    if route == 0 {
+                        return None;
+                    }
+                    route_ptrs[i] = route;
+                }
+                if memory.copy_records(
+                    RecordSources::Pointers(&route_ptrs[..count]),
+                    &ORIGIN_PTR_LAYOUT,
+                    &mut route_vtables[..count * 8],
+                ) != count
+                {
+                    return None;
+                }
+                for i in 0..count {
+                    if u64::from_le_bytes(route_vtables[i * 8..(i + 1) * 8].try_into().unwrap())
+                        != expected_route
+                    {
+                        return None;
+                    }
+                }
+                Some(())
+            })()
+            .is_some();
+            if batch_ok {
+                for i in 0..count {
+                    let rec = &given_records[i * GIVEN_RECORD_STRIDE..(i + 1) * GIVEN_RECORD_STRIDE];
+                    let receiver = self.id(u32::from_le_bytes(rec[40..44].try_into().unwrap()))?;
+                    let handle = u32::from_le_bytes(rec[8..12].try_into().unwrap());
+                    let status = ClientStatus::new(
+                        [
+                            i64::from_le_bytes(rec[20..28].try_into().unwrap()),
+                            i64::from_le_bytes(rec[28..36].try_into().unwrap()),
+                        ],
+                        [
+                            i32::from_le_bytes(rec[12..16].try_into().unwrap()),
+                            i32::from_le_bytes(rec[16..20].try_into().unwrap()),
+                        ],
+                        i32::from_le_bytes(rec[36..40].try_into().unwrap()),
+                        self.threshold,
+                    );
+                    let key = RouteKey {
+                        class: DELIVERY_ROUTE_CLASS,
+                        country: country.id,
+                        other: receiver,
+                    };
+                    table.push(
+                        output,
+                        ClientRow {
+                            owner_ordinal: Some(first + i as u32),
+                            other_ordinal: None,
+                            address: ptrs[i],
+                            handle,
+                            category: LEND_LEASE,
+                            owner: country.id,
+                            other: receiver,
+                            route: key,
+                            bad: status.bad,
+                            convoys: status.convoys,
+                            efficiency: status.efficiency,
+                            convoys_base: status.convoys_base,
+                            route_address: route_ptrs[i],
+                        },
+                    )?;
+                }
+                first += count as u32;
+            } else {
+                for index in first..given.count {
+                    let client = element(memory, given, index, 8, "lend-lease exchange unreadable")?;
+                    if client == 0 {
+                        return Err("null lend-lease exchange in a live list");
+                    }
+                    let receiver = read::<u32>(memory, at(client, LEND_LEASE_RECEIVER)?)
+                        .ok_or("lend-lease receiver unreadable")?;
+                    let receiver = self.id(receiver)?;
+                    let route = self.held_route(client, LEND_LEASE_ROUTE)?;
+                    let key = RouteKey {
+                        class: DELIVERY_ROUTE_CLASS,
+                        country: country.id,
+                        other: receiver,
+                    };
+                    let mut row = self.client(
+                        client,
+                        LEND_LEASE_VTABLE_RVA,
+                        LEND_LEASE,
+                        country.id,
+                        receiver,
+                        (key, route),
+                    )?;
+                    row.owner_ordinal = Some(index);
+                    table.push(output, row)?;
+                }
+                break;
             }
-            let receiver = read::<u32>(memory, at(client, LEND_LEASE_RECEIVER)?)
-                .ok_or("lend-lease receiver unreadable")?;
-            let receiver = self.id(receiver)?;
-            let route = self.held_route(client, LEND_LEASE_ROUTE)?;
-            let key = RouteKey {
-                class: DELIVERY_ROUTE_CLASS,
-                country: country.id,
-                other: receiver,
-            };
-            let mut row = self.client(
-                client,
-                LEND_LEASE_VTABLE_RVA,
-                LEND_LEASE,
-                country.id,
-                receiver,
-                (key, route),
-            )?;
-            row.owner_ordinal = Some(index);
-            table.push(output, row)?;
         }
         let system = pointer(
             memory,
@@ -1006,36 +1341,132 @@ impl<M: Memory> Walk<'_, M> {
             SUPPLY_TRANSFER_STRIDE,
             "supply transfers unreadable",
         )?;
-        for index in 0..transfers.count {
-            let entry = transfers
-                .element(index, SUPPLY_TRANSFER_STRIDE)
-                .ok_or("supply transfer unreadable")?;
-            let client = pointer(
-                memory,
-                at(entry, SUPPLY_TRANSFER_CLIENT)?,
-                "supply transfer client unreadable",
-            )?;
-            if client == 0 {
-                return Err("supply transfer without a client");
+        let expected_supply = vtable(self.base, SUPPLY_VTABLE_RVA)? as u64;
+        let mut supply_records = [0_u8; CLIENT_BATCH * SUPPLY_RECORD_STRIDE];
+        let mut first = 0_u32;
+        while first < transfers.count {
+            let count = ((transfers.count - first) as usize).min(CLIENT_BATCH);
+            let batch_ok = (|| {
+                let start = transfers.element(first, SUPPLY_TRANSFER_STRIDE)?;
+                if memory.copy_records(
+                    RecordSources::Strided {
+                        base: start,
+                        stride: SUPPLY_TRANSFER_STRIDE,
+                        count,
+                    },
+                    &SUPPLY_PTR_LAYOUT,
+                    &mut ptr_bytes[..count * 8],
+                ) != count
+                {
+                    return None;
+                }
+                for i in 0..count {
+                    let client = usize::try_from(u64::from_le_bytes(
+                        ptr_bytes[i * 8..(i + 1) * 8].try_into().unwrap(),
+                    ))
+                    .ok()?;
+                    if client == 0 || client.checked_add(SUPPLY_ROUTE + 8).is_none() {
+                        return None;
+                    }
+                    ptrs[i] = client;
+                }
+                if memory.copy_records(
+                    RecordSources::Pointers(&ptrs[..count]),
+                    &SUPPLY_RECORD_LAYOUT,
+                    &mut supply_records[..count * SUPPLY_RECORD_STRIDE],
+                ) != count * SUPPLY_RECORD_FIELDS.len()
+                {
+                    return None;
+                }
+                for i in 0..count {
+                    let rec =
+                        &supply_records[i * SUPPLY_RECORD_STRIDE..(i + 1) * SUPPLY_RECORD_STRIDE];
+                    if u64::from_le_bytes(rec[0..8].try_into().unwrap()) != expected_supply
+                        || u64::from_le_bytes(rec[40..48].try_into().unwrap()) != expected_route
+                    {
+                        return None;
+                    }
+                }
+                Some(())
+            })()
+            .is_some();
+            if batch_ok {
+                for i in 0..count {
+                    let rec =
+                        &supply_records[i * SUPPLY_RECORD_STRIDE..(i + 1) * SUPPLY_RECORD_STRIDE];
+                    let client = ptrs[i];
+                    let handle = u32::from_le_bytes(rec[8..12].try_into().unwrap());
+                    let status = ClientStatus::new(
+                        [
+                            i64::from_le_bytes(rec[20..28].try_into().unwrap()),
+                            i64::from_le_bytes(rec[28..36].try_into().unwrap()),
+                        ],
+                        [
+                            i32::from_le_bytes(rec[12..16].try_into().unwrap()),
+                            i32::from_le_bytes(rec[16..20].try_into().unwrap()),
+                        ],
+                        i32::from_le_bytes(rec[36..40].try_into().unwrap()),
+                        self.threshold,
+                    );
+                    let key = RouteKey {
+                        class: SUPPLY_ROUTE_CLASS,
+                        country: country.id,
+                        other: handle,
+                    };
+                    table.push(
+                        output,
+                        ClientRow {
+                            owner_ordinal: Some(first + i as u32),
+                            other_ordinal: None,
+                            address: client,
+                            handle,
+                            category: SUPPLY_TRANSFER,
+                            owner: country.id,
+                            other: 0,
+                            route: key,
+                            bad: status.bad,
+                            convoys: status.convoys,
+                            efficiency: status.efficiency,
+                            convoys_base: status.convoys_base,
+                            route_address: client + SUPPLY_ROUTE,
+                        },
+                    )?;
+                }
+                first += count as u32;
+            } else {
+                for index in first..transfers.count {
+                    let entry = transfers
+                        .element(index, SUPPLY_TRANSFER_STRIDE)
+                        .ok_or("supply transfer unreadable")?;
+                    let client = pointer(
+                        memory,
+                        at(entry, SUPPLY_TRANSFER_CLIENT)?,
+                        "supply transfer client unreadable",
+                    )?;
+                    if client == 0 {
+                        return Err("supply transfer without a client");
+                    }
+                    let route = at(client, SUPPLY_ROUTE)?;
+                    self.authenticate_route(route)?;
+                    let handle = client_handle(memory, client)?;
+                    let key = RouteKey {
+                        class: SUPPLY_ROUTE_CLASS,
+                        country: country.id,
+                        other: handle,
+                    };
+                    let mut row = self.client(
+                        client,
+                        SUPPLY_VTABLE_RVA,
+                        SUPPLY_TRANSFER,
+                        country.id,
+                        0,
+                        (key, route),
+                    )?;
+                    row.owner_ordinal = Some(index);
+                    table.push(output, row)?;
+                }
+                break;
             }
-            let route = at(client, SUPPLY_ROUTE)?;
-            self.authenticate_route(route)?;
-            let handle = client_handle(memory, client)?;
-            let key = RouteKey {
-                class: SUPPLY_ROUTE_CLASS,
-                country: country.id,
-                other: handle,
-            };
-            let mut row = self.client(
-                client,
-                SUPPLY_VTABLE_RVA,
-                SUPPLY_TRANSFER,
-                country.id,
-                0,
-                (key, route),
-            )?;
-            row.owner_ordinal = Some(index);
-            table.push(output, row)?;
         }
         Ok(())
     }
@@ -1064,6 +1495,12 @@ impl<M: Memory> Walk<'_, M> {
         }
         endpoints.sort_unstable();
         endpoints.dedup();
+        let mut market_manager = None;
+        let mut market_sellers = None;
+        let mut market_buyers = None;
+        let mut ptr_bytes = [0_u8; CLIENT_BATCH * 8];
+        let mut entry_ptrs = [0_usize; CLIENT_BATCH];
+        let mut handle_bytes = [0_u8; CLIENT_BATCH * 4];
         for (country, category, owner_side) in endpoints {
             let resolved = self.countries.resolve(country)?;
             let list = if category == LEND_LEASE {
@@ -1075,11 +1512,18 @@ impl<M: Memory> Walk<'_, M> {
                     "received lend-lease order list unreadable",
                 )?
             } else {
-                let manager = pointer(
-                    self.memory,
-                    at(self.game_state, cgame_state::MARKET_MANAGER)?,
-                    "market order manager unreadable",
-                )?;
+                let manager = match market_manager {
+                    Some(manager) => manager,
+                    None => {
+                        let manager = pointer(
+                            self.memory,
+                            at(self.game_state, cgame_state::MARKET_MANAGER)?,
+                            "market order manager unreadable",
+                        )?;
+                        market_manager = Some(manager);
+                        manager
+                    }
+                };
                 let status = pointer(
                     self.memory,
                     at(resolved.pointer, ccountry::EQUIPMENT_MARKET_STATUS)?,
@@ -1094,19 +1538,35 @@ impl<M: Memory> Walk<'_, M> {
                 {
                     return Err("country market order manager mismatch");
                 }
-                let outer = array(
-                    self.memory,
-                    at(
-                        manager,
-                        if owner_side {
-                            MARKET_SELLERS
-                        } else {
-                            MARKET_BUYERS
-                        },
-                    )?,
-                    MARKET_COUNTRY_STRIDE,
-                    "market directional order table unreadable",
-                )?;
+                let outer = if owner_side {
+                    match market_sellers {
+                        Some(outer) => outer,
+                        None => {
+                            let outer = array(
+                                self.memory,
+                                at(manager, MARKET_SELLERS)?,
+                                MARKET_COUNTRY_STRIDE,
+                                "market directional order table unreadable",
+                            )?;
+                            market_sellers = Some(outer);
+                            outer
+                        }
+                    }
+                } else {
+                    match market_buyers {
+                        Some(outer) => outer,
+                        None => {
+                            let outer = array(
+                                self.memory,
+                                at(manager, MARKET_BUYERS)?,
+                                MARKET_COUNTRY_STRIDE,
+                                "market directional order table unreadable",
+                            )?;
+                            market_buyers = Some(outer);
+                            outer
+                        }
+                    }
+                };
                 let header = outer
                     .element(resolved.canonical_slot, MARKET_COUNTRY_STRIDE)
                     .ok_or("market country order list missing")?;
@@ -1117,25 +1577,19 @@ impl<M: Memory> Walk<'_, M> {
                     "market country order list unreadable",
                 )?
             };
-            for ordinal in 0..list.count {
-                let entry = element(
-                    self.memory,
-                    list,
-                    ordinal,
-                    8,
-                    "convoy order entry unreadable",
-                )?;
-                if entry == 0 {
-                    return Err("null convoy order entry");
-                }
-                let address = if category == MARKET {
-                    at(entry, CONTRACT_CLIENT)?
-                } else {
-                    entry
-                };
-                let handle = client_handle(self.memory, address)?;
+            let handle_layout = if category == MARKET {
+                &CONTRACT_HANDLE_LAYOUT
+            } else {
+                &CLIENT_HANDLE_LAYOUT
+            };
+            let max_offset = if category == MARKET {
+                CONTRACT_CLIENT + CLIENT_HANDLE_ID + 4
+            } else {
+                CLIENT_HANDLE_ID + 4
+            };
+            let mut apply_ordinal = |ordinal: u32, address: usize, handle: u32| -> Result<(), &'static str> {
                 let Ok(at) = handles.binary_search_by_key(&handle, |&(handle, _)| handle) else {
-                    continue;
+                    return Ok(());
                 };
                 let row = &mut clients[handles[at].1];
                 if row.category != category
@@ -1151,6 +1605,80 @@ impl<M: Memory> Walk<'_, M> {
                 };
                 if position.replace(ordinal).is_some() {
                     return Err("duplicate convoy directional order membership");
+                }
+                Ok(())
+            };
+            let mut first = 0_u32;
+            while first < list.count {
+                let count = ((list.count - first) as usize).min(CLIENT_BATCH);
+                let batch_ok = (|| {
+                    let start = list.element(first, 8)?;
+                    if self.memory.copy_records(
+                        RecordSources::Strided {
+                            base: start,
+                            stride: 8,
+                            count,
+                        },
+                        &ORIGIN_PTR_LAYOUT,
+                        &mut ptr_bytes[..count * 8],
+                    ) != count
+                    {
+                        return None;
+                    }
+                    for i in 0..count {
+                        let entry = usize::try_from(u64::from_le_bytes(
+                            ptr_bytes[i * 8..(i + 1) * 8].try_into().unwrap(),
+                        ))
+                        .ok()?;
+                        if entry == 0 || entry.checked_add(max_offset).is_none() {
+                            return None;
+                        }
+                        entry_ptrs[i] = entry;
+                    }
+                    if self.memory.copy_records(
+                        RecordSources::Pointers(&entry_ptrs[..count]),
+                        handle_layout,
+                        &mut handle_bytes[..count * 4],
+                    ) != count
+                    {
+                        return None;
+                    }
+                    Some(())
+                })()
+                .is_some();
+                if batch_ok {
+                    for i in 0..count {
+                        let address = if category == MARKET {
+                            entry_ptrs[i] + CONTRACT_CLIENT
+                        } else {
+                            entry_ptrs[i]
+                        };
+                        let handle =
+                            u32::from_le_bytes(handle_bytes[i * 4..(i + 1) * 4].try_into().unwrap());
+                        apply_ordinal(first + i as u32, address, handle)?;
+                    }
+                    first += count as u32;
+                } else {
+                    for ordinal in first..list.count {
+                        let entry = element(
+                            self.memory,
+                            list,
+                            ordinal,
+                            8,
+                            "convoy order entry unreadable",
+                        )?;
+                        if entry == 0 {
+                            return Err("null convoy order entry");
+                        }
+                        let address = if category == MARKET {
+                            at(entry, CONTRACT_CLIENT)?
+                        } else {
+                            entry
+                        };
+                        let handle = client_handle(self.memory, address)?;
+                        apply_ordinal(ordinal, address, handle)?;
+                    }
+                    break;
                 }
             }
         }
@@ -1184,30 +1712,158 @@ impl<M: Memory> Walk<'_, M> {
             8,
             "market contracts unreadable",
         )?;
-        for index in 0..contracts.count {
-            let contract = element(memory, contracts, index, 8, "market contract unreadable")?;
-            if contract == 0 {
-                return Err("null market contract in the owned list");
+        let expected_vtable = vtable(self.base, CONTRACT_CLIENT_VTABLE_RVA)? as u64;
+        let expected_route = vtable(self.base, ROUTE_VTABLE_RVA)? as u64;
+        let mut ptr_bytes = [0_u8; CLIENT_BATCH * 8];
+        let mut ptrs = [0_usize; CLIENT_BATCH];
+        let mut records = [0_u8; CLIENT_BATCH * CONTRACT_RECORD_STRIDE];
+        let mut route_ptrs = [0_usize; CLIENT_BATCH];
+        let mut route_vtables = [0_u8; CLIENT_BATCH * 8];
+        let mut first = 0_u32;
+        while first < contracts.count {
+            let count = ((contracts.count - first) as usize).min(CLIENT_BATCH);
+            let batch_ok = (|| {
+                let start = contracts.element(first, 8)?;
+                if memory.copy_records(
+                    RecordSources::Strided {
+                        base: start,
+                        stride: 8,
+                        count,
+                    },
+                    &ORIGIN_PTR_LAYOUT,
+                    &mut ptr_bytes[..count * 8],
+                ) != count
+                {
+                    return None;
+                }
+                for i in 0..count {
+                    let contract = usize::try_from(u64::from_le_bytes(
+                        ptr_bytes[i * 8..(i + 1) * 8].try_into().unwrap(),
+                    ))
+                    .ok()?;
+                    if contract == 0
+                        || contract
+                            .checked_add(CONTRACT_CLIENT + CONTRACT_CLIENT_ROUTE + 8)
+                            .is_none()
+                    {
+                        return None;
+                    }
+                    ptrs[i] = contract;
+                }
+                if memory.copy_records(
+                    RecordSources::Pointers(&ptrs[..count]),
+                    &CONTRACT_RECORD_LAYOUT,
+                    &mut records[..count * CONTRACT_RECORD_STRIDE],
+                ) != count * CONTRACT_RECORD_FIELDS.len()
+                {
+                    return None;
+                }
+                for i in 0..count {
+                    let rec =
+                        &records[i * CONTRACT_RECORD_STRIDE..(i + 1) * CONTRACT_RECORD_STRIDE];
+                    if u64::from_le_bytes(rec[8..16].try_into().unwrap()) != expected_vtable {
+                        return None;
+                    }
+                    let route =
+                        usize::try_from(u64::from_le_bytes(rec[48..56].try_into().unwrap()))
+                            .ok()?;
+                    if route == 0 {
+                        return None;
+                    }
+                    route_ptrs[i] = route;
+                }
+                if memory.copy_records(
+                    RecordSources::Pointers(&route_ptrs[..count]),
+                    &ORIGIN_PTR_LAYOUT,
+                    &mut route_vtables[..count * 8],
+                ) != count
+                {
+                    return None;
+                }
+                for i in 0..count {
+                    if u64::from_le_bytes(route_vtables[i * 8..(i + 1) * 8].try_into().unwrap())
+                        != expected_route
+                    {
+                        return None;
+                    }
+                }
+                Some(())
+            })()
+            .is_some();
+            if batch_ok {
+                for i in 0..count {
+                    let rec =
+                        &records[i * CONTRACT_RECORD_STRIDE..(i + 1) * CONTRACT_RECORD_STRIDE];
+                    let seller = self.id(u32::from_le_bytes(rec[0..4].try_into().unwrap()))?;
+                    let buyer = self.id(u32::from_le_bytes(rec[4..8].try_into().unwrap()))?;
+                    let client = ptrs[i] + CONTRACT_CLIENT;
+                    let handle = u32::from_le_bytes(rec[16..20].try_into().unwrap());
+                    let status = ClientStatus::new(
+                        [
+                            i64::from_le_bytes(rec[28..36].try_into().unwrap()),
+                            i64::from_le_bytes(rec[36..44].try_into().unwrap()),
+                        ],
+                        [
+                            i32::from_le_bytes(rec[20..24].try_into().unwrap()),
+                            i32::from_le_bytes(rec[24..28].try_into().unwrap()),
+                        ],
+                        i32::from_le_bytes(rec[44..48].try_into().unwrap()),
+                        self.threshold,
+                    );
+                    let key = RouteKey {
+                        class: DELIVERY_ROUTE_CLASS,
+                        country: seller,
+                        other: buyer,
+                    };
+                    table.push(
+                        output,
+                        ClientRow {
+                            owner_ordinal: None,
+                            other_ordinal: None,
+                            address: client,
+                            handle,
+                            category: MARKET,
+                            owner: seller,
+                            other: buyer,
+                            route: key,
+                            bad: status.bad,
+                            convoys: status.convoys,
+                            efficiency: status.efficiency,
+                            convoys_base: status.convoys_base,
+                            route_address: route_ptrs[i],
+                        },
+                    )?;
+                }
+                first += count as u32;
+            } else {
+                for index in first..contracts.count {
+                    let contract =
+                        element(memory, contracts, index, 8, "market contract unreadable")?;
+                    if contract == 0 {
+                        return Err("null market contract in the owned list");
+                    }
+                    let [seller, buyer] = pair_u32(memory, at(contract, CONTRACT_SELLER)?)
+                        .ok_or("market contract parties unreadable")?;
+                    let (seller, buyer) = (self.id(seller)?, self.id(buyer)?);
+                    let client = at(contract, CONTRACT_CLIENT)?;
+                    let route = self.held_route(client, CONTRACT_CLIENT_ROUTE)?;
+                    let key = RouteKey {
+                        class: DELIVERY_ROUTE_CLASS,
+                        country: seller,
+                        other: buyer,
+                    };
+                    let row = self.client(
+                        client,
+                        CONTRACT_CLIENT_VTABLE_RVA,
+                        MARKET,
+                        seller,
+                        buyer,
+                        (key, route),
+                    )?;
+                    table.push(output, row)?;
+                }
+                break;
             }
-            let [seller, buyer] = pair_u32(memory, at(contract, CONTRACT_SELLER)?)
-                .ok_or("market contract parties unreadable")?;
-            let (seller, buyer) = (self.id(seller)?, self.id(buyer)?);
-            let client = at(contract, CONTRACT_CLIENT)?;
-            let route = self.held_route(client, CONTRACT_CLIENT_ROUTE)?;
-            let key = RouteKey {
-                class: DELIVERY_ROUTE_CLASS,
-                country: seller,
-                other: buyer,
-            };
-            let row = self.client(
-                client,
-                CONTRACT_CLIENT_VTABLE_RVA,
-                MARKET,
-                seller,
-                buyer,
-                (key, route),
-            )?;
-            table.push(output, row)?;
         }
         Ok(())
     }
@@ -1535,7 +2191,8 @@ pub fn walk_regional(
     let mut unread = 0;
     let result = (|| -> Result<(), &'static str> {
         scratch.clear();
-        let mut path = Vec::new();
+        let mut route_paths = Vec::new();
+        let mut cached_routes: Vec<(usize, Option<(usize, usize)>)> = Vec::new();
         let bad = origins
             .iter()
             .filter(|origin| origin.bad)
@@ -1547,18 +2204,37 @@ pub fn walk_regional(
                     .map(|client| (client.route_address, [client.owner, client.other])),
             );
         for (route, countries) in bad {
-            path.clear();
-            let row = read_route(memory, base, RouteKey::default(), route, None, &mut path)?;
-            if row.kind != NAVAL {
+            let range = match cached_routes.binary_search_by_key(&route, |&(addr, _)| addr) {
+                Ok(index) => cached_routes[index].1,
+                Err(insert_at) => {
+                    let start = route_paths.len();
+                    let row =
+                        read_route(memory, base, RouteKey::default(), route, None, &mut route_paths)?;
+                    let range = if row.kind == NAVAL {
+                        Some((start, route_paths.len()))
+                    } else {
+                        route_paths.truncate(start);
+                        None
+                    };
+                    allocation::reserve(&mut cached_routes, 1)
+                        .map_err(|_| "regional route cache allocation failed")?;
+                    cached_routes.insert(insert_at, (route, range));
+                    range
+                }
+            };
+            let Some((start, end)) = range else {
                 continue;
-            }
+            };
             for country in countries.into_iter().filter(|&country| country != 0) {
-                for &region in &path {
-                    allocation::reserve(scratch, 1)
-                        .map_err(|_| "regional pair allocation failed")?;
+                allocation::reserve(scratch, end - start)
+                    .map_err(|_| "regional pair allocation failed")?;
+                for &region in &route_paths[start..end] {
                     scratch.push((country, region));
                 }
             }
+        }
+        if scratch.is_empty() {
+            return Ok(());
         }
         scratch.sort_unstable();
         scratch.dedup();

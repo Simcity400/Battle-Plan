@@ -530,6 +530,26 @@ fn presence_follows_the_native_probe_and_counts_the_ring_window() {
             .presence(&memory, absent),
         Ok(None)
     );
+    let map = PresenceMap::read(&memory, NAVY).unwrap();
+    let mut batched = [None; 3];
+    assert_eq!(
+        map.presences_batch(&memory, &[first, second, absent], &mut batched),
+        Ok(())
+    );
+    assert_eq!(
+        batched,
+        [
+            Some(Presence {
+                positive: 1,
+                total: 2,
+            }),
+            Some(Presence {
+                positive: 2,
+                total: 3,
+            }),
+            None,
+        ]
+    );
     let mut long = presence_map(&[(slot, first, 1, RING, 1_000, 0, 999)]);
     for index in 0..999 {
         put_u32(&mut long, RING + index * 4, 1_i32 as u32);

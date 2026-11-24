@@ -1773,48 +1773,82 @@ impl Captured {
                 hold[at].seen = true;
                 let held = &hold[at];
                 let mut first = 0;
-                for &(region, count) in &held.regions {
-                    let entries = &held.entries[first..first + count];
-                    first += count;
-                    engine_native_memory::walk::Buffer::Growing(&mut self.ledgers.rows).ensure(
-                        len.checked_add(1)
-                            .ok_or("naval mission ledger row demand overflow")?,
-                    )?;
-                    engine_native_memory::walk::Buffer::Growing(&mut self.entries.first).ensure(
-                        self.entries
-                            .len
-                            .checked_add(count)
-                            .ok_or("naval mission ledger demand overflow")?,
-                    )?;
-
-                    self.entries.required = self.entries.required.saturating_add(count);
-                    if len == self.ledgers.rows.len()
-                        || count > self.entries.first.len().saturating_sub(self.entries.len)
-                    {
-                        unread = unread.saturating_add(1);
-                        continue;
-                    }
-                    self.entries.first[self.entries.len..self.entries.len + count]
-                        .copy_from_slice(entries);
-                    let map = match presence {
-                        Some(map) => map,
-                        None => {
-                            let read = inputs::PresenceMap::read(memory, pointer)?;
-                            presence = Some(read);
-                            read
+                let mut chunk_start = 0;
+                while chunk_start < held.regions.len() {
+                    const BATCH: usize = 32;
+                    let chunk_len = (held.regions.len() - chunk_start).min(BATCH);
+                    let mut slots = [0_u32; BATCH];
+                    let mut presences = [None; BATCH];
+                    let mut need_presence = false;
+                    let mut temp_len = len;
+                    let mut temp_entries_len = self.entries.len;
+                    for i in 0..chunk_len {
+                        let (region, count) = held.regions[chunk_start + i];
+                        slots[i] = region;
+                        engine_native_memory::walk::Buffer::Growing(&mut self.ledgers.rows).ensure(
+                            temp_len
+                                .checked_add(1)
+                                .ok_or("naval mission ledger row demand overflow")?,
+                        )?;
+                        engine_native_memory::walk::Buffer::Growing(&mut self.entries.first)
+                            .ensure(
+                                temp_entries_len
+                                    .checked_add(count)
+                                    .ok_or("naval mission ledger demand overflow")?,
+                            )?;
+                        if temp_len < self.ledgers.rows.len()
+                            && count <= self.entries.first.len().saturating_sub(temp_entries_len)
+                        {
+                            need_presence = true;
+                            temp_entries_len += count;
+                            temp_len += 1;
                         }
-                    };
-                    let counted = map.presence(memory, region)?;
-                    self.ledgers.rows[len] = LedgerRow {
-                        owner: owner.id,
-                        region,
-                        first: self.entries.len,
-                        count,
-                        ring: counted.is_some(),
-                        counted: counted.unwrap_or_default(),
-                    };
-                    self.entries.len += count;
-                    len += 1;
+                    }
+                    if need_presence {
+                        let map = match presence {
+                            Some(map) => map,
+                            None => {
+                                let read = inputs::PresenceMap::read(memory, pointer)?;
+                                presence = Some(read);
+                                read
+                            }
+                        };
+                        if chunk_len == 1 {
+                            presences[0] = map.presence(memory, slots[0])?;
+                        } else {
+                            map.presences_batch(
+                                memory,
+                                &slots[..chunk_len],
+                                &mut presences[..chunk_len],
+                            )?;
+                        }
+                    }
+                    for i in 0..chunk_len {
+                        let (region, count) = held.regions[chunk_start + i];
+                        let entries = &held.entries[first..first + count];
+                        first += count;
+                        self.entries.required = self.entries.required.saturating_add(count);
+                        if len == self.ledgers.rows.len()
+                            || count > self.entries.first.len().saturating_sub(self.entries.len)
+                        {
+                            unread = unread.saturating_add(1);
+                            continue;
+                        }
+                        self.entries.first[self.entries.len..self.entries.len + count]
+                            .copy_from_slice(entries);
+                        let counted = presences[i];
+                        self.ledgers.rows[len] = LedgerRow {
+                            owner: owner.id,
+                            region,
+                            first: self.entries.len,
+                            count,
+                            ring: counted.is_some(),
+                            counted: counted.unwrap_or_default(),
+                        };
+                        self.entries.len += count;
+                        len += 1;
+                    }
+                    chunk_start += chunk_len;
                 }
                 continue;
             }
@@ -1957,6 +1991,7 @@ impl Captured {
         let mut receivers = 0;
         let mut leaders = std::mem::take(&mut self.leaders);
         let mut witness = std::mem::take(&mut self.witness);
+        let mut headquarters_cache: Vec<(u64, Option<(usize, [usize; 4])>)> = Vec::new();
         for index in 0..self.named.len {
             let country = self.named.first[index];
             witness.clear();
@@ -1966,7 +2001,7 @@ impl Captured {
                     base,
                     game_state,
                     country,
-                    (&resolve, &mut leaders),
+                    (&resolve, &mut leaders, &mut headquarters_cache),
                     (&mut witness, &mut receivers),
                 )
                 .map(|()| fingerprints.witnesses.observe(country.id, &witness));
@@ -1987,7 +2022,11 @@ impl Captured {
         base: usize,
         game_state: usize,
         country: engine_native_memory::country_identity::Country,
-        (resolve, leaders): (inputs::Resolve<'_>, &mut Leaders),
+        (resolve, leaders, headquarters_cache): (
+            inputs::Resolve<'_>,
+            &mut Leaders,
+            &mut Vec<(u64, Option<(usize, [usize; 4])>)>,
+        ),
         (witness, receivers): (&mut Vec<u64>, &mut usize),
     ) -> Option<()> {
         let mut push = |words: &[u64]| {
@@ -2049,7 +2088,20 @@ impl Captured {
                 if character == 0 {
                     continue;
                 }
-                match inputs::headquarters_sources(memory, base, character, resolve).ok()? {
+                let resolved = match headquarters_cache
+                    .binary_search_by_key(&character, |&(id, _)| id)
+                {
+                    Ok(at) => headquarters_cache[at].1,
+                    Err(insert_at) => {
+                        let value = inputs::headquarters_sources(memory, base, character, resolve)
+                            .ok()?;
+                        if engine_allocation::advisory(|| reserve(headquarters_cache, 1)).is_ok() {
+                            headquarters_cache.insert(insert_at, (character, value));
+                        }
+                        value
+                    }
+                };
+                match resolved {
                     Some((leader, sources)) => {
                         push(&[1, leader as u64])?;
                         let mut count = 0_u64;

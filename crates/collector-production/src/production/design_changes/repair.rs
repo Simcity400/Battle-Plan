@@ -289,30 +289,35 @@ pub(super) fn snapshot(
     }
     result
 }
-pub(super) fn complete(
-    watch: &Watch,
-    snapshot: &rows::VariantSnapshot,
-) -> Result<(), &'static str> {
+pub(super) fn flags(snapshot: &rows::VariantSnapshot) -> Result<[u8; 3], &'static str> {
     let state = snapshot
         .definition
         .design
         .require("VariantChanges.design")
         .map_err(|_| "variant repair lacks design state")?;
+    Ok([
+        state.can_upgrade_type,
+        state.can_upgrade_variant,
+        state.can_upgrade_modules,
+    ])
+}
+pub(super) fn complete_all(updates: &[(usize, u64, [u8; 3])]) -> Result<(), &'static str> {
+    if updates.is_empty() {
+        return Ok(());
+    }
     let mut store = STORE
         .get()
         .unwrap()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let current = store
-        .watched
-        .get_mut(&watch.pointer)
-        .filter(|current| current.id == watch.id)
-        .ok_or("variant repair binding changed during acquisition")?;
-    current.flags = [
-        state.can_upgrade_type,
-        state.can_upgrade_variant,
-        state.can_upgrade_modules,
-    ];
+    for &(pointer, id, flags) in updates {
+        let current = store
+            .watched
+            .get_mut(&pointer)
+            .filter(|current| current.id == id)
+            .ok_or("variant repair binding changed during acquisition")?;
+        current.flags = flags;
+    }
     Ok(())
 }
 /// # Safety
