@@ -74,6 +74,7 @@ import type {
 import {
   ReadTarget,
   showBundle,
+  shownView,
   unitEntries,
   type PinnedAsk,
   type ShownBundle,
@@ -131,7 +132,7 @@ function buildFilterTimeline(
 }
 
 const NO_ENTRIES: readonly SourceEntry[] = [];
-const NO_VIEW: TargetView = { kind: 'none', failure: null, bundle: null, held: false };
+const NO_VIEW: TargetView = { inputs: '', kind: 'none', failure: null, bundle: null, held: false };
 const NO_PIN: PinnedAsk = {
   timeMode: 'pin',
   branch: { firstHour: 0, lastHour: 0 },
@@ -141,8 +142,10 @@ const NO_PIN: PinnedAsk = {
 };
 
 export interface StaticBundle {
+  readonly stamp: object;
   readonly hour: number;
   readonly span: readonly [number, number] | null;
+  readonly proof: readonly [number, number] | null;
   readonly follows?: boolean;
   readonly panels: Readonly<Record<string, unknown>>;
   readonly shifts?: Readonly<Record<string, number>>;
@@ -1067,15 +1070,17 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     () => (branch ? { timeMode: widget.time.mode, branch, window, pinHour, gate: frozenGate, countriesKnown: countriesState.known } : null),
     [branch, widget.time.mode, window, pinHour, frozenGate, countriesState.known],
   );
+  const inputs = useMemo(() => JSON.stringify([owner, following ? null : displayHour, sig, content]), [owner, following, displayHour, sig, content]);
   useLayoutEffect(() => {
-    const common = { entries: branch ? entries : NO_ENTRIES, active, content, trackOffset };
+    const common = { inputs, entries: branch ? entries : NO_ENTRIES, active, content, trackOffset };
     if (following && playback) readTarget().configure({ ...common, following: true, subscribed, playback });
     else if (!following && pinned) readTarget().configure({ ...common, following: false, displayHour, pinned });
     else readTarget().configure({ ...common, entries: NO_ENTRIES, following: false, displayHour, pinned: NO_PIN });
-  }, [readTarget, branch, entries, active, content, trackOffset, following, subscribed, playback, pinned, displayHour]);
+  }, [readTarget, inputs, branch, entries, active, content, trackOffset, following, subscribed, playback, pinned, displayHour]);
   const subscribeView = useCallback((changed: () => void) => readTarget().subscribe(() => inFrame(changed)), [readTarget]);
   const readView = useCallback(() => targetRef.current?.view() ?? NO_VIEW, []);
-  const view = useSyncExternalStore(subscribeView, readView, readView);
+  const targetView = useSyncExternalStore(subscribeView, readView, readView);
+  const view = shownView(targetView, inputs, !!branch && entries.length > 0);
   const retryUnits = useCallback(() => { targetRef.current?.retry(); }, []);
   const staticProof = useMemo<StaticProof>(() => ({
     read: () => targetRef.current?.proof() ?? null,
@@ -1111,11 +1116,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   );
 
   const viewBundle = view.bundle;
+  const viewPanels = viewBundle?.panels;
+  const panelRecord = useMemo(() => (viewPanels ? Object.fromEntries(viewPanels) : null), [viewPanels]);
   const viewedBundle = useMemo<StaticBundle | null>(
-    () => (viewBundle
-      ? { hour: viewBundle.hour, span: viewBundle.span, ...(viewBundle.follows ? { follows: true } : {}), panels: Object.fromEntries(viewBundle.panels), ...(viewBundle.shifts ? { shifts: viewBundle.shifts } : {}) }
+    () => (viewBundle && panelRecord
+      ? { stamp: viewBundle, hour: viewBundle.hour, span: viewBundle.span, proof: viewBundle.proof, ...(viewBundle.follows ? { follows: true } : {}), panels: panelRecord, ...(viewBundle.shifts ? { shifts: viewBundle.shifts } : {}) }
       : null),
-    [viewBundle],
+    [viewBundle, panelRecord],
   );
 
   const shownRef = useRef<ShownBundle<StaticBundle, FrozenView> | null>(null);

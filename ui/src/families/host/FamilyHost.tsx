@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ComponentType, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
 import type { WidgetRuntime } from '../../dashboard/definitions';
@@ -46,7 +46,7 @@ import {
   type ParsedFamilyHit,
 } from './adapter.ts';
 import { createPlanAuditVerifier, type FamilyAuditVerifier, type PlanAuditSnapshot } from './auditBinding.ts';
-import { boundDated, type BoundDated } from './dated.ts';
+import { boundDated, ownProof, StaticSupply } from './dated.ts';
 import { renderFamilyBodyState } from './FamilyBodyState.tsx';
 import {
   handleFamilyGridKeyDown,
@@ -511,12 +511,15 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const cur = latestRef.current;
     return boundDated(
       cur.staticSources,
-      cur.staticProof?.read()?.proof ?? null,
+      ownProof(cur.staticSources, cur.staticProof?.read() ?? null),
       Object.keys(sourceIdsRef.current).length > 0,
       cur.allowEmptyFollow || (!!cur.tiledSeries && Object.keys(cur.tiledSeries).length > 0),
       cur.bounds,
-    );
+    ) ?? null;
   }, [sourceIdsRef]);
+
+  const supply = useMemo(() => (pipeline && pipe !== null ? new StaticSupply(change => pipeline.supply(pipe, change)) : null), [pipeline, pipe]);
+  const supplyDated = useCallback(() => supply?.date(latestRef.current.staticSources, datedNow()), [supply, datedNow]);
 
   const bind = useCallback(() => {
     const mounted = surfaceRef.current;
@@ -593,14 +596,12 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     if (mounted.canvas.style.width !== widthPx) mounted.canvas.style.width = widthPx;
     if (mounted.canvas.style.height !== heightPx) mounted.canvas.style.height = heightPx;
     pipeline.present(pipe, curAdapter.family);
-    const dated = datedNow();
-    suppliedDatedRef.current = dated ?? null;
-    pipeline.bind(pipe, [mounted.surface], { surfaces: [{ width: w, height: h, dpr }], ...(dated ? { dated } : {}) }, {}, binding);
+    pipeline.bind(pipe, [mounted.surface], { surfaces: [{ width: w, height: h, dpr }] }, {}, binding);
     const bound = pipeline.view(pipe)?.binding;
     if (bound !== undefined) selectionsRef.current.bound(bound, cur.selectedKey);
-  }, [pipeline, pipe, audit.capture, sourceIdsRef, datedNow, reportWindow]);
+    supplyDated();
+  }, [pipeline, pipe, audit.capture, sourceIdsRef, supplyDated, reportWindow]);
 
-  const suppliedDatedRef = useRef<BoundDated | null>(null);
   const bindRef = useRef(bind);
   bindRef.current = bind;
   const clearHoverRef = useRef<() => void>(() => {});
@@ -1121,20 +1122,9 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     settings,
   ]);
 
-  const supplyDated = useCallback(() => {
-    if (!pipeline || pipe === null) return;
-    const dated = datedNow() ?? null;
-    const was = suppliedDatedRef.current;
-    if (was === dated || (was && dated && was.h === dated.h && was.c === dated.c)) return;
-    suppliedDatedRef.current = dated;
-    pipeline.supply(pipe, { dated });
-  }, [pipeline, pipe, datedNow]);
-
   useLayoutEffect(() => {
-    if (!pipeline || pipe === null) return;
-    pipeline.supply(pipe, { statics: staticSources ? { staticPanels: staticSources.panels, staticAnswers: staticSources.answers, ...(staticSources.shifts ? { staticShifts: staticSources.shifts } : {}) } : null });
-    supplyDated();
-  }, [pipeline, pipe, staticSources, supplyDated]);
+    supply?.statics(staticSources, datedNow());
+  }, [supply, staticSources, resolvedOwner, datedNow]);
 
   useLayoutEffect(() => {
     if (!pipeline || pipe === null) return;
