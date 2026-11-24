@@ -119,7 +119,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       case 'exact': lane.exact(m.sub, m.hour, m.data, m.refused); break;
       case 'stream': lane.stream(m.route, m.seek, m.target); break;
       case 'fail': lane.fail(m.route); break;
-      case 'pointer': lane.pointer(m.widget, m.surface, m.point); break;
+      case 'pointer': lane.pointer(m.widget, m.surface, m.point, m.installed); break;
       case 'frame': lane.frame(m); break;
     }
   };

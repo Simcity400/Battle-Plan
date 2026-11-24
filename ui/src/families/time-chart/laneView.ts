@@ -1,18 +1,16 @@
-import type { LiveValues } from '../../charts/live';
 import { canvasMeasureText, type Canvas2D, type MeasureText } from '../../charts/textWidth.ts';
-import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import type { LaneView, Painted, PaintInput } from '../../draw/lane.ts';
-import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
-import { createLaneArtProvider, laneArtDemand } from '../art/provider.ts';
+import { createLaneArtProvider } from '../art/provider.ts';
 import type { ArtResolution } from '../art/types.ts';
-import { BoundedSeriesCursor, createBoundedReadView, type WitnessedPoint } from '../boundedView.ts';
-import type { ArtDemand, ArtHandle, ArtProvider, BoundedSeries, EntityKind, IdentityDemand, IdentityProvider } from '../contract.ts';
+import { BoundedSeriesCursor, type WitnessedPoint } from '../boundedView.ts';
+import type { ArtHandle, ArtProvider, BoundedReadView, BoundedSeries, IdentityProvider } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
+import { projectScene, sceneReadView, type SceneIdentityDemand, type SceneSources } from '../scene.ts';
 import { knownValue } from '../value.ts';
 import {
   ensureTimeChartProjection,
@@ -26,21 +24,6 @@ import type { FamilyNavTuple } from '../host/keyboard.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import type { TimeChartModel } from './model.ts';
 import { collectVisibleChartArt, drawTimeChart } from './painter.ts';
-
-const liveAdapter = (map: LiveMap | null): LiveValues<number | bigint | string> | null => {
-  if (!map) return null;
-  return {
-    get: (key: string) => map.get(key),
-    raw: (key: string) => {
-      const value = map.get(key);
-      return typeof value === 'bigint' ? value : typeof value === 'number' && Number.isSafeInteger(value) ? BigInt(value) : undefined;
-    },
-    missing: (key: string) => {
-      const value = map.get(key);
-      return typeof value === 'string' ? value : 'Not recorded';
-    },
-  };
-};
 
 function hydrateTiledLine(raw: SerializedTiledLine): TiledLine {
   return {
@@ -142,100 +125,45 @@ function contentKey(binding: TimeChartBinding, revisions: Readonly<Record<string
   ]);
 }
 
-function buildReadView(
+function chartSeries(
   input: PaintInput,
+  sources: SceneSources,
   binding: TimeChartBinding,
   held: HeldTimeChart,
-  onIdentityDemand: IdentityDemand,
-  onArtDemand: ArtDemand,
-) {
-  const answers = new Map<string, FollowedAnswer | undefined>();
-  const panels = new Map<string, unknown>();
-  const live = new Map<string, LiveValues<number | bigint | string> | null>();
-  const refused = new Map<string, string>();
-  const revisions: Record<string, number> = {};
-
-  if (binding.staticAnswers) {
-    for (const [name, answer] of Object.entries(binding.staticAnswers)) answers.set(name, answer);
-  }
-  if (binding.staticPanels) {
-    for (const [name, data] of Object.entries(binding.staticPanels)) panels.set(name, data);
-  }
-
-  const subIndex = new Map<number, number>();
-  input.subs.forEach((sub, idx) => subIndex.set(sub.id, idx));
-
-  for (const [name, subId] of Object.entries(binding.sources)) {
-    const idx = subIndex.get(subId);
-    if (idx === undefined) continue;
-    const picture = input.pictures[idx];
-    if (!picture) continue;
-    const part = picture.parts[0];
-    if (!part) continue;
-    revisions[name] = part.version;
-    const val = part.value;
-    if (val.kind === 'answer') {
-      answers.set(name, val.answer);
-    } else if (val.kind === 'panel') {
-      if (val.refused !== null) refused.set(name, val.refused);
-      else {
-        panels.set(name, val.data);
-        live.set(name, liveAdapter(liveValues(picture)));
-      }
-    }
-  }
-
+): ReadonlyMap<string, ReadonlyMap<string, BoundedSeries>> | undefined {
+  if (!binding.tiledBySource) return undefined;
+  let answers: BoundedReadView | null = null;
   const seriesBySource = new Map<string, ReadonlyMap<string, BoundedSeries>>();
-  if (binding.tiledBySource) {
-    for (const [sourceName, tagToRev] of Object.entries(binding.tiledBySource)) {
-      const headCfg = binding.headSourceBySeries?.[sourceName];
-      const headAnswer = headCfg ? answers.get(headCfg.answerName) : answers.get(sourceName);
-      const boundedMap = new Map<string, BoundedSeries>();
-      for (const [tag, rev] of Object.entries(tagToRev)) {
-        const line = held.tiledByRev.get(rev);
-        if (!line) continue;
-        const cursorKey = `${sourceName}\u0000${tag}`;
-        let cursor = held.cursors.get(cursorKey);
-        if (!cursor) {
-          cursor = new BoundedSeriesCursor();
-          held.cursors.set(cursorKey, cursor);
-        }
-        let headPoint: WitnessedPoint | null = null;
-        let headValue = undefined;
-        if (headAnswer && headCfg) {
-          const tagIdx = rowIndexOf(headCfg.tags).get(tag) ?? -1;
-          if (tagIdx >= 0) {
-            const val = rowAmount(headAnswer, tagIdx, headCfg.decimals ?? line.decimals);
-            if (val !== undefined && val !== null && Number.isFinite(val)) {
-              headPoint = { hour: Math.floor(input.hour), value: val };
-              headValue = knownValue(val);
-            }
+  for (const [sourceName, tagToRev] of Object.entries(binding.tiledBySource)) {
+    const headCfg = binding.headSourceBySeries?.[sourceName];
+    const headAnswer = headCfg ? (answers ??= sceneReadView(input, sources, input.hour)).answer(headCfg.answerName) : undefined;
+    const boundedMap = new Map<string, BoundedSeries>();
+    for (const [tag, rev] of Object.entries(tagToRev)) {
+      const line = held.tiledByRev.get(rev);
+      if (!line) continue;
+      const cursorKey = `${sourceName}\u0000${tag}`;
+      let cursor = held.cursors.get(cursorKey);
+      if (!cursor) {
+        cursor = new BoundedSeriesCursor();
+        held.cursors.set(cursorKey, cursor);
+      }
+      let headPoint: WitnessedPoint | null = null;
+      let headValue = undefined;
+      if (headAnswer && headCfg) {
+        const tagIdx = rowIndexOf(headCfg.tags).get(tag) ?? -1;
+        if (tagIdx >= 0) {
+          const val = rowAmount(headAnswer, tagIdx, headCfg.decimals ?? line.decimals);
+          if (val !== undefined && val !== null && Number.isFinite(val)) {
+            headPoint = { hour: Math.floor(input.hour), value: val };
+            headValue = knownValue(val);
           }
         }
-        boundedMap.set(tag, cursor.advance(line, input.hour, { headPoint, headValue }));
       }
-      seriesBySource.set(sourceName, boundedMap);
+      boundedMap.set(tag, cursor.advance(line, input.hour, { headPoint, headValue }));
     }
+    seriesBySource.set(sourceName, boundedMap);
   }
-
-  const hovers = binding.hovers
-    ? new Map(Object.entries(binding.hovers))
-    : undefined;
-
-  return createBoundedReadView({
-    hour: input.hour,
-    revisions,
-    panels,
-    answers,
-    live,
-    refused,
-    series: seriesBySource,
-    hovers,
-    ...(held.identityProvider ? { identity: held.identityProvider } : {}),
-    onIdentityDemand,
-    art: held.artProvider,
-    onArtDemand,
-  });
+  return seriesBySource;
 }
 
 export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): readonly FamilyNavTuple[] {
@@ -345,8 +273,8 @@ export function timeChartLaneView(
         }
       }
 
-      const pendingIdentityDemands = new Map<string, readonly [EntityKind, string, number]>();
-      const pendingSpriteDemands = new Map<string, ArtHandle>();
+      let identityDemands: readonly SceneIdentityDemand[] = [];
+      let artAsks: readonly ArtHandle[] = [];
       const demandedArtUrls = new Set<string>();
 
       let model: TimeChartModel;
@@ -361,23 +289,30 @@ export function timeChartLaneView(
         if (proj === 'unknown') {
           return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown time-chart kind: ${binding.kind}` };
         }
-        const readView = buildReadView(
-          input,
-          binding,
-          held,
-          (kind, key, atHour) => {
-            pendingIdentityDemands.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]);
-          },
-          handle => laneArtDemand(handle, held!.identityIndex, binding.artResolutions, demandedArtUrls, pendingSpriteDemands),
-        );
-        model = proj.project(readView, binding.options);
-        contentSig = contentKey(binding, readView.revisions);
+        const sources: SceneSources = {
+          sources: binding.sources,
+          ...(binding.staticPanels ? { staticPanels: binding.staticPanels } : {}),
+          ...(binding.staticAnswers ? { staticAnswers: binding.staticAnswers } : {}),
+          ...(binding.hovers ? { hovers: new Map(Object.entries(binding.hovers)) } : {}),
+        };
+        const series = chartSeries(input, sources, binding, held);
+        const projected = projectScene(input, series ? { ...sources, series } : sources, input.hour, {
+          ...(held.identityProvider ? { identity: held.identityProvider } : {}),
+          art: held.artProvider,
+          index: held.identityIndex,
+          ...(binding.artResolutions ? { artResolutions: binding.artResolutions } : {}),
+        }, view => proj.project(view, binding.options));
+        model = projected.model;
+        identityDemands = projected.identityDemands;
+        artAsks = projected.artAsks;
+        for (const url of projected.artUrls) demandedArtUrls.add(url);
+        contentSig = contentKey(binding, projected.view.revisions);
       }
       if (binding.view?.x && model.view?.x !== binding.view.x) model = { ...model, view: { ...model.view, x: binding.view.x } };
 
       const fields: Record<string, { value: unknown; content: string }> = {};
-      if (pendingIdentityDemands.size > 0) {
-        const list = [...pendingIdentityDemands.values()];
+      if (identityDemands.length > 0) {
+        const list = identityDemands;
         const text = JSON.stringify(list);
         if (text !== held.lastIdentityDemandsText) {
           held.lastIdentityDemandsText = text;
@@ -385,8 +320,8 @@ export function timeChartLaneView(
         }
         fields.identityDemands = { value: list, content: `id:${held.lastIdentityDemandsContent}` };
       }
-      if (pendingSpriteDemands.size > 0) {
-        const list = [...pendingSpriteDemands.values()];
+      if (artAsks.length > 0) {
+        const list = artAsks;
         const text = JSON.stringify(list);
         if (text !== held.lastArtDemandsText) {
           held.lastArtDemandsText = text;

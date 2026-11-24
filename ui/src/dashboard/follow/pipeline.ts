@@ -292,13 +292,13 @@ export class Pipeline {
       const told = this.hits.get(message.widget)?.shift();
       const pageWidget = this.page.widgets.get(message.widget);
       const staleOwner = message.owner !== undefined && pageWidget?.owner !== undefined && message.owner !== pageWidget.owner;
-      const staleInstall = message.installedId !== undefined && pageWidget?.installed !== undefined && pageWidget.installed !== null && message.installedId !== pageWidget.installed.id;
+      const staleInstall = message.installedId !== undefined && told?.installed !== undefined && message.installedId !== told.installed;
       const acceptedKey = staleOwner || staleInstall ? null : message.key;
       if (!staleOwner && !staleInstall) {
         this.page.inspect(message.widget, acceptedKey);
         this.flush();
       }
-      told?.(acceptedKey, {
+      told?.hit?.(acceptedKey, {
         ...(message.installedId !== undefined ? { installedId: message.installedId } : {}),
         ...(message.owner !== undefined ? { owner: message.owner } : {}),
       });
@@ -581,7 +581,7 @@ export class Pipeline {
 
   inspecting(id: number) { return this.page.widgets.get(id)?.inspect ?? null; }
 
-  private readonly hits = new Map<number, (((key: string | null, meta?: PointerHitMeta) => void) | undefined)[]>();
+  private readonly hits = new Map<number, { readonly hit?: (key: string | null, meta?: PointerHitMeta) => void; readonly installed?: number }[]>();
 
   pointer(id: number, surface: number, point: [number, number] | null, hit?: (key: string | null, meta?: PointerHitMeta) => void) {
     if (this.closed) return;
@@ -589,8 +589,9 @@ export class Pipeline {
     if (!widget) return;
     let waiting = this.hits.get(id);
     if (!waiting) this.hits.set(id, waiting = []);
-    waiting.push(hit);
-    this.host.lanes[widget.lane]!.postMessage({ type: 'pointer', widget: id, surface, point });
+    const installed = this.page.widgets.get(id)?.installed?.id;
+    waiting.push({ ...(hit ? { hit } : {}), ...(installed !== undefined ? { installed } : {}) });
+    this.host.lanes[widget.lane]!.postMessage({ type: 'pointer', widget: id, surface, point, ...(installed !== undefined ? { installed } : {}) });
   }
 
   exact(sub: number, hour: number, data: unknown, refused: string | null) {

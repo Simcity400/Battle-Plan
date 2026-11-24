@@ -54,6 +54,9 @@ pub struct MasteryTrack {
     pub name: Option<String>,
     pub sub: Option<MasteryChoice>,
     pub rewards: Vec<MasteryReward>,
+    #[doc = " Why the subdoctrine's rewards are not known, where they are not: the list is then empty and"]
+    #[doc = " only the recorded unlock count is known."]
+    pub rewards_unknown: Option<String>,
     pub unlocked: i32,
 }
 
@@ -186,13 +189,13 @@ impl<'c> Naming<'c> {
         MasteryChoice { id: spelled(token), name: self.name(kind, token), icon: self.icon(presentation, token) }
     }
 
-    fn rewards(&mut self, token: &[u8]) -> Vec<MasteryReward> {
+    fn rewards(&mut self, token: &[u8]) -> Result<Vec<MasteryReward>, String> {
         let context: &'c Context = self.context;
         let Some(source) = context.database.tactic_sources.sub.get(&Token::c_str(token)) else {
             self.refused.note("subdoctrine rewards are not in the content", spelled(token));
-            return Vec::new();
+            return Err("The subdoctrine's rewards are not in the content".into());
         };
-        source
+        Ok(source
             .rewards
             .iter()
             .map(|reward| {
@@ -209,7 +212,7 @@ impl<'c> Naming<'c> {
                 };
                 MasteryReward { id: spelled(&reward.token), name: self.localised(&key, "reward"), threshold: threshold.map(|value| value.to_string()) }
             })
-            .collect()
+            .collect())
     }
 }
 
@@ -255,15 +258,20 @@ fn folders(frame: &DecodedFrame, slot: u32, context: &Context, live: &Cells) -> 
                 None => None,
             };
             let sub = track.sub_doctrine.map(|id| naming.choice(1, id));
-            let rewards = match track.sub_doctrine.and_then(|id| naming.tokens.get(&id).copied()) {
-                Some(token) => naming.rewards(token),
-                None => Vec::new(),
+            let rewards = match track.sub_doctrine.map(|id| naming.tokens.get(&id).copied()) {
+                Some(Some(token)) => naming.rewards(token),
+                Some(None) => Err("The subdoctrine's id is not named in the recording".into()),
+                None => Ok(Vec::new()),
+            };
+            let (rewards, rewards_unknown) = match rewards {
+                Ok(rewards) => (rewards, None),
+                Err(reason) => (Vec::new(), Some(reason)),
             };
             let (row, key) = (format!("{}|{}", folder.ordinal, track.ordinal), u128::from(slot) << 64 | u128::from(track.folder) << 32 | u128::from(track.ordinal));
             for (cell, column) in TRACK_CELLS.iter().zip(columns) {
                 live.value(&row, cell.0, Cell { table: TableId::DoctrineTracks, column, key }, 1.0);
             }
-            shown.push(MasteryTrack { ordinal: track.ordinal, name, sub, rewards, unlocked: track.rewards });
+            shown.push(MasteryTrack { ordinal: track.ordinal, name, sub, rewards, rewards_unknown, unlocked: track.rewards });
         }
         out.push(MasteryFolder {
             ordinal: folder.ordinal,

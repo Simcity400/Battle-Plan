@@ -1,12 +1,13 @@
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { LaneView, Painted, PaintInput, Scene } from '../../draw/lane.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
-import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
+import { createLaneArtProvider } from '../art/provider.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
 import type { ArtProvider, FamilyTheme, IdentityProvider } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
+import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload } from '../scene.ts';
 import { nextLookChange } from '../looks.ts';
 import { hitHeatMatrix, layoutHeatMatrix, type HeatMatrixLayout } from './matrixLayout.ts';
 import {
@@ -19,7 +20,6 @@ import {
 } from './matrixModel.ts';
 import { collectVisibleMatrixArt, createMatrixPicture, drawHeatMatrix, type HeatMatrixPicture } from './matrixPainter.ts';
 import { ensureHeatMatrixProjection } from './matrixRegistry.ts';
-import { projectFromScene, readViewFromHeatScene, samePictures, snapshotPictures, stringifyTooltipPayload } from './sceneReadView.ts';
 
 export interface FamilyHeatMatrixBinding<TOptions = unknown> {
   readonly family: 'heat-matrix';
@@ -151,7 +151,7 @@ export function familyHeatMatrixLaneView(
       if (projection === 'unknown') return Infinity;
       let soonest = nextLookChange(bound.theme?.countryLooks, hour);
       if (projection.nextChange) {
-        const readView = readViewFromHeatScene(scene, bound, hour);
+        const readView = sceneReadView(scene, bound, hour);
         soonest = Math.min(soonest, projection.nextChange(readView, bound.options));
       }
       return soonest;
@@ -266,10 +266,10 @@ export function familyHeatMatrixLaneView(
       if (canReuseModel) {
         model = held.cachedModel!;
       } else {
-        const projected = projectFromScene(input, bound, input.hour, {
+        const projected = projectScene(input, bound, input.hour, {
           identity: held.identityProvider,
           art: held.artProvider,
-          artUrl: handle => artUrlForHandle(handle, held!.identityIndex),
+          index: held.identityIndex,
         }, view => projection.project(view, bound.options));
         model = projected.model;
         const readView = projected.view;

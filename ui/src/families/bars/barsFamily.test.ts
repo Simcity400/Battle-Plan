@@ -13,22 +13,19 @@ import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../value.ts';
 import {
   assertBarsModelValid,
-  buildShareRowsModel,
   countryRowPresentation,
   deriveBarsAudit,
   deriveBarsMirror,
   deriveBarsTooltip,
-  drawFamilyBars,
-  familyBarsLaneView,
   FutureBarsDataError,
-  hitFamilyBars,
   InvalidBarsModelError,
-  axisCeiling,
-  layoutFamilyBars,
-  registerBarsProjection,
   type BarsModel,
-  type FamilyBarsBinding,
-} from './index.ts';
+} from './model.ts';
+import { axisCeiling, layoutFamilyBars } from './layout.ts';
+import { drawFamilyBars, hitFamilyBars } from './painter.ts';
+import { registerBarsProjection } from './registry.ts';
+import { familyBarsLaneView, type FamilyBarsBinding } from './laneView.ts';
+import { buildShareRowsModel } from './shareRows.ts';
 
 const THEME: FamilyTheme = {
   surface: '#16181d',

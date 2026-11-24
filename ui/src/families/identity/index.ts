@@ -161,6 +161,10 @@ function findCoveringEntity(runs: readonly EntityRunEntry[] | undefined, hour: n
   return candidate && candidate.firstHour <= hour && hour <= candidate.lastHour ? candidate : null;
 }
 
+export type BranchRead = 'facts' | 'identities' | 'groups';
+
+export const BRANCH_READS: readonly BranchRead[] = ['facts', 'identities', 'groups'];
+
 export class IdentityIndex {
   readonly scope: IdentityScope;
   private branchBounds: HourInterval;
@@ -277,14 +281,41 @@ export class IdentityIndex {
     this.resolveChanges++;
   }
 
-  setFactsFailure(failure: Failure): void {
-    this.factsFailure = failure;
+  setReadFailure(read: BranchRead, failure: Failure | undefined): void {
+    switch (read) {
+      case 'facts':
+        this.factsFailure = failure;
+        break;
+      case 'identities':
+        this.identitiesFailure = failure;
+        break;
+      case 'groups':
+        this.groupsFailure = failure;
+        break;
+    }
     this.resolveChanges++;
   }
 
-  clearFactsFailure(): void {
-    this.factsFailure = undefined;
-    this.resolveChanges++;
+  readFailed(read: BranchRead): boolean {
+    switch (read) {
+      case 'facts':
+        return this.factsFailure !== undefined;
+      case 'identities':
+        return this.identitiesFailure !== undefined;
+      case 'groups':
+        return this.groupsFailure !== undefined;
+    }
+  }
+
+  hasRead(read: BranchRead): boolean {
+    switch (read) {
+      case 'facts':
+        return this.facts !== undefined;
+      case 'identities':
+        return this.identities !== undefined;
+      case 'groups':
+        return this.groups !== undefined;
+    }
   }
 
   hasFactsAt(hour: number): boolean {
@@ -328,15 +359,6 @@ export class IdentityIndex {
     this.resolveChanges++;
   }
 
-  setIdentitiesFailure(failure: Failure): void {
-    this.identitiesFailure = failure;
-    this.resolveChanges++;
-  }
-
-  hasIdentities(): boolean {
-    return this.identities !== undefined;
-  }
-
   setGroups(reply: CountryGroupReply): void {
     this.groups = reply;
     this.groupsFailure = undefined;
@@ -344,15 +366,6 @@ export class IdentityIndex {
     this.factionsUnobserved = sortedHourSpans(reply.unobserved.factions);
     this.factionIncomplete = new Map(reply.factions.map(faction => [faction.id, sortedHourSpans(faction.incomplete)]));
     this.resolveChanges++;
-  }
-
-  setGroupsFailure(failure: Failure): void {
-    this.groupsFailure = failure;
-    this.resolveChanges++;
-  }
-
-  hasGroups(): boolean {
-    return this.groups !== undefined;
   }
 
   ingestStylesReply(reply: CountryStyleReply): void {

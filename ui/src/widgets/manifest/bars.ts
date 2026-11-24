@@ -33,6 +33,28 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     })),
   },
   {
+    kind: 'casualties',
+    view: 'butterfly',
+    label: 'Butterfly',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../casualties/casualtiesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'casualties', view: 'butterfly',
+      projection: mod.casualtiesButterflyProjection, declaration: mod.casualtiesButterflyDeclaration,
+    })),
+  },
+  {
+    kind: 'casualties',
+    view: 'race',
+    label: 'Race',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../casualties/casualtiesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'casualties', view: 'race',
+      projection: mod.casualtiesRaceProjection, declaration: mod.casualtiesRaceDeclaration,
+    })),
+  },
+  {
     kind: 'casualties-between',
     view: 'opponents',
     label: 'By opponent',

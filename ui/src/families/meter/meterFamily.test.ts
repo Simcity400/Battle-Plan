@@ -14,6 +14,7 @@ import { deriveMeterAudit, deriveMeterMirror, deriveMeterNav, findMeterTooltip }
 import { hitMeterModel, layoutMeterModel } from './painter.ts';
 import type { DecryptionReply, DoctrineMasteryReply, ResearchSlotsReply } from '../../generated/dashboard';
 import type { ResearchData } from '../../widgets/research/types';
+import { matrixCellAt } from '../heat/matrixModel.ts';
 
 const THEME: FamilyTheme = {
   surface: '#14171d',
@@ -217,7 +218,7 @@ test('activeResearchProjection renders researching, idle, missing, stale caption
   assert.equal(model.sections?.length, 1);
   const sec = model.sections![0]!;
   assert.equal(sec.title, 'Researching');
-  assert.equal(sec.count, '1 of 3 slots');
+  assert.equal(sec.count, '1 of 3 slots · 1 not recorded', 'an unread slot is named, not counted as idle');
   assert.ok(sec.rightCaption?.startsWith('As of '), 'shows single As of caption when reading >= 24h old');
   assert.equal(sec.rows?.length, 3);
   assert.equal(sec.rows![0]!.name, 'Basic Machine Tools');
@@ -258,6 +259,7 @@ test('doctrineMasteryProjection builds threshold meters, missing mastery, empty 
             name: 'Armour',
             sub: { id: 'armored_spearhead', name: 'Armored Spearhead', icon: null },
             unlocked: 2,
+            rewardsUnknown: null,
             rewards: [
               { id: 'r1', name: 'Breakthrough', threshold: '5000000' },
               { id: 'r2', name: 'Blitz', threshold: '5000000' },
@@ -269,6 +271,7 @@ test('doctrineMasteryProjection builds threshold meters, missing mastery, empty 
             name: 'Infantry',
             sub: null,
             unlocked: 0,
+            rewardsUnknown: null,
             rewards: [],
           },
         ],
@@ -286,6 +289,7 @@ test('doctrineMasteryProjection builds threshold meters, missing mastery, empty 
             name: 'Drop Pods',
             sub: { id: 'drop_assault', name: 'Drop Assault', icon: null },
             unlocked: 0,
+            rewardsUnknown: null,
             rewards: [{ id: 'o1', name: 'Shock Drop', threshold: '10000000' }],
           },
         ],
@@ -298,6 +302,22 @@ test('doctrineMasteryProjection builds threshold meters, missing mastery, empty 
         grand: null,
         completed: [],
         tracks: [],
+      },
+      {
+        ordinal: 3,
+        id: 'mod_missing_rewards',
+        name: 'Unread Rewards',
+        icon: null,
+        grand: { id: 'mod_grand', name: 'Mod Grand', icon: null },
+        completed: [],
+        tracks: [{
+          ordinal: 0,
+          name: 'Mod Track',
+          sub: { id: 'mod_sub', name: 'Mod Sub', icon: null },
+          unlocked: 2,
+          rewardsUnknown: "The subdoctrine's rewards are not in the content",
+          rewards: [],
+        }],
       },
     ],
   };
@@ -318,8 +338,12 @@ test('doctrineMasteryProjection builds threshold meters, missing mastery, empty 
 
   const model = doctrineMasteryProjection.project(view, { folders: [], countryName: 'Germany' });
   assert.equal(model.layout, 'columns');
-  assert.equal(model.summaryText, '2 tracks active');
-  assert.equal(model.sections?.length, 3);
+  assert.equal(model.summaryText, '3 tracks active');
+  assert.equal(model.sections?.length, 4);
+  const unread = model.sections![3]!.rows![0]!;
+  assert.equal(unread.subtitle, '2 steps unlocked', 'the recorded unlock count, never 2 of 0');
+  assert.equal(unread.clickable, true);
+  assert.equal(unread.tooltip?.items?.find(item => item.label === 'Steps in all')?.missingReason, "The subdoctrine's rewards are not in the content");
   assert.equal(model.sections![0]!.title, 'Land \u00b7 Mobile Warfare');
   assert.deepEqual(model.sections![2]!.rows!.map(row => [row.name, row.bar.kind]), [['No doctrine chosen', 'none']]);
   const armour = model.sections![0]!.rows![0]!;
@@ -355,6 +379,7 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
     missing: null,
     attemptsUnknown: null,
     warnings: [],
+    counts: { broken: 1, decrypting: 1, paused: 0, breakUnknown: 1 },
     pairs: [
       {
         owner: { id: 1, tag: 'ENG' },
@@ -364,8 +389,11 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
         bonusActive: 0,
         decrypting: 1,
         broken: true,
+        status: 'broken',
         started: { hour: 61310000, upperBound: false },
-        brokenAt: { hour: 61319000, upperBound: false },
+        brokenAt: { hour: 61319000, upperBound: true },
+        weekChangeTenths: 0,
+        weekChangeUnknown: null,
       },
       {
         owner: { id: 2, tag: 'GER' },
@@ -375,8 +403,11 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
         bonusActive: 0,
         decrypting: 1,
         broken: false,
+        status: 'decrypting',
         started: { hour: 61318000, upperBound: false },
         brokenAt: null,
+        weekChangeTenths: 24,
+        weekChangeUnknown: null,
       },
       {
         owner: { id: 1, tag: 'ENG' },
@@ -386,8 +417,11 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
         bonusActive: 0,
         decrypting: 1,
         broken: null,
+        status: 'breakUnknown',
         started: null,
         brokenAt: null,
+        weekChangeTenths: null,
+        weekChangeUnknown: 'Progress is not known: Target strength not recorded',
       },
     ],
   };
@@ -420,31 +454,36 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
   const allFilter = { passing: null, unrecorded: [], bounds: [] };
   const ciphers = decryptionProjection.project(view, { filter: allFilter, filterAll: true, side: 'decryptor' });
   assert.equal(ciphers.layout, 'ciphers');
-  assert.equal(ciphers.summaryText, '1 broken \u00b7 2 decrypting');
-  assert.equal(ciphers.sections?.length, 2);
-  assert.equal(ciphers.sections![0]!.title, 'Decrypting');
-  assert.equal(ciphers.sections![0]!.rows?.length, 2);
+  assert.equal(ciphers.summaryText, '1 broken \u00b7 1 decrypting \u00b7 1 not known', 'a break not known is counted apart, not as decrypting or broken');
+  assert.deepEqual(ciphers.sections?.map(section => [section.title, section.count]), [['Decrypting', '1'], ['Not known if broken', '1'], ['Cipher broken', '1']]);
   assert.equal(ciphers.sections![0]!.rows![0]!.figure, '62%');
-  assert.equal(ciphers.sections![0]!.rows![1]!.figureMissing, true);
-  assert.equal(ciphers.sections![1]!.title, 'Cipher broken');
-  assert.equal(ciphers.sections![1]!.chipLines?.length, 1);
-  assert.equal(ciphers.sections![1]!.chipLines![0]!.ownerName, 'United Kingdom');
-  assert.equal(ciphers.sections![1]!.chipLines![0]!.chips[0]!.targetName, 'German Reich');
-  assert.ok(!ciphers.sections![1]!.chipLines![0]!.chips[0]!.dateText?.includes(':'), 'broken date omits hour');
+  assert.equal(ciphers.sections![1]!.rows![0]!.figureMissing, true);
+  const weekItem = (section: number) => ciphers.sections![section]!.rows![0]!.tooltip?.items?.find(item => item.label === 'Last 7 days');
+  assert.equal(weekItem(0)?.value, '+2.4 points');
+  assert.equal(weekItem(1)?.missingReason, 'Progress is not known: Target strength not recorded');
+  assert.equal(ciphers.sections![2]!.chipLines?.length, 1);
+  assert.equal(ciphers.sections![2]!.chipLines![0]!.ownerName, 'United Kingdom');
+  assert.equal(ciphers.sections![2]!.chipLines![0]!.chips[0]!.targetName, 'German Reich');
+  assert.ok(!ciphers.sections![2]!.chipLines![0]!.chips[0]!.dateText?.includes(':'), 'broken date omits hour');
+  const chip = ciphers.sections![2]!.chipLines![0]!.chips[0]!;
+  assert.ok(chip.dateText?.startsWith('By '), 'a break first witnessed after a gap keeps its upper bound on the chip');
+  assert.match(chip.spoken, / By /);
+  assert.match(chip.audit, /\|broken\|By /);
 
   const matrix = whoReadsWhomProjection.project(view, { filter: allFilter, filterAll: true, side: 'decryptor' });
   assert.equal(matrix.corner, 'Reads');
-  assert.equal(matrix.summaryText, '1 broken · 2 decrypting');
+  assert.equal(matrix.summaryText, '1 broken \u00b7 1 decrypting \u00b7 1 not known');
   assert.deepEqual(matrix.rows.map(r => [r.label, r.trailing]), [
-    ['United Kingdom', 'Broken 1 · Decrypting 1'],
+    ['United Kingdom', 'Broken 1 \u00b7 Decrypting 0 \u00b7 Not known 1'],
     ['German Reich', 'Broken 0 · Decrypting 1'],
   ]);
   assert.deepEqual(matrix.columns.map(c => c.label), ['German Reich', 'Soviet Union']);
-  const engGer = matrix.cell(0, 0);
+  const engGer = matrixCellAt(matrix, 0, 0);
   assert.equal(engGer.kind === 'value' && engGer.mark, 'square');
-  assert.equal(matrix.cell(0, 1).kind, 'missing');
-  assert.equal(matrix.cell(1, 0).kind, 'diagonal');
-  const gerSov = matrix.cell(1, 1);
+  assert.ok(engGer.kind === 'value' && engGer.audit?.includes('|broken|By '), 'the matrix audit keeps the upper bound');
+  assert.equal(matrixCellAt(matrix, 0, 1).kind, 'missing');
+  assert.equal(matrixCellAt(matrix, 1, 0).kind, 'diagonal');
+  const gerSov = matrixCellAt(matrix, 1, 1);
   assert.ok(gerSov.kind === 'value' && gerSov.mark === 'ring' && gerSov.fraction === 0.62);
 
   const ctx = makeFakeCtx();
@@ -455,7 +494,9 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
   assert.ok(findMeterTooltip(ciphers, firstHit.key) !== null);
   assert.equal(deriveMeterNav(ciphers).length, 3);
   assert.equal(deriveMeterMirror(ciphers).total, 3);
-  assert.equal(deriveMeterAudit(ciphers).length, 3);
+  const audit = deriveMeterAudit(ciphers);
+  assert.equal(audit.length, 7, 'the summary, each section header and each item');
+  assert.equal(audit.find(row => row.key === 'section:decrypting')?.value, 'Decrypting|1|');
 });
 
 test('bounded readView throws FutureDataError on future who() lookups', () => {

@@ -188,14 +188,6 @@ export function airTooltip(region: { name: string }, view: AirView, viewpoint: b
   return { ...content, ...countryNameDetails(...named) };
 }
 
-export function airSummaryTooltip(full: TooltipContent, view: AirView): TooltipContent {
-  const labels = new Set(view.parts.map(part => part.label));
-  return { ...full, rows: full.rows.filter(row => row.label === 'Air wings assigned to the region' || labels.has(String(row.label)) || row.swatch != null
-    || row.label === 'Excluded sides' || row.label === 'Unknown sides')
-      .map(row => row.swatch ? { ...row, value: String(row.value).split(' · ')[0] } : row)
-      .concat(view.state === 'known' ? [] : [{ label: 'State', value: airState(view) }]) };
-}
-
 const text = (item: unknown): item is string => typeof item === 'string';
 const optionalText = (item: unknown) => item === null || text(item);
 const natural = (item: unknown): item is number => int(item) && item >= 0;
@@ -238,6 +230,3 @@ export function validateAirChoices(value: unknown): AirChoicesReply {
     || !value.countries.every(text) || !Array.isArray(value.warnings) || !value.warnings.every(text)) throw new Error('Invalid air-superiority-choices reply');
   return value as AirChoicesReply;
 }
-
-export const momentRows = (reply: AirSuperiorityReply) => JSON.stringify([reply.regions.map(region => [region.id, region.name, region.nameMissing]),
-  reply.sides, reply.viewpoint, reply.fallback.kind, reply.missing, reply.warnings, reply.scale, reply.badBelow, reply.goodAbove]);

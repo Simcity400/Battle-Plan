@@ -60,7 +60,7 @@ const asOf = (reply: DivisionEquipmentReply) => reply.poolHour === null ? undefi
 const [TYPE, HELD, NEEDED, MISSING, TYPE_FILL, DIVISIONS_SHORT] = TYPE_COLUMNS;
 
 const TYPE_SPEC: readonly DeclarativeColumnSpec<EquipmentType, Record<string, never>>[] = [
-  { ...TYPE!, priority: 0, text: true, hideable: false, widest: ['Infantry Equipment'],
+  { ...TYPE!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Infantry Equipment'],
     value: row => row.archetype === null ? knownValue('Unclassified equipment') : textValue(row.name, row.nameMissing ?? 'Equipment name unavailable') },
   { ...HELD!, priority: 3, numeric: true, format: 'integer', widest: ['999,999'], value: row => amount(row.heldRaw, 'Holdings not recorded') },
   { ...NEEDED!, priority: 2, numeric: true, format: 'integer', widest: ['999,999'], value: row => amount(row.neededRaw, 'Need not recorded') },
@@ -116,7 +116,7 @@ const [KIND, TEMPLATE, DIVISIONS, MANPOWER, STRENGTH, FILL, TYPES_SHORT] = TEMPL
 const TEMPLATE_SPEC: readonly DeclarativeColumnSpec<TemplateRow, Record<string, never>>[] = [
   { ...KIND!, priority: 6, sortable: false, cellKind: 'kind', iconSlot: true, icon: row => row.icon, iconPending: row => row.pending,
     extra: () => ({ artShape: 'counter' }), value: row => textValue(row.template.name, row.template.nameMissing ?? 'Template name unavailable') },
-  { ...TEMPLATE!, priority: 0, text: true, hideable: false, widest: ['Infantry Division 1941'],
+  { ...TEMPLATE!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Infantry Division 1941'],
     value: row => textValue(row.template.name, row.template.nameMissing ?? 'Template name unavailable') },
   { ...DIVISIONS!, priority: 1, numeric: true, format: 'integer', widest: ['999'], value: row => count(row.template.divisions, 'Divisions not recorded') },
   { ...MANPOWER!, priority: 3, numeric: true, format: PERCENT, widest: ['100%'],
@@ -169,7 +169,7 @@ export const divisionEquipmentProjection = registerTableProjection(registerTable
 
 function sources(ctx: FamilyPlanContext): SourcePlan {
   const params = ctx.countryTag
-    ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), countFor: ctx.options.countFor === 'host' ? 'host' : 'owner', template: null, division: null }
+    ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), countFor: ctx.options.countFor === 'host' ? 'host' : 'owner' }
     : null;
   return {
     owner: `division-equipment:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${ctx.countryTag ?? ''}:${params?.countFor ?? ''}`,
@@ -204,7 +204,7 @@ export const divisionEquipmentDeclaration: TableWidgetDeclaration<DivisionEquipm
   label: 'Division equipment',
   subject: 'division equipment',
   emptyCampaign: 'Load a campaign to see division equipment.',
-  icon: 'helmet',
+  icon: 'cube',
   optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its division equipment.' },
   sources: ctx => sources(ctx),

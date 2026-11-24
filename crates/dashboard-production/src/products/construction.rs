@@ -1,5 +1,6 @@
 
 pub mod log;
+pub mod breakdown;
 pub mod spending;
 #[cfg(test)]
 mod tests;

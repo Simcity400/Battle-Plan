@@ -26,7 +26,7 @@ const icText = (raw: string | null, reason: string): Value<string> => raw === nu
 const [NAME, PROGRESS, STRENGTH, DOCKYARDS] = COLUMNS;
 
 const REFIT_COLUMNS: readonly DeclarativeColumnSpec<RefitRow, Record<string, never>>[] = [
-  { ...NAME!, priority: 0, text: true, hideable: false, widest: ['Early Cruiser C Klasse refit line'],
+  { ...NAME!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Early Cruiser C Klasse refit line'],
     value: row => row.kind === 'line' ? lineName(row.line) : knownValue(shipLabel(row.ship).name) },
   { ...PROGRESS!, priority: 1, numeric: true, format: PERCENT, widest: ['100.0%'], value: () => notApplicable(ON_LINE) },
   { ...STRENGTH!, priority: 2, numeric: true, format: PERCENT, widest: ['100.0%'], value: () => notApplicable(ON_SHIP) },
@@ -92,7 +92,7 @@ export const refitsDeclaration: TableWidgetDeclaration<Record<string, never>> = 
   label: 'Refits',
   subject: 'refits',
   emptyCampaign: 'Load a campaign to see refits.',
-  icon: 'anchor',
+  icon: 'cube',
   optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its refits.' },
   sources: ctx => {

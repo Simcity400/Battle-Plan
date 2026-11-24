@@ -36,7 +36,7 @@ export const TEMPLATE_TABLE_OPTION = tableField(TEMPLATE_COLUMNS, TEMPLATE_BASE,
 
 export const OPTIONS: readonly OptionField[] = [REACHED_COUNTRY_OPTION, VIEW_OPTION, COUNT_FOR_OPTION, TYPE_TABLE_OPTION, TEMPLATE_TABLE_OPTION];
 export const definition = {
-  kind: 'division-equipment', version: 1, title: 'Division equipment', icon: 'helmet', category: 'Army',
+  kind: 'division-equipment', version: 1, title: 'Division equipment', icon: 'cube', category: 'Army',
   description: 'What a country’s divisions hold, need and are missing, by equipment type or by template.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: 1 }, minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 11 }, options: OPTIONS, viewSwitch: { option: 'view' },
