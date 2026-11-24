@@ -88,6 +88,9 @@ function resolveRowMetrics(model: BarsModel, bodyHeight: number): { dataRowHeigh
   if (model.form === 'stacked') {
     return { dataRowHeight: model.rowHeight ?? 28, barHeight: model.barHeight ?? 20 };
   }
+  if (model.form === 'two-sided' && model.twoSidedLayout === 'stacked-pair') {
+    return { dataRowHeight: model.rowHeight ?? 26, barHeight: model.barHeight ?? 7 };
+  }
   const dataRowHeight = model.rowHeight ?? (
     dataCount > 0 && dataCount <= 10 && bodyHeight >= dataCount * 30
       ? 30
@@ -124,7 +127,7 @@ export function layoutFamilyBars(
   const h = Math.max(1, Math.floor(height));
   const form = model.form;
   const twoSidedLayout: BarsTwoSidedLayout = model.twoSidedLayout ?? 'paired';
-  const hasHeader = Boolean(model.caption || model.leftHeader || model.rightHeader);
+  const hasHeader = Boolean(model.caption || model.leftHeader || model.rightHeader || (twoSidedLayout === 'stacked-pair' && model.legend?.length));
   const headerTop = BARS_PAD_TOP;
   const headerHeight = hasHeader ? BARS_HEADER_HEIGHT : 0;
   const hasLegend = form === 'stacked' && Boolean(model.legend?.length);
@@ -231,6 +234,15 @@ export function layoutFamilyBars(
     rightNameWidth = sideNameW;
     rightNameX = w - BARS_PAD_X - mediaWidth - mediaGap - rightNameWidth;
     rightPlotRight = Math.max(rightPlotLeft + 24, rightNameX - 8);
+  } else if (form === 'two-sided' && twoSidedLayout === 'stacked-pair') {
+    const narrow = w < 440;
+    nameWidth = narrow ? 88 : Math.min(168, Math.max(100, Math.round(w * 0.2)));
+    showReadout = model.rows.some(r => r.kind === 'data' && Boolean(r.readout));
+    readoutWidth = showReadout ? (narrow ? 104 : 128) : 0;
+    readoutX = w - BARS_PAD_X - readoutWidth;
+    plotLeft = nameX + nameWidth + 10;
+    plotRight = Math.max(plotLeft + 40, readoutX - (showReadout ? 12 : 0));
+    centerX = Math.round((plotLeft + plotRight) / 2);
   } else if (form === 'two-sided') {
     const narrow = w < 440;
     nameWidth = narrow ? 88 : Math.min(168, Math.max(100, Math.round(w * 0.24)));

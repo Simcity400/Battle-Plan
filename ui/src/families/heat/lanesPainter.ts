@@ -22,7 +22,7 @@ import {
 } from '../../draw/kit.ts';
 import { mix } from '../../shell/appearance/color.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
-import { artUrlForHandle } from '../art/provider.ts';
+import { collectArtUrls } from '../art/provider.ts';
 import type { ArtProvider, FamilyTheme } from '../contract.ts';
 import type { IdentityIndex } from '../identity/index.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
@@ -55,14 +55,12 @@ export function collectVisibleLaneArt(
   layout: HeatLanesLayout,
   identityIndex?: IdentityIndex | null,
 ): readonly string[] {
-  const urls = new Set<string>();
+  const handles = [];
   for (let i = layout.firstRow; i < layout.endRow; i++) {
     const row = model.rows[i];
-    if (!row?.flag) continue;
-    const url = artUrlForHandle(row.flag, identityIndex);
-    if (url) urls.add(url);
+    if (row?.flag) handles.push(row.flag);
   }
-  return [...urls];
+  return collectArtUrls(handles, identityIndex);
 }
 
 function drawRowFlag(

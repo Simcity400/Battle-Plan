@@ -296,6 +296,26 @@ fn subject_content(source: &Source, options: &dashboard_base::products::ContentO
     Ok(loaded)
 }
 
+pub(crate) fn content_levels(source: &Source, context: &LoadContext, warnings: &mut Vec<String>) -> Vec<SubjectLevel> {
+    let Some(options) = context.content.as_ref() else {
+        warnings.push("Autonomy levels are in no known order until the game folders are chosen.".into());
+        return Vec::new();
+    };
+    match subject_content(source, options) {
+        Ok(content) => {
+            warnings.extend(content.warnings.iter().cloned());
+            let named: BTreeSet<&str> = content.states.states.iter().map(|state| state.id.as_str()).collect();
+            let out = levels(&named, Some(&content.states), Some(&content.catalogue));
+            warnings.extend(content.catalogue.refusal_lines());
+            out
+        }
+        Err(error) => {
+            warnings.push(format!("Autonomy levels are in no known order: {error}"));
+            Vec::new()
+        }
+    }
+}
+
 pub(crate) fn named_levels(source: &Source, context: &LoadContext, named: &BTreeSet<&str>, warnings: &mut Vec<String>) -> Vec<SubjectLevel> {
     let content = match context.content.as_ref() {
         Some(options) => match subject_content(source, options) {

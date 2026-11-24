@@ -63,7 +63,7 @@ test('an unfolded 5000-country legend mounts only its viewport and formats no fu
     assert.equal(tooltips, 0, 'full tooltips are built only on hover/focus');
     const mounted = (html.match(/class="sunburst-name"/g) ?? []).length;
     assert.ok(mounted > 0 && mounted < 100, String(mounted));
-    assert.equal((html.match(/class="country-flag-art sunburst-icon"/g) ?? []).length, mounted);
+    assert.equal((html.match(/class="country-flag[^"]* sunburst-icon"/g) ?? []).length, mounted);
     assert.match(html, /aria-setsize="5000"/);
     assert.match(html, /COUNTRY-0: 1 units/, 'the complete spoken inventory is retained');
   } finally { await vite.close(); }

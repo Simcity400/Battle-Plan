@@ -1,6 +1,7 @@
 import type { TiledLine } from '../../dashboard/tiles/view';
 import type { FamilyGestureContext, FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
-import type { SerializedTiledLine, TimeChartBinding } from './declaration.ts';
+import type { SerializedTiledLine } from '../sceneTiles.ts';
+import type { TimeChartBinding } from './declaration.ts';
 import { parseChartInspect } from './hitTest.ts';
 import type { TimeChartModel } from './model.ts';
 
@@ -201,7 +202,8 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
       extent: ctx.extent,
       width: ctx.viewport.width,
       height: ctx.viewport.height,
-      theme: ctx.theme,
+      scrollTop: ctx.viewport.scrollTop,
+      ...(ctx.theme ? { theme: ctx.theme } : {}),
       ...(ctx.artResolutions ? { artResolutions: ctx.artResolutions } : {}),
       ...(ctx.viewport.zoomWindow ? { zoom: { x: ctx.viewport.zoomWindow } } : {}),
       ...(tiledLines.length ? { tiledLines } : {}),

@@ -3,11 +3,11 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { OptionValue } from '../../dashboard/options';
 import type { AuxProductSpec, BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../contract.ts';
 import type { HolderRun, HourRanges } from '../holders.ts';
+import { formatScalar } from '../valueFormat.ts';
 import { registerTimeChart, type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
 import { formatChartAxisValue } from './layout.ts';
 import type { ChartGap, ChartValueFormat, TimeChartSeriesModel } from './model.ts';
 import {
-  answerRowOf,
   assignCountrySeriesColours,
   branchGapsOf,
   countrySeriesIdentity,
@@ -20,6 +20,7 @@ import {
   seriesHeadAt,
   withinMapOf,
 } from './seriesHelpers.ts';
+import { answerRowOf } from '../sceneTiles.ts';
 
 export interface CountryLinesMeasure {
   readonly kind: string;
@@ -54,9 +55,8 @@ const COLOURED = 8;
 
 export function formatCountryValue(value: number, format: CountryLinesSpec['format']): string {
   if (format === 'compact') return formatChartAxisValue(value, 'compact');
-  if (format === 'percent') return `${(Math.round(value * 10) / 10).toLocaleString('en-US', { minimumFractionDigits: 1 })}%`;
-  const sign = value < 0 ? '−' : '';
-  return `${sign}${Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+  if (format === 'percent') return formatScalar(value, { decimals: 0, maxDecimals: 1, fixedDecimals: true, percent: true });
+  return formatScalar(value, { decimals: 0, maxDecimals: 2 });
 }
 
 export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAux>): {

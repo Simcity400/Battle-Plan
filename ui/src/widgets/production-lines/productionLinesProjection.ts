@@ -3,7 +3,8 @@ import { formatAmount } from '../../charts/valueAxis.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artState, urlArtHandle } from '../../families/table/identityCell.ts';
+import { urlArtHandle } from '../../families/art/provider.ts';
+import { artState } from '../../families/table/identityCell.ts';
 import {
   type TableCell,
   type TableModel,
