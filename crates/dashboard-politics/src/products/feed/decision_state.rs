@@ -1,0 +1,195 @@
+use super::{EventFeedKind, EventFeedRow, row::FeedEvent};
+use dashboard_query::Query;
+use replay_data::{
+    event_feed_rows::{
+        EventFeedCoverage, EventFeedHistoryRow, EventFeedScriptChange,
+        decisions::{Operation, TARGETED, TARGETED_TIMED, TIMED},
+    },
+    rows::{TableId, tables},
+};
+use replay_lanes::at::{Keys, Read, Seeker};
+use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, io};
+#[cfg(any(test, feature = "export-types"))]
+use ts_rs::TS;
+
+pub const MISSION_FAILURE_NOT_RECORDED: &str = "mission failure state was not recorded";
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum DecisionLifecycleState {
+    Active,
+    Available,
+    Completed,
+    Failed { observed_hour: i32 },
+    Aborted,
+    ReEnableCooldown,
+    Unsupported { raw: i32 },
+    NotRecorded { reason: String },
+}
+
+pub(crate) fn not_recorded() -> DecisionLifecycleState {
+    DecisionLifecycleState::NotRecorded {
+        reason: MISSION_FAILURE_NOT_RECORDED.to_owned(),
+    }
+}
+
+pub(crate) fn applies(event: &FeedEvent) -> bool {
+    let Some(kind) = EventFeedKind::of_code(event.code) else {
+        return false;
+    };
+    if !super::text::names_decision(kind) {
+        return false;
+    }
+    event.lifecycle.is_some()
+        || matches!(kind, EventFeedKind::DecisionTimedOut | EventFeedKind::DecisionCompleted)
+}
+
+pub(crate) fn decode(container: u8, lifecycle: i32, observed_hour: i32) -> DecisionLifecycleState {
+    match container {
+        TIMED => match lifecycle {
+            0 => DecisionLifecycleState::Active,
+            1 => DecisionLifecycleState::Completed,
+            2 => DecisionLifecycleState::Failed { observed_hour },
+            3 => DecisionLifecycleState::Aborted,
+            4 => DecisionLifecycleState::ReEnableCooldown,
+            raw => DecisionLifecycleState::Unsupported { raw },
+        },
+        TARGETED | TARGETED_TIMED => match lifecycle {
+            0 => DecisionLifecycleState::Available,
+            1 => DecisionLifecycleState::Completed,
+            2 => DecisionLifecycleState::ReEnableCooldown,
+            3 => DecisionLifecycleState::Failed { observed_hour },
+            4 => DecisionLifecycleState::Aborted,
+            raw => DecisionLifecycleState::Unsupported { raw },
+        },
+        _ => not_recorded(),
+    }
+}
+
+pub(crate) fn resolve_in_pack(event: &FeedEvent, pack: &EventFeedHistoryRow) -> DecisionLifecycleState {
+    let Some(actor_id) = event.actor.id else {
+        return not_recorded();
+    };
+    if pack.generation != event.generation
+        || pack.read_hour != event.read_hour
+        || pack.coverage != EventFeedCoverage::Complete
+        || pack.script_refusals != 0
+    {
+        return not_recorded();
+    }
+    let owner_refused = pack.events.iter().any(|ev| {
+        ev.generation == event.generation
+            && ev.actor.id == actor_id
+            && matches!(
+                ev.script.and_then(|script| script.change),
+                Some(EventFeedScriptChange::Decision(change))
+                    if matches!(change.operation, Operation::Refused | Operation::Invalidate)
+            )
+    });
+    if owner_refused {
+        return not_recorded();
+    }
+    let mut matched = pack
+        .events
+        .iter()
+        .filter(|ev| ev.generation == event.generation && ev.sequence == event.sequence);
+    let (Some(ev), None) = (matched.next(), matched.next()) else {
+        return not_recorded();
+    };
+    if ev.source as u8 != event.code || ev.actor.id != actor_id {
+        return not_recorded();
+    }
+    let Some(script) = ev.script else {
+        return not_recorded();
+    };
+    let Some(EventFeedScriptChange::Decision(change)) = script.change else {
+        return not_recorded();
+    };
+    if !matches!(change.operation, Operation::Store | Operation::Update | Operation::PassCut) {
+        return not_recorded();
+    }
+    let Some(instance) = script.instance else {
+        return not_recorded();
+    };
+    if event.instance.is_some_and(|recorded| recorded != instance) {
+        return not_recorded();
+    }
+    let Some(lifecycle) = script.lifecycle else {
+        return not_recorded();
+    };
+    if event.lifecycle != Some(lifecycle) {
+        return not_recorded();
+    }
+    decode(change.container, lifecycle, event.read_hour)
+}
+
+pub(crate) fn resolve_all(query: &Query<'_>, events: &[&FeedEvent]) -> io::Result<Vec<Option<DecisionLifecycleState>>> {
+    let mut out: Vec<Option<DecisionLifecycleState>> = vec![None; events.len()];
+    let mut wanted: BTreeMap<(u32, i32), Vec<usize>> = BTreeMap::new();
+    let recording = query.replay.recording();
+    let unavailable = recording.predates(TableId::EventFeedHistory.index()).is_some()
+        || recording.withheld_reason(TableId::EventFeedHistory.index()).is_some();
+    for (index, event) in events.iter().enumerate() {
+        if !applies(event) {
+            continue;
+        }
+        if unavailable {
+            out[index] = Some(not_recorded());
+            continue;
+        }
+        let Some(stretch) = query.timeline.at(event.read_hour) else {
+            out[index] = Some(not_recorded());
+            continue;
+        };
+        wanted.entry((stretch.run, event.read_hour)).or_default().push(index);
+    }
+    if wanted.is_empty() {
+        return Ok(out);
+    }
+    let mut seeker = Seeker::new(recording)?;
+    let read = [Read {
+        table: TableId::EventFeedHistory,
+        columns: None,
+        keys: Keys::These(&[0]),
+    }];
+    for ((run, read_hour), indices) in wanted {
+        let frame = dashboard_query::cost::storage(|| seeker.frame(run, read_hour, &read))?;
+        let sampled = frame.tables[TableId::EventFeedHistory.index()].sampled_at() == Some(read_hour);
+        let pack = sampled
+            .then(|| frame.complete::<tables::EventFeedHistory>().ok().and_then(|rows| rows.first()))
+            .flatten();
+        for index in indices {
+            out[index] = Some(match pack {
+                Some(pack) => resolve_in_pack(events[index], pack),
+                None => not_recorded(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+pub(crate) fn enforce_same_incarnation(events: &[&FeedEvent], rows: &mut [Option<EventFeedRow>]) {
+    let mut seen: Option<u32> = None;
+    let mut same_incarnation = true;
+    for event in events {
+        if let Some(instance) = event.instance {
+            match seen {
+                None => seen = Some(instance),
+                Some(first) if first != instance => {
+                    same_incarnation = false;
+                    break;
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    if !same_incarnation {
+        for row in rows.iter_mut().flatten() {
+            if row.decision_state.is_some() {
+                row.decision_state = Some(not_recorded());
+            }
+        }
+    }
+}
