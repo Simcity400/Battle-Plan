@@ -99,7 +99,7 @@ export const airMissionsDeclaration: TableWidgetDeclaration<Record<string, never
     };
   },
   projection: airMissionsProjection,
-  columns: SETTINGS_COLUMNS,
+  columns: SETTINGS_COLUMNS.map((column, at) => ({ ...column, priority: column.key === 'region' ? 0 : column.key === 'wings' ? 1 : at + 1 })),
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },
   projectionOptions: () => NO_OPTIONS,
   jumpToDate: true,
