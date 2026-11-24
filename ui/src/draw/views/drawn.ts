@@ -1,8 +1,8 @@
-import '../../families/table/registerAll.ts';
-import '../../families/meter/registerAll.ts';
-import '../../families/time-chart/registerAll.ts';
+import '../../widgets/familyManifest.ts';
 import { familyMeterLaneView } from '../../families/meter/laneView.ts';
 import { familyBarsLaneView } from '../../families/bars/laneView.ts';
+import { familyHeatLanesLaneView } from '../../families/heat/lanesLaneView.ts';
+import { familyHeatMatrixLaneView } from '../../families/heat/matrixLaneView.ts';
 import type { LaneView, Painted, PaintInput, Scene } from '../lane.ts';
 import { panelViews, readingStructure } from '../panels/views.ts';
 import { ArsenalPicture, arsenalNext, type ArsenalModel } from '../arsenal.ts';
@@ -93,6 +93,8 @@ export function drawnViews(kind: string, wake: (widget: number) => void): LaneVi
   if (kind === 'table') return tableView(readingStructure, wake);
   if (kind === 'meters') return familyMeterLaneView(wake);
   if (kind === 'bars') return familyBarsLaneView(wake);
+  if (kind === 'heat-matrix') return familyHeatMatrixLaneView(wake);
+  if (kind === 'heat-lanes') return familyHeatLanesLaneView(wake);
   if (kind === 'race') return race(wake);
   if (kind === 'time-chart') return timeChartLaneView(wake);
   return undefined;

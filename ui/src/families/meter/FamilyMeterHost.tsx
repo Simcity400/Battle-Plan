@@ -651,13 +651,11 @@ export default function FamilyMeterHost<TOptions>({
 
   const onRetryLocal = useCallback(() => retryLocal(() => bindRef.current()), [retryLocal]);
 
-  if (blockedState) return <>{blockedState}</>;
-
-  const summaryNode = headerSlot && meta.mode === 'picture' && !meta.empty && meta.summary
+  const summaryNode = !blockedState && headerSlot && meta.mode === 'picture' && !meta.empty && meta.summary
     ? createPortal(<span>{meta.summary}</span>, headerSlot)
     : null;
 
-  const bodyStateNode = renderFamilyBodyState({
+  const bodyStateNode = blockedState ?? renderFamilyBodyState({
     mode: meta.mode,
     reason: meta.reason,
     failureOrigin: meta.failureOrigin,

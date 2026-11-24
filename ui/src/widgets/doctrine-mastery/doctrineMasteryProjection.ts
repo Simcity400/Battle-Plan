@@ -62,6 +62,7 @@ function readTrackNumbers(
 }
 
 export const doctrineMasteryProjection: MeterProjection<DoctrineMasteryProjectionOptions> = registerMeterProjection({
+  family: 'meters',
   kind: 'doctrine-mastery',
   project(readView, options): MeterModel {
     const refused = readView.refused('main');

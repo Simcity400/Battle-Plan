@@ -148,6 +148,7 @@ function pairTooltipItems(
 }
 
 export const decryptionProjection: MeterProjection<DecryptionProjectionOptions> = registerMeterProjection({
+  family: 'meters',
   kind: 'decryption',
   nextChange(readView, options): number {
     return filterNext(options.filter, readView.hour);

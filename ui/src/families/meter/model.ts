@@ -130,6 +130,7 @@ export interface MeterModel {
 }
 
 export interface MeterProjection<TOptions = unknown> {
+  readonly family: 'meters';
   readonly kind: string;
   project(readView: BoundedReadView, options: TOptions): MeterModel;
   nextChange?(readView: BoundedReadView, options: TOptions): number;

@@ -23,13 +23,14 @@ import {
   type MeterModel,
 } from './model.ts';
 import { drawMeterModel, hitMeterModel, layoutMeterModel, type MeterLayout } from './painter.ts';
-import { meterProjection } from './registry.ts';
+import { ensureMeterProjection, meterProjection } from './registry.ts';
 
 export type MeterArtResolutions = Readonly<Record<string, ArtResolution>>;
 
 export interface FamilyMeterBinding<TOptions = unknown> {
   readonly family: 'meters';
   readonly kind: string;
+  readonly view?: string;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
@@ -266,7 +267,7 @@ export function familyMeterLaneView(
     next(scene: Scene, hour: number, state?: Map<string, unknown>): number {
       const bound = scene.model;
       if (!isFamilyMeterBinding(bound)) return Infinity;
-      const projection = meterProjection(bound.kind);
+      const projection = meterProjection(bound.kind, bound.view);
       if (!projection) return Infinity;
       const held = state?.get('familyMeter') as HeldFamilyMeter | undefined;
       let soonest = Math.min(
@@ -297,8 +298,9 @@ export function familyMeterLaneView(
       const bound = input.model;
       const surface = input.binding.surfaces[0];
       if (!isFamilyMeterBinding(bound) || !surface) return { surfaces: [], fields: {}, motion: false };
-      const projection = meterProjection(bound.kind);
-      if (!projection) {
+      const projection = ensureMeterProjection(bound.kind, bound.view, () => wake(input.widget));
+      if (projection === 'loading') return { surfaces: [], fields: {}, motion: false };
+      if (projection === 'unknown') {
         return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown meter declaration: ${bound.kind}` };
       }
 

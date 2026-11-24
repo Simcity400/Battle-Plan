@@ -63,6 +63,7 @@ function techNameOf(
 }
 
 export const activeResearchProjection: MeterProjection<ActiveResearchProjectionOptions> = registerMeterProjection({
+  family: 'meters',
   kind: 'active-research',
   nextChange(readView): number {
     const raw = readView.panel<unknown>('main');

@@ -5,11 +5,11 @@ import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
 import { loadTransientProduct } from './products';
 import { asFailure } from './queryError.ts';
-import { SpriteCaches, spriteFrames, spriteIcons, spriteId } from './spriteArtwork';
+import { SpriteCaches, spriteFrames, spriteId, spriteResolutions } from './spriteArtwork';
 import type { SpriteFrame } from './spriteArtwork';
 import { PerClient } from './prepare.ts';
 import { productRequest } from './request.ts';
-import { CURRENT_INSTALL_PROVENANCE, NO_ART, PENDING_ART, failedArt, missingArt, readyArt, type ArtResolution } from '../families/art/types.ts';
+import { NO_ART, PENDING_ART, failedArt, type ArtResolution } from '../families/art/types.ts';
 
 interface SpriteState {
   readonly caches: SpriteCaches;
@@ -47,6 +47,7 @@ export function useSpriteArtResolutions(
   const scope = track ? JSON.stringify([track.source.id, track.source.revision, revision]) : '';
   const state = stateOf(runtime.client);
   const icons = state.caches.icons(scope);
+  const resolutions = state.caches.resolutions(scope);
   const errors = failedFor(state, scope);
   const [landed, setLanded] = useState(0);
 
@@ -77,9 +78,11 @@ export function useSpriteArtResolutions(
     void loadTransientProduct<unknown>(runtime.client, request, controller.signal).then(reply => {
       if (controller.signal.aborted) return;
       const heldIcons = state.caches.icons(scope);
+      const heldResolutions = state.caches.resolutions(scope);
       const heldErrors = failedFor(state, scope);
-      for (const [id, icon] of spriteIcons(reply, asked)) {
-        heldIcons.set(id, icon);
+      for (const [id, resolution] of spriteResolutions(reply, asked)) {
+        heldResolutions.set(id, resolution);
+        heldIcons.set(id, resolution.status === 'ready' ? resolution.url : null);
         heldErrors.delete(id);
       }
       if (paint) paint(heldIcons);
@@ -99,10 +102,8 @@ export function useSpriteArtResolutions(
     const id = spriteId(sprite);
     const err = errors.get(id);
     if (err !== undefined) return failedArt(err, true);
-    if (!icons.has(id)) return PENDING_ART;
-    const url = icons.get(id);
-    return url ? readyArt(url, { assetId: id, provenance: CURRENT_INSTALL_PROVENANCE }) : missingArt('Sprite art not found in current installation');
-  }, [icons, errors, landed]);
+    return resolutions.get(id) ?? PENDING_ART;
+  }, [resolutions, errors, landed]);
 }
 
 export function useSpriteArtwork(

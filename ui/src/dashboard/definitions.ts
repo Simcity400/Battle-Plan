@@ -11,9 +11,14 @@ import type { OptionField, OptionValue } from './options';
 import type { Failure } from './queryError';
 import type { PinnedSpec } from './regionTime';
 import type { DeclaredProduct } from './request';
-import type { AnyTableWidgetDeclaration } from '../families/table/declaration';
-import type { AnyMeterWidgetDeclaration } from '../families/meter/declaration';
+import type { FamilyProjection } from '../families/contract';
 import type { FamilyId } from '../families/plan';
+
+export interface FamilyWidgetDeclaration {
+  readonly family: FamilyId;
+  readonly kind: string;
+  readonly projection: FamilyProjection<any, any>;
+}
 
 export interface WidgetRuntime {
   campaignTracks: TrackSpec[];
@@ -103,7 +108,7 @@ export type WidgetCountryChipProps = Pick<WidgetProps, 'widget' | 'runtime' | 'a
 
 export interface WidgetDefinition extends WidgetMeta {
   render?: ComponentType<WidgetProps>;
-  declaration?: AnyTableWidgetDeclaration | AnyMeterWidgetDeclaration;
+  declaration?: FamilyWidgetDeclaration;
   usePresets?: (definition: WidgetMeta, runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean) => WidgetPresets;
   useOptionChoices?: (widget: WidgetSpec, runtime: WidgetRuntime) => OptionChoices;
   countryChip?: ComponentType<WidgetCountryChipProps>;
