@@ -61,8 +61,15 @@ pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
             if tags.is_empty() {
                 return Err(invalid("A followed series names a country or more"));
             }
-            if top.is_some() && !parts {
-                return Err(invalid(format!("{} ranks its countries by a top naming no tag", series.kind)));
+            if let (Some(n), false) = (top, parts) {
+                if scope == CoverageScope::Row {
+                    return Err(invalid("Row coverage is only for keyed non-ranked series reads"));
+                }
+                if series.key.unowned() {
+                    return Err(invalid(format!("{} is rows no country owns: it is not ranked", series.kind)));
+                }
+                let least = params.get("least").and_then(Value::as_bool) == Some(true);
+                return Ok(Query::Series { series, measure, countries: tags, mode: SeriesMode::Top { n, least }, identity: identity.clone() });
             }
             let mode = if parts {
                 if scope == CoverageScope::Row {

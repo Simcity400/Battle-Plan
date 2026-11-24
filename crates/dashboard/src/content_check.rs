@@ -317,6 +317,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok("Relation titles resolve through the recorded content stack by each recorded relation type; which relations a country held requires a recording.".into())
         }
         key if key == <faction_state::details::FactionDetails as at_hour::AtHour>::KEY
+            || key == <faction_state::country_goals::CountryFactionGoals as at_hour::AtHour>::KEY
             || key == faction_state::history::FactionState::KEY
             || key == <faction_state::rewards::FactionGoalRewards as at_hour::AtHour>::KEY =>
         {
@@ -354,10 +355,6 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok("No content dependency: countries are named by their recorded tags.".into())
         }
         economy::resources::ResourceSizes::KEY => Ok("No content dependency: bar lengths are computed from the recorded pools.".into()),
-        economy::lend_lease_partners::LendLeasePartners::KEY => {
-            findings.push(Finding::new(Kind::Offline, key, "a country's partners over time need recorded WarLendLeaseHistories rows; unavailable offline"));
-            Ok("No content dependency: partners are named by their recorded tags.".into())
-        }
         key if key == <economy::fuel::CountryFuel as at_hour::AtHour>::KEY => {
             findings.push(Finding::new(Kind::Offline, key, "the tank, its days and current consumption need recorded CountryFuel, FuelDays and FuelDemandTotals rows; unavailable offline"));
             Ok("Consumer and source labels are the fuel panel's own localisation keys, resolved through the recorded content stack.".into())
@@ -426,7 +423,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             findings.push(Finding::new(Kind::Offline, key, "seller and buyer flows and their quantities need the recorded TradeFlows rows; unavailable offline"));
             Ok("Resource names and icons are read through the shared resource naming of the recorded content stack.".into())
         }
-        key if key == <economy::market::MarketLendLease as AtHour>::KEY || key == economy::market::history::LendLeaseHistory::KEY || key == economy::market::ledger::MarketLedger::KEY => {
+        key if key == <economy::market::MarketLendLease as AtHour>::KEY || key == economy::market::ledger::MarketLedger::KEY => {
             findings.push(Finding::new(Kind::Offline, key, "market listings, contracts, agreements and occurrences need the recorded market tables; unavailable offline"));
             Ok("Equipment names and icons need the recorded variant operands through the content stack; subsidy archetypes are localised from it.".into())
         }

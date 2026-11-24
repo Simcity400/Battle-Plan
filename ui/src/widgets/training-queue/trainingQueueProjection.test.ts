@@ -28,9 +28,10 @@ test('a template row carries the product’s manpower total and the title its di
   const model = project(reply());
   const [order] = model.rows;
   assert.deepEqual(order!.cells.division!.value, knownValue('Infantry 1940 A'));
-  assert.deepEqual(order!.cells.manpower!.value, knownValue('23,520 / 23,520'));
+  assert.deepEqual([order!.cells.manpower!.value, order!.cells.manpower!.secondaryValue], [knownValue(23520), knownValue('23,520')]);
+  assert.equal(order!.cells.division!.subtext, '2 divisions · Brandenburg · Medium equipment priority');
   assert.deepEqual(order!.cells.training!.value, notApplicable('Shown on each division'));
-  assert.equal(model.summaryPill, '34 in training');
+  assert.equal(model.titleSummary, '34 in training');
   const [first, second] = order!.children!;
   assert.deepEqual([first!.cells.training!.value, first!.cells.equipment!.value], [knownValue(92), knownValue(100)]);
   assert.deepEqual(second!.cells.equipment!.value, notRecorded('A held design’s equipment type is unresolved'), 'an unmeasurable fill is missing with its reason, never 0');
@@ -38,7 +39,7 @@ test('a template row carries the product’s manpower total and the title its di
 
 test('a queue not read near the hour is unavailable with the reason, and an old reply without the product totals is refused', () => {
   const missing = project(reply({ orders: [], inTraining: null, missing: 'The training queue was not read within a day of this hour' }));
-  assert.deepEqual([missing.rows.length, missing.emptyKind, missing.summaryPill], [0, 'unavailable', undefined]);
+  assert.deepEqual([missing.rows.length, missing.emptyKind, missing.titleSummary], [0, 'unavailable', undefined]);
   const { inTraining: _total, ...old } = reply();
   assert.throws(() => validateTrainingQueue(old));
 });

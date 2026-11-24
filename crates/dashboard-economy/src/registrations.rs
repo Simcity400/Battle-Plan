@@ -1,9 +1,7 @@
 dashboard_base::register_products! {
     ECONOMY_RESOURCES_RESOURCESIZES => crate::products::economy::resources::ResourceSizes,
-    ECONOMY_LEND_LEASE_PARTNERS_LENDLEASEPARTNERS => crate::products::economy::lend_lease_partners::LendLeasePartners,
     CONVOYS_CONVOYHEALTH => crate::products::convoys::ConvoyHealth,
     TRADE_FLOWS_TRADEFLOWS => crate::products::trade_flows::TradeFlows,
-    ECONOMY_MARKET_HISTORY_LENDLEASEHISTORY => crate::products::economy::market::history::LendLeaseHistory,
     ECONOMY_MARKET_LEDGER_MARKETLEDGER => crate::products::economy::market::ledger::MarketLedger,
     ECONOMY_MARKET_LEDGER_MARKETLEDGERTAIL => crate::products::economy::market::ledger::MarketLedgerTail,
     ECONOMY_FUEL_AWARDS_COUNTRYFUELAWARDS => crate::products::economy::fuel::awards::CountryFuelAwards,

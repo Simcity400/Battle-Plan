@@ -16,7 +16,7 @@ import type { FromLane } from '../draw/laneMessages';
 import type { MissingSpan } from '../generated/dashboard';
 import { LaneArtCache } from './art/laneCache.ts';
 import { artUrlForHandle, createLaneArtProvider, flagArtHandle } from './art/provider.ts';
-import { readyArt } from './art/types.ts';
+import { artHandleKey, readyArt } from './art/types.ts';
 import { AuditSnapshotStore } from './audit.ts';
 import {
   BoundedSeriesCursor,
@@ -30,7 +30,9 @@ import {
 } from './boundedView.ts';
 import {
   assertValidCoverage,
+  boundedEntries,
   buildPlaybackBoundedRequest,
+  composeProof,
   compileFollowPlan,
   CoverageContractError,
   FamilySourceBroker,
@@ -40,6 +42,7 @@ import {
   planQueryKey,
   planSignature,
   playbackIdleInterval,
+  readPlanExact,
   resolvePlaybackProvenInterval,
   stabilizeCanvasDimension,
 } from './broker.ts';
@@ -394,6 +397,16 @@ test('coverage contract rejects row coverage on population forms and top/least o
     () => assertValidCoverage('bad-keyed', { mode: 'keyed', keys: ['GER'] }, { kind: 'country-measure', params: { top: 5 } }),
     CoverageContractError,
   );
+  assert.throws(
+    () => assertValidCoverage('row-every', { mode: 'keyed', keys: ['GER'] }, { product: 'series-state', coverage: 'row', params: { reads: 'every' } }),
+    CoverageContractError,
+    'row coverage over every read is a population request, which the product refuses',
+  );
+  assert.throws(
+    () => assertValidCoverage('row-every-outer', { mode: 'keyed', keys: ['GER'] }, { product: 'series-state', coverage: 'row', reads: 'every' }),
+    CoverageContractError,
+  );
+  assertValidCoverage('row-keys', { mode: 'keyed', keys: ['GER'] }, { product: 'series-state', coverage: 'row', params: { reads: [{ country: 'GER' }] } });
 
   const badPlan: SourcePlan = {
     owner: 'test:1',
@@ -921,7 +934,7 @@ test('no-follow reads during playback ask nothing after the displayed hour, prov
     span: (firstHour: number, lastHour: number) => ({ firstHour, lastHour } as never),
   };
   const branch = { firstHour: 0, lastHour: 1000 };
-  const ask = (plan: SourcePlan, currentHour: number, effectiveEndHour = 1000) => buildPlaybackBoundedRequest(plan, { branch, effectiveEndHour, currentHour, gate });
+  const ask = (plan: SourcePlan, currentHour: number, effectiveEndHour = 1000) => buildPlaybackBoundedRequest(plan.entries[0]!, { branch, effectiveEndHour, currentHour, gate });
   const planOf = (read: SourcePlan['entries'][number]['read']): SourcePlan => ({
     owner: `${read.shape}:1`,
     entries: [{ name: 'main', source: src, branch: '1', offset: 0, read }],
@@ -982,7 +995,7 @@ test('no-follow reads during playback ask nothing after the displayed hour, prov
   });
   assert.equal(needsPlaybackBoundedRead(rangePlan, []), true);
   assert.equal(ask(rangePlan, 50), null, 'nothing is asked before a fixed range starts');
-  assert.deepEqual(playbackIdleInterval(rangePlan, { branch, effectiveEndHour: 1000, currentHour: 50, gate }), [-Infinity, 99], 'before the range the next boundary is its first hour');
+  assert.deepEqual(playbackIdleInterval(rangePlan.entries[0]!, { branch, effectiveEndHour: 1000, currentHour: 50, gate }), [-Infinity, 99], 'before the range the next boundary is its first hour');
   const rangeInside = ask(rangePlan, 250)!;
   assert.deepEqual(rangeInside.span, [100, 250]);
   assert.deepEqual(resolvePlaybackProvenInterval(rangeInside.entry.read, {}, rangeInside, 1000), [250, 250]);
@@ -1008,8 +1021,31 @@ test('no-follow reads during playback ask nothing after the displayed hour, prov
     recorded: (h: number | null | undefined) => (typeof h === 'number' && (h < 300 || h > 340) ? h : null) as never,
     recordedRun: (h: number) => (h < 300 ? [0, 299] : h <= 340 ? [300, 340] : [341, 1000]),
   };
-  assert.equal(buildPlaybackBoundedRequest(pointPlan, { branch, effectiveEndHour: 1000, currentHour: 310, gate: gappedGate }), null);
-  assert.deepEqual(playbackIdleInterval(pointPlan, { branch, effectiveEndHour: 1000, currentHour: 310, gate: gappedGate }), [300, 340], 'inside a gap the next boundary is the gap end, not the next hour');
+  assert.equal(buildPlaybackBoundedRequest(pointPlan.entries[0]!, { branch, effectiveEndHour: 1000, currentHour: 310, gate: gappedGate }), null);
+  assert.deepEqual(playbackIdleInterval(pointPlan.entries[0]!, { branch, effectiveEndHour: 1000, currentHour: 310, gate: gappedGate }), [300, 340], 'inside a gap the next boundary is the gap end, not the next hour');
+
+  const followedHead: SourcePlan['entries'][number] = {
+    name: 'head',
+    source: src,
+    branch: '1',
+    offset: 0,
+    read: { shape: 'point', channel: 'followed', coverage: { mode: 'population', form: 'all' }, product: 'scoreboard', followQuery: { product: 'scoreboard', params: { branchId: '1' } }, params: { branchId: '1' } },
+  };
+  const history = { ...rangePlan.entries[0]!, name: 'history' };
+  const mixed: SourcePlan = { owner: 'mixed:1', entries: [followedHead, history] };
+  const headFollowed = [{ name: 'head', source: src, branch: '1', offset: 0, query: {} as never, channel: 'followed' as const }];
+  assert.deepEqual(boundedEntries(mixed, true, headFollowed).map(entry => entry.name), ['history'], 'a followed point never stops an independent range from loading');
+  assert.equal(needsPlaybackBoundedRead(mixed, headFollowed), true);
+  assert.deepEqual(boundedEntries(mixed, false, []).map(entry => entry.name), ['head', 'history'], 'pinned, the range is read beside the primary');
+  assert.deepEqual(boundedEntries(mixed, true, []).map(entry => entry.name), ['history'], 'an entry with a follow query is never read by the bounded path while following');
+  assert.deepEqual(boundedEntries({ ...mixed, refused: 'no' }, true, headFollowed), []);
+  const exactPrimary: SourcePlan = { owner: 'exact:1', entries: [followedHead], staticEntry: pointPlan.entries[0]! };
+  assert.deepEqual(boundedEntries(exactPrimary, true, headFollowed), [], 'a static entry standing in for followed entries is not read while they follow');
+  assert.deepEqual(boundedEntries(exactPrimary, false, []).map(entry => entry.name), ['main']);
+
+  assert.deepEqual(composeProof([{ anchorHour: 50, proof: [50, 80] }, { anchorHour: 60, proof: [60, 60] }]), [60, 60], 'each entry keeps its own proof; the picture holds where all of them do');
+  assert.deepEqual(composeProof([{ anchorHour: 50, proof: [50, 80] }, { anchorHour: 90, proof: [90, 90] }]), null, 'a reply proven only before another entry’s asked hour is not installed with it');
+  assert.equal(composeProof([]), null);
 
   const ctx = { owner: 'a' };
   const held = resolveDisplayedStaticSnapshot(null, {
@@ -1076,6 +1112,95 @@ test('a family cannot reach data after the displayed hour through a slice, a til
   assert.equal(frozen.liveCount, 3, 'a source frozen at 100 counts what its own hour held, not a later head');
 });
 
+test('the exact read of a pixel-binned chart asks its exact product at the hour, in the shape of its head read', async () => {
+  const src = fakeSource();
+  const asked: { product: string; params: Record<string, unknown> }[] = [];
+  const reply = { values: [{ country: 'GER', value: 42 }] };
+  const client = {
+    product: async (request: { product: string; params: Record<string, unknown> }) => {
+      asked.push({ product: request.product, params: request.params });
+      return { data: reply };
+    },
+  } as unknown as DashboardClient;
+  const family = { kind: 'country-measure', measure: 'politicalPower' };
+  const chartPlan: SourcePlan = {
+    owner: 'political-power:1',
+    entries: [{
+      name: 'main',
+      source: src,
+      branch: '1',
+      offset: 0,
+      read: {
+        shape: 'pixel-binned',
+        coverage: { mode: 'keyed', keys: ['GER'] },
+        family,
+        tags: ['GER'],
+        headQuery: { product: 'series-state', params: { branchId: '1', family, reads: [{ country: 'GER' }] } },
+        exactProduct: 'series-state',
+      },
+    }],
+  };
+  const gate: FrozenGate = {
+    recorded: (h: number | null | undefined) => (typeof h === 'number' ? h : null) as never,
+    span: (firstHour: number, lastHour: number) => ({ firstHour, lastHour } as never),
+  };
+  const view = await readPlanExact(chartPlan, 120, {
+    client,
+    following: true,
+    timeMode: 'follow',
+    branch: { firstHour: 0, lastHour: 1000 },
+    window: null,
+    staticSpan: null,
+    gate,
+  });
+  assert.equal(asked.length, 1, 'one exact request, not none');
+  assert.deepEqual(asked[0], { product: 'series-state', params: { branchId: '1', family, reads: [{ country: 'GER', hour: 120 }] } });
+  assert.equal(view?.hour, 120);
+  assert.equal(view?.panel('main'), reply);
+});
+
+test('advancing through an open bucket and a growing mark cluster costs what changed, and replaced prefix points are never served from the cache', () => {
+  const runs: Run[] = [];
+  for (let h = 0; h < 1024; h++) runs.push({ firstHour: h, lastHour: h, value: h % 97 });
+  const bins: [number, number][] = [];
+  for (let h = 0; h < 1024; h++) bins.push([h, 1]);
+  const line: TiledLine = {
+    tag: 'GER',
+    head: 'GER',
+    decimals: 0,
+    summary: { from: 0, to: 1023, width: 1, buckets: [makeBucket(0, 1023, 0, 0, 0, 96)], runs, tiles: { binHours: 1024, valueAt: () => null } },
+    missing: [],
+    parts: [],
+    marks: { from: 0, to: 1023, width: 1, clusters: [{ firstHour: 0, lastHour: 1023, firstOrdinal: '0', count: '1024', bins }] },
+  };
+  const cursor = new BoundedSeriesCursor();
+  cursor.advance(line, 100);
+  let worst = 0;
+  for (let h = 101; h <= 900; h++) {
+    const counter: BoundedWorkCounter = { visits: 0, allocations: 0 };
+    const bounded = cursor.advance(line, h, { counter });
+    worst = Math.max(worst, counter.visits);
+    if (h === 900) {
+      const cut = bounded.buckets.at(0)!;
+      assert.deepEqual([cut.lastHour, cut.maxValue], [900, 96], 'the resumed cut equals a fresh one');
+      const tail = bounded.marks.at(0)!;
+      assert.equal(tail.count, '901');
+      assert.equal(tail.bins?.length, 901);
+      assert.ok(!Array.isArray(tail.bins), 'the clipped cluster shares its bins rather than copying them');
+    }
+  }
+  assert.ok(worst <= 48, `one more hour inside an open bucket visits a constant number of items, not the bucket: ${worst}`);
+  const fresh = boundTiledSeries(line, displayedHour(900));
+  assert.deepEqual(fresh.buckets.at(0), cursor.advance(line, 900).buckets.at(0));
+
+  const pointLine: TiledLine = { ...line, summary: { ...line.summary, runs: undefined } };
+  const pointCursor = new BoundedSeriesCursor();
+  const low = pointCursor.advance(pointLine, 105, { prefixPoints: [{ hour: 100, value: 1 }] });
+  assert.equal(low.buckets.at(0)?.maxValue, 1);
+  const high = pointCursor.advance(pointLine, 105, { prefixPoints: [{ hour: 100, value: 1 }, { hour: 104, value: 8 }] });
+  assert.equal(high.buckets.at(0)?.maxValue, 8, 'new prefix points at the same hour are read, as a fresh cursor would');
+});
+
 test('canvas pixel dimensions stay stable across sub-pixel jitter without changing planSignature', () => {
   const src = fakeSource();
   const makePlan = (width: number | undefined, height: number | undefined): SourcePlan => ({
@@ -1140,7 +1265,7 @@ test('ArtHandle discriminated union covers flag, sprite, portrait, path, and url
   const handles: readonly ArtHandle[] = [
     flagArtHandle('GER_fascism', 'shield'),
     { kind: 'sprite', key: 'GFX_pol_power', frame: 0, recorded: 'pol_power', text: true },
-    { kind: 'portrait', key: 'GFX_portrait_ger', owner: 'GER', recorded: 'leader_1' },
+    { kind: 'portrait', leader: '7', hour: 100 },
     { kind: 'path', path: 'gfx/interface/icons/icon.dds', frame: 1, frames: 2 },
     { kind: 'url', url: 'https://art.test/direct.png' },
   ];
@@ -1149,16 +1274,9 @@ test('ArtHandle discriminated union covers flag, sprite, portrait, path, and url
   assert.equal(artUrlForHandle(handles[1]!), null);
 
   const cache = new LaneArtCache();
-  const seenKinds: string[] = [];
-  const artProvider = createLaneArtProvider(cache, {
-    resolveHandle(handle) {
-      seenKinds.push(handle.kind);
-      if (handle.kind === 'sprite' && handle.text) {
-        return readyArt('art://sprite-text');
-      }
-      return { status: 'pending' };
-    },
-  });
+  const resolutions = { [artHandleKey(handles[1]!)]: readyArt('art://sprite-text') };
+  assert.equal(artUrlForHandle(handles[1]!, null, resolutions), 'art://sprite-text');
+  const artProvider = createLaneArtProvider(cache, { resolutions });
   assert.equal(artProvider.demandOwner, 'view');
 
   const identityResolveArgs: number[] = [];
@@ -1196,7 +1314,6 @@ test('ArtHandle discriminated union covers flag, sprite, portrait, path, and url
   const spriteRes = view.art(handles[1]!);
   assert.equal(spriteRes.status, 'pending');
   assert.equal(artDemandCount, 1);
-  assert.deepEqual(seenKinds, ['sprite']);
 
   const portraitRes = view.art(handles[2]!);
   assert.equal(portraitRes.status, 'pending');

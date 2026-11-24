@@ -7,15 +7,11 @@ import type { LiveValues } from './live';
 import Table from './table/Table';
 import type { TableColumn } from './table/Table';
 import type { SortValue } from './table/logic';
-import HeatMatrix from './heat/HeatMatrix';
-import type { MatrixCell } from './heat/matrix';
 import Timeline from './timeline/Timeline';
 import Sunburst from './sunburst/Sunburst';
 import type { SunburstItem, SunburstValues } from './sunburst/Sunburst';
 import DrillParts from './drill/DrillParts';
 import type { DrillPart, LiveDrillParts } from './drill/DrillParts';
-import ChordChart from './chord/ChordChart';
-import type { ChordFrame } from './chord/ChordChart';
 import FlowDiagram from './flow/FlowDiagram';
 import type { FlowValues } from './flow/FlowDiagram';
 import { canvasElement } from './surface';
@@ -86,8 +82,6 @@ const tableColumns: TableColumn<Row>[] = [
 const tableLive = new LiveCell<LiveValues<SortValue>>(valuesOf(new Map(), 'Not read yet'));
 const rowKey = (row: Row) => row.key;
 
-const axis = Array.from({ length: 6 }, (_, i) => ({ id: `c${i}`, label: `Country ${i}` }));
-const heatLive = new LiveCell<LiveValues<MatrixCell>>(valuesOf(new Map(), 'Not read yet'));
 
 const lanes = [{ id: 'slot', label: 'Slot', spans: [{ id: 'holder', firstHour: 0, lastHour: 1000, label: 'Holder' }] }];
 const timelineHead = new LiveCell(100);
@@ -107,9 +101,6 @@ const drillParts = (a: number | null, b: number | null): DrillPart[] => [
 ];
 const drillLive = new LiveCell<ReturnType<LiveDrillParts['read']>>({ parts: drillParts(30, 10) });
 
-const chordFrame = (forward: number, back: number): ChordFrame => ({ data: { nodes: [{ id: 'x', label: 'Ex', color: '#aa3333' }, { id: 'y', label: 'Why', color: '#3333aa' }],
-  flows: [{ id: 'xy', source: 'x', target: 'y', value: forward }, { id: 'yx', source: 'y', target: 'x', value: back }] }, segment: 'one' });
-const chordLive = new LiveCell<ChordFrame>(chordFrame(10, 10));
 const flowValues = (value: number | null): FlowValues => value === null ? { nodes: [], links: [], message: 'Not recorded at this hour' } : {
   nodes: [{ id: 's', side: 'source', label: 'Source', color: '#aa3333', order: 's' }, { id: 't', side: 'target', label: 'Target', color: '#3333aa', order: 't' },
     { id: 'u', side: 'target', label: 'Other', color: '#33aa33', order: 'u' }],
@@ -138,25 +129,6 @@ export const fixture = {
       });
   },
   tableMounted: () => roots.get('table')!.host.querySelectorAll('tbody tr').length,
-
-  async mountHeat(live: boolean) {
-    const { root } = host('heat', 600, 400);
-    root.render(counted('heat', <HeatMatrix key={String(live)} label="Synthetic matrix" rows={axis} columns={axis} cell={() => ({ color: '#999999' })} revision={0}
-      tooltip={() => null} active live={live ? heatLive : undefined} />));
-    await settle();
-  },
-  async pushHeat(color: string, missing?: [number, number]) {
-    const cells = new Map<string, MatrixCell>();
-    for (const [r, row] of axis.entries()) for (const [c, column] of axis.entries())
-      if (!missing || missing[0] !== r || missing[1] !== c) cells.set(liveKey(row.id, column.id), { color });
-    heatLive.set(valuesOf(cells, 'Not recorded at this hour'));
-    await settle();
-  },
-  heatFills() {
-    const counts: Record<string, number> = {};
-    for (const fill of lastFrame('heat').fills) if (/^#[0-9a-f]{6}$/.test(fill)) counts[fill] = (counts[fill] ?? 0) + 1;
-    return counts;
-  },
 
   async mountTimeline(live: boolean) {
     const { root } = host('timeline', 600, 200);
@@ -188,14 +160,6 @@ export const fixture = {
   },
   async pushDrill(a: number | null, b: number | null) { drillLive.set({ parts: drillParts(a, b) }); await settle(); },
   drill: () => [...roots.get('drill')!.host.querySelectorAll('.drill-parts > li')].map(row => [row.querySelector('.drill-part-label')?.textContent, row.querySelector('b')?.textContent]),
-
-  async mountChord(live: boolean) {
-    const { root } = host('chord', 400, 400);
-    root.render(counted('chord', <ChordChart key={String(live)} label="Synthetic chord" caption="Flows" frame={chordFrame(10, 10)} active tooltip={() => null} onError={() => {}}
-      live={live ? chordLive : undefined} />));
-    await settle();
-  },
-  async pushChord(forward: number | null, back = 10) { chordLive.set(forward === null ? { data: null, segment: 'one' } : chordFrame(forward, back)); await settle(); },
 
   async mountFlow(live: boolean) {
     const { root } = host('flow', 500, 300);

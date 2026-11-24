@@ -414,6 +414,7 @@ pub(crate) fn readout_of(cell: Option<&AirDayCell>, hour: Option<i32>) -> AirRea
     };
     match cell {
         AirDayCell::Reason { reason } => AirReadout::NotRecorded { reason: reason.clone() },
+        AirDayCell::Sides(sides) if !sides.unknown.is_empty() => AirReadout::NotRecorded { reason: "A side's air score was not recorded".into() },
         AirDayCell::Sides(sides) => {
             let mut total: i128 = 0;
             let mut best: Option<(u32, i128)> = None;
@@ -425,9 +426,6 @@ pub(crate) fn readout_of(cell: Option<&AirDayCell>, hour: Option<i32>) -> AirRea
                 }
             }
             if total == 0 {
-                if !sides.unknown.is_empty() {
-                    return AirReadout::NotRecorded { reason: "Air superiority could not be determined".into() };
-                }
                 return AirReadout::NoActivity { as_of_hour };
             }
             let Some((side, score)) = best else {

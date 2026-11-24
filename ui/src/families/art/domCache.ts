@@ -17,8 +17,7 @@ export interface DomArtCacheOptions<TImage extends DomArtImage = HTMLImageElemen
 
 interface Entry<TImage extends DomArtImage> {
   readonly image: TImage;
-  status: 'pending' | 'ready' | 'failed';
-  reason?: string;
+  status: 'pending' | 'ready';
 }
 
 const DEFAULT_MAX_ENTRIES = 2048;
@@ -81,19 +80,13 @@ export class DomArtCache<TImage extends DomArtImage = HTMLImageElement> {
   retry(asset?: string): void {
     if (asset !== undefined) {
       this.failed.delete(asset);
-      const existing = this.entries.get(asset);
-      if (existing?.status === 'failed') this.entries.delete(asset);
       this.ensure(asset);
       this.wake(asset);
       return;
     }
     const urls = [...this.failed.keys()];
     this.failed.clear();
-    for (const url of urls) {
-      const existing = this.entries.get(url);
-      if (existing?.status === 'failed') this.entries.delete(url);
-      this.wake(url);
-    }
+    for (const url of urls) this.wake(url);
   }
 
   resolve(resolution: ArtResolution): ArtResult<TImage> {
@@ -106,6 +99,7 @@ export class DomArtCache<TImage extends DomArtImage = HTMLImageElement> {
       case 'failed':
         return { ...resolution, retry: () => this.retry() };
       case 'ready': {
+        const entry = this.failed.has(resolution.url) ? null : this.ensure(resolution.url);
         const failReason = this.failed.get(resolution.url);
         if (failReason !== undefined) {
           return {
@@ -115,20 +109,10 @@ export class DomArtCache<TImage extends DomArtImage = HTMLImageElement> {
             retry: () => this.retry(resolution.url),
           };
         }
-        const entry = this.ensure(resolution.url);
-        if (!entry) return { status: 'pending' };
-        if (entry.status === 'ready') {
+        if (entry?.status === 'ready') {
           return {
             ...resolution,
             bitmap: entry.image,
-          };
-        }
-        if (entry.status === 'failed') {
-          return {
-            status: 'failed',
-            reason: entry.reason ?? 'Image decode failed',
-            retryable: true,
-            retry: () => this.retry(resolution.url),
           };
         }
         return { status: 'pending' };
@@ -137,12 +121,10 @@ export class DomArtCache<TImage extends DomArtImage = HTMLImageElement> {
   }
 
   readUrl(url: string, onSettle?: () => void): { readonly image: TImage | null; readonly pending: boolean; readonly failed: boolean } {
-    const failReason = this.failed.get(url);
-    if (failReason !== undefined) return { image: null, pending: false, failed: true };
-    const entry = this.ensure(url);
+    const entry = this.failed.has(url) ? null : this.ensure(url);
+    if (this.failed.has(url)) return { image: null, pending: false, failed: true };
     if (!entry) return { image: null, pending: false, failed: false };
     if (entry.status === 'ready') return { image: entry.image, pending: false, failed: false };
-    if (entry.status === 'failed') return { image: null, pending: false, failed: true };
     if (onSettle) {
       let set = this.oneShotListeners.get(url);
       if (!set) this.oneShotListeners.set(url, set = new Set());
@@ -151,8 +133,20 @@ export class DomArtCache<TImage extends DomArtImage = HTMLImageElement> {
     return { image: null, pending: true, failed: false };
   }
 
+  stateOfUrl(url: string): 'ready' | 'pending' | 'failed' | 'unrequested' {
+    if (this.failed.has(url)) return 'failed';
+    const entry = this.entries.get(url);
+    if (!entry) return 'unrequested';
+    this.settleComplete(url, entry);
+    return this.failed.has(url) ? 'failed' : entry.status;
+  }
+
   get cachedCount(): number {
     return this.entries.size;
+  }
+
+  get failedCount(): number {
+    return this.failed.size;
   }
 
   get revision(): number {
@@ -164,16 +158,8 @@ export class DomArtCache<TImage extends DomArtImage = HTMLImageElement> {
     if (existing) {
       this.entries.delete(url);
       this.entries.set(url, existing);
-      if (existing.status === 'pending' && existing.image.complete) {
-        if (existing.image.naturalWidth > 0) {
-          existing.status = 'ready';
-        } else {
-          existing.status = 'failed';
-          existing.reason = 'Image failed to load';
-          this.recordFailure(url, existing.reason);
-        }
-      }
-      return existing;
+      this.settleComplete(url, existing);
+      return this.entries.get(url) === existing ? existing : null;
     }
     const create = this.createImage ?? (typeof Image !== 'undefined' ? (defaultCreateImage as unknown as () => TImage) : undefined);
     if (!create) return null;
@@ -183,21 +169,18 @@ export class DomArtCache<TImage extends DomArtImage = HTMLImageElement> {
     this.entries.set(url, entry);
     image.onload = () => {
       if (this.contentRevision !== rev || this.entries.get(url) !== entry) return;
-      entry.status = image.naturalWidth > 0 ? 'ready' : 'failed';
-      if (entry.status === 'failed') {
-        entry.reason = 'Image decoded empty';
-        this.recordFailure(url, entry.reason);
-      } else {
+      if (image.naturalWidth > 0) {
+        entry.status = 'ready';
         this.failed.delete(url);
+        this.evict();
+      } else {
+        this.fail(url, entry, 'Image decoded empty');
       }
-      this.evict();
       this.wake(url);
     };
     image.onerror = () => {
       if (this.contentRevision !== rev || this.entries.get(url) !== entry) return;
-      entry.status = 'failed';
-      entry.reason = 'Image failed to load';
-      this.recordFailure(url, entry.reason);
+      this.fail(url, entry, 'Image failed to load');
       this.wake(url);
     };
     image.src = url;
@@ -208,7 +191,17 @@ export class DomArtCache<TImage extends DomArtImage = HTMLImageElement> {
     return entry;
   }
 
-  private recordFailure(url: string, reason: string): void {
+  private settleComplete(url: string, entry: Entry<TImage>): void {
+    if (entry.status !== 'pending' || !entry.image.complete) return;
+    if (entry.image.naturalWidth > 0) entry.status = 'ready';
+    else this.fail(url, entry, 'Image failed to load');
+  }
+
+  private fail(url: string, entry: Entry<TImage>, reason: string): void {
+    entry.image.onload = null;
+    entry.image.onerror = null;
+    if (this.entries.get(url) === entry) this.entries.delete(url);
+    this.failed.delete(url);
     this.failed.set(url, reason);
     while (this.failed.size > this.maxFailed) {
       const oldest = this.failed.keys().next().value;
@@ -219,7 +212,7 @@ export class DomArtCache<TImage extends DomArtImage = HTMLImageElement> {
 
   private evict(): void {
     if (this.entries.size <= this.maxEntries) return;
-    for (const [url, entry] of [...this.entries]) {
+    for (const [url, entry] of this.entries) {
       if (this.entries.size <= this.maxEntries) break;
       if (entry.status === 'pending' || this.listeners.has(url)) continue;
       entry.image.onload = null;

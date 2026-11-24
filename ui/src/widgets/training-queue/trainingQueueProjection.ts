@@ -7,7 +7,7 @@ import type { BoundedReadView } from '../../families/plan.ts';
 import { knownValue, textValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TrainingDivision, TrainingOrder, TrainingQueueReply } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
 const ON_DIVISION = 'Shown on each division';
@@ -50,25 +50,35 @@ export function equipmentShare(division: TrainingDivision): Value<number> {
 
 const fraction = (value: Value<number>): Value<number> => value.kind === 'known' ? knownValue(value.value / 100) : value;
 const count = (value: number) => value.toLocaleString('en-US');
-const outOf = (have: number, need: number): Value<string> => knownValue(`${count(have)} / ${count(need)}`);
+const manpower = (have: number): Value<number> => have === 0 ? zeroValue(0) : knownValue(have);
+
+function orderLine(order: TrainingOrder): string {
+  const parts = [`${count(order.divisions.length)} ${order.divisions.length === 1 ? 'division' : 'divisions'}`];
+  if (order.locationName?.trim()) parts.push(order.locationName);
+  if (order.priorityName?.trim()) parts.push(order.priorityName);
+  return parts.join(' · ');
+}
 
 const [DIVISION, TRAINING, EQUIPMENT, MANPOWER] = COLUMNS;
 
 const QUEUE_COLUMNS: readonly DeclarativeColumnSpec<QueueRow, Record<string, never>>[] = [
   { ...DIVISION!, priority: 0, text: true, hideable: false, widest: ['Motorized Infantry Division 1941 B'], iconSlot: true,
     icon: row => row.kind === 'order' ? row.icon : undefined,
+    extra: row => (row.kind === 'order' ? { subtext: orderLine(row.order) } : {}),
     value: row => row.kind === 'order'
       ? textValue(row.order.templateName, row.order.templateMissing ?? 'Template name unavailable')
       : textValue(row.division.name, row.division.nameMissing ?? 'Division name unavailable') },
   { ...TRAINING!, priority: 1, numeric: true, format: PERCENT, widest: ['100%'],
     value: row => row.kind === 'division' ? trainingShare(row.division) : notApplicable(ON_DIVISION),
+    extra: row => (row.kind === 'order' ? { blank: true } : {}),
     bar: row => row.kind === 'division' ? { fraction: fraction(trainingShare(row.division)) } : null },
   { ...EQUIPMENT!, priority: 2, numeric: true, format: PERCENT, widest: ['100%'],
     value: row => row.kind === 'division' ? equipmentShare(row.division) : notApplicable(ON_DIVISION),
+    extra: row => (row.kind === 'order' ? { blank: true } : {}),
     bar: row => row.kind === 'division' ? { fraction: fraction(equipmentShare(row.division)) } : null },
-  { ...MANPOWER!, priority: 3, numeric: true, widest: ['999,999 / 999,999'], hint: 'available / needed',
-    value: row => row.kind === 'order' ? outOf(row.order.manpower, row.order.manpowerNeeded) : outOf(row.division.manpower, row.division.manpowerNeeded),
-    sortValue: row => knownValue(row.kind === 'order' ? row.order.manpower : row.division.manpower) },
+  { ...MANPOWER!, priority: 3, numeric: true, cellKind: 'outOf', format: 'integer', widest: ['999,999 / 999,999'],
+    value: row => manpower(row.kind === 'order' ? row.order.manpower : row.division.manpower),
+    extra: row => ({ secondaryValue: knownValue(count(row.kind === 'order' ? row.order.manpowerNeeded : row.division.manpowerNeeded)) }) },
 ];
 
 function orderIcon(order: TrainingOrder, readView: BoundedReadView): string | undefined {
@@ -120,7 +130,7 @@ export const trainingQueueProjection: TableProjection<Record<string, never>> = r
       return {
         rows,
         ...(!rows.length ? { empty: 'No divisions in training', emptyKind: 'empty' as const } : {}),
-        summaryPill: reply.inTraining === null ? null : `${count(reply.inTraining)} in training`,
+        titleSummary: reply.inTraining === null ? null : `${count(reply.inTraining)} in training`,
         warnings: reply.warnings,
       };
     },
@@ -140,6 +150,7 @@ export const trainingQueueDeclaration: TableWidgetDeclaration<Record<string, nev
   subject: 'training queue',
   emptyCampaign: 'Load a campaign to see the training queue.',
   icon: 'helmet',
+  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its training queue.' },
   sources: ctx => {
     const params = ctx.countryTag ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) } : null;

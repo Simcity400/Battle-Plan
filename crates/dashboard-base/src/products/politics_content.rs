@@ -51,8 +51,8 @@ pub struct PoliticsContent {
     pub names: content_reader_politics::names::NameLists,
     pub warnings: Vec<String>,
     artwork: Mutex<BTreeMap<String, catalogue::Drawn<(Artwork, Option<String>)>>>,
-    portraits: Mutex<BTreeMap<PortraitKey, catalogue::Drawn<Result<String, String>>>>,
-    portrait_thumbnails: Mutex<BTreeMap<PortraitKey, catalogue::Drawn<Result<String, String>>>>,
+    portraits: Mutex<BTreeMap<PortraitKey, super::artwork::sprites::DrawnArt>>,
+    portrait_thumbnails: Mutex<BTreeMap<PortraitKey, super::artwork::sprites::DrawnArt>>,
     power: OnceLock<Arc<PowerContent>>,
     power_result: catalogue::CachedResult<PowerContent>,
     power_requested: std::sync::atomic::AtomicBool,
@@ -637,10 +637,31 @@ impl PoliticsContent {
         identity: &[u8],
         edge: u32,
     ) -> Result<String, String> {
-        let text = std::str::from_utf8(identity)
-            .map_err(|_| "Recorded portrait identity is not UTF-8".to_owned())?;
+        match self.recorded_portrait_art(kind, identity, edge) {
+            super::artwork::ArtResolution::Ready { url, .. } => Ok(url),
+            other => Err(other
+                .reason()
+                .map_or_else(|| "The recorded portrait has no texture.".to_owned(), str::to_owned)),
+        }
+    }
+
+    pub fn recorded_portrait_art(
+        &self,
+        kind: u32,
+        identity: &[u8],
+        edge: u32,
+    ) -> super::artwork::ArtResolution {
+        let refused = |reason: &str, construct: &str| super::artwork::ArtResolution::Refused {
+            reason: reason.to_owned(),
+            construct: construct.to_owned(),
+            origin: None,
+            file: None,
+        };
+        let Ok(text) = std::str::from_utf8(identity) else {
+            return refused("Recorded portrait identity is not UTF-8", "portrait-non-utf8");
+        };
         if edge == 0 {
-            return Err("Portrait thumbnail edge must be positive".to_owned());
+            return refused("Portrait thumbnail edge must be positive", "portrait-edge");
         }
         let key = (
             kind,
@@ -658,14 +679,14 @@ impl PoliticsContent {
             .unwrap_or_else(|error| error.into_inner())
             .get(&key)
         {
-            return cached.get().clone();
+            return super::artwork::sprites::settled_art(cached);
         }
-        let drawn = catalogue::draw(
+        let drawn = super::artwork::sprites::drawn_art(
             || format!("portrait {text}"),
             &self.catalogue,
-            |catalogue| recorded_portrait_in(catalogue, kind, text, edge),
+            |catalogue| super::artwork::resolve_portrait_entry(catalogue, kind, text, edge),
         );
-        let loaded = drawn.get().clone();
+        let loaded = super::artwork::sprites::settled_art(&drawn);
         store
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -767,6 +788,7 @@ impl PoliticsContent {
                     description: None,
                     base_duration_days: None,
                     icon: None,
+                    sprite: None,
                 };
                 return (art, Some(format!("{token}: {reason}")));
             }
@@ -786,7 +808,7 @@ impl PoliticsContent {
         &self,
         token: &str,
         icon: &IdeaIcon,
-    ) -> Result<Option<String>, Box<Finding>> {
+    ) -> Result<Option<(String, String)>, Box<Finding>> {
         let recorded = match self.catalogue.recorded() {
             Some(recorded) if !content_reader_layers::content::is_strict() => recorded,
             _ => return idea_icon(&self.catalogue, token, icon),
@@ -795,13 +817,13 @@ impl PoliticsContent {
             || format!("idea {token} icon"),
             &self.catalogue,
             |catalogue| match idea_icon(catalogue, token, icon) {
-                Ok(Some(png)) => Ok(png),
+                Ok(Some(drawn)) => Ok(drawn),
                 Ok(None) => Err(format!("{token}: no artwork")),
                 Err(finding) => Err(finding.message),
             },
         );
         match drawn.get() {
-            Ok(png) => Ok(Some(png.clone())),
+            Ok(drawn) => Ok(Some(drawn.clone())),
             Err(_) => idea_icon(recorded, token, icon),
         }
     }
@@ -843,8 +865,8 @@ impl PoliticsContent {
                 }
             },
         };
-        let (icon, problem) = match icon {
-            Ok(Some(icon)) => (Some(icon), None),
+        let (drawn, problem) = match icon {
+            Ok(Some(drawn)) => (Some(drawn), None),
             Ok(None) => {
                 let reason =
                     format!("{token}: no artwork in the recorded content; a placeholder is shown");
@@ -862,12 +884,14 @@ impl PoliticsContent {
                 (None, Some(reason))
             }
         };
+        let (sprite, icon) = drawn.unzip();
         let art = Artwork {
             token: token.to_owned(),
             name,
             description,
             base_duration_days: None,
             icon,
+            sprite,
         };
         (art, problem)
     }
@@ -913,11 +937,12 @@ fn idea_icon(
     catalogue: &Catalogue,
     token: &str,
     icon: &IdeaIcon,
-) -> Result<Option<String>, Box<Finding>> {
+) -> Result<Option<(String, String)>, Box<Finding>> {
     let refused = |message: String| Box::new(Finding::new(Kind::Refused, token, message));
     let (names, recorded_tag) = match icon {
         IdeaIcon::Sprite(name) => {
             return sprite_png_in(catalogue, name, ICON_EDGE)
+                .map(|png| png.map(|png| (name.clone(), png)))
                 .map_err(|why| refused(why.to_string()));
         }
         IdeaIcon::Candidates {
@@ -929,7 +954,7 @@ fn idea_icon(
         if catalogue.sprites.find(name).map_err(&refused)?.is_some() {
             return sprite_png_in(catalogue, name, ICON_EDGE)
                 .map_err(|why| refused(why.to_string()))?
-                .map(Some)
+                .map(|png| Some((name.clone(), png)))
                 .ok_or_else(|| refused(format!("sprite {name} has no readable texture")));
         }
     }
@@ -961,21 +986,6 @@ pub fn sprite_png_in(catalogue: &Catalogue, name: &str, edge: u32) -> io::Result
             ..
         } => Ok(None),
         other => other.into_io_result(),
-    }
-}
-
-fn recorded_portrait_in(
-    catalogue: &Catalogue,
-    kind: u32,
-    text: &str,
-    edge: u32,
-) -> Result<String, String> {
-    match super::artwork::resolve_portrait_entry(catalogue, kind, text, edge) {
-        super::artwork::ArtResolution::Ready { url, .. } => Ok(url),
-        other => Err(other
-            .reason()
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("{text} has no texture."))),
     }
 }
 

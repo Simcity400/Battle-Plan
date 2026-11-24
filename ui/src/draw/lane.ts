@@ -1378,6 +1378,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         components.push({ picture, window });
       }
       joined = joinComponents(components);
+      const dated = widget.binding.dated;
+      if (joined && dated) {
+        if (target < dated.h) return null;
+        if (joined.window[0] < dated.h) joined = { ...joined, window: [dated.h, joined.window[1]] };
+      }
     }
     if (!joined) return null;
     const view = this.host.views(widget.view);
@@ -1525,6 +1530,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
             const h = this.facts.nextStart(id, target);
             if (h < next) next = h;
           }
+          if (widget.binding.dated && widget.binding.dated.h > target && widget.binding.dated.h < next) next = widget.binding.dated.h;
         }
         widget.validWindow = Number.isFinite(next) ? [-Infinity, next - 1] : null;
         this.syncWindowTracking(widget);

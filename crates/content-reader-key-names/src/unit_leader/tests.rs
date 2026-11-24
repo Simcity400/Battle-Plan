@@ -1021,7 +1021,7 @@ fn trait_names_follow_the_append_pass() {
 }
 
 #[test]
-fn a_trait_name_finds_its_first_definitions_ordinal() {
+fn a_trait_name_finds_its_first_definitions_ordinal_and_an_ordinal_names_its_trait() {
     let mut traits = Traits::default();
     for (path, text) in [
         (
@@ -1036,6 +1036,8 @@ fn a_trait_name_finds_its_first_definitions_ordinal() {
     assert_eq!(traits.first_ordinal(b"calm"), Ok(Some(4)));
     assert_eq!(traits.first_ordinal(b"late"), Ok(Some(6)));
     assert_eq!(traits.first_ordinal(b"absent"), Ok(None));
+    assert_eq!([1, 3, 4, 5, 6].map(|ordinal| traits.by_ordinal(ordinal)), [Some("brave"), Some("brave"), Some("calm"), Some("calm"), Some("late")]);
+    assert_eq!([0, 2, 7].map(|ordinal| traits.by_ordinal(ordinal)), [None, None, None], "no ordinal 0, an unreadable name, past the last definition");
 }
 
 #[test]

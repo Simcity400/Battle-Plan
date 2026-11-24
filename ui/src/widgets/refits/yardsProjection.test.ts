@@ -35,8 +35,8 @@ test('a refit line shows the product’s progress against its cost, its dockyard
   assert.equal(cell(unknown, 'dockyards')?.kind, 'notRecorded', 'dockyards the line metadata does not hold are missing, not zero');
   assert.deepEqual(cell(known!.children![0], 'strength'), knownValue(100));
   assert.deepEqual(cell(unknown!.children![0], 'strength'), notRecorded('Maximum ship strength not recorded'));
-  assert.equal(model.summaryPill, '3 dockyards');
-  assert.equal(project(refitsProjection, refits({ dockyards: null })).summaryPill, null, 'no total is invented when the census is incomplete');
+  assert.equal(model.titleSummary, '3 dockyards');
+  assert.equal(project(refitsProjection, refits({ dockyards: null })).titleSummary, null, 'no total is invented when the census is incomplete');
 });
 
 test('the hourly progress cell moves the share without a new reply', () => {
@@ -67,6 +67,6 @@ test('a port shows its priority and dockyards, its queued ships their strength, 
   assert.deepEqual(cell(unnamed, 'name'), notRecorded('Port name unavailable'));
   assert.equal(cell(unnamed, 'dockyards')?.kind, 'notRecorded');
   assert.equal(unnamed!.children, undefined, 'a port with no queue has nothing to open');
-  assert.equal(model.summaryPill, '1 ship waiting · 0 / 29 repair dockyards in use');
-  assert.equal(project(dockyardsProjection, repairs({ queuedShips: null, repairLimit: null })).summaryPill, null);
+  assert.equal(model.titleSummary, '1 ship waiting · 0 / 29 repair dockyards in use');
+  assert.equal(project(dockyardsProjection, repairs({ queuedShips: null, repairLimit: null })).titleSummary, null);
 });

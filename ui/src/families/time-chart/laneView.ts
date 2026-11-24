@@ -6,8 +6,8 @@ import type { TiledLine } from '../../dashboard/tiles/view';
 import type { LaneView, Painted, PaintInput } from '../../draw/lane.ts';
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
-import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
-import { PENDING_ART, artHandleKey, type ArtResolution } from '../art/types.ts';
+import { createLaneArtProvider, laneArtDemand } from '../art/provider.ts';
+import type { ArtResolution } from '../art/types.ts';
 import { BoundedSeriesCursor, createBoundedReadView, type WitnessedPoint } from '../boundedView.ts';
 import type { ArtDemand, ArtHandle, ArtProvider, BoundedSeries, EntityKind, IdentityDemand, IdentityProvider } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
@@ -22,6 +22,8 @@ import {
 } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart, parseChartInspect } from './hitTest.ts';
 import { layoutTimeChart, type TimeChartLayout } from './layout.ts';
+import type { FamilyNavTuple } from '../host/keyboard.ts';
+import { formatDateOnly } from '../valueFormat.ts';
 import type { TimeChartModel } from './model.ts';
 import { collectVisibleChartArt, drawTimeChart } from './painter.ts';
 
@@ -67,7 +69,7 @@ interface HeldTimeChart {
   identitySnapshot: IdentitySnapshot | null | undefined;
   identityIndex: IdentityIndex | null;
   identityProvider: IdentityProvider | undefined;
-  spriteResolutions: Readonly<Record<string, ArtResolution>> | undefined;
+  artResolutions: Readonly<Record<string, ArtResolution>> | undefined;
   artProvider: ArtProvider;
   tiledByRev: Map<number, TiledLine>;
   cursors: Map<string, BoundedSeriesCursor>;
@@ -77,6 +79,12 @@ interface HeldTimeChart {
   lastModel: TimeChartModel | null;
   lastLayout: TimeChartLayout | null;
   lastTipText: string;
+  lastNavSig: string;
+  lastNavText: string;
+  lastNavContent: string;
+  lastNav: readonly FamilyNavTuple[];
+  lastFocusText: string;
+  lastFocusContent: string;
   lastTipContent: string;
   lastMetaText: string;
   lastMetaContent: string;
@@ -96,6 +104,42 @@ function defaultCreateCanvas(width: number, height: number): { readonly canvas: 
   const ctx = canvas.getContext('2d') as unknown as Canvas2D | null;
   if (!ctx) throw new Error('OffscreenCanvas 2D context unavailable');
   return { canvas, ctx };
+}
+
+const objectIds = new WeakMap<object, number>();
+let nextObjectId = 1;
+
+function objectId(value: unknown): number {
+  if (!value || typeof value !== 'object') return 0;
+  let id = objectIds.get(value);
+  if (id === undefined) {
+    id = nextObjectId++;
+    objectIds.set(value, id);
+  }
+  return id;
+}
+
+const rowIndexes = new WeakMap<readonly string[], ReadonlyMap<string, number>>();
+
+export function rowIndexOf(tags: readonly string[]): ReadonlyMap<string, number> {
+  let index = rowIndexes.get(tags);
+  if (!index) {
+    index = new Map(tags.map((tag, row) => [tag, row]));
+    rowIndexes.set(tags, index);
+  }
+  return index;
+}
+
+function contentKey(binding: TimeChartBinding, revisions: Readonly<Record<string, number>>): string {
+  return JSON.stringify([
+    binding.keepTiled ?? [],
+    revisions,
+    objectId(binding.options),
+    objectId(binding.staticPanels),
+    objectId(binding.staticAnswers),
+    objectId(binding.directModel),
+    objectId(binding.identitySnapshot),
+  ]);
 }
 
 function buildReadView(
@@ -159,7 +203,7 @@ function buildReadView(
         let headPoint: WitnessedPoint | null = null;
         let headValue = undefined;
         if (headAnswer && headCfg) {
-          const tagIdx = headCfg.tags.indexOf(tag);
+          const tagIdx = rowIndexOf(headCfg.tags).get(tag) ?? -1;
           if (tagIdx >= 0) {
             const val = rowAmount(headAnswer, tagIdx, headCfg.decimals ?? line.decimals);
             if (val !== undefined && val !== null && Number.isFinite(val)) {
@@ -192,6 +236,19 @@ function buildReadView(
     art: held.artProvider,
     onArtDemand,
   });
+}
+
+export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): readonly FamilyNavTuple[] {
+  const stops: { readonly hour: number; readonly key: string; readonly name: string }[] = [];
+  for (const tick of layout.axisTicks) {
+    if (tick.hour <= model.hour) stops.push({ hour: tick.hour, key: `plot:${tick.hour}`, name: formatDateOnly(tick.hour) });
+  }
+  for (const placed of layout.markers) {
+    stops.push({ hour: placed.marker.hour, key: `marker:${placed.index}@${placed.marker.hour}`, name: placed.marker.title });
+  }
+  stops.push({ hour: model.hour, key: `plot:${model.hour}`, name: formatDateOnly(model.hour) });
+  stops.sort((a, b) => a.hour - b.hour);
+  return stops.map((stop, index) => [stop.key, stop.name, index, 0, ''] as const);
 }
 
 export function timeChartLaneView(
@@ -227,7 +284,7 @@ export function timeChartLaneView(
           identitySnapshot: undefined,
           identityIndex: null,
           identityProvider: undefined,
-          spriteResolutions: undefined,
+          artResolutions: undefined,
           artProvider: createLaneArtProvider(art),
           tiledByRev: new Map(),
           cursors: new Map(),
@@ -237,6 +294,12 @@ export function timeChartLaneView(
           lastModel: null,
           lastLayout: null,
           lastTipText: '',
+          lastNavSig: '',
+          lastNavText: '',
+          lastNavContent: content(),
+          lastNav: [],
+          lastFocusText: '',
+          lastFocusContent: content(),
           lastTipContent: content(),
           lastMetaText: '',
           lastMetaContent: content(),
@@ -254,24 +317,15 @@ export function timeChartLaneView(
       }
 
       const snapshotChanged = held.identitySnapshot !== binding.identitySnapshot;
-      const spritesChanged = held.spriteResolutions !== binding.spriteResolutions;
+      const spritesChanged = held.artResolutions !== binding.artResolutions;
       if (snapshotChanged || spritesChanged) {
         if (snapshotChanged) {
           held.identitySnapshot = binding.identitySnapshot;
           held.identityIndex = binding.identitySnapshot ? IdentityIndex.fromSnapshot(binding.identitySnapshot) : null;
           held.identityProvider = held.identityIndex ? createSnapshotIdentityProvider(held.identityIndex) : undefined;
         }
-        held.spriteResolutions = binding.spriteResolutions;
-        const spriteMap = binding.spriteResolutions;
-        held.artProvider = createLaneArtProvider(held.art, {
-          index: held.identityIndex,
-          resolveHandle: handle => {
-            if (handle.kind === 'sprite' && spriteMap) {
-              return spriteMap[artHandleKey(handle)] ?? PENDING_ART;
-            }
-            return PENDING_ART;
-          },
-        });
+        held.artResolutions = binding.artResolutions;
+        held.artProvider = createLaneArtProvider(held.art, { index: held.identityIndex, resolutions: binding.artResolutions });
       }
 
       if (held.canvas.width !== backingWidth) held.canvas.width = backingWidth;
@@ -296,6 +350,7 @@ export function timeChartLaneView(
       const demandedArtUrls = new Set<string>();
 
       let model: TimeChartModel;
+      let contentSig = contentKey(binding, {});
       if (binding.directModel) {
         model = binding.directModel;
       } else {
@@ -313,21 +368,10 @@ export function timeChartLaneView(
           (kind, key, atHour) => {
             pendingIdentityDemands.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]);
           },
-          handle => {
-            if (handle.kind === 'sprite') {
-              const resolved = binding.spriteResolutions?.[artHandleKey(handle)];
-              if (resolved?.status === 'ready' && resolved.url) {
-                demandedArtUrls.add(resolved.url);
-              } else if (!resolved || resolved.status === 'pending') {
-                pendingSpriteDemands.set(artHandleKey(handle), handle);
-              }
-              return;
-            }
-            const url = artUrlForHandle(handle, held!.identityIndex);
-            if (url) demandedArtUrls.add(url);
-          },
+          handle => laneArtDemand(handle, held!.identityIndex, binding.artResolutions, demandedArtUrls, pendingSpriteDemands),
         );
         model = proj.project(readView, binding.options);
+        contentSig = contentKey(binding, readView.revisions);
       }
       if (binding.view?.x && model.view?.x !== binding.view.x) model = { ...model, view: { ...model.view, x: binding.view.x } };
 
@@ -412,6 +456,7 @@ export function timeChartLaneView(
         model.markers?.length ?? 0,
         model.gaps?.length ?? 0,
         input.inspect ?? null,
+        contentSig,
         held.artRevision,
         binding.theme?.surface ?? '',
       ]);
@@ -444,6 +489,8 @@ export function timeChartLaneView(
         transform: {
           xFrom: layout.xDomain[0],
           xTo: layout.xDomain[1],
+          axisFrom: model.extent[0],
+          axisTo: model.hour,
           yMin: layout.yDomain[0],
           yMax: layout.yDomain[1],
           log: model.yAxis.log === true,
@@ -462,9 +509,32 @@ export function timeChartLaneView(
       }
       fields.meta = { value: metaPayload, content: `meta:${held.lastMetaContent}` };
 
+      if (sig !== held.lastNavSig) {
+        held.lastNavSig = sig;
+        const stops = chartNavStops(model, layout);
+        const text = JSON.stringify(stops);
+        if (text !== held.lastNavText) {
+          held.lastNavText = text;
+          held.lastNavContent = content();
+        }
+        held.lastNav = stops;
+      }
+      fields.nav = { value: held.lastNav, content: `nav:${held.lastNavContent}` };
+
+      if (binding.focusedKey) {
+        const focusTip = deriveTimeChartTooltip(model, layout, binding.focusedKey);
+        const tipObj = { key: `focus:${binding.focusedKey}`, text: focusTip };
+        const focusText = JSON.stringify(tipObj);
+        if (focusText !== held.lastFocusText) {
+          held.lastFocusText = focusText;
+          held.lastFocusContent = content();
+        }
+        fields.focusTooltip = { value: tipObj, content: `focus:${held.lastFocusContent}` };
+      }
+
       if (binding.audit && model.auditRows) {
         fields.audit = {
-          value: { auditId: binding.auditId, rows: model.auditRows },
+          value: { id: binding.auditId, rows: model.auditRows },
           content: `audit:${binding.auditId ?? 0}:${held.content}`,
         };
       }
