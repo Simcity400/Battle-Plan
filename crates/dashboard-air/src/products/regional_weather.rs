@@ -1,7 +1,6 @@
 
 use dashboard_base::products::{LoadContext, Product};
-use dashboard_world::products::place_names;
-use dashboard_base::{Source, catalogue::{self, Catalogue, KeyedResults, Refusals, View}, products::at_hour::{At, AtHour, Read}, span::HourSpan};
+use dashboard_base::{Source, catalogue::{self, Catalogue, KeyedResults, Refusals, View}, span::HourSpan};
 use dashboard_query::{Query, read};
 use engine_executable::modifier_keys;
 use content_reader_map::province_graph::ProvinceGraph;
@@ -47,7 +46,6 @@ pub(crate) const MODIFIERS: [(&str, u32, &str); 8] = [
 ];
 
 pub struct RegionalWeather;
-pub struct WeatherProvinces;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -207,40 +205,6 @@ pub struct RegionalWeatherReply {
 }
 
 dashboard_base::reply_warnings!(RegionalWeatherReply);
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RegionalWeatherProvincesParams {
-    pub branch_id: String,
-    pub region: String,
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct RegionalWeatherProvince {
-    pub id: String,
-    pub name: Option<String>,
-    #[doc = " The stored snow word, fixed5; permanent snow is not added."]
-    pub snow: Option<String>,
-    #[doc = " Whether the game shows mud: the raw mud byte is nonzero."]
-    pub mud: Option<bool>,
-    #[doc = " The replayed temperature, fixed5 degrees Celsius."]
-    pub temperature: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct RegionalWeatherProvincesReply {
-    pub read_hour: Option<i32>,
-    pub region: String,
-    pub provinces: Vec<RegionalWeatherProvince>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(RegionalWeatherProvincesReply);
 
 pub struct Weather {
     members: BTreeMap<u32, Vec<u32>>,
@@ -441,24 +405,12 @@ pub(crate) fn region_readout(
                 return WeatherReadout::NotRecorded { reason: "Region weather was not recorded at this hour".into() };
             };
             let mut since_idx = last_idx;
-            let mut bounded = true;
             while since_idx > 0 {
                 let prev = since_idx - 1;
-                if days[prev].at.is_none() {
-                    bounded = true;
+                if days[prev].at.is_none() || region_condition_on_day(region, prev, measures) != Some(current) {
                     break;
                 }
-                match region_condition_on_day(region, prev, measures) {
-                    Some(cond) if cond == current => since_idx = prev,
-                    Some(_) => {
-                        bounded = false;
-                        break;
-                    }
-                    None => {
-                        bounded = true;
-                        break;
-                    }
-                }
+                since_idx = prev;
             }
             let name = if current == "clear" {
                 "Clear".to_owned()
@@ -468,8 +420,8 @@ pub(crate) fn region_readout(
             WeatherReadout::Condition {
                 id: current.to_owned(),
                 name,
-                since_hour: Some(days[since_idx].first),
-                since_bounded: bounded,
+                since_hour: days[since_idx].at.map(|(_, hour)| hour),
+                since_bounded: true,
                 as_of_hour,
             }
         }
@@ -876,143 +828,5 @@ impl Product for RegionalWeather {
         let reply = history(&query, params, &weather, cancelled)?;
         dashboard_base::products::check_reply_budget(&reply).map_err(|_| dashboard_core::invalid("Regional weather reply exceeds transport budget; nothing was truncated"))?;
         Ok(reply)
-    }
-}
-
-pub struct ProvincesContext {
-    weather: Result<Arc<Weather>, String>,
-    places: Result<Arc<place_names::Content>, String>,
-}
-
-impl ProvincesContext {
-    fn members(&self, region: &str) -> Option<&[u32]> {
-        let weather = self.weather.as_ref().ok()?;
-        weather.members.get(&region.parse::<u32>().ok()?).map(Vec::as_slice)
-    }
-}
-
-fn province_name(frame: &DecodedFrame, places: &Result<Arc<place_names::Content>, String>, named: &place_names::Places<'_>, id: u32) -> Result<String, String> {
-    let content = places.as_ref().map_err(Clone::clone)?;
-    let name = named.province(content, id, false);
-    name.name.ok_or_else(|| name.missing.unwrap_or_else(|| format!("province {id} has no name at {}", frame.hour)))
-}
-
-pub(crate) fn provinces(
-    frame: &DecodedFrame,
-    members: &[u32],
-    name_of: &dyn Fn(u32) -> Result<String, String>,
-    temperatures: Result<Vec<Option<i64>>, String>,
-    warnings: &mut Vec<String>,
-) -> Vec<RegionalWeatherProvince> {
-    let weather = frame.complete::<tables::WeatherProvinces>();
-    let rows: BTreeMap<u32, &WeatherProvinceRow> = weather.as_ref().ok().into_iter().flat_map(|rows| rows.iter()).map(|row| (row.id, row)).collect();
-    let mut refused = Refusals::default();
-    let mut out = Vec::with_capacity(members.len());
-    for (at, &id) in members.iter().enumerate() {
-        let identity = format!("province {id}");
-        let name = name_of(id).map_err(|why| refused.note(format!("name: {why}"), &identity)).ok();
-        let (snow, mud) = match rows.get(&id) {
-            Some(row) => {
-                let mud = row.raw_mud.require("raw mud of weather provinces").map(|&mud| mud != 0).map_err(|error| refused.note(format!("raw mud: {error}"), &identity)).ok();
-                (Some(row.snow.to_string()), mud)
-            }
-            None => {
-                let reason = weather.as_ref().err().map(ToString::to_string).unwrap_or_else(|| "province has no recorded weather row".into());
-                refused.note(format!("snow and raw mud: {reason}"), &identity);
-                (None, None)
-            }
-        };
-        let temperature = match &temperatures {
-            Ok(values) => values[at].map(|value| value.to_string()).or_else(|| {
-                refused.note("temperature: province has no reconstructed slot", &identity);
-                None
-            }),
-            Err(reason) => {
-                refused.note(format!("temperature: {reason}"), &identity);
-                None
-            }
-        };
-        out.push(RegionalWeatherProvince { id: id.to_string(), name, snow, mud, temperature });
-    }
-    warnings.extend(refused.counts("weather province fields"));
-    out
-}
-
-impl AtHour for WeatherProvinces {
-    const KEY: &'static str = "regional-weather-provinces";
-    const TITLE: &'static str = "Province weather";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = RegionalWeatherProvincesParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, region];
-    type Reply = RegionalWeatherProvincesReply;
-    type Context = ProvincesContext;
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        params.region.parse::<u32>().map(drop).map_err(|_| "Invalid weather region")
-    }
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![RegionalWeatherProvincesParams::decl(), RegionalWeatherProvincesReply::decl(), RegionalWeatherProvince::decl()]
-    }
-
-    fn tables(_params: &Self::Params) -> Vec<TableId> {
-        let mut tables = vec![TableId::WeatherProvinces];
-        tables.extend(place_names::TABLES);
-        tables
-    }
-
-    fn reads_in(params: &Self::Params, _owner: Option<dashboard_base::products::at_hour::Owner>, step: usize, held: &DecodedFrame, at: &dashboard_base::products::at_hour::ReadsAt<'_, Self::Context>) -> Vec<Read> {
-        let context = at.context;
-        let members = context.members(&params.region).filter(|_| context.places.is_ok()).unwrap_or_default();
-        let mut reads = place_names::reads(members, &[], step, held);
-        if members.is_empty() {
-            reads.clear();
-        }
-        if step == 0 {
-            reads.push(Read::all(TableId::WeatherProvinces));
-        }
-        reads
-    }
-
-    fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(ProvincesContext {
-            weather: weather(source, load).map_err(|error| error.to_string()),
-            places: place_names::Content::read(source, load).map_err(|error| error.to_string()),
-        })
-    }
-
-    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let region = params.region.parse::<u32>().map_err(|_| dashboard_core::invalid("Invalid weather region"))?;
-        let mut warnings = Vec::new();
-        let read_hour = frame.tables[TableId::WeatherProvinces.index()].sampled_at().or_else(|| frame.complete::<tables::WeatherProvinces>().is_ok().then_some(frame.hour));
-        let named = place_names::Places::new(frame);
-        let name_of = |id: u32| province_name(frame, &at.context.places, &named, id);
-        let provinces = match &at.context.weather {
-            Err(why) => {
-                warnings.push(format!("1 weather province roster not shown: region {region}: {why}"));
-                Vec::new()
-            }
-            Ok(weather) => {
-                warnings.extend(weather.warnings.iter().cloned());
-                match weather.members.get(&region) {
-                    None => {
-                        warnings.push(format!("1 weather province roster not shown: region {region} is absent from the recorded content stack"));
-                        Vec::new()
-                    }
-                    Some(members) => {
-                        let mut memo = Memo::default();
-                        let temperatures = frame
-                            .complete::<tables::WeatherProvinces>()
-                            .map_err(|error| error.to_string())
-                            .and_then(|rows| states(&mut memo, weather, frame.branch, frame.hour, rows))
-                            .map(|states| members.iter().map(|&id| states.get(id as usize).map(|state| state.temperature)).collect());
-                        provinces(frame, members, &name_of, temperatures, &mut warnings)
-                    }
-                }
-            }
-        };
-        Ok(RegionalWeatherProvincesReply { read_hour, region: params.region.clone(), provinces, warnings })
     }
 }

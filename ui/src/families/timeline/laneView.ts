@@ -4,14 +4,15 @@ import type { LaneView, Painted, PaintInput, Scene } from '../../draw/lane.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
 import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
-import type { ArtHandle, ArtProvider, BoundedReadView, EntityKind, FamilyTheme, IdentityProvider, MirrorModel } from '../contract.ts';
-import { readViewFromHeatScene, samePictures, snapshotPictures, stringifyTooltipPayload } from '../heat/sceneReadView.ts';
+import type { ArtHandle, ArtProvider, BoundedReadView, FamilyTheme, IdentityProvider, MirrorModel } from '../contract.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import type { FamilyTooltipField, FamilyTooltipPayload } from '../host/tooltips.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
-import { AXIS_HEIGHT, layoutTimeline, type TimelineLayout } from './layout.ts';
+import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload } from '../scene.ts';
+import { AXIS_HEIGHT, frameTimeline, placeTimeline, visibleRange, type TimelinePlacement } from './layout.ts';
+import { resolutionFor, type TimelineResolution } from './resolution.ts';
 import { deriveTimelineAudit, laneByKey, spanAt, type TimelineHit, type TimelineLane, type TimelineModel, type TimelineProjection } from './model.ts';
 import { decodeTimelineHit, drawTimeline, encodeTimelineHit, hitTimeline } from './painter.ts';
 import { ensureTimelineProjection } from './registry.ts';
@@ -70,7 +71,10 @@ interface HeldTimeline {
   identityDemands: FieldEntry | null;
   kept: Map<string, { text: string; content: string }>;
   paintView: BoundedReadView | null;
-  structure: readonly unknown[] | null;
+  placementKey: readonly unknown[] | null;
+  placement: TimelinePlacement | null;
+  resolution: TimelineResolution | null;
+  structure: TimelinePlacement | null;
   structureFields: Record<string, FieldEntry>;
   auditKey: readonly unknown[] | null;
   auditField: FieldEntry | null;
@@ -96,18 +100,19 @@ function keptField(held: HeldTimeline, name: string, value: unknown, text: strin
   return { value, content: next.content };
 }
 
-function navOf(layout: TimelineLayout): FamilyNavTuple[] {
+function navOf(layout: TimelinePlacement): FamilyNavTuple[] {
   const nav: FamilyNavTuple[] = [];
   for (const placed of layout.lanes) {
     const lane = placed.lane;
+    if (lane.kind === 'heading') continue;
     const tree = lane.expandable ? (layout.lanes[placed.ordinal + 1]?.lane.parentKey === lane.key ? 1 : 0) : -1;
     nav.push([lane.key, lane.label, nav.length, tree, lane.parentKey ?? '', lane.meta ?? null, placed.y, placed.height]);
   }
   return nav;
 }
 
-function mirrorOf(layout: TimelineLayout): MirrorModel {
-  const rows = layout.lanes.map((placed, index) => ({
+function mirrorOf(layout: TimelinePlacement): MirrorModel {
+  const rows = layout.lanes.filter(placed => placed.lane.kind !== 'heading').map((placed, index) => ({
     key: placed.lane.key,
     name: placed.lane.label,
     rowIndex: index,
@@ -140,17 +145,19 @@ function tooltipFor(
   return defaultTimelineTooltip(model, lane, hit);
 }
 
-function collectArt(model: TimelineModel, layout: TimelineLayout, index: IdentityIndex | null): string[] {
+function collectArt(model: TimelineModel, layout: TimelinePlacement, scrollTop: number, index: IdentityIndex | null): string[] {
   const urls = new Set<string>();
   const add = (handle: ArtHandle | null | undefined) => {
     if (!handle) return;
     const url = artUrlForHandle(handle, index);
     if (url) urls.add(url);
   };
-  for (const placed of layout.lanes) {
-    add(placed.lane.flag);
-    add(placed.lane.icon);
-    if (model.iconsOnBars) for (const span of placed.lane.spans) add(span.icon);
+  const [first, end] = visibleRange(layout, scrollTop);
+  for (let i = first; i < end; i++) {
+    const lane = layout.lanes[i]!.lane;
+    add(lane.flag);
+    add(lane.icon);
+    if (model.iconsOnBars) for (const span of lane.spans) add(span.icon);
   }
   return [...urls];
 }
@@ -173,7 +180,7 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
       const day = nextDayStart(hour);
       if (held?.model && held.modelKind === bound.kind && hour >= held.validFrom && hour < held.validUntil) return Math.min(day, held.validUntil);
       if (!projection.nextChange) return hour + 1;
-      return Math.min(day, projection.nextChange(readViewFromHeatScene(scene, bound, hour), bound.options));
+      return Math.min(day, projection.nextChange(sceneReadView(scene, bound, hour), bound.options));
     },
 
     unmount(_widget: number, state: Map<string, unknown>): void {
@@ -223,6 +230,9 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
           identityDemands: null,
           kept: new Map(),
           paintView: null,
+          placementKey: null,
+          placement: null,
+          resolution: null,
           structure: null,
           structureFields: {},
           auditKey: null,
@@ -261,33 +271,21 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
         && input.hour >= held.validFrom
         && input.hour < held.validUntil;
 
-      let readView: BoundedReadView | null = null;
-      const viewAt = (hour: number): BoundedReadView => {
-        const pendingIdentity = new Map<string, readonly [EntityKind, string, number]>();
-        const demandedArt = new Set<string>();
-        const view = readViewFromHeatScene(input, bound, hour, {
-          identity: held!.identityProvider,
-          onIdentityDemand: (kind, key, atHour) => { pendingIdentity.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]); },
-          art: held!.artProvider,
-          onArtDemand: handle => {
-            const url = artUrlForHandle(handle, held!.identityIndex);
-            if (url) demandedArt.add(url);
-          },
-        });
-        held!.demandedArt = [...demandedArt];
-        const demands = [...pendingIdentity.values()];
-        held!.identityDemands = demands.length
-          ? keptField(held!, 'identityDemands', demands, JSON.stringify(demands), content)
-          : null;
-        return view;
-      };
-
       let model: TimelineModel;
       if (reuse) {
         model = held.model!;
       } else {
-        readView = viewAt(input.hour);
-        model = projection.project(readView, bound.options);
+        const projected = projectScene(input, bound, input.hour, {
+          identity: held.identityProvider,
+          art: held.artProvider,
+          index: held.identityIndex,
+        }, view => projection.project(view, bound.options));
+        model = projected.model;
+        const readView = projected.view;
+        held.demandedArt = projected.artUrls;
+        held.identityDemands = projected.identityDemands.length
+          ? keptField(held, 'identityDemands', projected.identityDemands, JSON.stringify(projected.identityDemands), content)
+          : null;
         held.model = model;
         held.modelKind = bound.kind;
         held.prevOptions = bound.options;
@@ -300,8 +298,14 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
         held.focusTipGate.invalidate();
       }
 
-      const layout = layoutTimeline(model, bound.width, bound.height, bound.expanded, input.hour);
-      held.art.requestVisible([...collectArt(model, layout, held.identityIndex), ...held.demandedArt]);
+      const placementKey = [model, bound.expanded, bound.width, bound.height] as const;
+      if (!held.placement || !held.placementKey || held.placementKey.some((part, index) => part !== placementKey[index])) {
+        held.placementKey = placementKey;
+        held.placement = placeTimeline(model, bound.width, bound.height, bound.expanded);
+      }
+      const layout = frameTimeline(held.placement, input.hour);
+      const resolution = held.resolution = resolutionFor(held.resolution, model, layout);
+      held.art.requestVisible([...collectArt(model, layout, bound.scrollTop, held.identityIndex), ...held.demandedArt]);
       const paintView = held.paintView!;
       const inspected = decodeTimelineHit(input.inspect);
 
@@ -316,14 +320,14 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
         inspectedKey: inspected?.laneKey ?? null,
         selectedKey: bound.selectedKey,
         focusedKey: bound.focusedKey,
+        resolution,
       });
       held.content = content();
 
       const fields: Record<string, FieldEntry> = {};
       if (held.identityDemands) fields.identityDemands = held.identityDemands;
-      const structure = [model, bound.expanded, bound.width, bound.height] as const;
-      if (!held.structure || held.structure.some((part, index) => part !== structure[index])) {
-        held.structure = structure;
+      if (held.structure !== held.placement) {
+        held.structure = held.placement;
         const meta = {
           empty: model.empty ?? null,
           emptyDetail: null,
@@ -346,7 +350,7 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
 
       const now = laneOptions?.clock ? laneOptions.clock() : input.now;
       let tipView: BoundedReadView | null = null;
-      const tipViewNow = () => tipView ??= readViewFromHeatScene(input, bound, input.hour, { identity: held!.identityProvider, art: held!.artProvider });
+      const tipViewNow = () => tipView ??= sceneReadView(input, bound, input.hour, { identity: held!.identityProvider, art: held!.artProvider });
       if (inspected && input.inspect) {
         if (!held.tipField || held.tipGate.due(now, input.speed, input.inspect)) {
           const payload = tooltipFor(projection, model, inspected, tipViewNow(), bound.options);
@@ -365,7 +369,10 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
 
       if (bound.focusedKey) {
         if (!held.focusTipField || held.focusTipGate.due(now, input.speed, bound.focusedKey)) {
-          const focusHit: TimelineHit = { kind: 'lane', laneKey: bound.focusedKey, hour: input.hour };
+          const current = laneByKey(model, bound.focusedKey)?.spans.find(span => span.open);
+          const focusHit: TimelineHit = current
+            ? { kind: 'span', laneKey: bound.focusedKey, spanId: current.id, hour: input.hour }
+            : { kind: 'lane', laneKey: bound.focusedKey, hour: input.hour };
           const payload = tooltipFor(projection, model, focusHit, tipViewNow(), bound.options);
           const tip: FamilyTooltipField = {
             key: `focus:${bound.focusedKey}`,
@@ -395,7 +402,7 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
         fields,
         motion: false,
         nextChangeAt: Math.min(held.validUntil, nextDayStart(input.hour)),
-        hit: point => encodeTimelineHit(hitTimeline(layout, point[0], point[1], scrollTop)),
+        hit: point => encodeTimelineHit(hitTimeline(layout, resolution, point[0], point[1], scrollTop)),
       };
     },
   };

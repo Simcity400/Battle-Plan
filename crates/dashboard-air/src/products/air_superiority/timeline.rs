@@ -5,7 +5,7 @@ use super::{
     compose::{Cell, Compose, Pair, Roster, View},
     country_style_at, hour_scores,
     index::{self, AirIndex},
-    names, ranking, region_name, side_of,
+    names, region_name, side_of,
 };
 use dashboard_base::{Source, products::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, at_hour::{self, AtHour, Read}}, span::HourSpan};
 use dashboard_query::{Query, identity::Holders, timeline::Stretch};
@@ -414,6 +414,7 @@ pub(crate) fn readout_of(cell: Option<&AirDayCell>, hour: Option<i32>) -> AirRea
     };
     match cell {
         AirDayCell::Reason { reason } => AirReadout::NotRecorded { reason: reason.clone() },
+        AirDayCell::Sides(sides) if !sides.unknown.is_empty() => AirReadout::NotRecorded { reason: "A side's air score was not recorded".into() },
         AirDayCell::Sides(sides) => {
             let mut total: i128 = 0;
             let mut best: Option<(u32, i128)> = None;
@@ -425,9 +426,6 @@ pub(crate) fn readout_of(cell: Option<&AirDayCell>, hour: Option<i32>) -> AirRea
                 }
             }
             if total == 0 {
-                if !sides.unknown.is_empty() {
-                    return AirReadout::NotRecorded { reason: "Air superiority could not be determined".into() };
-                }
                 return AirReadout::NoActivity { as_of_hour };
             }
             let Some((side, score)) = best else {
@@ -642,10 +640,20 @@ impl Links {
     }
 }
 
+fn theatres_in(query: &Query<'_>, run: u32, first: i32, last: i32, theatres: &[u64]) -> Option<(Vec<(i32, i32)>, Vec<(u32, i32, i32)>)> {
+    let table = TableId::AirTheatreRegions;
+    let recording = query.replay.recording();
+    let ranges: Vec<(u128, u128)> = theatres.iter().map(|&theatre| (u128::from(theatre) << 32, u128::from(theatre) << 32 | u128::from(u32::MAX))).collect();
+    let column = dashboard_declare::field(table, "wings").ok()?;
+    let read = dashboard_query::cost::storage(|| lanes::reads(recording, run, table, first, last)).ok()?;
+    let history = dashboard_query::cost::storage(|| lanes::history(recording, run, table, &[column], lanes::Keys::Ranges(&ranges), first, last)).ok()?;
+    let runs = history.runs(column)?.into_iter().flat_map(|(key, runs)| runs.into_iter().filter(|run| run.2.is_some()).map(move |(first, last, _)| (key as u32, first, last))).collect();
+    Some((read, runs))
+}
+
 fn theatre_days(query: &Query<'_>, stretches: &[Stretch], days: &[Option<DayRead>], at: &[Option<DayAt>], ids: &[String]) -> Vec<Option<Result<HashSet<u32>, ()>>> {
     let theatres: Vec<u64> = ids.iter().filter_map(|id| id.parse().ok()).collect::<BTreeSet<u64>>().into_iter().collect();
-    let ledger = Recorded { query };
-    let held: Vec<Option<(Vec<(i32, i32)>, Vec<(u32, i32, i32)>)>> = stretches.iter().map(|stretch| ranking::Ledger::theatres(&ledger, stretch.run, stretch.first, stretch.last, &theatres)).collect();
+    let held: Vec<Option<(Vec<(i32, i32)>, Vec<(u32, i32, i32)>)>> = stretches.iter().map(|stretch| theatres_in(query, stretch.run, stretch.first, stretch.last, &theatres)).collect();
     days.iter()
         .zip(at)
         .map(|(read, at)| {
@@ -709,89 +717,9 @@ fn bounds(query: &Query<'_>, stretches: &[Stretch], viewpoint: bool) -> Option<H
     Some(out.into_iter().map(|(region, bound)| (region, u128::try_from(bound).unwrap_or(0))).collect())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct DayActivity {
-    pub day: i32,
-    pub activity: i64,
-    pub total: i64,
-}
-
-impl DayActivity {
-    fn before(&self, day: i32) -> i128 {
-        i128::from(self.total) + i128::from(self.activity) * i128::from(day.saturating_sub(self.day).max(0))
-    }
-}
-
-pub(crate) struct StretchDays {
-    pub first_day: i32,
-    pub last_day: i32,
-    pub counts_last: bool,
-    pub start: HashMap<u32, DayActivity>,
-    pub end: HashMap<u32, DayActivity>,
-}
-
-pub(crate) fn day_sums(stretches: &[StretchDays]) -> HashMap<u32, u128> {
-    let mut out: HashMap<u32, i128> = HashMap::new();
-    for stretch in stretches {
-        for (region, row) in &stretch.end {
-            let through = row.before(stretch.last_day) + if stretch.counts_last { i128::from(row.activity) } else { 0 };
-            let before = stretch.start.get(region).map_or(0, |row| row.before(stretch.first_day));
-            *out.entry(*region).or_default() += through - before;
-        }
-    }
-    out.into_iter().map(|(region, sum)| (region, u128::try_from(sum).unwrap_or(0))).collect()
-}
-
-struct Recorded<'q, 'a> {
-    query: &'q Query<'a>,
-}
-
-impl Recorded<'_, '_> {
-    fn rows(&self, table: TableId, run: u32, hour: i32, keys: lanes::Keys<'_>, fields: &[&str]) -> Option<Vec<(u128, Vec<i64>)>> {
-        let snapshot = dashboard_query::cost::storage(|| lanes::at_keys(self.query.replay.recording(), run, table, hour, None, keys)).ok()?;
-        if !matches!(snapshot.status, Status::Complete) {
-            return None;
-        }
-        let view = snapshot.view();
-        let columns: Vec<usize> = fields.iter().map(|name| dashboard_declare::field(table, name).ok()).collect::<Option<_>>()?;
-        snapshot.rows.iter().map(|&(key, slot)| Some((key, columns.iter().map(|&column| view.number(column, slot)).collect::<Option<Vec<i64>>>()?))).collect()
-    }
-}
-
-impl ranking::Ledger for Recorded<'_, '_> {
-    fn read(&self, table: TableId, run: u32, first: i32, last: i32) -> bool {
-        dashboard_query::cost::storage(|| lanes::reads(self.query.replay.recording(), run, table, first, last)).is_ok_and(|read| read == [(first, last)])
-    }
-
-    fn owner(&self, run: u32, hour: i32, raw: u32) -> Option<HashMap<u32, ranking::OwnerDay>> {
-        let owner = u128::from(raw) << 32;
-        let rows = self.rows(TableId::AirOwnerDays, run, hour, lanes::Keys::Range(owner, owner | u128::from(u32::MAX)), &["day", "friendly", "enemy", "friendly_total", "enemy_total"])?;
-        rows.into_iter()
-            .map(|(key, cells)| Some((key as u32, ranking::OwnerDay { day: i32::try_from(cells[0]).ok()?, friendly: cells[1], enemy: cells[2], friendly_total: cells[3], enemy_total: cells[4] })))
-            .collect()
-    }
-
-    fn regions(&self, run: u32, hour: i32) -> Option<HashMap<u32, DayActivity>> {
-        let rows = self.rows(TableId::AirRegionDays, run, hour, lanes::Keys::All, &["day", "activity", "activity_total"])?;
-        rows.into_iter().map(|(key, cells)| Some((key as u32, DayActivity { day: i32::try_from(cells[0]).ok()?, activity: cells[1], total: cells[2] }))).collect()
-    }
-
-    fn theatres(&self, run: u32, first: i32, last: i32, theatres: &[u64]) -> Option<(Vec<(i32, i32)>, Vec<(u32, i32, i32)>)> {
-        let table = TableId::AirTheatreRegions;
-        let recording = self.query.replay.recording();
-        let ranges: Vec<(u128, u128)> = theatres.iter().map(|&theatre| (u128::from(theatre) << 32, u128::from(theatre) << 32 | u128::from(u32::MAX))).collect();
-        let column = dashboard_declare::field(table, "wings").ok()?;
-        let read = dashboard_query::cost::storage(|| lanes::reads(recording, run, table, first, last)).ok()?;
-        let history = dashboard_query::cost::storage(|| lanes::history(recording, run, table, &[column], lanes::Keys::Ranges(&ranges), first, last)).ok()?;
-        let runs = history.runs(column)?.into_iter().flat_map(|(key, runs)| runs.into_iter().filter(|run| run.2.is_some()).map(move |(first, last, _)| (key as u32, first, last))).collect();
-        Some((read, runs))
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Want {
     Whole,
-    Ranking,
     Tile(i64),
 }
 
@@ -848,45 +776,9 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
             })
             .collect()
     };
-    let empty = |rows: Vec<AirTimelineRow>, warnings: Vec<String>| AirTimelineReply {
-        first_hour,
-        last_hour: view_last,
-        day_hours: DAY,
-        days: Vec::new(),
-        excluded: Vec::new(),
-        sides: Vec::new(),
-        legend: Vec::new(),
-        viewpoint: None,
-        viewpoint_country_style: None,
-        gaps: gaps.clone(),
-        rows,
-        scale: SCALE,
-        bad_below: BAD_BELOW,
-        good_above: GOOD_ABOVE,
-        warnings,
-    };
     let top = params.regions.is_none().then(|| params.top.unwrap_or(TOP));
 
     let stretches: Vec<Stretch> = query.timeline.within(first_hour, view_last).collect();
-    if want == Want::Ranking
-        && let Some(top) = top
-        && let Some(sums) = ranking::sums(&Recorded { query: &query }, params, &index, &query.holders, &stretches, view_last)
-    {
-        let mut ranked: Vec<(u32, u128)> = sums.into_iter().filter(|(region, _)| !pinned_set.contains(region) && !hidden_set.contains(region)).collect();
-        let mut seen: HashSet<u32> = ranked.iter().map(|(region, _)| *region).chain(pinned_set.iter().copied()).chain(hidden_set.iter().copied()).collect();
-        for stretch in &stretches {
-            for region in activity_at(&query, stretch.run, stretch.last).into_iter().flat_map(|rows| rows.into_keys()) {
-                if seen.insert(region) {
-                    ranked.push((region, 0));
-                }
-            }
-        }
-        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        ranked.truncate(top);
-        let mut regions = pinned_list.clone();
-        regions.extend(ranked.into_iter().map(|(region, _)| region));
-        return Ok(empty(named(&regions, Vec::new(), Vec::new()), warnings));
-    }
     let mut days: Vec<Option<DayAt>> = vec![None; count];
     for (at, stretch) in stretches.iter().enumerate() {
         for day in stretch.first.div_euclid(DAY)..=stretch.last.div_euclid(DAY) {
@@ -977,9 +869,6 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
             }
         }
     };
-    if want == Want::Ranking {
-        return Ok(empty(named(&shown, Vec::new(), Vec::new()), warnings));
-    }
     let mut resolver = RecordedSideResolver::new(source, &query, branch, load, cancelled, &mut warnings)?;
     let cells = composer.shown_with_resolver(&shown, &index, &mut resolver, cancelled)?;
     let viewpoint_country_style = (params.mode == Some(AirMode::Viewpoint) && params.viewpoint_country == Some(true)).then(|| {
@@ -1026,43 +915,5 @@ impl Product for AirSuperiorityTimeline {
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         timeline(source, params, context, cancelled, params.tile.map_or(Want::Whole, Want::Tile))
-    }
-}
-
-pub struct AirSuperiorityRanking;
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct AirRankingReply {
-    pub rows: Vec<AirTimelineRow>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(AirRankingReply);
-
-impl Product for AirSuperiorityRanking {
-    const KEY: &'static str = "air-superiority-ranking";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = AirTimelineParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, mode, viewpoint, viewpointCountry, sides, regions, pinnedRegions, hiddenRegions, theatres, top, tile, "regions[]", "pinnedRegions[]", "hiddenRegions[]"];
-    type Reply = AirRankingReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![AirRankingReply::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.validate()?;
-        if params.tile.is_some() {
-            return Err("The air ranking is of the whole view, not a tile");
-        }
-        Ok(())
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let reply = timeline(source, params, context, cancelled, Want::Ranking)?;
-        Ok(AirRankingReply { rows: reply.rows, warnings: reply.warnings })
     }
 }

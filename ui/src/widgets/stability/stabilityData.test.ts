@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { breakdownRows, formatPercent, linesPerMeasure, percentRuns, rawAt, readHourOf, stabilityEnd, zoomRange } from './stabilityData.ts';
-import type { ChartBucket, ChartSummary } from '../../charts/chartSummary';
+import { breakdownRows, formatPercent, linesPerMeasure, rawAt } from './stabilityData.ts';
 import { resolveCountries } from '../../dashboard/groups.ts';
 import { definition } from './definition.ts';
 import type { BreakdownLine, StabilityBreakdown } from '../../generated/dashboard';
@@ -39,7 +38,6 @@ test('values are exact percent with two decimals, signed for parts', () => {
   assert.equal(formatPercent('96000', 5), '96.0%');
   assert.equal(formatPercent('5000', 5, true), '+5.0%');
   assert.equal(formatPercent('-8938', 5, true), '−8.9%');
-  assert.deepEqual(percentRuns([{ firstHour: 1, lastHour: 2, valueRaw: '96000', startsSegment: true }], 5), [{ firstHour: 1, lastHour: 2, value: 96, breakBefore: true }]);
   assert.equal(rawAt([{ firstHour: 1, lastHour: 2, valueRaw: '96000', startsSegment: true }], 3), null);
 });
 
@@ -85,31 +83,4 @@ test('a long breakdown lists its largest lines and counts the rest, so it fits t
   const { rows } = breakdownRows(many, 'stability', 5, 'Stability', cap);
   assert.equal(rows.filter(row => row.label.startsWith('Spirit')).length, cap);
   assert.deepEqual(rows.find(row => row.label === '3 more lines'), { label: '3 more lines', value: '+0.6%', tone: 'muted' });
-});
-
-test('zoom fits both bounds of the values in view, even beyond 0-100% in a mod', () => {
-  assert.deepEqual(zoomRange([90, 96]), [89, 97]);
-  assert.deepEqual(zoomRange([120, 150]), [117, 153]);
-  assert.equal(zoomRange(null), null);
-});
-
-
-test('an hour between reads of the inputs carries the read before it; before the first read nothing is known', () => {
-  const reads = [{ firstHour: 100, lastHour: 100 }, { firstHour: 124, lastHour: 130 }];
-  assert.equal(readHourOf(reads, 100), 100);
-  assert.equal(readHourOf(reads, 110), 100);
-  assert.equal(readHourOf(reads, 127), 127);
-  assert.equal(readHourOf(reads, 200), 130);
-  assert.equal(readHourOf(reads, 99), null);
-});
-
-test('an end label reads the value where the line ends, never that value taken for an hour', () => {
-  const bucket = (firstHour: number, value: number): ChartBucket => ({ firstHour, lastHour: firstHour + 23, lastValueHour: firstHour + 23, minHour: firstHour,
-    maxHour: firstHour, firstValue: value, lastValue: value, minValue: value, maxValue: value, firstBreak: false, hasBreak: false });
-  const summary: ChartSummary = { from: 5000, to: 5047, width: 2, buckets: [bucket(5000, 0.452), bucket(5024, 0.613)] };
-  assert.deepEqual(stabilityEnd(summary, 5047, 5), { value: 0.613, raw: '61300' });
-  assert.equal(formatPercent(stabilityEnd(summary, 5047, 5)!.raw, 5), formatPercent('61300', 5));
-  assert.deepEqual(stabilityEnd(summary, 5010, 5), { value: 0.452, raw: '45200' }, 'the last bin begun by the end');
-  assert.equal(stabilityEnd(summary, 4000, 5), null, 'before the line nothing is labelled');
-  assert.equal(stabilityEnd(undefined, 5047, 5), null);
 });

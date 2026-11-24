@@ -1,6 +1,6 @@
 
-use dashboard_base::products::{Country, validate_country};
-use dashboard_world::products::{army_windows::windows, holder_tags::{HolderTags, Identity, matches}};
+use dashboard_base::products::Country;
+use dashboard_world::products::{army_windows::windows, holder_tags::{HolderTags, Identity}};
 use dashboard_base::products::{BranchParams, LoadContext, Product};
 use super::wars::{self, WarRelationMembership, WarsReply};
 use dashboard_base::{Source, catalogue, span::HourSpan};
@@ -119,19 +119,6 @@ fn held_at(runs: &read::Runs, gone: i64, hour: i32) -> Option<i64> {
     value_at(runs, i64::from(hour).min(gone) as i32)
 }
 
-fn summed(counters: &[Option<&read::Runs>], lives: &[(i64, i64)], hour: i32) -> Option<i128> {
-    let mut total = 0i128;
-    let mut any = false;
-    for (runs, &(born, gone)) in counters.iter().zip(lives) {
-        if i64::from(hour) < born {
-            continue;
-        }
-        total += i128::from(held_at((*runs)?, gone, hour)?);
-        any = true;
-    }
-    any.then_some(total)
-}
-
 fn push_run<T>(runs: &mut Vec<T>, run: T, joins: impl Fn(&mut T, &T) -> bool) {
     if let Some(last) = runs.last_mut()
         && joins(last, &run)
@@ -141,127 +128,7 @@ fn push_run<T>(runs: &mut Vec<T>, run: T, joins: impl Fn(&mut T, &T) -> bool) {
     runs.push(run);
 }
 
-
-pub struct CasualtyPairs;
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CasualtyPairsParams {
-    pub branch_id: String,
-    pub countries: Vec<Country>,
-    #[doc = " Otherwise each chosen country's casualties with every enemy."]
-    pub between: bool,
-    #[doc = " None asks for the window manifest."]
-    pub window: Option<usize>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct CasualtyPairRun {
-    pub first_hour: i32,
-    pub last_hour: i32,
-    pub read_hour: i32,
-    pub hourly: bool,
-    #[doc = " What the first country took from the second, over every lifetime of the pair."]
-    pub first_taken: String,
-    pub second_taken: String,
-    #[doc = " Either country's recorded history lost a lifetime's last hours in a gap."]
-    pub incomplete: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct CasualtyPairSeries {
-    pub identity: String,
-    pub first_country: String,
-    pub second_country: String,
-    pub runs: Vec<CasualtyPairRun>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct CasualtyPairsReply {
-    pub branch_id: String,
-    pub available: bool,
-    pub windows: Vec<HourSpan>,
-    pub window: Option<usize>,
-    #[doc = " Hours of the window the casualty tables were written."]
-    pub observed: Vec<HourSpan>,
-    pub pairs: Vec<CasualtyPairSeries>,
-    #[doc = " The window has hours the casualty tables were not written."]
-    pub has_gap: bool,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(CasualtyPairsReply, CasualtyBreakdownReply, CasualtyLabelsReply);
-
-pub fn fold_pairs(
-    lifetimes: &[(u128, i64, i64)],
-    reads: &WindowReads,
-    tags: &HolderTags,
-    first: i32,
-    last: i32,
-    keep: impl Fn((Identity, &str), (Identity, &str)) -> bool,
-) -> Vec<CasualtyPairSeries> {
-    let mut by_pair: BTreeMap<(Identity, Identity), Vec<(u128, i64, i64)>> = BTreeMap::new();
-    for &(key, born, gone) in lifetimes {
-        let lifetime = Lifetime::of(key);
-        by_pair.entry((lifetime.a, lifetime.b)).or_default().push((key, born, gone));
-    }
-    let mut out: BTreeMap<(String, String, String), Vec<CasualtyPairRun>> = BTreeMap::new();
-    for ((a, b), held) in by_pair {
-        let keys: Vec<u128> = held.iter().map(|life| life.0).collect();
-        let lives: Vec<(i64, i64)> = held.iter().map(|life| (life.1, life.2)).collect();
-        let taken_a: Vec<Option<&read::Runs>> = keys.iter().map(|key| reads.taken_a.get(key)).collect();
-        let taken_b: Vec<Option<&read::Runs>> = keys.iter().map(|key| reads.taken_b.get(key)).collect();
-        let mut edges = reads.edges(&keys, &[a, b], first, last);
-        for &(born, gone) in &lives {
-            for edge in [born, gone.saturating_add(1)] {
-                if i64::from(first) < edge && edge <= i64::from(last) {
-                    edges.insert(edge as i32);
-                }
-            }
-        }
-        tags.edges(a, first, last, &mut edges);
-        tags.edges(b, first, last, &mut edges);
-        let identity = format!("{}-{}", identity_text(a), identity_text(b));
-        for (from, to) in pieces(&edges, first, last) {
-            if !within(&reads.observed, from) {
-                continue;
-            }
-            let (Some(first_tag), Some(second_tag)) = (tags.tag_at(a, from), tags.tag_at(b, from)) else { continue };
-            if !keep((a, first_tag), (b, second_tag)) {
-                continue;
-            }
-            let (Some(first_taken), Some(second_taken)) = (summed(&taken_a, &lives, from), summed(&taken_b, &lives, from)) else { continue };
-            let run = CasualtyPairRun {
-                first_hour: from,
-                last_hour: to,
-                read_hour: from,
-                hourly: true,
-                first_taken: first_taken.to_string(),
-                second_taken: second_taken.to_string(),
-                incomplete: reads.incomplete(a, from) || reads.incomplete(b, from),
-            };
-            let runs = out.entry((identity.clone(), first_tag.to_owned(), second_tag.to_owned())).or_default();
-            push_run(runs, run, |held, next| {
-                let joins = i64::from(held.last_hour) + 1 == i64::from(next.first_hour)
-                    && (&held.first_taken, &held.second_taken, held.incomplete) == (&next.first_taken, &next.second_taken, next.incomplete);
-                if joins {
-                    held.last_hour = next.last_hour;
-                }
-                joins
-            });
-        }
-    }
-    out.into_iter()
-        .map(|((identity, first_country, second_country), runs)| CasualtyPairSeries { identity, first_country, second_country, runs })
-        .collect()
-}
+dashboard_base::reply_warnings!(CasualtyBreakdownReply, CasualtyLabelsReply);
 
 struct Window {
     first: i32,
@@ -405,79 +272,6 @@ fn manifest(query: &Query<'_>) -> io::Result<Vec<HourSpan>> {
 
 fn branch(text: &str) -> Result<u64, &'static str> {
     text.parse::<u64>().map_err(|_| "Invalid branch")
-}
-
-impl Product for CasualtyPairs {
-    const KEY: &'static str = "casualty-pairs";
-    const CONTENT_DEPENDENT: bool = false;
-    type Params = CasualtyPairsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, between, window, "countries[]"];
-    type Reply = CasualtyPairsReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![CasualtyPairsParams::decl(), CasualtyPairRun::decl(), CasualtyPairSeries::decl(), HourSpan::decl(), CasualtyPairsReply::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        branch(&params.branch_id)?;
-        params.countries.iter().try_for_each(validate_country)
-    }
-
-    fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let query = dashboard_base::queries::query(source, branch(&params.branch_id).map_err(invalid)?)?;
-        let windows = manifest(&query)?;
-        let mut reply = CasualtyPairsReply {
-            branch_id: params.branch_id.clone(),
-            available: true,
-            windows: windows.clone(),
-            window: params.window,
-            observed: Vec::new(),
-            pairs: Vec::new(),
-            has_gap: false,
-            warnings: Vec::new(),
-        };
-        let Some(index) = params.window else { return Ok(reply) };
-        let window = window(&query, &windows, index)?;
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let tags = HolderTags::new(&query);
-        let chosen = |(identity, tag): (Identity, &str)| params.countries.iter().any(|country| matches(country, identity, tag));
-        let keep = |a: (Identity, &str), b: (Identity, &str)| params.countries.is_empty() || if params.between { chosen(a) && chosen(b) } else { chosen(a) || chosen(b) };
-        let mut observed_runs: Vec<(i32, i32)> = Vec::new();
-        let mut merged: BTreeMap<(String, String, String), Vec<CasualtyPairRun>> = BTreeMap::new();
-        for &(run, s_first, s_last) in &window.stretches {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            let lifetimes = stretch_lifetimes(source, run, s_last)?;
-            let names = |identity| tags.names_in(identity, s_first, s_last);
-            let asked: Vec<(u128, i64, i64)> = lifetimes
-                .iter()
-                .filter(|&&(key, ..)| {
-                    let lifetime = Lifetime::of(key);
-                    let (a, b) = (names(lifetime.a), names(lifetime.b));
-                    a.iter().any(|first| b.iter().any(|second| keep((lifetime.a, first), (lifetime.b, second))))
-                })
-                .copied()
-                .collect();
-            let identities: Vec<Identity> = asked.iter().flat_map(|&(key, ..)| {
-                let lifetime = Lifetime::of(key);
-                [lifetime.a, lifetime.b]
-            }).collect();
-            let ended = crate::products::casualties::cached_casualty_ends(source, run)?;
-            let reads = stretch_reads(&query, run, s_first, s_last, &asked, &identities, &ended)?;
-            observed_runs.extend_from_slice(&reads.observed);
-            for series in fold_pairs(&asked, &reads, &tags, s_first, s_last, keep) {
-                merged.entry((series.identity, series.first_country, series.second_country)).or_default().extend(series.runs);
-            }
-        }
-        reply.pairs = merged
-            .into_iter()
-            .map(|((identity, first_country, second_country), runs)| CasualtyPairSeries { identity, first_country, second_country, runs })
-            .collect();
-        reply.has_gap = observed_runs != [(window.first, window.last)];
-        reply.observed = spans(&observed_runs);
-        dashboard_base::products::check_reply_budget(&reply)?;
-        Ok(reply)
-    }
 }
 
 

@@ -711,7 +711,7 @@ function drawChipLineBlock(
   if (block.showOwnerName) {
     const maxW = Math.max(24, block.ownerWidth - 26);
     ctx.save();
-    ctx.font = `${LABEL_WEIGHT} 12px ${theme.font}`;
+    ctx.font = `400 12px ${theme.font}`;
     ctx.fillStyle = theme.text;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';

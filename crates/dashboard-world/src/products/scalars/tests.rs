@@ -122,6 +122,30 @@ fn a_game_score_part_is_its_value_or_the_named_reason_it_was_not_recorded_never_
 }
 
 #[test]
+fn the_game_score_top_is_ranked_in_the_product_and_refused_by_name_while_any_country_lacks_the_score() {
+    let scored = |army: Recorded<i64>, army_reason: u8| CountryGameScoreRow { army, army_reason, ..CountryGameScoreRow::default() };
+    let (ger, ita, sov, eng) = (scored(Recorded::Value(30), CountryGameScoreRow::KNOWN), scored(Recorded::Value(50), CountryGameScoreRow::KNOWN),
+        scored(Recorded::Value(30), CountryGameScoreRow::KNOWN), scored(Recorded::NotRecorded, CountryGameScoreRow::COUNT_UNREAD));
+    let ask = |count| game_score::GameScoreTopParams { count, by: "army".into() };
+    let complete = [("GER", &ger), ("ITA", &ita), ("SOV", &sov)];
+    assert_eq!(game_score::top(&complete, &[], &ask(2)), game_score::GameScoreTop { tags: vec!["ITA".into(), "GER".into()], missing: None }, "highest first, a tie broken by tag");
+    assert_eq!(game_score::top(&complete, &[], &ask(9)).tags, ["ITA", "GER", "SOV"]);
+    let (low, high) = (scored(Recorded::Value(10), CountryGameScoreRow::KNOWN), scored(Recorded::Value(40), CountryGameScoreRow::KNOWN));
+    assert_eq!(game_score::top(&complete, &[&low], &ask(2)).tags, ["ITA", "GER"], "a country whose holder is unresolved but scores below the top cannot change it");
+    let unproven = game_score::top(&complete, &[&high], &ask(2));
+    assert!(unproven.tags.is_empty(), "an unresolved country that could rank in the top makes the top unproven");
+    assert_eq!(unproven.missing.as_deref(), Some("The top 2 by army score is not known: 1 scored countries could not be matched to a tag at this hour and could be among them"));
+    assert!(game_score::top(&complete, &[&eng], &ask(2)).missing.is_some(), "an unresolved country with no score could be anywhere");
+    assert!(game_score::top(&complete, &[&low], &ask(9)).missing.is_some(), "a short top could hold any unresolved country");
+    let partial = [("GER", &ger), ("ITA", &ita), ("ENG", &eng)];
+    let refused = game_score::top(&partial, &[], &ask(1));
+    assert!(refused.tags.is_empty(), "with one unread score the apparent leader is unproven");
+    assert_eq!(refused.missing.as_deref(), Some("The top 1 by army score needs every country's army score, and 1 of 3 were not recorded at this hour"));
+    let unknown_part = game_score::GameScoreTopParams { count: 1, by: "morale".into() };
+    assert!(game_score::top(&complete, &[], &unknown_part).missing.is_some(), "a part the product does not score ranks nothing");
+}
+
+#[test]
 fn factory_groups_are_named_by_every_type_their_flag_counts_and_an_ambiguous_type_by_none() {
     use content_reader_key_names::buildings::{Buildings, FactoryFlags};
     let flags = |military, naval, general, rocket| FactoryFlags { military_production: military, naval_production: naval, general_production: general, rocket_production: rocket };

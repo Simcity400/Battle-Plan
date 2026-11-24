@@ -399,11 +399,10 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
 
     const { default: Research } = await realVite.ssrLoadModule('/ui/src/widgets/research/ResearchWidget.tsx');
     const { default: ActiveResearch } = await realVite.ssrLoadModule('/ui/src/widgets/active-research/ActiveResearchView.tsx');
-    const { default: NationalFocus } = await realVite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
     const emptyRuntime = { tracks: [], campaignTracks: [], defaultRoleId: null, maps: {}, client: { available: true },
       clock: { getHour: () => 0, getSnapshot: () => ({ playing: false, hoursPerSecond: 1 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } } as unknown as WidgetRuntime;
     const baseWidget = { id: 'r', kind: 'research', configVersion: 1, title: 'Research', campaign: 'default', trackIds: [], time: { mode: 'follow' }, countries: { kind: 'all' }, options: {} } as WidgetSpec;
-    for (const [name, Component] of [['research', Research], ['active-research', ActiveResearch], ['national-focus', NationalFocus]] as const) {
+    for (const [name, Component] of [['research', Research], ['active-research', ActiveResearch]] as const) {
       const html = renderToStaticMarkup(createElement(Component as never, { widget: baseWidget, runtime: emptyRuntime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} } as never));
       assert.match(html, /data-state="empty"/, `${name} routes empty state through WidgetState`);
       assert.doesNotMatch(html, /dash-empty/, `${name} does not render raw dash-empty`);
@@ -447,17 +446,19 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
         if (path.endsWith('/dashboard/widgetTime.ts')) {
           return `export const useRegion = () => ({}); export const useRegionCoverage = () => ({ outside: null });`;
         }
-        if (path.endsWith('/families/table/FamilyTableHost.tsx')) {
+        if (path.endsWith('/families/host/FamilyHost.tsx')) {
           return `export default ({ blockedState }) => blockedState ?? null;`;
         }
       },
     }] });
   try {
     const { ShownError } = await scoreboardVite.ssrLoadModule('/ui/src/dashboard/queryError.ts');
-    const { default: DeclaredTableWidget } = await scoreboardVite.ssrLoadModule('/ui/src/families/table/DeclaredTableWidget.tsx');
+    const { default: DeclaredFamilyWidget } = await scoreboardVite.ssrLoadModule('/ui/src/families/host/DeclaredFamilyWidget.tsx');
+    const { tableHostAdapter } = await scoreboardVite.ssrLoadModule('/ui/src/families/table/hostAdapter.ts');
     const { scoreboardDeclaration } = await scoreboardVite.ssrLoadModule('/ui/src/widgets/scoreboard/scoreboardProjection.ts');
     const sbProps = {
       declaration: scoreboardDeclaration,
+      adapter: tableHostAdapter,
       widget: { id: 'sb', kind: 'scoreboard', configVersion: 1, title: 'Scoreboard', campaign: 'default', trackIds: ['t1'], time: { mode: 'follow' }, countries: { kind: 'tags', tags: ['GER'] }, options: {} },
       runtime: {
         tracks: [{ id: 't1', roleId: 'primary', label: 'Primary', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 200 }, source: { id: 's1', revision: '1', metadata: { campaignKey: 'c', countries: [] } } }],
@@ -469,12 +470,12 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
     const okRegistry = { data: { columns: [{ key: 'factories', label: 'Factories', available: true, decimals: 0, family: { kind: 'country', measure: 'factories' } }], defaultColumns: ['factories'], defaultSort: 'factories', warnings: [] }, error: undefined, retry() {} };
     (globalThis as Record<string, unknown>).__sbAux = okRegistry;
     (globalThis as Record<string, unknown>).__sbFollowCheck = () => ({ query: null, refused: 'Table absent in format 141' });
-    const refusedHtml = renderToStaticMarkup(createElement(DeclaredTableWidget as never, sbProps as never));
+    const refusedHtml = renderToStaticMarkup(createElement(DeclaredFamilyWidget as never, sbProps as never));
     assert.match(refusedHtml, /data-state="unavailable"/, 'scoreboard recording refusal renders unavailable, never a load error');
     assert.doesNotMatch(refusedHtml, /role="alert"|is-error|Retry/);
     (globalThis as Record<string, unknown>).__sbFollowCheck = (q: unknown) => ({ query: q, refused: null });
     (globalThis as Record<string, unknown>).__sbAux = { data: undefined, error: new ShownError('Scoreboard stream broke.', 'sb 503'), retry() {} };
-    const failedHtml = renderToStaticMarkup(createElement(DeclaredTableWidget as never, sbProps as never));
+    const failedHtml = renderToStaticMarkup(createElement(DeclaredFamilyWidget as never, sbProps as never));
     assert.match(failedHtml, /data-state="error"/, 'scoreboard stream failure renders retryable error');
     assert.match(failedHtml, /Scoreboard stream broke\./);
     assert.match(failedHtml, />Retry</);

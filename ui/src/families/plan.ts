@@ -107,11 +107,14 @@ export interface PixelBinnedSourceRead {
   readonly coverage: SourceCoverage;
   readonly family: Readonly<Record<string, unknown>>;
   readonly tags: readonly string[];
+  readonly keys?: readonly { readonly tag: string; readonly part: string }[];
+  readonly partBits?: number;
   readonly within?: ReadonlyMap<string, readonly HourSpan[]>;
   readonly marks?: boolean;
   readonly headQuery?: Readonly<Record<string, unknown>> | null;
   readonly exactProduct?: DeclaredProduct;
   readonly params?: Readonly<Record<string, unknown>> | null;
+  readonly top?: { readonly n: number; readonly least?: boolean };
 }
 
 export interface ExactHoverSourceRead {
@@ -173,6 +176,10 @@ export interface BoundedSlice<T> extends Iterable<T> {
   at(index: number): T | undefined;
 }
 
+export interface BoundedMarkCluster extends Omit<MarkCluster, 'bins'> {
+  readonly bins?: BoundedSlice<readonly [number, number]> | MarkCluster['bins'];
+}
+
 export interface BoundedSeries {
   readonly tag: string;
   readonly decimals: number;
@@ -184,7 +191,7 @@ export interface BoundedSeries {
   readonly headValue?: Value;
   readonly missing: BoundedSlice<MissingSpan>;
   readonly approximate?: BoundedSlice<{ readonly firstHour: number; readonly lastHour: number }>;
-  readonly marks: BoundedSlice<MarkCluster>;
+  readonly marks: BoundedSlice<BoundedMarkCluster>;
   readonly validInterval: readonly [lo: number, hi: number];
 }
 
@@ -233,6 +240,11 @@ export type ArtHandle =
       readonly kind: 'portrait';
       readonly leader: string;
       readonly hour: number;
+    }
+  | {
+      readonly kind: 'technology';
+      readonly token: string;
+      readonly databaseIndex: number | null;
     }
   | {
       readonly kind: 'path';

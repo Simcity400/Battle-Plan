@@ -3,7 +3,7 @@ import test from 'node:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'vite';
 import { widgetMetas } from './definitions.ts';
-import { manifestSlotsForKind } from './manifest.ts';
+import { FAMILY_VIEW_UI, familyViewsForKind, manifestSlotsForKind } from './manifest.ts';
 import { buildRendererLoaders, isPlaybackActive, loadWidgetRenderer, preloadAllWidgetRenderers, rendererKinds, setPlaybackActive } from './rendererLoaders.ts';
 import { viewKey } from '../families/manifest.ts';
 
@@ -20,6 +20,7 @@ test('every installed widget registers its body and all declared lazy slots', ()
     const slots = manifestSlotsForKind(meta.kind);
     assert.ok(slots.includes('render'), `${meta.kind} must mount its body`);
     const entry = ['index.ts', 'index.tsx'].map(name => new URL(`./${meta.kind}/${name}`, import.meta.url)).find(existsSync);
+    if (!entry && familyViewsForKind(meta.kind).length && !Object.hasOwn(FAMILY_VIEW_UI, meta.kind)) continue;
     assert.ok(entry, `${meta.kind} must provide an index.ts or index.tsx entry`);
     const source = readFileSync(entry, 'utf8');
     for (const slot of ['countryChip'] as const) {

@@ -1212,16 +1212,24 @@ impl<'q, 'a> Reader<'q, 'a> {
                             b = (b.div_euclid(bin) + 1) * bin - 1;
                         }
                         let (whole, edges) = split(a, b, bin);
-                        if let Some((first, last)) = whole {
+                        if let Some((first, last)) = whole
+                            && first.max(run_first) <= last.min(run_last)
+                        {
                             coarse.entry(run).or_default().push((at, first, last));
                         }
                         for (x, y) in edges {
                             let (middle, ends) = split(x, y, six);
-                            if let Some((first, last)) = middle {
+                            if let Some((first, last)) = middle
+                                && first.max(run_first) <= last.min(run_last)
+                            {
                                 fine.entry(run).or_default().push((at, first, last));
                             }
                             for (first, last) in ends {
-                                slivers.entry(run).or_default().push((at, first, last));
+                                let lo = first.max(run_first);
+                                let hi = last.min(run_last);
+                                if lo <= hi {
+                                    slivers.entry(run).or_default().push((at, lo, hi));
+                                }
                             }
                         }
                     }
@@ -1230,11 +1238,17 @@ impl<'q, 'a> Reader<'q, 'a> {
                     for (&run, held) in spans {
                         let (first, last) = (held.iter().map(|span| span.1).min().unwrap_or(0), held.iter().map(|span| span.2).max().unwrap_or(0));
                         let (run_first, run_last) = runs[&run];
+                        let q_from = first.max(run_first);
+                        let q_to = last.min(run_last);
+                        if q_from > q_to {
+                            continue;
+                        }
+                        let origin = q_from.div_euclid(size) * size;
                         let mut unique_ats: Vec<usize> = held.iter().map(|&(at, _, _)| at).collect();
                         unique_ats.sort_unstable();
                         unique_ats.dedup();
                         let asked = |facet: u128| unique_ats.iter().any(|&at| patterns[at].holds(facet));
-                        let counts = pieces::counts(recording, run, self.log.table, (first.max(run_first) as i32, last.min(run_last) as i32), size, &asked)?;
+                        let counts = pieces::counts(recording, run, self.log.table, (q_from as i32, q_to as i32), size, &asked)?;
                         for &(at, a, b) in held {
                             let pattern = &patterns[at];
                             for (facet, counts) in &counts {
@@ -1242,7 +1256,7 @@ impl<'q, 'a> Reader<'q, 'a> {
                                     continue;
                                 }
                                 for (index, &count) in counts.iter().enumerate() {
-                                    let start = first + index as i64 * size;
+                                    let start = origin + index as i64 * size;
                                     if count > 0 && a <= start && start <= b {
                                         out[at].push((start.div_euclid(bin) * bin, count));
                                     }
@@ -1308,12 +1322,13 @@ impl<'q, 'a> Reader<'q, 'a> {
                             let q_from = first_six.max(run_first) as i32;
                             let q_to = last_six_end.min(run_last) as i32;
                             if q_from <= q_to {
+                                let origin = i64::from(q_from).div_euclid(six) * six;
                                 let asked = |facet: u128| index.asked(facet);
                                 let counts = pieces::counts(recording, run, self.log.table, (q_from, q_to), six, &asked)?;
                                 for (_, six_counts) in &counts {
                                     for (si, &count) in six_counts.iter().enumerate() {
                                         if count > 0 {
-                                            non_empty_buckets.insert(first_six + si as i64 * six);
+                                            non_empty_buckets.insert(origin + si as i64 * six);
                                         }
                                     }
                                 }
@@ -1373,6 +1388,7 @@ impl<'q, 'a> Reader<'q, 'a> {
                         let q_from = first_bin.max(run_first) as i32;
                         let q_to = last_bin_end.min(run_last) as i32;
                         if q_from <= q_to {
+                            let origin = i64::from(q_from).div_euclid(bin) * bin;
                             let asked = |facet: u128| index.asked(facet);
                             let counts = pieces::counts(recording, run, self.log.table, (q_from, q_to), bin, &asked)?;
                             for (facet, bin_counts) in &counts {
@@ -1381,7 +1397,7 @@ impl<'q, 'a> Reader<'q, 'a> {
                                     if count == 0 {
                                         continue;
                                     }
-                                    let bin_start = first_bin + bi as i64 * bin;
+                                    let bin_start = origin + bi as i64 * bin;
                                     let bin_end = bin_start + bin - 1;
                                     let b_lo = bin_start.max(run_first);
                                     let b_hi = bin_end.min(run_last);
@@ -1429,6 +1445,7 @@ impl<'q, 'a> Reader<'q, 'a> {
                         if q_from > q_to {
                             continue;
                         }
+                        let origin = i64::from(q_from).div_euclid(six) * six;
                         let asked = |facet: u128| if bin == six { index.asked(facet) } else { split_coarse.contains_key(&facet) };
                         let counts = pieces::counts(recording, run, self.log.table, (q_from, q_to), six, &asked)?;
                         for (facet, six_counts) in &counts {
@@ -1437,7 +1454,7 @@ impl<'q, 'a> Reader<'q, 'a> {
                                 if count == 0 {
                                     continue;
                                 }
-                                let six_start = first_six + si as i64 * six;
+                                let six_start = origin + si as i64 * six;
                                 if bin > six && !split_coarse.get(facet).is_some_and(|set| set.contains(&(six_start.div_euclid(bin) * bin))) {
                                     continue;
                                 }

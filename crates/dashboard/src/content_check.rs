@@ -149,7 +149,7 @@ fn aggregate(findings: &mut Vec<Finding>) {
 fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<String, String> {
     use dashboard_base::products::{Product, artwork, at_hour::{self, AtHour}};
     use dashboard_world::products::{country_flags, identities, subjects};
-    use dashboard_land::products::{army, army_losses, divisions, doctrine_mastery, doctrines, experience, forces, leaders, training_queue};
+    use dashboard_land::products::{army, army_losses, divisions, doctrine_mastery, doctrines, forces, leaders, training_queue};
     use dashboard_naval::products::naval;
     use dashboard_wars::products::{casualties, diplomacy, faction_state, occupation, peace, scoreboard, territory_transfers, volunteers, wargoals, wars};
     use dashboard_politics::products::{feed, focus_artwork, national_focus, stability, technology_artwork};
@@ -249,7 +249,6 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             let units = dashboard_base::catalogue::equipment_units(content.catalogue()?)?;
             Ok(format!("Equipment types resolve each design's recorded archetype through the equipment database ({} types); design names localise the recorded naming operands; amounts and repair rates are the recorded production tables.", units.equipment.len()))
         }
-        <experience::CountryExperience as at_hour::AtHour>::KEY => Ok("No content dependency: banked experience and its daily change and gain are recorded tables.".into()),
         <training_queue::TrainingQueue as at_hour::AtHour>::KEY => {
             content.catalogue()?;
             Ok("Deployment orders, divisions in training, manpower and equipment come from the recorded daily queue read; template, priority, location and archetype names resolve through the recorded naming operands and the content stack.".into())
@@ -317,6 +316,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok("Relation titles resolve through the recorded content stack by each recorded relation type; which relations a country held requires a recording.".into())
         }
         key if key == <faction_state::details::FactionDetails as at_hour::AtHour>::KEY
+            || key == <faction_state::country_goals::CountryFactionGoals as at_hour::AtHour>::KEY
             || key == faction_state::history::FactionState::KEY
             || key == <faction_state::rewards::FactionGoalRewards as at_hour::AtHour>::KEY =>
         {
@@ -364,7 +364,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         economy::fuel::awards::CountryFuelAwardHistory::KEY | economy::fuel::demand::CountryFuelDemandHistory::KEY => {
             Ok("No content dependency: receipts and rates are recorded amounts.".into())
         }
-        production::ProductionLines::KEY | production::ProductionLineDetail::KEY | production::ProductionLinesAt::KEY | production::ProductionLineBreakdown::KEY => {
+        production::ProductionLines::KEY | production::ProductionLinesAt::KEY | production::ProductionLineBreakdown::KEY => {
             Ok("Variant and organisation names and icons, and modifier source labels, need the recorded variant, country, organisation and modifier operands; unavailable offline.".into())
         }
         production::ProductionLicences::KEY | production::IndustrialOrganisations::KEY | production::EquipmentDesigns::KEY => {
@@ -386,7 +386,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         <stability::CountryStabilityBreakdown as at_hour::AtHour>::KEY | <stability::StabilityPartNames as at_hour::AtHour>::KEY => {
             Ok("No offline check: idea, advisor, leader, ideology and modifier names are read at the reply from the recorded lines and parts dictionary, in the country's look at the hour.".into())
         }
-        casualties::CasualtyPairs::KEY | casualties::CasualtyBreakdown::KEY => Ok("No content dependency: pairs and losses are the recorded casualty lifetimes and totals, named by the identity table.".into()),
+        casualties::CasualtyBreakdown::KEY => Ok("No content dependency: pairs and losses are the recorded casualty lifetimes and totals, named by the identity table.".into()),
         casualties::CasualtyLabels::KEY => {
             let catalogue = content.catalogue()?;
             if catalogue.localised("CASUALTIES_UNKNOWN", dashboard_base::catalogue::View::Plain).is_none() {
@@ -422,11 +422,11 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             findings.push(Finding::new(Kind::Offline, key, "seller and buyer flows and their quantities need the recorded TradeFlows rows; unavailable offline"));
             Ok("Resource names and icons are read through the shared resource naming of the recorded content stack.".into())
         }
-        key if key == <economy::market::MarketLendLease as AtHour>::KEY || key == economy::market::history::LendLeaseHistory::KEY || key == economy::market::ledger::MarketLedger::KEY => {
+        key if key == <economy::market::MarketLendLease as AtHour>::KEY || key == economy::market::ledger::MarketLedger::KEY => {
             findings.push(Finding::new(Kind::Offline, key, "market listings, contracts, agreements and occurrences need the recorded market tables; unavailable offline"));
             Ok("Equipment names and icons need the recorded variant operands through the content stack; subsidy archetypes are localised from it.".into())
         }
-        construction::log::ConstructionLogManifest::KEY | construction::log::ConstructionLog::KEY | construction::spending::ConstructionSpending::KEY => {
+        construction::log::ConstructionLogManifest::KEY | construction::log::ConstructionLog::KEY | construction::breakdown::ConstructionBreakdown::KEY => {
             content.catalogue()?;
             Ok("Building type names localise the token spellings recorded in LexicalTokens through the recorded buildings; icons and the repair marker are the construction queue's line entry art; state names are the recorded states' name keys. Lines, totals and endings are the recorded ConstructionProjects and ConstructionSpend rows.".into())
         }
@@ -440,7 +440,13 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             dashboard_base::content::strategic_regions(&catalogue.content.layers).map_err(|why| why.to_string())?;
             Ok("Ship classes resolve recorded class tokens through the sub-unit database, sea zones through the strategic regions; ship, cause and fleet names are the text the game stored, shown in its recorded language.".into())
         }
-        feed::EventFeed::KEY | feed::EventChoices::KEY | feed::Decisions::KEY | feed::EventFeedSpan::KEY => {
+        feed::EventFeed::KEY
+        | feed::EventFeedTail::KEY
+        | feed::EventChoices::KEY
+        | feed::EventChoicesTail::KEY
+        | feed::Decisions::KEY
+        | feed::DecisionsTail::KEY
+        | feed::EventFeedSpan::KEY => {
             let catalogue = content.catalogue()?;
             catalogue.scripted_content()?.effects()?;
             take(catalogue, "event feed text", findings);

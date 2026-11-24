@@ -1,5 +1,6 @@
 import type { IconName } from '../../components/Icons';
 import type { OptionField } from '../../dashboard/options';
+import type { DeclaredProjectionExtra } from '../host/DeclaredFamilyWidget.tsx';
 import type {
   AuxProductSpec,
   CountryPolicy,
@@ -7,10 +8,10 @@ import type {
   FamilyViewportRequest,
   SourcePlan,
 } from '../plan.ts';
-import type { HeatLaneRow, HeatLanesProjection } from './lanesModel.ts';
+import type { HeatLaneIdentity, HeatLanesProjection } from './lanesModel.ts';
 
 export interface LaneActivation {
-  readonly row: HeatLaneRow;
+  readonly row: HeatLaneIdentity;
   readonly rowIndex: number;
   readonly hour: number;
 }
@@ -29,7 +30,7 @@ export interface HeatLanesWidgetDeclaration<TProjectionOptions = Record<string, 
   readonly aux?: AuxProductSpec<TAux>;
   readonly sources: (ctx: FamilyPlanContext<TAux>, view: FamilyViewportRequest) => SourcePlan;
   readonly projection: HeatLanesProjection<TProjectionOptions>;
-  readonly projectionOptions: (ctx: FamilyPlanContext<TAux>) => TProjectionOptions;
+  readonly projectionOptions: (ctx: FamilyPlanContext<TAux>, extra: DeclaredProjectionExtra) => TProjectionOptions;
   readonly unavailable?: (ctx: FamilyPlanContext<TAux>, moment: number) => string | null;
   readonly warnings?: (ctx: FamilyPlanContext<TAux>, followRefused: string | null) => readonly string[];
   readonly jumpToDate?: boolean;

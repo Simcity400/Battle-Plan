@@ -32,7 +32,7 @@ export function syntheticEpisode(id: string, firstHour: number, raider: string |
     preparation: preparingTo >= firstHour ? [[firstHour, preparingTo, 0, 1]] : [],
     launchedHour, launchedExact: launchedHour !== null, launched: launchedHour !== null,
     endedHour, endedExact: endedHour !== null,
-    endedSource: endedHour !== null ? 'observedEndedRead' : null,
+    endedSource: endedHour !== null ? 'observedEndedRead' : null, endedSeenHour: endedHour,
     disappearedHour: null, disappearedExact: false,
     succeeded, ...changes,
   };

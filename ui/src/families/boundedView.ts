@@ -11,6 +11,7 @@ import type {
   ArtProvider,
   ArtResult,
   BoundedHover,
+  BoundedMarkCluster,
   BoundedReadView,
   BoundedSeries,
   BoundedSlice,
@@ -130,6 +131,91 @@ function lowerBoundPoint(
   return lo;
 }
 
+export interface StraddleResume {
+  state: StraddleState | null;
+}
+
+interface StraddleState {
+  readonly coarse: ChartBucket;
+  readonly runs: readonly Run[] | null;
+  readonly points: readonly WitnessedPoint[] | null;
+  hour: number;
+  runIndex: number;
+  observedRun: number;
+  pointIndex: number;
+  found: boolean;
+  firstHour: number;
+  lastHour: number;
+  lastValueHour: number;
+  firstValue: number;
+  lastValue: number;
+  minValue: number;
+  maxValue: number;
+  minHour: number;
+  maxHour: number;
+  firstBreak: boolean;
+  hasBreak: boolean;
+  prevLast: number;
+}
+
+function freshStraddle(
+  coarse: ChartBucket,
+  runs: readonly Run[] | null,
+  points: readonly WitnessedPoint[] | null,
+  counter?: BoundedWorkCounter,
+): StraddleState {
+  return {
+    coarse,
+    runs,
+    points,
+    hour: -Infinity,
+    runIndex: runs && runs.length ? lowerBoundRunOverlap(runs, coarse.firstHour, counter) : 0,
+    observedRun: -1,
+    pointIndex: points && points.length ? lowerBoundPoint(points, coarse.firstHour, counter) : 0,
+    found: false,
+    firstHour: Infinity,
+    lastHour: -Infinity,
+    lastValueHour: -Infinity,
+    firstValue: 0,
+    lastValue: 0,
+    minValue: Infinity,
+    maxValue: -Infinity,
+    minHour: coarse.firstHour,
+    maxHour: coarse.firstHour,
+    firstBreak: coarse.firstBreak,
+    hasBreak: false,
+    prevLast: -Infinity,
+  };
+}
+
+function observeSpan(st: StraddleState, hour: number, from: number, to: number, val: number, breakBefore: boolean): void {
+  const start = Math.max(st.coarse.firstHour, from);
+  const end = Math.min(hour, to);
+  if (start > end) return;
+  if (!st.found) {
+    st.found = true;
+    st.firstHour = start;
+    st.firstValue = val;
+    st.firstBreak = st.coarse.firstBreak || breakBefore;
+  } else if (breakBefore || start > st.prevLast + 1) {
+    st.hasBreak = true;
+  }
+  if (end > st.lastHour || (end === st.lastHour && start >= st.lastValueHour)) {
+    st.lastHour = end;
+    st.lastValueHour = start;
+    st.lastValue = val;
+  }
+  if (val < st.minValue) {
+    st.minValue = val;
+    st.minHour = start;
+  }
+  if (val > st.maxValue) {
+    st.maxValue = val;
+    st.maxHour = start;
+  }
+  st.prevLast = Math.max(st.prevLast, end);
+}
+
 export function cutStraddlingBucket(
   coarse: ChartBucket,
   hour: DisplayedHour,
@@ -137,6 +223,7 @@ export function cutStraddlingBucket(
   prefixPoints?: readonly WitnessedPoint[] | null,
   headPoint?: WitnessedPoint | null,
   counter?: BoundedWorkCounter,
+  resume?: StraddleResume,
 ): StraddlingCutResult {
   if (coarse.firstHour > hour) {
     return { bucket: null, straddling: 'none' };
@@ -144,92 +231,61 @@ export function cutStraddlingBucket(
   if (coarse.lastHour <= hour) {
     return { bucket: coarse, straddling: 'none' };
   }
-  const bucketStart = coarse.firstHour;
-  let firstHour = Infinity;
-  let lastHour = -Infinity;
-  let lastValueHour = -Infinity;
-  let firstValue = 0;
-  let lastValue = 0;
-  let minValue = Infinity;
-  let maxValue = -Infinity;
-  let minHour = bucketStart;
-  let maxHour = bucketStart;
-  let firstBreak = coarse.firstBreak;
-  let hasBreak = false;
-  let prevLast = -Infinity;
-  let found = false;
+  const runs = prefixRuns && prefixRuns.length ? prefixRuns : null;
+  const points = prefixPoints && prefixPoints.length ? prefixPoints : null;
+  const resumable = !!resume && !(runs && points);
+  const held = resumable ? resume!.state : null;
+  const st = held && held.coarse === coarse && held.runs === runs && held.points === points && held.hour <= hour
+    ? held
+    : freshStraddle(coarse, runs, points, counter);
+  if (resumable) resume!.state = st;
 
-  const observeSpan = (from: number, to: number, val: number, breakBefore: boolean) => {
-    const start = Math.max(bucketStart, from);
-    const end = Math.min(hour, to);
-    if (start > end) return;
-    if (!found) {
-      found = true;
-      firstHour = start;
-      firstValue = val;
-      firstBreak = coarse.firstBreak || breakBefore;
-    } else if (breakBefore || start > prevLast + 1) {
-      hasBreak = true;
-    }
-    if (end > lastHour || (end === lastHour && start >= lastValueHour)) {
-      lastHour = end;
-      lastValueHour = start;
-      lastValue = val;
-    }
-    if (val < minValue) {
-      minValue = val;
-      minHour = start;
-    }
-    if (val > maxValue) {
-      maxValue = val;
-      maxHour = start;
-    }
-    prevLast = Math.max(prevLast, end);
-  };
-
-  if (prefixRuns && prefixRuns.length > 0) {
-    const startIdx = lowerBoundRunOverlap(prefixRuns, bucketStart, counter);
-    for (let i = startIdx; i < prefixRuns.length; i++) {
-      const run = prefixRuns[i]!;
+  if (runs) {
+    for (let i = st.runIndex; i < runs.length; i++) {
+      const run = runs[i]!;
       if (counter) counter.visits++;
       if (run.firstHour > hour) break;
-      observeSpan(run.firstHour, run.lastHour, run.value, run.breakBefore === true);
+      observeSpan(st, hour, run.firstHour, run.lastHour, run.value, i !== st.observedRun && run.breakBefore === true);
+      st.observedRun = i;
+      st.runIndex = i;
     }
   }
-
-  if (prefixPoints && prefixPoints.length > 0) {
-    const startIdx = lowerBoundPoint(prefixPoints, bucketStart, counter);
-    for (let i = startIdx; i < prefixPoints.length; i++) {
-      const pt = prefixPoints[i]!;
+  if (points) {
+    for (let i = st.pointIndex; i < points.length; i++) {
+      const pt = points[i]!;
       if (counter) counter.visits++;
       if (pt.hour > hour) break;
-      observeSpan(pt.hour, pt.hour, pt.value, pt.breakBefore === true);
+      observeSpan(st, hour, pt.hour, pt.hour, pt.value, pt.breakBefore === true);
+      st.pointIndex = i + 1;
     }
   }
+  st.hour = hour;
 
-  if (headPoint && headPoint.hour >= bucketStart && headPoint.hour <= hour) {
+  let out: StraddleState = st;
+  if (headPoint && headPoint.hour >= coarse.firstHour && headPoint.hour <= hour) {
     if (counter) counter.visits++;
-    observeSpan(headPoint.hour, headPoint.hour, headPoint.value, headPoint.breakBefore === true);
+    out = { ...st };
+    observeSpan(out, hour, headPoint.hour, headPoint.hour, headPoint.value, headPoint.breakBefore === true);
   }
 
-  if (!found) {
+  if (!out.found) {
     return { bucket: null, straddling: 'loading' };
   }
 
   if (counter) counter.allocations++;
   return {
     bucket: {
-      firstHour,
-      lastHour,
-      lastValueHour,
-      minHour,
-      maxHour,
-      firstValue,
-      lastValue,
-      minValue,
-      maxValue,
-      firstBreak,
-      hasBreak,
+      firstHour: out.firstHour,
+      lastHour: out.lastHour,
+      lastValueHour: out.lastValueHour,
+      minHour: out.minHour,
+      maxHour: out.maxHour,
+      firstValue: out.firstValue,
+      lastValue: out.lastValue,
+      minValue: out.minValue,
+      maxValue: out.maxValue,
+      firstBreak: out.firstBreak,
+      hasBreak: out.hasBreak,
     },
     straddling: 'cut',
   };
@@ -241,21 +297,21 @@ export interface SlicedSpanResult<T> {
   readonly validHi: number;
 }
 
-export function sliceSpansByHour<T extends { readonly firstHour: number; readonly lastHour: number }>(
+export function sliceSpansByHour<T extends { readonly firstHour: number; readonly lastHour: number }, U = T>(
   sorted: readonly T[],
   hour: DisplayedHour,
-  clipTail: (item: T, h: DisplayedHour) => T | undefined,
+  clipTail: (item: T, h: DisplayedHour) => U | undefined,
   counter?: BoundedWorkCounter,
-): SlicedSpanResult<T> {
+): SlicedSpanResult<T | U> {
   if (!sorted.length) {
-    return { slice: emptySlice<T>(), validLo: -Infinity, validHi: Infinity };
+    return { slice: emptySlice<T | U>(), validLo: -Infinity, validHi: Infinity };
   }
   const count = upperBoundFirst(sorted, hour, counter);
   const nextItem = count < sorted.length ? sorted[count] : undefined;
   const nextStart = nextItem ? nextItem.firstHour - 1 : Infinity;
 
   if (count === 0) {
-    return { slice: emptySlice<T>(), validLo: -Infinity, validHi: nextStart };
+    return { slice: emptySlice<T | U>(), validLo: -Infinity, validHi: nextStart };
   }
 
   const last = sorted[count - 1]!;
@@ -263,7 +319,7 @@ export function sliceSpansByHour<T extends { readonly firstHour: number; readonl
   if (last.lastHour <= hour) {
     if (counter) counter.allocations++;
     return {
-      slice: createBoundedSlice(sorted, count),
+      slice: createBoundedSlice<T | U>(sorted, count),
       validLo: last.lastHour,
       validHi: nextStart,
     };
@@ -271,7 +327,7 @@ export function sliceSpansByHour<T extends { readonly firstHour: number; readonl
   const tail = clipTail(last, hour);
   if (counter) counter.allocations++;
   return {
-    slice: createBoundedSlice(sorted, count - 1, tail),
+    slice: createBoundedSlice<T | U>(sorted, count - 1, tail),
     validLo: hour,
     validHi: hour,
   };
@@ -285,7 +341,19 @@ function clipSingleRun(run: Run, hour: DisplayedHour): Run {
   return { ...run, lastHour: hour };
 }
 
-function clipSingleMark(cluster: MarkCluster, hour: DisplayedHour): MarkCluster | undefined {
+const markTotals = new WeakMap<MarkCluster, Float64Array>();
+
+function markPrefixTotals(cluster: MarkCluster, bins: readonly (readonly [number, number])[]): Float64Array {
+  let totals = markTotals.get(cluster);
+  if (!totals) {
+    totals = new Float64Array(bins.length + 1);
+    for (let i = 0; i < bins.length; i++) totals[i + 1] = totals[i]! + bins[i]![1];
+    markTotals.set(cluster, totals);
+  }
+  return totals;
+}
+
+function clipSingleMark(cluster: MarkCluster, hour: DisplayedHour): BoundedMarkCluster | undefined {
   const sourceBins = cluster.bins;
   if (!sourceBins?.length) return undefined;
   let lo = 0;
@@ -296,15 +364,13 @@ function clipSingleMark(cluster: MarkCluster, hour: DisplayedHour): MarkCluster 
     else hi = mid;
   }
   if (lo === 0) return undefined;
-  const bins = sourceBins.slice(0, lo);
-  let total = 0;
-  for (let i = 0; i < bins.length; i++) total += bins[i]![1];
+  const total = markPrefixTotals(cluster, sourceBins)[lo]!;
   return {
     firstHour: cluster.firstHour,
-    lastHour: Math.min(cluster.lastHour, bins[bins.length - 1]![0]),
+    lastHour: Math.min(cluster.lastHour, sourceBins[lo - 1]![0]),
     firstOrdinal: cluster.firstOrdinal,
     count: String(total),
-    bins,
+    bins: createBoundedSlice(sourceBins, lo),
   };
 }
 
@@ -327,7 +393,7 @@ export function sliceMarks(
   clusters: readonly MarkCluster[],
   hour: DisplayedHour,
   counter?: BoundedWorkCounter,
-): SlicedSpanResult<MarkCluster> {
+): SlicedSpanResult<BoundedMarkCluster> {
   return sliceSpansByHour(clusters, hour, clipSingleMark, counter);
 }
 
@@ -343,7 +409,7 @@ export function clipMissingSpans(spans: readonly MissingSpan[], hour: DisplayedH
   return [...sliceMissingSpans(spans, hour).slice];
 }
 
-export function clipMarks(clusters: readonly MarkCluster[], hour: DisplayedHour): MarkCluster[] {
+export function clipMarks(clusters: readonly MarkCluster[], hour: DisplayedHour): BoundedMarkCluster[] {
   return [...sliceMarks(clusters, hour).slice];
 }
 
@@ -424,6 +490,7 @@ export interface BoundSeriesOptions {
   readonly headPoint?: WitnessedPoint | null;
   readonly headValue?: Value;
   readonly counter?: BoundedWorkCounter;
+  readonly straddle?: StraddleResume;
 }
 
 export function boundTiledSeries(
@@ -477,6 +544,7 @@ export function boundTiledSeries(
           options?.prefixPoints,
           options?.headPoint,
           counter,
+          options?.straddle,
         );
         straddling = cut.straddling;
         if (cut.bucket) straddlingBucket = cut.bucket;
@@ -519,7 +587,7 @@ export function boundTiledSeries(
     ...(options?.headValue ? { headValue: options.headValue } : {}),
     missing: missingResult.slice,
     ...(approxResult ? { approximate: approxResult.slice } : {}),
-    marks: marksResult ? marksResult.slice : emptySlice<MarkCluster>(),
+    marks: marksResult ? marksResult.slice : emptySlice<BoundedMarkCluster>(),
     validInterval: [validLo, Math.max(validLo, validHi)],
   };
 }
@@ -527,6 +595,8 @@ export function boundTiledSeries(
 export class BoundedSeriesCursor {
   private lastLine: TiledLine | null = null;
   private lastPrefixRuns: readonly Run[] | null | undefined = undefined;
+  private lastPrefixPoints: readonly WitnessedPoint[] | null | undefined = undefined;
+  private readonly straddle: StraddleResume = { state: null };
   private lastHeadPoint: WitnessedPoint | null | undefined = undefined;
   private lastHeadValue: Value | undefined = undefined;
   private cached: BoundedSeries | null = null;
@@ -537,6 +607,7 @@ export class BoundedSeriesCursor {
       this.cached
       && this.lastLine === line
       && this.lastPrefixRuns === options?.prefixRuns
+      && this.lastPrefixPoints === options?.prefixPoints
       && this.lastHeadPoint === options?.headPoint
       && this.lastHeadValue === options?.headValue
       && h >= this.cached.validInterval[0]
@@ -544,9 +615,11 @@ export class BoundedSeriesCursor {
     ) {
       return this.cached;
     }
-    const next = boundTiledSeries(line, h, options);
+    if (this.lastLine !== line) this.straddle.state = null;
+    const next = boundTiledSeries(line, h, { ...options, straddle: this.straddle });
     this.lastLine = line;
     this.lastPrefixRuns = options?.prefixRuns;
+    this.lastPrefixPoints = options?.prefixPoints;
     this.lastHeadPoint = options?.headPoint;
     this.lastHeadValue = options?.headValue;
     this.cached = next;
@@ -556,6 +629,7 @@ export class BoundedSeriesCursor {
   reset(): void {
     this.lastLine = null;
     this.cached = null;
+    this.straddle.state = null;
   }
 }
 

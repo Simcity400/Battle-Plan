@@ -9,7 +9,6 @@ export const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
 const tabFullTest = 'ui/src/components/VirtualList.dom.test.ts';
 
 export const browserTests = [
-  'ui/src/charts/heat/HeatMatrix.dom.test.ts',
   'ui/src/charts/live.dom.test.ts',
   'ui/src/charts/paintCost.dom.test.ts',
   'ui/src/charts/shareDrawing.test.ts',
@@ -32,8 +31,6 @@ export const browserTests = [
   'ui/src/recorder/RecorderPanel.dom.test.ts',
   'ui/src/shell/appearance/WidgetIconMenu.dom.test.ts',
   'ui/src/widgets/raid-log/raidPlayback.dom.test.ts',
-  'ui/src/widgets/special-projects/specialProjects.dom.test.ts',
-  'ui/src/widgets/war-goals/warGoals.dom.test.ts',
   tabFullTest,
 ];
 const pureBrowserSupportTests = new Set(['tools/canvas-page.test.ts']);

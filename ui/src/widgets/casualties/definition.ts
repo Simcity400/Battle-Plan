@@ -1,21 +1,18 @@
 import { TOP_COUNTRIES } from '../../charts/race/options.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { choiceVariants } from '../../dashboard/options.ts';
 
 export const OPTIONS: readonly OptionField[] = [
-  { key: 'view', section: 'options', label: 'Views', kind: 'choice', default: 'butterfly',
-    choices: [{ value: 'butterfly', label: 'Dealt vs taken' }, { value: 'race', label: 'Race of losses taken' }] },
-  { key: 'includeUnknown', section: 'options', label: 'Include losses from unknown attackers', kind: 'toggle', default: false },
-  { key: 'values', section: 'options', label: 'Values at bar ends', kind: 'toggle', default: true, visibleWhen: options => options.view !== 'race' },
-  { key: 'ratio', section: 'options', label: 'Ratio column', kind: 'toggle', default: true, visibleWhen: options => options.view !== 'race' },
+  { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'butterfly',
+    choices: [{ value: 'butterfly', label: 'Butterfly' }, { value: 'race', label: 'Race' }] },
+  { key: 'includeUnknown', section: 'options', label: 'Include casualties from unknown attackers', kind: 'toggle', default: false },
 ];
+
 export const definition = {
-  kind: 'casualties', version: 1, title: 'Casualties', icon: 'target',
-  description: 'Each country’s casualties dealt and taken, with their ratio.',
+  kind: 'casualties', version: 2, title: 'Casualties', icon: 'target',
+  description: 'Each country’s casualties taken and dealt.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES,
   options: OPTIONS,
-  variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), () => 'Losses race'),
 } as const satisfies WidgetMeta;

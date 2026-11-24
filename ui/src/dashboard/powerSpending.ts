@@ -2,7 +2,6 @@ import type { HourSpan, PowerSpendingReply, SpendCategory, SpendCoverage, SpendI
 import { validateIdeaTooltipData } from './ideaHistoryReply.ts';
 import type { BoundTrack, WidgetSpec } from './model';
 import { resolveWindow } from './model.ts';
-import type { SunburstItem } from '../charts/sunburst/layout';
 import { dayLabel } from '../charts/draw.ts';
 import { drawableIcon } from './artwork.ts';
 import { gameDate, monthAt, monthIndex, monthNames } from './calendar.ts';
@@ -177,13 +176,6 @@ export function spendLabel(item: SpendItem, category: string): string {
 }
 
 export interface SpendingSummary { spent: bigint; unknownCosts: number; uncovered: boolean }
-export function spendingSummary(payments: readonly PaymentEntry[], days: readonly DayEntry[]): SpendingSummary {
-  let spent = 0n, unknownCosts = 0, uncovered = false;
-  for (const entry of payments) { spent += entry.known ?? 0n; unknownCosts += entry.known === null ? entry.payments : entry.unknown; uncovered ||= entry.uncovered; }
-  for (const entry of days) { spent += entry.charge ?? 0n; unknownCosts += entry.charge === null ? entry.payments : entry.unknown; uncovered ||= entry.uncovered > 0; }
-  return { spent, unknownCosts, uncovered };
-}
-
 const plural = (amount: number, one: string) => `${amount.toLocaleString('en-US')} ${one}${amount === 1 ? '' : 's'}`;
 const duration = (hours: number) => hours < 48 ? plural(hours, 'hour') : plural(Math.floor(hours / 24), 'day');
 
@@ -229,18 +221,6 @@ export function spendingGapNote(gaps: readonly SpendGap[]): string | null {
 }
 
 export interface PowerGain { gained: bigint; lost: bigint; complete: boolean }
-export function powerGain(ledgers: readonly PowerLedger[], window: SpendingWindow, selection?: Pick<SpendingSelection, 'matches'>): PowerGain | null {
-  let gained = 0n, lost = 0n, complete = true, any = false;
-  for (const ledger of ledgers) for (const entry of ledger.gains.slice(0, readThrough(ledger.gains, window.hour))) {
-    if ((window.from !== null && entry.read < window.from) || (selection && !selection.matches(ledger.tag, entry.read))) continue;
-    any = true;
-    if (entry.gained === null || entry.unknownDays) complete = false;
-    gained += entry.gained ?? 0n;
-    lost += entry.capped ?? 0n;
-  }
-  return any ? { gained, lost, complete } : null;
-}
-
 export function powerGains(ledgers: readonly PowerLedger[], from: number | null, selection?: Pick<SpendingSelection, 'matches'>): (hour: number) => PowerGain | null {
   const entries = ledgers.flatMap(ledger => ledger.gains.filter(entry => (from === null || entry.read >= from) && (!selection || selection.matches(ledger.tag, entry.read))))
     .sort((a, b) => a.read - b.read);
@@ -257,10 +237,6 @@ export function powerGains(ledgers: readonly PowerLedger[], from: number | null,
   };
 }
 
-export function groupCostNotes(groups: ReadonlyMap<string, SpendingGroup>, hour: number): string[] {
-  return spendingCostNotes(groupSummary(groups, hour));
-}
-
 export function groupSummary(groups: ReadonlyMap<string, SpendingGroup>, hour: number): SpendingSummary {
   let spent = 0n, unknownCosts = 0, uncovered = false;
   for (const group of groups.values()) {
@@ -268,20 +244,6 @@ export function groupSummary(groups: ReadonlyMap<string, SpendingGroup>, hour: n
     if (at) { spent += at.charge; unknownCosts += at.unknown; uncovered ||= at.uncovered; }
   }
   return { spent, unknownCosts, uncovered };
-}
-
-export function sameSpendingItems(a: readonly SunburstItem[], b: readonly SunburstItem[]): boolean {
-  return a.length === b.length && a.every((item, at) => {
-    const other = b[at];
-    return item.exact === other.exact && item.present === other.present && item.count === other.count && item.final === other.final
-      && item.note === other.note && item.path.length === other.path.length && item.path.every((step, depth) => step.id === other.path[depth].id && step.label === other.path[depth].label);
-  });
-}
-
-export function firstPaid(groups: ReadonlyMap<string, SpendingGroup>): number | null {
-  let first: number | null = null;
-  for (const group of groups.values()) if (group.reads.length && (first === null || group.reads[0] < first)) first = group.reads[0];
-  return first;
 }
 
 export interface SpendingTableRow {
@@ -448,31 +410,6 @@ export function spendingGroups(ledgers: readonly PowerLedger[], from: number | n
 export function groupAt(group: SpendingGroup, hour: number) {
   const at = countThrough(group.reads, hour) - 1;
   return at < 0 ? null : { charge: group.charge[at], payments: group.payments[at], unknown: group.unknown[at], uncovered: group.uncovered[at] > 0, latestHour: group.hours[at] };
-}
-
-export function spendingItems(groups: ReadonlyMap<string, SpendingGroup>, hour: number, end: number): SunburstItem[] {
-  return [...groups.values()].flatMap(group => {
-    const final = groupAt(group, end);
-    if (!final) return [];
-    const now = groupAt(group, hour);
-    const partial = !!now && (now.unknown > 0 || now.uncovered);
-    const category = { id: group.category.id, label: categoryLabel(group.category.name, group.category.identified) };
-    const path = group.latest.name === null ? [category] : [category, { id: group.id, label: group.latest.name, icon: group.image }];
-    return [{ path, value: Number(now?.charge ?? 0n), exact: now?.charge ?? 0n, present: !!now, final: Number(final.charge),
-      count: now?.payments ?? 0, unknown: partial ? { incomplete: 1 } : undefined, note: partial ? 'Some costs weren’t recorded.' : undefined }];
-  });
-}
-
-export function daySpending(ledger: PowerLedger, day: number, through: number) {
-  const byCategory = new Map<string, { category: SpendCategory; charge: bigint; unknown: number }>();
-  const add = (category: SpendCategory, charge: bigint | null, unknown: number) => {
-    const held = byCategory.get(category.id) ?? { category, charge: 0n, unknown: 0 };
-    held.charge += charge ?? 0n; held.unknown += charge === null ? Math.max(1, unknown) : unknown;
-    byCategory.set(category.id, held);
-  };
-  for (const entry of ledger.payments) if (entry.read >= day && entry.read < day + 24 && entry.read <= through) add(entry.category, entry.known, entry.unknown);
-  for (const entry of ledger.days) if (entry.hour === day && entry.read <= through) add(entry.category, entry.charge, entry.unknown);
-  return byCategory;
 }
 
 export const SPENDING_CHUNK_HOURS = 8192;

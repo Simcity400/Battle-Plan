@@ -457,3 +457,27 @@ fn held_complete_status_without_fresh_read_breaks_carry_continuity() {
     assert_eq!(fold.segment_at(105).unwrap().1.order.completed, [entry(0, "a", None), entry(1, "x", Some(105))]);
     assert_eq!(fold.segment_at(107).unwrap().1.order.completed, [entry(0, "x", None)]);
 }
+
+#[test]
+fn a_focus_card_lists_dated_completions_newest_first_then_undated_and_holds_only_until_its_reading_changes() {
+    use crate::products::focus_card::{NO_GAIN, card_at, progress_figures};
+    let source = recording();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let fold = read(&query, &"GER".into(), &AtomicBool::new(false)).unwrap();
+    let early = card_at(&fold, 103);
+    assert_eq!(early.completed, [("a".to_owned(), None)]);
+    assert_eq!((early.undated, early.segment_first), (1, Some(100)));
+    assert_eq!(early.current, Some(("b".to_owned(), false, false)));
+    assert_eq!(early.progress, Some((200_000, Some(100_000))));
+    assert_eq!(early.valid_through, 104, "the answer stands no later than its progress reading");
+    let later = card_at(&fold, 107);
+    assert_eq!(later.completed, [("b".to_owned(), Some(105)), ("a".to_owned(), None)], "dated newest first, the undated after them");
+    assert_eq!((later.undated, later.current.clone(), later.valid_through), (1, None, 109));
+    let gap = card_at(&fold, 110);
+    assert!(gap.completed.is_empty() && gap.current.is_none());
+    assert_eq!(gap.missing.as_ref().map(|missing| missing.reason.as_str()), Some(NO_ROW));
+    assert_eq!(gap.valid_through, 111);
+    assert_eq!(progress_figures(Some((150_000, Some(50_000))), Some(70.0)), (Some(1), Some(214), Some(137), None));
+    assert_eq!(progress_figures(Some((150_000, None)), Some(70.0)), (Some(1), Some(214), None, Some(NO_GAIN.to_owned())));
+    assert_eq!(progress_figures(Some((9_000_000, Some(1))), Some(70.0)).1, Some(10_000), "progress past the duration is complete, not more");
+}

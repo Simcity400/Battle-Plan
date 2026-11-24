@@ -3,11 +3,11 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { gameWindow } from '../../dashboard/gameWindows';
 import { object } from '../../dashboard/validation.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artNameCell } from '../../families/table/identityCell.ts';
+import { artKindCell, urlArtHandle } from '../../families/table/identityCell.ts';
 import type { TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import type { IndustrialOrganisationsReply, OrganisationNow } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
@@ -37,12 +37,16 @@ export function validateOrganisations(value: unknown): IndustrialOrganisationsRe
   return reply;
 }
 
-const PRIORITY: Readonly<Record<string, number>> = { organisation: 0, size: 1, funds: 2, policy: 3, traits: 4 };
+const PRIORITY: Readonly<Record<string, number>> = { kind: 0, organisation: 0, size: 1, funds: 2, policy: 3, traits: 4, view: 5 };
 export const ORGANISATION_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(column => ({
   ...column,
   priority: PRIORITY[column.key] ?? 9,
   numeric: column.key === 'size' || column.key === 'funds' || column.key === 'traits',
   text: column.key === 'organisation' || column.key === 'policy',
+  ...(column.key === 'kind' ? { cellKind: 'kind' as const, sortable: false, pinned: true } : {}),
+  ...(column.key === 'organisation' ? { cellKind: 'item' as const, pinned: true } : {}),
+  ...(column.key === 'size' || column.key === 'funds' || column.key === 'traits' ? { barEligible: true } : {}),
+  ...(column.key === 'view' ? { cellKind: 'action' as const, sortable: false } : {}),
 }));
 
 const count = (value: number | null, missing: string): Value => value === null ? notRecorded(missing) : value === 0 ? zeroValue(0) : knownValue(value);
@@ -95,11 +99,13 @@ export const organisationsProjection: TableProjection<OrganisationsProjectionOpt
         key: row.id,
         name,
         cells: {
-          organisation: artNameCell(readView, row.name, image ? { kind: 'url', url: image } : null, row.nameUnknown ?? 'Organisation name not recorded'),
+          kind: artKindCell(readView, urlArtHandle(image), 'wide', row.name),
+          organisation: { value: row.name ? knownValue(row.name) : notRecorded(row.nameUnknown ?? 'Organisation name not recorded') },
           size: { value: count(row.size, reply.detailsMissing ?? 'Size not recorded'), format: 'integer' },
           funds: { value: funds(valueFromLive(live, liveKey(row.id, 'funds'), reply.detailsMissing ? { overrideMissing: reply.detailsMissing } : undefined)), format: 'integer' },
           traits: { value: count(row.traits, reply.detailsMissing ?? 'Traits not recorded'), format: 'integer' },
           policy: { value: policyValue(row, reply.detailsMissing) },
+          view: { value: options.canOpen ? knownValue('View') : notApplicable('The policy window is not available yet') },
         },
         tooltipExtra: extra,
         ...(options.canOpen ? { tooltipAction: 'Open its policies' } : {}),

@@ -30,6 +30,18 @@ export function validateRankReply(value: unknown): SeriesStateReply {
   return reply as SeriesStateReply;
 }
 
+export function seriesStateProvenInterval(data: unknown, hour: number): readonly [number, number] | null {
+  const reply = data as SeriesStateReply;
+  let from = -Infinity;
+  let until = Infinity;
+  for (const state of reply.states) {
+    if (!state.run) return [hour, hour];
+    from = Math.max(from, state.run.firstHour);
+    until = Math.min(until, state.run.lastHour);
+  }
+  return from <= hour && hour <= until ? [from, until] : [hour, hour];
+}
+
 export function validateRankedLines(value: unknown): { decimals: number; lines: RankedLine[] } {
   const reply = value as { decimals?: unknown; lines?: unknown } | null;
   const lines = chartSummaryLines<RankedLine>(reply?.lines, line => typeof line.tag === 'string' && Array.isArray(line.membership)

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { engineHour } from './calendar.ts';
-import { groupAt, ledgerOf, monthFigures, powerGain, spendingGaps, spendingGroups, spendingItems, spendingTableRows, stableSpendingRows, validatePowerSpending } from './powerSpending.ts';
+import { groupAt, ledgerOf, monthFigures, spendingGaps, spendingGroups, spendingTableRows, stableSpendingRows, validatePowerSpending } from './powerSpending.ts';
 import { spendingChunks, structureAt, structureHours, SPENDING_CHUNK_HOURS } from './powerSpending.ts';
 import { namesCovered, spendingCountryRequests, spendingRowsAhead } from './powerSpending.ts';
 import type { PowerSpendingReply } from '../generated/dashboard';
@@ -9,7 +9,7 @@ import type { PowerSpendingReply } from '../generated/dashboard';
 const day = (month: number, date: number) => engineHour({ year: 1937, month, day: date, hour: 1 })!;
 const item = (id: string, category: string, recurring: boolean, name: string | null) => ({ id, groupId: `g-${id}`, cause: recurring ? 'DailyGain' : 'Decision',
   category, recurring, firstHour: day(1, 1), firstRead: day(1, 1), name, action: name ?? 'Not identified', icon: null, character: null, targetTag: null,
-  targetName: null, unknown: null, tooltipToken: null });
+  targetName: null, unknown: null, tooltipToken: null, kind: null });
 const categories = [{ id: 'decisions', name: 'Decisions', identified: true }, { id: 'dailyCosts', name: 'Daily costs', identified: true }];
 
 function chunks(): PowerSpendingReply[] {
@@ -69,17 +69,11 @@ test('a block made again keeps each row that draws the same, so the table render
   assert.ok(later.filter(row => !earlier.some(held => held.key === row.key)).length > 0, 'payments the later block holds are new rows');
 });
 
-test('the breakdown reads each group at any hour from its cumulated entries, and gains and gaps name what is unknown', () => {
+test('the table reads each group at any hour from its cumulated entries, and gaps name what is unknown', () => {
   const ledgers = [ledgerOf('GER', 'Political', chunks())];
   const groups = spendingGroups(ledgers, null);
   assert.deepEqual(groupAt(groups.get('g-7:0:1')!, day(2, 1)), { charge: 5000000n, payments: 1, unknown: 0, uncovered: false, latestHour: day(1, 1) + 5 });
   assert.equal(groupAt(groups.get('g-7:0:1')!, day(1, 1)), null);
-  const items = spendingItems(groups, day(1, 2), day(4, 1));
-  const decision = items.find(entry => entry.path[0].id === 'decisions')!;
-  assert.equal(decision.exact, 5000000n);
-  assert.equal(decision.final, 12000000);
-  assert.deepEqual(powerGain(ledgers, { from: null, hour: day(1, 3) }), { gained: 600000n, lost: 100000n, complete: false });
-  assert.equal(powerGain(ledgers, { from: null, hour: day(1, 1) }), null, 'no day counted: no gain, not zero');
   assert.deepEqual(spendingGaps(ledgers, { from: null, hour: day(4, 1) }).map(gap => [gap.from, gap.through]), [[day(1, 1), day(1, 1) + 1]]);
 });
 

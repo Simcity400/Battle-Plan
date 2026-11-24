@@ -1,24 +1,18 @@
-import { breakdownOption, breakdownVariants, DRILL_OPTION } from '../../charts/drill/drillState.ts';
-import { NARROW_TABLE_OPTION } from '../../charts/table/options.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 
-export const DETAIL = { id: 'pairs', label: 'Casualty pairs' };
-export const OPTIONS: readonly OptionField[] = [{ key: 'mostCountries', section: 'options', label: 'Countries around the chord',
-  hint: 'The remaining countries fold into Other; click to see every recorded pair',
-  kind: 'number', min: 1, max: Number.MAX_SAFE_INTEGER, step: 1, default: 12 },
+export const OPTIONS: readonly OptionField[] = [
+  { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'matrix',
+    choices: [{ value: 'matrix', label: 'Matrix' }, { value: 'opponents', label: 'By opponent' }] },
   { key: 'between', section: 'options', label: 'With countries chosen, show', kind: 'choice', default: 'touching',
-    choices: [{ value: 'touching', label: 'Their casualties with anyone' }, { value: 'between', label: 'Only casualties between them' }] }, DRILL_OPTION,
-  breakdownOption([DETAIL], 'Chord'),
-  { key: 'pairSelection', section: 'options', label: 'Pair selection', kind: 'content-choice', automatic: 'All recorded pairs',
-    default: '', visibleWhen: () => false }, NARROW_TABLE_OPTION];
+    choices: [{ value: 'touching', label: 'Their casualties with anyone' }, { value: 'between', label: 'Only casualties between them' }] },
+];
 export const definition = {
-  kind: 'casualties-between', version: 1, title: 'Casualties between countries', icon: 'target',
+  kind: 'casualties-between', version: 2, title: 'Casualties between countries', icon: 'target',
   description: 'Recorded casualties dealt from each country to each enemy country.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   defaultCountries: { kind: 'all' },
-  availability: { product: 'casualty-pairs', params: { countries: [], between: false, window: null } },
-  options: OPTIONS, variants: breakdownVariants('Casualties between countries', OPTIONS),
+  options: OPTIONS,
 } as const satisfies WidgetMeta;
