@@ -1,5 +1,5 @@
 import { projectCountryFlow } from '../../families/flow/countryFlow.ts';
-import { countryFlowPlan, flowPerSide } from '../../families/flow/countryFlowPlan.ts';
+import { countryFlowPlan, flowPerSide, flowUnavailable } from '../../families/flow/countryFlowPlan.ts';
 import type { FlowWidgetDeclaration } from '../../families/flow/declaration.ts';
 import type { FlowProjection } from '../../families/flow/model.ts';
 
@@ -32,5 +32,6 @@ export const volunteersDeclaration: FlowWidgetDeclaration = {
   sources: (ctx, view) => countryFlowPlan(ctx, 'volunteer-flow', { limit: flowPerSide(view) }),
   projection: volunteersProjection,
   projectionOptions: () => EMPTY_OPTIONS,
+  unavailable: flowUnavailable,
   jumpToDate: true,
 };

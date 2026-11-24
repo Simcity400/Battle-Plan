@@ -5,10 +5,12 @@ use dashboard_base::products::{
     validate_country,
 };
 use dashboard_base::Source;
+use dashboard_query::series::ranked::GroupSelection;
+use dashboard_world::products::group_members::GroupsAt;
 use replay_data::rows::{MilitaryAidRow, Recorded, TableId, TagHolderRow, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, io};
+use std::io;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -30,6 +32,10 @@ pub struct VolunteerFlowParams {
     pub countries: Vec<Country>,
     #[serde(default)]
     pub between: bool,
+    #[doc = " A group: its members at the hour (or every member so far), resolved in Rust; replaces `countries`."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub limit: Option<u32>,
@@ -66,11 +72,11 @@ impl AtHour for VolunteerFlow {
     const KEY: &'static str = "volunteer-flow";
     const TITLE: &'static str = "Volunteers & expeditionaries";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = VolunteerFlowParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, limit];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit];
     type Reply = CountryFlowReply;
-    type Context = ();
+    type Context = GroupsAt;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
@@ -88,7 +94,15 @@ impl AtHour for VolunteerFlow {
     }
 
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(())
+        Ok(GroupsAt::default())
+    }
+
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())
+    }
+
+    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        if params.subject.is_some() { i32::MAX } else { at.context.valid_through(params.group.as_ref(), at.hour) }
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -105,7 +119,10 @@ impl AtHour for VolunteerFlow {
         if let Some(None) = subject {
             return Ok(empty("The chosen country holds no tag at this hour".to_owned()));
         }
-        let chosen: Option<HashSet<u32>> = (!params.countries.is_empty()).then(|| params.countries.iter().filter_map(resolve).collect());
+        let chosen = match at.context.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour)? {
+            Ok(chosen) => chosen,
+            Err(refused) => return Ok(empty(refused)),
+        };
         let shape = FlowShape {
             subject: subject.flatten(),
             chosen: chosen.as_ref(),
