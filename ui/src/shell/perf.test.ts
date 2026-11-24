@@ -98,6 +98,28 @@ test('beginAudit clears any unfinished pictureAudit and cached exactReads before
   await capturePicturesBatch(100);
 });
 
+test('R4-S6: each audited picture hands its own installed fields to the exact reader', async () => {
+  const { capturePictures, capturePicturesBatch, recordPicture } = await import('../dashboard/pulled.ts');
+  const recorder = Object.create(PerfRecorder.prototype) as PerfRecorder;
+  Object.assign(recorder as unknown as Record<string, unknown>, {
+    readers: new Map(), exactReads: new Map(), auditGen: 0, lines: [],
+    buffered: { count: 0, bytes: 0, from: Infinity, to: -Infinity }, lost: { count: 0, bytes: 0, from: Infinity, to: -Infinity },
+    sending: 0, stopped: false, push: () => {}, flush: async () => {},
+  });
+  const seen: unknown[] = [];
+  recorder.reader(1, 0, async (_hour, _auditId, fields) => { seen.push(fields?.range); return { values: new Map([['A:v', '1']]) }; });
+  await recorder.beginAudit();
+  const sample = (at: number, fields: Readonly<Record<string, unknown>>) => ({ t: 'picture', at, widget: 'w', surface: 'table', placement: 1, owner: 0, renderer: 'page', head: at, hour: at, offset: 0, since: at, through: at,
+    eligibleHour: at, entry: at, parts: [], face: '', drawMs: 0, mode: 'picture', dim: false, reset: 0, binding: 0, inspect: null, tooltip: false, auditId: 3, fields, rows: [{ row: 'A', key: 'A:v', value: '1' }] }) as never;
+  recordPicture(sample(1, { range: { first: 0, count: 4 } }));
+  recordPicture(sample(2, { range: { first: 0, count: 2 } }));
+  const results = await recorder.auditPictures();
+  assert.deepEqual(results.map(result => result.error), [null, null]);
+  assert.deepEqual(seen, [{ first: 0, count: 4 }, { first: 0, count: 2 }], 'the earlier sample keeps its own range when a later one with the same audit id installs');
+  await capturePictures(false);
+  await capturePicturesBatch(100);
+});
+
 test('beginAudit invalidates in-flight audit continuations via generation token so stale drains cannot touch the next window', async () => {
   const { capturePictures, capturePicturesBatch, recordPicture } = await import('../dashboard/pulled.ts');
   const recorder = Object.create(PerfRecorder.prototype) as PerfRecorder;
