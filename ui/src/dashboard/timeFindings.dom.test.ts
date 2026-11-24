@@ -47,7 +47,6 @@ const followedQuery = (ask: Ask, product: string): Record<string, unknown> | nul
   return query.product === product ? query.params as Record<string, unknown> ?? {} : null;
 };
 const follows = (asks: Ask[], product: string) => asks.flatMap(ask => { const params = followedQuery(ask, product); return params && !ask.hours.length ? [params] : []; });
-const reads = (asks: Ask[], product: string) => [...asks.filter(ask => ask.product === product).map(ask => ask.params ?? {}), ...follows(asks, product)];
 const pinAt = (hour: number) => ({ mode: 'pin', windows: { main: { firstOffset: hour - 100, lastOffset: hour - 100 } } });
 const NO_PIN = { mode: 'pin', windows: {} };
 const groupsOf = (tags: string[], members: { tag: string; firstHour: number; lastHour: number }[] = []) => ({ branchId: '1', warnings: [], warStarts: [], capitulations: [],
