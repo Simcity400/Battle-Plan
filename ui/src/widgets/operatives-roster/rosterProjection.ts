@@ -10,7 +10,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { Country, OperativesRosterReply, OperativeTrait, RosterOperative } from '../../generated/dashboard';
-import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
 
 export type RosterProjectionOptions = Record<string, never>;
 
@@ -170,7 +170,6 @@ export const rosterProjection: TableProjection<RosterProjectionOptions> = regist
 export const rosterDeclaration: TableWidgetDeclaration<RosterProjectionOptions> = {
   family: 'table',
   kind: 'operatives-roster',
-  optionFields: OPTIONS,
   label: 'Operatives roster',
   subject: 'operatives',
   emptyCampaign: 'Load a campaign to see operatives.',

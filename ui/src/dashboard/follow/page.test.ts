@@ -211,6 +211,9 @@ test('clock: a paused forward step that native has not covered keeps the install
   offer(entry({ id: 2, h: 22, c: 22, lo: 22, hi: 22 }));
   p.publish(21);
   assert.deepEqual([view().id, view().through, view().dim], [1, 20, true], 'the actually installed picture, not one pending or selected');
+  assert.equal(view().expired, true, 'its coverage has expired');
+  p.rebind(1);
+  assert.deepEqual([view().dim, view().expired], [true, true], 'a pending rebind does not hide that the coverage expired');
 });
 
 test('clock: pause, speed change, seek and rebind each wake a request at the actual target', () => {
@@ -253,7 +256,7 @@ test('binding: a geometry rebind holds the installed picture dimmed; the old bin
   const { p, offer, view } = page();
   offer(entry({ id: 1, c: 100 })); p.publish(10, { playing: true });
   p.rebind(1);
-  assert.deepEqual([view().id, view().dim], [1, true]);
+  assert.deepEqual([view().id, view().dim, view().expired], [1, true, false], 'a pending rebind alone dims without expiring');
   offer(entry({ id: 2, binding: 1 })); offer(entry({ id: 3, binding: 2, c: 100 })); p.publish(11);
   assert.deepEqual([view().id, view().dim], [3, false]);
 });
