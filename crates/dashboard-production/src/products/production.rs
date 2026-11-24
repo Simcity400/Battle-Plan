@@ -1,14 +1,12 @@
 
 pub mod breakdown;
 pub mod catalogue;
-pub mod lines;
 pub mod live;
 #[cfg(test)]
 mod tests;
 
 pub use breakdown::ProductionLineBreakdown;
 pub use catalogue::{EquipmentDesigns, IndustrialOrganisations, ProductionLicences};
-pub use lines::ProductionLines;
 pub use live::ProductionLinesAt;
 
 use dashboard_base::products::Country;
@@ -23,6 +21,10 @@ use std::{collections::BTreeMap, io};
 use ts_rs::TS;
 
 pub const DECIMALS: u8 = 5;
+
+pub(crate) fn index_of(source: &dashboard_base::Source) -> impl Fn(u32) -> io::Result<std::sync::Arc<RunLines>> + '_ {
+    move |run| cached_production_lines(source, run)
+}
 pub const DETAIL_HOURS: i32 = 720;
 
 pub fn weekly_units_raw(speed_raw: i64, cost_raw: i64) -> Option<i64> {
@@ -53,33 +55,6 @@ impl LineKind {
             _ => None,
         }
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct OutputPart {
-    pub variant: String,
-    #[doc = r#" The organisation's reference; "0" for none."#]
-    pub mio: String,
-    #[doc = " Units delivered since `sinceHour`, as a decimal string."]
-    pub units: String,
-    #[doc = " False when a tick could not be counted: `units` then leave it out."]
-    pub exact: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct OutputRun {
-    pub first_hour: i32,
-    pub last_hour: i32,
-    #[doc = " Its parts by row ordinal; the total is their sum, exact only when every part is."]
-    pub parts: Vec<OutputPart>,
-    #[doc = " The hour the branch's observation of the line began."]
-    pub since_hour: i32,
-    #[doc = " The line was first seen after the branch's first complete census: the units are its whole life's."]
-    pub whole_life: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
