@@ -1913,37 +1913,6 @@ impl SpritePass {
         self.draw_runs(&mut pass, [width, height]);
     }
 
-    pub fn draw_into(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
-        size: [u32; 2],
-        load: wgpu::LoadOp<wgpu::Color>,
-    ) {
-        if !self.runs.is_empty() {
-            self.draw_pages(encoder);
-        }
-        let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("sprites"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        if !self.runs.is_empty() {
-            self.draw_runs(&mut pass, size);
-        }
-    }
-
     fn draw_pages(&self, encoder: &mut wgpu::CommandEncoder) {
         for (index, page) in self.fade.pages.iter().take(self.fade_pages).enumerate() {
             let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {

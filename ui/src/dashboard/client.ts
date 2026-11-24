@@ -89,7 +89,6 @@ export interface GameWindowRequest {
   kind: string;
   target?: unknown;
   scale: number;
-  scroll?: Readonly<Record<string, number>>;
   subView?: string | null;
 }
 
@@ -99,19 +98,12 @@ export interface GameWindowTooltip {
   detail: string | null;
 }
 
-export interface GameWindowScrollRegion {
-  target: string;
-  vertical: boolean;
-  wheelFactor: number;
-}
-
 export interface GameWindowRegion {
   path: string;
   rect: readonly [number, number, number, number];
   clip: readonly [number, number, number, number] | null;
   disabled: boolean;
   close: boolean;
-  scroll: GameWindowScrollRegion | null;
   tooltip: GameWindowTooltip | null;
 }
 

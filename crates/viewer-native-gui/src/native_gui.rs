@@ -2184,6 +2184,14 @@ impl<'a> Walk<'a> {
         .map(|_| ())
     }
 
+    fn effective_extent(info: &SpriteInfo, sized: Option<[i32; 2]>, scale: f32) -> [i32; 2] {
+        if let (SpriteKind::CorneredTile { .. }, Some(size)) = (&info.kind, sized) {
+            size
+        } else {
+            info.scaled_extent(scale)
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn state_part(
         &mut self,
@@ -2263,12 +2271,12 @@ impl<'a> Walk<'a> {
             }),
             None => info,
         };
-        let extent = info.scaled_extent(scale);
+        let extent = Self::effective_extent(&info, self.sized, scale);
         let offset = match centre {
             Centre::None => [0, 0],
             Centre::Position => [extent[0] / 2, extent[1] / 2],
             Centre::Unscaled => {
-                let unscaled = info.scaled_extent(1.0);
+                let unscaled = Self::effective_extent(&info, self.sized, 1.0);
                 [unscaled[0] / 2, unscaled[1] / 2]
             }
             Centre::Anchor => match info.kind {
@@ -3914,7 +3922,8 @@ impl Walk<'_> {
             },
             None => info,
         };
-        if let Some(button) = button
+        if element.kind == Kind::Button
+            && let Some(button) = button
             && button.size[0] > 0
             && button.size[1] > 0
             && matches!(info.kind, SpriteKind::CorneredTile { .. })

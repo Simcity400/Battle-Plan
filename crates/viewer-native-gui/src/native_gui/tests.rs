@@ -614,6 +614,88 @@ fn a_cornered_tile_button_uses_its_declared_size() {
         .fold(f32::NEG_INFINITY, f32::max);
     assert_eq!(right, 5.0 + 30.0);
     assert_eq!(bottom, 7.0 + 20.0);
+
+    let centered = laid(
+        "buttonType = { name = \"centered\" quadTextureSprite = \"GFX_cornered\" \
+         position = { x = 100 y = 80 } size = { x = 110 y = 58 } centerposition = yes }",
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    let PartKind::Tiles { ref quads, .. } = centered.parts[0].kind else {
+        panic!("not a tile");
+    };
+    let left = quads
+        .iter()
+        .map(|(rect, _)| rect[0])
+        .fold(f32::INFINITY, f32::min);
+    let top = quads
+        .iter()
+        .map(|(rect, _)| rect[1])
+        .fold(f32::INFINITY, f32::min);
+    let right = quads
+        .iter()
+        .map(|(rect, _)| rect[0] + rect[2])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let bottom = quads
+        .iter()
+        .map(|(rect, _)| rect[1] + rect[3])
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert_eq!([left, top, right, bottom], [45.0, 51.0, 155.0, 109.0]);
+
+    let standard_centered = laid(
+        "guiButtonType = { name = \"std_centered\" quadTextureSprite = \"GFX_cornered\" \
+         position = { x = 100 y = 80 } size = { x = 110 y = 58 } centerposition = yes scale = 2.0 }",
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    let PartKind::Tiles { ref quads, .. } = standard_centered.parts[0].kind else {
+        panic!("not a tile");
+    };
+    let left = quads
+        .iter()
+        .map(|(rect, _)| rect[0])
+        .fold(f32::INFINITY, f32::min);
+    let top = quads
+        .iter()
+        .map(|(rect, _)| rect[1])
+        .fold(f32::INFINITY, f32::min);
+    let right = quads
+        .iter()
+        .map(|(rect, _)| rect[0] + rect[2])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let bottom = quads
+        .iter()
+        .map(|(rect, _)| rect[1] + rect[3])
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert_eq!([left, top, right, bottom], [45.0, 51.0, 155.0, 109.0]);
+
+    let checkbox = laid(
+        "checkboxType = { name = \"cb\" quadTextureSprite = \"GFX_cornered\" \
+         position = { x = 5 y = 7 } size = { x = 110 y = 58 } }",
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    let PartKind::Tiles { ref quads, .. } = checkbox.parts[0].kind else {
+        panic!("not a tile");
+    };
+    let right = quads
+        .iter()
+        .map(|(rect, _)| rect[0] + rect[2])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let bottom = quads
+        .iter()
+        .map(|(rect, _)| rect[1] + rect[3])
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert_eq!([right, bottom], [5.0 + 30.0, 7.0 + 20.0]);
+    let cb_region = checkbox
+        .regions
+        .iter()
+        .find(|region| region.path.ends_with(".cb"))
+        .unwrap();
+    assert_eq!(cb_region.rect, [5.0, 7.0, 30.0, 20.0]);
 }
 
 #[test]

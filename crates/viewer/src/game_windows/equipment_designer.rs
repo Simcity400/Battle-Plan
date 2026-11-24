@@ -1,9 +1,9 @@
 use super::{
-    ComposedPlan, ComposedSubWindow, DEFAULT_VIEWPORT, GameWindowRegion, GameWindowRender,
-    GameWindowRequest, GameWindowScrollRegion, GameWindowTooltip, Service, WindowCacheKey,
-    container_holder, layout_window, strip_markup,
+    ComposedPlan, ComposedSubWindow, DEFAULT_VIEWPORT, GameWindowError, GameWindowRender,
+    GameWindowRequest, GameWindowTooltip, Service, WindowCacheKey, container_holder,
+    layout_window, strip_markup,
 };
-use content_reader_gui::gui::native::{Element, Fields, Kind, resources::Registry};
+use content_reader_gui::gui::native::{self, Element, Fields, Kind, resources::Registry};
 use content_reader_key_names::{
     equipment::{Database, Equipment},
     resources::Resources as ResourceDatabase,
@@ -19,12 +19,12 @@ use replay_data::rows::{
     VariantDesignState, VariantModuleRow, VariantStatsRow, VariantUpgradeRow, tables,
 };
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
-use viewer_native_gui::{
-    native_gui::{self, Assets, Layout, Resources, lifecycle::Instance},
-    native_text::{COLOR, ICON},
-    native_windows::NativeWindows,
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::atomic::AtomicBool,
 };
+use viewer_native_gui::native_gui::{self, Assets, Layout, Resources, lifecycle::Instance};
+use viewer_native_gui::native_text::{COLOR, ICON};
 
 #[cfg(test)]
 mod tests;
@@ -632,76 +632,101 @@ pub fn build_stat_columns(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "rendering resolves recorded tables, content layers, language, warnings, and cancellation independently"
+)]
 pub fn render(
     service: &Service,
     source: &Source,
     layers: &ResolvedLayers,
     resolve: &ResolveOptions,
     visual_revision: &str,
+    language: &str,
+    extra_warnings: Vec<String>,
     request: GameWindowRequest,
-) -> Result<GameWindowRender, String> {
+    cancel: &AtomicBool,
+) -> Result<GameWindowRender, GameWindowError> {
     let target: Target = serde_json::from_value(request.target.clone())
-        .map_err(|error| format!("Invalid equipment designer target: {error}"))?;
+        .map_err(|error| GameWindowError::refused(format!("Invalid equipment designer target: {error}")))?;
     let variant_id: u64 = target
         .variant
         .parse()
-        .map_err(|_| format!("Invalid equipment design id '{}'.", target.variant))?;
+        .map_err(|_| GameWindowError::refused(format!("Invalid equipment design id '{}'.", target.variant)))?;
     let branch_id: u64 = request
         .branch_id
         .parse()
-        .map_err(|_| format!("Invalid branch id '{}'.", request.branch_id))?;
+        .map_err(|_| GameWindowError::refused(format!("Invalid branch id '{}'.", request.branch_id)))?;
 
     let frame = match source
         .replay_ref()
         .seek_selected(branch_id, request.hour, Some(REQUIRED_TABLES))
-        .map_err(|error| format!("Could not seek recording to hour {}: {error}", request.hour))?
-    {
+        .map_err(|error| {
+            GameWindowError::failed(format!(
+                "Could not seek recording to hour {}: {error}",
+                request.hour
+            ))
+        })? {
         SeekResult::Frame(frame) => frame,
         SeekResult::Gap { reason, .. } => {
-            return Err(format!(
+            return Err(GameWindowError::refused(format!(
                 "Hour {} is not recorded on this branch: {reason}",
                 request.hour
-            ));
+            )));
         }
     };
 
     let definitions = frame
         .complete::<tables::VariantDefinitions>()
-        .map_err(|error| format!("Equipment definitions are not recorded at this hour: {error}"))?;
+        .map_err(|error| {
+            GameWindowError::refused(format!(
+                "Equipment definitions are not recorded at this hour: {error}"
+            ))
+        })?;
     let definition = definitions
         .binary_search_by_key(&variant_id, |row| row.id)
         .ok()
         .map(|index| &definitions[index])
         .ok_or_else(|| {
-            format!(
+            GameWindowError::refused(format!(
                 "Equipment design {} is not recorded at hour {}.",
                 target.variant, request.hour
-            )
+            ))
         })?;
     let lexical = frame
         .complete::<tables::LexicalTokens>()
-        .map_err(|error| format!("Lexical tokens are not recorded at this hour: {error}"))?;
+        .map_err(|error| {
+            GameWindowError::refused(format!(
+                "Lexical tokens are not recorded at this hour: {error}"
+            ))
+        })?;
     let dlc_mask = frame
         .complete::<tables::SimulationFeatures>()
         .ok()
         .and_then(|rows| rows.first())
         .map_or(0, |row| row.dlc_mask);
 
-    let equipment_db = Database::load(layers)
-        .map_err(|error| format!("Could not load recorded equipment definitions: {error}"))?;
-    let (resource_db, _) = content_reader_key_names::resources::read(layers)
-        .map_err(|error| format!("Could not load recorded resource definitions: {error}"))?;
+    let equipment_db = Database::load(layers).map_err(|error| {
+        GameWindowError::failed(format!(
+            "Could not load recorded equipment definitions: {error}"
+        ))
+    })?;
+    let (resource_db, _) = content_reader_key_names::resources::read(layers).map_err(|error| {
+        GameWindowError::failed(format!(
+            "Could not load recorded resource definitions: {error}"
+        ))
+    })?;
 
     let equipment_key = spell(lexical, definition.equipment_token).ok_or_else(|| {
-        format!(
+        GameWindowError::refused(format!(
             "Equipment design {} has an unknown equipment token {}.",
             target.variant, definition.equipment_token
-        )
+        ))
     })?;
     let equipment = equipment_db.named(&equipment_key).ok_or_else(|| {
-        format!(
+        GameWindowError::refused(format!(
             "Equipment '{equipment_key}' is not defined in the recorded mod stack."
-        )
+        ))
     })?;
     let archetype_key = equipment
         .archetype
@@ -710,7 +735,8 @@ pub fn render(
         .or_else(|| spell(lexical, definition.archetype_token))
         .unwrap_or_else(|| equipment_key.clone());
 
-    let kind = classify_designer(&equipment_db, equipment, u64::from(dlc_mask))?;
+    let kind = classify_designer(&equipment_db, equipment, u64::from(dlc_mask))
+        .map_err(GameWindowError::refused)?;
     let tag = resolve_variant_tag(&frame, definition, &target.tag);
     let design_state = match &definition.design {
         Recorded::Value(state) => Some(state),
@@ -762,6 +788,7 @@ pub fn render(
         game_dir: resolve.game_dir.clone(),
         user_dir: resolve.user_dir.clone(),
         visual_revision: visual_revision.to_owned(),
+        language: language.to_owned(),
         window: window_name.to_owned(),
     };
     struct ResolvedVisuals {
@@ -770,7 +797,6 @@ pub fn render(
         mio_sprite: Option<String>,
     }
 
-    let scroll = request.scroll.clone();
     let empty_tooltips = BTreeMap::new();
 
     service.render_composed_from_layers(
@@ -782,7 +808,9 @@ pub fn render(
         true,
         &["close_button"],
         &empty_tooltips,
-        |windows, registry, localisation| {
+        extra_warnings,
+        cancel,
+        |guis, registry, localisation| {
             let mut extra = Assets::default();
             let mut visuals = ResolvedVisuals {
                 icon_sprite: None,
@@ -809,25 +837,25 @@ pub fn render(
             }
 
             if kind.is_modular() {
-                if let Some(entry) = windows.gui_type(b"equipment_designer_module_slot_entry") {
+                if let Some(entry) = guis.template(b"equipment_designer_module_slot_entry") {
                     merge_assets(
                         &mut extra,
-                        native_gui::assets_in(entry, &|name| windows.gui_type(name), localisation),
+                        native_gui::assets_in(entry, &|name| guis.template(name), localisation),
                     );
                 }
-                if let Some(entry) = windows.gui_type(b"stat_entry") {
+                if let Some(entry) = guis.template(b"stat_entry") {
                     merge_assets(
                         &mut extra,
-                        native_gui::assets_in(entry, &|name| windows.gui_type(name), localisation),
+                        native_gui::assets_in(entry, &|name| guis.template(name), localisation),
                     );
                 }
-                if let Some(bp_name) = resolve_blueprint_window(&data, windows) {
-                    if let Some(bp_root) = windows.gui_type(bp_name.as_bytes()) {
+                if let Some(bp_name) = resolve_blueprint_window(&data, guis) {
+                    if let Some(bp_root) = guis.template(bp_name.as_bytes()) {
                         merge_assets(
                             &mut extra,
                             native_gui::assets_in(
                                 bp_root,
-                                &|name| windows.gui_type(name),
+                                &|name| guis.template(name),
                                 localisation,
                             ),
                         );
@@ -852,23 +880,23 @@ pub fn render(
                     }
                 }
             } else if let DesignerKind::Upgrade(domain) = kind {
-                if let Some(sub) = windows.gui_type(domain.sub_window().as_bytes()) {
+                if let Some(sub) = guis.template(domain.sub_window().as_bytes()) {
                     merge_assets(
                         &mut extra,
-                        native_gui::assets_in(sub, &|name| windows.gui_type(name), localisation),
+                        native_gui::assets_in(sub, &|name| guis.template(name), localisation),
                     );
                 }
-                if let Some(entry) = windows.gui_type(b"equipment_designer_stat_entry") {
+                if let Some(entry) = guis.template(b"equipment_designer_stat_entry") {
                     merge_assets(
                         &mut extra,
-                        native_gui::assets_in(entry, &|name| windows.gui_type(name), localisation),
+                        native_gui::assets_in(entry, &|name| guis.template(name), localisation),
                     );
                 }
             }
 
             Ok((extra, visuals))
         },
-        |root, _windows, localisation, instance, tooltips, visuals| {
+        |root, _guis, localisation, instance, tooltips, visuals| {
             configure_main_window(
                 root,
                 localisation,
@@ -880,18 +908,17 @@ pub fn render(
                 tooltips,
             );
         },
-        |main_layout, root, windows, resources, localisation, visuals| {
+        |main_layout, root, guis, resources, localisation, visuals| {
             compose_sub_windows(
                 main_layout,
                 root,
-                windows,
+                guis,
                 resources,
                 localisation,
                 &data,
                 &equipment_db,
                 visuals.blueprint_name.as_deref(),
                 visuals.icon_sprite.as_deref(),
-                &scroll,
             )
         },
     )
@@ -1112,7 +1139,7 @@ fn extract_design_data(
         equipment_key: equipment_key.to_owned(),
         archetype_key: archetype_key.to_owned(),
         equipment_sprite: String::from_utf8_lossy(&equipment.sprite).into_owned(),
-        air_map_icon_frame: equipment.air_map_icon_frame,
+        air_map_icon_frame: collect_air_map_icon_frame(equipment_key, equipment, equipment_db),
         category_mask: equipment_db.category(equipment),
         base_name,
         version_suffix,
@@ -1142,6 +1169,49 @@ fn merge_assets(target: &mut Assets, added: Assets) {
     target.sprites.extend(added.sprites);
     target.fonts.extend(added.fonts);
     target.textures.extend(added.textures);
+}
+
+fn collect_air_map_icon_frame(
+    equipment_key: &str,
+    equipment: &Equipment,
+    database: &Database,
+) -> i32 {
+    if equipment.air_map_icon_frame > 0 {
+        return equipment.air_map_icon_frame;
+    }
+    let stem = equipment_key
+        .trim_end_matches(|ch: char| ch.is_ascii_digit())
+        .trim_end_matches('_');
+    if !stem.is_empty()
+        && stem != equipment_key
+        && let Some(base) = database.named(stem)
+        && base.air_map_icon_frame > 0
+    {
+        return base.air_map_icon_frame;
+    }
+    let mut current = equipment;
+    let mut visited = Vec::new();
+    loop {
+        if current.air_map_icon_frame > 0 {
+            return current.air_map_icon_frame;
+        }
+        let parent = &database.equipment[current.parent];
+        if !std::ptr::eq(parent, current) && !visited.contains(&current.parent) {
+            visited.push(current.parent);
+            current = parent;
+            continue;
+        }
+        if let Some(arch_idx) = current.archetype {
+            let arch = &database.equipment[arch_idx];
+            if !std::ptr::eq(arch, current) && !visited.contains(&arch_idx) {
+                visited.push(arch_idx);
+                current = arch;
+                continue;
+            }
+        }
+        break;
+    }
+    0
 }
 
 fn collect_equipment_upgrades(equipment: &Equipment, database: &Database) -> Vec<String> {
@@ -1272,7 +1342,7 @@ fn resolve_equipment_icon(
         .find(|name| registry.sprite(name.as_bytes()).is_some())
 }
 
-fn resolve_blueprint_window(data: &EquipmentDesignData, windows: &NativeWindows) -> Option<String> {
+fn resolve_blueprint_window(data: &EquipmentDesignData, guis: &native::Guis) -> Option<String> {
     let tag_lower = data.tag.to_ascii_lowercase();
     let candidates = [
         format!("equipment_designer_{}_{tag_lower}", data.equipment_key),
@@ -1282,7 +1352,7 @@ fn resolve_blueprint_window(data: &EquipmentDesignData, windows: &NativeWindows)
     ];
     candidates
         .into_iter()
-        .find(|name| windows.gui_type(name.as_bytes()).is_some())
+        .find(|name| guis.template(name.as_bytes()).is_some())
 }
 
 fn expand_loc_refs(localisation: &Localisation, text: &str, depth: usize) -> String {
@@ -1442,7 +1512,7 @@ fn format_resources_text(
             if !out.is_empty() {
                 out.push(' ');
             }
-            out.push_str(&format!("{amount} {ICON}resources_strip|{frame}"));
+            out.push_str(&format!("{amount}{ICON}resources_strip|{frame}"));
         }
     }
     out
@@ -1619,8 +1689,21 @@ fn configure_main_window(
             bound.frame = Some(data.niche_frame.max(1));
         }
 
-        if let (Some(mio), Some(sprite)) = (&data.mio, mio_sprite) {
-            if let Some(company) = find_direct(root, "design_company_icon") {
+        let has_mio = if let (Some(mio), Some(sprite)) = (&data.mio, mio_sprite) {
+            if let Some(team_button) = find_direct(root, "design_team_button") {
+                if let Ok(bound) = instance.control(root, team_button) {
+                    bound.sprite = Some(sprite.as_bytes().to_vec());
+                }
+                tooltips.insert(
+                    team_button.path.clone(),
+                    GameWindowTooltip {
+                        title: loc_or(localisation, &mio.name),
+                        body: Some("Assigned Military Industrial Organization".to_owned()),
+                        detail: None,
+                    },
+                );
+                hide_by_name(instance, root, "design_company_icon");
+            } else if let Some(company) = find_direct(root, "design_company_icon") {
                 if let Ok(bound) = instance.control(root, company) {
                     bound.sprite = Some(sprite.as_bytes().to_vec());
                 }
@@ -1633,13 +1716,15 @@ fn configure_main_window(
                     },
                 );
             }
-            hide_by_name(instance, root, "design_team_button");
+            true
         } else {
             hide_by_name(instance, root, "design_company_icon");
-        }
+            false
+        };
 
         match data.kind {
             DesignerKind::Ship => {
+                hide_by_name(instance, root, "nubbin");
                 let group_label = data
                     .naming_group
                     .as_deref()
@@ -1755,7 +1840,7 @@ fn configure_main_window(
                 if let Some(role_icon) = find_direct(root, "plane_role/role_icon")
                     && let Ok(bound) = instance.control(root, role_icon)
                 {
-                    bound.frame = Some(data.air_map_icon_frame.max(1));
+                    bound.frame = Some(data.air_map_icon_frame.max(1) * 2 - 1);
                 }
                 if let Some(preview_btn) = find_direct(root, "toggle_model_selector_button") {
                     tooltips.insert(
@@ -1779,13 +1864,15 @@ fn configure_main_window(
             "save_button",
             "save_to_file_button",
             "historical_design_button",
-            "design_team_button",
             "upgrade_assigned_industrial_org",
             "toggle_comparison_button",
             "toggle_model_selector_button",
             "select3d_button",
         ] {
             disable_by_name(instance, root, disabled);
+        }
+        if !has_mio {
+            disable_by_name(instance, root, "design_team_button");
         }
     } else {
         hide_by_name(instance, root, "equipment_select_model");
@@ -1838,20 +1925,19 @@ fn configure_main_window(
 fn compose_sub_windows(
     main_layout: &Layout,
     root: &Element,
-    windows: &NativeWindows,
+    guis: &native::Guis,
     resources: &dyn Resources,
     localisation: &Localisation,
     data: &EquipmentDesignData,
     equipment_db: &Database,
     blueprint_name: Option<&str>,
     icon_sprite: Option<&str>,
-    scroll: &BTreeMap<String, f32>,
-) -> Result<ComposedPlan, String> {
+) -> Result<ComposedPlan, GameWindowError> {
     let mut plan = ComposedPlan::default();
 
     if data.kind.is_modular() {
         if let Some(bp_name) = blueprint_name
-            && let Some(bp_root) = windows.gui_type(bp_name.as_bytes())
+            && let Some(bp_root) = guis.template(bp_name.as_bytes())
             && let Some(preview_el) = find_direct(root, "equipment_modules/equipment_preview")
         {
             if let Some(holder) = container_holder(main_layout, &preview_el.path) {
@@ -1870,7 +1956,7 @@ fn compose_sub_windows(
             }
         }
 
-        if let Some(slot_root) = windows.gui_type(b"equipment_designer_module_slot_entry") {
+        if let Some(slot_root) = guis.template(b"equipment_designer_module_slot_entry") {
             compose_module_slots(
                 main_layout,
                 root,
@@ -1883,21 +1969,17 @@ fn compose_sub_windows(
             )?;
         }
 
-        if let Some(stat_root) = windows.gui_type(b"stat_entry") {
+        if let Some(stat_root) = guis.template(b"stat_entry") {
             let columns = build_stat_columns(data.kind, data.stats.as_ref(), data.manpower);
-            for (rel_container, rel_grid, target_name, lines) in [
-                ("info/base_stats", "info/base_stats/stats_grid", "base_stats", &columns.base),
-                ("info/combat_stats", "info/combat_stats/stats_grid", "combat_stats", &columns.combat),
-                ("info/misc_stats", "info/misc_stats/stats_grid", "misc_stats", &columns.misc),
+            for (rel_grid, lines) in [
+                ("info/base_stats/stats_grid", &columns.base),
+                ("info/combat_stats/stats_grid", &columns.combat),
+                ("info/misc_stats/stats_grid", &columns.misc),
             ] {
-                if let (Some(container_el), Some(grid_el)) =
-                    (find_direct(root, rel_container), find_direct(root, rel_grid))
-                {
+                if let Some(grid_el) = find_direct(root, rel_grid) {
                     compose_stat_grid(
                         main_layout,
-                        &container_el.path,
                         grid_el,
-                        target_name,
                         stat_root,
                         "stat_entry",
                         "value",
@@ -1907,7 +1989,6 @@ fn compose_sub_windows(
                         20,
                         resources,
                         localisation,
-                        scroll,
                         &mut plan,
                     )?;
                 }
@@ -1915,7 +1996,7 @@ fn compose_sub_windows(
         }
     } else if let DesignerKind::Upgrade(domain) = data.kind {
         let sub_name = domain.sub_window();
-        if let Some(sub_root) = windows.gui_type(sub_name.as_bytes())
+        if let Some(sub_root) = guis.template(sub_name.as_bytes())
             && let Some(host_el) = find_direct(root, "active_equipment_view")
         {
             if let Some(holder) = container_holder(main_layout, &host_el.path) {
@@ -1933,18 +2014,13 @@ fn compose_sub_windows(
                 });
             }
         }
-        if let Some(stat_root) = windows.gui_type(b"equipment_designer_stat_entry")
-            && let (Some(container_el), Some(grid_el)) = (
-                find_direct(root, "equipment_info"),
-                find_direct(root, "equipment_info/equipment_info_grid"),
-            )
+        if let Some(stat_root) = guis.template(b"equipment_designer_stat_entry")
+            && let Some(grid_el) = find_direct(root, "equipment_info/equipment_info_grid")
         {
             let columns = build_stat_columns(data.kind, data.stats.as_ref(), data.manpower);
             compose_stat_grid(
                 main_layout,
-                &container_el.path,
                 grid_el,
-                "equipment_info",
                 stat_root,
                 "equipment_designer_stat_entry",
                 "count",
@@ -1954,7 +2030,6 @@ fn compose_sub_windows(
                 21,
                 resources,
                 localisation,
-                scroll,
                 &mut plan,
             )?;
         }
@@ -2038,7 +2113,7 @@ fn compose_module_slots(
     data: &EquipmentDesignData,
     equipment_db: &Database,
     plan: &mut ComposedPlan,
-) -> Result<(), String> {
+) -> Result<(), GameWindowError> {
     let Some(modules_container) = find_direct(root, "equipment_modules") else {
         return Ok(());
     };
@@ -2265,13 +2340,11 @@ fn configure_upgrade_view(
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "stat grid placement binds a template across scroll state, grid geometry, and tooltips"
+    reason = "stat grid placement binds a template across grid geometry, values, and tooltips"
 )]
 fn compose_stat_grid(
     main_layout: &Layout,
-    container_path: &str,
     grid_el: &Element,
-    scroll_target: &str,
     stat_root: &Element,
     stat_window_name: &str,
     value_child: &str,
@@ -2281,9 +2354,8 @@ fn compose_stat_grid(
     slot_height: i32,
     resources: &dyn Resources,
     localisation: &Localisation,
-    scroll: &BTreeMap<String, f32>,
     plan: &mut ComposedPlan,
-) -> Result<(), String> {
+) -> Result<(), GameWindowError> {
     let Some(holder) = main_layout
         .holders
         .iter()
@@ -2295,42 +2367,6 @@ fn compose_stat_grid(
         Fields::Grid(grid) => [grid.position.x.value, grid.position.y.value],
         _ => [0, 0],
     };
-    let rows_count = lines.len().div_ceil(columns.max(1));
-    let total_height = (rows_count as i32) * slot_height;
-    let visible_height = main_layout
-        .regions
-        .iter()
-        .find(|region| region.path == container_path)
-        .map(|region| region.rect[3].round() as i32)
-        .unwrap_or(total_height);
-    let max_scroll = (total_height - visible_height).max(0);
-    let scroll_y = scroll
-        .get(scroll_target)
-        .copied()
-        .unwrap_or(0.0)
-        .round()
-        .clamp(0.0, max_scroll as f32) as i32;
-
-    if max_scroll > 0
-        && let Some(container_region) = main_layout
-            .regions
-            .iter()
-            .find(|region| region.path == container_path)
-    {
-        plan.extra_regions.push(GameWindowRegion {
-            path: format!("scroll:{scroll_target}"),
-            rect: container_region.rect,
-            clip: None,
-            disabled: false,
-            close: false,
-            scroll: Some(GameWindowScrollRegion {
-                target: scroll_target.to_owned(),
-                vertical: true,
-                wheel_factor: slot_height,
-            }),
-            tooltip: None,
-        });
-    }
 
     let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
     for (index, line) in lines.iter().enumerate() {
@@ -2338,7 +2374,7 @@ fn compose_stat_grid(
         let row = (index / columns.max(1)) as i32;
         let place = [
             grid_offset[0] + col * slot_width,
-            grid_offset[1] + row * slot_height - scroll_y,
+            grid_offset[1] + row * slot_height,
         ];
         let full_label = localisation
             .get(line.label_key)
@@ -2402,7 +2438,7 @@ fn compose_stat_grid(
             parts: holder.place(place, &row_layout),
             regions: placed_regions,
             root_window: stat_window_name.to_owned(),
-            path_prefix: format!("stat:{scroll_target}:{index}/"),
+            path_prefix: format!("stat:{}:{index}/", grid_el.path),
             close_paths: Vec::new(),
             tooltip_overrides: overrides,
         });

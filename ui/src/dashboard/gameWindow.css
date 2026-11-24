@@ -18,6 +18,12 @@
   max-width: 100%;
 }
 
+.game-window-canvas {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
 .game-window-image {
   display: block;
   max-width: 100%;
@@ -28,6 +34,26 @@
 
 .game-window-image.is-close-hover {
   cursor: pointer;
+}
+
+.game-window-regions {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.game-window-region-focus {
+  position: absolute;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.game-window-region-focus:focus-visible {
+  outline: 2px solid var(--color-accent, #d4a64a);
+  outline-offset: -1px;
 }
 
 .game-window-art-note {

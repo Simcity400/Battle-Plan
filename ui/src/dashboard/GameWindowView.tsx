@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { MouseEvent, WheelEvent } from 'react';
+import type { FocusEvent, KeyboardEvent, MouseEvent } from 'react';
 import WidgetState from '../components/WidgetState';
 import { hideTooltip, showTooltip } from '../charts/tooltip';
 import type { DashboardClient, GameWindowRegion, GameWindowRender, GameWindowRequest } from './client';
 import { useContentRevision } from './contentRevision';
 import {
+  accessibleRegions,
   gameWindowRequestKey,
   hitTestRegion,
-  hitTestScrollRegion,
-  nextScrollOffset,
+  isActivatableClose,
+  normalizeGameWindowRequest,
   normalizeScale,
   regionTooltipContent,
 } from './gameWindowLogic';
@@ -21,9 +22,9 @@ function useDevicePixelRatio(): number {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
     let active = true;
     let current = normalizeScale(window.devicePixelRatio);
-    let media: MediaQueryList | null = null;
+    let cleanup: (() => void) | null = null;
     const listen = () => {
-      media = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      const media = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
       const onChange = () => {
         if (!active) return;
         const next = normalizeScale(window.devicePixelRatio);
@@ -31,25 +32,42 @@ function useDevicePixelRatio(): number {
           current = next;
           setDpr(next);
         }
-        media?.removeEventListener('change', onChange);
+        cleanup?.();
+        cleanup = null;
         listen();
       };
       media.addEventListener('change', onChange);
+      cleanup = () => { media.removeEventListener('change', onChange); };
     };
     listen();
-    return () => { active = false; };
+    return () => {
+      active = false;
+      cleanup?.();
+      cleanup = null;
+    };
   }, []);
   return dpr;
 }
 
 export interface GameWindowViewProps {
   client: DashboardClient;
-  request: Omit<GameWindowRequest, 'scale' | 'scroll'>;
+  request: Omit<GameWindowRequest, 'scale'>;
   active: boolean;
   label: string;
   onDiagnostics?: (lines: string[]) => void;
   onShown?: (shown: ShownWindow | null) => void;
   onClose?: () => void;
+}
+
+interface CompletedRender {
+  key: string;
+  render: GameWindowRender;
+  hour: number;
+}
+
+interface FailedRender {
+  key: string;
+  error: Error;
 }
 
 export default function GameWindowView({
@@ -64,24 +82,29 @@ export default function GameWindowView({
   const ownerId = `game-window:${useId()}`;
   const dpr = useDevicePixelRatio();
   const contentRev = useContentRevision(client, active);
-  const [scroll, setScroll] = useState<Record<string, number>>({});
-  const [render, setRender] = useState<GameWindowRender | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  const [completed, setCompleted] = useState<CompletedRender | null>(null);
+  const [failed, setFailed] = useState<FailedRender | null>(null);
   const [loading, setLoading] = useState(false);
   const [hoveredClose, setHoveredClose] = useState(false);
-  const lastCompletedKey = useRef<string | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+  const completedRef = useRef<CompletedRender | null>(null);
+  completedRef.current = completed;
 
-  const fullRequest = useMemo<GameWindowRequest>(() => ({
+  const normalized = normalizeGameWindowRequest({
     ...request,
     scale: dpr,
-    scroll,
-  }), [request, dpr, scroll]);
+  });
+  const requestKey = gameWindowRequestKey(normalized, contentRev);
+  const stableRequestRef = useRef<{ key: string; value: GameWindowRequest } | null>(null);
+  if (!stableRequestRef.current || stableRequestRef.current.key !== requestKey) {
+    stableRequestRef.current = { key: requestKey, value: normalized };
+  }
+  const stableRequest = stableRequestRef.current.value;
 
-  const requestKey = useMemo(
-    () => gameWindowRequestKey(fullRequest, contentRev),
-    [fullRequest, contentRev],
-  );
+  const onDiagnosticsRef = useRef(onDiagnostics);
+  onDiagnosticsRef.current = onDiagnostics;
+  const onShownRef = useRef(onShown);
+  onShownRef.current = onShown;
 
   useEffect(() => {
     if (!active) {
@@ -89,35 +112,49 @@ export default function GameWindowView({
       return;
     }
     if (!client.renderGameWindow) {
-      setError(new Error('Open BattlePlan in the desktop app to display game windows.'));
-      setRender(null);
+      setFailed({
+        key: requestKey,
+        error: new Error('Open BattlePlan in the desktop app to display game windows.'),
+      });
+      setCompleted(null);
       return;
     }
-    if (lastCompletedKey.current === requestKey && render !== null) {
+    const existing = completedRef.current;
+    if (existing && existing.key === requestKey) {
+      setFailed(null);
+      setLoading(false);
+      onDiagnosticsRef.current?.([...existing.render.warnings]);
+      onShownRef.current?.({ hour: existing.hour, readHour: existing.render.readHour });
       return;
     }
     const controller = new AbortController();
     setLoading(true);
-    setError(null);
-    client.renderGameWindow(fullRequest, controller.signal)
+    setFailed(null);
+    client.renderGameWindow(stableRequest, controller.signal)
       .then(result => {
         if (controller.signal.aborted) return;
-        lastCompletedKey.current = requestKey;
-        setRender(result);
+        setCompleted({ key: requestKey, render: result, hour: stableRequest.hour });
+        setFailed(null);
         setLoading(false);
-        onDiagnostics?.([...result.warnings]);
-        onShown?.({ hour: fullRequest.hour, readHour: result.readHour });
+        onDiagnosticsRef.current?.([...result.warnings]);
+        onShownRef.current?.({ hour: stableRequest.hour, readHour: result.readHour });
       })
       .catch(caught => {
         if (controller.signal.aborted) return;
         setLoading(false);
-        setError(caught instanceof Error ? caught : new Error(String(caught)));
-        onShown?.(null);
+        setFailed({
+          key: requestKey,
+          error: caught instanceof Error ? caught : new Error(String(caught)),
+        });
+        onShownRef.current?.(null);
       });
     return () => { controller.abort(); };
-  }, [active, client, fullRequest, requestKey, onDiagnostics, onShown]);
+  }, [active, client, requestKey, stableRequest, ownerId]);
 
   useEffect(() => () => { hideTooltip(ownerId); }, [ownerId]);
+
+  const render = completed?.render ?? null;
+  const error = failed && failed.key === requestKey ? failed.error : null;
 
   const logicalPoint = useCallback((clientX: number, clientY: number): [number, number] | null => {
     const img = imgRef.current;
@@ -138,7 +175,7 @@ export default function GameWindowView({
 
   const handleMove = useCallback((event: MouseEvent<HTMLImageElement>) => {
     const hit = hitAt(event.clientX, event.clientY);
-    setHoveredClose(Boolean(hit?.close && onClose));
+    setHoveredClose(Boolean(isActivatableClose(hit) && onClose));
     const tooltip = hit ? regionTooltipContent(hit) : null;
     if (tooltip) {
       showTooltip(ownerId, tooltip, event.clientX, event.clientY, hit?.path);
@@ -154,23 +191,39 @@ export default function GameWindowView({
 
   const handleClick = useCallback((event: MouseEvent<HTMLImageElement>) => {
     const hit = hitAt(event.clientX, event.clientY);
-    if (hit?.close) {
+    if (isActivatableClose(hit)) {
       hideTooltip(ownerId);
       onClose?.();
     }
   }, [hitAt, onClose, ownerId]);
 
-  const handleWheel = useCallback((event: WheelEvent<HTMLImageElement>) => {
-    if (!render) return;
-    const point = logicalPoint(event.clientX, event.clientY);
-    if (!point) return;
-    const hit = hitTestScrollRegion(render.regions, point[0], point[1]);
-    if (!hit?.scroll) return;
-    const next = nextScrollOffset(scroll, hit.scroll, event.deltaY, event.deltaX);
-    if (!next) return;
-    event.preventDefault();
-    setScroll(next);
-  }, [render, logicalPoint, scroll]);
+  const handleKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape' && onClose) {
+      event.preventDefault();
+      event.stopPropagation();
+      hideTooltip(ownerId);
+      onClose();
+    }
+  }, [onClose, ownerId]);
+
+  const handleRegionFocus = useCallback((region: GameWindowRegion, event: FocusEvent<HTMLElement>) => {
+    const tooltip = regionTooltipContent(region);
+    if (!tooltip) {
+      hideTooltip(ownerId);
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    showTooltip(ownerId, tooltip, rect.left + rect.width / 2, rect.bottom, region.path);
+  }, [ownerId]);
+
+  const handleRegionBlur = useCallback(() => {
+    hideTooltip(ownerId);
+  }, [ownerId]);
+
+  const focusRegions = useMemo(
+    () => (render ? accessibleRegions(render.regions, render.logicalSize) : []),
+    [render],
+  );
 
   if (error) {
     return <WidgetState kind="error" failure={error} />;
@@ -180,21 +233,57 @@ export default function GameWindowView({
   }
 
   const [logicalWidth, logicalHeight] = render.logicalSize;
-  return <div className="game-window-host">
+  return <div className="game-window-host" onKeyDown={handleKeyDown}>
     <div className="game-window-stage">
-      <img
-        ref={imgRef}
-        className={`game-window-image${hoveredClose ? ' is-close-hover' : ''}`}
-        src={`data:image/png;base64,${render.pngBase64}`}
-        alt={label}
-        width={logicalWidth}
-        height={logicalHeight}
-        draggable={false}
-        onMouseMove={handleMove}
-        onMouseLeave={handleLeave}
-        onClick={handleClick}
-        onWheel={handleWheel}
-      />
+      <div className="game-window-canvas">
+        <img
+          ref={imgRef}
+          className={`game-window-image${hoveredClose ? ' is-close-hover' : ''}`}
+          src={`data:image/png;base64,${render.pngBase64}`}
+          alt={label}
+          width={logicalWidth}
+          height={logicalHeight}
+          draggable={false}
+          onMouseMove={handleMove}
+          onMouseLeave={handleLeave}
+          onClick={handleClick}
+        />
+        <div className="game-window-regions" aria-label={`${label} controls`}>
+          {focusRegions.map(({ region, rect, label: regionLabel, closeable }, index) => {
+            const style = {
+              left: `${(rect[0] / logicalWidth) * 100}%`,
+              top: `${(rect[1] / logicalHeight) * 100}%`,
+              width: `${(rect[2] / logicalWidth) * 100}%`,
+              height: `${(rect[3] / logicalHeight) * 100}%`,
+            };
+            if (closeable && onClose) {
+              return <button
+                key={`${region.path}:${index}`}
+                type="button"
+                className="game-window-region-focus"
+                style={style}
+                aria-label={regionLabel}
+                onFocus={event => handleRegionFocus(region, event)}
+                onBlur={handleRegionBlur}
+                onClick={() => {
+                  hideTooltip(ownerId);
+                  onClose();
+                }}
+              />;
+            }
+            return <span
+              key={`${region.path}:${index}`}
+              role="note"
+              tabIndex={0}
+              className="game-window-region-focus"
+              style={style}
+              aria-label={regionLabel}
+              onFocus={event => handleRegionFocus(region, event)}
+              onBlur={handleRegionBlur}
+            />;
+          })}
+        </div>
+      </div>
     </div>
     {render.artLabel && <div className="game-window-art-note">{render.artLabel}</div>}
   </div>;

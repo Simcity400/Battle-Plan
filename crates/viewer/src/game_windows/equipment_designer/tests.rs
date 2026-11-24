@@ -179,3 +179,22 @@ fn designer_classification_respects_dlc_masks_and_classic_upgrade_fallback() {
         DesignerKind::Upgrade(UpgradeDomain::Air)
     );
 }
+
+#[test]
+fn loc_refs_expand_nested_tokens_and_preserve_unknown_tokens() {
+    let loc: Localisation = [
+        ("tank_engine_upgrade", "$ARMOR_ENGINE_LABEL$"),
+        ("ARMOR_ENGINE_LABEL", "§YEngine§!"),
+        ("tank_armor_upgrade", "$ARMOR_PLATE_LABEL$"),
+        ("ARMOR_PLATE_LABEL", "Armor"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .collect();
+    assert_eq!(loc_or(&loc, "tank_engine_upgrade"), "Engine");
+    assert_eq!(loc_or(&loc, "tank_armor_upgrade"), "Armor");
+    assert_eq!(
+        expand_loc_refs(&loc, "$UNKNOWN_TOKEN$ + $ARMOR_ENGINE_LABEL$", 4),
+        "$UNKNOWN_TOKEN$ + Engine"
+    );
+}

@@ -198,13 +198,24 @@ export const nativeDashboardClient: DashboardClient = {
   async renderGameWindow(windowRequest: GameWindowRequest, signal: AbortSignal): Promise<GameWindowRender> {
     if (!desktopAvailable) throw new Error('Open BattlePlan in the desktop app to display game windows.');
     if (signal.aborted) throw cancelled();
+    const requestId = `gw-${newId()}`;
     const done = busy('requests');
     try {
       const release = await admitted(signal);
+      const abort = () => { void invoke('cancel_game_window', { requestId }).catch(() => {}); };
+      signal.addEventListener('abort', abort, { once: true });
       try {
         if (signal.aborted) throw cancelled();
-        return await rawInvoke<GameWindowRender>('render_game_window', { request: windowRequest }, undefined, signal);
-      } finally { release(); }
+        return await rawInvoke<GameWindowRender>(
+          'render_game_window',
+          { request: windowRequest, requestId },
+          undefined,
+          signal,
+        );
+      } finally {
+        signal.removeEventListener('abort', abort);
+        release();
+      }
     } finally { done(); }
   },
 

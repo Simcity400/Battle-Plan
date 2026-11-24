@@ -699,6 +699,7 @@ fn main() {
             dashboard_service::dashboard_cancel,
             dashboard_service::dashboard_release_source,
             game_windows::render_game_window,
+            game_windows::cancel_game_window,
             perf::perf_enabled,
             perf::perf_write,
             perf::perf_finished,

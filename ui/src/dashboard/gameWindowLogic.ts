@@ -1,5 +1,5 @@
 import type { TooltipContent } from '../charts/tooltip.ts';
-import type { GameWindowRegion, GameWindowRequest, GameWindowScrollRegion } from './client.ts';
+import type { GameWindowRegion, GameWindowRequest } from './client.ts';
 
 export function normalizeScale(dpr: number): number {
   if (!Number.isFinite(dpr) || dpr <= 0) return 1;
@@ -18,17 +18,30 @@ function stableValue(value: unknown): unknown {
   return out;
 }
 
+export function normalizeGameWindowRequest(request: GameWindowRequest): GameWindowRequest {
+  return {
+    sourceId: request.sourceId,
+    revision: request.revision,
+    branchId: request.branchId,
+    hour: Math.floor(request.hour),
+    kind: request.kind,
+    target: stableValue(request.target ?? null),
+    scale: normalizeScale(request.scale),
+    subView: request.subView ?? null,
+  };
+}
+
 export function gameWindowRequestKey(request: GameWindowRequest, contentRevision: number): string {
+  const normalized = normalizeGameWindowRequest(request);
   return JSON.stringify([
-    request.sourceId,
-    request.revision,
-    request.branchId,
-    Math.floor(request.hour),
-    request.kind,
-    stableValue(request.target ?? null),
-    normalizeScale(request.scale),
-    stableValue(request.scroll ?? {}),
-    request.subView ?? null,
+    normalized.sourceId,
+    normalized.revision,
+    normalized.branchId,
+    normalized.hour,
+    normalized.kind,
+    normalized.target,
+    normalized.scale,
+    normalized.subView,
     contentRevision,
   ]);
 }
@@ -36,6 +49,10 @@ export function gameWindowRequestKey(request: GameWindowRequest, contentRevision
 function inRect(rect: readonly [number, number, number, number], x: number, y: number): boolean {
   const [left, top, width, height] = rect;
   return width > 0 && height > 0 && x >= left && x < left + width && y >= top && y < top + height;
+}
+
+export function isActivatableClose(region: GameWindowRegion | null): boolean {
+  return Boolean(region && region.close && !region.disabled);
 }
 
 export function hitTestRegion(
@@ -46,21 +63,6 @@ export function hitTestRegion(
   for (let index = regions.length - 1; index >= 0; index--) {
     const region = regions[index];
     if (!region.close && !region.tooltip) continue;
-    if (!inRect(region.rect, x, y)) continue;
-    if (region.clip && !inRect(region.clip, x, y)) continue;
-    return region;
-  }
-  return null;
-}
-
-export function hitTestScrollRegion(
-  regions: readonly GameWindowRegion[],
-  x: number,
-  y: number,
-): GameWindowRegion | null {
-  for (let index = regions.length - 1; index >= 0; index--) {
-    const region = regions[index];
-    if (!region.scroll) continue;
     if (!inRect(region.rect, x, y)) continue;
     if (region.clip && !inRect(region.clip, x, y)) continue;
     return region;
@@ -79,18 +81,44 @@ export function regionTooltipContent(region: GameWindowRegion): TooltipContent |
   };
 }
 
-export function nextScrollOffset(
-  current: Readonly<Record<string, number>>,
-  region: GameWindowScrollRegion,
-  deltaY: number,
-  deltaX: number,
-): Record<string, number> | null {
-  const raw = region.vertical ? deltaY : deltaX || deltaY;
-  if (!Number.isFinite(raw) || raw === 0) return null;
-  const factor = region.wheelFactor > 0 ? region.wheelFactor : 32;
-  const step = Math.sign(raw) * factor;
-  const previous = current[region.target] ?? 0;
-  const next = Math.max(0, Math.round(previous + step));
-  if (next === previous) return null;
-  return { ...current, [region.target]: next };
+export interface AccessibleRegion {
+  region: GameWindowRegion;
+  rect: readonly [number, number, number, number];
+  label: string;
+  closeable: boolean;
+}
+
+function intersectRect(
+  a: readonly [number, number, number, number],
+  b: readonly [number, number, number, number],
+): readonly [number, number, number, number] | null {
+  const left = Math.max(a[0], b[0]);
+  const top = Math.max(a[1], b[1]);
+  const right = Math.min(a[0] + a[2], b[0] + b[2]);
+  const bottom = Math.min(a[1] + a[3], b[1] + b[3]);
+  if (right <= left || bottom <= top) return null;
+  return [left, top, right - left, bottom - top];
+}
+
+export function accessibleRegions(
+  regions: readonly GameWindowRegion[],
+  logicalSize: readonly [number, number],
+): AccessibleRegion[] {
+  const bounds: readonly [number, number, number, number] = [0, 0, logicalSize[0], logicalSize[1]];
+  const out: AccessibleRegion[] = [];
+  for (const region of regions) {
+    const closeable = isActivatableClose(region);
+    const tip = regionTooltipContent(region);
+    if (!closeable && !tip) continue;
+    let rect = intersectRect(region.rect, bounds);
+    if (rect && region.clip) {
+      rect = intersectRect(rect, region.clip);
+    }
+    if (!rect) continue;
+    const label = closeable
+      ? (tip?.title ? `${tip.title} (Close)` : 'Close')
+      : (tip?.title || tip?.description || region.path);
+    out.push({ region, rect, label, closeable });
+  }
+  return out;
 }
