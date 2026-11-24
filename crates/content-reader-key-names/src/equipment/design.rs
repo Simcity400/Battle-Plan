@@ -173,6 +173,8 @@ pub fn module_save_xp(
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ModuleDesign {
     pub category: Vec<u8>,
+    pub gui_category: Vec<u8>,
+    pub gfx: Vec<u8>,
     pub xp_cost: Option<Amount>,
     pub dismantle_cost_ic: Option<Amount>,
     pub build_resources: ResourcePool,
@@ -286,6 +288,12 @@ impl ModuleDesign {
                 result.manpower = Some(number(field));
             } else if field.keyword_is("category") {
                 result.category = token(field);
+            } else if field.keyword_is("gui_category") {
+                result.gui_category = token(field);
+            } else if field.keyword_is("gfx") {
+                if let Some(value) = field.value.scalar() {
+                    result.gfx = content_reader_parser::parser::c_string(value).to_vec();
+                }
             } else if field.keyword_is("xp_cost") {
                 result.xp_cost = Some(number(field));
             } else if field.keyword_is("dismantle_cost_ic") {

@@ -1,6 +1,6 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createPortal } from 'react-dom';
-import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
@@ -25,6 +25,8 @@ import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboar
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
+import { gameWindow, subscribeGameWindows, windowDayLabel, withWindowDiagnostics } from '../../dashboard/gameWindows';
+import type { ShownWindow } from '../../dashboard/gameWindows';
 import { DEFAULT_SORT, OPTIONS, SHEET } from './definition';
 import { designRevision, designTypes, designsAt, designsKnown, designsSince, seenNote, seenText, validateDesigns } from './designsData';
 import type { DesignRow } from './designsData';
@@ -37,6 +39,7 @@ const NO_ROWS: readonly DesignRow[] = [];
 const NO_WARNINGS: readonly string[] = [];
 const OBSOLETE_SORT = { column: 'seenObsolete', direction: 'descending' } as const;
 const UNNAMED = 'Design name unavailable';
+const equipmentDesignerWindow = () => gameWindow('equipmentDesigner');
 
 function useDesigns(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -71,7 +74,13 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
     const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
     return window ? Math.floor(window.lastHour) : null;
   });
-  useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
+  const [windowLines, setWindowLines] = useState<readonly string[]>(NO_WARNINGS);
+  const onWindowDiagnostics = useCallback((lines: string[]) =>
+    setWindowLines(previous => previous.length === lines.length && previous.every((line, index) => line === lines[index]) ? previous : lines), []);
+  const [windowShown, setWindowShown] = useState<ShownWindow | null>(null);
+  const Designer = useSyncExternalStore(subscribeGameWindows, equipmentDesignerWindow, equipmentDesignerWindow);
+  const diagnostics = useMemo(() => withWindowDiagnostics(data?.warnings ?? NO_WARNINGS, windowLines), [data?.warnings, windowLines]);
+  useDiagnostics(onDiagnostics, diagnostics);
   const includedText = typeof options.included === 'string' ? options.included : '';
   const included = useMemo(() => { const keys = contentSet(includedText).map(contentKey); return keys.length ? new Set(keys) : null; }, [includedText]);
   const rows = useMemo(() => data && hour !== null ? designsAt(data, hour, included) : NO_ROWS, [data, hour, included]);
@@ -138,12 +147,34 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
           {table('Obsolete designs', obsolete, obsoleteColumns, true)}</div>
       </details>}
     </div>;
+  const closeDrill = useCallback(() => {
+    dispatch({ type: 'close' });
+    setWindowLines(NO_WARNINGS);
+    setWindowShown(null);
+  }, [dispatch]);
   return <div ref={anchor} data-detail={failureDetails([...names.values()].map(nameReadFailure))} className="equipment-designs">
     {header}
     <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null && !!picked} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
-      title={picked ? picked.name ?? UNNAMED : SHEET.label} day={at === null ? '' : dayLabel(at)} canFollow
-      onClose={() => dispatch({ type: 'close' })} main={main}>
-      {picked && <DesignSheet />}
+      title={picked ? picked.name ?? UNNAMED : SHEET.label} day={windowShown ? windowDayLabel(windowShown) : at === null ? '' : dayLabel(at)} canFollow
+      onClose={closeDrill} main={main}>
+      {picked && Designer && at === null && <WidgetState kind="outside" />}
+      {picked && Designer && at !== null && <Designer
+        selection={{
+          kind: 'equipmentDesigner',
+          sourceId: track.source.id,
+          revision: track.source.revision,
+          branchId: track.branch.id,
+          hour: at,
+          tag,
+          variant: picked.key,
+        }}
+        active={active}
+        client={runtime.client}
+        onDiagnostics={onWindowDiagnostics}
+        onShown={setWindowShown}
+        onClose={closeDrill}
+      />}
+      {picked && !Designer && <DesignSheet />}
     </DrillHost>
   </div>;
 }
