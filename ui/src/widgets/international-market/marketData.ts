@@ -32,26 +32,22 @@ export interface OfferRow {
 const items = (equipment: ReturnType<typeof equipmentOf>, list: readonly MarketItem[]): MarketItemAt[] =>
   list.map(item => ({ ...equipment(item.variant), name: item.name ?? equipment(item.variant).name, variant: item.variant, amount: BigInt(item.amountRaw) }));
 
-export type MarketMatch = (tag: string | null, hour: number) => boolean;
-
-export function contractRows(reply: MarketAt, tab: 'contracts' | 'requests', matches: MarketMatch): ContractRow[] {
+export function contractRows(reply: MarketAt, tab: 'contracts' | 'requests'): ContractRow[] {
   const rows: ContractRow[] = [];
   const equipment = equipmentOf(reply);
   for (const terms of reply.contracts ?? []) {
     if (terms.request !== (tab === 'requests')) continue;
     const { seller, buyer } = terms;
-    if (!matches(seller, reply.hour) && !matches(buyer, reply.hour)) continue;
     rows.push({ key: terms.key, terms, seller, buyer, equipment: items(equipment, terms.equipment), prices: items(equipment, terms.prices),
       levels: terms.levels.map(level => ({ variant: level.variant, level: level.level })) });
   }
   return rows;
 }
 
-export function offerRows(reply: MarketAt, matches: MarketMatch): OfferRow[] {
+export function offerRows(reply: MarketAt): OfferRow[] {
   const rows: OfferRow[] = [];
   const equipment = equipmentOf(reply);
   for (const offer of reply.offers ?? []) {
-    if (!matches(offer.tag, reply.hour)) continue;
     const levels = new Map(offer.prices.map(level => [level.variant, level.level]));
     for (const item of offer.inventory) {
       const drawn = equipment(item.variant);

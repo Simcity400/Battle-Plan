@@ -84,6 +84,12 @@ fn a_slot_names_the_tag_it_holds_at_each_hour_and_none_between() {
     assert_eq!(holders.slot_tag(5, 155), None, "no tag between the two runs");
     assert_eq!(holders.slot_tag(5, 199), Some("SPA"));
     assert_eq!(holders.slot_tag(6, 120), None);
+    let overlapping = Holders::new(
+        [("AAA".to_owned(), vec![run(100, 119, GER)]), ("BBB".to_owned(), vec![run(105, 109, GER_AFTER)])].into(),
+        Vec::new(),
+    );
+    assert_eq!(overlapping.slot_tag(5, 107), overlapping.tag_at(&Country::Slot(5), 107), "a later, higher holder id names the slot nowhere");
+    assert_eq!(overlapping.slot_tag(5, 107), Some("AAA"));
 }
 
 #[test]
