@@ -1,7 +1,8 @@
 import type { WidgetProps } from '../../dashboard/definitions';
-import DeclaredTimeChartWidget from '../../families/time-chart/DeclaredTimeChartWidget.tsx';
+import { DeclaredFamilyWidget } from '../../families/host/index.ts';
+import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import { commandPowerDeclaration } from './commandPowerProjection.ts';
 
 export default function CommandPowerWidget(props: WidgetProps) {
-  return <DeclaredTimeChartWidget {...props} declaration={commandPowerDeclaration} />;
+  return <DeclaredFamilyWidget {...props} adapter={timeChartHostAdapter} declaration={commandPowerDeclaration} />;
 }

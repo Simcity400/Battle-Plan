@@ -54,7 +54,7 @@ export interface TimeChartProjection<TOptions = unknown> extends FamilyProjectio
   nextChange?(readView: BoundedReadView, options: TOptions): number;
 }
 
-export interface TimeChartWidgetDeclaration<TProjectionOptions = Record<string, never>, TAux = unknown, TExtra = unknown> {
+export interface TimeChartWidgetDeclaration<TProjectionOptions = Record<string, never>, TAux = unknown> {
   readonly family: 'series';
   readonly kind: string;
   readonly label: string;
@@ -68,7 +68,7 @@ export interface TimeChartWidgetDeclaration<TProjectionOptions = Record<string, 
   readonly projection: TimeChartProjection<TProjectionOptions>;
   readonly projectionOptions: (
     ctx: FamilyPlanContext<TAux>,
-    extra: { readonly extent: readonly [number, number]; readonly surface: string; readonly extra?: TExtra },
+    extra: { readonly extent: readonly [number, number]; readonly surface: string },
   ) => TProjectionOptions;
   readonly unavailable?: (ctx: FamilyPlanContext<TAux>, moment: number) => string | null;
   readonly warnings?: (ctx: FamilyPlanContext<TAux>, followRefused: string | null) => readonly string[];

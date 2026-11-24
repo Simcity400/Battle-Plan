@@ -39,12 +39,13 @@ import './stability.css';
 const HOLDERS = { holders: true };
 const MEASURES: readonly Measure[] = ['stability', 'warSupport'];
 
-function pickFromInspect(key: string, tags: readonly string[], shown: readonly Measure[]): StabilityPick | null {
-  const parsed = parseChartInspect(key);
-  if (!parsed || (parsed.kind !== 'plot' && parsed.kind !== 'line') || !tags.length || !shown.length) return null;
-  const hour = Math.floor(parsed.hour);
-  if (parsed.kind === 'line') {
-    const [first, second] = parsed.seriesId.split(':');
+function pickFromAction(subject: string, actionHour: number, tags: readonly string[], shown: readonly Measure[]): StabilityPick | null {
+  const parsed = parseChartInspect(subject);
+  if (!tags.length || !shown.length || !Number.isFinite(actionHour)) return null;
+  if (parsed && parsed.kind !== 'plot' && parsed.kind !== 'line') return null;
+  const hour = Math.floor(actionHour);
+  if (!parsed) {
+    const [first, second] = subject.split(':');
     const tag = second === undefined ? tags[0]! : first!;
     const measure = (second ?? first) as Measure;
     if (tags.includes(tag) && MEASURES.includes(measure)) {
@@ -56,7 +57,7 @@ function pickFromInspect(key: string, tags: readonly string[], shown: readonly M
 }
 
 export default function StabilityDetail({ widget, runtime, active, countrySlot, chart }: WidgetProps & {
-  readonly chart?: (onActivate: (key: string) => void) => ReactNode;
+  readonly chart?: (onActivate: (subject: string, hour: number) => void) => ReactNode;
 }) {
   const tokens = useChartTokens();
   const options = resolveOptions(STABILITY_OPTIONS, widget.options);
@@ -126,8 +127,8 @@ export default function StabilityDetail({ widget, runtime, active, countrySlot, 
   const menu = useContextMenu('Chart actions');
   const anchor = useRef<HTMLDivElement | null>(null);
 
-  const onActivate = useCallback((key: string) => {
-    const picked = pickFromInspect(key, resolved.tags, shown);
+  const onActivate = useCallback((subject: string, hour: number) => {
+    const picked = pickFromAction(subject, hour, resolved.tags, shown);
     if (!picked) return;
     setActorPick({ owner: pickOwner, pick: picked });
     setDrillMeasure(picked.measure);

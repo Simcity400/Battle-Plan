@@ -75,3 +75,7 @@ export {
   type AnyBarsWidgetDeclaration,
   type BarsWidgetDeclaration,
 } from './declaration.ts';
+export {
+  barsHostAdapter,
+  parseBarsHit,
+} from './hostAdapter.ts';

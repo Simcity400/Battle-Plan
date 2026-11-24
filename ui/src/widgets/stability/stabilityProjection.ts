@@ -313,7 +313,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
   },
 });
 
-export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions, unknown, readonly StabilityRawMarker[]> = {
+export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> = {
   family: 'series',
   kind: 'stability',
   label: 'Stability & War support',
@@ -390,7 +390,7 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions, 
     };
   },
   projection: stabilityProjection,
-  projectionOptions(ctx, { extent, surface, extra }) {
+  projectionOptions(ctx, { extent, surface }) {
     return {
       tags: ctx.countries.tags,
       holders: ctx.countries.holders,
@@ -400,7 +400,14 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions, 
       showStability: ctx.options.stability !== false,
       showWarSupport: ctx.options.warSupport !== false,
       zoom: ctx.options.scale === 'zoom',
-      rawMarkers: extra ?? [],
+      rawMarkers: [],
     };
   },
 };
+
+export function stabilityDeclarationWith(markers: readonly StabilityRawMarker[]): TimeChartWidgetDeclaration<StabilityOptions> {
+  return {
+    ...stabilityDeclaration,
+    projectionOptions: (ctx, extra) => ({ ...stabilityDeclaration.projectionOptions(ctx, extra), rawMarkers: markers }),
+  };
+}

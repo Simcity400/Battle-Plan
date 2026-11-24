@@ -9,7 +9,8 @@ import { resolveOptions } from '../../dashboard/options.ts';
 import { useProduct } from '../../dashboard/products.ts';
 import { productRequest } from '../../dashboard/request.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups.ts';
-import DeclaredTimeChartWidget from '../../families/time-chart/DeclaredTimeChartWidget.tsx';
+import { DeclaredFamilyWidget } from '../../families/host/index.ts';
+import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import type {
   Artwork,
   FocusReply,
@@ -21,7 +22,7 @@ import { validateFocusReply } from '../national-focus/focusData.ts';
 import { partyBadges, validatePartyHistoryReply } from '../ruling-party/partyData.ts';
 import { STABILITY_OPTIONS } from './definition.ts';
 import StabilityDetail from './StabilityDetail.tsx';
-import { stabilityDeclaration, type StabilityRawMarker } from './stabilityProjection.ts';
+import { stabilityDeclarationWith, type StabilityRawMarker } from './stabilityProjection.ts';
 
 function inSpans(spans: readonly HourSpan[], hour: number): boolean {
   return spans.some(s => s.firstHour <= hour && hour <= s.lastHour);
@@ -249,21 +250,21 @@ export default function StabilityWidget(props: WidgetProps) {
     return out;
   }, [track, singleTag, pinnedBreakdown, wantFocus, wantGov, wantWars, wantFactions, completedFocuses, focus.data, ideas.data, parties.data, groups.data]);
 
+  const declaration = useMemo(() => stabilityDeclarationWith(rawMarkers), [rawMarkers]);
+
   if (pinnedBreakdown) {
     return <StabilityDetail {...props} />;
   }
 
-  const markersSig = `${rawMarkers.length}:${focus.data?.artwork.length ?? 0}:${ideas.data?.spans.length ?? 0}:${groups.data?.warStarts.length ?? 0}`;
   return (
     <StabilityDetail
       {...props}
       chart={onActivate => (
-        <DeclaredTimeChartWidget
+        <DeclaredFamilyWidget
           {...props}
-          declaration={stabilityDeclaration}
-          extraOptions={rawMarkers}
-          extraBindingKey={markersSig}
-          onActivate={onActivate}
+          adapter={timeChartHostAdapter}
+          declaration={declaration}
+          onActivate={action => onActivate(action.subject, action.hour)}
         />
       )}
     />

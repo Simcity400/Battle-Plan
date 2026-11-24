@@ -1,0 +1,92 @@
+.fh-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--surface);
+  outline: none;
+}
+
+.fh-body-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.fh-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  outline: none;
+}
+
+.fh-body[data-scroll="none"] {
+  overflow: hidden;
+}
+
+.fh-body[data-scroll="vertical"] {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.fh-body[data-scroll="horizontal"] {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.fh-body[data-scroll="both"] {
+  overflow: auto;
+}
+
+.fh-body[data-clickable="true"] {
+  cursor: pointer;
+}
+
+.fh-extent {
+  position: relative;
+}
+
+.fh-canvas {
+  position: sticky;
+  top: 0;
+  left: 0;
+  display: block;
+  pointer-events: none;
+}
+
+.fh-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+}
+
+.fh-summary {
+  color: var(--muted);
+  font-size: var(--type-sm);
+  font-weight: 400;
+}
+
+.fh-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

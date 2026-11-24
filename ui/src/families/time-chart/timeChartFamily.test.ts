@@ -432,6 +432,23 @@ describe('time-chart laneView integration', () => {
       now: 1,
     }, state, () => `c${seq++}`);
     assert.ok(hovered.fields.tooltip);
+    const fullTransform = (hovered.fields.meta?.value as { transform: { xFrom: number; xTo: number } }).transform;
+    assert.deepEqual([fullTransform.xFrom, fullTransform.xTo], [H1936, H1936 + 100 * 24]);
+
+    const zoomWindow: readonly [number, number] = [H1936 + 20 * 24, H1936 + 50 * 24];
+    const zoomed = view.paint({
+      widget: 1,
+      subs: [],
+      pictures: [],
+      model: { ...binding, view: { x: zoomWindow } },
+      hour: H1936 + 100 * 24,
+      speed: 0,
+      binding: { generation: 2, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: 2,
+    }, state, () => `c${seq++}`);
+    const zoomedTransform = (zoomed.fields.meta?.value as { transform: { xFrom: number; xTo: number } }).transform;
+    assert.deepEqual([zoomedTransform.xFrom, zoomedTransform.xTo], zoomWindow, 'the bound zoom window is the drawn x domain');
 
     view.unmount?.(1, state);
     assert.equal(state.has('time-chart'), false);
