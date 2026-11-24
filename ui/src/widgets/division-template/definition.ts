@@ -9,7 +9,7 @@ export const COLUMNS = [
   { key: 'battalions', label: 'Battalions' }, { key: 'width', label: 'Base combat width' }, { key: 'priority', label: 'Priority' },
 ] as const;
 export const DEFAULT_SORT = { column: 'template', direction: 'ascending' } as const;
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', showRank: false, sort: DEFAULT_SORT };
 const COLUMN_DEFAULTS: readonly TableColumnDefaults[] = COLUMNS.map(column => ({ key: column.key, label: column.label, as: 'plain', offered: OFFERED.text }));
 export const COUNT_FOR_OPTION: OptionField = { key: 'countFor', section: 'options', label: 'Expeditionary forces count for', kind: 'choice', default: 'owner',
   choices: [{ value: 'owner', label: 'Owner' }, { value: 'host', label: 'Host' }] };

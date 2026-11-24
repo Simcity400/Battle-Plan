@@ -1,4 +1,3 @@
-import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { MeterWidgetDeclaration } from '../../families/meter/declaration.ts';
 import type {
   MeterChip,
@@ -17,6 +16,7 @@ import {
   decryptionFilterOptions,
   decryptionNextChange,
   decryptionSources,
+  brokenText,
   pairTooltipItems,
   readCipherNumbers,
   readDecryption,
@@ -50,8 +50,7 @@ export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = re
     }
     const country = frame.country;
     const sections: MeterSection[] = [];
-    if (frame.active.length) {
-      const rows: MeterRow[] = frame.active.map(pair => {
+    const progressRows = (list: readonly CipherPair[]): MeterRow[] => list.map(pair => {
         const owner = country(pair.owner);
         const target = country(pair.target);
         const numbers = readCipherNumbers(frame.live, pair);
@@ -84,41 +83,35 @@ export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = re
           },
         };
       });
-      sections.push({
-        key: 'decrypting',
-        title: 'Decrypting',
-        count: String(frame.active.length),
-        rows,
-      });
+    const progressSections: readonly [string, string, readonly CipherPair[]][] = [
+      ['decrypting', 'Decrypting', frame.byStatus.decrypting],
+      ['paused', 'Paused', frame.byStatus.paused],
+      ['break-unknown', 'Not known if broken', frame.byStatus.breakUnknown],
+    ];
+    for (const [key, title, list] of progressSections) {
+      if (list.length) sections.push({ key, title, count: String(list.length), rows: progressRows(list) });
     }
 
-    if (frame.broken.length) {
+    if (frame.byStatus.broken.length) {
       const grouped = new Map<number, { owner: ResolvedCountry; items: CipherPair[] }>();
-      for (const pair of frame.broken) {
+      for (const pair of frame.byStatus.broken) {
         const group = grouped.get(pair.owner.id) ?? { owner: country(pair.owner), items: [] };
         group.items.push(pair);
         grouped.set(pair.owner.id, group);
       }
-      const lines = [...grouped.values()].sort((a, b) =>
-        b.items.length - a.items.length || a.owner.name.localeCompare(b.owner.name),
-      );
-      const chipLines: MeterChipLine[] = lines.map(group => {
-        const sortedItems = [...group.items].sort((a, b) =>
-          (b.brokenAt?.hour ?? -Infinity) - (a.brokenAt?.hour ?? -Infinity)
-          || country(a.target).name.localeCompare(country(b.target).name),
-        );
-        const chips: MeterChip[] = sortedItems.map(pair => {
-          const target = country(pair.target);
+      const chipLines: MeterChipLine[] = [...grouped.values()].map(group => {
+        const chips: MeterChip[] = group.items.map(pair => {
+          const target = country(pair.target, pair.brokenAt?.hour);
           const numbers = readCipherNumbers(frame.live, pair);
           const percent = percentOf(pair, numbers);
-          const dateText = pair.brokenAt ? formatDateOnly(pair.brokenAt.hour) : null;
+          const dateText = brokenText(pair.brokenAt);
           const title = `${group.owner.name} \u2192 ${target.name}`;
           return {
             key: `broken:${pairKey(pair)}`,
             targetFlag: flagOf(target),
             targetName: target.name,
             dateText,
-            spoken: `${group.owner.name} broke ${target.name} cipher${dateText ? ` on ${dateText}` : ', date not recorded'}`,
+            spoken: `${group.owner.name} broke ${target.name} cipher${!pair.brokenAt ? ', date not recorded' : pair.brokenAt.upperBound ? ` ${dateText}` : ` on ${dateText}`}`,
             audit: `${group.owner.tag}>${target.tag}|broken|${dateText ?? 'not-recorded'}`,
             tooltip: {
               title,
@@ -137,7 +130,7 @@ export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = re
       sections.push({
         key: 'broken',
         title: 'Cipher broken',
-        count: String(frame.broken.length),
+        count: String(frame.byStatus.broken.length),
         chipLines,
       });
     }

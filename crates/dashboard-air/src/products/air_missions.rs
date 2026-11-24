@@ -1,7 +1,7 @@
 
 use dashboard_base::products::{Country, validate_country};
 use dashboard_base::products::LoadContext;
-use dashboard_base::{Source, catalogue::{self, CachedResult, Catalogue}, products::at_hour::{At, AtHour, Keys, Read}};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, products::at_hour::{At, AtHour, Keys, Read}};
 use dashboard_base::products::{
     artwork::sprites::{self, SpriteFrame},
 };
@@ -12,8 +12,7 @@ use replay_data::rows::{
 };
 use replay_derive::{
     air_mission_counts::{MISSION_ENTRY_TEMPLATE, MISSIONS},
-    air_mission_sources::{AirRegistrySources, MissionCountrySources, canonical, effective_raw},
-    aircraft_count::{SortieSources, efficiency_override},
+    air_mission_sources::canonical,
 };
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -25,8 +24,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-#[cfg(test)]
-use replay_data::rows::AirRegionalMissionRow;
 
 #[cfg(test)]
 mod tests;
@@ -53,7 +50,6 @@ const MISSION_KEYS: [&str; MISSIONS] = [
 ];
 
 pub struct AirMissionsAt;
-pub struct AirMissionWingsAt;
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -61,15 +57,6 @@ pub struct AirMissionWingsAt;
 pub struct AirMissionsParams {
     pub branch_id: String,
     pub country: Country,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AirMissionWingsParams {
-    pub branch_id: String,
-    pub country: Country,
-    pub region: u32,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -120,35 +107,7 @@ pub struct AirMissionsReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct AirMissionWing {
-    pub id: String,
-    pub name: Option<String>,
-    #[serde(rename = "type")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(rename = "type"))]
-    pub aircraft_type: Option<String>,
-    pub missions: Vec<String>,
-    #[doc = " Raw fixed5 decimal text: 100,000 is one."]
-    pub efficiency: Option<String>,
-    #[doc = " Why a field above is not shown."]
-    pub refusals: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct AirMissionWingsReply {
-    pub read_hour: Option<i32>,
-    pub region: u32,
-    pub wings: Vec<AirMissionWing>,
-    #[doc = " Why the region's wings are not shown at the hour, when they are not."]
-    pub missing: Option<String>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(AirMissionsReply, AirMissionWingsReply);
+dashboard_base::reply_warnings!(AirMissionsReply);
 
 pub struct Names {
     catalogue: Result<Arc<Catalogue>, String>,
@@ -218,10 +177,6 @@ fn region_name(names: &Names, region: u32) -> (Option<String>, Option<String>) {
 pub(crate) fn stored_in(cat: &Result<Arc<Catalogue>, String>, bytes: &[u8], what: &str) -> Result<String, String> {
     let cat = cat.as_ref().map_err(Clone::clone)?;
     dashboard_text::scripted_text::stored_text(&cat.localisation, &cat.recorded_language, bytes, what).and_then(|text| catalogue::plain_text(&text))
-}
-
-fn stored(names: &Names, bytes: &[u8], what: &str) -> Result<String, String> {
-    stored_in(&names.catalogue, bytes, what)
 }
 
 pub(crate) fn mission_cells(row: &AirMissionCountRow) -> [Recorded<i32>; MISSIONS] {
@@ -459,192 +414,4 @@ impl AtHour for AirMissionsAt {
         let theatres = theatres_at(frame, owner.slot, &at.context.catalogue);
         reply(frame.complete::<tables::AirMissionCounts>(), owner.slot, read_hour, theatres, at.context, at.live)
     }
-}
-
-#[cfg(test)]
-pub(crate) fn region_wings<'a>(registrations: &[AirRegionalMissionRow], wings: &'a [AirWingRow], links: &BTreeMap<u32, u32>, slot: u32, region: u32) -> Result<Vec<&'a AirWingRow>, String> {
-    let (_, rosters) = replay_derive::air_mission_counts::regional_counts(registrations, wings, slot, |raw| canonical(raw, links))?;
-    let mut seen = BTreeSet::new();
-    Ok(rosters.get(&region).into_iter().flatten().copied().filter(|wing| seen.insert(wing.id)).collect())
-}
-
-const SORTIE_TABLES: [TableId; 8] = [
-    TableId::AirSortieModifiers,
-    TableId::AirSortieBaseCountries,
-    TableId::AirSortieSpecialBases,
-    TableId::AirSortieModifierMetadata,
-    TableId::SimulationFeatures,
-    TableId::AirReferenceWitnesses,
-    TableId::AirBases,
-    TableId::VolunteerHosts,
-];
-
-fn region_range(slot: u32, region: u32) -> (u128, u128) {
-    let low = u128::from(slot) << 96 | u128::from(region) << 64;
-    (low, low | u128::from(u64::MAX))
-}
-
-pub(crate) fn wings_in(frame: &DecodedFrame, slot: u32, region: u32) -> Result<Vec<&AirWingRow>, String> {
-    let registered = frame.complete::<tables::AirMissionWings>().map_err(|error| error.to_string())?;
-    let wings = frame.complete::<tables::AirWings>().map_err(|error| error.to_string())?;
-    let mut ordered: Vec<(u32, u64)> = registered.iter().filter(|row| row.slot == slot && row.region == region).map(|row| (row.ordinal, row.wing)).collect();
-    ordered.sort_unstable();
-    ordered
-        .into_iter()
-        .map(|(_, id)| wings.binary_search_by_key(&id, |wing| wing.id).map(|at| &wings[at]).map_err(|_| format!("registered wing {id} has no air wings row")))
-        .collect()
-}
-
-impl AtHour for AirMissionWingsAt {
-    const KEY: &'static str = "air-mission-wings";
-    const TITLE: &'static str = "Air mission wings";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = AirMissionWingsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, region];
-    type Reply = AirMissionWingsReply;
-    type Context = Names;
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_country(&params.country)
-    }
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![AirMissionWingsParams::decl(), AirMissionWingsReply::decl(), AirMissionWing::decl()]
-    }
-
-    fn owner(params: &Self::Params) -> Option<&Country> {
-        Some(&params.country)
-    }
-
-    fn tables(_params: &Self::Params) -> Vec<TableId> {
-        let mut tables = vec![TableId::AirMissionWings, TableId::AirRegionalMissions, TableId::AirWings, TableId::CountryLinks, TableId::AirMissionInputs, TableId::Provinces];
-        tables.extend(SORTIE_TABLES);
-        tables
-    }
-
-    fn reads(params: &Self::Params, owner: Option<dashboard_base::products::at_hour::Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
-        let Some(owner) = owner else { return Vec::new() };
-        match step {
-            0 => {
-                let (low, high) = region_range(owner.slot, params.region);
-                let mut reads = vec![
-                    Read { table: TableId::AirMissionWings, keys: Keys::Range(low, high) },
-                    Read { table: TableId::AirRegionalMissions, keys: Keys::These(Vec::new()) },
-                    Read::all(TableId::CountryLinks),
-                ];
-                reads.extend(SORTIE_TABLES.into_iter().map(Read::all));
-                reads
-            }
-            1 => {
-                let Ok(registered) = held.complete::<tables::AirMissionWings>() else { return Vec::new() };
-                let wings: Vec<u128> = registered.iter().map(|row| u128::from(row.wing)).collect();
-                let provinces: Vec<u128> = match AirRegistrySources::read(held) {
-                    Ok(Some(registry)) => registry.bases.values().filter_map(|base| base.province).map(u128::from).collect(),
-                    _ => Vec::new(),
-                };
-                vec![Read::these(TableId::AirWings, wings.iter().copied()), Read::these(TableId::AirMissionInputs, wings), Read::these(TableId::Provinces, provinces)]
-            }
-            _ => Vec::new(),
-        }
-    }
-
-    fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(names(source, load))
-    }
-
-    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let owner = at.owner.ok_or_else(|| dashboard_core::refused("Air missions country is unavailable at this hour"))?;
-        let read_hour = frame.tables[TableId::AirRegionalMissions.index()].sampled_at();
-        let mut reply = AirMissionWingsReply { read_hour, region: params.region, wings: Vec::new(), missing: None, warnings: Vec::new() };
-        let selected = match wings_in(frame, owner.slot, params.region) {
-            Ok(wings) => wings,
-            Err(why) => {
-                reply.missing = Some(format!("This region's wings are not recorded at this hour: {why}"));
-                return Ok(reply);
-            }
-        };
-        wings_reply(frame, &selected, at.context, at.live, &mut reply)?;
-        Ok(reply)
-    }
-}
-
-fn wings_reply(frame: &DecodedFrame, selected: &[&AirWingRow], names: &Names, live: &Cells, reply: &mut AirMissionWingsReply) -> io::Result<()> {
-    let planes = column(TableId::AirWings, "planes")?;
-    let links = frame.complete::<tables::CountryLinks>().map(slots_of).map_err(|error| error.to_string());
-    let modifiers: Result<BTreeMap<(u8, u32, u32), i64>, String> =
-        frame.complete::<tables::AirSortieModifiers>().map(|rows| rows.iter().map(|row| ((row.scope, row.subject, row.region), row.raw)).collect()).map_err(|error| error.to_string());
-    let sources = SortieSources::read(frame).map_err(|error| error.to_string()).and_then(|sources| sources.map_err(str::to_owned));
-    let registry = AirRegistrySources::read(frame).map_err(|error| error.to_string()).and_then(|registry| registry.ok_or_else(|| "air base registry is incomplete".to_owned()));
-    let countries = match (&registry, &links) {
-        (Ok(registry), Ok(links)) => MissionCountrySources::read(frame, links, registry).map_err(|error| error.to_string()),
-        (Err(why), _) | (_, Err(why)) => Err(why.clone()),
-    };
-    let units = names.catalogue.as_ref().map_err(Clone::clone).and_then(|cat| {
-        cat.content.layers.derived::<CachedResult<content_reader_script::sub_units::SubUnits>>().get_or_init(|| content_reader_key_names::unit_leader::sub_units(&cat.content.layers)).map_err(|error| error.to_string())
-    });
-    let fuel_penalty = names.catalogue.as_ref().map_err(Clone::clone).and_then(|cat| {
-        let defines = cat.content.layers.derived::<CachedResult<content_reader_defines::defines::Defines>>().get_or_init(|| content_reader_defines::defines::read(&cat.content.layers)).map_err(|error| error.to_string())?;
-        defines.fixed5("NAir", "MISSION_EFFICIENCY_MULT_AT_LACK_OF_FUEL").map_err(|error| error.to_string())
-    });
-    let mut notes = BTreeMap::<String, usize>::new();
-    for wing in selected {
-        let mut refusals = Vec::new();
-        let name = wing
-            .name
-            .require("name of air wings")
-            .and_then(|name| name.as_ref().ok_or_else(|| "Air wing name was not recorded".to_owned()))
-            .and_then(|bytes| stored(names, bytes, "Air wing name"));
-        let aircraft_type = wing
-            .pool_subunit
-            .require("pool subunit of air wings")
-            .and_then(|index| (*index).ok_or_else(|| "Air wing pool type was not recorded".to_owned()))
-            .and_then(|index| {
-                let units = units.as_ref().map_err(Clone::clone)?;
-                units.name(index).ok_or_else(|| format!("Air wing pool type {index} is absent from the recorded content"))?.map(str::to_owned)
-            })
-            .and_then(|key| {
-                let cat = names.catalogue.as_ref().map_err(Clone::clone)?;
-                if !key.is_empty() && cat.localisation.get(&key).is_none() {
-                    return Err(format!("Localisation {key} is absent from the recorded content stack"));
-                }
-                dashboard_text::catalogue::localised(&cat.localisation, &key, View::Plain)
-            });
-        let efficiency = (|| -> Result<String, String> {
-            let raw = effective_raw(wing);
-            let slot = canonical(raw, links.as_ref().map_err(Clone::clone)?).ok_or("Sortie effective country is unresolved")?;
-            if let Some(value) = efficiency_override(modifiers.as_ref().map_err(Clone::clone)?, (raw, slot)) {
-                return Ok(value.to_string());
-            }
-            sources
-                .as_ref()
-                .map_err(Clone::clone)?
-                .wing_efficiency(wing, registry.as_ref().map_err(Clone::clone)?, countries.as_ref().map_err(Clone::clone)?, *fuel_penalty.as_ref().map_err(Clone::clone)?)
-                .map(|value| value.to_string())
-                .map_err(str::to_owned)
-        })();
-        let mut field = |result: Result<String, String>| {
-            result
-                .map_err(|why| {
-                    *notes.entry(why.clone()).or_default() += 1;
-                    refusals.push(why);
-                })
-                .ok()
-        };
-        let (name, aircraft_type, efficiency) = (field(name), field(aircraft_type), field(efficiency));
-        let id = wing.id.to_string();
-        live.value(&id, "planes", Cell { table: TableId::AirWings, column: planes, key: u128::from(wing.id) }, 1.0);
-        reply.wings.push(AirMissionWing {
-            id,
-            name,
-            aircraft_type,
-            missions: (0..u32::BITS).filter(|bit| wing.mission_mask & (1 << bit) != 0).map(|bit| bit.to_string()).collect(),
-            efficiency,
-            refusals,
-        });
-    }
-    reply.warnings.extend(names.warnings.iter().cloned());
-    reply.warnings.extend(notes.into_iter().map(|(why, count)| format!("{count} air wing fields are not shown: {why}")));
-    Ok(())
 }

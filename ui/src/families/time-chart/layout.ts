@@ -471,12 +471,18 @@ export function layoutTimeChart(
         estWidth,
       });
     }
-  } else if (model.mode === 'stack' && model.stack && model.stack.hours.length > 0) {
+  } else if (model.mode === 'stack' && playheadInView && model.stack && model.stack.hours.length > 0) {
     let lastIdx = -1;
     for (let i = model.stack.hours.length - 1; i >= 0; i--) {
       if (model.stack.hours[i]! <= model.hour) { lastIdx = i; break; }
     }
-    if (lastIdx >= 0) {
+    const lastValid = lastIdx >= 0
+      && Math.abs(model.hour - model.stack.hours[lastIdx]!) <= 48
+      && model.stack.bands.every(band => {
+        const v = band.values[lastIdx];
+        return v !== null && v !== undefined && Number.isFinite(v);
+      });
+    if (lastValid) {
       let acc = 0;
       for (const band of model.stack.bands) {
         const v = band.values[lastIdx] ?? 0;

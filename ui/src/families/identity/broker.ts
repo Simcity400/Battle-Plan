@@ -20,7 +20,7 @@ import type {
   UnitLeadersReply,
 } from '../../generated/dashboard';
 import { busyWait } from '../../shell/busy.ts';
-import { IdentityIndex, drawnFlagKey } from './index.ts';
+import { BRANCH_READS, IdentityIndex, drawnFlagKey, type BranchRead } from './index.ts';
 import {
   identityKeyString,
   identityScopeKey,
@@ -184,6 +184,16 @@ interface DemandWants {
   readonly entities: readonly (readonly [EntityRequest, string, EntityIdentityKey])[];
 }
 
+interface BranchReadState {
+  controller: AbortController | null;
+  retryTimer: (() => void) | null;
+  failures: number;
+}
+
+function idleRead(): BranchReadState {
+  return { controller: null, retryTimer: null, failures: 0 };
+}
+
 interface StyleTask {
   readonly id: number;
   readonly hour: number;
@@ -215,12 +225,7 @@ interface ScopeState {
   readonly demands: Map<object, DemandEntry>;
   readonly wants: WeakMap<DemandEntry, DemandWants>;
 
-  factsController: AbortController | null;
-  factsRetryTimer: (() => void) | null;
-  factsFailures: number;
-
-  identitiesController: AbortController | null;
-  groupsController: AbortController | null;
+  readonly reads: Record<BranchRead, BranchReadState>;
 
   readonly styleRunning: Map<number, StyleTask>;
   readonly styleInflightKeys: Set<string>;
@@ -283,11 +288,7 @@ export class IdentityBroker {
         watchers: new Set(),
         demands: new Map(),
         wants: new WeakMap(),
-        factsController: null,
-        factsRetryTimer: null,
-        factsFailures: 0,
-        identitiesController: null,
-        groupsController: null,
+        reads: { facts: idleRead(), identities: idleRead(), groups: idleRead() },
         styleRunning: new Map(),
         styleInflightKeys: new Set(),
         styleRetryAt: new Map(),
@@ -389,10 +390,13 @@ export class IdentityBroker {
   retry(scope: IdentityScope): void {
     const state = this.scopes.get(identityScopeKey(scope));
     if (!state) return;
-    state.factsRetryTimer?.();
-    state.factsRetryTimer = null;
-    state.factsFailures = 0;
-    state.index.clearFactsFailure();
+    for (const read of BRANCH_READS) {
+      const slot = state.reads[read];
+      slot.retryTimer?.();
+      slot.retryTimer = null;
+      slot.failures = 0;
+      if (state.index.readFailed(read)) state.index.setReadFailure(read, undefined);
+    }
     state.styleRetryTimer?.();
     state.styleRetryTimer = null;
     for (const pairKey of state.styleRetryAt.keys()) {
@@ -434,14 +438,13 @@ export class IdentityBroker {
   }
 
   private abortScope(state: ScopeState): void {
-    state.factsController?.abort();
-    state.factsController = null;
-    state.factsRetryTimer?.();
-    state.factsRetryTimer = null;
-    state.identitiesController?.abort();
-    state.identitiesController = null;
-    state.groupsController?.abort();
-    state.groupsController = null;
+    for (const read of BRANCH_READS) {
+      const slot = state.reads[read];
+      slot.controller?.abort();
+      slot.controller = null;
+      slot.retryTimer?.();
+      slot.retryTimer = null;
+    }
     state.styleRetryTimer?.();
     state.styleRetryTimer = null;
     for (const task of state.styleRunning.values()) task.controller.abort();
@@ -497,15 +500,9 @@ export class IdentityBroker {
       }
     }
 
-    if (wantFacts && !state.index.hasFacts() && !state.factsController && !state.factsRetryTimer) {
-      this.startFacts(state);
-    }
-    if (wantIdentities && !state.index.hasIdentities() && !state.identitiesController) {
-      this.startIdentities(state);
-    }
-    if (wantGroups && !state.index.hasGroups() && !state.groupsController) {
-      this.startGroups(state);
-    }
+    if (wantFacts) this.ensureRead(state, 'facts');
+    if (wantIdentities) this.ensureRead(state, 'identities');
+    if (wantGroups) this.ensureRead(state, 'groups');
 
     for (const [id, task] of [...state.styleRunning]) {
       const stillWanted = task.tags.some(tag => wantedStyleKeys.has(`${task.hour}\u0000${tag}`));
@@ -724,33 +721,29 @@ export class IdentityBroker {
     return held.tag;
   }
 
-  private startFacts(state: ScopeState): void {
+  private ensureRead(state: ScopeState, read: BranchRead): void {
+    const slot = state.reads[read];
+    if (state.index.hasRead(read) || state.index.readFailed(read) || slot.controller || slot.retryTimer) return;
     const controller = new AbortController();
-    state.factsController = controller;
-    void this.transport.loadFacts(state.scope, controller.signal, state.recording).then(
-      reply => {
-        if (state.factsController !== controller || controller.signal.aborted) return;
-        state.factsController = null;
-        state.factsFailures = 0;
-        state.index.setFacts(reply, true);
-        for (const [id, task] of [...state.styleRunning]) {
-          task.controller.abort();
-          state.styleRunning.delete(id);
-          for (const tag of task.tags) state.styleInflightKeys.delete(`${task.hour}\u0000${tag}`);
-        }
+    slot.controller = controller;
+    void this.loadRead(state, read, controller.signal).then(
+      apply => {
+        if (slot.controller !== controller || controller.signal.aborted) return;
+        slot.controller = null;
+        slot.failures = 0;
+        apply();
         this.notify(state);
         this.reconcile(state);
       },
       error => {
-        if (state.factsController !== controller || controller.signal.aborted) return;
-        state.factsController = null;
-        const failure = asFailure(error);
-        state.factsFailures++;
-        state.index.setFactsFailure(failure);
+        if (slot.controller !== controller || controller.signal.aborted) return;
+        slot.controller = null;
+        slot.failures++;
+        state.index.setReadFailure(read, asFailure(error));
         if (transientError(error)) {
-          state.factsRetryTimer = this.clock.after(retryDelay(state.factsFailures), () => {
-            state.factsRetryTimer = null;
-            state.index.clearFactsFailure();
+          slot.retryTimer = this.clock.after(retryDelay(slot.failures), () => {
+            slot.retryTimer = null;
+            state.index.setReadFailure(read, undefined);
             this.reconcile(state);
           });
         }
@@ -759,44 +752,22 @@ export class IdentityBroker {
     );
   }
 
-  private startIdentities(state: ScopeState): void {
-    const controller = new AbortController();
-    state.identitiesController = controller;
-    void this.transport.loadIdentities(state.scope, controller.signal, state.recording).then(
-      reply => {
-        if (state.identitiesController !== controller || controller.signal.aborted) return;
-        state.identitiesController = null;
-        state.index.setIdentities(reply);
-        this.notify(state);
-        this.reconcile(state);
-      },
-      error => {
-        if (state.identitiesController !== controller || controller.signal.aborted) return;
-        state.identitiesController = null;
-        state.index.setIdentitiesFailure(asFailure(error));
-        this.notify(state);
-      },
-    );
-  }
-
-  private startGroups(state: ScopeState): void {
-    const controller = new AbortController();
-    state.groupsController = controller;
-    void this.transport.loadGroups(state.scope, controller.signal, state.recording).then(
-      reply => {
-        if (state.groupsController !== controller || controller.signal.aborted) return;
-        state.groupsController = null;
-        state.index.setGroups(reply);
-        this.notify(state);
-        this.reconcile(state);
-      },
-      error => {
-        if (state.groupsController !== controller || controller.signal.aborted) return;
-        state.groupsController = null;
-        state.index.setGroupsFailure(asFailure(error));
-        this.notify(state);
-      },
-    );
+  private loadRead(state: ScopeState, read: BranchRead, signal: AbortSignal): Promise<() => void> {
+    switch (read) {
+      case 'facts':
+        return this.transport.loadFacts(state.scope, signal, state.recording).then(reply => () => {
+          state.index.setFacts(reply, true);
+          for (const [id, task] of [...state.styleRunning]) {
+            task.controller.abort();
+            state.styleRunning.delete(id);
+            for (const tag of task.tags) state.styleInflightKeys.delete(`${task.hour}\u0000${tag}`);
+          }
+        });
+      case 'identities':
+        return this.transport.loadIdentities(state.scope, signal, state.recording).then(reply => () => state.index.setIdentities(reply));
+      case 'groups':
+        return this.transport.loadGroups(state.scope, signal, state.recording).then(reply => () => state.index.setGroups(reply));
+    }
   }
 
   private pumpStyles(state: ScopeState, neededByHour: Map<number, Set<string>>): void {

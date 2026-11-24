@@ -43,22 +43,21 @@ test('agreements are those of the chosen country, one per relation, with offers 
     { kind: 'mod_pact', name: 'Mod pact', count: 1, reason: null }] as never), [{ kind: 'military_access', name: 'Military access' }, { kind: 'mod_pact', name: 'Mod pact' }]);
 });
 
-test('lanes are a section per kind, split by side, with ended agreements faded or hidden', () => {
+test('lanes are a section per kind, split by side, with ended agreements shown or hidden, and nothing past the hour', () => {
   const pacts = [pact('1', 'embargo', 10, 50, { first: 'B', second: 'A', goneBy: 100 }), pact('2', 'embargo', 10, 100, { presentAtEnd: true }),
     pact('3', 'non_aggression_pact', 10, 100, { presentAtEnd: true, startHour: 5, endHour: 900 }), pact('4', 'mod_pact', 10, 100, { presentAtEnd: true })];
   const agreements = agreementsOf(pacts, 'A', 100, null);
-  const text = { name: 'Alpha', country: (tag: string | null) => ({ name: `Country ${tag}` }), kindName: (kind: string) => kind === 'mod_pact' ? 'Mod pact' : kind, colors: ['#112233'] };
-  const { lanes, info } = agreementLanes(agreements, true, 1000, text);
-  assert.deepEqual(lanes.map(lane => lane.identity?.label), ['Non-aggression pacts · 1 in force', 'Country B', 'Trade embargoes · 1 in force', 'Embargoed by', 'Country B',
-    'Alpha embargoes', 'Country B', 'Mod pact · 1 in force', 'Alpha → partner', 'Country B'], 'engine kinds first, embargoes received first, a mod kind by its game name');
-  const ended = lanes.find(lane => (info.get(lane.id) && idOf(info.get(lane.id)!.agreement.pact)) === '1')!;
-  assert.equal(ended.muted, true);
-  assert.equal(ended.spans[0].color, '#11223366');
-  assert.equal(info.get(lanes[1].id)!.agreement.expires, 900);
-  assert.equal(lanes.find(lane => (info.get(lane.id) && idOf(info.get(lane.id)!.agreement.pact)) === '2')!.spans[0].lastHour, 1000, 'still listed at the last read runs to the branch end');
-  assert.ok(!agreementLanes(agreements, false, 1000, text).lanes.some(lane => (info.get(lane.id) && idOf(info.get(lane.id)!.agreement.pact)) === '1'), 'Ended hidden');
+  const text = { name: 'Alpha', country: (tag: string) => ({ name: `Country ${tag}`, flag: null }), kindName: (kind: string) => kind === 'mod_pact' ? 'Mod pact' : kind,
+    colour: () => '#112233' };
+  const lanes = agreementLanes(agreements, true, 100, text);
+  assert.deepEqual(lanes.map(lane => lane.subtitle ? `${lane.label} · ${lane.subtitle}` : lane.label), ['Non-aggression pacts · 1 in force', 'Country B', 'Trade embargoes · 1 in force',
+    'Embargoed by', 'Country B', 'Alpha embargoes', 'Country B', 'Mod pact · 1 in force', 'Alpha → Partner', 'Country B'], 'engine kinds first, embargoes received first, a mod kind by its game name');
+  const endedLane = lanes.find(lane => lane.meta && idOf((lane.meta as { agreement: { pact: Pact } }).agreement.pact) === '1')!;
+  assert.deepEqual([endedLane.spans[0].open, endedLane.spans[0].lastHour, endedLane.spans[0].endUnseen], [false, 50, true], 'gone by a later read is an unseen end');
+  const live = lanes.find(lane => lane.meta && idOf((lane.meta as { agreement: { pact: Pact } }).agreement.pact) === '2')!;
+  assert.deepEqual([live.spans[0].open, live.spans[0].lastHour], [true, 100], 'still listed runs to the displayed hour, never the branch end');
+  assert.ok(!agreementLanes(agreements, false, 100, text).some(lane => lane.meta && idOf((lane.meta as { agreement: { pact: Pact } }).agreement.pact) === '1'), 'Ended hidden');
 });
-
 
 test('an agreements reply of another shape is refused, never read wrongly', () => {
   const reply = { kinds: [{ kind: 'guarantee', count: 1, name: null, reason: 'not read' }], pacts: [pact('9', 'guarantee', 1, 2)], unobserved: [], warnings: [] };

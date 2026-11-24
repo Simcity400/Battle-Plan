@@ -71,6 +71,28 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.fuelProjection, declaration: mod.fuelDeclaration }),
     ),
   },
+  {
+    kind: 'supply-health',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'supply-health',
+      DEFAULT_VIEW,
+      () => import('../supply-health/supplyHealthProjection.ts'),
+      mod => ({ projection: mod.supplyHealthProjection, declaration: mod.supplyHealthDeclaration }),
+    ),
+  },
+  {
+    kind: 'ruling-party',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'ruling-party',
+      DEFAULT_VIEW,
+      () => import('../ruling-party/rulingPartyProjection.ts'),
+      mod => ({ projection: mod.rulingPartyProjection, declaration: mod.rulingPartyDeclaration }),
+    ),
+  },
 ];
 
 export const timeChartFamilyManifest: FamilyManifestModule = {

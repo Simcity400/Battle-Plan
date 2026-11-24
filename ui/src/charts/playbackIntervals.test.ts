@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { PlaybackIntervals, playbackRows, retainPlaybackMap, spanChanges } from './playbackIntervals.ts';
 import { LogPlayback } from './log/logPlayback.ts';
-import { deepFreeze } from '../testFrozen.ts';
+import { deepFreeze } from '../test-support/frozen.ts';
 
 test('playback intervals retain models until a recorded or computed display boundary', () => {
   let reads = 0;

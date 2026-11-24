@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { sinkingWindowRows } from './shipsSunkWindows.ts';
 import type { ShipsSunkWindowReply } from './useShipsSunk';
 import { validateSinkingManifest, validateSinkingWindow } from './useShipsSunk.ts';
-import { deepFreeze } from '../../testFrozen.ts';
+import { deepFreeze } from '../../test-support/frozen.ts';
 import type { ShipsSunkReply, ShipsSunkRow } from '../../generated/dashboard';
 const row = (sinkHour: number, knownAt: number): ShipsSunkRow => ({ sinkHour, knownAt, name: 'recorded ship', classIndex: 0,
   recordedNameIndex: 0, victim: 'mod victim', attacker: null, victimAsOf: null, attackerAsOf: null, placeIndex: 0,

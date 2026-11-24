@@ -52,6 +52,12 @@ test('a merged raid credits each tally event to the raider tag held at that even
   assert.deepEqual([at(tally, 'GER', 100), at(tally, 'DDR', 100)], [[0, 0], [1, 1]]);
 });
 
+test('a success is counted from the read that first saw it, never at an earlier native end date', () => {
+  const late = syntheticEpisode('8', 1, 'ENG', null, 5, true, { endedSource: 'nativeEndDate', endedSeenHour: 20 });
+  const tally = raidTally([late], SPAN, [], ['ENG'], null);
+  assert.deepEqual([at(tally, 'ENG', 10), at(tally, 'ENG', 20)], [[0, 0], [0, 1]]);
+});
+
 test('a top keeps each country for the spans it is among the leaders, ties in tag order', () => {
   const tally = raidTally([...episodes, syntheticEpisode('6', 65, 'PRC', 70, null, false)], SPAN, [], [], { count: 1, metric: 'launched' });
   const membership = new Map(tally.series.map(item => [item.tag, item.membership]));

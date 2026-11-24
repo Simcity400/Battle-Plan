@@ -446,17 +446,19 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
         if (path.endsWith('/dashboard/widgetTime.ts')) {
           return `export const useRegion = () => ({}); export const useRegionCoverage = () => ({ outside: null });`;
         }
-        if (path.endsWith('/families/table/FamilyTableHost.tsx')) {
+        if (path.endsWith('/families/host/FamilyHost.tsx')) {
           return `export default ({ blockedState }) => blockedState ?? null;`;
         }
       },
     }] });
   try {
     const { ShownError } = await scoreboardVite.ssrLoadModule('/ui/src/dashboard/queryError.ts');
-    const { default: DeclaredTableWidget } = await scoreboardVite.ssrLoadModule('/ui/src/families/table/DeclaredTableWidget.tsx');
+    const { default: DeclaredFamilyWidget } = await scoreboardVite.ssrLoadModule('/ui/src/families/host/DeclaredFamilyWidget.tsx');
+    const { tableHostAdapter } = await scoreboardVite.ssrLoadModule('/ui/src/families/table/hostAdapter.ts');
     const { scoreboardDeclaration } = await scoreboardVite.ssrLoadModule('/ui/src/widgets/scoreboard/scoreboardProjection.ts');
     const sbProps = {
       declaration: scoreboardDeclaration,
+      adapter: tableHostAdapter,
       widget: { id: 'sb', kind: 'scoreboard', configVersion: 1, title: 'Scoreboard', campaign: 'default', trackIds: ['t1'], time: { mode: 'follow' }, countries: { kind: 'tags', tags: ['GER'] }, options: {} },
       runtime: {
         tracks: [{ id: 't1', roleId: 'primary', label: 'Primary', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 200 }, source: { id: 's1', revision: '1', metadata: { campaignKey: 'c', countries: [] } } }],
@@ -468,12 +470,12 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
     const okRegistry = { data: { columns: [{ key: 'factories', label: 'Factories', available: true, decimals: 0, family: { kind: 'country', measure: 'factories' } }], defaultColumns: ['factories'], defaultSort: 'factories', warnings: [] }, error: undefined, retry() {} };
     (globalThis as Record<string, unknown>).__sbAux = okRegistry;
     (globalThis as Record<string, unknown>).__sbFollowCheck = () => ({ query: null, refused: 'Table absent in format 141' });
-    const refusedHtml = renderToStaticMarkup(createElement(DeclaredTableWidget as never, sbProps as never));
+    const refusedHtml = renderToStaticMarkup(createElement(DeclaredFamilyWidget as never, sbProps as never));
     assert.match(refusedHtml, /data-state="unavailable"/, 'scoreboard recording refusal renders unavailable, never a load error');
     assert.doesNotMatch(refusedHtml, /role="alert"|is-error|Retry/);
     (globalThis as Record<string, unknown>).__sbFollowCheck = (q: unknown) => ({ query: q, refused: null });
     (globalThis as Record<string, unknown>).__sbAux = { data: undefined, error: new ShownError('Scoreboard stream broke.', 'sb 503'), retry() {} };
-    const failedHtml = renderToStaticMarkup(createElement(DeclaredTableWidget as never, sbProps as never));
+    const failedHtml = renderToStaticMarkup(createElement(DeclaredFamilyWidget as never, sbProps as never));
     assert.match(failedHtml, /data-state="error"/, 'scoreboard stream failure renders retryable error');
     assert.match(failedHtml, /Scoreboard stream broke\./);
     assert.match(failedHtml, />Retry</);
