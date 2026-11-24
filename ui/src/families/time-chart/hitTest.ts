@@ -101,13 +101,19 @@ export function sampleSeriesValueAt(
     }
   }
   if (series.points && series.points.length > 0) {
-    let prev: { readonly hour: number; readonly value: number | null } | null = null;
+    const pointSample = (pt: { readonly value: number | null; readonly min?: number | null; readonly max?: number | null; readonly approximate?: boolean }) => {
+      if (pt.value === null) return null;
+      const min = pt.min != null && Number.isFinite(pt.min) ? pt.min : pt.value;
+      const max = pt.max != null && Number.isFinite(pt.max) ? pt.max : pt.value;
+      return { value: pt.value, min, max, exact: !pt.approximate && min === max };
+    };
+    let prev: (typeof series.points)[number] | null = null;
     for (const pt of series.points) {
       if (pt.hour > until) break;
       if (pt.hour > hour) {
         if (!prev || prev.value === null) return null;
-        if (series.step || pt.value === null) {
-          return { value: prev.value, min: prev.value, max: prev.value, exact: true };
+        if (series.step || pt.value === null || prev.approximate) {
+          return pointSample(prev);
         }
         const f = (hour - prev.hour) / Math.max(1, pt.hour - prev.hour);
         const v = prev.value + f * (pt.value - prev.value);
@@ -116,7 +122,7 @@ export function sampleSeriesValueAt(
       prev = pt;
     }
     if (prev && prev.value !== null) {
-      return { value: prev.value, min: prev.value, max: prev.value, exact: true };
+      return pointSample(prev);
     }
   }
   return null;

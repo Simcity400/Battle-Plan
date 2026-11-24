@@ -155,7 +155,7 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
     await browserStage(browser, `${name} page navigation`, async signal => {
       while (await evaluate('location.pathname') !== route) await pause(50, undefined, { signal });
     });
-    await evaluate(`import(${JSON.stringify(served.fixture)})`);
+    await evaluate(`import(${JSON.stringify(served.fixture)}).then(() => true)`);
     const press = async (key: NativeKey, shift = false) => {
       await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: KEY_CODES[key], modifiers: shift ? 8 : 0 });
       await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, modifiers: shift ? 8 : 0 });

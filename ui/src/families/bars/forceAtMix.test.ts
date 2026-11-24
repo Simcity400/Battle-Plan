@@ -51,11 +51,13 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
     decimals: 0,
     valueFormat: { decimals: 0 },
     valueLabel: 'Ships and convoys lost',
+    unit: 'Ships & convoys',
     partsLabel: 'Ships and convoys',
     emptyMessage: 'No naval losses.',
   });
   assertBarsModelValid(model, 300);
   assert.equal(model.form, 'share');
+  assert.equal(model.scaleUnit, 'Ships & convoys');
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(rows[0]!.segments?.map(s => [s.label, s.share]), [['Ships', 0.25], ['Convoys', 0.75]]);
   assert.equal(rows[0]!.readout?.primary, '100');

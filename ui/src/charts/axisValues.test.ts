@@ -90,3 +90,10 @@ test('native fixed-digit amounts truncate toward zero and retain two digits', ()
   assert.equal(formatNativeFixed5('-1', 2), '-0.00');
   assert.equal(formatNativeFixed5('214748364899999', 2), '-2147483648.99');
 });
+
+test('K4: linearTicks supports 2.5 steps so 0..100 at count 4 gives 0, 25, 50, 75, 100', () => {
+  assert.deepEqual(linearTicks(0, 100, 4), [0, 25, 50, 75, 100]);
+  assert.deepEqual(linearTicks(0, 100, 2), [0, 50, 100]);
+  assert.deepEqual(linearTicks(0, 1, 4), [0, 0.25, 0.5, 0.75, 1]);
+  assert.deepEqual(linearTicks(-1, 1, 4), [-1, -0.5, 0, 0.5, 1]);
+});

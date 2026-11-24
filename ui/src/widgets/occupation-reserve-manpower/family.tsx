@@ -8,6 +8,7 @@ import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
 import { DeclaredFamilyWidget, DetailWindowHost } from '../../families/host/index.ts';
+import { FamilyWidget } from '../../families/host/registry.tsx';
 import type { InstalledAction } from '../../families/plan.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { OccupationReserveReply } from '../../generated/dashboard';
@@ -61,7 +62,8 @@ function HolderSourcesDetail({ runtime, trackId, tag, hour, active }: {
 }
 
 function OccupationReserveFamilyWidget(props: WidgetProps) {
-  const { widget, runtime, active } = props;
+  const { widget, runtime, active, view, manifestDeclaration } = props;
+  const isBreakdown = manifestDeclaration?.family === 'time-chart';
   const anchorRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
   const gate = useGate(runtime, widget, SPEC, active);
@@ -72,6 +74,19 @@ function OccupationReserveFamilyWidget(props: WidgetProps) {
     const meta = action.meta as OccupationReserveRowMeta | null | undefined;
     setDetail({ tag: meta?.tag ?? action.subject, key: meta?.key ?? action.subject, hour: gated });
   }, [gate]);
+
+  if (isBreakdown && manifestDeclaration) {
+    return (
+      <div className="fh-frame">
+        <FamilyWidget
+          {...props}
+          family={manifestDeclaration.family}
+          view={view}
+          declaration={manifestDeclaration}
+        />
+      </div>
+    );
+  }
 
   return (
     <div ref={anchorRef} className="fh-frame">

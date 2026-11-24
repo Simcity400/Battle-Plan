@@ -39,6 +39,9 @@ export interface ChartEndLabel {
 export interface ChartInlinePoint {
   readonly hour: number;
   readonly value: number | null;
+  readonly min?: number | null;
+  readonly max?: number | null;
+  readonly approximate?: boolean;
 }
 
 export interface TimeChartSeriesModel {

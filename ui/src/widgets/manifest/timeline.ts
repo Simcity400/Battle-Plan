@@ -38,6 +38,17 @@ function warsView(view: 'gantt' | 'countries', label: string): FamilyViewEntry {
 export const TIMELINE_VIEWS: readonly FamilyViewEntry[] = [
   warsView('gantt', 'Wars'),
   warsView('countries', 'Countries'),
+  {
+    kind: 'special-projects',
+    view: 'history',
+    label: 'History',
+    family: 'timeline',
+    viewOption: 'view',
+    loadSpec: () => import('../special-projects/historyProjection.ts').then(mod => ({
+      family: 'timeline', kind: 'special-projects', view: 'history',
+      projection: mod.specialProjectsHistoryProjection, declaration: mod.specialProjectsHistoryDeclaration,
+    })),
+  },
   timelineView('diplomatic-pacts', () => import('../diplomatic-pacts/diplomaticPactsProjection.ts'),
     mod => ({ projection: mod.diplomaticPactsProjection, declaration: mod.diplomaticPactsDeclaration })),
   timelineView('factions', () => import('../factions/factionsProjection.ts'),

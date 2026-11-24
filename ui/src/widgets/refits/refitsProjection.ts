@@ -1,7 +1,7 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import { knownValue, textValue, notApplicable, notRecorded, valueFromNullable, type Value } from '../../families/value.ts';
@@ -39,7 +39,7 @@ const REFIT_COLUMNS: readonly DeclarativeColumnSpec<RefitRow, Record<string, nev
     extra: row => (row.kind === 'ship' ? { blank: true } : {}) },
 ];
 
-export const refitsProjection: TableProjection<Record<string, never>> = registerTableProjection(
+export const refitsProjection: TableProjection<Record<string, never>> = registerFamilyProjection(
   declareTableProjection<NavalRefitsReply, RefitRow, Record<string, never>>({
     kind: 'refits',
     validate: validateRefits,

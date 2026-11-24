@@ -1,5 +1,5 @@
 import { setToken } from '../../dashboard/options.ts';
-import type { AirMissionsReply, AirMissionTheatre } from '../../generated/dashboard';
+import type { AirMissionsReply } from '../../generated/dashboard';
 
 const text = (value: unknown): value is string => typeof value === 'string';
 const optionalText = (value: unknown) => value === null || text(value);
@@ -11,17 +11,11 @@ const sprite = (value: unknown) => value === null || !!value && typeof value ===
 
 export function validateAirMissions(value: unknown): AirMissionsReply {
   const reply = value as AirMissionsReply;
-  if (!reply || typeof reply !== 'object' || !hour(reply.readHour) || !optionalText(reply.missing) || !optionalText(reply.theatresMissing) || !strings(reply.warnings)
+  if (!reply || typeof reply !== 'object' || !hour(reply.readHour) || !optionalText(reply.missing) || !strings(reply.warnings)
     || !Array.isArray(reply.missions) || !reply.missions.every(mission => mission && text(mission.id) && text(mission.name) && sprite(mission.icon))
-    || !Array.isArray(reply.regions) || !reply.regions.every(region => region && text(region.region) && optionalText(region.name) && optionalText(region.missing) && strings(region.missions))
-    || !(reply.theatres === null || Array.isArray(reply.theatres) && reply.theatres.every(theatre => theatre && text(theatre.id) && text(theatre.name) && strings(theatre.regions))))
+    || !Array.isArray(reply.regions) || !reply.regions.every(region => region && text(region.region) && optionalText(region.name) && optionalText(region.missing) && strings(region.missions)))
     throw new Error('The air missions reply is malformed.');
   return reply;
-}
-
-export function theatreRegions(theatres: readonly AirMissionTheatre[] | null | undefined, chosen: readonly string[]): Set<string> | null {
-  if (!chosen.length) return null;
-  return new Set((theatres ?? []).filter(theatre => chosen.includes(theatre.id)).flatMap(theatre => theatre.regions));
 }
 
 export function choicesAt(listed: readonly { id: string; name: string }[], chosen: readonly string[]) {

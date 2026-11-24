@@ -4,7 +4,8 @@ import { Page, type Bitmap, type PageMessage } from '../dashboard/follow/page.ts
 import { Lane } from '../draw/lane.ts';
 import type { BoundedReadView, FamilyProjection } from './contract.ts';
 import { createLaneView, type LaneBinding, type LaneFamily } from './laneRuntime.ts';
-import { assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas, LANE_THEME as THEME } from './laneRuntime.fixture.ts';
+import { familyBinding, type FamilyBindingContext, type FamilyHostAdapter } from './host/adapter.ts';
+import { assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas, LANE_THEME as THEME, LaneTransport } from './laneRuntime.fixture.ts';
 import { bindFamilyManifest, registerFamilyProjection } from './registry.ts';
 import { IdentityIndex } from './identity/index.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
@@ -38,7 +39,7 @@ const family: LaneFamily<Binding, Model, Layout> = {
   boundary: () => Infinity,
   redraw: () => Infinity,
   status: () => 'picture',
-  view: () => [],
+  view: [],
   layout(model) {
     counts.layout++;
     return { rows: model.rows.map((row, at) => ({ key: row.key, y: at * 20, v: row.v })) };
@@ -67,8 +68,9 @@ const family: LaneFamily<Binding, Model, Layout> = {
 
 const rowsAt = (rows: readonly Row[]) => ({ main: { rows } });
 const DOWN: Options = { order: 'down' };
+const NO_SOURCES = {};
 const binding = (staticPanels: Readonly<Record<string, unknown>>, options: Options = DOWN, extra: Partial<Binding> = {}): Binding => ({
-  family: 'test-lane', kind: 'fixture', options, sources: {}, staticPanels, scrollTop: 0, theme: THEME, ...extra,
+  family: 'test-lane', kind: 'fixture', options, sources: NO_SOURCES, staticPanels, scrollTop: 0, theme: THEME, ...extra,
 });
 
 test('a projection’s identity demands are published by the paint that ran it', () => {
@@ -94,7 +96,7 @@ test('a quiet, steady or paused frame does no projection, layout or drawing, and
     const first = lane.paint({ label: 'first', binding: bound, hour: 12, speed: 24 });
     assert.equal(first.nextChangeAt, 20, 'the proven interval reaches the projection’s next change');
     assert.deepEqual({ ...counts }, { project: 1, nextChange: 1, layout: 1, paint: 1, tooltip: 0, mirror: 1 });
-    const scene = { widget: 1, subs: [], pictures: [], model: bound };
+    const scene = { widget: 1, subs: [], pictures: [], model: lane.model() };
     for (let hour = 13; hour < 20; hour++) assert.equal(view.next!(scene, hour, lane.state), 20);
     const steady = lane.paint({ label: 'steady', binding: bound, hour: 15, speed: 24 });
     const paused = lane.paint({ label: 'paused', binding: bound, hour: 15, speed: 0 });
@@ -126,6 +128,23 @@ test('a dirty mirror or tooltip arms one wake per boundary, never one per hour',
     assert.equal(set.length, 1, 'several changed hours inside one cadence arm one timer');
     pending[0]!();
     assert.equal(wakes, 1);
+  } finally {
+    recording.restore();
+  }
+});
+
+test('while playing, a correction inside the cadence never publishes the old tooltip or mirror beside the corrected picture', () => {
+  reset();
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(family, () => {}), recording.canvases);
+    lane.paint({ label: 'first', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 12, speed: 24, inspect: 'A', seek: 1 });
+    const corrected = lane.paint({ label: 'corrected', binding: binding(rowsAt([{ key: 'A', v: 7 }])), hour: 12, speed: 24, inspect: 'A', seek: 1 });
+    assert.deepEqual((corrected.fields.tooltip?.value as { text: { rowKey: string } } | undefined)?.text?.rowKey, 'A');
+    assert.ok(counts.tooltip >= 2, 'the tooltip was derived again from the corrected frame');
+    assert.equal(corrected.fields.mirror, undefined, 'the mirror is withheld until it is due, never the old rows');
+    const due = lane.paint({ label: 'paused', binding: binding(rowsAt([{ key: 'A', v: 7 }])), hour: 12, speed: 0, inspect: 'A', seek: 1 });
+    assert.deepEqual(due.fields.mirror?.value, ['A 7'], 'paused, the mirror is published at once');
   } finally {
     recording.restore();
   }
@@ -171,6 +190,19 @@ test('a previous frame is supplied only for continuous forward playback of the s
     assert.equal(paint({ hour: 60, seek: 3, owner: 'b', binding: binding(rowsAt([{ key: 'A', v: 1 }, { key: 'B', v: 2 }]), { order: 'up' }) }), null, 'another selection gives none');
     assert.equal(paint({ hour: 55, seek: 3, owner: 'b', binding: swapped }), null, 'an earlier hour on the same seek gives none');
     assert.equal(paint({ hour: 70, seek: 3, owner: 'b', binding: swapped }), 55, 'playing on again glides');
+  } finally {
+    recording.restore();
+  }
+});
+
+test('a secondary panel read on a clock 24 hours ahead reaches the projection with its shift, never as future data', () => {
+  reset();
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(family, () => {}), recording.canvases);
+    const painted = lane.paint({ label: 'shifted', hour: 12, binding: { ...binding({ main: { hour: 36, rows: [{ key: 'A', v: 1 }] } }), staticShifts: { main: 24 } } });
+    assert.equal(painted.mode, 'picture');
+    assert.deepEqual(painted.fields.nav?.value, ['A']);
   } finally {
     recording.restore();
   }
@@ -223,6 +255,25 @@ registerFamilyProjection<FamilyProjection<Model, Options>>({
   project: (view: BoundedReadView): Model => ({ hour: view.hour, bucket: view.hour, rows: [{ key: 'A', v: view.hour }], name: '' }),
 });
 
+test('a placement unmounted while its projection loads is not woken by the load, and a loading paint waits instead of presenting', async () => {
+  let release: (value: unknown) => void = () => {};
+  bindFamilyManifest([{ family: 'test-lane', kind: 'slow', loadSpec: () => new Promise(resolve => { release = resolve; }) as never }]);
+  const recording = installRecordingCanvas();
+  try {
+    let wakes = 0;
+    const view = createLaneView(family, () => { wakes++; });
+    const lane = driveLane(view, recording.canvases);
+    const slow = { ...binding(rowsAt([])), kind: 'slow' };
+    assert.equal(lane.paint({ label: 'loading', binding: slow, hour: 10 }).waiting, true, 'nothing to present until the import settles');
+    view.unmount!(1, lane.state);
+    release({ projection: { kind: 'slow', family: 'test-lane', project: (read: BoundedReadView) => ({ hour: read.hour, bucket: 0, rows: [], name: '' }) } });
+    await settle();
+    assert.equal(wakes, 0, 'the unmounted placement left the registry');
+  } finally {
+    recording.restore();
+  }
+});
+
 test('a seek to an hour the held proof cannot locate paints at that hour, through Lane.frame', async () => {
   const flushed = () => new Promise<void>(resolve => setImmediate(resolve));
   const hourly: LaneFamily<Binding, Model, Layout> = { ...family, boundary: (_model, hour) => hour + 1 };
@@ -248,22 +299,120 @@ test('a seek to an hour the held proof cannot locate paints at that hour, throug
   }
 });
 
-test('next() builds no identity index, and one snapshot is indexed once for every placement in the worker', () => {
+test('across the worker boundary a scroll, a focus change and an art arrival cost no projection, layout or index, and two placements share one index', () => {
+  reset();
   const recording = installRecordingCanvas();
   const original = IdentityIndex.fromSnapshot;
   let built = 0;
   IdentityIndex.fromSnapshot = snapshot => { built++; return original.call(IdentityIndex, snapshot); };
   try {
+    const adapter: FamilyHostAdapter<Model, Options, Binding> = { family: 'test-lane', navigation: 'rows' };
     const snapshot: IdentitySnapshot = { scope: { sourceId: 's', revision: 'r', branchId: 'b', content: 1 } };
-    const bound = { ...binding(rowsAt([{ key: 'A', v: 1 }])), identitySnapshot: snapshot };
+    const options: Options = { order: 'down', name: 'GER' };
+    const sources = {};
+    const staticPanels = rowsAt([{ key: 'A', v: 1 }, { key: 'B', v: 2 }]);
+    const viewport = { width: 320, height: 200, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null };
+    const context = (change: Partial<FamilyBindingContext<Options>> = {}): FamilyBindingContext<Options> => ({
+      kind: 'fixture', view: 'default', options, settings: undefined, sources, extent: null, plan: null, viewport, theme: THEME, reducedMotion: false,
+      selectedKey: null, focusedKey: null, expanded: {}, audit: false, auditId: undefined, pauseFlush: 0, ...change,
+    });
+    const bound = (change?: Partial<FamilyBindingContext<Options>>): Binding => ({ ...familyBinding(adapter, context(change))!, staticPanels, identitySnapshot: snapshot });
+    const transport = new LaneTransport();
     const views = [createLaneView(family, () => {}), createLaneView(family, () => {})];
-    const lanes = views.map(view => driveLane(view, recording.canvases));
-    for (const lane of lanes) lane.paint({ label: 'placed', binding: bound, hour: 12 });
-    assert.equal(built, 1, 'two placements share one index for one snapshot');
-    for (let hour = 12; hour < 400; hour++) for (const [at, view] of views.entries()) view.next!({ widget: 1, subs: [], pictures: [], model: bound }, hour, lanes[at]!.state);
+    const lanes = views.map((view, at) => driveLane(view, recording.canvases, undefined, transport, `placement ${at}`));
+    const paintBoth = (binding: Binding) => { for (const lane of lanes) lane.paint({ label: 'bind', binding, hour: 12 }); };
+    paintBoth(bound());
+    assert.deepEqual([counts.project, counts.layout, built], [2, 2, 1], 'two placements of one snapshot share one index, though each was cloned');
+    const sent = transport.sent.payloads;
+    const steps: [string, Binding, number][] = [
+      ['a scroll', bound({ viewport: { ...viewport, scrollTop: 40 } }), 0],
+      ['a focus change', bound({ viewport: { ...viewport, scrollTop: 40 }, focusedKey: 'B' }), 0],
+      ['an art arrival', bound({ viewport: { ...viewport, scrollTop: 40 }, focusedKey: 'B', artResolutions: { 'sprite:x': { status: 'noArtExpected' } } }), 1],
+    ];
+    let payloads = sent;
+    for (const [label, binding, crossed] of steps) {
+      reset();
+      paintBoth(binding);
+      assert.deepEqual([counts.project, counts.layout, built], [0, 0, 1], `${label}: no projection, no layout, no index build`);
+      assert.equal(transport.sent.payloads - payloads, crossed, `${label}: crosses only what changed`);
+      payloads = transport.sent.payloads;
+      assert.equal(counts.paint, 2, `${label}: each placement redraws`);
+    }
+    for (let hour = 12; hour < 400; hour++) for (const [at, view] of views.entries()) view.next!({ widget: 1, subs: [], pictures: [], model: lanes[at]!.model() }, hour, lanes[at]!.state);
     assert.equal(built, 1, 'next() never indexes a snapshot');
   } finally {
     IdentityIndex.fromSnapshot = original;
+    recording.restore();
+  }
+});
+
+test('a changed static answer, option or source mapping crosses once and rebuilds; an unchanged one keeps its revision', () => {
+  reset();
+  const recording = installRecordingCanvas();
+  try {
+    const transport = new LaneTransport();
+    const lane = driveLane(createLaneView(family, () => {}), recording.canvases, undefined, transport);
+    const a = { rows: [{ key: 'A', v: 1 }] };
+    const b = { rows: [{ key: 'B', v: 2 }] };
+    const sources = { main: 3 };
+    const bound = (panels: Readonly<Record<string, unknown>>, options: Options = DOWN, mapping: Readonly<Record<string, number>> = sources) =>
+      ({ ...binding(panels, options), sources: mapping });
+    lane.paint({ label: 'first', binding: bound({ main: a, other: b }), hour: 12 });
+    const after = (label: string, next: Binding, projected: number, crossed: number) => {
+      reset();
+      const sent = transport.sent.payloads;
+      lane.paint({ label, binding: next, hour: 12 });
+      assert.deepEqual([counts.project, transport.sent.payloads - sent], [projected, crossed], label);
+    };
+    after('a new bundle with the same answers', bound({ main: a, other: b }), 0, 0);
+    after('one changed answer', bound({ main: { rows: [{ key: 'A', v: 9 }] }, other: b }), 1, 1);
+    const up: Options = { order: 'up' };
+    after('another option', bound({ main: a, other: b }, up), 1, 2);
+    after('another source mapping', bound({ main: a, other: b }, up, { main: 4 }), 1, 1);
+  } finally {
+    recording.restore();
+  }
+});
+
+test('the previous layout is given only while the same placement plays forward, never across a seek or a pause', () => {
+  const recording = installRecordingCanvas();
+  try {
+    const seen: (number | null)[] = [];
+    const remembering: LaneFamily<Binding, Model, Layout> = {
+      ...family,
+      layout(model, binding, surface, theme, measure, hour, step) {
+        seen.push(step.previous ? step.previous.hour : null);
+        return family.layout(model, binding, surface, theme, measure, hour, step);
+      },
+    };
+    const lane = driveLane(createLaneView(remembering, () => {}), recording.canvases);
+    lane.paint({ label: 'first', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 10, speed: 24 });
+    lane.paint({ label: 'forward', binding: binding(rowsAt([{ key: 'A', v: 2 }])), hour: 12, speed: 24 });
+    lane.paint({ label: 'seek back', binding: binding(rowsAt([{ key: 'A', v: 3 }])), hour: 5, speed: 24 });
+    lane.paint({ label: 'paused, same hour', binding: binding(rowsAt([{ key: 'A', v: 4 }])), hour: 5, speed: 0 });
+    lane.paint({ label: 'paused jump', binding: binding(rowsAt([{ key: 'A', v: 5 }])), hour: 9, speed: 0 });
+    assert.deepEqual(seen, [null, 10, null, null, null], 'only continuous forward playback supplies it');
+  } finally {
+    recording.restore();
+  }
+});
+
+test('a drawing that expires at a wall-clock time arms the one timer, even while paused, and redraws when it passes', () => {
+  const recording = installRecordingCanvas();
+  const set: number[] = [];
+  const timers = { set: (_fn: () => void, ms: number) => { set.push(ms); return set.length as unknown as ReturnType<typeof setTimeout>; }, clear: () => {} };
+  try {
+    let draws = 0;
+    const holding: LaneFamily<Binding, Model, Layout> = { ...family, paint: (ctx, frame) => { draws++; family.paint(ctx, frame); return frame.now + 500; } };
+    const lane = driveLane(createLaneView(holding, () => {}, { timers }), recording.canvases);
+    const bound = binding(rowsAt([{ key: 'A', v: 1 }]));
+    lane.paint({ label: 'held', binding: bound, hour: 12, speed: 0 });
+    assert.deepEqual([draws, set], [1, [500]], 'one timer for the expiry while paused');
+    lane.paint({ label: 'still held', binding: bound, hour: 12, speed: 0 });
+    assert.deepEqual([draws, set.length], [1, 1], 'no redraw and no second timer before it passes');
+    lane.paint({ label: 'expired', binding: bound, hour: 12, speed: 0, now: 1600 });
+    assert.equal(draws, 2, 'the expired drawing is redrawn');
+  } finally {
     recording.restore();
   }
 });

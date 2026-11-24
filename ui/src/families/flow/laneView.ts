@@ -17,7 +17,7 @@ const flowLane: LaneFamily<FamilyFlowBinding, FlowModel, FlowLayout> = {
   boundary: () => Infinity,
   redraw: () => Infinity,
   status: model => (model.refused !== undefined ? { refused: model.refused } : 'scene'),
-  view: () => [],
+  view: [],
   layout: (model, _binding, surface) => layoutFlow(model, surface.width, surface.height),
   paint(ctx, frame) {
     drawFlow(ctx, {

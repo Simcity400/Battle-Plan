@@ -7,7 +7,7 @@ import { fixedNumber, formatAmount, formatRate, formatSigned } from '../../chart
 import { gbNumber, gbTwoSignificant } from '../../charts/numberFormat.ts';
 import { campaignToken } from '../../dashboard/chosen.ts';
 import type { ChoiceSource } from '../../dashboard/chosen';
-import { contentKey, setToken } from '../../dashboard/options.ts';
+import { setToken } from '../../dashboard/options.ts';
 import { DOMAINS, UNRESOLVED_ARM, UNRESOLVED_MARK, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
 import type { AmountRun, Domain, EquipmentStockpileReply, HourSpan, StockpileCatalogueReply, StockVariant, StockVariantName } from './types';
 import { chartSummaryFrom } from '../../charts/chartSummary.ts';
@@ -360,48 +360,6 @@ export function stockRuns(reply: EquipmentStockpileReply, group: Summed): Run[] 
   return runs;
 }
 
-export function balanceChangeHours(reply: EquipmentStockpileReply, group: Pick<StockGroup, 'types'> & Partial<Pick<StockGroup, 'kind' | 'key' | 'scope'>>): number[] {
-  const hours = new Set<number>(reply.balanceHours.map(span => span.firstHour));
-  const index = indexOf(reply);
-  const items = [...group.types.map(key => index.logistics.get(key)), ...(group.kind === 'domain' && group.key !== UNRESOLVED_ARM ? unresolvedIn(reply, group) : [])];
-  for (const item of items) {
-    if (!item) continue;
-    for (const run of [...item.balance, ...item.stock, ...item.available]) { hours.add(run.firstHour); hours.add(run.lastHour + 1); }
-  }
-  return [...hours].sort((a, b) => a - b);
-}
-
-function peak(reply: EquipmentStockpileReply, group: StockGroup): bigint {
-  const prepared = (reply as PreparedStockpileReply).prepared;
-  if (prepared) return BigInt(prepared.choices[JSON.stringify([group.kind, group.kind === 'variant' ? group.variants[0]?.id : group.key])]?.raw ?? '0');
-  let most = changeHours(reply, group.variants).reduce((best, hour) => {
-    const stock = stockAt(reply, group, hour) ?? 0n;
-    return stock > best ? stock : best;
-  }, 0n);
-  for (const hour of balanceChangeHours(reply, group)) {
-    const need = balanceAt(reply, group, hour)?.need ?? 0n;
-    if (need > most) most = need;
-  }
-  return most;
-}
-
-export function automaticGroups(reply: EquipmentStockpileReply, groups: readonly StockGroup[], grouping: Grouping): string[] {
-  if (grouping === 'domain') return groups.map(group => group.key);
-  const ranked = groups.map(group => ({ group, peak: peak(reply, group) })).filter(entry => entry.peak > 0n)
-    .sort((a, b) => (a.peak === b.peak ? 0 : a.peak > b.peak ? -1 : 1));
-  if (grouping === 'variant') return ranked.slice(0, 5).map(entry => entry.group.key);
-  const pick = (domain: Domain, count: number) => ranked.filter(entry => entry.group.domain === domain).slice(0, count).map(entry => entry.group.key);
-  const main = [...pick('land', 3), ...pick('air', 2)];
-  return main.length ? main : ranked.slice(0, 5).map(entry => entry.group.key);
-}
-
-export function automaticLines(reply: EquipmentStockpileReply, groups: readonly StockGroup[], grouping: Grouping, drawable: (group: StockGroup) => boolean, count = 5): string[] {
-  const shown = groups.filter(drawable);
-  const main = automaticGroups(reply, shown, grouping);
-  if (grouping === 'domain' || main.length >= count) return main;
-  return [...main, ...shown.map(group => group.key).filter(key => !main.includes(key))].slice(0, Math.max(main.length, count));
-}
-
 export const groupChoices = (groups: readonly StockGroup[], noun: string): ChoiceSource => ({
   lines: key => groups.some(group => group.key === key) ? 1 : 0,
   name: key => groups.find(group => group.key === key)?.label ?? 'Equipment group name unavailable',
@@ -432,16 +390,6 @@ export function choiceKey(group: StockGroup, hour: number, shown: readonly strin
   return design == null ? null : `${group.key}${DESIGN_MARK}${design}`;
 }
 
-export function oneChoicePerRow(tokens: readonly string[]): string[] {
-  const rows = new Set<string>();
-  return tokens.filter(token => {
-    const row = choiceRow(contentKey(token));
-    if (rows.has(row)) return false;
-    rows.add(row);
-    return true;
-  });
-}
-
 function chosenGroup(byRow: ReadonlyMap<string, StockGroup>, key: string): StockGroup | undefined {
   const group = byRow.get(rowOf(key));
   if (!group || group.kind !== 'variant') return group?.key === key ? group : undefined;
@@ -465,8 +413,6 @@ export function stockChoices(groups: readonly StockGroup[], noun: string, drawab
 
 export const choiceRow = rowOf;
 
-export const SAVED_DESIGN_UNAVAILABLE = 'Saved design unavailable. Choose another.';
-
 export const shareModeOf = (reply: EquipmentStockpileReply, grouping: Grouping) => grouping !== 'variant'
   && ((reply as PreparedStockpileReply).prepared?.balanceRecorded ?? reply.balanceHours.length > 0);
 
@@ -486,8 +432,6 @@ export function chartChoices(reply: EquipmentStockpileReply, grouping: Grouping)
     return key != null && chartDrawable(reply, group, grouping) ? [{ value: setToken(key), label: group.label }] : [];
   });
 }
-
-export const GROUP_NOUNS: Record<Grouping, string> = { type: 'equipment type', variant: 'variant', domain: 'arm' };
 
 export const CHOSEN_KEYS: Record<Grouping, string> = { type: 'chosen', variant: 'chosenVariant', domain: 'chosenDomain' };
 
@@ -564,27 +508,4 @@ export function groupLabel(reply: EquipmentStockpileReply, group: StockGroup, ho
   }
   const stock = stockAt(reply, group, hour);
   return stock == null ? `${group.label}: not recorded at this time` : `${group.label}: ${amount(stock, reply.decimals)} in stock`;
-}
-
-export interface LineAt { group: StockGroup; color: string; stock: bigint | null; daily: bigint | null; logistics?: GroupBalance | null }
-
-export function overTimeTooltip(title: string, lines: readonly LineAt[], decimals: number, note: string | undefined, height: number): TooltipContent {
-  const value = (line: LineAt) => {
-    if (line.logistics !== undefined) {
-      if (!line.logistics) return { value: NOT_RECORDED, tone: 'muted' as const };
-      const share = shareOf(line.logistics);
-      return { value: `${formatSigned(line.logistics.balance, decimals)}${share != null ? ` (${formatPercent(share)})` : ''}`,
-        tone: line.logistics.balance < 0n ? 'negative' as const : undefined };
-    }
-    return line.stock == null ? { value: NOT_RECORDED, tone: 'muted' as const } : { value: amount(line.stock, decimals) };
-  };
-  function* forms(): Generator<TooltipContent> {
-    yield { title, note, rows: lines.flatMap((line, index) => [
-      { label: line.group.label, swatch: line.color, strong: true, divider: index > 0, ...value(line) },
-      ...(line.logistics ? [{ label: 'Needed', indent: true, ...(line.logistics.need == null ? { value: 'Unavailable', tone: 'muted' as const } : { value: amount(line.logistics.need, decimals) }) }] : []),
-      { label: 'Output per day', indent: true, ...(line.daily == null ? { value: NOT_RECORDED, tone: 'muted' as const } : { value: formatRate(line.daily, decimals) }) },
-    ]) };
-    yield { title, note, rows: lines.map(line => ({ label: line.group.label, swatch: line.color, short: true, ...value(line) })) };
-  }
-  return fitTooltip(forms(), height, { more: hidden => `${hidden} more` });
 }
