@@ -40,11 +40,13 @@ export function experienceRatio(facts: CareerFacts): number | null {
   return value >= 0 && value <= 1 ? value : null;
 }
 
+export const CASUALTIES_TAKEN_NOTE = 'The game’s own count of the men this division has lost, as shown on its history tab in the game. It leaves out the men lost when a division is destroyed and losses from paradrop landings.';
+
 export function headerDetail(templateName: string | null, facts: CareerFacts | null): string {
   const medals = facts?.medals == null ? '—' : `${usNumber.format(facts.medals)} ${facts.medals === 1 ? 'medal' : 'medals'}`;
   const level = facts?.levelName ?? '—';
-  const kills = facts?.kills == null ? '—' : `${usNumber.format(facts.kills)} enemy soldiers killed`;
-  return [templateName ?? '—', medals, level, kills].join(' · ');
+  const casualties = facts?.casualtiesTaken == null ? '—' : `${usNumber.format(facts.casualtiesTaken)} casualties taken`;
+  return [templateName ?? '—', medals, level, casualties].join(' · ');
 }
 
 export type RecordItem = { entry: RecordEntry; medal: CareerMedal | undefined };
@@ -76,7 +78,7 @@ export function careerTooltip(row: CareerRow, reply: DivisionCareersReply, hour:
     rows.push({ label: medalName(reply.medals[award.medal]), lookupKey: reply.medals[award.medal]?.key, value: award.count === 1 ? undefined : `×${award.count}`, indent: true });
   const ratio = experienceRatio(facts);
   rows.push({ label: 'Experience', value: facts.levelName === null ? 'Not recorded' : `${facts.levelName}${ratio === null ? '' : ` (${Math.round(ratio * 100)}%)`}`, divider: true },
-    { label: 'Enemy soldiers killed', value: facts.kills === null ? 'Not recorded' : usNumber.format(facts.kills) });
+    { label: 'Casualties taken', value: facts.casualtiesTaken === null ? 'Not recorded' : usNumber.format(facts.casualtiesTaken), detail: CASUALTIES_TAKEN_NOTE });
   return { title: divisionName(row.name), subtitle: `As of ${formatDateTime(hour)}`, rows };
 }
 
