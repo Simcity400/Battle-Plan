@@ -704,6 +704,16 @@ fn status_reason(status: Status, label: &str) -> Option<String> {
     }
 }
 
+fn push_status_run(out: &mut Vec<(i32, i32, Option<String>)>, a: i32, b: i32, reason: Option<String>) {
+    if a > b {
+        return;
+    }
+    match out.last_mut() {
+        Some((_, end, held)) if end.checked_add(1) == Some(a) && *held == reason => *end = b,
+        _ => out.push((a, b, reason)),
+    }
+}
+
 fn status_runs(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i32, label: &str) -> io::Result<Vec<(i32, i32, Option<String>)>> {
     if first > last {
         return Ok(Vec::new());
@@ -715,40 +725,7 @@ fn status_runs(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i3
     let runs = dashboard_query::cost::storage(|| lanes::statuses(recording, run, table, first, last))?;
     let reads = dashboard_query::cost::storage(|| lanes::complete_reads(recording, run, table, first, last))?;
     let mut out: Vec<(i32, i32, Option<String>)> = Vec::new();
-    let mut push = |a: i32, b: i32, reason: Option<String>| {
-        if a > b {
-            return;
-        }
-        match out.last_mut() {
-            Some((_, end, held)) if end.checked_add(1) == Some(a) && *held == reason => *end = b,
-            _ => out.push((a, b, reason)),
-        }
-    };
     let mut read_at = 0usize;
-    let mut push_complete = |a: i32, b: i32| {
-        let mut cursor = a;
-        while read_at < reads.len() && reads[read_at].1 < cursor {
-            read_at += 1;
-        }
-        while read_at < reads.len() && reads[read_at].0 <= b {
-            let (ra, rb) = reads[read_at];
-            let hit_a = ra.max(cursor);
-            let hit_b = rb.min(b);
-            if cursor < hit_a {
-                push(cursor, hit_a - 1, Some(format!("{label} was not read at this hour")));
-            }
-            push(hit_a, hit_b, None);
-            cursor = hit_b.saturating_add(1);
-            if rb <= b {
-                read_at += 1;
-            } else {
-                break;
-            }
-        }
-        if cursor <= b {
-            push(cursor, b, Some(format!("{label} was not read at this hour")));
-        }
-    };
     let mut cursor = first;
     for run in runs {
         let (a, b) = (run.first.max(first), run.last.min(last));
@@ -756,16 +733,39 @@ fn status_runs(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i3
             continue;
         }
         if cursor < a {
-            push(cursor, a - 1, Some(format!("{label} was not recorded")));
+            push_status_run(&mut out, cursor, a - 1, Some(format!("{label} was not recorded")));
         }
         match status_reason(run.status, label) {
-            None => push_complete(a, b),
-            Some(reason) => push(a, b, Some(reason)),
+            None => {
+                let mut complete_cursor = a;
+                while read_at < reads.len() && reads[read_at].1 < complete_cursor {
+                    read_at += 1;
+                }
+                while read_at < reads.len() && reads[read_at].0 <= b {
+                    let (ra, rb) = reads[read_at];
+                    let hit_a = ra.max(complete_cursor);
+                    let hit_b = rb.min(b);
+                    if complete_cursor < hit_a {
+                        push_status_run(&mut out, complete_cursor, hit_a - 1, Some(format!("{label} was not read at this hour")));
+                    }
+                    push_status_run(&mut out, hit_a, hit_b, None);
+                    complete_cursor = hit_b.saturating_add(1);
+                    if rb <= b {
+                        read_at += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if complete_cursor <= b {
+                    push_status_run(&mut out, complete_cursor, b, Some(format!("{label} was not read at this hour")));
+                }
+            }
+            Some(reason) => push_status_run(&mut out, a, b, Some(reason)),
         }
         cursor = b.saturating_add(1);
     }
     if cursor <= last {
-        push(cursor, last, Some(format!("{label} was not recorded")));
+        push_status_run(&mut out, cursor, last, Some(format!("{label} was not recorded")));
     }
     Ok(out)
 }
