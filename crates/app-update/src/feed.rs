@@ -104,7 +104,7 @@ pub async fn offer(
     current: &semver::Version,
     switching: bool,
 ) -> Result<Option<Release>, String> {
-    let response = client
+    let mut response = client
         .get(feed)
         .header(reqwest::header::ACCEPT, "application/json")
         .timeout(FEED_TIMEOUT)
@@ -115,10 +115,15 @@ pub async fn offer(
     if !status.is_success() {
         return Err(format!("it answered HTTP {status}"));
     }
-    let body = response
-        .bytes()
+    let mut body = Body::new("its answer", response.content_length())?;
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|error| format!("its answer was cut off: {error}"))?;
+        .map_err(|error| format!("its answer was cut off: {error}"))?
+    {
+        body.take(&chunk)?;
+    }
+    let body = body.finish()?;
     let manifest: Manifest =
         serde_json::from_slice(&body).map_err(|error| format!("it isn’t a release: {error}"))?;
     let version = semver::Version::parse(&manifest.version)
@@ -157,17 +162,79 @@ pub async fn download(
         return Err(format!("the download answered HTTP {status}"));
     }
     let total = response.content_length();
-    let mut package = Vec::with_capacity(total.unwrap_or(0) as usize);
+    let mut body = Body::new("the download", total)?;
     while let Some(chunk) = response
         .chunk()
         .await
         .map_err(|error| format!("the download was cut off: {error}"))?
     {
-        package.extend_from_slice(&chunk);
-        progress(package.len() as u64, total);
+        body.take(&chunk)?;
+        progress(body.bytes.len() as u64, total);
     }
+    let package = body.finish()?;
     verify(&package, &release.signature, &release.version)?;
     Ok(package)
+}
+
+struct Body {
+    what: &'static str,
+    declared: Option<usize>,
+    bytes: Vec<u8>,
+}
+
+impl Body {
+    fn new(what: &'static str, declared: Option<u64>) -> Result<Self, String> {
+        let declared = declared
+            .map(|declared| {
+                usize::try_from(declared)
+                    .ok()
+                    .filter(|&declared| declared <= isize::MAX as usize)
+                    .ok_or_else(|| {
+                        format!("{what} declares {declared} bytes, more than this app can hold")
+                    })
+            })
+            .transpose()?;
+        Ok(Self {
+            what,
+            declared,
+            bytes: Vec::new(),
+        })
+    }
+
+    fn take(&mut self, chunk: &[u8]) -> Result<(), String> {
+        let what = self.what;
+        let limit = self.declared.unwrap_or(isize::MAX as usize);
+        let needed = self
+            .bytes
+            .len()
+            .checked_add(chunk.len())
+            .filter(|&needed| needed <= limit)
+            .ok_or_else(|| match self.declared {
+                Some(declared) => format!("{what} ran past the {declared} bytes it declared"),
+                None => format!("{what} is larger than this app can hold"),
+            })?;
+        if needed > self.bytes.capacity() {
+            let grown = needed
+                .max(self.bytes.capacity().saturating_mul(2))
+                .min(limit);
+            self.bytes
+                .try_reserve_exact(grown - self.bytes.len())
+                .map_err(|_| format!("{what} needs more memory than is free"))?;
+        }
+        self.bytes.extend_from_slice(chunk);
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Vec<u8>, String> {
+        if let Some(declared) = self.declared.filter(|&declared| self.bytes.len() < declared) {
+            return Err(format!(
+                "{} stopped at {} of the {declared} bytes it declared",
+                self.what,
+                self.bytes.len()
+            ));
+        }
+        Ok(self.bytes)
+    }
 }
 
 fn minisign_text(encoded: &str, what: &str) -> Result<String, String> {
@@ -202,7 +269,24 @@ fn verify(package: &[u8], signature: &str, version: &str) -> Result<(), String> 
 
 #[cfg(test)]
 mod tests {
-    use super::{ReleaseNotes, listed, offered};
+    use super::{Body, ReleaseNotes, listed, offered};
+
+    #[test]
+    fn a_body_is_held_to_the_length_its_response_declares() {
+        let read = |declared: Option<u64>, chunks: &[&[u8]]| -> Result<Vec<u8>, String> {
+            let mut body = Body::new("the download", declared)?;
+            for chunk in chunks {
+                body.take(chunk)?;
+            }
+            body.finish()
+        };
+        assert_eq!(read(Some(6), &[b"abc", b"def"]), Ok(b"abcdef".to_vec()));
+        assert!(read(Some(4), &[b"abc", b"def"]).is_err());
+        assert!(read(Some(5), &[b"abc"]).is_err());
+        assert_eq!(read(None, &[b"abc", b"def"]), Ok(b"abcdef".to_vec()));
+        assert!(read(Some(u64::MAX), &[b"abc"]).is_err());
+        assert!(read(Some(isize::MAX as u64), &[b"abc"]).is_err());
+    }
 
     #[test]
     fn a_channel_switch_offers_the_chosen_channels_release_even_when_it_is_older() {
