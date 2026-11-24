@@ -350,7 +350,7 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
             branchId: ctx.branch.id,
             from: boundFrom,
             limit: HEAD_LIMIT,
-            ask: { categories, ...(selection ? { selection } : {}) },
+            ask: { categories, ...selection },
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,

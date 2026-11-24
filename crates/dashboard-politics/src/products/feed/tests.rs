@@ -713,14 +713,15 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
         hour: Some(101),
         from: Some(100),
         to: None,
-        selection: None,
+        countries: None,
+        group: None,
         search: None,
         sort: None,
         offset: None,
         limit: 64,
         categories: vec![EventFeedCategory::WarsPeace, EventFeedCategory::Diplomacy, EventFeedCategory::Politics, EventFeedCategory::Milestones],
     };
-    let cards_at = |hour: i32| ScriptTailParams { branch_id: "1".into(), hour: Some(hour), from: Some(100), to: None, selection: None, search: None, sort: None, offset: None, limit: 64, kinds: None, statuses: None };
+    let cards_at = |hour: i32| ScriptTailParams { branch_id: "1".into(), hour: Some(hour), from: Some(100), to: None, countries: None, group: None, search: None, sort: None, offset: None, limit: 64, events: None, statuses: None };
 
     let feed_b1 = EventFeedTail::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
     let state_of = |page: &super::EventFeedTailReply, id: &str| {
@@ -797,7 +798,7 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
         products::{LoadContext, Product},
         test_fixtures::{CAMPAIGN, records, source},
     };
-    use dashboard_query::{identity::Country, log::{CountrySpan, occurrence::Selection}};
+    use dashboard_query::identity::Country;
     use replay::campaign::Replay;
     use replay_data::{
         event_feed_rows::{
@@ -892,30 +893,32 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
     .unwrap();
     let cancel = AtomicBool::new(false);
     let context = LoadContext { content: None };
-    let selection = |tag: &str| Some(Selection { membership: vec![CountrySpan { country: Country::Tag(tag.into()), first_hour: 100, last_hour: 106 }], unobserved: Vec::new() });
-    let feed = |hour: i32, from: Option<i32>, selection: Option<Selection>| EventFeedTailParams {
+    let selection = |tag: &str| Some(vec![Country::Tag(tag.into())]);
+    let feed = |hour: i32, from: Option<i32>, countries: Option<Vec<Country>>| EventFeedTailParams {
         branch_id: "1".into(),
         hour: Some(hour),
         from,
         to: None,
-        selection,
+        countries,
+        group: None,
         search: None,
         sort: None,
         offset: None,
         limit: 64,
         categories: vec![EventFeedCategory::Politics],
     };
-    let cards = |hour: i32, statuses: Option<Vec<ScriptStatus>>, selection: Option<Selection>| ScriptTailParams {
+    let cards = |hour: i32, statuses: Option<Vec<ScriptStatus>>, countries: Option<Vec<Country>>| ScriptTailParams {
         branch_id: "1".into(),
         hour: Some(hour),
         from: None,
         to: None,
-        selection,
+        countries,
+        group: None,
         search: None,
         sort: None,
         offset: None,
         limit: 64,
-        kinds: None,
+        events: None,
         statuses,
     };
     let hours = |reply: &super::EventFeedTailReply| reply.rows.iter().map(|row| row.hour).collect::<Vec<_>>();
@@ -967,7 +970,7 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
     let awaiting = EventChoicesTail::load(&replay_source, &cards(106, Some(vec![ScriptStatus::Awaiting]), None), &context, &cancel).unwrap();
     assert_eq!(awaiting.total, "3");
 
-    let choice_panel = event_choices_dated_panel(&replay_source, &context, &serde_json::json!({ "panel": "event-choices-tail", "branchId": "1", "limit": 64, "selection": selection("GER") })).unwrap();
+    let choice_panel = event_choices_dated_panel(&replay_source, &context, &serde_json::json!({ "panel": "event-choices-tail", "branchId": "1", "limit": 64, "countries": ["GER"] })).unwrap();
     let choice_exact = choice_panel.exact().unwrap();
     for hour in [100, 101, 102, 104, 105, 106, 100] {
         let stepped = (choice_exact.advance)(hour, true, &cancel, None);

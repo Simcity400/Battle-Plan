@@ -18,8 +18,9 @@ use dashboard_base::{
 use dashboard_follow::panel::Panel;
 use dashboard_query::{
     Query,
-    identity::Holders,
+    identity::{Country, Holders},
     log::occurrence::{Answer, Ask, Chip, Index, PlacedGap, Selection},
+    series::ranked::GroupSelection,
     timeline::Timeline,
 };
 use replay::campaign::Replay;
@@ -47,9 +48,14 @@ pub struct EventFeedTailParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub to: Option<i32>,
+    #[doc = " Rows naming one of these countries at the row's date; every row when neither this nor `group`."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub selection: Option<Selection>,
+    pub countries: Option<Vec<Country>>,
+    #[doc = " Rows naming a member of the group at the row's date, membership resolved in Rust."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub search: Option<String>,
@@ -77,9 +83,14 @@ pub struct ScriptTailParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub to: Option<i32>,
+    #[doc = " Rows naming one of these countries at the row's date; every row when neither this nor `group`."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub selection: Option<Selection>,
+    pub countries: Option<Vec<Country>>,
+    #[doc = " Rows naming a member of the group at the row's date, membership resolved in Rust."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub search: Option<String>,
@@ -90,35 +101,38 @@ pub struct ScriptTailParams {
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub offset: Option<String>,
     pub limit: u32,
-    #[doc = " The opening kinds listed; every one when none."]
+    #[doc = " The events whose choices are listed; every one when none. Decisions take none."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub kinds: Option<Vec<EventFeedKind>>,
+    pub events: Option<Vec<ScriptEventKind>>,
     #[doc = " The statuses listed, each at the hour asked; every one when none."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub statuses: Option<Vec<ScriptStatus>>,
 }
 
-pub(crate) const TAIL_FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
-    branchId,
-    hour: Read,
-    from: Start,
-    to: End,
-    selection,
-    search,
-    sort,
-    offset,
-    limit,
-    categories,
-    kinds,
-    statuses,
-    "selection.membership[].country",
-    "selection.membership[].firstHour": Start,
-    "selection.membership[].lastHour": End,
-    "selection.unobserved[].firstHour": Start,
-    "selection.unobserved[].lastHour": End
-];
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum ScriptEventKind {
+    Country,
+    News,
+}
+
+impl ScriptEventKind {
+    fn kind(self) -> EventFeedKind {
+        match self {
+            Self::Country => EventFeedKind::ScriptEventFired,
+            Self::News => EventFeedKind::NewsEventFired,
+        }
+    }
+}
+
+const FEED_FIELDS: dashboard_base::products::Fields =
+    dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, categories];
+
+const CARD_FIELDS: dashboard_base::products::Fields =
+    dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, events, statuses];
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -227,6 +241,7 @@ impl Owned {
 }
 
 struct Prepared {
+    selection: Option<Selection>,
     index: Arc<Index<Item>>,
     feed: Option<Arc<Feed>>,
     scanned: Arc<Scanned>,
@@ -239,7 +254,8 @@ fn branch_id(text: &str) -> io::Result<u64> {
     text.parse().map_err(|_| invalid("Invalid branch"))
 }
 
-fn prepare(source: &Source, query: &Query<'_>, branch: u64, context: &LoadContext, list: Option<List>, cancelled: &AtomicBool) -> io::Result<Prepared> {
+fn prepare(source: &Source, query: &Query<'_>, branch: u64, context: &LoadContext, list: Option<List>, asked: (Option<&[Country]>, Option<&GroupSelection>), cancelled: &AtomicBool) -> io::Result<Prepared> {
+    let selection = dashboard_world::products::group_members::dated(source, query, context, asked.0, asked.1, cancelled)?;
     let content = Arc::new(super::resolve_content(source, context));
     let scanned = index::scanned_for(source, query, branch, cancelled)?;
     let (index, feed) = match list {
@@ -251,7 +267,7 @@ fn prepare(source: &Source, query: &Query<'_>, branch: u64, context: &LoadContex
         }
     };
     let losses = source.replay_ref().event_losses(branch).collect();
-    Ok(Prepared { index, feed, scanned, losses, content, kept: kept_naming(source) })
+    Ok(Prepared { selection, index, feed, scanned, losses, content, kept: kept_naming(source) })
 }
 
 struct Window<'p> {
@@ -310,7 +326,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
     dashboard_text::metadata::check_cancel(cancelled)?;
     let feed = prepared.feed.as_ref().ok_or_else(|| invalid("The event feed's index is not prepared"))?;
     let kinds: Vec<u16> = EventFeedKind::ALL.iter().filter(|kind| params.categories.contains(&kind.category())).map(|&kind| kind_code(kind)).collect();
-    let window = Window { from: params.from, to: params.to, selection: params.selection.as_ref(), search: params.search.as_deref(), sort: params.sort.as_ref(), offset: params.offset.as_deref(), limit: params.limit };
+    let window = Window { from: params.from, to: params.to, selection: prepared.selection.as_ref(), search: params.search.as_deref(), sort: params.sort.as_ref(), offset: params.offset.as_deref(), limit: params.limit };
     let answer = answer(&feed.index, query, &window, hour, Some(&kinds), None, false, &[])?;
     let read = index::read_events(query, &locators(&feed.index, &answer, hour))?;
     let names = Names::new(&query.holders);
@@ -398,18 +414,17 @@ fn chips(list: List) -> (Vec<Chip>, &'static [&'static str]) {
 
 fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &ScriptTailParams, hour: i32, cancelled: &AtomicBool) -> io::Result<ScriptOccurrenceTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
-    let kinds: Option<Vec<u16>> = params.kinds.as_ref().map(|kinds| {
-        let mut codes: Vec<u16> = kinds.iter().filter(|kind| list.openers().contains(kind)).map(|&kind| kind_code(kind)).collect();
-        if list == List::EventChoices {
-            codes.push(kind_code(EventFeedKind::EventOptionSelected));
-        } else {
-            codes.extend(list.continuing().iter().map(|&kind| kind_code(kind)));
-        }
+    if list == List::Decisions && params.events.is_some() {
+        return Err(invalid("Decisions are not filtered by event kind"));
+    }
+    let kinds: Option<Vec<u16>> = params.events.as_ref().map(|events| {
+        let mut codes: Vec<u16> = events.iter().map(|event| kind_code(event.kind())).collect();
+        codes.push(kind_code(EventFeedKind::EventOptionSelected));
         codes
     });
     let states: Option<Vec<u8>> = params.statuses.as_ref().map(|statuses| statuses.iter().map(|status| status.code()).collect());
     let (chips, keys) = chips(list);
-    let window = Window { from: params.from, to: params.to, selection: params.selection.as_ref(), search: params.search.as_deref(), sort: params.sort.as_ref(), offset: params.offset.as_deref(), limit: params.limit };
+    let window = Window { from: params.from, to: params.to, selection: prepared.selection.as_ref(), search: params.search.as_deref(), sort: params.sort.as_ref(), offset: params.offset.as_deref(), limit: params.limit };
     let answer = answer(&prepared.index, query, &window, hour, kinds.as_deref(), states.as_deref(), true, &chips)?;
     let read = index::read_events(query, &locators(&prepared.index, &answer, hour))?;
     let names = Names::new(&query.holders);
@@ -473,16 +488,17 @@ impl Product for EventFeedTail {
     const CONTENT_DEPENDENT: bool = true;
     const REPLAYS: bool = true;
     type Params = EventFeedTailParams;
-    const FIELDS: dashboard_base::products::Fields = TAIL_FIELDS;
+    const FIELDS: dashboard_base::products::Fields = FEED_FIELDS;
     type Reply = EventFeedTailReply;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        use dashboard_query::log::{CountrySpan, UnobservedSpan, occurrence::Direction};
+        use dashboard_query::{log::occurrence::Direction, series::ranked::{GroupKind, GroupMembership}};
         vec![
-            CountrySpan::decl(),
-            UnobservedSpan::decl(),
-            Selection::decl(),
+            Country::decl(),
+            GroupKind::decl(),
+            GroupMembership::decl(),
+            GroupSelection::decl(),
             Direction::decl(),
             OccurrenceSort::decl(),
             OccurrenceCount::decl(),
@@ -516,7 +532,7 @@ impl Product for EventFeedTail {
         let branch = branch_id(&params.branch_id)?;
         let query = dashboard_base::queries::query(source, branch)?;
         let hour = occurrences::cutoff(&query, params.hour)?;
-        let prepared = prepare(source, &query, branch, context, None, cancelled)?;
+        let prepared = prepare(source, &query, branch, context, None, (params.countries.as_deref(), params.group.as_ref()), cancelled)?;
         load_feed_at(&prepared, &query, params, hour, cancelled)
     }
 }
@@ -532,7 +548,7 @@ pub fn event_feed_dated_panel(source: &Source, load: &LoadContext, asked: &serde
     EventFeedTail::validate(&params)?;
     let branch = branch_id(&params.branch_id).map_err(|error| error.to_string())?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
-    let prepared = prepare(source, &query, branch, load, None, &AtomicBool::new(false)).map_err(|error| error.to_string())?;
+    let prepared = prepare(source, &query, branch, load, None, (params.countries.as_deref(), params.group.as_ref()), &AtomicBool::new(false)).map_err(|error| error.to_string())?;
     let owned = Owned::of(&query, source.replay());
     Ok(occurrences::occurrence_panel(source.tables(), move |hour, cancelled| {
         let query = owned.query();
@@ -545,7 +561,7 @@ fn cards_load(list: List, source: &Source, params: &ScriptTailParams, context: &
     let branch = branch_id(&params.branch_id)?;
     let query = dashboard_base::queries::query(source, branch)?;
     let hour = occurrences::cutoff(&query, params.hour)?;
-    let prepared = prepare(source, &query, branch, context, Some(list), cancelled)?;
+    let prepared = prepare(source, &query, branch, context, Some(list), (params.countries.as_deref(), params.group.as_ref()), cancelled)?;
     load_cards_at(list, &prepared, &query, params, hour, cancelled)
 }
 
@@ -554,7 +570,7 @@ fn cards_dated_panel(list: List, name: &str, source: &Source, load: &LoadContext
     branch(&params.branch_id)?;
     let branch = branch_id(&params.branch_id).map_err(|error| error.to_string())?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
-    let prepared = prepare(source, &query, branch, load, Some(list), &AtomicBool::new(false)).map_err(|error| error.to_string())?;
+    let prepared = prepare(source, &query, branch, load, Some(list), (params.countries.as_deref(), params.group.as_ref()), &AtomicBool::new(false)).map_err(|error| error.to_string())?;
     let owned = Owned::of(&query, source.replay());
     Ok(occurrences::occurrence_panel(source.tables(), move |hour, cancelled| {
         let query = owned.query();
@@ -570,13 +586,13 @@ impl Product for EventChoicesTail {
     const CONTENT_DEPENDENT: bool = true;
     const REPLAYS: bool = true;
     type Params = ScriptTailParams;
-    const FIELDS: dashboard_base::products::Fields = TAIL_FIELDS;
+    const FIELDS: dashboard_base::products::Fields = CARD_FIELDS;
     type Reply = ScriptOccurrenceTailReply;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         use super::cards::{ScriptCost, ScriptCurrency};
-        vec![ScriptTailParams::decl(), ScriptCurrency::decl(), ScriptCost::decl(), ScriptEdge::decl(), ScriptOccurrence::decl(), ScriptPageRow::decl(), ScriptOccurrenceTailReply::decl()]
+        vec![ScriptEventKind::decl(), ScriptTailParams::decl(), ScriptCurrency::decl(), ScriptCost::decl(), ScriptEdge::decl(), ScriptOccurrence::decl(), ScriptPageRow::decl(), ScriptOccurrenceTailReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -599,7 +615,7 @@ impl Product for DecisionsTail {
     const CONTENT_DEPENDENT: bool = true;
     const REPLAYS: bool = true;
     type Params = ScriptTailParams;
-    const FIELDS: dashboard_base::products::Fields = TAIL_FIELDS;
+    const FIELDS: dashboard_base::products::Fields = CARD_FIELDS;
     type Reply = ScriptOccurrenceTailReply;
 
     #[cfg(any(test, feature = "export-types"))]

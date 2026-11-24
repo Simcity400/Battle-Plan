@@ -293,7 +293,7 @@ export const decisionsDeclaration: TableWidgetDeclaration<DecisionsProjectionOpt
             branchId: ctx.branch.id,
             from: boundFrom,
             limit: HEAD_LIMIT,
-            ask: { ...(statuses ? { statuses } : {}), ...(selection ? { selection } : {}) },
+            ask: { ...(statuses ? { statuses } : {}), ...selection },
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,

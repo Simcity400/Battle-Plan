@@ -1,6 +1,7 @@
 import type { DashboardSource } from '../../dashboard/client';
-import type { MissingSpan, OccurrenceSelection } from '../../generated/dashboard';
+import type { GroupSelection, MissingSpan } from '../../generated/dashboard';
 import type { ArtHandle, BoundedReadView, SourceEntry } from '../contract.ts';
+import { groupSelection } from '../groupSelection.ts';
 import type { FamilyPlanContext } from '../plan.ts';
 import { identityFlags, identityName, type IdentityBoundary, type IdentityOptions } from './identityCell.ts';
 
@@ -206,19 +207,11 @@ export function tailFollowParams(query: LogTailQuery): Record<string, unknown> {
   };
 }
 
-export function occurrenceSelection(ctx: Pick<FamilyPlanContext, 'countries' | 'gateSpan'>): OccurrenceSelection | undefined {
-  const filter = ctx.countries.filter;
-  if (!filter.passing) return undefined;
-  const membership = Object.entries(filter.passing).flatMap(([country, ranges]) =>
-    ranges.flatMap(([first, last]) => {
-      const bound = ctx.gateSpan(first, last);
-      return bound ? [{ country, firstHour: bound.firstHour, lastHour: bound.lastHour }] : [];
-    }));
-  const unobserved = filter.unrecorded.flatMap(([first, last]) => {
-    const bound = ctx.gateSpan(first, last);
-    return bound ? [{ firstHour: bound.firstHour, lastHour: bound.lastHour }] : [];
-  });
-  return { membership, unobserved };
+export function occurrenceSelection(ctx: Pick<FamilyPlanContext, 'countries' | 'widget'>): { readonly countries?: readonly string[]; readonly group?: GroupSelection } | undefined {
+  const group = groupSelection(ctx.widget.countries);
+  if (group) return { group };
+  if (ctx.countries.all) return undefined;
+  return { countries: ctx.countries.tags };
 }
 
 export function pagedTailEntry(

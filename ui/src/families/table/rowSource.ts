@@ -271,7 +271,7 @@ export function buildRowSourceFromHead(
 export function buildNavigableSlots<TRow extends DatedLogRow>(
   readAt: number,
   slots: readonly LogRowSlot<TRow>[],
-  gaps: readonly MissingSpan[],
+  gaps: readonly PlacedSpan[],
   total: number,
   previousRowHour?: number,
 ): LogRowSlot<TRow>[] {
@@ -286,7 +286,7 @@ export function buildNavigableSlots<TRow extends DatedLogRow>(
     .sort((a, b) => b.lastHour - a.lastHour || b.firstHour - a.firstHour);
 
   if (!activeGaps.length) return [...slots];
-  if (gaps.every(span => (span as PlacedSpan).before !== undefined)) return placeByOrdinal(readAt, slots, gaps as readonly PlacedSpan[], upperHour, total);
+  if (gaps.every(span => span.before !== undefined)) return placeByOrdinal(readAt, slots, gaps, upperHour, total);
   if (total === 0) {
     return activeGaps.map(span => ({
       kind: 'gap',

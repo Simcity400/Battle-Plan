@@ -7,8 +7,6 @@ let serial = 0;
 const row = (kind: EventFeedRow['kind'], hour: number, tags: string[], more: Partial<EventFeedRow> = {}): EventFeedRow => ({
   id: `native:1:${serial++}`, hour, readHour: hour, nameHour: hour, exact: true, category: 'warsPeace', kind, tags,
   participants: [tags[0] ?? null, tags[1] ?? null], item: null, amount: null, ...more });
-const family = (kind: EventFeedRow['kind'], hour: number, tags: string[], category: EventFeedRow['category'] = 'warsPeace'): EventFeedRow => ({
-  id: `${kind}:${hour}:${tags.join(',')}`, hour, readHour: hour, nameHour: hour, exact: true, category, kind, tags, item: null, amount: null });
 
 test('a feed row is validated, an icon the dashboard cannot draw dropped, and malformed rows refused', () => {
   const event = row('warDeclared', 100, ['GER', 'POL'], { readHour: 101, cause: { how: 'a diplomatic action', within: null, conference: null, state: null,

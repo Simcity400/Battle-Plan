@@ -14,7 +14,7 @@ mod window;
 
 pub use index::ScriptStatus;
 pub use tails::{
-    DecisionsTail, EventChoicesTail, EventFeedPageRow, EventFeedTail, EventFeedTailParams, EventFeedTailReply, ScriptOccurrenceTailReply, ScriptPageRow, ScriptTailParams,
+    DecisionsTail, EventChoicesTail, EventFeedPageRow, EventFeedTail, EventFeedTailParams, EventFeedTailReply, ScriptEventKind, ScriptOccurrenceTailReply, ScriptPageRow, ScriptTailParams,
     decisions_dated_panel, event_choices_dated_panel, event_feed_dated_panel,
 };
 pub use decision_state::{

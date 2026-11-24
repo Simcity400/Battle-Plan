@@ -49,13 +49,9 @@ impl<P> Occurrence<P> {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(rename = "OccurrenceSelection")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Selection {
-    #[serde(default)]
     pub membership: Vec<CountrySpan>,
-    #[serde(default)]
     pub unobserved: Vec<UnobservedSpan>,
 }
 

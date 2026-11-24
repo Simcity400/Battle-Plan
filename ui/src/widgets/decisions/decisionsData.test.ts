@@ -63,8 +63,6 @@ test('a mission with a recorded Failed native state shows Failed with its observ
   assert.equal(shown.status, 'failed');
   assert.equal(statusLabel(shown), 'Failed');
   assert.equal(lifecycleLine(shown), 'Failed · Timed out after 70 days');
-  assert.equal(at(timedOutFailed, day(6, 1), new Set(['timedOut'])), null, 'hidden when Failed filter is off');
-  assert.ok(at(timedOutFailed, day(6, 1), new Set(['failed'])), 'shown when Failed filter is on');
 
   const noInventedCause = [
     edge('decisionActivated', start, { days: 30 }),
