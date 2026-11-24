@@ -299,9 +299,17 @@ function unwrapPromiseModuleType(type, modSymIdToRel, checker) {
   return null;
 }
 
-function isOpaqueWideningType(type) {
+function isOpaqueWideningType(type, checker) {
   if (!type) return false;
   if (type.flags & (TypeFlags.Any | TypeFlags.Unknown)) return true;
+  const sigs = checker.getSignaturesOfType(type, SignatureKind.Call);
+  const target = sigs.length > 0 ? checker.getReturnTypeOfSignature(sigs[0]) : type;
+  if (!target) return false;
+  if (target.flags & (TypeFlags.Any | TypeFlags.Unknown)) return true;
+  if (target.isTypeReference()) {
+    const args = checker.getTypeArguments(target);
+    if (args.length === 1 && (args[0].flags & (TypeFlags.Any | TypeFlags.Unknown))) return true;
+  }
   return false;
 }
 
@@ -315,7 +323,7 @@ function isDefaultOnlyContextualType(type, checker) {
     const args = checker.getTypeArguments(target);
     if (args.length === 1) inner = args[0];
   }
-  if (!inner || isOpaqueWideningType(inner)) return false;
+  if (!inner || (inner.flags & (TypeFlags.Any | TypeFlags.Unknown))) return false;
   const props = checker.getPropertiesOfType(inner);
   return props.length === 1 && props[0].name === 'default';
 }
@@ -934,6 +942,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints, act
       const isWidgetManifestFile = rel === 'ui/src/widgets/manifest.ts';
 
       const identCandidates = [];
+      const shorthandCandidates = [];
       const dynamicImports = [];
       const inlineTypeImports = [];
       const workerUrlTargets = [];
@@ -944,6 +953,10 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints, act
         if (!node) return;
         parentOf.set(node, parent);
         const nextInType = inType || TYPE_NODE_KINDS.has(node.kind);
+
+        if (node.kind === SyntaxKind.ShorthandPropertyAssignment && !nextInType && info.fileScopeNames.has(node.name?.text)) {
+          shorthandCandidates.push(node);
+        }
 
         if (node.kind === SyntaxKind.NewExpression
           && node.expression?.kind === SyntaxKind.Identifier && node.expression.text === 'URL'
@@ -1040,6 +1053,14 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints, act
         }
       }
 
+      for (const shNode of shorthandCandidates) {
+        const sym = checker.getShorthandAssignmentValueSymbol(shNode);
+        if (!sym) continue;
+        if (followSymbolReference(rel, sym, unitIsType)) {
+          touchesModule = true;
+        }
+      }
+
       for (const qt of qualifiedTypes) {
         const sym = checker.getSymbolAtLocation(qt.nsNode);
         if (!sym) continue;
@@ -1086,7 +1107,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints, act
               if (ctxType) {
                 if (isDefaultOnlyContextualType(ctxType, checker)) {
                   addModuleEdge(rel, dyn.targetRel, false, 'default');
-                } else if (isOpaqueWideningType(ctxType)) {
+                } else if (isOpaqueWideningType(ctxType, checker)) {
                   addModuleEdge(rel, dyn.targetRel, false, '*');
                 }
               }
@@ -1238,7 +1259,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints, act
                   const ctxType = checker.getContextualType(n);
                   if (ctxType && isDefaultOnlyContextualType(ctxType, checker)) {
                     addModuleEdge(rel, loaderTarget, false, 'default');
-                  } else if (ctxType && isOpaqueWideningType(ctxType)) {
+                  } else if (ctxType && isOpaqueWideningType(ctxType, checker)) {
                     addModuleEdge(rel, loaderTarget, false, '*');
                   }
                 }
