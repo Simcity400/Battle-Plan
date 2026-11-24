@@ -82,7 +82,7 @@ function summary(reply: PowerSpendingBreakdownReply, currency: SpendCurrency): {
   if (currency === 'Command' && reply.lostAtCapRaw !== null && BigInt(reply.lostAtCapRaw) > 0n) parts.push(`${amount(reply.lostAtCapRaw)} lost at the cap`);
   const reasons = [
     ...(total.state !== 'known' && total.reason ? [total.reason] : []),
-    ...(reply.gainedRaw === null ? [reply.gainedReason ?? 'Gains were not recorded'] : []),
+    ...(reply.gainedReason ? [reply.gainedReason] : reply.gainedRaw === null ? ['Gains were not recorded'] : []),
   ];
   return { text: parts.join(' · '), partial: reasons.length ? reasons.join('; ') : null };
 }

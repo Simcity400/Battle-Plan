@@ -1,7 +1,8 @@
-use super::{PowerSpendingParams, PowerSpendingReply, SpendCurrency, naming, spending};
-use dashboard_base::products::breakdown::{self, Amount, Breakdown, Leaf, Node, Unrecorded};
+use super::{PowerSpendingParams, PowerSpendingReply, SpendCoverage, SpendCurrency, SpendGain, naming, spending};
+use dashboard_base::products::breakdown::{self, Amount, Breakdown, Dated, History, HistoryBuilder, Node};
 use dashboard_base::products::{Country, LoadContext, Product, check_reply_budget, validate_country};
 use dashboard_base::Source;
+use dashboard_query::{Query, identity::Holder};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io, sync::atomic::AtomicBool};
 #[cfg(any(test, feature = "export-types"))]
@@ -30,13 +31,15 @@ pub struct PowerSpendingBreakdownParams {
 pub struct PowerSpendingBreakdownReply {
     pub from: i32,
     pub hour: i32,
-    #[doc = " The breakdown stands unchanged from `hour` through this hour."]
+    #[doc = " Everything in the reply stands unchanged from `hour` through this hour."]
     pub through: i32,
     pub breakdown: Breakdown,
-    #[doc = " Gained over the same period before the cap, scaled by the breakdown's decimals; none when not"]
-    #[doc = " recorded whole."]
+    #[doc = " Gained over the same period before the cap, scaled by the breakdown's decimals; none when an"]
+    #[doc = " amount gained was read without its value. With `gained_reason`, hours of the period whose gains"]
+    #[doc = " were not read are left out: the figure is partial."]
     pub gained_raw: Option<String>,
     pub lost_at_cap_raw: Option<String>,
+    #[doc = " Why the gain is not known, or (with `gained_raw`) why it is partial."]
     pub gained_reason: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -77,7 +80,6 @@ impl Product for PowerSpendingBreakdown {
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid power spending branch"))?)?;
-        let naming = naming::context(source, context)?;
         let span = PowerSpendingParams {
             branch_id: params.branch_id.clone(),
             country: params.country.clone(),
@@ -85,19 +87,93 @@ impl Product for PowerSpendingBreakdown {
             from: params.from,
             to: query.timeline.last.max(params.hour),
         };
-        let whole = breakdown::held(source, span.clone(), || spending(source, &query, &span, &naming, cancelled))?;
-        let reply = at_hour(&whole, params.hour);
+        let held = breakdown::held(source, context, span.clone(), || {
+            let naming = naming::context(source, context)?;
+            let whole = spending(source, &query, &span, &naming, cancelled)?;
+            let spend = unrecorded(&query, &span.country, &whole.coverage, whole.from, whole.to);
+            let gain = unrecorded(&query, &span.country, &whole.gain_coverage, whole.from, whole.to);
+            Ok(index(&whole, &spend, &gain))
+        })?;
+        let reply = held.at(params.hour);
         check_reply_budget(&reply)?;
         Ok(reply)
     }
+}
+
+fn holes(runs: &[SpendCoverage], from: i32, to: i32) -> Vec<(i32, i32)> {
+    let mut out = Vec::new();
+    let mut cursor = from;
+    for run in runs {
+        let (first, last) = (run.first_hour.max(from), run.last_hour.min(to));
+        if first > last {
+            continue;
+        }
+        if first > cursor {
+            out.push((cursor, first - 1));
+        }
+        cursor = cursor.max(last.saturating_add(1));
+    }
+    if cursor <= to {
+        out.push((cursor, to));
+    }
+    out
+}
+
+pub(super) fn unrecorded(query: &Query<'_>, country: &Country, runs: &[SpendCoverage], from: i32, to: i32) -> Vec<(i32, i32, String)> {
+    let mut out: Vec<(i32, i32, String)> = runs
+        .iter()
+        .filter(|run| !run.covered && run.first_hour.max(from) <= run.last_hour.min(to))
+        .map(|run| (run.first_hour.max(from), run.last_hour.min(to), run.reason.clone().unwrap_or_else(|| "Spending was not recorded".into())))
+        .collect();
+    for (first, last) in holes(runs, from, to) {
+        for gap in query.timeline.unheld_within(first, last) {
+            out.push((gap.first, gap.last, gap.reason));
+        }
+        for stretch in query.timeline.within(first, last) {
+            for run in query.holders.within(country, stretch.first, stretch.last) {
+                if run.holder == Holder::Unresolved {
+                    out.push((run.first.max(stretch.first), run.last.min(stretch.last), "The country's holder was not recorded".into()));
+                }
+            }
+        }
+    }
+    out.sort_by_key(|gap| gap.0);
+    out
 }
 
 fn parse(raw: Option<&str>) -> Option<i128> {
     raw.and_then(|raw| raw.parse().ok())
 }
 
-fn plural(count: u32, one: &str) -> String {
-    format!("{count} {one}{}", if count == 1 { "" } else { "s" })
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Gain {
+    gained: Option<i128>,
+    lost: Option<i128>,
+    reason: Option<String>,
+}
+
+pub(super) struct PowerHistory {
+    from: i32,
+    history: History,
+    gained: Dated<Gain>,
+    warnings: Dated<Vec<String>>,
+}
+
+impl PowerHistory {
+    pub(super) fn at(&self, hour: i32) -> PowerSpendingBreakdownReply {
+        let (breakdown, through) = self.history.at(hour);
+        let gain = self.gained.at(hour).cloned().unwrap_or_default();
+        PowerSpendingBreakdownReply {
+            from: self.from,
+            hour,
+            through,
+            breakdown,
+            gained_raw: gain.gained.map(|value| value.to_string()),
+            lost_at_cap_raw: gain.lost.map(|value| value.to_string()),
+            gained_reason: gain.reason,
+            warnings: self.warnings.at(hour).cloned().unwrap_or_default(),
+        }
+    }
 }
 
 struct Entry {
@@ -107,9 +183,10 @@ struct Entry {
     payments: u32,
     unknown: u32,
     uncovered: bool,
+    credits: u32,
 }
 
-pub(super) fn at_hour(reply: &PowerSpendingReply, hour: i32) -> PowerSpendingBreakdownReply {
+fn entries(reply: &PowerSpendingReply) -> Vec<Entry> {
     let mut entries: Vec<Entry> = reply
         .payments
         .iter()
@@ -120,6 +197,7 @@ pub(super) fn at_hour(reply: &PowerSpendingReply, hour: i32) -> PowerSpendingBre
             payments: payment.payments,
             unknown: payment.unknown,
             uncovered: payment.uncovered,
+            credits: 0,
         })
         .chain(reply.days.iter().map(|day| Entry {
             item: day.item,
@@ -128,24 +206,64 @@ pub(super) fn at_hour(reply: &PowerSpendingReply, hour: i32) -> PowerSpendingBre
             payments: day.payments,
             unknown: day.unknown,
             uncovered: day.uncovered > 0,
+            credits: day.credits,
         }))
         .collect();
     entries.sort_by_key(|entry| (entry.read, entry.item));
-    let mut through = reply.to;
-    let names: HashMap<&str, (&str, bool)> = reply.categories.iter().map(|category| (category.id.as_str(), (category.name.as_str(), category.identified))).collect();
-    let mut categories: HashMap<String, u32> = HashMap::new();
-    let mut groups: HashMap<String, u32> = HashMap::new();
-    let mut kinds: HashMap<String, u32> = HashMap::new();
-    let mut named: HashMap<String, String> = HashMap::new();
-    let mut leaves = Vec::new();
-    for entry in &entries {
-        if entry.read > hour {
-            through = through.min(entry.read - 1);
-            continue;
+    entries
+}
+
+fn gains(reply: &PowerSpendingReply, unread: &[(i32, i32, String)]) -> Dated<Gain> {
+    let mut held = Gain { gained: Some(0), lost: Some(0), reason: None };
+    let mut values = vec![(reply.from, held.clone())];
+    let mut events: Vec<(i32, Option<&SpendGain>, Option<&str>)> =
+        reply.gains.iter().filter(|gain| gain.read >= reply.from).map(|gain| (gain.read, Some(gain), None)).collect();
+    events.extend(unread.iter().map(|(first, _, reason)| ((*first).max(reply.from), None, Some(reason.as_str()))));
+    events.sort_by_key(|event| event.0);
+    for (hour, gain, unread) in events {
+        if let Some(reason) = unread
+            && held.gained.is_some()
+        {
+            held.reason.get_or_insert_with(|| format!("Gains in hours when power changes were not read are not counted: {reason}."));
         }
+        if let Some(gain) = gain {
+            match parse(gain.gained_raw.as_deref()) {
+                Some(value) if gain.unknown_days == 0 && gain.unmatched == 0 => held.gained = held.gained.map(|sum| sum.saturating_add(value)),
+                _ => {
+                    if held.gained.is_some() {
+                        held.reason = Some("Some gains were not recorded.".to_owned());
+                    }
+                    held.gained = None;
+                }
+            }
+            held.lost = match (held.lost, parse(gain.capped_raw.as_deref())) {
+                (Some(sum), Some(value)) if gain.unknown_days == 0 && gain.unmatched == 0 => Some(sum.saturating_add(value)),
+                _ => None,
+            };
+        }
+        values.push((hour, held.clone()));
+    }
+    Dated::new(values)
+}
+
+pub(super) fn index(reply: &PowerSpendingReply, spend_unread: &[(i32, i32, String)], gain_unread: &[(i32, i32, String)]) -> PowerHistory {
+    let entries = entries(reply);
+    let names: HashMap<&str, (&str, bool)> = reply.categories.iter().map(|category| (category.id.as_str(), (category.name.as_str(), category.identified))).collect();
+    let mut group_names: HashMap<&str, &str> = HashMap::new();
+    for item in &reply.items {
+        if let Some(name) = &item.name {
+            group_names.insert(item.group_id.as_str(), name.as_str());
+        }
+    }
+    let mut categories: HashMap<String, u32> = HashMap::new();
+    let mut kinds: HashMap<String, u32> = HashMap::new();
+    let mut groups: HashMap<String, u32> = HashMap::new();
+    let mut built = HistoryBuilder::new(reply.decimals, reply.from, reply.to).dated();
+    let mut credited: Vec<(i32, String)> = Vec::new();
+    for entry in &entries {
         let Some(item) = reply.items.get(entry.item as usize) else { continue };
-        let ordinal = categories.len() as u32;
-        let category_ordinal = *categories.entry(item.category.clone()).or_insert(ordinal);
+        let next = categories.len() as u32;
+        let category_ordinal = *categories.entry(item.category.clone()).or_insert(next);
         let (name, identified) = names.get(item.category.as_str()).copied().unwrap_or((OTHER_CATEGORY, false));
         let mut category = Node::new(item.category.clone(), if identified { name } else { "Other spending" }, category_ordinal);
         if !identified {
@@ -161,72 +279,44 @@ pub(super) fn at_hour(reply: &PowerSpendingReply, hour: i32) -> PowerSpendingBre
                 _ => Node::new(key, "Category not recorded", ordinal).other(),
             });
         }
-        if let Some(name) = &item.name {
-            named.insert(item.group_id.clone(), name.clone());
-            let ordinal = groups.len() as u32;
-            let group_ordinal = *groups.entry(item.group_id.clone()).or_insert(ordinal);
-            path.push(Node::new(item.group_id.clone(), name.clone(), group_ordinal));
+        if let Some(&name) = group_names.get(item.group_id.as_str()).filter(|_| item.name.is_some()) {
+            let next = groups.len() as u32;
+            let ordinal = *groups.entry(item.group_id.clone()).or_insert(next);
+            path.push(Node::new(item.group_id.clone(), name, ordinal));
         }
+        let leaf = built.leaf(path);
         let count = Some(u64::from(entry.payments));
-        let unknown = if entry.charge.is_none() { entry.payments.max(1) } else { entry.unknown };
-        if let Some(charge) = entry.charge {
-            let amount = if entry.uncovered { Amount::Partial(charge, "Some payments may be missing.".into()) } else { Amount::Known(charge) };
-            leaves.push(Leaf { path: path.clone(), amount, count, last: Some(entry.read) });
+        match entry.charge {
+            Some(charge) => {
+                let amount = if entry.uncovered { Amount::Partial(charge, "Some payments may be missing.".into()) } else { Amount::Known(charge) };
+                built.add(entry.read, leaf, amount, count);
+                if entry.unknown > 0 {
+                    built.add(entry.read, leaf, Amount::NotRecorded("Some payment costs were not recorded.".into()), None);
+                }
+            }
+            None => built.add(entry.read, leaf, Amount::NotRecorded("Some payment costs were not recorded.".into()), count),
         }
-        if unknown > 0 {
-            let reason = format!("The cost of {} was not recorded.", plural(unknown, "payment"));
-            leaves.push(Leaf { path, amount: Amount::NotRecorded(reason), count: entry.charge.is_none().then_some(count).flatten(), last: Some(entry.read) });
-        }
-    }
-    for leaf in &mut leaves {
-        if let Some(node) = leaf.path.last_mut()
-            && let Some(name) = named.get(&node.key)
-        {
-            node.name.clone_from(name);
-        }
-    }
-    let mut unrecorded = Unrecorded::default();
-    for run in reply.coverage.iter().filter(|run| !run.covered) {
-        if run.first_hour > hour {
-            through = through.min(run.first_hour - 1);
-            continue;
-        }
-        let (first, last) = (run.first_hour.max(reply.from), run.last_hour.min(hour));
-        if first > last {
-            continue;
-        }
-        if run.last_hour > hour {
-            through = hour;
-        }
-        unrecorded.hours = unrecorded.hours.saturating_add(u32::try_from(last - first + 1).unwrap_or(u32::MAX));
-        unrecorded.reason.get_or_insert_with(|| run.reason.clone().unwrap_or_else(|| "Spending was not recorded".into()));
-    }
-    let (mut gained, mut lost, mut gained_reason) = (Some(0_i128), Some(0_i128), None);
-    for gain in &reply.gains {
-        if gain.read > hour {
-            through = through.min(gain.read - 1);
-            continue;
-        }
-        match parse(gain.gained_raw.as_deref()) {
-            Some(value) if gain.unknown_days == 0 => gained = gained.map(|held| held.saturating_add(value)),
-            _ => {
-                gained = None;
-                gained_reason.get_or_insert_with(|| "Some gains were not recorded.".to_owned());
+        if entry.credits > 0 {
+            let label = item.name.as_deref().unwrap_or(&item.action);
+            let warning = format!("Negative daily cost component {label}: its credit is not counted as spending");
+            if !credited.iter().any(|(_, held)| *held == warning) {
+                credited.push((entry.read, warning));
             }
         }
-        lost = match (lost, parse(gain.capped_raw.as_deref())) {
-            (Some(held), Some(value)) => Some(held.saturating_add(value)),
-            _ => None,
-        };
     }
-    PowerSpendingBreakdownReply {
-        from: reply.from,
-        hour,
-        through: through.max(hour),
-        breakdown: breakdown::breakdown(reply.decimals, &leaves, &unrecorded),
-        gained_raw: gained.map(|value| value.to_string()),
-        lost_at_cap_raw: lost.map(|value| value.to_string()),
-        gained_reason,
-        warnings: reply.warnings.clone(),
+    for (first, last, reason) in spend_unread {
+        built.unrecorded(*first, *last, reason.clone());
     }
+    let gained = gains(reply, gain_unread);
+    for hour in gained.hours() {
+        built.change(hour);
+    }
+    let mut warnings: Vec<(i32, Vec<String>)> = Vec::new();
+    for (hour, warning) in credited {
+        built.change(hour);
+        let mut list = warnings.last().map(|(_, list)| list.clone()).unwrap_or_default();
+        list.push(warning);
+        warnings.push((hour, list));
+    }
+    PowerHistory { from: reply.from, history: built.build(), gained, warnings: Dated::new(warnings) }
 }
