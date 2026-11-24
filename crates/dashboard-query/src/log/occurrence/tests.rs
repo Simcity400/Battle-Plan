@@ -111,6 +111,28 @@ fn a_selection_matches_every_role_at_its_own_date_through_dated_membership() {
 }
 
 #[test]
+fn empty_selection_admits_no_rows_and_does_not_collide_with_no_selection_in_cache() {
+    let entries = vec![
+        Occurrence { roles: Box::new([Role { slot: Some(7), at: 100 }]), ..occurrence(1, 100, 100) },
+        Occurrence { roles: Box::new([Role { slot: Some(9), at: 110 }]), ..occurrence(2, 110, 110) },
+        Occurrence { roles: Box::new([Role { slot: None, at: 120 }]), ..occurrence(3, 120, 120) },
+    ];
+    let empty = Selection::default();
+
+    let first_all = Index::new(entries.clone(), Vec::new(), &[]).unwrap();
+    let all = first_all.ask(&holders(), &ask(200)).unwrap();
+    assert_eq!((all.total, all.unattributed), (3, 0));
+    let none = first_all.ask(&holders(), &Ask { selection: Some(&empty), ..ask(200) }).unwrap();
+    assert_eq!((none.total, none.rows.len(), none.unattributed), (0, 0, 1), "an empty selection admits no country rows even after all-countries warmed the cache");
+
+    let first_empty = Index::new(entries, Vec::new(), &[]).unwrap();
+    let none_cold = first_empty.ask(&holders(), &Ask { selection: Some(&empty), ..ask(200) }).unwrap();
+    assert_eq!((none_cold.total, none_cold.rows.len(), none_cold.unattributed), (0, 0, 1));
+    let all_after = first_empty.ask(&holders(), &ask(200)).unwrap();
+    assert_eq!((all_after.total, all_after.unattributed), (3, 0), "no selection admits every row even after an empty selection warmed the cache");
+}
+
+#[test]
 fn a_role_known_only_after_the_hour_asked_does_not_admit_its_row() {
     let entries = vec![Occurrence { roles: Box::new([Role { slot: Some(7), at: 100 }, Role { slot: Some(8), at: 120 }]), ..occurrence(1, 100, 100) }];
     let index = Index::new(entries, Vec::new(), &[]).unwrap();

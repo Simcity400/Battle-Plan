@@ -5,7 +5,11 @@ import { daysLeft, decisionAt, decisionCard, lifecycleLine, STATUS_CHOICES, stat
 import { plainScripted, scriptedParts } from '../event-feed/scriptedGaps.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
-import { decisionsProjection } from './decisionsProjection.ts';
+import { decisionsDeclaration, decisionsProjection } from './decisionsProjection.ts';
+import { eventChoicesDeclaration } from '../event-choices/eventChoicesProjection.ts';
+import { eventFeedDeclaration } from '../event-feed/eventFeedProjection.ts';
+import type { FamilyPlanContext } from '../../families/plan.ts';
+import type { CountrySelection } from '../../dashboard/model.ts';
 import type { EventFeedKind, EventFeedRow, ScriptCost, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
 
 const day = (month: number, date: number, year = 1939) => engineHour({ year, month, day: date, hour: 1 })!;
@@ -197,4 +201,37 @@ test('decisions projection formats unsigned costs with PP icon, keeps unknown ch
   assert.equal(productStatusModel.rows[0]?.live, true);
   assert.equal(productStatusModel.rows[1]?.live, false);
   assert.deepEqual(productStatusModel.rows[1]?.cells.status?.value, { kind: 'known', value: 'Not recorded' });
+});
+
+test('R2-S1: real filter-mode log declarations send selected and explicit country keys instead of empty countries, pass groups directly, and omit selection only for all', () => {
+  const planAsk = (declaration: typeof decisionsDeclaration | typeof eventChoicesDeclaration | typeof eventFeedDeclaration, countries: CountrySelection) => {
+    const ctx = {
+      track: { source: { id: 's1', revision: 'r1', metadata: { playerCountryId: '9' } }, axisOffset: 0, selectedSlot: 7 },
+      branch: { id: '1', firstHour: 0, lastHour: 200, gaps: [] },
+      widget: { id: 'w1', kind: declaration.kind, countries, time: { mode: 'follow' } },
+      options: { warsPeace: true },
+      following: true,
+      countries: {
+        all: countries.kind === 'all',
+        tags: [],
+        filter: { passing: null, unrecorded: [], bounds: [] },
+      },
+      gateSpan: (firstHour: number, lastHour: number) => ({ firstHour, lastHour }),
+    } as unknown as FamilyPlanContext<unknown>;
+    const entry = declaration.sources(ctx, { following: true, staticSpan: null }).entries[0]!;
+    if (entry.read.shape !== 'paged-rows') throw new Error('expected paged-rows');
+    return entry.read.tailQuery.ask as { countries?: unknown; group?: unknown };
+  };
+
+  for (const declaration of [decisionsDeclaration, eventChoicesDeclaration, eventFeedDeclaration]) {
+    assert.deepEqual(planAsk(declaration, { kind: 'tags', tags: ['GER'] }).countries, ['GER'], `${declaration.kind}: one explicit country`);
+    assert.deepEqual(planAsk(declaration, { kind: 'tags', tags: ['GER', 'ITA'] }).countries, ['GER', 'ITA'], `${declaration.kind}: two explicit countries`);
+    assert.deepEqual(planAsk(declaration, { kind: 'selected' }).countries, [7], `${declaration.kind}: selected country sends the track slot`);
+    assert.deepEqual(planAsk(declaration, { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }).group, { type: 'humans', membership: 'hour' }, `${declaration.kind}: groups pass directly`);
+    assert.equal(planAsk(declaration, { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }).countries, undefined);
+    const all = planAsk(declaration, { kind: 'all' });
+    assert.equal(all.countries, undefined, `${declaration.kind}: all omits countries`);
+    assert.equal(all.group, undefined, `${declaration.kind}: all omits group`);
+    assert.deepEqual(planAsk(declaration, { kind: 'tags', tags: [] }).countries, [], `${declaration.kind}: explicit empty tags stays empty selection`);
+  }
 });
