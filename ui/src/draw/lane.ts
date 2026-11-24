@@ -22,6 +22,7 @@ export interface Scene { widget: number; subs: readonly Sub[]; pictures: readonl
 
 export interface PaintInput extends Scene {
   hour: number;
+  seek: number;
   speed: number;
   binding: Binding;
   inspect: string | null;
@@ -40,7 +41,7 @@ export interface Painted {
 }
 
 export interface LaneView {
-  next?(scene: Scene, hour: number, state?: Map<string, unknown>): number;
+  next?(scene: Scene, hour: number, state?: Map<string, unknown>): number | null;
   paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted;
   unmount?(widget: number, state: Map<string, unknown>): void;
 }
@@ -1602,7 +1603,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       for (let pass = 0; pass < 4; pass++) {
         try {
           painted = view.paint({ widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures: activeSelected.pictures, model: widget.model,
-            hour: activeSelected.window[0], speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start }, widget.state, this.content);
+            hour: activeSelected.window[0], seek: request.seek, speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start }, widget.state, this.content);
           mode = painted.mode ?? 'picture'; reason = painted.reason; failureOrigin = undefined;
           const refusals = activeSelected.pictures.map(refusalOf);
           if (painted.mode === undefined && refusals.length && refusals.every(refusal => refusal !== null)) { mode = 'refused'; reason = [...new Set(refusals)].join('; '); }
