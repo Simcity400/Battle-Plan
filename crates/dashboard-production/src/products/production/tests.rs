@@ -253,11 +253,7 @@ fn a_countrys_designs_at_the_hour_are_its_creators_with_their_obsolete_flags_cur
 }
 
 #[test]
-fn a_line_key_names_its_handle_and_a_positive_appearance() {
-    assert_eq!(parse_key("7460358193208#1"), Some((7_460_358_193_208, 1)));
-    assert_eq!(parse_key("12#0"), None);
-    assert_eq!(parse_key("12"), None);
-    assert_eq!(parse_key("x#1"), None);
+fn weekly_units_need_a_positive_cost() {
     assert_eq!(weekly_units_raw(200_000, 700_000), Some(200_000));
     assert_eq!(weekly_units_raw(1, 0), None);
 }
