@@ -18,6 +18,25 @@ pub struct GameScore;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GameScoreParams {
     pub branch_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub top: Option<GameScoreTopParams>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GameScoreTopParams {
+    pub count: u32,
+    pub by: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct GameScoreTop {
+    pub tags: Vec<String>,
+    pub missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -63,6 +82,9 @@ pub struct GameScoreReply {
     pub hints: BTreeMap<String, String>,
     #[doc = " Why no country's scores are known at the hour."]
     pub missing: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub top: Option<GameScoreTop>,
     pub warnings: Vec<String>,
 }
 
@@ -92,6 +114,41 @@ pub(super) fn row(tag: &str, score: &CountryGameScoreRow) -> GameScoreRow {
 }
 
 const SCORES: [&str; 6] = ["total", "army", "navy", "air", "industry", "land"];
+
+fn part(score: &CountryGameScoreRow, by: &str) -> Option<(&Recorded<i64>, u8)> {
+    Some(match by {
+        "total" => (&score.total, score.total_reason),
+        "army" => (&score.army, score.army_reason),
+        "navy" => (&score.navy, score.navy_reason),
+        "air" => (&score.air, score.air_reason),
+        "industry" => (&score.industry, score.industry_reason),
+        "land" => (&score.land, score.land_reason),
+        _ => return None,
+    })
+}
+
+pub(super) fn top(scored: &[(&str, &CountryGameScoreRow)], ask: &GameScoreTopParams) -> GameScoreTop {
+    let mut known = Vec::with_capacity(scored.len());
+    let mut unread = 0usize;
+    for &(tag, score) in scored {
+        match part(score, &ask.by) {
+            Some((Recorded::Value(value), CountryGameScoreRow::KNOWN)) => known.push((*value, tag)),
+            _ => unread += 1,
+        }
+    }
+    if unread > 0 {
+        return GameScoreTop {
+            tags: Vec::new(),
+            missing: Some(format!(
+                "The top {} by {} score needs every country's {} score, and {unread} of {} were not recorded at this hour",
+                ask.count, ask.by, ask.by, scored.len()
+            )),
+        };
+    }
+    known.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+    known.truncate(usize::try_from(ask.count).unwrap_or(usize::MAX));
+    GameScoreTop { tags: known.into_iter().map(|(_, tag)| tag.to_owned()).collect(), missing: None }
+}
 
 pub(super) fn name_cells(live: &Cells, tag: &str, score: &CountryGameScoreRow, columns: &[usize; 6]) {
     let shown = row(tag, score);
@@ -151,24 +208,30 @@ impl AtHour for GameScore {
     const TITLE: &'static str = "Game score";
     const CONTENT_DEPENDENT: bool = true;
     type Params = GameScoreParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, top, "top.count", "top.by"];
     type Reply = GameScoreReply;
     type Context = (BTreeMap<String, String>, Vec<String>);
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![GameScoreParams::decl(), GameScoreCell::decl(), GameScoreRow::decl(), GameScoreMultiplier::decl(), GameScoreReply::decl()]
+        vec![GameScoreParams::decl(), GameScoreTopParams::decl(), GameScoreTop::decl(), GameScoreCell::decl(), GameScoreRow::decl(), GameScoreMultiplier::decl(), GameScoreReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        super::branch(&params.branch_id)
+        super::branch(&params.branch_id)?;
+        match &params.top {
+            Some(top) if top.count == 0 => Err("top.count must be at least 1"),
+            Some(top) if !SCORES.contains(&top.by.as_str()) => Err("top.by must name a score: total, army, navy, air, industry or land"),
+            _ => Ok(()),
+        }
     }
 
 
     const CLOCK_DEPENDENT: bool = false;
 
-    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, live: &dashboard_follow::live::Live, _data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+    fn advance(frame: &DecodedFrame, params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, live: &dashboard_follow::live::Live, _data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
         let id = TableId::CountryGameScores;
+        if params.top.is_some() && (edits.tables.contains_key(&id) || edits.replaced.contains(&id)) { return Ok(false); }
         if !edits.only_columns(id, dashboard_base::products::at_hour::field_mask(id, &SCORES)) { return Ok(false); }
         let rows = frame.complete::<tables::CountryGameScores>()?;
         for (&key, &mask) in edits.tables.get(&id).into_iter().flatten() {
@@ -201,9 +264,9 @@ impl AtHour for GameScore {
         })
     }
 
-    fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let (hints, hint_warnings) = at.context;
-        let mut reply = GameScoreReply { rows: Vec::new(), multipliers: Vec::new(), hints: hints.clone(), missing: None, warnings: hint_warnings.clone() };
+        let mut reply = GameScoreReply { rows: Vec::new(), multipliers: Vec::new(), hints: hints.clone(), missing: None, top: None, warnings: hint_warnings.clone() };
         match rows::<tables::GameScoreMultipliers>(frame) {
             Ok(held) => reply.multipliers = held.first().map(multipliers).unwrap_or_default(),
             Err(reason) => reply.warnings.push(format!("Score multipliers: {reason}")),
@@ -221,15 +284,18 @@ impl AtHour for GameScore {
         }
         let named = Named::new(at.holders, frame.hour);
         let mut unheld = 0usize;
+        let mut scored = Vec::with_capacity(if params.top.is_some() { scores.len() } else { 0 });
         for score in scores {
             match named.id(score.country) {
                 Some(tag) => {
                     name_cells(at.live, tag, score, &columns);
                     reply.rows.push(row(tag, score));
+                    if params.top.is_some() { scored.push((tag, score)); }
                 }
                 None => unheld += 1,
             }
         }
+        if let Some(ask) = &params.top { reply.top = Some(top(&scored, ask)); }
         reply.rows.sort_unstable_by(|a, b| a.tag.cmp(&b.tag));
         if unheld > 0 {
             reply.warnings.push(format!("{unheld} scored countries are held by no tag at this hour and are not shown"));
