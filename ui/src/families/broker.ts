@@ -91,8 +91,8 @@ export function planSignature(plan: SourcePlan | null): string {
   return canonical({
     owner: plan.owner,
     entries: plan.entries.map(entrySignature),
-    staticEntry: entrySignature(plan.staticEntry),
-    exactEntry: entrySignature(plan.exactEntry),
+    staticEntry: plan.staticEntry === undefined ? 'omitted' : entrySignature(plan.staticEntry),
+    exactEntry: plan.exactEntry === undefined ? 'omitted' : entrySignature(plan.exactEntry),
     allowEmptyFollow: plan.allowEmptyFollow === true,
     unavailable: plan.unavailable ?? null,
     refused: plan.refused ?? null,
@@ -623,6 +623,54 @@ export async function readPlanExact(
   return null;
 }
 
+export interface HoverAsk {
+  readonly name: string;
+  readonly key: string;
+  readonly hour: number;
+  readonly request: ProductRequest;
+  readonly validate?: (raw: unknown) => unknown;
+}
+
+export interface HeldHover {
+  readonly key: string;
+  readonly hour: number;
+  readonly data: unknown;
+}
+
+export function hoverAsks(plan: SourcePlan, hoverHour: number | null | undefined): readonly HoverAsk[] {
+  if (hoverHour === null || hoverHour === undefined || !Number.isFinite(hoverHour)) return NO_HOVER_ASKS;
+  const hour = Math.floor(hoverHour);
+  const asks: HoverAsk[] = [];
+  for (const entry of plan.entries) {
+    const read = entry.read;
+    if (read.shape !== 'exact-hover' || !read.params) continue;
+    const params = { ...read.params, [read.hourParam ?? 'hour']: hour };
+    asks.push({
+      name: entry.name,
+      key: planQueryKey(entry.source, entry.branch, read.product, params),
+      hour,
+      request: productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params }),
+      ...(read.validate ? { validate: read.validate } : {}),
+    });
+  }
+  return asks.length ? asks : NO_HOVER_ASKS;
+}
+
+const NO_HOVER_ASKS: readonly HoverAsk[] = [];
+const NO_HOVERS: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>> = Object.freeze({});
+
+export function currentHovers(
+  asks: readonly HoverAsk[],
+  held: Readonly<Record<string, HeldHover>>,
+): Readonly<Record<string, { readonly hour: number; readonly data: unknown }>> {
+  let out: Record<string, { readonly hour: number; readonly data: unknown }> | null = null;
+  for (const ask of asks) {
+    const hover = held[ask.name];
+    if (hover && hover.key === ask.key) (out ??= {})[ask.name] = { hour: hover.hour, data: hover.data };
+  }
+  return out ?? NO_HOVERS;
+}
+
 interface InFlightRequest {
   readonly controller: AbortController;
   readonly promise: Promise<unknown>;
@@ -635,7 +683,7 @@ export interface BrokerSlotHandle {
 
 export class FamilySourceBroker {
   private readonly inflight = new Map<string, InFlightRequest>();
-  private readonly slots = new Map<string, { seq: number; cleanup: () => void }>();
+  private readonly slots = new Map<string, { readonly cleanup: () => void }>();
 
   get activeRequestCount(): number {
     return this.inflight.size;
@@ -688,36 +736,34 @@ export class FamilySourceBroker {
     onResult: (value: T) => void,
     onError?: (error: unknown) => void,
   ): BrokerSlotHandle {
-    const prev = this.slots.get(slotId);
-    const seq = (prev?.seq ?? 0) + 1;
-    prev?.cleanup();
+    this.slots.get(slotId)?.cleanup();
 
     const { promise, release } = this.request(key, load);
     let cancelled = false;
-    const cleanup = () => {
-      if (cancelled) return;
-      cancelled = true;
-      release();
+    const slot = {
+      cleanup: () => {
+        if (cancelled) return;
+        cancelled = true;
+        release();
+      },
     };
-    this.slots.set(slotId, { seq, cleanup });
+    this.slots.set(slotId, slot);
 
     void promise.then(
       value => {
-        if (cancelled || this.slots.get(slotId)?.seq !== seq) return;
+        if (cancelled || this.slots.get(slotId) !== slot) return;
         onResult(value);
       },
       error => {
-        if (cancelled || this.slots.get(slotId)?.seq !== seq) return;
+        if (cancelled || this.slots.get(slotId) !== slot) return;
         onError?.(error);
       },
     );
 
     return {
       cancel: () => {
-        if (this.slots.get(slotId)?.seq === seq) {
-          this.slots.delete(slotId);
-        }
-        cleanup();
+        if (this.slots.get(slotId) === slot) this.slots.delete(slotId);
+        slot.cleanup();
       },
     };
   }
