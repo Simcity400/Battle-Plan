@@ -245,7 +245,7 @@ fn weather(content: &Content, frame: &DecodedFrame, root: &native::Element, out:
             .enumerate()
             .filter(|(_, [lower, upper])| *lower <= value && value < *upper)
             .map(|(at, _)| at as u32)
-            .last()
+            .next_back()
     });
     let region_weather = (|| {
         let region = content
@@ -263,7 +263,7 @@ fn weather(content: &Content, frame: &DecodedFrame, root: &native::Element, out:
                 .enumerate()
                 .filter(|(_, set)| **set != 0)
                 .map(|(at, _)| at as u32)
-                .last()
+                .next_back()
         }))
     })();
     let mud = match weather.raw_mud {

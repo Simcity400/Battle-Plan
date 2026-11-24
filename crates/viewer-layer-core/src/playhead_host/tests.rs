@@ -277,7 +277,7 @@ fn changed_inputs_redeclare_and_reset_only_the_tables_whose_columns_changed() {
     entry.playhead().seek(0);
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     assert_eq!((*first.lock().unwrap(), *second.lock().unwrap()), (1, 1));
-    let kept = side.parts().unwrap().0.get(table(0)).unwrap() as *const Mirror;
+    let kept = std::ptr::from_ref::<Mirror>(side.parts().unwrap().0.get(table(0)).unwrap());
     side.set_view(View { camera_height: 2.0, ..View::default() }).unwrap();
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     let mirrors = side.parts().unwrap().0;

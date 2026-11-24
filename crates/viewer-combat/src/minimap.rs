@@ -298,7 +298,7 @@ impl Minimap {
         self.window.as_ref().is_some_and(Retained::pointing)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one frame's view, pointer and clock, as the picker's draw takes them")]
+    #[expect(clippy::too_many_arguments, reason = "one frame's view, pointer and clock, as the picker's draw takes them")]
     pub fn draw(
         &mut self,
         content: &super::content::Content,

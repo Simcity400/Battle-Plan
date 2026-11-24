@@ -245,7 +245,7 @@ fn push_air_entry(
     });
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the plane, its side, the joins, the trees and the text resources are separate operands"
 )]
@@ -315,7 +315,6 @@ pub(crate) fn countries_by_reference<'a>(
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn air_entries(
     out: &mut Bindings,
     static_content: &StaticContent,

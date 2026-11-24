@@ -34,6 +34,7 @@ impl Beside {
     }
 }
 
+#[expect(clippy::large_enum_variant, reason = "a reset is sent once per load and its fields move straight into the worker")]
 enum Job {
     Reset { epoch: u64, tables: Box<Tables>, status_only: Vec<(TableId, Standing)>, kinds: BTreeMap<TableId, Option<Status>>, columns: Columns, choice: Choice, stamp: Option<Hour>, answers: u64 },
     Step { epoch: u64, step: Arc<Step> },

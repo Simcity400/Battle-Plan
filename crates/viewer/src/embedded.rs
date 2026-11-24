@@ -1091,7 +1091,7 @@ impl NativeWindow {
 
     fn map_views(&self, views: &[DashboardMapView]) -> io::Result<()> {
         let mut client = RECT::default();
-        if unsafe { GetClientRect(GetParent(self.hwnd()), &mut client) } == 0 {
+        if unsafe { GetClientRect(GetParent(self.hwnd()), &raw mut client) } == 0 {
             return Err(io::Error::last_os_error());
         }
         let root = ViewBounds {

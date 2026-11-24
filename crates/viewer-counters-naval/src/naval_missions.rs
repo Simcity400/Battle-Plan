@@ -1579,7 +1579,7 @@ fn reach<'c>(
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the counter inputs, the pass and view, the windows, the resources, the batch and the report")]
 pub fn draw(
     inputs: &CounterInputs<'_>,
     pass: &MissionPass,

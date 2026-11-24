@@ -279,7 +279,8 @@ pub struct DumpReport {
     pub grading: Option<String>,
 }
 
-#[allow(clippy::too_many_arguments, reason = "The window's scene inputs plus the dump's request and output.")]
+#[expect(clippy::too_many_arguments, reason = "The window's scene inputs plus the dump's request and output.")]
+#[expect(clippy::await_holding_lock, reason = "block_on polls this future to completion on this thread, and wgpu's native adapter and device futures resolve without another thread taking the lock, which must span device creation")]
 pub fn dump_png(
     assets: &MapAssets,
     layers: MapLayers<'_>,

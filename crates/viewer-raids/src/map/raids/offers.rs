@@ -381,7 +381,7 @@ pub fn allowed_types(
             }
         }
         if let Some(refusal) = unnamed {
-            reasons.push(refusal.clone());
+            reasons.push(refusal);
             let reason = "a raid type in the player cache's list is refused, so it may be any type";
             for index in (0..catalog.types.len()).filter(|&index| offered(index)) {
                 out.types

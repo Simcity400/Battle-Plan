@@ -345,7 +345,7 @@ pub(super) fn rectangle(
     bytes
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "each input of one native draw the test builds")]
 pub(super) fn inputs(
     effect: &Arc<library::Effect>,
     technique: &str,

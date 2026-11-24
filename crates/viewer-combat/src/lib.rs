@@ -679,8 +679,7 @@ impl Window {
     ) -> Option<Duration> {
         self.hover.next_change(now, defines?.timing)
     }
-    #[allow(clippy::too_many_arguments, reason = "the window's read inputs, each from another owner")]
-    #[allow(clippy::too_many_arguments, reason = "the window's read inputs, each from another owner")]
+    #[expect(clippy::too_many_arguments, reason = "the window's read inputs, each from another owner")]
     pub fn prepare(
         &mut self,
         document: &Arc<StaticContent>,
@@ -803,7 +802,7 @@ impl Window {
         self.settings = self.settings.wrapping_add(1);
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the window's layout inputs, each from another owner")]
+    #[expect(clippy::too_many_arguments, reason = "the window's layout inputs, each from another owner")]
     pub fn draw(
         &mut self,
         document: &Arc<StaticContent>,
@@ -1199,6 +1198,7 @@ pub struct Fresh {
     of: Option<(Family, u64)>,
 }
 
+#[expect(clippy::large_enum_variant, reason = "one read per fresh update, consumed where it is made and never collected")]
 enum Read {
     Close,
     Hold {

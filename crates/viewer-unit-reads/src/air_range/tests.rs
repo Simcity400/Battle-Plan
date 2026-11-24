@@ -43,11 +43,11 @@ fn frame_ace_lookup_indexes_interleaved_country_handles_once() {
     let sources = FrameSources::new(&frame);
     assert!(sources.aces.get().is_none());
     assert_eq!(sources.ace(3).unwrap().unwrap().range, 30);
-    let index = sources.aces.get().unwrap() as *const _;
+    let index = std::ptr::from_ref(sources.aces.get().unwrap());
     assert_eq!(sources.ace(90).unwrap().unwrap().range, 900);
     assert_eq!(sources.ace(70).unwrap().unwrap().range, 700);
     assert_eq!(sources.ace(4).unwrap(), None);
-    assert_eq!(sources.aces.get().unwrap() as *const _, index);
+    assert_eq!(std::ptr::from_ref(sources.aces.get().unwrap()), index);
 }
 
 #[test]

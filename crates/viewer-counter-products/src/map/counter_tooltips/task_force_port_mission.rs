@@ -1200,7 +1200,7 @@ mod tests {
         own.maximum_strength = 0;
         own.maximum_organisation = 0;
         assert_eq!(score(own, power(), &d).unwrap(), 173_436);
-        let mut missing_screen = d.clone();
+        let mut missing_screen = d;
         missing_screen.score.as_mut().unwrap().screening_ratio = Err("unreached screening".into());
         assert_eq!(
             score(

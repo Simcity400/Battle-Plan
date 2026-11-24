@@ -46,12 +46,12 @@ pub struct Inputs<'a> {
     pub arrow: Option<&'a ArrowType>,
     pub color: Result<[f32; 4], &'a str>,
     pub heights: HeightField<'a>,
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity, reason = "the caller's base lookup, which can refuse or find no position")]
     pub base_position: &'a dyn Fn(&AirBaseRow) -> Result<Option<[f32; 3]>, String>,
 }
 
 #[cfg(test)]
-#[allow(clippy::type_complexity)]
+#[expect(clippy::type_complexity, reason = "the arrow's two ends, its offset and its fixed-point progress, returned together")]
 fn location(
     from: [f32; 3],
     to: [f32; 3],
@@ -67,7 +67,7 @@ fn location(
     )
 }
 
-#[allow(clippy::type_complexity)]
+#[expect(clippy::type_complexity, reason = "the arrow's two ends, its offset and its fixed-point progress, returned together")]
 fn locate(
     mut points: [[i64; 2]; 2],
     width: u32,

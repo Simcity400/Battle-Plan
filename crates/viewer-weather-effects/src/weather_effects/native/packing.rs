@@ -142,7 +142,6 @@ impl Uploads {
         self.end = end;
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn packet<'a>(
         &'a mut self,
         arena: &gpu::Arena,

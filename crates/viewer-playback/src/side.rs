@@ -606,7 +606,7 @@ impl LayIns {
         self.lay_icons(&mut prepared.laid_icons, &view, hour, camera, pixels, ui_scale, ours)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the icon state, view, host, camera, viewport, scale and viewer country")]
+    #[expect(clippy::too_many_arguments, reason = "the icon state, view, host, camera, viewport, scale and viewer country")]
     pub fn lay_icons(
         &self,
         laid_icons: &mut crate::document::LaidIcons,

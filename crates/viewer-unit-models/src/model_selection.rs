@@ -82,7 +82,7 @@ impl Content {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the template, its category and exclusions, the equipment and variants, the tokens and stages")]
     pub(crate) fn select_pair_profiled<'a>(
         &'a self,
         template: &Template<'a>,
@@ -98,7 +98,7 @@ impl Content {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the template, its category and exclusions, the equipment and variants, the tokens, stages and facts")]
     pub(crate) fn select_pair_classified<'a>(
         &'a self,
         template: &Template<'a>,

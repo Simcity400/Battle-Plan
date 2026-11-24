@@ -409,13 +409,15 @@ fn p2_join_keeps_the_native_range_boundary_and_null_home_base_hub_guard() {
         hour.active(11, 2)
     };
     assert_eq!(check(&frame, &[3].into()), Ok(true));
-    let cache = anchors
-        .mission_content
-        .as_ref()
-        .unwrap()
-        .distances
-        .get()
-        .unwrap() as *const _;
+    let cache = std::ptr::from_ref(
+        anchors
+            .mission_content
+            .as_ref()
+            .unwrap()
+            .distances
+            .get()
+            .unwrap(),
+    );
     if let TableView::Complete(TableRows::NavalMissionTaskForces(rows)) =
         &mut *frame.tables[TableId::NavalMissionTaskForces.index()]
     {
@@ -435,13 +437,15 @@ fn p2_join_keeps_the_native_range_boundary_and_null_home_base_hub_guard() {
     }
     assert_eq!(check(&frame, &[4].into()), Ok(false));
     assert_eq!(
-        anchors
-            .mission_content
-            .as_ref()
-            .unwrap()
-            .distances
-            .get()
-            .unwrap() as *const _,
+        std::ptr::from_ref(
+            anchors
+                .mission_content
+                .as_ref()
+                .unwrap()
+                .distances
+                .get()
+                .unwrap()
+        ),
         cache
     );
 }

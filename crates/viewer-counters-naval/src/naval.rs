@@ -832,7 +832,6 @@ impl PortTables {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn read(
         frame: &DecodedFrame,
         content: &CounterMap,
@@ -898,7 +897,7 @@ impl PortTables {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the counter inputs, the frame, the owner lookup, the naval tables and the frame it fills")]
 pub fn port_counters(
     inputs: &CounterInputs<'_>,
     frame: &DecodedFrame,
@@ -914,7 +913,7 @@ pub fn port_counters(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the counter inputs, the frame, the owner lookup, the naval tables, the retained plans and the frame it fills")]
 pub fn port_counters_with(
     inputs: &CounterInputs<'_>,
     frame: &DecodedFrame,
@@ -1074,7 +1073,7 @@ impl PortPlans {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the counter inputs, the frame, the owner lookup, the naval tables, the retained plans and the frame it fills")]
 fn port_items(
     inputs: &CounterInputs<'_>,
     frame: &DecodedFrame,

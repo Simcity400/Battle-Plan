@@ -12,7 +12,7 @@ use viewer_gpu::{
 };
 use viewer_scene_base::post::PostAssets;
 
-#[allow(clippy::too_many_arguments, reason = "The loader needs recorded geometry, presentation artwork, and decode settings together.")]
+#[expect(clippy::too_many_arguments, reason = "The loader needs recorded geometry, presentation artwork, and decode settings together.")]
 pub fn load_with_products(
     products: Option<&map_content::loader::Loader>,
     layers: &ResolvedLayers,

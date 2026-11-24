@@ -401,7 +401,7 @@ impl Player {
             .retain(|_, province| !province.queue.is_empty() || !province.active.is_empty());
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the arena, encoder and targets, the caller's state, the camera and its scissor, and the event filter")]
     pub fn draw(
         &mut self,
         arena: &gpu::Arena,

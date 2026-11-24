@@ -591,6 +591,7 @@ mod tests {
             ),
             HullIcon::Resolved(Some(b"light_cruiser".to_vec()))
         );
+        #[expect(clippy::redundant_clone, reason = "the test's earlier hull reads keep the cruiser borrowed, so it cannot be moved")]
         let mut invalid = cruiser.clone();
         invalid.counter.as_mut().unwrap().definition_valid = 0;
         assert_eq!(
@@ -815,7 +816,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::field_reassign_with_default)]
     fn authenticated_null_definition_compares_without_content_and_preserves_faults() {
         let null = HullVariantInputs {
             organisation_marker: Some(-2),

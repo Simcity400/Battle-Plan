@@ -174,6 +174,7 @@ mod tests {
         library
     }
 
+    #[expect(clippy::mutable_key_type, reason = "asset keys cache display data outside equality and ordering")]
     fn draws(library: &ModelLibrary) -> BTreeMap<AssetKey, Vec<u8>> {
         let textures: Vec<_> = library
             .textures
@@ -198,6 +199,7 @@ mod tests {
     fn reversed_merges_preserve_distinct_native_draws_and_detect_swapped_effective_bindings() {
         let reference = merged(false);
         let mut reversed = merged(true);
+        #[expect(clippy::mutable_key_type, reason = "asset keys cache display data outside equality and ordering")]
         let expected = draws(&reference);
         assert_eq!(expected.len(), 2);
         assert_eq!(reversed.materials.len(), 2);
@@ -225,6 +227,7 @@ mod tests {
         reversed.meshes[second].native[0].lods[0][0].material_index = binding;
         assert_eq!(reversed.materials, materials);
         assert_eq!(reversed.textures, textures);
+        #[expect(clippy::mutable_key_type, reason = "asset keys cache display data outside equality and ordering")]
         let swapped = draws(&reversed);
         assert_ne!(
             swapped[&reversed.meshes[first].asset],
@@ -239,6 +242,7 @@ mod tests {
     #[test]
     fn native_draw_bytes_preserve_order_node_indices_float_payloads_and_skin() {
         let library = merged(false);
+        #[expect(clippy::mutable_key_type, reason = "asset keys cache display data outside equality and ordering")]
         let expected = draws(&library);
         for change in 0..12 {
             let mut changed = merged(false);

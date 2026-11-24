@@ -159,7 +159,7 @@ pub(super) fn flags(static_content: &StaticContent, frame: &DecodedFrame) -> io:
         .collect())
 }
 impl Bindings {
-    #[allow(clippy::too_many_arguments, reason = "the window's read inputs, each from another owner")]
+    #[expect(clippy::too_many_arguments, reason = "the window's read inputs, each from another owner")]
     pub fn read(
         static_content: &StaticContent,
         frame: &DecodedFrame,

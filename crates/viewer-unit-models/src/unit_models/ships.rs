@@ -221,7 +221,7 @@ impl UnitModelAssets {
     }
 
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the frame, vision and anchor, the route world, the ship places, the hour and the report")]
     pub(super) fn prepare_naval(
         &self,
         frame: &DecodedFrame,
@@ -244,7 +244,7 @@ impl UnitModelAssets {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the frame, vision and anchor, the route world, the ship places, the hour, the report and the spans")]
     pub(super) fn prepare_naval_with_spans(
         &self,
         frame: &DecodedFrame,
@@ -262,7 +262,7 @@ impl UnitModelAssets {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the frame, vision and anchor, the route world, the ship places, the hour, the report, the spans and the names")]
     fn prepare_naval_with_names<'rows>(
         &self,
         frame: &'rows DecodedFrame,
@@ -370,7 +370,7 @@ impl UnitModelAssets {
         Ok(placed)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the frame, vision and anchor, the route world, the ship places, the links and clock, and the sources and report")]
     fn add_land_competitors(
         &self,
         frame: &DecodedFrame,
