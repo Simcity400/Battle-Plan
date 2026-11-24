@@ -1,8 +1,9 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { DeclaredTableContext, TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
+import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import { declareTableProjection, type DeclarativeColumnSpec, type TableColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
+import { encodeTableSettings, tableSettingsOf } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, textValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { DivisionEquipmentReply, EquipmentTemplate, EquipmentType } from '../../generated/dashboard';
@@ -83,8 +84,7 @@ function typeTooltip(row: EquipmentType): TooltipExtraRow[] {
   return rows;
 }
 
-export const equipmentTypeProjection: TableProjection<Record<string, never>> = registerTableProjection(
-  declareTableProjection<DivisionEquipmentReply, EquipmentType, Record<string, never>>({
+const typeProjection: TableProjection<Record<string, never>> = declareTableProjection<DivisionEquipmentReply, EquipmentType, Record<string, never>>({
     kind: 'division-equipment',
     validate: validateDivisionEquipment,
     columns: TYPE_SPEC,
@@ -97,9 +97,7 @@ export const equipmentTypeProjection: TableProjection<Record<string, never>> = r
     rowName: row => row.name ?? 'Equipment name unavailable',
     tooltipExtra: row => typeTooltip(row),
     tooltipNote: (_row, reply) => asOf(reply),
-  }),
-  'equipment',
-);
+  });
 
 interface TemplateRow { readonly template: EquipmentTemplate; readonly icon: string | undefined; readonly pending: boolean }
 
@@ -128,8 +126,7 @@ const TEMPLATE_SPEC: readonly DeclarativeColumnSpec<TemplateRow, Record<string, 
   { ...TYPES_SHORT!, priority: 5, numeric: true, format: 'integer', widest: ['99'], value: row => count(row.template.typesShort, 'Types short not recorded') },
 ];
 
-export const equipmentTemplateProjection: TableProjection<Record<string, never>> = registerTableProjection(
-  declareTableProjection<DivisionEquipmentReply, TemplateRow, Record<string, never>>({
+const templateProjection: TableProjection<Record<string, never>> = declareTableProjection<DivisionEquipmentReply, TemplateRow, Record<string, never>>({
     kind: 'division-equipment',
     validate: validateDivisionEquipment,
     columns: TEMPLATE_SPEC,
@@ -148,16 +145,28 @@ export const equipmentTemplateProjection: TableProjection<Record<string, never>>
       ? [{ label: 'Divisions not recorded', value: count(row.template.unknownDivisions, 'Divisions not recorded'), divider: true }]
       : undefined,
     tooltipNote: (_row, reply) => asOf(reply),
-  }),
-  'template',
-);
+  });
 
-function sources(ctx: FamilyPlanContext, view: string): SourcePlan {
+export type EquipmentView = 'equipment' | 'template';
+export interface DivisionEquipmentOptions { readonly view: EquipmentView }
+
+const viewOf = (raw: unknown): EquipmentView => raw === 'template' ? 'template' : 'equipment';
+const OPTIONS_BY_VIEW: Readonly<Record<EquipmentView, DivisionEquipmentOptions>> = { equipment: { view: 'equipment' }, template: { view: 'template' } };
+
+const combinedProjection: TableProjection<DivisionEquipmentOptions> = {
+  kind: 'division-equipment',
+  family: 'table',
+  project: (readView, options) => (options.view === 'template' ? templateProjection : typeProjection).project(readView, NO_OPTIONS),
+};
+
+export const divisionEquipmentProjection = registerTableProjection(registerTableProjection(combinedProjection, 'equipment'), 'template');
+
+function sources(ctx: FamilyPlanContext): SourcePlan {
   const params = ctx.countryTag
     ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), countFor: ctx.options.countFor === 'host' ? 'host' : 'owner', template: null, division: null }
     : null;
   return {
-    owner: `division-equipment:${view}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${ctx.countryTag ?? ''}:${params?.countFor ?? ''}`,
+    owner: `division-equipment:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${ctx.countryTag ?? ''}:${params?.countFor ?? ''}`,
     entries: params
       ? [{
           name: 'main',
@@ -178,29 +187,30 @@ function sources(ctx: FamilyPlanContext, view: string): SourcePlan {
   };
 }
 
-const noOptions = (_ctx: DeclaredTableContext) => NO_OPTIONS;
+const VIEW_TABLE = {
+  equipment: { key: TYPE_TABLE_KEY, base: TYPE_BASE, columns: TYPE_SPEC as readonly TableColumnSpec[] },
+  template: { key: TEMPLATE_TABLE_KEY, base: TEMPLATE_BASE, columns: TEMPLATE_SPEC as readonly TableColumnSpec[] },
+} as const;
 
-export const equipmentTypeDeclaration: TableWidgetDeclaration<Record<string, never>> = {
+export const divisionEquipmentDeclaration: TableWidgetDeclaration<DivisionEquipmentOptions> = {
   family: 'table',
   kind: 'division-equipment',
-  label: 'Division equipment by type',
+  label: 'Division equipment',
   subject: 'division equipment',
   emptyCampaign: 'Load a campaign to see division equipment.',
   icon: 'helmet',
   countries: { mode: 'single', choose: 'Choose a country to see its division equipment.' },
-  sources: ctx => sources(ctx, 'equipment'),
-  projection: equipmentTypeProjection,
-  columns: TYPE_SPEC,
-  settings: { kind: 'table', key: TYPE_TABLE_KEY, base: TYPE_BASE },
-  projectionOptions: noOptions,
+  sources: ctx => sources(ctx),
+  projection: divisionEquipmentProjection,
+  columns: ctx => VIEW_TABLE[viewOf(ctx.options.view)].columns,
+  settings: {
+    kind: 'custom',
+    resolve: (ctx, columns) => {
+      const table = VIEW_TABLE[viewOf(ctx.options.view)];
+      return tableSettingsOf(ctx.options[table.key], columns, table.base);
+    },
+    onChange: (next, _current, ctx, setOption) => setOption(VIEW_TABLE[viewOf(ctx.options.view)].key, encodeTableSettings(next)),
+  },
+  projectionOptions: ctx => OPTIONS_BY_VIEW[viewOf(ctx.options.view)],
   jumpToDate: true,
-};
-
-export const equipmentTemplateDeclaration: TableWidgetDeclaration<Record<string, never>> = {
-  ...equipmentTypeDeclaration,
-  label: 'Division equipment by template',
-  sources: ctx => sources(ctx, 'template'),
-  projection: equipmentTemplateProjection,
-  columns: TEMPLATE_SPEC,
-  settings: { kind: 'table', key: TEMPLATE_TABLE_KEY, base: TEMPLATE_BASE },
 };

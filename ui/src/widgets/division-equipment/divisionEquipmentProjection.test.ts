@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import type { DivisionEquipmentReply, EquipmentTemplate, EquipmentType } from '../../generated/dashboard';
-import { equipmentTemplateProjection, equipmentTypeProjection } from './divisionEquipmentProjection.ts';
+import { divisionEquipmentProjection } from './divisionEquipmentProjection.ts';
 
 const type = (archetype: string | null, extra: Partial<EquipmentType> = {}): EquipmentType => ({
   archetype, name: archetype ? 'Infantry Equipment' : null, nameMissing: null, heldRaw: '26514100000', neededRaw: '26937000000',
@@ -21,11 +21,11 @@ const reply = (extra: Partial<DivisionEquipmentReply> = {}): DivisionEquipmentRe
   divisionRows: null, pool: null, warnings: [], ...extra,
 } as DivisionEquipmentReply);
 
-const project = (projection: typeof equipmentTypeProjection, raw: unknown) =>
-  projection.project(createBoundedReadView({ hour: 48, panels: new Map([['main', raw]]) }), {});
+const project = (view: 'equipment' | 'template', raw: unknown) =>
+  divisionEquipmentProjection.project(createBoundedReadView({ hour: 48, panels: new Map([['main', raw]]) }), { view });
 
 test('by equipment: whole items from the product, the shortfall as a red negative, fill missing when the product has none', () => {
-  const model = project(equipmentTypeProjection, reply());
+  const model = project('equipment', reply());
   const [infantry, unclassified] = model.rows;
   assert.deepEqual([infantry!.cells.held!.value, infantry!.cells.missing!.value, infantry!.cells.missing!.shortage], [knownValue(265141), knownValue(-4229), true]);
   assert.deepEqual(infantry!.cells.fill!.value, knownValue(98.43));
@@ -35,9 +35,9 @@ test('by equipment: whole items from the product, the shortfall as a red negativ
 });
 
 test('by template: shares of the product’s own figures; a figure it does not hold is missing; unrecorded equipment is the body state', () => {
-  const [row] = project(equipmentTemplateProjection, reply()).rows;
+  const [row] = project('template', reply()).rows;
   assert.deepEqual([row!.cells.manpower!.value, row!.cells.fill!.value], [knownValue(93.75), knownValue(50)]);
   assert.deepEqual(row!.cells.strength!.value, notRecorded('Strength not recorded'));
-  const missing = project(equipmentTypeProjection, reply({ missing: 'Division equipment is not recorded at this hour', types: [], templates: [] }));
+  const missing = project('equipment', reply({ missing: 'Division equipment is not recorded at this hour', types: [], templates: [] }));
   assert.deepEqual([missing.emptyKind, missing.empty], ['unavailable', 'Division equipment is not recorded at this hour']);
 });

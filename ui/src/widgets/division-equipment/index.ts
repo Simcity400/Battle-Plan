@@ -1,4 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import { equipmentTypeDeclaration } from './divisionEquipmentProjection';
+import { divisionEquipmentDeclaration } from './divisionEquipmentProjection';
 
-export default { declaration: equipmentTypeDeclaration } satisfies WidgetRenderer;
+export default { declaration: divisionEquipmentDeclaration } satisfies WidgetRenderer;

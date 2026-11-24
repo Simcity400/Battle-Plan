@@ -224,7 +224,7 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       'division-equipment',
       'equipment',
       () => import('../division-equipment/divisionEquipmentProjection.ts'),
-      mod => ({ projection: mod.equipmentTypeProjection, declaration: mod.equipmentTypeDeclaration }),
+      mod => ({ projection: mod.divisionEquipmentProjection, declaration: mod.divisionEquipmentDeclaration }),
     ),
   },
   {
@@ -238,7 +238,7 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       'division-equipment',
       'template',
       () => import('../division-equipment/divisionEquipmentProjection.ts'),
-      mod => ({ projection: mod.equipmentTemplateProjection, declaration: mod.equipmentTemplateDeclaration }),
+      mod => ({ projection: mod.divisionEquipmentProjection, declaration: mod.divisionEquipmentDeclaration }),
     ),
   },
   {
