@@ -102,6 +102,8 @@ interface HeldFamilyTable {
   demandedArtUrls: string[];
   identityDemandsField: FieldEntry | null;
   widthConfigKey: string;
+  sampleSig: string;
+  layoutSampleSig: string;
   fixedWidths: Record<string, number>;
   priorRows: readonly FlatTableRow[];
   priorHour: number;
@@ -174,6 +176,7 @@ interface HeldFamilyTable {
 
 const MIRROR_CADENCE_MS = 1000;
 const TOOLTIP_CADENCE_MS = 250;
+const TEXT_SAMPLE_ROWS = 40;
 
 export const liveAdapter = (map: LiveMap | null): LiveValues<number | bigint | string> | null => map && {
   get: (key: string) => {
@@ -360,9 +363,28 @@ function widthConfigOf(columns: readonly TableColumnSpec[], settings: TableSetti
   ]);
 }
 
+function textSampleSignature(columns: readonly TableColumnSpec[], rows: readonly FlatTableRow[]): string {
+  const limit = Math.min(rows.length, TEXT_SAMPLE_ROWS);
+  let sig = '';
+  for (const column of columns) {
+    if (column.numeric || column.widest?.length) continue;
+    let longest = 0;
+    for (let i = 0; i < limit; i++) {
+      const item = rows[i]!;
+      if (item.kind !== 'data') continue;
+      const cell = item.row.cells[column.key];
+      if (!cell) continue;
+      const val = cell.looks ? item.name : cell.value.kind === 'known' ? String(cell.value.value) : '';
+      if (val.length > longest) longest = val.length;
+    }
+    sig += `${column.key}:${longest}|`;
+  }
+  return sig;
+}
+
 function initialTextSamples(columns: readonly FamilyColumnLayout[], rows: readonly FlatTableRow[]): Record<string, string[]> {
   const samples: Record<string, string[]> = {};
-  const limit = Math.min(rows.length, 40);
+  const limit = Math.min(rows.length, TEXT_SAMPLE_ROWS);
   for (const column of columns) {
     if (column.numeric || column.widest?.length) continue;
     const list: string[] = [];
@@ -384,7 +406,8 @@ function metaSignature(model: TableModel, hasTree: boolean, rankShown: boolean, 
     model.empty ?? null,
     model.emptyDetail ?? null,
     model.emptyKind ?? 'empty',
-    model.titleSummary ?? model.summaryPill ?? null,
+    model.titleSummary ?? null,
+    model.titleSummaryPartial ?? null,
     model.hideHeader === true,
     model.rowHeightMode ?? 'standard',
     model.notes ?? [],
@@ -494,6 +517,8 @@ export function familyTableLaneView(
           demandedArtUrls: [],
           identityDemandsField: null,
           widthConfigKey: '',
+          sampleSig: '',
+          layoutSampleSig: '',
           fixedWidths: {},
           priorRows: [],
           priorHour: -Infinity,
@@ -698,6 +723,7 @@ export function familyTableLaneView(
         return { mode: 'refused', reason: model.refused, surfaces: [], fields: {}, motion: false };
       }
 
+      if (modelChanged) held.sampleSig = textSampleSignature(model.columns, flatRows);
       const rankShown = model.rank === true && (bound.settings.showRank === true || model.defaultRankShown === true);
       const rankMarkersOn = rankShown && model.rankMarkers === true;
       const rankWidth = rankShown ? (bound.rankWidth ?? (rankMarkersOn ? 64 : 36)) : 0;
@@ -707,7 +733,8 @@ export function familyTableLaneView(
         && held.layoutWidth === bound.width
         && held.layoutRankShown === rankShown
         && held.layoutRankWidth === rankWidth
-        && held.layoutTheme === bound.theme;
+        && held.layoutTheme === bound.theme
+        && held.layoutSampleSig === held.sampleSig;
 
       let allLayouts: FamilyColumnLayout[];
       let layout: FamilyTableLayout;
@@ -716,7 +743,7 @@ export function familyTableLaneView(
         allLayouts = held.cachedAllLayouts;
         layout = held.cachedLayout!;
       } else {
-        const configKey = widthConfigOf(model.columns, bound.settings, bound.theme);
+        const configKey = `${widthConfigOf(model.columns, bound.settings, bound.theme)}${held.sampleSig}`;
         if (bound.theme && held.widthConfigKey !== configKey) {
           const baseCols = buildColumnLayouts(model.columns, bound.settings);
           const measure = (text: string, font: string) => {
@@ -746,6 +773,7 @@ export function familyTableLaneView(
         held.layoutRankShown = rankShown;
         held.layoutRankWidth = rankWidth;
         held.layoutTheme = bound.theme;
+        held.layoutSampleSig = held.sampleSig;
         held.cachedAllLayouts = allLayouts;
         held.cachedLayout = layout;
         held.cachedMaxima = null;
@@ -944,7 +972,7 @@ export function familyTableLaneView(
               emptyDetail: model.emptyDetail ?? null,
               emptyKind: model.emptyKind ?? 'empty',
               titleSummary: model.titleSummary ?? null,
-              summaryPill: model.summaryPill ?? null,
+              titleSummaryPartial: model.titleSummaryPartial ?? null,
               hideHeader: model.hideHeader === true,
               rowHeightMode,
               notes: model.notes ?? [],
