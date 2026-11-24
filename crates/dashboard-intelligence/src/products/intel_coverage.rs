@@ -1,11 +1,10 @@
 
 use dashboard_base::{Source, products::{Country as ParamCountry, LoadContext, at_hour::{At, AtHour}, validate_country}};
 use crate::products::intelligence::{Country, IDENTITY, Tags, branch};
-use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::series::ranked::GroupSelection;
 use dashboard_world::products::group_members::GroupsAt;
 use replay_data::rows::{IntelNetworkSummaryRow, TableId, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -16,14 +15,6 @@ use ts_rs::TS;
 
 const TABLES: [TableId; 3] = [TableId::IntelNetworkSummaries, IDENTITY[0], IDENTITY[1]];
 const FIXED_SCALE: i64 = 100_000;
-
-pub const FIELDS: [(&str, &str); 5] = [
-    ("coveredControlled", "covered_controlled_states"),
-    ("coveredCore", "covered_core_states"),
-    ("controlledStrength", "controlled_strength_sum"),
-    ("coreStrength", "core_strength_sum"),
-    ("maxStrength", "max_state_strength"),
-];
 
 pub struct IntelNetworkCoverage;
 
@@ -75,59 +66,45 @@ pub struct IntelCoverageParams {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct IntelNetwork {
-    pub owner: Country,
-    pub target: Country,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum IntelCoverageCell {
-    Present {
-        value: i64,
-        covered_controlled: i32,
-        covered_core: i32,
-        controlled_strength: i64,
-        core_strength: i64,
-        max_strength: i64,
-    },
-    NoNetwork,
-    Diagonal,
-    Missing {
-        reason: String,
-    },
+pub struct IntelPair {
+    #[doc = " The owner's and the target's index in `displayed`."]
+    pub row: u32,
+    pub column: u32,
+    pub value: i64,
+    pub covered_controlled: i32,
+    pub covered_core: i32,
+    pub controlled_strength: i64,
+    pub core_strength: i64,
+    pub max_strength: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IntelCoverageReply {
-    #[doc = " Every country present at the hour (a slot the identity names), by tag: a pair of them"]
-    #[doc = " without a network has none, where the summaries are known."]
-    pub countries: Vec<Country>,
-    #[doc = " By owner, then target id."]
-    pub networks: Vec<IntelNetwork>,
     pub displayed: Vec<Country>,
-    pub cells: Vec<IntelCoverageCell>,
+    #[doc = " The witnessed networks between displayed countries, by row then column."]
+    pub pairs: Vec<IntelPair>,
+    #[doc = " Why a pair not in `pairs` may still have a network (the summaries were read only in part); null when the read was whole, so an unlisted pair has none."]
+    pub unlisted: Option<String>,
     pub max_value: i64,
     pub scale: i64,
     #[doc = " The summaries' read hour the rows hold (they are taken daily); it moves daily, so a widget"]
     #[doc = " renders nothing for it."]
     pub read_hour: Option<i32>,
     pub missing: Option<String>,
-    #[doc = " Why the countries to show are not known at this hour (a group whose membership is not recorded); none are shown then."]
+    #[doc = " Why the countries to show are not known at this hour (a top over summaries read only in part, or a group whose membership is not recorded); none are shown then."]
     pub chosen_missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
+dashboard_base::reply_warnings!(IntelCoverageReply);
+
 impl IntelCoverageReply {
-    fn empty(countries: Vec<Country>, scale: i64, read_hour: Option<i32>, missing: Option<String>, chosen_missing: Option<String>) -> Self {
-        Self { countries, networks: Vec::new(), displayed: Vec::new(), cells: Vec::new(), max_value: 0, scale, read_hour, missing, chosen_missing, warnings: Vec::new() }
+    fn empty(scale: i64, read_hour: Option<i32>, missing: Option<String>, chosen_missing: Option<String>) -> Self {
+        Self { displayed: Vec::new(), pairs: Vec::new(), unlisted: None, max_value: 0, scale, read_hour, missing, chosen_missing, warnings: Vec::new() }
     }
 }
-
-dashboard_base::reply_warnings!(IntelCoverageReply);
 
 fn row_value(row: &IntelNetworkSummaryRow, measure: IntelCoverageMeasure, basis: IntelCoverageBasis) -> i64 {
     match (measure, basis) {
@@ -139,16 +116,22 @@ fn row_value(row: &IntelNetworkSummaryRow, measure: IntelCoverageMeasure, basis:
     }
 }
 
+pub(crate) struct Matrix {
+    pub displayed: Vec<Country>,
+    pub pairs: Vec<IntelPair>,
+    pub max_value: i64,
+}
+
 pub(crate) fn build_matrix(
     countries: &[Country],
     rows: &[IntelNetworkSummaryRow],
     tags: &Tags,
-    selected_tags: Option<&HashSet<String>>,
+    selected: Option<&HashSet<String>>,
     top: Option<u32>,
     touching: bool,
     measure: IntelCoverageMeasure,
     basis: IntelCoverageBasis,
-) -> (Vec<Country>, Vec<IntelCoverageCell>, i64, i64) {
+) -> Matrix {
     let mut counts: HashMap<&str, usize> = countries.iter().filter_map(|c| Some((c.tag.as_deref()?, 0))).collect();
     let mut pairs_by_tag: Vec<(String, String, &IntelNetworkSummaryRow)> = Vec::new();
     for row in rows {
@@ -164,7 +147,7 @@ pub(crate) fn build_matrix(
             pairs_by_tag.push((o, t, row));
         }
     }
-    let mut chosen: Vec<Country> = if let Some(filter) = selected_tags {
+    let mut chosen: Vec<Country> = if let Some(filter) = selected {
         countries.iter().filter(|c| c.tag.as_deref().is_some_and(|tag| filter.contains(tag))).cloned().collect()
     } else {
         let limit = top.unwrap_or(12) as usize;
@@ -197,61 +180,35 @@ pub(crate) fn build_matrix(
             }
         }
     }
-    let displayed_tags: HashSet<&str> = chosen.iter().filter_map(|c| c.tag.as_deref()).collect();
-    let mut by_pair: HashMap<(&str, &str), &IntelNetworkSummaryRow> = HashMap::new();
+    let index: HashMap<&str, u32> = chosen.iter().enumerate().filter_map(|(at, c)| Some((c.tag.as_deref()?, at as u32))).collect();
+    let mut by_pair: HashMap<(u32, u32), &IntelNetworkSummaryRow> = HashMap::new();
     for (o, t, row) in &pairs_by_tag {
-        if displayed_tags.contains(o.as_str()) && displayed_tags.contains(t.as_str()) {
-            by_pair.insert((o.as_str(), t.as_str()), row);
+        if let (Some(&r), Some(&c)) = (index.get(o.as_str()), index.get(t.as_str()))
+            && r != c
+        {
+            by_pair.insert((r, c), row);
         }
     }
-    let scale = match measure {
-        IntelCoverageMeasure::Covered => 1,
-        IntelCoverageMeasure::Strength | IntelCoverageMeasure::Strongest => FIXED_SCALE,
-    };
-    let mut cells = Vec::with_capacity(chosen.len() * chosen.len());
     let mut max_value = 0_i64;
-    for (r, owner) in chosen.iter().enumerate() {
-        for (c, target) in chosen.iter().enumerate() {
-            if r == c {
-                cells.push(IntelCoverageCell::Diagonal);
-                continue;
+    let mut pairs: Vec<IntelPair> = by_pair
+        .into_iter()
+        .map(|((row, column), held)| {
+            let value = row_value(held, measure, basis);
+            max_value = max_value.max(value);
+            IntelPair {
+                row,
+                column,
+                value,
+                covered_controlled: held.covered_controlled_states,
+                covered_core: held.covered_core_states,
+                controlled_strength: held.controlled_strength_sum,
+                core_strength: held.core_strength_sum,
+                max_strength: held.max_state_strength,
             }
-            match owner.tag.as_deref().zip(target.tag.as_deref()).and_then(|pair| by_pair.get(&pair).copied()) {
-                Some(row) => {
-                    let value = row_value(row, measure, basis);
-                    max_value = max_value.max(value);
-                    cells.push(IntelCoverageCell::Present {
-                        value,
-                        covered_controlled: row.covered_controlled_states,
-                        covered_core: row.covered_core_states,
-                        controlled_strength: row.controlled_strength_sum,
-                        core_strength: row.core_strength_sum,
-                        max_strength: row.max_state_strength,
-                    });
-                }
-                None => cells.push(IntelCoverageCell::NoNetwork),
-            }
-        }
-    }
-    (chosen, cells, max_value, scale)
-}
-
-fn networks(frame: &DecodedFrame, tags: &Tags, live: &Cells) -> io::Result<(Vec<IntelNetwork>, Vec<IntelNetworkSummaryRow>)> {
-    let mut columns = Vec::with_capacity(FIELDS.len());
-    for (name, field) in FIELDS {
-        columns.push((name, dashboard_declare::field(TableId::IntelNetworkSummaries, field)?));
-    }
-    let rows = frame.complete::<tables::IntelNetworkSummaries>()?;
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let id = format!("{}:{}", row.owner_country, row.target_country);
-        let key = (u128::from(row.owner_country) << 32) | u128::from(row.target_country);
-        for &(name, column) in &columns {
-            live.value(&id, name, Cell { table: TableId::IntelNetworkSummaries, column, key }, 1.0);
-        }
-        out.push(IntelNetwork { owner: Country::of(tags, row.owner_country), target: Country::of(tags, row.target_country) });
-    }
-    Ok((out, rows.to_vec()))
+        })
+        .collect();
+    pairs.sort_unstable_by_key(|pair| (pair.row, pair.column));
+    Matrix { displayed: chosen, pairs, max_value }
 }
 
 impl AtHour for IntelNetworkCoverage {
@@ -270,9 +227,8 @@ impl AtHour for IntelNetworkCoverage {
             IntelCoverageParams::decl(),
             IntelCoverageMeasure::decl(),
             IntelCoverageBasis::decl(),
-            IntelCoverageCell::decl(),
             Country::decl(),
-            IntelNetwork::decl(),
+            IntelPair::decl(),
             IntelCoverageReply::decl(),
         ]
     }
@@ -314,14 +270,19 @@ impl AtHour for IntelNetworkCoverage {
         };
         let tags = match Tags::read(frame) {
             Ok(tags) => tags,
-            Err(error) => return Ok(IntelCoverageReply::empty(Vec::new(), scale, read_hour, Some(error.to_string()), None)),
+            Err(error) => return Ok(IntelCoverageReply::empty(scale, read_hour, Some(error.to_string()), None)),
         };
-        let countries = tags.present();
+        let summaries = dashboard_query::coverage::witnessed_rows::<tables::IntelNetworkSummaries>(frame);
+        let view: &TableView = &frame.tables[TableId::IntelNetworkSummaries.index()];
+        if !matches!(view, TableView::Complete(_) | TableView::Truncated { .. }) {
+            return Ok(IntelCoverageReply::empty(scale, read_hour, summaries.missing, None));
+        }
+        let unlisted = summaries.missing;
         let selected: Option<HashSet<String>> = match &params.group {
             Some(group) => {
                 let members = at.context.members(group, at.hour)?;
                 if let Some(refused) = members.refused {
-                    return Ok(IntelCoverageReply::empty(countries, scale, read_hour, None, Some(refused)));
+                    return Ok(IntelCoverageReply::empty(scale, read_hour, None, Some(refused)));
                 }
                 Some(members.tags.into_iter().collect())
             }
@@ -329,13 +290,13 @@ impl AtHour for IntelNetworkCoverage {
                 list.iter().filter_map(|country| at.holders.tag_at(country, at.hour).map(str::to_owned).or_else(|| country.tag().map(str::to_owned))).collect()
             }),
         };
-        Ok(match networks(frame, &tags, at.live) {
-            Ok((networks, rows)) => {
-                let (displayed, cells, max_value, scale) = build_matrix(&countries, &rows, &tags, selected.as_ref(), params.top, params.touching == Some(true), measure, basis);
-                IntelCoverageReply { countries, networks, displayed, cells, max_value, scale, read_hour, missing: None, chosen_missing: None, warnings: Vec::new() }
-            }
-            Err(error) => IntelCoverageReply::empty(countries, scale, read_hour, Some(error.to_string()), None),
-        })
+        if selected.is_none()
+            && let Some(reason) = &unlisted
+        {
+            return Ok(IntelCoverageReply::empty(scale, read_hour, None, Some(format!("{reason}, so the countries with the most networks are not known"))));
+        }
+        let matrix = build_matrix(&tags.present(), summaries.rows, &tags, selected.as_ref(), params.top, params.touching == Some(true), measure, basis);
+        Ok(IntelCoverageReply { displayed: matrix.displayed, pairs: matrix.pairs, unlisted, max_value: matrix.max_value, scale, read_hour, missing: None, chosen_missing: None, warnings: Vec::new() })
     }
 }
 
@@ -365,16 +326,13 @@ mod tests {
             IntelNetworkSummaryRow { owner_country: 3, target_country: 1, covered_controlled_states: 50, covered_core_states: 40, controlled_strength_sum: 9_000_000, core_strength_sum: 8_000_000, max_state_strength: 1_000_000, covered_worth: 0, ordinal: 0 },
         ];
         let filter = HashSet::from(["AAA".to_owned(), "BBB".to_owned()]);
-        let (displayed, cells, max_value, scale) = build_matrix(&countries, &rows, &tags, Some(&filter), None, false, IntelCoverageMeasure::Covered, IntelCoverageBasis::Controlled);
-        assert_eq!(displayed.len(), 2);
-        assert_eq!(scale, 1);
-        assert_eq!(max_value, 3, "off-matrix CCC network with 50 states never inflates displayed max_value");
-        assert_eq!(cells[0], IntelCoverageCell::Diagonal);
-        assert!(matches!(cells[1], IntelCoverageCell::Present { value: 3, .. }));
-        assert_eq!(cells[2], IntelCoverageCell::NoNetwork);
+        let matrix = build_matrix(&countries, &rows, &tags, Some(&filter), None, false, IntelCoverageMeasure::Covered, IntelCoverageBasis::Controlled);
+        assert_eq!(matrix.displayed.len(), 2);
+        assert_eq!(matrix.max_value, 3, "off-matrix CCC network with 50 states never inflates displayed max_value");
+        assert_eq!(matrix.pairs.iter().map(|pair| (pair.row, pair.column, pair.value)).collect::<Vec<_>>(), vec![(0, 1, 3)], "only the witnessed network is a pair: no diagonal, no cell for a pair without a network");
 
-        let (ranked, _, _, _) = build_matrix(&countries, &rows, &tags, None, Some(2), false, IntelCoverageMeasure::Covered, IntelCoverageBasis::Controlled);
-        assert_eq!(ranked.iter().filter_map(|c| c.tag.as_deref()).collect::<Vec<_>>(), vec!["AAA", "BBB"]);
+        let ranked = build_matrix(&countries, &rows, &tags, None, Some(2), false, IntelCoverageMeasure::Covered, IntelCoverageBasis::Controlled);
+        assert_eq!(ranked.displayed.iter().filter_map(|c| c.tag.as_deref()).collect::<Vec<_>>(), vec!["AAA", "BBB"]);
     }
 
     #[test]
@@ -392,9 +350,9 @@ mod tests {
         let tags = Tags::read(&frame).unwrap();
         let countries = tags.present();
         let rows = vec![IntelNetworkSummaryRow { owner_country: 10, target_country: 2, covered_controlled_states: 4, covered_core_states: 4, controlled_strength_sum: 0, core_strength_sum: 0, max_state_strength: 0, covered_worth: 0, ordinal: 0 }];
-        let (displayed, cells, _, _) = build_matrix(&countries, &rows, &tags, None, Some(2), false, IntelCoverageMeasure::Covered, IntelCoverageBasis::Controlled);
-        assert_eq!(displayed.iter().filter_map(|c| c.tag.as_deref()).collect::<Vec<_>>(), vec!["AAA", "BBB"]);
-        assert!(matches!(cells[1], IntelCoverageCell::Present { value: 4, .. }), "the second raw id's network is drawn, not shown as absent: {:?}", cells[1]);
+        let matrix = build_matrix(&countries, &rows, &tags, None, Some(2), false, IntelCoverageMeasure::Covered, IntelCoverageBasis::Controlled);
+        assert_eq!(matrix.displayed.iter().filter_map(|c| c.tag.as_deref()).collect::<Vec<_>>(), vec!["AAA", "BBB"]);
+        assert_eq!(matrix.pairs.iter().map(|pair| (pair.row, pair.column, pair.value)).collect::<Vec<_>>(), vec![(0, 1, 4)], "the second raw id's network is drawn, not shown as absent");
     }
 
     #[test]
@@ -402,6 +360,7 @@ mod tests {
         use dashboard_query::{identity::Holders, series::ranked::{GroupKind, GroupMembership}};
         use dashboard_world::products::groups::{CountryGroupReply, MembershipRun, UnobservedHours};
         use dashboard_base::span::HourSpan;
+        use dashboard_follow::live::Cells;
         use std::sync::{Arc, atomic::AtomicBool};
         let mut frame = DecodedFrame { branch: 1, hour: 500, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
         *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
@@ -445,6 +404,34 @@ mod tests {
         let (none, refused) = shown(310);
         assert!(none.is_empty() && refused.is_some(), "unknown membership is never a guess or a union");
         assert_eq!(IntelNetworkCoverage::valid_through(&frame, &params, &at(500)), 599, "the reply holds only until the next member joins");
+    }
+
+    #[test]
+    fn a_truncated_read_shows_its_witnessed_networks_marks_the_rest_not_read_and_ranks_no_top() {
+        use dashboard_follow::live::Cells;
+        use dashboard_query::identity::Holders;
+        use std::sync::atomic::AtomicBool;
+        let mut frame = DecodedFrame { branch: 1, hour: 500, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
+        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+            CountryRow { id: 1, canonical_slot: 1, tag: b"AAA".to_vec(), ..CountryRow::default() },
+            CountryRow { id: 2, canonical_slot: 2, tag: b"BBB".to_vec(), ..CountryRow::default() },
+        ]));
+        *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow { id: 1, canonical_slot: 1 }, CountryLinkRow { id: 2, canonical_slot: 2 }]));
+        let network = IntelNetworkSummaryRow { owner_country: 1, target_country: 2, covered_controlled_states: 5, covered_core_states: 1, controlled_strength_sum: 0, core_strength_sum: 0, max_state_strength: 0, covered_worth: 0, ordinal: 0 };
+        *frame.tables[TableId::IntelNetworkSummaries.index()] = TableView::Truncated { rows: TableRows::IntelNetworkSummaries(vec![network]), missing: 3 };
+        let groups = GroupsAt::default();
+        let holders = Holders::new(Default::default(), Vec::new());
+        let live = Cells::default();
+        let cancelled = AtomicBool::new(false);
+        let at = At { owner: None, holders: &holders, hour: 500, context: &groups, cancelled: &cancelled, live: &live };
+        let chosen = IntelCoverageParams { branch_id: "1".into(), countries: Some(vec![ParamCountry::from("AAA"), ParamCountry::from("BBB")]), top: None, touching: None, measure: None, basis: None, group: None };
+        let reply = IntelNetworkCoverage::reply(&frame, &chosen, &at).unwrap();
+        assert_eq!(reply.missing, None, "a truncated read is not refused whole");
+        assert_eq!(reply.pairs.iter().map(|pair| (pair.row, pair.column, pair.value)).collect::<Vec<_>>(), vec![(0, 1, 5)], "the witnessed network keeps its value");
+        assert!(reply.unlisted.is_some(), "a pair not listed is not read, never 'no network'");
+        let top = IntelCoverageParams { countries: None, top: Some(2), ..chosen };
+        let reply = IntelNetworkCoverage::reply(&frame, &top, &at).unwrap();
+        assert!(reply.displayed.is_empty() && reply.chosen_missing.is_some(), "the countries with the most networks are not known from part of the read");
     }
 }
 

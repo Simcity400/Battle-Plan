@@ -84,8 +84,15 @@ function collectArt(model: TimelineModel, layout: TimelinePlacement, scrollTop: 
   const [first, end] = visibleRange(layout, scrollTop);
   for (let i = first; i < end; i++) {
     const lane = layout.lanes[i]!.lane;
-    handles.push(lane.flag, lane.icon);
-    if (model.iconsOnBars) for (const span of lane.spans) handles.push(span.icon);
+    handles.push(lane.flag, lane.icon, lane.outcome?.flag);
+    for (const side of lane.sides ?? []) {
+      handles.push(side.flag);
+      for (const member of side.strip) handles.push(member.flag);
+    }
+    for (const span of lane.spans) {
+      if (model.iconsOnBars) handles.push(span.icon);
+      for (const mark of span.marks ?? []) handles.push(mark.art);
+    }
   }
   return collectArtUrls(handles, index);
 }
@@ -139,7 +146,7 @@ export const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, Time
     drawTimeline(ctx, {
       model: frame.model,
       layout: frame.layout.frame,
-      readView: frame.projected,
+      art: frame.artProvider,
       theme: frame.theme,
       scrollTop: frame.binding.scrollTop,
       expanded: frame.binding.expanded,

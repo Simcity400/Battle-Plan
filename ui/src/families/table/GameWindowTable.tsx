@@ -22,8 +22,10 @@ import { TimeRegion, useRegion, useRegionHour } from '../../dashboard/widgetTime
 import { pageClock } from '../../dashboard/widgetClock.ts';
 import { DetailWindowHost } from '../host/DetailWindowHost';
 import type { InstalledAction } from '../contract.ts';
+import { mirrorRowSelector } from '../host/mirror.ts';
 import { FamilyWidget } from '../host/registry';
-import { gameWindowSelectionAt, openGameWindow, type OpenedGameWindow } from './gameWindowOpen.ts';
+import { gameWindowSelectionAt, openGameWindow } from './gameWindowOpen.ts';
+import { rowScope, useOpenedRow } from './rowSelection.ts';
 import './gameWindowTable.css';
 
 const NO_LINES: readonly string[] = [];
@@ -48,9 +50,8 @@ export default function GameWindowTable<S extends GameWindowSelection>({ window:
   const anchor = useRef<HTMLDivElement>(null);
   const drill = useDrill(runtime, useRegion(widget));
   const dispatch = drill.dispatch;
-  const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, widget.countries]);
-  const [picked, setPicked] = useState<OpenedGameWindow<S> | null>(null);
-  const opened = picked?.scope === scope ? picked : null;
+  const scope = rowScope(track, widget);
+  const [opened, pick, unpick] = useOpenedRow<S>(scope);
   const [inherited, setInherited] = useState<WindowPosition | null>(null);
   const [shownFor, setShownFor] = useState<{ readonly key: string; readonly shown: ShownWindow } | null>(null);
   const openedKey = useRef<string | null>(null);
@@ -60,11 +61,11 @@ export default function GameWindowTable<S extends GameWindowSelection>({ window:
 
   const handOver = useCallback(() => {
     dispatch({ type: 'close' });
-    setPicked(null);
+    unpick();
     setShownFor(null);
     setInherited(null);
     setLines(NO_LINES);
-  }, [dispatch]);
+  }, [dispatch, unpick]);
   const close = useCallback(() => {
     releaseGameWindowSlot(row.kind, slotOwner);
     handOver();
@@ -76,9 +77,9 @@ export default function GameWindowTable<S extends GameWindowSelection>({ window:
     if (!clicked) return;
     const { opened: next, drill: opening } = openGameWindow(scope, key, clicked, WINDOW_BREAKDOWN);
     setInherited(claimGameWindowSlot(row.kind, slotOwner, handOver));
-    setPicked(next);
+    pick(next.key, next.selection);
     dispatch(opening);
-  }, [Window, track, row, slotOwner, handOver, scope, dispatch]);
+  }, [Window, track, row, slotOwner, handOver, scope, pick, dispatch]);
 
   const open = drill.state.breakdown !== null && opened !== null && Window !== null;
   const at = useRegionHour(runtime, drill.region, active && open, undefined, true);
@@ -112,6 +113,7 @@ export default function GameWindowTable<S extends GameWindowSelection>({ window:
       day={shut ? '' : shown ? windowDayLabel(shown) : at === null ? '' : dayLabel(at)}
       placement="center"
       anchor={anchor}
+      returnFocus={opened ? mirrorRowSelector(opened.key) : undefined}
       initialPosition={inherited}
       settled={shown !== null}
       onPositionChange={(position: WindowPosition) => updateGameWindowSlotPosition(row.kind, slotOwner, position)}

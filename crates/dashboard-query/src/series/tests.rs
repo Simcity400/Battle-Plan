@@ -1893,3 +1893,22 @@ fn damaged_derived_version_marker_withholds_table_without_failing_open() {
     let countries_snap = replay_lanes::lanes::at(invalid_boundary.recording(), 0, TableId::Countries, first, None).unwrap();
     assert_eq!(countries_snap.rows.len(), 1);
 }
+
+#[test]
+fn a_missing_span_is_named_at_its_own_hours_and_an_unread_holder_keeps_its_reason() {
+    use crate::identity::{Holder, HolderRun, Holders, NOT_HELD_AT_HOUR};
+    let fixture = Fixture::campaign(Data::Resources);
+    let base = fixture.query();
+    let ger = HolderRun { first: FIRST, last: FIRST + 2_999, holder: Holder::Found { slot: 7, id: 9001 }, starts_segment: true };
+    let unread = (FIRST + 3_000, FIRST + 3_099, "Countries were not read".to_owned());
+    let holders = Holders::new([("GER".to_owned(), vec![ger])].into(), vec![unread]);
+    let query = Query { replay: base.replay, timeline: Arc::clone(&base.timeline), holders: Arc::new(holders) };
+    let line = resources_line(&query, "produced");
+    let country = Country::Slot(7);
+    let parts = line.held(&Ask { country: country.clone(), part: 4 }, FIRST, FIRST + 3_199);
+    let missing = line.missing(country.clone(), FIRST, FIRST + 3_199, &parts).unwrap();
+    let reason_at = |hour: i32| missing.iter().find(|span| span.first_hour <= hour && hour <= span.last_hour).map(|span| span.reason.clone());
+    assert_eq!(reason_at(FIRST).as_deref(), Some("GER's produced was not recorded here"), "a span is named at its own hours, not where the range ends: {missing:?}");
+    assert_eq!(reason_at(FIRST + 3_050), Some(format!("Who holds {} is not known: Countries were not read", country.key())), "an unread holder keeps its reason: {missing:?}");
+    assert_eq!(reason_at(FIRST + 3_150).as_deref(), Some(NOT_HELD_AT_HOUR), "{missing:?}");
+}

@@ -97,7 +97,7 @@ export interface TimeChartSeriesModel {
   readonly icon?: ChartArtSlot;
   readonly missingSpans?: readonly ChartMissingSpan[];
   readonly absentReason?: string | null;
-  readonly exact?: { readonly hour: number; readonly value: number | null; readonly reason?: string } | null;
+  readonly exact?: { readonly hour: number; readonly value: number | null; readonly raw?: bigint; readonly denominator?: bigint; readonly reason?: string } | null;
   readonly rank?: number;
 }
 
@@ -115,6 +115,7 @@ export interface ChartStackBand {
 export interface ChartStackModel {
   readonly hours: readonly number[];
   readonly bands: readonly ChartStackBand[];
+  readonly bandFormat?: ChartValueFormat;
   readonly step?: boolean;
   readonly total?: {
     readonly color?: string;
@@ -196,7 +197,7 @@ export interface ChartHoverDetail {
   readonly replacesSeries?: boolean;
 }
 
-export type ChartValueFormat = 'number' | 'percent' | 'compact' | 'signed1' | 'power';
+export type ChartValueFormat = 'number' | 'share' | 'percent' | 'signedPercent' | 'compact' | 'signed1' | 'power';
 
 export interface ChartYAxisSpec {
   readonly format: ChartValueFormat;

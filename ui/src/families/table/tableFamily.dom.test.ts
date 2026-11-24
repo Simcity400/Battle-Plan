@@ -39,6 +39,9 @@ test('table family plays live with zero React commits, zero layout reads on inst
     assert.equal(played.pauseInstallReads, 0, `zero layout/style reads through pause flush: ${played.pauseInstallReads}`);
     assert.ok(played.installs >= 6, `frames actually installed while playing: ${played.installs}`);
     assert.equal(played.flushedOnPause, true, `mirror immediately flushed to ${played.wantTop} on pause`);
+    const settled = await act<{ mutations: number; installs: number; samePicture: boolean }>('mirrorSyncsOverFrames(100)');
+    t.diagnostic(`100 frames after the pause flush: ${settled.mutations} mirror mutations, ${settled.installs} installs`);
+    assert.equal(settled.mutations, 0, `100 frames that change neither rows, text, selection nor focus touch the mirror zero times: ${settled.mutations}`);
     assert.equal(played.mirrorRows.at(-1)?.key, 'ENG', 'notRecorded row stays last');
     assert.ok(played.mirrorRows.at(-1)?.cells.some(c => c?.includes('Not recorded: ENG factories not recorded')), 'mirror speaks missing reason');
 
@@ -94,9 +97,10 @@ test('table family plays live with zero React commits, zero layout reads on inst
       cdp.close();
     }
 
-    const kbd = await act<{ firstKey: string | null; afterDown: string | null; activated: string[]; liveStatus: string; scrollsSideways: boolean; totalInstallReads: number }>('testKeyboardAndNarrow()');
+    const kbd = await act<{ firstKey: string | null; afterDown: string | null; activated: string[]; liveStatus: string; focusReturned: boolean; scrollsSideways: boolean; totalInstallReads: number }>('testKeyboardAndNarrow()');
     assert.ok(kbd.afterDown !== null && kbd.afterDown !== kbd.firstKey, `S8: ArrowDown moved focus from ${kbd.firstKey} to ${kbd.afterDown}`);
     assert.equal(kbd.activated.length, 1, 'Enter activates focused row');
+    assert.equal(kbd.focusReturned, true, 'closing a window opened from a row returns focus to that row by its key');
     assert.equal(kbd.scrollsSideways, true, 'a narrow table scrolls sideways and shows the right fade');
 
     const r5 = await act<{ opened: boolean; menuLabel: string | null; tipShown: boolean; hasMissingState: boolean; hasKnownState: boolean }>('testEmptySpaceContextMenuAndValueStateTooltip()');

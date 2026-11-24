@@ -1,6 +1,6 @@
 use super::*;
 use replay_data::rows::*;
-use dashboard_follow::live::{CellValue, Cells, GroupState};
+use dashboard_follow::live::Cells;
 use replay_frame::frame::{Metrics, TableView, not_selected};
 
 fn frame(opinions: Vec<RelationOpinionRow>, reads: Vec<SliceReadRow>) -> DecodedFrame {
@@ -8,6 +8,16 @@ fn frame(opinions: Vec<RelationOpinionRow>, reads: Vec<SliceReadRow>) -> Decoded
     *frame.tables[TableId::RelationOpinions.index()] = TableView::Complete(TableRows::RelationOpinions(opinions));
     *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(reads));
     frame
+}
+
+fn shown(pairs: &[OpinionPair]) -> Vec<(u32, u32, Option<i32>)> {
+    pairs
+        .iter()
+        .map(|pair| match pair.cell {
+            OpinionCell::Value { opinion } => (pair.row, pair.column, Some(opinion)),
+            OpinionCell::Missing { .. } => (pair.row, pair.column, None),
+        })
+        .collect()
 }
 
 #[test]
@@ -18,19 +28,16 @@ fn opinions_among_the_chosen_name_unread_and_unheld_countries_as_unknown_never_a
         vec![opinion(1, 2, -20), opinion(1, 9, 50), opinion(2, 1, 10), opinion(9, 1, 5)],
         vec![SliceReadRow { table, owner: 1, sample_hour: 480 }, SliceReadRow { table, owner: 3, sample_hour: 470 }, SliceReadRow { table: table + 1, owner: 4, sample_hour: 490 }],
     );
-    let cells = Cells::default();
-    let owners = opinions(&frame, &[("AAA", Some((1, 1))), ("BBB", Some((2, 2))), ("CCC", Some((3, 3))), ("DDD", Some((4, 4))), ("EEE", None)], &cells).unwrap();
-    let shown: Vec<_> = owners.iter().map(|owner| (owner.tag.as_str(), owner.known)).collect();
-    assert_eq!(shown, vec![("AAA", true), ("BBB", true), ("CCC", true), ("DDD", false), ("EEE", false)]);
+    let (owners, pairs, _) = opinions_matrix(&frame, &[("AAA", Some((1, 1))), ("BBB", Some((2, 2))), ("CCC", Some((3, 3))), ("DDD", Some((4, 4))), ("EEE", None)]);
+    let known: Vec<_> = owners.iter().map(|owner| (owner.tag.as_str(), owner.known)).collect();
+    assert_eq!(known, vec![("AAA", true), ("BBB", true), ("CCC", true), ("DDD", false), ("EEE", false)]);
     assert!(owners[3].reason.is_some() && owners[4].reason.is_some());
-    let live = cells.finish();
-    let values: Vec<CellValue> = live.values(&frame).into_iter().flatten().collect();
-    let json = live.json(&live.values(&frame).into_iter().map(GroupState::Values).collect::<Vec<_>>());
-    assert_eq!(json["rows"], serde_json::json!(["AAA", "BBB", "CCC"]), "unknown owners name no cell");
-    let opinions_group = json["groups"].as_array().unwrap().iter().find(|group| group["table"] == TableId::RelationOpinions.index()).unwrap();
-    assert!(opinions_group["keys"].as_array().unwrap().contains(&serde_json::json!((1u128 << 32 | 2).to_string())));
-    assert!(!opinions_group["keys"].as_array().unwrap().contains(&serde_json::json!((1u128 << 32 | 9).to_string())), "a country not chosen is no column");
-    assert!(values.contains(&CellValue::Number(-20)) && values.contains(&CellValue::Number(480)) && values.contains(&CellValue::Number(470)));
+    assert_eq!((owners[0].read_hour, owners[2].read_hour), (Some(480), Some(470)));
+    assert_eq!(
+        shown(&pairs),
+        vec![(0, 1, Some(-20)), (0, 4, None), (1, 0, Some(10)), (1, 4, None), (2, 4, None)],
+        "only witnessed opinions and the unheld column are pairs; a country not chosen is no column"
+    );
 }
 
 #[test]
@@ -42,17 +49,13 @@ fn an_opinion_listed_under_a_countrys_other_raw_ids_is_its_pair() {
     );
     let link = |id, canonical_slot| CountryLinkRow { id, canonical_slot };
     *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![link(1, 10), link(2, 20), link(7, 10), link(8, 20)]));
-    let cells = Cells::default();
-    let owners = opinions(&frame, &[("AAA", Some((10, 1))), ("BBB", Some((20, 2)))], &cells).unwrap();
-    assert_eq!(owners.iter().map(|owner| (owner.tag.as_str(), owner.known, owner.country_id)).collect::<Vec<_>>(), vec![("AAA", true, Some(1)), ("BBB", false, Some(2))]);
-    let live = cells.finish();
-    let values: Vec<CellValue> = live.values(&frame).into_iter().flatten().collect();
-    assert!(values.contains(&CellValue::Number(35)), "the pair's row under the alias ids is followed");
-    assert!(values.contains(&CellValue::Number(490)), "the owner's read under its alias dates its opinions");
+    let (owners, pairs, _) = opinions_matrix(&frame, &[("AAA", Some((10, 1))), ("BBB", Some((20, 2)))]);
+    assert_eq!(owners.iter().map(|owner| (owner.tag.as_str(), owner.known, owner.country_id, owner.read_hour)).collect::<Vec<_>>(), vec![("AAA", true, Some(1), Some(490)), ("BBB", false, Some(2), None)]);
+    assert_eq!(shown(&pairs), vec![(0, 1, Some(35))], "the pair's row under the alias ids is its opinion");
 }
 
 #[test]
-fn opinions_matrix_computes_exact_cells_and_displayed_only_domain() {
+fn opinions_matrix_lists_witnessed_pairs_only_and_a_displayed_only_domain() {
     let table = TableId::RelationOpinions.index() as u32;
     let frame = frame(
         vec![
@@ -60,19 +63,22 @@ fn opinions_matrix_computes_exact_cells_and_displayed_only_domain() {
             RelationOpinionRow { owner_country: 2, target_country: 1, opinion: 40 },
             RelationOpinionRow { owner_country: 1, target_country: 9, opinion: 200 },
         ],
-        vec![
-            SliceReadRow { table, owner: 1, sample_hour: 480 },
-            SliceReadRow { table, owner: 2, sample_hour: 485 },
-        ],
+        vec![SliceReadRow { table, owner: 1, sample_hour: 480 }, SliceReadRow { table, owner: 2, sample_hour: 485 }],
     );
-    let (owners, cells, domain) = opinions_matrix(&frame, &[("AAA", Some((1, 1))), ("BBB", Some((2, 2))), ("CCC", Some((3, 3)))], &Cells::default()).unwrap();
+    let (owners, pairs, domain) = opinions_matrix(&frame, &[("AAA", Some((1, 1))), ("BBB", Some((2, 2))), ("CCC", Some((3, 3)))]);
     assert_eq!(domain, [-25, 40], "off-matrix country 9 opinion +200 never pollutes displayed domain");
-    assert_eq!(owners[0].read_hour, Some(480));
-    assert_eq!(cells[0], OpinionMatrixCell::Diagonal);
-    assert_eq!(cells[1], OpinionMatrixCell::Value { opinion: -25 });
-    assert_eq!(cells[2], OpinionMatrixCell::Value { opinion: 0 }, "known owner without pair row is exact zero");
-    assert_eq!(cells[3], OpinionMatrixCell::Value { opinion: 40 });
-    assert!(matches!(cells[6], OpinionMatrixCell::Missing { .. }), "unread owner CCC cells are missing, never zero");
+    assert_eq!(shown(&pairs), vec![(0, 1, Some(-25)), (1, 0, Some(40))], "no diagonal and no cell per pair: AAA's opinion of CCC is its known row's zero");
+    assert!(owners[0].known && !owners[2].known, "unread owner CCC's row is not recorded, never zero");
+}
+
+#[test]
+fn a_truncated_opinions_read_keeps_each_witnessed_opinion_and_claims_no_zero() {
+    let table = TableId::RelationOpinions.index() as u32;
+    let mut frame = frame(Vec::new(), vec![SliceReadRow { table, owner: 1, sample_hour: 480 }]);
+    *frame.tables[TableId::RelationOpinions.index()] = TableView::Truncated { rows: TableRows::RelationOpinions(vec![RelationOpinionRow { owner_country: 1, target_country: 2, opinion: 30 }]), missing: 2 };
+    let (owners, pairs, _) = opinions_matrix(&frame, &[("AAA", Some((1, 1))), ("BBB", Some((2, 2)))]);
+    assert_eq!(shown(&pairs), vec![(0, 1, Some(30))], "the witnessed opinion is shown, not refused with the whole matrix");
+    assert!(owners.iter().all(|owner| !owner.known && owner.reason.is_some()), "an opinion not listed may be unread, so no row claims zero");
 }
 
 #[test]

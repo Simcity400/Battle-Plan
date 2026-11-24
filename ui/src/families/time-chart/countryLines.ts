@@ -3,7 +3,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { OptionValue } from '../../dashboard/options';
 import { FutureDataError, type AuxProductSpec, type BoundedReadView, type FamilyPlanContext, type SourceEntry, type SourcePlan } from '../contract.ts';
 import type { HolderRun, HourRanges } from '../holders.ts';
-import { formatScalar, formatShare } from '../valueFormat.ts';
+import { formatCompactRational, formatRational, formatRecordedPercent, formatScalar } from '../valueFormat.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { formatChartAxisValue } from './layout.ts';
@@ -23,6 +23,7 @@ import {
   rankedPanelKeys,
   withinMapOf,
   type HeadReading,
+  type KnownHeadReading,
 } from './seriesHelpers.ts';
 
 export interface CountryLinesMeasure {
@@ -98,10 +99,21 @@ export function formatCountryValue(value: number, format: CountryLinesSpec['form
   if (format === 'compact') return formatChartAxisValue(value, 'compact');
   if (format === 'percent') {
     return digits === null
-      ? formatShare(value / 100)
-      : formatScalar(value, { decimals: digits, maxDecimals: digits, fixedDecimals: true, percent: true });
+      ? formatRecordedPercent(value)
+      : formatScalar(value, { decimals: 0, maxDecimals: digits, fixedDecimals: true, percent: true });
   }
   return formatScalar(value, { decimals: 0, maxDecimals: digits ?? 2 });
+}
+
+function formatCountryReading(reading: KnownHeadReading, format: CountryLinesSpec['format'], digits: number | null = null): string {
+  if (reading.raw !== undefined && reading.denominator !== undefined) {
+    if (format === 'compact') return formatCompactRational(reading.raw, reading.denominator, { maxDecimals: 0 }).text;
+    if (format === 'percent') {
+      return formatRational(reading.raw, reading.denominator, { maxDecimals: digits ?? 5, fixedDecimals: digits !== null, percent: true });
+    }
+    return formatRational(reading.raw, reading.denominator, { maxDecimals: digits ?? 2 });
+  }
+  return formatCountryValue(reading.value, format, digits);
 }
 
 export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAux>): {
@@ -136,7 +148,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
       const detailHour = spec.hover ? hoverHourOf(readView, 'detail') : null;
       const lines: CountryLine[] = [];
       const readings: [string, HeadReading | null][] = [];
-      const format = (value: number) => formatCountryValue(value, spec.format, options.digits);
+      const format = (reading: KnownHeadReading) => formatCountryReading(reading, spec.format, options.digits);
       const series: TimeChartSeriesModel[] = ordered.flatMap((tag, rank) => {
         const isTail = rank >= COLOURED;
         const bounded = drawn?.get(tag) ?? null;
@@ -163,9 +175,9 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
           identities,
           missingSpans: missingSpansOf(bounded),
           rank,
-          endLabel: isTail || headValue === null || !options.endLabels
+          endLabel: isTail || !reading || !('value' in reading) || !options.endLabels
             ? null
-            : { flag, name, fullName: name, value: format(headValue) },
+            : { flag, name, fullName: name, value: format(reading) },
         };
         const secondBounded = secondLines?.get(tag);
         if (!options.second || !secondBounded) return [main];

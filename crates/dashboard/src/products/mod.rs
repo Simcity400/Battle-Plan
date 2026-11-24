@@ -83,6 +83,7 @@ const OWN: &[Registered] = &[
     dashboard_air::registrations::AIRCRAFT_CATALOGUE_AIRCRAFTCATALOGUE,
     dashboard_world::registrations::ARTWORK_SPRITEARTWORK,
     dashboard_land::registrations::ARMY_ARMYSIZE,
+    dashboard_land::registrations::ARMY_ARMYBREAKDOWN,
     dashboard_world::registrations::IDENTITIES_COUNTRYIDENTITIES,
     dashboard_world::registrations::STYLES_COUNTRYFACTS,
     dashboard_world::registrations::STYLES_COUNTRYSTYLES,
@@ -163,7 +164,7 @@ const OWN: &[Registered] = &[
     dashboard_production::registrations::STOCKPILE_EQUIPMENTSTOCKPILELINES,
     dashboard_wars::registrations::FACTION_STATE_HISTORY_FACTIONSTATE,
     dashboard_wars::registrations::WARS_WARS,
-    dashboard_wars::registrations::WARS_WARLOSSES,
+    dashboard_wars::registrations::WARS_WARTIMELINEAT,
     dashboard_research::registrations::SPECIAL_PROJECTS_SPECIALPROJECTS,
     dashboard_air::registrations::AIR_SUPERIORITY_AIRSUPERIORITYCHOICES,
     dashboard_land::registrations::COMBAT_LOG_COMBATLOG,
@@ -176,6 +177,7 @@ const OWN: &[Registered] = &[
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDCOUNTRY,
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDAT,
     dashboard_politics::registrations::POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN,
+    dashboard_politics::registrations::POWER_LEDGER_MARKERS_POWERSPENDMARKERS,
     dashboard_air::registrations::AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE,
     dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGETYPETOKENS,
 ];
@@ -185,6 +187,7 @@ pub static PRODUCTS: &[Registered] = &ALL;
 
 const MOVED_OWN: &[&str] = &[
     dashboard_land::registrations::ARMY_ARMYSIZE.key,
+    dashboard_land::registrations::ARMY_ARMYBREAKDOWN.key,
     dashboard_world::registrations::IDENTITIES_COUNTRYIDENTITIES.key,
     dashboard_world::registrations::STYLES_COUNTRYFACTS.key,
     dashboard_world::registrations::STYLES_COUNTRYSTYLES.key,
@@ -265,7 +268,7 @@ const MOVED_OWN: &[&str] = &[
     dashboard_production::registrations::STOCKPILE_EQUIPMENTSTOCKPILELINES.key,
     dashboard_wars::registrations::FACTION_STATE_HISTORY_FACTIONSTATE.key,
     dashboard_wars::registrations::WARS_WARS.key,
-    dashboard_wars::registrations::WARS_WARLOSSES.key,
+    dashboard_wars::registrations::WARS_WARTIMELINEAT.key,
     dashboard_research::registrations::SPECIAL_PROJECTS_SPECIALPROJECTS.key,
     dashboard_air::registrations::AIR_SUPERIORITY_AIRSUPERIORITYCHOICES.key,
     dashboard_land::registrations::COMBAT_LOG_COMBATLOG.key,
@@ -278,6 +281,7 @@ const MOVED_OWN: &[&str] = &[
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDCOUNTRY.key,
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDAT.key,
     dashboard_politics::registrations::POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN.key,
+    dashboard_politics::registrations::POWER_LEDGER_MARKERS_POWERSPENDMARKERS.key,
     dashboard_air::registrations::AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE.key,
     dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGETYPETOKENS.key,
 ];

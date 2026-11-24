@@ -55,7 +55,6 @@ export type {
 export {
   BoundedSeriesCursor,
   boundTiledSeries,
-  clipMarks,
   clipMissingSpans,
   clipRuns,
   createBoundedReadView,
@@ -65,7 +64,6 @@ export {
   emptyReadView,
   emptySlice,
   FutureDataError,
-  sliceMarks,
   sliceMissingSpans,
   sliceRuns,
   sliceSpansByHour,

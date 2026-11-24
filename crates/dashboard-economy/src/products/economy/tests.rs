@@ -340,50 +340,52 @@ mod market {
     fn recording() -> Source {
         open(
             (FIRST..=LAST)
-                .map(|hour| {
-                    let mut frame = source(1, hour, Some(1));
-                    let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
-                    countries.push(CountryRow { id: FRA, canonical_slot: 3, tag: b"FRA".to_vec(), ..CountryRow::default() });
-                    countries.sort_by_key(|row| row.id);
-                    set::<tables::Countries>(&mut frame, countries);
-                    let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
-                    links.push(CountryLinkRow { id: FRA, canonical_slot: 3 });
-                    links.sort_by_key(|row| row.id);
-                    set::<tables::CountryLinks>(&mut frame, links);
-                    set::<tables::LexicalTokens>(&mut frame, Vec::new());
-                    set::<tables::VariantDefinitions>(&mut frame, Vec::new());
-                    set::<tables::CountryMarket>(&mut frame, vec![
-                        CountryMarketRow { country: FRA, inventory: equipment(5, 300_000), ..CountryMarketRow::default() },
-                        CountryMarketRow { country: GER, inventory: equipment(6, i64::from(hour) * 100_000), subsidy_total_raw: 7, ..CountryMarketRow::default() },
-                    ]);
-                    set::<tables::MarketContractTerms>(&mut frame, vec![
-                        MarketContractTermsRow { country: FRA, id: 0x51, kind: 1, buyer: GER, speed: 2, equipment: equipment(5, 100_000), ..MarketContractTermsRow::default() },
-                        MarketContractTermsRow { country: FRA, id: 0x52, kind: 0, buyer: 77, ..MarketContractTermsRow::default() },
-                    ]);
-                    if hour == UNREAD {
-                        *frame.tables[TableId::PurchaseContracts.index()] = TableView::Unavailable { reason: "purchases unreadable".into() };
-                    } else {
-                        set::<tables::PurchaseContracts>(&mut frame, vec![PurchaseContractRow {
-                            id: 0x51,
-                            seller: FRA,
-                            buyer: GER,
-                            convoys_assigned: 2,
-                            convoys_total: 3,
-                            collected_raw: i64::from(hour) * 1_000,
-                            completed_deliveries: 1,
-                            ..PurchaseContractRow::default()
-                        }]);
-                    }
-                    let leases = if hour < ENDS {
-                        vec![LendLeaseAgreementRow { country: GER, id: 9, receiver: FRA, active_since: FIRST, monthly: equipment(6, 50_000), fuel_sent_raw: i64::from(hour) * 32_768, ..LendLeaseAgreementRow::default() }]
-                    } else {
-                        Vec::new()
-                    };
-                    set::<tables::LendLeaseAgreements>(&mut frame, leases);
-                    frame
-                })
+                .map(frame)
                 .collect(),
         )
+    }
+
+    fn frame(hour: i32) -> DecodedFrame {
+        let mut frame = source(1, hour, Some(1));
+        let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
+        countries.push(CountryRow { id: FRA, canonical_slot: 3, tag: b"FRA".to_vec(), ..CountryRow::default() });
+        countries.sort_by_key(|row| row.id);
+        set::<tables::Countries>(&mut frame, countries);
+        let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
+        links.push(CountryLinkRow { id: FRA, canonical_slot: 3 });
+        links.sort_by_key(|row| row.id);
+        set::<tables::CountryLinks>(&mut frame, links);
+        set::<tables::LexicalTokens>(&mut frame, Vec::new());
+        set::<tables::VariantDefinitions>(&mut frame, Vec::new());
+        set::<tables::CountryMarket>(&mut frame, vec![
+            CountryMarketRow { country: FRA, inventory: equipment(5, 300_000), ..CountryMarketRow::default() },
+            CountryMarketRow { country: GER, inventory: equipment(6, i64::from(hour) * 100_000), subsidy_total_raw: 7, ..CountryMarketRow::default() },
+        ]);
+        set::<tables::MarketContractTerms>(&mut frame, vec![
+            MarketContractTermsRow { country: FRA, id: 0x51, kind: 1, buyer: GER, speed: 2, equipment: equipment(5, 100_000), ..MarketContractTermsRow::default() },
+            MarketContractTermsRow { country: FRA, id: 0x52, kind: 0, buyer: 77, ..MarketContractTermsRow::default() },
+        ]);
+        if hour == UNREAD {
+            *frame.tables[TableId::PurchaseContracts.index()] = TableView::Unavailable { reason: "purchases unreadable".into() };
+        } else {
+            set::<tables::PurchaseContracts>(&mut frame, vec![PurchaseContractRow {
+                id: 0x51,
+                seller: FRA,
+                buyer: GER,
+                convoys_assigned: 2,
+                convoys_total: 3,
+                collected_raw: i64::from(hour) * 1_000,
+                completed_deliveries: 1,
+                ..PurchaseContractRow::default()
+            }]);
+        }
+        let leases = if hour < ENDS {
+            vec![LendLeaseAgreementRow { country: GER, id: 9, receiver: FRA, active_since: FIRST, monthly: equipment(6, 50_000), fuel_sent_raw: i64::from(hour) * 32_768, ..LendLeaseAgreementRow::default() }]
+        } else {
+            Vec::new()
+        };
+        set::<tables::LendLeaseAgreements>(&mut frame, leases);
+        frame
     }
 
     fn without_live(mut reply: Value) -> Value {
@@ -421,6 +423,45 @@ mod market {
         assert_eq!(side("received")["agreements"], json!([]), "GER receives nothing");
         let ended = asked::<MarketLendLease>(&source, params, ENDS).unwrap();
         assert_eq!(ended["agreements"], json!([]));
+    }
+
+    #[test]
+    fn a_detail_reads_the_clicked_row_by_its_full_recorded_key_even_when_its_seller_is_not_named() {
+        const LINKS_UNREAD: i32 = 115;
+        let source = open(
+            (FIRST..=LAST)
+                .map(|hour| {
+                    let mut frame = frame(hour);
+                    let mut terms = frame.complete::<tables::MarketContractTerms>().unwrap().to_vec();
+                    terms.push(MarketContractTermsRow { country: GER, id: 0x52, kind: 0, buyer: FRA, speed: 9, ..MarketContractTermsRow::default() });
+                    terms.sort_by_key(|row| (row.country, row.id, row.kind));
+                    set::<tables::MarketContractTerms>(&mut frame, terms);
+                    if hour == LINKS_UNREAD {
+                        *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable { reason: "links unreadable".into() };
+                    }
+                    frame
+                })
+                .collect(),
+        );
+        let key = |seller: u32, id: u128, kind: u128| (u128::from(seller) << 72 | id << 8 | kind).to_string();
+        let row = |only: &str, row: String, hour: i32| asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": [], "only": only, "row": row }), hour).unwrap();
+        let german = row("contracts", key(GER, 0x52, 0), 110);
+        let contracts = german["contracts"].as_array().unwrap();
+        assert_eq!(contracts.len(), 1, "two sellers share request id 0x52: only the clicked seller's is read");
+        assert_eq!((contracts[0]["seller"].as_str(), contracts[0]["speed"].as_i64()), (Some("GER"), Some(9)));
+        let french = row("contracts", key(FRA, 0x52, 0), 110);
+        assert_eq!(french["contracts"][0]["seller"], "FRA");
+        assert_eq!(french["contracts"][0]["buyer"], Value::Null);
+        let unnamed = row("offers", FRA.to_string(), LINKS_UNREAD);
+        let offers = unnamed["offers"].as_array().unwrap();
+        assert_eq!(offers.len(), 1, "an offer whose seller cannot be named at the hour still opens from its raw seller");
+        assert_eq!((offers[0]["country"].as_u64(), offers[0]["tag"].is_null()), (Some(u64::from(FRA)), true));
+        assert_eq!(offers[0]["inventory"][0]["variant"], "5");
+        let every = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": [], "only": "offers" }), LINKS_UNREAD).unwrap();
+        assert_eq!(every["offers"].as_array().unwrap().len(), 2, "under All, witnessed offers are kept when countries are unread");
+        let chosen = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["GER"], "only": "offers" }), LINKS_UNREAD).unwrap();
+        assert_eq!((chosen["offers"].as_array().unwrap().len(), chosen["unattributed"].as_u64()), (0, Some(2)), "a chosen country cannot be matched: the rows are counted, not dropped silently");
+        assert!(row("contracts", key(FRA, 0x53, 0), 110)["contracts"].as_array().unwrap().is_empty(), "a key with no row at the hour is no row");
     }
 
     #[test]
