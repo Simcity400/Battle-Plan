@@ -175,6 +175,7 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly audit: boolean;
   readonly auditId: number | undefined;
   readonly pauseFlush: number;
+  readonly window?: FamilyRowWindow | null;
 }
 
 export interface FamilyAuditContext<TSettings = unknown> {
@@ -240,6 +241,7 @@ export interface FamilyBaseBinding<TOptions = unknown> extends FamilyBindingIden
   readonly audit: boolean;
   readonly auditId?: number;
   readonly pauseFlush: number;
+  readonly window?: FamilyRowWindow;
 }
 
 export type FamilyBindingExtras<TBinding> = Omit<TBinding, keyof FamilyBaseBinding>;
@@ -268,8 +270,20 @@ export function familyBinding<TOptions, TBinding, TSettings>(
     audit: ctx.audit,
     ...(ctx.auditId !== undefined ? { auditId: ctx.auditId } : {}),
     pauseFlush: ctx.pauseFlush,
+    ...(ctx.window ? { window: ctx.window } : {}),
   };
-  return { ...base, ...extras } as TBinding & FamilyBaseBinding<TOptions>;
+  return { ...extras, ...base } as TBinding & FamilyBaseBinding<TOptions>;
+}
+
+export function requestedRowWindow<TSettings>(
+  adapter: Pick<FamilyHostAdapter<any, any, any, TSettings>, 'rowWindow'>,
+  plan: SourcePlan | null,
+  viewport: FamilyViewportState,
+  settings: TSettings | undefined,
+  fields: Readonly<Record<string, unknown>>,
+): FamilyRowWindow | null {
+  if (!adapter.rowWindow || !plan || !plan.entries.some(entry => entry.read.shape === 'paged-rows')) return null;
+  return adapter.rowWindow(viewport, settings, fields);
 }
 
 export function parseFamilyHit(adapter: Pick<FamilyHostAdapter, 'parseHit'>, hitKey: string | null): ParsedFamilyHit | null {
@@ -293,6 +307,7 @@ export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBindin
   readonly chromeState?: (fields: Readonly<Record<string, unknown>>, previous: unknown) => unknown;
   readonly auditOwnerId?: number;
   readonly defaultSize?: readonly [width: number, height: number];
+  readonly rowWindow?: (viewport: FamilyViewportState, settings: TSettings | undefined, fields: Readonly<Record<string, unknown>>) => FamilyRowWindow | null;
   readonly buildBinding?: (ctx: FamilyBindingContext<TOptions, TSettings>) => FamilyBindingExtras<TBinding> | null;
   readonly parseHit?: (hitKey: string | null) => ParsedFamilyHit | null;
   readonly inspectToken?: (key: string) => string;

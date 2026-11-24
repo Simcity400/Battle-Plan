@@ -61,18 +61,3 @@ export function estimateHour(shown: { texts: ReadonlyMap<string, string>; hour: 
   const read = asked.slots.find(held => held.index === slot);
   return !read || read.state.token !== token || read.state.details?.remainingDays == null ? asked.hour : effectiveHour(read, asked.hour);
 }
-
-export interface SlotInspection { fraction: number | null; left: number | null; hour: number; token?: string | null }
-
-export function inspectedSlot(shown: { texts: ReadonlyMap<string, string>; hour: number; data: { slots: readonly { index: number; state: { token: string | null } }[] } | undefined } | undefined,
-  slot: number): SlotInspection | undefined {
-  if (!shown) return undefined;
-  const values = slotInspection(shown.texts, slot, shown.hour) ?? { fraction: null, left: null, hour: shown.hour };
-  return { ...values, token: shown.data?.slots.find(read => read.index === slot)?.state.token };
-}
-
-export function slotInspection(texts: ReadonlyMap<string, string> | undefined, slot: number, hour: number | null): SlotInspection | undefined {
-  const bar = texts?.get(slot + ':bar'), left = texts?.get(slot + ':left');
-  if (bar === undefined || left === undefined || hour === null) return undefined;
-  return { fraction: bar === '' ? null : Number(bar), left: left === '' ? null : Number(left), hour };
-}

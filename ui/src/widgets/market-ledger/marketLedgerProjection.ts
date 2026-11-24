@@ -16,7 +16,7 @@ import {
   urlArtHandle,
 } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
@@ -133,7 +133,7 @@ function deliveredCell(items: readonly MarketContractItem[]): TableCell {
 
 function paidCell(contract: MarketContractRow, sign: -1 | 0 | 1): TableCell {
   if (contract.paidNotRecorded) return { value: notRecorded('Payment amount was not recorded') };
-  if (contract.paidRaw === null) return { value: notApplicable('No payments yet') };
+  if (contract.paidRaw === null) return { value: notApplicable('No payments yet'), blank: true };
   return {
     value: knownValue(formatCic(contract.paidRaw, sign)),
     unitSuffix: 'CIC',
@@ -290,7 +290,7 @@ function buildContractRow(
   };
 }
 
-export const marketLedgerProjection: TableProjection<MarketLedgerProjectionOptions> = registerTableProjection({
+export const marketLedgerProjection: TableProjection<MarketLedgerProjectionOptions> = registerFamilyProjection({
   kind: 'market-ledger',
   family: 'table',
   project(readView, options): TableModel {
@@ -396,7 +396,8 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
   projectionOptions(ctx): MarketLedgerProjectionOptions {
     const all = ctx.countries.all;
     const tags = all ? null : ctx.countries.tags;
-    const perspective = tags && tags.length === 1 ? tags[0]! : null;
+    const ref = tags && tags.length === 1 ? countryFromKey(tags[0]!) : null;
+    const perspective = typeof ref === 'string' ? ref : null;
     const selectionEmpty = !all && (!tags || tags.length === 0)
       ? (ctx.widget.countries.kind === 'group' || ctx.widget.countries.kind === 'factions'
           ? 'This group has no members in this campaign.'

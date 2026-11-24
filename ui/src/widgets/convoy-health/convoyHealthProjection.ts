@@ -348,8 +348,8 @@ export function projectConvoyHealth(readView: BoundedReadView, options: ConvoyPr
     rows,
     ...(now.view === 'regions' ? { regions: regionLanes(subject) } : {}),
     inspect: (rowIndex, at) => built[rowIndex]?.inspect(at) ?? null,
-    ...(rows.length ? {} : now.unranked ? { empty: now.unranked, emptyKind: 'unavailable' as const } : { empty: `${now.view === 'regions' ? 'No convoys' : 'No convoyed trade'} for ${subject ?? 'this country'} at this date.` }),
-    warnings: [...new Set([...tiles, now].flatMap(reply => reply.warnings).concat(rows.length && now.unranked ? [now.unranked] : []))],
+    ...(rows.length ? {} : now.rankMissing ? { empty: now.rankMissing, emptyKind: 'unavailable' as const } : { empty: `${now.view === 'regions' ? 'No convoys' : 'No convoyed trade'} for ${subject ?? 'this country'} at this date.` }),
+    warnings: [...new Set([...tiles, now].flatMap(reply => reply.warnings).concat(rows.length && now.rankMissing ? [now.rankMissing] : []))],
   };
 }
 
@@ -381,7 +381,7 @@ export const convoyHealthDeclaration: HeatLanesWidgetDeclaration<ConvoyProjectio
     const regions: Record<string, unknown> = view === 'regions' ? regionParams(readRegionChoice(ctx.options.regions)) : {};
     const params = { branchId: ctx.branch.id, view, country: countryFromKey(ctx.countryTag), from: null, to: null };
     const shown = view === 'regions' ? { ...params, ...regions, top } : params;
-    const { pinnedRegions: _pinned, hiddenRegions: _hidden, ...unranked } = regions;
+    const { pinnedRegions: _pinned, hiddenRegions: _hidden, ...rankMissing } = regions;
     return {
       owner: `convoy-health:${JSON.stringify(shown)}`,
       entries: dayTileEntries(ctx, {
@@ -393,7 +393,7 @@ export const convoyHealthDeclaration: HeatLanesWidgetDeclaration<ConvoyProjectio
           validThrough: data => (data as ConvoyHealthReply | undefined)?.validThrough ?? null,
         },
         tile: {
-          params: view === 'regions' ? { ...params, ...unranked, every: true } : params,
+          params: view === 'regions' ? { ...params, ...rankMissing, every: true } : params,
           coverage: { mode: 'population', form: 'all' },
           span: (base, first, last) => ({ ...base, from: first, to: last }),
         },

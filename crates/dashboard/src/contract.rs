@@ -1,4 +1,4 @@
-use crate::{answer, panel, products};
+use crate::{answer, products};
 
 pub fn typescript_contract() -> String {
     use dashboard_core::{QueryError, dto::*, map_display, map_settings, protocol, transport};
@@ -74,6 +74,9 @@ pub fn typescript_contract() -> String {
         dashboard_query::series::ranked::SeriesRankMeasure::decl(),
         dashboard_query::series::ranked::SeriesRankRow::decl(),
         dashboard_query::series::ranked::SeriesRankReply::decl(),
+        dashboard_query::series::ranked::GroupKind::decl(),
+        dashboard_query::series::ranked::GroupMembership::decl(),
+        dashboard_query::series::ranked::GroupSelection::decl(),
         army::ArmyChartLine::decl(),
         army::ArmyChartReply::decl(),
     ];
@@ -214,15 +217,6 @@ pub fn request_paths() -> std::collections::BTreeMap<String, std::collections::B
     for (head, _, walk) in dashboard_players::products::player_apm::head::HEADS {
         table.insert(format!("head:{head}"), paths(walk(), false));
     }
-    aliased(table)
-}
-
-fn aliased<T: Clone>(mut table: std::collections::BTreeMap<String, T>) -> std::collections::BTreeMap<String, T> {
-    for (alias, product) in panel::PANEL_ALIASES {
-        if let Some(row) = table.get(*product).cloned() {
-            table.insert((*alias).to_owned(), row);
-        }
-    }
     table
 }
 
@@ -242,7 +236,7 @@ pub fn request_fields() -> std::collections::BTreeMap<String, Vec<(&'static str,
     for (head, fields, _) in dashboard_players::products::player_apm::head::HEADS {
         table.insert(format!("head:{head}"), dated(fields));
     }
-    aliased(table)
+    table
 }
 
 #[derive(Default)]

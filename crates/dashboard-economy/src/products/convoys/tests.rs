@@ -272,7 +272,7 @@ fn the_automatic_regions_are_ranked_at_the_asked_hour_and_every_lists_each_regio
     assert_eq!(today.regions.iter().map(|r| r.region).collect::<Vec<_>>(), vec![18], "at hour 30, 18 loses more, whatever the day before held");
     assert_eq!(today.valid_through, 47, "the order and every cell hold to the end of the day");
     assert!(today.regions[0].cells.iter().all(|cell| cell.first_hour >= 24 && cell.last_hour <= 30));
-    assert_eq!(today.unranked, None);
+    assert_eq!(today.rank_missing, None);
     let before = health_of(&source, &ConvoyHealthParams { top: Some(2), ..regions(0, 23) });
     assert_eq!(before.regions.iter().map(|r| r.region).collect::<Vec<_>>(), vec![17, 18], "most loss first, a full route after it");
     assert_eq!(before.valid_through, 23, "both readings change at hour 24");
@@ -284,6 +284,6 @@ fn the_automatic_regions_are_ranked_at_the_asked_hour_and_every_lists_each_regio
 #[test]
 fn an_hour_whose_convoy_state_is_not_recorded_ranks_no_automatic_region_and_says_why() {
     let reply = health_of(&gapped(), &ConvoyHealthParams { top: Some(7), pinned_regions: Some(vec![17]), ..regions(24, 30) });
-    assert!(reply.unranked.is_some());
+    assert!(reply.rank_missing.is_some());
     assert_eq!(reply.regions.iter().map(|r| (r.region, r.pinned)).collect::<Vec<_>>(), vec![(17, true)], "the pin stays");
 }

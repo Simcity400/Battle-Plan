@@ -2,13 +2,15 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { liveKey } from '../../charts/live.ts';
 import { engineHour, firstHourOfMonth } from '../../dashboard/calendar.ts';
-import { createBoundedReadView } from '../../families/boundedView.ts';
+import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
+import type { InstalledPicture } from '../../families/plan.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from '../../families/time-chart/hitTest.ts';
+import { parseTimeChartHit, timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import { chartNavStops } from '../../families/time-chart/laneView.ts';
 import { layoutTimeChart } from '../../families/time-chart/layout.ts';
 import type { MeasureText } from '../../charts/textWidth.ts';
 import type { ArmyLossesReply } from '../../generated/dashboard';
-import { armyLossesProjection, monthOfHour } from './armyLossesProjection.ts';
+import { armyLossesProjection, monthOfHour, resolveArmyMonthDetail } from './armyLossesProjection.ts';
 
 const H1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
 const H1941_SEP15 = engineHour({ year: 1941, month: 9, day: 15, hour: 1 })!;
@@ -144,5 +146,148 @@ describe('army-losses-by-month projection (acceptance cases 1-9)', () => {
     const hit = hitTestTimeChart(model, layout, [sepCol.x + sepCol.width / 2, layout.top + 20]);
     const tip = deriveTimeChartTooltip(model, layout, hit);
     assert.equal(tip?.payload?.items?.at(-1)?.value, '90,000');
+  });
+
+  it('S6: partial bar activation carries installed frame hour, clicked month, and installed country separately', () => {
+    const sep = 1941 * 12 + 8;
+    const model = armyLossesProjection.project(
+      createBoundedReadView({ hour: H1941_SEP15, panels: new Map([['main', makeReply()]]) }),
+      {
+        measure: 'equipment',
+        ledger: 'attrition',
+        stack: 'type',
+        foldUnrecorded: true,
+        countryKey: 'GER',
+        countryName: 'German Reich',
+        following: true,
+        extent: [H1936, H1941_SEP15],
+      } as Parameters<typeof armyLossesProjection.project>[1],
+    );
+    const layout = layoutTimeChart(model, 720, 260, 'Segoe UI', measure);
+    const sepCol = layout.columns.at(-1)!;
+    const hitKey = hitTestTimeChart(model, layout, [sepCol.x + sepCol.width / 2, layout.top + 20]);
+    const parsed = parseTimeChartHit(hitKey);
+    assert.ok(parsed);
+    const installed: InstalledPicture = {
+      id: 1,
+      owner: 'army-losses:s:1:b:GER',
+      generation: { seek: 0, reset: 0, binding: 1 },
+      hour: displayedHour(H1941_SEP15),
+      factRevisions: {},
+      validInterval: [H1941_SEP15, H1941_SEP15],
+      through: H1941_SEP15,
+      viewport: { width: 720, height: 260, dpr: 1, scrollTop: 0, scrollLeft: 0 },
+      optionsRevision: '1',
+      themeRevision: '1',
+      actionKeys: new Map(),
+      accessibleDescription: null,
+    };
+    const action = timeChartHostAdapter.resolveHitAction?.(parsed, installed, { meta: { subject: model.subject } });
+    assert.ok(action, 'timeChartHostAdapter must resolve month activation from installed picture');
+    assert.equal(action.hour, H1941_SEP15, 'frame hour must be installed displayed hour (15 Sep), not 1 Sep');
+    assert.equal((action.meta as { monthFirstHour?: number } | undefined)?.monthFirstHour, firstHourOfMonth(sep));
+    assert.equal((action.meta as { country?: string } | undefined)?.country, 'GER');
+
+    const emptyLive = { get: () => undefined, missing: () => 'missing' };
+    const unreadDetail = resolveArmyMonthDetail(
+      makeReply({
+        monthDetail: { month: sep, firstHour: firstHourOfMonth(sep), lastHour: firstHourOfMonth(sep + 1) - 1, missing: 'incomplete read', armies: [] },
+        availability: { armies: null, manpower: null, months: null, ownEquipment: 'incomplete read', enemyEquipment: null },
+      }),
+      'equipment',
+      'attrition',
+      emptyLive,
+    );
+    assert.equal(unreadDetail.kind, 'unavailable', 'unread table reports unavailable, never empty');
+    if (unreadDetail.kind === 'unavailable') assert.equal(unreadDetail.reason, 'incomplete read');
+
+    const withTotal = resolveArmyMonthDetail(
+      makeReply({
+        monthDetail: {
+          month: sep,
+          firstHour: firstHourOfMonth(sep),
+          lastHour: firstHourOfMonth(sep + 1) - 1,
+          missing: null,
+          armies: [
+            {
+              army: { reference: 'a1', ordinal: 0, name: '1. Armee', nameMissing: null, parent: null, parentName: null, parentMissing: null },
+              manpower: null,
+              manpowerLiveRow: null,
+              selectedTotalRaw: '350000',
+              selectedLiveRow: 'sel:a1',
+              selectedMissing: null,
+              ledgers: [],
+            },
+            {
+              army: { reference: 'a2', ordinal: 1, name: '2. Armee', nameMissing: null, parent: null, parentName: null, parentMissing: null },
+              manpower: null,
+              manpowerLiveRow: null,
+              selectedTotalRaw: null,
+              selectedLiveRow: null,
+              selectedMissing: 'Combat Log equipment of this hour was not read',
+              ledgers: [],
+            },
+          ],
+        },
+      }),
+      'equipment',
+      'attrition',
+      { get: key => (key === liveKey('sel:a1', 'amount') ? 500000n : undefined), missing: () => 'missing' },
+    );
+    assert.equal(withTotal.kind, 'rows');
+    if (withTotal.kind === 'rows') {
+      assert.equal(withTotal.rows[0]?.equipmentText, '5');
+      assert.equal(withTotal.rows[1]?.equipmentText, null);
+      assert.equal(withTotal.rows[1]?.equipmentMissing, 'Combat Log equipment of this hour was not read');
+    }
+  });
+
+  it('S21: binds archetype and army-group colours to stable identity, not current loss rank', () => {
+    const may = 1941 * 12 + 4;
+    const baseOpts = {
+      measure: 'equipment' as const,
+      ledger: 'combat' as const,
+      stack: 'type' as const,
+      foldUnrecorded: true,
+      countryName: 'German Reich',
+      following: true,
+      extent: [H1936, H1941_SEP15] as readonly [number, number],
+    };
+    const orderA = makeReply({
+      rollup: {
+        unitScale: 100000,
+        wrapI32: false,
+        parts: [
+          { key: 'archetype:infantry_equipment', label: 'Infantry Equipment', otherCount: 0 },
+          { key: 'archetype:artillery_equipment', label: 'Artillery', otherCount: 0 },
+          { key: 'other', label: 'Other (2)', otherCount: 2 },
+        ],
+        months: [
+          { month: may, firstHour: firstHourOfMonth(may), lastHour: firstHourOfMonth(may + 1) - 1, liveRow: null, missing: null, values: ['500000', '300000', '100000'], total: '900000' },
+        ],
+      },
+    });
+    const orderB = makeReply({
+      rollup: {
+        unitScale: 100000,
+        wrapI32: false,
+        parts: [
+          { key: 'archetype:artillery_equipment', label: 'Artillery', otherCount: 0 },
+          { key: 'archetype:infantry_equipment', label: 'Infantry Equipment', otherCount: 0 },
+          { key: 'other', label: 'Other (2)', otherCount: 2 },
+        ],
+        months: [
+          { month: may, firstHour: firstHourOfMonth(may), lastHour: firstHourOfMonth(may + 1) - 1, liveRow: null, missing: null, values: ['300000', '500000', '100000'], total: '900000' },
+        ],
+      },
+    });
+    const modelA = armyLossesProjection.project(createBoundedReadView({ hour: H1941_SEP15, panels: new Map([['main', orderA]]) }), baseOpts);
+    const modelB = armyLossesProjection.project(createBoundedReadView({ hour: H1941_SEP15, panels: new Map([['main', orderB]]) }), baseOpts);
+    const segColor = (m: typeof modelA, id: string) => m.columns!.months.find(mo => mo.year === 1941 && mo.month === 5)!.segments.find(s => s.id === id)!.color;
+    const legColor = (m: typeof modelA, id: string) => m.legend!.find(l => l.id === id)!.color;
+    assert.equal(segColor(modelA, 'archetype:infantry_equipment'), segColor(modelB, 'archetype:infantry_equipment'), 'infantry colour must stay identical when rank swaps');
+    assert.equal(segColor(modelA, 'archetype:artillery_equipment'), segColor(modelB, 'archetype:artillery_equipment'), 'artillery colour must stay identical when rank swaps');
+    assert.equal(legColor(modelA, 'archetype:infantry_equipment'), legColor(modelB, 'archetype:infantry_equipment'));
+    assert.equal(legColor(modelA, 'archetype:artillery_equipment'), legColor(modelB, 'archetype:artillery_equipment'));
   });
 });

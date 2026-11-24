@@ -41,6 +41,17 @@ const WORLD_TENSION_RACE_OPTIONS = WORLD_TENSION_OPTIONS.filter(field => field.k
 
 export const BARS_VIEWS: readonly FamilyViewEntry[] = [
   {
+    kind: 'war-contribution',
+    view: 'measure',
+    label: 'By measure',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../war-contribution/measureProjection.ts').then(m => ({
+      family: 'bars', kind: 'war-contribution', view: 'measure',
+      projection: m.warContributionMeasureProjection, declaration: m.warContributionMeasureDeclaration,
+    })),
+  },
+  {
     kind: 'air-force-size',
     view: 'mix',
     label: 'Mix',
@@ -95,6 +106,15 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     loadSpec: () => import('../air-kills-losses/airKillsLossesProjection.ts').then(mod => ({
       family: 'bars', kind: 'air-kills-losses', view: 'paired',
       projection: mod.airKillsLossesPairedProjection, declaration: mod.airKillsLossesPairedDeclaration,
+    })),
+  },
+  {
+    kind: 'air-statistics',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: () => import('../air-statistics/airStatisticsProjection.ts').then(mod => ({
+      family: 'bars', kind: 'air-statistics', view: DEFAULT_VIEW,
+      projection: mod.airStatisticsProjection, declaration: mod.airStatisticsDeclaration,
     })),
   },
   {

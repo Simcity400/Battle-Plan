@@ -10,10 +10,9 @@ import type { MissingSpan, TilePart } from '../generated/dashboard';
 import { BoundedSeriesCursor, type WitnessedPoint } from './boundedView.ts';
 import type { BoundedReadView, BoundedSeries } from './contract.ts';
 import { sceneReadView, type SceneSources } from './scene.ts';
-import { knownValue } from './value.ts';
+import { knownValue, valueFromWireCell, type Value } from './value.ts';
 
 export interface SerializedTiledLine {
-  readonly rev: number;
   readonly source: string;
   readonly tag: string;
   readonly head: string;
@@ -38,14 +37,15 @@ export interface SeriesHeadSource {
 }
 
 export interface TiledSources {
-  readonly tiledLines?: readonly SerializedTiledLine[];
-  readonly keepTiled?: readonly number[];
-  readonly tiledBySource?: Readonly<Record<string, Readonly<Record<string, number>>>>;
+  readonly tiledBySource?: Readonly<Record<string, Readonly<Record<string, SerializedTiledLine>>>>;
   readonly headSourceBySeries?: Readonly<Record<string, SeriesHeadSource>>;
 }
 
+const hydrated = new WeakMap<SerializedTiledLine, TiledLine>();
+
 function hydrateTiledLine(raw: SerializedTiledLine): TiledLine {
-  return {
+  let line = hydrated.get(raw);
+  if (!line) hydrated.set(raw, line = {
     tag: raw.tag,
     head: raw.head,
     decimals: raw.decimals,
@@ -60,7 +60,8 @@ function hydrateTiledLine(raw: SerializedTiledLine): TiledLine {
     missing: [...raw.missing],
     parts: [...raw.parts],
     marks: raw.marks,
-  };
+  });
+  return line;
 }
 
 const rowIndexes = new WeakMap<readonly string[], ReadonlyMap<string, number>>();
@@ -96,39 +97,31 @@ function headRow(answer: FollowedAnswer, head: SeriesHeadSource, tag: string): n
 }
 
 export class SceneTiles {
-  private readonly lines = new Map<number, TiledLine>();
   private readonly cursors = new Map<string, BoundedSeriesCursor>();
-
-  sync(binding: TiledSources): void {
-    if (binding.tiledLines) for (const raw of binding.tiledLines) if (!this.lines.has(raw.rev)) this.lines.set(raw.rev, hydrateTiledLine(raw));
-    if (binding.keepTiled) {
-      const keep = new Set(binding.keepTiled);
-      for (const rev of [...this.lines.keys()]) if (!keep.has(rev)) this.lines.delete(rev);
-    }
-  }
 
   series(scene: Scene, sources: SceneSources, binding: TiledSources, hour: number): ReadonlyMap<string, ReadonlyMap<string, BoundedSeries>> | undefined {
     if (!binding.tiledBySource) return undefined;
     let answers: BoundedReadView | null = null;
     const bySource = new Map<string, ReadonlyMap<string, BoundedSeries>>();
-    for (const [source, revs] of Object.entries(binding.tiledBySource)) {
+    for (const [source, lines] of Object.entries(binding.tiledBySource)) {
       const head = binding.headSourceBySeries?.[source];
       const answer = head ? (answers ??= sceneReadView(scene, sources, hour)).answer(head.answerName) : undefined;
       const byTag = new Map<string, BoundedSeries>();
-      for (const [tag, rev] of Object.entries(revs)) {
-        const line = this.lines.get(rev);
-        if (!line) continue;
+      for (const [tag, raw] of Object.entries(lines)) {
+        const line = hydrateTiledLine(raw);
         const key = `${source}\u0000${tag}`;
         let cursor = this.cursors.get(key);
         if (!cursor) this.cursors.set(key, cursor = new BoundedSeriesCursor());
         let headPoint: WitnessedPoint | null = null;
-        let headValue = undefined;
-        const row = answer && head ? headRow(answer, head, tag) : -1;
-        if (answer && head && row >= 0) {
-          const value = rowAmount(answer, row, head.decimals ?? line.decimals);
+        let headValue: Value | undefined;
+        if (answer && head) {
+          const row = headRow(answer, head, tag);
+          const value = row >= 0 ? rowAmount(answer, row, head.decimals ?? line.decimals) : null;
           if (value !== undefined && value !== null && Number.isFinite(value)) {
             headPoint = { hour: Math.floor(hour), value };
             headValue = knownValue(value);
+          } else {
+            headValue = valueFromWireCell(answer, row, 0);
           }
         }
         byTag.set(tag, cursor.advance(line, hour, { headPoint, headValue }));

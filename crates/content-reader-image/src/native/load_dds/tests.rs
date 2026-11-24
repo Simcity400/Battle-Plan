@@ -327,7 +327,7 @@ fn dx10_bc_formats_decode_as_blocks_and_unsupported_dxgi_is_refused_by_name() {
         let mut file = dx10(4, 4, 1, unsupported);
         file.extend([0; 64]);
         assert!(
-            matches!(load(&file), Err(Failure::Undecodable(ref why)) if why.contains(&format!("DXGI format {unsupported}"))),
+            matches!(load(&file), Err(Failure::Unsupported(ref why)) if why.contains(&format!("DXGI format {unsupported}"))),
             "expected named refusal for DXGI format {unsupported}"
         );
     }

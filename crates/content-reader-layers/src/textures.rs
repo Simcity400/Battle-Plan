@@ -19,6 +19,7 @@ pub enum NoTexture {
     Missing(Vec<String>),
     TooLarge { path: String, bytes: usize },
     Undecodable { path: String, reason: String },
+    Unsupported { path: String, reason: String },
     Undefined { path: String, reason: String },
     Device { path: String, reason: String },
     OverBudget { path: String, reason: String },
@@ -28,7 +29,7 @@ impl NoTexture {
     pub fn native_failure(&self) -> bool {
         !matches!(
             self,
-            Self::Undefined { .. } | Self::Device { .. } | Self::OverBudget { .. }
+            Self::Unsupported { .. } | Self::Undefined { .. } | Self::Device { .. } | Self::OverBudget { .. }
         )
     }
 }
@@ -51,6 +52,9 @@ impl std::fmt::Display for NoTexture {
             ),
             Self::Undecodable { path, reason } => {
                 write!(f, "texture {path} does not load in the game: {reason}")
+            }
+            Self::Unsupported { path, reason } => {
+                write!(f, "texture {path} is in a form this reader does not decode: {reason}")
             }
             Self::Undefined { path, reason } => {
                 write!(
@@ -164,6 +168,7 @@ pub fn texture_within<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<Byt
             Err(native::Failure::Undecodable(reason)) => {
                 Err(NoTexture::Undecodable { path, reason })
             }
+            Err(native::Failure::Unsupported(reason)) => Err(NoTexture::Unsupported { path, reason }),
             Err(native::Failure::Undefined(reason)) => Err(NoTexture::Undefined { path, reason }),
             Err(native::Failure::Device(reason)) => Err(NoTexture::Device { path, reason }),
             Err(native::Failure::OverBudget(reason)) => Err(NoTexture::OverBudget { path, reason }),

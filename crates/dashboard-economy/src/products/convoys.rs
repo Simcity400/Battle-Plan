@@ -250,17 +250,16 @@ pub struct ConvoyHealthReply {
     pub valid_through: i32,
     #[doc = " Fixed-point denominator of every efficiency."]
     pub scale: u32,
-    #[doc = " Hours each table the view reads was read and available (regional efficiency; resource"]
-    #[doc = " deals, convoy clients), in the hours asked: outside them a row not shown is not recorded,"]
-    #[doc = " not absent; an hour read but refused holds no rows and is not known."]
+    #[doc = " Hours each table the view reads was read whole (regional efficiency; resource deals,"]
+    #[doc = " convoy clients), in the hours asked: outside them a row not shown is not recorded, not"]
+    #[doc = " absent, though a row shown there was witnessed."]
     pub known: Vec<Vec<HourSpan>>,
     #[doc = " Hours no country held the tag: nothing is known of it there. Recording gaps are `gaps`."]
     pub unheld: Vec<HourSpan>,
     pub gaps: Vec<HourSpan>,
     pub regions: Vec<ConvoyRegion>,
-    #[doc = " Why the automatic regions could not be ranked at the asked hour: the regions' convoy state there is not recorded. No automatic region is listed then."]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub unranked: Option<String>,
+    #[doc = " Why the most strained regions are not a proven rank at the asked hour: the regions' convoy state there is not recorded. A top then lists only the pinned regions."]
+    pub rank_missing: Option<String>,
     #[doc = " With `every`: the cells of a region without a convoy efficiency."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub absent: Option<Vec<ConvoyCellRun>>,
@@ -650,10 +649,6 @@ pub(crate) fn without(spans: &[HourSpan], gaps: &[(HourSpan, &str)]) -> Vec<Hour
     out
 }
 
-fn reads(recording: &Recording, run: u32, table: TableId, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
-    dashboard_query::cost::storage(|| lanes::available_reads(recording, run, table, first, last))
-}
-
 fn history(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>, first: i32, last: i32) -> io::Result<History> {
     dashboard_query::cost::storage(|| lanes::history(recording, run, table, columns, keys, first, last))
 }
@@ -673,7 +668,7 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
         for &(at, table) in tables {
             let read = match params.view {
                 ConvoyView::Regions => complete_spans(recording, run, table, stretch.first, stretch.last)?,
-                ConvoyView::Trade => reads(recording, run, table, stretch.first, stretch.last)?,
+                ConvoyView::Trade => complete_spans(recording, run, table, stretch.first, stretch.last)?,
             };
             gathered.known[at].extend(spans(read));
         }
@@ -1033,7 +1028,7 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         cut(&mut cells, to);
         cells
     });
-    let mut unranked = None;
+    let mut rank_missing = None;
     let mut all_regions: BTreeMap<u32, ConvoyRegion> = BTreeMap::new();
     for region in region_ids {
         let mut efficiency = held.gathered.regions.remove(&region).unwrap_or_default();
@@ -1064,7 +1059,7 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
         let mut auto: Vec<(u32, i64)> = Vec::new();
         match absent.as_ref().and_then(|cells| cells.last()).map(|run| &run.state) {
-            Some(ConvoyCellState::NotRecorded { reason }) => unranked = Some(reason.clone()),
+            Some(ConvoyCellState::NotRecorded { reason }) => rank_missing = Some(reason.clone()),
             _ => {
                 auto = all_regions
                     .iter()
@@ -1164,7 +1159,7 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         unheld,
         gaps,
         regions,
-        unranked,
+        rank_missing,
         absent: every.then_some(absent).flatten(),
         deals,
         leases,

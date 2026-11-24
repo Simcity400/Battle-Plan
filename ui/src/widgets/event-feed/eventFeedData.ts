@@ -13,7 +13,8 @@ const NATIVE_KINDS = new Set([...SCRIPT_KINDS, 'warDeclared', 'warJoined', 'civi
   'stateTransferred', 'peaceConferenceStarted', 'nuclearStrike']);
 const CAUSED_KINDS = new Set([...NATIVE_KINDS].filter(kind => kind !== 'nuclearStrike'));
 const KINDS = new Set([...NATIVE_KINDS, 'warStarted', 'peace', 'capitulated', 'ceasedToExist', 'factionJoined', 'factionLeft', 'becameSubject',
-  'guaranteeGranted', 'rulingPartyChanged', 'lawChanged', 'advisorHired', 'focusCompleted', 'projectFinished', 'nukesIncreased', 'nuclearStrike']);
+  'guaranteeGranted', 'rulingPartyChanged', 'lawChanged', 'advisorHired', 'focusCompleted', 'projectFinished', 'nukesIncreased', 'nuclearStrike',
+  'eventWindowPresented']);
 const CATEGORY_NAMES = new Set(['warsPeace', 'diplomacy', 'politics', 'milestones']);
 const text = (value: unknown): value is string | null => value === null || typeof value === 'string';
 const amount = (value: unknown): value is number | null => value === null || (typeof value === 'number' && Number.isFinite(value));
@@ -61,7 +62,7 @@ export function validateFeedRow(value: unknown): EventFeedRow {
   if (!object(value) || typeof value.id !== 'string' || value.id.length === 0 || !int(value.hour) || !int(value.readHour) || !int(value.nameHour)
     || value.hour > value.readHour || typeof value.exact !== 'boolean' || typeof value.category !== 'string' || !CATEGORY_NAMES.has(value.category)
     || typeof value.kind !== 'string' || !KINDS.has(value.kind) || !Array.isArray(value.tags) || !value.tags.every(opaqueTag)
-    || (!NATIVE_KINDS.has(value.kind) && value.tags.length === 0) || !roles(value) || !cause(value) || !strike(value) || !decisionState(value)
+    || (!NATIVE_KINDS.has(value.kind) && value.kind !== 'eventWindowPresented' && value.tags.length === 0) || !roles(value) || !cause(value) || !strike(value) || !decisionState(value)
     || !(value.item === null || item(value.item)) || !(value.amount === null || (int(value.amount) && value.amount > 0))) {
     throw new Error('The event feed row is malformed.');
   }
@@ -96,8 +97,65 @@ export function validateSpan(value: unknown): EventFeedSpanReply {
 
 export type Facet = BoundFacetFilter;
 
-export function feedFacets(kinds: readonly FeedKindCode[], categories: ReadonlySet<string>): Facet[] | null {
-  const values = kinds.filter(kind => categories.has(kind.category)).map(kind => kind.code);
+export const EVENT_FEED_NOISE_KINDS: ReadonlySet<string> = new Set([
+  'decisionRemovalEffect',
+  'decisionCancellationEffect',
+  'decisionCompletionEffect',
+  'decisionTimeoutEffect',
+  'decisionDurationChanged',
+  'decisionReenabled',
+]);
+
+const KIND_LABELS: Readonly<Record<string, string>> = {
+  warStarted: 'War started',
+  warDeclared: 'War declared',
+  warJoined: 'Joined a war',
+  civilWarWarTransferred: 'Civil war transferred',
+  annexed: 'Annexed',
+  warEnded: 'War ended',
+  released: 'Released',
+  stateTransferred: 'State transferred',
+  peaceConferenceStarted: 'Peace conference',
+  peace: 'Peace',
+  capitulated: 'Capitulated',
+  ceasedToExist: 'Ceased to exist',
+  factionJoined: 'Joined faction',
+  factionLeft: 'Left faction',
+  becameSubject: 'Became subject',
+  guaranteeGranted: 'Guaranteed',
+  rulingPartyChanged: 'New government',
+  lawChanged: 'Law changed',
+  advisorHired: 'Advisor hired',
+  focusCompleted: 'Focus completed',
+  projectFinished: 'Project finished',
+  nukesIncreased: 'Nuclear stockpile',
+  nuclearStrike: 'Nuclear strike',
+  scriptEventFired: 'Country events',
+  newsEventFired: 'News events',
+  eventOptionSelected: 'Event choices',
+  decisionSelected: 'Decision taken',
+  decisionActivated: 'Mission activated',
+  decisionCompleted: 'Decision completed',
+  decisionCancelled: 'Decision cancelled',
+  decisionTimedOut: 'Decision timed out',
+  decisionRemoved: 'Decision removed',
+};
+
+export function feedKindLabel(kind: string): string {
+  const known = KIND_LABELS[kind];
+  if (known) return known;
+  const spaced = kind.replace(/([A-Z])/g, ' $1').trim();
+  return spaced ? spaced[0]!.toUpperCase() + spaced.slice(1).toLowerCase() : kind;
+}
+
+export function feedFacets(
+  kinds: readonly FeedKindCode[],
+  categories: ReadonlySet<string>,
+  excludedKinds?: ReadonlySet<string>,
+): Facet[] | null {
+  const values = kinds
+    .filter(kind => categories.has(kind.category) && !EVENT_FEED_NOISE_KINDS.has(kind.kind) && !excludedKinds?.has(kind.kind))
+    .map(kind => kind.code);
   return values.length ? [{ name: 'kind', values, countries: [] }] : null;
 }
 

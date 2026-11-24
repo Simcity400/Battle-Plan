@@ -20,7 +20,6 @@ import { subjectToken } from './chosen';
 import { dayLabel } from '../charts/draw';
 import { contentKey } from './options';
 import { forgetProducts } from './products';
-import { productionLineToken } from '../widgets/production-lines/productionData';
 import { datedPanel } from './follow/messages.fixture.ts';
 import { packet, splitForLanes } from './follow/split.ts';
 import { pipelineOf } from './follow/pipeline.ts';
@@ -207,7 +206,6 @@ Object.assign(window, { findings: {
   identityToken: (originOffset: number) => datedToken({ campaign: 'campaign', branch: '1', tag: 'GER', originOffset }),
   day: (hour: number) => dayLabel(hour),
   content: (token: string) => contentKey(token),
-  lineToken: (_tag: string, key: string) => productionLineToken('campaign', '1', key),
   async mount(scene: Scene) {
     await loadWidgetRenderer(scene.kind);
     root?.unmount();

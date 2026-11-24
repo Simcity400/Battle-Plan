@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
-import type { Breakdown, BreakdownPart as WirePart, ConstructionBreakdownReply, PowerSpendingBreakdownReply } from '../../generated/dashboard';
+import type { Breakdown, BreakdownPart as WirePart, ConstructionBreakdownReply, PowerSpendingBreakdownReply, TerritoryBreakdownReply } from '../../generated/dashboard';
 import { constructionProjection } from '../../widgets/construction-spending/constructionProjection.ts';
-import { ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
+import { ppSpendingBreakdown, ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
+import { territoryBreakdownProjection } from '../../widgets/territory-breakdown/territoryBreakdownProjection.ts';
+import type { IdentityProvider } from '../plan.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
+import { resolvePlaybackProvenInterval } from '../broker.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
 import { registerFamilyProjection } from '../registry.ts';
@@ -55,6 +58,7 @@ function wire(key: string, ordinal: number, raw: string | null, extra: Partial<W
     parentShare: null,
     count: null,
     last: null,
+    art: null,
     children: [],
     ...extra,
   };
@@ -337,4 +341,54 @@ test('a lone item under a category is still a row', () => {
     ] })] };
   const parts = layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(model(single)), view: 'parts', userExpanded: { Decisions: true } }) as PartsViewLayout;
   assert.ok(parts.rows.some(row => row.depth === 2 && row.part.name === 'Only decision'));
+});
+
+test('territory names each country by its identity at the hour, with its flag and colour, and leaves unnamed land as the product gave it', () => {
+  const identity: IdentityProvider = {
+    resolve(kind, key, atHour) {
+      return {
+        kind, key, atHour,
+        holder: { status: 'ready', value: key },
+        tag: { status: 'ready', value: key },
+        name: { status: 'ready', value: `${key} land` },
+        colour: { status: 'ready', value: '#4f86f7' },
+        flagChoice: { status: 'absent', reason: 'Flag not recorded' },
+        validInterval: [0, 1000],
+        nextChangeAt: Infinity,
+      };
+    },
+  };
+  const territory: TerritoryBreakdownReply = { hour: 10, warnings: [], breakdown: {
+    decimals: 2, unrecordedHours: 0, total: { raw: '583', state: 'known', reason: null },
+    parts: [wire('AAA', 1, '433', { share: 0.74 }), wire('slot:2', 2, '100', { other: true, name: 'Country not named at this hour' }), wire('~unheld', 9, '50', { other: true, name: 'Held by no country' })],
+  } };
+  const project = (reply: TerritoryBreakdownReply, chosen = false) => territoryBreakdownProjection.project(
+    createBoundedReadView({ hour: 10, panels: new Map([['main', reply]]), identity }), { measure: 'states', rule: 'controlled', chosen });
+  const read = project(territory);
+  assert.deepEqual(read.parts.map(part => part.name), ['AAA land', 'Country not named at this hour', 'Held by no country']);
+  assert.equal(read.parts[0]!.color, '#4f86f7');
+  assert.equal(read.parts[0]!.flag, 'AAA');
+  assert.equal(read.parts[1]!.flag, undefined, 'a slot no tag names has no flag');
+  assert.equal(read.total.text, '5.83');
+  assert.equal(read.total.unit, 'states');
+  assert.equal(read.periodLabel, 'Controlled by every country');
+  assert.equal(project(territory, true).periodLabel, 'Controlled by the chosen countries');
+  const unread = project({ ...territory, breakdown: { decimals: 0, unrecordedHours: 0, total: { raw: null, state: 'notRecorded', reason: 'territory by strategic region is not known at this hour' }, parts: [] } });
+  assert.equal(unread.empty, 'Not recorded at this time.');
+  assert.equal(unread.emptyDetail, 'Territory by strategic region is not known at this hour');
+});
+
+test('a breakdown reply proves the stretch it stands through, so a quiet hundred played hours asks once', () => {
+  const ctx = {
+    countryTag: 'AAA',
+    track: { source: { id: 'source', revision: '1' }, axisOffset: 0 },
+    branch: { id: '1', firstHour: START },
+  } as unknown as Parameters<typeof ppSpendingBreakdown.sources>[0];
+  const entry = ppSpendingBreakdown.sources(ctx, { width: 800, height: 300 } as Parameters<typeof ppSpendingBreakdown.sources>[1]).entries[0]!;
+  const quiet = reply(spent(), { hour: START + 10, through: START + 110 });
+  const proof = resolvePlaybackProvenInterval(entry.read, quiet, { anchorHour: START + 10, span: null }, START + 10_000);
+  assert.deepEqual(proof, [START + 10, START + 110], 'one reply stands for every hour up to its next change');
+  let asks = 1;
+  for (let hour = START + 11; hour <= START + 110; hour++) if (hour > proof[1]) asks++;
+  assert.equal(asks, 1);
 });

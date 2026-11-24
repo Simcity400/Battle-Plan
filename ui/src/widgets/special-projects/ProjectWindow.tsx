@@ -5,6 +5,7 @@ import type { CSSProperties } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
 import '../../components/Dossier.css';
+import './specialProjects.css';
 import { dayLabel } from '../../charts/draw';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { formatDateTime } from '../../dashboard/calendar';

@@ -86,13 +86,15 @@ test('army-size race under default Top handles unpopulated panel and preserves e
     hour: displayedHour(300),
     panels: new Map([['main', {
       branchId: '1',
-      measure: 'ownerManpower',
-      decimals: 0,
-      states: [
-        { country: 'GER', hour: 300, run: { firstHour: 300, lastHour: 300, value: 1_500_000, valueRaw: '1500000' }, missing: null },
-        { country: 'SOV', hour: 300, run: null, missing: 'Manpower not recorded at this hour' },
+      hour: 300,
+      from: 300,
+      until: 300,
+      refused: 'Manpower not recorded at this hour',
+      measures: [{ name: 'ownerManpower', decimals: 0 }],
+      rows: [
+        { country: 'GER', readings: [{ country: 'GER', hour: 300, run: { firstHour: 300, lastHour: 300, value: 1_500_000, valueRaw: '1500000' }, missing: null }] },
+        { country: 'SOV', readings: [{ country: 'SOV', hour: 300, run: null, missing: 'Manpower not recorded at this hour' }] },
       ],
-      warnings: [],
     }]]),
     identity: fakeIdentity({
       GER: { name: 'German Reich', color: '#6b7280' },

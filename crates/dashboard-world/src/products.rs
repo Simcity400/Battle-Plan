@@ -1,6 +1,8 @@
 pub mod windows;
 pub mod identities;
+pub mod group_members;
 pub mod groups;
+pub mod group_counts;
 pub mod styles;
 pub mod country_flags;
 pub mod land_owners;

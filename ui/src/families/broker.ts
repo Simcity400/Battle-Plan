@@ -1,3 +1,4 @@
+import { countryFromKey } from '../dashboard/countryKey.ts';
 import type { DashboardClient, DashboardSource, ProductRequest } from '../dashboard/client';
 import { canonical } from '../dashboard/follow/canonical.ts';
 import type { Channel } from '../dashboard/follow/facts';
@@ -7,7 +8,7 @@ import type { FollowRefusal } from '../dashboard/regionGate';
 import type { BoundWindow, GatedHour } from '../dashboard/regionTime';
 import { forwardRequest, productRequest } from '../dashboard/request.ts';
 import { createBoundedReadView, displayedHour } from './boundedView.ts';
-import { buildRowSourceFromHead, type DatedLogRow, type LogTailQuery, type PageFetchAsk, type TableRowSource } from './table/rowSource.ts';
+import { buildRowSourceFromHead, DEFAULT_TAIL_PAGE_SIZE, validateGenericTailReply, type DatedLogRow, type LogTailQuery, type PageFetchAsk, type RowWindow, type TableRowSource } from './table/rowSource.ts';
 import type {
   ArtProvider,
   BoundedReadView,
@@ -273,6 +274,17 @@ export function buildTailPageRequest(
     product: entry.read.tailQuery.product,
     params,
   });
+}
+
+export function tailPageOffsets(window: RowWindow, headLimit: number, pageSize: number): readonly number[] {
+  const first = Math.max(0, Math.floor(window.first));
+  const end = first + Math.max(0, Math.floor(window.count));
+  if (end <= headLimit) return [];
+  const startPage = Math.floor((Math.max(first, headLimit) - headLimit) / pageSize);
+  const endPage = Math.floor((end - 1 - headLimit) / pageSize);
+  const offsets: number[] = [];
+  for (let page = startPage; page <= endPage; page++) offsets.push(headLimit + page * pageSize);
+  return offsets;
 }
 
 export function buildStaticRequest(
@@ -563,6 +575,7 @@ export interface ExactReadOptions {
   readonly exactOnce?: <T>(key: string, load: () => Promise<T>) => Promise<T>;
   readonly identity?: IdentityProvider;
   readonly art?: ArtProvider;
+  readonly rowWindow?: RowWindow | null;
 }
 
 interface ExactPart {
@@ -666,8 +679,25 @@ async function readEntryExact(
       product: read.tailQuery.product,
       params,
     });
-    const raw = await fetchRaw(request);
-    const rowSource = buildRowSourceFromHead(`${entry.source.id}|${entry.branch}|${entry.name}`, raw, undefined, recorded);
+    const headLimit = Math.max(1, read.tailQuery.limit);
+    const pageSize = Math.max(1, read.pageSize ?? DEFAULT_TAIL_PAGE_SIZE);
+    const offsets = options.rowWindow ? tailPageOffsets(options.rowWindow, headLimit, pageSize) : [];
+    const [raw, ...pages] = await Promise.all([
+      fetchRaw(request),
+      ...offsets.map(offset => fetchRaw(buildTailPageRequest(entry, { offset, limit: pageSize, hour: recorded })!)),
+    ]);
+    const validate = read.validate ?? validateGenericTailReply;
+    const snapshot = offsets.length
+      ? {
+          identity: `${entry.source.id}|${entry.branch}|${entry.name}`,
+          frozenHour: recorded as number,
+          headLimit,
+          pageSize,
+          pages: Object.fromEntries(offsets.map((offset, i) => [offset, validate(pages[i], recorded).rows])),
+          refusals: {},
+        }
+      : undefined;
+    const rowSource = buildRowSourceFromHead(`${entry.source.id}|${entry.branch}|${entry.name}`, raw, undefined, recorded, snapshot);
     return { name: entry.name, hour: recorded, panel: raw, ...(rowSource ? { rows: rowSource } : {}) };
   }
 
@@ -710,6 +740,7 @@ export async function readPlanExact(
     ...(live.size ? { live } : {}),
     ...(hovers.size ? { hovers } : {}),
     ...(rows.size ? { rows } : {}),
+    ...(rows.size && options.rowWindow ? { rowWindow: options.rowWindow } : {}),
     ...(options.identity ? { identity: options.identity } : {}),
     ...(options.art ? { art: options.art } : {}),
   });
@@ -729,14 +760,20 @@ export interface HeldHover {
   readonly data: unknown;
 }
 
-export function hoverAsks(plan: SourcePlan, hoverHour: number | null | undefined): readonly HoverAsk[] {
+export function hoverAsks(
+  plan: SourcePlan,
+  hoverHour: number | null | undefined,
+  displayed: (entry: string) => readonly string[] | undefined = () => undefined,
+): readonly HoverAsk[] {
   if (hoverHour === null || hoverHour === undefined || !Number.isFinite(hoverHour)) return NO_HOVER_ASKS;
   const hour = Math.floor(hoverHour);
   const asks: HoverAsk[] = [];
   for (const entry of plan.entries) {
     const read = entry.read;
     if (read.shape !== 'exact-hover' || !read.params) continue;
-    const reads = (read.params as { reads?: unknown }).reads;
+    const shown = read.readsOf === undefined ? null : displayed(read.readsOf);
+    if (shown !== null && !shown?.length) continue;
+    const reads = shown ? shown.map(key => ({ country: countryFromKey(key) })) : (read.params as { reads?: unknown }).reads;
     const params = Array.isArray(reads)
       ? { ...read.params, reads: reads.map(asked => ({ ...(asked as Record<string, unknown>), [read.hourParam ?? 'hour']: hour })) }
       : { ...read.params, [read.hourParam ?? 'hour']: hour };

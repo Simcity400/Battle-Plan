@@ -93,4 +93,165 @@ describe('apm-graph projection', () => {
     assert.equal(model.series[8]?.endLabel, null);
     assert.equal(model.auditRows?.length, 8);
   });
+
+  it('S7: retains departed players from tiles, surfaces product gap flag, and uses exact hovered-hour rates', () => {
+    const departedId = 'user:departed';
+    const activeId = 'user:active';
+    const head: ApmReply = {
+      available: true,
+      players: [],
+      series: [{
+        id: activeId,
+        name: 'Active',
+        nameMissing: null,
+        tag: 'ITA',
+        hour: H1943,
+        summary: { apm: 42, confirmedApm: 42, orders: '42', pausedOrders: '0', unpausedMinutes: 1, complete: true, gaps: true },
+        points: [],
+      }],
+      warnings: [],
+    };
+    const hoverReply: ApmReply = {
+      available: true,
+      players: [],
+      series: [{
+        id: departedId,
+        name: 'Departed',
+        nameMissing: null,
+        tag: 'GER',
+        hour: H1936 + 1,
+        summary: { apm: 20, confirmedApm: 20, orders: '20', pausedOrders: '0', unpausedMinutes: 1, complete: true, gaps: true },
+        points: [],
+      }],
+      warnings: [],
+    };
+    const tiledMap = new Map([
+      [activeId, boundTiledSeries(makeTiled(activeId, 42), displayedHour(H1943))],
+      [departedId, boundTiledSeries(makeTiled(departedId, 20), displayedHour(H1943))],
+    ]);
+    const readView = createBoundedReadView({
+      hour: H1943,
+      panels: new Map([['head', head]]),
+      series: new Map([['apm', tiledMap]]),
+      hovers: new Map([['hover', { hour: H1936 + 1, data: hoverReply }]]),
+    });
+    const model = apmGraphProjection.project(readView, {
+      group: 'player',
+      extent: [H1936, H1943],
+      surface: '#111111',
+      gaps: [],
+      yMin: null,
+      yMax: null,
+      available: true,
+      players: [
+        { id: activeId, name: 'Active', nameMissing: null, tags: ['ITA'], runs: [{ firstHour: H1936, lastHour: H1943, tag: 'ITA', name: 'Active', nameMissing: null }] },
+        { id: departedId, name: 'Departed', nameMissing: null, tags: ['GER'], runs: [{ firstHour: H1936, lastHour: H1943, tag: 'GER', name: 'Departed', nameMissing: null }] },
+      ],
+    } as Parameters<typeof apmGraphProjection.project>[1]);
+    const departed = model.series.find(s => s.id === departedId);
+    assert.ok(departed, 'departed player who left the trailing window keeps their recorded line');
+    assert.equal(departed?.headValue, null);
+    assert.equal(departed?.endLabel, null);
+    assert.equal(departed?.name, 'Departed');
+    const activeSeries = model.series.find(s => s.id === activeId);
+    assert.equal(activeSeries?.endLabel?.valueMuted, true, 'gap flag marks end label muted');
+    assert.ok(model.note?.includes('not recorded'), 'product gap flag surfaces in chart note');
+    assert.ok(model.hoverDetail, 'exact hovered-hour reply builds hoverDetail');
+    assert.equal(model.hoverDetail?.hour, H1936 + 1);
+    assert.ok(model.hoverDetail?.items.some(item => item.label === 'Departed' && item.value === '20'));
+    assert.ok(model.hoverDetail?.items.some(item => item.tone === 'muted' && item.label.includes('not recorded')));
+  });
+
+  it('S14: resolves historical APM hover and departed player identity at the drawn hour without leaking later names or tags', () => {
+    const playerId = 'user:renamed';
+    const departedId = 'user:departed';
+    const midHour = H1936 + 100;
+    const head: ApmReply = {
+      available: true,
+      players: [],
+      series: [{
+        id: playerId,
+        name: 'LateName',
+        nameMissing: null,
+        tag: 'ITA',
+        hour: H1943,
+        summary: { apm: 50, confirmedApm: 50, orders: '50', pausedOrders: '0', unpausedMinutes: 1, complete: true, gaps: false },
+        points: [],
+      }],
+      warnings: [],
+    };
+    const hoverReply: ApmReply = {
+      available: true,
+      players: [],
+      series: [{
+        id: playerId,
+        name: 'EarlyName',
+        nameMissing: null,
+        tag: 'GER',
+        hour: H1936 + 5,
+        summary: { apm: 30, confirmedApm: 30, orders: '30', pausedOrders: '0', unpausedMinutes: 1, complete: true, gaps: false },
+        points: [],
+      }],
+      warnings: [],
+    };
+    const tiledMap = new Map([
+      [playerId, boundTiledSeries(makeTiled(playerId, 50), displayedHour(H1943))],
+      [departedId, boundTiledSeries({
+        ...makeTiled(departedId, 15),
+        summary: {
+          from: H1936,
+          to: midHour,
+          width: 1,
+          buckets: [{
+            firstHour: H1936, lastHour: midHour, firstValue: 15, lastValue: 15, lastValueHour: midHour,
+            minHour: H1936, minValue: 15, maxHour: midHour, maxValue: 15, firstBreak: false, hasBreak: false,
+          }],
+          tiles: { binHours: 96, valueAt: () => null },
+        },
+      }, displayedHour(midHour + 50))],
+    ]);
+    const readView = createBoundedReadView({
+      hour: midHour + 50,
+      panels: new Map([['head', head]]),
+      series: new Map([['apm', tiledMap]]),
+      hovers: new Map([['hover', { hour: H1936 + 5, data: hoverReply }]]),
+    });
+    const model = apmGraphProjection.project(readView, {
+      group: 'player',
+      extent: [H1936, H1943],
+      surface: '#111111',
+      gaps: [],
+      yMin: null,
+      yMax: null,
+      available: true,
+      players: [
+        {
+          id: playerId,
+          name: 'LateName',
+          nameMissing: null,
+          tags: ['GER', 'ITA'],
+          runs: [
+            { firstHour: H1936, lastHour: midHour, tag: 'GER', name: 'EarlyName', nameMissing: null },
+            { firstHour: midHour + 100, lastHour: H1943, tag: 'ITA', name: 'LateName', nameMissing: null },
+          ],
+        },
+        {
+          id: departedId,
+          name: 'FutureDepartedName',
+          nameMissing: null,
+          tags: ['FRA', 'ENG'],
+          runs: [
+            { firstHour: H1936, lastHour: midHour, tag: 'FRA', name: 'EarlyDepartedName', nameMissing: null },
+            { firstHour: H1943 - 10, lastHour: H1943, tag: 'ENG', name: 'FutureDepartedName', nameMissing: null },
+          ],
+        },
+      ] as unknown as ApmReply['players'],
+    });
+    assert.ok(
+      model.hoverDetail?.items.some(item => item.label === 'EarlyName' && item.value === '30'),
+      `hover at early hour must use EarlyName, not LateName: ${JSON.stringify(model.hoverDetail?.items)}`,
+    );
+    const departed = model.series.find(s => s.id === departedId);
+    assert.equal(departed?.name, 'EarlyDepartedName', 'departed player uses dated name <= displayed hour, not future branch-latest name');
+  });
 });

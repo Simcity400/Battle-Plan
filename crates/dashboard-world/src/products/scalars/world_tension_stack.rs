@@ -53,6 +53,8 @@ pub struct TensionStackBand {
     pub tag: Option<String>,
     pub remembered: bool,
     pub values: Vec<Option<f64>>,
+    pub min_values: Vec<Option<f64>>,
+    pub max_values: Vec<Option<f64>>,
     pub end_value: Option<f64>,
     pub end_raw: Option<String>,
 }
@@ -71,6 +73,9 @@ pub struct TensionStackOther {
 #[serde(rename_all = "camelCase")]
 pub struct TensionStackEvent {
     pub hour: i32,
+    pub slot: Option<u32>,
+    pub second_country: u32,
+    pub place: u32,
     pub tag: Option<String>,
     pub remembered: bool,
     pub reason: String,
@@ -89,6 +94,7 @@ pub struct WorldTensionStackReply {
     pub ceiling_raw: String,
     pub end_hour: Option<i32>,
     pub capped_end_tension: Option<f64>,
+    pub downsampled: bool,
     pub hours: Vec<i32>,
     pub total: Vec<Option<f64>>,
     pub bands: Vec<TensionStackBand>,
@@ -111,7 +117,7 @@ pub(super) struct Identity {
 }
 
 pub(super) enum Step {
-    Stretch { first: i32, last: i32, listed: Vec<(Identity, i64, Option<u32>)> },
+    Stretch { first: i32, last: i32, listed: Option<Vec<(Identity, i64, Option<u32>)>> },
     Row { hour: i32, kind: u8, identity: Identity, final_raw: i64, slot: Option<u32> },
 }
 
@@ -122,13 +128,15 @@ pub(super) struct Joined {
     pub added: Vec<(i32, i64)>,
     pub first_read: i32,
     pub last_read: Option<i32>,
+    pub removed_at: Option<i32>,
 }
 
-pub(super) fn join(steps: impl IntoIterator<Item = Step>) -> (Vec<Joined>, usize) {
+pub(super) fn join(steps: impl IntoIterator<Item = Step>) -> (Vec<Joined>, Vec<i32>) {
     let mut events: Vec<Joined> = Vec::new();
+    let mut last_seen: Vec<i32> = Vec::new();
     let mut open: HashMap<Identity, usize> = HashMap::new();
-    let mut stretch_last = i32::MIN;
-    let mut unmatched = 0;
+    let mut stretch_last: Option<i32> = None;
+    let mut unmatched_hours: Vec<i32> = Vec::new();
     let added = |event: &mut Joined, hour: i32, value: i64| {
         if event.added.last().is_none_or(|&(_, last)| last != value) {
             event.added.push((hour, value));
@@ -136,44 +144,71 @@ pub(super) fn join(steps: impl IntoIterator<Item = Step>) -> (Vec<Joined>, usize
     };
     for step in steps {
         match step {
-            Step::Stretch { first, last, listed } => {
+            Step::Stretch { first, last, listed: Some(listed) } => {
                 let now: HashSet<&Identity> = listed.iter().map(|(identity, ..)| identity).collect();
                 open.retain(|identity, at| {
                     let kept = now.contains(identity);
                     if !kept {
-                        events[*at].last_read = Some(stretch_last);
+                        let seen = stretch_last.map_or(last_seen[*at], |s| s.max(last_seen[*at]));
+                        events[*at].last_read = Some(seen);
+                        events[*at].removed_at = Some(first);
                     }
                     kept
                 });
                 for (identity, value, slot) in listed {
                     match open.get(&identity) {
-                        Some(&at) => added(&mut events[at], first, value),
+                        Some(&at) => {
+                            added(&mut events[at], first, value);
+                            last_seen[at] = last_seen[at].max(first);
+                        }
                         None => {
                             open.insert(identity.clone(), events.len());
-                            events.push(Joined { identity, slot, added: vec![(first, value)], first_read: first, last_read: None });
+                            events.push(Joined {
+                                identity,
+                                slot,
+                                added: vec![(first, value)],
+                                first_read: first,
+                                last_read: None,
+                                removed_at: None,
+                            });
+                            last_seen.push(first);
                         }
                     }
                 }
-                stretch_last = last;
+                stretch_last = Some(last);
             }
+            Step::Stretch { listed: None, .. } => {}
             Step::Row { hour, kind, identity, final_raw, slot } => match (kind, open.get(&identity).copied()) {
                 (ThreatEventRow::DROPPED, Some(at)) => {
                     events[at].last_read = Some(hour - 1);
+                    events[at].removed_at = Some(hour);
                     open.remove(&identity);
                 }
-                (ThreatEventRow::DROPPED, None) => unmatched += 1,
-                (_, Some(at)) => added(&mut events[at], hour, final_raw),
+                (ThreatEventRow::DROPPED, None) => unmatched_hours.push(hour),
+                (_, Some(at)) => {
+                    added(&mut events[at], hour, final_raw);
+                    last_seen[at] = last_seen[at].max(hour);
+                }
                 (kind, None) => {
                     if kind == ThreatEventRow::CHANGED {
-                        unmatched += 1;
+                        unmatched_hours.push(hour);
                     }
                     open.insert(identity.clone(), events.len());
-                    events.push(Joined { identity, slot, added: vec![(hour, final_raw)], first_read: hour, last_read: None });
+                    events.push(Joined {
+                        identity,
+                        slot,
+                        added: vec![(hour, final_raw)],
+                        first_read: hour,
+                        last_read: None,
+                        removed_at: None,
+                    });
+                    last_seen.push(hour);
                 }
             },
         }
     }
-    (events, unmatched)
+    unmatched_hours.sort_unstable();
+    (events, unmatched_hours)
 }
 
 fn listed(sources: &[ThreatSourceRow], slot_of: impl Fn(u32) -> Option<u32>) -> Vec<(Identity, i64, Option<u32>)> {
@@ -229,19 +264,26 @@ fn row_step(row: &log::Row) -> Option<Step> {
 struct CachedEvent {
     hour: i32,
     slot: Option<u32>,
+    second_country: u32,
+    place: u32,
     reason: String,
     added: Vec<(i32, i64)>,
     first_read: i32,
     last_read: Option<i32>,
+    removed_at: Option<i32>,
 }
 
 struct BranchTension {
     tension: Vec<(i32, i32, i64)>,
     sum: Vec<(i32, i32, i64)>,
-    slots: BTreeMap<u32, Vec<(i32, i32, i64)>>,
+    slots: BTreeMap<u32, Vec<(i32, i32, Option<i64>)>>,
+    aggregates_complete: Vec<(i32, i32)>,
     events: Vec<CachedEvent>,
-    missing: Vec<MissingSpan>,
-    warnings: Vec<String>,
+    tension_missing: Vec<MissingSpan>,
+    aggregates_missing: Vec<MissingSpan>,
+    warnings: Vec<(i32, String)>,
+    unreadable_hours: Vec<i32>,
+    unmatched_hours: Vec<i32>,
 }
 
 #[derive(Default)]
@@ -288,6 +330,36 @@ fn push_runs(target: &mut Vec<(i32, i32, i64)>, runs: &[(i32, i32, Option<i64>)]
     }
 }
 
+fn push_opt_runs(target: &mut Vec<(i32, i32, Option<i64>)>, runs: &[(i32, i32, Option<i64>)], lo: i32, hi: i32) {
+    for &(first, last, value) in runs {
+        let (first, last) = (first.max(lo), last.min(hi));
+        if first > last {
+            continue;
+        }
+        if let Some(prev) = target.last_mut()
+            && prev.2 == value
+            && i64::from(prev.1) + 1 == i64::from(first)
+        {
+            prev.1 = last;
+        } else {
+            target.push((first, last, value));
+        }
+    }
+}
+
+fn push_span(target: &mut Vec<(i32, i32)>, first: i32, last: i32) {
+    if first > last {
+        return;
+    }
+    if let Some(prev) = target.last_mut()
+        && i64::from(prev.1) + 1 >= i64::from(first)
+    {
+        prev.1 = prev.1.max(last);
+    } else {
+        target.push((first, last));
+    }
+}
+
 fn merge_missing(mut spans: Vec<MissingSpan>) -> Vec<MissingSpan> {
     spans.sort_by_key(|span| (span.first_hour, span.last_hour));
     let mut merged: Vec<MissingSpan> = Vec::with_capacity(spans.len());
@@ -328,18 +400,21 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
     let contrib_col = dashboard_declare::field(TableId::ThreatCountryAggregates, "total_raw")?;
     let mut tension = Vec::new();
     let mut sum = Vec::new();
-    let mut slots: BTreeMap<u32, Vec<(i32, i32, i64)>> = BTreeMap::new();
-    let mut missing: Vec<MissingSpan> = timeline
+    let mut slots: BTreeMap<u32, Vec<(i32, i32, Option<i64>)>> = BTreeMap::new();
+    let mut aggregates_complete: Vec<(i32, i32)> = Vec::new();
+    let unheld: Vec<MissingSpan> = timeline
         .unheld
         .iter()
         .map(|gap| MissingSpan { first_hour: gap.first, last_hour: gap.last, reason: gap.reason.clone() })
         .collect();
+    let mut tension_missing = unheld.clone();
+    let mut aggregates_missing = unheld;
     let mut warnings = Vec::new();
     for stretch in &timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let (t_span, t_miss) = valid_span(recording, TableId::WorldTension, stretch.run, stretch.first, stretch.last);
         if let Some(span) = t_miss {
-            missing.push(span);
+            tension_missing.push(span);
         }
         if let Some((lo, hi)) = t_span {
             let statuses = read::statuses(recording, stretch.run, TableId::WorldTension, lo, hi)?;
@@ -355,7 +430,7 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
                     Status::Truncated { .. } => "World tension was incomplete at this hour.".into(),
                     Status::Complete => continue,
                 };
-                missing.push(MissingSpan { first_hour: s_lo, last_hour: s_hi, reason });
+                tension_missing.push(MissingSpan { first_hour: s_lo, last_hour: s_hi, reason });
             }
             if let Some(runs) = read::runs(recording, stretch.run, TableId::WorldTension, ColumnSource::Cell(tension_col), Some(&[0]), lo, hi)?.get(&0) {
                 push_runs(&mut tension, runs, lo, hi);
@@ -366,11 +441,40 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
         {
             push_runs(&mut sum, runs, lo, hi);
         }
-        if let (Some((lo, hi)), _) = valid_span(recording, TableId::ThreatCountryAggregates, stretch.run, stretch.first, stretch.last) {
+        let (a_span, a_miss) = valid_span(recording, TableId::ThreatCountryAggregates, stretch.run, stretch.first, stretch.last);
+        if let Some(span) = a_miss {
+            aggregates_missing.push(span);
+        }
+        if let Some((lo, hi)) = a_span {
+            let statuses = read::statuses(recording, stretch.run, TableId::ThreatCountryAggregates, lo, hi)?;
+            let reasons = read::status_reasons(recording, stretch.run, TableId::ThreatCountryAggregates, &statuses)?;
+            for status_run in &statuses {
+                let (s_lo, s_hi) = (status_run.first.max(lo), status_run.last.min(hi));
+                if s_lo > s_hi {
+                    continue;
+                }
+                match status_run.status {
+                    Status::Complete => push_span(&mut aggregates_complete, s_lo, s_hi),
+                    Status::Unavailable { reason } => {
+                        let text = reasons.get(&reason).cloned().unwrap_or_else(|| "Country threat contributions were not recorded at this hour.".into());
+                        aggregates_missing.push(MissingSpan { first_hour: s_lo, last_hour: s_hi, reason: text });
+                    }
+                    Status::NotRecorded => aggregates_missing.push(MissingSpan {
+                        first_hour: s_lo,
+                        last_hour: s_hi,
+                        reason: "Country threat contributions were not recorded in this recording.".into(),
+                    }),
+                    Status::Truncated { .. } => aggregates_missing.push(MissingSpan {
+                        first_hour: s_lo,
+                        last_hour: s_hi,
+                        reason: "Country threat contributions were incomplete at this hour.".into(),
+                    }),
+                }
+            }
             let held = read::runs(recording, stretch.run, TableId::ThreatCountryAggregates, ColumnSource::Cell(contrib_col), None, lo, hi)?;
             for (key, runs) in held {
                 if let Ok(slot) = u32::try_from(key) {
-                    push_runs(slots.entry(slot).or_default(), &runs, lo, hi);
+                    push_opt_runs(slots.entry(slot).or_default(), &runs, lo, hi);
                 }
             }
         }
@@ -388,7 +492,7 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
     }
     let mut steps: Vec<Step> = Vec::new();
     let mut iter = log_rows.into_iter().peekable();
-    let mut unreadable = 0usize;
+    let mut unreadable_hours: Vec<i32> = Vec::new();
     for stretch in &timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let reads = [
@@ -399,50 +503,60 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
         let listed = match rows::<tables::ThreatSources>(&frame) {
             Ok(sources) => {
                 let links = rows::<tables::CountryLinks>(&frame).ok();
-                listed(sources, |country| links.and_then(|links| link_slot(links, country)))
+                Some(listed(sources, |country| links.and_then(|links| link_slot(links, country))))
             }
             Err(error) => {
-                warnings.push(format!("Threat sources listed at hour {} are not known: {error}", stretch.first));
-                Vec::new()
+                warnings.push((stretch.first, format!("Threat sources listed at hour {} are not known: {error}", stretch.first)));
+                None
             }
         };
         while let Some(row) = iter.next_if(|row| row.hour < stretch.first) {
             steps.extend(row_step(&row).or_else(|| {
-                unreadable += 1;
+                unreadable_hours.push(row.hour);
                 None
             }));
         }
         steps.push(Step::Stretch { first: stretch.first, last: stretch.last, listed });
         while let Some(row) = iter.next_if(|row| row.hour <= stretch.last) {
             steps.extend(row_step(&row).or_else(|| {
-                unreadable += 1;
+                unreadable_hours.push(row.hour);
                 None
             }));
         }
     }
-    let (joined, unmatched) = join(steps);
-    if unreadable > 0 {
-        warnings.push(format!("{unreadable} threat event rows hold a cell that was not recorded and are not shown"));
-    }
-    if unmatched > 0 {
-        warnings.push(format!("{unmatched} threat event rows change or drop a source no read listed"));
-    }
+    unreadable_hours.sort_unstable();
+    let (joined, unmatched_hours) = join(steps);
     let events: Vec<CachedEvent> = joined
         .into_iter()
         .map(|event| CachedEvent {
             hour: event.identity.date,
             slot: event.slot,
+            second_country: event.identity.second,
+            place: event.identity.place,
             reason: dashboard_text::catalogue::display_text(&event.identity.reason).unwrap_or_else(|why| {
                 let raw = String::from_utf8_lossy(&event.identity.reason).into_owned();
-                warnings.push(format!("Threat reason {raw:?} {why}"));
+                warnings.push((event.first_read, format!("Threat reason {raw:?} {why}")));
                 raw
             }),
             added: event.added,
             first_read: event.first_read,
             last_read: event.last_read,
+            removed_at: event.removed_at,
         })
         .collect();
-    let built = Arc::new(BranchTension { tension, sum, slots, events, missing: merge_missing(missing), warnings });
+    warnings.sort_by_key(|(hour, _)| *hour);
+    let built = Arc::new(BranchTension {
+        tension,
+        sum,
+        slots,
+        aggregates_complete,
+        events,
+        tension_missing: merge_missing(tension_missing),
+        aggregates_missing: merge_missing(aggregates_missing),
+        warnings,
+        unreadable_hours,
+        unmatched_hours,
+    });
     state.lock().unwrap_or_else(|error| error.into_inner()).branches.insert(branch, Arc::clone(&built));
     Ok(built)
 }
@@ -461,6 +575,42 @@ fn next_run_change(runs: &[(i32, i32, i64)], after: i32) -> Option<i32> {
     }
 }
 
+fn is_complete(spans: &[(i32, i32)], hour: i32) -> bool {
+    let at = spans.partition_point(|span| span.1 < hour);
+    spans.get(at).is_some_and(|span| span.0 <= hour && hour <= span.1)
+}
+
+fn lookup_slot(runs: Option<&[(i32, i32, Option<i64>)]>, complete: bool, hour: i32) -> Option<i64> {
+    if let Some(runs) = runs {
+        let at = runs.partition_point(|run| run.1 < hour);
+        if let Some(&(first, last, value)) = runs.get(at)
+            && first <= hour
+            && hour <= last
+        {
+            return value;
+        }
+    }
+    complete.then_some(0)
+}
+
+fn next_opt_run_change(runs: &[(i32, i32, Option<i64>)], after: i32) -> Option<i32> {
+    let at = runs.partition_point(|run| run.1 < after);
+    match runs.get(at) {
+        Some(&(first, last, _)) if first <= after && after <= last => last.checked_add(1).filter(|&next| next > after),
+        Some(&(first, _, _)) => Some(first),
+        None => None,
+    }
+}
+
+fn next_span_change(spans: &[(i32, i32)], after: i32) -> Option<i32> {
+    let at = spans.partition_point(|span| span.1 < after);
+    match spans.get(at) {
+        Some(&(first, last)) if first <= after && after <= last => last.checked_add(1).filter(|&next| next > after),
+        Some(&(first, _)) => Some(first),
+        None => None,
+    }
+}
+
 fn collect_change_hours(runs: &[(i32, i32, i64)], first: i32, last: i32, out: &mut Vec<i32>) {
     let start = runs.partition_point(|run| run.1 < first);
     for &(r_first, r_last, _) in &runs[start..] {
@@ -474,11 +624,49 @@ fn collect_change_hours(runs: &[(i32, i32, i64)], first: i32, last: i32, out: &m
     }
 }
 
+fn collect_opt_change_hours(runs: &[(i32, i32, Option<i64>)], first: i32, last: i32, out: &mut Vec<i32>) {
+    let start = runs.partition_point(|run| run.1 < first);
+    for &(r_first, r_last, _) in &runs[start..] {
+        if r_first > last {
+            break;
+        }
+        out.push(r_first.max(first));
+        if r_last < last {
+            out.push(r_last + 1);
+        }
+    }
+}
+
+fn collect_span_change_hours(spans: &[(i32, i32)], first: i32, last: i32, out: &mut Vec<i32>) {
+    let start = spans.partition_point(|span| span.1 < first);
+    for &(s_first, s_last) in &spans[start..] {
+        if s_first > last {
+            break;
+        }
+        out.push(s_first.max(first));
+        if s_last < last {
+            out.push(s_last + 1);
+        }
+    }
+}
+
 pub(super) struct StackInput<'a> {
     pub tension: &'a [(i32, i32, i64)],
     pub sum: &'a [(i32, i32, i64)],
-    pub slots: &'a BTreeMap<u32, Vec<(i32, i32, i64)>>,
+    pub slots: &'a BTreeMap<u32, Vec<(i32, i32, Option<i64>)>>,
+    pub aggregates_complete: &'a [(i32, i32)],
     pub missing: &'a [MissingSpan],
+}
+
+pub(super) struct StackOutput {
+    pub end_hour: Option<i32>,
+    pub capped_end_tension: Option<f64>,
+    pub downsampled: bool,
+    pub hours: Vec<i32>,
+    pub total: Vec<Option<f64>>,
+    pub bands: Vec<TensionStackBand>,
+    pub other: Option<TensionStackOther>,
+    pub next_change_hour: Option<i32>,
 }
 
 pub(super) fn compute_stack(
@@ -490,7 +678,8 @@ pub(super) fn compute_stack(
     filter: Option<&HashSet<&str>>,
     max_points: usize,
     mut slot_tag: impl FnMut(u32, i32) -> Option<(String, bool)>,
-) -> (Option<i32>, Option<f64>, Vec<i32>, Vec<Option<f64>>, Vec<TensionStackBand>, Option<TensionStackOther>, Option<i32>) {
+    mut slot_next_change: impl FnMut(u32, i32) -> Option<i32>,
+) -> StackOutput {
     let tension_scale = (cthreat_source::FIXED_POINT_SCALE / cworld_threat::SCALAR_DIVISOR) as f64;
     let contribution_scale = cthreat_source::FIXED_POINT_SCALE as f64;
     let mut next_change: Option<i32> = next_run_change(input.tension, last);
@@ -500,8 +689,10 @@ pub(super) fn compute_stack(
         }
     };
     bump(&mut next_change, next_run_change(input.sum, last));
-    for runs in input.slots.values() {
-        bump(&mut next_change, next_run_change(runs, last));
+    bump(&mut next_change, next_span_change(input.aggregates_complete, last));
+    for (&slot, runs) in input.slots {
+        bump(&mut next_change, next_opt_run_change(runs, last));
+        bump(&mut next_change, slot_next_change(slot, last));
     }
     for span in input.missing {
         if span.first_hour > last {
@@ -511,51 +702,85 @@ pub(super) fn compute_stack(
             bump(&mut next_change, span.last_hour.checked_add(1));
         }
     }
-    let end_hour = {
-        let pos = input.tension.partition_point(|run| run.0 <= last);
-        input.tension[..pos].iter().rev().find_map(|&(r_first, r_last, _)| {
-            let hi = r_last.min(last);
-            (hi >= first && r_first <= last).then_some(hi)
-        })
+    let last_complete = is_complete(input.aggregates_complete, last);
+    let has_contrib_at_last = last_complete
+        || input.slots.values().any(|runs| lookup_slot(Some(runs), false, last).is_some());
+    let rank_hour = if has_contrib_at_last {
+        last
+    } else {
+        let mut latest: Option<i32> = None;
+        let pos = input.aggregates_complete.partition_point(|span| span.0 <= last);
+        if let Some(&(s_first, s_last)) = input.aggregates_complete[..pos].last() {
+            let hi = s_last.min(last);
+            if hi >= first && s_first <= last {
+                latest = Some(hi);
+            }
+        }
+        for runs in input.slots.values() {
+            let pos = runs.partition_point(|run| run.0 <= last);
+            if let Some(hi) = runs[..pos].iter().rev().find_map(|&(r_first, r_last, val)| {
+                let hi = r_last.min(last);
+                (val.is_some() && hi >= first && r_first <= last).then_some(hi)
+            }) {
+                latest = Some(latest.map_or(hi, |held| held.max(hi)));
+            }
+        }
+        latest.unwrap_or(last)
     };
-    let rank_hour = end_hour.unwrap_or(last);
-    let capped_end_tension = end_hour.and_then(|h| lookup_run(input.tension, h)).map(|raw| raw as f64 / tension_scale);
-    let mut ranked: Vec<(u32, i64, i64, Option<(String, bool)>)> = Vec::new();
+    let rank_complete = is_complete(input.aggregates_complete, rank_hour);
+    let capped_end_tension = lookup_run(input.tension, last).map(|raw| raw as f64 / tension_scale);
+    struct RankedSlot {
+        slot: u32,
+        end_abs: u64,
+        end_signed: i64,
+        peak_abs: u64,
+        resolved: Option<(String, bool)>,
+    }
+    let mut ranked: Vec<RankedSlot> = Vec::new();
     for (&slot, runs) in input.slots {
-        let resolved = slot_tag(slot, rank_hour);
+        let resolved = slot_tag(slot, last);
         if let Some(wanted) = filter {
             let keep = resolved.as_ref().is_some_and(|(tag, _)| wanted.contains(tag.as_str()));
             if !keep {
                 continue;
             }
         }
-        let end_raw = lookup_run(runs, rank_hour).unwrap_or(0);
-        let mut peak = end_raw;
+        let end_opt = lookup_slot(Some(runs), rank_complete, rank_hour);
+        let end_signed = end_opt.unwrap_or(0);
+        let end_abs = end_signed.unsigned_abs();
+        let mut peak_abs = end_abs;
         let start = runs.partition_point(|run| run.1 < first);
         for &(r_first, _, value) in &runs[start..] {
-            if r_first > rank_hour {
+            if r_first > last {
                 break;
             }
-            if value > peak {
-                peak = value;
+            if let Some(val) = value {
+                peak_abs = peak_abs.max(val.unsigned_abs());
             }
         }
-        if end_raw > 0 || peak > 0 {
-            ranked.push((slot, end_raw, peak, resolved));
+        if end_abs > 0 || peak_abs > 0 {
+            ranked.push(RankedSlot { slot, end_abs, end_signed, peak_abs, resolved });
         }
     }
-    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)).then_with(|| a.0.cmp(&b.0)));
+    ranked.sort_by(|a, b| {
+        b.end_abs
+            .cmp(&a.end_abs)
+            .then_with(|| b.end_signed.cmp(&a.end_signed))
+            .then_with(|| b.peak_abs.cmp(&a.peak_abs))
+            .then_with(|| a.slot.cmp(&b.slot))
+    });
     let kept_count = ranked.len().min(layers);
     let top = &ranked[..kept_count];
     let tail = &ranked[kept_count..];
-    let other_count = if filter.is_some() { 0 } else { tail.iter().filter(|entry| entry.1 > 0).count() as u32 };
+    let other_count = if filter.is_some() { 0 } else { tail.iter().filter(|entry| entry.end_abs > 0).count() as u32 };
     let has_other = filter.is_none() && !tail.is_empty();
     let mut raw_hours = Vec::new();
     raw_hours.push(first);
     collect_change_hours(input.tension, first, last, &mut raw_hours);
     collect_change_hours(input.sum, first, last, &mut raw_hours);
+    collect_span_change_hours(input.aggregates_complete, first, last, &mut raw_hours);
     for runs in input.slots.values() {
-        collect_change_hours(runs, first, last, &mut raw_hours);
+        collect_opt_change_hours(runs, first, last, &mut raw_hours);
     }
     for span in input.missing {
         if span.last_hour < first || span.first_hour > last {
@@ -572,67 +797,79 @@ pub(super) fn compute_stack(
         hour: i32,
         total: Option<f64>,
         bands: Vec<Option<f64>>,
+        band_min: Vec<Option<f64>>,
+        band_max: Vec<Option<f64>>,
         other: Option<f64>,
     }
+    let make_sample = |hour: i32, total: Option<f64>, bands: Vec<Option<f64>>, other: Option<f64>| Sample {
+        hour,
+        total,
+        band_min: bands.clone(),
+        band_max: bands.clone(),
+        bands,
+        other,
+    };
     let evaluate = |hour: i32| -> Sample {
-        let Some(tension_raw) = lookup_run(input.tension, hour) else {
-            return Sample { hour, total: None, bands: vec![None; top.len()], other: None };
-        };
+        let tension_raw = lookup_run(input.tension, hour);
         let sum_raw = lookup_run(input.sum, hour);
-        let top_raws: Vec<i64> = top
+        let agg_complete = is_complete(input.aggregates_complete, hour);
+        let top_raws: Vec<Option<i64>> = top
             .iter()
-            .map(|(slot, ..)| input.slots.get(slot).and_then(|runs| lookup_run(runs, hour)).unwrap_or(0).max(0))
+            .map(|entry| lookup_slot(input.slots.get(&entry.slot).map(Vec::as_slice), agg_complete, hour))
             .collect();
+        let all_top_known = top_raws.iter().all(Option::is_some);
+        let top_sum_raw: Option<i128> = all_top_known.then(|| top_raws.iter().flatten().map(|&raw| i128::from(raw)).sum());
         match mode {
             TensionValueMode::Share => {
-                let total_pct = tension_raw as f64 / tension_scale;
-                if filter.is_none() {
-                    let Some(sum_val) = sum_raw else {
-                        return Sample { hour, total: Some(total_pct), bands: vec![None; top.len()], other: None };
-                    };
-                    if sum_val <= 0 || tension_raw <= 0 {
-                        return Sample {
-                            hour,
-                            total: Some(total_pct),
-                            bands: vec![Some(0.0); top.len()],
-                            other: has_other.then_some(0.0),
-                        };
-                    }
-                    let mut band_vals = Vec::with_capacity(top.len());
-                    let mut band_sum = 0.0;
-                    for &raw in &top_raws {
-                        let share = ((raw as i128 * tension_raw as i128) as f64) / (sum_val as f64 * tension_scale);
-                        band_sum += share;
-                        band_vals.push(Some(share));
-                    }
-                    let other_val = has_other.then(|| (total_pct - band_sum).max(0.0));
-                    Sample { hour, total: Some(total_pct), bands: band_vals, other: other_val }
-                } else {
-                    let Some(sum_val) = sum_raw else {
-                        return Sample { hour, total: Some(total_pct), bands: vec![None; top.len()], other: None };
-                    };
-                    if sum_val <= 0 || tension_raw <= 0 {
-                        return Sample { hour, total: Some(total_pct), bands: vec![Some(0.0); top.len()], other: None };
-                    }
-                    let band_vals = top_raws
+                let total_pct = tension_raw.map(|raw| raw as f64 / tension_scale);
+                let (Some(t_raw), Some(s_val)) = (tension_raw, sum_raw) else {
+                    return make_sample(hour, total_pct, vec![None; top.len()], None);
+                };
+                if s_val > 0 {
+                    let denom = s_val as f64 * tension_scale;
+                    let band_vals: Vec<Option<f64>> = top_raws
                         .iter()
-                        .map(|&raw| Some(((raw as i128 * tension_raw as i128) as f64) / (sum_val as f64 * tension_scale)))
+                        .map(|raw| raw.map(|v| ((i128::from(v) * i128::from(t_raw)) as f64) / denom))
                         .collect();
-                    Sample { hour, total: Some(total_pct), bands: band_vals, other: None }
+                    let other_val = if has_other {
+                        top_sum_raw.map(|top_sum| (((i128::from(s_val) - top_sum) * i128::from(t_raw)) as f64) / denom)
+                    } else {
+                        None
+                    };
+                    make_sample(hour, total_pct, band_vals, other_val)
+                } else if t_raw == 0 && s_val == 0 {
+                    let band_vals: Vec<Option<f64>> = top_raws
+                        .iter()
+                        .map(|raw| raw.and_then(|v| (v == 0).then_some(0.0)))
+                        .collect();
+                    let other_val = if has_other {
+                        (all_top_known && top_raws.iter().all(|v| *v == Some(0))).then_some(0.0)
+                    } else {
+                        None
+                    };
+                    make_sample(hour, total_pct, band_vals, other_val)
+                } else {
+                    make_sample(hour, total_pct, vec![None; top.len()], None)
                 }
             }
             TensionValueMode::Recorded => {
-                let band_vals: Vec<Option<f64>> = top_raws.iter().map(|&raw| Some(raw as f64 / contribution_scale)).collect();
-                let top_sum_raw: i128 = top_raws.iter().map(|&raw| i128::from(raw)).sum();
+                let band_vals: Vec<Option<f64>> = top_raws
+                    .iter()
+                    .map(|raw| raw.map(|v| v as f64 / contribution_scale))
+                    .collect();
                 if filter.is_none() {
                     let total_val = sum_raw.map(|s| s as f64 / contribution_scale);
-                    let other_val = has_other
-                        .then(|| sum_raw.map(|s| ((i128::from(s) - top_sum_raw).max(0) as f64) / contribution_scale))
-                        .flatten();
-                    Sample { hour, total: total_val, bands: band_vals, other: other_val }
+                    let other_val = if has_other {
+                        sum_raw
+                            .zip(top_sum_raw)
+                            .map(|(s, top_sum)| (i128::from(s) - top_sum) as f64 / contribution_scale)
+                    } else {
+                        None
+                    };
+                    make_sample(hour, total_val, band_vals, other_val)
                 } else {
-                    let total_val = Some(top_sum_raw as f64 / contribution_scale);
-                    Sample { hour, total: total_val, bands: band_vals, other: None }
+                    let total_val = top_sum_raw.map(|s| s as f64 / contribution_scale);
+                    make_sample(hour, total_val, band_vals, None)
                 }
             }
         }
@@ -647,37 +884,65 @@ pub(super) fn compute_stack(
             samples.push(sample);
         }
     }
+    let mut downsampled = false;
     if samples.len() > max_points && max_points >= 4 {
+        downsampled = true;
         let span = (i64::from(last) - i64::from(first)).max(1);
         let step = (span / max_points as i64).max(1);
         let mut reduced: Vec<Sample> = Vec::with_capacity(max_points + 2);
         let total_len = samples.len();
         let mut last_bucket = i64::MIN;
-        let mut prev_missing = false;
+        let mut prev_nulls: Vec<bool> = Vec::new();
         for (idx, sample) in samples.into_iter().enumerate() {
-            let is_missing = sample.total.is_none();
+            let mut cur_nulls = Vec::with_capacity(sample.bands.len() + 2);
+            cur_nulls.push(sample.total.is_none());
+            cur_nulls.push(sample.other.is_none());
+            cur_nulls.extend(sample.bands.iter().map(Option::is_none));
             let bucket = (i64::from(sample.hour) - i64::from(first)) / step;
-            let keep = idx == 0 || idx + 1 == total_len || is_missing != prev_missing || bucket != last_bucket;
+            let keep = idx == 0 || idx + 1 == total_len || cur_nulls != prev_nulls || bucket != last_bucket;
             if keep {
                 reduced.push(sample);
                 last_bucket = bucket;
             } else if let Some(last_kept) = reduced.last_mut() {
-                *last_kept = sample;
+                last_kept.total = sample.total;
+                last_kept.other = sample.other;
+                for i in 0..last_kept.bands.len() {
+                    let val = sample.bands[i];
+                    last_kept.bands[i] = val;
+                    if let Some(v) = val {
+                        last_kept.band_min[i] = Some(last_kept.band_min[i].map_or(v, |m| m.min(v)));
+                        last_kept.band_max[i] = Some(last_kept.band_max[i].map_or(v, |m| m.max(v)));
+                    }
+                }
             }
-            prev_missing = is_missing;
+            prev_nulls = cur_nulls;
         }
         samples = reduced;
     }
-    let end_sample = end_hour.map(evaluate);
+    let end_sample = evaluate(last);
+    let end_hour = (end_sample.total.is_some()
+        || end_sample.bands.iter().any(Option::is_some)
+        || end_sample.other.is_some())
+        .then_some(last);
     let mut hours = Vec::with_capacity(samples.len());
     let mut total = Vec::with_capacity(samples.len());
     let mut band_series: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(samples.len()); top.len()];
+    let mut band_mins: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(if downsampled { samples.len() } else { 0 }); top.len()];
+    let mut band_maxs: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(if downsampled { samples.len() } else { 0 }); top.len()];
     let mut other_series: Vec<Option<f64>> = Vec::with_capacity(if has_other { samples.len() } else { 0 });
     for sample in samples {
         hours.push(sample.hour);
         total.push(sample.total);
         for (i, val) in sample.bands.into_iter().enumerate() {
             band_series[i].push(val);
+        }
+        if downsampled {
+            for (i, val) in sample.band_min.into_iter().enumerate() {
+                band_mins[i].push(val);
+            }
+            for (i, val) in sample.band_max.into_iter().enumerate() {
+                band_maxs[i].push(val);
+            }
         }
         if has_other {
             other_series.push(sample.other);
@@ -686,21 +951,76 @@ pub(super) fn compute_stack(
     let bands = top
         .iter()
         .enumerate()
-        .map(|(i, (slot, end_raw, _, resolved))| TensionStackBand {
-            slot: *slot,
-            tag: resolved.as_ref().map(|(tag, _)| tag.clone()),
-            remembered: resolved.as_ref().is_some_and(|(_, remembered)| *remembered),
-            values: std::mem::take(&mut band_series[i]),
-            end_value: end_sample.as_ref().and_then(|s| s.bands.get(i).copied().flatten()),
-            end_raw: end_hour.map(|_| end_raw.to_string()),
+        .map(|(i, entry)| {
+            let end_raw = lookup_slot(input.slots.get(&entry.slot).map(Vec::as_slice), last_complete, last)
+                .map(|v| v.to_string());
+            TensionStackBand {
+                slot: entry.slot,
+                tag: entry.resolved.as_ref().map(|(tag, _)| tag.clone()),
+                remembered: entry.resolved.as_ref().is_some_and(|(_, remembered)| *remembered),
+                values: std::mem::take(&mut band_series[i]),
+                min_values: std::mem::take(&mut band_mins[i]),
+                max_values: std::mem::take(&mut band_maxs[i]),
+                end_value: end_sample.bands.get(i).copied().flatten(),
+                end_raw,
+            }
         })
         .collect();
     let other = has_other.then(|| TensionStackOther {
         count: other_count,
         values: other_series,
-        end_value: end_sample.as_ref().and_then(|s| s.other),
+        end_value: end_sample.other,
     });
-    (end_hour, capped_end_tension, hours, total, bands, other, next_change)
+    StackOutput {
+        end_hour,
+        capped_end_tension,
+        downsampled,
+        hours,
+        total,
+        bands,
+        other,
+        next_change_hour: next_change,
+    }
+}
+
+pub(super) fn filter_dated_warnings(
+    warnings: &[(i32, String)],
+    unreadable_hours: &[i32],
+    unmatched_hours: &[i32],
+    last: i32,
+    next_change_hour: &mut Option<i32>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let bump = |best: &mut Option<i32>, hour: i32| {
+        *best = Some(best.map_or(hour, |held| held.min(hour)));
+    };
+    for (hour, text) in warnings {
+        if *hour <= last {
+            out.push(text.clone());
+        } else {
+            bump(next_change_hour, *hour);
+            break;
+        }
+    }
+    let unreadable = unreadable_hours.partition_point(|&h| h <= last);
+    if unreadable > 0 {
+        out.push(format!("{unreadable} threat event rows hold a cell that was not recorded and are not shown"));
+    }
+    if let Some(&hour) = unreadable_hours.get(unreadable) {
+        bump(next_change_hour, hour);
+    }
+    let unmatched = unmatched_hours.partition_point(|&h| h <= last);
+    if unmatched > 0 {
+        out.push(format!("{unmatched} threat event rows change or drop a source no read listed"));
+    }
+    if let Some(&hour) = unmatched_hours.get(unmatched) {
+        bump(next_change_hour, hour);
+    }
+    out
+}
+
+fn dated_warnings(held: &BranchTension, last: i32, next_change_hour: &mut Option<i32>) -> Vec<String> {
+    filter_dated_warnings(&held.warnings, &held.unreadable_hours, &held.unmatched_hours, last, next_change_hour)
 }
 
 impl Product for WorldTensionStack {
@@ -750,6 +1070,8 @@ impl Product for WorldTensionStack {
         let first = params.first_hour.max(timeline.first);
         let last = params.last_hour.min(timeline.last);
         if first > last {
+            let mut next_change_hour = (params.last_hour < timeline.first).then_some(timeline.first);
+            let warnings = dated_warnings(&held, params.last_hour, &mut next_change_hour);
             let reply = WorldTensionStackReply {
                 branch_id: params.branch_id.clone(),
                 tension_scale,
@@ -757,14 +1079,15 @@ impl Product for WorldTensionStack {
                 ceiling_raw,
                 end_hour: None,
                 capped_end_tension: None,
+                downsampled: false,
                 hours: Vec::new(),
                 total: Vec::new(),
                 bands: Vec::new(),
                 other: None,
                 events: Vec::new(),
                 missing: vec![MissingSpan { first_hour: params.first_hour, last_hour: params.last_hour, reason: "This time is outside the recording.".into() }],
-                next_change_hour: (params.last_hour < timeline.first).then_some(timeline.first),
-                warnings: held.warnings.clone(),
+                next_change_hour,
+                warnings,
             };
             check_reply_budget(&reply)?;
             return Ok(reply);
@@ -776,8 +1099,18 @@ impl Product for WorldTensionStack {
             .map(|list| list.iter().map(String::as_str).collect());
         let max_points = params.width.unwrap_or(1600).clamp(120, 2400) as usize;
         let named = Named::new(&query.holders, last);
-        let input = StackInput { tension: &held.tension, sum: &held.sum, slots: &held.slots, missing: &held.missing };
-        let (end_hour, capped_end_tension, hours, total, bands, other, mut next_change_hour) = compute_stack(
+        let mode_missing = match params.values {
+            TensionValueMode::Share => &held.tension_missing,
+            TensionValueMode::Recorded => &held.aggregates_missing,
+        };
+        let input = StackInput {
+            tension: &held.tension,
+            sum: &held.sum,
+            slots: &held.slots,
+            aggregates_complete: &held.aggregates_complete,
+            missing: mode_missing,
+        };
+        let computed = compute_stack(
             &input,
             first,
             last,
@@ -786,7 +1119,9 @@ impl Product for WorldTensionStack {
             filter.as_ref(),
             max_points,
             |slot, hour| named.slot(slot, hour).map(|(tag, remembered)| (tag.to_owned(), remembered)),
+            |slot, hour| named.next_change(slot, hour),
         );
+        let mut next_change_hour = computed.next_change_hour;
         let mut events: Vec<TensionStackEvent> = Vec::new();
         for event in &held.events {
             if event.first_read > last {
@@ -808,25 +1143,31 @@ impl Product for WorldTensionStack {
             {
                 continue;
             }
-            if let Some(ended) = event.last_read
-                && ended >= last
-                && let Some(next) = ended.checked_add(1)
+            if let Some(removed_at) = event.removed_at
+                && removed_at > last
             {
-                next_change_hour = Some(next_change_hour.map_or(next, |h| h.min(next)));
+                next_change_hour = Some(next_change_hour.map_or(removed_at, |h| h.min(removed_at)));
             }
+            let last_read = event
+                .removed_at
+                .is_some_and(|at| at <= last)
+                .then_some(event.last_read)
+                .flatten();
             events.push(TensionStackEvent {
                 hour: event.hour,
+                slot: event.slot,
+                second_country: event.second_country,
+                place: event.place,
                 tag: resolved.map(|(tag, _)| tag.to_owned()),
                 remembered: resolved.is_some_and(|(_, remembered)| remembered),
                 reason: event.reason.clone(),
                 added_raw: added_raw.to_string(),
                 first_read: event.first_read,
-                last_read: event.last_read.filter(|&ended| ended < last),
+                last_read,
             });
         }
         events.sort_by(|a, b| a.hour.cmp(&b.hour).then_with(|| a.first_read.cmp(&b.first_read)));
-        let missing: Vec<MissingSpan> = held
-            .missing
+        let missing: Vec<MissingSpan> = mode_missing
             .iter()
             .filter_map(|span| {
                 let lo = span.first_hour.max(first);
@@ -834,21 +1175,23 @@ impl Product for WorldTensionStack {
                 (lo <= hi).then(|| MissingSpan { first_hour: lo, last_hour: hi, reason: span.reason.clone() })
             })
             .collect();
+        let warnings = dated_warnings(&held, last, &mut next_change_hour);
         let reply = WorldTensionStackReply {
             branch_id: params.branch_id.clone(),
             tension_scale,
             contribution_scale,
             ceiling_raw,
-            end_hour,
-            capped_end_tension,
-            hours,
-            total,
-            bands,
-            other,
+            end_hour: computed.end_hour,
+            capped_end_tension: computed.capped_end_tension,
+            downsampled: computed.downsampled,
+            hours: computed.hours,
+            total: computed.total,
+            bands: computed.bands,
+            other: computed.other,
             events,
             missing,
             next_change_hour,
-            warnings: held.warnings.clone(),
+            warnings,
         };
         check_reply_budget(&reply)?;
         Ok(reply)

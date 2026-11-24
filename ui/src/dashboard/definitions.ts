@@ -44,10 +44,12 @@ export interface WidgetProps {
   mapOptions: MapOptions;
   headerSlot: HTMLElement | null;
   countrySlot?: HTMLElement | null;
+  filterSlot?: HTMLElement | null;
   onDiagnostics: (warnings: string[]) => void;
   setOption?: (key: string, value: OptionValue) => void;
   setOptions?: (values: Readonly<Record<string, OptionValue>>) => void;
   view?: string;
+  manifestDeclaration?: FamilyWidgetDeclaration;
 }
 
 export interface WidgetViewSwitch {
@@ -106,15 +108,22 @@ export type WidgetCountryChipProps = Pick<WidgetProps, 'widget' | 'runtime' | 'a
   compact?: boolean;
 };
 
+export interface WidgetSubjectMenuProps {
+  readonly widget: WidgetSpec;
+  readonly runtime: WidgetRuntime;
+  readonly onApply: (widget: WidgetSpec) => void;
+}
+
 export interface WidgetDefinition extends WidgetMeta {
   render?: ComponentType<WidgetProps>;
   declaration?: FamilyWidgetDeclaration;
   usePresets?: (definition: WidgetMeta, runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean) => WidgetPresets;
   useOptionChoices?: (widget: WidgetSpec, runtime: WidgetRuntime) => OptionChoices;
   countryChip?: ComponentType<WidgetCountryChipProps>;
+  subjectMenu?: ComponentType<WidgetSubjectMenuProps>;
 }
 
-export type WidgetRenderer = Pick<WidgetDefinition, 'render' | 'declaration' | 'countryChip' | 'useOptionChoices' | 'usePresets'>;
+export type WidgetRenderer = Pick<WidgetDefinition, 'render' | 'declaration' | 'countryChip' | 'subjectMenu' | 'useOptionChoices' | 'usePresets'>;
 
 const registry = new Map<string, WidgetDefinition>();
 

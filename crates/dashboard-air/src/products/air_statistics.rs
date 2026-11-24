@@ -34,6 +34,22 @@ pub struct AirStatisticsParams {
     pub country: Country,
     #[doc = " Pair index in recorded schema order, not the interface's button order."]
     pub channel: u8,
+    #[doc = " Only these regions; every region the holder has statistics in when empty."]
+    #[serde(default)]
+    pub regions: Vec<u32>,
+    #[doc = " Only regions of these air theatres at the hour; refused with the reason while membership is not known."]
+    #[serde(default)]
+    pub theatres: Vec<String>,
+    #[doc = " The most active regions (ours plus the enemy's), when no region is chosen."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub top: Option<u32>,
+}
+
+#[derive(Default)]
+pub(crate) struct Shown {
+    pub regions: Option<BTreeSet<u32>>,
+    pub top: Option<usize>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -151,7 +167,7 @@ fn owners(frame: &DecodedFrame, owner: Owner, note: &mut Option<String>) -> Vec<
     ids
 }
 
-pub(crate) fn reply(rows: io::Result<&[AirStatisticsRow]>, owners: &[u32], read_hour: Option<i32>, channel: usize, names: &Names, live: &Cells) -> io::Result<AirStatisticsReply> {
+pub(crate) fn reply(rows: io::Result<&[AirStatisticsRow]>, owners: &[u32], read_hour: Option<i32>, channel: usize, names: &Names, live: &Cells, shown: &Shown) -> io::Result<AirStatisticsReply> {
     let mut warnings = names.warnings.clone();
     let (ours, enemy) = (channel_column(channel)?, channel_column(channel + PAIRS)?);
     let (regions, missing) = match rows {
@@ -171,8 +187,17 @@ pub(crate) fn reply(rows: io::Result<&[AirStatisticsRow]>, owners: &[u32], read_
             if shared > 0 {
                 warnings.push(format!("{shared} air statistics rows of the country's other link ids not shown: a region they share shows the lowest id's row"));
             }
-            let mut regions = Vec::with_capacity(held.len());
-            for (&id, row) in &held {
+            let mut ranked: Vec<(i128, u32, &AirStatisticsRow)> = held
+                .iter()
+                .filter(|(id, _)| shown.regions.as_ref().is_none_or(|regions| regions.contains(id)))
+                .map(|(&id, row)| (i128::from(row.channels[channel]).abs() + i128::from(row.channels[channel + PAIRS]).abs(), id, *row))
+                .collect();
+            ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            if let Some(top) = shown.top {
+                ranked.truncate(top);
+            }
+            let mut regions = Vec::with_capacity(ranked.len());
+            for (_, id, row) in ranked {
                 let key = u128::from(row.country) << 32 | u128::from(id);
                 let shown = region(names, id);
                 live.value(&shown.region, "ours", Cell { table: TableId::AirStatistics, column: ours, key }, 1.0);
@@ -194,7 +219,7 @@ impl AtHour for AirStatisticsAt {
     const CONTENT_DEPENDENT: bool = true;
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = AirStatisticsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, channel];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, channel, regions, "regions[]", theatres, "theatres[]", top];
     type Reply = AirStatisticsReply;
     type Context = Names;
 
@@ -244,9 +269,26 @@ impl AtHour for AirStatisticsAt {
         let read_hour = frame.tables[TableId::AirStatistics.index()].sampled_at();
         let mut note = None;
         let owners = owners(frame, owner, &mut note);
-        let mut reply = reply(frame.complete::<tables::AirStatistics>(), &owners, read_hour, usize::from(params.channel), at.context, at.live)?;
+        let theatres = theatres_at(frame, owner.slot, &at.context.catalogue);
+        let chosen: Option<BTreeSet<u32>> = (!params.regions.is_empty()).then(|| params.regions.iter().copied().collect());
+        let in_theatres: Option<Result<BTreeSet<u32>, String>> = (!params.theatres.is_empty()).then(|| {
+            theatres.as_ref().map_err(Clone::clone).map(|theatres| {
+                theatres.iter().filter(|theatre| params.theatres.contains(&theatre.id)).flat_map(|theatre| theatre.regions.iter().filter_map(|region| region.parse().ok())).collect()
+            })
+        });
+        let (regions, refused) = match (chosen, in_theatres) {
+            (_, Some(Err(why))) => (Some(BTreeSet::new()), Some(format!("Air theatre membership is not recorded at this hour: {why}"))),
+            (Some(chosen), Some(Ok(theatre))) => (Some(chosen.intersection(&theatre).copied().collect()), None),
+            (chosen, Some(Ok(theatre))) => (chosen.or(Some(theatre)), None),
+            (chosen, None) => (chosen, None),
+        };
+        let top = if params.regions.is_empty() { params.top.map(|top| usize::try_from(top).unwrap_or(usize::MAX)) } else { None };
+        let mut reply = reply(frame.complete::<tables::AirStatistics>(), &owners, read_hour, usize::from(params.channel), at.context, at.live, &Shown { regions, top })?;
         reply.warnings.extend(note);
-        match theatres_at(frame, owner.slot, &at.context.catalogue) {
+        if let Some(why) = refused {
+            reply.missing.get_or_insert(why);
+        }
+        match theatres {
             Ok(theatres) => reply.theatres = Some(theatres),
             Err(why) => reply.theatres_missing = Some(why),
         }

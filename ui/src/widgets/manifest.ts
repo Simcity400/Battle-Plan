@@ -19,18 +19,22 @@ export { DEFAULT_VIEW, FAMILY_VIEWS, LEGACY_WIDGETS };
 
 export interface FamilyViewUiLoader {
   readonly load: () => Promise<{ default: WidgetRenderer }>;
-  readonly slots?: readonly ('render' | 'countryChip')[];
+  readonly slots?: readonly ('render' | 'countryChip' | 'subjectMenu')[];
+  readonly views?: readonly string[];
 }
 
 export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'active-research': { load: () => import('./active-research') },
   'agency-comparison': { load: () => import('./agency-comparison') },
+  'air-kills-losses': { load: () => import('./air-kills-losses/family.tsx') },
+  'air-statistics': { load: () => import('./air-statistics') },
   'air-superiority-region': { load: () => import('./air-superiority-region') },
   'apm-graph': { load: () => import('./apm-graph') },
   'apm-table': { load: () => import('./apm-table') },
   'army-losses-by-month': { load: () => import('./army-losses-by-month') },
   'army-size': { load: () => import('./army-size/family.tsx') },
   'command-power': { load: () => import('./command-power'), slots: ['render', 'countryChip'] },
+  'decisions': { load: () => import('./decisions') },
   'division-template': { load: () => import('./division-template') },
   'doctrine-mastery': { load: () => import('./doctrine-mastery') },
   'equipment-designs': { load: () => import('./equipment-designs') },
@@ -47,10 +51,11 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'occupation-reserve-manpower': { load: () => import('./occupation-reserve-manpower/family.tsx') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'production-lines': { load: () => import('./production-lines') },
+  'research': { load: () => import('./research') },
   'scoreboard': { load: () => import('./scoreboard') },
-  'special-projects': { load: () => import('./special-projects/current.ts') },
+  'special-projects': { load: () => import('./special-projects'), views: ['live'] },
   'stability': { load: () => import('./stability') },
-  'war-contribution': { load: () => import('./war-contribution/sides.ts') },
+  'war-contribution': { load: () => import('./war-contribution'), slots: ['render', 'countryChip', 'subjectMenu'] },
   'convoy-health': { load: () => import('./convoy-health'), slots: ['render', 'countryChip'] },
   'air-superiority-timeline': { load: () => import('./air-superiority-timeline'), slots: ['render', 'countryChip'] },
   'weather-by-region': { load: () => import('./weather-by-region') },
@@ -191,7 +196,7 @@ export function manifestKinds(): readonly string[] {
   return kinds;
 }
 
-export function manifestSlotsForKind(kind: string): readonly ('render' | 'countryChip')[] {
+export function manifestSlotsForKind(kind: string): readonly ('render' | 'countryChip' | 'subjectMenu')[] {
   const ui = Object.hasOwn(FAMILY_VIEW_UI, kind) ? FAMILY_VIEW_UI[kind] : undefined;
   if (ui?.slots?.length) return ui.slots;
   const legacy = legacyEntriesForKind(kind);

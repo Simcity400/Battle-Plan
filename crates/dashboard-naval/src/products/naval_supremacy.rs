@@ -160,9 +160,8 @@ pub struct NavalSupremacyReply {
     pub viewer_color_missing: Option<String>,
     pub legend: Vec<SupremacyLegendItem>,
     pub regions: Vec<SupremacyRegion>,
-    #[doc = " Why the automatic regions could not be ranked at the asked hour: its day's naval control is not recorded. No automatic region is listed then."]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub unranked: Option<String>,
+    #[doc = " Why the most active regions are not a proven rank at the asked hour: its day, or a region's score on it, is not recorded. A top then lists only the pinned regions."]
+    pub rank_missing: Option<String>,
     pub scale: i32,
     pub warnings: Vec<String>,
 }
@@ -486,18 +485,24 @@ fn control(query: &Query<'_>, sea: &SeaContent, country: &Country, (first, last)
     Ok(Control { runs: runs(pieces), unknown, hours })
 }
 
-fn ranked(at_hour: impl Iterator<Item = (u32, i128)>, top: Option<usize>) -> Vec<u32> {
-    let mut order: Vec<(u32, i128)> = at_hour.filter(|&(_, score)| score > 0).collect();
+fn ranked(at_hour: impl Iterator<Item = (u32, Option<i128>)>, top: Option<usize>) -> Result<Vec<u32>, String> {
+    let mut order: Vec<(u32, i128)> = Vec::new();
+    for (id, score) in at_hour {
+        match score {
+            None => return Err("A region's naval scores are not recorded on this day".to_owned()),
+            Some(score) if score > 0 => order.push((id, score)),
+            Some(_) => {}
+        }
+    }
     order.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     order.truncate(top.unwrap_or(usize::MAX));
-    order.into_iter().map(|(id, _)| id).collect()
+    Ok(order.into_iter().map(|(id, _)| id).collect())
 }
 
-fn activity_on(runs: &[SupremacyRun], day: u32) -> i128 {
-    runs.iter().find(|run| run.first_day <= day && day <= run.last_day).map_or(0, |run| {
-        let score = |value: &Option<String>| value.as_deref().and_then(|s| s.parse::<i128>().ok()).unwrap_or(0).max(0);
-        score(&run.friendly) + score(&run.enemy)
-    })
+fn activity_on(runs: &[SupremacyRun], day: u32) -> Option<i128> {
+    let Some(run) = runs.iter().find(|run| run.first_day <= day && day <= run.last_day) else { return Some(0) };
+    let score = |value: &Option<String>| value.as_deref().and_then(|s| s.parse::<i128>().ok()).map(|score| score.max(0));
+    Some(score(&run.friendly)? + score(&run.enemy)?)
 }
 
 impl Product for NavalSupremacy {
@@ -633,7 +638,7 @@ impl Product for NavalSupremacy {
                 runs: runs_vec,
             }
         };
-        let mut unranked = None;
+        let mut rank_missing = None;
         let selected_regions: Vec<SupremacyRegion> = if let Some(explicit) = &params.regions {
             explicit.iter().map(|&id| make_region(id, true, runs.remove(&id).unwrap_or_default())).collect()
         } else if params.top.is_some() || params.pinned_regions.is_some() || params.hidden_regions.is_some() {
@@ -641,13 +646,14 @@ impl Product for NavalSupremacy {
             let pinned_list: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
             let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
             let scored = match (&last_day_unknown, last_day_index) {
-                (Some(reason), _) => {
-                    unranked = Some(reason.clone());
-                    Vec::new()
-                }
+                (Some(reason), _) => Err(reason.clone()),
                 (None, Some(day)) => ranked(runs.iter().filter(|(id, _)| !seen.contains(id) && !hidden.contains(id)).map(|(&id, region_runs)| (id, activity_on(region_runs, day))), params.top),
-                (None, None) => Vec::new(),
+                (None, None) => Ok(Vec::new()),
             };
+            let scored = scored.unwrap_or_else(|reason| {
+                rank_missing = Some(reason);
+                Vec::new()
+            });
             let mut out = Vec::with_capacity(pinned_list.len() + scored.len());
             for id in pinned_list {
                 out.push(make_region(id, true, runs.remove(&id).unwrap_or_default()));
@@ -693,7 +699,7 @@ impl Product for NavalSupremacy {
             viewer_color_missing: viewer_look.color_missing,
             legend,
             regions: selected_regions,
-            unranked,
+            rank_missing,
             scale: SCALE,
             warnings,
         };

@@ -15,7 +15,7 @@ export interface RendererLoaderEntry {
 export function buildRendererLoaders(
   legacy: readonly LegacyWidgetEntry[],
   family: readonly FamilyViewEntry[],
-  ui: Readonly<Record<string, { readonly load: RendererLoader }>>,
+  ui: Readonly<Record<string, { readonly load: RendererLoader; readonly views?: readonly string[] }>>,
 ): ReadonlyMap<string, RendererLoaderEntry> {
   const map = new Map<string, RendererLoaderEntry>();
   for (const entry of legacy) {
@@ -25,12 +25,14 @@ export function buildRendererLoaders(
   for (const entry of family) {
     const key = viewKey(entry.kind, entry.view);
     if (map.has(key)) continue;
-    const override = Object.hasOwn(ui, entry.kind) ? ui[entry.kind] : undefined;
+    const held = Object.hasOwn(ui, entry.kind) ? ui[entry.kind] : undefined;
+    const override = held && (!held.views || held.views.includes(normalizeView(entry.view))) ? held : undefined;
     map.set(key, {
       kind: entry.kind,
       view: normalizeView(entry.view),
       load: override
-        ? override.load
+        ? () => Promise.all([override.load(), entry.loadSpec()])
+          .then(([module, spec]) => ({ default: { ...module.default, declaration: spec.declaration } as WidgetRenderer }))
         : () => entry.loadSpec().then(spec => ({ default: { declaration: spec.declaration } as WidgetRenderer })),
     });
   }

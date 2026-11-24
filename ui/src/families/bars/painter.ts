@@ -48,6 +48,7 @@ import {
   type BarsSegment,
   type BarsValueField,
 } from './model.ts';
+import { drawCaptionSides, drawPickList } from './pickList.ts';
 
 export interface BarsGlideOffset {
   readonly fromY: number;
@@ -222,24 +223,21 @@ function drawHeader(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: 
   ctx.save();
   ctx.textBaseline = 'middle';
   if (model.form === 'two-sided' && layout.twoSidedLayout === 'stacked-pair') {
-    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-    ctx.textAlign = 'left';
-    let cursor = layout.nameX;
-    const swatch = 9;
-    (model.legend ?? []).forEach((item, at) => {
-      const top = Math.round(middleY - swatch / 2);
-      ctx.fillStyle = theme.text;
-      ctx.strokeStyle = theme.muted;
-      if (at === 0) {
-        ctx.fillRect(cursor, top, swatch, swatch);
-      } else {
-        ctx.lineWidth = 1;
-        ctx.strokeRect(cursor + 0.5, top + 0.5, swatch - 1, swatch - 1);
-      }
-      ctx.fillStyle = theme.muted;
-      ctx.fillText(item.label, cursor + swatch + 6, middleY);
-      cursor += swatch + 6 + textWidth(ctx, item.label) + 18;
-    });
+    const legend = model.legend ?? [];
+    if (legend.length > 0) {
+      drawLegendStrip(ctx, layout.nameX, layout.headerTop, Math.max(0, layout.width - layout.nameX - BARS_PAD_X), layout.headerHeight, {
+        entries: {
+          length: legend.length,
+          at: at => ({
+            label: legend[at]!.label,
+            color: theme.text,
+            ...(at > 0 ? { outlined: true } : {}),
+            muted: true,
+          }),
+        },
+        entryGap: 18,
+      }, theme);
+    }
   } else if (model.form === 'two-sided' && layout.twoSidedLayout === 'paired') {
     ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
     ctx.fillStyle = theme.text;
@@ -262,9 +260,9 @@ function drawHeader(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: 
       ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
       ctx.fillStyle = theme.text;
       ctx.textAlign = 'left';
-      ctx.fillText(ellipsise(model.caption, layout.width - BARS_PAD_X * 2, s => textWidth(ctx, s)), BARS_PAD_X, middleY);
+      ctx.fillText(ellipsise(model.caption, layout.width - layout.bodyLeft - BARS_PAD_X * 2, s => textWidth(ctx, s)), layout.bodyLeft + BARS_PAD_X, middleY);
     }
-    if (model.captionRight) {
+    if (model.captionRight && !model.captionSides?.length) {
       ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'right';
@@ -312,6 +310,9 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
   ctx.clearRect(0, 0, layout.width, layout.height);
 
   drawHeader(ctx, model, layout, theme);
+  if (model.captionSides?.length && layout.headerHeight > 0) {
+    drawCaptionSides(ctx, model.captionSides, layout.width - BARS_PAD_X, layout.headerTop + layout.headerHeight / 2, theme, { ...(icons ? { icons } : {}), ...(artCache ? { artCache } : {}) });
+  }
   if (layout.showAxis) drawAxis(ctx, model, layout, theme);
 
   const { first, last } = visibleBarsRange(layout, scrollTop);
@@ -320,7 +321,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
 
   ctx.save();
   ctx.beginPath();
-  ctx.rect(0, layout.bodyTop, layout.width, layout.bodyHeight);
+  ctx.rect(layout.bodyLeft, layout.bodyTop, layout.width - layout.bodyLeft, layout.bodyHeight);
   ctx.clip();
 
   if (model.form === 'net' || (model.form === 'two-sided' && layout.twoSidedLayout !== 'stacked-pair')) {
@@ -350,8 +351,8 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
 
     if (item.kind === 'add-region') {
       const hovered = inspectedKey === item.key;
-      if (hovered) drawRowHover(ctx, 0, y, layout.width, rowH, theme);
-      if (focusedKey === item.key) drawRowFocusRing(ctx, 0, y, layout.width, rowH, theme);
+      if (hovered) drawRowHover(ctx, layout.bodyLeft, y, layout.width - layout.bodyLeft, rowH, theme);
+      if (focusedKey === item.key) drawRowFocusRing(ctx, layout.bodyLeft, y, layout.width - layout.bodyLeft, rowH, theme);
       drawAddRow(ctx, layout.nameX, middleY, layout.plotLeft, layout.plotRight, item.label, theme);
       continue;
     }
@@ -361,14 +362,14 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
     const isSelected = selectedKey === row.key || (row.rightSide && selectedKey === row.rightSide.key);
     const isFocused = focusedKey === row.key || (row.rightSide && focusedKey === row.rightSide.key);
 
-    if (isSelected) drawRowSelected(ctx, 0, y, layout.width, rowH, theme);
-    else if (isHovered) drawRowHover(ctx, 0, y, layout.width, rowH, theme);
-    if (isFocused) drawRowFocusRing(ctx, 0, y, layout.width, rowH, theme);
+    if (isSelected) drawRowSelected(ctx, layout.bodyLeft, y, layout.width - layout.bodyLeft, rowH, theme);
+    else if (isHovered) drawRowHover(ctx, layout.bodyLeft, y, layout.width - layout.bodyLeft, rowH, theme);
+    if (isFocused) drawRowFocusRing(ctx, layout.bodyLeft, y, layout.width - layout.bodyLeft, rowH, theme);
     if (model.form === 'net' && i < model.rows.length - 1) {
-      drawRowHairline(ctx, BARS_PAD_X, layout.width - BARS_PAD_X, y + rowH - 1, theme, 'normal');
+      drawRowHairline(ctx, layout.bodyLeft + BARS_PAD_X, layout.width - BARS_PAD_X, y + rowH - 1, theme, 'normal');
     }
 
-    drawMediaSlot(ctx, BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, { icons, artCache, radius: 2 });
+    drawMediaSlot(ctx, layout.bodyLeft + BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, { icons, artCache, radius: 2 });
 
     if (layout.nameWidth > 0) {
       const regionTools = row.region !== undefined && (isHovered || isFocused);
@@ -542,7 +543,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         const rightName = drawNameSlot(
           ctx,
           right.labelMissing ? notRecordedLabel('Name') : right.label,
-          layout.rightNameX,
+          layout.rightNameX + layout.rightNameWidth,
           y,
           layout.rightNameWidth,
           rowH,
@@ -743,17 +744,56 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
   }
   ctx.restore();
 
-  if (layout.legendHeight > 0 && model.legend?.length) {
-    drawLegendStrip(ctx, 0, layout.legendTop, layout.width, layout.legendHeight, {
-      entries: model.legend.map(entry => ({
-        label: entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label,
-        color: entry.color,
-      })),
-      padX: BARS_PAD_X,
-      entryGap: 14,
-    }, theme);
+  if (layout.legendHeight > 0 && (model.legend?.length || model.scaleUnit)) {
+    const entries = (model.legend ?? []).map(entry => ({
+      label: entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label,
+      color: entry.color,
+      ...(entry.hatched ? { hatch: true } : {}),
+    }));
+    const rowCount = Math.max(1, Math.round(layout.legendHeight / 22));
+    if (rowCount > 1 && entries.length > 1) {
+      const rowH = layout.legendHeight / rowCount;
+      const entryGap = 14;
+      ctx.save();
+      ctx.font = `500 ${theme.fontSize.small}px ${theme.font}`;
+      const rightReserve = model.scaleUnit ? Math.min(Math.floor(layout.width * 0.3), Math.ceil(textWidth(ctx, model.scaleUnit))) + entryGap : 0;
+      const row1Limit = Math.max(80, layout.width - BARS_PAD_X * 2 - rightReserve);
+      let used = 0;
+      let splitAt = entries.length;
+      for (let i = 0; i < entries.length; i++) {
+        const w = 18 + Math.ceil(textWidth(ctx, entries[i]!.label));
+        const next = used + (i > 0 ? entryGap : 0) + w;
+        if (i > 0 && next > row1Limit) {
+          splitAt = i;
+          break;
+        }
+        used = next;
+      }
+      ctx.restore();
+      drawLegendStrip(ctx, 0, layout.legendTop, layout.width, rowH, {
+        entries: entries.slice(0, splitAt),
+        ...(model.scaleUnit ? { rightNote: model.scaleUnit } : {}),
+        padX: BARS_PAD_X,
+        entryGap,
+      }, theme);
+      if (splitAt < entries.length) {
+        drawLegendStrip(ctx, 0, layout.legendTop + rowH, layout.width, rowH, {
+          entries: entries.slice(splitAt),
+          padX: BARS_PAD_X,
+          entryGap,
+        }, theme);
+      }
+    } else {
+      drawLegendStrip(ctx, 0, layout.legendTop, layout.width, layout.legendHeight, {
+        entries,
+        ...(model.scaleUnit ? { rightNote: model.scaleUnit } : {}),
+        padX: BARS_PAD_X,
+        entryGap: 14,
+      }, theme);
+    }
   }
 
+  if (model.pickList) drawPickList(ctx, model.pickList, layout, theme, inspectedKey ?? null, focusedKey ?? null);
   return { paintedRows, truncatedKeys };
 }
 
@@ -817,5 +857,6 @@ export function collectVisibleBarsIcons(model: BarsModel, layout: BarsLayout, sc
     if (item.kind !== 'data') continue;
     items.push(item.media, item.rightSide?.media, item.readout?.iconUrl, item.target?.iconUrl);
   }
+  for (const side of model.captionSides ?? []) items.push(side.media);
   return collectArtUrls(items);
 }

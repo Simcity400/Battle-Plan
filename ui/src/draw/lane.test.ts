@@ -13,6 +13,8 @@ import { splitForLanes } from '../dashboard/follow/split.ts';
 import { componentReading } from '../dashboard/follow/useFollowed.ts';
 import { installedEntry } from '../dashboard/follow/store.ts';
 import type { Pipeline } from '../dashboard/follow/pipeline';
+import { PayloadSender } from '../dashboard/follow/payloads.ts';
+import { boundDated } from '../families/host/dated.ts';
 
 interface Fake extends Bitmap { content: string; closed: boolean }
 const NATIVE = 9, ROUTE = 1;
@@ -155,6 +157,30 @@ test('addendum 2: a moving widget stays due, one step per acknowledgement, after
   assert.equal(page.view(1).fields?.step, 1);
   while (later.length) { later.splice(0).forEach(run => run()); await flush(); await flush(); page.frame(); await flush(); }
   assert.equal(page.view(1).fields?.step, 3, 'motion ran to its end, each step a whole install');
+});
+
+test('the host’s dated binding and the lane’s intersection meet: a static proof dates the picture alone or beside a followed stream', async () => {
+  const proof = [100, 140] as const;
+  const alone = rig();
+  alone.mount(1, [], 'fields', 0, { dated: boundDated({ hour: 100, follows: true }, proof, false, false, null)! });
+  await alone.step(99, { playing: false });
+  assert.equal(alone.page.view(1).mode, 'reading', 'nothing before the hour the static read answered');
+  await alone.step(120, { playing: false });
+  assert.deepEqual([alone.page.view(1).mode, alone.page.view(1).h, alone.page.view(1).through, alone.page.view(1).dim], ['picture', 100, 120, false]);
+  await alone.step(150, { playing: false });
+  assert.deepEqual([alone.page.view(1).through, alone.page.view(1).dim], [140, true], 'at rest past the proof the picture is held as not current');
+
+  const beside = rig();
+  const dated = boundDated({ hour: 100, follows: true }, proof, true, false, null);
+  assert.deepEqual(dated, { h: 100, c: 140 }, 'a followed static read is dated by its proof even beside subscriptions');
+  beside.mount(1, [{ id: 5, channel: 'followed' }], 'fields', 0, { dated: dated! });
+  beside.lane.bindRoute(5, ROUTE, NATIVE);
+  beside.lane.receive('follow', message(160, [{ id: 5, hour: 90, answer: rows([1n], [1n]) }], false, NATIVE));
+  await beside.step(130, { playing: false });
+  assert.deepEqual([beside.page.view(1).mode, beside.page.view(1).h, beside.page.view(1).through], ['picture', 100, 130], 'the join starts at the later of the stream and the static read');
+  await beside.step(150, { playing: false });
+  assert.deepEqual([beside.page.view(1).through, beside.page.view(1).dim], [140, true], 'and is confirmed only through the static proof, though the stream confirms 160');
+  assert.equal(boundDated({ hour: 100 }, null, true, false, null), undefined, 'a pinned read beside subscriptions leaves dating to the stream');
 });
 
 test('addendum 3: a widget of two subscriptions installs their join, or waits while either is missing', async () => {
@@ -3348,4 +3374,52 @@ test('seeded differential search: hand-over lane matches main at quiescence acro
   for (let seed = 1; seed <= 600; seed++) {
     await runSeed(seed);
   }
+});
+
+test('payloads are taken in on every message, not at paint: two binds between paints keep every tile, and each tile crosses once', async () => {
+  const seen: string[][] = [];
+  const tiles: LaneView = { paint: input => {
+    const lines = (input.model as { tiledBySource: { main: Record<string, { tag: string }> } }).tiledBySource.main;
+    seen.push(Object.values(lines).map(line => line.tag));
+    return { surfaces: [], fields: {}, motion: false };
+  } };
+  const { lane, mount, step } = rig({ tiles });
+  let crossed = 0;
+  const sender = new PayloadSender(message => { crossed += message.put?.length ?? 0; lane.payloads(structuredClone(message)); });
+  mount(1, [], 'tiles', 0, { dated: { h: 0, c: 100 } });
+  const ger = { tag: 'GER', buckets: [1, 2, 3] };
+  const ita = { tag: 'ITA', buckets: [4, 5, 6] };
+  const bind = (lines: Record<string, unknown>) => {
+    const encoded = sender.acquire({ family: 'chart', kind: 'test', tiledBySource: { main: lines } });
+    lane.bind(1, { generation: 2, surfaces: [], offset: 0, pin: null, dated: { h: 0, c: 100 } }, structuredClone(encoded.wire));
+    return encoded.ids;
+  };
+  const first = bind({ GER: ger });
+  const second = bind({ GER: ger, ITA: ita });
+  sender.release(first);
+  await step(10, { playing: false });
+  assert.deepEqual(seen.at(-1), ['GER', 'ITA'], 'the tile the first bind brought is still there for the second');
+  assert.equal(crossed, 2, 'each tile crossed once');
+  sender.release(second);
+});
+
+test('a date-only supply for a stamp the lane does not hold is dropped, and a new owner clears the previous owner’s statics', async () => {
+  const seen: { panels: unknown; dated: unknown }[] = [];
+  const watch: LaneView = { paint: input => {
+    seen.push({ panels: (input.model as { staticPanels?: unknown } | undefined)?.staticPanels ?? null, dated: input.binding.dated ?? null });
+    return { surfaces: [], fields: {}, motion: false };
+  } };
+  const { lane, mount, step } = rig({ watch });
+  mount(1, [], 'watch', 0, { dated: { h: 0, c: 100 } });
+  lane.bind(1, { generation: 2, owner: 'a', surfaces: [], offset: 0, pin: null, dated: { h: 0, c: 100 } }, { family: 'f', kind: 'k' });
+  lane.supply(1, { stamp: 5, statics: { staticPanels: { main: { at: 10 } } }, dated: { h: 10, c: 20 } });
+  lane.supply(1, { stamp: 4, dated: { h: 0, c: 100 } });
+  await step(15, { playing: false });
+  assert.deepEqual(seen.at(-1), { panels: { main: { at: 10 } }, dated: { h: 10, c: 20 } }, 'dates stamped for another answer never date this one');
+  lane.supply(1, { stamp: 5, dated: { h: 10, c: 30 } });
+  await step(25, { playing: false });
+  assert.deepEqual(seen.at(-1)?.dated, { h: 10, c: 30 }, 'dates for the answer held are applied');
+  lane.bind(1, { generation: 3, owner: 'b', surfaces: [], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+  await step(26, { playing: false });
+  assert.equal(seen.at(-1)?.panels, null, 'the previous owner’s panels are gone');
 });

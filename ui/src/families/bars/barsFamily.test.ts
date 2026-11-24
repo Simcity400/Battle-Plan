@@ -23,11 +23,12 @@ import {
   InvalidBarsModelError,
   type BarsModel, type BarsProjection,
 } from './model.ts';
-import { axisCeiling, layoutFamilyBars } from './layout.ts';
+import { axisCeiling, barsScrollHeight, layoutFamilyBars, visibleBarsRange } from './layout.ts';
+import { barsHostAdapter } from './hostAdapter.ts';
 import { drawFamilyBars, hitFamilyBars } from './painter.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { familyBarsLaneView, type FamilyBarsBinding } from './laneView.ts';
-import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, LaneTransport } from '../laneRuntime.fixture.ts';
 import { buildShareRowsModel } from './shareRows.ts';
 
 const THEME: FamilyTheme = {
@@ -421,8 +422,8 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
   registerFamilyProjection({
     kind: 'test-bars-1500',
     family: 'bars',
-    project(readView, opts) {
-      const list = opts.swapTop ? [rows1500[1]!, rows1500[0]!, ...rows1500.slice(2)] : rows1500;
+    project(readView) {
+      const list = readView.hour === h + 1 ? [rows1500[1]!, rows1500[0]!, ...rows1500.slice(2)] : rows1500;
       return {
         form: 'ordered',
         hour: readView.hour,
@@ -431,6 +432,7 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
         rows: list,
       };
     },
+    nextChange: readView => readView.hour + 1,
   });
 
   const origOffscreen = globalThis.OffscreenCanvas;
@@ -447,46 +449,52 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
     const state = new Map<string, unknown>();
     let seq = 0;
     const content = () => `c${++seq}`;
-    const mkInput = (hour: number, speed: number, now: number, swapTop = false): PaintInput => ({
+    const model = new LaneTransport().carry({
+      family: 'bars',
+      kind: 'test-bars-1500',
+      options: {},
+      sources: {},
+      width: 480,
+      height: 240,
+      scrollTop: 0,
+      theme: THEME,
+      audit: true,
+      auditId: 7,
+    } satisfies FamilyBarsBinding<Record<string, never>>);
+    const mkInput = (hour: number, speed: number, now: number): PaintInput => ({
       widget: 1,
       subs: [],
       pictures: [],
       hour,
+      seek: 0,
       speed,
       now,
       inspect: null,
-      binding: { surfaces: [{ width: 480, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'],
-      model: {
-        family: 'bars',
-        kind: 'test-bars-1500',
-        options: { swapTop },
-        sources: {},
-        width: 480,
-        height: 240,
-        scrollTop: 0,
-        theme: THEME,
-        audit: true,
-        auditId: 7,
-      } satisfies FamilyBarsBinding<{ readonly swapTop: boolean }>,
+      binding: { generation: 1, surfaces: [{ width: 480, height: 240, dpr: 1 }], offset: 0, pin: null },
+      model,
     });
 
-    const first = view.paint(mkInput(h, 24, 1000, false), state, content);
+    const first = view.paint(mkInput(h, 24, 1000), state, content);
     assert.equal(first.mode, 'picture');
     assert.equal(first.motion, false);
     const auditField = first.fields.audit?.value as { id: number; rows: readonly { row: string; key: string; value?: string }[] };
     assert.equal(auditField.id, 7);
-    const expectedAudit = deriveBarsAudit({ form: 'ordered', hour: h, rows: rows1500 });
-    assert.deepEqual(auditField.rows, expectedAudit);
+    const exact = (scrollTop: number) => barsHostAdapter.deriveAuditRows!({ form: 'ordered', hour: h, rows: rows1500 }, h, {
+      viewport: { width: 480, height: 240, dpr: 1, scrollLeft: 0, scrollTop, zoomWindow: null }, settings: undefined, expanded: {}, theme: THEME, fields: {},
+    });
+    assert.deepEqual(auditField.rows, exact(0), 'the installed window and the exact read at the same scroll agree');
+    assert.ok(new Set(auditField.rows.map(row => row.row)).size < 20, 'a ten-row viewport audits its visible rows, not 1,500 countries');
+    assert.notDeepEqual(exact(600), auditField.rows, 'a picture scrolled to the wrong window fails its audit');
     const mirror = deriveBarsMirror({ form: 'ordered', hour: h, rows: rows1500 }, { first: 0, count: 10 });
     assert.equal(mirror.total, 1500);
     assert.equal(mirror.rows.length, 10);
 
-    const watchingSwap = view.paint(mkInput(h + 1, 24, 1050, true), state, content);
+    const watchingSwap = view.paint(mkInput(h + 1, 24, 1050), state, content);
     assert.equal(watchingSwap.mode, 'picture');
     assert.equal(watchingSwap.motion, true, 'rank order glides at watching speed');
     assert.ok(watchingSwap.hit?.([100, 18])?.startsWith('row:'));
 
-    const topSpeed = view.paint(mkInput(h + 2, 720, 1100, false), state, content);
+    const topSpeed = view.paint(mkInput(h + 2, 720, 1100), state, content);
     assert.equal(topSpeed.mode, 'picture', 'top speed stays picture mode with no placeholder');
     assert.equal(topSpeed.motion, false, 'top speed disables glide animation');
   } finally {
@@ -543,7 +551,7 @@ test('a backward seek drops a cached model from a later hour', () => {
     let seq = 0;
     const options: Record<string, never> = {};
     const input = (hour: number): PaintInput => ({
-      widget: 1, subs: [], pictures: [], hour, speed: 24, now: hour, inspect: null,
+      widget: 1, subs: [], pictures: [], hour, seek: 0, speed: 24, now: hour, inspect: null,
       binding: { surfaces: [{ width: 480, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'],
       model: { family: 'bars', kind: 'test-bars-seek-back', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME, audit: true, auditId: 1 } satisfies FamilyBarsBinding<Record<string, never>>,
     });
@@ -562,6 +570,23 @@ test('a backward seek drops a cached model from a later hour', () => {
     { label: 'after', binding, hour: 20, speed: 24 },
     { label: 'seek back', binding, hour: 5, check: true },
     { label: 'scrolled', binding: { ...binding, scrollTop: 10 }, hour: 5, check: true },
+  ], surface);
+  registerFamilyProjection<BarsProjection<Record<string, never>>>({
+    kind: 'test-bars-seek-swap',
+    family: 'bars',
+    project(readView) {
+      const a = { kind: 'data' as const, key: 'A', label: 'A', value: { value: knownValue(readView.hour >= 10 ? 1 : 2) }, numeric: readView.hour >= 10 ? 1 : 2 };
+      const b = { kind: 'data' as const, key: 'B', label: 'B', value: { value: knownValue(readView.hour >= 10 ? 2 : 1) }, numeric: readView.hour >= 10 ? 2 : 1 };
+      return { form: 'ordered', hour: readView.hour, animateOrder: true, rows: readView.hour >= 10 ? [b, a] : [a, b] };
+    },
+    nextChange: readView => (readView.hour < 10 ? 10 : Infinity),
+  });
+  const swapping = { ...binding, kind: 'test-bars-seek-swap', reducedMotion: false };
+  assertFreshPaint(() => familyBarsLaneView(() => {}), [
+    { label: 'swapped later', binding: swapping, hour: 3, speed: 24 },
+    { label: 'swapped later', binding: swapping, hour: 20, speed: 24 },
+    { label: 'seek back across the swap while playing', binding: swapping, hour: 5, speed: 24, check: true },
+    { label: 'seek forward across the swap while playing', binding: swapping, hour: 30, speed: 24, check: true },
   ], surface);
 });
 
@@ -613,10 +638,10 @@ test('a hover over 1,500 rows reuses navigation, meta and row bounds, and the mi
     const state = new Map<string, unknown>();
     const options: Record<string, never> = {};
     let seq = 0;
+    const model = new LaneTransport().carry({ family: 'bars', kind: 'test-bars-hover', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME } satisfies FamilyBarsBinding<Record<string, never>>);
     const input = (inspect: string | null, now: number): PaintInput => ({
-      widget: 1, subs: [], pictures: [], hour: 50, speed: 24, now, inspect,
+      widget: 1, subs: [], pictures: [], hour: 50, seek: 0, speed: 24, now, inspect, model,
       binding: { surfaces: [{ width: 480, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'],
-      model: { family: 'bars', kind: 'test-bars-hover', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME } satisfies FamilyBarsBinding<Record<string, never>>,
     });
     const first = view.paint(input(null, 0), state, () => `c${++seq}`);
     const hovered = view.paint(input('row:K3', 16), state, () => `c${++seq}`);
@@ -654,4 +679,94 @@ test('a two-sided row can carry a ratio column with its own header', () => {
   drawFamilyBars(ctx, { model, layout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
   const texts = ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
   assert.ok(texts.includes('1.80 : 1') && texts.includes('Ratio'));
+});
+
+test('a measure list sits left of the butterfly: the body moves right, a list row hits as a pick with its key, and the audit names the chosen one', async () => {
+  const { hitPickList, pickAudit, pickNav, pickRowTops } = await import('./pickList.ts');
+  const { parseBarsHit } = await import('./hostAdapter.ts');
+  const pickList = {
+    rows: [
+      { key: 'one', label: 'Invented measure one', left: { fraction: 0.25 }, right: { fraction: 0.75 } },
+      { key: 'two', label: 'Invented measure two', left: { fraction: null }, right: { fraction: null }, divided: true },
+    ],
+    selectedKey: 'two',
+  };
+  const model = {
+    form: 'two-sided' as const, twoSidedLayout: 'split-sides' as const, hour: 10, pickList,
+    rows: [{ kind: 'data' as const, key: 'a', label: 'Country A', value: { value: knownValue(0.5), format: 'share' as const }, numeric: 0.5 }],
+  };
+  const wide = layoutFamilyBars(model, 1600, 320);
+  assert.equal(wide.pickWidth, 330);
+  assert.ok(wide.bodyLeft > wide.pickWidth && wide.nameX > wide.bodyLeft && wide.centerX > wide.bodyLeft, 'the butterfly is laid out right of the list');
+  const tops = pickRowTops(pickList);
+  assert.ok(tops[1]! - tops[0]! > 22, 'a divided row keeps its gap');
+  assert.equal(hitPickList(pickList, wide, { x: 40, y: tops[1]! + 4 }), 'pick:two');
+  assert.equal(hitPickList(pickList, wide, { x: wide.bodyLeft + 40, y: tops[0]! + 4 }), null, 'the butterfly is not the list');
+  assert.deepEqual(parseBarsHit('pick:two')?.meta, { pick: 'two' }, 'activation carries the measure');
+  assert.deepEqual(pickNav(pickList).map(item => item[0]), ['pick:one', 'pick:two']);
+  assert.ok(pickAudit(pickList).some(row => row.row === 'pick:two' && JSON.parse(row.value as string)[3] === true));
+  assert.equal(layoutFamilyBars(model, 500, 320).pickWidth, 0, 'too narrow for the list: the butterfly alone');
+});
+
+test('at the deepest scroll the extent allows, the last row sits above the axis, not under it', () => {
+  const rows = Array.from({ length: 40 }, (_, at) => ({ kind: 'data' as const, key: `C${at}`, label: `C${at}`, value: { value: knownValue(100 - at) }, numeric: 100 - at }));
+  const layout = layoutFamilyBars({ form: 'ordered', hour: 0, rows, showAxis: true }, 480, 240);
+  assert.ok(layout.axisHeight > 0);
+  const deepest = barsScrollHeight(layout) - layout.height;
+  const lastBottom = layout.rowTops[39]! + layout.rowHeights[39]!;
+  assert.ok(lastBottom - deepest <= layout.bodyHeight, 'the last row ends inside the clipped body');
+  assert.equal(visibleBarsRange(layout, deepest, 0).last, 40);
+});
+
+test('share rows draw the category legend strip, wrap long category lists cleanly, and draw right-aligned count unit once', () => {
+  const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
+  const model: BarsModel = {
+    form: 'share',
+    hour: h,
+    scaleUnit: 'Battalions',
+    legend: [
+      { key: 'armored', label: 'Armored Battalions', color: '#3b82f6' },
+      { key: 'combat-support', label: 'Combat Support Battalions', color: '#ea580c' },
+      { key: 'infantry', label: 'Infantry Battalions', color: '#16a34a' },
+      { key: 'mobile', label: 'Mobile Battalions', color: '#d97706' },
+      { key: 'mobile-cs', label: 'Mobile Combat Support Battalions', color: '#db2777' },
+      { key: 'support', label: 'Support Companies', color: '#7c3aed' },
+    ],
+    rows: [
+      {
+        kind: 'data',
+        key: 'GER',
+        label: 'German Reich',
+        segments: [
+          { key: 'infantry', label: 'Infantry Battalions', share: 0.7, value: knownValue(280), color: '#16a34a' },
+          { key: 'support', label: 'Support Companies', share: 0.3, value: knownValue(120), color: '#7c3aed' },
+        ],
+        readout: { primary: '400' },
+      },
+    ],
+  };
+  const layout = layoutFamilyBars(model, 840, 390);
+  assert.ok(layout.legendHeight >= 44, 'six long category names wrap onto two legend rows');
+  const { ctx, ops } = makeFakeCtx();
+  drawFamilyBars(ctx, { model, layout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
+  const texts = ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
+  assert.ok(texts.includes('Armored Battalions'), 'legend includes first category');
+  assert.ok(texts.includes('Support Companies'), 'wrapped legend includes last category');
+  assert.ok(texts.includes('Battalions'), 'legend strip includes count unit once');
+});
+
+test('a bars race view breaks at the exact hour a country enters or leaves selection membership, not midnight', async () => {
+  const { nextSeriesRaceChange } = await import('./seriesRace.ts');
+  const leaveAt = nextSeriesRaceChange(101, {
+    top: null,
+    candidates: ['GER', 'ITA'],
+    membership: { GER: [[100, 102]], ITA: [[100, 200]] },
+  });
+  assert.equal(leaveAt, 103, 'leaves at lastHour + 1 (hour 103), not midnight');
+  const enterAt = nextSeriesRaceChange(101, {
+    top: null,
+    candidates: ['GER', 'ITA'],
+    membership: { GER: [[100, 200]], ITA: [[105, 200]] },
+  });
+  assert.equal(enterAt, 105, 'enters at firstHour (hour 105), not midnight');
 });

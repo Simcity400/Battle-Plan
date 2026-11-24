@@ -25,7 +25,7 @@ import {
 import { canonicalAuditData } from '../audit.ts';
 import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import { formatDateHover, spokenValue, valueStateProps, type DateBoundKind, type ValueFormat } from '../valueFormat.ts';
-import type { FamilyColumnLayout } from './layout.ts';
+import { treeColumnOf, type FamilyColumnLayout } from './layout.ts';
 import { lookAt, nextLookChange, type CountryLook, type CountryLooksMap } from '../looks.ts';
 import { measuresColumn, type TableColumnDefaults, type TableSettings, type TableSortDirection } from './settings.ts';
 
@@ -127,6 +127,7 @@ export interface TableCell {
   readonly icon?: string;
   readonly iconSlot?: boolean;
   readonly iconPending?: boolean;
+  readonly iconArt?: string;
   readonly artShape?: 'wide' | 'square' | 'portrait' | 'equipment' | 'counter';
   readonly artName?: string;
   readonly flags?: readonly TableCellFlag[];
@@ -459,7 +460,7 @@ export function annotateLogBoundaries(
   const out = rows.slice();
   let prevDay: number | null = null;
   let prevBound: DateBoundKind | undefined;
-  let prevWasNonLiveData = false;
+  let prevWasLive: boolean | null = null;
 
   for (let b = 0; b < blocks.length; b++) {
     const block = blocks[b]!;
@@ -467,32 +468,25 @@ export function annotateLogBoundaries(
     if (block.head.kind !== 'data') {
       prevDay = null;
       prevBound = undefined;
-      prevWasNonLiveData = false;
+      prevWasLive = null;
       continue;
     }
     const isLive = block.head.row.live === true;
-    if (isLive) {
-      const nextIsLive = nextHead?.kind === 'data' && nextHead.row.live === true;
-      const lastItem = out[block.end]!;
-      if (!nextIsLive && nextHead && lastItem.kind === 'data') {
-        out[block.end] = { ...lastItem, isLiveEnd: true };
-      }
-      prevDay = null;
-      prevBound = undefined;
-      prevWasNonLiveData = false;
-      continue;
-    }
     const rowHour = dateHourOf(block.head.row, dateKey);
     const day = dayKeyOf(rowHour);
     const bound = dateKey ? block.head.row.cells[dateKey]?.boundedDate : undefined;
-    const showDate = !(suppressRepeatDates && prevWasNonLiveData && day !== null && day === prevDay && bound === prevBound);
+    const showDate = !(suppressRepeatDates && prevWasLive === isLive && day !== null && day === prevDay && bound === prevBound);
     if (!showDate) {
       out[block.start] = { ...block.head, showDate: false };
     }
-    const nextIsHistorical = nextHead?.kind === 'data' && nextHead.row.live !== true;
-    const nextDay = nextIsHistorical ? dayKeyOf(dateHourOf(nextHead.row, dateKey)) : null;
-    const isDayEnd = day !== null && (!nextIsHistorical || nextDay !== day);
-    if (isDayEnd) {
+    const nextIsSameSection = nextHead?.kind === 'data' && (nextHead.row.live === true) === isLive;
+    const nextDay = nextIsSameSection ? dayKeyOf(dateHourOf(nextHead.row, dateKey)) : null;
+    if (isLive && !nextIsSameSection && nextHead) {
+      const lastItem = out[block.end]!;
+      if (lastItem.kind === 'data') {
+        out[block.end] = { ...lastItem, isLiveEnd: true };
+      }
+    } else if (day !== null && (!nextIsSameSection || nextDay !== day)) {
       const lastItem = out[block.end]!;
       if (lastItem.kind === 'data') {
         out[block.end] = { ...lastItem, isDayEnd: true };
@@ -500,7 +494,7 @@ export function annotateLogBoundaries(
     }
     prevDay = day;
     prevBound = bound;
-    prevWasNonLiveData = true;
+    prevWasLive = isLive;
   }
   return out;
 }
@@ -1108,10 +1102,25 @@ export function deriveTableAudit(input: TableAuditInput): FamilyAuditRow[] {
           ...(model.dateGrouped ? { showDate: item.showDate !== false, isDayEnd: item.isDayEnd === true, isLiveEnd: item.isLiveEnd === true } : {}),
         })),
     ];
+    let handled = false;
     for (const col of visibleColumns) {
-      rowOut.push(auditCell(item.key, col.key, canonicalAuditData(resolveCellPaintModel(item.row.cells[col.key], col, hour, maxima, countryColors))));
+      const cell = item.row.cells[col.key];
+      const painted = resolveCellPaintModel(cell, col, hour, maxima, countryColors);
+      if (cell?.iconArt === undefined) {
+        rowOut.push(auditCell(item.key, col.key, canonicalAuditData(painted)));
+        continue;
+      }
+      handled = true;
+      const { icon: _arrived, iconPending: _arriving, ...shown } = painted;
+      rowOut.push(auditCell(item.key, col.key, canonicalAuditData({ ...shown, iconArt: cell.iconArt })));
     }
-    rowOut.push(auditCell(item.key, '_tooltip', canonicalAuditData(deriveRowTooltip(item, model.columns, hour))));
+    const tooltip = deriveRowTooltip(item, model.columns, hour);
+    if (handled) {
+      const { countryFlag: _arrivedFlag, ...shown } = tooltip;
+      rowOut.push(auditCell(item.key, '_tooltip', canonicalAuditData(shown)));
+    } else {
+      rowOut.push(auditCell(item.key, '_tooltip', canonicalAuditData(tooltip)));
+    }
     if (rowAuditCache && model.rowTimeBoundaries === false) {
       rowAuditCache.set(item.row, { sig: rowSig, rows: rowOut });
     }
@@ -1221,14 +1230,17 @@ export function deriveRowTooltip(
 ): TooltipContent {
   const { row } = found;
   const rows: TooltipRow[] = [];
-  const firstCol = allColumns[0];
+  const nameIndex = treeColumnOf(allColumns);
+  const firstCol = allColumns[nameIndex];
   const firstCell = firstCol ? row.cells[firstCol.key] : undefined;
   const firstResolved = firstCell ? resolveCellAtHour(firstCell, hour) : null;
   const firstText = firstResolved && hasMeasuredValue(firstResolved.value) ? String(firstResolved.value.value) : undefined;
   const title = row.tooltipTitle ?? (firstCol?.cellKind === 'date' ? found.name : (firstText ?? found.name));
   for (let i = 0; i < allColumns.length; i++) {
     const col = allColumns[i]!;
-    if (i === 0 && col.cellKind !== 'date' && !row.tooltipExtra && (firstText === undefined || firstText === title)) continue;
+    if (col.cellKind === 'kind' || col.cellKind === 'action') continue;
+    if (!col.label && col.cellKind !== 'date') continue;
+    if (i === nameIndex && col.cellKind !== 'date' && (firstText === undefined || firstText === title)) continue;
     const cell = row.cells[col.key];
     if (!cell) continue;
     const resolved = resolveCellAtHour(cell, hour);

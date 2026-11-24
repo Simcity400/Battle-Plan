@@ -126,8 +126,8 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
     pickedHeading: PICKED_REGIONS_HEADING,
     automaticHeading: mostActiveHeading(look.viewer),
     addRegionLabel: ADD_REGION_LABEL,
-    ...(reply.regions.length ? {} : reply.unranked ? { empty: reply.unranked, emptyKind: 'unavailable' as const } : { empty: `No naval activity for ${look.viewer} at this date.` }),
-    warnings: reply.regions.length && reply.unranked ? [...reply.warnings, reply.unranked] : reply.warnings,
+    ...(reply.regions.length ? {} : reply.rankMissing ? { empty: reply.rankMissing, emptyKind: 'unavailable' as const } : { empty: `No naval activity for ${look.viewer} at this date.` }),
+    warnings: reply.regions.length && reply.rankMissing ? [...reply.warnings, reply.rankMissing] : reply.warnings,
   });
 }
 
@@ -275,8 +275,8 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
       const readoutDay = reply === now && Math.floor((at - now.firstDayHour) / now.dayHours) === lastDay;
       return inspectDay(reply, region, row.label, at, look, findRunAtHour(row.runs, at, through)?.cell, readoutDay);
     },
-    ...(rows.length ? {} : now.unranked ? { empty: now.unranked, emptyKind: 'unavailable' as const } : { empty: `No naval activity for ${look.viewer} at this date.` }),
-    warnings: [...new Set(pieces.flatMap(reply => reply.warnings).concat(rows.length && now.unranked ? [now.unranked] : []))],
+    ...(rows.length ? {} : now.rankMissing ? { empty: now.rankMissing, emptyKind: 'unavailable' as const } : { empty: `No naval activity for ${look.viewer} at this date.` }),
+    warnings: [...new Set(pieces.flatMap(reply => reply.warnings).concat(rows.length && now.rankMissing ? [now.rankMissing] : []))],
   };
 }
 
@@ -290,7 +290,7 @@ function supremacySources(ctx: FamilyPlanContext, shares: boolean): SourcePlan {
   const regions: Record<string, unknown> = regionParams(readRegionChoice(ctx.options.regions));
   const base = { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) };
   const params = { ...base, top, ...regions };
-  const { pinnedRegions: _pinned, hiddenRegions: _hidden, ...unranked } = regions;
+  const { pinnedRegions: _pinned, hiddenRegions: _hidden, ...rankMissing } = regions;
   const entries = dayTileEntries(ctx, {
     product: 'naval-supremacy',
     now: {
@@ -300,7 +300,7 @@ function supremacySources(ctx: FamilyPlanContext, shares: boolean): SourcePlan {
       validThrough: data => (data as NavalSupremacyReply | undefined)?.validThrough ?? null,
     },
     tile: {
-      params: { ...base, ...unranked },
+      params: { ...base, ...rankMissing },
       coverage: { mode: 'population', form: 'all' },
       span: (params, first, last) => ({ ...params, firstHour: first, lastHour: last }),
     },

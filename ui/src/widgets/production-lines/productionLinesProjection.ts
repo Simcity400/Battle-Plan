@@ -12,7 +12,7 @@ import {
   type TableRow,
   type TooltipExtraRow,
 } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly, formatRecordedPercent } from '../../families/valueFormat.ts';
@@ -31,7 +31,15 @@ import {
   weeklyText,
 } from './productionData.ts';
 
-export type ProductionLinesProjectionOptions = Record<string, never>;
+export interface ProductionLinesProjectionOptions {
+  readonly country: string | null;
+}
+
+export interface ProductionLineMeta {
+  readonly handle: string;
+  readonly country: string | null;
+  readonly name: string;
+}
 
 function readLiveNum(live: ReturnType<BoundedReadView['live']>, handle: string, field: string): number | null {
   if (!live) return null;
@@ -55,10 +63,10 @@ function readLiveWhole(live: ReturnType<BoundedReadView['live']>, handle: string
   return typeof num === 'number' && Number.isSafeInteger(num) ? BigInt(num) : null;
 }
 
-export const productionLinesProjection: TableProjection<ProductionLinesProjectionOptions> = registerTableProjection({
+export const productionLinesProjection: TableProjection<ProductionLinesProjectionOptions> = registerFamilyProjection({
   kind: 'production-lines',
   family: 'table',
-  project(readView: BoundedReadView): TableModel {
+  project(readView: BoundedReadView, options: ProductionLinesProjectionOptions): TableModel {
     const hour = readView.hour;
     const columns = PRODUCTION_LINES_COLUMNS;
     const refused = readView.refused('main');
@@ -111,7 +119,6 @@ export const productionLinesProjection: TableProjection<ProductionLinesProjectio
       const costRaw = readLiveWhole(live, line.handle, 'cost');
       const outputUnits = readLiveNum(live, line.handle, 'output');
       const weekly = weeklyRaw(speedRaw, costRaw);
-      const weeklyVal = weekly === null ? null : Number(weekly) / 10 ** reply.decimals;
       const effPct = effRaw === null ? null : Number(efficiencyPercent(effRaw));
       const effFrac = effRaw === null ? null : efficiencyFraction(effRaw);
 
@@ -138,12 +145,12 @@ export const productionLinesProjection: TableProjection<ProductionLinesProjectio
           bar: effFrac === null ? null : { fraction: effFrac === 0 ? zeroValue(0) : knownValue(effFrac) },
         },
         output: {
-          value: weeklyVal === null
+          value: weekly === null
             ? notRecorded('Weekly output not recorded')
-            : weeklyVal === 0
-              ? zeroValue(0)
-              : knownValue(weeklyVal),
-          format: weeklyVal !== null && weeklyVal > 0 && weeklyVal < 0.05 ? { decimals: 0, maxDecimals: reply.decimals } : 'decimal1',
+            : weekly === 0n
+              ? zeroValue(0n)
+              : knownValue(weekly),
+          format: { decimals: reply.decimals, maxDecimals: 1 },
         },
         total: { value: producedValue(line, reply.outputMissing, outputUnits) },
         priority: { value: knownValue(line.priority + 1) },
@@ -181,8 +188,8 @@ export const productionLinesProjection: TableProjection<ProductionLinesProjectio
         name,
         cells,
         tooltipExtra: extra,
-        tooltipAction: 'Click for efficiency breakdown',
-        meta: { handle: line.handle, name, variant: line.variant },
+        tooltipAction: 'Click for its production factors',
+        meta: { handle: line.handle, country: options.country, name } satisfies ProductionLineMeta,
       };
     });
 
@@ -233,7 +240,7 @@ export const productionLinesDeclaration: TableWidgetDeclaration<ProductionLinesP
   projection: productionLinesProjection,
   columns: PRODUCTION_LINES_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: PRODUCTION_LINES_BASE },
-  projectionOptions: () => ({}),
+  projectionOptions: ctx => ({ country: ctx.countryTag }),
   jumpToDate: true,
   keyByBranch: true,
 };
