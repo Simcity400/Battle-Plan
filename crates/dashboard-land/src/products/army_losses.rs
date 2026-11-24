@@ -582,7 +582,7 @@ pub(super) fn month_detail_missing(availability: &ArmyLossesAvailability, wanted
                 return Some(reason.clone());
             }
             let needs_own = ledgers.iter().any(|&l| l != ENEMY_LEDGER);
-            let needs_enemy = ledgers.iter().any(|&l| l == ENEMY_LEDGER);
+            let needs_enemy = ledgers.contains(&ENEMY_LEDGER);
             if needs_own && let Some(reason) = &availability.own_equipment {
                 return Some(reason.clone());
             }

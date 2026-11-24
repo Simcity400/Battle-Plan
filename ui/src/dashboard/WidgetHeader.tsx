@@ -30,6 +30,7 @@ export interface WidgetHeaderProps {
   readingBadge?: string | null;
   summarySlotRef: (element: HTMLSpanElement | null) => void;
   countrySlotRef: (element: HTMLSpanElement | null) => void;
+  filterSlotRef?: (element: HTMLSpanElement | null) => void;
   headerSlotElement: HTMLSpanElement | null;
   source?: DashboardSource;
   onApply?: (widget: WidgetSpec, view?: boolean) => void;
@@ -60,6 +61,7 @@ export default function WidgetHeader({
   readingBadge = null,
   summarySlotRef,
   countrySlotRef,
+  filterSlotRef,
   headerSlotElement,
   source,
   onApply,
@@ -166,6 +168,7 @@ export default function WidgetHeader({
     };
     observe(header);
     if (hasSummary && !effectiveDrop.dropPill) observe(header.querySelector('.dash-widget-summary'));
+    observe(header.querySelector('.dash-widget-filter-slot'));
     if (hasSubject) observe(header.querySelector('.dash-widget-country-button, .dash-widget-controls > .dash-widget-country, .dash-widget-controls > .dash-widget-country-slot'));
     if (activeSwitch) observe(header.querySelector('[data-view-switch]'));
     if (showTime) observe(header.querySelector('.dash-time-chip'));
@@ -200,12 +203,14 @@ export default function WidgetHeader({
     const gripEl = header.querySelector<HTMLElement>('.dash-drag-grip');
     const settingsEl = header.querySelector<HTMLElement>('[data-widget-settings]');
     const summaryEl = header.querySelector<HTMLElement>('.dash-widget-summary');
+    const filterEl = header.querySelector<HTMLElement>('.dash-widget-filter-slot');
     const subjectEl = header.querySelector<HTMLElement>('.dash-widget-country-button, .dash-widget-controls > .dash-widget-country, .dash-widget-controls > .dash-widget-country-slot');
     const viewEl = header.querySelector<HTMLElement>('[data-view-switch]');
     const timeEl = header.querySelector<HTMLElement>('.dash-time-chip');
     const heading = titleRef.current;
     const titleFull = heading ? Math.ceil(heading.scrollWidth) : 0;
-    const fixed = widthOf(iconEl) + widthOf(settingsEl) + widthOf(gripEl);
+    const filterW = widthOf(filterEl);
+    const fixed = widthOf(iconEl) + widthOf(settingsEl) + widthOf(gripEl) + (filterW > 0 ? filterW + 6 : 0);
 
     if (hasSummary && !effectiveDrop.dropPill) {
       cache.pill = summaryEl ? Math.ceil(summaryEl.scrollWidth) : 0;
@@ -302,6 +307,7 @@ export default function WidgetHeader({
     <span className="dash-widget-summary" ref={summarySlotRef} hidden={effectiveDrop.dropPill || hasBodyState || undefined} />
     {readingBadge && <span className="dash-reading-badge is-in-header">{readingBadge}</span>}
     <div className="dash-widget-controls">
+      {filterSlotRef && <span className="dash-widget-filter-slot" ref={filterSlotRef} />}
       {hasSubject && (readOnly || !template || !onApply
         ? <CountryChip widget={widget} runtime={runtime} active={false} compact={effectiveDrop.compactSubject} onSlot={countrySlotRef} />
         : <WidgetCountryControl widget={widget} template={template} runtime={runtime} onApply={onApply}

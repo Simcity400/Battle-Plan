@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -10,6 +10,7 @@ import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import type { InstalledAction } from '../../families/contract.ts';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
+import { countryTagKey, useIdentity, useIdentityScope } from '../../families/identity/react.ts';
 import { FamilyWidget } from '../../families/host/registry';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { MarketLendLeaseReply } from '../../generated/dashboard';
@@ -26,13 +27,27 @@ interface Opened {
   readonly hour: GatedHour;
 }
 
-function Lines({ lines }: { readonly lines: readonly MarketDetailLine[] }) {
+interface Naming {
+  readonly runtime: WidgetProps['runtime'];
+  readonly source: NonNullable<WidgetProps['runtime']['tracks'][number]>['source'];
+  readonly scope: ReturnType<typeof useIdentityScope>;
+  readonly hour: number;
+  readonly active: boolean;
+}
+
+function CountryName({ naming, tag }: { readonly naming: Naming; readonly tag: string }) {
+  const key = useMemo(() => countryTagKey(tag), [tag]);
+  const { result } = useIdentity(naming.runtime.client, naming.source, naming.scope, key, naming.hour, { active: naming.active });
+  return <>{result?.kind === 'known' && result.name.kind === 'known' ? result.name.value : tag}</>;
+}
+
+function Lines({ lines, naming }: { readonly lines: readonly MarketDetailLine[]; readonly naming: Naming }) {
   return (
     <dl>
       {lines.map((line, index) => (
         <div key={index} className={line.marked ? 'is-marked' : undefined}>
           <dt>{line.label}</dt>
-          <dd>{line.value}</dd>
+          <dd>{line.country === undefined ? line.value : <CountryName naming={naming} tag={line.country} />}</dd>
         </div>
       ))}
     </dl>
@@ -54,7 +69,9 @@ function MarketRowDetail({ runtime, trackId, opened, active }: {
     params: { branchId: track.branch.id, countries: opened.tags.map(countryFromKey), only, hour: opened.hour },
   }) : null;
   const { data, error, retry } = useProduct<MarketLendLeaseReply>(runtime.client, request, active, validateMarketReply, track?.source);
+  const scope = useIdentityScope(runtime.client, track?.source, track?.branch.id ?? null, active);
   if (!track) return null;
+  const naming: Naming = { runtime, source: track.source, scope, hour: opened.hour, active };
   if (error) return <WidgetState kind="error" what="the market details" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading the market…" />;
   const detail = marketDetail(data, opened.selected);
@@ -64,7 +81,7 @@ function MarketRowDetail({ runtime, trackId, opened, active }: {
       {detail.sections.map(section => (
         <section key={section.title} aria-label={section.title}>
           <h4>{section.title}</h4>
-          {section.lines.length ? <Lines lines={section.lines} /> : <p>{section.empty}</p>}
+          {section.lines.length ? <Lines lines={section.lines} naming={naming} /> : <p>{section.empty}</p>}
         </section>
       ))}
     </div>

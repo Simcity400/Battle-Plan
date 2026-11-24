@@ -38,7 +38,7 @@ fn a_threat_source_is_one_event_from_its_listing_to_its_drop_across_a_stretch() 
 fn unread_threat_source_snapshot_keeps_open_events_and_dates_removals() {
     let a = source(1, "annexed", 0);
     let (events, unmatched) = join([
-        Step::Stretch { first: 10, last: 19, listed: Some(vec![(a.clone(), 500, Some(1001))]) },
+        Step::Stretch { first: 10, last: 19, listed: Some(vec![(a, 500, Some(1001))]) },
         Step::Stretch { first: 20, last: 29, listed: None },
     ]);
     assert!(unmatched.is_empty());
@@ -426,7 +426,7 @@ fn downsampled_world_tension_stack_preserves_band_min_max_bounds() {
     assert_eq!(band.min_values.len(), band.values.len());
     assert_eq!(band.max_values.len(), band.values.len());
     assert!(
-        band.max_values.iter().any(|&v| v == Some(40.0)),
+        band.max_values.contains(&Some(40.0)),
         "intermediate 40% spike must survive in max_values when bucketed: {:?}",
         (&out.hours, &band.values, &band.min_values, &band.max_values),
     );

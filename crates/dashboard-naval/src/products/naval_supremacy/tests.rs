@@ -227,3 +227,19 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
     assert_eq!(region.enemy_ships, MissionShips::Counted { ships: 1 });
     assert_ne!(reply.viewer_name_missing.as_deref(), Some("The recording holds no hour here"), "the viewer is named at the readout's hour, not inside the gap");
 }
+
+#[test]
+fn the_most_active_regions_are_a_rank_only_where_every_score_and_day_is_recorded() {
+    let run = |first_day: u32, last_day: u32, friendly: Option<&str>, enemy: Option<&str>| SupremacyRun {
+        first_day, last_day, control: None, friendly: friendly.map(str::to_owned), enemy: enemy.map(str::to_owned), share: None, own: None,
+    };
+    let runs = BTreeMap::from([(1, vec![run(0, 9, Some("5"), Some("5"))]), (2, vec![run(0, 9, Some("1"), Some("1"))]), (3, vec![run(0, 9, Some("0"), Some("0"))])]);
+    assert_eq!(most_active(&runs, &[], |_| true, Some(1)), (vec![1], None), "recorded scores rank; an idle region is not active");
+    let unread = BTreeMap::from([(1, vec![run(0, 9, Some("5"), Some("5"))]), (2, vec![run(0, 4, None, Some("1")), run(5, 9, Some("1"), Some("1"))])]);
+    let (top, missing) = most_active(&unread, &[], |_| true, Some(1));
+    assert!(top.is_empty() && missing.is_some(), "a region whose friendly score is missing could be the most active: no top, and why");
+    assert_eq!(most_active(&unread, &[], |_| true, None).0, [1, 2], "without a top every region is listed, the unranked after the ranked");
+    let gap = [UnknownDays { first_day: 3, last_day: 4, reason: "Not recorded".into() }];
+    let (top, missing) = most_active(&runs, &gap, |_| true, Some(2));
+    assert_eq!((top.len(), missing.as_deref()), (0, Some("Naval supremacy is not recorded on some days of the view: Not recorded")));
+}

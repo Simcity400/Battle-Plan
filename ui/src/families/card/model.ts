@@ -83,6 +83,7 @@ export interface CardColumns {
   readonly figure?: number;
   readonly figureAlign?: 'left' | 'right';
   readonly state?: number;
+  readonly lists?: boolean;
 }
 
 export interface CardModel {

@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { raidDescription, raidLogGroups, raidLogRows, raidLogSections, raidLogTypes, raidTooltip, targetNameRequest, targetNames, targetText } from './raidLogData.ts';
 import { raidAt } from '../../dashboard/raids.ts';
-import { phaseRun, syntheticEpisode, syntheticRaidLog } from '../../dashboard/raids.fixtures.ts';
+import { observedEnd, phaseRun, syntheticEpisode, syntheticRaidLog } from '../../dashboard/raids.fixtures.ts';
+
+const CODES = syntheticRaidLog([]);
 
 const all = () => true;
 
@@ -37,7 +39,7 @@ test('the description and tooltip carry victim provenance, hide future endings a
     preparation: [[10, 19, 0, 1]],
   });
   const data = syntheticRaidLog([raid]);
-  const at12 = raidAt(raid, 12)!;
+  const at12 = raidAt(CODES, raid, 12)!;
   assert.equal(at12.ended, false);
   assert.equal(at12.victim.tag, 'FRA');
   assert.equal(at12.victim.source, 'controllerAtObservedRead');
@@ -47,7 +49,7 @@ test('the description and tooltip carry victim provenance, hide future endings a
   assert.deepEqual(tip12.rows[1], { label: 'Target controller', value: 'France' });
   assert.deepEqual(tip12.rows.map(row => [row.label, row.value]).slice(3, 5), [['Phase / outcome', 'Phase 2'], ['Hours prepared', '2']]);
 
-  const at35 = raidAt(raid, 35)!;
+  const at35 = raidAt(CODES, raid, 35)!;
   assert.equal(at35.ended, true);
   assert.equal(at35.victim.tag, 'GER');
   assert.equal(at35.victim.source, 'controllerAtFirstEndedRead');
@@ -57,7 +59,7 @@ test('the description and tooltip carry victim provenance, hide future endings a
   assert.ok(tip35.rows.some(row => row.label === 'Ended (observed)'));
 
   const nativeEnded = syntheticEpisode('2', 10, 'ENG', 20, 30, true, {
-    endedSource: 'nativeEndDate',
+    ends: [{ hour: 30, endedHour: 30, exact: true, source: 'nativeEndDate', raider: 'ENG' }],
     victim: 'POL',
     victimSource: 'completionCountry',
     victims: [
@@ -66,7 +68,7 @@ test('the description and tooltip carry victim provenance, hide future endings a
     ],
   });
   const nativeData = syntheticRaidLog([nativeEnded]);
-  const nativeTip = raidTooltip(nativeData, raidAt(nativeEnded, 35)!, 'England', 'Poland', 'Kent', 35);
+  const nativeTip = raidTooltip(nativeData, raidAt(CODES, nativeEnded, 35)!, 'England', 'Poland', 'Kent', 35);
   assert.deepEqual(nativeTip.rows[1], { label: 'Country at completion', value: 'Poland' });
   assert.ok(nativeTip.rows.some(row => row.label === 'Ended (recorded)'));
 });
@@ -96,7 +98,7 @@ test('every raid’s target is asked, past the 4,096 the log once stopped at', (
 test('interval ordering preserves precedence between disjoint intervals and puts mutually overlapping changes in a visible interval group', () => {
   const r1 = syntheticEpisode('1', 10, 'ENG', null, 15, false, {
     firstHourExact: false,
-    endedExact: false,
+    ends: [observedEnd(15, 'ENG', false)],
     runs: [
       { ...phaseRun(10, 10, 2), firstExact: false, afterHour: null },
       { ...phaseRun(15, 35, 5, 1), firstExact: false, afterHour: 10 },
@@ -104,7 +106,7 @@ test('interval ordering preserves precedence between disjoint intervals and puts
   });
   const r2 = syntheticEpisode('2', 1, 'ENG', null, 30, false, {
     firstHourExact: false,
-    endedExact: false,
+    ends: [observedEnd(30, 'ENG', false)],
     runs: [
       { ...phaseRun(1, 1, 2), firstExact: false, afterHour: null },
       { ...phaseRun(30, 35, 5, 2), firstExact: false, afterHour: 1 },
@@ -112,7 +114,7 @@ test('interval ordering preserves precedence between disjoint intervals and puts
   });
   const r3 = syntheticEpisode('3', 25, 'ENG', null, 30, false, {
     firstHourExact: false,
-    endedExact: false,
+    ends: [observedEnd(30, 'ENG', false)],
     runs: [
       { ...phaseRun(25, 25, 2), firstExact: false, afterHour: null },
       { ...phaseRun(30, 35, 5, 3), firstExact: false, afterHour: 25 },
@@ -146,9 +148,9 @@ test('interval ordering preserves precedence between disjoint intervals and puts
     ],
   });
   const provData = syntheticRaidLog([fixed, captor]);
-  assert.equal(raidDescription(provData, raidAt(fixed, 35)!, 'England', 'Germany', 'Kent', 35), 'England targets Germany at Kent with Sky raid from a mod. Phase 5 · Outcome 3.');
-  assert.equal(raidTooltip(provData, raidAt(fixed, 35)!, 'England', 'Germany', 'Kent', 35).rows[1].label, 'Fixed target country');
-  assert.equal(raidDescription(provData, raidAt(captor, 15)!, 'England', 'France', 'Kent', 15), 'England targets Kent (captor: France) with Sky raid from a mod. Phase 2. 5 h prepared.');
-  assert.equal(raidTooltip(provData, raidAt(captor, 35)!, 'England', 'Germany', 'Kent', 35).rows[1].label, 'Leader captor at first ended read');
+  assert.equal(raidDescription(provData, raidAt(CODES, fixed, 35)!, 'England', 'Germany', 'Kent', 35), 'England targets Germany at Kent with Sky raid from a mod. Phase 5 · Outcome 3.');
+  assert.equal(raidTooltip(provData, raidAt(CODES, fixed, 35)!, 'England', 'Germany', 'Kent', 35).rows[1].label, 'Fixed target country');
+  assert.equal(raidDescription(provData, raidAt(CODES, captor, 15)!, 'England', 'France', 'Kent', 15), 'England targets Kent (captor: France) with Sky raid from a mod. Phase 2. 5 h prepared.');
+  assert.equal(raidTooltip(provData, raidAt(CODES, captor, 35)!, 'England', 'Germany', 'Kent', 35).rows[1].label, 'Leader captor at first ended read');
   assert.equal(raidLogSections(raidLogGroups(provData, 35, [], all, null), true), null, 'exact rows produce no unordered sections');
 });
