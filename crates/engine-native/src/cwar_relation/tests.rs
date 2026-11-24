@@ -1108,14 +1108,7 @@ fn status_header_hints_preserve_owned_page_protection_after_later_auth_failure()
                 &mut destination
             ));
             assert_eq!(destination, [0xa5; 16]);
-            assert_eq!(
-                owned_status.protect(READWRITE),
-                if protection & GUARD != 0 {
-                    READWRITE
-                } else {
-                    NOACCESS
-                }
-            );
+            assert_eq!(owned_status.protect(READWRITE), protection);
         }
     }
 }

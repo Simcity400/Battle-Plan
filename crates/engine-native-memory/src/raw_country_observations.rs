@@ -95,6 +95,7 @@ pub struct Journal {
     hour: i32,
     occurrences: Vec<Occurrence>,
     links: Vec<Option<Field<u32>>>,
+    link_bound: u32,
     bytes: Vec<u8>,
     used: usize,
     required: Capacity,
@@ -107,6 +108,7 @@ impl Journal {
             hour: 0,
             occurrences: Vec::new(),
             links: Vec::new(),
+            link_bound: 0,
             bytes: Vec::new(),
             used: 0,
             required: Capacity::default(),
@@ -135,6 +137,7 @@ impl Journal {
     pub fn reset(&mut self) {
         self.occurrences.clear();
         self.links.fill(None);
+        self.link_bound = 0;
         self.used = 0;
         self.required = Capacity::default();
         self.failed = None;
@@ -188,6 +191,7 @@ impl Journal {
     pub fn link_controls(&mut self, result: Field<[Array; 2]>) {
         self.occurrence(Occurrence::LinkControls { result });
         if let Ok([_, links]) = result {
+            self.link_bound = links.count;
             self.required.links = self.required.links.max(links.count as usize);
             self.grow_links(links.count as usize);
         }
@@ -210,8 +214,10 @@ impl Journal {
     }
     pub fn link(&mut self, raw: u32, result: Field<u32>) {
         self.occurrence(Occurrence::Link { raw, result });
-        self.required.links = self.required.links.max((raw as usize).saturating_add(1));
-        self.grow_links((raw as usize).saturating_add(1));
+        if raw >= self.link_bound {
+            self.refuse("raw country link outside link table");
+            return;
+        }
         if let Some(slot) = self.links.get_mut(raw as usize)
             && slot.is_none()
         {
@@ -297,5 +303,47 @@ impl Journal {
                 words: &self.links,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn links_outside_the_game_link_table_are_refused_without_growth() {
+        let count = 6;
+        let mut journal = Journal::try_new(Capacity {
+            occurrences: 8,
+            ..Default::default()
+        })
+        .unwrap();
+        journal.begin(1);
+        journal.link_controls(Ok([
+            Array {
+                data: 0x2000,
+                count: 4,
+            },
+            Array {
+                data: 0x1000,
+                count,
+            },
+        ]));
+        let retained = journal.allocated_bytes();
+        let growths = engine_allocation::growths();
+        journal.link(count - 1, Ok(3));
+        assert_eq!(journal.failed, None);
+        for raw in [count, u32::MAX - 1] {
+            journal.link(raw, Err("country link unreadable or outside link table"));
+            assert_eq!(engine_allocation::growths(), growths);
+            assert_eq!(journal.allocated_bytes(), retained);
+        }
+        assert_eq!(journal.required().links, count as usize);
+        assert_eq!(journal.failed, Some("raw country link outside link table"));
+        journal.seal();
+        assert!(!journal.complete());
+        let links = journal.map_loan().links;
+        assert_eq!(links.word(count - 1), Some(Ok(3)));
+        assert_eq!(links.word(count), None);
     }
 }

@@ -1,7 +1,7 @@
 use crate::{Host, Role};
 use std::{
     io,
-    sync::{Arc, Condvar, Mutex, OnceLock, PoisonError},
+    sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak},
 };
 use windows_sys::Win32::{
     Foundation::{
@@ -17,7 +17,7 @@ use windows_sys::Win32::{
             PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
         },
         RemoteDesktop::ProcessIdToSessionId,
-        Threading::{CreateEventW, GetCurrentProcessId, INFINITE, ResetEvent, SetEvent, WaitForMultipleObjects},
+        Threading::{CreateEventW, GetCurrentProcessId, INFINITE, ResetEvent, SetEvent, WaitForMultipleObjects, WaitForSingleObject},
     },
 };
 
@@ -29,6 +29,7 @@ const FREE: u8 = b'I';
 const BUSY: u8 = b'B';
 const WRITE_LIMIT: u32 = 2_000;
 const READ_BACK_LIMIT: u32 = 5_000;
+const RETRY_AFTER: u32 = 1_000;
 
 fn close_reply(closing: Result<(), String>) -> (Vec<u8>, Option<Vec<u8>>) {
     match closing {
@@ -64,12 +65,20 @@ pub(crate) struct Server {
 }
 
 // SAFETY: the stop event is a kernel handle, usable from any thread, and lives as long as the
-// server (it is never closed).
+// server: it is closed only when the server is dropped.
 unsafe impl Send for Server {}
 // SAFETY: as above; every other field is synchronised.
 unsafe impl Sync for Server {}
 
-static SERVED: OnceLock<Arc<Server>> = OnceLock::new();
+impl Drop for Server {
+    fn drop(&mut self) {
+        // SAFETY: the server owns the stop event, and nothing waits on it once the last owner,
+        // including the serving thread, has let go.
+        unsafe { CloseHandle(self.stop) };
+    }
+}
+
+static SERVED: OnceLock<Weak<Server>> = OnceLock::new();
 
 impl Server {
     fn lock(&self) -> std::sync::MutexGuard<'_, Serving> {
@@ -95,7 +104,7 @@ impl Server {
 }
 
 pub fn stop() {
-    if let Some(server) = SERVED.get() {
+    if let Some(server) = SERVED.get().and_then(Weak::upgrade) {
         server.stop();
     }
 }
@@ -190,7 +199,7 @@ impl Pipe {
 }
 
 pub(crate) fn serve(role: Role, host: Arc<dyn Host>) -> io::Result<()> {
-    serve_on(&pipe_name(role)?, host, |server| drop(SERVED.set(Arc::clone(server)))).map(drop)
+    serve_on(&pipe_name(role)?, host, |server| drop(SERVED.set(Arc::downgrade(server)))).map(drop)
 }
 
 fn serve_on(name: &[u16], host: Arc<dyn Host>, publish: impl FnOnce(&Arc<Server>)) -> io::Result<Arc<Server>> {
@@ -210,17 +219,19 @@ fn serve_on(name: &[u16], host: Arc<dyn Host>, publish: impl FnOnce(&Arc<Server>
         if handle == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
         }
-        (handle, CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()), CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()))
-    };
-    if io.is_null() || stop.is_null() {
-        let error = io::Error::last_os_error();
-        // SAFETY: closing the handles made above.
-        unsafe {
+        let event = || {
+            let made = CreateEventW(std::ptr::null(), 1, 0, std::ptr::null());
+            if made.is_null() { Err(io::Error::last_os_error()) } else { Ok(made) }
+        };
+        let io = event().inspect_err(|_| {
+            CloseHandle(handle);
+        })?;
+        let stop = event().inspect_err(|_| {
             CloseHandle(handle);
             CloseHandle(io);
-        }
-        return Err(error);
-    }
+        })?;
+        (handle, io, stop)
+    };
     let server = Arc::new(Server { stop, serving: Mutex::default(), finished: Condvar::new() });
     publish(&server);
     let serving = Arc::clone(&server);
@@ -261,8 +272,16 @@ fn serve_until_stopped(pipe: &Pipe, server: &Server, host: &dyn Host) {
                 continue;
             }
             Err(Ended::Failed(error)) => {
-                eprintln!("The update control pipe failed: {}", io::Error::from_raw_os_error(error as i32));
-                return;
+                eprintln!("The update control pipe failed, and is tried again: {}", io::Error::from_raw_os_error(error as i32));
+                // SAFETY: no I/O is outstanding on the handle here, and the stop event lives as long
+                // as the server.
+                unsafe {
+                    DisconnectNamedPipe(pipe.handle);
+                    if WaitForSingleObject(server.stop, RETRY_AFTER) == WAIT_OBJECT_0 {
+                        return;
+                    }
+                }
+                continue;
             }
         }
         let mut request = [0_u8; 16];
