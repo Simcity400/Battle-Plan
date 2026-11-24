@@ -1575,33 +1575,32 @@ id: number,
 longestRaw: string | null, };
 export type ProductionBreakdownParams = { branchId: string, country: CountryRef,
 /**
- * The line's handle in `production-lines-at`: the line it names at `hour`.
+ * The line's handle in `production-lines-at` at `hour`.
  */
 handle: string,
 /**
- * The factor shown in full; the others carry only their totals.
+ * The factor shown in full.
  */
-group: string, hour: number,
+group: string,
 /**
- * The held identity's own runs: lines are read only while the country holds them.
+ * The clicked hour: the line, its operands and its organisation are read at it.
  */
-within?: Array<HourSpan>, };
-export type ProductionLineBreakdownReply = { branchId: string, tag: string, key: string,
+hour: number, };
+export type ProductionLineBreakdownReply = { branchId: string, tag: string, hour: number, groups: Array<ProductionModifierChoice>,
 /**
- * The window's hours, both included.
+ * The asked factor at the hour; null with `missing` when its operands were not recorded.
  */
-firstHour: number, lastHour: number, groups: Array<ProductionModifierChoice>,
+group: ProductionModifierGroup | null, missing: string | null,
 /**
- * The factors over the window's hours the line was read, cut where they change.
+ * The line's own notes at the hour: pending organisation bonuses, unnamed sources, operands not recorded.
  */
-runs: Array<ProductionModifierRun>, warnings: Array<string>, };
+warnings: Array<string>, };
 export type ProductionModifierPart = { id: string, label: string | null, raw: string, unknown: string | null, };
 export type ProductionModifierGroup = { id: string, label: string,
 /**
  * Exact sum of the displayed signed parts; null when an operand failed.
  */
 totalRaw: string | null, decimals: number, unit: string, parts: Array<ProductionModifierPart>, note: string, };
-export type ProductionModifierRun = { firstHour: number, lastHour: number, groups: Array<ProductionModifierGroup>, warnings: Array<string>, };
 export type ProductionModifierChoice = { id: string, label: string, };
 export type PlaceNamesParams = { branchId: string,
 /**
@@ -6075,7 +6074,12 @@ only?: MarketSection,
 /**
  * Lend-lease rows the chosen countries give (`sent`) or receive (`received`); either side when absent.
  */
-leaseSide?: LeaseSide, };
+leaseSide?: LeaseSide,
+/**
+ * The one row read, by its recorded key in the `only` section: an offer's seller raw id, a
+ * contract's `key`. With it, `countries` is empty.
+ */
+row?: string, };
 export type MarketLendLeaseReply = { branchId: string,
 /**
  * Null where the section was not asked or not recorded at the hour (`warnings` says which).
@@ -6838,7 +6842,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "politics-state-history": {},
   "power-spending-breakdown": { "from": "start", "hour": "end" },
   "production-licences": { "hour": "read" },
-  "production-line-breakdown": { "hour": "bucket", "within[].firstHour": "start", "within[].lastHour": "end" },
+  "production-line-breakdown": { "hour": "read" },
   "production-lines-at": { "hour": "read" },
   "production-spending": {},
   "production-spending-months": { "firstHour": "start", "lastHour": "end" },
@@ -6990,7 +6994,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "log-page": { "branchId": "leaf", "columns": "node", "columns[]": "leaf", "cursor": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "log": "leaf", "pageSize": "leaf", "to": "leaf" },
   "log-tail": { "branchId": "leaf", "columns": "node", "columns[]": "leaf", "countFacets": "node", "countFacets[]": "node", "countFacets[].facets": "node", "countFacets[].facets[]": "node", "countFacets[].facets[].countries": "node", "countFacets[].facets[].countries[]": "any", "countFacets[].facets[].deduplicate": "leaf", "countFacets[].facets[].membership": "node", "countFacets[].facets[].membership[]": "node", "countFacets[].facets[].membership[].country": "any", "countFacets[].facets[].membership[].firstHour": "leaf", "countFacets[].facets[].membership[].lastHour": "leaf", "countFacets[].facets[].name": "leaf", "countFacets[].facets[].unobserved": "node", "countFacets[].facets[].unobserved[]": "node", "countFacets[].facets[].unobserved[].firstHour": "leaf", "countFacets[].facets[].unobserved[].lastHour": "leaf", "countFacets[].facets[].values": "node", "countFacets[].facets[].values[]": "leaf", "countFacets[].key": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "hour": "leaf", "limit": "leaf", "log": "leaf", "offset": "leaf" },
   "market-ledger-tail": { "branchId": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf" },
-  "market-lendlease": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "leaseSide": "leaf", "only": "leaf" },
+  "market-lendlease": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "leaseSide": "leaf", "only": "leaf", "row": "leaf" },
   "military-air-at": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "countries": "node", "countries[]": "any", "family": "leaf", "fromHour": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "metric": "leaf", "regions": "node", "regions[]": "leaf", "top": "leaf" },
   "military-air-ledger": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "family": "leaf", "fromHour": "leaf", "regions": "node", "regions[]": "leaf", "top": "node", "top.count": "leaf", "top.metric": "leaf", "window": "leaf" },
   "minefields": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "hour": "leaf", "order": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf" },
@@ -7023,7 +7027,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "politics-state-history": { "branchId": "leaf", "country": "any", "hour": "leaf", "mode": "leaf" },
   "power-spending-breakdown": { "branchId": "leaf", "country": "any", "currency": "leaf", "from": "leaf", "hour": "leaf" },
   "production-licences": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "subject": "any" },
-  "production-line-breakdown": { "branchId": "leaf", "country": "any", "group": "leaf", "handle": "leaf", "hour": "leaf", "within": "node", "within[]": "node", "within[].firstHour": "leaf", "within[].lastHour": "leaf" },
+  "production-line-breakdown": { "branchId": "leaf", "country": "any", "group": "leaf", "handle": "leaf", "hour": "leaf" },
   "production-lines-at": { "branchId": "leaf", "country": "any", "hour": "leaf", "order": "leaf" },
   "production-spending": { "branchId": "leaf", "country": "any", "repairs": "leaf", "window": "leaf" },
   "production-spending-months": { "branchId": "leaf", "country": "any", "domain": "leaf", "firstHour": "leaf", "lastHour": "leaf", "repairs": "leaf" },
@@ -7208,7 +7212,7 @@ export type RequestParams<E, B> = {
   "politics-state-history": {};
   "power-spending-breakdown": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "hour"?: B | null };
   "production-licences": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "production-line-breakdown": { readonly [key: string]: unknown; readonly "hour"?: E | null; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
+  "production-line-breakdown": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "production-lines-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "production-spending": {};
   "production-spending-months": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
