@@ -21,5 +21,5 @@ export const definition = {
   description: 'Compare countries across selected measures.',
   timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false,
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES,
-  minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 12 }, options: OPTIONS, playsBackDated: true,
+  minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 12 }, options: OPTIONS,
 } as const satisfies WidgetMeta;

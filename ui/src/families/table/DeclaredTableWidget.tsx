@@ -12,6 +12,7 @@ import type { DeclaredTableContext, TableWidgetDeclaration } from './declaration
 import FamilyTableHost from './FamilyTableHost.tsx';
 import type { TableColumnSpec } from './model.ts';
 import { encodeTableSettings, TABLE_SETTINGS_KEY, tableSettingsOf, type TableSettings } from './settings.ts';
+import { barsBehindOf, rowHeightOf } from '../settingsControls.ts';
 
 export interface DeclaredTableWidgetProps<TProjectionOptions, TAux> extends WidgetProps {
   readonly declaration: TableWidgetDeclaration<TProjectionOptions, TAux>;
@@ -38,12 +39,13 @@ function resolveTableSettings<TProjectionOptions, TAux>(
   if (sp.kind === 'options') {
     const sort = tableSortOf(options.tableSort as string | undefined, sp.defaultSort);
     const overflow = narrowTableOf(options as never) === 'tooltip' ? 'tooltip' as const : 'scroll' as const;
-    const density = options.density === 'compact' ? 'compact' as const : options.density === 'comfortable' ? 'comfortable' as const : 'normal' as const;
-    return tableSettingsOf(undefined, columns, { density, bars: 'all', overflow, sort });
+    const density = rowHeightOf(options.rowHeight ?? options.density, 'normal');
+    const barsBehind = barsBehindOf(options.barsBehind, 'all');
+    return tableSettingsOf(undefined, columns, { density, barsBehind, overflow, sort });
   }
   return ctx
     ? sp.resolve(ctx, columns)
-    : tableSettingsOf(undefined, columns, { density: 'normal', bars: 'all', overflow: 'scroll', sort: { column: columns[0]?.key ?? '', direction: 'descending' } });
+    : tableSettingsOf(undefined, columns, { density: 'normal', barsBehind: 'all', overflow: 'scroll', sort: { column: columns[0]?.key ?? '', direction: 'descending' } });
 }
 
 export default function DeclaredTableWidget<TProjectionOptions, TAux>({

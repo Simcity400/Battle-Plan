@@ -2,13 +2,13 @@ import { useRef, useState } from 'react';
 import { Segmented } from '../../components/Segmented';
 import { SettingLabel } from './SettingLabel';
 import type { OptionValue } from '../options';
+import { BARS_BEHIND_CHOICES, ROW_HEIGHT_CHOICES, type BarsBehindMode } from '../../families/settingsControls.ts';
 import {
   encodeTableSettings,
   isCountryColumn,
   tableDefaults,
   tableSettingsOf,
   updateTableSettings,
-  type TableBarsMode,
   type TableBase,
   type TableColumnDefaults,
   type TableDensity,
@@ -71,13 +71,9 @@ export function TableSettingsField({ field, value, onChange }: {
       <SettingLabel label="Bars behind figures" />
       <Segmented
         label="Bars behind figures"
-        value={settings.bars}
-        options={[
-          { value: 'all', label: 'All' },
-          { value: 'sorted', label: 'Sorted' },
-          { value: 'off', label: 'Off' },
-        ]}
-        onChange={next => save(draft => { draft.bars = next as TableBarsMode; })}
+        value={settings.barsBehind ?? 'all'}
+        options={BARS_BEHIND_CHOICES}
+        onChange={next => save(draft => { draft.barsBehind = next as BarsBehindMode; })}
       />
     </div>
     <div className="setting-row setting-row-stacked">
@@ -85,11 +81,7 @@ export function TableSettingsField({ field, value, onChange }: {
       <Segmented
         label="Row height"
         value={settings.density}
-        options={[
-          { value: 'compact', label: 'Compact' },
-          { value: 'normal', label: 'Normal' },
-          { value: 'comfortable', label: 'Comfortable' },
-        ]}
+        options={ROW_HEIGHT_CHOICES}
         onChange={next => save(draft => { draft.density = next as TableDensity; })}
       />
     </div>

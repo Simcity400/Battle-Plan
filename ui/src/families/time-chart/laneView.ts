@@ -15,8 +15,8 @@ import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import { knownValue } from '../value.ts';
 import {
+  ensureTimeChartProjection,
   isTimeChartBinding,
-  timeChartProjection,
   type SerializedTiledLine,
   type TimeChartBinding,
 } from './declaration.ts';
@@ -307,8 +307,11 @@ export function timeChartLaneView(
       if (binding.directModel) {
         model = binding.directModel;
       } else {
-        const proj = timeChartProjection(binding.kind);
-        if (!proj) {
+        const proj = ensureTimeChartProjection(binding.kind, binding.viewId, () => wake?.(input.widget));
+        if (proj === 'loading') {
+          return { surfaces: [], fields: {}, motion: false };
+        }
+        if (proj === 'unknown') {
           return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown time-chart kind: ${binding.kind}` };
         }
         const readView = buildReadView(

@@ -40,12 +40,13 @@ import {
   type FamilyTablePicture,
   type RowLayoutGeometry,
 } from './painter.ts';
-import { tableProjection } from './registry.ts';
+import { ensureTableProjection, tableProjection } from './registry.ts';
 import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings, type TableTheme } from './settings.ts';
 
 export interface FamilyTableBinding<TOptions = unknown> {
   readonly family: 'table';
   readonly kind: string;
+  readonly view?: string;
   readonly options: TOptions;
   readonly settings: TableSettings;
   readonly sources: Readonly<Record<string, number>>;
@@ -408,7 +409,7 @@ export function familyTableLaneView(
     next(scene: Scene, hour: number, state?: Map<string, unknown>): number {
       const bound = scene.model;
       if (!isFamilyTableBinding(bound)) return Infinity;
-      const projection = tableProjection(bound.kind);
+      const projection = tableProjection(bound.kind, bound.view);
       if (!projection) return Infinity;
       let soonest = Math.min(
         nextLookChange(optionsLooks(bound.options), hour),
@@ -449,8 +450,11 @@ export function familyTableLaneView(
       const bound = input.model;
       const surface = input.binding.surfaces[0];
       if (!isFamilyTableBinding(bound) || !surface) return { surfaces: [], fields: {}, motion: false };
-      const projection = tableProjection(bound.kind);
-      if (!projection) {
+      const projection = ensureTableProjection(bound.kind, bound.view, () => wake(input.widget));
+      if (projection === 'loading') {
+        return { surfaces: [], fields: {}, motion: false };
+      }
+      if (projection === 'unknown') {
         return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown table declaration: ${bound.kind}` };
       }
       const timed = bound.audit === true;

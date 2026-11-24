@@ -1,11 +1,12 @@
 import { formatNativeFixed5 } from '../../charts/valueAxis.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options.ts';
 import type { FamilyTheme } from '../contract.ts';
+import type { BarsBehindMode } from '../settingsControls.ts';
 
 export type TableSortDirection = 'ascending' | 'descending';
 export type TableOverflow = 'tooltip' | 'scroll';
 export type TableDensity = 'compact' | 'normal' | 'comfortable';
-export type TableBarsMode = 'all' | 'sorted' | 'off';
+export type TableBarsMode = BarsBehindMode;
 export type TableTone = 'blue' | 'red' | 'amber' | 'green' | 'grey' | 'country' | 'value-good' | 'value-bad';
 export type TableDisplay = 'plain' | 'faint' | 'track' | 'meterAfter' | 'meterBefore' | 'underline' | 'dot' | 'text'
   | 'flagName' | 'name' | 'flag' | 'icon';
@@ -20,7 +21,7 @@ export interface TableColumnSetting {
 
 export interface TableSettings {
   density: TableDensity;
-  bars: TableBarsMode;
+  barsBehind?: BarsBehindMode;
   overflow: TableOverflow;
   showRank: boolean;
   order: string[];
@@ -41,7 +42,7 @@ export interface TableColumnDefaults {
 
 export interface TableBase {
   density: TableDensity;
-  bars?: TableBarsMode;
+  barsBehind?: BarsBehindMode;
   overflow: TableOverflow;
   showRank?: boolean;
   sort: TableSettings['sort'];
@@ -215,7 +216,7 @@ const columnDefault = (column: TableColumnDefaults): TableColumnSetting => {
 export function tableDefaults(columns: readonly TableColumnDefaults[], base: TableBase): TableSettings {
   return {
     density: base.density ?? 'normal',
-    bars: base.bars ?? 'all',
+    barsBehind: base.barsBehind ?? 'all',
     overflow: base.overflow ?? 'scroll',
     showRank: base.showRank ?? false,
     order: columns.map(column => column.key),
@@ -230,7 +231,7 @@ const displays = new Set<TableDisplay>([
 ]);
 const tones = new Set<TableTone>(['blue', 'red', 'amber', 'green', 'grey', 'country', 'value-good', 'value-bad']);
 const densities = new Set<TableDensity>(['compact', 'normal', 'comfortable']);
-const barModes = new Set<TableBarsMode>(['all', 'sorted', 'off']);
+const barsBehindModes = new Set<BarsBehindMode>(['off', 'sorted', 'all']);
 const own = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const validWidth = (width: unknown): width is number | null => width === null || typeof width === 'number' && Number.isFinite(width) && width >= 40 && width <= 1000;
 const validTone = (tone: unknown): tone is TableTone | undefined => tone === undefined || typeof tone === 'string' && tones.has(tone as TableTone);
@@ -258,7 +259,11 @@ export function tableSettingsOf(value: unknown, columns: readonly TableColumnDef
     || !Array.isArray(parsed.order) || !own(parsed.columns) || !own(parsed.sort)
     || typeof parsed.sort.column !== 'string' || !['ascending', 'descending'].includes(String(parsed.sort.direction))) return result;
   result.density = parsed.density as TableDensity;
-  result.bars = typeof parsed.bars === 'string' && barModes.has(parsed.bars as TableBarsMode) ? parsed.bars as TableBarsMode : (base.bars ?? 'all');
+  if (typeof parsed.barsBehind === 'string' && barsBehindModes.has(parsed.barsBehind as BarsBehindMode)) {
+    result.barsBehind = parsed.barsBehind as BarsBehindMode;
+  } else if (typeof parsed.bars === 'string' && barsBehindModes.has(parsed.bars as BarsBehindMode)) {
+    result.barsBehind = parsed.bars as BarsBehindMode;
+  }
   result.overflow = parsed.overflow;
   result.showRank = typeof parsed.showRank === 'boolean' ? parsed.showRank : (base.showRank ?? false);
   const known = new Map(columns.map(column => [column.key, column]));
@@ -298,7 +303,7 @@ export function encodeTableSettings(settings: TableSettings): string {
   return JSON.stringify({
     v: TABLE_SETTINGS_VERSION,
     density: settings.density,
-    bars: settings.bars,
+    ...(settings.barsBehind !== undefined ? { barsBehind: settings.barsBehind } : {}),
     overflow: settings.overflow,
     showRank: settings.showRank,
     order: settings.order,
@@ -314,7 +319,7 @@ export function tableSettingValue(settings: TableSettings): OptionValue {
 export function cloneTableSettings(settings: TableSettings): TableSettings {
   return {
     density: settings.density,
-    bars: settings.bars,
+    ...(settings.barsBehind !== undefined ? { barsBehind: settings.barsBehind } : {}),
     overflow: settings.overflow,
     showRank: settings.showRank,
     order: [...settings.order],

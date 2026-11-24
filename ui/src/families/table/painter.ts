@@ -419,14 +419,14 @@ export function drawFamilyTable(
       const col = layout.columns[c]!;
       colKey += `${col.key}:${col.width}:${col.display}:${col.tone ?? ''}:${col.barEligible ? 1 : 0}|`;
     }
-    frameKey = `${width}|${height}|${uniformRowHeight}|${rowHeightMode}|${settings.bars}|${settings.sort.column}|${rank}|${scrollTop}|${scrollLeft}|${layout.scrollable ? 1 : 0}|${layout.pinnedCount}|${layout.pinnedWidth}|${first}|${last}|${rows.length ? '' : empty ?? ''}|${colKey}`;
+    frameKey = `${width}|${height}|${uniformRowHeight}|${rowHeightMode}|${settings.barsBehind ?? 'all'}|${settings.sort.column}|${rank}|${scrollTop}|${scrollLeft}|${layout.scrollable ? 1 : 0}|${layout.pinnedCount}|${layout.pinnedWidth}|${first}|${last}|${rows.length ? '' : empty ?? ''}|${colKey}`;
   }
 
   const renderCtx: CellRenderContext = {
     ctx,
     theme,
     density: settings.density,
-    barsMode: settings.bars,
+    barsMode: settings.barsBehind ?? 'all',
     sortedColumn: settings.sort.column,
     icons,
     artCache,
