@@ -69,3 +69,15 @@ fn division_equipment_overview_reads_division_templates_for_template_names() {
         other => panic!("expected Keys::These([42]), got {other:?}"),
     }
 }
+
+#[test]
+fn a_medal_s_picture_is_its_definition_s_sprite_at_its_authored_frame() {
+    use content_reader_military::unit_medals::Medal;
+    let medal = Medal { name: b"medal_one".to_vec(), icon: Some(b"GFX_medal_strip".to_vec()), frame: Some(3), ..Default::default() };
+    let sprite = super::careers::sprite_of(&medal).unwrap();
+    assert_eq!((sprite.key.as_str(), sprite.frame), ("GFX_medal_strip", 2), "the authored frame counts from one; the handle from zero");
+    let unframed = Medal { frame: None, ..medal.clone() };
+    assert_eq!(super::careers::sprite_of(&unframed).unwrap().frame, 0);
+    let bare = Medal { icon: None, ..medal };
+    assert_eq!(super::careers::sprite_of(&bare).unwrap_err(), "The medal's definition names no icon");
+}

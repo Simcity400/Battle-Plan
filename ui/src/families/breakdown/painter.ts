@@ -66,12 +66,6 @@ function drawTotalLine(ctx: Canvas2D, line: TotalLineLayout, theme: FamilyTheme)
   ctx.textAlign = 'left';
 
   let cursor = rect.x;
-  if (total.atLeast) {
-    ctx.font = `400 12px ${theme.font}`;
-    ctx.fillStyle = theme.muted;
-    ctx.fillText('At least ', cursor, cy + 2);
-    cursor += textWidth(ctx, 'At least ');
-  }
 
   ctx.font = `600 22px ${theme.font}`;
   ctx.fillStyle = theme.text;
