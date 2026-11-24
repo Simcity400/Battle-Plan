@@ -92,13 +92,25 @@ export function keyedTileParams(keys: readonly SeriesKey[], within: Readonly<Rec
   return { lines, within: Object.entries(byTag).map(([tag, spans]) => [countryFromKey(tag), spans.flatMap(held => span(held.firstHour, held.lastHour) ?? [])] as const) };
 }
 
+const followedRows = new WeakMap<object, Map<number, ReadonlyMap<string, number>>>();
+
 export function followedRow(answer: FollowedAnswer | undefined, key: SeriesKey, partBits: number): number {
   if (!answer || answer.kind === 'notRecorded') return -1;
-  const mask = (1n << BigInt(partBits)) - 1n, part = BigInt(key.part);
-  for (let row = 0; row < answer.rows; row++) {
-    if (rowName(answer, row) === key.tag && (rowKey(answer, row) & mask) === part && rowKey(answer, row) >> BigInt(partBits) !== 0n) return row;
+  let byWidth = followedRows.get(answer);
+  if (!byWidth) followedRows.set(answer, byWidth = new Map());
+  let rows = byWidth.get(partBits);
+  if (!rows) {
+    const mask = (1n << BigInt(partBits)) - 1n;
+    const index = new Map<string, number>();
+    for (let row = 0; row < answer.rows; row++) {
+      const raw = rowKey(answer, row);
+      if (raw >> BigInt(partBits) === 0n) continue;
+      const id = `${rowName(answer, row)}\u0000${raw & mask}`;
+      if (!index.has(id)) index.set(id, row);
+    }
+    byWidth.set(partBits, rows = index);
   }
-  return -1;
+  return rows.get(`${key.tag}\u0000${BigInt(key.part)}`) ?? -1;
 }
 
 export function keyedTileReply(reply: TileReply & { lines: readonly { country: CountryRef; part?: unknown }[] }, keys: readonly SeriesKey[]): TileReply {
