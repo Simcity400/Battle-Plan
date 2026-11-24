@@ -230,22 +230,37 @@ fn later_damaged_run_does_not_prevent_reading_earlier_healthy_interval() {
     let run1_frames: Vec<DecodedFrame> = (200..=240)
         .map(|hour| {
             let mut frame = source(1, hour, Some(1));
-            *frame.tables[TableId::MarketEvents.index()] = TableView::Unavailable { reason: WHY.into() };
+            let events = if hour == 220 {
+                vec![MarketEventRow { id: 2, occurrence: 2, hour, country: 9001, kind: 1, ..MarketEventRow::default() }]
+            } else {
+                Vec::new()
+            };
+            *frame.tables[TableId::MarketEvents.index()] = TableView::Complete(TableRows::MarketEvents(events));
             frame
         })
         .collect();
     let continued = continuation_records(&first_part, 1, run1_frames);
     let clean = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, run0_frames), continued]).unwrap();
     let entry = clean.recording().table_entry(1, 0, TableId::MarketEvents.index()).unwrap();
-    let frame_entry = &entry.unit.parts[0].frames[0];
-    let mut damaged = clean.bytes().to_vec();
-    damaged[(frame_entry.offset + u64::from(frame_entry.stored) / 2) as usize] ^= 0x40;
-    let dir = std::env::temp_dir().join(format!("bp-log-damage-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("damaged-later-run.battleplan");
-    std::fs::write(&path, &damaged).unwrap();
-    let replay = Replay::open_timelines(&path).unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
+    let mut damaged = clean.recording().memory().unwrap().to_vec();
+    let mut corrupted = 0usize;
+    for part in &entry.unit.parts {
+        for frame_entry in &part.frames {
+            damaged[(frame_entry.offset + u64::from(frame_entry.stored) / 2) as usize] ^= 0x40;
+            corrupted += 1;
+        }
+    }
+    if let Some(first) = &entry.unit.first {
+        for (_, chunks) in &first.streams {
+            for chunk in chunks {
+                let frame_entry = &chunk.frame;
+                damaged[(frame_entry.offset + u64::from(frame_entry.stored) / 2) as usize] ^= 0x40;
+                corrupted += 1;
+            }
+        }
+    }
+    assert!(corrupted > 0, "run 1 MarketEvents block must hold at least one frame to corrupt");
+    let replay = Replay::open(damaged).unwrap().into_timelines(&Default::default()).unwrap();
     let src = Source::from_replay(
         dashboard_base::SourceKey { source_id: "logs-later-damage".into(), revision: "1".into() },
         "synthetic.battleplan".into(),

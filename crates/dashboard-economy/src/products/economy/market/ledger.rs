@@ -161,8 +161,8 @@ fn validate_facets(facets: &[FacetFilter]) -> Result<(), &'static str> {
 fn links_by_run(source: &Source, query: &Query<'_>) -> io::Result<BTreeMap<u32, Arc<dashboard_base::queries::country_ids::RunLinks>>> {
     let mut out = BTreeMap::new();
     for stretch in &query.timeline.stretches {
-        if !out.contains_key(&stretch.run) {
-            out.insert(stretch.run, dashboard_base::queries::links(source, stretch.run)?);
+        if let std::collections::btree_map::Entry::Vacant(slot) = out.entry(stretch.run) {
+            slot.insert(dashboard_base::queries::links(source, stretch.run)?);
         }
     }
     Ok(out)
