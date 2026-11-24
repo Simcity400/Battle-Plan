@@ -131,7 +131,7 @@
 .blueprint-tile img { width:64px; height:39px; object-fit:contain; }
 
 :where(.art-fallback) { width: 100%; height: 100%; }
-.art-fallback { display: grid; place-items: center; overflow: hidden; border-radius: var(--r-xs);
+:root .art-fallback { display: grid; place-items: center; overflow: hidden; border-radius: var(--r-xs);
   background: repeating-linear-gradient(135deg, var(--hatch) 0 1.2px, transparent 1.2px 4px);
   box-shadow: inset 0 0 0 1px var(--hatch-edge); color: var(--muted); }
 .art-fallback[data-has-tag] { container: art-tile / size; }

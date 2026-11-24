@@ -22,7 +22,7 @@ button.produced-pill:hover, button.produced-pill[aria-expanded='true'] { backgro
 .produced-equipment b { display: block; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
 .produced-equipment small { display: block; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: var(--type-xs); font-weight: 400; }
 .produced-equipment.is-charted b { text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
-.produced-art { width: 30px; height: 16px; flex: none; border-radius: var(--r-sm); background: color-mix(in srgb, var(--text) 8%, transparent); }
+.produced-art { width: 30px; height: 16px; flex: none; border-radius: var(--r-sm); }
 img.produced-art { object-fit: contain; background: transparent; }
 .produced-share { color: var(--muted); font-size: var(--type-xs); font-weight: 400; }
 .produced-chart-title { margin-top: var(--space-2); }
