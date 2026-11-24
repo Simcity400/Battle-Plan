@@ -46,6 +46,7 @@ fn a_viewers_row_comes_first_then_the_every_viewer_row_then_zeros_and_a_refusal_
             (key(NavalRegionControlRow::EVERY_VIEWER, 1), vec![step(100, row(9, 9, 9, 0))]),
             (key(NavalRegionControlRow::EVERY_VIEWER, 2), vec![step(100, row(0, 200, 0, 0)), step(150, None)]),
         ],
+        ..Default::default()
     };
     let sea = SeaContent {
         sea: Ok(BTreeSet::from([1, 2, 3, 4])),

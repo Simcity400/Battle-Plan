@@ -580,7 +580,7 @@ mod tests {
     }
 
     fn history(keys: Vec<(u128, Vec<lanes::Step>)>, to: i32) -> lanes::History {
-        lanes::History { columns: vec![0, 1], to, texts: Vec::new(), keys }
+        lanes::History { columns: vec![0, 1], to, texts: Vec::new(), keys, ..Default::default() }
     }
 
     #[test]

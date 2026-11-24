@@ -17,6 +17,7 @@ fn a_switch_between_levels_with_equal_bounds_is_a_new_level_and_an_unshown_row_i
             (2, vec![step(100, Some(Cell::Text(0))), step(120, Some(Cell::Text(1))), step(140, None), step(150, Some(Cell::Text(1))), step(160, Some(Cell::Unrecorded))]),
             (3, vec![step(100, Some(Cell::Text(0)))]),
         ],
+        ..Default::default()
     };
     let levels = level_runs(&history);
     let named = |text: &str| Some(text.to_owned());
