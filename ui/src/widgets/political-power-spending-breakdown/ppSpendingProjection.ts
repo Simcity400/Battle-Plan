@@ -30,7 +30,8 @@ export const ppSpendingProjection: BreakdownProjection<PoliticalPowerSpendingOpt
     const lost = reply?.lostAtCapRaw == null ? null : BigInt(reply.lostAtCapRaw);
     const power = (raw: bigint) => `${formatPower(raw, options.digits, reply?.breakdown.decimals ?? 5)} PP`;
     const capped = lost !== null && lost > 0n ? `${power(lost)} lost at the cap.` : null;
-    const note = [reply?.gainedReason, reply?.gainedRaw !== null ? capped : null].filter((text): text is string => Boolean(text)).join(' ');
+    const lostReason = reply?.lostAtCapReason !== reply?.gainedReason ? reply?.lostAtCapReason : null;
+    const note = [reply?.gainedReason, reply?.gainedRaw !== null ? capped : null, lostReason].filter((text): text is string => Boolean(text)).join(' ');
     return breakdownAtHourModel(Math.floor(readView.hour), reply, words(options.digits), reply ? {
       label: 'Gained',
       value: reply.gainedRaw === null ? 'Not recorded' : power(BigInt(reply.gainedRaw)),

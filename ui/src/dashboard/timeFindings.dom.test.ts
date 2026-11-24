@@ -241,7 +241,7 @@ const FACTIONS = { ...groupsOf(['GER', 'ENG']), factions: [{ id: '1', name: 'Axi
 const naming = (asks: Ask[], tag: string) => asks.filter(ask => JSON.stringify(ask.params ?? {}).includes(`"${tag}"`));
 
 test('25. Faction totals following fixed rosters follow their members at playback: the follow names no hour, so it registers', () => onPage(async act => {
-  const shown = await act<Read>(scene({ kind: 'territory', time: { mode: 'follow' }, hour: 105, countries: { kind: 'factions', count: 3, membership: 'end' },
+  const shown = await act<Read>(scene({ kind: 'territory', time: { mode: 'follow' }, hour: 105, countries: { kind: 'factions', count: 3, membership: 'ever' },
     groups: FACTIONS, accept: true }));
   const members = shown.follows.filter(query => query.includes('"series-state"'));
   assert.ok(members.length > 0, `the members’ values are followed: ${JSON.stringify(shown.followLog)} ${shown.text}`);

@@ -342,7 +342,7 @@ fn an_empty_comparison_says_whether_the_widget_left_every_active_region_out_the_
     assert_eq!((none.regions.len(), none.empty), (0, Some(NoRegions::None)));
     let (shown, _) = moment_of(&frame(scores(), true), &automatic);
     assert_eq!(shown.empty, None, "a listed region: nothing to explain");
-    let mut theatres = automatic.clone();
+    let mut theatres = automatic;
     theatres.theatres = Some(vec!["5".into()]);
     let mut elsewhere = frame(vec![score(1, 10, 500, 0)], true);
     *elsewhere.tables[TableId::AirTheatres.index()] = TableView::Complete(TableRows::AirTheatres(vec![AirTheatreRow { id: 5, owner: 1, ordinal: 0, name: Vec::new() }]));

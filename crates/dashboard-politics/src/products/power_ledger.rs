@@ -1281,21 +1281,21 @@ struct Items {
     asked: Vec<(u32, PowerItemRow)>,
     index: HashMap<(u32, u32, u32), u32>,
     unrecorded: Vec<UnrecordedItem>,
-    unrecorded_index: HashMap<(u32, u32, u32), u32>,
+    unrecorded_index: HashMap<(u32, u32, u32, String), u32>,
 }
 
 impl Items {
-    fn read(&mut self, query: &Query<'_>, piece: &Piece, asks: &BTreeMap<u32, (i32, bool)>) -> io::Result<HashMap<u32, (u32, bool)>> {
+    fn read(&mut self, query: &Query<'_>, piece: &Piece, asks: &BTreeMap<(u32, i32), bool>) -> io::Result<HashMap<(u32, i32), (u32, bool)>> {
         let mut by_hour: BTreeMap<i32, Vec<u32>> = BTreeMap::new();
-        for (&ordinal, &(read, _)) in asks {
+        for &(ordinal, read) in asks.keys() {
             by_hour.entry(read).or_default().push(ordinal);
         }
         let mut out = HashMap::with_capacity(asks.len());
         for (hour, ordinals) in by_hour {
             let frame = items_at(query, piece.slot, &ordinals, hour)?;
             for ordinal in ordinals {
-                let recurring = asks[&ordinal].1;
-                out.insert(ordinal, self.at(&frame, piece.run, piece.slot, ordinal, hour, recurring));
+                let recurring = asks[&(ordinal, hour)];
+                out.insert((ordinal, hour), self.at(&frame, piece.run, piece.slot, ordinal, hour, recurring));
             }
         }
         Ok(out)
@@ -1316,7 +1316,7 @@ impl Items {
             coverage::Witness::NotRecorded(reason) => reason,
         };
         let unrecorded = &mut self.unrecorded;
-        let at = *self.unrecorded_index.entry((run, slot, ordinal)).or_insert_with(|| {
+        let at = *self.unrecorded_index.entry((run, slot, ordinal, reason.clone())).or_insert_with(|| {
             unrecorded.push(UnrecordedItem { slot, ordinal, read, recurring, reason });
             (unrecorded.len() - 1) as u32
         });
@@ -1388,12 +1388,9 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         instant_gains(query, piece, currency, &mut reply.gain_coverage, &mut gain_buckets, &mut allocations)?;
         let low = u128::from(piece.slot) << 40 | u128::from(currency.code()) << 32;
         let (payments_from, days_from) = (reply.payments.len(), reply.days.len());
-        let mut asks: BTreeMap<u32, (i32, bool)> = BTreeMap::new();
+        let mut asks: BTreeMap<(u32, i32), bool> = BTreeMap::new();
         let mut ask = |ordinal: u32, hour: i32, recurring: bool| {
-            let held = asks.entry(ordinal).or_insert((hour, recurring));
-            if hour < held.0 {
-                *held = (hour, recurring);
-            }
+            asks.entry((ordinal, hour)).or_insert(recurring);
         };
         changes(query, piece, low, low | u128::from(u32::MAX), &mut |change| {
             if change.ordinal == PowerSpendTotalRow::GAINS {
@@ -1425,10 +1422,10 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         let resolved = items.read(query, piece, &asks)?;
         let missing = resolved.values().filter(|(_, known)| !known).count();
         for payment in &mut reply.payments[payments_from..] {
-            payment.item = resolved[&payment.item].0;
+            payment.item = resolved[&(payment.item, payment.read)].0;
         }
         for day in &mut reply.days[days_from..] {
-            day.item = resolved[&day.item].0;
+            day.item = resolved[&(day.item, day.read)].0;
             if day.credits > 0 {
                 *credits.entry(day.item).or_default() += day.credits;
             }
