@@ -36,9 +36,16 @@ export interface ChartEndLabel {
   readonly valueMuted?: boolean;
 }
 
+export interface ChartExactRational {
+  readonly raw: bigint;
+  readonly denominator: bigint;
+}
+
 export interface ChartInlinePoint {
   readonly hour: number;
   readonly value: number | null;
+  readonly raw?: bigint;
+  readonly denominator?: bigint;
   readonly min?: number | null;
   readonly max?: number | null;
   readonly approximate?: boolean;
@@ -108,6 +115,7 @@ export interface ChartStackBand {
   readonly color: string;
   readonly opacity?: number;
   readonly values: readonly (number | null)[];
+  readonly exact?: readonly (ChartExactRational | null)[];
   readonly endLabel?: ChartEndLabel | null;
   readonly flag?: ChartArtSlot;
 }
@@ -116,9 +124,11 @@ export interface ChartStackModel {
   readonly hours: readonly number[];
   readonly bands: readonly ChartStackBand[];
   readonly step?: boolean;
+  readonly valueKind?: 'share' | 'recorded';
   readonly total?: {
     readonly color?: string;
     readonly values: readonly (number | null)[];
+    readonly exact?: readonly (ChartExactRational | null)[];
     readonly endLabel?: ChartEndLabel | null;
   };
 }

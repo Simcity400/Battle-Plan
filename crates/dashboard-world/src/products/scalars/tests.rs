@@ -310,24 +310,40 @@ fn world_tension_stack_computes_exact_shares_folds_other_and_clips_future() {
     let out = compute_stack(&input, 10, 25, 2, TensionValueMode::Share, None, None, None, 200, tag_of, no_change);
     assert_eq!(out.end_hour, Some(25));
     assert_eq!(out.capped_end_tension, Some(100.0));
+    assert_eq!(out.capped_end_tension_raw.as_deref(), Some("100000"));
+    assert_eq!(out.end_total_raw.as_deref(), Some("100000"));
+    assert_eq!(out.end_sum_raw.as_deref(), Some("12000000"));
     assert!(!out.downsampled);
     assert_eq!(out.hours, [10, 20]);
     assert_eq!(out.total, [Some(25.0), Some(100.0)]);
+    assert_eq!(out.total_raw, [Some("25000".into()), Some("100000".into())]);
+    assert_eq!(out.sum_raw, [Some("2500000".into()), Some("12000000".into())]);
     assert_eq!(out.bands.len(), 2);
     assert_eq!(out.bands[0].tag.as_deref(), Some("GER"));
     assert_eq!(out.bands[1].tag.as_deref(), Some("JAP"));
     assert_eq!(out.bands[0].end_value, Some(50.0));
+    assert_eq!(out.bands[0].end_raw.as_deref(), Some("6000000"));
+    assert_eq!(out.bands[0].values_raw, [Some("1500000".into()), Some("6000000".into())]);
     assert!((out.bands[1].end_value.unwrap() - 100.0 / 3.0).abs() < 1e-9);
+    assert_eq!(out.bands[1].end_raw.as_deref(), Some("4000000"));
     let other = out.other.unwrap();
     assert_eq!(other.count, 1);
     assert!((other.end_value.unwrap() - 100.0 / 6.0).abs() < 1e-9);
+    assert_eq!(other.end_raw.as_deref(), Some("2000000"));
+    assert_eq!(other.values_raw, [Some("0".into()), Some("2000000".into())]);
     assert_eq!(out.next_change_hour, Some(30));
 
     let rec = compute_stack(&input, 10, 25, 2, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(rec.total, [Some(25.0), Some(120.0)]);
+    assert_eq!(rec.total_raw, [Some("2500000".into()), Some("12000000".into())]);
+    assert_eq!(rec.end_total_raw.as_deref(), Some("12000000"));
     assert_eq!(rec.bands[0].end_value, Some(60.0));
+    assert_eq!(rec.bands[0].end_raw.as_deref(), Some("6000000"));
     assert_eq!(rec.bands[1].end_value, Some(40.0));
-    assert_eq!(rec.other.unwrap().end_value, Some(20.0));
+    assert_eq!(rec.bands[1].end_raw.as_deref(), Some("4000000"));
+    let rec_other = rec.other.unwrap();
+    assert_eq!(rec_other.end_value, Some(20.0));
+    assert_eq!(rec_other.end_raw.as_deref(), Some("2000000"));
 }
 
 #[test]

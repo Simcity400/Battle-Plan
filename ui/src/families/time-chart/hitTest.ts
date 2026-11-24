@@ -91,7 +91,7 @@ export function sampleSeriesValueAt(
   series: TimeChartSeriesModel,
   hour: number,
   until: number,
-): { readonly value: number; readonly min: number; readonly max: number; readonly exact: boolean } | null {
+): { readonly value: number; readonly min: number; readonly max: number; readonly exact: boolean; readonly raw?: bigint; readonly denominator?: bigint } | null {
   if (hour > until) return null;
   if (series.bounded) {
     const sampled = sampleBoundedAt(series.bounded, hour, series.valueScale ?? 1);
@@ -101,11 +101,17 @@ export function sampleSeriesValueAt(
     }
   }
   if (series.points && series.points.length > 0) {
-    const pointSample = (pt: { readonly value: number | null; readonly min?: number | null; readonly max?: number | null; readonly approximate?: boolean }) => {
+    const pointSample = (pt: { readonly value: number | null; readonly raw?: bigint; readonly denominator?: bigint; readonly min?: number | null; readonly max?: number | null; readonly approximate?: boolean }) => {
       if (pt.value === null) return null;
       const min = pt.min != null && Number.isFinite(pt.min) ? pt.min : pt.value;
       const max = pt.max != null && Number.isFinite(pt.max) ? pt.max : pt.value;
-      return { value: pt.value, min, max, exact: !pt.approximate && min === max };
+      return {
+        value: pt.value,
+        min,
+        max,
+        exact: !pt.approximate && min === max,
+        ...(pt.raw !== undefined && pt.denominator !== undefined ? { raw: pt.raw, denominator: pt.denominator } : {}),
+      };
     };
     let prev: (typeof series.points)[number] | null = null;
     for (const pt of series.points) {
@@ -223,12 +229,15 @@ export function hitTestTimeChart(
   return `plot:${clampedHour}`;
 }
 
-function formatExactFigure(value: number, model: TimeChartModel, raw?: bigint, denominator?: bigint): string {
+function formatExactFigure(value: number, model: TimeChartModel, raw?: bigint, denominator?: bigint, isTotal = false): string {
   if (raw !== undefined && denominator !== undefined) {
     if (model.yAxis.format === 'percent') {
-      return model.mode === 'stack'
-        ? formatShareRatio(raw, denominator * 100n)
-        : formatRational(raw, denominator, { maxDecimals: 5, percent: true });
+      if (!isTotal && model.mode === 'stack' && model.stack?.valueKind !== 'recorded') {
+        return raw < 0n
+          ? formatRational(raw, denominator, { maxDecimals: 1, percent: true })
+          : formatShareRatio(raw, denominator * 100n);
+      }
+      return formatRational(raw, denominator, { maxDecimals: 5, percent: true });
     }
     if (model.yAxis.format === 'signed1') {
       if (raw === 0n) return '0';
@@ -242,7 +251,9 @@ function formatExactFigure(value: number, model: TimeChartModel, raw?: bigint, d
     return formatRational(raw, denominator, { maxDecimals: 0 });
   }
   if (model.yAxis.format === 'percent') {
-    return model.mode === 'stack' ? formatShare(value / 100) : formatRecordedPercent(value);
+    return !isTotal && model.mode === 'stack' && model.stack?.valueKind !== 'recorded'
+      ? formatShare(value / 100)
+      : formatRecordedPercent(value);
   }
   if (model.yAxis.format === 'signed1') {
     if (Math.abs(value) < 1e-9) return '0';
@@ -269,19 +280,21 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
     }
     if (at >= 0) {
       const totalVal = model.stack.total?.values[at];
+      const totalExact = model.stack.total?.exact?.[at];
       const totalItem: TooltipListItem | null = totalVal !== null && totalVal !== undefined && Number.isFinite(totalVal)
-        ? { label: model.measureTitle, value: formatExactFigure(totalVal, model), strong: true }
+        ? { label: model.measureTitle, value: formatExactFigure(totalVal, model, totalExact?.raw, totalExact?.denominator, true), strong: true }
         : null;
       for (const band of model.stack.bands) {
         if (only !== undefined && band.id !== only) continue;
         const v = band.values[at];
         if (v === null || v === undefined || !Number.isFinite(v)) continue;
+        const bandExact = band.exact?.[at];
         const flagUrl = artUrlOf(band.flag);
         entries.push({
           sortVal: v,
           item: {
             label: band.name,
-            value: formatExactFigure(v, model),
+            value: formatExactFigure(v, model, bandExact?.raw, bandExact?.denominator),
             swatch: band.color,
             ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
           },
@@ -360,7 +373,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
         continue;
       }
       const text = sampled.exact || sampled.min === sampled.max
-        ? formatExactFigure(sampled.value, model)
+        ? formatExactFigure(sampled.value, model, sampled.raw, sampled.denominator)
         : `${formatChartAxisValue(sampled.min, model.yAxis.format)}\u2013${formatChartAxisValue(sampled.max, model.yAxis.format)}`;
       entries.push({
         sortVal: sampled.value,
