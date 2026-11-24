@@ -5,6 +5,7 @@ dashboard_base::register_products! {
     TRADE_FLOWS_TRADEFLOWS => crate::products::trade_flows::TradeFlows,
     ECONOMY_MARKET_HISTORY_LENDLEASEHISTORY => crate::products::economy::market::history::LendLeaseHistory,
     ECONOMY_MARKET_LEDGER_MARKETLEDGER => crate::products::economy::market::ledger::MarketLedger,
+    ECONOMY_MARKET_LEDGER_MARKETLEDGERTAIL => crate::products::economy::market::ledger::MarketLedgerTail,
     ECONOMY_FUEL_AWARDS_COUNTRYFUELAWARDS => crate::products::economy::fuel::awards::CountryFuelAwards,
     ECONOMY_FUEL_AWARDS_COUNTRYFUELAWARDHISTORY => crate::products::economy::fuel::awards::CountryFuelAwardHistory,
     ECONOMY_FUEL_DEMAND_COUNTRYFUELDEMAND => crate::products::economy::fuel::demand::CountryFuelDemand,

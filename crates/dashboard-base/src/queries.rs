@@ -81,6 +81,15 @@ pub fn forget(source: &Source) {
     *source.state::<Histories>().lock().unwrap_or_else(PoisonError::into_inner) = Histories::default();
     *source.state::<Lexicons>().lock().unwrap_or_else(PoisonError::into_inner) = Lexicons::default();
     *source.state::<Spellings>().lock().unwrap_or_else(PoisonError::into_inner) = Spellings::default();
+    source.state::<dashboard_query::log::BucketCache>().lock().unwrap_or_else(PoisonError::into_inner).clear();
+    source.state::<crate::products::log_page::CoverageCache>().lock().unwrap_or_else(PoisonError::into_inner).clear();
+}
+
+pub fn log_caches(source: &Source) -> crate::products::log_page::LogCaches {
+    crate::products::log_page::LogCaches {
+        buckets: source.state::<dashboard_query::log::BucketCache>(),
+        coverage: source.state::<crate::products::log_page::CoverageCache>(),
+    }
 }
 
 pub fn links(source: &Source, run: u32) -> io::Result<Arc<country_ids::RunLinks>> {

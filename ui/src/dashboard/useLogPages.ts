@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { LogPage, LogRow } from '../charts/log/logData';
 import { stableLogPages } from '../charts/log/logPages.ts';
 import { aheadThrough, askedPages, binPages, cumulativeCounts, drawnAhead, failedPage, logPageRequest, noPages, pageFirstHour, pageInSpan, pagesOf, rowsAhead, shownPages, shownThrough, validateLogCounts, validateLogPage } from '../charts/log/logSource.ts';
-import type { HeldPages, LogCounts, LogReplyRow } from '../charts/log/logSource';
+import type { BoundFacetFilter, HeldPages, LogCounts, LogReplyRow } from '../charts/log/logSource';
 import { AHEAD_ROWS, aheadEnd } from '../charts/reveal.ts';
 import { useAheadHour } from './aheadHour.ts';
-import type { FacetFilter, MembershipRun, MissingSpan } from '../generated/dashboard';
+import type { MembershipRun, MissingSpan } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource } from './client';
 import { inFrame } from './frameUpdates.ts';
 import type { PlaybackController } from './playback';
@@ -16,11 +16,13 @@ import { productRequest } from './request.ts';
 import { forwardRequest, type DeclaredProduct } from './request.ts';
 import type { BoundWindow } from './regionTime';
 
+export type { BoundFacetFilter };
+
 export interface LogSpec {
   source: DashboardSource;
   branchId: string;
   log: string;
-  facets?: readonly FacetFilter[];
+  facets?: readonly BoundFacetFilter[];
   scope?: readonly (MembershipRun & BoundWindow)[];
   firstHour: BoundHour;
   lastHour: BoundHour;

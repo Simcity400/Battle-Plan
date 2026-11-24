@@ -150,6 +150,16 @@ pub struct Content {
     held: Arc<Mutex<Held>>,
 }
 
+impl Content {
+    pub fn from_catalogue(catalogue: Arc<Catalogue>) -> Self {
+        Self {
+            catalogue,
+            icons: Err("Equipment icons are unavailable".to_owned()),
+            held: Arc::new(Mutex::new(Held::default())),
+        }
+    }
+}
+
 pub type Context = Result<Content, String>;
 
 #[derive(Default)]

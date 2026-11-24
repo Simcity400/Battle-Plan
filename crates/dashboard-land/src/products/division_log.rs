@@ -241,7 +241,21 @@ impl Product for DivisionLog {
     const KEY: &'static str = "division-log";
     const CONTENT_DEPENDENT: bool = true;
     type Params = DivisionLogParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, facets, from: Start, to: End, cursor, pageSize, "facets[].countries[]", "facets[].values[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
+        branchId,
+        facets,
+        from: Start,
+        to: End,
+        cursor,
+        pageSize,
+        "facets[].countries[]",
+        "facets[].values[]",
+        "facets[].membership[].country",
+        "facets[].membership[].firstHour": Start,
+        "facets[].membership[].lastHour": End,
+        "facets[].unobserved[].firstHour": Start,
+        "facets[].unobserved[].lastHour": End
+    ];
     type Reply = LogPageReply;
 
     #[cfg(any(test, feature = "export-types"))]

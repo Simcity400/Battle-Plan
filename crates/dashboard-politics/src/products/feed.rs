@@ -495,7 +495,23 @@ impl Product for EventFeed {
     const CONTENT_DEPENDENT: bool = true;
     const REPLAYS: bool = true;
     type Params = FeedPageParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, facets, from: Start, to: End, cursor, pageSize, "scope[].firstHour": Start, "scope[].lastHour": End, "facets[].countries[]", "facets[].values[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
+        branchId,
+        facets,
+        from: Start,
+        to: End,
+        cursor,
+        pageSize,
+        "scope[].firstHour": Start,
+        "scope[].lastHour": End,
+        "facets[].countries[]",
+        "facets[].values[]",
+        "facets[].membership[].country",
+        "facets[].membership[].firstHour": Start,
+        "facets[].membership[].lastHour": End,
+        "facets[].unobserved[].firstHour": Start,
+        "facets[].unobserved[].lastHour": End
+    ];
     type Reply = EventFeedPage;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -566,7 +582,7 @@ pub(crate) fn annexations(query: &Query<'_>) -> io::Result<Vec<super::politics::
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = log::Reader::new(query, declared)?;
     let annexed = EventFeedKind::Annexed.code().map(i64::from).ok_or_else(|| invalid("An annexation has no feed code"))?;
-    let selection = reader.select(&[FacetFilter { name: "kind".into(), values: vec![annexed], countries: Vec::new() }], query.timeline.first, query.timeline.last)?;
+    let selection = reader.select(&[FacetFilter { name: "kind".into(), values: vec![annexed], ..Default::default() }], query.timeline.first, query.timeline.last)?;
     let (columns, names) = (Columns::new()?, Names::new(&query.holders));
     let mut out = Vec::new();
     let mut cursor = 0;

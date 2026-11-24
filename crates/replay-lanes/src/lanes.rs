@@ -742,20 +742,22 @@ pub fn statuses(recording: &Recording, run: u32, table: TableId, from: i32, to: 
         return Ok(Vec::new());
     }
     let blocks = held.place(first).0..held.place(last).0 + 1;
-    let found = blocks
-        .into_par_iter()
-        .map(|block| -> io::Result<Vec<StatusRun>> {
-            let entry = recording.table_entry(run, block, table.index())?.unit;
-            let mut runs = Vec::new();
-            unit::reader::statuses(&entry, held.block(block as usize).1 as u16, held.block_first_hour(block), &mut |start, end, status| {
-                let (first, last) = (start.max(from), end.min(to));
-                if first <= last {
-                    runs.push(StatusRun { first, last, status });
-                }
-            })?;
-            Ok(runs)
-        })
-        .collect::<io::Result<Vec<_>>>()?;
+    let read_block = |block: u32| -> io::Result<Vec<StatusRun>> {
+        let entry = recording.table_entry(run, block, table.index())?.unit;
+        let mut runs = Vec::new();
+        unit::reader::statuses(&entry, held.block(block as usize).1 as u16, held.block_first_hour(block), &mut |start, end, status| {
+            let (first, last) = (start.max(from), end.min(to));
+            if first <= last {
+                runs.push(StatusRun { first, last, status });
+            }
+        })?;
+        Ok(runs)
+    };
+    let found = if unit::reader::counting_decodes() {
+        blocks.map(read_block).collect::<io::Result<Vec<_>>>()?
+    } else {
+        blocks.into_par_iter().map(read_block).collect::<io::Result<Vec<_>>>()?
+    };
     let mut out: Vec<StatusRun> = Vec::new();
     for run in found.into_iter().flatten() {
         match out.last_mut() {

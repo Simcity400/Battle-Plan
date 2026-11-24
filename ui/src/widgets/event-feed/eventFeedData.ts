@@ -1,11 +1,11 @@
 import type { LogPage, LogRow } from '../../charts/log/logData';
-import type { LogReplyRow } from '../../charts/log/logSource';
+import type { BoundFacetFilter, LogReplyRow } from '../../charts/log/logSource';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { drawableIcon } from '../../dashboard/artwork.ts';
 import type { ProductRequest } from '../../dashboard/client';
 import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar.ts';
 import { int, object, opaqueTag } from '../../dashboard/validation.ts';
-import type { EventFeedItem, EventFeedRow, EventFeedSpanReply, EventFeedStrike, EventFeedUnavailable, FacetFilter, FeedKindCode } from '../../generated/dashboard';
+import type { EventFeedItem, EventFeedRow, EventFeedSpanReply, EventFeedStrike, EventFeedUnavailable, FeedKindCode } from '../../generated/dashboard';
 import { plainScripted, reasonRows } from './scriptedGaps.ts';
 import { productRequest } from '../../dashboard/request.ts';
 
@@ -89,7 +89,7 @@ export function validateSpan(value: unknown): EventFeedSpanReply {
   return { ...(value as unknown as EventFeedSpanReply), rows };
 }
 
-export type Facet = FacetFilter;
+export type Facet = BoundFacetFilter;
 
 export function feedFacets(kinds: readonly FeedKindCode[], categories: ReadonlySet<string>): Facet[] | null {
   const values = kinds.filter(kind => categories.has(kind.category)).map(kind => kind.code);

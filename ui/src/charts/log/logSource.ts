@@ -1,9 +1,14 @@
 import type { BoundHour, BoundWindow, ParamsFor } from '../../dashboard/regionTime';
 import type { Failure } from '../../dashboard/queryError';
-import type { FacetFilter, LogCell, MembershipRun, MissingSpan } from '../../generated/dashboard';
+import type { CountrySpan, FacetFilter, LogCell, MembershipRun, MissingSpan } from '../../generated/dashboard';
 import type { LogPage, LogRow } from './logData';
 import { AHEAD_SECONDS } from '../reveal.ts';
 import type { DeclaredProduct } from '../../dashboard/request';
+
+export type BoundFacetFilter = Omit<FacetFilter, 'membership' | 'unobserved'> & {
+  membership?: readonly (CountrySpan & BoundWindow)[];
+  unobserved?: readonly BoundWindow[];
+};
 
 export interface LogCounts { firstHour: number; binHours: number; counts: readonly number[]; total: number; before: number; missing: readonly MissingSpan[] }
 
@@ -67,7 +72,7 @@ export function validateLogPage(value: unknown, firstOrdinal: number, pageSize: 
   return { firstOrdinal, total, rows };
 }
 
-export function logPageRequest(spec: { product?: DeclaredProduct; branchId: string; log: string; facets?: readonly FacetFilter[]; scope?: readonly (MembershipRun & BoundWindow)[];
+export function logPageRequest(spec: { product?: DeclaredProduct; branchId: string; log: string; facets?: readonly BoundFacetFilter[]; scope?: readonly (MembershipRun & BoundWindow)[];
   firstHour: BoundHour; lastHour: BoundHour }, cursor: number, pageSize: number): { product: DeclaredProduct; params: ParamsFor<DeclaredProduct> } {
   return { product: spec.product ?? 'log-page', params: { branchId: spec.branchId, ...(spec.product ? {} : { log: spec.log }),
     ...(spec.facets ? { facets: spec.facets } : {}), ...(spec.scope ? { scope: spec.scope } : {}), from: spec.firstHour, to: spec.lastHour, cursor: String(cursor), pageSize } };

@@ -1,7 +1,7 @@
 import { countryFromKey } from './countryKey.ts';
 import type { LogRow } from '../charts/log/logData';
-import type { LogReplyRow } from '../charts/log/logSource';
-import type { FacetFilter, LogCell } from '../generated/dashboard';
+import type { BoundFacetFilter, LogReplyRow } from '../charts/log/logSource';
+import type { LogCell } from '../generated/dashboard';
 import { FUEL_QUANTITY, fixedText } from './market.ts';
 
 export const MARKET_LOG = 'market-events';
@@ -68,8 +68,8 @@ export function ledgerEntry(row: LogReplyRow): LogRow<LedgerItem> {
   } };
 }
 
-export function ledgerFacets(kinds: readonly number[], tags: readonly string[] | null): FacetFilter[] {
-  const facets: FacetFilter[] = [{ name: 'kind', values: [...kinds], countries: [] }];
+export function ledgerFacets(kinds: readonly number[], tags: readonly string[] | null): BoundFacetFilter[] {
+  const facets: BoundFacetFilter[] = [{ name: 'kind', values: [...kinds], countries: [] }];
   if (tags) facets.push({ name: 'country|receiver', values: [], countries: tags.map(countryFromKey) });
   return facets;
 }
