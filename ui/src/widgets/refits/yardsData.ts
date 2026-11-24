@@ -1,7 +1,9 @@
 import { liveKey } from '../../charts/live.ts';
+import { NOT_LIVE_CELL } from '../../dashboard/follow/liveCells.ts';
 import type { LiveValues } from '../../charts/live';
-import { knownValue, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
+import { knownValue, notRecorded, partialValue, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import type { TableCellExtra, TooltipExtraRow } from '../../families/table/model.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
 import { artState, type ArtState } from '../../families/table/identityCell.ts';
 import type { NavalRefitsReply, NavalRepairsReply, RefitLine, RepairPort, YardShip } from '../../generated/dashboard';
@@ -25,7 +27,7 @@ export function validateRepairs(value: unknown): NavalRepairsReply {
   if (!reply || typeof reply !== 'object' || typeof reply.censusComplete !== 'boolean' || !strings(reply.warnings)
     || !optionalInteger(reply.usedDockyards) || !optionalInteger(reply.repairLimit) || !optionalInteger(reply.queuedShips)
     || !Array.isArray(reply.ports) || !reply.ports.every((port: RepairPort) => !!port && Number.isSafeInteger(port.province) && optional(port.name)
-      && optionalInteger(port.priority) && optional(port.policy) && optionalInteger(port.dockyards) && Array.isArray(port.queue) && port.queue.every(ship)))
+      && optionalInteger(port.priority) && optional(port.policy) && optionalInteger(port.dockyards) && Array.isArray(port.queue) && port.queue.every(ship) && optional(port.queueMissing)))
     throw new Error('The naval repairs reply is malformed.');
   return reply;
 }
@@ -35,7 +37,7 @@ export function validateRefits(value: unknown): NavalRefitsReply {
   if (!reply || typeof reply !== 'object' || typeof reply.censusComplete !== 'boolean' || !strings(reply.warnings) || !optional(reply.missing)
     || !optionalInteger(reply.ships) || !optionalInteger(reply.dockyards) || !optionalInteger(reply.costRead)
     || !Array.isArray(reply.lines) || !reply.lines.every((line: RefitLine) => !!line && decimal(line.handle) && optional(line.target) && decimal(line.progress)
-      && optionalDecimal(line.cost) && optionalInteger(line.dockyards) && optionalDecimal(line.remaining) && Array.isArray(line.ships) && line.ships.every(ship)))
+      && optionalDecimal(line.cost) && optionalInteger(line.dockyards) && optionalDecimal(line.remaining) && Array.isArray(line.ships) && line.ships.every(ship) && optional(line.shipsMissing)))
     throw new Error('The naval refits reply is malformed.');
   return reply;
 }
@@ -74,36 +76,66 @@ function shareValue(part: bigint, whole: bigint): Value<number> {
   return knownValue(Number((part > whole ? whole : part) * 1_000_000n / whole) / 10_000);
 }
 
-function liveRaw(live: LiveValues<number | bigint | string> | null, row: string, column: string, held: string | null, reason: string): bigint | Value<never> {
-  const value = valueFromLive(live, liveKey(row, column));
-  if (value.kind === 'known' || value.kind === 'zero') return typeof value.value === 'bigint' ? value.value : BigInt(Math.trunc(value.value));
-  if (held !== null) return BigInt(held);
-  return notRecorded(value.kind === 'notRecorded' ? value.reason : reason);
+type Live = LiveValues<number | bigint | string> | null;
+
+export function reading(live: Live, row: string, column: string, held: string | null, reason: string): bigint | Value<never> {
+  if (live) {
+    const value = valueFromLive(live, liveKey(row, column));
+    if (value.kind === 'known' || value.kind === 'zero') return typeof value.value === 'bigint' ? value.value : BigInt(Math.trunc(value.value));
+    if (value.kind === 'notRecorded' && value.reason !== NOT_LIVE_CELL) return notRecorded(value.reason);
+  }
+  return held === null ? notRecorded(reason) : BigInt(held);
 }
 
-export function shipStrength(item: YardShip, live: LiveValues<number | bigint | string> | null): Value<number> {
+const hullReading = (item: YardShip, live: Live) => reading(live, item.handle, 'hull', item.hull, 'Ship strength not recorded');
+
+export function shipStrength(item: YardShip, live: Live): Value<number> {
   const maximum = item.maximum === null ? 0n : BigInt(item.maximum);
   if (maximum <= 0n) return notRecorded('Maximum ship strength not recorded');
-  const hull = liveRaw(live, item.handle, 'hull', item.hull, 'Ship strength not recorded');
+  const hull = hullReading(item, live);
   return typeof hull === 'bigint' ? shareValue(hull, maximum) : hull;
 }
 
-export function refitProgress(reply: NavalRefitsReply, line: RefitLine, live: LiveValues<number | bigint | string> | null): Value<number> {
+const LONGEST = 9223372036854775807n;
+
+function refitCost(reply: NavalRefitsReply, line: RefitLine): bigint | null {
   const cost = line.cost === null || reply.costRead === null ? 0n : BigInt(line.cost);
-  if (cost <= 0n || cost >= 9223372036854775807n) return notRecorded('Refit cost not recorded');
-  const progress = liveRaw(live, line.handle, 'progress', line.progress, 'Refit progress not recorded');
+  return cost <= 0n || cost >= LONGEST ? null : cost;
+}
+
+export const progressReading = (line: RefitLine, live: Live) => reading(live, line.handle, 'progress', line.progress, 'Refit progress not recorded');
+
+export function refitProgress(reply: NavalRefitsReply, line: RefitLine, live: Live): Value<number> {
+  const cost = refitCost(reply, line);
+  if (cost === null) return notRecorded('Refit cost not recorded');
+  const progress = progressReading(line, live);
   return typeof progress === 'bigint' ? shareValue(progress, cost) : progress;
+}
+
+const icValue = (raw: bigint | Value<never>): Value<string> => typeof raw === 'bigint' ? knownValue(`${fixedText(raw)} IC`) : raw;
+
+export function refitAmounts(reply: NavalRefitsReply, line: RefitLine, live: Live): { readonly done: Value<string>; readonly remaining: Value<string> } {
+  const progress = progressReading(line, live);
+  const cost = refitCost(reply, line);
+  const remaining = cost === null ? notRecorded('Remaining cost not recorded') : typeof progress === 'bigint' ? icValue(cost - progress) : progress;
+  return { done: icValue(progress), remaining };
+}
+
+export function childCount(count: number, missing: string | null): Value<string> {
+  if (missing === null) return knownValue(formatScalar(count, 'integer'));
+  return count > 0 ? partialValue(formatScalar(count, 'integer'), missing, { atLeast: true }) : notRecorded(missing);
 }
 
 export const fraction = (value: Value<number>): Value<number> =>
   value.kind === 'known' ? knownValue(value.value / 100) : value;
 
-export function shipTooltip(item: YardShip): TooltipExtraRow[] {
+export function shipTooltip(item: YardShip, live: Live): TooltipExtraRow[] {
   const label = shipLabel(item);
   const named = (value: string | null, reason: string): Value<string> => value ? knownValue(value) : notRecorded(reason);
+  const hull = hullReading(item, live);
   return [
     { label: 'Name', value: knownValue(NAME_SOURCE[label.source]), divider: true },
-    { label: 'Strength', value: item.hull === null || item.maximum === null ? notRecorded('Ship strength not recorded') : knownValue(`${fixedText(item.hull)} of ${fixedText(item.maximum)}`) },
+    { label: 'Strength', value: typeof hull !== 'bigint' ? hull : item.maximum === null ? notRecorded('Maximum ship strength not recorded') : knownValue(`${fixedText(hull)} of ${fixedText(item.maximum)}`) },
     { label: 'Design', value: named(item.design, 'Design name unavailable') },
     { label: 'Class', value: named(item.class, 'Ship class not recorded') },
     { label: 'Task force', value: named(item.taskForce, 'Task force not recorded') },
