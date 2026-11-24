@@ -6,9 +6,14 @@ import importlib.util
 import io
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from xml.sax.saxutils import escape
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("ci", ROOT / "tools" / "ci.py")
@@ -277,13 +282,29 @@ class Crates(unittest.TestCase):
                                                'inputs = ["fuzz/**"]\nmanifest = "fuzz/Cargo.toml"\ncommand = ["cargo", "check"]\n')
         ctx = context(["crates/core/src/lib.rs"])
         ctx.pipeline, ctx.definitions = pipeline, {job.name: job.definition for job in pipeline.jobs}
-        ctx.manifests = {"fuzz/Cargo.toml": {"mid"}}
+        ctx.reach = {"fuzz": {"mid"}}
         self.assertEqual(decide("fuzz", ctx).state, "skipped")
         ctx.changed = {"crates/mid/src/lib.rs"}
         self.assertEqual(decide("fuzz", ctx).state, "run")
-        ctx.manifests = {"fuzz/Cargo.toml": None}
+        ctx.reach = {"fuzz": None}
         ctx.changed = {"crates/core/src/lib.rs"}
         self.assertEqual(decide("fuzz", ctx).state, "run")
+
+    def test_a_job_naming_a_package_runs_for_the_crates_its_library_builds_on_only(self):
+        pipeline = ci.load_pipeline(PIPELINE + '[[job]]\nname = "shipped"\ngroup = "all"\ntier = "check"\ntoolchain = "rust"\n'
+                                               'inputs = ["ui/generated.ts"]\npackage = "mid"\ncommand = ["cargo", "check"]\n')
+        job = next(job for job in pipeline.jobs if job.name == "shipped")
+        workspace = crates(core=[], mid=["core"], top=["mid"], other=[])
+        self.assertEqual(ci.job_reach(ROOT, job, workspace), {"mid", "core"})
+        ctx = context(["crates/top/src/lib.rs", "crates/other/src/lib.rs"])
+        ctx.pipeline, ctx.definitions = pipeline, {job.name: job.definition for job in pipeline.jobs}
+        ctx.reach = {"shipped": ci.job_reach(ROOT, job, workspace)}
+        self.assertEqual(decide("shipped", ctx).state, "skipped")
+        for path in ("crates/core/src/lib.rs", "crates/mid/src/lib.rs", "ui/generated.ts", "Cargo.lock"):
+            ctx.changed = {path}
+            self.assertEqual(decide("shipped", ctx).state, "run", path)
+        with self.assertRaises(SystemExit):
+            ci.job_reach(ROOT, job, crates(core=[]))
 
 
 
@@ -408,6 +429,39 @@ class ReviewOfFourteen(unittest.TestCase):
             self.assertRegex(label, r"^(ubuntu|windows)-(latest|\d{2,4}(\.\d+)?)$")
         self.assertNotIn("matrix.os", workflow)
 
+    def test_a_pull_request_compares_with_the_commit_it_was_merged_into(self):
+        workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+        tier = next(step["run"] for step in workflow["jobs"]["changes"]["steps"] if step.get("id") == "tier")
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash)
+        with tempfile.TemporaryDirectory() as folder:
+            def git(*args):
+                identity = ["-c", "user.name=ci", "-c", "user.email=ci@example.invalid", "-c", "commit.gpgsign=false"]
+                return subprocess.run(["git", *identity, *args], cwd=folder, capture_output=True, text=True, check=True).stdout.strip()
+
+            def commit(name):
+                Path(folder, name).write_text(name, encoding="utf-8")
+                git("add", name)
+                git("commit", "--quiet", "--message", name)
+                return git("rev-parse", "HEAD")
+
+            def base(event_base):
+                output = Path(folder, "output")
+                output.write_text("", encoding="utf-8")
+                env = dict(ci.os.environ, EVENT="pull_request", PR_BASE=event_base, GITHUB_OUTPUT=output.as_posix())
+                subprocess.run([bash, "-e", "-c", tier], cwd=folder, env=env, check=True, capture_output=True)
+                return dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())["base"]
+
+            git("init", "--quiet", "--initial-branch", "main")
+            opened = commit("opened")
+            git("checkout", "--quiet", "-b", "change")
+            change = commit("change")
+            self.assertEqual(base(opened), opened)
+            git("checkout", "--quiet", "main")
+            merged_into = commit("merged-since")
+            git("merge", "--quiet", "--no-ff", "--message", "merge", change)
+            self.assertEqual(base(opened), merged_into)
+
 
 class Sharding(unittest.TestCase):
     WORKSPACE = crates(hub=[], mid=["hub"], app=["mid", "hub"], tool=["hub"], leaf=[], other=["leaf"])
@@ -483,6 +537,7 @@ class Sharding(unittest.TestCase):
         self.assertEqual([leg["name"] for leg in tests], ["test 1/2", "test 2/2"])
         self.assertTrue(all(leg["needs_python"] for leg in legs))
         self.assertIn("clippy", next(leg for leg in legs if leg["shard"] == "")["jobs"].split())
+        self.assertEqual({leg["name"]: leg["cache"] for leg in legs}, {"all": "group-all", "test 1/2": "test", "test 2/2": "test"})
         taken = []
         for leg in tests:
             cut, refused = ci.take_shard([d for d in decisions if d.job.name == "test"], leg["shard"], ctx.crates, table)
@@ -571,15 +626,13 @@ class RestoredTarget(unittest.TestCase):
                 pipeline.write_text(text, encoding="utf-8")
                 output.write_text("", encoding="utf-8")
                 ci.PIPELINE = pipeline
-                ci.warm("fuzz-build", Path(folder, "target"), output)
+                ci.warm("group-rust", Path(folder, "target"), output)
                 return output.read_text(encoding="utf-8").strip()
             try:
                 Path(folder, "target").mkdir()
                 Path(folder, "target", ci.BUILT_FROM).write_text(head + "\n", encoding="utf-8")
                 self.assertEqual(saved(committed), "save=false")
-                job = next(job for job in ci.load_pipeline(committed).jobs if job.name == "fuzz-build")
-                changed = committed.replace("warm = " + ci.json.dumps(list(job.warm)),
-                                            "warm = " + ci.json.dumps([sys.executable, "-c", "pass"]), 1)
+                changed = re.sub(r"^warm = \[.*\]$", lambda _: "warm = " + ci.json.dumps([sys.executable, "-c", "pass"]), committed, flags=re.M)
                 self.assertNotEqual(changed, committed)
                 self.assertEqual(saved(changed), "save=true")
             finally:
@@ -606,6 +659,37 @@ class RestoredTarget(unittest.TestCase):
                 named, output = run(0)
                 self.assertEqual(named.read_text(encoding="utf-8").strip(), ci.git("rev-parse", "HEAD").strip())
                 self.assertEqual(output, "save=true\n")
+            finally:
+                ci.PIPELINE = original
+
+    def test_a_groups_cache_holds_every_build_its_jobs_warm_and_none_when_one_fails(self):
+        stale = "fedcba9876543210"
+        original = ci.PIPELINE
+        with tempfile.TemporaryDirectory() as folder:
+            def build(unit, code=0):
+                message = ci.json.dumps({"reason": "compiler-artifact", "filenames": [f"t/debug/deps/lib{unit}-{unit * 16}.rlib"]})
+                return ci.json.dumps([sys.executable, "-c", f"import sys; print({message!r}); sys.exit({code})"])
+
+            def run(second):
+                pipeline = Path(folder, "ci.toml")
+                pipeline.write_text(PIPELINE.replace('command = ["scan"]\n', f'command = ["scan"]\nwarm = {build("a")}\n')
+                                    .replace('command = ["slow"]\n', f'command = ["slow"]\nwarm = {second}\n'), encoding="utf-8")
+                ci.PIPELINE = pipeline
+                output = Path(folder, "output")
+                output.write_text("", encoding="utf-8")
+                ci.warm("group-all", Path(folder, "target"), github_output=output)
+                return output.read_text(encoding="utf-8")
+
+            try:
+                deps = Path(folder, "target", "debug", "deps")
+                deps.mkdir(parents=True)
+                Path(folder, "target", "debug", ".fingerprint").mkdir()
+                for name in (f"liba-{'a' * 16}.rlib", f"libb-{'b' * 16}.rlib", f"libc-{stale}.rlib"):
+                    Path(deps, name).write_text("x", encoding="utf-8")
+                self.assertEqual(run(build("b", code=1)), "save=false\n")
+                self.assertEqual(len(list(deps.iterdir())), 3)
+                self.assertEqual(run(build("b")), "save=true\n")
+                self.assertEqual(sorted(path.name for path in deps.iterdir()), [f"liba-{'a' * 16}.rlib", f"libb-{'b' * 16}.rlib"])
             finally:
                 ci.PIPELINE = original
 
@@ -639,18 +723,20 @@ class Pipeline(unittest.TestCase):
         self.assertTrue(scripts)
         self.assertEqual([script for script in scripts if f"tools/{script}" not in commands], [])
 
-    def test_the_cache_workflow_warms_every_sharded_job_and_restores_what_ci_restores(self):
-        import yaml
+    def test_the_cache_workflow_warms_every_rust_legs_cache_and_restores_what_ci_restores(self):
         pipeline = ci.load_pipeline((ROOT / "tools" / "ci.toml").read_text(encoding="utf-8"))
         cache = yaml.safe_load((ROOT / ".github" / "workflows" / "rust-cache.yml").read_text(encoding="utf-8"))
         ci_workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
         warm = cache["jobs"]["warm"]
-        self.assertEqual(sorted(warm["strategy"]["matrix"]["job"]), sorted(job.name for job in pipeline.jobs if job.warm))
-        self.assertLessEqual({job.name for job in pipeline.jobs if job.shards}, {job.name for job in pipeline.jobs if job.warm})
-        paths = [step["with"]["path"] for step in warm["steps"] if str(step.get("uses", "")).startswith("actions/cache/")]
-        paths += [step["with"]["path"] for step in ci_workflow["jobs"]["run"]["steps"] if str(step.get("uses", "")).startswith("actions/cache/")]
-        self.assertEqual(len(paths), 3)
-        self.assertEqual(len(set(paths)), 1)
+        self.assertEqual(sorted(warm["strategy"]["matrix"]["cache"]), ci.caches(pipeline))
+        builds = [job for job in pipeline.jobs if "rust" in pipeline.groups[job.group].get("setup", [])]
+        self.assertEqual([job.name for job in builds if not job.warm], [])
+        steps = [step["with"] for step in [*warm["steps"], *ci_workflow["jobs"]["run"]["steps"]] if str(step.get("uses", "")).startswith("actions/cache/")]
+        self.assertEqual(len(steps), 3)
+        self.assertEqual(len({step["path"] for step in steps}), 1)
+        self.assertEqual(len({step["key"] for step in steps}), 1)
+        self.assertIn("matrix.cache", steps[0]["key"])
+        self.assertEqual(len({step["restore-keys"] for step in steps if "restore-keys" in step}), 1)
 
     def test_an_unknown_tier_is_refused(self):
         with self.assertRaises(SystemExit):
