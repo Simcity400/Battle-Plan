@@ -2,7 +2,6 @@ import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, u
 import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
 import type { WidgetSpec } from '../../dashboard/model';
 import { PreparingPage } from '../../dashboard/preparing.ts';
@@ -33,6 +32,7 @@ import {
   type MountedFamilyCanvas,
   type PlanAuditSnapshot,
 } from '../host/index.ts';
+import type { StaticBundle } from '../host/useFamilyPlan.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import type { LaneActivation } from './lanesDeclaration.ts';
@@ -54,7 +54,7 @@ export interface FamilyHeatLanesHostProps<TOptions> {
   readonly subscriptions: readonly FamilySourceSubscription[];
   readonly allowEmptyFollow?: boolean;
   readonly owner?: string;
-  readonly staticSources?: { readonly panels?: Readonly<Record<string, unknown>>; readonly answers?: Readonly<Record<string, FollowedAnswer>>; readonly hour: number } | null;
+  readonly staticBundle?: StaticBundle | null;
   readonly exactReadView?: (hour: number) => Promise<BoundedReadView | null>;
   readonly offset: number;
   readonly pin: number | null;
@@ -62,6 +62,7 @@ export interface FamilyHeatLanesHostProps<TOptions> {
   readonly countryLooks?: CountryLooksMap;
   readonly identitySnapshot?: IdentitySnapshot | null;
   readonly onIdentityDemands?: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
+  readonly onViewportSize?: (width: number, height: number) => void;
   readonly selectedRowId?: string | null;
   readonly onActivate?: (activation: LaneActivation) => void;
   readonly contextMenuItems?: (activation: LaneActivation | null, hour: number) => MenuItem[];
@@ -109,7 +110,7 @@ export default function FamilyHeatLanesHost<TOptions>({
   subscriptions,
   allowEmptyFollow = false,
   owner,
-  staticSources = null,
+  staticBundle = null,
   exactReadView,
   offset,
   pin,
@@ -117,6 +118,7 @@ export default function FamilyHeatLanesHost<TOptions>({
   countryLooks,
   identitySnapshot = null,
   onIdentityDemands,
+  onViewportSize,
   selectedRowId = null,
   onActivate,
   contextMenuItems,
@@ -149,7 +151,7 @@ export default function FamilyHeatLanesHost<TOptions>({
   heldRef.current = held;
   const dimRef = useRef(false);
   const pauseFlushRef = useRef(0);
-  const lastHourRef = useRef(staticSources?.hour ?? 0);
+  const lastHourRef = useRef(staticBundle?.hour ?? 0);
   const navRef = useRef<readonly FamilyNavTuple[]>([]);
   const typeaheadRef = useRef({ query: '', until: 0 });
   const lastMirrorKeyRef = useRef('');
@@ -164,7 +166,7 @@ export default function FamilyHeatLanesHost<TOptions>({
   const lastAuditRef = useRef<{ id: number; declaration: HeatLanesProjection<TOptions>; options: TOptions; exactReadView: (hour: number) => Promise<BoundedReadView | null> } | null>(null);
 
   const [meta, setMeta] = useState<LanesMetaState>(() => ({
-    mode: staticSources ? 'picture' : 'reading',
+    mode: staticBundle ? 'picture' : 'reading',
     reason: null,
     failureOrigin: 'local',
     empty: null,
@@ -178,7 +180,7 @@ export default function FamilyHeatLanesHost<TOptions>({
   const { theme } = useFamilyTheme(undefined, countryLooks);
   const { hasFrame, liveRegionRef } = useFamilyAnnouncer('heat-lanes');
 
-  const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticSources !== null || allowEmptyFollow);
+  const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticBundle !== null || allowEmptyFollow);
   const auditable = !!exactReadView;
   const placement = useFamilyPlacement({
     family: 'heat-lanes',
@@ -193,7 +195,7 @@ export default function FamilyHeatLanesHost<TOptions>({
     auditable,
     subscriptions,
     offset,
-    pin: pin ?? (subscriptions.length === 0 && staticSources ? staticSources.hour : null),
+    pin: pin ?? (subscriptions.length === 0 && staticBundle && !staticBundle.follows ? staticBundle.hour : null),
     bounds,
     frameRef,
     surfaceLabel: 'heat-lanes',
@@ -220,10 +222,11 @@ export default function FamilyHeatLanesHost<TOptions>({
     declaration,
     options,
     theme,
-    staticSources,
+    staticBundle,
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
+    onViewportSize,
     selectedRowId,
     onActivate,
     contextMenuItems,
@@ -236,10 +239,11 @@ export default function FamilyHeatLanesHost<TOptions>({
     declaration,
     options,
     theme,
-    staticSources,
+    staticBundle,
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
+    onViewportSize,
     selectedRowId,
     onActivate,
     contextMenuItems,
@@ -256,8 +260,8 @@ export default function FamilyHeatLanesHost<TOptions>({
     const w = Math.max(1, width || 360);
     const h = Math.max(1, height || 220);
     const cur = latestRef.current;
-    const staticPanels = cur.staticSources?.panels;
-    const staticAnswers = cur.staticSources?.answers;
+    const staticPanels = cur.staticBundle?.panels;
+    const staticAnswers = cur.staticBundle?.answers;
 
     let auditId: number | undefined;
     if (perfLog && cur.captureActive && cur.exactReadView) {
@@ -297,13 +301,15 @@ export default function FamilyHeatLanesHost<TOptions>({
     mounted.canvas.style.width = `${w}px`;
     mounted.canvas.style.height = `${h}px`;
     pipeline.present(pipe, 'heat-lanes');
-    const dated = Object.keys(sourceIdsRef.current).length === 0
-      ? (cur.staticSources
-        ? { h: cur.staticSources.hour, c: cur.staticSources.hour }
-        : cur.allowEmptyFollow && cur.bounds
-          ? { h: cur.bounds[0], c: cur.bounds[1] }
+    const dated = cur.staticBundle
+      ? (Object.keys(cur.staticBundle.panels).length > 0 || Object.keys(cur.staticBundle.answers ?? {}).length > 0
+          ? (cur.staticBundle.provenInterval
+              ? { h: cur.staticBundle.provenInterval[0], c: cur.staticBundle.provenInterval[1] }
+              : { h: cur.staticBundle.hour, c: cur.staticBundle.hour })
           : undefined)
-      : undefined;
+      : (Object.keys(sourceIdsRef.current).length === 0 && cur.allowEmptyFollow && cur.bounds
+          ? { h: cur.bounds[0], c: cur.bounds[1] }
+          : undefined);
     pipeline.bind(
       pipe,
       [mounted.surface],
@@ -477,8 +483,11 @@ export default function FamilyHeatLanesHost<TOptions>({
 
     const resizeObserver = new ResizeObserver(entries => {
       const rect = entries[0]?.contentRect;
-      const w = Math.round(rect ? rect.width : node.clientWidth);
-      const h = Math.round(rect ? rect.height : node.clientHeight);
+      const rawW = rect ? rect.width : node.clientWidth;
+      const rawH = rect ? rect.height : node.clientHeight;
+      latestRef.current.onViewportSize?.(rawW, rawH);
+      const w = Math.round(rawW);
+      const h = Math.round(rawH);
       const box = frameRef.current?.getBoundingClientRect();
       if (box) focusAnchorRef.current = { x: box.left + Math.min(200, box.width / 2), y: box.top + 48 };
       if (w === viewportRef.current.width && h === viewportRef.current.height) return;
@@ -489,6 +498,7 @@ export default function FamilyHeatLanesHost<TOptions>({
     resizeObserver.observe(node);
     viewportRef.current.width = node.clientWidth;
     viewportRef.current.height = node.clientHeight;
+    latestRef.current.onViewportSize?.(node.clientWidth, node.clientHeight);
 
     node.addEventListener('scroll', onScroll, { passive: true });
     bindRef.current();
@@ -507,7 +517,7 @@ export default function FamilyHeatLanesHost<TOptions>({
 
   useLayoutEffect(() => {
     if (pipe !== null && enabled) bind();
-  }, [pipe, enabled, bind, options, theme, staticSources, identitySnapshot, selectedRowId, subsReady, auditable, exactReadView, audit.captureActive]);
+  }, [pipe, enabled, bind, options, theme, staticBundle, identitySnapshot, selectedRowId, subsReady, auditable, exactReadView, audit.captureActive]);
 
   useFamilyPauseFlush(runtime.clock, () => {
     if (!pipeline || pipe === null) return;

@@ -1,6 +1,6 @@
 import type { AuditRow } from '../../draw/notifications.ts';
 import { flagArtHandle } from '../art/provider.ts';
-import { missingArt, PENDING_ART, type ArtResult } from '../art/types.ts';
+import { failedArt, missingArt, PENDING_ART, type ArtResult } from '../art/types.ts';
 import { canonicalAuditValue } from '../audit.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyActionPayload, FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
@@ -34,7 +34,7 @@ export function countryRowPresentation(
   dimmed?: boolean,
 ): CountryRowPresentation {
   const identity = readView.who('country', tag);
-  const labelMissing = identity.name.status === 'absent';
+  const labelMissing = identity.name.status === 'absent' || identity.name.status === 'failed';
   const label = identity.name.status === 'ready' ? identity.name.value : tag;
   const color = identity.colour?.status === 'ready' ? identity.colour.value : fallbackColor;
   let art: ArtResult;
@@ -42,6 +42,8 @@ export function countryRowPresentation(
     art = readView.art(flagArtHandle(identity.flagChoice.value));
   } else if (identity.flagChoice?.status === 'absent') {
     art = missingArt(identity.flagChoice.reason);
+  } else if (identity.flagChoice?.status === 'failed') {
+    art = failedArt(identity.flagChoice.reason, identity.flagChoice.retryable);
   } else {
     art = PENDING_ART;
   }

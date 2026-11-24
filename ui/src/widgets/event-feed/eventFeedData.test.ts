@@ -135,6 +135,12 @@ test('decision outcomes agree on the native Failed state, keep timeout cause, an
   assert.equal(eventDescription({ event: unrecorded, item }, name), 'GER reached the deadline of Hold Sector');
   assert.ok(eventTooltip({ event: unrecorded, item }, name)[0].rows.some(r => r.label === 'Mission failure state' && r.value === 'Not recorded — mission failure state was not recorded'));
 
+  const notApplicable = validateFeedRow(row('decisionSelected', 100, ['GER'], {
+    category: 'politics', participants: ['GER', null], item, decisionState: { kind: 'notApplicable', reason: 'decision has no mission lifecycle state' },
+  }));
+  assert.equal(eventDescription({ event: notApplicable, item }, name), 'GER selected decision Hold Sector');
+  assert.ok(!eventTooltip({ event: notApplicable, item }, name)[0].rows.some(r => r.label === 'Mission failure state'));
+
   const unsupported = validateFeedRow(row('decisionTimedOut', 100, ['GER'], {
     category: 'politics', participants: ['GER', null], item, decisionState: { kind: 'unsupported', raw: 77 },
   }));

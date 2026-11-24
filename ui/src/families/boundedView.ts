@@ -638,7 +638,7 @@ export function createBoundedReadView(input: BoundedReadViewInput): BoundedReadV
         input.onIdentityDemand?.(kind, key, target);
         return defaultIdentityResult(kind, key, target);
       }
-      const result = input.identity.resolve(kind, key, target, input.onIdentityDemand);
+      const result = input.identity.resolve(kind, key, target);
       if (
         input.onIdentityDemand
         && (
@@ -658,7 +658,7 @@ export function createBoundedReadView(input: BoundedReadViewInput): BoundedReadV
         input.onArtDemand?.(handle);
         return DEFAULT_ART_PENDING;
       }
-      const result = input.art.resolve(handle, input.onArtDemand);
+      const result = input.art.resolve(handle);
       if (result.status === 'pending') {
         input.onArtDemand?.(handle);
       }

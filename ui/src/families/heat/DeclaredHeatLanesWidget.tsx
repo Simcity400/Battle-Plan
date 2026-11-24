@@ -89,7 +89,7 @@ export default function DeclaredHeatLanesWidget<TProjectionOptions, TAux>({
     subscriptions={plan.subscriptions}
     allowEmptyFollow={plan.allowEmptyFollow}
     owner={plan.owner}
-    staticSources={plan.staticBundle ? { panels: plan.staticBundle.panels, answers: plan.staticBundle.answers, hour: plan.staticBundle.hour } : null}
+    staticBundle={plan.staticBundle}
     exactReadView={displayedCtx && perfLog && !blockedState ? plan.exactReadView : undefined}
     offset={plan.offset}
     pin={plan.pin}
@@ -97,6 +97,7 @@ export default function DeclaredHeatLanesWidget<TProjectionOptions, TAux>({
     countryLooks={plan.displayedCountryLooks}
     identitySnapshot={plan.identitySnapshot}
     onIdentityDemands={plan.onIdentityDemands}
+    onViewportSize={plan.measureViewport}
     selectedRowId={selectedRowId}
     onActivate={onActivate}
     contextMenuItems={declaration.jumpToDate ? contextMenuItems : undefined}

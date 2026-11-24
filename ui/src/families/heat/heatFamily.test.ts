@@ -359,7 +359,7 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   }, picture);
   assert.equal(res.drew, true);
   assert.ok(fake.ops.some(op => op.op === 'fillText' && op.args[0] === '70%'));
-  assert.ok(fake.ops.some(op => op.op === 'setLineDash'));
+  assert.ok(fake.ops.some(op => op.op === 'stroke'));
 });
 
 test('heat scale helpers preserve zero neutrality, signed extremes, margin blend, and proportional stripes', () => {

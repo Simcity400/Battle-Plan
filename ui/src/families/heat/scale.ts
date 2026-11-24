@@ -88,6 +88,7 @@ export function resolveRecordedColour(
 export interface ResolvedEntityPresentation {
   readonly label: string;
   readonly nameMissing?: string;
+  readonly nameFailed?: { readonly reason: string; readonly retryable: boolean };
   readonly pending?: boolean;
   readonly color?: string;
   readonly flag?: ArtHandle | null;
@@ -105,6 +106,7 @@ export function resolveEntityFromReadView(
   const identity = readView.who(kind, key, atHour);
   let label = fallbackLabel;
   let nameMissing: string | undefined = fallbackMissing ?? undefined;
+  let nameFailed: { readonly reason: string; readonly retryable: boolean } | undefined;
   let pending = false;
 
   if (identity.name.status === 'ready') {
@@ -114,6 +116,9 @@ export function resolveEntityFromReadView(
     pending = true;
   } else if (identity.name.status === 'absent') {
     nameMissing = identity.name.reason;
+  } else if (identity.name.status === 'failed') {
+    nameFailed = { reason: identity.name.reason, retryable: identity.name.retryable };
+    nameMissing = undefined;
   }
 
   let color: string | undefined;
@@ -125,8 +130,6 @@ export function resolveEntityFromReadView(
   if (kind === 'country') {
     if (identity.flagChoice?.status === 'ready') {
       flag = flagArtHandle(identity.flagChoice.value, 'panel');
-    } else if (identity.flagChoice?.status === 'pending') {
-      flag = null;
     } else {
       flag = null;
     }
@@ -135,6 +138,7 @@ export function resolveEntityFromReadView(
   return {
     label,
     ...(nameMissing ? { nameMissing } : {}),
+    ...(nameFailed ? { nameFailed } : {}),
     ...(pending ? { pending: true } : {}),
     ...(color ? { color } : {}),
     ...(flag !== undefined ? { flag } : {}),
