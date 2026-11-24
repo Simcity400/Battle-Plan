@@ -3,7 +3,6 @@ import type { MarkSummary } from '../../charts/markSummary';
 import type { Run } from '../../charts/series';
 import type { IconName } from '../../components/Icons';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
-import type { OptionField } from '../../dashboard/options';
 import type { MissingSpan, TilePart } from '../../generated/dashboard';
 import type { ArtResolution } from '../art/types.ts';
 import type { FamilyProjection, FamilyTheme } from '../contract.ts';
@@ -62,7 +61,6 @@ export interface TimeChartWidgetDeclaration<TProjectionOptions = Record<string, 
   readonly subject: string;
   readonly emptyCampaign: string;
   readonly icon?: IconName;
-  readonly optionFields?: readonly OptionField[];
   readonly countries: CountryPolicy;
   readonly aux?: AuxProductSpec<TAux>;
   readonly sources: (ctx: FamilyPlanContext<TAux>, view: FamilyViewportRequest) => SourcePlan;

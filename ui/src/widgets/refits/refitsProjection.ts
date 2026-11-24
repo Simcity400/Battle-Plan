@@ -6,7 +6,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import { knownValue, textValue, notApplicable, notRecorded, valueFromNullable, type Value } from '../../families/value.ts';
 import type { NavalRefitsReply, RefitLine, YardShip } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
 import { fixedText, fraction, refitProgress, shipLabel, shipPicture, shipPictureCell, shipStrength, shipTooltip, validateRefits } from './yardsData.ts';
 import type { ArtState } from '../../families/table/identityCell.ts';
 
@@ -29,7 +29,7 @@ const [NAME, PROGRESS, STRENGTH, DOCKYARDS] = COLUMNS;
 const REFIT_COLUMNS: readonly DeclarativeColumnSpec<RefitRow, Record<string, never>>[] = [
   { ...NAME!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Early Cruiser C Klasse refit line'],
     value: row => row.kind === 'line' ? lineName(row.line) : knownValue(shipLabel(row.ship).name),
-    iconSlot: true, extra: row => (row.kind === 'ship' ? shipPictureCell(row.ship, row.picture) : {}) },
+    extra: row => (row.kind === 'ship' ? shipPictureCell(row.ship, row.picture) : {}) },
   { ...PROGRESS!, priority: 1, numeric: true, format: PERCENT, widest: ['100.0%'], value: () => notApplicable(ON_LINE) },
   { ...STRENGTH!, priority: 2, numeric: true, format: PERCENT, widest: ['100.0%'], value: () => notApplicable(ON_SHIP) },
   { ...DOCKYARDS!, priority: 3, numeric: true, format: 'integer', widest: ['99'],
@@ -95,7 +95,6 @@ export const refitsDeclaration: TableWidgetDeclaration<Record<string, never>> = 
   subject: 'refits',
   emptyCampaign: 'Load a campaign to see refits.',
   icon: 'cube',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its refits.' },
   sources: ctx => {
     const params = ctx.countryTag ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) } : null;

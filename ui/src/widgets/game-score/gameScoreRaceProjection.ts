@@ -10,7 +10,6 @@ import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import { formatValueState } from '../../families/valueFormat.ts';
 import type { GameScoreRow } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { SCORE_LABELS, scorePart, validateGameScore, type ScorePart } from './gameScoreData.ts';
 
 const PART_SURFACE = DEFAULT_CARD_SURFACE;
@@ -246,7 +245,6 @@ export const gameScoreRaceDeclaration: BarsWidgetDeclaration<GameScoreRaceOption
   subject: 'game scores',
   emptyCampaign: 'Load a campaign to see its game scores.',
   icon: 'grid',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

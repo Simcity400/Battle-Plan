@@ -12,7 +12,6 @@ import {
   type SeriesRaceBaseOptions,
 } from '../../families/bars/seriesRace.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
-import { OPTIONS } from './definition.ts';
 
 export type AirForceMeasureOption = 'planes' | 'wings';
 export type AirForceOwnershipOption = 'roster' | 'effective';
@@ -142,7 +141,6 @@ export const airForceSizeRaceDeclaration: BarsWidgetDeclaration<AirForceSizeRace
   subject: 'air forces',
   emptyCampaign: 'Load a campaign to see its air forces.',
   icon: 'layers',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

@@ -23,7 +23,6 @@ import {
   seriesHeadValue,
 } from '../../families/time-chart/seriesHelpers.ts';
 import type { PartyHistoryReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import {
   bandKeys,
   bands,
@@ -338,7 +337,6 @@ export const rulingPartyDeclaration: TimeChartWidgetDeclaration<RulingPartyOptio
   subject: 'ruling party',
   emptyCampaign: 'Load a campaign and choose a country to see its politics.',
   icon: 'palette',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its politics.' },
   aux: {
     product: 'party-history',

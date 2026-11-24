@@ -9,7 +9,6 @@ import { knownValue, notRecorded, valueFromLive, type Value } from '../../famili
 import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
 import type { WargoalEntry, WargoalJustification, WargoalRemoved, WargoalState, WargoalsReply } from '../../generated/dashboard';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
-import { OPTIONS } from './definition.ts';
 import { validateWargoalsReply } from './warGoalsData.ts';
 
 export interface WarGoalsOptions {
@@ -178,7 +177,6 @@ export const warGoalsDeclaration: CardWidgetDeclaration<WarGoalsOptions> = {
   subject: 'war goals',
   emptyCampaign: 'Load a campaign to see war goals.',
   icon: 'handshake',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its war goals.' },
   keyByBranch: true,
   jumpToDate: true,
