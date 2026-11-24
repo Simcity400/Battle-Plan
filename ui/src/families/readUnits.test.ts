@@ -809,3 +809,49 @@ test('sweep-2 P0: a seek back never hands the worker a panel dated after the hou
     lane.close();
   }
 });
+
+test('a failed sibling never lets the clock re-ask a unit still pending: requests stay bounded by replies (R4-S5)', async () => {
+  const tile = range('tile', 0, 50);
+  const now = aggregate('now');
+  const time = fakeClock(100);
+  const server = fakeServer();
+  const target = new ReadTarget(time.clock, server.load);
+  target.configure(followConfig([tile, now]));
+  assert.deepEqual(server.calls.map(call => call.unit.name).sort(), ['now', 'tile']);
+  server.refuse('tile');
+  await settled();
+  assert.equal(target.view().failure?.name, 'tile');
+  for (let hour = 101; hour <= 110; hour++) {
+    time.advance(hour);
+    await settled();
+  }
+  assert.equal(server.calls.length, 2, 'ten advancing frames while `now` is unanswered ask nothing more');
+  assert.equal(server.pending.filter(call => call.unit.name === 'now').length, 1, 'and the pending read is not cancelled');
+  server.answer('now', {});
+  await settled();
+  assert.ok(server.calls.length <= 3, `once it answers, at most one new ask for the clock's hour (${server.calls.length})`);
+  time.seekTo(200);
+  await settled();
+  assert.ok(server.calls.some(call => call.unit.name === 'tile' && server.calls.indexOf(call) > 1), 'an explicit seek still asks the failed read again');
+  target.dispose();
+});
+
+test('a pinned unit uses its own branch and coverage gate, so a point at +24 on a longer track is asked there (R4-S7)', () => {
+  const longer = { ...source, id: 'other', branches: [{ id: '2', firstHour: 0, lastHour: 1000 }] } as unknown as DashboardSource;
+  const shifted: SourceEntry = { name: 'shifted', source: longer, branch: '2', offset: 24, read: point('shifted').read };
+  const plain = point('plain');
+  const endsAt = (last: number): FrozenGate => ({ ...gate, recorded: (hour: number | null | undefined) => (typeof hour === 'number' && hour <= last ? hour : null) as never });
+  const short = { branch: { firstHour: 0, lastHour: 100 }, gate: endsAt(100) };
+  const long = { branch: { firstHour: 0, lastHour: 1000 }, gate: endsAt(1000) };
+  const units = askUnits([shifted, plain], {
+    following: false,
+    trackOffset: 0,
+    content: 0,
+    displayHour: 90,
+    pinned: { timeMode: 'pin', branch: short.branch, window: { firstHour: 90, lastHour: 90 }, pinHour: 90, gate: short.gate },
+    track: entry => (entry.branch === '2' ? long : short),
+  });
+  assert.equal(unit(units, 'shifted').anchor, 114, 'the secondary is pinned at its own 114, recorded on its own track');
+  assert.ok(unit(units, 'shifted').spec, 'and is asked, not gated away by the primary track ending at 100');
+  assert.equal(unit(units, 'plain').anchor, 90);
+});

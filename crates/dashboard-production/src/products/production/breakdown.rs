@@ -939,7 +939,7 @@ impl Product for ProductionLineBreakdown {
         let reply = ProductionLineBreakdownReply {
             branch_id: params.branch_id.clone(),
             tag: query.holders.name(&params.country, params.hour),
-            key: appearance.key.clone(),
+            key: appearance.key,
             first_hour: first,
             last_hour: last,
             groups: FACTORS.iter().map(|(id, label)| ProductionModifierChoice { id: (*id).into(), label: (*label).into() }).collect(),
