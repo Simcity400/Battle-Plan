@@ -267,3 +267,36 @@ fn non_merging_factions_keep_unchanged_region_sides_and_filtered_ranking() {
         .unwrap();
     assert_eq!(ranked, [11, 10]);
 }
+
+#[test]
+fn ordered_air_superiority_ranks_regions_and_registers_live_totals() {
+    let contested_scores = vec![
+        score(1, 10, 900, 0),
+        score(3, 10, 100, 0),
+        score(1, 11, 300, 0),
+        score(3, 11, 280, 0),
+        score(4, 12, 0, 0),
+    ];
+    let mut contested = params(AirMode::Sides);
+    contested.order = Some(AirRegionOrder::Contested);
+    let (reply, cells) = moment_of(&frame(contested_scores.clone(), true), &contested);
+    let ids: Vec<u32> = reply.regions.iter().map(|region| region.id).collect();
+    assert_eq!(ids, [11, 10], "more closely contested region ranks first and inactive region is omitted");
+    let live = cells.finish();
+    let f = frame(contested_scores.clone(), true);
+    let json = live.json(&live.values(&f).into_iter().map(GroupState::Values).collect::<Vec<_>>());
+    let kinds: Vec<&str> = json["kinds"].as_array().unwrap().iter().map(|kind| kind["id"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"total"), "ordered reply registers live region total");
+
+    let mut active = params(AirMode::Sides);
+    active.order = Some(AirRegionOrder::Active);
+    let (active_reply, _) = moment_of(&frame(contested_scores.clone(), true), &active);
+    let active_ids: Vec<u32> = active_reply.regions.iter().map(|region| region.id).collect();
+    assert_eq!(active_ids, [10, 11], "active ordering places highest total score first");
+
+    let mut named = params(AirMode::Sides);
+    named.order = Some(AirRegionOrder::Name);
+    let (named_reply, _) = moment_of(&frame(contested_scores, true), &named);
+    let named_ids: Vec<u32> = named_reply.regions.iter().map(|region| region.id).collect();
+    assert_eq!(named_ids, [10, 11, 12], "name ordering retains inactive regions");
+}

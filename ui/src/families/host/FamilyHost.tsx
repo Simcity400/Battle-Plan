@@ -74,6 +74,7 @@ const PLAN_VERIFIER = createPlanAuditVerifier<unknown, unknown>() as FamilyAudit
 const EMPTY_NAV: readonly FamilyNavTuple[] = [];
 const EMPTY_FIELDS: Readonly<Record<string, unknown>> = {};
 const NO_STRINGS: readonly string[] = [];
+const PICTURE_FIELDS = new WeakMap<InstalledPicture, Readonly<Record<string, unknown>>>();
 
 interface RawMeta {
   readonly empty?: string | null;
@@ -122,6 +123,22 @@ function listboxItems(mirror: MirrorModel, selectedKey: string | null): readonly
   }));
 }
 
+type HostCommand = 'activate' | 'toggle' | 'menu' | 'pin';
+
+interface HostInput {
+  readonly key: string | null;
+  readonly hit: ParsedFamilyHit | null;
+  readonly picture: InstalledPicture | null;
+  readonly at?: { readonly x: number; readonly y: number };
+}
+
+function keyInPicture(adapter: FamilyHostAdapter<any, any, any>, picture: InstalledPicture, key: string): boolean {
+  if (adapter.navigation !== 'grid') return picture.actionKeys.has(key);
+  const metrics = adapter.getGridMetrics?.(PICTURE_FIELDS.get(picture) ?? EMPTY_FIELDS);
+  const cell = (adapter.parseGridKey ?? parseGridKey)(key);
+  return !!metrics && !!cell && cell.row < metrics.rows && cell.column < metrics.columns;
+}
+
 function currentDpr(): number {
   return typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
 }
@@ -129,6 +146,7 @@ function currentDpr(): number {
 export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, TBinding = unknown> {
   readonly adapter: FamilyHostAdapter<TModel, TOptions, TBinding>;
   readonly declaration: FamilyProjection<TModel, TOptions>;
+  readonly view: string;
   readonly options: TOptions;
   readonly label: string;
   readonly subject: string;
@@ -171,6 +189,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
 export default function FamilyHost<TModel = unknown, TOptions = unknown, TBinding = unknown>({
   adapter,
   declaration,
+  view,
   options,
   label,
   subject,
@@ -222,6 +241,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const accessibleTableRef = useRef<HTMLTableElement>(null);
   const mirrorBodyRef = useRef<HTMLTableSectionElement>(null);
   const surfaceRef = useRef<MountedFamilyCanvas | null>(null);
+  const descriptionRef = useRef<HTMLDivElement>(null);
+  const lastDescriptionRef = useRef<string | null>(null);
 
   const scrollMode = adapter.scroll ?? 'none';
   const mirrorKind = adapter.mirror ?? 'none';
@@ -252,6 +273,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const pauseFlushRef = useRef(0);
   const installedPictureRef = useRef<InstalledPicture | null>(null);
   const installedFieldsRef = useRef<Readonly<Record<string, unknown>>>(EMPTY_FIELDS);
+  const resolveInstalledRef = useRef<() => InstalledPicture | null>(() => installedPictureRef.current);
   const navRef = useRef<readonly FamilyNavTuple[]>(EMPTY_NAV);
   const typeaheadRef = useRef({ query: '', until: 0 });
   const interactionRef = useRef<unknown>(adapter.interaction?.initial);
@@ -325,6 +347,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const latest = {
     adapter,
     declaration,
+    view,
     options,
     theme,
     reducedMotion,
@@ -424,16 +447,17 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
     let auditId: number | undefined;
     if (perfLog && cur.captureActive && cur.exactReadView && curAdapter.deriveAuditRows) {
-      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows];
+      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows, viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop];
       const prev = lastAuditRef.current;
       if (prev && prev.key.length === key.length && prev.key.every((part, i) => part === key[i])) {
         auditId = prev.id;
       } else {
+        const deriveRows = curAdapter.deriveAuditRows;
         const snapshot: PlanAuditSnapshot<TModel, TOptions> = {
           projection: cur.declaration,
           options: cur.options,
           exactReadView: cur.exactReadView,
-          deriveRows: curAdapter.deriveAuditRows,
+          deriveRows: (model, hour) => deriveRows(model, hour, { viewport }),
           ...(curAdapter.auditOrdered !== undefined ? { ordered: curAdapter.auditOrdered } : {}),
         };
         auditId = audit.capture(snapshot, PLAN_VERIFIER);
@@ -445,6 +469,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const staticAnswers = cur.staticSources?.answers;
     const binding = curAdapter.buildBinding({
       kind: cur.declaration.kind,
+      view: cur.view,
       options: cur.options,
       sources: sourceIdsRef.current,
       ...(staticPanels && Object.keys(staticPanels).length ? { staticPanels } : {}),
@@ -521,7 +546,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   const actionFor = useCallback((installed: InstalledPicture, hit: ParsedFamilyHit, toggle: boolean): InstalledAction | null => {
     const refine = latestRef.current.adapter.resolveHitAction;
-    if (refine) return refine(hit, installed, installedFieldsRef.current);
+    if (refine) return refine(hit, installed, PICTURE_FIELDS.get(installed) ?? EMPTY_FIELDS);
     const target = installed.actionKeys.get(hit.key);
     const label = hit.label ?? target?.label;
     const meta = hit.meta ?? target?.meta;
@@ -536,40 +561,56 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     };
   }, []);
 
-  const activateKey = useCallback((key: string, toggle: boolean, hit?: ParsedFamilyHit | null) => {
-    const installed = installedPictureRef.current;
-    if (!installed) return;
-    const action = actionFor(installed, hit ?? latestRef.current.adapter.parseHit(key) ?? { key }, toggle);
-    if (action) dispatchAction(toggle ? { ...action, toggle: true } : action);
-  }, [actionFor, dispatchAction]);
-
-  const openContextMenuFor = useCallback((key: string | null, clientX: number, clientY: number, hit: ParsedFamilyHit | null): boolean => {
-    const installed = installedPictureRef.current;
-    const build = latestRef.current.contextMenuItems;
-    if (!installed || !build) return false;
-    const target = key ? installed.actionKeys.get(key) : undefined;
-    const hitHour = hit?.hour ?? target?.hour ?? null;
-    const items = build({
-      key,
-      subject: hit?.subject ?? target?.subject ?? key,
-      label: hit?.label ?? target?.label ?? key,
-      hour: hitHour ?? installed.hour,
-      hitHour,
-      ...(hit?.kind !== undefined ? { kind: hit.kind } : {}),
-      ...(hit?.meta !== undefined ? { meta: hit.meta } : target?.meta !== undefined ? { meta: target.meta } : {}),
-      installed,
-    });
-    if (!items.length) return false;
-    contextMenuRef.current.open(clientX, clientY, items);
+  const dispatch = useCallback((command: HostCommand, input: HostInput): boolean => {
+    const current = resolveInstalledRef.current();
+    const picture = input.picture;
+    if (heldRef.current || dimRef.current || !current || !picture || picture.id !== current.id || picture.owner !== current.owner) return false;
+    const activeAdapter = latestRef.current.adapter;
+    if (input.key !== null && !input.hit && !keyInPicture(activeAdapter, picture, input.key)) return false;
+    if (command === 'menu') {
+      const build = latestRef.current.contextMenuItems;
+      if (!build) return false;
+      const key = input.key;
+      const hit = input.hit;
+      const target = key ? picture.actionKeys.get(key) : undefined;
+      const hitHour = hit?.hour ?? target?.hour ?? null;
+      const items = build({
+        key,
+        subject: hit?.subject ?? target?.subject ?? key,
+        label: hit?.label ?? target?.label ?? key,
+        hour: hitHour ?? picture.hour,
+        hitHour,
+        ...(hit?.kind !== undefined ? { kind: hit.kind } : {}),
+        ...(hit?.meta !== undefined ? { meta: hit.meta } : target?.meta !== undefined ? { meta: target.meta } : {}),
+        installed: picture,
+      });
+      if (!items.length) return false;
+      const at = input.at ?? focusAnchorRef.current;
+      contextMenuRef.current.open(at.x, at.y, items);
+      return true;
+    }
+    if (input.key === null) return false;
+    if (command === 'pin') {
+      const focusTip = (PICTURE_FIELDS.get(picture) ?? EMPTY_FIELDS).focusTooltip as FamilyTooltipField | undefined;
+      if (!focusTip?.text || focusTip.text.rowKey !== input.key) return false;
+      tooltips.pinFocused(focusTip.text, picture.hour, focusAnchorRef.current, latestRef.current.viewportHeight, announce);
+      return true;
+    }
+    const toggle = command === 'toggle';
+    const action = actionFor(picture, input.hit ?? activeAdapter.parseHit(input.key) ?? { key: input.key }, toggle);
+    if (!action) return false;
+    dispatchAction(toggle ? { ...action, toggle: true } : action);
     return true;
-  }, []);
+  }, [actionFor, announce, dispatchAction, tooltips]);
 
   const focusRowByKey = useCallback((key: string) => {
     const entry = navRef.current.find(item => item[0] === key);
     if (!entry) return;
     focusedKeyRef.current = key;
     const stride = Math.max(1, latestRef.current.adapter.getRowStride?.(installedFieldsRef.current) ?? DEFAULT_ROW_STRIDE);
-    scrollRangeIntoView(bodyRef.current, viewportRef.current, entry[2] * stride, stride, scrollGeometryRef.current);
+    const top = entry[6] ?? entry[2] * stride;
+    const height = entry[7] ?? stride;
+    scrollRangeIntoView(bodyRef.current, viewportRef.current, top, height, scrollGeometryRef.current);
     bindRef.current();
   }, []);
 
@@ -632,6 +673,15 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       bindNow: () => bindRef.current(),
     });
 
+    const describe = (text: string | null) => {
+      if (text === lastDescriptionRef.current) return;
+      lastDescriptionRef.current = text;
+      const target = descriptionRef.current;
+      if (target) target.textContent = text ?? '';
+      if (text && target) node.setAttribute('aria-describedby', target.id);
+      else node.removeAttribute('aria-describedby');
+    };
+
     const updateMeta = (mode: string, reason: string | null, failureOrigin: FailureOrigin, raw: RawMeta | undefined) => {
       const prev = lastRawMetaRef.current;
       if (prev && prev.mode === mode && prev.reason === reason && prev.failureOrigin === failureOrigin && prev.raw === raw) return;
@@ -658,7 +708,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const frameNode = frameRef.current;
       const cur = latestRef.current;
       const activeAdapter = cur.adapter;
-      dimRef.current = !!shown?.dim;
+      dimRef.current = !!shown?.dim && shown.installedBinding === shown.binding;
       holdElement(frameNode, !!shown?.dim);
       const visible = shown?.mode === 'picture';
       if (lastVisibleRef.current !== visible) {
@@ -688,6 +738,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         installedPictureRef.current = null;
         installedFieldsRef.current = EMPTY_FIELDS;
         navRef.current = EMPTY_NAV;
+        describe(null);
         if (lastMirrorObjRef.current !== null) {
           lastMirrorObjRef.current = null;
           syncMirrorRef.current(null);
@@ -726,7 +777,9 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         accessibleDescription: typeof fields.accessibleDescription === 'string' ? fields.accessibleDescription : null,
         ...(installedAuditId !== undefined ? { auditId: installedAuditId } : {}),
       };
+      PICTURE_FIELDS.set(installed, fields);
       installedPictureRef.current = installed;
+      describe(installed.accessibleDescription);
 
       const extentSize = activeAdapter.getScrollExtent?.(fields);
       if (extentSize) {
@@ -787,6 +840,13 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
     install();
     const stopInstall = pipeline.onInstall(pipe, install);
+    const resolveInstalled = () => {
+      const shown = pipeline.view(pipe);
+      const shownId = shown?.mode === 'picture' ? shown.id : undefined;
+      if (shownId !== installedPictureRef.current?.id) install();
+      return installedPictureRef.current;
+    };
+    resolveInstalledRef.current = resolveInstalled;
 
     const gestures = mountAdapter.gestures;
     const stopPointer = bindFamilyPointer({
@@ -804,7 +864,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       accessibleRef: (mountAdapter.mirror ?? 'none') === 'table' ? accessibleTableRef : (mountAdapter.mirror ?? 'none') === 'listbox' ? listboxMirrorRef : bodyRef,
       pointerMode,
       isBlocked: () => heldRef.current || dimRef.current || !installedPictureRef.current,
-      getInstalled: () => installedPictureRef.current,
+      getInstalled: resolveInstalled,
       getViewportHeight: () => latestRef.current.viewportHeight,
       parseHit: hitKey => latestRef.current.adapter.parseHit(hitKey),
       inspectToken: key => latestRef.current.adapter.inspectToken(key),
@@ -820,14 +880,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
             },
           }
         : {}),
-      onActivate: (key, toggle, action, hit) => {
-        const installed = installedPictureRef.current;
-        if (!installed || (action && (action.installedId !== installed.id || action.owner !== installed.owner))) return;
-        const resolved = hit ? actionFor(installed, hit, toggle) : action ?? null;
-        if (resolved) dispatchAction(toggle ? { ...resolved, toggle: true } : resolved);
-        else activateKey(key, toggle);
-      },
-      onContextMenu: (key, clientX, clientY, hit) => openContextMenuFor(key, clientX, clientY, hit ?? null),
+      onActivate: (key, toggle, _action, hit, picture) => { dispatch(toggle ? 'toggle' : 'activate', { key: hit?.key ?? key, hit: hit ?? null, picture: picture ?? null }); },
+      onContextMenu: (key, clientX, clientY, hit, picture) => dispatch('menu', { key, hit: hit ?? null, picture: picture ?? null, at: { x: clientX, y: clientY } }),
     });
     clearHoverRef.current = stopPointer.clearHover;
 
@@ -843,35 +897,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       : null;
     if (onScroll) node.addEventListener('scroll', onScroll, { passive: true });
 
-    const measure = (width: number, height: number) => {
-      refreshFocusAnchor();
-      const w = Math.round(width);
-      const h = Math.round(height);
-      const dpr = currentDpr();
-      const vp = viewportRef.current;
-      if (w === vp.width && h === vp.height && dpr === vp.dpr) return;
-      vp.width = w;
-      vp.height = h;
-      vp.dpr = dpr;
-      notifyViewportChange();
-      bindRef.current();
-    };
-    const observer = typeof ResizeObserver === 'function'
-      ? new ResizeObserver(entries => {
-          const rect = entries[0]?.contentRect;
-          measure(rect ? rect.width : node.clientWidth, rect ? rect.height : node.clientHeight);
-        })
-      : null;
-    observer?.observe(node);
-    viewportRef.current.width = node.clientWidth;
-    viewportRef.current.height = node.clientHeight;
-    viewportRef.current.dpr = currentDpr();
-    refreshFocusAnchor();
-    notifyViewportChange();
     bindRef.current();
 
     return () => {
-      observer?.disconnect();
+      resolveInstalledRef.current = () => installedPictureRef.current;
+      describe(null);
       if (onScroll) node.removeEventListener('scroll', onScroll);
       clearHoverRef.current = () => {};
       stopPointer();
@@ -886,7 +916,33 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       holdElement(frameRef.current, false);
       reportFamilyShownHour(reportShownRef.current, false, null);
     };
-  }, [pipeline, pipe, instanceId, tooltips, scrollMode, pointerMode, gestureContext, actionFor, activateKey, dispatchAction, openContextMenuFor, publishHoverHour, notifyViewportChange, refreshFocusAnchor]);
+  }, [pipeline, pipe, instanceId, tooltips, scrollMode, pointerMode, gestureContext, dispatch, publishHoverHour]);
+
+  useLayoutEffect(() => {
+    const node = bodyRef.current;
+    if (!node) return;
+    const measure = (width: number, height: number) => {
+      refreshFocusAnchor();
+      const w = Math.round(width);
+      const h = Math.round(height);
+      const dpr = currentDpr();
+      const vp = viewportRef.current;
+      if (w === vp.width && h === vp.height && dpr === vp.dpr) return;
+      vp.width = w;
+      vp.height = h;
+      vp.dpr = dpr;
+      notifyViewportChange();
+      bindRef.current();
+    };
+    measure(node.clientWidth, node.clientHeight);
+    if (typeof ResizeObserver !== 'function') return;
+    const observer = new ResizeObserver(entries => {
+      const rect = entries[0]?.contentRect;
+      measure(rect ? rect.width : node.clientWidth, rect ? rect.height : node.clientHeight);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [notifyViewportChange, refreshFocusAnchor]);
 
   useLayoutEffect(() => {
     if (pipe !== null && enabled) bind();
@@ -895,6 +951,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     enabled,
     bind,
     declaration,
+    view,
     options,
     theme,
     reducedMotion,
@@ -927,24 +984,14 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     return () => onDiagnostics([]);
   }, [onDiagnostics, extraWarnings, meta.warnings]);
 
-  const pinFocusedTooltip = useCallback((key: string | null) => {
-    const installed = installedPictureRef.current;
-    if (!pipeline || pipe === null || heldRef.current || !installed || !key) return;
-    const focusTip = installedFieldsRef.current.focusTooltip as FamilyTooltipField | undefined;
-    if (focusTip?.text && focusTip.text.rowKey === key) {
-      refreshFocusAnchor();
-      tooltips.pinFocused(focusTip.text, installed.hour, focusAnchorRef.current, latestRef.current.viewportHeight, announce);
-    }
-  }, [announce, pipe, pipeline, refreshFocusAnchor, tooltips]);
-
   const onKeyDown = useCallback((event: ReactKeyboardEvent) => {
-    const installed = installedPictureRef.current;
+    const picture = resolveInstalledRef.current();
     const activeAdapter = latestRef.current.adapter;
     const fields = installedFieldsRef.current;
-    const blocked = heldRef.current || dimRef.current || !installed;
-    const menuAt = (key: string | null, hit: ParsedFamilyHit | null) => {
+    const blocked = heldRef.current || dimRef.current || !picture;
+    const run = (command: HostCommand, key: string | null) => {
       refreshFocusAnchor();
-      return openContextMenuFor(key, focusAnchorRef.current.x, focusAnchorRef.current.y, hit);
+      return dispatch(command, { key, hit: null, picture });
     };
     const unpin = () => tooltips.unpin(announce);
 
@@ -961,12 +1008,9 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         blocked,
         isPinnedTooltip: () => tooltips.isPinned(),
         onFocusCell: focusGridCell,
-        onActivate: (row, column) => activateKey(formatKey(row, column), false, { key: formatKey(row, column) }),
-        onContextMenu: (row, column) => {
-          const key = row >= 0 && column >= 0 ? formatKey(row, column) : null;
-          return menuAt(key, key ? { key } : null);
-        },
-        onTogglePinTooltip: (row, column) => pinFocusedTooltip(formatKey(row, column)),
+        onActivate: (row, column) => { run('activate', formatKey(row, column)); },
+        onContextMenu: (row, column) => run('menu', row >= 0 && column >= 0 ? formatKey(row, column) : null),
+        onTogglePinTooltip: (row, column) => { run('pin', formatKey(row, column)); },
         onUnpinTooltip: unpin,
       });
       return;
@@ -985,9 +1029,9 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           if (hour !== undefined) publishHoverHour(hour);
           bindRef.current();
         },
-        onActivate: entry => activateKey(entry[0], false),
-        onContextMenu: entry => menuAt(entry ? entry[0] : null, entry ? activeAdapter.parseHit(entry[0]) ?? { key: entry[0] } : null),
-        onTogglePinTooltip: pinFocusedTooltip,
+        onActivate: entry => { run('activate', entry[0]); },
+        onContextMenu: entry => run('menu', entry ? entry[0] : null),
+        onTogglePinTooltip: key => { run('pin', key); },
         onUnpinTooltip: unpin,
       });
       return;
@@ -1002,13 +1046,13 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       typeaheadRef,
       isPinnedTooltip: () => tooltips.isPinned(),
       onFocusKey: focusRowByKey,
-      onActivate: entry => activateKey(entry[0], false, { key: entry[0] }),
-      onToggleTree: key => activateKey(key, true, { key }),
-      onContextMenu: entry => menuAt(entry ? entry[0] : null, entry ? { key: entry[0] } : null),
-      onTogglePinTooltip: pinFocusedTooltip,
+      onActivate: entry => { run('activate', entry[0]); },
+      onToggleTree: key => { run('toggle', key); },
+      onContextMenu: entry => run('menu', entry ? entry[0] : null),
+      onTogglePinTooltip: key => { run('pin', key); },
       onUnpinTooltip: unpin,
     });
-  }, [activateKey, announce, focusGridCell, focusRowByKey, openContextMenuFor, pinFocusedTooltip, publishHoverHour, refreshFocusAnchor, tooltips]);
+  }, [announce, dispatch, focusGridCell, focusRowByKey, publishHoverHour, refreshFocusAnchor, tooltips]);
 
   const onFocus = useCallback(() => {
     focusInsideRef.current = true;
@@ -1033,9 +1077,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   const onRetryLocal = useCallback(() => retryLocal(() => bindRef.current()), [retryLocal]);
 
-  if (blockedState) return <>{blockedState}</>;
-
-  const bodyStateNode = renderFamilyBodyState({
+  const bodyStateNode = blockedState ?? renderFamilyBodyState({
     mode: meta.mode,
     reason: meta.reason,
     failureOrigin: meta.failureOrigin,
@@ -1065,7 +1107,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           className="fh-body"
           data-scroll={scrollMode}
           data-clickable={onActivate ? 'true' : undefined}
-          tabIndex={0}
+          tabIndex={blockedState ? -1 : 0}
           role={bodyRole}
           aria-label={label}
           onFocus={onFocus}
@@ -1076,6 +1118,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         </div>
         {bodyStateNode ? <div className="fh-overlay">{bodyStateNode}</div> : null}
       </div>
+      <div ref={descriptionRef} id={`${adapter.family}-${instanceId}-description`} className="fh-sr-only" />
       {mirrorKind === 'table' ? (
         <table ref={accessibleTableRef} className="fh-sr-only" aria-label={label}>
           <tbody ref={mirrorBodyRef} />

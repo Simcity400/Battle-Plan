@@ -1,6 +1,6 @@
 
 use dashboard_base::products::{BranchParams, LoadContext, Product};
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::at_hour::{At, AtHour, Read}, span::HourSpan};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, products::at_hour::{At, AtHour, Read}};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::identity::{Holder, Holders};
 use dashboard_world::products::{groups::{self, FactionGroup}, styles::{BranchLooks, LookResolver, ResolvedCountryLook}};
@@ -12,6 +12,8 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
+use dashboard_base::span::HourSpan;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -39,6 +41,16 @@ pub enum AirMode {
     Viewpoint,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "lowercase")]
+pub enum AirRegionOrder {
+    #[default]
+    Contested,
+    Active,
+    Name,
+}
+
 #[derive(Clone, Debug, PartialEq, Default, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -60,6 +72,9 @@ pub struct AirSuperiorityParams {
     #[doc = " The air theatres whose regions are shown; all when none."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub theatres: Option<Vec<String>>,
+    #[doc = " Region ordering; omitted preserves region-id order."]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub order: Option<AirRegionOrder>,
 }
 
 pub(crate) fn viewpoint_name<'a>(viewpoint: Option<&'a dashboard_base::products::Country>, country: bool, holders: &'a Holders, hour: i32) -> &'a str {
@@ -580,7 +595,80 @@ fn live_row(tag: &str, region: u32) -> String {
     format!("{tag}@{region}")
 }
 
-fn shown(cell: compose::Cell, region: u32, dictionary: &Dictionary<'_>, live: &Cells, columns: (usize, usize), enemy: bool) -> AirCell {
+fn side_ranks(sides: &[AirSide]) -> Vec<usize> {
+    let mut factions: Vec<u128> = sides
+        .iter()
+        .filter_map(|side| side.faction.as_deref().and_then(|id| id.parse::<u128>().ok()))
+        .collect();
+    factions.sort_unstable();
+    factions.dedup();
+    let mut seen: HashMap<&str, usize> = HashMap::with_capacity(sides.len());
+    let mut ranks = Vec::with_capacity(sides.len());
+    for side in sides {
+        let rank = if let Some(&held) = seen.get(side.key.as_str()) {
+            held
+        } else {
+            let next = match side.faction.as_deref().and_then(|id| id.parse::<u128>().ok()).and_then(|id| factions.binary_search(&id).ok()) {
+                Some(index) => index,
+                None => factions.len() + seen.len(),
+            };
+            seen.insert(side.key.as_str(), next);
+            next
+        };
+        ranks.push(rank);
+    }
+    ranks
+}
+
+fn region_lead_and_total(cell: &compose::Cell, pairs: Option<&[Pair]>) -> (f64, i64) {
+    let Some(pairs) = pairs else {
+        return (f64::INFINITY, 0);
+    };
+    let by_raw: HashMap<u32, &Pair> = pairs.iter().map(|pair| (pair.raw, pair)).collect();
+    match cell {
+        compose::Cell::View { row: Some(raw), .. } => {
+            let Some(pair) = by_raw.get(raw) else {
+                return (f64::INFINITY, 0);
+            };
+            let friendly = pair.friendly.max(0);
+            let enemy = pair.enemy.max(0);
+            let total = friendly.saturating_add(enemy);
+            if total <= 0 {
+                return (f64::INFINITY, 0);
+            }
+            let lead = (friendly - enemy).abs() as f64 / total as f64;
+            (lead, total)
+        }
+        compose::Cell::Sides(cell) if cell.unknown.is_empty() => {
+            let mut total: i64 = 0;
+            let mut first: i64 = 0;
+            let mut second: i64 = 0;
+            for (_, _, raw) in &cell.parts {
+                let Some(pair) = by_raw.get(raw) else {
+                    return (f64::INFINITY, 0);
+                };
+                let score = pair.friendly.max(0);
+                if score <= 0 {
+                    continue;
+                }
+                total = total.saturating_add(score);
+                if score > first {
+                    second = first;
+                    first = score;
+                } else if score > second {
+                    second = score;
+                }
+            }
+            if total <= 0 {
+                return (f64::INFINITY, 0);
+            }
+            ((first - second) as f64 / total as f64, total)
+        }
+        _ => (f64::INFINITY, 0),
+    }
+}
+
+fn shown(cell: compose::Cell, region: u32, dictionary: &Dictionary<'_>, live: &Cells, columns: (usize, usize), enemy: bool, register_total: bool) -> AirCell {
     let score = |tag: &str, raw: u32| {
         let row = live_row(tag, region);
         let key = u128::from(raw) << 32 | u128::from(region);
@@ -592,19 +680,41 @@ fn shown(cell: compose::Cell, region: u32, dictionary: &Dictionary<'_>, live: &C
     };
     match cell {
         compose::Cell::Reason(reason) => AirCell::Reason { reason: reason.to_owned() },
-        compose::Cell::Sides(cell) => AirCell::Sides(AirSidesCell {
-            parts: cell.parts.iter().map(|(position, tag, raw)| AirPart { side: dictionary.index(*position), tag: tag.clone(), live: score(tag, *raw) }).collect(),
-            viewpoints: cell.viewpoints.iter().filter(|(position, _)| dictionary.at.contains_key(position)).map(|(position, tag)| (dictionary.index(*position), tag.clone())).collect(),
-            unknown: cell.unknown.iter().map(|position| dictionary.index(*position)).collect(),
-            no_air_object: cell.no_air_object.iter().map(|position| dictionary.index(*position)).collect(),
-            filtered: cell.filtered,
-            excluded: cell.excluded,
-        }),
-        compose::Cell::View { side, leader, row } => AirCell::View {
-            side: side.map(|position| dictionary.index(position)),
-            live: row.zip(leader.as_deref()).map(|(raw, tag)| score(tag, raw)),
-            leader,
-        },
+        compose::Cell::Sides(cell) => {
+            if register_total && !cell.parts.is_empty() {
+                let sources: Vec<Cell> = cell
+                    .parts
+                    .iter()
+                    .map(|(_, _, raw)| Cell { table: TableId::RaidAirScores, column: columns.0, key: u128::from(*raw) << 32 | u128::from(region) })
+                    .collect();
+                live.sum(&region.to_string(), "total", &sources, 1.0);
+            }
+            AirCell::Sides(AirSidesCell {
+                parts: cell.parts.iter().map(|(position, tag, raw)| AirPart { side: dictionary.index(*position), tag: tag.clone(), live: score(tag, *raw) }).collect(),
+                viewpoints: cell.viewpoints.iter().filter(|(position, _)| dictionary.at.contains_key(position)).map(|(position, tag)| (dictionary.index(*position), tag.clone())).collect(),
+                unknown: cell.unknown.iter().map(|position| dictionary.index(*position)).collect(),
+                no_air_object: cell.no_air_object.iter().map(|position| dictionary.index(*position)).collect(),
+                filtered: cell.filtered,
+                excluded: cell.excluded,
+            })
+        }
+        compose::Cell::View { side, leader, row } => {
+            if register_total
+                && let Some(raw) = row
+            {
+                let key = u128::from(raw) << 32 | u128::from(region);
+                let sources = [
+                    Cell { table: TableId::RaidAirScores, column: columns.0, key },
+                    Cell { table: TableId::RaidAirScores, column: columns.1, key },
+                ];
+                live.sum(&region.to_string(), "total", &sources, 1.0);
+            }
+            AirCell::View {
+                side: side.map(|position| dictionary.index(position)),
+                live: row.zip(leader.as_deref()).map(|(raw, tag)| score(tag, raw)),
+                leader,
+            }
+        }
     }
 }
 
@@ -660,6 +770,13 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
     let chosen: Option<BTreeSet<u32>> = params.regions.as_ref().map(|regions| regions.iter().copied().collect());
     let mut ids: BTreeSet<u32> = scores.pairs.keys().chain(&scores.active).copied().collect();
     ids.extend(wings.iter().flat_map(|wings| wings.iter().filter(|(_, count)| **count != 0).map(|(region, _)| *region)));
+    if params.order == Some(AirRegionOrder::Name)
+        && chosen.is_none()
+        && theatres.is_none()
+        && let Ok(all) = &context.names.regions
+    {
+        ids.extend(all.regions.keys().copied());
+    }
     if let Some(chosen) = &chosen {
         ids.retain(|region| chosen.contains(region));
         ids.extend(chosen.iter().copied());
@@ -686,26 +803,58 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
     let columns = (dashboard_declare::field(TableId::RaidAirScores, "friendly")?, dashboard_declare::field(TableId::RaidAirScores, "enemy")?);
     let wings_column = dashboard_declare::field(TableId::AirRegionWings, "wings")?;
     let enemy = !matches!(view, View::Sides);
-    let regions: Vec<AirRegion> = cells
-        .into_iter()
-        .map(|(region, cell)| {
-            let (name, name_missing) = region_name(&context.names, region);
-            let wings = match wings.as_ref().map(|wings| wings.get(&region)) {
-                Some(Some(_)) => {
-                    live.value(&region.to_string(), "wings", Cell { table: TableId::AirRegionWings, column: wings_column, key: u128::from(region) }, 1.0);
-                    AirWings::Live
-                }
-                Some(None) => AirWings::None,
-                None => AirWings::Unknown,
-            };
-            AirRegion { id: region, name, name_missing, active: scores.active.contains(&region), cell: shown(cell, region, &dictionary, live, columns, enemy), wings }
-        })
-        .collect();
-    let fallback = shown(fallback, 0, &dictionary, live, columns, enemy);
+    let ordered = params.order.is_some();
+    let resolved_sides: Vec<AirSide> = dictionary.at.keys().map(|position| side_of(index, &sides[*position as usize], hour, resolver)).collect();
+    let ranks = ordered.then(|| side_ranks(&resolved_sides));
+    let mut ordered_regions: Vec<(AirRegion, f64, i64, i64)> = Vec::with_capacity(cells.len());
+    for (region, cell) in cells {
+        let (lead, total) = if ordered { region_lead_and_total(&cell, scores.pairs.get(&region).map(Vec::as_slice)) } else { (f64::INFINITY, 0) };
+        let wing_count = wings.as_ref().and_then(|map| map.get(&region)).copied().unwrap_or(0);
+        let active = scores.active.contains(&region);
+        if let Some(order) = params.order {
+            if matches!(cell, compose::Cell::Reason("outside-theatres")) {
+                continue;
+            }
+            if chosen.is_none() && order != AirRegionOrder::Name && !active && total <= 0 && wing_count <= 0 {
+                continue;
+            }
+        }
+        let (name, name_missing) = region_name(&context.names, region);
+        let wings_kind = match wings.as_ref().map(|wings| wings.get(&region)) {
+            Some(Some(_)) => {
+                live.value(&region.to_string(), "wings", Cell { table: TableId::AirRegionWings, column: wings_column, key: u128::from(region) }, 1.0);
+                AirWings::Live
+            }
+            Some(None) => AirWings::None,
+            None => AirWings::Unknown,
+        };
+        let mut shown_cell = shown(cell, region, &dictionary, live, columns, enemy, ordered);
+        if let (Some(ranks), AirCell::Sides(sides_cell)) = (&ranks, &mut shown_cell) {
+            sides_cell.parts.sort_by_key(|part| ranks.get(part.side as usize).copied().unwrap_or(usize::MAX));
+        }
+        ordered_regions.push((
+            AirRegion { id: region, name, name_missing, active, cell: shown_cell, wings: wings_kind },
+            lead,
+            total,
+            wing_count,
+        ));
+    }
+    if let Some(order) = params.order {
+        ordered_regions.sort_by(|a, b| match order {
+            AirRegionOrder::Name => {
+                let an = a.0.name.clone().unwrap_or_else(|| format!("Region {}", a.0.id));
+                let bn = b.0.name.clone().unwrap_or_else(|| format!("Region {}", b.0.id));
+                an.to_lowercase().cmp(&bn.to_lowercase()).then_with(|| an.cmp(&bn)).then_with(|| a.0.id.cmp(&b.0.id))
+            }
+            AirRegionOrder::Contested => a.1.total_cmp(&b.1).then_with(|| b.2.cmp(&a.2)).then_with(|| a.0.id.cmp(&b.0.id)),
+            AirRegionOrder::Active => b.2.cmp(&a.2).then_with(|| b.3.cmp(&a.3)).then_with(|| a.0.id.cmp(&b.0.id)),
+        });
+    }
+    let regions: Vec<AirRegion> = ordered_regions.into_iter().map(|(region, ..)| region).collect();
+    let fallback = shown(fallback, 0, &dictionary, live, columns, enemy, false);
     if let Err(error) = &wings_rows {
         warnings.push(format!("Air wings by region are not known at this hour: {error}"));
     }
-    let resolved_sides: Vec<AirSide> = dictionary.at.keys().map(|position| side_of(index, &sides[*position as usize], hour, resolver)).collect();
     let viewpoint_index = viewpoint_side.map(|position| dictionary.index(position));
     let legend = match params.mode.unwrap_or_default() {
         AirMode::Viewpoint => viewpoint_index.into_iter().collect(),
@@ -743,7 +892,7 @@ impl AtHour for AirSuperiorityAt {
     const TITLE: &'static str = "Air superiority";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AirSuperiorityParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, mode, viewpoint, viewpointCountry, sides, regions, theatres, "regions[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, mode, viewpoint, viewpointCountry, sides, regions, theatres, order, "regions[]"];
     type Reply = AirSuperiorityReply;
     type Context = AirContext;
 
@@ -757,6 +906,7 @@ impl AtHour for AirSuperiorityAt {
             AirSuperiorityParams::decl(),
             AirSuperiorityReply::decl(),
             AirMode::decl(),
+            AirRegionOrder::decl(),
             AirAnchor::decl(),
             AirCountryStyle::decl(),
             AirSide::decl(),

@@ -2,7 +2,7 @@ use dashboard_base::products::Country;
 use dashboard_query::identity::Holders;
 use super::{
     battles::{BattleCells, NavalBattleCountryFilter, battle_id, live_run, parse_id, result_history, sides_at, sides_at_truncated},
-    losses::{Counts, NavalPeriod, month_bases, month_start, row_key, run_key, score},
+    losses::{Counts, NavalPeriod, month_bases, month_start, score},
     sunk::{ShipSinkingCause, cause, known_at, pruned},
 };
 use dashboard_world::products::groups::MembershipRun;
@@ -27,8 +27,8 @@ fn a_month_starts_at_its_first_day_whatever_the_year() {
 #[test]
 fn counts_are_known_only_after_the_baseline_while_read_whole_and_a_missing_row_counted_none() {
     let owner = 7u128 << 32 | 9;
-    let ships = row_key(owner, Row::LOST, Row::SHIPS);
-    let run = run_key(Row::SHIPS);
+    let ships = Row::holder_key(owner, Row::LOST, Row::SHIPS);
+    let run = Row::run_key(Row::SHIPS);
     let start = month_start(HOUR_EPOCH + 4 * 365 * 24 + 40 * 24);
     let known = HashMap::from([(run, vec![(start, start + 99, Some(1)), (start + 100, start + 110, Some(0)), (start + 111, start + 2000, Some(1))])]);
     let counted = HashMap::from([(run, vec![(start, start + 2000, Some(i64::from(start + 10)))])]);
@@ -42,7 +42,7 @@ fn counts_are_known_only_after_the_baseline_while_read_whole_and_a_missing_row_c
     let next = month_start(start + 900);
     assert!(next > start + 10 && next <= start + 900);
     assert_eq!(counts.count(Row::SHIPS, ships, start + 950, NavalPeriod::Month), Some(5 - counts.running(Row::SHIPS, ships, next - 1).unwrap()));
-    assert_eq!(counts.count(Row::CONVOYS, row_key(owner, Row::LOST, Row::CONVOYS), start + 60, NavalPeriod::Running), None, "a kind without a run row is not known");
+    assert_eq!(counts.count(Row::CONVOYS, Row::holder_key(owner, Row::LOST, Row::CONVOYS), start + 60, NavalPeriod::Running), None, "a kind without a run row is not known");
 }
 
 #[test]
@@ -50,9 +50,9 @@ fn a_months_ranking_subtracts_each_kind_at_its_own_baseline_as_its_counts_do() {
     let h = month_start(HOUR_EPOCH + 4 * 365 * 24 + 40 * 24) + 48;
     let (a, b) = (7u128 << 32 | 1, 8u128 << 32 | 2);
     let kinds = [Row::SHIPS, Row::CONVOYS];
-    let known = HashMap::from([(run_key(Row::SHIPS), vec![(h, h + 20, Some(1))]), (run_key(Row::CONVOYS), vec![(h, h + 20, Some(1))])]);
-    let counted = HashMap::from([(run_key(Row::SHIPS), vec![(h, h + 20, Some(i64::from(h)))]), (run_key(Row::CONVOYS), vec![(h, h + 20, Some(i64::from(h + 10)))])]);
-    let (a_ships, b_ships) = (row_key(a, Row::LOST, Row::SHIPS), row_key(b, Row::LOST, Row::SHIPS));
+    let known = HashMap::from([(Row::run_key(Row::SHIPS), vec![(h, h + 20, Some(1))]), (Row::run_key(Row::CONVOYS), vec![(h, h + 20, Some(1))])]);
+    let counted = HashMap::from([(Row::run_key(Row::SHIPS), vec![(h, h + 20, Some(i64::from(h)))]), (Row::run_key(Row::CONVOYS), vec![(h, h + 20, Some(i64::from(h + 10)))])]);
+    let (a_ships, b_ships) = (Row::holder_key(a, Row::LOST, Row::SHIPS), Row::holder_key(b, Row::LOST, Row::SHIPS));
     let totals = HashMap::from([(a_ships, vec![(h + 5, h + 20, Some(5))]), (b_ships, vec![(h + 15, h + 20, Some(1))])]);
     let counts = Counts::of(known, counted, totals);
     let at = h + 20;

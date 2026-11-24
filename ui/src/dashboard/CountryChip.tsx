@@ -77,7 +77,7 @@ export default function CountryChip({ widget, runtime, active, compact = false }
     return <span className="dash-widget-country" data-tooltip={compact ? text : undefined}><Icon name="layers" /><span>{text}</span></span>;
   }
   if (track && widget.countries.kind === 'group') return <span className="dash-widget-country" data-tooltip={compact ? label : undefined}>
-    <Icon name="layers" /><span>{label}</span></span>;
+    <Icon name="globe" /><span>{label}</span></span>;
   if (!track || !tags.length) return null;
   const names = shownKeys.map((_, i) => chipName(labels[i]));
   const first = labels[0];
