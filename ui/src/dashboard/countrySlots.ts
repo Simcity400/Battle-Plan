@@ -19,12 +19,14 @@ export function keyNameAt(slots: SlotTags | undefined, key: string, hour: number
 type Held = { firstHour: number; lastHour: number; countryId: number; tag: string };
 
 export class SlotTags {
+  private readonly known: readonly { firstHour: number; lastHour: number }[] | null;
   private readonly bySlot = new Map<number, Held[]>();
   private readonly resolvedSlotRuns = new Map<number, readonly HolderRun[]>();
   private readonly byTag = new Map<string, readonly { firstHour: number; lastHour: number; slot: number }[]>();
   private readonly byTagUnresolved = new Map<string, readonly { firstHour: number; lastHour: number }[]>();
 
-  constructor(reply: Pick<CountryIdentitiesReply, 'countries'>) {
+  constructor(reply: Pick<CountryIdentitiesReply, 'countries'> & { known?: readonly { firstHour: number; lastHour: number }[] }) {
+    this.known = reply.known?.length ? reply.known : null;
     for (const { tag, identities, unresolved } of reply.countries) {
       this.byTag.set(tag, identities);
       if (unresolved?.length) this.byTagUnresolved.set(tag, unresolved);
@@ -40,11 +42,23 @@ export class SlotTags {
     }
   }
 
+  private isKnown(hour: number): boolean {
+    if (!this.known) return true;
+    let low = 0, high = this.known.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (this.known[mid].lastHour < hour) low = mid + 1;
+      else high = mid;
+    }
+    return low < this.known.length && this.known[low].firstHour <= hour;
+  }
+
   tagAt(slot: number, hour: number): string | null {
     return this.holderAt(slot, hour)?.tag ?? null;
   }
 
   private holderAt(slot: number, hour: number): Held | null {
+    if (!this.isKnown(hour)) return null;
     let found: Held | null = null;
     for (const held of this.bySlot.get(slot) ?? []) {
       if (held.firstHour > hour) break;
@@ -76,6 +90,7 @@ export class SlotTags {
   }
 
   slotOf(tag: string, hour: number): number | null {
+    if (!this.isKnown(hour)) return null;
     return this.byTag.get(tag)?.find(run => run.firstHour <= hour && hour <= run.lastHour)?.slot ?? null;
   }
 
@@ -86,7 +101,7 @@ export class SlotTags {
   runNear(slot: number, hour: number): { tag: string; firstHour: number; lastHour: number } | null {
     let best = this.holderAt(slot, hour), distance = Infinity;
     if (!best) for (const held of this.bySlot.get(slot) ?? []) {
-      const away = hour < held.firstHour ? held.firstHour - hour : hour - held.lastHour;
+      const away = hour < held.firstHour ? held.firstHour - hour : hour > held.lastHour ? hour - held.lastHour : 0;
       if (away < distance) { best = held; distance = away; }
     }
     return best && { tag: best.tag, firstHour: best.firstHour, lastHour: best.lastHour };
