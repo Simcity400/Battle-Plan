@@ -1,4 +1,3 @@
-import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 import { RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { WidgetOptions, OptionField } from '../../dashboard/options';
@@ -8,9 +7,6 @@ export const OPTIONS: readonly OptionField[] = [
     { value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines' },
     { value: 'mix', label: 'Battalion mix' }, { value: 'breakdown', label: 'Army breakdown' },
   ] },
-  { ...DRILL_OPTION, visibleWhen: options => options.view !== 'breakdown' },
-  { key: 'drillOriginHour', section: 'options', label: 'Recorded country selection hour', kind: 'number',
-    default: null, min: -2147483648, max: 2147483647, step: 1, visibleWhen: () => false },
   { key: 'measure', section: 'options', label: 'Measure', kind: 'content-choice', default: '',
     automatic: 'Default for this recording', titleChoice: false, visibleWhen: options => options.view !== 'mix',
     hint: 'Manpower in the field when recorded; otherwise number of divisions' },
