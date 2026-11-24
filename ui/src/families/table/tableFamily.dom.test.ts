@@ -29,7 +29,7 @@ test('table family plays live with zero React commits, zero layout reads on inst
     t.diagnostic(`live playback: ${played.commits} commits, ${played.totalInstallReads} play reads, ${played.pauseInstallReads} pause reads, ${played.installs} installs, beforePauseTop=${played.beforePauseTop}, pendingBefore=${played.pendingTimersBeforePause}, pendingAfter=${played.pendingTimersAfterPause}, timerFired=${played.timerFiredBeforePause}/${played.timerFiredAfterPause}, flushedOnPause=${played.flushedOnPause}`);
     assert.equal(played.playingDuringAdvance, true, 'clock.playing was true during frame advance');
     assert.equal(played.playingBeforePause, true, 'clock.playing stayed true until pause');
-    assert.equal(played.beforePauseTop, 'GER', 'S8: mirror was still throttled on GER before pause with controlled clock');
+    assert.equal(played.beforePauseTop, null, 'S8: while its cadence is held, the outdated GER mirror is withheld, not left exposed (R2-S6)');
     assert.ok(played.pendingTimersBeforePause > 0, 'S8: trailing flush timer was armed and held before pause');
     assert.equal(played.timerFiredBeforePause, 0, 'S8: trailing timer did not fire before pause');
     assert.equal(played.timerFiredAfterPause, 0, 'S8: pause flushed the mirror without the trailing timer firing');
