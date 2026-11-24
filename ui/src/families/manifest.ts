@@ -20,7 +20,7 @@ export function viewKey(kind: string, view?: string): string {
 export function viewOwnedFields(fields: readonly OptionField[], view: string | undefined): readonly OptionField[] {
   const active = normalizeView(view);
   if (active === DEFAULT_VIEW) return fields;
-  return fields.map(field => (field.kind === 'choice' && field.choices.some(choice => choice.value === active)
+  return fields.map(field => ((field.kind === 'choice' && field.choices.some(choice => choice.value === active)) || field.kind === 'regions'
     ? field
     : { ...field, storeAs: scopedOptionKey(field.key, active) }));
 }
@@ -150,7 +150,8 @@ export function scopedOptionFields(
   const optionKey = resolveViewOptionKey(meta, familyEntries);
   const baseFields = meta?.options ?? [];
 
-  if (!activeFamily?.options) return baseFields;
+  if (!activeFamily) return baseFields;
+  if (!activeFamily.options) return viewOwnedFields(baseFields, activeView);
 
   const result: OptionField[] = [];
   const seen = new Set<string>();

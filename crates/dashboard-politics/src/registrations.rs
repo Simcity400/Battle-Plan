@@ -9,14 +9,10 @@ dashboard_base::register_products! {
     FOCUS_CARD_FOCUSCARD => crate::products::focus_card::FocusCard,
     IDEAS_IDEAHISTORY => crate::products::ideas::IdeaHistory,
     PARTY_HISTORY_PARTYHISTORY => crate::products::party_history::PartyHistory,
-    FEED_EVENTFEED => crate::products::feed::EventFeed,
     FEED_EVENTFEEDTAIL => crate::products::feed::EventFeedTail,
-    FEED_EVENTCHOICES => crate::products::feed::EventChoices,
     FEED_EVENTCHOICESTAIL => crate::products::feed::EventChoicesTail,
-    FEED_DECISIONS => crate::products::feed::Decisions,
     FEED_DECISIONSTAIL => crate::products::feed::DecisionsTail,
     FEED_EVENTFEEDSPAN => crate::products::feed::EventFeedSpan,
-    POWER_LEDGER_POWERSPENDING => crate::products::power_ledger::PowerSpending,
     POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN => crate::products::power_ledger::breakdown::PowerSpendingBreakdown,
 }
 
@@ -26,3 +22,12 @@ dashboard_base::register_hourly_products! {
     STABILITY_COUNTRYSTABILITYBREAKDOWN => crate::products::stability::CountryStabilityBreakdown,
     STABILITY_STABILITYPARTNAMES => crate::products::stability::StabilityPartNames,
 }
+
+use dashboard_base::{Source, products::at_hour::exact_panel};
+use dashboard_core::config::LoadContext;
+use dashboard_follow::panel::Panel;
+use serde_json::Value;
+
+type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, String>;
+
+pub const EXACT_POLITICSSTATE: ExactPanel = exact_panel::<crate::products::politics::state::PoliticsState>;

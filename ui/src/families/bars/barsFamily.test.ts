@@ -19,11 +19,11 @@ import {
   deriveBarsTooltip,
   FutureBarsDataError,
   InvalidBarsModelError,
-  type BarsModel,
+  type BarsModel, type BarsProjection,
 } from './model.ts';
 import { axisCeiling, layoutFamilyBars } from './layout.ts';
 import { drawFamilyBars, hitFamilyBars } from './painter.ts';
-import { registerBarsProjection } from './registry.ts';
+import { registerFamilyProjection } from '../registry.ts';
 import { familyBarsLaneView, type FamilyBarsBinding } from './laneView.ts';
 import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
 import { buildShareRowsModel } from './shareRows.ts';
@@ -253,7 +253,7 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
       {
         key: 'reg:poland',
         label: 'Eastern Poland',
-        removable: true,
+        region: 40,
         segments: [
           { key: 'axis', label: 'Axis', share: 0.59, value: knownValue(59), color: '#ccb2a7' },
           { key: 'comintern', label: 'Comintern', share: 0.41, value: knownValue(41), color: '#d44852' },
@@ -281,7 +281,20 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
   assert.ok(shareTexts.includes('Axis 59%'));
   assert.ok(shareTexts.includes('90 air wings'));
   assert.ok(shareTexts.includes('Not recorded'));
-  assert.ok(shareTexts.includes('+ Add region'));
+  assert.ok(shareTexts.includes('Add region'));
+  const gripHit = hitFamilyBars(
+    shareLayoutWide,
+    shareModel,
+    { x: shareLayoutWide.nameX - 4, y: shareLayoutWide.bodyTop + shareLayoutWide.rowTops[1]! + shareLayoutWide.rowHeights[1]! / 2 },
+    0,
+    undefined,
+    0,
+    0,
+    new Set(['reg:poland']),
+  );
+  assert.deepEqual(gripHit, { kind: 'grip-region', rowKey: 'reg:poland' });
+  assert.equal(hitFamilyBars(shareLayoutWide, shareModel, { x: shareLayoutWide.nameX - 4, y: shareLayoutWide.bodyTop + shareLayoutWide.rowTops[3]! + 4 }, 0, undefined, 0, 0, new Set(['reg:atlantic'])).kind, 'row',
+    'a row that is not a region has no grip');
   const removeHit = hitFamilyBars(
     shareLayoutWide,
     shareModel,
@@ -403,7 +416,7 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
     numeric: 1500 - i,
   }));
 
-  registerBarsProjection<{ readonly swapTop?: boolean }>({
+  registerFamilyProjection({
     kind: 'test-bars-1500',
     family: 'bars',
     project(readView, opts) {
@@ -503,7 +516,7 @@ test('audit rows keep one key per row and cell, so two bars never collapse in th
 });
 
 test('a backward seek drops a cached model from a later hour', () => {
-  registerBarsProjection<Record<string, never>>({
+  registerFamilyProjection<BarsProjection<Record<string, never>>>({
     kind: 'test-bars-seek-back',
     family: 'bars',
     project(readView) {
@@ -579,7 +592,7 @@ test('a known 40 percent share beside an unavailable part fills 40 percent and m
 
 test('a hover over 1,500 rows reuses navigation, meta and row bounds, and the mirror holds only visible rows', () => {
   const rows = Array.from({ length: 1500 }, (_, i) => ({ kind: 'data' as const, key: `K${i}`, label: `Country ${i}`, value: { value: knownValue(1500 - i) }, numeric: 1500 - i }));
-  registerBarsProjection<Record<string, never>>({
+  registerFamilyProjection<BarsProjection<Record<string, never>>>({
     kind: 'test-bars-hover',
     family: 'bars',
     project(readView) { return { form: 'ordered', hour: readView.hour, rows }; },

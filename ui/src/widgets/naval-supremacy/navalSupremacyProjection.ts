@@ -9,10 +9,10 @@ import { findRunAtHour, spanIndexAt, type HeatLaneCell, type HeatLaneReadout, ty
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { countryColourAt, regionLabel, type DatedColour } from '../../families/heat/scale.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
-import { regionIds } from '../../families/regionTokens.ts';
+import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
+import { ADD_REGION_LABEL, mostActiveHeading, PICKED_REGIONS_HEADING } from '../../families/regions/regionRows.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
 import type { MissionShips, NavalSupremacyReply, SupremacyRegion, SupremacyRun } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 
 export const SUPREMACY_TOP_DEFAULT = 7;
 
@@ -79,11 +79,14 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
   const look = lookOf(readView, reply, options);
   const entry = (region: SupremacyRegion): ShareRowEntry => {
     const named = regionLabel(readView, region.id, region.name);
-    const base = { key: region.id, subject: region.id, label: named.label, ...(named.nameMissing ? { labelMissing: true } : {}), countText: shipsText(region.ownShips, region.enemyShips) };
+    const base = { key: region.id, subject: region.id, region: Number(region.id), label: named.label, ...(named.nameMissing ? { labelMissing: true } : {}), countText: shipsText(region.ownShips, region.enemyShips) };
     const readout = region.readout;
     if (!readout || readout.kind === 'notRecorded') {
       const reason = readout?.reason ?? 'Naval region control was not recorded';
       return { ...base, segments: [], missing: notRecorded(reason), tooltip: { title: named.label, hour, missingReason: reason, items: shipItems(region, look) } };
+    }
+    if (idle(readout.friendly, readout.enemy)) {
+      return { ...base, segments: [], tooltip: { title: named.label, hour: readout.as_of_hour, items: [{ label: 'No activity' }, ...shipItems(region, look)] } };
     }
     const share = shareOf(readout.share, reply.scale);
     if (share === null) {
@@ -115,8 +118,12 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
   const automatic = reply.regions.filter(region => !region.pinned).map(entry);
   return buildShareRowsModel({
     hour,
-    ...(picked.length ? { picked, automatic, automaticHeading: 'Most active' } : { rows: automatic }),
-    ...(reply.regions.length ? {} : { empty: 'No naval activity for this country at this date.' }),
+    picked,
+    automatic,
+    pickedHeading: PICKED_REGIONS_HEADING,
+    automaticHeading: mostActiveHeading(look.viewer),
+    addRegionLabel: ADD_REGION_LABEL,
+    ...(reply.regions.length ? {} : { empty: `No naval activity for ${look.viewer} at this date.` }),
     warnings: reply.warnings,
   });
 }
@@ -184,7 +191,7 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
         ? { kind: 'value', form: 'value', primary: '', secondary: 'Contested', swatch: color, audit: 'Contested' }
         : { kind: 'value', form: 'value', primary: share === null ? '' : `${Math.round((readout.control > 0 ? share : 1 - share) * 100)}%`, secondary: readout.control > 0 ? look.friendlyLabel : look.enemyLabel, swatch: color };
     }
-    return { id: region.id, label: named.label, ...(named.nameMissing ? { nameMissing: named.nameMissing } : {}), pinned: region.pinned, runs, ...(shown ? { readout: shown } : {}) };
+    return { id: region.id, label: named.label, ...(named.nameMissing ? { nameMissing: named.nameMissing } : {}), pinned: region.pinned, region: Number(region.id), runs, ...(shown ? { readout: shown } : {}) };
   });
   return {
     hour: through,
@@ -194,6 +201,7 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
     playhead: through,
     gaps: reply.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' })),
     rows,
+    regions: { pickedHeading: PICKED_REGIONS_HEADING, automaticHeading: mostActiveHeading(look.viewer), addLabel: ADD_REGION_LABEL },
     readoutWidth: 204,
     inspect: (rowIndex, at) => {
       const region = reply.regions[rowIndex];
@@ -210,17 +218,15 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
       const made = runCell(run, look, reply.scale, painted?.kind === 'solid' ? painted.color : look.contested);
       return made.cell.kind === 'missing' ? { title, ...dated, missingReason: made.cell.reason } : { title, ...dated, items: made.items };
     },
-    ...(rows.length ? {} : { empty: 'No naval activity for this country at this date.' }),
+    ...(rows.length ? {} : { empty: `No naval activity for ${look.viewer} at this date.` }),
     warnings: reply.warnings,
   };
 }
 
 function supremacySources(ctx: FamilyPlanContext, shares: boolean): SourcePlan {
   if (!ctx.countryTag) return { owner: `naval-supremacy:${ctx.branch.id}:none`, entries: [], unavailable: 'Choose a country in the widget’s header.' };
-  const pinned = regionIds(ctx.options.regions);
   const top = typeof ctx.options.rowCount === 'number' ? ctx.options.rowCount : SUPREMACY_TOP_DEFAULT;
-  const params = { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), top, ...(pinned.length ? { pinnedRegions: pinned } : {}) };
-  const firstHour = ctx.branch.firstHour;
+  const params = { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), top, ...regionParams(readRegionChoice(ctx.options.regions)) };
   return {
     owner: `naval-supremacy:${shares ? 'shares' : 'timeline'}:${JSON.stringify(params)}`,
     entries: [{
@@ -229,14 +235,11 @@ function supremacySources(ctx: FamilyPlanContext, shares: boolean): SourcePlan {
       branch: ctx.branch.id,
       offset: ctx.track.axisOffset,
       read: {
-        shape: 'point',
-        channel: 'followed',
+        shape: 'branch-to-hour',
         coverage: { mode: 'population', form: 'top', limit: top },
         product: 'naval-supremacy',
         followQuery: null,
         params,
-        dynamicKeys: ['lastHour'],
-        buildExactParams: (base, hour) => ({ ...base, firstHour, lastHour: hour }),
       },
     }],
   };
@@ -248,7 +251,6 @@ const COMMON = {
   subject: 'naval supremacy',
   emptyCampaign: 'Load a campaign to see naval supremacy.',
   icon: 'anchor' as const,
-  optionFields: OPTIONS,
   countries: { mode: 'single' } as const,
   unavailable: (ctx: FamilyPlanContext) => (ctx.countryTag ? null : 'Choose a country in the widget’s header.'),
   jumpToDate: true,

@@ -1,4 +1,4 @@
-import type { Canvas2D } from '../../charts/textWidth.ts';
+import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   DEFAULT_FAMILY_THEME,
   drawArtSlot,
@@ -13,37 +13,29 @@ import {
 } from '../../draw/kit.ts';
 import { rgbaColor } from '../../shell/appearance/color.ts';
 import { toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
+import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import { parseChartInspect, sampleSeriesValueAt } from './hitTest.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
-import type { ChartArtSlot, TimeChartModel, TimeChartSeriesModel } from './model.ts';
-
-function artUrl(slot: ChartArtSlot | undefined): string | null {
-  return slot?.art.status === 'ready' && slot.art.url ? slot.art.url : null;
-}
+import type { TimeChartModel, TimeChartSeriesModel } from './model.ts';
 
 export function collectVisibleChartArt(model: TimeChartModel, layout: TimeChartLayout): string[] {
-  const urls = new Set<string>();
-  const add = (slot: ChartArtSlot | undefined) => {
-    const url = artUrl(slot);
-    if (url) urls.add(url);
-  };
+  const items: ArtUrlInput[] = [];
   for (const label of layout.endLabels) {
-    add(label.flag);
-    add(label.icon);
+    items.push(label.flag, label.icon);
   }
   for (const m of layout.markers) {
-    if (m.kind === 'flag') add(m.marker.flag);
-    if (m.kind === 'icon') add(m.marker.icon);
+    if (m.kind === 'flag') items.push(m.marker.flag);
+    if (m.kind === 'icon') items.push(m.marker.icon);
   }
   if (model.legend) {
-    for (const item of model.legend) add(item.flag);
+    for (const item of model.legend) items.push(item.flag);
   }
   if (model.overlays) {
-    for (const ov of model.overlays) add(ov.icon);
+    for (const ov of model.overlays) items.push(ov.icon);
   }
-  return [...urls];
+  return collectArtUrls(items);
 }
 
 export function buildLineSubpaths(
@@ -260,7 +252,15 @@ export function drawTimeChart(
   }
 
   if (model.mode === 'columns') {
+    const hoveredColIdx = parsedInspect?.kind === 'month' || parsedInspect?.kind === 'fold' ? parsedInspect.index : -1;
     for (const col of layout.columns) {
+      if (col.index === hoveredColIdx) {
+        ctx.save();
+        ctx.fillStyle = theme.text;
+        ctx.globalAlpha = 0.055;
+        ctx.fillRect(col.x, layout.top, col.width, layout.plotHeight);
+        ctx.restore();
+      }
       if (col.kind === 'fold') {
         drawGapBand(ctx, col.barX, layout.top, col.barWidth, layout.plotHeight, theme);
         continue;
@@ -270,28 +270,133 @@ export function drawTimeChart(
         drawGapBand(ctx, col.barX, layout.top, col.barWidth, layout.plotHeight, theme);
         continue;
       }
-      let yb = layout.toY(0);
+      let yPos = layout.toY(0);
+      let yNeg = layout.toY(0);
       for (const seg of m.segments) {
         if (seg.value === 0) continue;
-        const nextY = layout.toY(seg.value);
-        const h = Math.abs(layout.toY(0) - nextY);
+        const h = Math.abs(layout.toY(0) - layout.toY(seg.value));
         ctx.save();
         ctx.globalAlpha = m.partial ? 0.55 : 1;
         ctx.fillStyle = seg.color;
         if (seg.value > 0) {
-          ctx.fillRect(col.barX, yb - h, col.barWidth, h);
-          yb -= h;
+          ctx.fillRect(col.barX, yPos - h, col.barWidth, h);
+          yPos -= h;
         } else {
-          ctx.fillRect(col.barX, layout.toY(0), col.barWidth, h);
+          ctx.fillRect(col.barX, yNeg, col.barWidth, h);
+          yNeg += h;
         }
         ctx.restore();
       }
     }
   } else if (model.mode === 'stack' && model.stack && model.stack.hours.length > 0) {
-    const { hours, bands, total } = model.stack;
+    const { hours, bands, total, step } = model.stack;
     let count = 0;
     while (count < hours.length && hours[count]! <= model.hour) count++;
-    if (count > 0 && bands.length > 0) {
+    if (count > 0 && step) {
+      const gapBetween = (a: number, b: number) =>
+        model.gaps?.some(g => g.firstHour > a && g.firstHour < b) ?? false;
+      const isNullAt = (i: number) => total ? total.values[i] == null : bands.every(b => b.values[i] == null);
+      const runs: { readonly start: number; readonly end: number; readonly endHour: number }[] = [];
+      let runStart = -1;
+      for (let i = 0; i < count; i++) {
+        if (isNullAt(i)) {
+          if (runStart >= 0) {
+            runs.push({ start: runStart, end: i - 1, endHour: hours[i]! });
+            runStart = -1;
+          }
+          continue;
+        }
+        if (runStart >= 0 && gapBetween(hours[i - 1]!, hours[i]!)) {
+          const hitGap = model.gaps!.find(g => g.firstHour > hours[i - 1]! && g.firstHour < hours[i]!);
+          runs.push({ start: runStart, end: i - 1, endHour: hitGap ? hitGap.firstHour : hours[i - 1]! });
+          runStart = i;
+        } else if (runStart < 0) {
+          runStart = i;
+        }
+      }
+      if (runStart >= 0) {
+        const trailingGap = model.gaps?.find(g => g.firstHour > hours[count - 1]! && g.firstHour <= model.hour);
+        runs.push({ start: runStart, end: count - 1, endHour: trailingGap ? trailingGap.firstHour : Math.min(layout.xDomain[1], model.hour) });
+      }
+      if (runs.length > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(layout.left, layout.top - 2, layout.plotWidth + 1, layout.plotHeight + 4);
+        ctx.clip();
+        for (const run of runs) {
+          const len = run.end - run.start + 1;
+          const acc = new Float64Array(len);
+          const endX = layout.toX(Math.min(run.endHour, layout.xDomain[1], model.hour));
+          for (const band of bands) {
+            const topVals = new Float64Array(len);
+            let anyValid = false;
+            for (let k = 0; k < len; k++) {
+              const v = band.values[run.start + k];
+              if (v != null && Number.isFinite(v)) anyValid = true;
+              topVals[k] = acc[k]! + (v ?? 0);
+            }
+            if (anyValid) {
+              ctx.beginPath();
+              for (let k = 0; k < len; k++) {
+                const x = layout.toX(hours[run.start + k]!);
+                const y = layout.toY(topVals[k]!);
+                if (k === 0) ctx.moveTo(x, y);
+                else {
+                  ctx.lineTo(x, layout.toY(topVals[k - 1]!));
+                  ctx.lineTo(x, y);
+                }
+              }
+              if (endX > layout.toX(hours[run.end]!)) {
+                ctx.lineTo(endX, layout.toY(topVals[len - 1]!));
+                ctx.lineTo(endX, layout.toY(acc[len - 1]!));
+              }
+              for (let k = len - 1; k >= 0; k--) {
+                const x = layout.toX(hours[run.start + k]!);
+                const y = layout.toY(acc[k]!);
+                if (k < len - 1) {
+                  ctx.lineTo(layout.toX(hours[run.start + k + 1]!), y);
+                }
+                ctx.lineTo(x, y);
+              }
+              ctx.closePath();
+              ctx.fillStyle = band.color;
+              ctx.globalAlpha = (band.opacity ?? 0.78) * (hoveredSeriesId && hoveredSeriesId !== band.id ? 0.35 : 1);
+              ctx.fill();
+              ctx.globalAlpha = 0.9;
+              ctx.strokeStyle = theme.surface;
+              ctx.lineWidth = 0.8;
+              ctx.stroke();
+            }
+            acc.set(topVals);
+          }
+          if (total) {
+            ctx.beginPath();
+            let started = false;
+            let prevY = 0;
+            for (let k = 0; k < len; k++) {
+              const tv = total.values[run.start + k];
+              if (tv == null) continue;
+              const x = layout.toX(hours[run.start + k]!);
+              const y = layout.toY(tv);
+              if (!started) { ctx.moveTo(x, y); started = true; }
+              else { ctx.lineTo(x, prevY); ctx.lineTo(x, y); }
+              prevY = y;
+            }
+            if (started && endX > layout.toX(hours[run.end]!)) {
+              ctx.lineTo(endX, prevY);
+            }
+            if (started) {
+              ctx.globalAlpha = 1;
+              ctx.strokeStyle = total.color ?? theme.text;
+              ctx.lineWidth = 1.6;
+              ctx.lineJoin = 'round';
+              ctx.stroke();
+            }
+          }
+        }
+        ctx.restore();
+      }
+    } else if (count > 0 && bands.length > 0) {
       const segments: [number, number][] = [];
       let segStart = -1;
       for (let i = 0; i < count; i++) {
@@ -541,7 +646,7 @@ export function drawTimeChart(
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText(label.name, cursorX, label.y + 0.5);
-      cursorX += ctx.measureText(label.name).width + 6;
+      cursorX += textWidth(ctx, label.name) + 6;
     }
     ctx.font = labelValueFont;
     ctx.fillStyle = label.valueMuted ? theme.muted : (label.valueColor ?? theme.text);
@@ -551,11 +656,11 @@ export function drawTimeChart(
     ctx.restore();
   }
 
-  if (model.overlays && !layout.small) {
+  if (model.overlays && layout.plotHeight >= 72 && layout.plotWidth >= 240) {
     for (const ov of model.overlays) {
       ctx.save();
       ctx.font = overlayFont;
-      const tw = ctx.measureText(ov.text).width;
+      const tw = textWidth(ctx, ov.text);
       const ox = layout.left + layout.plotWidth - 8 - tw;
       const oy = ov.position === 'top-right' ? layout.top + 12 : layout.baseY - 12;
       if (ov.arrow) {
@@ -668,6 +773,25 @@ export function drawTimeChart(
   if (hoverHour != null && model.mode !== 'columns' && hoverHour >= layout.xDomain[0] && hoverHour <= model.hour) {
     const xh = layout.toX(hoverHour);
     drawCrosshairLine(ctx, xh, layout.top - 2, layout.axisY, theme);
+    if (model.mode === 'stack' && model.stack?.total && model.stack.hours.length > 0) {
+      let at = -1;
+      for (let i = 0; i < model.stack.hours.length; i++) {
+        if (model.stack.hours[i]! <= hoverHour) at = i;
+        else break;
+      }
+      const tv = at >= 0 ? model.stack.total.values[at] : null;
+      if (tv != null && Number.isFinite(tv)) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(xh, layout.toY(tv), 3.4, 0, Math.PI * 2);
+        ctx.fillStyle = model.stack.total.color ?? theme.text;
+        ctx.fill();
+        ctx.strokeStyle = theme.surface;
+        ctx.lineWidth = 1.8;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
     for (const s of model.series) {
       const sampled = sampleSeriesValueAt(s, hoverHour, model.hour);
       if (!sampled) continue;

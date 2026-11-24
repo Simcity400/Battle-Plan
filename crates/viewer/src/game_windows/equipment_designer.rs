@@ -7,7 +7,7 @@ use content_reader_equipment_graphics::equipment_graphics::countries as graphics
 use content_reader_gui::gui::native::{self, Element, Fields, Kind};
 use content_reader_image::native::Decode;
 use content_reader_key_names::{
-    equipment::{Database, Equipment},
+    equipment::{Database, Equipment, ModularDesigner, category_families},
     resources::Resources as ResourceDatabase,
 };
 use content_reader_layers::{ResolveOptions, ResolvedLayers, content::ResolvedContent};
@@ -43,14 +43,6 @@ use viewer_native_gui::native_text::{COLOR, ICON};
 
 #[cfg(test)]
 mod tests;
-
-const SHIP_DLC_BIT: u64 = 1 << 4;
-const TANK_DLC_BIT: u64 = 1 << 7;
-const PLANE_DLC_BIT: u64 = 1 << 8;
-
-const SHIP_CATEGORY_MASK: u64 = 0x8000_4001_c0;
-const TANK_CATEGORY_MASK: u64 = 4;
-const PLANE_CATEGORY_MASK: u64 = 0x1d00_26fc_00;
 
 const FIXED5_SCALE: f64 = 100_000.0;
 const NOT_RECORDED_VALUE: &str = "n/a";
@@ -323,28 +315,27 @@ struct EquipmentDesignData {
 pub fn classify_designer(
     database: &Database,
     equipment: &Equipment,
-    dlc_mask: Option<u64>,
-    dlc_unavailable: Option<&str>,
+    dlc_mask: Result<u32, &str>,
 ) -> Result<DesignerKind, String> {
-    let category = database.category(equipment);
     if !equipment.module_slots.is_empty() {
-        let modular_family = category & (SHIP_CATEGORY_MASK | TANK_CATEGORY_MASK | PLANE_CATEGORY_MASK) != 0;
-        if modular_family {
-            let Some(mask) = dlc_mask else {
-                let reason = dlc_unavailable.unwrap_or("SimulationFeatures is not recorded at this hour");
-                return Err(format!(
-                    "Cannot determine whether '{}' uses the modular or classic designer because active DLC flags are unavailable ({reason}).",
-                    String::from_utf8_lossy(&equipment.name)
-                ));
-            };
-            if mask & SHIP_DLC_BIT != 0 && category & SHIP_CATEGORY_MASK != 0 {
-                return Ok(DesignerKind::Ship);
-            }
-            if mask & TANK_DLC_BIT != 0 && category & TANK_CATEGORY_MASK != 0 {
-                return Ok(DesignerKind::Tank);
-            }
-            if mask & PLANE_DLC_BIT != 0 && category & PLANE_CATEGORY_MASK != 0 {
-                return Ok(DesignerKind::Plane);
+        let name = String::from_utf8_lossy(&equipment.name);
+        let families = category_families().map_err(|reason| {
+            format!(
+                "Cannot determine which designer '{name}' uses because the recording does not hold the game's equipment categories ({reason})."
+            )
+        })?;
+        let category = database.category(equipment);
+        if families.has_modular_designer(category) {
+            let mask = dlc_mask.map_err(|reason| {
+                format!(
+                    "Cannot determine whether '{name}' uses the modular or classic designer because active DLC flags are unavailable ({reason})."
+                )
+            })?;
+            match families.modular_designer(category, mask) {
+                Some(ModularDesigner::Ship) => return Ok(DesignerKind::Ship),
+                Some(ModularDesigner::Tank) => return Ok(DesignerKind::Tank),
+                Some(ModularDesigner::Plane) => return Ok(DesignerKind::Plane),
+                None => {}
             }
         }
     }
@@ -987,15 +978,12 @@ pub fn render(
             "Lexical tokens are not recorded at this hour: {error}"
         ))
     })?;
-    let (dlc_mask, dlc_unavailable) = match frame.complete::<tables::SimulationFeatures>() {
-        Ok(rows) => match rows.first() {
-            Some(row) => (Some(u64::from(row.dlc_mask)), None),
-            None => (
-                None,
-                Some("SimulationFeatures has no row at this hour".to_owned()),
-            ),
-        },
-        Err(error) => (None, Some(error.to_string())),
+    let dlc_mask = match frame.complete::<tables::SimulationFeatures>() {
+        Ok(rows) => rows
+            .first()
+            .map(|row| row.dlc_mask)
+            .ok_or_else(|| "SimulationFeatures has no row at this hour".to_owned()),
+        Err(error) => Err(error.to_string()),
     };
 
     let equipment_db = Database::shared(layers).map_err(|error| {
@@ -1027,13 +1015,8 @@ pub fn render(
         .or_else(|| spell(lexical, definition.archetype_token))
         .unwrap_or_else(|| equipment_key.clone());
 
-    let kind = classify_designer(
-        &equipment_db,
-        equipment,
-        dlc_mask,
-        dlc_unavailable.as_deref(),
-    )
-    .map_err(GameWindowError::refused)?;
+    let kind = classify_designer(&equipment_db, equipment, dlc_mask.as_ref().copied().map_err(String::as_str))
+        .map_err(GameWindowError::refused)?;
     let (tag, tag_tables) = resolve_variant_tag(&frame, definition);
     let (design_state, design_state_reason) = match &definition.design {
         Recorded::Value(state) => (Some(state), None),
@@ -1113,7 +1096,7 @@ pub fn render(
     if matches!(data.mio, RecordedMio::Resolved(_)) {
         base_sampled_tables.insert(TableId::IndustrialOrganisations);
     }
-    if !equipment.module_slots.is_empty() && dlc_mask.is_some() {
+    if !equipment.module_slots.is_empty() && dlc_mask.is_ok() {
         base_sampled_tables.insert(TableId::SimulationFeatures);
     }
     for table in tag_tables {
@@ -1173,6 +1156,7 @@ pub fn render(
             tooltip_overrides: &empty_tooltips,
             extra_warnings,
             admitted_gen: Some(admitted_gen),
+            scroll: &request.scroll,
         },
         cancel,
         |shared| {
@@ -1454,8 +1438,9 @@ pub fn render(
                 tooltips,
             );
         },
-        |main_layout, root, guis, resources, localisation, visuals| {
-            let mut plan = compose_sub_windows(
+        |plan, main_layout, root, guis, resources, localisation, visuals| {
+            compose_sub_windows(
+                plan,
                 main_layout,
                 root,
                 guis,
@@ -1475,7 +1460,7 @@ pub fn render(
                 plan.art_label = Some(provenance.label.clone());
             }
             plan.warnings.extend(visuals.prep_warnings.iter().cloned());
-            Ok(plan)
+            Ok(())
         },
     )
 }
@@ -2908,13 +2893,14 @@ struct StatGridSpec<'a> {
 }
 
 fn compose_sub_windows(
+    plan: &mut ComposedPlan,
     main_layout: &Layout,
     root: &Element,
     guis: &native::Guis,
     resources: &dyn Resources,
     localisation: &Localisation,
     ctx: SubWindowContext<'_>,
-) -> Result<ComposedPlan, GameWindowError> {
+) -> Result<(), GameWindowError> {
     let SubWindowContext {
         data,
         equipment_db,
@@ -2922,8 +2908,6 @@ fn compose_sub_windows(
         blueprint_name,
         equipment_icon,
     } = ctx;
-    let mut plan = ComposedPlan::default();
-
     if data.kind.is_modular() {
         let _ = format_resources_text(
             data.build_resources.as_deref(),
@@ -2966,7 +2950,7 @@ fn compose_sub_windows(
             resources,
             localisation,
             (data, equipment_db),
-            &mut plan,
+            plan,
         )?;
 
         let stat_root = guis.template(b"stat_entry").ok_or_else(|| {
@@ -3002,7 +2986,7 @@ fn compose_sub_windows(
                 },
                 resources,
                 localisation,
-                &mut plan,
+                plan,
             )?;
         }
 
@@ -3013,7 +2997,7 @@ fn compose_sub_windows(
             resources,
             localisation,
             data,
-            &mut plan,
+            plan,
         )?;
     } else if let DesignerKind::Upgrade(domain) = data.kind {
         let sub_name = domain.sub_window();
@@ -3086,11 +3070,11 @@ fn compose_sub_windows(
             },
             resources,
             localisation,
-            &mut plan,
+            plan,
         )?;
     }
 
-    Ok(plan)
+    Ok(())
 }
 
 fn compose_unknown_auto_upgrade(
@@ -3162,6 +3146,7 @@ fn compose_unknown_auto_upgrade(
         view: None,
         tooltip: Some(tip),
         alpha_mask: None,
+        scroll: None,
     });
     Ok(())
 }

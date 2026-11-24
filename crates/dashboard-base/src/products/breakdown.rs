@@ -51,6 +51,8 @@ pub struct BreakdownPart {
     #[doc = " bound or either is not positive."]
     pub parent_share: Option<f64>,
     pub count: Option<u64>,
+    #[doc = " The latest hour one of its amounts was read; none where the product does not date them."]
+    pub last: Option<i32>,
     #[doc = " In display order. Their known amounts add up to this part's: an amount given to this part"]
     #[doc = " itself and to none of them is the last known child, `other`."]
     pub children: Vec<BreakdownPart>,
@@ -99,6 +101,7 @@ pub struct Leaf {
     pub path: Vec<Node>,
     pub amount: Amount,
     pub count: Option<u64>,
+    pub last: Option<i32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -117,10 +120,12 @@ struct Sum {
     partial: Vec<String>,
     missing: Vec<String>,
     count: Option<u64>,
+    last: Option<i32>,
 }
 
 impl Sum {
-    fn add(&mut self, amount: &Amount, count: Option<u64>) {
+    fn add(&mut self, amount: &Amount, count: Option<u64>, last: Option<i32>) {
+        self.date(last);
         match amount {
             Amount::Known(value) => {
                 self.known = self.known.saturating_add(*value);
@@ -146,6 +151,13 @@ impl Sum {
             remember(&mut self.missing, reason);
         }
         self.add_count(other.count);
+        self.date(other.last);
+    }
+
+    fn date(&mut self, last: Option<i32>) {
+        if let Some(hour) = last {
+            self.last = Some(self.last.map_or(hour, |held| held.max(hour)));
+        }
     }
 
     fn add_count(&mut self, count: Option<u64>) {
@@ -275,6 +287,7 @@ fn parts(children: Vec<Branch>, whole: Option<i128>, parent: Option<i128>) -> Ve
                 state: branch.sum.state(),
                 reason: branch.sum.reason(),
                 count: branch.sum.count,
+                last: branch.sum.last,
                 children,
             }
         })
@@ -309,7 +322,7 @@ pub fn breakdown(decimals: u8, leaves: &[Leaf], unrecorded: &Unrecorded) -> Brea
     let mut root = Branch::new(Node::new("", "", 0));
     for leaf in leaves {
         let mut sum = Sum::default();
-        sum.add(&leaf.amount, leaf.count);
+        sum.add(&leaf.amount, leaf.count, leaf.last);
         root.add(&leaf.path, &sum);
     }
     assemble(decimals, root, unrecorded, &[])
@@ -335,11 +348,17 @@ pub struct HistoryBuilder {
     qualified: Vec<(i32, String)>,
     gaps: Vec<(i32, i32, String)>,
     changes: Vec<i32>,
+    dated: bool,
 }
 
 impl HistoryBuilder {
     pub fn new(decimals: u8, from: i32, to: i32) -> Self {
-        Self { decimals, from, to, paths: Vec::new(), index: HashMap::new(), events: Vec::new(), qualified: Vec::new(), gaps: Vec::new(), changes: Vec::new() }
+        Self { decimals, from, to, paths: Vec::new(), index: HashMap::new(), events: Vec::new(), qualified: Vec::new(), gaps: Vec::new(), changes: Vec::new(), dated: false }
+    }
+
+    pub fn dated(mut self) -> Self {
+        self.dated = true;
+        self
     }
     pub fn leaf(&mut self, path: Vec<Node>) -> usize {
         let keys: Vec<String> = path.iter().map(|node| node.key.clone()).collect();
@@ -372,7 +391,7 @@ impl HistoryBuilder {
             self.changes.push(hour);
             let held = &mut steps[leaf];
             let mut sum = held.last().map(|(_, sum)| sum.clone()).unwrap_or_default();
-            sum.add(&amount, count);
+            sum.add(&amount, count, self.dated.then_some(hour));
             match held.last_mut() {
                 Some(last) if last.0 == hour => last.1 = sum,
                 _ => held.push((hour, sum)),

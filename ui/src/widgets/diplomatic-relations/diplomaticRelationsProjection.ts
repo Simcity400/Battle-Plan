@@ -6,7 +6,6 @@ import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixA
 import { labelsAtReadings, resolveEntityFromReadView, signedRampColour } from '../../families/heat/scale.ts';
 import type { DiplomaticRelationsReply, OpinionOrder } from '../../generated/dashboard';
 import { surfaceMix } from '../../shell/appearance/color.ts';
-import { OPTIONS } from './definition.ts';
 
 export const RELATIONS_TOP_DEFAULT = 12;
 
@@ -105,7 +104,6 @@ export const diplomaticRelationsDeclaration: HeatMatrixWidgetDeclaration<Diploma
   subject: 'diplomatic relations',
   emptyCampaign: 'Load a campaign to see diplomatic relations.',
   icon: 'handshake',
-  optionFields: OPTIONS,
   countries: { mode: 'multi', labels: false, colours: false },
   sources: (ctx): SourcePlan => {
     const order = orderOf(ctx.options.order);

@@ -61,6 +61,7 @@ impl Product for PowerSpendingBreakdown {
         vec![
             PowerSpendingBreakdownParams::decl(),
             PowerSpendingBreakdownReply::decl(),
+            SpendCurrency::decl(),
             Breakdown::decl(),
             BreakdownTotal::decl(),
             BreakdownPart::decl(),
@@ -257,7 +258,7 @@ pub(super) fn index(reply: &PowerSpendingReply, spend_unread: &[(i32, i32, Strin
     let mut categories: HashMap<String, u32> = HashMap::new();
     let mut kinds: HashMap<String, u32> = HashMap::new();
     let mut groups: HashMap<String, u32> = HashMap::new();
-    let mut built = HistoryBuilder::new(reply.decimals, reply.from, reply.to);
+    let mut built = HistoryBuilder::new(reply.decimals, reply.from, reply.to).dated();
     let mut credited: Vec<(i32, String)> = Vec::new();
     for entry in &entries {
         let Some(item) = reply.items.get(entry.item as usize) else { continue };

@@ -2,8 +2,8 @@ import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
 import { colour } from '../../charts/palette.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
-import { drawFlagSlot, drawLegendEntry, FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH, resolveKitTokens } from '../../draw/kit.ts';
-import { toFlagSlotState } from '../art/adapters.ts';
+import { drawFlagSlot, drawLegendStrip, FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH, resolveKitTokens } from '../../draw/kit.ts';
+import { resolveCachedArt, toFlagSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import type { ArtResult, FamilyTheme } from '../contract.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
@@ -234,12 +234,7 @@ export interface DrawFlowInput {
 
 function flagState(art: ArtResult | undefined, tag: string | undefined, cache?: LaneArtCache) {
   if (!art) return { kind: 'missing' as const, tag: tag ?? '?' };
-  let resolved = art;
-  if (resolved.status === 'ready' && !resolved.bitmap && cache) {
-    const held = cache.resolve(resolved);
-    if (held) resolved = held;
-  }
-  return toFlagSlotState(resolved, tag);
+  return toFlagSlotState(resolveCachedArt(art, { artCache: cache }), tag);
 }
 
 function drawNodeLabel(ctx: Canvas2D, box: FlowNodeBox, layout: FlowLayout, theme: FamilyTheme, artCache: LaneArtCache | undefined, highlighted: boolean): void {
@@ -301,17 +296,18 @@ export function drawFlow(ctx: Canvas2D, input: DrawFlowInput): void {
   ctx.fillRect(0, 0, layout.width, layout.height);
 
   if (layout.legendHeight > 0) {
-    const middle = Math.round(layout.legendHeight / 2);
-    let cursor = FLOW_PAD;
-    if (model.parts.length > 1) {
-      for (const part of model.parts) {
-        if (cursor > layout.width - 40) break;
-        const drawn = drawLegendEntry(ctx, cursor, middle, part.label, colour(theme.surface, part.ordinal), theme, { maxWidth: Math.max(40, layout.width - cursor - FLOW_PAD) });
-        cursor += drawn.width + 12;
-      }
-    }
-    if (model.notRecordedKey && cursor < layout.width - 60) {
-      drawLegendEntry(ctx, cursor, middle, 'Not recorded', '', theme, { hatch: true, muted: true });
+    const entries = [
+      ...(model.parts.length > 1
+        ? model.parts.map(part => ({ label: part.label, color: colour(theme.surface, part.ordinal) }))
+        : []),
+      ...(model.notRecordedKey ? [{ label: 'Not recorded', color: '', hatch: true, muted: true }] : []),
+    ];
+    if (entries.length) {
+      drawLegendStrip(ctx, 0, 0, layout.width, layout.legendHeight, {
+        entries,
+        padX: FLOW_PAD,
+        entryGap: 12,
+      }, theme);
     }
   }
 

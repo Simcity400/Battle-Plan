@@ -1,6 +1,6 @@
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import {
   nextSeriesRaceChange,
   projectSeriesRace,
@@ -10,7 +10,6 @@ import {
   type SeriesRaceBaseOptions,
 } from '../../families/bars/seriesRace.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
-import { OPTIONS } from './definition.ts';
 import { measureName, rankingMeasure, SERIES, type OccupationMeasure, type ShownMeasure } from './occupationTrendData.ts';
 
 export interface OccupationTrendRaceOptions extends SeriesRaceBaseOptions {
@@ -29,7 +28,7 @@ function resolveRank(options: Readonly<Record<string, unknown>>): OccupationMeas
   return rankingMeasure(shown, ranking);
 }
 
-export const occupationTrendRaceProjection: BarsProjection<OccupationTrendRaceOptions> = registerBarsProjection({
+export const occupationTrendRaceProjection: BarsProjection<OccupationTrendRaceOptions> = registerFamilyProjection({
   kind: 'occupation-trend',
   family: 'bars',
   nextChange(readView, options) {
@@ -63,7 +62,6 @@ export const occupationTrendRaceDeclaration: BarsWidgetDeclaration<OccupationTre
   subject: 'occupation',
   emptyCampaign: 'Load a campaign to see occupation trends.',
   icon: 'globe',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

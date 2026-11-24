@@ -685,7 +685,7 @@ fn reply(
     warnings.extend(covered.warnings(combat_log));
     Ok(LossesReply {
         branch_id: params.branch_id.clone(),
-        tag: query.holders.name(&params.country, query.timeline.last),
+        tag: query.holders.nearest_name(&params.country, query.timeline.last),
         land_source: params.land_source,
         land_lower_bound: None,
         amount_scale: AMOUNT_SCALE as u32,

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useRef, useSyncExternalStore } from 'react';
 import { useContentRevision } from './contentRevision.ts';
 import { useHeldTimeline } from './countryNamesAt.ts';
 import { identitySince } from './countryTimeline.ts';
@@ -43,22 +43,6 @@ function slotIdentitySince(timeline: Parameters<typeof identitySince>[0], slots:
   }
   const held = identitySince(timeline, hour, tags);
   return held === undefined ? undefined : Math.max(held, since);
-}
-
-export function choiceHour(at: number, through: number | null, changes: readonly number[]): number {
-  if (through === null || through <= at) return at;
-  let low = 0, high = changes.length - 1, found = at;
-  while (low <= high) {
-    const middle = (low + high) >> 1;
-    if (changes[middle] <= through) { found = Math.max(found, changes[middle]); low = middle + 1; } else high = middle - 1;
-  }
-  return found;
-}
-
-export function useChoiceHour(clock: PlaybackController, on: boolean, at: () => number, through: () => number | null, changes: readonly number[] | undefined,
-  wake?: (changed: () => void) => () => void): number {
-  const sorted = useMemo(() => [...changes ?? []].sort((a, b) => a - b), [changes]);
-  return useAtHead(clock, on, () => choiceHour(at(), through(), sorted), Object.is, wake);
 }
 
 export function useIdentityKey(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, on: boolean): (hour: number, tags: readonly string[]) => string | null {

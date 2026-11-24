@@ -2,14 +2,13 @@ import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { holderTagAt, inHourRanges, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, zeroValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { NukeCountry, NukeType } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { typeName, validateNuclearArsenal } from './nuclearArsenalData.ts';
 
 const PART_SURFACE = DEFAULT_CARD_SURFACE;
@@ -98,7 +97,7 @@ function compareExplicitRows(a: BarsDataRow, b: BarsDataRow): number {
   return compareTags(a.subject ?? a.key, b.subject ?? b.key);
 }
 
-export const nuclearArsenalRaceProjection: BarsProjection<NuclearArsenalRaceOptions> = registerBarsProjection({
+export const nuclearArsenalRaceProjection: BarsProjection<NuclearArsenalRaceOptions> = registerFamilyProjection({
   kind: 'nuclear-arsenal',
   family: 'bars',
   nextChange(readView, options) {
@@ -199,7 +198,6 @@ export const nuclearArsenalRaceDeclaration: BarsWidgetDeclaration<NuclearArsenal
   subject: 'nuclear stockpiles',
   emptyCampaign: 'Load a campaign to see nuclear stockpiles.',
   icon: 'target',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

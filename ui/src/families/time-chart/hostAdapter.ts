@@ -1,6 +1,7 @@
 import type { TiledLine } from '../../dashboard/tiles/view';
 import type { FamilyGestureContext, FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
-import type { SerializedTiledLine, TimeChartBinding } from './declaration.ts';
+import type { SerializedTiledLine } from '../sceneTiles.ts';
+import type { TimeChartBinding } from './declaration.ts';
 import { parseChartInspect } from './hitTest.ts';
 import type { TimeChartModel } from './model.ts';
 
@@ -196,23 +197,14 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
     }
 
     return {
-      options: ctx.options,
-      sources: ctx.sources,
       extent: ctx.extent,
-      width: ctx.viewport.width,
-      height: ctx.viewport.height,
-      theme: ctx.theme,
-      identitySnapshot: ctx.identitySnapshot,
-      ...(ctx.artResolutions ? { artResolutions: ctx.artResolutions } : {}),
+      ...(ctx.theme ? { theme: ctx.theme } : {}),
       ...(ctx.viewport.zoomWindow ? { zoom: { x: ctx.viewport.zoomWindow } } : {}),
       ...(tiledLines.length ? { tiledLines } : {}),
       keepTiled,
       tiledBySource,
       ...(headSourceBySeries ? { headSourceBySeries } : {}),
-      ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-      ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
       ...(ctx.hovers && Object.keys(ctx.hovers).length ? { hovers: ctx.hovers } : {}),
-      ...(ctx.audit ? { audit: true, auditId: ctx.auditId } : {}),
       ...(ctx.focusedKey ? { focusedKey: ctx.focusedKey } : {}),
     };
   },

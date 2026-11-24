@@ -262,7 +262,7 @@ fn licences_name_both_parties_by_their_countries_and_organisations_say_when_thei
     let early = asked(&source, entry::<IndustrialOrganisations>(), json!({ "branchId": "1", "country": "GER", "hour": 1_050 }));
     let organisations = early["organisations"].as_array().unwrap();
     assert_eq!(organisations.len(), 1, "ITA's organisation is not GER's");
-    assert!(organisations[0]["size"].is_null() && early["detailsMissing"].as_str().is_some());
+    assert!(organisations[0]["size"].is_null() && organisations[0]["detailsMissing"].as_str().is_some());
     let early_cells = cells(&early);
     assert!(cell(&early_cells, "40", "funds").is_err(), "funds not read are missing, never zero");
     let later = asked(&source, entry::<IndustrialOrganisations>(), json!({ "branchId": "1", "country": "GER", "hour": 1_150 }));
@@ -480,6 +480,7 @@ fn artwork_queries_fetch_state_continent_tokens_appearance_refs_and_reserved_nam
         branch_id: "1".into(),
         countries: Vec::new(),
         only: Some(MarketSection::Offers),
+        lease_side: None,
     };
     let mut market_held = DecodedFrame {
         branch: 1,

@@ -176,12 +176,21 @@
   color: var(--muted);
 }
 
-.tf-th-hatch,
 .tf-sort-mark {
   display: inline-flex;
   align-items: center;
   flex: none;
   color: var(--accent);
+}
+
+.tf-th-hatch {
+  display: inline-block;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid var(--hatch-edge);
+  background: repeating-linear-gradient(-45deg, transparent 0 2px, var(--hatch) 2px 3.5px);
 }
 
 .tf-th .tf-sort-arrow {
@@ -331,4 +340,90 @@
   opacity: 0.65;
   pointer-events: none;
   z-index: 5;
+}
+
+.tf-pane-heads {
+  display: flex;
+  background: transparent;
+  border-bottom: none;
+}
+
+.tf-pane-head {
+  flex: none;
+  min-width: 0;
+  overflow: hidden;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+:root[data-theme="light"] .tf-pane-head {
+  border-bottom-color: rgba(15, 23, 42, 0.18);
+}
+
+.tf-pane-heads .tf-head-row {
+  height: 34px;
+}
+
+.tf-pane-heads .tf-th {
+  font-size: 12px;
+  font-weight: 500;
+  color: #cfcfcf;
+  background: var(--surface);
+}
+
+:root[data-theme="light"] .tf-pane-heads .tf-th {
+  color: var(--muted);
+}
+
+.tf-pane-rule {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.085);
+  pointer-events: none;
+}
+
+:root[data-theme="light"] .tf-pane-rule {
+  background: rgba(15, 23, 42, 0.11);
+}
+
+.tf-th-identity {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tf-th-flag {
+  flex: none;
+  width: 20px;
+  height: 13px;
+  border-radius: 1px;
+  object-fit: cover;
+}
+
+.tf-th-flag.is-missing {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  color: var(--muted);
+  background: repeating-linear-gradient(135deg, transparent 0 3px, rgba(255, 255, 255, 0.12) 3px 4px);
+}
+
+.tf-th-identity-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tf-th-identity-name.is-missing {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.fh-body[data-tf-panes]::-webkit-scrollbar:horizontal {
+  height: 0;
 }

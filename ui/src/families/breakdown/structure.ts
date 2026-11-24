@@ -22,7 +22,7 @@ export function deriveBreakdownNavAndMirror(
     const parentName = item.parentKey === null ? null : names.get(item.parentKey) ?? null;
     const name = parentName ? `${parentName}, ${item.part.name}` : item.part.name;
     names.set(item.key, name);
-    nav.push([item.key, item.part.name, index, item.open, item.parentKey ?? '', null]);
+    nav.push(item.top === undefined ? [item.key, item.part.name, index, item.open, item.parentKey ?? '', null] : [item.key, item.part.name, index, item.open, item.parentKey ?? '', null, item.top, item.height]);
     rows.push({
       key: item.key,
       name,

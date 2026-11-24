@@ -50,12 +50,18 @@ export function resolveInstalledAction(
   };
 }
 
-export function parseDefaultRowHit(hitKey: string | null): FamilyPointerHit | null {
+export function parseDefaultRowHit(hitKey: string | null): ParsedFamilyHit | null {
   if (!hitKey) return null;
   const toggle = hitKey.startsWith('toggle:');
   if (!toggle && !hitKey.startsWith('row:')) return null;
   const key = hitKey.slice(hitKey.indexOf(':') + 1);
-  return key ? { key, toggle } : null;
+  return key ? { key, subject: key, toggle, kind: toggle ? 'toggle' : 'row', inspectToken: `row:${key}` } : null;
+}
+
+export interface FamilyRowDrag {
+  readonly starts: (hit: ParsedFamilyHit) => boolean;
+  readonly move: (point: readonly [number, number]) => void;
+  readonly end: (point: readonly [number, number] | null) => void;
 }
 
 export interface FamilyPointerBindingOptions {
@@ -79,6 +85,7 @@ export interface FamilyPointerBindingOptions {
   readonly inspectToken?: (key: string) => string;
   readonly onHoverChange?: (hit: ParsedFamilyHit | null) => void;
   readonly gestures?: FamilyPointerGestures;
+  readonly rowDrag?: FamilyRowDrag;
   readonly onActivate: (key: string, toggle: boolean, action?: InstalledAction, hit?: ParsedFamilyHit | null, picture?: InstalledPicture | null) => void;
   readonly onContextMenu?: (key: string | null, clientX: number, clientY: number, hit?: ParsedFamilyHit | null, picture?: InstalledPicture | null) => boolean;
 }
@@ -101,6 +108,7 @@ interface PointerDownState extends PictureStamp {
   toggle: boolean;
   cancelled: boolean;
   dragging: boolean;
+  rowDrag: boolean;
 }
 
 export interface FamilyPointerBinding {
@@ -128,6 +136,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     getInstalled,
     onHoverChange,
     gestures,
+    rowDrag,
     onActivate,
     onContextMenu,
   } = options;
@@ -152,19 +161,12 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     }
   };
 
-  const matchesInstalled = (meta: PointerHitMeta | undefined, down?: PictureStamp): boolean => {
+  const acceptsReply = (meta: PointerHitMeta | undefined, stamp: PictureStamp): boolean => {
+    if (meta?.installedId !== undefined && meta.installedId !== stamp.installedId) return false;
+    if (meta?.owner !== undefined && meta.owner !== stamp.owner) return false;
+    if (!getInstalled) return true;
     const cur = installedNow();
-    if (cur) {
-      if (meta?.owner !== undefined && meta.owner !== cur.owner) return false;
-      if (down?.owner !== undefined && down.owner !== cur.owner) return false;
-      if (meta?.installedId !== undefined && meta.installedId !== cur.id) return false;
-    } else if (getInstalled) {
-      return false;
-    }
-    if (down?.installedId !== undefined && meta?.installedId !== undefined && meta.installedId !== down.installedId) {
-      return false;
-    }
-    return true;
+    return cur !== null && cur.owner === stamp.owner;
   };
 
   const toPoint = (clientX: number, clientY: number): [number, number] => {
@@ -200,11 +202,18 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
       const dy = event.clientY - pointerDown.y;
       if (!pointerDown.cancelled && Math.hypot(dx, dy) > CLICK_CANCEL_PX) {
         pointerDown.cancelled = true;
-        if (pointerDown.button === 0 && !isBlocked() && gestures?.onDragMove) {
+        if (pointerDown.button === 0 && !isBlocked() && pointerDown.hit && rowDrag?.starts(pointerDown.hit)) {
+          pointerDown.rowDrag = true;
+          try { bodyNode.setPointerCapture?.(pointerDown.pointerId); } catch {}
+        } else if (pointerDown.button === 0 && !isBlocked() && gestures?.onDragMove) {
           pointerDown.dragging = true;
           try { bodyNode.setPointerCapture?.(pointerDown.pointerId); } catch {}
           gestures.onDragStart?.(pointerDown.startPoint);
         }
+      }
+      if (pointerDown.rowDrag) {
+        rowDrag?.move(toPoint(event.clientX, event.clientY));
+        return;
       }
       if (pointerDown.dragging) {
         gestures?.onDragMove?.(toPoint(event.clientX, event.clientY), [dx, dy]);
@@ -216,9 +225,11 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     if (last && last.x === event.clientX && last.y === event.clientY) return;
     lastPointerRef.current = { x: event.clientX, y: event.clientY };
     tooltips.cancelHoverLeave();
+    const moved = installedNow();
+    const stamp: PictureStamp = { installedId: moved?.id, owner: moved?.owner };
     pipeline.pointer(pipe, 0, toPoint(event.clientX, event.clientY), (hitKey, hitMeta) => {
-      if (isBlocked() || !matchesInstalled(hitMeta)) return;
-      const parsed = parseHit(hitKey, installedNow());
+      if (isBlocked() || !acceptsReply(hitMeta, stamp)) return;
+      const parsed = parseHit(hitKey, moved);
       const nextKey = parsed?.key ?? null;
       const changed = nextKey !== inspectedKeyRef.current;
       inspectedKeyRef.current = nextKey;
@@ -286,11 +297,12 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
       toggle: false,
       cancelled: false,
       dragging: false,
+      rowDrag: false,
     };
     pointerDown = down;
     pipeline.pointer(pipe, 0, point, (hitKey, hitMeta) => {
       if (down.cancelled) return;
-      if (!matchesInstalled(hitMeta, down)) {
+      if (!acceptsReply(hitMeta, down)) {
         down.key = null;
         down.hit = null;
         down.resolved = true;
@@ -310,7 +322,13 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     });
   };
 
-  const endDrag = (down: PointerDownState) => {
+  const endDrag = (down: PointerDownState, point: readonly [number, number] | null = null) => {
+    if (down.rowDrag) {
+      down.rowDrag = false;
+      try { bodyNode.releasePointerCapture?.(down.pointerId); } catch {}
+      rowDrag?.end(point);
+      return;
+    }
     if (!down.dragging) return;
     down.dragging = false;
     try { bodyNode.releasePointerCapture?.(down.pointerId); } catch {}
@@ -320,9 +338,9 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
   const onPointerUp = (event: PointerEvent) => {
     const down = pointerDown;
     if (!down) return;
-    if (down.dragging) {
+    if (down.dragging || down.rowDrag) {
       pointerDown = null;
-      endDrag(down);
+      endDrag(down, isBlocked() ? null : toPoint(event.clientX, event.clientY));
       return;
     }
     if (down.cancelled || down.button !== 0 || isBlocked()) {
@@ -338,8 +356,9 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     const picture = installedNow();
     if (getInstalled && !picture) return;
     const stamp: PictureStamp = { installedId: picture?.id, owner: picture?.owner };
+    if (stamp.owner !== down.owner) return;
     pipeline.pointer(pipe, 0, toPoint(event.clientX, event.clientY), (hitKey, hitMeta) => {
-      if (isBlocked() || !matchesInstalled(hitMeta, stamp)) return;
+      if (isBlocked() || !acceptsReply(hitMeta, stamp)) return;
       const released = parseHit(hitKey, picture);
       if (!released || !down.resolved || released.key !== down.key) return;
       dispatchActivate(released.key, released.toggle === true, { ...down, picture, hit: released });
@@ -368,7 +387,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     const { clientX, clientY } = event;
     const stamp: PictureStamp = { installedId: picture?.id, owner: picture?.owner };
     pipeline.pointer(pipe, 0, toPoint(clientX, clientY), (hitKey, hitMeta) => {
-      if (isBlocked() || !matchesInstalled(hitMeta, stamp)) return;
+      if (isBlocked() || !acceptsReply(hitMeta, stamp)) return;
       const parsed = parseHit(hitKey, picture);
       onContextMenu(parsed?.key ?? null, clientX, clientY, parsed, picture);
     });

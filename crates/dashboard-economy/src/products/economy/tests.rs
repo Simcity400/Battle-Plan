@@ -357,7 +357,11 @@ mod market {
         assert_eq!(contracts.len(), 1, "GER buys on FRA's contract; FRA's request to a country with no identity is not GER's");
         assert_eq!((contracts[0]["seller"].as_str(), contracts[0]["buyer"].as_str(), contracts[0]["purchase"].as_bool()), (Some("FRA"), Some("GER"), Some(true)));
         assert_eq!(at["agreements"][0]["receiver"], "FRA");
+        assert_eq!(at["unattributed"], 1, "the request to a buyer with no country is left out but counted: it may be GER's");
         assert!(at["live"].is_object(), "purchase progress and fuel are named as live cells");
+        let side = |side: &str| asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["GER"], "only": "agreements", "leaseSide": side }), 110).unwrap();
+        assert_eq!(side("sent")["agreements"].as_array().unwrap().len(), 1, "GER gives to FRA");
+        assert_eq!(side("received")["agreements"], json!([]), "GER receives nothing");
         let ended = asked::<MarketLendLease>(&source, params, ENDS).unwrap();
         assert_eq!(ended["agreements"], json!([]));
     }

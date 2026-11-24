@@ -9,11 +9,8 @@ import {
 } from '../../families/contract.ts';
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import type {
   ChartArtSlot,
@@ -37,7 +34,6 @@ import {
   seriesHeadAt,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
-import { STABILITY_OPTIONS } from './definition.ts';
 import { breakdownRows, linesPerMeasure, type Measure } from './stabilityData.ts';
 
 export interface StabilityRawMarker {
@@ -146,7 +142,7 @@ function markerDays(raw: readonly StabilityRawMarker[]): readonly MarkerDay[] {
   return days;
 }
 
-export const stabilityProjection: TimeChartProjection<StabilityOptions> = registerTimeChart({
+export const stabilityProjection: TimeChartProjection<StabilityOptions> = registerFamilyProjection({
   kind: 'stability',
   family: 'time-chart',
   variant: 'line',
@@ -314,7 +310,6 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
   subject: 'stability and war support',
   emptyCampaign: 'Load a campaign to see stability and war support.',
   icon: 'chart-line',
-  optionFields: STABILITY_OPTIONS,
   countries: { mode: 'multi', labels: true, colours: true, allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
     const tags = ctx.countries.tags;

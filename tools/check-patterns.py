@@ -38,12 +38,13 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string")
+RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string", "family-measure-text-loop")
 RULE_HINTS = {
     "local-contrast-ink": "use contrastInkForFill from ui/src/draw/kit.ts",
     "local-tick-engine": "use computeTimeAxisTicks from ui/src/draw/kit.ts or linearTicks from ui/src/charts/valueAxis.ts",
     "family-colour-literal": "use ui/src/charts/palette.ts, ui/src/shell/appearance/color.ts, or resolveKitTokens in ui/src/draw/kit.ts",
     "family-locale-string": "use formatScalar, formatCompactScalar, or formatValueState from ui/src/families/valueFormat.ts",
+    "family-measure-text-loop": "use textWidth or measureCanvasText from ui/src/charts/textWidth.ts, or fitLabelWidth / fitLabel from ui/src/charts/labels.ts",
 }
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
 TS_FIXTURE = re.compile(r"\.fixture\.tsx?$")
@@ -60,6 +61,8 @@ FAMILY_COLOUR_LITERAL = re.compile(r"""['"`]#[0-9a-fA-F]{3,8}(?=['"`])|\b(?:rgba
 FAMILY_LOCALE_STRING = re.compile(
     r"""\.toLocaleString\s*\(|from\s+['"][^'"]*charts/numberFormat(?:\.ts)?['"]|\bnew\s+Intl\.NumberFormat\s*\("""
 )
+TS_LOOP_HEAD = re.compile(r"\b(?:for|while)\s*\(|\bdo\s*\{|\.(?:forEach|map|reduce|flatMap|filter|some|every)\s*\(")
+TS_MEASURE_TEXT = re.compile(r"\.measureText\s*\(")
 PS_TEST = re.compile(r"\.tests\.ps1$", re.IGNORECASE)
 JS_CLOCK = re.compile(r"\bset(?:Timeout|Interval)\s*\(")
 PS_CLOCK = re.compile(r"\bStart-Sleep\b|::Sleep\s*\(", re.IGNORECASE)
@@ -613,6 +616,28 @@ def mask_ts_comments(text):
     return "".join(out)
 
 
+def ts_loop_spans(code):
+    spans = []
+    for head in TS_LOOP_HEAD.finditer(code):
+        token = head.group()
+        if token.startswith("."):
+            end = closing(code, head.end() - 1, "(", ")")
+            spans.append((head.end() - 1, end))
+        elif token.endswith("{"):
+            end = closing(code, head.end() - 1, "{", "}")
+            spans.append((head.end() - 1, end))
+        else:
+            after = skip_space(code, closing(code, head.end() - 1, "(", ")"))
+            if after < len(code) and code[after] == "{":
+                spans.append((after, closing(code, after, "{", "}")))
+            else:
+                semi = code.find(";", after)
+                nl = code.find("\n", after)
+                end = min(p for p in (semi + 1 if semi >= 0 else len(code), nl if nl >= 0 else len(code)))
+                spans.append((after, end))
+    return spans
+
+
 def family_ts_matches(name, text):
     code = mask_ts_comments(text)
     found = {}
@@ -629,6 +654,11 @@ def family_ts_matches(name, text):
         locale_lines = [line_of(text, m.start()) for m in FAMILY_LOCALE_STRING.finditer(code)]
         if locale_lines:
             found["family-locale-string"] = locale_lines
+    if ".measureText" in code:
+        loops = ts_loop_spans(code)
+        measure_lines = [line_of(text, m.start()) for m in TS_MEASURE_TEXT.finditer(code) if within(loops, m.start())]
+        if measure_lines:
+            found["family-measure-text-loop"] = measure_lines
     return found
 
 

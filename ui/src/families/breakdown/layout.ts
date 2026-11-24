@@ -36,6 +36,8 @@ export interface DrawnItem {
   readonly part: BreakdownPart;
   readonly open: -1 | 0 | 1;
   readonly shareText: string;
+  readonly top?: number;
+  readonly height?: number;
 }
 
 export interface TotalLineLayout {
@@ -372,7 +374,7 @@ function layoutPartsView(input: BreakdownLayoutInput): PartsViewLayout {
       ...extra,
     });
     const open = extra.hasChildren ? (extra.expanded ? 1 : 0) : -1;
-    items.push({ key: part.key, parentKey, depth, part, open, shareText });
+    items.push({ key: part.key, parentKey, depth, part, open, shareText, top: rowY, height: rowHeight });
     rowY += rowHeight;
   };
 
@@ -655,7 +657,7 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
         chevronRect: hasChildren ? { x: listX, y: ry, width: 14, height: rowHeight } : null,
         shareText,
       });
-      items.push({ key: part.key, parentKey, depth, part, open: hasChildren ? (isExpanded ? 1 : 0) : -1, shareText });
+      items.push({ key: part.key, parentKey, depth, part, open: hasChildren ? (isExpanded ? 1 : 0) : -1, shareText, top: ry, height: rowHeight });
       ry += rowHeight;
     };
     for (const part of level.parts) {

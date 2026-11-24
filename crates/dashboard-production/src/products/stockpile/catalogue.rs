@@ -670,7 +670,7 @@ fn catalogue(source: &Source, query: &Query<'_>, params: &StockpileCataloguePara
         reply.balance_hours.extend(balance);
         reply.ai_hours.extend(ai);
         if !replay.unresolved.is_empty() {
-            reply.warnings.push(format!("{}: {} stretches of hours have no resolved country; nothing is shown for them.", query.holders.name(&holder.country, query.timeline.last), replay.unresolved.len()));
+            reply.warnings.push(format!("{}: {} stretches of hours have no resolved country; nothing is shown for them.", query.holders.nearest_name(&holder.country, query.timeline.last), replay.unresolved.len()));
         }
     }
     for reads in [&mut reply.reads, &mut reply.line_reads, &mut reply.logistics_reads] {
@@ -709,7 +709,7 @@ fn catalogue(source: &Source, query: &Query<'_>, params: &StockpileCataloguePara
         reply.warnings.push("The surplus or shortage is not in this recording: it has no logistics record (logistics equipment).".to_owned());
     }
     if reply.stock_hours.is_empty() {
-        reply.warnings.push(format!("{}: no recorded stockpile in this branch", tags.iter().map(|country| query.holders.name(country, query.timeline.last)).collect::<Vec<_>>().join(", ")));
+        reply.warnings.push(format!("{}: no recorded stockpile in this branch", tags.iter().map(|country| query.holders.nearest_name(country, query.timeline.last)).collect::<Vec<_>>().join(", ")));
     }
     Ok(reply)
 }

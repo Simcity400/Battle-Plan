@@ -19,7 +19,7 @@ const EVERY_HOUR: Interval = [-Infinity, Infinity];
 const NO_ENTRIES: readonly SourceEntry[] = [];
 
 function boundedReadable(read: SourceTimeShape): boolean {
-  return read.shape === 'point' || read.shape === 'range' || read.shape === 'branch-to-hour' || read.shape === 'trailing-window';
+  return read.shape === 'point' || read.shape === 'range' || read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'paged-rows';
 }
 
 export function unitEntries(
@@ -165,6 +165,7 @@ export type Settlement =
 
 export interface SettleInput {
   readonly following: boolean;
+  readonly moving: boolean;
   readonly hour: number;
   readonly subscribed: boolean;
   readonly endHour: number;
@@ -217,7 +218,7 @@ export function settleUnits(
   if (!input.following) {
     return { kind: 'complete', bundle: { hour: Number.isFinite(answered) ? answered : input.hour, span, proof: null, panels } };
   }
-  if (lo > hi || lo > input.hour) return { kind: 'hold' };
+  if (lo > hi || lo > input.hour || (!input.moving && input.hour > hi)) return { kind: 'hold' };
   const hour = Number.isFinite(lo) ? lo : Math.min(input.hour, hi);
   return { kind: 'complete', bundle: { hour, span, proof: [lo, hi], panels } };
 }
