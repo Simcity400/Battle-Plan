@@ -42,6 +42,7 @@ import {
   type BarsSegment,
   type BarsValueField,
 } from './model.ts';
+import { drawCaptionSides, drawPickList } from './pickList.ts';
 
 export interface BarsGlideOffset {
   readonly fromY: number;
@@ -256,9 +257,9 @@ function drawHeader(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: 
       ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
       ctx.fillStyle = theme.text;
       ctx.textAlign = 'left';
-      ctx.fillText(ellipsise(model.caption, layout.width - BARS_PAD_X * 2, s => textWidth(ctx, s)), BARS_PAD_X, middleY);
+      ctx.fillText(ellipsise(model.caption, layout.width - layout.bodyLeft - BARS_PAD_X * 2, s => textWidth(ctx, s)), layout.bodyLeft + BARS_PAD_X, middleY);
     }
-    if (model.captionRight) {
+    if (model.captionRight && !model.captionSides?.length) {
       ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'right';
@@ -306,6 +307,9 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
   ctx.clearRect(0, 0, layout.width, layout.height);
 
   drawHeader(ctx, model, layout, theme);
+  if (model.captionSides?.length && layout.headerHeight > 0) {
+    drawCaptionSides(ctx, model.captionSides, layout.width - BARS_PAD_X, layout.headerTop + layout.headerHeight / 2, theme, { ...(icons ? { icons } : {}), ...(artCache ? { artCache } : {}) });
+  }
   if (layout.showAxis) drawAxis(ctx, model, layout, theme);
 
   const { first, last } = visibleBarsRange(layout, scrollTop);
@@ -314,7 +318,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
 
   ctx.save();
   ctx.beginPath();
-  ctx.rect(0, layout.bodyTop, layout.width, layout.bodyHeight);
+  ctx.rect(layout.bodyLeft, layout.bodyTop, layout.width - layout.bodyLeft, layout.bodyHeight);
   ctx.clip();
 
   if (model.form === 'net' || (model.form === 'two-sided' && layout.twoSidedLayout !== 'stacked-pair')) {
@@ -343,15 +347,15 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(item.label, BARS_PAD_X, middleY);
+      ctx.fillText(item.label, layout.bodyLeft + BARS_PAD_X, middleY);
       ctx.restore();
       continue;
     }
 
     if (item.kind === 'add-region') {
       const hovered = inspectedKey === item.key;
-      if (hovered) drawRowHover(ctx, 0, y, layout.width, rowH, theme);
-      if (focusedKey === item.key) drawRowFocusRing(ctx, 0, y, layout.width, rowH, theme);
+      if (hovered) drawRowHover(ctx, layout.bodyLeft, y, layout.width - layout.bodyLeft, rowH, theme);
+      if (focusedKey === item.key) drawRowFocusRing(ctx, layout.bodyLeft, y, layout.width - layout.bodyLeft, rowH, theme);
       ctx.save();
       ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
       ctx.fillStyle = theme.accent;
@@ -376,14 +380,14 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
     const isSelected = selectedKey === row.key || (row.rightSide && selectedKey === row.rightSide.key);
     const isFocused = focusedKey === row.key || (row.rightSide && focusedKey === row.rightSide.key);
 
-    if (isSelected) drawRowSelected(ctx, 0, y, layout.width, rowH, theme);
-    else if (isHovered) drawRowHover(ctx, 0, y, layout.width, rowH, theme);
-    if (isFocused) drawRowFocusRing(ctx, 0, y, layout.width, rowH, theme);
+    if (isSelected) drawRowSelected(ctx, layout.bodyLeft, y, layout.width - layout.bodyLeft, rowH, theme);
+    else if (isHovered) drawRowHover(ctx, layout.bodyLeft, y, layout.width - layout.bodyLeft, rowH, theme);
+    if (isFocused) drawRowFocusRing(ctx, layout.bodyLeft, y, layout.width - layout.bodyLeft, rowH, theme);
     if (model.form === 'net' && i < model.rows.length - 1) {
-      drawRowHairline(ctx, BARS_PAD_X, layout.width - BARS_PAD_X, y + rowH - 1, theme, 'normal');
+      drawRowHairline(ctx, layout.bodyLeft + BARS_PAD_X, layout.width - BARS_PAD_X, y + rowH - 1, theme, 'normal');
     }
 
-    drawMediaSlot(ctx, BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, { icons, artCache, radius: 2 });
+    drawMediaSlot(ctx, layout.bodyLeft + BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, { icons, artCache, radius: 2 });
 
     if (layout.nameWidth > 0) {
       const reserveRemove = row.removable && (isHovered || isFocused) ? BARS_REMOVE_BUTTON_SIZE + 4 : 0;
@@ -779,6 +783,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
     }, theme);
   }
 
+  if (model.pickList) drawPickList(ctx, model.pickList, layout, theme, inspectedKey ?? null, focusedKey ?? null);
   return { paintedRows, truncatedKeys };
 }
 
@@ -843,5 +848,6 @@ export function collectVisibleBarsIcons(model: BarsModel, layout: BarsLayout, sc
     if (item.kind !== 'data') continue;
     items.push(item.media, item.rightSide?.media, item.readout?.iconUrl, item.target?.iconUrl);
   }
+  for (const side of model.captionSides ?? []) items.push(side.media);
   return collectArtUrls(items);
 }

@@ -9,7 +9,7 @@ import type { WidgetSpec } from '../dashboard/model';
 import { resolveWidgetActiveView } from './manifest';
 import { loadedWidgetRenderer, loadWidgetRenderer } from './rendererLoaders';
 
-type Slot = 'render' | 'countryChip';
+type Slot = 'render' | 'countryChip' | 'subjectMenu';
 const nothing = () => null;
 const declaredRenderers = new WeakMap<object, Map<string, ComponentType<WidgetProps>>>();
 

@@ -62,7 +62,7 @@ export interface LegacyWidgetEntry {
   readonly view?: string;
   readonly label?: string;
   readonly playsBackDated?: boolean;
-  readonly slots?: readonly ('render' | 'countryChip')[];
+  readonly slots?: readonly ('render' | 'countryChip' | 'subjectMenu')[];
   readonly load: () => Promise<{ default: WidgetRenderer }>;
 }
 
