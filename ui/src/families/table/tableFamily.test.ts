@@ -30,8 +30,8 @@ import { capturePictures, capturePicturesBatch } from '../../dashboard/pulled.ts
 import { isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
-import { computeColumnMaxima, declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type TableColumnSpec, type TableModel, type TableRow } from './model.ts';
-import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
+import { computeColumnMaxima, declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
+import { computeRowLayout, createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
 import { openGate } from '../../test-support/gated.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
 
@@ -1451,15 +1451,17 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
     });
     page.publish(120, { playing: false });
     await flushTicks();
-    assert.equal(requestedArt.length, 20, `F6: 1500-country model with 20-row viewport requests only 20 visible flags at displayed hour (got ${requestedArt.length})`);
+    assert.equal(requestedArt.length, 6, `F6: 1500-country model starts bounded maxConcurrent=6 visible flags (got ${requestedArt.length})`);
     assert.ok(requestedArt.every(url => url.endsWith('_mid.png')), 'F6: requests only the displayed hour flag, never past/future look history');
     for (let i = 0; i < 10; i++) {
       const url = requestedArt[i]!;
       artResolvers.get(url)!({ width: 20, height: 14, close() { closedArt.push(url); } } as unknown as ImageBitmap);
+      await flushTicks();
     }
-    await flushTicks();
+    assert.equal(requestedArt.length, 16, 'F6: resolving 10 flags pumps the next visible flags up to 6 in flight');
+    assert.ok(requestedArt.every(url => url.endsWith('_mid.png')), 'F6: every pumped visible flag is from the displayed hour');
     lane.unmount(2);
-    assert.equal(abortedArt.length, 10, 'F6: unmount aborts remaining 10 pending fetches');
+    assert.equal(abortedArt.length, 6, 'F6: unmount aborts remaining 6 in-flight fetches');
     assert.equal(closedArt.length, 10, 'F6: unmount closes all 10 decoded bitmaps');
 
     page.mount(3, { route: 0, lane: 0, surfaces: [{ install() {}, clear() {} }] });
@@ -1938,6 +1940,355 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     names.set('A', 'A country whose recorded name arrived later and is long');
     const after = widthOf(paint());
     assert.ok(after > before, `a name that arrives after the first measurement widens its column (${before} -> ${after})`);
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
+});
+
+test('log capability: headerless widths, date-grouped boundaries, gap/refused/loading slots, in-place children, and fresh-paint equality after seek back, same-hour correction and reorder', () => {
+  const DAY1 = 43_800_000 + 400 * 24;
+  const DAY2 = DAY1 + 24;
+  const DAY3 = DAY2 + 24;
+  const logColumns: TableColumnSpec[] = [
+    { key: 'date', label: 'Occurred On Date', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'date', sortable: true },
+    { key: 'kind', label: 'Category', as: 'plain', offered: ['plain'], priority: 1, cellKind: 'kind', sortable: false },
+    { key: 'country', label: 'Origin Country', as: 'flag', offered: ['flag', 'flagName'], priority: 2, sortable: false },
+    { key: 'item', label: 'Item', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
+    { key: 'cost', label: 'Cost', as: 'plain', offered: ['plain'], priority: 3, numeric: true, format: 'integer' },
+    { key: 'state', label: 'Outcome State', as: 'plain', offered: ['plain'], priority: 4, cellKind: 'status' },
+  ];
+  const baseSettings = tableSettingsOf(undefined, logColumns, { density: 'normal', overflow: 'scroll', sort: { column: 'date', direction: 'descending' } });
+  const baseCols = buildColumnLayouts(logColumns, baseSettings);
+  const measure = (text: string) => text.length * 7;
+  const headedWidths = measureFixedColumnWidths(baseCols, baseSettings, TEST_THEME, measure);
+  const headerlessWidths = measureFixedColumnWidths(baseCols, baseSettings, TEST_THEME, measure, undefined, { hideHeader: true });
+  assert.ok(headerlessWidths.date! < headedWidths.date!, 'headerless mode ignores hidden header label width on date column');
+  assert.ok(headerlessWidths.country! < headedWidths.country!, 'headerless mode keeps flag-only country column compact');
+  const grown = layoutFamilyTable(buildColumnLayouts(logColumns, baseSettings, headerlessWidths), 720, 'scroll');
+  assert.ok(grown.columns.find(c => c.key === 'item')!.width > 300, 'item column absorbs spare width while date/kind/flag/status stay fixed');
+
+  const mkLogRow = (
+    key: string,
+    hour: number,
+    cost: number,
+    opts: {
+      live?: boolean;
+      boundedDate?: 'by';
+      statusKind?: 'running' | 'waiting' | 'succeeded' | 'finished' | 'ended';
+      statusLabel?: string;
+      inlinePrefix?: string;
+      inlineSubtext?: string;
+      title?: string;
+      children?: readonly TableRow[];
+    } = {},
+  ): TableRow => ({
+    key,
+    name: opts.title ?? key,
+    rowHour: hour,
+    ...(opts.live ? { live: true } : {}),
+    ...(opts.children ? { children: opts.children } : {}),
+    cells: {
+      date: { value: knownValue(hour), ...(opts.boundedDate ? { boundedDate: opts.boundedDate } : {}) },
+      kind: { value: knownValue('dec'), iconSlot: true, artShape: 'square', artName: 'Decision' },
+      country: { value: knownValue('GER'), flags: [{ tag: 'GER' }] },
+      item: {
+        value: knownValue(opts.title ?? key),
+        ...(opts.inlinePrefix ? { inlinePrefix: opts.inlinePrefix } : {}),
+        ...(opts.inlineSubtext ? { inlineSubtext: opts.inlineSubtext } : {}),
+      },
+      cost: { value: knownValue(cost), format: 'integer', unitSuffix: 'PP' },
+      state: opts.statusKind
+        ? { value: knownValue(opts.statusLabel ?? opts.statusKind), statusKind: opts.statusKind }
+        : { value: notRecorded('Outcome not recorded'), missingFigure: 'Outcome' },
+    },
+  });
+
+  const childRow = mkLogRow('c1', DAY2 + 2, 10, { title: 'Delivery 1', statusKind: 'finished', statusLabel: 'Delivered' });
+  const slottedModel: TableModel = {
+    columns: logColumns,
+    hour: DAY3 + 12,
+    hideHeader: true,
+    unsorted: true,
+    dateGrouped: true,
+    rows: [],
+    slots: [
+      { kind: 'data', row: mkLogRow('live1', DAY3 + 5, 50, { live: true, title: 'Stop the Strikes', inlineSubtext: 'Mission', statusKind: 'running', statusLabel: 'Running', children: [childRow] }) },
+      { kind: 'data', row: mkLogRow('h1', DAY2 + 10, 25, { title: 'Event \uFFFC choice', inlinePrefix: 'A', statusKind: 'succeeded', statusLabel: 'Succeeded' }) },
+      { kind: 'data', row: mkLogRow('h2', DAY2 + 4, 15, { title: 'Same day exact', statusKind: 'finished', statusLabel: 'Finished' }) },
+      { kind: 'data', row: mkLogRow('h3', DAY2 + 2, 5, { title: 'Same day bounded', boundedDate: 'by', statusKind: 'ended', statusLabel: 'Ended' }) },
+      { kind: 'gap', key: 'gap:1', firstHour: DAY1 + 6, lastHour: DAY2 - 1, reason: 'Collector detached' },
+      { kind: 'data', row: mkLogRow('h4', DAY1 + 3, 100, { title: 'Before gap' }) },
+      { kind: 'refused', key: 'ref:1', reason: 'Block damaged' },
+      { kind: 'loading', key: 'load:1' },
+    ],
+  };
+
+  const flatExpanded = resolveTableRows(slottedModel, baseSettings, { live1: true });
+  assert.deepEqual(
+    flatExpanded.map(item => (item.kind === 'data'
+      ? [item.kind, item.key, item.level, item.showDate !== false, item.isDayEnd === true, item.isLiveEnd === true]
+      : [item.kind, item.key])),
+    [
+      ['data', 'live1', 1, true, false, false],
+      ['data', 'c1', 2, true, false, true],
+      ['data', 'h1', 1, true, false, false],
+      ['data', 'h2', 1, false, false, false],
+      ['data', 'h3', 1, true, true, false],
+      ['gap', 'gap:1'],
+      ['data', 'h4', 1, true, true, false],
+      ['refused', 'ref:1'],
+      ['loading', 'load:1'],
+    ],
+    'live block band sits after its last open child, same-day exact repeats hide date while bounded dates stay visible, and gap/refused/loading slots preserve order',
+  );
+
+  const geom = computeRowLayout(flatExpanded, 'normal', 'standard');
+  const gapTop = geom.tops[5]!;
+  assert.deepEqual(hitFamilyTable(grown, flatExpanded, { x: 40, y: gapTop + 10 }, 36, 0, 0, false, 0, undefined, undefined, undefined, geom), { kind: 'row', rowKey: 'gap:1' });
+  const gapTip = deriveTableTooltip(flatExpanded, 'gap:1', logColumns, new Set(), DAY3 + 12);
+  assert.equal(gapTip?.title, 'Not recorded');
+  assert.equal(gapTip?.detail, 'Collector detached');
+  const boundedTip = deriveTableTooltip(flatExpanded, 'h3', logColumns, new Set(), DAY3 + 12);
+  assert.ok(boundedTip?.rows.some(r => r.valueState?.text?.startsWith('By ')), 'bounded date hover carries By prefix and hour');
+  const audit = deriveTableAudit({ model: slottedModel, flatRows: flatExpanded, visibleColumns: grown.columns });
+  assert.ok(audit.some(r => r.key === 'gap:1:gap'));
+  assert.ok(audit.some(r => r.key === 'ref:1:refused'));
+  assert.ok(audit.some(r => r.key === 'load:1:loading'));
+
+  const gappedModel: TableModel = {
+    columns: logColumns,
+    hour: DAY2 + 5,
+    hideHeader: true,
+    unsorted: true,
+    dateGrouped: true,
+    rows: [
+      mkLogRow('live0', DAY2 + 4, 20, { live: true, statusKind: 'waiting', statusLabel: 'Waiting' }),
+      mkLogRow('after', DAY2 + 1, 10, { statusKind: 'finished', statusLabel: 'Finished' }),
+      mkLogRow('before', DAY1 + 1, 10, { statusKind: 'finished', statusLabel: 'Finished' }),
+    ],
+    gaps: [{ firstHour: DAY1 + 12, lastHour: DAY3, reason: 'Unrecorded stretch' }],
+  };
+  const gappedFlat = resolveTableRows(gappedModel, baseSettings);
+  assert.deepEqual(gappedFlat.map(r => r.kind === 'gap' ? `gap:${r.firstHour}-${r.lastHour}` : r.key), [
+    'live0',
+    `gap:${DAY1 + 12}-${DAY2 + 5}`,
+    'after',
+    'before',
+  ], 'interleaveLogGaps clamps gaps to model.hour and never splits the live block');
+
+  const sortByCost = tableSettingsOf(undefined, logColumns, { density: 'normal', overflow: 'scroll', sort: { column: 'cost', direction: 'descending' } });
+  const costSorted = resolveTableRows({
+    columns: logColumns,
+    hour: DAY3,
+    dateGrouped: true,
+    rows: [
+      mkLogRow('a', DAY2 + 8, 10, { statusKind: 'finished' }),
+      mkLogRow('b', DAY2 + 4, 40, { statusKind: 'finished' }),
+    ],
+  }, sortByCost);
+  assert.deepEqual(costSorted.map(r => r.kind === 'data' && r.showDate !== false), [true, true], 'sorting by a non-date figure shows every row date');
+
+  type LogScene = {
+    readonly rows: readonly TableRow[];
+    readonly slots?: readonly TableModelSlot[];
+    readonly unsorted?: boolean;
+  };
+  registerTableProjection({
+    kind: 'test-log-fresh-equals-incremental',
+    family: 'table',
+    project: readView => {
+      const reply = readView.panel('main') as LogScene;
+      return {
+        hour: readView.hour,
+        hideHeader: true,
+        dateGrouped: true,
+        unsorted: reply.unsorted,
+        columns: logColumns,
+        rows: reply.rows,
+        ...(reply.slots ? { slots: reply.slots } : {}),
+      };
+    },
+  });
+
+  const makeRichGrid = (width: number, height: number) => {
+    const base = gridContext(width, height);
+    const hPixels = new Map<string, string>();
+    const hatchBoxes = new Map<string, string>();
+    const canvasBox: readonly [number, number, number, number] = [0, 0, width, height];
+    let clipBox: readonly [number, number, number, number] = canvasBox;
+    let pending: readonly [number, number, number, number] | null = null;
+    const clipStack: (readonly [number, number, number, number])[] = [];
+    let moveX = 0;
+    let moveY = 0;
+    let lineX = 0;
+    let lineY = 0;
+    let hasLine = false;
+    const raw = base.ctx as Record<string, unknown>;
+    const wrapped = new Proxy(raw, {
+      get(target, prop) {
+        if (prop === 'save') {
+          const orig = target.save as () => void;
+          return () => { clipStack.push(clipBox); orig(); };
+        }
+        if (prop === 'restore') {
+          const orig = target.restore as () => void;
+          return () => { clipBox = clipStack.pop() ?? canvasBox; orig(); };
+        }
+        if (prop === 'beginPath') {
+          const orig = target.beginPath as () => void;
+          return () => { pending = null; orig(); };
+        }
+        if (prop === 'rect' || prop === 'roundRect') {
+          const orig = target.rect as (x: number, y: number, w: number, h: number) => void;
+          return (x: number, y: number, w: number, h: number) => {
+            pending = [x, y, x + w, y + h];
+            if (prop === 'rect') orig(x, y, w, h);
+          };
+        }
+        if (prop === 'clip') {
+          const orig = target.clip as () => void;
+          return () => {
+            if (pending) {
+              clipBox = [Math.max(clipBox[0], pending[0]), Math.max(clipBox[1], pending[1]), Math.min(clipBox[2], pending[2]), Math.min(clipBox[3], pending[3])];
+            }
+            orig();
+          };
+        }
+        if (prop === 'moveTo') return (x: number, y: number) => { moveX = x; moveY = y; hasLine = false; };
+        if (prop === 'lineTo') return (x: number, y: number) => { lineX = x; lineY = y; hasLine = true; };
+        if (prop === 'stroke') {
+          return () => {
+            if (hasLine) {
+              const y0 = Math.floor(moveY);
+              const y1 = Math.floor(lineY);
+              if (y0 === y1 && y0 >= clipBox[1] && y0 < clipBox[3]) {
+                const xStart = Math.max(Math.ceil(clipBox[0]), Math.round(Math.min(moveX, lineX)));
+                const xEnd = Math.min(Math.floor(clipBox[2]), Math.round(Math.max(moveX, lineX)));
+                for (let px = xStart; px < xEnd; px++) hPixels.set(`${px},${y0}`, String(target.strokeStyle));
+              } else if (y0 !== y1) {
+                hatchBoxes.set(`${Math.round(clipBox[0])},${Math.round(clipBox[1])},${Math.round(clipBox[2])},${Math.round(clipBox[3])}`, String(target.strokeStyle));
+              }
+              hasLine = false;
+            }
+          };
+        }
+        if (prop === 'fillRect' || prop === 'clearRect') {
+          const orig = target[prop] as (x: number, y: number, w: number, h: number) => void;
+          return (x: number, y: number, w: number, h: number) => {
+            orig(x, y, w, h);
+            const x0 = Math.max(clipBox[0], x);
+            const y0 = Math.max(clipBox[1], y);
+            const x1 = Math.min(clipBox[2], x + w);
+            const y1 = Math.min(clipBox[3], y + h);
+            for (const key of [...hPixels.keys()]) {
+              const [px, py] = key.split(',').map(Number) as [number, number];
+              if (px >= x0 && px < x1 && py >= y0 && py < y1) hPixels.delete(key);
+            }
+            for (const key of [...hatchBoxes.keys()]) {
+              const [bx0, by0, bx1, by1] = key.split(',').map(Number) as [number, number, number, number];
+              if (bx1 > x0 && bx0 < x1 && by1 > y0 && by0 < y1) hatchBoxes.delete(key);
+            }
+          };
+        }
+        return target[prop as string];
+      },
+    });
+    return { ctx: wrapped, snapshot: () => ({ marks: new Map(base.marks), hPixels: new Map(hPixels), hatchBoxes: new Map(hatchBoxes) }) };
+  };
+
+  const grids: ReturnType<typeof makeRichGrid>[] = [];
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = class {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() { const g = makeRichGrid(this.width, this.height); grids.push(g); return g.ctx; }
+    transferToImageBitmap() { return { close() {} }; }
+  };
+  try {
+    const createLane = () => {
+      const view = familyTableLaneView(() => {}, { clock: () => 5000 });
+      const state = new Map<string, unknown>();
+      let seq = 1;
+      const idx = grids.length;
+      const paint = (scene: LogScene, hour: number, settings: TableSettings, expanded?: Readonly<Record<string, boolean>>) => view.paint({
+        widget: 1,
+        subs: [],
+        pictures: [],
+        model: {
+          family: 'table' as const,
+          kind: 'test-log-fresh-equals-incremental',
+          options: {},
+          settings,
+          sources: {},
+          staticPanels: { main: scene },
+          width: 640,
+          height: 360,
+          scrollLeft: 0,
+          scrollTop: 0,
+          expanded,
+          theme: TEST_THEME,
+          reducedMotion: true,
+        },
+        hour,
+        speed: 24,
+        binding: { generation: 1, surfaces: [{ width: 640, height: 360, dpr: 1 }], offset: 0, pin: null },
+        inspect: null,
+        now: 5000,
+      }, state, () => `c${seq++}`);
+      return { paint, snap: () => grids[idx]!.snapshot() };
+    };
+    const freshSnap = (scene: LogScene, hour: number, settings: TableSettings, expanded?: Readonly<Record<string, boolean>>) => {
+      const other = createLane();
+      other.paint(scene, hour, settings, expanded);
+      return other.snap();
+    };
+
+    const uniformAt1: LogScene = {
+      unsorted: true,
+      rows: [
+        mkLogRow('e2', DAY2 + 8, 50, { title: 'Event Two', inlineSubtext: 'Political', statusKind: 'finished', statusLabel: 'Finished' }),
+        mkLogRow('e1', DAY2 + 2, 25, { title: 'Event \uFFFC One', inlinePrefix: 'A', statusKind: 'succeeded', statusLabel: 'Succeeded' }),
+        mkLogRow('e0', DAY1 + 6, 10, { title: 'Earlier Day', statusKind: 'ended', statusLabel: 'Ended' }),
+      ],
+    };
+    const uniformAt2: LogScene = {
+      unsorted: true,
+      rows: [
+        mkLogRow('e3', DAY2 + 12, 75, { title: 'Event Three', statusKind: 'finished', statusLabel: 'Finished' }),
+        ...uniformAt1.rows,
+      ],
+    };
+    const correctedAt1: LogScene = {
+      unsorted: true,
+      rows: [
+        mkLogRow('e2', DAY2 + 8, 50, { title: 'Event Two', inlineSubtext: 'Revised', boundedDate: 'by', statusKind: 'succeeded', statusLabel: 'Succeeded' }),
+        mkLogRow('e1', DAY2 + 2, 25, { title: 'Event \uFFFC One', inlinePrefix: 'B', statusKind: 'ended', statusLabel: 'Ended' }),
+        mkLogRow('e0', DAY1 + 6, 10, { title: 'Earlier Day', statusKind: 'ended', statusLabel: 'Ended' }),
+      ],
+    };
+    const reorderScene: LogScene = {
+      unsorted: false,
+      rows: correctedAt1.rows,
+    };
+
+    const played = createLane();
+    played.paint(uniformAt1, DAY2 + 9, baseSettings);
+    played.paint(uniformAt2, DAY2 + 13, baseSettings);
+    assert.deepEqual(played.snap(), freshSnap(uniformAt2, DAY2 + 13, baseSettings), 'forward log step shifting repeat-date suppression equals fresh paint');
+
+    played.paint(uniformAt1, DAY2 + 9, baseSettings);
+    assert.deepEqual(played.snap(), freshSnap(uniformAt1, DAY2 + 9, baseSettings), 'log seek back restores dates and hairlines identically to fresh paint');
+
+    played.paint(correctedAt1, DAY2 + 9, baseSettings);
+    assert.deepEqual(played.snap(), freshSnap(correctedAt1, DAY2 + 9, baseSettings), 'same-hour log correction (boundedDate, inlinePrefix, inlineSubtext, statusKind) equals fresh paint');
+
+    played.paint(reorderScene, DAY2 + 9, sortByCost);
+    assert.deepEqual(played.snap(), freshSnap(reorderScene, DAY2 + 9, sortByCost), 'reordering log by figure restores every row date identically to fresh paint');
+
+    const slottedScene: LogScene = { unsorted: true, rows: [], slots: slottedModel.slots };
+    played.paint(slottedScene, DAY3 + 12, baseSettings, { live1: true });
+    assert.deepEqual(played.snap(), freshSnap(slottedScene, DAY3 + 12, baseSettings, { live1: true }), 'slotted log with live block, expanded children, gap, refused, and loading rows equals fresh paint');
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
   }
