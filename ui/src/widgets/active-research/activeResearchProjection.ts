@@ -1,7 +1,7 @@
 import { liveKey } from '../../charts/live.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { missingArt, NO_ART } from '../../families/art/types.ts';
+import { unavailableArt, NO_ART } from '../../families/art/types.ts';
 import type { MeterWidgetDeclaration } from '../../families/meter/declaration.ts';
 import type { MeterModel, MeterProjection, MeterRow } from '../../families/meter/model.ts';
 import { registerMeterProjection } from '../../families/meter/registry.ts';
@@ -151,7 +151,7 @@ export const activeResearchProjection: MeterProjection<ActiveResearchProjectionO
           key,
           name: 'Not recorded',
           muted: true,
-          art: { result: missingArt(item.reason), resolvedName: 'NR', radius: 4 },
+          art: { result: unavailableArt(item.reason), resolvedName: 'NR', radius: 4 },
           bar: { kind: 'none' },
           figureMissing: true,
           figureMissingLabel: 'Not recorded',

@@ -114,7 +114,7 @@ sprite?: string, };
 export type ArtOrigin = { "kind": "baseGame" } | { "kind": "dlc", id: string, name: string, } | { "kind": "mod", id: string, name: string, } | { "kind": "visualMod", id: string, name: string, } | { "kind": "builtin", id: string, };
 export type ArtFrame = { frameIndex: number, frameCount: number, frameWidth: number, frameHeight: number, textureWidth: number, textureHeight: number, outputWidth: number, outputHeight: number, };
 export type ArtProvenance = { fromCurrentInstall: boolean, label: string, scopeKey: string, };
-export type ArtResolution = { "status": "noArtExpected" } | { "status": "pending" } | { "status": "ready", assetId: string, url: string, origin: ArtOrigin, file: string, frame: ArtFrame, provenance: ArtProvenance, } | { "status": "confirmedMissing", reason: string, origin?: ArtOrigin, file?: string, } | { "status": "refused", reason: string, construct: string, origin?: ArtOrigin, file?: string, } | { "status": "failed", reason: string, retryable: boolean, };
+export type ArtResolution = { "status": "noArtExpected" } | { "status": "pending" } | { "status": "ready", assetId: string, url: string, origin: ArtOrigin, file: string, frame: ArtFrame, provenance: ArtProvenance, } | { "status": "confirmedMissing", reason: string, origin?: ArtOrigin, file?: string, } | { "status": "unavailable", reason: string, } | { "status": "refused", reason: string, construct: string, origin?: ArtOrigin, file?: string, } | { "status": "failed", reason: string, retryable: boolean, };
 export type FocusDatabase = "national" | "continuous";
 export type FocusEntry = { ordinal: number, token: string,
 /**
@@ -768,7 +768,11 @@ keys: [string | null, string | null, string | null],
 /**
  * Why each atlas has no key, or what was refused on the way to its key; null when nothing.
  */
-reasons: [string | null, string | null, string | null], };
+reasons: [string | null, string | null, string | null],
+/**
+ * True where the atlas has no key because a completed search of every candidate found no file.
+ */
+searched?: [boolean | null, boolean | null, boolean | null], };
 export type CountryFactsReply = { branchId: string,
 /**
  * The hours the runs answer, as `[first, last]` spans in order.
@@ -1640,11 +1644,12 @@ export type PlaceNameRunsParams = { branchId: string,
  * Land's ladder: a province in no state stays unnamed rather than taking its region's name.
  */
 land: boolean, from: number, to: number, states: Array<number>, provinces: Array<number>, };
+export type Presence = "present" | "absent" | "unknown";
 export type NameRun = { firstHour: number, lastHour: number, name: string | null, missing: string | null,
 /**
- * True when the subject is proven not to exist (for its owner) across the run.
+ * Whether the subject exists (for its owner) across the run: proven present, proven absent, or not known because what proves it is not recorded.
  */
-absent: boolean, };
+presence: Presence, };
 export type PlaceRuns = { id: number,
 /**
  * One run per constant answer, in hour order; equal answers either side of an `unknown` span are

@@ -55,7 +55,7 @@ test('a focus card shows the product’s dated completions, then its undated one
   assert.equal(dated!.date?.hour, hour - 30 * DAY);
   assert.deepEqual(undated!.date, { hour: null, reason: 'Already complete when first read' });
   assert.deepEqual(undated!.title, { kind: 'notRecorded', reason: 'Name refused' });
-  assert.equal(undated!.art?.art.status, 'confirmedMissing', 'missing art is the hatched tile, not a blank');
+  assert.equal(undated!.art?.art.status, 'unavailable', 'art the product did not draw is unavailable with its reason, drawn as the hatched tile, not a blank');
 
   const unknownRate = nationalFocusProjection.project(view(hour, { ...reply, current: { ...reply.current!, daysLeft: null, progressMissing: 'Daily progress was not recorded' } }), {});
   assert.deepEqual((unknownRate.rows[0] as CardHeroRow).figure?.value, { kind: 'notRecorded', reason: 'Daily progress was not recorded' }, 'days left are not recorded, never zero');
@@ -134,7 +134,7 @@ test('national spirits list only what is held at the displayed hour, with since 
   assert.deepEqual(rows.map(row => row.key), ['mod_spirit_a', 'mod_spirit_b'], 'a spirit gained after the displayed hour is not shown');
   assert.match(String(rows[0]!.figure?.value.kind === 'known' && rows[0]!.figure.value.value), /^Held before /);
   assert.match(String(rows[1]!.figure?.value.kind === 'known' && rows[1]!.figure.value.value), /^Since /);
-  assert.equal(rows[1]!.art?.art.status, 'confirmedMissing');
+  assert.equal(rows[1]!.art?.art.status, 'unavailable');
   assert.equal(model.nextChangeAt, first + 40 * DAY);
   const unseen = nationalSpiritsProjection.project(view(first + 60 * DAY, reply), { branchFirst: first });
   assert.equal(unseen.emptyKind, 'unavailable');
@@ -199,7 +199,7 @@ test('special projects follow the product’s order: running with progress and s
   assert.equal(running!.figure?.value.kind, 'notRecorded', 'an unread scientist is named as not recorded');
   assert.deepEqual(radar!.figure?.value, { kind: 'known', value: 'No scientist' });
   assert.deepEqual(old!.date, { hour: null, reason: 'Already complete when the project was first recorded' });
-  assert.equal(radar!.art?.art.status, 'confirmedMissing');
+  assert.equal(radar!.art?.art.status, 'unavailable');
 });
 
 test('a stored "Show names" reaches the war goals projection through the declaration the host resolves', () => {
