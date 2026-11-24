@@ -21,7 +21,7 @@ const identity: IdentityProvider = {
   },
 };
 
-const AIR: MilitaryAirAtOptions = { family: 'airLosses', scale: 100_000, digits: 5, leftHeader: 'Own losses', rightHeader: 'Enemy aircraft destroyed', unit: 'Aircraft', ratio: true, chosen: null };
+const AIR: MilitaryAirAtOptions = { family: 'airLosses', scale: 100_000, digits: 5, leftHeader: 'Own losses', rightHeader: 'Enemy aircraft destroyed', unit: 'Aircraft', ratio: true, chosen: null, none: 'No aircraft lost yet.' };
 
 const aircraft = (count: number) => String(BigInt(count) * 100_000n);
 
@@ -56,7 +56,7 @@ test('a row whose events may be missing is partial, at least its value, and has 
 });
 
 test('an unread hour and an unranked population are named states, never empty bars', () => {
-  const unread = model(reply({ missing: 'Military air events were not read at this hour', rows: [] }));
+  const unread = model(reply({ missing: 'Aircraft loss events were not recorded at this hour', rows: [] }));
   assert.equal(unread.emptyKind, 'unavailable');
   const unranked = model(reply({ rankMissing: 'Some events may be missing', rows: [] }));
   assert.equal(unranked.empty, 'Some events may be missing');
@@ -91,6 +91,13 @@ test('loss causes stack each country by cause in the product order, with one col
   assert.equal(rows[0]!.segments![0]!.color, rows[1]!.segments![0]!.color, 'one cause, one colour in every row');
   assert.equal(rows[0]!.readout?.primary, '2.47K lost');
   assert.deepEqual(drawn.legend?.map(item => item.key), ['1', '3']);
-  const unread = lossCausesModel(createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply({ missing: 'Military air events were not read at this hour', rows: [] })]]), identity }), AIR);
+  const unread = lossCausesModel(createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply({ missing: 'Aircraft loss events were not recorded at this hour', rows: [] })]]), identity }), AIR);
   assert.equal(unread.emptyKind, 'unavailable');
+});
+
+test('an observed hour with no events is a recorded none, never a missing reading', () => {
+  const none = model(reply({ rows: [] }));
+  assert.deepEqual([none.empty, none.emptyKind], ['No aircraft lost yet.', 'empty']);
+  const unread = model(reply({ missing: 'Aircraft loss events were not recorded at this hour', rows: [] }));
+  assert.deepEqual([unread.empty, unread.emptyKind], ['Aircraft loss events were not recorded at this hour', 'unavailable']);
 });

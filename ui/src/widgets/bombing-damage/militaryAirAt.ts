@@ -34,6 +34,7 @@ export interface MilitaryAirAtOptions {
   readonly unit: string;
   readonly ratio: boolean;
   readonly chosen: readonly string[] | null;
+  readonly none: string;
   readonly paired?: { readonly solid: string; readonly outline: string };
 }
 
@@ -186,7 +187,7 @@ export function lossCausesModel(readView: BoundedReadView, options: MilitaryAirA
     ...base,
     rows,
     legend,
-    ...(rows.length ? {} : { empty: 'Nothing recorded at this date.', emptyKind: 'empty' as const }),
+    ...(rows.length ? {} : { empty: options.none, emptyKind: 'empty' as const }),
     ...(reply.rankMissing ? { notes: [reply.rankMissing] } : {}),
     warnings: reply.warnings,
   };
@@ -229,7 +230,7 @@ export function militaryAirModel(readView: BoundedReadView, options: MilitaryAir
   return {
     ...base,
     rows,
-    ...(rows.length ? {} : { empty: 'Nothing recorded at this date.', emptyKind: 'empty' as const }),
+    ...(rows.length ? {} : { empty: options.none, emptyKind: 'empty' as const }),
     ...(reply.rankMissing ? { notes: [reply.rankMissing] } : {}),
     warnings: reply.warnings,
   };
