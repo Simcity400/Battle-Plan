@@ -120,7 +120,8 @@ pub struct PoliticsUnavailable {
 #[serde(rename_all = "camelCase")]
 pub struct StateExile {
     pub id: String,
-    pub tag: String,
+    #[doc = " Null when the country has no identity at this hour; the exile is still witnessed."]
+    pub tag: Option<String>,
     pub host: Option<String>,
 }
 
@@ -131,6 +132,8 @@ pub struct PoliticsStateReply {
     pub branch_id: String,
     pub view: PoliticsView,
     pub exiles: Vec<StateExile>,
+    #[doc = " Why `exiles` may not hold every government in exile at the hour; null when every country's exile status was read."]
+    pub exiles_missing: Option<String>,
     pub balances: Vec<BalanceRecord>,
     #[doc = " Null when the membership cannot say which record each country shows."]
     pub current: Option<Vec<CurrentBalance>>,
@@ -267,6 +270,7 @@ fn read_for(
         branch_id: params.branch_id.clone(),
         view: params.view,
         exiles: Vec::new(),
+        exiles_missing: None,
         balances: Vec::new(),
         current: None,
         unavailable: Vec::new(),
@@ -292,6 +296,13 @@ fn exiles(frame: &DecodedFrame, reply: &mut PoliticsStateReply, live: &Cells) {
         return;
     }
     let (rows, refusals) = country_people::exile_rows(frame, |_, _| true);
+    if refusals[0] != 0 {
+        reply.exiles_missing = Some(format!("{} countries' exile hosts are not recorded at this hour", refusals[0]));
+    }
+    let missing_tag = rows.iter().filter(|row| row.exile.tag.is_none()).count();
+    if missing_tag != 0 {
+        reply.refuse("exile identity", "the country has no identity at this hour", u32::try_from(missing_tag).unwrap_or(u32::MAX));
+    }
     for (count, field) in refusals.into_iter().zip(["exile host roster", "exile legitimacy", "exile manpower", "exile manpower cap", "exile leader resources"]) {
         if count != 0 {
             reply.refuse(field, "operands unavailable", count);

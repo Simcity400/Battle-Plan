@@ -23,6 +23,20 @@ export interface FamilyKeyboardOptions {
   readonly onEscape?: () => void;
 }
 
+export function navPageStep(nav: readonly FamilyNavTuple[], focusedKey: string | null, viewportHeight: number): number {
+  const at = Math.max(0, nav.findIndex(entry => entry[0] === focusedKey));
+  const top = nav[at]?.[6];
+  if (top === undefined) return Math.max(1, nav.length);
+  const bottom = top + viewportHeight;
+  let step = 0;
+  for (let i = at + 1; i < nav.length; i++) {
+    const entry = nav[i]!;
+    if (entry[6] === undefined || entry[6] + (entry[7] ?? 0) > bottom) break;
+    step++;
+  }
+  return Math.max(1, step);
+}
+
 export function handleFamilyKeyDown(event: ReactKeyboardEvent | KeyboardEvent, options: FamilyKeyboardOptions): void {
   const { nav, pageStep, blocked } = options;
   const totalCount = options.totalCount ?? nav.length;
@@ -96,12 +110,12 @@ export function handleFamilyKeyDown(event: ReactKeyboardEvent | KeyboardEvent, o
     else options.onActivate(target);
     return;
   }
-  if (event.key === 'ArrowRight' && entry && entry[3] === 0 && options.onToggleTree) {
+  if (event.key === 'ArrowRight' && hasExplicitFocus && entry && entry[3] === 0 && options.onToggleTree) {
     event.preventDefault();
     options.onToggleTree(entry[0]);
     return;
   }
-  if (event.key === 'ArrowLeft' && entry) {
+  if (event.key === 'ArrowLeft' && hasExplicitFocus && entry) {
     if (entry[3] === 1 && options.onToggleTree) {
       event.preventDefault();
       options.onToggleTree(entry[0]);

@@ -49,3 +49,20 @@ test('a reply that reaches past the displayed hour, or for the other view, draws
   assert.deepEqual(projectConvoyHealth(view(45, reply(50)), OPTIONS).rows, []);
   assert.deepEqual(projectConvoyHealth(view(50, reply(50)), { view: 'trade', surface: SURFACE }).rows, []);
 });
+
+test('a lend-lease route stays a status in the lane, the readout and the tooltip, never an efficiency', async () => {
+  const { deriveLanesTooltip } = await import('../../families/heat/lanesModel.ts');
+  const data: ConvoyHealthReply = {
+    ...reply(50), view: 'trade', regions: [], gaps: [],
+    known: [[], [], [{ firstHour: 0, lastHour: 50 }]],
+    leases: [{ handle: '7', giver: [{ firstHour: 0, lastHour: 50, tag: 'USA', name: 'United States' }], bad: [[0, 19, 1], [20, 50, 0]], convoys: [] }],
+  };
+  const model = projectConvoyHealth(view(50, data), { view: 'trade', surface: SURFACE });
+  const [bad, clear] = model.rows[0]!.runs;
+  assert.equal(bad!.cell.kind === 'solid' && bad!.cell.label, 'Route bad');
+  assert.deepEqual(clear!.cell, { kind: 'clear', label: 'Route clear' });
+  assert.equal(model.rows[0]!.readout?.kind === 'value' && model.rows[0]!.readout.primary, 'Route clear');
+  const tip = deriveLanesTooltip(model, 0, 10)!;
+  assert.equal(tip.items?.[0]?.label, 'Route bad');
+  assert.ok(!tip.items?.some(item => item.label === 'Efficiency'), 'no measured efficiency is claimed');
+});

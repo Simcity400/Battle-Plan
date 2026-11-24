@@ -63,6 +63,7 @@ const detail = (balances: BalanceRecord[], extra: Record<string, unknown> = {}):
   branchId: '1',
   view: 'balances',
   exiles: [],
+  exilesMissing: null,
   balances,
   current: [{ tag: 'MOD', record: 0 }],
   unavailable: [],

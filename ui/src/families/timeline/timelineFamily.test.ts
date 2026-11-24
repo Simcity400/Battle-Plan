@@ -9,11 +9,11 @@ import { frameTimeline, placeTimeline } from './layout.ts';
 import { resolutionFor } from './resolution.ts';
 import { untilItem } from './helpers.ts';
 import { familyTimelineLaneView, nextDayStart, type FamilyTimelineBinding } from './laneView.ts';
-import { registerTimelineProjection } from './registry.ts';
+import { registerFamilyProjection } from '../registry.ts';
 import type { PaintInput } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
-import { visibleLanes, type TimelineLane, type TimelineModel } from './model.ts';
+import { visibleLanes, type TimelineLane, type TimelineModel, type TimelineProjection } from './model.ts';
 import { decodeTimelineHit, encodeTimelineHit, hitTimeline } from './painter.ts';
 
 const H = (year: number, month = 1, day = 1) => engineHour({ year, month, day, hour: 1 })!;
@@ -91,9 +91,9 @@ test('expanded state hides children of closed lanes, and hits encode lane, span 
   assert.equal(hit?.kind, 'span');
   const token = encodeTimelineHit(hit);
   assert.deepEqual(decodeTimelineHit(token), hit);
-  assert.deepEqual(timelineHostAdapter.parseHit(token), { key: 'm', subject: 'm', hour: hit!.hour, kind: 'span', toggle: false, inspectToken: token });
+  assert.deepEqual(timelineHostAdapter.parseHit!(token), { key: 'm', subject: 'm', hour: hit!.hour, kind: 'span', toggle: false, inspectToken: token });
   const toggle = hitTimeline(layout, resolution, 20, layout.lanes[0]!.y + 5, 0);
-  assert.equal(timelineHostAdapter.parseHit(encodeTimelineHit(toggle))?.toggle, true);
+  assert.equal(timelineHostAdapter.parseHit!(encodeTimelineHit(toggle))?.toggle, true);
 });
 
 test('the picture repaints at each new day so the playhead and open bars follow the clock between content changes', () => {
@@ -158,7 +158,8 @@ test('a hover over an unchanged model neither re-projects nor re-places, and pai
     spans: Array.from({ length: 50 }, (_, j) => ({ id: `s${j}`, firstHour: FIRST + j * 100, lastHour: FIRST + j * 100 + 50, color: '#4f86f7', open: false })),
   }));
   for (const count of [100, 1500]) {
-    registerTimelineProjection<{ readonly n: number }>({
+    registerFamilyProjection<TimelineProjection<{ readonly n: number }>>({
+  family: 'timeline',
       kind: `test-timeline-${count}`,
       project(view, opt) {
         projections++;
@@ -201,7 +202,8 @@ test('a hover over an unchanged model neither re-projects nor re-places, and pai
 });
 
 test('a timeline lane equals a fresh paint after a seek back, a correction and an opened lane, and draws once per day while quiet', () => {
-  registerTimelineProjection<Record<string, never>>({
+  registerFamilyProjection<TimelineProjection<Record<string, never>>>({
+  family: 'timeline',
     kind: 'test-timeline-lane',
     project(view) {
       const lanes = view.panel<{ lanes: TimelineLane[] }>('main')?.lanes ?? [];

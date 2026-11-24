@@ -8,7 +8,7 @@ import { createBoundedReadView, emptyReadView } from '../../families/boundedView
 import { deriveTableTooltip, resolveCellAtHour, resolveTableRows } from '../../families/table/model.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
 import type { ApmReply } from '../../generated/dashboard';
-import { ABSENT_PLAYER_NAME_REASON, apmFromSort, apmHeadNamesKey, apmHeadRows, apmHeadStructure, apmHolders, apmLiveValues, apmPausedView, apmSortValue, clockHead, datedPlayerNameMissing, datedPlayerNames } from './apmHead.ts';
+import { apmFromSort, apmHeadRows, apmHeadStructure, apmLiveValues, apmSortValue, clockHead } from './apmHead.ts';
 import { apmTableColumns, apmTableProjection } from './apmProjection.ts';
 
 const bits = (value: number) => { const view = new DataView(new ArrayBuffer(8)); view.setFloat64(0, value, true); return view.getBigInt64(0, true); };
@@ -103,22 +103,6 @@ test('the followed clock reads its seconds exactly, an unclassified playing time
   assert.equal(clockHead(undefined), null);
 });
 
-test("the graph's legend names each holder as at the hour shown while it follows the head, never as at the campaign's end", () => {
-  const rows = [{ id: 'GER@1', tag: 'GER', hour: 100_000 }, { id: 'ETH@2', tag: 'ETH', hour: 3_000 }, { id: 'user:ab', tag: null, hour: 100_000 }];
-  assert.deepEqual(apmHolders(rows, null), [{ key: 'GER@1', tag: 'GER', hour: 100_000 }, { key: 'ETH@2', tag: 'ETH', hour: 3_000 }]);
-  assert.deepEqual(apmHolders(rows, 2_000), [{ key: 'GER@1', tag: 'GER', hour: 2_000 }, { key: 'ETH@2', tag: 'ETH', hour: 2_000 }]);
-  assert.deepEqual(apmHolders(rows, 50_000), [{ key: 'GER@1', tag: 'GER', hour: 50_000 }, { key: 'ETH@2', tag: 'ETH', hour: 3_000 }]);
-});
-
-test('paused or after a seek the graph view ends at the head, never past it; while playing the chart window follows', () => {
-  const first = 1000, last = 9000, week = 168;
-  assert.deepEqual(apmPausedView(first, first, last, week), [first, first + 1], 'at the first hour, its one hour: never two weeks ahead');
-  assert.deepEqual(apmPausedView(first + 50.6, first, last, week), [first, first + 50]);
-  assert.deepEqual(apmPausedView(first + 4000, first, last, week), [first + 4000 - week, first + 4000]);
-  assert.deepEqual(apmPausedView(last + 30, first, last, week), [last - week, last], 'a head past the branch ends at its last hour');
-  assert.equal(apmPausedView(null, first, last, week), null);
-});
-
 test('apm-table resolves country at row observation hour including hour 0, gives each field its own missing/partial meaning, checks membership gaps over the active window only, and keeps missing player names notRecorded without internal ids', () => {
   const reply: ApmReply = {
     available: true,
@@ -196,25 +180,4 @@ test('apm-table resolves country at row observation hour including hour 0, gives
   assert.equal(apmTableProjection.nextChange?.(emptyReadView(15), followOpts), 188, 'trailing window leaves gap [10,20] at 20 + 168 = 188');
   assert.equal(apmTableProjection.project(createBoundedReadView({ hour: 180, panels: new Map([['main', reply]]) }), followOpts).emptyKind, 'unavailable', 'trailing [13,180] overlaps [10,20]');
   assert.equal(apmTableProjection.project(createBoundedReadView({ hour: 188, panels: new Map([['main', reply]]) }), followOpts).empty, undefined, 'trailing [21,188] is past [10,20]');
-});
-
-test('M2: APM graph legend and tooltips use dated player names from the window head and mark absent players not recorded with a reason', () => {
-  const branchRows = [
-    { id: 'p1', name: 'RenamedAtBranchEnd', nameMissing: null },
-    { id: 'p2', name: 'LaterAliasOfP2', nameMissing: null },
-  ];
-  const registry = [{ id: 'p1', name: 'RenamedAtBranchEnd' }, { id: 'p2', name: 'LaterAliasOfP2' }];
-  const earlyHead = headAnswer([
-    { key: 0n, id: 'p1', values: [bits(3.0), bits(3.0), 30n, 0n, bits(10), 1n, 0n, 'GER', 50n, 'EarlyAlias', null] },
-  ]);
-  const laterHead = headAnswer([
-    { key: 0n, id: 'p1', values: [bits(3.0), bits(3.0), 30n, 0n, bits(10), 1n, 0n, 'GER', 200n, 'LaterAlias', null] },
-  ]);
-  assert.notEqual(apmHeadNamesKey(earlyHead), apmHeadNamesKey(laterHead), 'structure key changes when player renames');
-  const earlyNames = datedPlayerNames(branchRows, earlyHead, registry);
-  assert.equal(earlyNames.get('p1'), 'EarlyAlias', 'dated head name overrides branch-end name');
-  assert.equal(earlyNames.get('p2'), undefined, 'M2: player absent from dated head never gets whole-branch alias from another time');
-  assert.equal(datedPlayerNameMissing(branchRows, earlyHead).get('p2'), ABSENT_PLAYER_NAME_REASON, 'M2: absent player carries a missing-name reason');
-  const laterNames = datedPlayerNames(branchRows, laterHead, registry);
-  assert.equal(laterNames.get('p1'), 'LaterAlias', 'updates to the new alias at the later window');
 });

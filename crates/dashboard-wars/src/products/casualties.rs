@@ -537,7 +537,7 @@ impl Product for CasualtyBreakdown {
         let windows = manifest(&query)?;
         let mut reply = CasualtyBreakdownReply {
             branch_id: params.branch_id.clone(),
-            tag: query.holders.name(&params.country, query.timeline.last),
+            tag: query.holders.nearest_name(&params.country, query.timeline.last),
             available: true,
             windows: windows.clone(),
             window: params.window,
