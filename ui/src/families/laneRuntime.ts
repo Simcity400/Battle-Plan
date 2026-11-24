@@ -498,7 +498,6 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           ...(binding.staticPanels ? { staticPanels: binding.staticPanels } : {}),
           ...(binding.staticShifts ? { staticShifts: binding.staticShifts } : {}),
           ...(binding.staticAnswers ? { staticAnswers: binding.staticAnswers } : {}),
-          ...(binding.staticShifts ? { staticShifts: binding.staticShifts } : {}),
           ...(binding.hovers ? { hovers: binding.hovers } : {}),
           kind: binding.kind,
           ...(binding.pagedRows ? { pagedRows: binding.pagedRows } : {}),
