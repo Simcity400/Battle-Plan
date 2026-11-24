@@ -2,6 +2,7 @@ import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import {
   displayedHour,
+  FutureDataError,
   type ArtHandle,
   type BoundedReadView,
   type FamilyPlanContext,
@@ -13,13 +14,17 @@ import {
   type TimeChartProjection,
   type TimeChartWidgetDeclaration,
 } from '../../families/time-chart/declaration.ts';
+import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import type {
   ChartArtSlot,
   ChartGap,
+  ChartHoverDetail,
   ChartMarker,
   ChartMarkerItem,
   TimeChartSeriesModel,
 } from '../../families/time-chart/model.ts';
+import { notRecordedLabel } from '../../families/valueFormat.ts';
+import type { StabilityBreakdownReply } from '../../generated/dashboard';
 import {
   assignCountrySeriesColours,
   branchGapsOf,
@@ -29,6 +34,7 @@ import {
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 import { STABILITY_OPTIONS } from './definition.ts';
+import { breakdownRows, linesPerMeasure, type Measure } from './stabilityData.ts';
 
 export interface StabilityRawMarker {
   readonly id: string;
@@ -40,7 +46,7 @@ export interface StabilityRawMarker {
   readonly factionId?: string;
   readonly factionVerb?: 'Founded' | 'Joined' | 'Left';
   readonly fallbackFactionName?: string;
-  readonly iconUrl?: string | null;
+  readonly sprite?: string | null;
   readonly warAlert?: boolean;
 }
 
@@ -80,11 +86,68 @@ function resolveMarkerTitle(m: StabilityRawMarker, readView: BoundedReadView, li
   return m.title;
 }
 
+const BREAKDOWN_DECIMALS = 5;
+
+function breakdownDetail(readView: BoundedReadView, measures: readonly { readonly key: Measure; readonly label: string }[]): ChartHoverDetail | null {
+  let hover;
+  try {
+    hover = readView.hover<StabilityBreakdownReply>('hover');
+  } catch (error) {
+    if (error instanceof FutureDataError) return null;
+    throw error;
+  }
+  if (!hover || measures.length === 0) return null;
+  const reply = hover.data;
+  if (!reply.breakdown) {
+    return { hour: hover.hour, items: [{ label: 'Breakdown', missingReason: reply.missing ?? notRecordedLabel(), tone: 'muted' }] };
+  }
+  const items: TooltipListItem[] = [];
+  const perMeasure = linesPerMeasure(measures.length);
+  for (const measure of measures) {
+    const { rows } = breakdownRows(reply.breakdown, measure.key, BREAKDOWN_DECIMALS, measure.label, perMeasure);
+    rows.forEach((row, index) => items.push({
+      label: row.label,
+      ...(row.value !== undefined ? { value: row.value } : {}),
+      ...(row.tone ? { tone: row.tone } : {}),
+      ...(row.strong ? { strong: true } : {}),
+      ...(index === 0 && items.length > 0 ? { divider: true } : {}),
+      ...(index > 0 && !row.strong ? { indent: true } : {}),
+    }));
+  }
+  return { hour: hover.hour, items };
+}
+
 function markerPriority(m: StabilityRawMarker): number {
   if (m.warAlert) return 3;
-  if (m.kind === 'focus' && m.iconUrl) return 2;
-  if (m.kind === 'idea' && m.iconUrl) return 1;
+  if (m.kind === 'focus' && m.sprite) return 2;
+  if (m.kind === 'idea' && m.sprite) return 1;
   return 0;
+}
+
+interface MarkerDay {
+  readonly key: number;
+  readonly hour: number;
+  readonly markers: readonly StabilityRawMarker[];
+}
+
+const markerDayCache = new WeakMap<readonly StabilityRawMarker[], readonly MarkerDay[]>();
+
+function markerDays(raw: readonly StabilityRawMarker[]): readonly MarkerDay[] {
+  const held = markerDayCache.get(raw);
+  if (held) return held;
+  const byDay = new Map<number, StabilityRawMarker[]>();
+  for (const m of raw) {
+    const key = Math.floor(m.hour / 24);
+    let list = byDay.get(key);
+    if (!list) byDay.set(key, list = []);
+    list.push(m);
+  }
+  const days = [...byDay.entries()].map(([key, list]) => {
+    list.sort((a, b) => markerPriority(b) - markerPriority(a) || a.hour - b.hour || a.title.localeCompare(b.title));
+    return { key, hour: list[0]!.hour, markers: list };
+  }).sort((a, b) => a.hour - b.hour);
+  markerDayCache.set(raw, days);
+  return days;
 }
 
 export const stabilityProjection: TimeChartProjection<StabilityOptions> = registerTimeChart({
@@ -198,31 +261,22 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
 
     const markers: ChartMarker[] = [];
     if (single && options.rawMarkers.length > 0) {
-      const byDay = new Map<number, StabilityRawMarker[]>();
-      for (const m of options.rawMarkers) {
-        if (m.hour > hour || m.hour < options.extent[0]) continue;
-        const dayKey = Math.floor(m.hour / 24);
-        let list = byDay.get(dayKey);
-        if (!list) byDay.set(dayKey, list = []);
-        list.push(m);
-      }
-      const days = [...byDay.keys()].sort((a, b) => a - b);
-      for (const dayKey of days) {
-        const rawList = byDay.get(dayKey)!;
-        rawList.sort((a, b) => markerPriority(b) - markerPriority(a) || a.hour - b.hour || a.title.localeCompare(b.title));
-        const lead = rawList[0]!;
+      const days = markerDays(options.rawMarkers);
+      for (const day of days) {
+        if (day.hour > hour) break;
+        if (day.hour < options.extent[0]) continue;
         const iconSlot = (m: StabilityRawMarker): ChartArtSlot | undefined => {
           if (m.warAlert) return { art: readView.art(WAR_ALERT_ICON_HANDLE), label: 'War' };
-          if (m.iconUrl) return { art: readView.art({ kind: 'url', url: m.iconUrl }), label: m.title };
+          if (m.sprite) return { art: readView.art({ kind: 'sprite', key: m.sprite, frame: 0 }), label: m.title };
           return undefined;
         };
-        const items: ChartMarkerItem[] = rawList.map(m => ({
+        const items: ChartMarkerItem[] = day.markers.map(m => ({
           title: resolveMarkerTitle(m, readView, hour),
           icon: iconSlot(m),
         }));
         markers.push({
-          id: `stab-m:${dayKey}:${lead.id}`,
-          hour: lead.hour,
+          id: `stab-m:${day.key}:${day.markers[0]!.id}`,
+          hour: day.hour,
           title: items[0]!.title,
           icon: items[0]!.icon,
           items,
@@ -243,6 +297,12 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
       series,
       markers: markers.length > 0 ? markers : undefined,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
+      hoverDetail: single
+        ? breakdownDetail(readView, [
+            ...(options.showStability ? [{ key: 'stability' as const, label: 'Stability' }] : []),
+            ...(options.showWarSupport ? [{ key: 'warSupport' as const, label: 'War support' }] : []),
+          ])
+        : null,
       empty: !options.showStability && !options.showWarSupport
         ? { message: 'Both lines are switched off in the settings.' }
         : null,

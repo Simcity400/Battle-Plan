@@ -185,4 +185,8 @@ pub struct Artwork {
     pub base_duration_days: Option<f64>,
     #[doc = " The artwork URL of the first authored sprite frame."]
     pub icon: Option<String>,
+    #[doc = " The sprite the icon was drawn from, for the art resolver."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sprite: Option<String>,
 }

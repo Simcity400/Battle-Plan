@@ -21,7 +21,7 @@ function timeChartSpec<TModule>(
   kind: string,
   view: string,
   load: () => Promise<TModule>,
-  pick: (mod: TModule) => { readonly projection: TimeChartProjection<any>; readonly declaration: TimeChartWidgetDeclaration<any, any> },
+  pick: (mod: TModule) => { readonly projection: TimeChartProjection<any>; readonly declaration: TimeChartWidgetDeclaration<any, any, any> },
 ): () => Promise<FamilyViewModule> {
   return () => load().then(mod => {
     const { projection, declaration } = pick(mod);

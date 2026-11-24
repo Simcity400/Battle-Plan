@@ -1024,6 +1024,7 @@ impl Context {
             )
         };
         let mut findings = Vec::new();
+        let mut drawn_sprite = None;
         let icon = match self.selected_icon(token) {
             Err(finding) => {
                 findings.push(finding);
@@ -1048,7 +1049,10 @@ impl Context {
                     },
                 );
                 match drawn.get() {
-                    Ok(icon) => Some(icon.clone()),
+                    Ok(icon) => {
+                        drawn_sprite = Some(sprite.clone());
+                        Some(icon.clone())
+                    }
                     Err(why) if *why == undeclared => {
                         findings.push(placeholder(undeclared));
                         None
@@ -1064,6 +1068,7 @@ impl Context {
                 description: self.description(token),
                 base_duration_days: self.base_duration_days(token),
                 icon,
+                sprite: drawn_sprite,
             },
             findings,
         ))
@@ -1100,6 +1105,7 @@ impl Context {
                     description: self.description(token),
                     base_duration_days: self.base_duration_days(token),
                     icon: None,
+                    sprite: None,
                 }
             }
         };
@@ -1546,6 +1552,7 @@ impl Context {
                 description: None,
                 base_duration_days: self.base_duration_days(token),
                 icon: None,
+                sprite: None,
             };
             if matches!(projection, FocusProjection::Icons) {
                 return FocusItem { art, icon, text };
@@ -1667,6 +1674,7 @@ impl Context {
                 description: None,
                 base_duration_days: self.base_duration_days(token),
                 icon: None,
+                sprite: self.selected_icon(token).ok().flatten(),
             });
         }
         Ok((items, self.standing_warnings()))
@@ -1723,6 +1731,7 @@ impl Context {
                 description,
                 base_duration_days: self.base_duration_days(token),
                 icon: None,
+                sprite: None,
             });
         }
         Ok((items, self.standing_warnings()))

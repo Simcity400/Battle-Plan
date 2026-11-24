@@ -1,5 +1,6 @@
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { AuditRow } from '../../draw/notifications.ts';
+import type { TooltipListItem } from '../host/tooltips.ts';
 import type { ArtResult, BoundedSeries } from '../plan.ts';
 
 export { CHART_MEASURE_COLOURS };
@@ -149,6 +150,11 @@ export interface ChartOverlayLabel {
   readonly color?: string;
 }
 
+export interface ChartHoverDetail {
+  readonly hour: number;
+  readonly items: readonly TooltipListItem[];
+}
+
 export type ChartValueFormat = 'number' | 'percent' | 'compact' | 'signed1' | 'power';
 
 export interface ChartYAxisSpec {
@@ -177,6 +183,7 @@ export interface TimeChartModel {
   readonly legend?: readonly ChartLegendEntry[];
   readonly overlays?: readonly ChartOverlayLabel[];
   readonly note?: string | null;
+  readonly hoverDetail?: ChartHoverDetail | null;
   readonly warnings?: readonly string[];
   readonly empty?: {
     readonly message: string;

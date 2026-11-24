@@ -12,17 +12,15 @@ import { useCountryGroups } from '../../dashboard/useCountryGroups.ts';
 import DeclaredTimeChartWidget from '../../families/time-chart/DeclaredTimeChartWidget.tsx';
 import type {
   Artwork,
-  FocusArtworkParams,
-  FocusArtworkReply,
   FocusReply,
   HourSpan,
   IdeaHistoryReply,
   PartyHistoryReply,
 } from '../../generated/dashboard';
-import { validateFocusArtworkReply, validateFocusReply } from '../national-focus/focusData.ts';
+import { validateFocusReply } from '../national-focus/focusData.ts';
 import { partyBadges, validatePartyHistoryReply } from '../ruling-party/partyData.ts';
 import { STABILITY_OPTIONS } from './definition.ts';
-import StabilityBreakdownView from './StabilityBreakdownView.tsx';
+import StabilityDetail from './StabilityDetail.tsx';
 import { stabilityDeclaration, type StabilityRawMarker } from './stabilityProjection.ts';
 
 function inSpans(spans: readonly HourSpan[], hour: number): boolean {
@@ -90,34 +88,6 @@ export default function StabilityWidget(props: WidgetProps) {
     return out;
   }, [focus.data]);
 
-  const focusArtParams = useMemo<FocusArtworkParams | null>(() => {
-    if (!track || !singleTag || !wantFocus || completedFocuses.length === 0) return null;
-    const tokens = [...new Set(completedFocuses.map(f => f.token))].slice(0, 256);
-    if (!tokens.length) return null;
-    return {
-      branchId: track.branch.id,
-      hour: track.branch.lastHour,
-      country: countryFromKey(singleTag),
-      database: 'national',
-      tokens,
-      textOnly: false,
-      includeDescriptions: false,
-      iconsOnly: true,
-    };
-  }, [track, singleTag, wantFocus, completedFocuses]);
-
-  const focusArtReq = useMemo(
-    () => (track && focusArtParams
-      ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'focus-artwork', params: focusArtParams })
-      : null),
-    [track, focusArtParams],
-  );
-  const validateFocusArt = useMemo(
-    () => (focusArtParams ? (raw: unknown) => validateFocusArtworkReply(raw, focusArtParams) : undefined),
-    [focusArtParams],
-  );
-  const focusArt = useProduct<FocusArtworkReply>(runtime.client, focusArtReq, active && !pinnedBreakdown && wantFocus, validateFocusArt, track?.source);
-
   const rawMarkers = useMemo<readonly StabilityRawMarker[]>(() => {
     if (!track || !singleTag || pinnedBreakdown) return [];
     const branchFirst = track.branch.firstHour;
@@ -127,18 +97,16 @@ export default function StabilityWidget(props: WidgetProps) {
 
     if (wantFocus && completedFocuses.length > 0) {
       const staticNames = new Map((focus.data?.staticText ?? []).map(a => [a.token, a.name]));
-      const replyIcons = new Map((focus.data?.artwork ?? []).map(a => [a.token, a]));
-      const artIcons = new Map((focusArt.data?.items ?? []).map(i => [i.artwork.token, i.artwork]));
+      const replyArt = new Map((focus.data?.artwork ?? []).map(a => [a.token, a]));
       for (const entry of completedFocuses) {
-        const fetched = artIcons.get(entry.token);
-        const fallbackArt = replyIcons.get(entry.token);
-        const name = contentTitle(staticNames.get(entry.token) ?? fetched?.name ?? fallbackArt?.name, entry.token, 'Focus name unavailable');
+        const art = replyArt.get(entry.token);
+        const name = contentTitle(staticNames.get(entry.token) ?? art?.name, entry.token, 'Focus name unavailable');
         out.push({
           id: `focus:${entry.token}:${entry.hour}`,
           hour: entry.hour,
           kind: 'focus',
           title: `Focus: ${name}`,
-          iconUrl: fetched?.icon ?? fallbackArt?.icon ?? null,
+          sprite: art?.sprite ?? null,
         });
       }
     }
@@ -167,7 +135,7 @@ export default function StabilityWidget(props: WidgetProps) {
             hour: span.firstHour,
             kind: 'idea',
             title: `Law: ${ideaName(art, info, 'Idea name unavailable')}`,
-            iconUrl: art?.icon ?? null,
+            sprite: art?.sprite ?? null,
           });
         } else if (slot && seats.has(slot)) {
           const holderArt = span.character
@@ -181,7 +149,7 @@ export default function StabilityWidget(props: WidgetProps) {
             hour: span.firstHour,
             kind: 'idea',
             title: `Advisor: ${label}`,
-            iconUrl: holderArt?.icon ?? art?.icon ?? null,
+            sprite: holderArt?.sprite ?? art?.sprite ?? null,
           });
         }
       }
@@ -279,19 +247,25 @@ export default function StabilityWidget(props: WidgetProps) {
     }
 
     return out;
-  }, [track, singleTag, pinnedBreakdown, wantFocus, wantGov, wantWars, wantFactions, completedFocuses, focus.data, focusArt.data, ideas.data, parties.data, groups.data]);
+  }, [track, singleTag, pinnedBreakdown, wantFocus, wantGov, wantWars, wantFactions, completedFocuses, focus.data, ideas.data, parties.data, groups.data]);
 
   if (pinnedBreakdown) {
-    return <StabilityBreakdownView {...props} />;
+    return <StabilityDetail {...props} />;
   }
 
-  const markersSig = `${rawMarkers.length}:${focusArt.data?.items.length ?? 0}:${ideas.data?.spans.length ?? 0}:${groups.data?.warStarts.length ?? 0}`;
+  const markersSig = `${rawMarkers.length}:${focus.data?.artwork.length ?? 0}:${ideas.data?.spans.length ?? 0}:${groups.data?.warStarts.length ?? 0}`;
   return (
-    <DeclaredTimeChartWidget
+    <StabilityDetail
       {...props}
-      declaration={stabilityDeclaration}
-      extraOptions={rawMarkers}
-      extraBindingKey={markersSig}
+      chart={onActivate => (
+        <DeclaredTimeChartWidget
+          {...props}
+          declaration={stabilityDeclaration}
+          extraOptions={rawMarkers}
+          extraBindingKey={markersSig}
+          onActivate={onActivate}
+        />
+      )}
     />
   );
 }

@@ -444,8 +444,8 @@ describe('time-chart laneView integration', () => {
     const readView = createBoundedReadView({
       hour: until,
       series: new Map([
-        ['main', new Map([['GER', boundTiledSeries(mainLine, until, { headValue: knownValue(23) })]])],
-        ['ceiling', new Map([['GER', boundTiledSeries(capLine, until, { headValue: knownValue(150) })]])],
+        ['main', new Map([['GER', boundTiledSeries(mainLine, displayedHour(until), { headValue: knownValue(23) })]])],
+        ['ceiling', new Map([['GER', boundTiledSeries(capLine, displayedHour(until), { headValue: knownValue(150) })]])],
       ]),
     });
     const model = commandPowerProjection.project(readView, {
@@ -490,8 +490,8 @@ describe('time-chart laneView integration', () => {
     const readView = createBoundedReadView({
       hour: until,
       series: new Map([
-        ['stability', new Map([['GER', boundTiledSeries(stabLine, until, { headValue: knownValue(1.0) })]])],
-        ['warSupport', new Map([['GER', boundTiledSeries(warLine, until, { headValue: knownValue(0.9) })]])],
+        ['stability', new Map([['GER', boundTiledSeries(stabLine, displayedHour(until), { headValue: knownValue(1.0) })]])],
+        ['warSupport', new Map([['GER', boundTiledSeries(warLine, displayedHour(until), { headValue: knownValue(0.9) })]])],
       ]),
       identity: createSnapshotIdentityProvider(index),
     });
@@ -520,5 +520,35 @@ describe('time-chart laneView integration', () => {
     assert.deepEqual(fullLayout.yTicks, [0, 25, 50, 75, 100]);
     const minLayout = layoutTimeChart(model, 476, 186, FONT, measure);
     assert.deepEqual(minLayout.yTicks, [0, 50, 100]);
+
+    const formula = (valueRaw: string) => ({ valueRaw, terms: [], clampRaw: null });
+    const hoverAt = H1936 + 120;
+    const breakdown = {
+      tag: 'GER',
+      hour: hoverAt,
+      breakdown: { hour: hoverAt, readHour: hoverAt, language: 'english', stability: formula('80000'), warSupport: formula('35000'),
+        maxCommandPower: formula('15000000'), linesAvailable: false, modifiers: [] },
+      missing: null,
+      warnings: [],
+    };
+    const projectHovered = (hovers: Map<string, { hour: number; data: unknown }>) => stabilityProjection.project(createBoundedReadView({
+      hour: until,
+      series: new Map([['stability', new Map([['GER', boundTiledSeries(stabLine, displayedHour(until), { headValue: knownValue(1.0) })]])]]),
+      hovers,
+      identity: createSnapshotIdentityProvider(index),
+    }), { tags: ['GER'], extent: [H1936, until], gaps: [], surface: '#111111', showStability: true, showWarSupport: false, zoom: false, rawMarkers: [] });
+    const hovered = projectHovered(new Map([['hover', { hour: hoverAt, data: breakdown }]]));
+    assert.equal(hovered.hoverDetail?.hour, hoverAt);
+    const tip = deriveTimeChartTooltip(hovered, layoutTimeChart(hovered, 960, 276, FONT, measure), `plot:${hoverAt}`);
+    const labels = tip?.payload?.items?.map(item => `${item.label}=${item.value ?? ''}`) ?? [];
+    assert.ok(labels.includes('Total=80.0%'), `breakdown total in the hover card: ${labels.join(' | ')}`);
+    assert.equal(deriveTimeChartTooltip(hovered, layoutTimeChart(hovered, 960, 276, FONT, measure), `plot:${hoverAt + 1}`)
+      ?.payload?.items?.some(item => item.label === 'Total') ?? false, false, 'another hour shows no stale breakdown');
+
+    const missing = projectHovered(new Map([['hover', { hour: hoverAt, data: { ...breakdown, breakdown: null, missing: 'Stability inputs were not read' } }]]));
+    assert.equal(missing.hoverDetail?.items[0]?.missingReason, 'Stability inputs were not read');
+
+    const afterSeekBack = projectHovered(new Map([['hover', { hour: until + 24, data: breakdown }]]));
+    assert.equal(afterSeekBack.hoverDetail, null, 'a hover read after the displayed hour is never shown');
   });
 });
