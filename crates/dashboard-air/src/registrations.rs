@@ -13,6 +13,5 @@ dashboard_base::register_hourly_products! {
     AIR_ACES_AIRACESAT => crate::products::air_aces::AirAcesAt,
     REGIONAL_WEATHER_WEATHERPROVINCES => crate::products::regional_weather::WeatherProvinces,
     AIR_MISSIONS_AIRMISSIONSAT => crate::products::air_missions::AirMissionsAt,
-    AIR_MISSIONS_AIRMISSIONWINGSAT => crate::products::air_missions::AirMissionWingsAt,
     AIR_SUPERIORITY_AIRSUPERIORITYAT => crate::products::air_superiority::AirSuperiorityAt,
 }
