@@ -925,7 +925,7 @@ impl DivisionStatusRow {
             .copied()
             .flatten()
     }
-    pub fn career_counter(&self) -> Option<i32> {
+    pub fn casualties_taken(&self) -> Option<i32> {
         self.career_counter
             .require("DivisionStatus.career_counter")
             .ok()

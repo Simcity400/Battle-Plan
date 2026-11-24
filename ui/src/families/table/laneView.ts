@@ -6,10 +6,10 @@ import type { AuditRow } from '../../draw/notifications';
 import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
 import { sectionLiveValues, type LiveMap } from '../../draw/views/fields.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
-import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
+import { createLaneArtProvider, laneArtDemand, type ArtResolutions } from '../art/provider.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
 import { createBoundedReadView } from '../boundedView.ts';
-import type { ArtDemand, ArtProvider, BoundedReadView, EntityKind, IdentityDemand, IdentityProvider } from '../contract.ts';
+import type { ArtDemand, ArtHandle, ArtProvider, BoundedReadView, EntityKind, IdentityDemand, IdentityProvider } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
@@ -58,6 +58,7 @@ export interface FamilyTableBinding<TOptions = unknown> {
   readonly scrollTop: number;
   readonly theme?: TableTheme;
   readonly identitySnapshot?: IdentitySnapshot | null;
+  readonly artResolutions?: ArtResolutions;
   readonly rankWidth?: number;
   readonly selectedKey?: string | null;
   readonly focusedKey?: string | null;
@@ -93,6 +94,8 @@ interface HeldFamilyTable {
   content: string;
   art: LaneArtCache;
   identitySnapshot: IdentitySnapshot | null | undefined;
+  artResolutions: ArtResolutions | undefined;
+  artDemandsField: FieldEntry | null;
   identityIndex: IdentityIndex | null;
   identityProvider: IdentityProvider | undefined;
   artProvider: ArtProvider;
@@ -506,6 +509,8 @@ export function familyTableLaneView(
           content: content(),
           art,
           identitySnapshot: undefined,
+          artResolutions: undefined,
+          artDemandsField: null,
           identityIndex: null,
           identityProvider: undefined,
           artProvider: createLaneArtProvider(art),
@@ -579,12 +584,15 @@ export function familyTableLaneView(
         });
       }
       held.wake = () => wake(input.widget);
-      const snapshotChanged = held.identitySnapshot !== bound.identitySnapshot;
+      const snapshotChanged = held.identitySnapshot !== bound.identitySnapshot || held.artResolutions !== bound.artResolutions;
       if (snapshotChanged) {
-        held.identitySnapshot = bound.identitySnapshot;
-        held.identityIndex = bound.identitySnapshot ? IdentityIndex.fromSnapshot(bound.identitySnapshot) : null;
-        held.identityProvider = held.identityIndex ? createSnapshotIdentityProvider(held.identityIndex) : undefined;
-        held.artProvider = createLaneArtProvider(held.art, { index: held.identityIndex });
+        if (held.identitySnapshot !== bound.identitySnapshot) {
+          held.identitySnapshot = bound.identitySnapshot;
+          held.identityIndex = bound.identitySnapshot ? IdentityIndex.fromSnapshot(bound.identitySnapshot) : null;
+          held.identityProvider = held.identityIndex ? createSnapshotIdentityProvider(held.identityIndex) : undefined;
+        }
+        held.artResolutions = bound.artResolutions;
+        held.artProvider = createLaneArtProvider(held.art, { index: held.identityIndex, resolutions: bound.artResolutions });
       }
       if (held.canvas.width !== widthPx || held.canvas.height !== heightPx) {
         held.canvas.width = widthPx;
@@ -623,19 +631,20 @@ export function familyTableLaneView(
       } else {
         const pendingIdentityDemands = new Map<string, readonly [EntityKind, string, number]>();
         const demandedArt = new Set<string>();
+        const artAsks = new Map<string, ArtHandle>();
         const readView = readViewFromScene(input, bound, input.hour, {
           identity: held.identityProvider,
           onIdentityDemand: (kind, key, atHour) => {
             pendingIdentityDemands.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]);
           },
           art: held.artProvider,
-          onArtDemand: handle => {
-            const url = artUrlForHandle(handle, held!.identityIndex);
-            if (url) demandedArt.add(url);
-          },
+          onArtDemand: handle => laneArtDemand(handle, held!.identityIndex, bound.artResolutions, demandedArt, artAsks),
         });
         model = projection.project(readView, bound.options);
         held.demandedArtUrls = [...demandedArt];
+        held.artDemandsField = artAsks.size
+          ? { value: [...artAsks.values()], content: cachedField(held, 'artDemands', JSON.stringify([...artAsks.keys()]), content) }
+          : null;
         const demandsList = [...pendingIdentityDemands.values()];
         if (demandsList.length) {
           const dText = JSON.stringify(demandsList);
@@ -950,6 +959,7 @@ export function familyTableLaneView(
 
       if (held.widthsField) fields.widths = held.widthsField;
       if (held.identityDemandsField) fields.identityDemands = held.identityDemandsField;
+      if (held.artDemandsField) fields.artDemands = held.artDemandsField;
 
       const hasTree = !incrementalUsed && flatRows.some(item => item.kind === 'data' && item.isTreeGroup);
       if (modelChanged || layoutChanged || !held.metaField) {
