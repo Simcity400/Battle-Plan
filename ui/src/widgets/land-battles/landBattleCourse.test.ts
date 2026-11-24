@@ -3,6 +3,7 @@ import test from 'node:test';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { landBattleRows } from './landBattlesData.ts';
 import type { LandBattle, LandBattlesWindow } from './landBattlesData.ts';
+import { BATTLE_PARTIAL_REASON } from '../battles/battleRows.ts';
 import {
   battleOutcome,
   battleTooltip,
@@ -16,6 +17,7 @@ import {
   paintBattle,
   sameKnownSides,
   sideLook,
+  subText,
   validateLandBattleCourse,
   validateLandBattleTerrain,
   winners,
@@ -140,6 +142,12 @@ test('the tooltip is one compact summary: no per-design rows, whole equipment an
   assert.ok(tip.rows.every(entry => !entry.label.startsWith('Equipment lost ·') && !String(entry.value ?? '').includes('as of')));
   assert.equal(tip.rows.at(-1)?.value, 'Country B and 2 more won');
   assert.equal(tip.rows.find(entry => entry.label === 'Length')?.value, '11 hours');
+  const [joined] = landBattleRows(new Map([[0, window([battle({ start: { hour: 10, bound: 'by' } })])]]), 21, () => true, true);
+  const joinedTip = battleTooltip(joined, joined.sides.map(side => sideLook(side, names)), null, ['blue', 'orange'], false);
+  assert.deepEqual(['Length', 'Most divisions at once'].map(label => joinedTip.rows.find(entry => entry.label === label)?.valueState?.kind), ['partial', 'partial'],
+    'R2-K7: a battle first seen after it began keeps the partial mark on its length and peak');
+  assert.equal(joinedTip.rows.find(entry => entry.label === 'Length')?.valueState?.reason, BATTLE_PARTIAL_REASON);
+  assert.equal(subText(joined, null), '11 hours partial');
   assert.equal(battleTooltip({ ...row, place: { ...row.place, name: null } }, looks, null, ['blue', 'orange'], true).title, 'Loading…');
   assert.equal(battleTooltip({ ...row, place: { ...row.place, name: null } }, looks, null, ['blue', 'orange'], false).title, 'Unnamed province');
   const missingTip = battleTooltip({ ...row, provinceId: null, place: { ...row.place, name: null } }, looks, null, ['blue', 'orange'], false);

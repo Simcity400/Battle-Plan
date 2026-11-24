@@ -94,7 +94,7 @@ impl<'a> Links<'a> {
     }
 
     pub(crate) fn slot(&self, raw: u32) -> Option<u32> {
-        self.links.binary_search_by_key(&raw, |link| link.id).ok().map(|at| self.links[at].canonical_slot)
+        link_slot(self.links, raw)
     }
 
     pub(crate) fn slot_tag(&self, slot: u32) -> Option<String> {
@@ -104,6 +104,10 @@ impl<'a> Links<'a> {
     pub(crate) fn tag(&self, raw: u32) -> Option<String> {
         self.slot_tag(self.slot(raw)?)
     }
+}
+
+fn link_slot(links: &[CountryLinkRow], raw: u32) -> Option<u32> {
+    links.binary_search_by_key(&raw, |link| link.id).ok().map(|at| links[at].canonical_slot)
 }
 
 pub const EXILE_TABLES: [TableId; 5] = [TableId::Countries, TableId::CountryLinks, TableId::CountryStabilityInputs, TableId::SliceReads, TableId::CountryDeployedManpower];
@@ -120,9 +124,10 @@ pub fn exile_rows(frame: &DecodedFrame, include: impl Fn(u32, u32) -> bool) -> (
     let Ok(rows) = frame.complete::<tables::CountryStabilityInputs>() else {
         return (out, refusals);
     };
-    let links = Links::new(frame).ok();
-    let slot = |raw: u32| links.as_ref().and_then(|links| links.slot(raw));
-    let tag = |raw: u32| links.as_ref().and_then(|links| links.tag(raw));
+    let links = frame.complete::<tables::CountryLinks>().ok();
+    let slot = |raw: u32| links.and_then(|links| link_slot(links, raw));
+    let names = Links::new(frame).ok();
+    let tag = |raw: u32| names.as_ref().and_then(|names| names.tag(raw));
     let deployed = frame.complete::<tables::CountryDeployedManpower>().ok();
     let reads = frame.complete::<tables::SliceReads>().ok();
     for row in rows {

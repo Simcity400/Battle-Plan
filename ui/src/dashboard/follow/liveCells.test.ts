@@ -126,3 +126,9 @@ test('repliedCells preserves unsafe 64-bit integers from ordinary JSON head repl
     },
   }), /malformed/);
 });
+
+test('liveSection ignores occurrence tail live-count strings while still rejecting malformed live payloads', () => {
+  assert.equal(liveSection({ branchId: '1', total: '12', offset: '0', live: '3', rows: [] }), null);
+  assert.throws(() => liveSection({ live: 'bad' }), /malformed/);
+  assert.throws(() => liveSection({ live: '3' }), /malformed/);
+});

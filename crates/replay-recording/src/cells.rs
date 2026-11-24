@@ -85,11 +85,12 @@ pub struct Changes {
     pub written: Vec<Vec<u32>>,
     pub status_changed: bool,
     pub coverage_changed: bool,
+    pub witnessed: Vec<u32>,
 }
 
 impl Changes {
     pub fn quiet(&self) -> bool {
-        !self.anew && !self.status_changed && self.inserted.is_empty() && self.deleted.is_empty() && self.written.iter().all(Vec::is_empty)
+        !self.anew && !self.status_changed && self.inserted.is_empty() && self.deleted.is_empty() && self.written.iter().all(Vec::is_empty) && self.witnessed.is_empty()
     }
 
     fn clear(&mut self) {
@@ -99,10 +100,11 @@ impl Changes {
         self.written.iter_mut().for_each(Vec::clear);
         self.status_changed = false;
         self.coverage_changed = false;
+        self.witnessed.clear();
     }
 
     pub fn rows_moved(&self) -> bool {
-        self.anew || self.coverage_changed || !self.inserted.is_empty() || !self.deleted.is_empty() || self.written.iter().any(|slots| !slots.is_empty())
+        self.anew || self.coverage_changed || !self.witnessed.is_empty() || !self.inserted.is_empty() || !self.deleted.is_empty() || self.written.iter().any(|slots| !slots.is_empty())
     }
 }
 
@@ -202,6 +204,7 @@ pub struct TableReader {
     read: bool,
     sampled: Option<i32>,
     view: Vec<u32>,
+    witnessed_before: Vec<u32>,
     ordinal: Option<u32>,
     block: u32,
     entry: TableEntry,
@@ -264,6 +267,7 @@ impl TableReader {
             read: false,
             sampled: None,
             view: Vec::new(),
+            witnessed_before: Vec::new(),
             ordinal: None,
             block: 0,
             entry: TableEntry::default(),
@@ -472,9 +476,7 @@ impl TableReader {
             let before = (self.status, self.read, self.sampled);
             self.advance_log(recording, hour)?;
             self.ordinal = Some(next);
-            self.settle(hour)?;
-            self.changes.status_changed = before != (self.status, self.read, self.sampled);
-            self.changes.coverage_changed = (before.0, before.1) != (self.status, self.read);
+            self.settle_stepped(hour, before)?;
             return Ok(true);
         }
         if block != self.block {
@@ -499,10 +501,41 @@ impl TableReader {
         self.changes.inserted.dedup();
         self.changes.inserted.retain(|&slot| self.cells.live().get(slot));
         self.ordinal = Some(next);
+        self.settle_stepped(hour, before)?;
+        Ok(true)
+    }
+
+    fn settle_stepped(&mut self, hour: u16, before: (Status, bool, Option<i32>)) -> io::Result<()> {
+        std::mem::swap(&mut self.view, &mut self.witnessed_before);
         self.settle(hour)?;
         self.changes.status_changed = before != (self.status, self.read, self.sampled);
         self.changes.coverage_changed = (before.0, before.1) != (self.status, self.read);
-        Ok(true)
+        if matches!(before.0, Status::Truncated { .. }) && matches!(self.status, Status::Truncated { .. }) {
+            let (old, new) = (&self.witnessed_before, &self.view);
+            let (mut at, mut to) = (0, 0);
+            while at < old.len() || to < new.len() {
+                match (old.get(at), new.get(to)) {
+                    (Some(a), Some(b)) if a == b => {
+                        at += 1;
+                        to += 1;
+                    }
+                    (Some(&a), Some(&b)) if a < b => {
+                        self.changes.witnessed.push(a);
+                        at += 1;
+                    }
+                    (Some(_), Some(&b)) | (None, Some(&b)) => {
+                        self.changes.witnessed.push(b);
+                        to += 1;
+                    }
+                    (Some(&a), None) => {
+                        self.changes.witnessed.push(a);
+                        at += 1;
+                    }
+                    (None, None) => break,
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn go_to(&mut self, recording: &Recording, ordinal: u32) -> io::Result<()> {

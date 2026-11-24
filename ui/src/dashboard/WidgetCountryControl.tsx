@@ -6,10 +6,12 @@ import { resolveWidgetCampaign } from './campaigns';
 import { widgetDefinition } from './definitions';
 import type { WidgetRuntime } from './definitions';
 import type { CountrySelection, DashboardTemplate, WidgetSpec } from './model';
+import type { OptionValue } from './options';
 import { CountriesSection } from './settings/CountriesSection';
 
-export default function WidgetCountryControl({ widget, template, runtime, onApply, compact = false, onRegisterOpen, children }: {
+export default function WidgetCountryControl({ widget, template, runtime, onApply, setOption, compact = false, onRegisterOpen, children }: {
   widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime; onApply: (widget: WidgetSpec, view?: boolean) => void;
+  setOption: (key: string, value: OptionValue) => void;
   compact?: boolean; onRegisterOpen?: (open: (() => void) | undefined) => void; children: ReactNode;
 }) {
   const id = useId();
@@ -38,7 +40,7 @@ export default function WidgetCountryControl({ widget, template, runtime, onAppl
     </button>
     <Popover menu={menu} id={id} className="widget-countries-menu" aria-label={`${widget.title} countries`}>
       {menu.open && <CountriesSection inline widget={widget} reference={reference} runtime={runtime} limits={limits} onChange={save} />}
-      {menu.open && SubjectMenu && <SubjectMenu widget={widget} runtime={runtime} onApply={next => { onApply(next, true); menu.close(); }} />}
+      {menu.open && SubjectMenu && <SubjectMenu widget={widget} runtime={runtime} setOption={(key, value) => { setOption(key, value); menu.close(); }} />}
     </Popover>
   </>;
 }
