@@ -38,7 +38,7 @@ const BUTTERFLY_MEASURES = ['dealtAndTaken', 'dealt', 'taken', 'unknown', 'parti
 const butterflyReply = (unknownSov: number | null = 40) => reply(BUTTERFLY_MEASURES, [['SOV', 900, 300, 600, unknownSov, 0], ['GER', 700, 500, 200, 0, 3], ['ITA', null, null, null, null, null]]);
 
 const view = (panel: SeriesRankReply = butterflyReply()) => createBoundedReadView({ hour: displayedHour(500), panels: new Map<string, unknown>([['rank', panel]]), identity });
-const BUTTERFLY: CasualtiesOptions = { view: 'butterfly', includeUnknown: false, chosen: null, membership: null };
+const BUTTERFLY: CasualtiesOptions = { view: 'butterfly', includeUnknown: false, group: false };
 
 test('the butterfly keeps the product rank, puts casualties taken left and dealt right, and leaves the unrecorded last', () => {
   const model = casualtiesButterflyProjection.project(view(), BUTTERFLY);
@@ -77,6 +77,7 @@ const ctxOf = (countries: Record<string, unknown>): Ctx => ({
   branch: { id: '1' },
   options: {},
   countries: { all: false, top: null, every: [], tags: [], membership: null, ...countries },
+  widget: { countries: { kind: 'tags', tags: [] } },
 }) as unknown as Ctx;
 
 function askedAt(ctx: Ctx, name: string, hour: number): Readonly<Record<string, unknown>> | null {
@@ -95,12 +96,12 @@ test('under the default Top selection one rank reply carries every displayed mea
   assert.deepEqual((model.rows as BarsDataRow[]).map(row => formatBarsValueField(row.right!.value).text).slice(0, 2), ['300', '500'], 'recorded casualties are drawn, not missing');
 });
 
-test('a faction member that joins after the displayed hour is neither asked for nor drawn', () => {
-  const ctx = ctxOf({ tags: ['GER', 'ITA'], membership: { GER: [[0, 900]], ITA: [[600, 900]] } });
-  assert.deepEqual((askedAt(ctx, 'rank', 500) as { countries: unknown }).countries, ['GER']);
-  assert.deepEqual((askedAt(ctx, 'rank', 700) as { countries: unknown }).countries, ['GER', 'ITA']);
-  const before = ctxOf({ tags: ['GER', 'FIN'], membership: { GER: [[0, 900]], FIN: [[600, 900]] } });
-  const shown = (casualtiesButterflyProjection.project(view(), casualtiesButterflyDeclaration.projectionOptions(before)).rows as BarsDataRow[]).map(row => row.key);
-  assert.equal(shown.includes('FIN'), false, 'a member from tomorrow is not drawn today');
-  assert.equal(casualtiesButterflyProjection.nextChange?.(view(), casualtiesButterflyDeclaration.projectionOptions(before)), 600);
+test('a faction is sent as the group, resolved at the hour in Rust, and a known empty group says so', () => {
+  const faction = { kind: 'group', group: { type: 'faction', id: '42' }, membership: 'hour', aggregate: false };
+  const ctx = { ...ctxOf({ tags: ['GER', 'ITA'] }), widget: { countries: faction } } as unknown as Ctx;
+  const asked = askedAt(ctx, 'rank', 500) as { group?: unknown; countries?: unknown; top?: unknown };
+  assert.deepEqual([asked.group, asked.countries, asked.top], [{ type: 'faction', id: '42', membership: 'hour' }, undefined, undefined],
+    'the group, never the union of its members over time');
+  const empty = casualtiesButterflyProjection.project(view(reply(BUTTERFLY_MEASURES, [])), casualtiesButterflyDeclaration.projectionOptions(ctx));
+  assert.deepEqual([empty.empty, empty.emptyKind], ['No country of this group at this date.', 'empty']);
 });

@@ -1,7 +1,7 @@
 import { formatAmount, formatFixed, formatSigned } from '../../charts/valueAxis.ts';
 import { liveKey } from '../../charts/live.ts';
 import type { DeclaredCountryFilter, HourRanges, TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { lookAt, type CountryLooksMap } from '../../families/looks.ts';
+import { lookAt, nextLookChange, type CountryLooksMap } from '../../families/looks.ts';
 import {
   declareTableProjection,
   type DeclarativeColumnSpec,
@@ -10,7 +10,7 @@ import {
   type TableProjection,
   type TooltipExtraRow,
 } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { strengthBar, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, partialValue, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
@@ -94,11 +94,11 @@ function lawsOf(reply: OccupiedStatesReply) {
   return map;
 }
 
-export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions> = registerTableProjection(
+export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions> = registerFamilyProjection(
   declareTableProjection<OccupiedStatesReply, OccupiedRow, OccupiedProjectionOptions>({
     kind: 'occupied-states',
     validate: validateOccupiedStates,
-    nextChange: (readView, options) => filterNext(options.filter, readView.hour),
+    nextChange: (readView, options) => Math.min(filterNext(options.filter, readView.hour), nextLookChange(options.labels, readView.hour)),
     columns: (reply, options): readonly DeclarativeColumnSpec<OccupiedRow, OccupiedProjectionOptions>[] => {
       const laws = lawsOf(reply);
       const redBelow = reply.garrisonRedRaw === null ? undefined : BigInt(reply.garrisonRedRaw);

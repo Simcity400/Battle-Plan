@@ -79,6 +79,10 @@ pub struct LendLeaseBalanceReply {
     pub rows: Vec<LendLeaseRow>,
     #[doc = " Why the histories are not known at the hour."]
     pub missing: Option<String>,
+    #[doc = " Why the asked rank is not proven: a history names a country no identity resolves. A top then holds no rows."]
+    pub rank_missing: Option<String>,
+    #[doc = " Why a country not listed may still hold lend-lease or a roster place: a history or roster entry is unresolved, or the rosters were not read."]
+    pub unlisted: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -133,7 +137,7 @@ fn ranked(sums: BTreeMap<u32, [i128; 4]>, slots: &Slots, params: &LendLeaseBalan
 }
 
 fn reply(frame: &DecodedFrame, params: &LendLeaseBalanceParams, holder: Option<(&str, u32)>) -> io::Result<LendLeaseBalanceReply> {
-    let mut out = LendLeaseBalanceReply { holder: holder.map(|(tag, _)| tag.to_owned()), scale: SCALE, rows: Vec::new(), missing: None, warnings: Vec::new() };
+    let mut out = LendLeaseBalanceReply { holder: holder.map(|(tag, _)| tag.to_owned()), scale: SCALE, rows: Vec::new(), missing: None, rank_missing: None, unlisted: None, warnings: Vec::new() };
     let histories = match frame.complete::<tables::WarLendLeaseHistories>() {
         Ok(rows) => rows,
         Err(error) => {
@@ -184,19 +188,34 @@ fn reply(frame: &DecodedFrame, params: &LendLeaseBalanceParams, holder: Option<(
                     sums.entry(slot).or_default();
                 }
                 if unresolved > 0 {
-                    out.warnings.push(format!("{unresolved} war roster entries name a country with no identity; their totals are not known"));
+                    let why = format!("{unresolved} war roster entries name a country with no identity; their totals are not known");
+                    out.unlisted.get_or_insert_with(|| why.clone());
+                    out.warnings.push(why);
                 }
             }
-            Err(error) => out.warnings.push(format!("The war rosters are not recorded at this hour, so a country without a history is not known to have none: {error}")),
+            Err(error) => {
+                let why = format!("The war rosters are not recorded at this hour, so a country without a history is not known to have none: {error}");
+                out.unlisted.get_or_insert_with(|| why.clone());
+                out.warnings.push(why);
+            }
         }
     }
-    if orphans > 0 {
-        out.warnings.push(format!("{orphans} lend-lease histories name a country with no identity; they are left out"));
-    }
-    if strays > 0 {
-        out.warnings.push(format!("{strays} lend-lease histories name a partner with no identity; they are left out"));
+    let unattributed = match (orphans, strays) {
+        (0, 0) => None,
+        (0, strays) => Some(format!("{strays} lend-lease histories name a partner with no identity; they are left out")),
+        (orphans, _) => Some(format!("{orphans} lend-lease histories name a country with no identity; they are left out")),
+    };
+    if let Some(why) = &unattributed {
+        out.warnings.push(why.clone());
+        out.unlisted = Some(why.clone());
+        if params.rank.is_some() {
+            out.rank_missing = Some(why.clone());
+        }
     }
     out.rows = ranked(sums, &slots, params);
+    if out.rank_missing.is_some() && params.top.is_some() {
+        out.rows.clear();
+    }
     Ok(out)
 }
 

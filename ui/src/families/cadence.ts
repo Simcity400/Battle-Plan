@@ -66,8 +66,8 @@ export class TrailingFlushScheduler {
     this.timers = timers;
   }
 
-  sync(now: number, speed: number, onFlush: () => void): void {
-    let waitMs = Infinity;
+  sync(now: number, speed: number, onFlush: () => void, deadline = Infinity): void {
+    let waitMs = deadline > now ? deadline - now : deadline === Infinity ? Infinity : 1;
     if (speed > 0) {
       for (const gate of this.gates) {
         const ms = gate.remainingMs(now);
