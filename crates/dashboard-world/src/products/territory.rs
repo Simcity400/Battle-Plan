@@ -165,7 +165,7 @@ impl AtHour for TerritoryShare {
     }
 
 
-    const CLOCK_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
 
     fn projection(params: &Self::Params, table: TableId, _plan: &[(Vec<dashboard_base::products::at_hour::Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         (table == TableId::TerritoryTotals).then(|| vec![MEASURES.iter().position(|&m| m == params.measure).expect("validated measure")])
@@ -342,6 +342,7 @@ impl AtHour for TerritoryBreakdown {
     const KEY: &'static str = "territory-breakdown";
     const TITLE: &'static str = "Territory breakdown";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = TerritoryBreakdownParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, measure, rule];
     type Reply = TerritoryBreakdownReply;

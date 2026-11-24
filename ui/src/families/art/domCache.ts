@@ -94,6 +94,7 @@ export class DomArtCache<TImage extends DomArtImage = HTMLImageElement> {
       case 'noArtExpected':
       case 'pending':
       case 'confirmedMissing':
+      case 'unavailable':
       case 'refused':
         return resolution;
       case 'failed':

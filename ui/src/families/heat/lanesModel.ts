@@ -1,7 +1,7 @@
-import type { AuditRow } from '../../draw/notifications';
+import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import type { ArtHandle, BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
-import { formatDateOnly } from '../valueFormat.ts';
+import { formatDateOnly, formatShare } from '../valueFormat.ts';
 import type { HeatPart } from './scale.ts';
 
 export type HeatLaneCell =
@@ -45,6 +45,7 @@ export type HeatLaneReadout =
       readonly swatch?: string | 'hollow';
       readonly primary: string;
       readonly secondary?: string;
+      readonly meaning?: string;
       readonly tone?: 'positive' | 'negative' | 'neutral' | 'muted';
       readonly color?: string;
       readonly audit?: string;
@@ -69,6 +70,7 @@ export interface HeatLaneRow {
   readonly flag?: ArtHandle | null;
   readonly flagPending?: boolean;
   readonly pinned?: boolean;
+  readonly region?: number;
   readonly runs: readonly HeatLaneRun[];
   readonly readout?: HeatLaneReadout;
   readonly meta?: unknown;
@@ -94,6 +96,12 @@ export interface HeatLaneLegend {
   readonly rightNote?: string;
 }
 
+export interface HeatLaneRegions {
+  readonly pickedHeading: string;
+  readonly automaticHeading: string;
+  readonly addLabel: string;
+}
+
 export interface HeatLaneGap {
   readonly firstHour: number;
   readonly lastHour: number;
@@ -109,6 +117,7 @@ export interface HeatLanesModel {
   readonly gaps?: readonly HeatLaneGap[];
   readonly legend?: HeatLaneLegend;
   readonly rows: readonly HeatLaneRow[];
+  readonly regions?: HeatLaneRegions;
   readonly readoutWidth?: number;
   readonly rowHeight?: number;
   readonly inspect?: (rowIndex: number, hour: number) => FamilyTooltipPayload | null;
@@ -182,7 +191,8 @@ export function readoutAuditText(readout: HeatLaneReadout | undefined): string {
   if (!readout) return '';
   if (readout.audit !== undefined) return readout.audit;
   if (readout.kind === 'value') {
-    return readout.secondary ? `${readout.primary} (${readout.secondary})` : readout.primary;
+    const note = readout.secondary ?? readout.meaning;
+    return note ? `${readout.primary} (${note})` : readout.primary;
   }
   if (readout.kind === 'clear') return readout.label;
   return readout.figure ? `${readout.figure} not recorded` : `Not recorded (${readout.reason})`;
@@ -193,7 +203,8 @@ function readoutTooltip(row: HeatLaneRow, hour: number): FamilyTooltipPayload {
   if (!readout) return { title: row.label, hour, missingReason: 'Not recorded at this hour' };
   if (readout.kind === 'missing') return { title: row.label, hour, missingReason: readout.reason };
   if (readout.kind === 'clear') return { title: row.label, hour, items: [{ label: readout.label, tone: 'muted' }] };
-  return { title: row.label, hour, exactValue: readout.primary, ...(readout.secondary ? { note: readout.secondary } : {}) };
+  const note = readout.secondary ?? readout.meaning;
+  return { title: row.label, hour, exactValue: readout.primary, ...(note ? { note } : {}) };
 }
 
 export function laneCellTooltip(title: string, hour: number, cell: HeatLaneCell): FamilyTooltipPayload {
@@ -203,7 +214,7 @@ export function laneCellTooltip(title: string, hour: number, cell: HeatLaneCell)
   return {
     title,
     hour,
-    items: cell.parts.map(part => ({ label: part.label, value: part.text ?? `${Math.round(part.share * 100)}%`, swatch: part.color })),
+    items: cell.parts.map(part => ({ label: part.label, value: part.text ?? formatShare(part.share), swatch: part.color })),
   };
 }
 
@@ -229,7 +240,7 @@ function cellAuditText(cell: HeatLaneCell): string {
   if (cell.kind === 'gap') return `Gap (${cell.reason ?? 'Recording gap'})`;
   if (cell.kind === 'clear') return cell.label ?? 'Clear';
   if (cell.kind === 'solid') return cell.label ? `${cell.label} ${cell.color}` : cell.color;
-  return cell.parts.map(part => `${part.label} ${part.text ?? `${Math.round(part.share * 100)}%`} ${part.color}`).join(', ');
+  return cell.parts.map(part => `${part.label} ${part.text ?? formatShare(part.share)} ${part.color}`).join(', ');
 }
 
 function laneAuditText(row: HeatLaneRow, hour: number): string {
@@ -245,17 +256,17 @@ function laneAuditText(row: HeatLaneRow, hour: number): string {
 export function deriveLanesAudit(
   model: HeatLanesModel,
   window: { readonly firstRow: number; readonly endRow: number },
-): readonly AuditRow[] {
+): readonly FamilyAuditRow[] {
   const first = Math.max(0, window.firstRow);
   const end = Math.min(model.rows.length, window.endRow);
-  const out: AuditRow[] = [];
+  const out: FamilyAuditRow[] = [];
   for (let i = first; i < end; i++) {
     const row = model.rows[i]!;
-    out.push({ key: `${row.id}:readout`, row: row.id, value: row.audit ?? readoutAuditText(row.readout) });
-    out.push({ key: `${row.id}:lane`, row: row.id, value: laneAuditText(row, model.hour) });
+    out.push(auditCell(row.id, 'readout', row.audit ?? readoutAuditText(row.readout)));
+    out.push(auditCell(row.id, 'lane', laneAuditText(row, model.hour)));
   }
   const gaps = (model.gaps ?? []).filter(gap => gap.firstHour <= model.hour).map(gap => `${gap.firstHour}-${Math.min(gap.lastHour, model.hour)}`);
-  if (gaps.length) out.push({ key: 'gaps', row: 'gaps', value: gaps.join('; ') });
+  if (gaps.length) out.push(auditRow('gaps', gaps.join('; ')));
   return out;
 }
 

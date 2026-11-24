@@ -151,12 +151,11 @@ export function courseEquipment(course: LandCourse, at: number): { hour: number;
 export const wholeEquipment = (raw: bigint) => formatFixed(raw, 5, 0);
 export const exactEquipment = (raw: bigint) => formatAmount(raw, 5, 5);
 
-export function lengthText(hours: number, atLeast: boolean, long: boolean): string {
+export function lengthText(hours: number, _atLeast: boolean, long: boolean): string {
   const days = Math.floor(hours / 24), rest = hours % 24;
   const unit = (count: number, one: string, many: string) => `${usNumber.format(count)} ${count === 1 ? one : many}`;
-  const text = days === 0 ? unit(hours, 'hour', 'hours')
+  return days === 0 ? unit(hours, 'hour', 'hours')
     : long && rest ? `${unit(days, 'day', 'days')} ${unit(rest, 'hour', 'hours')}` : unit(days, 'day', 'days');
-  return atLeast ? `at least ${text}` : text;
 }
 
 export interface SideLook { countries: { tag: string; hour: number; name: string; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean }[]; name: string | null; unknown: string | null }
@@ -178,8 +177,8 @@ export function lossNote(row: LandBattleRow): string | undefined {
   return `${row.lossRead.terminal ? 'Final losses' : 'Losses so far'}, read ${formatDateTime(row.lossRead.hour)}`;
 }
 
-export const peakText = (peak: { value: number; hour: number } | null, atLeast = false) =>
-  peak === null ? 'Not recorded' : `${atLeast ? 'at least ' : ''}${usNumber.format(peak.value)}, ${dayLabel(peak.hour)}`;
+export const peakText = (peak: { value: number; hour: number } | null, _atLeast = false) =>
+  peak === null ? 'Not recorded' : `${usNumber.format(peak.value)}, ${dayLabel(peak.hour)}`;
 
 const SIDES = ['Attackers', 'Defenders'] as const;
 const placeName = (row: LandBattleRow, pending: boolean) => row.place.name ?? (row.provinceId === null ? 'Province not recorded' : pending ? 'Loading…' : 'Unnamed province');

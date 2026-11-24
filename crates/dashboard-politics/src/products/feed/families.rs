@@ -221,8 +221,15 @@ pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadConte
     if wanted(EventFeedKind::FactionJoined) {
         for faction in &reply.factions {
             let name = |hour: i32| {
-                let named = faction.names.iter().find(|run| run.first_hour <= hour && hour <= run.last_hour).and_then(|run| run.name.clone()).or_else(|| faction.name.clone());
-                Some(EventFeedItem { token: (!faction.recorded_name.is_empty()).then(|| faction.recorded_name.clone()), name: named, icon: None, description: None, ..Default::default() })
+                let named = faction
+                    .names
+                    .iter()
+                    .find(|run| run.first_hour <= hour && hour <= run.last_hour)
+                    .and_then(|run| run.name.as_deref())
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned);
+                let name_missing = named.is_none().then(|| "Faction name not recorded at this hour".to_owned());
+                Some(EventFeedItem { token: (!faction.recorded_name.is_empty()).then(|| faction.recorded_name.clone()), name: named, icon: None, description: None, name_missing, ..Default::default() })
             };
             for member in &faction.members {
                 if within(member.first_hour) && follows_observed(query, &reply.unobserved.factions, member.first_hour) {

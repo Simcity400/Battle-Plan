@@ -73,7 +73,7 @@ test('raidTallyRaceProjection handles default Top unpopulated panel, split launc
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.equal(rows.length, 2);
   assert.equal(rows[0]!.numeric, 10);
-  assert.equal(rows[0]!.readout?.primary, '10+ \u00b7 6+');
+  assert.equal(rows[0]!.readout?.primary, '10 \u00b7 6');
   assert.deepEqual(rows[0]!.segments?.map(s => [s.key, s.share, Boolean(s.hatched)]), [
     ['succeeded', 0.6, false],
     ['other', 0.4, true],

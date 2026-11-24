@@ -151,6 +151,7 @@ impl AtHour for FactionRosters {
     const KEY: &'static str = "faction-rosters";
     const TITLE: &'static str = "Faction rosters";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = FactionRostersParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = FactionRostersReply;
@@ -508,7 +509,7 @@ impl AtHour for FactionTotalsAt {
     const KEY: &'static str = "faction-totals-at";
     const TITLE: &'static str = "Faction totals";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = FactionTotalsAtParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, kind, measure, top, members, "members[]"];
     type Reply = FactionTotalsAtReply;

@@ -397,16 +397,13 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
     assert.match(fallbackHtml, /data-state="loading"/, 'lazy widget fallback renders WidgetState loading');
     assert.doesNotMatch(fallbackHtml, /dash-empty|role="status"/);
 
-    const { default: Research } = await realVite.ssrLoadModule('/ui/src/widgets/research/ResearchWidget.tsx');
     const { default: ActiveResearch } = await realVite.ssrLoadModule('/ui/src/widgets/active-research/ActiveResearchView.tsx');
     const emptyRuntime = { tracks: [], campaignTracks: [], defaultRoleId: null, maps: {}, client: { available: true },
       clock: { getHour: () => 0, getSnapshot: () => ({ playing: false, hoursPerSecond: 1 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } } as unknown as WidgetRuntime;
-    const baseWidget = { id: 'r', kind: 'research', configVersion: 1, title: 'Research', campaign: 'default', trackIds: [], time: { mode: 'follow' }, countries: { kind: 'all' }, options: {} } as WidgetSpec;
-    for (const [name, Component] of [['research', Research], ['active-research', ActiveResearch]] as const) {
-      const html = renderToStaticMarkup(createElement(Component as never, { widget: baseWidget, runtime: emptyRuntime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} } as never));
-      assert.match(html, /data-state="empty"/, `${name} routes empty state through WidgetState`);
-      assert.doesNotMatch(html, /dash-empty/, `${name} does not render raw dash-empty`);
-    }
+    const baseWidget = { id: 'r', kind: 'active-research', configVersion: 1, title: 'Active research', campaign: 'default', trackIds: [], time: { mode: 'follow' }, countries: { kind: 'all' }, options: {} } as WidgetSpec;
+    const html = renderToStaticMarkup(createElement(ActiveResearch as never, { widget: baseWidget, runtime: emptyRuntime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} } as never));
+    assert.match(html, /data-state="empty"/, 'active-research routes empty state through WidgetState');
+    assert.doesNotMatch(html, /dash-empty/, 'active-research does not render raw dash-empty');
 
     const { default: WidgetViewSwitch } = await realVite.ssrLoadModule('/ui/src/dashboard/WidgetViewSwitch.tsx');
     const roSwitch = renderToStaticMarkup(createElement(WidgetViewSwitch as never, {

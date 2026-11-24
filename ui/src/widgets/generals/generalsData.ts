@@ -84,7 +84,7 @@ export function topLeader(rows: readonly LeaderRow[]): LeaderRow | null {
 
 export const recordedSince = (firstSeen: number | null, recordingStart: number) => `Battles since ${formatDateTime(firstSeen ?? recordingStart)}`;
 
-const atLeast = (partial: boolean, count: number | null) => count == null ? '—' : partial ? `at least ${count}` : String(count);
+const atLeast = (_partial: boolean, count: number | null) => count == null ? '—' : String(count);
 
 export function traitDateText(date: TraitDate | null): string {
   return date ? `${DATES[date[1]] ?? 'Held by'} ${formatDateTime(date[0])}` : 'Date not recorded';

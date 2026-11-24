@@ -19,18 +19,24 @@ import {
   drawScrollFade,
   drawSplitBar,
   resolveKitTokens,
+  drawAddRow,
+  drawRowGrip,
+  drawRowRemoveButton,
+  drawRowSectionLabel,
+  ROW_REMOVE_SIZE,
+  rowGripBox,
+  rowRemoveBox,
 } from '../../draw/kit.ts';
 import { drawMediaSlot, toArtSlotState, urlToArt } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { ArtResult } from '../art/types.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
-import { formatCompactScalar, formatValueState, notRecordedLabel } from '../valueFormat.ts';
+import { formatCompactScalar, formatShare, formatValueState, notRecordedLabel } from '../valueFormat.ts';
 import { mix } from '../../shell/appearance/color.ts';
 import type { FamilyTheme } from '../contract.ts';
 import {
   BARS_PAD_X,
-  BARS_REMOVE_BUTTON_SIZE,
   BARS_VALUE_GAP,
   visibleBarsRange,
   type BarsLayout,
@@ -42,6 +48,7 @@ import {
   type BarsSegment,
   type BarsValueField,
 } from './model.ts';
+import { drawCaptionSides, drawPickList } from './pickList.ts';
 
 export interface BarsGlideOffset {
   readonly fromY: number;
@@ -73,7 +80,7 @@ export interface BarsPaintStats {
 }
 
 export interface BarsHitResult {
-  readonly kind: 'none' | 'row' | 'right-row' | 'remove-region' | 'add-region';
+  readonly kind: 'none' | 'row' | 'right-row' | 'remove-region' | 'grip-region' | 'add-region';
   readonly rowKey?: string;
   readonly segmentKey?: string;
   readonly side?: 'left' | 'right';
@@ -138,7 +145,7 @@ function drawShareSegments(
       ctx.fillRect(cursor, y, segW, height);
     }
     if (!seg.hatched && segW >= 34) {
-      const pctText = `${Math.round(seg.share * 100)}%`;
+      const pctText = formatShare(seg.share);
       const fullText = seg.inlineLabel ?? `${seg.label} ${pctText}`;
       ctx.font = `600 11px ${theme.font}`;
       ctx.fillStyle = contrastInkForFill(readableColour(seg.color, theme.surface), theme);
@@ -256,9 +263,9 @@ function drawHeader(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: 
       ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
       ctx.fillStyle = theme.text;
       ctx.textAlign = 'left';
-      ctx.fillText(ellipsise(model.caption, layout.width - BARS_PAD_X * 2, s => textWidth(ctx, s)), BARS_PAD_X, middleY);
+      ctx.fillText(ellipsise(model.caption, layout.width - layout.bodyLeft - BARS_PAD_X * 2, s => textWidth(ctx, s)), layout.bodyLeft + BARS_PAD_X, middleY);
     }
-    if (model.captionRight) {
+    if (model.captionRight && !model.captionSides?.length) {
       ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'right';
@@ -306,6 +313,9 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
   ctx.clearRect(0, 0, layout.width, layout.height);
 
   drawHeader(ctx, model, layout, theme);
+  if (model.captionSides?.length && layout.headerHeight > 0) {
+    drawCaptionSides(ctx, model.captionSides, layout.width - BARS_PAD_X, layout.headerTop + layout.headerHeight / 2, theme, { ...(icons ? { icons } : {}), ...(artCache ? { artCache } : {}) });
+  }
   if (layout.showAxis) drawAxis(ctx, model, layout, theme);
 
   const { first, last } = visibleBarsRange(layout, scrollTop);
@@ -314,7 +324,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
 
   ctx.save();
   ctx.beginPath();
-  ctx.rect(0, layout.bodyTop, layout.width, layout.bodyHeight);
+  ctx.rect(layout.bodyLeft, layout.bodyTop, layout.width - layout.bodyLeft, layout.bodyHeight);
   ctx.clip();
 
   if (model.form === 'net' || (model.form === 'two-sided' && layout.twoSidedLayout !== 'stacked-pair')) {
@@ -338,36 +348,15 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
     paintedRows++;
 
     if (item.kind === 'section') {
-      ctx.save();
-      ctx.font = `${LABEL_WEIGHT} 11px ${theme.font}`;
-      ctx.fillStyle = theme.muted;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(item.label, BARS_PAD_X, middleY);
-      ctx.restore();
+      drawRowSectionLabel(ctx, layout.nameX, y, rowH, item.label, theme);
       continue;
     }
 
     if (item.kind === 'add-region') {
       const hovered = inspectedKey === item.key;
-      if (hovered) drawRowHover(ctx, 0, y, layout.width, rowH, theme);
-      if (focusedKey === item.key) drawRowFocusRing(ctx, 0, y, layout.width, rowH, theme);
-      ctx.save();
-      ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
-      ctx.fillStyle = theme.accent;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(`+ ${item.label}`, layout.nameX, middleY);
-      ctx.strokeStyle = tokens.hairlineStrong;
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 4]);
-      const py = Math.floor(middleY) + 0.5;
-      ctx.beginPath();
-      ctx.moveTo(layout.plotLeft, py);
-      ctx.lineTo(layout.plotRight, py);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.restore();
+      if (hovered) drawRowHover(ctx, layout.bodyLeft, y, layout.width - layout.bodyLeft, rowH, theme);
+      if (focusedKey === item.key) drawRowFocusRing(ctx, layout.bodyLeft, y, layout.width - layout.bodyLeft, rowH, theme);
+      drawAddRow(ctx, layout.nameX, middleY, layout.plotLeft, layout.plotRight, item.label, theme);
       continue;
     }
 
@@ -376,18 +365,19 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
     const isSelected = selectedKey === row.key || (row.rightSide && selectedKey === row.rightSide.key);
     const isFocused = focusedKey === row.key || (row.rightSide && focusedKey === row.rightSide.key);
 
-    if (isSelected) drawRowSelected(ctx, 0, y, layout.width, rowH, theme);
-    else if (isHovered) drawRowHover(ctx, 0, y, layout.width, rowH, theme);
-    if (isFocused) drawRowFocusRing(ctx, 0, y, layout.width, rowH, theme);
+    if (isSelected) drawRowSelected(ctx, layout.bodyLeft, y, layout.width - layout.bodyLeft, rowH, theme);
+    else if (isHovered) drawRowHover(ctx, layout.bodyLeft, y, layout.width - layout.bodyLeft, rowH, theme);
+    if (isFocused) drawRowFocusRing(ctx, layout.bodyLeft, y, layout.width - layout.bodyLeft, rowH, theme);
     if (model.form === 'net' && i < model.rows.length - 1) {
-      drawRowHairline(ctx, BARS_PAD_X, layout.width - BARS_PAD_X, y + rowH - 1, theme, 'normal');
+      drawRowHairline(ctx, layout.bodyLeft + BARS_PAD_X, layout.width - BARS_PAD_X, y + rowH - 1, theme, 'normal');
     }
 
-    drawMediaSlot(ctx, BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, { icons, artCache, radius: 2 });
+    drawMediaSlot(ctx, layout.bodyLeft + BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, { icons, artCache, radius: 2 });
 
     if (layout.nameWidth > 0) {
-      const reserveRemove = row.removable && (isHovered || isFocused) ? BARS_REMOVE_BUTTON_SIZE + 4 : 0;
-      const nameColor = row.labelMissing || row.muted || row.group === 'auto' ? theme.muted : theme.text;
+      const regionTools = row.region !== undefined && (isHovered || isFocused);
+      const reserveRemove = regionTools ? ROW_REMOVE_SIZE + 4 : 0;
+      const nameColor = row.labelMissing || row.muted ? theme.muted : row.group === 'auto' ? tokens.autoName : theme.text;
       const fitted = drawNameSlot(
         ctx,
         row.labelMissing ? notRecordedLabel('Name') : row.label,
@@ -399,20 +389,9 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         { color: nameColor, weight: model.form === 'net' ? 500 : 400 },
       );
       if (fitted.truncated) truncatedKeys.push(row.key);
-      if (row.removable && (isHovered || isFocused)) {
-        const bx = layout.nameX + layout.nameWidth - BARS_REMOVE_BUTTON_SIZE;
-        const by = Math.round(middleY - BARS_REMOVE_BUTTON_SIZE / 2);
-        ctx.save();
-        ctx.fillStyle = tokens.barMuted;
-        ctx.beginPath();
-        ctx.roundRect(bx, by, BARS_REMOVE_BUTTON_SIZE, BARS_REMOVE_BUTTON_SIZE, 4);
-        ctx.fill();
-        ctx.fillStyle = theme.text;
-        ctx.font = `500 11px ${theme.font}`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('\u00d7', bx + BARS_REMOVE_BUTTON_SIZE / 2, middleY);
-        ctx.restore();
+      if (regionTools) {
+        drawRowGrip(ctx, layout.nameX, middleY, theme);
+        drawRowRemoveButton(ctx, layout.nameX + layout.nameWidth, middleY, theme);
       }
     }
 
@@ -567,7 +546,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         const rightName = drawNameSlot(
           ctx,
           right.labelMissing ? notRecordedLabel('Name') : right.label,
-          layout.rightNameX,
+          layout.rightNameX + layout.rightNameWidth,
           y,
           layout.rightNameWidth,
           rowH,
@@ -769,18 +748,55 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
   ctx.restore();
 
   if (layout.legendHeight > 0 && (model.legend?.length || model.scaleUnit)) {
-    drawLegendStrip(ctx, 0, layout.legendTop, layout.width, layout.legendHeight, {
-      entries: (model.legend ?? []).map(entry => ({
-        label: entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label,
-        color: entry.color,
-        ...(entry.hatched ? { hatch: true } : {}),
-      })),
-      ...(model.scaleUnit ? { rightNote: model.scaleUnit } : {}),
-      padX: BARS_PAD_X,
-      entryGap: 14,
-    }, theme);
+    const entries = (model.legend ?? []).map(entry => ({
+      label: entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label,
+      color: entry.color,
+      ...(entry.hatched ? { hatch: true } : {}),
+    }));
+    const rowCount = Math.max(1, Math.round(layout.legendHeight / 22));
+    if (rowCount > 1 && entries.length > 1) {
+      const rowH = layout.legendHeight / rowCount;
+      const entryGap = 14;
+      ctx.save();
+      ctx.font = `500 ${theme.fontSize.small}px ${theme.font}`;
+      const rightReserve = model.scaleUnit ? Math.min(Math.floor(layout.width * 0.3), Math.ceil(textWidth(ctx, model.scaleUnit))) + entryGap : 0;
+      const row1Limit = Math.max(80, layout.width - BARS_PAD_X * 2 - rightReserve);
+      let used = 0;
+      let splitAt = entries.length;
+      for (let i = 0; i < entries.length; i++) {
+        const w = 18 + Math.ceil(textWidth(ctx, entries[i]!.label));
+        const next = used + (i > 0 ? entryGap : 0) + w;
+        if (i > 0 && next > row1Limit) {
+          splitAt = i;
+          break;
+        }
+        used = next;
+      }
+      ctx.restore();
+      drawLegendStrip(ctx, 0, layout.legendTop, layout.width, rowH, {
+        entries: entries.slice(0, splitAt),
+        ...(model.scaleUnit ? { rightNote: model.scaleUnit } : {}),
+        padX: BARS_PAD_X,
+        entryGap,
+      }, theme);
+      if (splitAt < entries.length) {
+        drawLegendStrip(ctx, 0, layout.legendTop + rowH, layout.width, rowH, {
+          entries: entries.slice(splitAt),
+          padX: BARS_PAD_X,
+          entryGap,
+        }, theme);
+      }
+    } else {
+      drawLegendStrip(ctx, 0, layout.legendTop, layout.width, layout.legendHeight, {
+        entries,
+        ...(model.scaleUnit ? { rightNote: model.scaleUnit } : {}),
+        padX: BARS_PAD_X,
+        entryGap: 14,
+      }, theme);
+    }
   }
 
+  if (model.pickList) drawPickList(ctx, model.pickList, layout, theme, inspectedKey ?? null, focusedKey ?? null);
   return { paintedRows, truncatedKeys };
 }
 
@@ -804,12 +820,11 @@ export function hitFamilyBars(
     if (point.y < y || point.y >= y + rowH) continue;
     if (item.kind === 'section') return { kind: 'none' };
     if (item.kind === 'add-region') return { kind: 'add-region', rowKey: item.key };
-    if (item.removable && removeShown?.has(item.key)) {
-      const bx = layout.nameX + layout.nameWidth - BARS_REMOVE_BUTTON_SIZE;
-      const by = Math.round(y + rowH / 2 - BARS_REMOVE_BUTTON_SIZE / 2);
-      if (point.x >= bx && point.x <= layout.nameX + layout.nameWidth && point.y >= by && point.y <= by + BARS_REMOVE_BUTTON_SIZE) {
-        return { kind: 'remove-region', rowKey: item.key };
-      }
+    if (item.region !== undefined && removeShown?.has(item.key)) {
+      const inside = (box: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }) =>
+        point.x >= box.x && point.x <= box.x + box.width && point.y >= box.y && point.y <= box.y + box.height;
+      if (inside(rowRemoveBox(layout.nameX + layout.nameWidth, y + rowH / 2))) return { kind: 'remove-region', rowKey: item.key };
+      if (inside(rowGripBox(layout.nameX, y + rowH / 2))) return { kind: 'grip-region', rowKey: item.key };
     }
     if (model.form === 'two-sided' && layout.twoSidedLayout === 'split-sides' && item.rightSide && point.x >= layout.centerX) {
       return { kind: 'right-row', rowKey: item.rightSide.key, side: 'right' };
@@ -845,5 +860,6 @@ export function collectVisibleBarsIcons(model: BarsModel, layout: BarsLayout, sc
     if (item.kind !== 'data') continue;
     items.push(item.media, item.rightSide?.media, item.readout?.iconUrl, item.target?.iconUrl);
   }
+  for (const side of model.captionSides ?? []) items.push(side.media);
   return collectArtUrls(items);
 }

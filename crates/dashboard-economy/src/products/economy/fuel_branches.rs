@@ -124,6 +124,7 @@ impl AtHour for FuelBranches {
     const KEY: &'static str = "fuel-branches";
     const TITLE: &'static str = "Fuel by branch";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = FuelBranchesParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = FuelBranchesReply;

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import { assertBarsModelValid, type BarsDataRow } from '../../families/bars/model.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
-import type { FactionTotalsAtReply, SeriesStateReply } from '../../generated/dashboard';
+import type { FactionTotalsAtReply, SeriesRankReply } from '../../generated/dashboard';
 import { territoryRaceProjection, type TerritoryRaceOptions } from './territoryRaceProjection.ts';
 
 function fakeIdentity(names: Record<string, { name: string; color: string }>): IdentityProvider {
@@ -58,19 +58,29 @@ test('territoryRaceProjection renders default Top selection with unpopulated pan
   assert.equal(emptyModel.rows.length, 0);
   assert.equal(emptyModel.scaleUnit, 'States');
 
-  const reply: SeriesStateReply = {
-    branchId: '1',
-    measure: 'controlledStates',
-    decimals: 0,
-    states: [
+  const reply: SeriesRankReply = {
+    hour: 300,
+    from: 1,
+    until: 400,
+    refused: null,
+    measures: [{ name: 'controlledStates', decimals: 0 }],
+    rows: [
       {
         country: 'GER',
-        hour: 300,
-        run: { firstHour: 1, lastHour: 400, valueRaw: '42', slot: 1, countryId: 1, startsSegment: true, segmentFirstHour: 1, firstExact: true, lastExact: true },
-        drop: null,
-        missing: null,
+        readings: [
+          {
+            country: 'GER',
+            hour: 300,
+            run: { firstHour: 1, lastHour: 400, valueRaw: '42', slot: 1, countryId: 1, startsSegment: true, segmentFirstHour: 1, firstExact: true, lastExact: true },
+            drop: null,
+            missing: null,
+          },
+        ],
       },
-      { country: 'FRA', hour: 300, run: null, drop: null, missing: 'Not recorded at this hour' },
+      {
+        country: 'FRA',
+        readings: [{ country: 'FRA', hour: 300, run: null, drop: null, missing: 'Not recorded at this hour' }],
+      },
     ],
   };
   const view = createBoundedReadView({

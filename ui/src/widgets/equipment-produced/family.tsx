@@ -6,12 +6,12 @@ import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
-import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
-import { DeclaredFamilyWidget, DetailWindowHost } from '../../families/host/index.ts';
+import { DetailWindowHost } from '../../families/host/index.ts';
+import { FamilyWidget } from '../../families/host/registry.tsx';
 import type { InstalledAction } from '../../families/plan.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { ProducedAtReply, ProducedCount, ProducedMeasure } from '../../generated/dashboard';
-import { equipmentProducedRaceDeclaration, type EquipmentProducedRowMeta } from './equipmentProducedRaceProjection.ts';
+import type { EquipmentProducedRowMeta } from './equipmentProducedRaceProjection.ts';
 
 function validateProducedAt(data: unknown): ProducedAtReply {
   const reply = data as Partial<ProducedAtReply> | null;
@@ -67,7 +67,7 @@ function ProducedDetails({ widget, runtime, active, tag, hour, count, measure, r
 }
 
 function EquipmentProducedFamilyWidget(props: WidgetProps) {
-  const { widget, runtime, active } = props;
+  const { widget, runtime, active, manifestDeclaration } = props;
   const count: ProducedCount = widget.options?.count === 'ic' ? 'ic' : 'units';
   const measure: ProducedMeasure = widget.options?.measure === 'total' || widget.options?.measure === 'month' || widget.options?.measure === 'week'
     ? widget.options.measure : 'day';
@@ -83,13 +83,15 @@ function EquipmentProducedFamilyWidget(props: WidgetProps) {
     setDetail({ tag: meta?.tag ?? action.subject, key: meta?.key ?? action.subject, hour: gated });
   }, [gate]);
 
+  if (!manifestDeclaration) return null;
+
   return (
     <div ref={anchorRef} className="fh-frame">
-      <DeclaredFamilyWidget
+      <FamilyWidget
         {...props}
-        view="race"
-        adapter={barsHostAdapter}
-        declaration={equipmentProducedRaceDeclaration}
+        family={manifestDeclaration.family}
+        view={props.view ?? 'race'}
+        declaration={manifestDeclaration}
         selectedKey={detail?.key ?? null}
         onActivate={onActivate}
       />

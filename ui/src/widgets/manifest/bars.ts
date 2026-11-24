@@ -55,6 +55,17 @@ const WORLD_TENSION_RACE_OPTIONS = WORLD_TENSION_OPTIONS.filter(field => field.k
 
 export const BARS_VIEWS: readonly FamilyViewEntry[] = [
   {
+    kind: 'war-contribution',
+    view: 'measure',
+    label: 'By measure',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../war-contribution/measureProjection.ts').then(m => ({
+      family: 'bars', kind: 'war-contribution', view: 'measure',
+      projection: m.warContributionMeasureProjection, declaration: m.warContributionMeasureDeclaration,
+    })),
+  },
+  {
     kind: 'air-force-size',
     view: 'mix',
     label: 'Mix',

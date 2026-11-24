@@ -19,7 +19,7 @@ export { DEFAULT_VIEW, FAMILY_VIEWS, LEGACY_WIDGETS };
 
 export interface FamilyViewUiLoader {
   readonly load: () => Promise<{ default: WidgetRenderer }>;
-  readonly slots?: readonly ('render' | 'countryChip')[];
+  readonly slots?: readonly ('render' | 'countryChip' | 'subjectMenu')[];
 }
 
 export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
@@ -35,9 +35,11 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'doctrine-mastery': { load: () => import('./doctrine-mastery') },
   'equipment-designs': { load: () => import('./equipment-designs') },
   'equipment-produced': { load: () => import('./equipment-produced/family.tsx') },
+  'event-choices': { load: () => import('./event-choices') },
+  'event-feed': { load: () => import('./event-feed') },
   'factions': { load: () => import('./factions') },
   'fuel': { load: () => import('./fuel') },
-  'factories': { load: () => import('./factories'), slots: ['render', 'countryChip'] },
+  'factories': { load: () => import('./factories') },
   'idea-timeline': { load: () => import('./idea-timeline') },
   'industrial-organisations': { load: () => import('./industrial-organisations') },
   'international-market': { load: () => import('./international-market') },
@@ -46,10 +48,11 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'occupation-reserve-manpower': { load: () => import('./occupation-reserve-manpower/family.tsx') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'production-lines': { load: () => import('./production-lines') },
+  'research': { load: () => import('./research') },
   'scoreboard': { load: () => import('./scoreboard') },
   'special-projects': { load: () => import('./special-projects/current.ts') },
   'stability': { load: () => import('./stability') },
-  'war-contribution': { load: () => import('./war-contribution/sides.ts') },
+  'war-contribution': { load: () => import('./war-contribution'), slots: ['render', 'countryChip', 'subjectMenu'] },
   'convoy-health': { load: () => import('./convoy-health'), slots: ['render', 'countryChip'] },
   'air-superiority-timeline': { load: () => import('./air-superiority-timeline'), slots: ['render', 'countryChip'] },
   'weather-by-region': { load: () => import('./weather-by-region') },
@@ -190,7 +193,7 @@ export function manifestKinds(): readonly string[] {
   return kinds;
 }
 
-export function manifestSlotsForKind(kind: string): readonly ('render' | 'countryChip')[] {
+export function manifestSlotsForKind(kind: string): readonly ('render' | 'countryChip' | 'subjectMenu')[] {
   const ui = Object.hasOwn(FAMILY_VIEW_UI, kind) ? FAMILY_VIEW_UI[kind] : undefined;
   if (ui?.slots?.length) return ui.slots;
   const legacy = legacyEntriesForKind(kind);

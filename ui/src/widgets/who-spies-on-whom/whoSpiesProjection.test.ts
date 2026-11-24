@@ -58,6 +58,13 @@ test('spy matrix: counter-intelligence on the diagonal, unknown pairs hatched ne
   assert.equal(deriveMatrixMirror(model, 0, 1, 0, model.columns.length).rows[0]!.cells.at(-1)!.column, model.margin!.header, 'and spoken in the mirror');
 });
 
+test('spy matrix: a spy with an operative on an unrecorded target does not know its own home cell either', () => {
+  const model = projectOperativeMatrix(view(reply));
+  assert.deepEqual(matrixCellAt(model, 2, 2), { kind: 'missing', reason: "An operative's target country was not recorded at this hour" });
+  assert.deepEqual(matrixCellAt(model, 1, 1), { kind: 'diagonal', outlined: true }, 'a known spy without counter-intelligence keeps the outlined home cell');
+  assert.deepEqual(matrixCellAt(model, 0, 0), { kind: 'diagonal', outlined: true, text: '2' }, 'a witnessed home cell is kept');
+});
+
 test('spy matrix: a census not recorded is the not-recorded state, not an empty matrix', () => {
   const model = projectOperativeMatrix(view({ ...reply, rows: [], columns: [], cells: [], pairs: [], missing: 'Operative memberships were not read' }));
   assert.equal(model.emptyKind, 'unavailable');

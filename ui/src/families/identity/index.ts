@@ -13,7 +13,8 @@ import type {
 } from '../../generated/dashboard';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import { artHandleKey } from '../art/types.ts';
-import { resolveSlotHolderRuns, type HolderRun } from '../holders.ts';
+import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { mergeTagExistenceRuns, resolveSlotHolderRuns, type HolderRun } from '../holders.ts';
 import {
   countryTagKey,
   flagChoiceKey,
@@ -42,6 +43,7 @@ import {
 type FactRun = readonly [number, number, number, number, number];
 type RawSlotEntry = { readonly firstHour: number; readonly lastHour: number; readonly countryId: number; readonly tag: string };
 
+const NO_RUNS: readonly HolderRun[] = [];
 const NOT_A_COUNTRY = 'not a country at this hour';
 const FACTS_NOT_RECORDED = 'country facts were not recorded at this hour';
 const NO_COLOUR = 'no recorded map colour';
@@ -182,6 +184,7 @@ export class IdentityIndex {
   private tagIdentities = new Map<string, readonly { readonly firstHour: number; readonly lastHour: number; readonly slot: number; readonly countryId: number }[]>();
   private tagUnresolved = new Map<string, readonly HourSpan[]>();
   private identitiesFailure?: Failure;
+  private slotChanges = 0;
 
   private groups?: CountryGroupReply;
   private factionsById = new Map<string, FactionGroup>();
@@ -296,12 +299,38 @@ export class IdentityIndex {
         break;
       case 'identities':
         this.identitiesFailure = failure;
+        this.slotChanges++;
         break;
       case 'groups':
         this.groupsFailure = failure;
         break;
     }
     this.resolveChanges++;
+  }
+
+  readFailure(read: BranchRead): Failure | undefined {
+    switch (read) {
+      case 'facts':
+        return this.factsFailure;
+      case 'identities':
+        return this.identitiesFailure;
+      case 'groups':
+        return this.groupsFailure;
+    }
+  }
+
+  slotRevision(): number {
+    return this.slotChanges;
+  }
+
+  tagRuns(slot: number): readonly HolderRun[] {
+    return this.slotRuns.get(slot) ?? NO_RUNS;
+  }
+
+  runsForKey(key: string): readonly HolderRun[] {
+    const ref = countryFromKey(key);
+    if (typeof ref === 'number') return this.tagRuns(ref);
+    return mergeTagExistenceRuns(ref, this.tagIdentities.get(ref) ?? [], this.tagUnresolved.get(ref) ?? []);
   }
 
   readFailed(read: BranchRead): boolean {
@@ -364,6 +393,7 @@ export class IdentityIndex {
       list.sort((a, b) => a.firstHour - b.firstHour || a.countryId - b.countryId || compareTags(a.tag, b.tag));
       this.slotRuns.set(slot, resolveSlotHolderRuns(list));
     }
+    this.slotChanges++;
     this.resolveChanges++;
   }
 
@@ -832,12 +862,14 @@ export class IdentityIndex {
     const before = after < 0 ? unknown.length - 1 : after - 1;
     const gap = before >= 0 && unknown[before]!.lastHour >= at ? unknown[before]! : null;
     if (gap) {
+      const unrecorded: IdentityField<never> = { kind: 'missing', reason: gap.reason };
       return {
         kind: 'known',
         entityKind: key.kind,
         valid: [gap.firstHour, gap.lastHour],
         nextBoundary: nextBoundaryOf(gap.lastHour),
-        name: { kind: 'missing', reason: gap.reason },
+        holder: unrecorded,
+        name: unrecorded,
         warnings: [],
       };
     }
@@ -867,11 +899,15 @@ export class IdentityIndex {
         : entry.artKey !== null
           ? { kind: 'known', value: entry.artKey }
           : { kind: 'missing', reason: entry.artReason ?? `${key.kind} art unavailable` };
+      const holder: IdentityField<string> = entry.holderReason === undefined
+        ? { kind: 'known', value: id }
+        : { kind: 'missing', reason: entry.holderReason };
       return {
         kind: 'known',
         entityKind: key.kind,
         valid,
         nextBoundary: nextBoundaryOf(valid[1]),
+        holder,
         name,
         ...(subtitle ? { subtitle } : {}),
         ...(artKey ? { artKey } : {}),

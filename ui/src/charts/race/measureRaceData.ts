@@ -5,7 +5,7 @@ import { chartSummaryLines } from '../chartSummary.ts';
 import { CELL, cellNumber, cellState, cellValue, rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { compareTags } from '../../dashboard/tagOrder.ts';
-import type { SeriesRankedLine, SeriesState, SeriesStateReply } from '../../generated/dashboard';
+import type { SeriesRankedLine, SeriesRankReply, SeriesRankRow, SeriesState } from '../../generated/dashboard';
 
 export type RankedMeasure = { kind: string; measure: string };
 export type RankedLine = Decoded<SeriesRankedLine>;
@@ -22,24 +22,32 @@ function validState(value: unknown): value is SeriesState {
     && (run === null || (!!run && typeof run === 'object' && isRaw(run.valueRaw) && isInteger(run.firstHour) && isInteger(run.lastHour)));
 }
 
-export function validateRankReply(value: unknown): SeriesStateReply {
-  const reply = value as Partial<SeriesStateReply> | null;
-  if (!reply || typeof reply !== 'object' || !isInteger(reply.decimals) || !Array.isArray(reply.states) || !reply.states.every(validState)) {
-    throw new Error('The rank reply is malformed.');
-  }
-  return reply as SeriesStateReply;
+function validRankRow(value: unknown, measures: number): boolean {
+  const row = value as { country?: unknown; readings?: unknown } | null;
+  return !!row && (typeof row.country === 'string' || typeof row.country === 'number')
+    && Array.isArray(row.readings) && row.readings.length === measures && row.readings.every(validState);
 }
 
-export function seriesStateProvenInterval(data: unknown, hour: number): readonly [number, number] | null {
-  const reply = data as SeriesStateReply;
-  let from = -Infinity;
-  let until = Infinity;
-  for (const state of reply.states) {
-    if (!state.run) return [hour, hour];
-    from = Math.max(from, state.run.firstHour);
-    until = Math.min(until, state.run.lastHour);
+export function validateRankReply(value: unknown): SeriesRankReply {
+  const reply = value as Partial<SeriesRankReply> | null;
+  if (!reply || typeof reply !== 'object' || !isInteger(reply.hour) || !isInteger(reply.from) || !isInteger(reply.until)
+    || !(reply.from <= reply.hour && reply.hour <= reply.until) || !(reply.refused === null || typeof reply.refused === 'string')
+    || !Array.isArray(reply.measures) || !reply.measures.length
+    || !reply.measures.every(measure => !!measure && typeof measure.name === 'string' && isInteger(measure.decimals))
+    || !Array.isArray(reply.rows) || !reply.rows.every(row => validRankRow(row, reply.measures!.length))) {
+    throw new Error('The rank reply is malformed.');
   }
-  return from <= hour && hour <= until ? [from, until] : [hour, hour];
+  return reply as SeriesRankReply;
+}
+
+export function rankProvenInterval(data: unknown, hour: number): readonly [number, number] {
+  const reply = data as SeriesRankReply;
+  return reply.from <= hour && hour <= reply.until ? [reply.from, reply.until] : [hour, hour];
+}
+
+export function rankReading(reply: SeriesRankReply, row: SeriesRankRow, measure: string): SeriesState | null {
+  const at = reply.measures.findIndex(held => held.name === measure);
+  return at < 0 ? null : row.readings[at] ?? null;
 }
 
 export function validateRankedLines(value: unknown): { decimals: number; lines: RankedLine[] } {
@@ -56,11 +64,12 @@ export function validateRankedLines(value: unknown): { decimals: number; lines: 
 
 export const rawNumber = (raw: string | bigint | number, decimals: number) => Number(raw) / 10 ** decimals;
 
-export function stateEntries(states: readonly SeriesState[], decimals: number, format: (raw: string, decimals: number) => string,
-  hour: number, slots: number): CountryRaceEntry[] {
-  const held = states.flatMap(state => state.run ? [{ tag: countryKey(state.country), raw: BigInt(state.run.valueRaw), text: state.run.valueRaw }] : []);
-  held.sort((a, b) => (a.raw < b.raw ? 1 : a.raw > b.raw ? -1 : 0) || compareTags(a.tag, b.tag));
-  return held.slice(0, Math.max(0, slots)).map(({ tag, text }) => ({ tag, value: rawNumber(text, decimals), label: format(text, decimals), stretch: null, hour }));
+export function rankEntries(reply: SeriesRankReply, format: (raw: string, decimals: number) => string, slots: number): CountryRaceEntry[] {
+  const decimals = reply.measures[0]!.decimals;
+  return reply.rows.flatMap(row => {
+    const run = row.readings[0]!.run;
+    return run ? [{ tag: countryKey(row.country), value: rawNumber(run.valueRaw, decimals), label: format(run.valueRaw, decimals), stretch: null, hour: reply.hour }] : [];
+  }).slice(0, Math.max(0, slots));
 }
 
 export function followedEntries(answer: FollowedAnswer | undefined, asked: readonly string[] | null, member: ((tag: string, hour: number) => boolean) | null,

@@ -1,22 +1,30 @@
 import { linearTicks } from '../../charts/valueAxis.ts';
-import { FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH } from '../../draw/kit.ts';
+import { FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH, ROW_SECTION_HEIGHT } from '../../draw/kit.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { BarsDataRow, BarsForm, BarsModel, BarsTwoSidedLayout } from './model.ts';
 
 export const BARS_PAD_X = 12;
 export const BARS_PAD_TOP = 6;
 export const BARS_PAD_BOTTOM = 6;
-export const BARS_SECTION_HEIGHT = 20;
 export const BARS_HEADER_HEIGHT = 22;
 export const BARS_AXIS_HEIGHT = 20;
 export const BARS_LEGEND_ROW_HEIGHT = 22;
 export const BARS_VALUE_GAP = 6;
 export const BARS_SPLIT_CENTER_GAP = 36;
-export const BARS_REMOVE_BUTTON_SIZE = 22;
 export const BARS_GRIP_WIDTH = 10;
+export const PICK_WIDTH = 330;
+export const PICK_GAP = 24;
+export const PICK_ROW_HEIGHT = 22;
+export const PICK_DIVIDER_GAP = 8;
+
+export function pickListWidth(width: number): number {
+  return width >= PICK_WIDTH + PICK_GAP + 360 ? PICK_WIDTH : 0;
+}
 
 export interface BarsLayout {
   readonly form: BarsForm;
+  readonly bodyLeft: number;
+  readonly pickWidth: number;
   readonly twoSidedLayout: BarsTwoSidedLayout;
   readonly width: number;
   readonly height: number;
@@ -120,6 +128,34 @@ export function layoutFamilyBars(
   model: BarsModel,
   width: number,
   height: number,
+  theme?: FamilyTheme,
+  measure?: (text: string) => number,
+): BarsLayout {
+  const pickWidth = model.pickList ? pickListWidth(width) : 0;
+  if (pickWidth <= 0) return layoutBarsBody(model, width, height, theme, measure);
+  const offset = pickWidth + PICK_GAP;
+  const body = layoutBarsBody(model, Math.max(1, width - offset), height, theme, measure);
+  return {
+    ...body,
+    width: Math.max(1, Math.floor(width)),
+    bodyLeft: offset,
+    pickWidth,
+    nameX: body.nameX + offset,
+    plotLeft: body.plotLeft + offset,
+    plotRight: body.plotRight + offset,
+    centerX: body.centerX + offset,
+    readoutX: body.readoutX + offset,
+    pairX: body.pairX + offset,
+    rightPlotLeft: body.rightPlotLeft + offset,
+    rightPlotRight: body.rightPlotRight + offset,
+    rightNameX: body.rightNameX + offset,
+  };
+}
+
+function layoutBarsBody(
+  model: BarsModel,
+  width: number,
+  height: number,
   _theme?: FamilyTheme,
   measure?: (text: string) => number,
 ): BarsLayout {
@@ -131,7 +167,21 @@ export function layoutFamilyBars(
   const headerTop = BARS_PAD_TOP;
   const headerHeight = hasHeader ? BARS_HEADER_HEIGHT : 0;
   const hasLegend = (form === 'stacked' || form === 'share') && Boolean(model.legend?.length || model.scaleUnit);
-  const legendHeight = hasLegend ? BARS_LEGEND_ROW_HEIGHT : 0;
+  let legendRows = hasLegend ? 1 : 0;
+  if (hasLegend && model.legend?.length && h >= 240) {
+    const entryGap = 14;
+    const rightReserve = model.scaleUnit ? Math.min(Math.floor(w * 0.3), Math.ceil(measure ? measure(model.scaleUnit) : model.scaleUnit.length * 6.5)) + entryGap : 0;
+    const avail = Math.max(80, w - BARS_PAD_X * 2 - rightReserve);
+    let totalW = 0;
+    for (let i = 0; i < model.legend.length; i++) {
+      const entry = model.legend[i]!;
+      const text = entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label;
+      const itemW = 18 + (measure ? measure(text) : text.length * 6.5);
+      totalW += (i > 0 ? entryGap : 0) + itemW;
+    }
+    if (totalW > avail) legendRows = 2;
+  }
+  const legendHeight = legendRows * BARS_LEGEND_ROW_HEIGHT;
   const wantAxis = (model.showAxis ?? (form === 'ordered')) && h >= 140 && w >= 240;
   const axisHeight = wantAxis ? BARS_AXIS_HEIGHT : 0;
 
@@ -153,7 +203,7 @@ export function layoutFamilyBars(
   for (let i = 0; i < model.rows.length; i++) {
     const row = model.rows[i]!;
     rowTops.push(cursorY);
-    const rh = row.kind === 'section' ? BARS_SECTION_HEIGHT : dataRowHeight;
+    const rh = row.kind === 'section' ? ROW_SECTION_HEIGHT : dataRowHeight;
     rowHeights.push(rh);
     cursorY += rh;
   }
@@ -296,6 +346,8 @@ export function layoutFamilyBars(
 
   return {
     form,
+    bodyLeft: 0,
+    pickWidth: 0,
     twoSidedLayout,
     width: w,
     height: h,

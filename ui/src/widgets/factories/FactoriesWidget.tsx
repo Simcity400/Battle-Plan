@@ -7,17 +7,14 @@ import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
-import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
-import { DeclaredFamilyWidget, DetailWindowHost } from '../../families/host/index.ts';
+import { DetailWindowHost } from '../../families/host/index.ts';
+import { FamilyWidget } from '../../families/host/registry.tsx';
 import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
-import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import type { InstalledAction } from '../../families/plan.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { FactoryPartsReply } from '../../generated/dashboard';
 import { countMode, partRows, validateFactoryParts } from './factoriesData.ts';
-import { factoriesLinesDeclaration } from './factoriesLinesProjection.ts';
-import { factoriesMixDeclaration } from './factoriesMixProjection.ts';
-import { factoriesDeclaration, type FactoriesRowMeta } from './factoriesProjection.ts';
+import type { FactoriesRowMeta } from './factoriesProjection.ts';
 
 function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
   tag: string; hour: GatedHour; types: readonly string[]; mode: ReturnType<typeof countMode>;
@@ -47,53 +44,37 @@ function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pic
 }
 
 export default function FactoriesWidget(props: WidgetProps) {
-  const { widget, runtime, active } = props;
-  const rawView = String(widget.options?.view ?? 'race');
+  const { widget, runtime, active, manifestDeclaration } = props;
+  const rawView = String(props.view ?? widget.options?.view ?? 'race');
   const view = rawView === 'lines' ? 'lines' : rawView === 'mix' ? 'mix' : 'race';
   const mode = countMode(widget.options?.count);
   const types = useMemo(() => contentSet(widget.options?.types ?? ''), [widget.options?.types]);
+  const isLines = manifestDeclaration?.family === 'time-chart' || view === 'lines';
 
   const anchorRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
   const gate = useGate(runtime, widget, SPEC, active);
 
   const onActivate = useCallback((action: InstalledAction) => {
-    if (view === 'lines' && parseChartInspect(action.subject) !== null) return;
+    if (isLines && parseChartInspect(action.subject) !== null) return;
     const gated = gate.recorded(Math.floor(action.hour));
     if (gated === null) return;
     const rowMeta = action.meta as FactoriesRowMeta | null | undefined;
     setDetail({ tag: rowMeta?.tag ?? action.subject, key: rowMeta?.key ?? action.subject, hour: gated });
-  }, [gate, view]);
+  }, [gate, isLines]);
+
+  if (!manifestDeclaration) return null;
 
   return (
     <div ref={anchorRef} className="fh-frame">
-      {view === 'lines' ? (
-        <DeclaredFamilyWidget
-          {...props}
-          view="lines"
-          adapter={timeChartHostAdapter}
-          declaration={factoriesLinesDeclaration}
-          onActivate={onActivate}
-        />
-      ) : view === 'mix' ? (
-        <DeclaredFamilyWidget
-          {...props}
-          view="mix"
-          adapter={barsHostAdapter}
-          declaration={factoriesMixDeclaration}
-          selectedKey={detail?.key ?? null}
-          onActivate={onActivate}
-        />
-      ) : (
-        <DeclaredFamilyWidget
-          {...props}
-          view="race"
-          adapter={barsHostAdapter}
-          declaration={factoriesDeclaration}
-          selectedKey={detail?.key ?? null}
-          onActivate={onActivate}
-        />
-      )}
+      <FamilyWidget
+        {...props}
+        family={manifestDeclaration.family}
+        view={view}
+        declaration={manifestDeclaration}
+        {...(isLines ? {} : { selectedKey: detail?.key ?? null })}
+        onActivate={onActivate}
+      />
       <DetailWindowHost
         open={detail !== null}
         subject={detail?.tag ?? null}

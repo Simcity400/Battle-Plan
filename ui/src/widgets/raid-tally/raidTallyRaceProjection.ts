@@ -13,7 +13,7 @@ import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { RaidTallyAtReply, RaidTallyAtRow, RaidTallyMetric } from '../../generated/dashboard';
 
-const NOTE = '+ means at least this many. Success includes critical success and excludes limited success.';
+const NOTE = 'Success includes critical success and excludes limited success.';
 
 export interface RaidTallyRaceOptions {
   readonly metric: RaidTallyMetric;
@@ -57,8 +57,8 @@ function metricOption(value: unknown): RaidTallyMetric {
   return value === 'launched' || value === 'succeeded' ? value : 'both';
 }
 
-function countPlus(value: number): string {
-  return `${formatScalar(value, { decimals: 0 })}+`;
+function countText(value: number): string {
+  return formatScalar(value, { decimals: 0 });
 }
 
 interface RaidTallyExactBase {
@@ -188,8 +188,8 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
         }
       }
       const tooltipItems: TooltipListItem[] = [
-        { label: 'Launches', value: countPlus(item.launched) },
-        { label: 'Successes', value: countPlus(item.succeeded) },
+        { label: 'Launches', value: countText(item.launched) },
+        { label: 'Successes', value: countText(item.succeeded) },
       ];
       rows.push({
         kind: 'data',
@@ -204,8 +204,8 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
         ...(segments?.length ? { segments } : {}),
         readout: {
           primary: options.metric === 'both'
-            ? `${countPlus(item.launched)} \u00b7 ${countPlus(item.succeeded)}`
-            : countPlus(primary),
+            ? `${countText(item.launched)} \u00b7 ${countText(item.succeeded)}`
+            : countText(primary),
         },
         tooltip: {
           title: pres.labelMissing ? 'Name not recorded' : pres.label,

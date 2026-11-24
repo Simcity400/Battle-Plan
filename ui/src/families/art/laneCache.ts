@@ -91,6 +91,7 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
       case 'noArtExpected':
       case 'pending':
       case 'confirmedMissing':
+      case 'unavailable':
       case 'refused':
         return resolution;
       case 'failed':

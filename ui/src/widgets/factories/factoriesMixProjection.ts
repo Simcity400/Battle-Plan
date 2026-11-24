@@ -11,7 +11,7 @@ import { holderTagAt, inHourRanges, type HolderRun, type HourRanges } from '../.
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
-import { formatScalar } from '../../families/valueFormat.ts';
+import { formatScalar, formatShare } from '../../families/valueFormat.ts';
 import type { FactoryMixPart, FactoryMixReply, FactoryMixRow } from '../../generated/dashboard';
 import { COUNT_MODES, FACTORY_GROUPS, countMode, type CountMode } from './factoriesData.ts';
 import type { FactoriesRowMeta } from './factoriesProjection.ts';
@@ -72,10 +72,6 @@ function partLabel(part: FactoryMixPart): string {
   if (part.name) return part.name;
   const fallback = FACTORY_GROUPS.find(item => item.value === part.group)?.label ?? part.group;
   return part.damaged ? `Damaged ${fallback}` : fallback;
-}
-
-function sharePct(share: number): string {
-  return `${Math.round(share * 100)}%`;
 }
 
 function formatWhole(value: number): string {
@@ -231,6 +227,7 @@ export const factoriesMixProjection: BarsProjection<FactoriesMixOptions> = regis
         const info = partInfo[i]!;
         const share = raw / item.total;
         usedParts.add(i);
+        const pctText = formatShare(share);
         segments.push({
           key: info.part.key,
           label: info.label,
@@ -239,12 +236,12 @@ export const factoriesMixProjection: BarsProjection<FactoriesMixOptions> = regis
           format: { decimals: 0 },
           color: info.color,
           ...(info.part.damaged ? { hatched: true } : {}),
-          inlineLabel: `${info.label} ${sharePct(share)}`,
+          inlineLabel: `${info.label} ${pctText}`,
         });
         tooltipItems.push({
           label: info.label,
           swatch: info.color,
-          value: `${formatWhole(raw)} (${sharePct(share)})`,
+          value: `${formatWhole(raw)} (${pctText})`,
         });
       }
 

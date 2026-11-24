@@ -1,7 +1,7 @@
 
 use super::{
-    EventFeedKind, EventFeedRow, EventFeedUnavailable, FeedEvent, FeedPageParams, FeedTailParams, LOG, Names, Notices, Presenter, TAIL_FIELDS, branch, content, content_from,
-    content_refusals, invalid, kept_naming, logs, page, present_all, resolve_content, scope, tail_rows,
+    EventFeedKind, EventFeedRow, EventFeedUnavailable, FeedEvent, FeedTailParams, LOG, Names, Notices, Presenter, TAIL_FIELDS, branch, content_from,
+    content_refusals, invalid, kept_naming, logs, present_all, resolve_content, scope, tail_rows,
     text::KeptNaming,
 };
 use dashboard_base::{Source, catalogue::Catalogue};
@@ -9,7 +9,7 @@ use dashboard_follow::panel::Panel;
 use dashboard_query::{
     Query,
     log::{self, FacetFilter, Reader},
-    series::{MissingSpan, PAGE_LIMIT, hour_of},
+    series::{MissingSpan, PAGE_LIMIT},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -120,24 +120,6 @@ pub struct ScriptPageRow {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct ScriptOccurrencePage {
-    pub branch_id: String,
-    pub log: String,
-    pub columns: Vec<String>,
-    pub first_ordinal: String,
-    pub total: String,
-    pub cursor: Option<String>,
-    pub rows: Vec<ScriptPageRow>,
-    pub missing: Vec<MissingSpan>,
-    pub unavailable: Vec<EventFeedUnavailable>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(ScriptOccurrencePage);
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
 pub struct ScriptOccurrenceTailReply {
     pub branch_id: String,
     pub log: String,
@@ -222,160 +204,6 @@ pub(crate) fn continuing(
         }
     }
     Ok(out)
-}
-
-fn cards(list: List, source: &Source, params: &FeedPageParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<ScriptOccurrencePage> {
-    dashboard_text::metadata::check_cancel(cancelled)?;
-    let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| invalid("Invalid branch"))?)?;
-    let to = hour_of(Some(params.to), "to")?;
-    let (page, rows, missing) = page(source, &query, params)?;
-    let openers: Vec<(u64, u64, i32)> = rows
-        .iter()
-        .filter(|paged| EventFeedKind::of_code(paged.event.code).is_some_and(|kind| list.openers().contains(&kind)))
-        .map(|paged| (paged.event.generation, paged.event.sequence, paged.event.read_hour))
-        .collect();
-    let mut joined = continuing(&query, list, &openers, to, None, cancelled)?;
-    let names = Names::new(&query.holders);
-    let mut notices = Notices::default();
-    let presenter = Presenter::new(&query, content(source, context, &mut notices), kept_naming(source));
-    let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
-    let cards: Vec<(Option<EventFeedKind>, Vec<FeedEvent>)> = rows
-        .iter()
-        .map(|paged| {
-            let shown = EventFeedKind::of_code(paged.event.code).filter(|kind| list.openers().contains(kind) || list.continuing().contains(kind));
-            let continued = match shown {
-                Some(kind) if list.openers().contains(&kind) => joined.remove(&(paged.event.generation, paged.event.sequence)).unwrap_or_default(),
-                _ => Vec::new(),
-            };
-            (shown, continued)
-        })
-        .collect();
-    let events: Vec<&FeedEvent> = rows.iter().zip(&cards).flat_map(|(paged, (_, continued))| std::iter::once(&paged.event).chain(continued)).collect();
-    let mut presented = present_all(&query, &events, &names, &presenter, &mut notices, cancelled)?.into_iter();
-    let mut out = Vec::with_capacity(rows.len());
-    for (paged, (shown, continued)) in rows.into_iter().zip(cards) {
-        let own = presented.next().ok_or_else(|| invalid("A card row was not presented"))?;
-        let mut card_rows: Vec<Option<EventFeedRow>> = std::iter::once(own).chain(presented.by_ref().take(continued.len())).collect();
-        if list == List::Decisions {
-            let card_events: Vec<&FeedEvent> = std::iter::once(&paged.event).chain(continued.iter()).collect();
-            super::decision_state::enforce_same_incarnation(&card_events, &mut card_rows);
-        }
-        let mut card_rows = card_rows.into_iter();
-        let own = card_rows.next().flatten();
-        let rows_continuing: Vec<Option<EventFeedRow>> = card_rows.collect();
-        let occurrence = match (shown, own) {
-            (Some(kind), Some(row)) => {
-                let mut edges = vec![edge(&paged.event, row)];
-                edges.extend(continued.iter().zip(rows_continuing).filter_map(|(event, row)| row.map(|row| edge(event, row))));
-                Some(ScriptOccurrence { id: paged.event.id(), opened: list.openers().contains(&kind), edges })
-            }
-            _ => None,
-        };
-        out.push(ScriptPageRow {
-            hour: paged.hour,
-            key: paged.key.to_string(),
-            ordinal: paged.ordinal.to_string(),
-            country: paged.tag,
-            own_ordinal: tagged.then(|| paged.own.to_string()),
-            cells: Vec::new(),
-            occurrence,
-        });
-    }
-    content_refusals(&presenter, &mut notices)?;
-    let reply = ScriptOccurrencePage {
-        branch_id: params.branch_id.clone(),
-        log: LOG.to_owned(),
-        columns: Vec::new(),
-        first_ordinal: page.first.to_string(),
-        total: page.total().to_string(),
-        cursor: page.cursor().map(|cursor| cursor.to_string()),
-        rows: out,
-        missing,
-        unavailable: notices.into_list(),
-        warnings: Vec::new(),
-    };
-    dashboard_base::products::check_reply_budget(&reply)?;
-    Ok(reply)
-}
-
-pub struct EventChoices;
-
-impl Product for EventChoices {
-    const KEY: &'static str = "event-choices";
-    const CONTENT_DEPENDENT: bool = true;
-    const REPLAYS: bool = true;
-    type Params = FeedPageParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
-        branchId,
-        facets,
-        from: Start,
-        to: End,
-        cursor,
-        pageSize,
-        "scope[].firstHour": Start,
-        "scope[].lastHour": End,
-        "facets[].countries[]",
-        "facets[].values[]",
-        "facets[].membership[].country",
-        "facets[].membership[].firstHour": Start,
-        "facets[].membership[].lastHour": End,
-        "facets[].unobserved[].firstHour": Start,
-        "facets[].unobserved[].lastHour": End
-    ];
-    type Reply = ScriptOccurrencePage;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![ScriptCurrency::decl(), ScriptCost::decl(), ScriptEdge::decl(), ScriptOccurrence::decl(), ScriptPageRow::decl(), ScriptOccurrencePage::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        branch(&params.branch_id)
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        cards(List::EventChoices, source, params, context, cancelled)
-    }
-}
-
-pub struct Decisions;
-
-impl Product for Decisions {
-    const KEY: &'static str = "decisions";
-    const CONTENT_DEPENDENT: bool = true;
-    const REPLAYS: bool = true;
-    type Params = FeedPageParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
-        branchId,
-        facets,
-        from: Start,
-        to: End,
-        cursor,
-        pageSize,
-        "scope[].firstHour": Start,
-        "scope[].lastHour": End,
-        "facets[].countries[]",
-        "facets[].values[]",
-        "facets[].membership[].country",
-        "facets[].membership[].firstHour": Start,
-        "facets[].membership[].lastHour": End,
-        "facets[].unobserved[].firstHour": Start,
-        "facets[].unobserved[].lastHour": End
-    ];
-    type Reply = ScriptOccurrencePage;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        EventChoices::types()
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        branch(&params.branch_id)
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        cards(List::Decisions, source, params, context, cancelled)
-    }
 }
 
 fn load_cards_tail_at(
@@ -533,7 +361,15 @@ impl Product for EventChoicesTail {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![FeedTailParams::decl(), ScriptOccurrenceTailReply::decl()]
+        vec![
+            FeedTailParams::decl(),
+            ScriptCurrency::decl(),
+            ScriptCost::decl(),
+            ScriptEdge::decl(),
+            ScriptOccurrence::decl(),
+            ScriptPageRow::decl(),
+            ScriptOccurrenceTailReply::decl(),
+        ]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

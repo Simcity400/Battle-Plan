@@ -22,7 +22,7 @@ function shortMonth(month: number): string {
 
 export function formatChartAxisValue(value: number, format: ChartValueFormat): string {
   if (!Number.isFinite(value)) return '';
-  if (format === 'percent') return `${Math.round(value)}%`;
+  if (format === 'percent') return formatScalar(value, { decimals: 0, maxDecimals: 0, percent: true });
   if (format === 'signed1') {
     if (Math.abs(value) < 1e-9) return '0';
     return formatScalar(value, { decimals: 0, maxDecimals: 1, signed: true });
@@ -345,7 +345,8 @@ export function layoutTimeChart(
   hoverHour?: number | null,
   hoveredSeriesId?: string | null,
 ): TimeChartLayout {
-  const small = width <= 490 || height <= 200;
+  const narrow = width <= 490;
+  const small = narrow || height <= 200;
   const smallFont = `11px ${fontFamily}`;
   const tabFont = `600 11px ${fontFamily}`;
   const labelNameFont = `500 12px ${fontFamily}`;
@@ -456,6 +457,7 @@ export function layoutTimeChart(
     value: string;
     valueColor?: string;
     valueMuted?: boolean;
+    fixedWidth: number;
     estWidth: number;
   }[] = [];
 
@@ -467,8 +469,11 @@ export function layoutTimeChart(
       if (!s.endLabel) continue;
       const end = seriesEndPoint(s, model.hour);
       if (!end || Math.abs(end.hour - model.hour) > 48) continue;
-      const showName = !!(s.endLabel.name && (!small || (!s.endLabel.flag && !s.endLabel.icon)));
-      const nameText = showName ? ellipsise(s.endLabel.name!, END_LABEL_MAX_NAME_PX, measureName) : null;
+      const rawName = small && s.endLabel.shortName !== undefined
+        ? s.endLabel.shortName
+        : s.endLabel.name;
+      const showName = !!(rawName && (!small || s.endLabel.shortName !== undefined || (!s.endLabel.flag && !s.endLabel.icon)));
+      const nameText = showName ? ellipsise(rawName!, END_LABEL_MAX_NAME_PX, measureName) : null;
       const artW = s.endLabel.flag && s.endLabel.flag.art.status !== 'noArtExpected'
         ? 24
         : s.endLabel.icon && s.endLabel.icon.art.status !== 'noArtExpected'
@@ -476,7 +481,8 @@ export function layoutTimeChart(
           : 0;
       const nameW = nameText ? measure(nameText, labelNameFont) + 6 : 0;
       const valW = measure(s.endLabel.value, labelValueFont);
-      const estWidth = artW + nameW + valW + 8;
+      const fixedWidth = artW + valW;
+      const estWidth = fixedWidth + nameW + 8;
       const isNegative = s.negRed && end.value < 0;
       rawEndLabels.push({
         id: s.id,
@@ -491,6 +497,7 @@ export function layoutTimeChart(
         value: s.endLabel.value,
         valueColor: isNegative ? CHART_MEASURE_COLOURS.shortInk : s.endLabel.valueColor,
         valueMuted: s.endLabel.valueMuted,
+        fixedWidth,
         estWidth,
       });
     }
@@ -524,12 +531,13 @@ export function layoutTimeChart(
         const rawName = small && band.endLabel.shortName !== undefined
           ? band.endLabel.shortName
           : band.endLabel.name;
-        const showName = !!(rawName && (!small || !band.endLabel.flag));
+        const showName = !!(rawName && (!narrow || !band.endLabel.flag));
         const nameText = showName ? ellipsise(rawName!, END_LABEL_MAX_NAME_PX, measureName) : null;
         const barW = 9;
         const artW = band.endLabel.flag && band.endLabel.flag.art.status !== 'noArtExpected' ? 24 : 0;
         const nameW = nameText ? measure(nameText, labelNameFont) + 6 : 0;
         const valW = measure(band.endLabel.value, labelValueFont);
+        const fixedWidth = barW + artW + valW;
         rawEndLabels.push({
           id: band.id,
           seriesId: band.id,
@@ -542,7 +550,8 @@ export function layoutTimeChart(
           fullName: band.endLabel.fullName ?? band.name,
           value: band.endLabel.value,
           valueColor: band.endLabel.valueColor,
-          estWidth: barW + artW + nameW + valW + 8,
+          fixedWidth,
+          estWidth: fixedWidth + nameW + 8,
         });
       }
       if (model.stack.total?.endLabel) {
@@ -550,6 +559,7 @@ export function layoutTimeChart(
         const el = model.stack.total.endLabel;
         const artW = el.icon && el.icon.art.status !== 'noArtExpected' ? 22 : 0;
         const valW = measure(el.value, labelValueFont);
+        const fixedWidth = artW + valW;
         rawEndLabels.push({
           id: '__total__',
           seriesId: '__total__',
@@ -561,7 +571,8 @@ export function layoutTimeChart(
           fullName: model.measureTitle,
           value: el.value,
           valueColor: el.valueColor,
-          estWidth: artW + valW + 8,
+          fixedWidth,
+          estWidth: fixedWidth + 8,
         });
       }
     }
@@ -570,7 +581,7 @@ export function layoutTimeChart(
   if (rawEndLabels.length > 0) {
     let widest = 0;
     for (const l of rawEndLabels) widest = Math.max(widest, l.estWidth);
-    const maxRight = Math.max(76, Math.floor(width * (small ? 0.36 : 0.32)));
+    const maxRight = Math.max(76, Math.floor(width * (narrow ? 0.36 : 0.32)));
     right = Math.min(maxRight, Math.max(56, Math.ceil(widest + 16)));
   }
 
@@ -603,23 +614,35 @@ export function layoutTimeChart(
     const anchors = rawEndLabels.map(l => ({ id: l.id, y: toY(l.anchorVal), height: END_LABEL_HEIGHT }));
     const placedY = layoutEndLabels(anchors, Math.max(2, top - END_LABEL_HEIGHT / 2), baseY + 4, END_LABEL_GAP);
     const lx = playheadX + 10;
+    const availWidth = Math.max(0, width - lx - 4);
+    const minEllipsis = measure('\u2026', labelNameFont);
     for (const l of rawEndLabels) {
       const anchorY = toY(l.anchorVal);
       const ly = placedY.get(l.id) ?? anchorY;
+      let fittedName = l.name;
+      if (fittedName) {
+        const nameBudget = availWidth - l.fixedWidth - 6;
+        if (nameBudget < minEllipsis) {
+          fittedName = null;
+        } else if (measureName(fittedName) > nameBudget) {
+          fittedName = ellipsise(fittedName, nameBudget, measureName);
+        }
+      }
+      const fittedWidth = l.fixedWidth + (fittedName ? measureName(fittedName) + 6 : 0) + 8;
       endLabels.push({
         id: l.id,
         seriesId: l.seriesId,
         anchorY,
         y: ly,
         x: lx,
-        width: Math.min(l.estWidth, Math.max(0, width - lx - 4)),
+        width: Math.min(fittedWidth, availWidth),
         height: 16,
         color: l.color,
         faded: l.faded,
         colorBar: l.colorBar,
         flag: l.flag,
         icon: l.icon,
-        name: l.name,
+        name: fittedName,
         fullName: l.fullName,
         value: l.value,
         valueColor: l.valueColor,

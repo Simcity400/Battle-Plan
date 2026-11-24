@@ -1,7 +1,7 @@
 import { colour } from '../../charts/palette.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import { flagArtHandle } from '../../families/art/provider.ts';
-import { failedArt, missingArt, PENDING_ART } from '../../families/art/types.ts';
+import { flagChoiceArt } from '../../families/art/provider.ts';
+import { unavailableArt } from '../../families/art/types.ts';
 import type { HourRanges } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import type { MeterWidgetDeclaration } from '../../families/meter/declaration.ts';
@@ -9,6 +9,7 @@ import type { MeterModel, MeterProjection, MeterRow } from '../../families/meter
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView, DeclaredCountryFilter, FamilyPlanContext } from '../../families/plan.ts';
 import type { ArtResult } from '../../families/contract.ts';
+import { formatProgress } from '../../families/valueFormat.ts';
 import type { AutonomyLevelsReply, AutonomySubject, SubjectLevel } from '../../generated/dashboard';
 
 export interface AutonomyLevelsOptions {
@@ -53,16 +54,10 @@ interface Named {
 }
 
 function named(readView: BoundedReadView, tag: string | null, rawId: number): Named {
-  if (!tag) return { name: `Country ${rawId}`, tag: '?', flag: missingArt('Country tag not recorded') };
+  if (!tag) return { name: `Country ${rawId}`, tag: '?', flag: unavailableArt('Country tag not recorded') };
   const who = readView.who('country', tag, readView.hour);
   const name = who.name.status === 'ready' ? who.name.value : tag;
-  const flag = who.flagChoice?.status === 'ready'
-    ? readView.art(flagArtHandle(who.flagChoice.value, 'panel'))
-    : who.flagChoice?.status === 'absent'
-      ? missingArt(who.flagChoice.reason)
-      : who.flagChoice?.status === 'failed'
-        ? failedArt(who.flagChoice.reason, who.flagChoice.retryable)
-        : PENDING_ART;
+  const flag = flagChoiceArt(readView, who.flagChoice);
   return { name, tag, flag };
 }
 
@@ -72,7 +67,7 @@ export function levelTitle(levels: readonly SubjectLevel[], token: string | null
 }
 
 export function percentText(milli: number): string {
-  return `${Math.round(milli / 1000)}%`;
+  return formatProgress(milli / 100_000);
 }
 
 function row(readView: BoundedReadView, reply: AutonomyLevelsReply, item: AutonomySubject, surface: string): MeterRow {

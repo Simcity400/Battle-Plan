@@ -11,7 +11,7 @@ import { useIdentityScope } from '../identity/react.ts';
 import type { ArtHandle } from '../plan.ts';
 import { sharedDomArtCache, type DomArtCache } from './domCache.ts';
 import { mergeArtDemands, needsArtResolution, requestDemandedFlags, type ArtResolutions } from './provider.ts';
-import { SpriteCaches, fetchArtHandles } from './transport.ts';
+import { SpriteCaches, artCacheScope, fetchArtHandles } from './transport.ts';
 import { PENDING_ART, artHandleKey, failedArt, type ArtResolution, type ArtResult } from './types.ts';
 
 const NO_HANDLES: readonly ArtHandle[] = [];
@@ -33,7 +33,7 @@ export function useArtResolutions(
   active: boolean,
 ): (handle: ArtHandle) => ArtResolution {
   const revision = useContentRevision(runtime.client);
-  const scope = track ? JSON.stringify([track.source.id, track.source.revision, revision]) : '';
+  const scope = track ? artCacheScope(track, revision) : '';
   const held = cachesOf(runtime.client);
   const resolutions = held.resolutions(scope);
   const errors = held.errors(scope);
@@ -67,7 +67,7 @@ export function useArtResolutions(
     return () => { stop(); release(); };
   }, [held, scope]);
 
-  const key = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, revision, scope, askedKey]);
+  const key = JSON.stringify([scope, askedKey]);
   useEffect(() => {
     if (!active || !track || !asked.length) return;
     held.request(scope, asked, (batch, signal) => fetchArtHandles((request, sent) => loadTransientProduct<unknown>(runtime.client, request, sent), track, batch, signal));

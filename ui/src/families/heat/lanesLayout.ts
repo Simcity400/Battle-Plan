@@ -1,4 +1,5 @@
-import type { HeatLaneCell, HeatLaneLegend, HeatLaneRow, HeatLaneRun } from './lanesModel.ts';
+import { ROW_SECTION_HEIGHT, rowGripBox, rowRemoveBox } from '../../draw/kit.ts';
+import type { HeatLaneCell, HeatLaneLegend, HeatLaneRegions, HeatLaneRow, HeatLaneRun } from './lanesModel.ts';
 
 export const LANE_NAME_WIDTH = 168;
 export const LANE_NAME_COMPACT_WIDTH = 116;
@@ -28,6 +29,9 @@ export interface HeatLanesLayout {
   readonly plotHeight: number;
   readonly rowHeight: number;
   readonly rowStride: number;
+  readonly rowTops: readonly number[];
+  readonly sections: readonly { readonly label: string; readonly top: number }[];
+  readonly addTop: number | null;
   readonly totalHeight: number;
   readonly firstRow: number;
   readonly endRow: number;
@@ -44,6 +48,7 @@ export interface LayoutHeatLanesInput {
   readonly lastHour: number;
   readonly displayedHour: number;
   readonly rows: readonly HeatLaneRow[];
+  readonly regions?: HeatLaneRegions;
   readonly legend?: HeatLaneLegend;
   readonly requestedReadoutWidth?: number;
   readonly requestedRowHeight?: number;
@@ -74,18 +79,41 @@ export function layoutHeatLanes(input: LayoutHeatLanesInput): HeatLanesLayout {
   const plotTop = legendHeight + 4;
   const plotHeight = Math.max(1, height - plotTop - axisHeight);
 
-  const shared = input.rows.length > 0 ? Math.floor((plotHeight - 8 + LANE_ROW_GAP) / input.rows.length) - LANE_ROW_GAP : LANE_ROW_DEFAULT;
+  const sectionAt = new Map<number, string>();
+  if (input.regions) {
+    const firstPicked = input.rows.findIndex(row => row.pinned);
+    const firstAuto = input.rows.findIndex(row => !row.pinned);
+    if (firstPicked >= 0) sectionAt.set(firstPicked, input.regions.pickedHeading);
+    if (firstAuto >= 0) sectionAt.set(firstAuto, input.regions.automaticHeading);
+  }
+  const units = input.rows.length + (input.regions ? 1 : 0);
+  const sectionsHeight = sectionAt.size * ROW_SECTION_HEIGHT;
+  const shared = units > 0 ? Math.floor((plotHeight - 8 - sectionsHeight + LANE_ROW_GAP) / units) - LANE_ROW_GAP : LANE_ROW_DEFAULT;
   const rowHeight = Math.max(
     LANE_ROW_MIN,
     Math.min(LANE_ROW_MAX, Math.round(input.requestedRowHeight ?? shared)),
   );
   const rowStride = rowHeight + LANE_ROW_GAP;
-  const contentHeight = input.rows.length > 0 ? input.rows.length * rowStride - LANE_ROW_GAP + 8 : 0;
+  const rowTops: number[] = [];
+  const sections: { label: string; top: number }[] = [];
+  let y = 0;
+  for (let i = 0; i < input.rows.length; i++) {
+    const label = sectionAt.get(i);
+    if (label !== undefined) {
+      sections.push({ label, top: y });
+      y += ROW_SECTION_HEIGHT;
+    }
+    rowTops.push(y);
+    y += rowStride;
+  }
+  const addTop = input.regions ? y : null;
+  if (addTop !== null) y += rowStride;
+  const contentHeight = y > 0 ? y - LANE_ROW_GAP + 8 : 0;
   const totalHeight = Math.max(height, plotTop + contentHeight + axisHeight);
 
   const scrollTop = Math.max(0, input.scrollTop);
-  const firstRow = Math.max(0, Math.floor(scrollTop / rowStride) - 1);
-  const endRow = Math.min(input.rows.length, Math.ceil((scrollTop + plotHeight) / rowStride) + 1);
+  const firstRow = Math.max(0, rowAtOrBelow(rowTops, scrollTop) - 1);
+  const endRow = Math.min(input.rows.length, rowAtOrBelow(rowTops, scrollTop + plotHeight) + 2);
 
   const firstHour = input.firstHour;
   const lastHour = Math.max(firstHour, input.lastHour);
@@ -105,6 +133,9 @@ export function layoutHeatLanes(input: LayoutHeatLanesInput): HeatLanesLayout {
     plotHeight,
     rowHeight,
     rowStride,
+    rowTops,
+    sections,
+    addTop,
     totalHeight,
     firstRow,
     endRow,
@@ -244,9 +275,22 @@ export function projectLaneRunsToPixels(
   return out;
 }
 
+function rowAtOrBelow(tops: readonly number[], y: number): number {
+  let lo = 0;
+  let hi = tops.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (tops[mid]! <= y) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo - 1;
+}
+
 export type LaneHit =
   | { readonly kind: 'lane'; readonly rowIndex: number; readonly hour: number }
   | { readonly kind: 'row'; readonly rowIndex: number }
+  | { readonly kind: 'remove' | 'grip'; readonly rowIndex: number }
+  | { readonly kind: 'add' }
   | null;
 
 export function hitHeatLanes(
@@ -254,14 +298,23 @@ export function hitHeatLanes(
   y: number,
   scrollTop: number,
   layout: HeatLanesLayout,
-  rowCount: number,
+  rows: readonly HeatLaneRow[],
+  toolsRow: number | null = null,
 ): LaneHit {
   if (x < 0 || x > layout.width || y < layout.plotTop || y > layout.height - layout.axisHeight) return null;
   const relY = y - layout.plotTop + scrollTop;
-  const rowIndex = Math.floor(relY / layout.rowStride);
-  if (rowIndex < 0 || rowIndex >= rowCount) return null;
-  const inRowY = relY - rowIndex * layout.rowStride;
+  if (layout.addTop !== null && relY >= layout.addTop && relY <= layout.addTop + layout.rowHeight) return { kind: 'add' };
+  const rowIndex = rowAtOrBelow(layout.rowTops, relY);
+  if (rowIndex < 0 || rowIndex >= rows.length) return null;
+  const inRowY = relY - layout.rowTops[rowIndex]!;
   if (inRowY > layout.rowHeight) return null;
+  if (toolsRow === rowIndex && rows[rowIndex]!.region !== undefined) {
+    const middleY = layout.plotTop + layout.rowTops[rowIndex]! - scrollTop + layout.rowHeight / 2;
+    const inside = (box: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }) =>
+      x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height;
+    if (inside(rowRemoveBox(layout.nameWidth, middleY))) return { kind: 'remove', rowIndex };
+    if (inside(rowGripBox(LANE_PAD, middleY))) return { kind: 'grip', rowIndex };
+  }
   if (x >= layout.plotLeft && x <= layout.plotLeft + layout.plotWidth) {
     const hour = laneXToHour(x, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth);
     return hour > layout.displayedHour ? null : { kind: 'lane', rowIndex, hour };

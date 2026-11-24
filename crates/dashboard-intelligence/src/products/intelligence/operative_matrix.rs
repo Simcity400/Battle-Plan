@@ -1,6 +1,6 @@
 use super::{Content, IDENTITY, Tags, branch, missing, placements::{MISSION, Operative, working}};
 use dashboard_base::{Source, products::{Country as ParamCountry, LoadContext, at_hour::{At, AtHour}, validate_country}};
-use dashboard_world::products::groups::{FactionAt, FactionGroup, factions_at};
+use dashboard_world::products::groups::{FactionAt, FactionGroup, factions_at, factions_valid_through};
 use replay_data::rows::{IntelligenceAgencyRow, OperativeMembershipRow, Recorded, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -293,6 +293,7 @@ impl AtHour for OperativeMatrix {
     const KEY: &'static str = "operative-matrix";
     const TITLE: &'static str = "Operative matrix";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = OperativeMatrixParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", top, form];
     type Reply = OperativeMatrixReply;
@@ -336,6 +337,10 @@ impl AtHour for OperativeMatrix {
             .and_then(|query| dashboard_world::products::groups::groups(source, &query, &params.branch_id, load, &AtomicBool::new(false)).ok())
             .map_or_else(|| Arc::new(Vec::new()), |reply| Arc::new(reply.factions));
         Ok(MatrixContext { content, factions })
+    }
+
+    fn valid_through(_frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        factions_valid_through(&at.context.factions, at.hour)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {

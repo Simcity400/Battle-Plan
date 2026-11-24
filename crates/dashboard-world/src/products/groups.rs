@@ -209,9 +209,9 @@ struct NameOperands {
 }
 
 pub struct RunGroups {
-    spans: Vec<(u8, u32, u32, i32, i32)>,
+    pub(crate) spans: Vec<(u8, u32, u32, i32, i32)>,
     events: Vec<(u8, i32, u32, u32, i32)>,
-    factions: HashMap<u32, u64>,
+    pub(crate) factions: HashMap<u32, u64>,
     names: HashMap<u32, NameOperands>,
 }
 
@@ -731,6 +731,26 @@ pub fn factions_at(factions: &[FactionGroup], hour: i32) -> HashMap<String, Fact
         }
     }
     out
+}
+
+pub fn factions_valid_through(factions: &[FactionGroup], hour: i32) -> i32 {
+    let mut through = i32::MAX;
+    let mut bound = |first: i32, last: i32| {
+        if first > hour {
+            through = through.min(first - 1);
+        } else if last >= hour {
+            through = through.min(last);
+        }
+    };
+    for faction in factions {
+        for run in &faction.names {
+            bound(run.first_hour, run.last_hour);
+        }
+        for run in &faction.members {
+            bound(run.first_hour, run.last_hour);
+        }
+    }
+    through
 }
 
 #[derive(Default)]

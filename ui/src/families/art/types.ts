@@ -1,6 +1,10 @@
-import type { ArtFrame, ArtHandle, ArtOrigin, ArtProvenance, ArtResolution, ArtResult } from '../plan.ts';
+import type { ArtFrame, ArtHandle, ArtOrigin, ArtProvenance, ArtResolution, ArtResult, ProductArtResolution } from '../plan.ts';
 
-export type { ArtFrame, ArtOrigin, ArtProvenance, ArtResolution, ArtResult };
+export type { ArtFrame, ArtOrigin, ArtProvenance, ArtResolution, ArtResult, ProductArtResolution };
+
+export function productArt(resolution: ProductArtResolution): ArtResolution {
+  return resolution as ArtResolution;
+}
 
 export interface ArtBitmap {
   readonly width: number;
@@ -70,16 +74,8 @@ export function readyArt(
   };
 }
 
-export function missingArt(
-  reason: string,
-  options: { readonly origin?: ArtOrigin; readonly file?: string } = {},
-): Extract<ArtResolution, { status: 'confirmedMissing' }> {
-  return {
-    status: 'confirmedMissing',
-    reason,
-    ...(options.origin !== undefined ? { origin: options.origin } : {}),
-    ...(options.file !== undefined ? { file: options.file } : {}),
-  };
+export function unavailableArt(reason: string): Extract<ArtResolution, { status: 'unavailable' }> {
+  return { status: 'unavailable', reason };
 }
 
 export function refusedArt(

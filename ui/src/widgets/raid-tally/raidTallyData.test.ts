@@ -26,8 +26,9 @@ test('Both metric line tooltip shows launched and succeeded counts with note', (
   const series = tallyModel([item, overflow]);
   const tip = tallyLineTooltip(series, 104, ['MOD A', 'MOD A', 'MOD B'], () => tag => ({ name: `${tag} at hover`, flag: 'hover flag' }), () => 'country', 'both');
   assert.deepEqual(tip.rows.map(row => [row.label, row.countryFlag?.flag, row.value]),
-    [['MOD A at hover', 'hover flag', '4+ launched · 1+ succeeded'], ['MOD B at hover', 'hover flag', '0+ launched · 7+ succeeded']]);
-  assert.match(tip.note!, /\+ means at least this many/);
+    [['MOD A at hover', 'hover flag', '4 launched · 1 succeeded'], ['MOD B at hover', 'hover flag', '0 launched · 7 succeeded']]);
+  assert.doesNotMatch(tip.note!, /\+ means|at least/i);
+  assert.match(tip.note!, /Success includes critical success and excludes limited success/);
 });
 
 test('chosen raid countries have no arbitrary row cap', () => {
