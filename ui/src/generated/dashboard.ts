@@ -6248,7 +6248,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "country-people": { "hour": "read" },
   "country-stability-breakdown": { "hour": "read" },
   "country-styles": { "hour": "read" },
-  "decisions": { "from": "start", "to": "end", "scope[].firstHour": "start", "scope[].lastHour": "end" },
+  "decisions": { "from": "start", "to": "end", "scope[].firstHour": "start", "scope[].lastHour": "end", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end" },
   "decryption": { "hour": "read" },
   "diplomatic-pacts": {},
   "diplomatic-relations": { "hour": "read" },
@@ -6277,7 +6277,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "espionage-operations": { "hour": "read" },
   "espionage-type-tokens": {},
   "espionage-types": {},
-  "event-choices": { "from": "start", "to": "end", "scope[].firstHour": "start", "scope[].lastHour": "end" },
+  "event-choices": { "from": "start", "to": "end", "scope[].firstHour": "start", "scope[].lastHour": "end", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end" },
   "event-feed": { "from": "start", "to": "end", "scope[].firstHour": "start", "scope[].lastHour": "end", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end" },
   "event-feed-span": { "from": "start", "to": "end" },
   "events-page": { "reads[].hour": "read", "from": "start", "to": "end", "firstHour": "start", "lastHour": "end", "hour": "read", "within[].1[].firstHour": "start", "within[].1[].lastHour": "end", "family.membership[].firstHour": "start", "family.membership[].lastHour": "end" },
@@ -6638,7 +6638,7 @@ export type RequestParams<E, B> = {
   "country-people": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "country-stability-breakdown": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "country-styles": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "decisions": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
+  "decisions": { readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
   "decryption": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "diplomatic-pacts": {};
   "diplomatic-relations": { readonly [key: string]: unknown; readonly "hour"?: E | null };
@@ -6667,7 +6667,7 @@ export type RequestParams<E, B> = {
   "espionage-operations": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "espionage-type-tokens": {};
   "espionage-types": {};
-  "event-choices": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
+  "event-choices": { readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
   "event-feed": { readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
   "event-feed-span": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
   "events-page": { readonly [key: string]: unknown; readonly "family"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly "1"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };

@@ -944,7 +944,10 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
     }
   }
 
-  const columns = resolveLogColumns(model.columns, width, 12, 10);
+  const effectiveTracks = density === 'compact'
+    ? model.columns.map(track => (track.id === 'date' ? { ...track, width: Math.max(track.width ?? 58, 76) } : track))
+    : model.columns;
+  const columns = resolveLogColumns(effectiveTracks, width, 12, 10);
   const colById = new Map<string, ResolvedLogColumn>();
   for (const col of columns) colById.set(col.id, col);
   const dateCol = colById.get('date');

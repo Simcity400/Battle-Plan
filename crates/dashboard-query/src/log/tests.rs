@@ -501,7 +501,7 @@ fn projected_out_numeric_column_in_append_log_stays_unrecorded() {
     let first = 600;
     let last = 604;
     let fixture = Fixture::new(Data::DenseMarket(602, 5), first..=last);
-    let mut recording = fixture.replay.recording().clone();
+    let mut recording = fixture.query().replay.recording().clone();
     let table = replay_data::rows::TableId::MarketEvents;
     let index = table.index();
     let kind_col = dashboard_declare::field(table, "kind").unwrap();
