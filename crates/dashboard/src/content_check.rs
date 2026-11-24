@@ -316,8 +316,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         }
         key if key == <faction_state::details::FactionDetails as at_hour::AtHour>::KEY
             || key == <faction_state::country_goals::CountryFactionGoals as at_hour::AtHour>::KEY
-            || key == faction_state::history::FactionState::KEY
-            || key == <faction_state::rewards::FactionGoalRewards as at_hour::AtHour>::KEY =>
+            || key == faction_state::history::FactionState::KEY =>
         {
             let layers = &content.resolved.layers;
             let goals = content_reader_politics::faction_goals::cached(layers)?;

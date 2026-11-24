@@ -1,6 +1,6 @@
 import { liveKey } from '../../charts/live.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { gameWindow } from '../../dashboard/gameWindows';
+import { gameWindow } from '../../dashboard/gameWindows.ts';
 import { object } from '../../dashboard/validation.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { artKindCell, urlArtHandle } from '../../families/table/identityCell.ts';

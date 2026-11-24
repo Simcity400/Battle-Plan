@@ -17,9 +17,16 @@ export const FACTORY_GROUPS = [
 
 export const countMode = (value: unknown): CountMode => COUNT_MODES.find(mode => mode.value === value)?.value ?? 'free';
 
+function groupMask(groups: readonly string[]): number {
+  return FACTORY_GROUPS.reduce((sum, group) => sum | (groups.includes(group.value) ? group.bit : 0), 0) || 7;
+}
+
 export function factoryMeasure(mode: CountMode, groups: readonly string[]): string {
-  const mask = FACTORY_GROUPS.reduce((sum, group) => sum | (groups.includes(group.value) ? group.bit : 0), 0);
-  return `${mode}${mask || 7}`;
+  return `${mode}${groupMask(groups)}`;
+}
+
+export function damagedMeasure(groups: readonly string[]): string {
+  return `damaged${groupMask(groups)}`;
 }
 
 export function groupName(key: string, names: FactoryGroupsReply | undefined): string {

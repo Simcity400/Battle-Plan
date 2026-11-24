@@ -66,7 +66,6 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_air::registrations::AIR_SUPERIORITY_AIRSUPERIORITYAT,
     dashboard_production::registrations::EQUIPMENT_LOSSES_EQUIPMENTLOSSHEAD,
     dashboard_land::registrations::ARMY_LOSSES_ARMYLOSSES,
-    dashboard_wars::registrations::FACTION_STATE_REWARDS_FACTIONGOALREWARDS,
     dashboard_land::registrations::FORCES_AIRFORCEAT,
     dashboard_land::registrations::FORCES_NAVYAT,
 ];
@@ -113,6 +112,7 @@ const OWN: &[Registered] = &[
     dashboard_world::registrations::SEA_REGIONS_STRATEGICREGIONS,
     dashboard_naval::registrations::NAVAL_SUPREMACY_NAVALSUPREMACY,
     dashboard_land::registrations::LEADERS_LEADERPORTRAITS,
+    dashboard_land::registrations::LEADER_NAME_RUNS_LEADERNAMERUNS,
     dashboard_land::registrations::LEADERS_CAREER_LEADERCAREER,
     dashboard_land::registrations::LEADERS_CAREER_LEADERCHOICES,
     dashboard_air::registrations::REGIONAL_WEATHER_REGIONALWEATHER,
@@ -217,6 +217,7 @@ const MOVED_OWN: &[&str] = &[
     dashboard_world::registrations::SEA_REGIONS_STRATEGICREGIONS.key,
     dashboard_naval::registrations::NAVAL_SUPREMACY_NAVALSUPREMACY.key,
     dashboard_land::registrations::LEADERS_LEADERPORTRAITS.key,
+    dashboard_land::registrations::LEADER_NAME_RUNS_LEADERNAMERUNS.key,
     dashboard_land::registrations::LEADERS_CAREER_LEADERCAREER.key,
     dashboard_land::registrations::LEADERS_CAREER_LEADERCHOICES.key,
     dashboard_air::registrations::REGIONAL_WEATHER_REGIONALWEATHER.key,

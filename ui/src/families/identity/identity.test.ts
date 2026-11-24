@@ -9,7 +9,7 @@ import type {
   CountryStyleReply,
   PlaceNameRunsReply,
   StrategicRegionsReply,
-  UnitLeadersReply,
+  LeaderNameRunsReply,
 } from '../../generated/dashboard';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
@@ -123,10 +123,10 @@ function sampleGroups(): CountryGroupReply {
   };
 }
 
-const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadPlaceNameRuns' | 'loadLeaders'> = {
+const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadPlaceNameRuns' | 'loadLeaderNameRuns'> = {
   loadRegions: () => deferred<StrategicRegionsReply>().promise,
   loadPlaceNameRuns: () => deferred<PlaceNameRunsReply>().promise,
-  loadLeaders: () => deferred<UnitLeadersReply>().promise,
+  loadLeaderNameRuns: () => deferred<LeaderNameRunsReply>().promise,
 };
 
 function deferred<T>() {
@@ -741,16 +741,19 @@ test('leader, state, province and region asks each start their product read and 
         from,
         to,
         unknown: [{ firstHour: 100, lastHour: 120, reason: 'Not in this recording: the game was paused' }],
-        states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: 199, name: `State ${id}`, missing: null }, { firstHour: 200, lastHour: to, name: `Renamed ${id}`, missing: null }] })),
-        provinces: provinces.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: null, missing: 'Province unnamed in this map' }] })),
+        states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: 199, name: `State ${id}`, missing: null, absent: false }, { firstHour: 200, lastHour: to, name: `Renamed ${id}`, missing: null, absent: false }] })),
+        provinces: provinces.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: null, missing: 'Province unnamed in this map', absent: false }] })),
         warnings: [],
       };
     },
-    loadLeaders: async (_scope, owner, hour) => {
-      calls.push(`leaders ${owner} ${hour}`);
+    loadLeaderNameRuns: async (_scope, owner, from, to, references) => {
+      calls.push(`leaders ${owner} ${from}-${to} ${references.join(',')}`);
       return {
-        leaders: [{ reference: 'L1', name: 'Ada Vance', role: { owner: 'ALP', kind: 0, category: 0, rank: null, attributeNames: [null, null, null, null], maximumSkill: null }, skill: 3, components: [1, 1, 1, 0], traits: null, traitDates: [], firstSeenHour: 0, fought: 0, won: 0, lost: 0 }],
-        traits: [], withheld: [], missing: null, battlesPartialFrom: null, resultsMissing: '', warnings: [],
+        from,
+        to,
+        unknown: [],
+        leaders: [{ reference: 'L1', runs: [{ firstHour: from, lastHour: 179, name: null, missing: 'Not a leader of this country at this hour', absent: true }, { firstHour: 180, lastHour: to, name: 'Ada Vance', missing: null, absent: false }] }],
+        warnings: [],
       };
     },
   };
@@ -765,7 +768,7 @@ test('leader, state, province and region asks each start their product read and 
   for (let i = 0; i < 20; i++) await Promise.resolve();
   ask();
   for (let i = 0; i < 20; i++) await Promise.resolve();
-  assert.deepEqual([...calls].sort(), ['leaders ALP 150', 'places 0-500 64 7', 'regions']);
+  assert.deepEqual([...calls].sort(), ['leaders ALP 0-500 L1,L2', 'places 0-500 64 7', 'regions']);
 
   const [region, unknownRegion, state, province, leader, otherLeader] = ask();
   assert.deepEqual(region!.name, { status: 'ready', value: 'Coral Reach' });
@@ -779,7 +782,9 @@ test('leader, state, province and region asks each start their product read and 
   const worker = createSnapshotIdentityProvider(IdentityIndex.fromSnapshot(structuredClone(broker.snapshotOf(SCOPE))));
   assert.deepEqual(worker.resolve('state', '64', 110 as DisplayedHour).name, { status: 'absent', reason: 'Not in this recording: the game was paused' }, 'unknown spans cross to the worker');
   assert.deepEqual(province!.name, { status: 'absent', reason: 'Province unnamed in this map' });
-  assert.deepEqual(leader!.name, { status: 'ready', value: 'Ada Vance' });
+  assert.equal(leader!.holder.status, 'absent', 'a leader before it serves its owner is absent, not named');
+  assert.deepEqual(view.who('leader', 'ALP:L1', 190).name, { status: 'ready', value: 'Ada Vance' });
+  assert.deepEqual(view.who('leader', 'ALP:L1', 190).validInterval, [180, 500]);
   assert.equal(otherLeader!.holder.status, 'absent');
   assert.equal(calls.length, 3, 'answers inside their validity ask nothing again');
   broker.dispose();
