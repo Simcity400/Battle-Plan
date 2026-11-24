@@ -9,12 +9,17 @@ const byte = (value: unknown) => Number.isInteger(value) && (value as number) >=
 const text = (value: unknown) => typeof value === 'string' && value.length > 0;
 const observation = (value: unknown) => value === null || object(value) && Number.isSafeInteger(value.hour) && typeof value.upperBound === 'boolean';
 
+const STATUSES = new Set(['broken', 'decrypting', 'paused', 'breakUnknown']);
+const count = (value: unknown) => Number.isInteger(value) && (value as number) >= 0;
+const counts = (value: unknown) => object(value) && count(value.broken) && count(value.decrypting) && count(value.paused) && count(value.breakUnknown);
+
 export function validateDecryption(value: unknown): DecryptionReply {
-  const ok = object(value) && Array.isArray(value.pairs) && (value.missing === null || text(value.missing))
+  const ok = object(value) && Array.isArray(value.pairs) && counts(value.counts) && (value.missing === null || text(value.missing))
     && (value.attemptsUnknown === null || text(value.attemptsUnknown)) && Array.isArray(value.warnings) && value.warnings.every(item => typeof item === 'string')
     && value.pairs.every(pair => object(pair) && country(pair.owner) && country(pair.target)
       && (pair.thresholdRaw === null ? text(pair.thresholdUnknown) : raw(pair.thresholdRaw) && pair.thresholdUnknown === null)
       && byte(pair.bonusActive) && byte(pair.decrypting) && (pair.broken === null || typeof pair.broken === 'boolean')
+      && STATUSES.has(pair.status as string)
       && observation(pair.started) && observation(pair.brokenAt)
       && (pair.weekChangeTenths === null ? text(pair.weekChangeUnknown) : Number.isSafeInteger(pair.weekChangeTenths) && pair.weekChangeUnknown === null));
   if (!ok) throw new Error('The decryption reply is malformed.');
@@ -41,20 +46,20 @@ export function progressPercent(amount: bigint, active: number, threshold: bigin
 }
 
 export interface CipherNumbers {
-  amount: number | undefined;
+  amount: bigint | undefined;
   bonusDays: number | undefined;
   missing: string;
 }
 
 export function percentOf(pair: CipherPair, numbers: CipherNumbers): number | null {
-  if (pair.thresholdRaw === null || numbers.amount === undefined || !Number.isInteger(numbers.amount)) return null;
-  return progressPercent(BigInt(numbers.amount), pair.bonusActive, BigInt(pair.thresholdRaw));
+  if (pair.thresholdRaw === null || numbers.amount === undefined) return null;
+  return progressPercent(numbers.amount, pair.bonusActive, BigInt(pair.thresholdRaw));
 }
 
 const CIPHER_BROKEN = 'Cipher broken';
 export const progressLabel = (percent: number | null) => percent === null ? 'Progress unknown' : `${percent}%`;
-export const amountText = (numbers: CipherNumbers) => numbers.amount === undefined || !Number.isInteger(numbers.amount) ? `Amount not read (${numbers.missing})`
-  : formatAmount(BigInt(numbers.amount), 5, 5);
+export const amountText = (numbers: CipherNumbers) => numbers.amount === undefined ? `Amount not read (${numbers.missing})`
+  : formatAmount(numbers.amount, 5, 5);
 export const activeBonusDays = (pair: CipherPair, numbers: CipherNumbers): number | null =>
   pair.broken === true && pair.bonusActive !== 0 && numbers.bonusDays !== undefined ? numbers.bonusDays : null;
 

@@ -4579,6 +4579,8 @@ export type WargoalsParamsAtHour = WargoalsParams & { hour: number };
 export type DecryptionParams = { branchId: string, };
 export type Country = { id: number, tag: string | null, };
 export type Observation = { hour: number, upperBound: boolean, };
+export type CipherStatus = "broken" | "decrypting" | "paused" | "breakUnknown";
+export type CipherCounts = { broken: number, decrypting: number, paused: number, breakUnknown: number, };
 export type CipherPair = { owner: Country, target: Country,
 /**
  * Fixed5: the amount that breaks the cipher; none where it is not known.
@@ -4592,6 +4594,10 @@ thresholdUnknown: string | null, bonusActive: number, decrypting: number,
  * None where the threshold is not known and no bonus is active.
  */
 broken: boolean | null,
+/**
+ * Broken, decrypting, paused, or not known to be broken or not.
+ */
+status: CipherStatus,
 /**
  * When the attempt current at the hour started; none when none is, or it is not known.
  */
@@ -4615,6 +4621,10 @@ export type DecryptionReply = {
  * by progress (unknown last), then by decryptor and target.
  */
 pairs: Array<CipherPair>,
+/**
+ * How many of the pairs are in each status.
+ */
+counts: CipherCounts,
 /**
  * Why the hour's ciphers are not known, when they are not.
  */
@@ -5086,7 +5096,12 @@ export type EquipmentDesignsParamsAtHour = EquipmentDesignsParams & { hour: numb
 export type DoctrineMasteryParams = { branchId: string, country: CountryRef, };
 export type MasteryChoice = { id: string, name: string | null, icon: string | null, };
 export type MasteryReward = { id: string, name: string | null, threshold: string | null, };
-export type MasteryTrack = { ordinal: number, name: string | null, sub: MasteryChoice | null, rewards: Array<MasteryReward>, unlocked: number, };
+export type MasteryTrack = { ordinal: number, name: string | null, sub: MasteryChoice | null, rewards: Array<MasteryReward>,
+/**
+ * Why the subdoctrine's rewards are not known, where they are not: the list is then empty and
+ * only the recorded unlock count is known.
+ */
+rewardsUnknown: string | null, unlocked: number, };
 export type MasteryFolder = { ordinal: number,
 /**
  * The folder token's spelling: stable across hours, for settings that choose folders.

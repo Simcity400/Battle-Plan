@@ -40,6 +40,52 @@ pub struct DecryptionParams {
     pub branch_id: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum CipherStatus {
+    Broken,
+    Decrypting,
+    Paused,
+    BreakUnknown,
+}
+
+impl CipherStatus {
+    fn of(broken: Option<bool>, decrypting: u8) -> Self {
+        match (broken, decrypting) {
+            (Some(true), _) => Self::Broken,
+            (None, _) => Self::BreakUnknown,
+            (Some(false), 0) => Self::Paused,
+            (Some(false), _) => Self::Decrypting,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct CipherCounts {
+    pub broken: u32,
+    pub decrypting: u32,
+    pub paused: u32,
+    pub break_unknown: u32,
+}
+
+impl CipherCounts {
+    fn of(pairs: &[CipherPair]) -> Self {
+        let mut out = Self::default();
+        for pair in pairs {
+            match pair.status {
+                CipherStatus::Broken => out.broken += 1,
+                CipherStatus::Decrypting => out.decrypting += 1,
+                CipherStatus::Paused => out.paused += 1,
+                CipherStatus::BreakUnknown => out.break_unknown += 1,
+            }
+        }
+        out
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +100,8 @@ pub struct CipherPair {
     pub decrypting: u8,
     #[doc = " None where the threshold is not known and no bonus is active."]
     pub broken: Option<bool>,
+    #[doc = " Broken, decrypting, paused, or not known to be broken or not."]
+    pub status: CipherStatus,
     #[doc = " When the attempt current at the hour started; none when none is, or it is not known."]
     pub started: Option<Observation>,
     #[doc = " When that attempt broke the cipher; none when it has not."]
@@ -72,6 +120,8 @@ pub struct DecryptionReply {
     #[doc = " The pairs with an attempt or a broken cipher, in the game's race order: broken first, then"]
     #[doc = " by progress (unknown last), then by decryptor and target."]
     pub pairs: Vec<CipherPair>,
+    #[doc = " How many of the pairs are in each status."]
+    pub counts: CipherCounts,
     #[doc = " Why the hour's ciphers are not known, when they are not."]
     pub missing: Option<String>,
     #[doc = " Why the attempts' starts and breaks are not known, when they are not: every pair at work"]
@@ -177,6 +227,7 @@ fn pairs(
                 bonus_active: row.bonus_active,
                 decrypting: row.decrypting,
                 broken,
+                status: CipherStatus::of(broken, row.decrypting),
                 started,
                 broken_at,
                 week_change_tenths: change.as_ref().ok().copied(),
@@ -211,7 +262,7 @@ impl AtHour for Decryption {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![DecryptionParams::decl(), Country::decl(), Observation::decl(), CipherPair::decl(), DecryptionReply::decl()]
+        vec![DecryptionParams::decl(), Country::decl(), Observation::decl(), CipherStatus::decl(), CipherCounts::decl(), CipherPair::decl(), DecryptionReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -239,8 +290,8 @@ impl AtHour for Decryption {
         let history_error = history.as_ref().err().map(ToString::to_string).unwrap_or_default();
         let history = history.as_deref().map_err(|_| history_error.as_str());
         Ok(match pairs(frame, defines, attempts.as_deref().ok(), history, at.live) {
-            Ok(pairs) => DecryptionReply { pairs, missing: None, attempts_unknown, warnings },
-            Err(error) => DecryptionReply { pairs: Vec::new(), missing: Some(error.to_string()), attempts_unknown, warnings },
+            Ok(pairs) => DecryptionReply { counts: CipherCounts::of(&pairs), pairs, missing: None, attempts_unknown, warnings },
+            Err(error) => DecryptionReply { pairs: Vec::new(), counts: CipherCounts::default(), missing: Some(error.to_string()), attempts_unknown, warnings },
         })
     }
 }
@@ -621,6 +672,7 @@ mod tests {
                 bonus_active: 0,
                 decrypting: 1,
                 broken,
+                status: CipherStatus::of(broken, 1),
                 started: None,
                 broken_at: None,
                 week_change_tenths: None,
@@ -641,6 +693,23 @@ mod tests {
         race.sort_by(race_order);
         let owners: Vec<&str> = race.iter().map(|item| item.pair.owner.tag.as_deref().unwrap()).collect();
         assert_eq!(owners, ["ITA", "SOV", "JAP", "GER", "ENG"]);
+    }
+
+    #[test]
+    fn a_paused_attempt_and_an_unknown_break_are_counted_apart_from_decrypting_and_broken() {
+        assert_eq!(CipherStatus::of(Some(false), 0), CipherStatus::Paused);
+        assert_eq!(CipherStatus::of(None, 1), CipherStatus::BreakUnknown);
+        assert_eq!(CipherStatus::of(Some(true), 0), CipherStatus::Broken);
+        let pairs: Vec<CipherPair> = [
+            ranked("GER", "ENG", 400, Some(1_000), Some(false)),
+            ranked("ENG", "GER", 100, None, None),
+            ranked("ITA", "FRA", 1_000, Some(1_000), Some(true)),
+        ].into_iter().map(|item| item.pair).collect();
+        let mut paused = pairs[0].clone();
+        paused.decrypting = 0;
+        paused.status = CipherStatus::of(paused.broken, 0);
+        let counts = CipherCounts::of(&[pairs[0].clone(), pairs[1].clone(), pairs[2].clone(), paused]);
+        assert_eq!(counts, CipherCounts { broken: 1, decrypting: 1, paused: 1, break_unknown: 1 });
     }
 
     #[test]

@@ -8,10 +8,10 @@ import { activeBonusDays, amountText, percentOf, progressLabel, progressPercent,
 
 const pair = (owner: string | null, target: string, id: number, thresholdRaw: string | null = '1000000', extra: Partial<CipherPair> = {}): CipherPair => ({
   owner: { id, tag: owner }, target: { id: id + 100, tag: target }, thresholdRaw, thresholdUnknown: thresholdRaw === null ? 'The target RaidIntelInputs row is not recorded' : null,
-  bonusActive: 0, decrypting: 1, broken: false, started: { hour: 100, upperBound: false }, brokenAt: null, weekChangeTenths: 24, weekChangeUnknown: null, ...extra,
+  bonusActive: 0, decrypting: 1, broken: false, status: 'decrypting', started: { hour: 100, upperBound: false }, brokenAt: null, weekChangeTenths: 24, weekChangeUnknown: null, ...extra,
 });
-const reply = (pairs: CipherPair[], attemptsUnknown: string | null = null): DecryptionReply => ({ pairs, missing: null, attemptsUnknown, warnings: [] });
-const numbers = (_item: CipherPair, amount?: number, bonusDays?: number): CipherNumbers => ({ amount, bonusDays, missing: amount === undefined ? 'Not read yet' : '' });
+const reply = (pairs: CipherPair[], attemptsUnknown: string | null = null): DecryptionReply => ({ pairs, counts: { broken: 0, decrypting: pairs.length, paused: 0, breakUnknown: 0 }, missing: null, attemptsUnknown, warnings: [] });
+const numbers = (_item: CipherPair, amount?: number, bonusDays?: number): CipherNumbers => ({ amount: amount === undefined ? undefined : BigInt(amount), bonusDays, missing: amount === undefined ? 'Not read yet' : '' });
 
 test('the meter percent matches the game exactly: rounding, wrapping, the sentinel and overflow', () => {
   const vectors = JSON.parse(readFileSync(new URL('../../../../crates/dashboard-text/src/cryptology/test-values.json', import.meta.url), 'utf8')) as [string, number, string, number | null][];

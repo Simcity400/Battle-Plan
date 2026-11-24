@@ -50,8 +50,7 @@ export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = re
     }
     const country = frame.country;
     const sections: MeterSection[] = [];
-    if (frame.active.length) {
-      const rows: MeterRow[] = frame.active.map(pair => {
+    const progressRows = (list: readonly CipherPair[]): MeterRow[] => list.map(pair => {
         const owner = country(pair.owner);
         const target = country(pair.target);
         const numbers = readCipherNumbers(frame.live, pair);
@@ -84,17 +83,18 @@ export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = re
           },
         };
       });
-      sections.push({
-        key: 'decrypting',
-        title: 'Decrypting',
-        count: String(frame.active.length),
-        rows,
-      });
+    const progressSections: readonly [string, string, readonly CipherPair[]][] = [
+      ['decrypting', 'Decrypting', frame.byStatus.decrypting],
+      ['paused', 'Paused', frame.byStatus.paused],
+      ['break-unknown', 'Not known if broken', frame.byStatus.breakUnknown],
+    ];
+    for (const [key, title, list] of progressSections) {
+      if (list.length) sections.push({ key, title, count: String(list.length), rows: progressRows(list) });
     }
 
-    if (frame.broken.length) {
+    if (frame.byStatus.broken.length) {
       const grouped = new Map<number, { owner: ResolvedCountry; items: CipherPair[] }>();
-      for (const pair of frame.broken) {
+      for (const pair of frame.byStatus.broken) {
         const group = grouped.get(pair.owner.id) ?? { owner: country(pair.owner), items: [] };
         group.items.push(pair);
         grouped.set(pair.owner.id, group);
@@ -137,7 +137,7 @@ export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = re
       sections.push({
         key: 'broken',
         title: 'Cipher broken',
-        count: String(frame.broken.length),
+        count: String(frame.byStatus.broken.length),
         chipLines,
       });
     }

@@ -6,7 +6,7 @@ import type { HourRanges } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import type { BoundedReadView, DeclaredCountryFilter, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
 import { formatDateHover } from '../../families/valueFormat.ts';
-import type { CipherPair, Country, DecryptionReply, Observation } from '../../generated/dashboard';
+import type { CipherCounts, CipherPair, CipherStatus, Country, DecryptionReply, Observation } from '../../generated/dashboard';
 import {
   activeBonusDays,
   amountText,
@@ -49,8 +49,7 @@ export type DecryptionFrame =
       readonly reply: DecryptionReply;
       readonly live: ReturnType<BoundedReadView['live']>;
       readonly pairs: readonly CipherPair[];
-      readonly broken: readonly CipherPair[];
-      readonly active: readonly CipherPair[];
+      readonly byStatus: Readonly<Record<CipherStatus, readonly CipherPair[]>>;
       readonly summaryText: string;
       readonly notes: readonly string[];
       readonly country: (country: Country) => ResolvedCountry;
@@ -102,7 +101,7 @@ export function readCipherNumbers(live: ReturnType<BoundedReadView['live']>, pai
   const key = pairKey(pair);
   const rawAmt = live?.get(liveKey(key, 'amount'));
   const rawBonus = live?.get(liveKey(key, 'bonusDays'));
-  const amount = typeof rawAmt === 'number' ? rawAmt : typeof rawAmt === 'bigint' ? Number(rawAmt) : undefined;
+  const amount = typeof rawAmt === 'bigint' ? rawAmt : typeof rawAmt === 'number' && Number.isSafeInteger(rawAmt) ? BigInt(rawAmt) : undefined;
   const bonusDays = typeof rawBonus === 'number' ? rawBonus : typeof rawBonus === 'bigint' ? Number(rawBonus) : undefined;
   return {
     amount,
@@ -149,6 +148,15 @@ export function pairTooltipItems(
   ];
 }
 
+export function countsText(counts: CipherCounts): string {
+  return [
+    `${counts.broken} broken`,
+    `${counts.decrypting} decrypting`,
+    ...(counts.paused ? [`${counts.paused} paused`] : []),
+    ...(counts.breakUnknown ? [`${counts.breakUnknown} not known`] : []),
+  ].join(' \u00b7 ');
+}
+
 export function readDecryption(readView: BoundedReadView, options: DecryptionFilterOptions): DecryptionFrame {
   const refused = readView.refused('main');
   if (refused) return { kind: 'refused', reason: refused };
@@ -182,7 +190,7 @@ export function readDecryption(readView: BoundedReadView, options: DecryptionFil
       kind: 'empty',
       empty: options.filterAll ? 'No ciphers being decrypted yet.' : 'No matching decryption pairs at this time.',
       emptyKind: 'empty',
-      summaryText: '0 broken · 0 decrypting',
+      summaryText: countsText({ broken: 0, decrypting: 0, paused: 0, breakUnknown: 0 }),
       warnings: reply.warnings,
     };
   }
@@ -195,16 +203,18 @@ export function readDecryption(readView: BoundedReadView, options: DecryptionFil
     }
     return held;
   };
-  const broken = pairs.filter(pair => pair.broken === true);
-  const active = pairs.filter(pair => pair.broken !== true);
+  const byStatus: Record<CipherStatus, CipherPair[]> = { broken: [], decrypting: [], paused: [], breakUnknown: [] };
+  for (const pair of pairs) byStatus[pair.status].push(pair);
+  const counts: CipherCounts = options.filterAll
+    ? reply.counts
+    : { broken: byStatus.broken.length, decrypting: byStatus.decrypting.length, paused: byStatus.paused.length, breakUnknown: byStatus.breakUnknown.length };
   return {
     kind: 'pairs',
     reply,
     live: readView.live('main'),
     pairs,
-    broken,
-    active,
-    summaryText: `${broken.length} broken · ${active.length} decrypting`,
+    byStatus,
+    summaryText: countsText(counts),
     notes: reply.attemptsUnknown ? [reply.attemptsUnknown] : [],
     country,
   };
