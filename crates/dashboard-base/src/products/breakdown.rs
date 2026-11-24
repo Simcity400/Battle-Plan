@@ -25,8 +25,8 @@ pub enum BreakdownState {
 #[derive(Clone, Debug, Serialize, PartialEq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct BreakdownTotal {
-    #[doc = " Scaled by `decimals`; none when nothing is known."]
-    pub raw: Option<String>,
+    #[doc = " None when nothing is known."]
+    pub amount: Option<BreakdownAmount>,
     pub state: BreakdownState,
     pub reason: Option<String>,
 }
@@ -44,8 +44,8 @@ pub struct BreakdownPart {
     pub ordinal: u32,
     #[doc = " Unattributed or other: drawn in the reserved grey."]
     pub other: bool,
-    #[doc = " Scaled by `decimals`; none when not recorded."]
-    pub raw: Option<String>,
+    #[doc = " None when not recorded."]
+    pub amount: Option<BreakdownAmount>,
     pub state: BreakdownState,
     pub reason: Option<String>,
     #[doc = " Of the whole; none where the whole is only a lower bound or the part is not positive."]
@@ -66,7 +66,6 @@ pub struct BreakdownPart {
 #[derive(Clone, Debug, Serialize, PartialEq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Breakdown {
-    pub decimals: u8,
     pub total: BreakdownTotal,
     #[doc = " In display order: the largest known part first, then parts at zero or below, then other,"]
     #[doc = " then parts not recorded."]
@@ -75,10 +74,88 @@ pub struct Breakdown {
     pub unrecorded_hours: u32,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BreakdownAmount {
+    #[doc = " Reduced, over a positive denominator."]
+    pub numerator: String,
+    pub denominator: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Exact {
+    numerator: i128,
+    denominator: i128,
+}
+
+fn gcd(mut a: u128, mut b: u128) -> u128 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+impl Exact {
+    pub const ZERO: Self = Self { numerator: 0, denominator: 1 };
+
+    pub fn new(numerator: i128, denominator: i128) -> Option<Self> {
+        if denominator <= 0 {
+            return None;
+        }
+        let divisor = i128::try_from(gcd(numerator.unsigned_abs(), denominator.unsigned_abs())).ok()?;
+        Some(Self { numerator: numerator / divisor, denominator: denominator / divisor })
+    }
+
+    pub fn whole(value: i128) -> Self {
+        Self { numerator: value, denominator: 1 }
+    }
+
+    pub fn scaled(raw: i128, decimals: u8) -> Option<Self> {
+        Self::new(raw, 10_i128.checked_pow(u32::from(decimals))?)
+    }
+
+    pub fn numerator(self) -> i128 {
+        self.numerator
+    }
+
+    pub fn denominator(self) -> i128 {
+        self.denominator
+    }
+
+    fn checked_add(self, other: Self) -> Option<Self> {
+        let divisor = i128::try_from(gcd(self.denominator.unsigned_abs(), other.denominator.unsigned_abs())).ok()?;
+        let denominator = self.denominator.checked_mul(other.denominator / divisor)?;
+        let numerator = self.numerator.checked_mul(other.denominator / divisor)?.checked_add(other.numerator.checked_mul(self.denominator / divisor)?)?;
+        Self::new(numerator, denominator)
+    }
+
+    fn value(self) -> f64 {
+        self.numerator as f64 / self.denominator as f64
+    }
+
+    fn of(self, whole: Self) -> f64 {
+        match (self.numerator.checked_mul(whole.denominator), whole.numerator.checked_mul(self.denominator)) {
+            (Some(part), Some(whole)) => part as f64 / whole as f64,
+            _ => self.value() / whole.value(),
+        }
+    }
+
+    fn compare(self, other: Self) -> std::cmp::Ordering {
+        match (self.numerator.checked_mul(other.denominator), other.numerator.checked_mul(self.denominator)) {
+            (Some(left), Some(right)) => left.cmp(&right),
+            _ => self.value().total_cmp(&other.value()),
+        }
+    }
+
+    pub fn wire(self) -> BreakdownAmount {
+        BreakdownAmount { numerator: self.numerator.to_string(), denominator: self.denominator.to_string() }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Amount {
-    Known(i128),
-    Partial(i128, String),
+    Known(Exact),
+    Partial(Exact, String),
     NotRecorded(String),
 }
 
@@ -129,10 +206,11 @@ pub struct Unrecorded {
 
 const REST_KEY: &str = "~rest";
 const REST_NAME: &str = "Other";
+const INEXACT: &str = "Too many fractions to add exactly";
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct Sum {
-    known: i128,
+    known: Option<Exact>,
     measured: u32,
     partial: Vec<String>,
     missing: Vec<String>,
@@ -140,16 +218,30 @@ struct Sum {
     last: Option<i32>,
 }
 
+impl Default for Sum {
+    fn default() -> Self {
+        Self { known: Some(Exact::ZERO), measured: 0, partial: Vec::new(), missing: Vec::new(), count: None, last: None }
+    }
+}
+
 impl Sum {
+    fn plus(&mut self, value: Option<Exact>) {
+        self.known = self.known.zip(value).and_then(|(held, value)| held.checked_add(value));
+    }
+
+    fn known(&self) -> Exact {
+        self.known.unwrap_or(Exact::ZERO)
+    }
+
     fn add(&mut self, amount: &Amount, count: Option<u64>, last: Option<i32>) {
         self.date(last);
         match amount {
             Amount::Known(value) => {
-                self.known = self.known.saturating_add(*value);
+                self.plus(Some(*value));
                 self.measured += 1;
             }
             Amount::Partial(value, reason) => {
-                self.known = self.known.saturating_add(*value);
+                self.plus(Some(*value));
                 self.measured += 1;
                 remember(&mut self.partial, reason);
             }
@@ -159,7 +251,7 @@ impl Sum {
     }
 
     fn merge(&mut self, other: &Sum) {
-        self.known = self.known.saturating_add(other.known);
+        self.plus(other.known);
         self.measured += other.measured;
         for reason in &other.partial {
             remember(&mut self.partial, reason);
@@ -188,6 +280,9 @@ impl Sum {
     }
 
     fn state(&self) -> BreakdownState {
+        if self.known.is_none() {
+            return BreakdownState::NotRecorded;
+        }
         match (self.measured, self.missing.is_empty(), self.partial.is_empty()) {
             (0, false, _) => BreakdownState::NotRecorded,
             (_, false, _) => BreakdownState::AtLeast,
@@ -197,16 +292,17 @@ impl Sum {
     }
 
     fn reason(&self) -> Option<String> {
-        let reasons: Vec<&str> = self.missing.iter().chain(&self.partial).map(String::as_str).collect();
+        let inexact = self.known.is_none().then_some(INEXACT);
+        let reasons: Vec<&str> = inexact.into_iter().chain(self.missing.iter().chain(&self.partial).map(String::as_str)).collect();
         (!reasons.is_empty()).then(|| reasons.join("; "))
     }
 
-    fn raw(&self) -> Option<String> {
-        (self.measured > 0 || self.missing.is_empty()).then(|| self.known.to_string())
+    fn amount(&self) -> Option<BreakdownAmount> {
+        self.known.filter(|_| self.measured > 0 || self.missing.is_empty()).map(Exact::wire)
     }
 
-    fn whole(&self) -> Option<i128> {
-        matches!(self.state(), BreakdownState::Known | BreakdownState::Partial).then_some(self.known)
+    fn whole(&self) -> Option<Exact> {
+        self.known.filter(|_| matches!(self.state(), BreakdownState::Known | BreakdownState::Partial))
     }
 }
 
@@ -268,28 +364,28 @@ fn class(branch: &Branch) -> u8 {
     match branch.sum.state() {
         BreakdownState::NotRecorded => 3,
         _ if branch.node.other => 2,
-        _ if branch.sum.known > 0 => 0,
+        _ if branch.sum.known().numerator() > 0 => 0,
         _ => 1,
     }
 }
 
-fn share_of(part: &Sum, whole: Option<i128>) -> Option<f64> {
-    match (whole, part.state()) {
-        (Some(whole), BreakdownState::Known | BreakdownState::Partial) if whole > 0 && part.known > 0 => Some(part.known as f64 / whole as f64),
+fn share_of(part: &Sum, whole: Option<Exact>) -> Option<f64> {
+    match (whole, part.whole()) {
+        (Some(whole), Some(part)) if whole.numerator() > 0 && part.numerator() > 0 => Some(part.of(whole)),
         _ => None,
     }
 }
 
-fn exact_share_of(part: &Sum, parent: Option<i128>) -> Option<f64> {
+fn exact_share_of(part: &Sum, parent: Option<Exact>) -> Option<f64> {
     (part.state() == BreakdownState::Known).then(|| share_of(part, parent)).flatten()
 }
 
-fn parts(children: Vec<Branch>, whole: Option<i128>, parent: Option<i128>) -> Vec<BreakdownPart> {
+fn parts(children: Vec<Branch>, whole: Option<Exact>, parent: Option<Exact>) -> Vec<BreakdownPart> {
     let mut children = children;
     children.sort_by(|a, b| {
         class(a)
             .cmp(&class(b))
-            .then_with(|| if class(a) < 2 { b.sum.known.cmp(&a.sum.known) } else { std::cmp::Ordering::Equal })
+            .then_with(|| if class(a) < 2 { b.sum.known().compare(a.sum.known()) } else { std::cmp::Ordering::Equal })
             .then_with(|| a.node.ordinal.cmp(&b.node.ordinal))
     });
     children
@@ -305,7 +401,7 @@ fn parts(children: Vec<Branch>, whole: Option<i128>, parent: Option<i128>) -> Ve
                 name_missing: branch.node.name_missing,
                 ordinal: branch.node.ordinal,
                 other: branch.node.other,
-                raw: branch.sum.raw(),
+                amount: branch.sum.amount(),
                 state: branch.sum.state(),
                 reason: branch.sum.reason(),
                 count: branch.sum.count,
@@ -317,7 +413,7 @@ fn parts(children: Vec<Branch>, whole: Option<i128>, parent: Option<i128>) -> Ve
         .collect()
 }
 
-fn assemble(decimals: u8, mut root: Branch, unrecorded: &Unrecorded, qualified: &[String], unwitnessed: bool) -> Breakdown {
+fn assemble(mut root: Branch, unrecorded: &Unrecorded, qualified: &[String], unwitnessed: bool) -> Breakdown {
     root.split_rest();
     let unwitnessed = unwitnessed && root.sum.measured == 0;
     let mut state = if unwitnessed { BreakdownState::NotRecorded } else { root.sum.state() };
@@ -333,26 +429,24 @@ fn assemble(decimals: u8, mut root: Branch, unrecorded: &Unrecorded, qualified: 
     if state == BreakdownState::Known && (unrecorded.hours > 0 || !qualified.is_empty()) {
         state = BreakdownState::Partial;
     }
-    let whole = matches!(state, BreakdownState::Known | BreakdownState::Partial).then_some(root.sum.known);
+    let whole = root.sum.known.filter(|_| matches!(state, BreakdownState::Known | BreakdownState::Partial));
     Breakdown {
-        decimals,
-        total: BreakdownTotal { raw: if unwitnessed { None } else { root.sum.raw() }, state, reason },
+        total: BreakdownTotal { amount: if unwitnessed { None } else { root.sum.amount() }, state, reason },
         parts: parts(root.children, whole, whole.filter(|_| state == BreakdownState::Known)),
         unrecorded_hours: unrecorded.hours,
     }
 }
 
-pub fn breakdown(decimals: u8, leaves: &[Leaf], unrecorded: &Unrecorded) -> Breakdown {
+pub fn breakdown(leaves: &[Leaf], unrecorded: &Unrecorded) -> Breakdown {
     let mut root = Branch::new(Node::new("", "", 0));
     for leaf in leaves {
         let mut sum = Sum::default();
         sum.add(&leaf.amount, leaf.count, leaf.last);
         root.add(&leaf.path, &sum);
     }
-    assemble(decimals, root, unrecorded, &[], false)
+    assemble(root, unrecorded, &[], false)
 }
 pub struct History {
-    decimals: u8,
     from: i32,
     to: i32,
     paths: Vec<Vec<Node>>,
@@ -363,7 +457,6 @@ pub struct History {
 }
 
 pub struct HistoryBuilder {
-    decimals: u8,
     from: i32,
     to: i32,
     paths: Vec<Vec<Node>>,
@@ -376,8 +469,8 @@ pub struct HistoryBuilder {
 }
 
 impl HistoryBuilder {
-    pub fn new(decimals: u8, from: i32, to: i32) -> Self {
-        Self { decimals, from, to, paths: Vec::new(), index: HashMap::new(), events: Vec::new(), qualified: Vec::new(), gaps: Vec::new(), changes: Vec::new(), dated: false }
+    pub fn new(from: i32, to: i32) -> Self {
+        Self { from, to, paths: Vec::new(), index: HashMap::new(), events: Vec::new(), qualified: Vec::new(), gaps: Vec::new(), changes: Vec::new(), dated: false }
     }
 
     pub fn dated(mut self) -> Self {
@@ -432,7 +525,7 @@ impl HistoryBuilder {
         }
         self.changes.sort_unstable();
         self.changes.dedup();
-        History { decimals: self.decimals, from: self.from, to: self.to, paths: self.paths, steps, qualified: self.qualified, gaps: self.gaps, changes: self.changes }
+        History { from: self.from, to: self.to, paths: self.paths, steps, qualified: self.qualified, gaps: self.gaps, changes: self.changes }
     }
 }
 
@@ -465,7 +558,7 @@ impl History {
         unrecorded.reason = (!reasons.is_empty()).then(|| reasons.join("; "));
         let period = i64::from(hour) - i64::from(self.from) + 1;
         let unwitnessed = period > 0 && i64::from(unrecorded.hours) >= period;
-        (assemble(self.decimals, root, &unrecorded, &qualified, unwitnessed), if inside { hour } else { self.through(hour) })
+        (assemble(root, &unrecorded, &qualified, unwitnessed), if inside { hour } else { self.through(hour) })
     }
     pub fn through(&self, hour: i32) -> i32 {
         let next = self.changes[self.changes.partition_point(|&at| at <= hour)..].first().copied();

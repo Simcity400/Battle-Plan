@@ -1,7 +1,7 @@
 
 use super::group_members::GroupsAt;
 use dashboard_base::products::{Country, LoadContext, validate_country};
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{at_hour::{At, AtHour}, breakdown::{self, Amount, Breakdown, Leaf, Node, Unrecorded}}};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{at_hour::{At, AtHour}, breakdown::{self, Amount, Breakdown, Exact, Leaf, Node, Unrecorded}}};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::identity::{Holder, Holders};
 use dashboard_query::series::ranked::GroupSelection;
@@ -202,7 +202,6 @@ pub const BREAKDOWN_MEASURES: [(&str, usize); 4] = [("states", 3), ("provinces",
 pub const RULES: [&str; 2] = ["controlled", "owned"];
 const RULE_COLUMNS: usize = 5;
 const STATES: usize = 3;
-const STATE_DECIMALS: u8 = 2;
 const REGION_UNKNOWN: &str = "~region";
 const NOT_HELD: &str = "~unheld";
 
@@ -232,8 +231,7 @@ pub struct TerritoryBreakdownReply {
     pub hour: i32,
     #[doc = " Countries (key: `slot:N`, the recorded slot, named by the tag it holds at the hour or `other` where no"]
     #[doc = " tag names it; `~unheld` for land no country holds), each split by strategic region (`~region` where"]
-    #[doc = " the region is not recorded). States are counted to two decimals: a state split between holders counts"]
-    #[doc = " by its share."]
+    #[doc = " the region is not recorded). A state split between holders counts by its exact share."]
     pub breakdown: Breakdown,
     pub warnings: Vec<String>,
 }
@@ -325,16 +323,15 @@ fn amount(row: &TerritoryRegionTotalRow, column: usize) -> Amount {
     let value = region_cell(row, column);
     if column % RULE_COLUMNS != STATES {
         return match value {
-            Recorded::Value(value) => Amount::Known(i128::from(value)),
+            Recorded::Value(value) => Amount::Known(Exact::whole(i128::from(value))),
             Recorded::NotRecorded => Amount::NotRecorded("Territory was not recorded here at this hour".into()),
         };
     }
     match (value, region_cell(row, column + 1)) {
-        (Recorded::Value(value), Recorded::Value(denominator)) if denominator > 0 => {
-            let scale = 10_i128.pow(u32::from(STATE_DECIMALS));
-            let (value, denominator) = (i128::from(value) * scale, i128::from(denominator));
-            Amount::Known((2 * value + denominator) / (2 * denominator))
-        }
+        (Recorded::Value(value), Recorded::Value(denominator)) => match Exact::new(i128::from(value), i128::from(denominator)) {
+            Some(share) => Amount::Known(share),
+            None => Amount::NotRecorded("States were not recorded here at this hour".into()),
+        },
         _ => Amount::NotRecorded("States were not recorded here at this hour".into()),
     }
 }
@@ -347,7 +344,6 @@ fn territory_breakdown(
     regions: Option<&RegionNames>,
 ) -> Breakdown {
     let column = breakdown_column(params).expect("validated measure and rule");
-    let decimals = if column % RULE_COLUMNS == STATES { STATE_DECIMALS } else { 0 };
     let mut leaves = Vec::new();
     for row in rows {
         let held = (row.holder != TerritoryRegionTotalRow::NO_COUNTRY).then_some(row.holder);
@@ -371,16 +367,16 @@ fn territory_breakdown(
             None => Node::new(REGION_UNKNOWN, "Region not recorded", u32::MAX).other(),
         };
         let amount = amount(row, column);
-        if amount == Amount::Known(0) {
+        if matches!(amount, Amount::Known(known) if known.numerator() == 0) {
             continue;
         }
         leaves.push(Leaf { path: vec![country, region], amount, count: None, last: None });
     }
-    breakdown::breakdown(decimals, &leaves, &Unrecorded::default())
+    breakdown::breakdown(&leaves, &Unrecorded::default())
 }
 
 fn not_recorded(reason: String) -> Breakdown {
-    breakdown::breakdown(0, &[Leaf { path: Vec::new(), amount: Amount::NotRecorded(reason), count: None, last: None }], &Unrecorded::default())
+    breakdown::breakdown(&[Leaf { path: Vec::new(), amount: Amount::NotRecorded(reason), count: None, last: None }], &Unrecorded::default())
 }
 
 impl AtHour for TerritoryBreakdown {
@@ -446,6 +442,7 @@ impl AtHour for TerritoryBreakdown {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dashboard_base::products::breakdown::BreakdownAmount;
 
     fn total(slot: u32, owned_states: Recorded<i64>, controlled_states: i64) -> TerritoryTotalRow {
         TerritoryTotalRow { slot, owned_states, controlled_states: Recorded::Value(controlled_states), ..TerritoryTotalRow::default() }
@@ -497,24 +494,41 @@ mod tests {
         let regions = RegionNames { names: [(7, Ok("Northern Sea".to_owned())), (8, Err("missing".to_owned()))].into(), warnings: Vec::new() };
         let params = TerritoryBreakdownParams { branch_id: "1".into(), measure: "states".into(), rule: "controlled".into(), countries: Vec::new(), group: None };
         let out = territory_breakdown(&rows, &tags, &params, None, Some(&regions));
-        assert_eq!(out.decimals, 2, "states split between holders count by their share");
         let keys: Vec<&str> = out.parts.iter().map(|part| part.key.as_str()).collect();
         assert_eq!(keys, ["slot:1", "slot:2", NOT_HELD], "keyed by recorded slot, the largest first, a country holding none has no part, then other");
         let names: Vec<(&str, bool)> = out.parts.iter().map(|part| (part.name.as_str(), part.other)).collect();
         assert_eq!(names, [("AAA", false), ("Country not named at this hour", true), ("Held by no country", true)]);
-        assert_eq!(out.parts[0].raw.as_deref(), Some("433"), "7/3 + 2 states");
+        let thirds = |numerator: &str| Some(BreakdownAmount { numerator: numerator.into(), denominator: "3".into() });
+        assert_eq!(out.parts[0].amount, thirds("13"), "7/3 + 2 states, exactly");
         let children: Vec<(&str, &str)> = out.parts[0].children.iter().map(|part| (part.key.as_str(), part.name.as_str())).collect();
         assert_eq!(children, [("7", "Northern Sea"), ("8", "Region 8")], "a region without a name is named by its id, never a guess");
         assert!(out.parts[1].other && out.parts[2].other);
         assert_eq!(out.parts[2].children[0].key, REGION_UNKNOWN);
-        assert_eq!(out.total.raw.as_deref(), Some("583"));
+        assert_eq!(out.total.amount, Some(BreakdownAmount { numerator: "35".into(), denominator: "6".into() }), "13/3 + 1 + 1/2");
         let unread = [held(1, 7, Recorded::NotRecorded, 3), held(3, 8, Recorded::Value(2), 1)];
         let partly = territory_breakdown(&unread, &tags, &params, None, None);
         assert_eq!(partly.total.state, BreakdownState::AtLeast, "a region not recorded is never zero");
         assert_eq!(partly.parts.last().map(|part| part.state), Some(BreakdownState::NotRecorded));
         let provinces = TerritoryBreakdownParams { measure: "provinces".into(), ..params };
-        assert_eq!(territory_breakdown(&rows, &tags, &provinces, None, None).decimals, 0);
+        assert_eq!(territory_breakdown(&rows, &tags, &provinces, None, None).total.amount, Some(BreakdownAmount { numerator: "8".into(), denominator: "1".into() }), "provinces are whole");
         assert!(breakdown_column(&TerritoryBreakdownParams { rule: "occupied".into(), ..provinces }).is_none(), "the breakdown's rules are controlled and owned");
+    }
+
+    #[test]
+    fn a_state_split_between_regions_adds_up_exactly_and_a_sliver_is_never_zero() {
+        let tags: HashMap<u32, (&str, u32)> = [(1, ("AAA", 10)), (2, ("BBB", 20))].into();
+        let third = |holder: u32, region: u32, states: i64, of: i64| TerritoryRegionTotalRow {
+            holder,
+            region,
+            controlled_states: Recorded::Value(states),
+            controlled_states_denominator: Recorded::Value(of),
+            ..TerritoryRegionTotalRow::default()
+        };
+        let rows = [third(1, 7, 1, 3), third(1, 8, 1, 3), third(1, 9, 1, 3), third(2, 7, 1, 300)];
+        let params = TerritoryBreakdownParams { branch_id: "1".into(), measure: "states".into(), rule: "controlled".into(), countries: Vec::new(), group: None };
+        let out = territory_breakdown(&rows, &tags, &params, None, None);
+        assert_eq!(out.parts[0].amount, Some(BreakdownAmount { numerator: "1".into(), denominator: "1".into() }), "three thirds of one state are one state");
+        assert_eq!(out.parts.len(), 2, "a three-hundredth of a state is held, never rounded away");
     }
 
     #[test]
