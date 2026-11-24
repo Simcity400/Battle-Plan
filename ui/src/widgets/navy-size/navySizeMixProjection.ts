@@ -44,6 +44,7 @@ export const navySizeMixProjection: BarsProjection<NavySizeMixOptions> = registe
       decimals: strength ? 5 : 0,
       valueFormat: strength ? { decimals: 0, maxDecimals: 2 } : { decimals: 0 },
       valueLabel: strength ? 'Current hull strength (HP)' : 'Number of ships',
+      unit: strength ? 'Hull strength (HP)' : 'Ships',
       partsLabel: options.grouping === 'type' ? 'Roles' : 'Ship classes',
       emptyMessage: strength ? 'No hull strength recorded at this date.' : 'No ships recorded at this date.',
       ...(strength ? { referenceLabel: 'Maximum hull strength (HP)' } : {}),

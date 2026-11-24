@@ -19,19 +19,26 @@ export type RegionList =
   | { readonly kind: 'failed'; readonly failure: Failure; readonly retry: () => void }
   | { readonly kind: 'ready'; readonly regions: readonly RegionListEntry[] };
 
+const CLOSED: RegionList = { kind: 'loading' };
+const NO_ASKS: readonly { readonly key: ReturnType<typeof regionKey>; readonly hour: number }[] = [];
+
 export function useRegionList(client: DashboardClient, track: BoundTrack | undefined, active: boolean): RegionList {
-  const request = track
-    ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'strategic-regions', params: { branchId: track.branch.id } })
-    : null;
-  const listed = useProduct<StrategicRegionsReply>(client, request, active, undefined, track?.source);
-  const scope = useIdentityScope(client, track?.source, track?.branch.id, active);
+  const open = active && !!track;
+  const request = useMemo(
+    () => (open && track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'strategic-regions', params: { branchId: track.branch.id } }) : null),
+    [open, track?.source.id, track?.source.revision, track?.branch.id],
+  );
+  const listed = useProduct<StrategicRegionsReply>(client, request, open, undefined, track?.source);
+  const scope = useIdentityScope(client, track?.source, track?.branch.id, open);
   const hour = track?.branch.lastHour ?? 0;
-  const asks = useMemo(() => (listed.data?.regions ?? []).map(region => ({ key: regionKey(region.id), hour })), [listed.data, hour]);
-  const names = useIdentities(client, track?.source, active ? scope : null, asks, { active });
+  const regions = open ? listed.data?.regions : undefined;
+  const asks = useMemo(() => (regions ? regions.map(region => ({ key: regionKey(region.id), hour })) : NO_ASKS), [regions, hour]);
+  const names = useIdentities(client, track?.source, open ? scope : null, asks, { active: open });
   return useMemo((): RegionList => {
+    if (!open) return CLOSED;
     if (listed.error) return { kind: 'failed', failure: listed.error, retry: listed.retry };
-    if (!listed.data) return { kind: 'loading' };
-    const regions = listed.data.regions.map((region): RegionListEntry => {
+    if (!regions) return CLOSED;
+    const entries = regions.map((region): RegionListEntry => {
       const named = names.resolve(regionKey(region.id), hour);
       const name = named.kind === 'known' && named.name.kind === 'known' ? named.name.value : null;
       const reason = named.kind === 'known' && named.name.kind === 'missing' ? named.name.reason
@@ -40,7 +47,7 @@ export function useRegionList(client: DashboardClient, track: BoundTrack | undef
             : 'Region name not recorded';
       return { id: region.id, label: name ?? `${reason} (${region.id})`, nameMissing: name === null, sea: region.sea };
     });
-    regions.sort((a, b) => a.label.localeCompare(b.label) || a.id - b.id);
-    return { kind: 'ready', regions };
-  }, [listed.data, listed.error, listed.retry, names, hour]);
+    entries.sort((a, b) => a.label.localeCompare(b.label) || a.id - b.id);
+    return { kind: 'ready', regions: entries };
+  }, [open, regions, listed.error, listed.retry, names.version, hour, names.resolve]);
 }

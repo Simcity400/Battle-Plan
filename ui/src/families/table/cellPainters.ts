@@ -20,11 +20,11 @@ import {
   FLAG_SLOT_HEIGHT,
   FLAG_SLOT_WIDTH,
   resolveKitTokens,
-  type ArtSlotState,
-  type FlagSlotState,
   type IconStripItem,
 } from '../../draw/kit.ts';
+import { resolveCachedArt, toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
+import { PENDING_ART, readyArt, unavailableArt } from '../art/types.ts';
 import { formatDateParts, formatScalar, formatValueState } from '../valueFormat.ts';
 import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE, PARTIAL_TAB_GAP, PARTIAL_TAB_HEIGHT, PARTIAL_TAB_WIDTH } from '../valueCanvas.ts';
 import { SHARE_FIGURE_SLOT, TREE_CHEVRON_LANE, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, type FamilyColumnLayout } from './layout.ts';
@@ -78,6 +78,7 @@ export interface CellRenderContext {
   readonly sortedColumn: string;
   readonly treeColumn: number;
   readonly treeLevels: number;
+  readonly hasActionColumn?: boolean;
   readonly icons?: ReadonlyMap<string, ImageBitmap | null>;
   readonly artCache?: LaneArtCache;
   readonly measure: (text: string, font: string) => number;
@@ -102,44 +103,9 @@ export interface CellDrawArgs {
 
 const fontOf = (theme: TableTheme, size: number, weight: number) => `${weight} ${size}px ${theme.font}`;
 
-function resolveArtState(
-  url: string | null | undefined,
-  pending: boolean,
-  resolvedName: string | undefined,
-  rc: CellRenderContext,
-): ArtSlotState {
-  if (url) {
-    const bitmap = rc.artCache?.bitmapOf(url) ?? rc.icons?.get(url);
-    if (bitmap) return { kind: 'ready', bitmap, width: bitmap.width, height: bitmap.height };
-    const st = rc.artCache?.stateOfUrl(url);
-    if (st === 'pending' || (st === undefined && rc.icons !== undefined && !rc.icons.has(url))) {
-      return { kind: 'pending' };
-    }
-    if (st === 'failed') return { kind: 'failed' };
-    return { kind: 'missing', ...(resolvedName ? { resolvedName } : {}) };
-  }
-  if (pending) return { kind: 'pending' };
-  return { kind: 'missing', ...(resolvedName ? { resolvedName } : {}) };
-}
-
-function resolveFlagState(
-  url: string | null | undefined,
-  pending: boolean,
-  tag: string | undefined,
-  rc: CellRenderContext,
-): FlagSlotState {
-  if (url) {
-    const bitmap = rc.artCache?.bitmapOf(url) ?? rc.icons?.get(url);
-    if (bitmap) return { kind: 'ready', bitmap, width: bitmap.width, height: bitmap.height };
-    const st = rc.artCache?.stateOfUrl(url);
-    if (st === 'pending' || (st === undefined && rc.icons !== undefined && !rc.icons.has(url))) {
-      return { kind: 'pending' };
-    }
-    if (st === 'failed') return { kind: 'failed' };
-    return { kind: 'missing', ...(tag ? { tag } : {}) };
-  }
-  if (pending) return { kind: 'pending' };
-  return { kind: 'missing', ...(tag ? { tag } : {}) };
+function cellArt(url: string | null | undefined, pending: boolean, rc: CellRenderContext) {
+  const resolution = url ? readyArt(url) : pending ? PENDING_ART : unavailableArt('Artwork unavailable');
+  return resolveCachedArt(resolution, { artCache: rc.artCache, icons: rc.icons });
 }
 
 function artGeometry(shape: TableCell['artShape'], density: TableDensity, rowHeight: number): { readonly width: number; readonly height: number } {
@@ -151,7 +117,7 @@ function artGeometry(shape: TableCell['artShape'], density: TableDensity, rowHei
   if (shape === 'equipment') return { width: 30, height: 24 };
   if (shape === 'counter') return { width: 30, height: 18 };
   if (shape === 'wide') {
-    const h = Math.min(28, Math.max(20, rowHeight - 14));
+    const h = Math.min(24, Math.max(18, rowHeight - 12));
     const w = Math.round(h * (46 / 28));
     return { width: w, height: h };
   }
@@ -207,8 +173,8 @@ function drawInlineRuns(
     return measure(fitted, font);
   }
   const parts = text.split('\uFFFC');
-  const boxSize = MISSING_BOX_SIZE;
-  const boxPad = 3;
+  const boxH = Math.max(MISSING_BOX_SIZE, 12);
+  const boxPad = 4;
   let cursor = x;
   const limit = x + maxWidth;
   ctx.save();
@@ -230,10 +196,11 @@ function drawInlineRuns(
     }
     if (i + 1 < parts.length) {
       const lead = cursor > x ? boxPad : 0;
-      if (cursor + lead + boxSize > limit) break;
+      const boxW = Math.min(48, Math.max(16, limit - cursor - lead));
+      if (cursor + lead + 16 > limit) break;
       cursor += lead;
-      drawHatchRect(ctx, cursor, Math.round(middle - boxSize / 2), boxSize, boxSize, 2, theme);
-      cursor += boxSize + (parts[i + 1] ? boxPad : 0);
+      drawHatchRect(ctx, cursor, Math.round(middle - boxH / 2), boxW, boxH, 2, theme);
+      cursor += boxW + (parts[i + 1] ? boxPad : 0);
     }
   }
   ctx.restore();
@@ -250,26 +217,35 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   const middle = y + rowHeight / 2;
   let left = leftBase;
 
-  if (column.notRecordedReason || cell?.blank) return;
-
-  if (colIndex === rc.treeColumn) {
-    left += treeTextStart(item.level, rc.treeLevels);
-    if (item.isTreeGroup) drawChevron(ctx, left - TREE_CHEVRON_LANE - 2, middle, item.isOpen, theme);
-  }
-
+  if (column.notRecordedReason) return;
   const kind = column.cellKind;
 
   if (kind === 'action') {
+    if (item.isTreeGroup && (cell?.blank || formatted.kind === 'notApplicable' || cell?.actionLabel === '')) {
+      drawChevron(ctx, right - 10, middle, item.isOpen, theme);
+      return;
+    }
+    if (cell?.blank || formatted.kind === 'notApplicable' || cell?.actionLabel === '') return;
     const label = cell?.actionLabel ?? 'View';
-    if (formatted.kind === 'notApplicable' || cell?.actionLabel === '') return;
     drawActionButton(ctx, right, middle, label, rowHovered || rowFocused, theme);
     return;
+  }
+
+  if (cell?.blank) return;
+
+  if (colIndex === rc.treeColumn) {
+    if (rc.hasActionColumn) {
+      if (item.level > 1) left += (item.level - 1) * TREE_CHEVRON_LANE;
+    } else {
+      left += treeTextStart(item.level, rc.treeLevels);
+      if (item.isTreeGroup) drawChevron(ctx, left - TREE_CHEVRON_LANE - 2, middle, item.isOpen, theme);
+    }
   }
 
   if (kind === 'kind') {
     if (!cell || (!cell.icon && !paintModel.iconPending && !cell.iconSlot)) return;
     const geom = artGeometry(cell.artShape ?? 'square', density, rowHeight);
-    const state = resolveArtState(paintModel.icon, paintModel.iconPending === true, cell.artName ?? item.name, rc);
+    const state = toArtSlotState(cellArt(paintModel.icon, paintModel.iconPending === true, rc), cell.artName ?? item.name);
     drawArtSlot(ctx, Math.round(x + (column.width - geom.width) / 2), Math.round(middle - geom.height / 2), geom.width, geom.height, state, theme, { radius: 2 });
     return;
   }
@@ -379,7 +355,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     }
     const iconUrl = cell?.icon ?? column.skillIcon ?? null;
     const iconState = iconUrl
-      ? resolveArtState(iconUrl, paintModel.iconPending === true, column.label, rc)
+      ? toArtSlotState(cellArt(iconUrl, paintModel.iconPending === true, rc), column.label)
       : { kind: 'none' as const };
     drawSkillFigure(ctx, left, right, middle, formatted.text, iconState, theme, {
       badge: column.key === 'skill' || column.key === 'level',
@@ -405,7 +381,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       return;
     }
     const stripItems: IconStripItem[] = list.map(entry => ({
-      state: resolveArtState(entry.url, entry.pending === true, entry.name, rc),
+      state: toArtSlotState(cellArt(entry.url, entry.pending === true, rc), entry.name),
       name: entry.name,
       count: entry.count,
     }));
@@ -518,7 +494,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     let fx = left;
     const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
     for (const fl of cell.flags) {
-      const state = resolveFlagState(fl.icon, fl.pending === true, fl.tag, rc);
+      const state = toFlagSlotState(cellArt(fl.icon, fl.pending === true, rc), fl.tag);
       drawFlagSlot(ctx, fx, fy, state, theme, { dimmed: fl.dimmed });
       fx += FLAG_SLOT_WIDTH + 6;
     }
@@ -526,20 +502,20 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     left = fx + 2;
   } else if (cell?.artShape && (cell.icon || paintModel.iconPending || cell.iconSlot)) {
     const geom = artGeometry(cell.artShape, density, rowHeight);
-    const state = resolveArtState(paintModel.icon, paintModel.iconPending === true, cell.artName ?? item.name, rc);
+    const state = toArtSlotState(cellArt(paintModel.icon, paintModel.iconPending === true, rc), cell.artName ?? item.name);
     drawArtSlot(ctx, left, Math.round(middle - geom.height / 2), geom.width, geom.height, state, theme, { radius: 3 });
     left += geom.width + 10;
   } else if (cell?.iconSlot && showsIcon(column.display)) {
     const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
     const isFlag = column.display === 'flag' || column.display === 'flagName';
     if (isFlag) {
-      const state = resolveFlagState(paintModel.icon, paintModel.iconPending === true, paintModel.country ?? undefined, rc);
+      const state = toFlagSlotState(cellArt(paintModel.icon, paintModel.iconPending === true, rc), paintModel.country ?? undefined);
       drawFlagSlot(ctx, left, fy, state, theme);
       if (column.display === 'flag') return;
       left += FLAG_SLOT_WIDTH + 8;
     } else {
       const geom = artGeometry('square', density, rowHeight);
-      const state = resolveArtState(paintModel.icon, paintModel.iconPending === true, cell.artName ?? item.name, rc);
+      const state = toArtSlotState(cellArt(paintModel.icon, paintModel.iconPending === true, rc), cell.artName ?? item.name);
       drawArtSlot(ctx, left, Math.round(middle - geom.height / 2), geom.width, geom.height, state, theme, { radius: 3 });
       left += geom.width + 8;
     }
@@ -558,7 +534,22 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   }
 
   if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
-    drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: !!column.numeric, muted: item.row.muted }, theme, measure, fit);
+    let nrLeft = left;
+    if (cell?.inlinePrefix && !column.numeric) {
+      const prefixFont = fontOf(theme, density === 'compact' ? 13 : 13.5, 600);
+      const prefixW = measure(cell.inlinePrefix, prefixFont);
+      if (prefixW + 10 < Math.max(0, right - nrLeft)) {
+        ctx.save();
+        ctx.font = prefixFont;
+        ctx.fillStyle = item.row.muted ? theme.muted : theme.text;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(cell.inlinePrefix, nrLeft, middle);
+        ctx.restore();
+        nrLeft += prefixW + 8;
+      }
+    }
+    drawFormattedValue(ctx, formatted, { left: nrLeft, right, middle, endAligned: !!column.numeric, muted: item.row.muted }, theme, measure, fit);
     return;
   }
 
@@ -621,7 +612,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       const numW = measure(shownNum, font);
       const iconX = Math.round(numRight - numW - iconSize - 5);
       if (iconX >= left) {
-        const state = resolveArtState(cell.unitIcon, cell.unitIconPending === true, cell.unitSuffix ?? column.label, rc);
+        const state = toArtSlotState(cellArt(cell.unitIcon, cell.unitIconPending === true, rc), cell.unitSuffix ?? column.label);
         drawArtSlot(ctx, iconX, Math.round(textMid - iconSize / 2), iconSize, iconSize, state, theme, { radius: 2 });
       }
     }

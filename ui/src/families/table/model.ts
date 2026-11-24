@@ -460,7 +460,7 @@ export function annotateLogBoundaries(
   const out = rows.slice();
   let prevDay: number | null = null;
   let prevBound: DateBoundKind | undefined;
-  let prevWasNonLiveData = false;
+  let prevWasLive: boolean | null = null;
 
   for (let b = 0; b < blocks.length; b++) {
     const block = blocks[b]!;
@@ -468,32 +468,25 @@ export function annotateLogBoundaries(
     if (block.head.kind !== 'data') {
       prevDay = null;
       prevBound = undefined;
-      prevWasNonLiveData = false;
+      prevWasLive = null;
       continue;
     }
     const isLive = block.head.row.live === true;
-    if (isLive) {
-      const nextIsLive = nextHead?.kind === 'data' && nextHead.row.live === true;
-      const lastItem = out[block.end]!;
-      if (!nextIsLive && nextHead && lastItem.kind === 'data') {
-        out[block.end] = { ...lastItem, isLiveEnd: true };
-      }
-      prevDay = null;
-      prevBound = undefined;
-      prevWasNonLiveData = false;
-      continue;
-    }
     const rowHour = dateHourOf(block.head.row, dateKey);
     const day = dayKeyOf(rowHour);
     const bound = dateKey ? block.head.row.cells[dateKey]?.boundedDate : undefined;
-    const showDate = !(suppressRepeatDates && prevWasNonLiveData && day !== null && day === prevDay && bound === prevBound);
+    const showDate = !(suppressRepeatDates && prevWasLive === isLive && day !== null && day === prevDay && bound === prevBound);
     if (!showDate) {
       out[block.start] = { ...block.head, showDate: false };
     }
-    const nextIsHistorical = nextHead?.kind === 'data' && nextHead.row.live !== true;
-    const nextDay = nextIsHistorical ? dayKeyOf(dateHourOf(nextHead.row, dateKey)) : null;
-    const isDayEnd = day !== null && (!nextIsHistorical || nextDay !== day);
-    if (isDayEnd) {
+    const nextIsSameSection = nextHead?.kind === 'data' && (nextHead.row.live === true) === isLive;
+    const nextDay = nextIsSameSection ? dayKeyOf(dateHourOf(nextHead.row, dateKey)) : null;
+    if (isLive && !nextIsSameSection && nextHead) {
+      const lastItem = out[block.end]!;
+      if (lastItem.kind === 'data') {
+        out[block.end] = { ...lastItem, isLiveEnd: true };
+      }
+    } else if (day !== null && (!nextIsSameSection || nextDay !== day)) {
       const lastItem = out[block.end]!;
       if (lastItem.kind === 'data') {
         out[block.end] = { ...lastItem, isDayEnd: true };
@@ -501,7 +494,7 @@ export function annotateLogBoundaries(
     }
     prevDay = day;
     prevBound = bound;
-    prevWasNonLiveData = true;
+    prevWasLive = isLive;
   }
   return out;
 }
@@ -1481,7 +1474,7 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
             if (changed.size === 0) {
               return { ...prevInc.model, hour, changedKeys: changed, changedRows: new Map() };
             }
-            if (changed.size * 2 < prevInc.rawRows.length) {
+            {
               const colSpecs = prevInc.colSpecs;
               const buildRow = (row: TRow): TableRow => buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, labels, row);
               const nextRows = prevInc.model.rows.slice();

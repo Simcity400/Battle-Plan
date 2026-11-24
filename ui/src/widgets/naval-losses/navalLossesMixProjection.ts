@@ -87,6 +87,7 @@ export const navalLossesMixProjection: BarsProjection<NavalLossesMixOptions> = r
       decimals: 0,
       valueFormat: { decimals: 0 },
       valueLabel: label,
+      unit: options.kind === 'ships' ? 'Ships' : options.kind === 'convoys' ? 'Convoys' : 'Ships & convoys',
       partsLabel: 'Ships and convoys',
       emptyMessage,
       note: NOTE,

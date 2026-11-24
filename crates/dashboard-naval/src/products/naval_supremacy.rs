@@ -5,7 +5,7 @@ use dashboard_world::products::{place_names, sea_regions::{self, SeaContent}, st
 #[cfg(any(test, feature = "export-types"))]
 use dashboard_world::products::sea_regions::Choice;
 use dashboard_base::{Source, catalogue::Refusals, span::HourSpan};
-use dashboard_query::identity::Holder;
+use dashboard_query::{Query, identity::Holder};
 use replay_lanes::{lanes, points::Cell};
 use replay_data::rows::{AirCountryRelationRow, NavalRegionControlRow, TableId, tables};
 use replay_derive::naval_region_control;
@@ -142,6 +142,8 @@ pub struct UnknownDays {
 pub struct NavalSupremacyReply {
     pub first_hour: i32,
     pub last_hour: i32,
+    #[doc = " The last hour through which nothing this reply shows changes: read beside the reply, never among its rows."]
+    pub valid_through: i32,
     #[doc = " Day 0 starts at this hour (a multiple of `dayHours`); day `n` covers the `n`th day after."]
     pub first_day_hour: i32,
     pub day_hours: i32,
@@ -158,6 +160,8 @@ pub struct NavalSupremacyReply {
     pub viewer_color_missing: Option<String>,
     pub legend: Vec<SupremacyLegendItem>,
     pub regions: Vec<SupremacyRegion>,
+    #[doc = " Why the most active regions are not a proven rank at the asked hour: its day, or a region's score on it, is not recorded. A top then lists only the pinned regions."]
+    pub rank_missing: Option<String>,
     pub scale: i32,
     pub warnings: Vec<String>,
 }
@@ -415,6 +419,92 @@ fn supremacy_legend(regions: &[SupremacyRegion], viewer_label: &str) -> Vec<Supr
     out
 }
 
+struct Control {
+    runs: BTreeMap<u32, Vec<SupremacyRun>>,
+    unknown: Vec<UnknownDays>,
+    hours: BTreeMap<u32, (u32, i32)>,
+}
+
+fn control(query: &Query<'_>, sea: &SeaContent, country: &Country, (first, last): (i32, i32), count: u32, notes: &mut Refusals, cancelled: &AtomicBool) -> io::Result<Control> {
+    let first_day = first.div_euclid(DAY);
+    let hours = if count == 0 { BTreeMap::new() } else { day_hours(&query.timeline, first, last) };
+    let regions: BTreeSet<u32> = sea.sea.clone().unwrap_or_default();
+    let recording = query.replay.recording();
+    let mut pieces: BTreeMap<u32, Vec<(u32, u32, Values)>> = BTreeMap::new();
+    let mut known: BTreeSet<u32> = BTreeSet::new();
+    let mut refused: BTreeMap<u32, String> = BTreeMap::new();
+    let mut segment: Vec<(u32, i32)> = Vec::new();
+    let mut held: Option<(u32, u32)> = None;
+    let flush = |held: Option<(u32, u32)>, segment: &mut Vec<(u32, i32)>, pieces: &mut BTreeMap<u32, Vec<(u32, u32, Values)>>, known: &mut BTreeSet<u32>, refused: &mut BTreeMap<u32, String>, notes: &mut Refusals| -> io::Result<()> {
+        let (Some((run, viewer)), Some(&(_, from)), Some(&(_, to))) = (held, segment.first(), segment.last()) else { return Ok(()) };
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let every = u128::from(NavalRegionControlRow::EVERY_VIEWER) << 32;
+        let ranges = [(u128::from(viewer) << 32, u128::from(viewer) << 32 | u128::from(u32::MAX)), (every, every | u128::from(u32::MAX))];
+        let history = dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::NavalRegionControl, &COLUMNS, lanes::Keys::Ranges(&ranges), from, to))?;
+        let statuses = dashboard_query::cost::storage(|| lanes::statuses(recording, run, TableId::NavalRegionControl, from, to))?;
+        let available = |hour: i32| statuses.iter().any(|status| status.first <= hour && hour <= status.last && replay_recording::columnar_frames::available(status.status));
+        let (shown, unavailable): (Vec<(u32, i32)>, Vec<(u32, i32)>) = segment.drain(..).partition(|&(_, hour)| available(hour));
+        refused.extend(unavailable.into_iter().map(|(day, _)| (day, "Naval region control was not available on this day".to_owned())));
+        known.extend(shown.iter().map(|(day, _)| *day));
+        region_runs(&history, viewer, &shown, &regions, sea, notes, pieces);
+        Ok(())
+    };
+    for (day, (run, hour)) in &hours {
+        match query.holders.at(country, *hour).map(|run| run.holder) {
+            Some(Holder::Found { slot, .. }) => {
+                if held != Some((*run, slot)) {
+                    flush(held, &mut segment, &mut pieces, &mut known, &mut refused, notes)?;
+                    held = Some((*run, slot));
+                }
+                segment.push((*day, *hour));
+            }
+            _ => {
+                refused.insert(*day, "The viewer's tag is held by no country on this day".to_owned());
+            }
+        }
+    }
+    flush(held, &mut segment, &mut pieces, &mut known, &mut refused, notes)?;
+    let mut unknown: Vec<UnknownDays> = Vec::new();
+    let gap = |day: u32, reason: String, unknown: &mut Vec<UnknownDays>| match unknown.last_mut() {
+        Some(span) if span.last_day + 1 == day && span.reason == reason => span.last_day = day,
+        _ => unknown.push(UnknownDays { first_day: day, last_day: day, reason }),
+    };
+    for day in 0..count {
+        if known.contains(&day) {
+            continue;
+        }
+        match refused.remove(&day) {
+            Some(reason) => gap(day, reason, &mut unknown),
+            None => {
+                let hour = (first_day + day as i32) * DAY;
+                let reason = query.timeline.unheld.iter().find(|unheld| unheld.first <= hour + DAY - 1 && hour <= unheld.last).map_or_else(|| "The day was not recorded".to_owned(), |unheld| unheld.reason.clone());
+                gap(day, reason, &mut unknown);
+            }
+        }
+    }
+    Ok(Control { runs: runs(pieces), unknown, hours })
+}
+
+fn ranked(at_hour: impl Iterator<Item = (u32, Option<i128>)>, top: Option<usize>) -> Result<Vec<u32>, String> {
+    let mut order: Vec<(u32, i128)> = Vec::new();
+    for (id, score) in at_hour {
+        match score {
+            None => return Err("A region's naval scores are not recorded on this day".to_owned()),
+            Some(score) if score > 0 => order.push((id, score)),
+            Some(_) => {}
+        }
+    }
+    order.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    order.truncate(top.unwrap_or(usize::MAX));
+    Ok(order.into_iter().map(|(id, _)| id).collect())
+}
+
+fn activity_on(runs: &[SupremacyRun], day: u32) -> Option<i128> {
+    let Some(run) = runs.iter().find(|run| run.first_day <= day && day <= run.last_day) else { return Some(0) };
+    let score = |value: &Option<String>| value.as_deref().and_then(|s| s.parse::<i128>().ok()).map(|score| score.max(0));
+    Some(score(&run.friendly)? + score(&run.enemy)?)
+}
+
 impl Product for NavalSupremacy {
     const KEY: &'static str = "naval-supremacy";
     const CONTENT_DEPENDENT: bool = true;
@@ -479,62 +569,8 @@ impl Product for NavalSupremacy {
         };
         let first_day = first.div_euclid(DAY);
         let count = if outside { 0 } else { (last.div_euclid(DAY) - first_day + 1) as u32 };
-        let hours = if outside { BTreeMap::new() } else { day_hours(&query.timeline, first, last) };
-        let regions: BTreeSet<u32> = sea.sea.clone().unwrap_or_default();
-        let recording = query.replay.recording();
         let mut notes = Refusals::default();
-        let mut pieces: BTreeMap<u32, Vec<(u32, u32, Values)>> = BTreeMap::new();
-        let mut known: BTreeSet<u32> = BTreeSet::new();
-        let mut refused: BTreeMap<u32, String> = BTreeMap::new();
-        let mut segment: Vec<(u32, i32)> = Vec::new();
-        let mut held: Option<(u32, u32)> = None;
-        let flush = |held: Option<(u32, u32)>, segment: &mut Vec<(u32, i32)>, pieces: &mut BTreeMap<u32, Vec<(u32, u32, Values)>>, known: &mut BTreeSet<u32>, refused: &mut BTreeMap<u32, String>, notes: &mut Refusals| -> io::Result<()> {
-            let (Some((run, viewer)), Some(&(_, from)), Some(&(_, to))) = (held, segment.first(), segment.last()) else { return Ok(()) };
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            let every = u128::from(NavalRegionControlRow::EVERY_VIEWER) << 32;
-            let ranges = [(u128::from(viewer) << 32, u128::from(viewer) << 32 | u128::from(u32::MAX)), (every, every | u128::from(u32::MAX))];
-            let history = dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::NavalRegionControl, &COLUMNS, lanes::Keys::Ranges(&ranges), from, to))?;
-            let statuses = dashboard_query::cost::storage(|| lanes::statuses(recording, run, TableId::NavalRegionControl, from, to))?;
-            let available = |hour: i32| statuses.iter().any(|status| status.first <= hour && hour <= status.last && replay_recording::columnar_frames::available(status.status));
-            let (shown, unavailable): (Vec<(u32, i32)>, Vec<(u32, i32)>) = segment.drain(..).partition(|&(_, hour)| available(hour));
-            refused.extend(unavailable.into_iter().map(|(day, _)| (day, "Naval region control was not available on this day".to_owned())));
-            known.extend(shown.iter().map(|(day, _)| *day));
-            region_runs(&history, viewer, &shown, &regions, &sea, notes, pieces);
-            Ok(())
-        };
-        for (day, (run, hour)) in &hours {
-            match query.holders.at(&params.country, *hour).map(|run| run.holder) {
-                Some(Holder::Found { slot, .. }) => {
-                    if held != Some((*run, slot)) {
-                        flush(held, &mut segment, &mut pieces, &mut known, &mut refused, &mut notes)?;
-                        held = Some((*run, slot));
-                    }
-                    segment.push((*day, *hour));
-                }
-                _ => {
-                    refused.insert(*day, "The viewer's tag is held by no country on this day".to_owned());
-                }
-            }
-        }
-        flush(held, &mut segment, &mut pieces, &mut known, &mut refused, &mut notes)?;
-        let mut unknown: Vec<UnknownDays> = Vec::new();
-        let gap = |day: u32, reason: String, unknown: &mut Vec<UnknownDays>| match unknown.last_mut() {
-            Some(span) if span.last_day + 1 == day && span.reason == reason => span.last_day = day,
-            _ => unknown.push(UnknownDays { first_day: day, last_day: day, reason }),
-        };
-        for day in 0..count {
-            if known.contains(&day) {
-                continue;
-            }
-            match refused.remove(&day) {
-                Some(reason) => gap(day, reason, &mut unknown),
-                None => {
-                    let hour = (first_day + day as i32) * DAY;
-                    let reason = query.timeline.unheld.iter().find(|unheld| unheld.first <= hour + DAY - 1 && hour <= unheld.last).map_or_else(|| "The day was not recorded".to_owned(), |unheld| unheld.reason.clone());
-                    gap(day, reason, &mut unknown);
-                }
-            }
-        }
+        let Control { mut runs, unknown, hours } = control(&query, &sea, &params.country, (first, last), count, &mut notes, cancelled)?;
         let mut warnings = sea.notes.clone();
         warnings.extend(places.warnings());
         let mut looks = LookResolver::new(source, &query.timeline, load, &mut warnings)?;
@@ -542,7 +578,6 @@ impl Product for NavalSupremacy {
         let viewer_tag = query.holders.name(&params.country, look_hour);
         let viewer_look = looks.at(&viewer_tag, look_hour)?;
         let viewer_label = viewer_look.name.clone().unwrap_or_else(|| viewer_tag.clone());
-        let mut runs = runs(pieces);
         let mut names = Refusals::default();
         let all_choices = sea_regions::choices(&places, &sea, runs.keys().copied().chain(params.regions.iter().flatten().copied()).chain(params.pinned_regions.iter().flatten().copied()), &mut names);
         let name_map: HashMap<u32, String> = all_choices.iter().filter_map(|c| Some((c.id.parse::<u32>().ok()?, c.name.clone()))).collect();
@@ -603,38 +638,27 @@ impl Product for NavalSupremacy {
                 runs: runs_vec,
             }
         };
+        let mut rank_missing = None;
         let selected_regions: Vec<SupremacyRegion> = if let Some(explicit) = &params.regions {
             explicit.iter().map(|&id| make_region(id, true, runs.remove(&id).unwrap_or_default())).collect()
         } else if params.top.is_some() || params.pinned_regions.is_some() || params.hidden_regions.is_some() {
             let mut seen = HashSet::new();
             let pinned_list: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
             let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
-            let mut scored: Vec<(u32, i128)> = runs
-                .iter()
-                .filter(|(id, _)| !seen.contains(id) && !hidden.contains(id))
-                .map(|(&id, region_runs)| {
-                    let score: i128 = region_runs
-                        .iter()
-                        .map(|run| {
-                            let days = i128::from(run.last_day - run.first_day + 1);
-                            let f = run.friendly.as_deref().and_then(|s| s.parse::<i128>().ok()).unwrap_or(0).max(0);
-                            let e = run.enemy.as_deref().and_then(|s| s.parse::<i128>().ok()).unwrap_or(0).max(0);
-                            (f + e) * days
-                        })
-                        .sum();
-                    (id, score)
-                })
-                .filter(|&(_, score)| score > 0)
-                .collect();
-            scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-            if let Some(limit) = params.top {
-                scored.truncate(limit);
-            }
+            let scored = match (&last_day_unknown, last_day_index) {
+                (Some(reason), _) => Err(reason.clone()),
+                (None, Some(day)) => ranked(runs.iter().filter(|(id, _)| !seen.contains(id) && !hidden.contains(id)).map(|(&id, region_runs)| (id, activity_on(region_runs, day))), params.top),
+                (None, None) => Ok(Vec::new()),
+            };
+            let scored = scored.unwrap_or_else(|reason| {
+                rank_missing = Some(reason);
+                Vec::new()
+            });
             let mut out = Vec::with_capacity(pinned_list.len() + scored.len());
             for id in pinned_list {
                 out.push(make_region(id, true, runs.remove(&id).unwrap_or_default()));
             }
-            for (id, _) in scored {
+            for id in scored {
                 out.push(make_region(id, false, runs.remove(&id).unwrap_or_default()));
             }
             out
@@ -663,6 +687,7 @@ impl Product for NavalSupremacy {
         let reply = NavalSupremacyReply {
             first_hour: first,
             last_hour: last,
+            valid_through: last,
             first_day_hour: first_day * DAY,
             day_hours: DAY,
             days: count,
@@ -674,6 +699,7 @@ impl Product for NavalSupremacy {
             viewer_color_missing: viewer_look.color_missing,
             legend,
             regions: selected_regions,
+            rank_missing,
             scale: SCALE,
             warnings,
         };

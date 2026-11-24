@@ -137,3 +137,14 @@ fn a_credit_is_named_from_the_day_it_was_read() {
     assert_eq!(index.at(49).through, 49);
     assert_eq!(index.at(50).warnings.len(), 1);
 }
+
+#[test]
+fn a_category_the_localisation_does_not_name_keeps_its_key_with_the_reason() {
+    let mut held = reply();
+    held.items[0].kind = Some(SpendKind { id: Some("decision:group_a_cat".into()), name: Some("group_a_cat".into()), unknown: Some("The recorded localisation holds no name for group_a_cat".into()) });
+    let at = index(&held, &unread(), &[]).at(20);
+    let decisions = at.breakdown.parts.iter().find(|part| part.key == "decisions").expect("decisions");
+    let group = decisions.children.iter().find(|part| part.key == "decision:group_a_cat").expect("the category");
+    assert_eq!(group.name, "group_a_cat", "the key is shown, never a guessed name");
+    assert_eq!(group.name_missing.as_deref(), Some("The recorded localisation holds no name for group_a_cat"), "and it is marked as missing with the reason");
+}

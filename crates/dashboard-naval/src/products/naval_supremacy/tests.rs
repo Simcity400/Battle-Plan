@@ -227,3 +227,16 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
     assert_eq!(region.enemy_ships, MissionShips::Counted { ships: 1 });
     assert_ne!(reply.viewer_name_missing.as_deref(), Some("The recording holds no hour here"), "the viewer is named at the readout's hour, not inside the gap");
 }
+
+#[test]
+fn the_automatic_regions_are_ranked_by_the_score_of_the_day_read_at_the_hour() {
+    let run = |first_day, last_day, friendly: &str, enemy: &str| SupremacyRun { first_day, last_day, control: Some(0), friendly: Some(friendly.into()), enemy: Some(enemy.into()), share: None, own: None };
+    let busy_before = vec![run(0, 4, "900", "900"), run(5, 5, "1", "0")];
+    let busy_now = vec![run(0, 4, "0", "0"), run(5, 5, "40", "2")];
+    let idle = vec![run(0, 5, "0", "0")];
+    let regions = [(7, busy_before), (8, busy_now), (9, idle)];
+    assert_eq!(ranked(regions.iter().map(|(id, runs)| (*id, activity_on(runs, 5))), None), Ok(vec![8, 7]), "the day read at the hour decides, not the days before it; an idle region is not ranked");
+    assert_eq!(ranked(regions.iter().map(|(id, runs)| (*id, activity_on(runs, 2))), Some(1)), Ok(vec![7]));
+    let unread = vec![SupremacyRun { first_day: 0, last_day: 5, control: None, friendly: None, enemy: Some("3".into()), share: None, own: None }];
+    assert!(ranked([(7, activity_on(&regions[0].1, 5)), (10, activity_on(&unread, 5))].into_iter(), Some(1)).is_err(), "a candidate whose score is not recorded leaves the rank unproven");
+}
