@@ -88,6 +88,7 @@ export interface FamilyBarsHostProps<TOptions> {
   readonly countryLooks?: CountryLooksMap;
   readonly identitySnapshot?: IdentitySnapshot | null;
   readonly onIdentityDemands?: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
+  readonly onViewportSize?: (width: number, height: number) => void;
   readonly selectedKey?: string | null;
   readonly onActivate?: (key: string, meta?: unknown, hour?: number) => void;
   readonly onAddRegion?: () => void;
@@ -122,6 +123,7 @@ export default function FamilyBarsHost<TOptions>({
   countryLooks,
   identitySnapshot = null,
   onIdentityDemands,
+  onViewportSize,
   selectedKey = null,
   onActivate,
   onAddRegion,
@@ -196,7 +198,7 @@ export default function FamilyBarsHost<TOptions>({
     auditable,
     subscriptions,
     offset,
-    pin: pin ?? (subscriptions.length === 0 && staticBundle ? staticBundle.hour : null),
+    pin: pin ?? (subscriptions.length === 0 && staticBundle && !staticBundle.follows ? staticBundle.hour : null),
     bounds,
     frameRef,
     surfaceLabel: 'bars',
@@ -226,6 +228,7 @@ export default function FamilyBarsHost<TOptions>({
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
+    onViewportSize,
     selectedKey,
     onActivate,
     onAddRegion,
@@ -243,6 +246,7 @@ export default function FamilyBarsHost<TOptions>({
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
+    onViewportSize,
     selectedKey,
     onActivate,
     onAddRegion,
@@ -294,7 +298,9 @@ export default function FamilyBarsHost<TOptions>({
 
     const dated = latest.staticBundle
       ? (Object.keys(latest.staticBundle.panels).length > 0 || Object.keys(latest.staticBundle.answers ?? {}).length > 0
-          ? { h: latest.staticBundle.hour, c: latest.staticBundle.hour }
+          ? (latest.staticBundle.provenInterval
+              ? { h: latest.staticBundle.provenInterval[0], c: latest.staticBundle.provenInterval[1] }
+              : { h: latest.staticBundle.hour, c: latest.staticBundle.hour })
           : undefined)
       : undefined;
 
@@ -472,8 +478,11 @@ export default function FamilyBarsHost<TOptions>({
 
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(entries => {
       const rect = entries[0]?.contentRect;
-      const w = Math.round(rect ? rect.width : node.clientWidth);
-      const h = Math.round(rect ? rect.height : node.clientHeight);
+      const rawW = rect ? rect.width : node.clientWidth;
+      const rawH = rect ? rect.height : node.clientHeight;
+      latestRef.current.onViewportSize?.(rawW, rawH);
+      const w = Math.round(rawW);
+      const h = Math.round(rawH);
       const box = frameRef.current?.getBoundingClientRect();
       if (box) focusAnchorRef.current = { x: box.left + Math.min(200, box.width / 2), y: box.top + 36 };
       if (w === viewportRef.current.width && h === viewportRef.current.height) return;
@@ -484,6 +493,7 @@ export default function FamilyBarsHost<TOptions>({
     observer?.observe(node);
     viewportRef.current.width = node.clientWidth;
     viewportRef.current.height = node.clientHeight;
+    latestRef.current.onViewportSize?.(node.clientWidth, node.clientHeight);
     bindRef.current();
 
     return () => {

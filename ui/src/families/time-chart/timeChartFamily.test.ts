@@ -339,7 +339,7 @@ describe('time-chart laneView integration', () => {
       joinMode: 'join',
       measureTitle: 'Political power',
       project: readView => {
-        const icon = readView.art({ scope: 'sprite', choice: 'GFX_pol_power', sprite: 'GFX_pol_power', frame: 0 });
+        const icon = readView.art({ kind: 'sprite', key: 'GFX_pol_power', frame: 0 });
         return {
           kind: 'test-pp',
           measureTitle: 'Political power',
