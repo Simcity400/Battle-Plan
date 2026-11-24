@@ -1,12 +1,21 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import WidgetState from '../../components/WidgetState';
-import DrillHost from '../../charts/drill/DrillHost';
+import FollowControl from '../../charts/drill/FollowControl';
 import { useDrill } from '../../charts/drill/useDrill';
+import GateState from '../../dashboard/GateState';
+import { DetailWindowHost } from '../../families/host/DetailWindowHost';
 import { formatDateTime } from '../../dashboard/calendar';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { useRegion, useRegionCoverage, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { TimeRegion, useRegion, useRegionCoverage, useRegionHour } from '../../dashboard/widgetTime.ts';
 import DeclaredTableWidget from '../../families/table/DeclaredTableWidget';
-import { gameWindow, subscribeGameWindows } from '../../dashboard/gameWindows';
+import {
+  claimGameWindowSlot,
+  gameWindow,
+  releaseGameWindowSlot,
+  subscribeGameWindows,
+  updateGameWindowSlotPosition,
+} from '../../dashboard/gameWindows';
+import type { WindowPosition } from '../../dashboard/gameWindows';
 import { divisionTemplateDeclaration } from './divisionTemplateProjection';
 import './divisionTemplate.css';
 
@@ -25,22 +34,37 @@ export default function DivisionTemplateWidget(props: WidgetProps) {
   const Designer = useSyncExternalStore(subscribeGameWindows, divisionDesignerWindow, divisionDesignerWindow);
   const anchor = useRef<HTMLDivElement>(null);
   const [opened, setOpened] = useState<{ template: string; designer: 'ordinary' | 'headquarters'; tag: string } | null>(null);
+  const slotOwnerId = useId();
+  const [inheritedPos, setInheritedPos] = useState<WindowPosition | null>(null);
   const [windowLines, setWindowLines] = useState<readonly string[]>(NO_LINES);
   const onWindowDiagnostics = useCallback((lines: string[]) =>
     setWindowLines(prev => (prev.length === lines.length && prev.every((line, i) => line === lines[i]) ? prev : lines)), []);
 
-  useEffect(() => {
+  const closeForHandover = useCallback(() => {
     dispatch({ type: 'close' });
     setOpened(null);
-  }, [track?.source.id, track?.source.revision, track?.branch.id, widget.options?.country, dispatch]);
+    setWindowLines(NO_LINES);
+    setInheritedPos(null);
+  }, [dispatch]);
+  const closeDrill = useCallback(() => {
+    releaseGameWindowSlot('divisionDesigner', slotOwnerId);
+    closeForHandover();
+  }, [slotOwnerId, closeForHandover]);
+
+  useEffect(() => closeDrill(), [track?.source.id, track?.source.revision, track?.branch.id, widget.options?.country, closeDrill]);
+  useEffect(() => () => releaseGameWindowSlot('divisionDesigner', slotOwnerId), [slotOwnerId]);
 
   const handleActivate = useCallback((key: string, meta?: unknown, atHour?: number) => {
     if (!Designer || atHour === undefined) return;
     const info = meta as { designer?: 'ordinary' | 'headquarters' | null; tag?: string } | null | undefined;
     if (!info?.tag || !info.designer) return;
+    setInheritedPos(claimGameWindowSlot('divisionDesigner', slotOwnerId, closeForHandover));
     setOpened({ template: key, designer: info.designer, tag: info.tag });
     drillControl.show(key, atHour);
-  }, [Designer, drillControl]);
+  }, [Designer, drillControl, slotOwnerId, closeForHandover]);
+  const onPositionChange = useCallback((pos: WindowPosition) => {
+    updateGameWindowSlotPosition('divisionDesigner', slotOwnerId, pos);
+  }, [slotOwnerId]);
 
   const main = <DeclaredTableWidget
     {...props}
@@ -50,25 +74,26 @@ export default function DivisionTemplateWidget(props: WidgetProps) {
     extraWarnings={windowLines}
   />;
 
-  const closeDrill = useCallback(() => {
-    dispatch({ type: 'close' });
-    setOpened(null);
-    setWindowLines(NO_LINES);
-  }, [dispatch]);
+  const shut = drillControl.gate.stage.stage !== 'open' && drillControl.gate.stage.stage !== 'unbound';
 
   return <div ref={anchor} className="division-template">
-    <DrillHost
-      drill={drillControl}
-      runtime={runtime}
-      subject={drill.breakdown !== null && !!Designer && !!opened}
-      mode="window"
+    {main}
+    <DetailWindowHost
+      open={drill.breakdown !== null && !!Designer && !!opened}
+      subject={opened?.template ?? null}
+      hour={drillAt}
       title="Division designer"
-      day={drillAt === null ? '' : formatDateTime(drillAt)}
-      canFollow
+      day={shut || drillAt === null ? '' : formatDateTime(drillAt)}
+      placement="center"
       anchor={anchor}
+      initialPosition={inheritedPos}
+      onPositionChange={onPositionChange}
+      headerActions={<FollowControl following={drillControl.following} onFollow={drillControl.follow} onPause={drillControl.pause} />}
+      className="detail-window-game"
       onClose={closeDrill}
-      main={main}
     >
+      <TimeRegion runtime={runtime} region={drillControl.region}>
+      {shut ? <GateState gate={drillControl.gate} loading="Loading…" /> : <>
       {Designer && opened && track && drillAt === null && <WidgetState kind="outside" read={drillCoverage} />}
       {Designer && opened && track && drillAt !== null && <Designer
         selection={{
@@ -86,6 +111,8 @@ export default function DivisionTemplateWidget(props: WidgetProps) {
         onDiagnostics={onWindowDiagnostics}
         onClose={closeDrill}
       />}
-    </DrillHost>
+      </>}
+      </TimeRegion>
+    </DetailWindowHost>
   </div>;
 }

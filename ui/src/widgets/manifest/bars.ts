@@ -54,6 +54,15 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
       projection: mod.casualtyOpponentsProjection, declaration: mod.casualtyOpponentsDeclaration,
     })),
   },
+  {
+    kind: 'lend-lease-balance',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: () => import('../lend-lease-balance/lendLeaseBalanceProjection.ts').then(mod => ({
+      family: 'bars', kind: 'lend-lease-balance', view: DEFAULT_VIEW,
+      projection: mod.lendLeaseBalanceProjection, declaration: mod.lendLeaseBalanceDeclaration,
+    })),
+  },
 ];
 
 export const barsFamilyManifest: FamilyManifestModule = {

@@ -147,7 +147,7 @@ export interface FamilyBindingContext<TOptions> {
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
-  readonly spriteResolutions?: Readonly<Record<string, ArtResolution>>;
+  readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
   readonly extent: readonly [number, number] | null;
   readonly plan: SourcePlan | null;
   readonly viewport: FamilyViewportState;
