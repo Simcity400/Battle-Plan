@@ -25,6 +25,7 @@ pub fn forget(source: &Source) {
     dashboard_economy::forget(source);
     dashboard_politics::forget(source);
     dashboard_air::forget(source);
+    dashboard_intelligence::forget(source);
 }
 
 const KEPT_LIFETIMES: [replay_data::rows::TableId; 9] = [

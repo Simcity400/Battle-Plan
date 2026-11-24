@@ -13,6 +13,7 @@ dashboard_base::register_products! {
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDTYPES => crate::products::equipment_produced::EquipmentProducedTypes,
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDCOUNTRY => crate::products::equipment_produced::EquipmentProducedCountry,
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDAT => crate::products::equipment_produced::EquipmentProducedAt,
+    EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDRACE => crate::products::equipment_produced::EquipmentProducedRace,
 }
 
 dashboard_base::register_hourly_products! {

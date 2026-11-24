@@ -45,11 +45,12 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'division-template': { load: () => import('./division-template') },
   'doctrine-mastery': { load: () => import('./doctrine-mastery') },
   'equipment-designs': { load: () => import('./equipment-designs') },
+  'equipment-produced': { load: () => import('./equipment-produced/family.tsx') },
   'event-choices': { load: () => import('./event-choices') },
   'event-feed': { load: () => import('./event-feed') },
   'factions': { load: () => import('./factions') },
   'fuel': { load: () => import('./fuel') },
-  'factories': { load: () => import('./factories'), slots: ['render', 'countryChip'] },
+  'factories': { load: () => import('./factories') },
   'idea-timeline': { load: () => import('./idea-timeline') },
   'industrial-organisations': { load: () => import('./industrial-organisations') },
   'international-market': { load: () => import('./international-market') },
@@ -139,15 +140,6 @@ export function widgetViewOptions(kind: string, storedOptions?: WidgetOptions, v
   let resolved = byView.get(key);
   if (!resolved) byView.set(key, resolved = Object.freeze(resolveOptions(viewOptionFields(kind, view), stored)));
   return resolved;
-}
-
-export function viewOptionsAsStored(kind: string, view: string, options: ResolvedWidgetOptions): WidgetOptions {
-  const stored: Record<string, OptionValue> = {};
-  for (const field of viewOptionFields(kind, view)) {
-    const value = options[field.key];
-    if (value !== undefined && value !== field.default) stored[field.key] = value;
-  }
-  return stored;
 }
 
 export function presetStoredOptions(kind: string, chosen: WidgetOptions): WidgetOptions {

@@ -152,33 +152,99 @@ impl Renderer<'_, '_, '_> {
     ) -> String {
         let mut parts = Vec::new();
         for bonus in bonuses.iter().filter(|bonus| bonus.value != 0) {
-            let part = (|| {
-                if let Some(index) = content_reader_script::equipment_stats::stat_index(bonus.name.as_bytes()) {
-                    self.char_equipment_stat_difference(index, bonus.value, scopes)
-                } else if content_reader_military::mio_traits::is_production_stat(&bonus.name) {
-                    let key = format!("BONUS_{}", bonus.name.to_ascii_uppercase());
-                    let label = self.char_native_text(key.as_bytes(), &[], scopes, false)?;
-                    let bad_positive = matches!(
-                        bonus.name.as_str(),
-                        "production_cost_factor"
-                            | "production_resource_need_factor"
-                            | "production_resource_penalty_factor"
-                    );
-                    Ok(format!(
-                        "{label}: {}",
-                        mio_production_percent(bonus.value, bad_positive)
-                    ))
-                } else {
-                    Ok(String::new())
-                }
-            })();
-            match part {
+            match self.char_mio_bonus(bonus, scopes) {
                 Ok(text) if !text.is_empty() => parts.push(text),
                 Ok(_) => {}
                 Err(why) => self.refuse(class, why),
             }
         }
         parts.join(", ")
+    }
+
+    fn char_mio_bonus(
+        &self,
+        bonus: &content_reader_military::mio_traits::Bonus,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        if let Some(index) = content_reader_script::equipment_stats::stat_index(bonus.name.as_bytes()) {
+            self.char_equipment_stat_difference(index, bonus.value, scopes)
+        } else if content_reader_military::mio_traits::is_production_stat(&bonus.name) {
+            let key = format!("BONUS_{}", bonus.name.to_ascii_uppercase());
+            let label = self.char_native_text(key.as_bytes(), &[], scopes, false)?;
+            let bad_positive = matches!(
+                bonus.name.as_str(),
+                "production_cost_factor"
+                    | "production_resource_need_factor"
+                    | "production_resource_penalty_factor"
+            );
+            Ok(format!(
+                "{label}: {}",
+                mio_production_percent(bonus.value, bad_positive)
+            ))
+        } else {
+            Ok(String::new())
+        }
+    }
+
+    pub(in crate::effect_description) fn char_mio_lines(
+        &mut self,
+        text: MioText<'_>,
+        scopes: Scopes,
+    ) -> Vec<Result<String, String>> {
+        let class = "MIO window";
+        let lines = |text: Result<String, String>| -> Vec<Result<String, String>> {
+            match text {
+                Ok(text) => text
+                    .split('\n')
+                    .map(|line| line.trim_matches([' ', '\t', '\r']))
+                    .filter(|line| !line.is_empty())
+                    .map(|line| Ok(line.to_owned()))
+                    .collect(),
+                Err(why) => vec![Err(why)],
+            }
+        };
+        let listed = |renderer: &Self, modifiers: &content_reader_script::modifiers::Modifiers| {
+            renderer.modifier_description_with(
+                modifiers,
+                "",
+                ModifierListOptions {
+                    category_mask: u32::MAX,
+                    separator: "\n",
+                    ..Default::default()
+                },
+            )
+        };
+        let out = match text {
+            MioText::Bonuses(bonuses) => bonuses
+                .iter()
+                .filter(|bonus| bonus.value != 0)
+                .map(|bonus| self.char_mio_bonus(bonus, scopes))
+                .filter(|line| line.as_ref().map_or(true, |text| !text.is_empty()))
+                .collect(),
+            MioText::Modifiers(modifiers) => match self.char_trait_modifier_kept(modifiers) {
+                Ok(true) => lines(listed(self, modifiers)),
+                Ok(false) => Vec::new(),
+                Err(why) => vec![Err(why)],
+            },
+            MioText::TraitModifiers(trait_) => {
+                match trait_.resolved_organisation_modifiers(|name| {
+                    self.char_trait_modifier_name_eligible(name)
+                }) {
+                    Ok(modifiers) => match self.char_trait_modifier_kept(&modifiers) {
+                        Ok(true) => lines(listed(self, &modifiers)),
+                        Ok(false) => Vec::new(),
+                        Err(why) => vec![Err(why)],
+                    },
+                    Err(why) => vec![Err(why)],
+                }
+            }
+        };
+        for line in &out {
+            if let Err(why) = line {
+                self.refuse(class, why.clone());
+            }
+        }
+        out
     }
 
     pub(in crate::effect_description) fn char_mio_policy_modifiers(
