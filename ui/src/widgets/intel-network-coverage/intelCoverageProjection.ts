@@ -4,7 +4,7 @@ import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
 import { labelsAtReadings, resolveEntityFromReadView, sequentialRampColour } from '../../families/heat/scale.ts';
-import { formatScalar } from '../../families/valueFormat.ts';
+import { formatRecordedPercent, formatScalar } from '../../families/valueFormat.ts';
 import type { IntelCoverageBasis, IntelCoverageCell, IntelCoverageMeasure, IntelCoverageReply } from '../../generated/dashboard';
 import { surfaceMix } from '../../shell/appearance/color.ts';
 
@@ -18,11 +18,11 @@ export interface IntelCoverageProjectionOptions {
 
 export function coverageText(raw: number | bigint, scale: number | bigint, measure: IntelCoverageMeasure): string {
   if (measure === 'covered') return formatScalar(raw, 'integer');
-  return `${Math.round((Number(raw) / Number(scale || 1)) * 100)}%`;
+  return formatRecordedPercent((Number(raw) / Number(scale || 1)) * 100);
 }
 
 function strengthText(raw: number | bigint): string {
-  return `${Math.round((Number(raw) / FIXED) * 100)}%`;
+  return formatRecordedPercent((Number(raw) / FIXED) * 100);
 }
 
 function emptyModel(hour: number, extra: Partial<HeatMatrixModel>): HeatMatrixModel {

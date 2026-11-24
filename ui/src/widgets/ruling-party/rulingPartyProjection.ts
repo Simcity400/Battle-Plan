@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { categoricalPalette, DEFAULT_DARK_SURFACE } from '../../charts/palette.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
@@ -19,12 +20,11 @@ import {
   buildBoundedStack,
   seriesHeadValue,
 } from '../../families/time-chart/seriesHelpers.ts';
+import { formatShare } from '../../families/valueFormat.ts';
 import type { PartyHistoryReply } from '../../generated/dashboard';
 import {
   bandKeys,
   bands,
-  formatPopularity,
-  formatShare,
   leaderAt,
   leaderShown,
   partyBadges,
@@ -154,7 +154,7 @@ function rulingHoverDetail(
       items.push({
         label,
         swatch: band.color,
-        value: formatPopularity(read.raw, decimals),
+        value: formatShare(Number(read.raw) / (10 ** decimals) / 100),
         ...(idx === 0 ? { divider: true } : {}),
       });
     } else {
@@ -277,7 +277,7 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
                 colorBar: band.color,
                 name: band.name,
                 fullName: band.token === ruling ? `${band.name} (ruling)` : band.name,
-                value: formatShare(headValue),
+                value: formatShare(headValue / 100),
               },
         };
       }),
@@ -301,7 +301,7 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
       const head = heads[idx];
       return head === null || head === undefined
         ? []
-        : [{ row: band.token, key: band.token, value: formatShare(head) }];
+        : [auditRow(band.token, formatShare(head / 100))];
     });
 
     return {

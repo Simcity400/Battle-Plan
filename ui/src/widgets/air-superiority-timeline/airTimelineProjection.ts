@@ -19,7 +19,7 @@ import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { readRegionChoice, regionParams, type RegionChoice } from '../../families/regions/regionChoice.ts';
 import { countrySubject, regionLanes } from '../../families/regions/regionRows.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatShare } from '../../families/valueFormat.ts';
 import type { AirDayCell, AirReadout, AirSide, AirTimelineReply, AirTimelineRow } from '../../generated/dashboard';
 import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
 import { mix, surfaceMix } from '../../shell/appearance/color.ts';
@@ -128,7 +128,7 @@ function cellOf(cell: AirDayCell | null, reply: AirTimelineReply, look: Look, su
         : look.contested;
     return {
       cell: { kind: 'solid', color },
-      tip: { items: [{ label: 'Air superiority', value: `${Math.round(share * 100)}%`, swatch: color }] },
+      tip: { items: [{ label: 'Air superiority', value: formatShare(share), swatch: color }] },
     };
   }
   const lead = cell.lead;
@@ -144,7 +144,7 @@ function cellOf(cell: AirDayCell | null, reply: AirTimelineReply, look: Look, su
     const score = Math.max(0, Number(part.friendly));
     if (score <= 0) continue;
     const side = reply.sides[part.side];
-    items.push({ label: sideName(side), value: `${Math.round((score / total) * 100)}%`, swatch: sideColour(side, surface, look.unknownSide) });
+    items.push({ label: sideName(side), value: formatShare(score / total), swatch: sideColour(side, surface, look.unknownSide) });
   }
   if (lead.kind === 'contested') return { cell: { kind: 'solid', color: look.contested }, tip: { items: [{ label: 'Contested' }, ...items] } };
   const color = depth(look.track, sideColour(reply.sides[lead.side], surface, look.unknownSide), lead.share_bp / 10_000);
@@ -162,11 +162,11 @@ function readoutOf(readout: AirReadout | undefined, reply: AirTimelineReply, loo
       return { kind: 'value', form: 'value', primary: '', secondary: 'Contested', swatch: look.contested, audit: 'Contested' };
     case 'leading': {
       const side = reply.sides[readout.side];
-      const pct = `${Math.round(readout.share_bp / 100)}%`;
+      const pct = formatShare(readout.share_bp / 10_000);
       return { kind: 'value', form: 'value', primary: pct, secondary: sideName(side), swatch: sideColour(side, surface, look.unknownSide) };
     }
     case 'viewpoint': {
-      const pct = `${Math.round(readout.share_bp / 100)}%`;
+      const pct = formatShare(readout.share_bp / 10_000);
       const viewer = viewerColour(readout.side, reply, look, surface, readout.as_of_hour).colour;
       const swatch = readout.share_bp > 5000 ? viewer : readout.share_bp < 5000 ? look.enemy : look.contested;
       return { kind: 'value', form: 'value', primary: pct, secondary: 'Air superiority', swatch };
