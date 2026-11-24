@@ -1,4 +1,6 @@
+import type { NoRegions } from '../../generated/dashboard';
 import type { BoundedReadView } from '../contract.ts';
+import { formatScalar } from '../valueFormat.ts';
 import type { RegionChoice } from './regionChoice.ts';
 import { moveRegion } from './regionChoice.ts';
 
@@ -90,4 +92,30 @@ export function countrySubject(readView: BoundedReadView, country: string | null
   if (!country) return null;
   const name = readView.who('country', country).name;
   return name.status === 'ready' ? name.value : null;
+}
+
+export interface RegionNouns {
+  readonly one: string;
+  readonly many: string;
+  readonly none: string;
+}
+
+export function validNoRegions(value: unknown): value is NoRegions | null {
+  if (value === null) return true;
+  if (!value || typeof value !== 'object') return false;
+  const empty = value as Record<string, unknown>;
+  const count = (item: unknown) => Number.isSafeInteger(item) && (item as number) >= 0;
+  return empty.kind === 'none' || (empty.kind === 'unread' && typeof empty.reason === 'string')
+    || (empty.kind === 'filtered' && count(empty.hidden) && count(empty.outside));
+}
+
+export function noRegionsBody(empty: NoRegions, nouns: RegionNouns): { readonly empty: string; readonly emptyKind: 'empty' | 'unavailable' } {
+  if (empty.kind === 'unread') return { empty: /[.!?]$/u.test(empty.reason) ? empty.reason : `${empty.reason}.`, emptyKind: 'unavailable' };
+  if (empty.kind === 'none') return { empty: nouns.none, emptyKind: 'empty' };
+  const total = empty.hidden + empty.outside;
+  const lead = total === 1 ? `The only ${nouns.one} at this date is` : `All ${formatScalar(total, 'integer')} ${nouns.many} at this date are`;
+  const where = empty.outside === 0 ? 'removed from this chart'
+    : empty.hidden === 0 ? 'outside the selected air theatres'
+      : `removed from this chart (${formatScalar(empty.hidden, 'integer')}) or outside the selected air theatres (${formatScalar(empty.outside, 'integer')})`;
+  return { empty: `${lead} ${where}.`, emptyKind: 'empty' };
 }

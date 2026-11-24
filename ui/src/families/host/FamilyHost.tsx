@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
-import type { WidgetSpec } from '../../dashboard/model';
+import type { WidgetBase } from '../../dashboard/model';
 import { PreparingPage } from '../../dashboard/preparing.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { useWidgetSkeleton, WidgetCaption } from '../../dashboard/widgetFrame.tsx';
@@ -52,12 +52,13 @@ import {
   handleFamilyGridKeyDown,
   handleFamilyKeyDown,
   handleFamilyPointsKeyDown,
-  navPageStep,
+  navPageSteps,
+  usableRowHeight,
   type FamilyNavTuple,
 } from './keyboard.ts';
 import { NO_EXPANSION, type FamilyExpansion } from './expansion.ts';
 import { BoundSelections, inputBlocked, installedRecordOf, recordInstalled, resolveHostInput, type HostCommand, type HostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
-import { syncListboxMirror, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
+import { mirrorRowSelector, syncListboxMirror, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
 import { bindFamilyPointer } from './pointer.ts';
 import { regionDropAt, regionRowOf, type RegionCommand, type RegionRowRef, type RegionRowsField } from '../regions/regionRows.ts';
 import { computeScrollGeometry, physicalToLogicalTop, scrollRangeIntoView, type ScrollGeometry } from './scroll.ts';
@@ -174,7 +175,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly options: TOptions;
   readonly label: string;
   readonly subject: string;
-  readonly widget: WidgetSpec;
+  readonly widget: WidgetBase;
   readonly runtime: WidgetRuntime;
   readonly active: boolean;
   readonly subscriptions: readonly FamilySourceSubscription[];
@@ -683,7 +684,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const top = entry[6];
     const height = entry[7];
     if (top === undefined || height === undefined) return false;
-    return scrollRangeIntoView(bodyRef.current, viewportRef.current, top, height, scrollGeometryRef.current);
+    const vp = viewportRef.current;
+    const rows = { scrollTop: vp.scrollTop, height: usableRowHeight(fieldsNow(), vp.height) };
+    const moved = scrollRangeIntoView(bodyRef.current, rows, top, height, scrollGeometryRef.current);
+    vp.scrollTop = rows.scrollTop;
+    return moved;
   }, []);
 
   const focusRowByKey = useCallback((key: string) => {
@@ -692,7 +697,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     focusedKeyRef.current = key;
     revealRow(entry);
     if ((latestRef.current.adapter.mirrorFocus ?? 'body') === 'rows') {
-      const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(`tr[data-row-key="${CSS.escape(key)}"]`);
+      const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(mirrorRowSelector(key));
       if (tr) {
         for (const sibling of mirrorBodyRef.current!.querySelectorAll<HTMLTableRowElement>('tr[tabindex="0"]')) {
           if (sibling !== tr) sibling.tabIndex = -1;
@@ -938,7 +943,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const hoverTip = inspected ? (fields.tooltip as FamilyTooltipField | undefined) : undefined;
       const focusTip = focusInside ? (fields.focusTooltip as FamilyTooltipField | undefined) : undefined;
       if (focusTip?.text && (activeAdapter.mirrorFocus ?? 'body') === 'rows' && focusTip.text.rowKey === focusedKeyRef.current) {
-        const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(`tr[data-row-key="${CSS.escape(focusTip.text.rowKey)}"]`);
+        const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(mirrorRowSelector(focusTip.text.rowKey));
         tr?.setAttribute('aria-description', tooltips.describeFocused(focusTip.text, installedHour, cur.viewportHeight));
       }
       const inspectedHit = inspectedHitRef.current;
@@ -1215,7 +1220,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     handleFamilyKeyDown(event, {
       nav: keyNav,
       focusedKey: focusedKeyRef.current,
-      pageStep: navPageStep(keyNav, focusedKeyRef.current, viewportRef.current.height),
+      pageStep: navPageSteps(keyNav, focusedKeyRef.current, usableRowHeight(fields, viewportRef.current.height)),
       blocked,
       typeaheadRef,
       isPinnedTooltip: () => tooltips.isPinned(),

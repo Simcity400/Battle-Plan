@@ -26,6 +26,7 @@ import {
   drawGapBand,
   drawGradientLegend,
   drawIconStrip,
+  iconStripSlotWidth,
   drawLegendStrip,
   drawMissingMark,
   drawNameSlot,
@@ -395,6 +396,9 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
   assert.equal(res.drawnCount + res.overflowCount, 4);
   assert.ok(res.overflowCount > 0);
   assert.ok(!strip.ops.some(op => op.op === 'fillText' && String(op.args[0]).startsWith('+')), 'a strip that does not fit draws what fits, never a +N mark');
+  const tall = { kind: 'ready', bitmap: {} as CanvasImageSource, width: 18, height: 36 } as const;
+  assert.deepEqual([iconStripSlotWidth(tall, 28), iconStripSlotWidth({ ...tall, width: 72 }, 28), iconStripSlotWidth({ kind: 'pending' }, 28)], [14, 28, 28],
+    'a tall medal takes its own width at the strip height, so the gap between medals is the strip gap');
 
   const act = makeFakeCtx();
   const restBox = drawActionButton(act.ctx, 100, 18, 'View', false, THEME);

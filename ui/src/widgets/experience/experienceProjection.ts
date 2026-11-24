@@ -81,7 +81,7 @@ export const experienceProjection: TimeChartProjection<ExperienceOptions> = regi
       yAxis: { format: 'number', decimals: 2 },
       series,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
-      auditRows: readings.map(([row, reading]) => auditReading(row, reading, formatExperience)),
+      auditRows: readings.map(([row, reading]) => auditReading(row, reading, known => formatExperience(known.value))),
     };
   },
 });

@@ -111,6 +111,9 @@ for (const meta of widgetMetas) {
     if (legacyEntries.some(entry => normalizeView(entry.view) === DEFAULT_VIEW)) {
       errors.push(`multi-view kind "${meta.kind}" cannot use default view in LEGACY_WIDGETS`);
     }
+  }
+  const named = [...familyEntries, ...legacyEntries].some(entry => normalizeView(entry.view) !== DEFAULT_VIEW);
+  if (named) {
     const viewOptionKey = familyEntries.find(entry => entry.viewOption)?.viewOption ?? meta.viewSwitch?.option ?? 'view';
     const viewField = meta.options?.find(field => field.key === viewOptionKey);
     if (viewField?.kind === 'choice') {
