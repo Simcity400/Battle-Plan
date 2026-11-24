@@ -377,6 +377,7 @@ impl CampaignMapSettings {
             audio.ambient,
             audio.units,
             audio.combat,
+            audio.interface,
             audio.voice,
             audio.music,
         ]
