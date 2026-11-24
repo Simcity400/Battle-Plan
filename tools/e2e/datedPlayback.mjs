@@ -38,7 +38,7 @@ export function inputPictures(frames, visibility, records, pinWidget) {
         anchor = r;
       }
       else if (r.t === 'workerFrame') {
-        if (anchor && r.seek === anchor.seek && r.playing === anchor.playing &&
+        if (!r.cancelled && anchor && r.seek === anchor.seek && r.playing === anchor.playing &&
           (anchor.playing || Math.floor(r.head) === Math.floor(anchor.hour))) applied.add(r.lane ?? 0);
         workerApplied ||= [...lanes].every(lane => applied.has(lane));
       }
@@ -126,8 +126,9 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const timed = r => r.at >= frames[0] && r.at <= frames.at(-1);
     const seconds = (frames.at(-1) - frames[0]) / 1000;
     const page = winRecords.filter(r => r.t === 'frame' && r.playing && timed(r));
-    const worker = winRecords.filter(r => r.t === 'workerFrame' && r.playing && timed(r));
-    const laneCount = Math.max(0, ...worker.map(r => r.lanes ?? (r.lane ?? 0) + 1));
+    const allWorker = winRecords.filter(r => r.t === 'workerFrame' && r.playing && timed(r));
+    const worker = allWorker.filter(r => !r.cancelled);
+    const laneCount = Math.max(0, ...allWorker.map(r => r.lanes ?? (r.lane ?? 0) + 1));
     const byLane = Map.groupBy(worker, r => r.lane ?? 0);
     const lanes = Array.from({ length: laneCount }, (_, lane) => byLane.has(lane) && seconds > 0 ? (byLane.get(lane).length - 1) / seconds : null);
     const fps = rate(frames), pageFps = rate(page.map(r => r.at)), presents = !lanes.length || lanes.includes(null) ? null : Math.min(...lanes);
@@ -533,7 +534,7 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
       max: diff(main.max, pooledMain.max),
     } : { p50: null, p95: null, max: null };
     const workerFrames = w.from != null && w.to != null
-      ? winRecords.filter(r => r.t === 'workerFrame' && r.playing && r.at >= w.from && r.at <= w.to) : [];
+      ? winRecords.filter(r => r.t === 'workerFrame' && r.playing && !r.cancelled && r.at >= w.from && r.at <= w.to) : [];
     const changed = workerFrames.filter(r => r.changed > 0);
     const workerQ = quantiles(changed.map(r => r.workMs));
     const workerMean = mean(changed.map(r => r.workMs));

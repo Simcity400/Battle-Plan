@@ -946,6 +946,8 @@ test('cancelled workerFrame with changed 0 is excluded from emptyMs', () => {
     audit: presented.map(at => ({ widget: 'w1', surface: 'main', placement: 1, owner: 0, at, error: null })),
   };
   const verdict = datedPlaybackVerdict([window], records, { legacy: true });
+  assert.equal(verdict.metrics[0].presents, 59, 'cancelled frame is excluded from worker presentation rate (59/s exposes the missed frame)');
+  assert.equal(verdict.pass, false, 'missed worker presentation fails the 60/s gate');
   assert.equal(verdict.metrics[0].emptyFrames, presented.length - 1, 'cancelled frame is excluded from emptyFrames');
   assert.ok(Math.abs(verdict.metrics[0].emptyMs - 0.2) < 1e-6, `cancelled 80ms frame must not pollute emptyMs, got ${verdict.metrics[0].emptyMs}`);
 });

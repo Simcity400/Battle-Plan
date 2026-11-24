@@ -80,7 +80,7 @@ interface Sent {
 
 interface Widget {
   id: number; order: number; subs: number[]; view: string; model: unknown; binding: Binding;
-  installed: Sent | null; inflight: Sent | null; sent: Record<string, string>; motion: boolean; inspect: string | null;
+  installed: Sent | null; inflight: Sent | null; sent: Record<string, string>; forceFull: boolean; motion: boolean; inspect: string | null;
   validWindow: Window | null;
   start: { version: string; hour: number } | null; state: Map<string, unknown>; cost: number; served: number; deferrals: number; halted: number | null; parked: Sent | null;
 }
@@ -225,12 +225,13 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly failed = new Set<number>();
   private readonly presented = new Map<number, { widget: number; sent: Sent }>();
   private readonly acks: { installed: readonly Ack[]; refused: readonly Refusal[] }[] = [];
-  private exactRequest: FrameRequest | null = null;
-  private exactSynthetic = false;
-  private specRequest: FrameRequest | null = null;
+  private ackMs = 0;
+  private request: FrameRequest | null = null;
   private lastExact: FrameRequest | null = null;
   private serving = false;
   private working = false;
+  private inHandover = false;
+  private handoverToken = 0;
   private pacing = false;
   private requests = 0;
   private nextEntry = 1;
@@ -531,7 +532,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (was) this.unindexWidget(was);
     const made: Widget = { id: widget, order: was?.order ?? this.nextOrder++, subs: [...subs], view, model,
       binding: was?.binding ?? { generation: 1, surfaces: [], offset: 0, pin: null },
-      installed: was?.installed ?? null, inflight: null, sent: {}, motion: false, inspect: was?.inspect ?? null, validWindow: null, start: null, state: was?.state ?? new Map(), cost: was?.cost ?? 0.1,
+      installed: was?.installed ?? null, inflight: null, sent: {}, forceFull: false, motion: false, inspect: was?.inspect ?? null, validWindow: null, start: null, state: was?.state ?? new Map(), cost: was?.cost ?? 0.1,
       served: was?.served ?? 0, deferrals: 0, halted: null, parked: null };
     this.widgets.set(widget, made);
     this.indexWidget(made);
@@ -558,6 +559,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     held.binding = binding;
     if (model !== undefined) held.model = model;
     held.sent = {};
+    held.forceFull = false;
     held.inflight = null;
     if (retry) {
       this.failedWidgets.delete(widget);
@@ -1213,24 +1215,26 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.holdMessage('panels', native, seek, completed ?? data.getInt32(12, true), unbound, completed);
   }
 
-  private hasRequest() { return this.exactRequest !== null || this.specRequest !== null; }
-
   private applyAcks(installed: readonly Ack[], refused: readonly Refusal[]) {
+    const began = this.time();
     this.acknowledge(installed, refused);
     for (const id of this.facts.drain()) this.gone.add(id);
     const bytes = this.freed + this.releasedFacts();
     this.freed = 0;
     if (bytes) this.host.release(bytes);
+    this.ackMs += Math.max(0, this.time() - began);
   }
 
   private flushAcks() {
     if (!this.acks.length) return;
+    const began = this.time();
     const batches = this.acks.splice(0);
     for (const batch of batches) this.acknowledge(batch.installed, batch.refused);
     for (const id of this.facts.drain()) this.gone.add(id);
     const bytes = this.freed + this.releasedFacts();
     this.freed = 0;
     if (bytes) this.host.release(bytes);
+    this.ackMs += Math.max(0, this.time() - began);
   }
 
   frame(request: FrameRequest) {
@@ -1239,29 +1243,23 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       else this.applyAcks(request.installed, request.refused);
     }
     const bare: FrameRequest = { ...request, installed: [], refused: [] };
-    if (request.exact) {
-      this.exactRequest = bare;
-      this.exactSynthetic = false;
-      this.specRequest = null;
-      this.lastExact = bare;
-    } else {
-      if (this.exactSynthetic) { this.exactRequest = null; this.exactSynthetic = false; }
-      this.specRequest = bare;
-      this.lastExact = null;
+    this.request = bare;
+    this.lastExact = request.exact ? bare : null;
+    if (request.exact && this.inHandover) {
+      this.inHandover = false;
+      this.handoverToken++;
+      this.working = false;
     }
     this.schedule();
   }
 
   private wake() {
-    if (!this.hasRequest() && this.lastExact) {
-      this.exactRequest = { ...this.lastExact, installed: [], refused: [] };
-      this.exactSynthetic = true;
-    }
+    if (!this.request && this.lastExact) this.request = { ...this.lastExact, installed: [], refused: [] };
     this.schedule();
   }
 
   private schedule() {
-    if (this.working || !this.hasRequest()) return;
+    if (this.working || !this.request) return;
     this.working = true;
     queueMicrotask(() => { void this.run(); });
   }
@@ -1273,27 +1271,39 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     }
   }
 
+  private pendingRequest(): FrameRequest | null {
+    return this.request;
+  }
+
   private finishRun() {
     this.working = false;
-    if (this.hasRequest()) this.schedule();
+    if (this.request) this.schedule();
     else this.armMotion();
   }
 
   private async run() {
-    const request = this.exactRequest ?? this.specRequest;
-    if (this.exactRequest) { this.exactRequest = null; this.exactSynthetic = false; }
-    else this.specRequest = null;
-    const began = this.time();
+    const request = this.request;
+    this.request = null;
+    const ackMs = this.ackMs;
+    this.ackMs = 0;
+    const began = this.time() - ackMs;
     this.serving = true;
-    try { if (request) await this.serve(request); }
+    try { if (request) await this.serve(request, began); }
     catch (error) { this.host.fail(error instanceof Error ? error.message : String(error)); }
     finally {
       this.serving = false;
       this.flushAcks();
+      const next = this.pendingRequest();
       const overBudget = this.time() - began >= (this.host.budget ?? 10);
-      if (this.host.schedule && (this.hasRequest() || overBudget)) {
-        if (!this.hasRequest()) this.armMotion();
-        this.host.schedule(() => this.finishRun());
+      if (this.host.schedule && !next?.exact && (next || overBudget)) {
+        if (!next) this.armMotion();
+        const token = ++this.handoverToken;
+        this.inHandover = true;
+        this.host.schedule(() => {
+          if (!this.inHandover || token !== this.handoverToken) return;
+          this.inHandover = false;
+          this.finishRun();
+        });
       } else {
         this.finishRun();
       }
@@ -1423,8 +1433,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return false;
   }
 
-  private async serve(request: FrameRequest) {
-    const began = this.time();
+  private async serve(request: FrameRequest, began = this.time()) {
     this.requests++;
     this.stats.frames++;
     if (this.seekSuperseded(request.seek)) {
@@ -1556,7 +1565,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const start = this.time();
       widget.served = this.requests;
       const initialOpen = this.isOpenFollowed(widget, selected) ? 'followed' : this.isOpenPanel(widget, selected) ? 'panel' : undefined;
-      if (!motion && !widget.motion && widget.installed && this.canRedate(widget.installed, selected, widget.binding.generation, widget.inspect)) {
+      if (!motion && !widget.motion && !widget.forceFull && widget.installed && this.canRedate(widget.installed, selected, widget.binding.generation, widget.inspect)) {
         const redated = this.redateEntry(widget, widget.installed, selected, request.seek, initialOpen);
         entries.push(redated);
         made.push({ widget, selected });
@@ -1691,7 +1700,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         this.presented.delete(orig.id);
         if (this.widgets.get(widget.id) === widget) {
           if (widget.inflight?.id === orig.id) widget.inflight = null;
-          if (widget.binding.generation === orig.binding) widget.sent = {};
+          if (widget.binding.generation === orig.binding) { widget.forceFull = true; widget.sent = {}; }
           this.dirtyWidgets.add(widget.id);
           this.syncWindowTracking(widget);
         }
@@ -1747,17 +1756,19 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private entry(widget: Widget, selected: Selected, painted: Painted, mode: Entry['mode'], reason: string | undefined, parts: (B | typeof SAME | null)[], seek: number, ms = 0, open?: 'followed' | 'panel', failureOrigin?: FailureOrigin): Entry<B> {
     const id = this.host.lane + 1 + this.host.lanes * this.nextEntry++, contents: Record<string, string> = { hour: String(selected.window[0]) };
+    const full = widget.forceFull;
+    if (mode === 'picture') widget.forceFull = false;
     if (mode === 'failed' && reason !== undefined) contents.failed = reason;
     const fields: Record<string, unknown> = {};
     painted.surfaces.forEach((surface, k) => {
       if (!surface) { parts[k] = null; return; }
       contents[k] = surface.content;
-      parts[k] = widget.sent[k] === surface.content ? SAME : null;
+      parts[k] = !full && widget.sent[k] === surface.content ? SAME : null;
     });
     const fieldKeys = Object.keys(painted.fields);
     for (const [key, field] of Object.entries(painted.fields)) {
       contents[key] = field.content;
-      fields[key] = widget.sent[key] === field.content ? SAME : field.value;
+      fields[key] = !full && widget.sent[key] === field.content ? SAME : field.value;
     }
     const route = this.routeOf(widget);
     const gen = route === null ? { seek, reset: 0 } : { seek: this.facts.generation(route).seek, reset: this.applied.get(this.natives.get(route)!) ?? this.resets.get(this.natives.get(route)!) ?? 0 };
