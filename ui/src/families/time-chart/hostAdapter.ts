@@ -136,6 +136,7 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
   parseHit: parseTimeChartHit,
   inspectToken: key => key,
   gestures: createTimeChartGestures(),
+  deriveAuditRows: model => model.auditRows ?? [],
   buildBinding: ctx => {
     if (!ctx.extent) return null;
     const tiledLines: SerializedTiledLine[] = [];
