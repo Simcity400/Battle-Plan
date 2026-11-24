@@ -5,7 +5,9 @@ import type { LiveValues } from '../../charts/live';
 import type { Canvas2D } from '../../charts/textWidth.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { ArtProvider, FamilyTheme, IdentityProvider } from '../contract.ts';
-import { missingArt, PENDING_ART, readyArt } from '../art/types.ts';
+import { PENDING_ART, productArt, readyArt } from '../art/types.ts';
+
+const missingArt = (reason: string) => productArt({ status: 'confirmedMissing', reason });
 import { activeResearchDeclaration, activeResearchProjection } from '../../widgets/active-research/activeResearchProjection.ts';
 import { doctrineMasteryProjection } from '../../widgets/doctrine-mastery/doctrineMasteryProjection.ts';
 import { decryptionProjection } from '../../widgets/decryption/decryptionProjection.ts';
@@ -18,6 +20,8 @@ import { hitMeterModel, layoutMeterModel } from './painter.ts';
 import type { DecryptionReply, DoctrineMasteryReply, ResearchSlotsReply } from '../../generated/dashboard';
 import type { ResearchData } from '../../widgets/research/types';
 import { matrixCellAt } from '../heat/matrixModel.ts';
+import { autonomyLevelsProjection } from '../../widgets/autonomy/autonomyLevelsProjection.ts';
+import type { AutonomyLevelsReply } from '../../generated/dashboard';
 
 const THEME: FamilyTheme = {
   surface: '#14171d',
@@ -519,10 +523,49 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
   assert.equal(hitMeterModel(layout, firstHit.x + 2, firstHit.y + 2, 0, 0), `row:${firstHit.key}`);
   assert.ok(findMeterTooltip(ciphers, firstHit.key) !== null);
   assert.equal(deriveMeterNav(ciphers).length, 3);
+  const measured = deriveMeterNav(ciphers, layout.itemBands);
+  assert.deepEqual(measured.map(entry => [entry[6], entry[7]]), measured.map(entry => [...layout.itemBands.get(entry[0])!]), 'navigation scrolls to each item’s measured band');
+  assert.equal(measured[0]![7], 23, 'a cipher row is 23 px, not an assumed 32');
   assert.equal(deriveMeterMirror(ciphers).total, 3);
   const audit = deriveMeterAudit(ciphers);
   assert.equal(audit.length, 7, 'the summary, each section header and each item');
   assert.equal(audit.find(row => row.key === 'section:decrypting')?.value, 'Decrypting|1|');
+});
+
+test('autonomyLevelsProjection keeps the product order, lists an unread subject with its reason, and filters by overlord or subject', () => {
+  const hour = 61320100;
+  const subject = (overlord: string, tag: string, id: number, level: string | null, progress: number | null, reason: string | null = null) => ({
+    overlordId: 1, overlord, subjectId: id, subject: tag, level,
+    levelBelow: level === 'dominion' ? 'puppet' : null, levelAbove: level === 'dominion' ? 'free' : null, levelsUnknown: level === null ? 'The subject\'s level is not recorded at this hour' : null,
+    progressMilli: progress, progressUnknown: reason,
+  });
+  const reply: AutonomyLevelsReply = {
+    levels: [{ token: 'puppet', name: 'Puppet', ordered: true }, { token: 'dominion', name: 'Dominion', ordered: true }, { token: 'free', name: 'Free', ordered: true }],
+    subjects: [
+      subject('ENG', 'RAJ', 10, 'dominion', 97_000),
+      subject('ENG', 'CAN', 11, 'dominion', 50_000),
+      subject('GER', 'SLO', 12, null, null, 'The subject\'s autonomy is not recorded at this hour'),
+    ],
+    missing: null,
+    warnings: [],
+  };
+  const view = createBoundedReadView({ hour, panels: new Map([['main', reply]]), identity: makeIdentity({ RAJ: { name: 'British Raj' }, CAN: { name: 'Dominion of Canada' }, SLO: { name: 'Slovakia' } }) });
+  const all = { passing: null, unrecorded: [], bounds: [] };
+  const model = autonomyLevelsProjection.project(view, { filter: all, filterAll: true, bySubject: false, surface: '#111111' });
+  const rows = model.sections![0]!.rows!;
+  assert.deepEqual(rows.map(row => row.name), ['British Raj', 'Dominion of Canada', 'Slovakia'], 'the product order, never re-sorted');
+  assert.equal(model.summaryText, '3 subjects');
+  assert.equal(rows[0]!.figure, '97%');
+  assert.equal(rows[0]!.subtitle, 'Dominion');
+  assert.ok(rows[0]!.bar.kind === 'threshold' && rows[0]!.bar.ends === true && rows[0]!.bar.fraction === 0.97);
+  assert.equal(rows[0]!.tooltip?.items?.find(item => item.label === 'Level below')?.value, 'Puppet');
+  assert.equal(rows[2]!.figureMissing, true, 'an unread subject is listed and marked, not drawn as zero');
+  assert.ok(rows[2]!.bar.kind === 'threshold' && rows[2]!.bar.fraction === null);
+  assert.equal(rows[2]!.tooltip?.items?.find(item => item.label === 'Within level')?.missingReason, "The subject's autonomy is not recorded at this hour");
+  const onlyGerman = { passing: { GER: [[0, hour + 10]] as [number, number][] }, unrecorded: [], bounds: [] };
+  assert.deepEqual(autonomyLevelsProjection.project(view, { filter: onlyGerman, filterAll: false, bySubject: false, surface: '#111111' }).sections![0]!.rows!.map(row => row.name), ['Slovakia']);
+  const onlyCanada = { passing: { CAN: [[0, hour + 10]] as [number, number][] }, unrecorded: [], bounds: [] };
+  assert.deepEqual(autonomyLevelsProjection.project(view, { filter: onlyCanada, filterAll: false, bySubject: true, surface: '#111111' }).sections![0]!.rows!.map(row => row.name), ['Dominion of Canada']);
 });
 
 test('bounded readView throws FutureDataError on future who() lookups', () => {

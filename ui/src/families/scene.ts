@@ -12,9 +12,10 @@ import type { IdentityIndex } from './identity/index.ts';
 export interface SceneSources {
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
+  readonly staticShifts?: Readonly<Record<string, number>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly series?: ReadonlyMap<string, ReadonlyMap<string, BoundedSeries>>;
-  readonly hovers?: ReadonlyMap<string, { readonly hour: number; readonly data: unknown }>;
+  readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
 }
 
 export interface SceneReaders {
@@ -73,7 +74,7 @@ function readScene(
     hour,
     revisions,
     ...(sources.series ? { series: sources.series } : {}),
-    ...(sources.hovers ? { hovers: sources.hovers } : {}),
+    ...(sources.hovers ? { hovers: new Map(Object.entries(sources.hovers)) } : {}),
     ...(readers?.identity ? { identity: readers.identity } : {}),
     ...(readers?.art ? { art: readers.art } : {}),
     ...(demands
@@ -84,6 +85,7 @@ function readScene(
           onArtDemand: (handle: ArtHandle) => laneArtDemand(handle, readers?.index, readers?.artResolutions, demands.urls, demands.asks),
         }
       : {}),
+    ...(sources.staticShifts ? { panelShifts: sources.staticShifts } : {}),
     ensureNonLive: () => {
       const answers = new Map<string, FollowedAnswer | undefined>();
       const panels = new Map<string, unknown>();

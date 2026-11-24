@@ -1,5 +1,4 @@
 import type { IconName } from '../../components/Icons';
-import type { OptionField } from '../../dashboard/options';
 import type { CountryPolicy, FamilyPlanContext, FamilyViewportRequest, SourcePlan } from '../plan.ts';
 import type { BreakdownProjection } from './model.ts';
 import { breakdownView, type BreakdownViewMode } from './options.ts';
@@ -15,7 +14,6 @@ export interface BreakdownWidgetSpec<TOptions> {
   readonly subject: string;
   readonly emptyCampaign: string;
   readonly icon?: IconName;
-  readonly optionFields?: readonly OptionField[];
   readonly countries: CountryPolicy;
   readonly sources: (ctx: FamilyPlanContext, view: FamilyViewportRequest) => SourcePlan;
   readonly projection: BreakdownProjection<TOptions & BreakdownViewOptions>;
@@ -28,9 +26,14 @@ export interface BreakdownWidgetDeclaration<TOptions> extends Omit<BreakdownWidg
   readonly projectionOptions: (ctx: FamilyPlanContext) => TOptions & BreakdownViewOptions;
 }
 
+function drawnAs<TOptions>(projection: BreakdownProjection<TOptions & BreakdownViewOptions>): BreakdownProjection<TOptions & BreakdownViewOptions> {
+  return { ...projection, project: (readView, options) => ({ ...projection.project(readView, options), view: options.view }) };
+}
+
 export function breakdownDeclaration<TOptions>(spec: BreakdownWidgetSpec<TOptions>): BreakdownWidgetDeclaration<TOptions> {
   return {
     ...spec,
+    projection: drawnAs(spec.projection),
     family: 'breakdown',
     projectionOptions: ctx => ({ ...spec.projectionOptions(ctx), view: breakdownView(ctx.options), namesInRing: ctx.options.namesInRing !== false }),
   };

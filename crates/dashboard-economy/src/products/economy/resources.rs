@@ -268,6 +268,7 @@ impl AtHour for ResourceBalance {
     const KEY: &'static str = "resource-balance";
     const TITLE: &'static str = "Resource balance";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("stage-0 reads_in queries ConvoyIndex::deals_at(owner, hour) without retained_reads expiry");
     type Params = ResourceBalanceParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, order, hideEmpty];
     type Reply = ResourceBalanceReply;

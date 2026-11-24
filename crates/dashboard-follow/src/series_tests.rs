@@ -281,25 +281,34 @@ fn a_followed_top_of_named_countries_ranks_only_them_as_series_state_does() {
     let measure = series.measure("politicalPower").unwrap();
     let asked = |reads: serde_json::Value| crate::parse::parse(&serde_json::json!({ "product": "series-state",
         "params": { "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" }, "reads": reads, "top": 2 } }), &identity);
-    let Ok(Query::Series { countries, mode: SeriesMode::Top { n: 2, least: false }, .. }) = asked(serde_json::json!([{ "country": "ITA" }])) else {
+    let Ok(Query::Series { countries, mode: SeriesMode::Top { n: 2, least: false, population: false }, .. }) = asked(serde_json::json!([{ "country": "ITA" }])) else {
         panic!("a top of named countries is a ranking of those countries")
     };
     assert_eq!(countries.len(), 1);
     let both = asked(serde_json::json!([{ "country": "GER" }, { "country": "ITA" }])).unwrap();
     let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let line = Line::new(&state, series, measure).unwrap();
-    let mut compared = 0;
-    for hour in (ITA_FROM..ITA_FROM + 60).step_by(7) {
+    let everyone = Query::series_top(series, measure, 2, identity.clone());
+    let (mut compared, mut refused) = (0, 0);
+    for hour in (ITA_FROM..ITA_FROM + 60).step_by(7).chain((ITA_FROM..ITA_FROM + 60).filter(|&hour| power(9001, hour).is_none()).take(2)) {
         let answer = Answer::parse(&answer_at(&both, &lane(&pages, &both, both.declared(), hour)).unwrap()).unwrap();
+        let population = Answer::parse(&answer_at(&everyone, &lane(&pages, &everyone, everyone.declared(), hour)).unwrap()).unwrap();
         let reads: Vec<SeriesRead> = ["GER", "ITA"].iter().map(|tag| SeriesRead { country: (*tag).into(), hour, part: None }).collect();
         let mut expected: Vec<(i64, String)> = line.states(&reads, None).unwrap().into_iter()
             .filter_map(|state| Some((state.run?.value_raw.parse::<i64>().ok()?, state.country.to_string()))).collect();
+        if expected.len() < 2 {
+            let unrecorded = Some("GER's politicalPower was not recorded at this hour".to_owned());
+            assert_eq!((answer.not_recorded.clone(), population.not_recorded.clone()), (unrecorded.clone(), unrecorded), "an unrecorded contender refuses both tops at {hour}, never drops out");
+            refused += 1;
+            continue;
+        }
         expected.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
         let named: Vec<&str> = (0..answer.keys.len()).filter_map(|row| answer.name(row)).collect();
         assert_eq!(named, expected.iter().map(|(_, tag)| tag.as_str()).collect::<Vec<_>>(), "hour {hour}");
-        compared += usize::from(expected.len() == 2);
+        assert_eq!(Ok(named.iter().map(|tag| (*tag).to_owned()).collect::<Vec<_>>()), line.rank_at(hour, 2, false).unwrap(), "the followed top is the exact rank at {hour}");
+        compared += 1;
     }
-    assert!(compared > 3, "{compared} hours ranked both countries");
+    assert!(compared > 3 && refused == 2, "{compared} hours ranked both countries, {refused} refused");
 }
 
 #[test]
@@ -1053,7 +1062,7 @@ fn follow_and_live_cells_apply_witness_rule_and_invalidate_across_swapped_trunca
             assert_eq!(a_zero.values[2], 0);
             assert_eq!(exact_board.rows[2].cells[2].value_raw.as_deref(), Some("0"));
             let exact_zero = line_zero.states(&reads, None).unwrap();
-            assert_eq!(exact_zero[2].missing.as_deref(), Some("FRA's army was not recorded at this hour"));
+            assert_eq!(exact_zero[2].run.as_ref().map(|run| run.value_raw.as_str()), Some("0"), "an absent row of an absent-is-none series reads zero, as followed and on the board");
             assert_eq!(a_keys.states, [State::Value, State::Value, State::NoRow]);
             assert_eq!(a_keys.reason(2), Some(NO_ROW));
         }

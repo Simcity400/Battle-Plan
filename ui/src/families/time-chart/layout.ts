@@ -5,7 +5,7 @@ import { linearTicks } from '../../charts/valueAxis.ts';
 import { monthNames } from '../../dashboard/calendar.ts';
 import { computeTimeAxisTicks } from '../../draw/kit.ts';
 import type { BoundedSeries } from '../plan.ts';
-import { formatCompactScalar, formatDateOnly } from '../valueFormat.ts';
+import { formatCompactScalar, formatDateOnly, formatScalar } from '../valueFormat.ts';
 import type {
   ChartColumnModel,
   ChartGap,
@@ -22,24 +22,20 @@ function shortMonth(month: number): string {
 
 export function formatChartAxisValue(value: number, format: ChartValueFormat): string {
   if (!Number.isFinite(value)) return '';
-  if (format === 'percent') return `${Math.round(value)}%`;
+  if (format === 'percent') return formatScalar(value, { decimals: 0, maxDecimals: 0, percent: true });
   if (format === 'signed1') {
     if (Math.abs(value) < 1e-9) return '0';
-    const text = Math.abs(value).toFixed(1).replace(/\.0$/, '');
-    return `${value < 0 ? '\u2212' : '+'}${text}`;
+    return formatScalar(value, { decimals: 0, maxDecimals: 1, signed: true });
   }
   if (format === 'compact') {
     if (value === 0) return '0';
     return formatCompactScalar(Math.round(value), 'integer').text;
   }
   if (format === 'power') {
-    const abs = Math.abs(value);
-    if (abs >= 1e4) return formatCompactScalar(Math.round(value), 'integer').text;
-    const sign = value < 0 ? '\u2212' : '';
-    return `${sign}${Math.round(abs).toLocaleString('en-US')}`;
+    if (Math.abs(value) >= 1e4) return formatCompactScalar(Math.round(value), 'integer').text;
+    return formatScalar(value, { decimals: 0, maxDecimals: 0 });
   }
-  const sign = value < 0 ? '\u2212' : '';
-  return `${sign}${Math.round(Math.abs(value)).toLocaleString('en-US')}`;
+  return formatScalar(value, { decimals: 0, maxDecimals: 0 });
 }
 
 export interface PlacedEndLabel {
@@ -232,12 +228,16 @@ function seriesEndPoint(
 
 function buildColumnsLayout(
   columns: ChartColumnModel,
+  xDomain: readonly [number, number],
   until: number,
   left: number,
   plotWidth: number,
   small: boolean,
+  measure: MeasureText,
+  smallFont: string,
 ): PlacedColumnItem[] {
-  const visible = columns.months.filter(m => m.firstHour <= until);
+  const cutoff = Math.min(xDomain[1], until);
+  const visible = columns.months.filter(m => m.lastHour >= xDomain[0] && m.firstHour <= cutoff);
   if (!visible.length) return [];
   const threshold = columns.foldThreshold ?? 6;
   const groups: ({ kind: 'fold'; months: ChartMonthSlot[] } | { kind: 'month'; month: ChartMonthSlot })[] = [];
@@ -267,6 +267,7 @@ function buildColumnsLayout(
   const slotWidth = Math.max(4, (plotWidth - foldCount * foldWidth) / Math.max(1, monthCount));
   const out: PlacedColumnItem[] = [];
   let x = left;
+  let lastLabelRight = -1e9;
 
   for (let idx = 0; idx < groups.length; idx++) {
     const g = groups[idx]!;
@@ -276,6 +277,10 @@ function buildColumnsLayout(
       const shortEnd = String(b.year).slice(-2);
       const foldLabel = a.year === b.year ? String(a.year) : `${a.year}\u2013${shortEnd}`;
       const foldSpanText = `${shortMonth(a.month)} ${a.year} \u2013 ${shortMonth(b.month)} ${b.year}`;
+      const cx = x + foldWidth / 2;
+      const lw = measure(foldLabel, smallFont);
+      const shownLabel = cx - lw / 2 >= lastLabelRight + 6 ? foldLabel : null;
+      if (shownLabel) lastLabelRight = cx + lw / 2;
       out.push({
         kind: 'fold',
         index: idx,
@@ -283,7 +288,7 @@ function buildColumnsLayout(
         width: foldWidth,
         barX: x + 4,
         barWidth: Math.max(4, foldWidth - 8),
-        label: foldLabel,
+        label: shownLabel,
         majorLabel: true,
         foldMonths: g.months,
         foldLabel,
@@ -305,6 +310,15 @@ function buildColumnsLayout(
     }
     if (small && idx > 0 && idx < groups.length - 1 && m.month !== 1 && !prevFold) {
       label = null;
+    }
+    if (label) {
+      const cx = x + slotWidth / 2;
+      const lw = measure(label, smallFont);
+      if (cx - lw / 2 < lastLabelRight + 8) {
+        label = null;
+      } else {
+        lastLabelRight = cx + lw / 2;
+      }
     }
     out.push({
       kind: 'month',
@@ -331,7 +345,8 @@ export function layoutTimeChart(
   hoverHour?: number | null,
   hoveredSeriesId?: string | null,
 ): TimeChartLayout {
-  const small = width <= 490 || height <= 200;
+  const narrow = width <= 490;
+  const small = narrow || height <= 200;
   const smallFont = `11px ${fontFamily}`;
   const tabFont = `600 11px ${fontFamily}`;
   const labelNameFont = `500 12px ${fontFamily}`;
@@ -346,11 +361,19 @@ export function layoutTimeChart(
   let dataMin = Infinity;
   let dataMax = -Infinity;
   if (model.mode === 'columns' && model.columns) {
+    const cutoff = Math.min(xDomain[1], model.hour);
     for (const m of model.columns.months) {
-      if (m.firstHour > model.hour || m.status !== 'recorded') continue;
-      if (m.totalValue < dataMin) dataMin = m.totalValue;
-      if (m.totalValue > dataMax) dataMax = m.totalValue;
-      if (0 < dataMin) dataMin = 0;
+      if (m.lastHour < xDomain[0] || m.firstHour > cutoff || m.status !== 'recorded') continue;
+      let posSum = 0;
+      let negSum = 0;
+      for (const seg of m.segments) {
+        if (seg.value > 0) posSum += seg.value;
+        else if (seg.value < 0) negSum += seg.value;
+      }
+      const lo = Math.min(0, negSum, m.totalValue);
+      const hi = Math.max(0, posSum, m.totalValue);
+      if (lo < dataMin) dataMin = lo;
+      if (hi > dataMax) dataMax = hi;
     }
   } else if (model.mode === 'stack' && model.stack) {
     const { hours, bands, total } = model.stack;
@@ -358,15 +381,20 @@ export function layoutTimeChart(
       const h = hours[i]!;
       if (h > model.hour) break;
       if (h < xDomain[0]) continue;
-      let sum = 0;
+      let posSum = 0;
+      let negSum = 0;
       for (const band of bands) {
         const v = band.values[i];
-        if (v !== null && v !== undefined && Number.isFinite(v)) sum += v;
+        if (v === null || v === undefined || !Number.isFinite(v)) continue;
+        if (v >= 0) posSum += v;
+        else negSum += v;
       }
       const tv = total?.values[i];
-      const top = tv !== null && tv !== undefined && Number.isFinite(tv) ? Math.max(sum, tv) : sum;
-      if (0 < dataMin) dataMin = 0;
-      if (top > dataMax) dataMax = top;
+      const hasTotal = tv !== null && tv !== undefined && Number.isFinite(tv);
+      const lo = hasTotal ? Math.min(0, negSum, tv) : Math.min(0, negSum);
+      const hi = hasTotal ? Math.max(0, posSum, tv) : Math.max(0, posSum);
+      if (lo < dataMin) dataMin = lo;
+      if (hi > dataMax) dataMax = hi;
     }
   } else {
     for (const s of model.series) {
@@ -434,6 +462,7 @@ export function layoutTimeChart(
     value: string;
     valueColor?: string;
     valueMuted?: boolean;
+    fixedWidth: number;
     estWidth: number;
   }[] = [];
 
@@ -445,8 +474,11 @@ export function layoutTimeChart(
       if (!s.endLabel) continue;
       const end = seriesEndPoint(s, model.hour);
       if (!end || Math.abs(end.hour - model.hour) > 48) continue;
-      const showName = !!(s.endLabel.name && (!small || (!s.endLabel.flag && !s.endLabel.icon)));
-      const nameText = showName ? ellipsise(s.endLabel.name!, END_LABEL_MAX_NAME_PX, measureName) : null;
+      const rawName = small && s.endLabel.shortName !== undefined
+        ? s.endLabel.shortName
+        : s.endLabel.name;
+      const showName = !!(rawName && (!small || s.endLabel.shortName !== undefined || (!s.endLabel.flag && !s.endLabel.icon)));
+      const nameText = showName ? ellipsise(rawName!, END_LABEL_MAX_NAME_PX, measureName) : null;
       const artW = s.endLabel.flag && s.endLabel.flag.art.status !== 'noArtExpected'
         ? 24
         : s.endLabel.icon && s.endLabel.icon.art.status !== 'noArtExpected'
@@ -454,7 +486,8 @@ export function layoutTimeChart(
           : 0;
       const nameW = nameText ? measure(nameText, labelNameFont) + 6 : 0;
       const valW = measure(s.endLabel.value, labelValueFont);
-      const estWidth = artW + nameW + valW + 8;
+      const fixedWidth = artW + valW;
+      const estWidth = fixedWidth + nameW + 8;
       const isNegative = s.negRed && end.value < 0;
       rawEndLabels.push({
         id: s.id,
@@ -469,6 +502,7 @@ export function layoutTimeChart(
         value: s.endLabel.value,
         valueColor: isNegative ? CHART_MEASURE_COLOURS.shortInk : s.endLabel.valueColor,
         valueMuted: s.endLabel.valueMuted,
+        fixedWidth,
         estWidth,
       });
     }
@@ -477,25 +511,42 @@ export function layoutTimeChart(
     for (let i = model.stack.hours.length - 1; i >= 0; i--) {
       if (model.stack.hours[i]! <= model.hour) { lastIdx = i; break; }
     }
+    const estPlotHeight = Math.max(1, height - top - bottom);
+    const ySpan = Math.max(1e-9, yDomain[1] - yDomain[0]);
+    const trailingGap = model.stack.step === true && lastIdx >= 0
+      && (model.gaps?.some(g => g.firstHour > model.stack!.hours[lastIdx]! && g.firstHour <= model.hour) ?? false);
+    const lastTotalVal = model.stack.total?.values[lastIdx];
+    const hasTotalAtLast = lastTotalVal !== null && lastTotalVal !== undefined && Number.isFinite(lastTotalVal);
+    const hasAnyBandAtLast = model.stack.bands.some(band => {
+      const v = band.values[lastIdx];
+      return v !== null && v !== undefined && Number.isFinite(v);
+    });
     const lastValid = lastIdx >= 0
-      && Math.abs(model.hour - model.stack.hours[lastIdx]!) <= 48
-      && model.stack.bands.every(band => {
-        const v = band.values[lastIdx];
-        return v !== null && v !== undefined && Number.isFinite(v);
-      });
+      && !trailingGap
+      && (model.stack.step === true || Math.abs(model.hour - model.stack.hours[lastIdx]!) <= 48)
+      && (hasTotalAtLast || hasAnyBandAtLast);
     if (lastValid) {
-      let acc = 0;
+      let posAcc = 0;
+      let negAcc = 0;
       for (const band of model.stack.bands) {
-        const v = band.values[lastIdx] ?? 0;
-        const mid = acc + v / 2;
-        acc += v;
+        const rawV = band.values[lastIdx];
+        if (rawV === null || rawV === undefined || !Number.isFinite(rawV)) continue;
+        const mid = rawV >= 0 ? posAcc + rawV / 2 : negAcc + rawV / 2;
+        if (rawV >= 0) posAcc += rawV;
+        else negAcc += rawV;
         if (!band.endLabel) continue;
-        const showName = !!(band.endLabel.name && (!small || !band.endLabel.flag));
-        const nameText = showName ? ellipsise(band.endLabel.name!, END_LABEL_MAX_NAME_PX, measureName) : null;
+        const bandPx = (Math.abs(rawV) / ySpan) * estPlotHeight;
+        if (small && bandPx < 10) continue;
+        const rawName = small && band.endLabel.shortName !== undefined
+          ? band.endLabel.shortName
+          : band.endLabel.name;
+        const showName = !!(rawName && (!narrow || !band.endLabel.flag));
+        const nameText = showName ? ellipsise(rawName!, END_LABEL_MAX_NAME_PX, measureName) : null;
         const barW = 9;
         const artW = band.endLabel.flag && band.endLabel.flag.art.status !== 'noArtExpected' ? 24 : 0;
         const nameW = nameText ? measure(nameText, labelNameFont) + 6 : 0;
         const valW = measure(band.endLabel.value, labelValueFont);
+        const fixedWidth = barW + artW + valW;
         rawEndLabels.push({
           id: band.id,
           seriesId: band.id,
@@ -508,14 +559,16 @@ export function layoutTimeChart(
           fullName: band.endLabel.fullName ?? band.name,
           value: band.endLabel.value,
           valueColor: band.endLabel.valueColor,
-          estWidth: barW + artW + nameW + valW + 8,
+          fixedWidth,
+          estWidth: fixedWidth + nameW + 8,
         });
       }
-      if (model.stack.total?.endLabel) {
-        const tv = model.stack.total.values[lastIdx] ?? acc;
+      if (model.stack.total?.endLabel && hasTotalAtLast) {
+        const tv = lastTotalVal!;
         const el = model.stack.total.endLabel;
         const artW = el.icon && el.icon.art.status !== 'noArtExpected' ? 22 : 0;
         const valW = measure(el.value, labelValueFont);
+        const fixedWidth = artW + valW;
         rawEndLabels.push({
           id: '__total__',
           seriesId: '__total__',
@@ -527,7 +580,8 @@ export function layoutTimeChart(
           fullName: model.measureTitle,
           value: el.value,
           valueColor: el.valueColor,
-          estWidth: artW + valW + 8,
+          fixedWidth,
+          estWidth: fixedWidth + 8,
         });
       }
     }
@@ -536,7 +590,7 @@ export function layoutTimeChart(
   if (rawEndLabels.length > 0) {
     let widest = 0;
     for (const l of rawEndLabels) widest = Math.max(widest, l.estWidth);
-    const maxRight = Math.max(76, Math.floor(width * (small ? 0.36 : 0.32)));
+    const maxRight = Math.max(76, Math.floor(width * (narrow ? 0.36 : 0.32)));
     right = Math.min(maxRight, Math.max(56, Math.ceil(widest + 16)));
   }
 
@@ -557,7 +611,7 @@ export function layoutTimeChart(
   };
 
   const columns = model.mode === 'columns' && model.columns
-    ? buildColumnsLayout(model.columns, model.hour, left, plotWidth, small)
+    ? buildColumnsLayout(model.columns, xDomain, model.hour, left, plotWidth, small, measure, smallFont)
     : [];
 
   const playheadX = model.mode === 'columns' && columns.length > 0
@@ -569,23 +623,35 @@ export function layoutTimeChart(
     const anchors = rawEndLabels.map(l => ({ id: l.id, y: toY(l.anchorVal), height: END_LABEL_HEIGHT }));
     const placedY = layoutEndLabels(anchors, Math.max(2, top - END_LABEL_HEIGHT / 2), baseY + 4, END_LABEL_GAP);
     const lx = playheadX + 10;
+    const availWidth = Math.max(0, width - lx - 4);
+    const minEllipsis = measure('\u2026', labelNameFont);
     for (const l of rawEndLabels) {
       const anchorY = toY(l.anchorVal);
       const ly = placedY.get(l.id) ?? anchorY;
+      let fittedName = l.name;
+      if (fittedName) {
+        const nameBudget = availWidth - l.fixedWidth - 6;
+        if (nameBudget < minEllipsis) {
+          fittedName = null;
+        } else if (measureName(fittedName) > nameBudget) {
+          fittedName = ellipsise(fittedName, nameBudget, measureName);
+        }
+      }
+      const fittedWidth = l.fixedWidth + (fittedName ? measureName(fittedName) + 6 : 0) + 8;
       endLabels.push({
         id: l.id,
         seriesId: l.seriesId,
         anchorY,
         y: ly,
         x: lx,
-        width: Math.min(l.estWidth, Math.max(0, width - lx - 4)),
+        width: Math.min(fittedWidth, availWidth),
         height: 16,
         color: l.color,
         faded: l.faded,
         colorBar: l.colorBar,
         flag: l.flag,
         icon: l.icon,
-        name: l.name,
+        name: fittedName,
         fullName: l.fullName,
         value: l.value,
         valueColor: l.valueColor,

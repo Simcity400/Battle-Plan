@@ -20,6 +20,7 @@ pub enum Country {
 }
 
 pub const NOT_IN_HISTORY: &str = "This country is not in this branch";
+pub const NOT_HELD_AT_HOUR: &str = "This country holds no tag at this hour";
 
 pub const SLOT_MARK: char = '\0';
 
@@ -172,16 +173,24 @@ impl Holders {
     }
 
     pub fn label(&self, country: &Country, hour: i32) -> Option<String> {
-        if let Some(tag) = self.tag_at(country, hour) {
-            return Some(tag.to_owned());
-        }
-        let Country::Slot(slot) = country else { return Some(country.to_string()) };
-        let distance = |first: i32, last: i32| if hour < first { i64::from(first) - i64::from(hour) } else { i64::from(hour) - i64::from(last) };
-        self.slots().get(slot).and_then(|held| held.tags.iter().min_by_key(|(first, last, ..)| distance(*first, *last))).map(|(.., tag)| tag.clone())
+        self.tag_at(country, hour).map(str::to_owned)
+    }
+
+    pub fn unnamed(&self, country: &Country) -> &'static str {
+        if self.named(country) { NOT_HELD_AT_HOUR } else { NOT_IN_HISTORY }
     }
 
     pub fn say(&self, country: &Country, hour: i32, message: impl FnOnce(&str) -> String) -> String {
-        self.label(country, hour).map_or_else(|| NOT_IN_HISTORY.to_owned(), |name| message(&name))
+        self.label(country, hour).map_or_else(|| self.unnamed(country).to_owned(), |name| message(&name))
+    }
+
+    pub fn nearest_name(&self, country: &Country, hour: i32) -> String {
+        if let Some(tag) = self.tag_at(country, hour) {
+            return tag.to_owned();
+        }
+        let Country::Slot(slot) = country else { return country.to_string() };
+        let distance = |first: i32, last: i32| if hour < first { i64::from(first) - i64::from(hour) } else { i64::from(hour) - i64::from(last) };
+        self.slots().get(slot).and_then(|held| held.tags.iter().min_by_key(|(first, last, ..)| distance(*first, *last))).map_or_else(|| country.key().into_owned(), |(.., tag)| tag.clone())
     }
 
     pub fn within<K: Key + ?Sized>(&self, country: &K, from: i32, to: i32) -> Vec<HolderRun> {
@@ -209,6 +218,12 @@ impl Holders {
 
     pub fn named<K: Key + ?Sized>(&self, country: &K) -> bool {
         !country.runs(self).is_empty()
+    }
+
+    pub fn slot_tag(&self, slot: u32, hour: i32) -> Option<&str> {
+        let held = self.slots().get(&slot)?;
+        let end = held.tags.partition_point(|(first, ..)| *first <= hour);
+        held.tags[..end].iter().rev().find(|(_, last, ..)| hour <= *last).map(|(.., tag)| tag.as_str())
     }
 }
 

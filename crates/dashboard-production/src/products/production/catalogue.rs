@@ -3,6 +3,7 @@ use dashboard_world::products::equipment_names::{self as names, EquipmentIcon, N
 use dashboard_base::products::{Country, validate_country, flows::{CountryFlowReply, FlowEdge, FlowPart, FlowShape, build_flows}};
 use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour::{At, AtHour, Owner, Read}}};
 use dashboard_follow::live::Source as Cell;
+use dashboard_query::coverage::{Witness, witnessed};
 use dashboard_text::{metadata::link_slot, variant_names::Texts};
 use replay_data::rows::{CountryLinkRow, CountryRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
@@ -72,6 +73,8 @@ pub struct OrganisationNow {
     #[doc = " The hour the policy may change again; null when none is set. The days left are counted"]
     #[doc = " where they are shown, as the game counts them: its day less the shown hour's."]
     pub cooldown_hour: Option<i32>,
+    #[doc = " Why this organisation's state (size, funds, traits, policy) is not known at the hour, when it is not."]
+    pub details_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -83,8 +86,6 @@ pub struct IndustrialOrganisationsReply {
     pub organisations: Vec<OrganisationNow>,
     #[doc = " Why the organisations are not known at the hour, when they are not."]
     pub missing: Option<String>,
-    #[doc = " Why their state (size, funds, traits, policy) is not known at the hour, when it is not."]
-    pub details_missing: Option<String>,
     pub icons: Vec<EquipmentIcon>,
     pub warnings: Vec<String>,
 }
@@ -150,6 +151,7 @@ impl AtHour for ProductionLicences {
     const KEY: &'static str = "production-licences";
     const TITLE: &'static str = "Production licences";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = ProductionLicencesParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, limit];
     type Reply = CountryFlowReply;
@@ -215,6 +217,7 @@ impl AtHour for IndustrialOrganisations {
     const KEY: &'static str = "industrial-organisations";
     const TITLE: &'static str = "Industrial organisations";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = IndustrialOrganisationsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = IndustrialOrganisationsReply;
@@ -248,7 +251,7 @@ impl AtHour for IndustrialOrganisations {
             1 => vec![Read::these(TableId::IndustrialOrganisationDetails, owned().iter().map(|row| u128::from(row.organisation)))],
             2 => {
                 let mut tokens: BTreeSet<u32> = owned().iter().map(|row| row.token).collect();
-                let policies = held.complete::<tables::IndustrialOrganisationDetails>().ok().into_iter().flatten().map(|detail| detail.state.policy);
+                let policies = owned().into_iter().filter_map(|row| witnessed::<tables::IndustrialOrganisationDetails>(held, u128::from(row.organisation)).row()).map(|detail| detail.state.policy);
                 tokens.extend(policies.filter(|&policy| policy != UNSELECTED_POLICY));
                 names::spelling_reads(held, tokens, false)
             }
@@ -262,7 +265,7 @@ impl AtHour for IndustrialOrganisations {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Industrial organisations country is unavailable at this hour"))?;
-        let mut reply = IndustrialOrganisationsReply { branch_id: params.branch_id.clone(), tag: at.holders.name(&params.country, at.hour), organisations: Vec::new(), missing: None, details_missing: None, icons: Vec::new(), warnings: Vec::new() };
+        let mut reply = IndustrialOrganisationsReply { branch_id: params.branch_id.clone(), tag: at.holders.name(&params.country, at.hour), organisations: Vec::new(), missing: None, icons: Vec::new(), warnings: Vec::new() };
         let rows = match organisations_of(frame, owner) {
             Ok(rows) => rows,
             Err(error) => {
@@ -270,10 +273,6 @@ impl AtHour for IndustrialOrganisations {
                 return Ok(reply);
             }
         };
-        let details = frame.complete::<tables::IndustrialOrganisationDetails>();
-        if let Err(error) = &details {
-            reply.details_missing = Some(format!("Organisation sizes, funds and policies are not recorded at this hour: {error}"));
-        }
         let lexical = frame.complete::<tables::LexicalTokens>().ok();
         let texts: Option<&dyn Texts> = at.context.as_ref().ok().map(|content| content.catalogue.as_ref() as &dyn Texts);
         let ids: Vec<u64> = rows.iter().map(|row| row.organisation).collect();
@@ -293,7 +292,11 @@ impl AtHour for IndustrialOrganisations {
         }
         for row in rows {
             let name = named.organisations.remove(&row.organisation);
-            let detail = details.as_ref().ok().and_then(|rows| rows.binary_search_by_key(&row.organisation, |detail| detail.organisation).ok().map(|at| &rows[at]));
+            let (detail, details_missing) = match witnessed::<tables::IndustrialOrganisationDetails>(frame, u128::from(row.organisation)) {
+                Witness::Row(detail) => (Some(detail), None),
+                Witness::Absent => (None, Some("The organisation's size, funds and policy are not recorded at this hour".to_owned())),
+                Witness::NotRecorded(reason) => (None, Some(format!("Organisation sizes, funds and policies are not recorded at this hour: {reason}"))),
+            };
             let selected = detail.map(|detail| detail.state.policy).filter(|&policy| policy != UNSELECTED_POLICY);
             let policy_token = selected.and_then(|policy| lexical.and_then(|lexical| names::spelled(lexical, policy)));
             let policy_unknown = match (selected, &policy_token, texts) {
@@ -316,6 +319,7 @@ impl AtHour for IndustrialOrganisations {
                 policy_name,
                 policy_unknown,
                 cooldown_hour: detail.and_then(|detail| detail.state.cooldown_hour),
+                details_missing,
             });
         }
         reply.organisations.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.id.len().cmp(&b.id.len())).then_with(|| a.id.cmp(&b.id)));
@@ -335,6 +339,7 @@ impl AtHour for EquipmentDesigns {
     const KEY: &'static str = "equipment-designs";
     const TITLE: &'static str = "Equipment designs";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = EquipmentDesignsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = EquipmentDesignsReply;

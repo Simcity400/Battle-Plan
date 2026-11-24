@@ -466,3 +466,19 @@ fn a_focus_card_lists_dated_completions_newest_first_then_undated_and_holds_only
     assert_eq!(progress_figures(Some((150_000, None)), Some(70.0)), (Some(1), Some(214), None, Some(NO_GAIN.to_owned())));
     assert_eq!(progress_figures(Some((9_000_000, Some(1))), Some(70.0)).1, Some(10_000), "progress past the duration is complete, not more");
 }
+
+#[test]
+fn completions_are_ordered_by_their_dates_and_each_is_presented_at_the_hour_it_was_observed() {
+    use super::{Fold, Segment};
+    use crate::products::focus_card::{card_at, observed_hours};
+    use crate::products::focus_dto::FocusOrder;
+    let order = FocusOrder { completed: vec![entry(0, "early", None), entry(1, "later", Some(110)), entry(2, "middle", Some(105))], current: Some("now".into()), continuous: None, paused: false };
+    let fold = Fold { segments: vec![Segment { first: 100, last: 200, slot: 7, id: 1, order }], ..Default::default() };
+    let card = card_at(&fold, 150);
+    assert_eq!(card.completed, [("later".to_owned(), Some(110)), ("middle".to_owned(), Some(105)), ("early".to_owned(), None)], "a reordered list still reads newest first by date");
+    let hours = observed_hours(&card);
+    assert_eq!(hours.get(&110), Some(&vec!["later".to_owned()]));
+    assert_eq!(hours.get(&105), Some(&vec!["middle".to_owned()]));
+    assert_eq!(hours.get(&100), Some(&vec!["early".to_owned()]), "an undated completion is presented at the first read that held it, never at the displayed hour");
+    assert!(!hours.contains_key(&150));
+}

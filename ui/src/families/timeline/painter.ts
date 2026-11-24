@@ -3,9 +3,7 @@ import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import {
   computeTimeAxisTicks,
-  drawArtSlot,
   drawChevron,
-  drawFlagSlot,
   drawGapBand,
   drawRowFocusRing,
   drawRowHairline,
@@ -18,7 +16,8 @@ import {
   type ArtSlotState,
   type TimeAxisTick,
 } from '../../draw/kit.ts';
-import { toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
+import { drawMediaSlot, toArtSlotState } from '../art/adapters.ts';
+import { unavailableArt } from '../art/types.ts';
 import type { ArtHandle, BoundedReadView, FamilyTheme } from '../contract.ts';
 import {
   BAR_HEIGHT,
@@ -71,12 +70,18 @@ function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: Timeline
     x += CHEVRON + 6;
   }
   if (lane.flag || lane.flagTag) {
-    const state = lane.flag ? toFlagSlotState(readView.art(lane.flag), lane.flagTag) : { kind: 'missing' as const, tag: lane.flagTag };
-    drawFlagSlot(ctx, x, Math.round(mid - FLAG_H / 2), state, theme, { width: FLAG_W, height: FLAG_H });
+    drawMediaSlot(ctx, x, mid, FLAG_W, FLAG_H, {
+      kind: 'flag',
+      art: lane.flag ? readView.art(lane.flag) : unavailableArt('Flag unavailable'),
+      tag: lane.flagTag,
+    }, theme);
     x += FLAG_W + 8;
   } else if (lane.icon || lane.iconMissing) {
-    const state = artState(readView, lane.icon, lane.iconMissing, lane.label);
-    drawArtSlot(ctx, x, Math.round(mid - LANE_ICON / 2), LANE_ICON, LANE_ICON, state, theme, { radius: 3 });
+    drawMediaSlot(ctx, x, mid, LANE_ICON, LANE_ICON, {
+      kind: 'art',
+      art: lane.icon ? readView.art(lane.icon) : unavailableArt('Art unavailable'),
+      resolvedName: lane.label,
+    }, theme, { radius: 3 });
     x += LANE_ICON + 8;
   } else if (lane.swatch) {
     ctx.save();

@@ -74,7 +74,7 @@ pub enum ProductionPurpose {
 }
 
 impl ProductionPurpose {
-    fn of(raw: u8) -> Self {
+    pub(crate) fn of(raw: u8) -> Self {
         match OutputPurpose::from_raw(raw) {
             Some(OutputPurpose::New) => Self::New,
             Some(OutputPurpose::Converted) => Self::Converted,
@@ -290,31 +290,31 @@ impl Read {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Row {
-    spent: Option<i64>,
-    reason: u8,
-    unproven: Option<i64>,
+pub(crate) struct Row {
+    pub(crate) spent: Option<i64>,
+    pub(crate) reason: u8,
+    pub(crate) unproven: Option<i64>,
 }
 
-type LeafKey = (bool, u64, Option<u8>);
+pub(crate) type LeafKey = (bool, u64, Option<u8>);
 
-struct SpanRead {
-    span: Span,
+pub(crate) struct SpanRead {
+    pub(crate) span: Span,
     lines: Vec<Piece<Context>>,
     rocket: Vec<Piece<Context>>,
     country: Vec<Piece<Option<(Option<i64>, Option<i64>)>>>,
-    rows: BTreeMap<LeafKey, Vec<Piece<Option<Row>>>>,
-    archetypes: BTreeMap<u64, u32>,
+    pub(crate) rows: BTreeMap<LeafKey, Vec<Piece<Option<Row>>>>,
+    pub(crate) archetypes: BTreeMap<u64, u32>,
     equipment_reads: Vec<i32>,
     rocket_reads: Vec<i32>,
-    equipment_observations: BTreeSet<i32>,
+    pub(crate) equipment_observations: BTreeSet<i32>,
     rocket_observations: BTreeSet<i32>,
-    repairs: Option<RepairRead>,
+    pub(crate) repairs: Option<RepairRead>,
 }
 
-struct RepairRead {
+pub(crate) struct RepairRead {
     total: Vec<Piece<Option<(Option<i64>, bool)>>>,
-    parts: BTreeMap<Option<u64>, Vec<Piece<Option<Option<i64>>>>>,
+    pub(crate) parts: BTreeMap<Option<u64>, Vec<Piece<Option<Option<i64>>>>>,
 }
 
 const RUN: u128 = ProductionCoverageRow::RUN as u128;
@@ -325,7 +325,7 @@ pub(crate) fn reads_of(query: &Query<'_>, span: &Span, table: TableId) -> io::Re
 }
 
 impl SpanRead {
-    fn read(query: &Query<'_>, span: Span, repairs: bool) -> io::Result<Self> {
+    pub(crate) fn read(query: &Query<'_>, span: Span, repairs: bool) -> io::Result<Self> {
         let id = u128::from(span.id);
         let country = Read::of(query, &span, TableId::ProductionCountryTotals, &["spent", "spent_without_refits"], Keys::These(&[id]))?;
         let country = country.pieces(id, &span, |read, cells| (read.number(cells, 0), read.number(cells, 1)));
@@ -386,7 +386,7 @@ impl SpanRead {
         if rocket { &self.rocket } else { &self.lines }
     }
 
-    fn amounts(&self, key: &LeafKey, cell: impl Fn(&Row) -> Option<i64>) -> Vec<Piece<Amount>> {
+    pub(crate) fn amounts(&self, key: &LeafKey, cell: impl Fn(&Row) -> Option<i64>) -> Vec<Piece<Amount>> {
         let absent = [(self.span.first, self.span.last, None)];
         let rows = self.rows.get(key).map_or(&absent[..], Vec::as_slice);
         let reason = ProductionSpendingUnknown::SpendingUnavailable;
@@ -396,7 +396,7 @@ impl SpanRead {
         })
     }
 
-    fn equipment(&self, refits: bool) -> Vec<Piece<Amount>> {
+    pub(crate) fn equipment(&self, refits: bool) -> Vec<Piece<Amount>> {
         zip(&self.lines, &self.country, |context, row| context.amount(row.map(|row| if refits { row.0 } else { row.1 }), ProductionSpendingUnknown::SpendingUnavailable))
     }
 
@@ -447,7 +447,7 @@ impl RepairRead {
         [(self.total.first().map_or(0, |piece| piece.0), self.total.last().map_or(0, |piece| piece.1), ())]
     }
 
-    fn total(&self) -> Vec<Piece<Amount>> {
+    pub(crate) fn total(&self) -> Vec<Piece<Amount>> {
         zip(&self.total, &self.span(), |row, _| match row {
             None => Amount::Unknown(ProductionSpendingUnknown::NotRecorded),
             Some((Some(rate), _)) => Amount::Known(i128::from(*rate)),
@@ -825,7 +825,7 @@ fn reply(source: &Source, query: &Query<'_>, params: &ProductionSpendingParams, 
     }
     let reply = ProductionSpendingReply {
         branch_id: params.branch_id.clone(),
-        tag: query.holders.name(&params.country, query.timeline.last),
+        tag: query.holders.nearest_name(&params.country, query.timeline.last),
         decimals: 5,
         reads: sorted(equipment_reads.iter().chain(&rocket_reads).copied()),
         observations: sorted(equipment_observations.iter().chain(&rocket_observations).copied()),

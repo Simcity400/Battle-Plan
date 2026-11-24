@@ -52,6 +52,7 @@ impl AtHour for CountryFactionGoals {
     const KEY: &'static str = "country-faction-goals";
     const TITLE: &'static str = "Country faction goals";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = CountryFactionGoalsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = CountryFactionGoalsReply;

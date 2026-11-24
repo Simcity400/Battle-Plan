@@ -1,17 +1,30 @@
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsProjection } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { FamilyPlanContext } from '../../families/contract.ts';
 import { contentKey, contentSet, type OptionValue } from '../../dashboard/options.ts';
-import { militaryAirModel, militaryAirParams, militaryAirSources, type MilitaryAirAtOptions } from '../bombing-damage/militaryAirAt.ts';
-import { OPTIONS } from './definition.ts';
+import { lossCausesModel, militaryAirModel, militaryAirParams, militaryAirSources, type MilitaryAirAtOptions } from '../bombing-damage/militaryAirAt.ts';
 
-export const airKillsLossesProjection: BarsProjection<MilitaryAirAtOptions> = registerBarsProjection({
+export const airKillsLossesProjection: BarsProjection<MilitaryAirAtOptions> = registerFamilyProjection({
   kind: 'air-kills-losses',
   family: 'bars',
   nextChange: () => Infinity,
   project: (readView, options) => militaryAirModel(readView, options),
 }, 'butterfly');
+
+export const airKillsLossesPairedProjection: BarsProjection<MilitaryAirAtOptions> = registerFamilyProjection({
+  kind: 'air-kills-losses',
+  family: 'bars',
+  nextChange: () => Infinity,
+  project: (readView, options) => militaryAirModel(readView, options),
+}, 'paired');
+
+export const airLossCausesProjection: BarsProjection<MilitaryAirAtOptions> = registerFamilyProjection({
+  kind: 'air-kills-losses',
+  family: 'bars',
+  nextChange: () => Infinity,
+  project: (readView, options) => lossCausesModel(readView, options),
+}, 'breakdown');
 
 const numbers = (value: OptionValue | undefined) => contentSet(value ?? '').map(contentKey).map(Number).filter(Number.isInteger);
 
@@ -27,7 +40,6 @@ export const airKillsLossesDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptio
   subject: 'aircraft losses',
   emptyCampaign: 'Load a campaign to see aircraft losses.',
   icon: 'target',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,
@@ -45,8 +57,28 @@ export const airKillsLossesDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptio
     rightHeader: 'Enemy aircraft destroyed',
     unit: 'Aircraft',
     ratio: true,
+    none: ctx.options.measure === 'dealt' ? 'No enemy aircraft destroyed yet.' : 'No aircraft lost yet.',
     chosen: !ctx.countries.all && ctx.countries.top == null ? ctx.countries.tags : null,
   }),
   jumpToDate: true,
   keyByBranch: true,
+};
+
+export const airKillsLossesPairedDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptions> = {
+  ...airKillsLossesDeclaration,
+  projection: airKillsLossesPairedProjection,
+  projectionOptions: ctx => ({
+    ...airKillsLossesDeclaration.projectionOptions(ctx),
+    leftHeader: 'Own losses',
+    rightHeader: 'Destroyed',
+    paired: { solid: 'Destroyed (solid)', outline: 'Own losses (outline)' },
+  }),
+};
+
+export const airLossCausesDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptions> = {
+  ...airKillsLossesDeclaration,
+  label: 'Own aircraft lost by cause',
+  sources: ctx => militaryAirSources('air-loss-causes', ctx, militaryAirParams(ctx, 'airLosses', 'taken', { regions: numbers(ctx.options.regions), causes: numbers(ctx.options.causes) })),
+  projection: airLossCausesProjection,
+  projectionOptions: ctx => ({ ...airKillsLossesDeclaration.projectionOptions(ctx), none: 'No aircraft lost yet.' }),
 };

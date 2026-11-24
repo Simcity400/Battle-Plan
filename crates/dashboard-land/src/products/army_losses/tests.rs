@@ -41,16 +41,44 @@ fn a_months_witness_reads_its_own_arrays_run_of_the_hours_rows() {
 }
 
 #[test]
-fn a_view_holds_the_measure_drawn_or_every_part_of_one_month() {
+fn a_view_is_read_from_the_request_as_manpower_equipment_ledgers_or_one_month() {
     use super::{ArmyLossesParams, LossView};
     let equipment = LossView::Equipment { ledgers: vec![1, 2, 3] };
-    assert!(LossView::Manpower.manpower(5) && !LossView::Manpower.ledger(0, 5));
-    assert!(!equipment.manpower(5) && equipment.ledger(2, 5) && !equipment.ledger(0, 5) && !equipment.ledger(super::ENEMY_LEDGER, 5));
     let month = LossView::Month { month: 5 };
-    assert!(month.manpower(5) && month.ledger(0, 5) && month.ledger(super::ENEMY_LEDGER, 5));
-    assert!(!month.manpower(6) && !month.ledger(0, 6));
     let asked = |json: serde_json::Value| serde_json::from_value::<ArmyLossesParams>(json).unwrap().view;
     assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER" })), LossView::Manpower);
     assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER", "view": { "kind": "equipment", "ledgers": [1, 2, 3] } })), equipment);
     assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER", "view": { "kind": "month", "month": 5 } })), month);
+}
+
+#[test]
+fn rollup_ranks_parts_folds_other_preserves_recorded_zero_and_marks_unknown_months() {
+    let cells = dashboard_follow::live::Cells::default();
+    let mut builder = RollupBuilder::new(EQUIPMENT_SCALE, false, None);
+    let m1 = 1941 * 12 + 5;
+    let m2 = 1941 * 12 + 6;
+    let m3 = 1941 * 12 + 7;
+    builder.add(m1, "a".into(), "Infantry".into(), 500_000, None);
+    builder.add(m1, "b".into(), "Artillery".into(), 300_000, None);
+    builder.add(m1, "c".into(), "Trucks".into(), 200_000, None);
+    builder.add(m1, "d".into(), "Tanks".into(), 100_000, None);
+    builder.mark_recorded(m2);
+    builder.add(m3, "a".into(), "Infantry".into(), 400_000, None);
+    builder.mark_unknown(m3, NO_READ_YET.into());
+    let rollup = builder.finish(3, &cells);
+    assert_eq!(rollup.parts.len(), 3);
+    assert_eq!(rollup.parts[0].key, "a");
+    assert_eq!(rollup.parts[1].key, "b");
+    assert_eq!(rollup.parts[2].key, OTHER);
+    assert_eq!(rollup.parts[2].label, "Other (2)");
+    assert_eq!(rollup.parts[2].other_count, 2);
+    assert_eq!(rollup.months.len(), 3);
+    assert_eq!(rollup.months[0].missing, None);
+    assert_eq!(rollup.months[0].values, ["500000", "300000", "300000"]);
+    assert_eq!(rollup.months[0].total, "1100000");
+    assert_eq!(rollup.months[1].missing, None);
+    assert_eq!(rollup.months[1].total, "0");
+    assert_eq!(rollup.months[1].values, ["0", "0", "0"]);
+    assert_eq!(rollup.months[2].missing.as_deref(), Some(NO_READ_YET));
+    assert!(rollup.months[2].values.is_empty());
 }

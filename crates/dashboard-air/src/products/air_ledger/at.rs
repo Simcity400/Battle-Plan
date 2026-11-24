@@ -12,7 +12,9 @@ use ts_rs::TS;
 
 pub struct MilitaryAirAt;
 
-pub const NOT_OBSERVED: &str = "Military air events were not read at this hour";
+pub const LOSSES_NOT_RECORDED: &str = "Aircraft loss events were not recorded at this hour";
+pub const BOMBING_NOT_RECORDED: &str = "Bombing events were not recorded at this hour";
+pub const LINKS_NOT_RECORDED: &str = "Country links were not recorded at this hour, so events cannot be credited to countries";
 pub const POPULATION_INCOMPLETE: &str = "Some military air events since the totals' start may be missing, so countries cannot be ranked";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -43,6 +45,14 @@ pub struct MilitaryAirAtParams {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
+pub struct MilitaryAirCauseTotal {
+    pub cause: u32,
+    pub taken: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
 pub struct MilitaryAirAtRow {
     pub tag: String,
     pub identity: String,
@@ -52,6 +62,8 @@ pub struct MilitaryAirAtRow {
     pub taken: String,
     #[doc = " False where events since the totals' start may be missing: the totals are at least these."]
     pub complete: bool,
+    #[doc = " Air losses: own losses by recorded cause since the totals' start, most first; empty for bombing."]
+    pub causes: Vec<MilitaryAirCauseTotal>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -107,24 +119,40 @@ fn parse(text: &str) -> io::Result<i128> {
     text.parse().map_err(|_| dashboard_core::invalid("Military air total is not a whole number"))
 }
 
-fn through(reply: &MilitaryAirReply, hour: i32) -> io::Result<HashMap<Option<&str>, Totals>> {
-    let mut out: HashMap<Option<&str>, Totals> = HashMap::new();
+#[derive(Default)]
+struct Through<'a> {
+    totals: HashMap<Option<&'a str>, Totals>,
+    causes: HashMap<(&'a str, u32), i128>,
+}
+
+fn through(reply: &MilitaryAirReply, hour: i32) -> io::Result<Through<'_>> {
+    let mut out = Through::default();
     if hour < reply.first_hour.saturating_sub(1) {
         return Ok(out);
     }
     for opening in &reply.openings {
-        let held = out.entry(opening.identity.as_deref()).or_default();
         let total = parse(&opening.total)?;
-        if opening.dealt { held.dealt += total } else { held.taken += total }
+        count(&mut out, opening.identity.as_deref(), opening.dealt, Some(opening.cause), total);
     }
     for part in &reply.parts {
         let at = part.points.partition_point(|point| point.1 <= hour);
         let Some(point) = at.checked_sub(1).and_then(|at| part.points.get(at)) else { continue };
-        let held = out.entry(part.identity.as_deref()).or_default();
         let total = parse(&point.2)?;
-        if part.dealt { held.dealt += total } else { held.taken += total }
+        count(&mut out, part.identity.as_deref(), part.dealt, part.cause, total);
     }
     Ok(out)
+}
+
+fn count<'a>(out: &mut Through<'a>, identity: Option<&'a str>, dealt: bool, cause: Option<u32>, total: i128) {
+    let held = out.totals.entry(identity).or_default();
+    if dealt {
+        held.dealt += total;
+        return;
+    }
+    held.taken += total;
+    if let (Some(identity), Some(cause)) = (identity, cause) {
+        *out.causes.entry((identity, cause)).or_default() += total;
+    }
 }
 
 fn next_change(reply: &MilitaryAirReply, hour: i32) -> i32 {
@@ -140,7 +168,7 @@ fn next_change(reply: &MilitaryAirReply, hour: i32) -> i32 {
             consider(point.1);
         }
     }
-    let spans = reply.observed.iter().chain(&reply.incomplete).chain(reply.countries.iter().flat_map(|country| &country.present));
+    let spans = reply.observed.iter().chain(&reply.incomplete).chain(&reply.unjoined).chain(reply.countries.iter().flat_map(|country| &country.present));
     for span in spans {
         consider(span.first_hour);
         consider(span.last_hour.saturating_add(1));
@@ -162,7 +190,16 @@ pub fn answer(reply: &MilitaryAirReply, params: &MilitaryAirAtParams) -> io::Res
         warnings: reply.warnings.clone(),
     };
     let Some(observed) = run_at(&reply.observed, hour) else {
-        out.missing = Some(NOT_OBSERVED.to_owned());
+        out.missing = Some(
+            if run_at(&reply.unjoined, hour).is_some() {
+                LINKS_NOT_RECORDED
+            } else if params.family == MilitaryAirFamily::AirLosses {
+                LOSSES_NOT_RECORDED
+            } else {
+                BOMBING_NOT_RECORDED
+            }
+            .to_owned(),
+        );
         return Ok(out);
     };
     let from = params.from_hour.or(reply.counted_from).unwrap_or(observed.first_hour);
@@ -170,8 +207,22 @@ pub fn answer(reply: &MilitaryAirReply, params: &MilitaryAirAtParams) -> io::Res
     let now = through(reply, hour)?;
     let before = through(reply, from.saturating_sub(1))?;
     let since = |identity: Option<&str>| {
-        let (now, before) = (now.get(&identity).copied().unwrap_or_default(), before.get(&identity).copied().unwrap_or_default());
+        let (now, before) = (now.totals.get(&identity).copied().unwrap_or_default(), before.totals.get(&identity).copied().unwrap_or_default());
         Totals { dealt: now.dealt - before.dealt, taken: now.taken - before.taken }
+    };
+    let mut causes_of: HashMap<&str, Vec<(u32, i128)>> = HashMap::new();
+    if params.family == MilitaryAirFamily::AirLosses {
+        for (&(identity, cause), &total) in &now.causes {
+            let amount = total - before.causes.get(&(identity, cause)).copied().unwrap_or_default();
+            if amount != 0 {
+                causes_of.entry(identity).or_default().push((cause, amount));
+            }
+        }
+    }
+    let causes = |identity: &str| {
+        let mut held = causes_of.get(identity).cloned().unwrap_or_default();
+        held.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        held.into_iter().map(|(cause, amount)| MilitaryAirCauseTotal { cause, taken: amount.to_string() }).collect()
     };
     let unattributed = since(None);
     out.unattributed = [unattributed.dealt.to_string(), unattributed.taken.to_string()];
@@ -189,6 +240,7 @@ pub fn answer(reply: &MilitaryAirReply, params: &MilitaryAirAtParams) -> io::Res
             dealt: totals.dealt.to_string(),
             taken: totals.taken.to_string(),
             complete,
+            causes: causes(country.identity.as_str()),
         }));
     }
     if complete {
@@ -263,7 +315,7 @@ impl Product for MilitaryAirAt {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![MilitaryAirAtParams::decl(), MilitaryAirAtRow::decl(), MilitaryAirAtReply::decl()]
+        vec![MilitaryAirAtParams::decl(), MilitaryAirCauseTotal::decl(), MilitaryAirAtRow::decl(), MilitaryAirAtReply::decl()]
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -311,6 +363,7 @@ mod tests {
             available: true,
             observed: vec![span(0, 99)],
             incomplete: Vec::new(),
+            unjoined: Vec::new(),
             countries: vec![country("GER", "1:1", span(0, 99)), country("SOV", "2:2", span(0, 99)), country("FRA", "3:3", span(50, 99))],
             openings: Vec::new(),
             parts: vec![
@@ -367,12 +420,30 @@ mod tests {
     }
 
     #[test]
+    fn air_losses_give_each_country_its_own_losses_by_cause_since_the_start_most_first() {
+        let mut losses = ledger();
+        losses.family = MilitaryAirFamily::AirLosses;
+        let caused = |cause: u32, dealt: bool, points: &[(i32, &str)]| MilitaryAirPart { cause: Some(cause), ..part(Some("GER"), Some("1:1"), dealt, points) };
+        losses.parts = vec![caused(1, false, &[(5, "30"), (20, "40")]), caused(3, false, &[(6, "45")]), caused(1, true, &[(7, "99")])];
+        let at = |hour: i32, from_hour: Option<i32>| answer(&losses, &MilitaryAirAtParams { family: MilitaryAirFamily::AirLosses, from_hour, ..asked(hour) }).unwrap();
+        let causes = |reply: &MilitaryAirAtReply| reply.rows.iter().find(|row| row.tag == "GER").unwrap().causes.iter().map(|cause| (cause.cause, cause.taken.clone())).collect::<Vec<_>>();
+        assert_eq!(causes(&at(10, None)), [(3, "45".to_owned()), (1, "30".to_owned())], "own losses only, most first");
+        assert_eq!(causes(&at(25, Some(10))), [(1, "10".to_owned())], "counted from the range start; a cause with none since then is left out");
+        assert!(answer(&ledger(), &asked(25)).unwrap().rows.iter().all(|row| row.causes.is_empty()), "bombing has no loss causes");
+    }
+
+    #[test]
     fn an_unread_hour_is_not_recorded_and_a_range_counts_from_its_start() {
         let mut gap = ledger();
         gap.observed = vec![span(0, 40)];
         let unread = answer(&gap, &asked(60)).unwrap();
-        assert_eq!(unread.missing.as_deref(), Some(NOT_OBSERVED));
+        assert_eq!(unread.missing.as_deref(), Some(BOMBING_NOT_RECORDED), "the reason names the events that were not recorded");
         assert!(unread.rows.is_empty());
+        gap.unjoined = vec![span(41, 99)];
+        assert_eq!(answer(&gap, &asked(60)).unwrap().missing.as_deref(), Some(LINKS_NOT_RECORDED), "read events without links are not credited");
+        let quiet = MilitaryAirReply { parts: Vec::new(), ..ledger() };
+        let none = answer(&quiet, &asked(60)).unwrap();
+        assert_eq!((none.missing.as_deref(), none.rank_missing.as_deref(), none.rows.len()), (None, None, 0), "an observed hour with no events is a recorded none, not missing");
         let ranged = answer(&ledger(), &MilitaryAirAtParams { from_hour: Some(10), ..asked(25) }).unwrap();
         assert_eq!(tags(&ranged), [("GER", "200", "50")], "events before the range start do not count; SOV has none in range");
     }

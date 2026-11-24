@@ -1,5 +1,4 @@
 import type { IconName } from '../../components/Icons';
-import type { OptionField } from '../../dashboard/options';
 import type { DeclaredProjectionExtra } from '../host/DeclaredFamilyWidget.tsx';
 import type {
   AuxProductSpec,
@@ -19,7 +18,6 @@ export interface BarsWidgetDeclaration<TProjectionOptions = Record<string, never
   readonly icon?: IconName;
   readonly className?: string;
   readonly frameClassName?: string;
-  readonly optionFields?: readonly OptionField[];
   readonly countries: CountryPolicy;
   readonly aux?: AuxProductSpec<TAux>;
   readonly sources: (ctx: FamilyPlanContext<TAux>, view: FamilyViewportRequest) => SourcePlan;

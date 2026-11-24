@@ -161,6 +161,7 @@ export function resolveKitTokens(
     hoverTabBg: theme.hoverTabBg ?? theme.text,
     hoverTabText: theme.hoverTabText ?? theme.surface,
     textSecondary: dark ? '#d4d4d4' : theme.muted,
+    autoName: mix(theme.text, theme.surface, 0.25),
     childText: dark ? '#d4d4d4' : theme.text,
     barNeutral: dark ? '#cfcfcf' : '#64748b',
     trackGrey: dark ? '#c4c4c4' : '#64748b',
@@ -1573,24 +1574,10 @@ export function drawIconStrip(
       countW = textWidth(ctx, countText) + 3;
       ctx.restore();
     }
-    const needW = size + countW;
-    const moreAfter = i < items.length - 1;
-    const reserve = moreAfter ? 26 : 0;
-    if (cursor + needW + reserve > right && drawnCount > 0) {
-      const overflowCount = items.length - drawnCount;
-      ctx.save();
-      ctx.font = `500 11.5px ${theme.font}`;
-      ctx.fillStyle = theme.muted;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(`+${overflowCount}`, cursor, middleY);
-      ctx.restore();
-      return { drawnCount, overflowCount };
-    }
-    if (cursor + size > right) break;
+    if (cursor + size + countW > right) break;
     drawArtSlot(ctx, cursor, y, size, size, item.state, theme, { radius: 3 });
     cursor += size;
-    if (countText && cursor + countW <= right) {
+    if (countText) {
       ctx.save();
       ctx.font = `600 11px ${theme.font}`;
       ctx.fillStyle = theme.text;
@@ -1970,4 +1957,93 @@ export function drawLegendStrip(
   if (spec.hairline) {
     drawRowHairline(ctx, x, x + width, y + height - 1, theme, 'normal');
   }
+}
+
+export const ROW_SECTION_HEIGHT = 20;
+export const ROW_REMOVE_SIZE = 22;
+export const ROW_GRIP_WIDTH = 8;
+export const ROW_GRIP_HEIGHT = 12;
+
+export function drawRowSectionLabel(ctx: Canvas2D, x: number, y: number, height: number, label: string, theme: FamilyTheme): void {
+  ctx.save();
+  ctx.font = `${LABEL_WEIGHT} 11px ${theme.font}`;
+  ctx.fillStyle = theme.muted;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, x, y + height / 2);
+  ctx.restore();
+}
+
+export function rowGripBox(nameX: number, middleY: number): { readonly x: number; readonly y: number; readonly width: number; readonly height: number } {
+  return { x: Math.max(0, nameX - ROW_GRIP_WIDTH - 1), y: Math.round(middleY - ROW_GRIP_HEIGHT / 2), width: ROW_GRIP_WIDTH, height: ROW_GRIP_HEIGHT };
+}
+
+export function drawRowGrip(ctx: Canvas2D, nameX: number, middleY: number, theme: FamilyTheme): void {
+  const box = rowGripBox(nameX, middleY);
+  ctx.save();
+  ctx.fillStyle = theme.muted;
+  for (let column = 0; column < 2; column++) {
+    for (let line = 0; line < 3; line++) {
+      ctx.fillRect(box.x + 1 + column * 4, box.y + 1 + line * 4, 2, 2);
+    }
+  }
+  ctx.restore();
+}
+
+export function rowRemoveBox(right: number, middleY: number): { readonly x: number; readonly y: number; readonly width: number; readonly height: number } {
+  return { x: right - ROW_REMOVE_SIZE, y: Math.round(middleY - ROW_REMOVE_SIZE / 2), width: ROW_REMOVE_SIZE, height: ROW_REMOVE_SIZE };
+}
+
+export function drawRowRemoveButton(ctx: Canvas2D, right: number, middleY: number, theme: FamilyTheme): void {
+  const box = rowRemoveBox(right, middleY);
+  ctx.save();
+  ctx.fillStyle = mix(theme.surface, theme.text, 0.08);
+  ctx.beginPath();
+  ctx.roundRect(box.x, box.y, box.width, box.height, 4);
+  ctx.fill();
+  ctx.fillStyle = theme.text;
+  ctx.font = `500 10px ${theme.font}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('\u00d7', box.x + box.width / 2, middleY + 0.5);
+  ctx.restore();
+}
+
+export function drawAddRow(
+  ctx: Canvas2D,
+  nameX: number,
+  middleY: number,
+  lineLeft: number,
+  lineRight: number,
+  label: string,
+  theme: FamilyTheme,
+): void {
+  const tokens = resolveKitTokens(theme);
+  const plus = 12;
+  const cx = nameX + plus / 2;
+  const cy = Math.round(middleY) + 0.5;
+  ctx.save();
+  ctx.strokeStyle = theme.accent;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(cx - plus / 2 + 1, cy);
+  ctx.lineTo(cx + plus / 2 - 1, cy);
+  ctx.moveTo(cx, cy - plus / 2 + 1);
+  ctx.lineTo(cx, cy + plus / 2 - 1);
+  ctx.stroke();
+  ctx.font = `500 12px ${theme.font}`;
+  ctx.fillStyle = theme.accent;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, nameX + plus + 6, middleY);
+  if (lineRight > lineLeft) {
+    ctx.strokeStyle = tokens.hairlineStrong;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(lineLeft, cy);
+    ctx.lineTo(lineRight, cy);
+    ctx.stroke();
+  }
+  ctx.restore();
 }

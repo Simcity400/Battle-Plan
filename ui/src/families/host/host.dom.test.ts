@@ -5,18 +5,19 @@ import { withNativePage } from '../../../../tools/native-page.ts';
 test('shared family host handles F1 campaign switch pin clear, F2 leave-then-deactivate hover cleanup, F3/F4 theme & reduced motion, F5 press across frame update, F12 dual placement isolation + typeahead, and the generic FamilyHost doing no React render, bind or paint on quiet, steady and paused frames', async () => {
   await withNativePage('family-host', '/ui/src/families/host/host.dom.fixture.tsx', page => page.stage('family-host', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.hostDom.${expression}`);
-    const mounted = await act<{ pipeId: number }>('mountPrimary()');
-    assert.ok(mounted.pipeId > 0);
-
-    const f1 = await act<{ pinnedBefore: string | null; cleared: boolean }>('testF1PinClearsOnCampaignSwitch()');
-    assert.equal(f1.pinnedBefore, 'Germany', 'F1: tooltip was pinned before campaign switch');
-    assert.equal(f1.cleared, true, 'F1: switching campaign clears pinned tooltip even when host stays mounted');
-
     const { cdpSession } = await import(new URL('../../../../tools/e2e/cdp.mjs', import.meta.url).href) as {
       cdpSession(url: string): Promise<{ send(method: string, params?: Record<string, unknown>): Promise<unknown>; close(): void }>;
     };
     const cdp = await cdpSession(page.page);
     try {
+      await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
+      const mounted = await act<{ pipeId: number }>('mountPrimary()');
+      assert.ok(mounted.pipeId > 0);
+
+      const f1 = await act<{ pinnedBefore: string | null; cleared: boolean }>('testF1PinClearsOnCampaignSwitch()');
+      assert.equal(f1.pinnedBefore, 'Germany', 'F1: tooltip was pinned before campaign switch');
+      assert.equal(f1.cleared, true, 'F1: switching campaign clears pinned tooltip even when host stays mounted');
+
       const box = await act<{ left: number; top: number }>('bodyBox()');
       const px = Math.round(box.left + 40);
       const py = Math.round(box.top + 14);

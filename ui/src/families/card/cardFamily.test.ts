@@ -6,6 +6,8 @@ import { nationalFocusProjection } from '../../widgets/national-focus/nationalFo
 import { nationalSpiritsProjection } from '../../widgets/national-spirits/nationalSpiritsProjection.ts';
 import { warGoalsDeclaration, warGoalsProjection } from '../../widgets/war-goals/warGoalsProjection.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
+import { familyViewOptionFields } from '../../widgets/manifest.ts';
+import '../../widgets/definitions.ts';
 import type { FamilyPlanContext, InstalledPicture } from '../plan.ts';
 import { displayedHour } from '../boundedView.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
@@ -53,7 +55,7 @@ test('a focus card shows the product’s dated completions, then its undated one
   assert.equal(dated!.date?.hour, hour - 30 * DAY);
   assert.deepEqual(undated!.date, { hour: null, reason: 'Already complete when first read' });
   assert.deepEqual(undated!.title, { kind: 'notRecorded', reason: 'Name refused' });
-  assert.equal(undated!.art?.art.status, 'confirmedMissing', 'missing art is the hatched tile, not a blank');
+  assert.equal(undated!.art?.art.status, 'unavailable', 'art the product did not draw is unavailable with its reason, drawn as the hatched tile, not a blank');
 
   const unknownRate = nationalFocusProjection.project(view(hour, { ...reply, current: { ...reply.current!, daysLeft: null, progressMissing: 'Daily progress was not recorded' } }), {});
   assert.deepEqual((unknownRate.rows[0] as CardHeroRow).figure?.value, { kind: 'notRecorded', reason: 'Daily progress was not recorded' }, 'days left are not recorded, never zero');
@@ -75,9 +77,9 @@ test('war goals keep the product’s order and states, show a missing expiry by 
       { handle: '2', name: 'Conquer', actor: 'AAA', recipient: 'DDD', available: true, expires: null, states: [4], liberate: [], puppets: [], state: 'ready', granted: hour - 40 * DAY, grantedMissing: null },
       { handle: '3', name: 'Conquer', actor: 'AAA', recipient: 'EEE', available: true, expires: hour - 10 * DAY, states: [5, 6], liberate: [], puppets: [], state: 'expired', granted: hour - 300 * DAY, grantedMissing: null },
     ],
-    removed: [{ handle: '9', name: 'Take state', recipient: 'NOR', granted: hour - 90 * DAY, grantedMissing: null, removed: hour - 5 * DAY, removedExact: false, reasonMissing: 'War goal removal reason was not recorded' }],
+    removed: [{ handle: '9', name: 'Take state', recipient: 'FFF', seen: hour - 6 * DAY, granted: hour - 90 * DAY, grantedMissing: null, removed: hour - 5 * DAY, removedExact: false, reasonMissing: 'War goal removal reason was not recorded' }],
     warnings: [],
-    stateNames: [{ id: 1, name: 'Norrbotten', known: true }, { id: 2, name: 'Moskva', known: true }, { id: 3, name: 'Leningrad', known: true }, { id: 4, name: 'Sjaelland', known: true }, { id: 5, name: 'Danzig', known: true }],
+    stateNames: [{ id: 1, name: 'Invented state 1', known: true }, { id: 2, name: 'Invented state 2', known: true }, { id: 3, name: 'Invented state 3', known: true }, { id: 4, name: 'Invented state 4', known: true }, { id: 5, name: 'Invented state 5', known: true }],
   };
   const live: LiveValues<number | bigint | string> = { get: key => (key.startsWith('11') ? 640_000 : undefined), missing: () => 'Not read at this hour' };
   const model = warGoalsProjection.project(view(hour, reply, live), { targetNames: false });
@@ -88,10 +90,13 @@ test('war goals keep the product’s order and states, show a missing expiry by 
   assert.ok(rows[4]!.tooltip?.items?.some(item => item.label === 'Reason' && item.missingReason === 'War goal removal reason was not recorded'));
   assert.deepEqual(rows[0]!.meter?.fraction, { kind: 'known', value: 0.64 });
   assert.deepEqual(rows[0]!.figure?.value, { kind: 'known', value: '21 days left' });
-  assert.equal(rows[1]!.place, 'Moskva · Leningrad');
+  assert.equal(rows[1]!.place, 'Invented state 2 · Invented state 3');
   assert.equal(rows[2]!.figure?.value.kind, 'notRecorded', 'an unrecorded expiry is named, never blank');
+  const unreadWar = items(warGoalsProjection.project(view(hour, { ...reply, goals: [{ ...reply.goals[1]!, state: 'unknown' }], justifications: [], removed: [] }, live), { targetNames: false }))[0]!;
+  assert.equal(unreadWar.state, undefined, 'unread war relations claim no state');
+  assert.equal(unreadWar.figure?.value.kind, 'notRecorded');
   assert.equal(rows[3]!.muted, true);
-  assert.equal(rows[3]!.place, 'Danzig · State not recorded');
+  assert.equal(rows[3]!.place, 'Invented state 5 · State not recorded');
   const unread = warGoalsProjection.project(view(hour, reply, null), { targetNames: false });
   assert.equal(items(unread)[0]!.meter?.fraction.kind, 'notRecorded', 'progress not read is not zero');
   const justification = reply.justifications[0]!;
@@ -102,49 +107,48 @@ test('war goals keep the product’s order and states, show a missing expiry by 
   assert.equal(withPause(null).figure?.value.kind, 'notRecorded');
   const named = warGoalsProjection.project(view(hour, reply, live), { targetNames: true });
   assert.equal(items(named)[0]!.subtitle, 'Take state');
-  assert.ok(deriveCardAudit(model).some(row => row.key === 'state' && String(row.value).endsWith(':Expired')));
+  assert.ok(deriveCardAudit(model).some(row => row.key === `${row.row}:state` && String(row.value).endsWith(':Expired')));
 });
 
-test('national spirits list only what is held at the displayed hour, with since dates from the recording', () => {
+test('national spirits list the product’s membership at the displayed hour, in its order, with since dates and unclassified items kept', () => {
   const first = 100 * DAY;
-  const reply = {
-    branchId: '1', tag: 'AAA', asked: 'AAA',
-    spans: [
-      { token: 'mod_spirit_a', firstHour: first, lastHour: first + 500 * DAY, slot: null, character: null },
-      { token: 'mod_spirit_b', firstHour: first + 10 * DAY, lastHour: first + 500 * DAY, slot: null, character: null },
-      { token: 'mod_spirit_c', firstHour: first + 40 * DAY, lastHour: first + 500 * DAY, slot: null, character: null },
-    ],
-    ideas: ['mod_spirit_a', 'mod_spirit_b', 'mod_spirit_c'].map(token => ({ token, category: 'spirits', slot: null, law: false, designer: false, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null })),
-    artwork: [
-      { token: 'mod_spirit_a', name: 'Invented Spirit A', description: null, baseDurationDays: null, icon: 'asset://spirit-a.png' },
-      { token: 'mod_spirit_b', name: 'Invented Spirit B', description: null, baseDurationDays: null, icon: null },
-      { token: 'mod_spirit_c', name: 'Invented Spirit C', description: null, baseDurationDays: null, icon: null },
-    ],
-    holders: [], categories: [{ token: 'spirits', name: 'Spirits', kind: 'national_spirit', hidden: false, politicsTab: false, slots: [] }],
-    unobserved: [{ firstHour: first + 60 * DAY, lastHour: first + 61 * DAY }], identityStarts: [], modifiers: [], texts: [], warnings: [],
-  } as unknown as IdeaHistoryReply;
+  const looks = ['mod_spirit_a', 'mod_spirit_b', 'mod_spirit_c', 'mod_law'].map((token, at) => ({
+    info: { token, category: at === 3 ? 'laws' : at === 2 ? null : 'spirits', slot: null, law: at === 3, designer: false, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: at === 2 ? 'Invented reason the idea has no category' : null, nameMissing: null },
+    artwork: { token, name: `Invented ${token}`, description: null, baseDurationDays: null, icon: at === 0 ? 'asset://spirit-a.png' : null },
+  }));
+  const categories = [{ token: 'spirits', name: 'Spirits', kind: 'national_spirit', hidden: false, politicsTab: false, slots: [] }, { token: 'laws', name: 'Laws', kind: null, hidden: false, politicsTab: true, slots: [] }];
+  const held = (look: number, firstHour: number, hour: number, start: string) => ({ token: looks[look]!.info.token, firstHour, lastHour: hour, start, end: { kind: 'held' }, slot: null, character: null, look });
+  const replyAt = (hour: number, holdings: ReturnType<typeof held>[], nextChange: number | null, unrecorded: string | null = null) => ({
+    branchId: '1', tag: 'AAA', asked: 'AAA', hour, nextChange, unrecorded, holdings, held: holdings.map((_, at) => at).reverse(), looks, categories,
+    unobserved: [], modifiers: [], texts: [], warnings: [],
+  } as unknown as IdeaHistoryReply);
   const hour = first + 20 * DAY;
-  const model = nationalSpiritsProjection.project(view(hour, reply), { branchFirst: first });
+  const reply = replyAt(hour, [held(0, first, hour, 'heldBefore'), held(1, first + 10 * DAY, hour, 'seen'), held(3, first, hour, 'seen')], first + 40 * DAY);
+  const model = nationalSpiritsProjection.project(view(hour, reply), {});
   const rows = items(model);
-  assert.deepEqual(rows.map(row => row.key), ['mod_spirit_a', 'mod_spirit_b'], 'a spirit gained after the displayed hour is not shown');
-  assert.match(String(rows[0]!.figure?.value.kind === 'known' && rows[0]!.figure.value.value), /^Held before /);
-  assert.match(String(rows[1]!.figure?.value.kind === 'known' && rows[1]!.figure.value.value), /^Since /);
-  assert.equal(rows[1]!.art?.art.status, 'confirmedMissing');
+  assert.deepEqual(rows.map(row => row.key), ['mod_spirit_b', 'mod_spirit_a'], 'the product decides the order; a law is not a spirit');
+  assert.match(String(rows[1]!.figure?.value.kind === 'known' && rows[1]!.figure.value.value), /^Held before /);
+  assert.match(String(rows[0]!.figure?.value.kind === 'known' && rows[0]!.figure.value.value), /^Since /);
+  assert.equal(rows[0]!.art?.art.status, 'unavailable');
   assert.equal(model.nextChangeAt, first + 40 * DAY);
-  const unseen = nationalSpiritsProjection.project(view(first + 60 * DAY, reply), { branchFirst: first });
+  const gained = first + 45 * DAY;
+  const later = replyAt(gained, [held(0, first, gained, 'heldBefore'), held(1, first + 10 * DAY, gained, 'seen'), held(2, first + 41 * DAY, gained, 'firstObserved')], null);
+  const unclassified = items(nationalSpiritsProjection.project(view(gained, later), {})).find(row => row.key === 'mod_spirit_c')!;
+  assert.match(String(unclassified.figure?.value.kind === 'known' && unclassified.figure.value.value), /^First observed /, 'first seen after a gap is a bound, not a start');
+  assert.ok(unclassified.tooltip?.items?.some(item => item.label === 'Category' && 'missingReason' in item), 'an unclassified idea is kept with its reason');
+  const unseen = nationalSpiritsProjection.project(view(first + 60 * DAY, replyAt(first + 60 * DAY, [], null, 'Invented unread reason')), {});
   assert.equal(unseen.emptyKind, 'unavailable');
 
   registerFamilyProjection(nationalSpiritsProjection);
-  const options = { branchFirst: first };
+  const options = {};
   const lane = (panel: unknown) => ({ family: 'card', kind: 'national-spirits', options, sources: {}, staticPanels: { main: panel }, scrollTop: 0, theme: LANE_THEME, width: 420, height: 160 });
-  const held = lane(reply);
-  const renamed = { ...reply, artwork: reply.artwork.map(entry => (entry.token === 'mod_spirit_b' ? { ...entry, name: 'Invented Spirit Renamed' } : entry)) } as IdeaHistoryReply;
+  const renamed = { ...reply, looks: reply.looks.map(entry => (entry.artwork.token === 'mod_spirit_b' ? { ...entry, artwork: { ...entry.artwork, name: 'Invented Spirit Renamed' } } : entry)) } as IdeaHistoryReply;
   const surface = { width: 420, height: 160, dpr: 1 };
-  assert.equal(assertQuietFrames(() => familyCardLaneView(() => {}), { label: 'spirits', binding: held, hour }, 24, surface), first + 40 * DAY);
+  assert.equal(assertQuietFrames(() => familyCardLaneView(() => {}), { label: 'spirits', binding: lane(reply), hour }, 24, surface), first + 40 * DAY);
   assertFreshPaint(() => familyCardLaneView(() => {}), [
-    { label: 'held', binding: held, hour, check: true },
-    { label: 'a spirit gained', binding: held, hour: first + 45 * DAY, speed: 24 },
-    { label: 'seek back', binding: held, hour, check: true },
+    { label: 'held', binding: lane(reply), hour, check: true },
+    { label: 'a spirit gained', binding: lane(later), hour: gained, speed: 24 },
+    { label: 'seek back', binding: lane(reply), hour, check: true },
     { label: 'same-hour correction', binding: lane(renamed), hour, check: true },
   ], surface);
 });
@@ -179,26 +183,27 @@ test('special projects follow the product’s order: running with progress and s
       project('support', 'running', [status(0, 'running', 24)]),
       project('radar', 'running', [status(1, 'completed', 100)], [{ ordinal: 0, date: hour - 196 * DAY, completion: true, readHour: hour - 196 * DAY, counted: true, presentation: null }]),
       project('old', 'completed', [status(2, 'completed', 100)]),
+      project('unread', 'running', [status(3, 'unknown', 40)]),
     ],
-    reads: [], presentations: [info('Support Ships', 1), info('Radar', 0), info('Cruiser Submarine', 0)],
+    reads: [], presentations: [info('Invented project A', 1), info('Invented project B', 0), info('Invented project C', 0), info('Invented project', 0)],
     people: [{ assigned: false, id: null, name: null, portrait: null, missing: null }, { assigned: null, id: null, name: null, portrait: null, missing: 'The program read was not recorded' }],
     iterationTexts: {}, unavailable: null, warnings: [],
-    shown: { through: hour, running: [0], completed: [{ project: 1, date: hour - 196 * DAY }, { project: 2, date: null }], undated: 1 },
+    shown: { through: hour, running: [0], unknown: [3], completed: [{ project: 1, date: hour - 196 * DAY }, { project: 2, date: null }], undated: 1 },
   };
   const model = specialProjectsProjection.project(view(hour, reply), {});
   assertCardModelValid(model, hour);
-  assert.deepEqual(model.rows.map(row => row.kind === 'section' ? `${row.label} ${row.count}` : row.key), ['In progress 1', 'running:support', 'Completed 2', 'done:radar', 'Date not recorded 1', 'done:old']);
-  const [running, radar, old] = items(model);
+  assert.deepEqual(model.rows.map(row => row.kind === 'section' ? `${row.label} ${row.count}` : row.key), ['In progress 1', 'running:support', 'State not recorded 1', 'running:unread', 'Completed 2', 'done:radar', 'Date not recorded 1', 'done:old']);
+  const [running, , radar, old] = items(model);
   assert.equal(running!.meter?.text, '24%');
   assert.equal(running!.figure?.value.kind, 'notRecorded', 'an unread scientist is named as not recorded');
   assert.deepEqual(radar!.figure?.value, { kind: 'known', value: 'No scientist' });
   assert.deepEqual(old!.date, { hour: null, reason: 'Already complete when the project was first recorded' });
-  assert.equal(radar!.art?.art.status, 'confirmedMissing');
+  assert.equal(radar!.art?.art.status, 'unavailable');
 });
 
 test('a stored "Show names" reaches the war goals projection through the declaration the host resolves', () => {
   const resolve = (stored: Record<string, boolean>) => warGoalsDeclaration.projectionOptions({
-    options: resolveOptions(warGoalsDeclaration.optionFields ?? [], stored),
+    options: resolveOptions(familyViewOptionFields('war-goals'), stored),
   } as FamilyPlanContext<unknown>);
   assert.equal(resolve({ targetNames: true }).targetNames, true);
   assert.equal(resolve({}).targetNames, false);
@@ -221,7 +226,7 @@ test('the card audit lists what is drawn: printed meter text, subtitle, hero det
       figure: { value: { kind: 'known', value: '58 days' }, caption: 'Due 3 Mar 1937' }, meter: { fraction: { kind: 'known', value: 0 }, text: '-20%' } },
     { kind: 'item', key: 'item', title: { kind: 'known', value: 'Invented project' }, subtitle: 'Invented science' },
   ] };
-  const audit = new Map(deriveCardAudit(model).map(row => [`${row.row}/${row.key}`, row.value]));
+  const audit = new Map(deriveCardAudit(model).map(row => [row.key.replace(`${row.row}:`, `${row.row}/`), row.value]));
   assert.equal(audit.get('hero/meterText'), '-20%');
   assert.equal(audit.get('hero/detail'), 'Day 12 of 70');
   assert.equal(audit.get('hero/caption'), 'Due 3 Mar 1937');

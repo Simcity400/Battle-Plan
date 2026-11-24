@@ -1,3 +1,5 @@
+import { pictureError } from '../../shell/perf.ts';
+import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { tooltipStore } from '../../charts/tooltip.ts';
@@ -5,12 +7,12 @@ import { engineHour } from '../../dashboard/calendar.ts';
 import type { Pipeline, PointerHitMeta } from '../../dashboard/follow/pipeline.ts';
 import { AuditSnapshotStore } from '../audit.ts';
 import { barsHostAdapter, parseBarsHit } from '../bars/hostAdapter.ts';
-import { displayedHour } from '../boundedView.ts';
+import { createBoundedReadView, displayedHour } from '../boundedView.ts';
 import type { FamilyTheme, InstalledAction, InstalledPicture } from '../contract.ts';
 import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
 import { lazyActionKeys, type ParsedFamilyHit } from './adapter.ts';
-import { createBoundAuditReader, type BoundAuditEntry } from './auditBinding.ts';
+import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry } from './auditBinding.ts';
 import { boundDated } from './dated.ts';
 import { NO_EXPANSION, toggleExpansion } from './expansion.ts';
 import {
@@ -153,6 +155,12 @@ test('handleFamilyKeyDown avoids activating row 0 when focus key was evicted and
   });
   assert.equal(enter.prevented(), true);
   assert.deepEqual(activated, [], 'Enter on an evicted row activates nothing, never the first remaining row');
+  const tree: FamilyNavTuple[] = [['GRP', 'Group', 0, 0, '', null], ['GER', 'Germany', 1, -1, 'GRP', null]];
+  const toggled: string[] = [];
+  for (const key of ['ArrowRight', 'ArrowLeft']) {
+    handleFamilyKeyDown(mkEvent(key).event, { nav: tree, focusedKey: 'evicted-key', pageStep: 5, blocked: false, isPinnedTooltip: () => false, onFocusKey: k => focused.push(k), onActivate: () => {}, onToggleTree: k => toggled.push(k) });
+  }
+  assert.deepEqual([toggled, focused], [[], []], 'tree keys on an evicted row expand or move nothing');
 
   const keyOptions = (focusedKey: string, blocked: boolean) => ({
     nav,
@@ -256,6 +264,16 @@ test('F6: bound audit reader verifies an earlier snapshot with the verifier capt
   assert.deepEqual(calls, ['verifierA:snapA@100', 'verifierB:snapB@200']);
   assert.equal(resA?.values.get('row'), 'A');
   assert.equal(resB?.values.get('row'), 'B');
+
+  const shown = [auditCell('GER', 'label', 'Germany'), auditCell('GER', 'value', '3'), auditCell('FRA', 'label', 'France'), auditCell('FRA', 'value', '2')];
+  const exactOf = (rows: readonly FamilyAuditRow[]) => createPlanAuditVerifier<null, Record<string, never>>()(5, {
+    projection: { family: 'bars', kind: 'synthetic-audit', project: () => null },
+    options: {},
+    exactReadView: async () => createBoundedReadView({ hour: 5, panels: new Map() }),
+    deriveRows: () => rows,
+  }, undefined);
+  assert.equal(pictureError('bars', shown, await exactOf(shown)), null, 'two rows with the same cell names compare cell by cell and a correct picture passes');
+  await assert.rejects(exactOf([auditRow('GER', '3'), auditRow('GER', '4')]), /Audit key GER repeats/, 'a repeated audit key is refused, never collapsed');
 });
 
 test('F8 & F9: listbox mirror uses stable key-based IDs, invalidates on prefix change, and honors explicit selected state', () => {
@@ -330,9 +348,9 @@ test('F8 & F9: listbox mirror uses stable key-based IDs, invalidates on prefix c
   }
 });
 
-test('parseDefaultRowHit distinguishes row and toggle hits', () => {
-  assert.deepEqual(parseDefaultRowHit('row:GER'), { key: 'GER', toggle: false });
-  assert.deepEqual(parseDefaultRowHit('toggle:grp-1'), { key: 'grp-1', toggle: true });
+test('parseDefaultRowHit distinguishes row and toggle hits, naming the subject and the inspect token an adapter without its own parser needs', () => {
+  assert.deepEqual(parseDefaultRowHit('row:GER'), { key: 'GER', subject: 'GER', toggle: false, kind: 'row', inspectToken: 'row:GER' });
+  assert.deepEqual(parseDefaultRowHit('toggle:grp-1'), { key: 'grp-1', subject: 'grp-1', toggle: true, kind: 'toggle', inspectToken: 'row:grp-1' });
   assert.equal(parseDefaultRowHit('header:col'), null);
   assert.equal(parseDefaultRowHit(null), null);
 });
@@ -398,6 +416,28 @@ test('tooltip payloads carry full truncated text, exact hours, date bounds, miss
   assert.equal(action.hour, hour);
 });
 
+test('activating a row closes its tooltip, which stays closed under the opened window until the pointer or focus reaches another row', () => {
+  const tooltips = new FamilyTooltipController('activated-row');
+  const tip = (rowKey: string): FamilyTooltipEntry => ({ hour: 10, rowKey, content: { title: rowKey, rows: [] } });
+  const sync = (inspectedKey: string | null, focusedKey: string | null = null) => tooltips.syncFromInstall({
+    dim: false, held: false, inspectedKey, pointerPos: inspectedKey ? { x: 5, y: 5 } : null, hoverTip: inspectedKey ? tip(inspectedKey) : null,
+    focusInside: focusedKey !== null, focusedKey, focusAnchor: { x: 0, y: 0 }, focusTip: focusedKey ? tip(focusedKey) : null, viewportHeight: 800,
+  });
+  sync('org');
+  assert.equal(tooltips.isHoverShown(), true);
+  tooltips.dismissActivated('org');
+  assert.equal(tooltips.isHoverShown(), false, 'activation closes the tooltip');
+  sync('org');
+  assert.equal(tooltips.isHoverShown(), false, 'a later install does not reopen it over the window');
+  sync(null, 'org');
+  assert.equal(tooltips.isHoverShown(), false, 'the focused activated row stays quiet too');
+  sync('other');
+  assert.equal(tooltips.isHoverShown(), true, 'another row shows its tooltip');
+  sync('org');
+  assert.equal(tooltips.isHoverShown(), true, 'coming back to the row shows it again');
+  tooltips.dispose();
+});
+
 test('window placement clamps and centres within viewport bounds and sameFamilyTheme detects presentation token changes', () => {
   assert.deepEqual(centerWindowPosition(400, 300, 1200, 800), { left: 400, top: 250 });
   assert.deepEqual(clampWindowPosition(-50, 999, 400, 300, 1200, 800), { left: 12, top: 488 });
@@ -445,6 +485,7 @@ test('syncTableMirror updates existing table rows and cells in place without rec
       append(...nodes: MockCell[]): void;
       replaceChildren(...nodes: MockCell[]): void;
       contains(node: unknown): boolean;
+      focus(): void;
       remove(): void;
     }
     const makeNode = (isFrag = false): MockCell => {
@@ -474,6 +515,7 @@ test('syncTableMirror updates existing table rows and cells in place without rec
         append(...nodes) { for (const n of nodes) this.appendChild(n); },
         replaceChildren(...nodes) { this.children = []; for (const n of nodes) this.appendChild(n); },
         contains() { return false; },
+        focus() { (globalThis as unknown as { document: { activeElement: unknown } }).document.activeElement = node; },
         remove() {},
       };
       if (isFrag) node.attrs.set('__frag', '1');
@@ -487,7 +529,8 @@ test('syncTableMirror updates existing table rows and cells in place without rec
     const body = makeNode();
     const opts = {
       selectedKey: null,
-      focusedKeyRef: { current: null },
+      rowsFocusable: true,
+      focusedKeyRef: { current: null as string | null },
       focusInsideRef: { current: false },
       restoringFocusRef: { current: false },
       lastMirrorKeyRef: { current: '' },
@@ -524,6 +567,22 @@ test('syncTableMirror updates existing table rows and cells in place without rec
       rows: [{ key: 'GER', name: 'Germany', rowIndex: 0, rank: 1, cells: [{ column: 'name', spoken: 'Germany' }, { column: 'val', spoken: '105' }] }],
     }, opts);
     assert.equal(body.children.length, 1, 'shrinking rows trims trailing tr nodes');
+
+    const rows = (keys: readonly string[]) => ({ first: 0, total: keys.length, rows: keys.map((key, rowIndex) => ({ key, name: key, rowIndex, cells: [] })) });
+    syncTableMirror(body as unknown as HTMLTableSectionElement, rows(['GER', 'FRA']), { ...opts, focusedKeyRef: { current: 'GER' } });
+    const focusedRef = { current: 'GER' as string | null };
+    const prevElement = (globalThis as { HTMLElement?: unknown }).HTMLElement;
+    (globalThis as { HTMLElement?: unknown }).HTMLElement = Object;
+    body.contains = () => true;
+    body.children[0]!.focus();
+    const moved = syncTableMirror(body as unknown as HTMLTableSectionElement, rows(['FRA']), { ...opts, focusedKeyRef: focusedRef, focusInsideRef: { current: true } });
+    assert.equal(moved, true, 'when the focused row goes, the mirror reports that it moved focus');
+    assert.equal(focusedRef.current, 'FRA', 'and the host focus key follows the row that took DOM focus');
+    (globalThis as { HTMLElement?: unknown }).HTMLElement = prevElement;
+
+    const bodyFocus = makeNode();
+    syncTableMirror(bodyFocus as unknown as HTMLTableSectionElement, rows(['GER', 'FRA']), { ...opts, rowsFocusable: false, lastMirrorKeyRef: { current: '' } });
+    assert.ok(bodyFocus.children.every(tr => !tr.hasAttribute('tabindex') && tr.tabIndex === -1), 'a mirror of a body-focused family has no tabbable rows outside the keyboard handler');
   } finally {
     (globalThis as { document: unknown }).document = prevDoc;
   }
@@ -781,7 +840,7 @@ test('grid and points keyboard navigation and family host adapters cover all fou
   assert.deepEqual(activatedPts, ['plot:200']);
 
   assert.deepEqual(parseBarsHit('right:GER'), { key: 'GER', subject: 'GER', kind: 'right-row', toggle: false, inspectToken: 'right:GER' });
-  assert.deepEqual(parseBarsHit('remove:reg1'), { key: 'reg1', subject: 'reg1', kind: 'remove-region', toggle: true, inspectToken: 'remove:reg1' });
+  assert.equal(parseBarsHit('remove:reg1'), null, 'removing a region is the regions control, never a canvas hit');
   assert.deepEqual(parseHeatMatrixHit('cell:2:5'), { key: '2:5', subject: '2:5', toggle: false, inspectToken: 'cell:2:5' });
   assert.equal(parseHeatLanesHit('lane:#0@144')?.hour, 144);
   assert.equal(parseTimeChartHit('line:GER@512')?.hour, 512);
@@ -815,9 +874,9 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 100 }),
     contains: (node: unknown) => node === body,
   };
-  const picture = (id: number, keys: readonly string[]): InstalledPicture => ({
+  const picture = (id: number, keys: readonly string[], owner = 'owner-A'): InstalledPicture => ({
     id,
-    owner: 'owner-A',
+    owner,
     generation: { seek: 1, reset: 0, binding: 1 },
     factRevisions: {},
     validInterval: [100, 120],
@@ -836,7 +895,7 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
     inspect() {},
     view() { return null; },
   } as unknown as Pipeline;
-  const reply = (key: string | null, id: number) => pending.shift()!(key, { installedId: id, owner: 'owner-A' });
+  const reply = (key: string | null, id: number, owner = 'owner-A') => pending.shift()!(key, { installedId: id, owner });
   const activations: InstalledAction[] = [];
   const menus: (string | null)[] = [];
   const inspectedKeyRef = { current: null as string | null };
@@ -872,16 +931,16 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
   assert.equal(activations.length, 0, 'the cached hover is not a hit: nothing activates before this press resolves');
   reply('row:GER', 7);
   reply('row:FRA', 8);
-  assert.equal(activations.length, 0, 'a press hit from the replaced picture is refused, so the release names no pressed target');
+  assert.equal(activations.length, 0, 'press on GER in picture 7 and release on FRA in picture 8 is not a click');
 
   body.dispatch('contextmenu', { clientX: 20, clientY: 10 });
   assert.deepEqual(menus, [], 'the menu waits for its own hit');
   installed = picture(9, ['ITA']);
   reply('row:FRA', 8);
-  assert.deepEqual(menus, [], 'a menu hit from a replaced picture opens nothing');
+  assert.deepEqual(menus, ['FRA'], 'a menu answers from the picture it was opened on, though the same owner repainted since');
   body.dispatch('contextmenu', { clientX: 20, clientY: 10 });
   reply('row:ITA', 9);
-  assert.deepEqual(menus, ['ITA']);
+  assert.deepEqual(menus, ['FRA', 'ITA']);
 
   body.dispatch('pointerdown', { button: 0, clientX: 20, clientY: 10, pointerId: 2 });
   reply('row:ITA', 9);
@@ -895,25 +954,41 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
   body.dispatch('pointerup', { button: 0, clientX: 20, clientY: 10, pointerId: 3 });
   installed = picture(11, ['ENG']);
   reply('row:ENG', 10);
-  assert.equal(activations.length, 0, 'a release hit from a picture replaced before it arrived is refused');
+  assert.equal(activations.length, 1, 'a valid release hit is kept when the same owner repaints before it arrives');
+  assert.equal(activations[0]!.installedId, 10, 'and the action belongs to the picture the release hit');
+  assert.equal(activations[0]!.hour, 110);
 
   body.dispatch('pointerdown', { button: 0, clientX: 20, clientY: 10, pointerId: 4 });
   reply('row:ENG', 11);
   body.dispatch('pointerup', { button: 0, clientX: 20, clientY: 10, pointerId: 4 });
   reply('row:ENG', 11);
-  assert.equal(activations.length, 1);
-  assert.equal(activations[0]!.installedId, 11, 'the action belongs to the picture the release hit');
-  assert.equal(activations[0]!.subject, 'ENG');
-  assert.equal(activations[0]!.hour, 111);
+  assert.equal(activations.length, 2);
+  assert.equal(activations[1]!.installedId, 11);
+  assert.equal(activations[1]!.subject, 'ENG');
+  assert.equal(activations[1]!.hour, 111);
+
+  body.dispatch('pointerdown', { button: 0, clientX: 20, clientY: 10, pointerId: 5 });
+  reply('row:ENG', 11);
+  installed = picture(12, ['ENG'], 'owner-B');
+  body.dispatch('pointerup', { button: 0, clientX: 20, clientY: 10, pointerId: 5 });
+  assert.equal(pending.length, 0, 'a press on owner A does not authorise a release on owner B');
+  assert.equal(activations.length, 2);
+
+  body.dispatch('pointerdown', { button: 0, clientX: 20, clientY: 10, pointerId: 6 });
+  reply('row:ENG', 12, 'owner-B');
+  body.dispatch('pointerup', { button: 0, clientX: 20, clientY: 10, pointerId: 6 });
+  installed = picture(13, ['ENG'], 'owner-C');
+  reply('row:ENG', 12, 'owner-B');
+  assert.equal(activations.length, 2, 'an owner change before the release hit arrives refuses it');
 
   stop();
   tooltips.dispose();
 });
 
 test('a followed bounded read dates its picture by its proof even when the widget also has subscriptions', () => {
-  const followed = { hour: 120, follows: true, provenInterval: [100, 140] as const };
-  assert.deepEqual(boundDated(followed, true, false, null), { h: 100, c: 140 }, 'held back between a seek back and the new bounded reply');
-  assert.equal(boundDated({ hour: 120 }, true, false, null), undefined, 'a pinned read beside subscriptions is dated by the stream');
-  assert.deepEqual(boundDated({ hour: 120 }, false, false, null), { h: 120, c: 120 });
-  assert.deepEqual(boundDated(null, false, true, [0, 500]), { h: 0, c: 500 });
+  const followed = { hour: 120, follows: true };
+  assert.deepEqual(boundDated(followed, [100, 140], true, false, null), { h: 100, c: 140 }, 'held back between a seek back and the new bounded reply');
+  assert.equal(boundDated({ hour: 120 }, null, true, false, null), undefined, 'a pinned read beside subscriptions is dated by the stream');
+  assert.deepEqual(boundDated({ hour: 120 }, null, false, false, null), { h: 120, c: 120 });
+  assert.deepEqual(boundDated(null, null, false, true, [0, 500]), { h: 0, c: 500 });
 });

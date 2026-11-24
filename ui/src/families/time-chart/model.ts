@@ -1,5 +1,5 @@
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
-import type { AuditRow } from '../../draw/notifications.ts';
+import type { FamilyAuditRow } from '../auditRow.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import type { ArtResult, BoundedSeries } from '../plan.ts';
 
@@ -28,6 +28,7 @@ export interface ChartEndLabel {
   readonly flag?: ChartArtSlot;
   readonly icon?: ChartArtSlot;
   readonly name?: string | null;
+  readonly shortName?: string | null;
   readonly fullName?: string;
   readonly value: string;
   readonly exactValue?: string;
@@ -80,6 +81,7 @@ export interface ChartStackBand {
 export interface ChartStackModel {
   readonly hours: readonly number[];
   readonly bands: readonly ChartStackBand[];
+  readonly step?: boolean;
   readonly total?: {
     readonly color?: string;
     readonly values: readonly (number | null)[];
@@ -105,8 +107,11 @@ export interface ChartMonthSlot {
   readonly partial?: boolean;
   readonly partialToHour?: number;
   readonly segments: readonly ChartColumnSegment[];
+  readonly missingParts?: readonly { readonly label: string; readonly color: string; readonly reason: string }[];
   readonly totalValue: number;
   readonly totalText: string;
+  readonly totalMissingReason?: string;
+  readonly note?: string;
 }
 
 export interface ChartColumnModel {
@@ -192,7 +197,7 @@ export interface TimeChartModel {
     readonly detail?: string;
     readonly kind?: 'empty' | 'unavailable';
   } | null;
-  readonly auditRows?: readonly AuditRow[];
+  readonly auditRows?: readonly FamilyAuditRow[];
 }
 
 export interface TimeChartSettings {

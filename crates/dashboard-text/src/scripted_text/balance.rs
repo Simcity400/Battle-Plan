@@ -444,9 +444,7 @@ impl<'a> ScriptedText<'a> {
                     .map(Some);
             }
             if text.contains('[') && text.contains(']') {
-                return Err(format!(
-                    "{name}: the definition name requires scripted localisation in an empty event scope, which this country view cannot reproduce"
-                ));
+                return self.expand_fresh_empty(&text, name, scopes).map(Some);
             }
             return Ok(Some(text));
         }

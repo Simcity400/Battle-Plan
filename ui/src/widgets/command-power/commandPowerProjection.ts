@@ -1,14 +1,12 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
-import { formatChartAxisValue } from '../../families/time-chart/layout.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
+import { formatCompactScalar, formatScalar } from '../../families/valueFormat.ts';
 import type { ChartArtSlot, ChartGap, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import {
   assignCountrySeriesColours,
@@ -23,7 +21,6 @@ import {
   spendMarkersOf,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
-import { OPTIONS } from './definition.ts';
 
 export interface CommandPowerOptions {
   readonly tags: readonly string[];
@@ -38,12 +35,11 @@ export interface CommandPowerOptions {
 
 
 function formatEndAmount(value: number): string {
-  if (Math.abs(value) >= 10_000) return formatChartAxisValue(value, 'power');
-  const sign = value < 0 ? '\u2212' : '';
-  return `${sign}${Math.round(Math.abs(value)).toLocaleString('en-US')}`;
+  if (!Number.isFinite(value)) return '';
+  return Math.abs(value) >= 1e4 ? formatCompactScalar(Math.trunc(value), 'integer').text : formatScalar(value, 'integer');
 }
 
-export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerTimeChart({
+export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerFamilyProjection({
   kind: 'command-power',
   family: 'time-chart',
   variant: 'rate-with-ceiling',
@@ -166,7 +162,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       auditRows: ordered.slice(0, 8).flatMap(tag => {
         const v = headByTag.get(tag);
-        return v === null || v === undefined ? [] : [{ row: tag, key: tag, value: formatEndAmount(v) }];
+        return v === null || v === undefined ? [] : [auditRow(tag, formatEndAmount(v))];
       }),
     };
   },
@@ -179,7 +175,6 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
   subject: 'command power',
   emptyCampaign: 'Load a campaign to see command power.',
   icon: 'chart-line',
-  optionFields: OPTIONS,
   countries: { mode: 'multi', labels: true, colours: true, allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
     const tags = ctx.countries.tags;

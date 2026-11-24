@@ -2,9 +2,9 @@ use crate::products::place_names::{Content, Name, Places, read_hour};
 use dashboard_base::products::{LoadContext, Product, at_hour};
 use dashboard_base::{Source, catalogue::Refusals};
 use dashboard_core::dto::RecordingGap;
-use dashboard_query::read::{self, row, touched};
+use dashboard_query::read::{self, touched};
 use dashboard_text::metadata::check_cancel;
-use replay_data::rows::{TableId, tables};
+use replay_data::rows::TableId;
 use replay_recording::cells::TableReader;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -31,6 +31,15 @@ pub struct PlaceNameRunsParams {
     pub provinces: Vec<u32>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum Presence {
+    Present,
+    Absent,
+    Unknown,
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -39,8 +48,8 @@ pub struct NameRun {
     pub last_hour: i32,
     pub name: Option<String>,
     pub missing: Option<String>,
-    #[doc = " True when the subject is proven not to exist (for its owner) across the run."]
-    pub absent: bool,
+    #[doc = " Whether the subject exists (for its owner) across the run: proven present, proven absent, or not known because what proves it is not recorded."]
+    pub presence: Presence,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -72,12 +81,18 @@ dashboard_base::reply_warnings!(PlaceNameRunsReply);
 pub struct Answer {
     pub name: Option<String>,
     pub missing: Option<String>,
-    pub absent: bool,
+    pub presence: Presence,
+}
+
+impl Answer {
+    pub fn unknown(reason: String) -> Self {
+        Self { name: None, missing: Some(reason), presence: Presence::Unknown }
+    }
 }
 
 impl From<Name> for Answer {
     fn from(name: Name) -> Self {
-        Self { name: name.name, missing: name.missing, absent: false }
+        Self { name: name.name, missing: name.missing, presence: Presence::Present }
     }
 }
 
@@ -85,13 +100,13 @@ pub fn extend_runs(runs: &mut Vec<NameRun>, first: i32, last: i32, answer: &Answ
     if let Some(held) = runs.last_mut()
         && held.name == answer.name
         && held.missing == answer.missing
-        && held.absent == answer.absent
+        && held.presence == answer.presence
         && unknown_between(unknown, held.last_hour + 1, first - 1)
     {
         held.last_hour = held.last_hour.max(last);
         return;
     }
-    runs.push(NameRun { first_hour: first, last_hour: last, name: answer.name.clone(), missing: answer.missing.clone(), absent: answer.absent });
+    runs.push(NameRun { first_hour: first, last_hour: last, name: answer.name.clone(), missing: answer.missing.clone(), presence: answer.presence });
 }
 
 pub struct RunBook<K> {
@@ -146,6 +161,45 @@ const STATES: usize = 0;
 const PROVINCES: usize = 1;
 const PROVINCE_NAMES: usize = 2;
 const COUNTRY_TABLES: std::ops::Range<usize> = 3..7;
+const PROVINCE_STATE: usize = 0;
+
+pub const PLACE_TABLES: [(TableId, Option<&[usize]>); 7] = [
+    (TableId::States, Some(&[0, 3, 4])),
+    (TableId::Provinces, Some(&[PROVINCE_STATE])),
+    (TableId::ProvinceNames, None),
+    (TableId::CountryLinks, None),
+    (TableId::Countries, Some(&[0, 1])),
+    (TableId::CountryAppearance, None),
+    (TableId::ReservedCountryNaming, None),
+];
+
+#[derive(Default)]
+pub struct PlaceInputs {
+    province_state: HashMap<u32, u32>,
+}
+
+impl PlaceInputs {
+    pub fn dirty(&mut self, readers: &[TableReader], opening: bool, states: &[u32], provinces: &[u32]) -> (Vec<u32>, Vec<u32>) {
+        let countries_moved = opening || readers[COUNTRY_TABLES].iter().any(|reader| reader.changes().rows_moved());
+        let dirty_states: Vec<u32> = states.iter().copied().filter(|&id| opening || touched(&readers[STATES], u128::from(id))).collect();
+        let dirty_provinces: Vec<u32> = provinces
+            .iter()
+            .copied()
+            .filter(|&id| {
+                let key = u128::from(id);
+                let moved = countries_moved || touched(&readers[PROVINCES], key) || touched(&readers[PROVINCE_NAMES], key);
+                moved || self.province_state.get(&id).is_some_and(|&state| state != 0 && touched(&readers[STATES], u128::from(state)))
+            })
+            .collect();
+        for &id in &dirty_provinces {
+            match read::number(&readers[PROVINCES], u128::from(id), PROVINCE_STATE).and_then(|state| u32::try_from(state).ok()) {
+                Some(state) => self.province_state.insert(id, state),
+                None => self.province_state.remove(&id),
+            };
+        }
+        (dirty_states, dirty_provinces)
+    }
+}
 
 pub struct PlaceNameRuns;
 
@@ -172,7 +226,7 @@ impl Product for PlaceNameRuns {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![PlaceNameRunsParams::decl(), NameRun::decl(), PlaceRuns::decl(), PlaceNameRunsReply::decl()]
+        vec![PlaceNameRunsParams::decl(), Presence::decl(), NameRun::decl(), PlaceRuns::decl(), PlaceNameRunsReply::decl()]
     }
 
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -195,53 +249,27 @@ impl Product for PlaceNameRuns {
         let mut state_book = RunBook::new(states.iter().copied());
         let mut province_book = RunBook::new(provinces.iter().copied());
         let recording = query.replay.recording();
-        let format = recording.format();
         let mut frames = at_hour::Frames::new(&query)?;
-        let tables: [(TableId, Option<&[usize]>); 7] = [
-            (TableId::States, Some(&[0, 3, 4])),
-            (TableId::Provinces, Some(&[0])),
-            (TableId::ProvinceNames, None),
-            (TableId::CountryLinks, None),
-            (TableId::Countries, Some(&[0, 1])),
-            (TableId::CountryAppearance, None),
-            (TableId::ReservedCountryNaming, None),
-        ];
         for stretch in query.timeline.stretches.iter().filter(|stretch| stretch.first <= to && stretch.last >= from) {
             let (first, last) = (stretch.first.max(from), stretch.last.min(to));
-            let mut province_state: HashMap<u32, u32> = HashMap::new();
-            read::walk(recording, stretch.run, &tables, first, last, |hour, readers: &[TableReader]| {
+            let mut inputs = PlaceInputs::default();
+            read::walk(recording, stretch.run, &PLACE_TABLES, first, last, |hour, readers: &[TableReader]| {
                 check_cancel(cancelled)?;
-                let opening = hour == first;
-                let countries_moved = opening || readers[COUNTRY_TABLES].iter().any(|reader| !reader.changes().quiet());
-                let dirty_states: Vec<u32> = states.iter().copied().filter(|&id| opening || touched(&readers[STATES], u128::from(id))).collect();
-                let dirty_provinces: Vec<u32> = provinces
-                    .iter()
-                    .copied()
-                    .filter(|&id| {
-                        let key = u128::from(id);
-                        let moved = opening || countries_moved || touched(&readers[PROVINCES], key) || touched(&readers[PROVINCE_NAMES], key);
-                        moved || province_state.get(&id).is_some_and(|&state| state != 0 && touched(&readers[STATES], u128::from(state)))
-                    })
-                    .collect();
+                let (dirty_states, dirty_provinces) = inputs.dirty(readers, hour == first, &states, &provinces);
                 if dirty_states.is_empty() && dirty_provinces.is_empty() {
                     return Ok(());
                 }
-                for &id in &dirty_provinces {
-                    match row::<tables::Provinces>(&readers[PROVINCES], u128::from(id), format) {
-                        Some(province) => province_state.insert(id, province.state),
-                        None => province_state.remove(&id),
-                    };
-                }
                 let named = read_hour(&query, &mut frames, hour, &dirty_provinces, &dirty_states);
-                let places = named.as_ref().ok().map(Places::new);
-                let answer = |name: Option<Name>| name.unwrap_or_else(|| Name { name: None, missing: named.as_ref().err().cloned() });
+                let places = named.as_ref().map(Places::new);
+                let answer = |name: &dyn Fn(&Places) -> Name| match &places {
+                    Ok(places) => Answer::from(name(places)),
+                    Err(reason) => Answer::unknown(String::clone(reason)),
+                };
                 for &id in &dirty_states {
-                    let name = answer(places.as_ref().map(|places| places.state(&content, id)));
-                    state_book.settle(id, name.into(), hour, &unknown);
+                    state_book.settle(id, answer(&|places| places.state(&content, id)), hour, &unknown);
                 }
                 for &id in &dirty_provinces {
-                    let name = answer(places.as_ref().map(|places| places.province(&content, id, params.land)));
-                    province_book.settle(id, name.into(), hour, &unknown);
+                    province_book.settle(id, answer(&|places| places.province(&content, id, params.land)), hour, &unknown);
                 }
                 Ok(())
             })?;
@@ -277,9 +305,10 @@ impl Product for PlaceNameRuns {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dashboard_query::read;
 
     fn name(text: &str) -> Answer {
-        Answer { name: Some(text.to_owned()), missing: None, absent: false }
+        Answer { name: Some(text.to_owned()), missing: None, presence: Presence::Present }
     }
 
     #[test]
@@ -307,8 +336,44 @@ mod tests {
         assert_eq!(contiguous.len(), 2, "hours between that are neither recorded runs nor unknown never join");
 
         let mut missing = Vec::new();
-        extend_runs(&mut missing, 0, 9, &Answer { name: None, missing: Some("Not in this recording: state 7 at this hour".into()), absent: false }, &[]);
+        extend_runs(&mut missing, 0, 9, &Answer::unknown("Not in this recording: state 7 at this hour".into()), &[]);
         extend_runs(&mut missing, 10, 19, &name("Sample State"), &[]);
         assert_eq!(missing.len(), 2, "an absent stretch is its own run with its reason");
+    }
+
+    fn walked_dirty(frames: Vec<replay_frame::frame::DecodedFrame>, first: i32, last: i32) -> Vec<(i32, Vec<u32>, Vec<u32>)> {
+        let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), dashboard_core::test_fixtures::CAMPAIGN.into(), &[dashboard_core::test_fixtures::records(1, frames)])
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
+        let source = Source::from_replay(dashboard_base::SourceKey { source_id: "places".into(), revision: "1".into() }, "synthetic.battleplan".into(), std::sync::Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let run = query.timeline.stretches[0].run;
+        let mut inputs = PlaceInputs::default();
+        let mut seen = Vec::new();
+        read::walk(query.replay.recording(), run, &PLACE_TABLES, first, last, |hour, readers| {
+            let (states, provinces) = inputs.dirty(readers, hour == first, &[7], &[3]);
+            if !states.is_empty() || !provinces.is_empty() {
+                seen.push((hour, states, provinces));
+            }
+            Ok(())
+        })
+        .unwrap();
+        seen
+    }
+
+    #[test]
+    fn a_province_follows_its_states_rename_through_the_state_cell_and_a_fresh_sample_alone_changes_nothing() {
+        use replay_data::rows::{ProvinceRow, StateRow, TableRows};
+        use replay_frame::frame::TableView;
+        let frame = |hour: i32| {
+            let mut frame = dashboard_core::test_fixtures::source(1, hour, Some(1));
+            let name = if hour < 1_050 { b"Sample State".to_vec() } else { b"Renamed State".to_vec() };
+            *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![StateRow { id: 7, custom_name: name, ..StateRow::default() }]));
+            *frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(vec![ProvinceRow { id: 3, state: 7, ..ProvinceRow::default() }]));
+            frame
+        };
+        let seen = walked_dirty((1_000..=1_100).map(frame).collect(), 1_000, 1_100);
+        assert_eq!(seen, vec![(1_000, vec![7], vec![3]), (1_050, vec![7], vec![3])], "every table is sampled afresh each hour, yet only the opening hour and the state's rename name anything again");
     }
 }

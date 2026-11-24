@@ -16,12 +16,11 @@ import type { LaneArtCache } from '../art/laneCache.ts';
 import { hasMeasuredValue, type Value } from '../value.ts';
 import { drawHatchRect, MISSING_BOX_SIZE } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';
-import { drawApprovedCell, TREE_CHEVRON_LANE, TREE_INDENT_PX, type CellRenderContext } from './cellPainters.ts';
-import type { FamilyColumnLayout, FamilyTableLayout } from './layout.ts';
+import { drawApprovedCell, treeLevelsOf, treeTextStart, type CellRenderContext } from './cellPainters.ts';
+import { LIVE_END_GAP, treeColumnOf, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
 import { computeColumnMaxima, resolveCellAtHour, resolveCellPaintModel, type FlatTableRow, type TableCell, type TableRow } from './model.ts';
 import {
   CELL_INSET,
-  CHILD_ROW_HEIGHT,
   MEDIA_ROW_HEIGHT,
   ROW_HEIGHT,
   ROW_MARGIN_X,
@@ -32,12 +31,11 @@ import {
   type GlideOffset,
   type RankMarker,
   type TableCanvasContext,
-  type TableDensity,
   type TableSettings,
   type TableTheme,
 } from './settings.ts';
 
-export { computeColumnMaxima, TREE_CHEVRON_LANE, TREE_INDENT_PX };
+export { computeColumnMaxima };
 
 export const WATCHING_SPEED = 24;
 export const FAST_SPEED = 168;
@@ -45,11 +43,6 @@ export const WATCHING_GLIDE_MS = 180;
 export const FAST_GLIDE_MS = 120;
 export const TOP_RANK_HOLD_MS = 1500;
 export const WATCHING_RANK_HOLD_MS = 2500;
-const GROUP_HEADER_HEIGHT = 30;
-const GAP_ROW_HEIGHT = 30;
-const REFUSED_ROW_HEIGHT = 32;
-const LOADING_ROW_HEIGHT = 32;
-const LIVE_END_GAP = 9;
 const HAIRLINE_INSET = 10;
 
 export function glideDurationForSpeed(speed: number, reducedMotion = false): number {
@@ -59,42 +52,6 @@ export function glideDurationForSpeed(speed: number, reducedMotion = false): num
 
 export function rankHoldForSpeed(speed: number): number {
   return speed > FAST_SPEED ? TOP_RANK_HOLD_MS : WATCHING_RANK_HOLD_MS;
-}
-
-export interface RowLayoutGeometry {
-  readonly tops: readonly number[];
-  readonly heights: readonly number[];
-  readonly totalHeight: number;
-}
-
-export function rowHeightOf(
-  item: FlatTableRow,
-  density: TableDensity,
-  mode: 'standard' | 'media' = 'standard',
-): number {
-  if (item.kind === 'group-header') return GROUP_HEADER_HEIGHT;
-  if (item.kind === 'gap') return GAP_ROW_HEIGHT;
-  if (item.kind === 'refused') return REFUSED_ROW_HEIGHT;
-  if (item.kind === 'loading') return LOADING_ROW_HEIGHT;
-  const base = item.level > 1 ? CHILD_ROW_HEIGHT : (mode === 'media' ? MEDIA_ROW_HEIGHT[density] : ROW_HEIGHT[density]);
-  return item.isLiveEnd ? base + LIVE_END_GAP : base;
-}
-
-export function computeRowLayout(
-  rows: readonly FlatTableRow[],
-  density: TableDensity,
-  mode: 'standard' | 'media' = 'standard',
-): RowLayoutGeometry {
-  const tops = new Array<number>(rows.length);
-  const heights = new Array<number>(rows.length);
-  let y = 0;
-  for (let i = 0; i < rows.length; i++) {
-    const h = rowHeightOf(rows[i]!, density, mode);
-    tops[i] = y;
-    heights[i] = h;
-    y += h;
-  }
-  return { tops, heights, totalHeight: y };
 }
 
 export interface FamilyTablePicture {
@@ -208,11 +165,6 @@ function nonDataMark(item: Exclude<FlatTableRow, { kind: 'data' }>): string {
   if (item.kind === 'gap') return `gap:${item.firstHour}:${item.lastHour}:${item.reason}`;
   if (item.kind === 'refused') return `ref:${item.reason}`;
   return `load:${item.key}`;
-}
-
-export function treeColumnOf(columns: readonly Pick<FamilyColumnLayout, 'cellKind'>[]): number {
-  const at = columns.findIndex(col => col.cellKind !== 'kind');
-  return at < 0 ? 0 : at;
 }
 
 function barSpanOf(column: FamilyColumnLayout): number {
@@ -467,7 +419,7 @@ export function drawFamilyTable(
     : HAIRLINE_INSET;
   const hairlineSpec = (item: Extract<FlatTableRow, { kind: 'data' }>, index: number, pinned: boolean) => {
     if (item.isLiveEnd) return { kind: 'band' as const, left: HAIRLINE_INSET };
-    if (item.isDayEnd || isLastChildRow(rows, index)) return { kind: 'strong' as const, left: HAIRLINE_INSET };
+    if (item.isDayEnd || item.isTotal || isLastChildRow(rows, index)) return { kind: 'strong' as const, left: HAIRLINE_INSET };
     if (dateGrouped && intraDayLeftBase > HAIRLINE_INSET) {
       const shifted = pinned ? intraDayLeftBase : Math.max(HAIRLINE_INSET, intraDayLeftBase - bounds.left);
       return { kind: 'normal' as const, left: shifted };
@@ -475,6 +427,7 @@ export function drawFamilyTable(
     return { kind: 'normal' as const, left: HAIRLINE_INSET };
   };
 
+  const treeLevels = treeLevelsOf(rows);
   const renderCtx: CellRenderContext = {
     ctx,
     theme,
@@ -482,6 +435,7 @@ export function drawFamilyTable(
     barsMode: settings.barsBehind ?? 'all',
     sortedColumn: settings.sort.column,
     treeColumn: treeColumnOf(layout.columns),
+    treeLevels,
     icons,
     artCache,
     measure,
@@ -538,7 +492,7 @@ export function drawFamilyTable(
     const icon = paintModel.icon ?? undefined;
     const iconPending = paintModel.iconPending === true;
     const art = icon === undefined && !iconPending ? '' : `${icon ?? ''}\u0003${icon === undefined ? 3 : artStateOf(icon)}`;
-    const treeKey = item.isTreeGroup ? (item.isOpen ? 'o' : 'c') : String(item.level);
+    const treeKey = `${item.isTreeGroup ? (item.isOpen ? 'o' : 'c') : ''}${treeTextStart(item.level, treeLevels)}`;
     const textVal = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text;
     const secVal = cell?.secondaryValue ? (cell.secondaryValue.kind === 'known' || cell.secondaryValue.kind === 'zero' ? String(cell.secondaryValue.value) : cell.secondaryValue.kind) : '';
     const unitArt = cell?.unitIcon ? `${cell.unitIcon}\u0005${artStateOf(cell.unitIcon)}` : (cell?.unitIconPending ? 'p' : '');
@@ -1061,7 +1015,7 @@ export function hitFamilyTable(
   for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
     const col = layout.columns[colIndex]!;
     if (bodyX >= x && bodyX < x + col.width) {
-      const toggle = colIndex === treeColumnOf(layout.columns) && item.isTreeGroup && bodyX - x <= CELL_INSET + (col.leadInset ?? 0) + (item.level - 1) * TREE_INDENT_PX + TREE_CHEVRON_LANE + 8;
+      const toggle = colIndex === treeColumnOf(layout.columns) && item.isTreeGroup && bodyX - x <= CELL_INSET + (col.leadInset ?? 0) + treeTextStart(item.level, treeLevelsOf(rows)) + 8;
       const action = col.cellKind === 'action';
       return { kind: 'row', rowKey: item.key, column: col.key, toggle, action };
     }

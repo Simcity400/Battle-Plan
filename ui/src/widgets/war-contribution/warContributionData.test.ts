@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WarContributionGroup, WarMeasureSide, WarObservation, WarTimeline, WarsReply } from '../../generated/dashboard';
 import { warContributions } from '../wars/warsData.ts';
-import { CATEGORIES, chosenWar, contributionRows, readHourFor, rowLengths, shareText } from './warContributionData.ts';
+import { chosenWar, readHourFor } from './warContributionData.ts';
 
 const observation = (first: number, last: number, viewpointSide: string[], opposingSide: string[], name = 'Synthetic war'): WarObservation => ({
   firstHour: first, lastHour: last, viewpointTag: viewpointSide[0], viewpointSide, opposingSide, attackersAreViewpoint: true, representative: null,
@@ -32,17 +32,61 @@ test('the saved war wins while it exists, else the war with most participants go
   assert.equal(warContributions(groups, joined), groups[0]);
 });
 
-test('rows come from the product’s measures in category order, its shares and order untouched', () => {
-  const side = (shareOfWar: number | null, members: WarMeasureSide['members']): WarMeasureSide => ({ total: '0', shareOfWar, partial: members.some(member => member.partial), members });
+const knownValueOf = (value: number) => ({ kind: 'known' as const, value });
+
+test('the Sides view draws the product’s shares in two panes: share of the war on top, then each side’s countries in the product’s order', async () => {
+  const { warContributionSidesProjection } = await import('./sidesProjection.ts');
+  const { createBoundedReadView } = await import('../../families/boundedView.ts');
   const member = (tag: string, value: string, shareOfSide: number | null, partial = false) => ({ tag, value, shareOfSide, shareOfWar: null, partial });
-  const group: WarContributionGroup = { viewpointSide: ['A', 'B'], opposingSide: ['C'], participants: [], reason: null, measures: [
-    { key: 'participation', viewpoint: side(null, [member('B', '60000', 6000), member('A', '40000', 4000)]), opposing: side(null, [member('C', '100000', 10000)]) },
-    { key: 'casualties', viewpoint: side(7500, [member('A', '300000', 10000, true)]), opposing: side(2500, [member('C', '100000', 10000)]) },
-  ] };
-  const rows = contributionRows(group);
-  assert.deepEqual(rows.map(row => row.key), CATEGORIES.map(category => category.key).filter(key => key === 'casualties' || key === 'participation'));
-  assert.deepEqual(rows.find(row => row.key === 'participation')!.left.members.map(item => item.tag), ['B', 'A'], 'the product’s order is kept');
-  assert.deepEqual(rowLengths(rows.find(row => row.key === 'casualties')!, 'totals'), { left: 1, right: 2500 / 7500 });
-  assert.equal(shareText(6000), '60.00%');
-  assert.equal(shareText(null), '—', 'no share is a dash, never zero');
+  const side = (total: string, shareOfWar: number | null, members: WarMeasureSide['members'], partial = false): WarMeasureSide => ({ total, shareOfWar, partial, members });
+  const country = (tag: string, side: 'attacker' | 'defender') => ({ tag, side, equipmentDamage: '0', occupation: '0', airDamage: '0', strategicBombing: '0', shipDamage: '0', convoyDamage: '0', casualties: '0', unknownCasualties: '0', lendLeaseSent: '0', lendLeaseReceived: '0', score: '0', participation: '0' });
+  const group: WarContributionGroup = { viewpointSide: ['BBB'], opposingSide: ['AAA', 'CCC'], reason: null,
+    participants: [country('BBB', 'defender'), country('AAA', 'attacker'), country('CCC', 'attacker')],
+    measures: [
+      { key: 'participation', viewpoint: side('100000', null, [member('BBB', '100000', 10000)]), opposing: side('100000', null, [member('CCC', '70000', 7000), member('AAA', '30000', 3000)]) },
+      { key: 'casualties', viewpoint: side('500000', 4100, [member('BBB', '500000', 10000)]), opposing: side('700000', 5900, [member('CCC', '700000', 10000, true), member('AAA', '0', 0)], true) },
+    ] };
+  const war = { id: '1', firstHour: 10, lastHour: 500, startedBy: false, endedBy: false, participants: [], capitulations: [],
+    observations: [observation(10, 500, ['BBB'], ['AAA', 'CCC'])] } as unknown as WarTimeline;
+  const wars = { available: true, wars: [war] } as unknown as WarsReply;
+  const reply = { branchId: '1', hour: 100, available: true, contributions: [group], warnings: [] };
+  const model = warContributionSidesProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['live', reply]]) }), { wars, saved: null });
+  assert.deepEqual(model.panes?.map(pane => pane.key), ['opposing', 'viewpoint'], 'the attackers are the left pane');
+  const [left, right] = model.panes!;
+  assert.deepEqual(left!.rows.map(row => row.key), ['opposing:CCC', 'opposing:AAA'], 'members in the product’s order');
+  assert.deepEqual(left!.totalRow!.cells.casualties!.value, { kind: 'partial', value: 0.59, reason: 'Part of this side’s casualties contribution is not attributed to a country' });
+  assert.equal(left!.totalRow!.cells.participation!.value.kind, 'notApplicable', 'participation is already a share of the side');
+  assert.equal(left!.rows[1]!.cells.casualties!.value.kind, 'zero', 'a part the product says is zero reads 0');
+  assert.deepEqual(left!.rows[1]!.cells.casualties!.format, { decimals: 0 }, 'a zero part reads 0, not 0%');
+  assert.equal(left!.rows[0]!.cells.casualties!.value.kind, 'partial');
+  assert.deepEqual(left!.rows[0]!.cells.participation!.value, { kind: 'known', value: 0.7 });
+  assert.equal(left!.rows[0]!.cells.participation!.format, 'share', 'every share follows the one share format');
+  const { formatValueState } = await import('../../families/valueFormat.ts');
+  assert.equal((formatValueState(knownValueOf(0.0042), 'share') as { text: string }).text, '0.4%', 'a small non-zero share keeps its decimal, never 0%');
+  assert.equal(right!.rows[0]!.group?.label, 'Share of the side');
+  assert.deepEqual(model.columns.map(column => column.key), ['country', 'participation', 'casualties'], 'only the measures the product answers are columns');
+  const none = warContributionSidesProjection.project(createBoundedReadView({ hour: 5, panels: new Map() }), { wars, saved: null });
+  assert.equal(none.empty, 'Choose a war to see who fought it.');
+  const ended = warContributionSidesProjection.project(createBoundedReadView({ hour: 900, panels: new Map([['ended', { ...reply, hour: 500 }]]) }), { wars, saved: null });
+  assert.equal(ended.panes?.length, 2, 'an ended war is read at its last hour, never later');
+  const { warContributionMeasureProjection } = await import('./measureProjection.ts');
+  const warShares: Readonly<Record<string, number>> = { BBB: 4100, CCC: 5900, AAA: 0 };
+  const withWar = { ...group, measures: group.measures.map(measure => (measure.key !== 'casualties' ? measure : {
+    ...measure,
+    viewpoint: { ...measure.viewpoint, members: measure.viewpoint.members.map(item => ({ ...item, shareOfWar: warShares[item.tag]! })) },
+    opposing: { ...measure.opposing, members: measure.opposing.members.map(item => ({ ...item, shareOfWar: warShares[item.tag]! })) },
+  })) };
+  const measured = warContributionMeasureProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['live', { ...reply, contributions: [withWar] }]]) }), { wars, saved: null, measure: 'casualties' });
+  const bars = measured.rows.filter(row => row.kind === 'data');
+  assert.deepEqual(bars.map(row => row.key), ['opposing:CCC', 'opposing:AAA'], 'the attackers on the left, in the product’s order');
+  assert.deepEqual(bars[0]!.value?.value, { kind: 'partial', value: 0.59, reason: 'Part of this side’s casualties contribution is not attributed to a country' });
+  assert.equal(bars[0]!.rightSide?.key, 'viewpoint:BBB');
+  assert.deepEqual(bars[0]!.rightSide?.value.value, { kind: 'known', value: 0.41 }, 'every figure is a share of all of the measure in this war');
+  assert.equal(bars[1]!.value?.value.kind, 'zero');
+  assert.equal(bars[1]!.rightSide, undefined, 'a shorter side leaves its half empty');
+  assert.deepEqual(measured.pickList?.rows.map(row => [row.key, row.left.fraction, row.right.fraction, row.divided === true]), [['casualties', 0.59, 0.41, false], ['participation', null, null, true]],
+    'the list offers the measures the product answers, each side’s part of its total, war participation set apart');
+  assert.equal(measured.pickList?.selectedKey, 'casualties');
+  assert.deepEqual(measured.captionSides?.map(item => item.value), ['59% partial', '41%']);
+  assert.match(measured.caption ?? '', /^Casualties inflicted · Each country’s share of all casualties inflicted in this war$/);
 });

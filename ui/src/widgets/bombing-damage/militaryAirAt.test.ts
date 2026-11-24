@@ -4,7 +4,7 @@ import { assertBarsModelValid, formatBarsValueField, type BarsDataRow } from '..
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
 import type { MilitaryAirAtReply } from '../../generated/dashboard';
-import { militaryAirModel, type MilitaryAirAtOptions } from './militaryAirAt.ts';
+import { lossCausesModel, militaryAirModel, type MilitaryAirAtOptions } from './militaryAirAt.ts';
 
 const identity: IdentityProvider = {
   resolve(kind, key, atHour) {
@@ -21,15 +21,15 @@ const identity: IdentityProvider = {
   },
 };
 
-const AIR: MilitaryAirAtOptions = { family: 'airLosses', scale: 100_000, digits: 5, leftHeader: 'Own losses', rightHeader: 'Enemy aircraft destroyed', unit: 'Aircraft', ratio: true, chosen: null };
+const AIR: MilitaryAirAtOptions = { family: 'airLosses', scale: 100_000, digits: 5, leftHeader: 'Own losses', rightHeader: 'Enemy aircraft destroyed', unit: 'Aircraft', ratio: true, chosen: null, none: 'No aircraft lost yet.' };
 
 const aircraft = (count: number) => String(BigInt(count) * 100_000n);
 
 const reply = (patch: Partial<MilitaryAirAtReply>): MilitaryAirAtReply => ({
   family: 'airLosses', hour: 500, countedFrom: 0, validUntil: 520, missing: null, rankMissing: null, unattributed: ['0', '0'], warnings: [],
   rows: [
-    { tag: 'GER', identity: '7:1', segmentFirstHour: 0, dealt: aircraft(4453), taken: aircraft(2474), complete: true },
-    { tag: 'ENG', identity: '8:2', segmentFirstHour: 0, dealt: aircraft(1439), taken: aircraft(2085), complete: true },
+    { tag: 'GER', identity: '7:1', segmentFirstHour: 0, dealt: aircraft(4453), taken: aircraft(2474), complete: true, causes: [{ cause: 1, taken: aircraft(2000) }, { cause: 3, taken: aircraft(474) }] },
+    { tag: 'ENG', identity: '8:2', segmentFirstHour: 0, dealt: aircraft(1439), taken: aircraft(2085), complete: true, causes: [{ cause: 1, taken: aircraft(2085) }] },
   ],
   ...patch,
 });
@@ -47,16 +47,17 @@ test('the product order is drawn as given: own losses left, destroyed right, wit
   assert.deepEqual([formatBarsValueField(rows[0]!.left!.value).text, formatBarsValueField(rows[0]!.right!.value).text], ['2,474', '4,453']);
   assert.equal(rows[0]!.readout?.primary, '1.80 : 1');
   assert.equal(rows[1]!.readout?.primary, '0.69 : 1');
+  assert.deepEqual(rows[0]!.meta, { tag: 'GER', identity: '7:1', countedFrom: 0 }, 'a click opens the causes of this holder, counted from the same start');
 });
 
 test('a row whose events may be missing is partial, at least its value, and has no ratio', () => {
-  const rows = model(reply({ rankMissing: 'Some events may be missing', rows: [{ tag: 'GER', identity: '7:1', segmentFirstHour: 0, dealt: '100000', taken: '200000', complete: false }] })).rows as BarsDataRow[];
+  const rows = model(reply({ rankMissing: 'Some events may be missing', rows: [{ tag: 'GER', identity: '7:1', segmentFirstHour: 0, dealt: '100000', taken: '200000', complete: false, causes: [] }] })).rows as BarsDataRow[];
   assert.equal(rows[0]!.left?.value.value.kind, 'partial');
   assert.equal(rows[0]!.readout, undefined);
 });
 
 test('an unread hour and an unranked population are named states, never empty bars', () => {
-  const unread = model(reply({ missing: 'Military air events were not read at this hour', rows: [] }));
+  const unread = model(reply({ missing: 'Aircraft loss events were not recorded at this hour', rows: [] }));
   assert.equal(unread.emptyKind, 'unavailable');
   const unranked = model(reply({ rankMissing: 'Some events may be missing', rows: [] }));
   assert.equal(unranked.empty, 'Some events may be missing');
@@ -66,4 +67,38 @@ test('a chosen country that is not present is drawn last as not recorded', () =>
   const rows = model(reply({}), { ...AIR, chosen: ['GER', 'ITA'] }).rows as BarsDataRow[];
   assert.deepEqual(rows.map(row => row.subject), ['GER', 'ENG', 'ITA']);
   assert.equal(rows[2]!.left?.value.value.kind, 'notRecorded');
+});
+
+test('the paired view stacks destroyed (solid) over own losses (outline) and reads destroyed / lost and the ratio', () => {
+  const paired = { ...AIR, leftHeader: 'Own losses', rightHeader: 'Destroyed', paired: { solid: 'Destroyed (solid)', outline: 'Own losses (outline)' } };
+  const drawn = model(reply({}), paired);
+  assertBarsModelValid(drawn, 500);
+  assert.equal(drawn.twoSidedLayout, 'stacked-pair');
+  assert.deepEqual(drawn.legend?.map(item => item.label), ['Destroyed (solid)', 'Own losses (outline)']);
+  const rows = drawn.rows as BarsDataRow[];
+  assert.deepEqual(rows.map(row => row.readout?.primary), ['4.45K / 2.47K · 1.80', '1.44K / 2.08K · 0.69']);
+  const partial = model(reply({ rows: [{ tag: 'GER', identity: '7:1', segmentFirstHour: 0, dealt: aircraft(319), taken: aircraft(1000), complete: false, causes: [] }] }), paired).rows as BarsDataRow[];
+  assert.equal(partial[0]!.readout?.primary, '319 / 1K', 'partial figures carry no ≥ prefix and no ratio');
+});
+
+test('loss causes stack each country by cause in the product order, with one colour per cause', () => {
+  const view = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply({})]]), identity });
+  const drawn = lossCausesModel(view, AIR);
+  assertBarsModelValid(drawn, 500);
+  assert.equal(drawn.form, 'stacked');
+  const rows = drawn.rows as BarsDataRow[];
+  assert.deepEqual(rows.map(row => row.subject), ['GER', 'ENG']);
+  assert.deepEqual(rows[0]!.segments?.map(segment => [segment.key, Math.round(segment.share * 1000)]), [['1', 808], ['3', 192]]);
+  assert.equal(rows[0]!.segments![0]!.color, rows[1]!.segments![0]!.color, 'one cause, one colour in every row');
+  assert.equal(rows[0]!.readout?.primary, '2.47K lost');
+  assert.deepEqual(drawn.legend?.map(item => item.key), ['1', '3']);
+  const unread = lossCausesModel(createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply({ missing: 'Aircraft loss events were not recorded at this hour', rows: [] })]]), identity }), AIR);
+  assert.equal(unread.emptyKind, 'unavailable');
+});
+
+test('an observed hour with no events is a recorded none, never a missing reading', () => {
+  const none = model(reply({ rows: [] }));
+  assert.deepEqual([none.empty, none.emptyKind], ['No aircraft lost yet.', 'empty']);
+  const unread = model(reply({ missing: 'Aircraft loss events were not recorded at this hour', rows: [] }));
+  assert.deepEqual([unread.empty, unread.emptyKind], ['Aircraft loss events were not recorded at this hour', 'unavailable']);
 });

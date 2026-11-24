@@ -1,4 +1,4 @@
-import { usNumber } from '../../charts/numberFormat.ts';
+import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import {
@@ -10,18 +10,15 @@ import {
   type SourcePlan,
 } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { ChartGap, ChartHoverDetail } from '../../families/time-chart/model.ts';
 import {
   branchGapsOf,
   buildBoundedStack,
   seriesHeadValue,
 } from '../../families/time-chart/seriesHelpers.ts';
-import { notRecordedLabel } from '../../families/valueFormat.ts';
+import { formatScalar, formatShare as formatDerivedShare, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { SeriesState } from '../../generated/dashboard';
 import {
   formatShare,
@@ -52,10 +49,6 @@ export interface SupplyHealthOptions {
   readonly tag: string | null;
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
-}
-
-function formatWholePct(value: number): string {
-  return `${Math.round(value)}%`;
 }
 
 function readHoverStates(readView: BoundedReadView, name: string): { readonly hour: number; readonly states: readonly SeriesState[] } | null {
@@ -103,7 +96,7 @@ function supplyHoverDetail(readView: BoundedReadView, tag: string): ChartHoverDe
     return {
       label: STATE_LABELS[state],
       swatch: BAND_COLOURS[state],
-      value: `${formatShare(count, total)} · ${usNumber.format(count)} ${count === 1 ? 'division' : 'divisions'}`,
+      value: `${formatShare(count, total)} · ${formatScalar(count, 'integer')} ${count === 1 ? 'division' : 'divisions'}`,
     };
   });
   return { hour, replacesSeries: true, items };
@@ -121,7 +114,7 @@ function missingReasonOf(seriesList: readonly (BoundedSeries | null)[], firstHou
   return null;
 }
 
-export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = registerTimeChart({
+export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = registerFamilyProjection({
   kind: 'supply-health',
   family: 'time-chart',
   variant: 'stacked-area',
@@ -153,7 +146,7 @@ export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = 
                 colorBar: BAND_COLOURS[state],
                 name: STATE_LABELS[state],
                 fullName: STATE_LABELS[state],
-                value: formatWholePct(headValue),
+                value: formatDerivedShare(headValue / 100),
               },
         };
       }),
@@ -174,7 +167,7 @@ export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = 
       const head = headsByState[idx];
       return head === null || head === undefined
         ? []
-        : [{ row: state, key: state, value: formatWholePct(head) }];
+        : [auditRow(state, formatDerivedShare(head / 100))];
     });
 
     return {

@@ -1,17 +1,18 @@
 import { liveKey } from '../../charts/live.ts';
 import { authoredHex, CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { airMode, airParams, airPercent, airScore, validateAirSuperiority } from '../../dashboard/airSuperiority.ts';
+import { ADD_REGION_LABEL, mostActiveHeading, PICKED_REGIONS_HEADING } from '../../families/regions/regionRows.ts';
 import { defaultCountryKey, selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection, BarsSegment } from '../../families/bars/model.ts';
 import { regionLabel } from '../../families/heat/scale.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/shareRows.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { AirRegion, AirSide, AirSuperiorityReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 
 export type AirRegionOrderOption = 'contested' | 'active' | 'name';
 
@@ -85,7 +86,7 @@ function wingsText(region: AirRegion, live: ReturnType<BoundedReadView['live']>)
   const raw = live?.get(liveKey(String(region.id), 'wings'));
   if (raw === undefined) return { text: 'Wings not recorded', count: null };
   const count = Math.trunc(Number(raw));
-  return { text: `${count.toLocaleString('en-US')} air ${count === 1 ? 'wing' : 'wings'}`, count };
+  return { text: `${formatScalar(count, 'integer')} air ${count === 1 ? 'wing' : 'wings'}`, count };
 }
 
 function superiorityState(friendly: number, total: number, scale: number, badBelow: number, goodAbove: number): string {
@@ -383,7 +384,7 @@ function projectRegion(
   };
 }
 
-export const airSuperiorityRegionProjection: BarsProjection<AirSuperiorityProjectionOptions> = registerBarsProjection({
+export const airSuperiorityRegionProjection: BarsProjection<AirSuperiorityProjectionOptions> = registerFamilyProjection({
   kind: 'air-superiority-region',
   family: 'bars',
   project(readView: BoundedReadView, options: AirSuperiorityProjectionOptions): BarsModel {
@@ -401,16 +402,22 @@ export const airSuperiorityRegionProjection: BarsProjection<AirSuperiorityProjec
       return buildShareRowsModel({ hour, rows: [], empty: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings });
     }
 
-    const rows: ShareRowEntry[] = [];
+    const picked: ShareRowEntry[] = [];
+    const automatic: ShareRowEntry[] = [];
     for (const region of reply.regions) {
       const entry = projectRegion(region, reply, readView, options);
-      if (entry) rows.push(entry);
+      if (entry) (region.pinned ? picked : automatic).push({ ...entry, region: region.id });
     }
 
     const knownEmpty = reply.fallback.kind !== 'reason' && reply.regions.every(region => region.wings !== 'unknown');
+    const rows = [...picked, ...automatic];
     return buildShareRowsModel({
       hour,
-      rows,
+      picked,
+      automatic,
+      pickedHeading: PICKED_REGIONS_HEADING,
+      automaticHeading: mostActiveHeading(options.mode === 'viewpoint' ? reply.viewpointCountryStyle?.name ?? null : null),
+      addRegionLabel: ADD_REGION_LABEL,
       ...(!rows.length
         ? {
             empty: knownEmpty ? 'No regions have a score or assigned wings at this time.' : 'Air activity is unknown at this time.',
@@ -468,7 +475,6 @@ export const airSuperiorityRegionDeclaration: BarsWidgetDeclaration<AirSuperiori
   subject: 'air superiority',
   emptyCampaign: 'Load a campaign to see its air superiority.',
   icon: 'plane',
-  optionFields: OPTIONS,
   countries: { mode: 'none' },
   sources: airSuperioritySources,
   projection: airSuperiorityRegionProjection,

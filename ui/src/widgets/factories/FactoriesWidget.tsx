@@ -11,13 +11,14 @@ import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
-import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
-import { DeclaredFamilyWidget, DetailWindowHost } from '../../families/host/index.ts';
+import { DetailWindowHost } from '../../families/host/index.ts';
+import { FamilyWidget } from '../../families/host/registry.tsx';
+import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
 import type { InstalledAction } from '../../families/plan.ts';
 import type { FactoryPartsReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import { COUNT_MODES, countMode, factoryMeasure, factoryParts, partRows, validateFactoryGroups, validateFactoryParts } from './factoriesData.ts';
-import { factoriesDeclaration, type FactoriesRowMeta } from './factoriesProjection.ts';
+import type { FactoriesRowMeta } from './factoriesProjection.ts';
 
 const NO_WARNINGS: string[] = [];
 const format = (raw: string, decimals: number) => formatRaw(raw, decimals);
@@ -45,24 +46,26 @@ function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pic
 }
 
 export default function FactoriesWidget(props: WidgetProps) {
-  const { widget, runtime, active, onDiagnostics, countrySlot } = props;
+  const { widget, runtime, active, onDiagnostics, countrySlot, manifestDeclaration } = props;
   const options = resolveOptions(OPTIONS, widget.options);
-  const view = (['race', 'lines', 'mix'].includes(String(options.view)) ? options.view : 'race') as RaceView;
+  const view = (['race', 'lines', 'mix'].includes(String(props.view)) ? props.view : 'race') as RaceView;
   const mode = countMode(options.count);
   const types = useMemo(() => contentSet(options.types), [options.types]);
-  const isBarsRace = view === 'race' && options.show !== 'breakdown';
+  const isLines = manifestDeclaration?.family === 'time-chart';
+  const familyDeclaration = manifestDeclaration && (isLines || options.show !== 'breakdown') ? manifestDeclaration : undefined;
+  const isFamily = familyDeclaration !== undefined;
 
   const anchorRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
-  const gate = useGate(runtime, widget, SPEC, active && isBarsRace);
+  const gate = useGate(runtime, widget, SPEC, active && isFamily);
 
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const named = useProduct(
     runtime.client,
-    !isBarsRace && track
+    !isFamily && track
       ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'factory-groups', params: { branchId: track.branch.id } })
       : null,
-    active && !isBarsRace,
+    active && !isFamily,
     validateFactoryGroups,
     track?.source,
   );
@@ -74,21 +77,22 @@ export default function FactoriesWidget(props: WidgetProps) {
   }, [onDiagnostics, named.data]);
 
   const onActivate = useCallback((action: InstalledAction) => {
+    if (isLines && parseChartInspect(action.subject) !== null) return;
     const gated = gate.recorded(Math.floor(action.hour));
     if (gated === null) return;
     const rowMeta = action.meta as FactoriesRowMeta | null | undefined;
     setDetail({ tag: rowMeta?.tag ?? action.subject, key: rowMeta?.key ?? action.subject, hour: gated });
-  }, [gate]);
+  }, [gate, isLines]);
 
-  if (isBarsRace) {
+  if (familyDeclaration) {
     return (
       <div ref={anchorRef} className="fh-frame">
-        <DeclaredFamilyWidget
+        <FamilyWidget
           {...props}
-          view="race"
-          adapter={barsHostAdapter}
-          declaration={factoriesDeclaration}
-          selectedKey={detail?.key ?? null}
+          family={familyDeclaration.family}
+          view={view}
+          declaration={familyDeclaration}
+          {...(isLines ? {} : { selectedKey: detail?.key ?? null })}
           onActivate={onActivate}
         />
         <DetailWindowHost

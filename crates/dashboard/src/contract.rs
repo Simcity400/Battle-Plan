@@ -71,6 +71,12 @@ pub fn typescript_contract() -> String {
         dashboard_query::series::ranked::RankedSpan::decl(),
         dashboard_query::series::ranked::SeriesRankedLine::decl(),
         dashboard_query::series::ranked::SeriesRankedReply::decl(),
+        dashboard_query::series::ranked::SeriesRankMeasure::decl(),
+        dashboard_query::series::ranked::SeriesRankRow::decl(),
+        dashboard_query::series::ranked::SeriesRankReply::decl(),
+        dashboard_query::series::ranked::GroupKind::decl(),
+        dashboard_query::series::ranked::GroupMembership::decl(),
+        dashboard_query::series::ranked::GroupSelection::decl(),
         army::ArmyChartLine::decl(),
         army::ArmyChartReply::decl(),
     ];

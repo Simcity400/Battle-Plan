@@ -5,9 +5,9 @@ import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { countryLook, inHourSpans, nextBoundaryAfter, timelineModel, spanStart, clipSpansToHour, wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection, type TimelineSpan } from '../../families/timeline/model.ts';
-import { registerTimelineProjection } from '../../families/timeline/registry.ts';
-import type { CountryGroupReply, SubjectLevel, SubjectReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
+import { groupCountsRead, rankedCounts } from '../../dashboard/groupCounts.ts';
+import type { CountryGroupReply, GroupCountsReply, SubjectLevel, SubjectReply } from '../../generated/dashboard';
 import {
   changeHours,
   laneCountries,
@@ -43,12 +43,14 @@ function boundaries(reply: SubjectReply, groups: CountryGroupReply | undefined):
   return changeHours(reply, groups?.identityChanges);
 }
 
-export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerTimelineProjection<SubjectsOptions>({
+export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerFamilyProjection<TimelineProjection<SubjectsOptions>>({
+  family: 'timeline',
   kind: 'subjects',
 
   nextChange(readView) {
     const reply = readView.panel<SubjectReply>('main');
-    return reply ? nextBoundaryAfter(boundaries(reply, readView.panel<CountryGroupReply>('groups')), readView.hour) : Infinity;
+    const counts = readView.panel<GroupCountsReply>('counts')?.nextChange ?? Infinity;
+    return reply ? Math.min(counts, nextBoundaryAfter(boundaries(reply, readView.panel<CountryGroupReply>('groups')), readView.hour)) : Infinity;
   },
 
   project(readView, opt) {
@@ -57,7 +59,8 @@ export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerT
     const groups = readView.panel<CountryGroupReply>('groups');
     const base = { hour, firstHour: opt.firstHour, labelWidth: 230 };
     if (!reply || !groups) return timelineModel(base);
-    const nextChangeAt = nextBoundaryAfter(boundaries(reply, groups), hour);
+    const counts = rankedCounts(readView.panel<GroupCountsReply>('counts'));
+    const nextChangeAt = Math.min(counts?.nextChange ?? Infinity, nextBoundaryAfter(boundaries(reply, groups), hour));
     const warnings = [...reply.warnings, ...groups.warnings];
     if (!reply.runs.length) return timelineModel({ ...base, empty: 'No subjects recorded', warnings, nextChangeAt });
     const overlords = viewsOf(reply, groups);
@@ -72,6 +75,7 @@ export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerT
       ended: opt.showEnded,
       countries: selected,
       countryIds: selected ? overlords[0]?.identities?.selected([...selected]) ?? null : null,
+      counts,
     }, { country: tag => ({ name: countryLook(readView, tag, hour).name }), day: formatDateOnly }, unobserved);
     if (!built.lanes.length) {
       return timelineModel({ ...base, empty: selected ? 'None of the chosen countries has been an overlord or a subject yet' : 'No subjects yet', warnings, nextChangeAt });
@@ -145,7 +149,6 @@ export const subjectsDeclaration: TimelineWidgetDeclaration<SubjectsOptions> = {
   subject: 'subjects',
   emptyCampaign: 'Load a campaign to see its overlords and subjects.',
   icon: 'hierarchy',
-  optionFields: OPTIONS,
   countries: { mode: 'multi', labels: true, allTagsForLabels: true },
   jumpToDate: true,
   keyByBranch: true,
@@ -165,6 +168,7 @@ export const subjectsDeclaration: TimelineWidgetDeclaration<SubjectsOptions> = {
       entries: [
         { name: 'main', source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset, read: read('subjects', validateSubjectReply) },
         { name: 'groups', source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset, read: read('country-groups') },
+        { name: 'counts', source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset, read: groupCountsRead(ctx.branch.id, 'overlords') },
       ],
     };
   },

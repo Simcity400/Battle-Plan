@@ -417,6 +417,67 @@ class FamilyKitPatterns(unittest.TestCase):
             "ui/src/families/table/tableFamily.test.ts": "const c = '#e5484d';\n",
         })[0], 0)
 
+    def test_family_locale_string_is_refused_in_families_and_projections(self):
+        code, out = check({}, {
+            "ui/src/families/table/cellPainters.ts": "const s = count.toLocaleString('en-US');\n",
+            "ui/src/widgets/foo/fooProjection.ts": "import { usNumber } from '../../charts/numberFormat.ts';\nconst f = new Intl.NumberFormat('en-US');\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("family-locale-string", out)
+        self.assertIn("ui/src/families/valueFormat.ts", out)
+        self.assertEqual(check({}, {
+            "ui/src/families/valueFormat.ts": "const s = count.toLocaleString('en-US');\n",
+            "ui/src/families/table/tableFamily.test.ts": "const s = count.toLocaleString('en-US');\n",
+        })[0], 0)
+
+    def test_family_measure_text_loop_is_refused_in_families_and_projections(self):
+        code, out = check({}, {
+            "ui/src/families/heat/matrixLaneView.ts": "for (const row of rows) { w = Math.max(w, ctx.measureText(row.label).width); }\n",
+            "ui/src/families/time-chart/painter.ts": "items.map(item => ctx.measureText(item).width);\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("family-measure-text-loop", out)
+        self.assertIn("ui/src/charts/textWidth.ts", out)
+        self.assertEqual(check({}, {
+            "ui/src/families/table/painter.ts": "const measure = (text: string) => ctx.measureText(text).width;\n",
+            "ui/src/charts/labels.ts": "for (const t of texts) { w = ctx.measureText(t).width; }\n",
+            "ui/src/families/heat/heatFamily.test.ts": "for (const t of texts) { w = ctx.measureText(t).width; }\n",
+        })[0], 0)
+
+    def test_family_hand_percent_is_refused_in_families_and_projections(self):
+        code, out = check({}, {
+            "ui/src/families/bars/painter.ts": "const pct = `${Math.round(share * 100)}%`;\n",
+            "ui/src/widgets/foo/fooProjection.ts": "const a = `${val.toFixed(1)}%`;\nconst b = Math.floor(share * 100) + '%';\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("family-hand-percent", out)
+        self.assertIn("formatShare", out)
+        self.assertIn("formatProgress", out)
+        self.assertIn("formatRecordedPercent", out)
+        self.assertEqual(check({}, {
+            "ui/src/families/valueFormat.ts": "const pct = `${Math.round(share * 100)}%`;\n",
+            "ui/src/families/heat/matrixModel.ts": "if (Math.floor(at / width) === at % width) continue;\n",
+            "ui/src/families/bars/barsFamily.test.ts": "const pct = `${Math.round(share * 100)}%`;\n",
+        })[0], 0)
+
+    def test_family_at_least_wording_is_refused_in_families_and_widgets(self):
+        code, out = check({}, {
+            "ui/src/families/valueFormat.ts": "const lead = value.atLeast ? `at least ${exact}` : exact;\n",
+            "ui/src/widgets/foo/fooData.ts": "const note = '+ means this many';\nconst pre = '\\u2265';\n",
+            "ui/src/widgets/foo/FooWidget.tsx": "export const x = () => <span>≥{count}</span>;\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("family-at-least-wording", out)
+        self.assertIn("ui/src/families/valueFormat.ts", out)
+        self.assertIn("ui/src/widgets/foo/fooData.ts", out)
+        self.assertIn("ui/src/widgets/foo/FooWidget.tsx", out)
+        self.assertEqual(check({}, {
+            "ui/src/families/value.ts": "export const p = (atLeast: boolean) => ({ atLeast });\n",
+            "ui/src/widgets/foo/foo.test.ts": "const s = 'at least 1';\n",
+            "ui/src/recorder/status.ts": "const s = 'At least one frame';\n",
+            "ui/src/shell/AnalyticsNav.tsx": "const s = 'Choose at least one page';\n",
+        })[0], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

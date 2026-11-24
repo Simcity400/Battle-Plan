@@ -38,6 +38,8 @@ const EXP_NOTREC_STATUS: &str = "country experience: not recorded at this hour";
 const RES_TRUNC: &str = "Country resources read only in part at this hour (1 rows not read)";
 const RES_TRUNC_STATUS: &str = "country resources: read only in part at this hour (1 rows not read)";
 const FAC_TRUNC_STATUS: &str = "country factories: read only in part at this hour (1 rows not read)";
+const FAC_TRUNC: &str = "Country factories read only in part at this hour (1 rows not read)";
+const FAC_TRUNC_TABLE: &str = "Country factories read only in part at this hour (1 rows not read), and which rows were read is not held at the head";
 const REL_TRUNC: &str = "Relation opinions read only in part at this hour (1 rows not read)";
 const REL_TRUNC_STATUS: &str = "relation opinions: read only in part at this hour (1 rows not read)";
 
@@ -203,7 +205,7 @@ fn read(tag: &str, hour: i32, part: Option<&str>) -> SeriesRead {
 }
 
 #[test]
-fn exact_states_apply_witness_rule_for_scalar_computed_parts_and_ranked() {
+fn exact_states_apply_witness_rule_for_scalar_computed_and_parts() {
     assert_eq!(dashboard_declare::field(TableId::CountryExperience, "army_raw").unwrap(), ARMY_COL);
     assert_eq!(dashboard_declare::field(TableId::CountryExperience, "navy_raw").unwrap(), NAVY_COL);
     let fixture = TruncatedFixture::new();
@@ -274,15 +276,75 @@ fn exact_states_apply_witness_rule_for_scalar_computed_parts_and_ranked() {
         ita_parts[0].missing
     );
 
-    let ranked_reply = answer(
-        &query,
-        "series-state",
-        &serde_json::json!({ "branchId": "1", "family": { "kind": "country-factories", "measure": "built1" }, "top": 2, "hour": T1 }),
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(ranked_reply["states"], serde_json::json!([]));
-    assert!(ranked_reply.get("missing").is_none(), "SeriesStateReply matches main without top-level missing");
+}
+
+fn exp_gap(cells: &dyn Cells, slot: u32) -> Computed {
+    match cells.number(ARMY_COL, slot) {
+        Some(100) | None => Computed::Unrecorded,
+        Some(army) => Computed::Value(army),
+    }
+}
+
+static GAP_EXP: Series = Series {
+    kind: "test-exp-gap",
+    table: TableId::CountryExperience,
+    key: Key::Country,
+    parts: None,
+    measures: &[Measure { name: "army", column: Column::Computed { id: 911, inputs: &["army_raw"], value: exp_gap }, decimals: 0, aggregates: 0, carry: Carry::None, rank: 0 }],
+    drops: false,
+    absent_none: false,
+};
+
+#[test]
+fn a_rank_reply_keeps_every_asked_country_reads_every_measure_and_holds_only_where_proven() {
+    let fixture = TruncatedFixture::new();
+    let query = fixture.query();
+    let rank = |params: serde_json::Value| -> ranked::SeriesRankReply {
+        let mut request = serde_json::json!({ "branchId": "1", "family": { "kind": "country-factories", "measure": "built1" }, "measures": ["free1"] });
+        request.as_object_mut().unwrap().extend(params.as_object().unwrap().clone());
+        serde_json::from_value(answer(&query, ranked::PRODUCT, &request).unwrap().unwrap()).unwrap()
+    };
+    let tags = |reply: &ranked::SeriesRankReply| reply.rows.iter().map(|row| row.country.to_string()).collect::<Vec<_>>();
+    let missing = |row: &ranked::SeriesRankRow| row.readings.iter().map(|reading| reading.missing.clone()).collect::<Vec<_>>();
+
+    let refused = rank(serde_json::json!({ "top": 2, "hour": T1 }));
+    assert_eq!(refused.rows, Vec::new(), "an unknown population ranks nobody");
+    assert_eq!(refused.refused.as_deref(), Some(FAC_TRUNC_TABLE), "and says why, never an empty rank");
+    assert_eq!((refused.from, refused.until), (T1, T1));
+
+    let chosen = rank(serde_json::json!({ "countries": ["ITA", "GER"], "hour": T1 }));
+    assert_eq!(tags(&chosen), ["GER", "ITA"], "the witnessed country first, the unread one kept after it");
+    assert_eq!(chosen.measures.iter().map(|measure| measure.name.as_str()).collect::<Vec<_>>(), ["built1", "free1"]);
+    assert_eq!(missing(&chosen.rows[0]), [None, None], "a witnessed row gives every measure from a truncated table");
+    assert_eq!(missing(&chosen.rows[1]), [Some(FAC_TRUNC.to_owned()), Some(FAC_TRUNC.to_owned())], "the unread row keeps its own reason");
+    assert_eq!(chosen.refused.as_deref(), Some(FAC_TRUNC), "the order of the chosen is not a proven rank");
+    assert_eq!((chosen.from, chosen.until), (T1, T1));
+
+    let top = rank(serde_json::json!({ "top": 1, "hour": T2 + 1 }));
+    assert_eq!(tags(&top), ["ITA"]);
+    assert_eq!(top.refused, None);
+    assert!(top.rows[0].readings.iter().all(|reading| reading.run.is_some()), "the detail measure is read for a ranked country");
+    assert_eq!((top.from, top.until), (T2 + 1, T3 - 1), "an hour whose population is unknown is not proven, though ITA's values run on");
+
+    let group = serde_json::json!({ "branchId": "1", "family": { "kind": "country-factories", "measure": "built1" }, "hour": T2 + 1, "group": { "type": "faction", "id": "42" } });
+    let members = |refused: Option<&'static str>| {
+        move |_: &ranked::GroupSelection, _: i32| Ok(ranked::Members { tags: vec!["GER".into(), "ITA".into()], refused: refused.map(str::to_owned), from: T2 + 1, until: T2 + 2 })
+    };
+    let grouped = |resolve: ranked::Resolve<'_>| -> ranked::SeriesRankReply { serde_json::from_value(answer_grouped(&query, ranked::PRODUCT, &group, resolve).unwrap().unwrap()).unwrap() };
+    let known = grouped(&members(None));
+    assert_eq!(tags(&known), ["ITA", "GER"], "a group's members at the hour are ranked by the product");
+    assert_eq!((known.from, known.until), (T2 + 1, T2 + 2), "the reply holds only while the membership does");
+    let unknown = grouped(&members(Some("Membership of this group is not recorded at this hour")));
+    assert_eq!((unknown.rows.len(), unknown.refused.as_deref()), (0, Some("Membership of this group is not recorded at this hour")), "unknown membership is refused, never a union");
+    assert!(answer(&query, ranked::PRODUCT, &group).is_err(), "a group is only answered where its membership is read");
+
+    let gap = Line::new(&query, &GAP_EXP, &GAP_EXP.measures[0]).unwrap();
+    assert_eq!(gap.rank_at(BASE, 2, false).unwrap(), Err("GER's army was not recorded at this hour".to_owned()), "an unrecorded contender refuses the rank");
+
+    let zero = Line::new(&query, &ABSENT_ZERO_EXP, &ABSENT_ZERO_EXP.measures[0]).unwrap();
+    assert_eq!(zero.rank_at(BASE, 3, false).unwrap(), Ok(vec!["ITA".to_owned(), "GER".to_owned(), "FRA".to_owned()]));
+    let states = zero.states(&[read("FRA", BASE, None)], None).unwrap();
+    assert_eq!(states[0].run.as_ref().map(|run| run.value_raw.as_str()), Some("0"), "a country absent from a complete absent-is-none table reads zero, as its rank does");
 }
 
 #[test]

@@ -1,7 +1,7 @@
 import type { EventFeedItem } from '../../generated/dashboard';
 
-export const SCRIPTED_GAP = '\uFFFC';
-export const GAP_TEXT = 'not recorded';
+const SCRIPTED_GAP = '\uFFFC';
+const GAP_TEXT = 'not recorded';
 
 export type ItemReasons = Pick<EventFeedItem, 'nameMissing' | 'gaps'>;
 export const reasonsOf = (item: EventFeedItem | null | undefined): ItemReasons => item ?? {};
@@ -15,10 +15,3 @@ export function scriptedParts(text: string, reason: string | undefined): Scripte
 }
 
 export const plainScripted = (text: string): string => text.split(SCRIPTED_GAP).join(`[${GAP_TEXT}]`);
-
-export function reasonRows(item: EventFeedItem | null | undefined): { label: string; value: string; tone: 'muted' }[] {
-  const { nameMissing, gaps } = reasonsOf(item);
-  return [...!item?.name && nameMissing ? [{ label: 'Name not recorded', value: nameMissing, tone: 'muted' as const }] : [],
-    ...gaps && [item?.name, item?.description, ...item?.options?.map(option => option.name) ?? []].some(text => text?.includes(SCRIPTED_GAP))
-      ? [{ label: 'Text not recorded', value: gaps, tone: 'muted' as const }] : []];
-}

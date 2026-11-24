@@ -1,13 +1,13 @@
 
-use dashboard_base::products::{Country, validate_country};
-use super::{COST_SCALE, Content, ConstructionStateName, ConstructionType, Line, ProjectKind, SpendingGap, gap_of, missing};
+use dashboard_base::products::Country;
+use super::{Content, Line, SpendingGap, col, gap_of, missing};
 use dashboard_base::{Source, products::LoadContext, queries::country_ids::Names};
-use dashboard_query::{Query, identity::Holder, series::MissingSpan};
+use dashboard_query::{Query, identity::Holder};
 use replay_lanes::lanes::{Cell, Keys};
 use replay_data::rows::{TableId, TagHolderRow, key_field};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::atomic::AtomicBool,
 };
@@ -31,66 +31,6 @@ pub struct SpentStep {
     pub total_raw: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct SpendingUnknown {
-    pub known_at: i32,
-    pub reason: SpendingGap,
-    pub project: String,
-    pub until: Option<i32>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct LeafProject {
-    pub project: String,
-    pub first_read: i32,
-    pub until: Option<i32>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct SpendingLeaf {
-    pub repair: bool,
-    pub kind: ProjectKind,
-    #[doc = " The building type's lexer id ([`ConstructionType::id`])."]
-    pub building: Option<u32>,
-    pub state: Option<u32>,
-    pub to_state: Option<u32>,
-    #[doc = " In hour order."]
-    pub spent: Vec<SpentStep>,
-    pub unknown: Vec<SpendingUnknown>,
-    #[doc = " By first read."]
-    pub projects: Vec<LeafProject>,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ConstructionSpendingReply {
-    pub branch_id: String,
-    pub tag: String,
-    #[doc = " Units per factory output point of a total."]
-    pub cost_scale: u32,
-    #[doc = " Either construction queue was read in the branch."]
-    pub recorded: bool,
-    pub types: Vec<ConstructionType>,
-    pub repair_icon: Option<String>,
-    pub states: Vec<ConstructionStateName>,
-    #[doc = " The tag's lines whose output before observation began is not counted."]
-    pub before_first_read: u32,
-    pub leaves: Vec<SpendingLeaf>,
-    #[doc = " Output no country can be given: lines named by output alone with no recorded owner."]
-    pub unattributed: Vec<SpendingUnknown>,
-    #[doc = " Hours of the branch the recording does not hold: output then is not counted."]
-    pub missing: Vec<MissingSpan>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(ConstructionSpendingReply);
 
 pub(crate) type LeafKey = (bool, bool, u32, u32, u32);
 
@@ -180,94 +120,6 @@ pub fn spent_by_leaf(query: &Query<'_>, tag: &Country) -> io::Result<BTreeMap<Le
     Ok(by_leaf.into_iter().map(|(leaf, deltas)| (leaf, totals(deltas))).collect())
 }
 
-pub(crate) fn history(source: &Source, params: &ConstructionSpendingParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<ConstructionSpendingReply> {
-    dashboard_text::metadata::check_cancel(cancelled)?;
-    let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
-    let names = Names::new(&query.holders);
-    let end = query.timeline.last;
-    let mut leaves: BTreeMap<LeafKey, SpendingLeaf> = BTreeMap::new();
-    for (key, spent) in spent_by_leaf(&query, &params.country)? {
-        leaf_mut(&mut leaves, key).spent = spent;
-    }
-    let mut before_first_read = 0u32;
-    let mut unattributed = Vec::new();
-    let mut seen = BTreeSet::new();
-    let mut tokens = BTreeMap::new();
-    for stretch in &query.timeline.stretches {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let lines = crate::products::construction::cached_construction(source, stretch.run)?;
-        let links = dashboard_base::queries::links(source, stretch.run)?;
-        let mut ids = BTreeSet::new();
-        for line in lines.within(stretch.first, stretch.last) {
-            if !seen.insert(line.id) {
-                continue;
-            }
-            let until = (line.last < end).then_some(line.last + 1);
-            if line.output_alone && gap_of(line.output_reason) == Some(SpendingGap::OwnerUnknown) {
-                unattributed.push(SpendingUnknown { known_at: line.first, reason: SpendingGap::OwnerUnknown, project: line.id.to_string(), until });
-                continue;
-            }
-            if !names.tag_at(&links, line.country, line.first_read).is_some_and(|tag| query.holders.goes_by(&params.country, tag, line.first_read)) {
-                continue;
-            }
-            before_first_read += u32::from(line.before_observation);
-            ids.extend(line.building);
-            for key in leaf_keys(line) {
-                let leaf = leaf_mut(&mut leaves, key);
-                leaf.building = leaf.building.or(line.building);
-                leaf.projects.push(LeafProject { project: line.id.to_string(), first_read: line.first_read, until });
-                if let Some(gap) = line_gap(line, until) {
-                    leaf.unknown.push(gap);
-                }
-            }
-        }
-        for leaf in leaves.values() {
-            ids.extend(leaf.building);
-        }
-        super::spellings(&query, stretch.run, stretch.last, &ids, &mut tokens)?;
-    }
-    let states: BTreeSet<u32> = leaves.values().flat_map(|leaf| [leaf.state, leaf.to_state]).flatten().collect();
-    let mut warnings = Vec::new();
-    let content = Content::load(source, context).name(source, &tokens, &states, &mut warnings);
-    let mut leaves: Vec<SpendingLeaf> = leaves.into_values().collect();
-    for leaf in &mut leaves {
-        leaf.projects.sort_by_key(|project| project.first_read);
-    }
-    let recorded = super::recorded(&query)?;
-    if recorded && leaves.is_empty() {
-        warnings.push(query.holders.say(&params.country, query.timeline.last, |name| format!("{name}: no recorded construction in this branch")));
-    }
-    let reply = ConstructionSpendingReply {
-        branch_id: params.branch_id.clone(),
-        tag: query.holders.name(&params.country, query.timeline.last),
-        cost_scale: COST_SCALE,
-        recorded,
-        types: content.types,
-        repair_icon: content.repair_icon,
-        states: content.states,
-        before_first_read,
-        leaves,
-        unattributed,
-        missing: missing(&query, query.timeline.first, end),
-        warnings,
-    };
-    dashboard_base::products::check_reply_budget(&reply)?;
-    Ok(reply)
-}
-
-fn leaf_mut(leaves: &mut BTreeMap<LeafKey, SpendingLeaf>, key: LeafKey) -> &mut SpendingLeaf {
-    leaves.entry(key).or_insert_with(|| SpendingLeaf {
-        repair: key.0,
-        kind: if key.1 { ProjectKind::Railway } else { ProjectKind::Building },
-        building: named(key.2),
-        state: named(key.3),
-        to_state: named(key.4),
-        spent: Vec::new(),
-        unknown: Vec::new(),
-        projects: Vec::new(),
-    })
-}
-
 pub(crate) fn leaf_keys(line: &Line) -> Vec<LeafKey> {
     let none = TagHolderRow::NONE;
     let place = (if line.railway { none } else { line.building.unwrap_or(none) }, line.state.unwrap_or(none), if line.railway { line.to_state.unwrap_or(none) } else { none });
@@ -281,11 +133,145 @@ pub(crate) fn leaf_keys(line: &Line) -> Vec<LeafKey> {
     out
 }
 
-pub(crate) fn line_gap(line: &Line, until: Option<i32>) -> Option<SpendingUnknown> {
-    let reason = gap_of(line.output_reason)?;
-    if reason == SpendingGap::NotRecorded && !line.had_output {
-        return None;
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LineFacts {
+    pub leaf: (bool, u32, u32, u32),
+    pub building: Option<u32>,
+    pub new_from: Option<i32>,
+    pub repair_from: Option<i32>,
+    pub gaps: Vec<(i32, SpendingGap)>,
+    pub before_first_read: Option<i32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Facts {
+    pub from: i32,
+    pub to: i32,
+    pub spent: BTreeMap<LeafKey, Vec<SpentStep>>,
+    pub lines: Vec<LineFacts>,
+    pub unattributed: Vec<i32>,
+    pub unrecorded: Vec<(i32, i32, String)>,
+    pub names: HashMap<u32, String>,
+    pub warnings: Vec<String>,
+}
+
+const QUEUES_UNREAD: &str = "The construction queues were not read, so output in those hours is not counted";
+const HOURS_UNRECORDED: &str = "Output in hours that were not recorded is not counted";
+
+pub(crate) fn dated_gaps(steps: &[(i32, Option<u8>, bool)], last: i32, final_reason: u8, had_output: bool) -> Vec<(i32, SpendingGap)> {
+    let mut out: Vec<(i32, SpendingGap)> = Vec::new();
+    let mut push = |hour: i32, reason: Option<SpendingGap>, output: bool| {
+        if let Some(reason) = reason
+            && !(reason == SpendingGap::NotRecorded && !output)
+            && out.last().is_none_or(|held| held.1 != reason)
+        {
+            out.push((hour, reason));
+        }
+    };
+    for &(hour, reason, output) in steps {
+        push(hour, reason.and_then(gap_of), output);
     }
-    let known_at = if reason == SpendingGap::FinalOutputMissing { line.last } else { line.first };
-    Some(SpendingUnknown { known_at, reason, project: line.id.to_string(), until })
+    push(last, gap_of(final_reason), had_output);
+    out
+}
+
+fn queue_gaps(query: &Query<'_>, out: &mut Vec<(i32, i32, String)>) -> io::Result<()> {
+    let recording = query.replay.recording();
+    for stretch in &query.timeline.stretches {
+        let mut read: Vec<(i32, i32)> = Vec::new();
+        for table in [TableId::BuildingConstruction, TableId::RailwayConstruction] {
+            let statuses = dashboard_query::cost::storage(|| replay_lanes::lanes::statuses(recording, stretch.run, table, stretch.first, stretch.last))?;
+            read.extend(statuses.iter().filter(|held| replay_recording::columnar_frames::available(held.status)).map(|held| (held.first, held.last)));
+        }
+        read.sort_unstable();
+        let mut cursor = stretch.first;
+        for (first, last) in read {
+            if first > cursor {
+                out.push((cursor, first - 1, QUEUES_UNREAD.to_owned()));
+            }
+            cursor = cursor.max(last.saturating_add(1));
+        }
+        if cursor <= stretch.last {
+            out.push((cursor, stretch.last, QUEUES_UNREAD.to_owned()));
+        }
+    }
+    Ok(())
+}
+
+type ReasonSteps = HashMap<u64, (Vec<(i32, Option<u8>, bool)>, Option<i32>)>;
+
+fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32) -> io::Result<ReasonSteps> {
+    let columns = [col::OUTPUT_REASON, col::OUTPUT_SINCE, col::FIRST_REPAIR_TICK];
+    let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(query.replay.recording(), run, TableId::ConstructionProjects, &columns, Keys::These(ids), first, last))?;
+    let at = |column: usize| history.columns.binary_search(&column).map_err(|_| dashboard_core::invalid("A construction project column was not read"));
+    let (reason, since, repair) = (at(columns[0])?, at(columns[1])?, at(columns[2])?);
+    let number = |cells: &[Cell], at: usize| match cells.get(at) {
+        Some(Cell::Number(value)) => Some(*value),
+        _ => None,
+    };
+    let mut out = ReasonSteps::new();
+    for (key, steps) in &history.keys {
+        let held = out.entry(*key as u64).or_default();
+        for step in steps {
+            let Some(cells) = step.cells.as_deref() else { continue };
+            held.0.push((step.hour, number(cells, reason).and_then(|value| u8::try_from(value).ok()), number(cells, since).is_some()));
+            if held.1.is_none() {
+                held.1 = number(cells, repair).and_then(|value| i32::try_from(value).ok());
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Facts> {
+    let names = Names::new(&query.holders);
+    let mut out = Facts { from: query.timeline.first, to: query.timeline.last, spent: spent_by_leaf(query, country)?, ..Facts::default() };
+    let mut seen = BTreeSet::new();
+    let mut tokens = BTreeMap::new();
+    for stretch in &query.timeline.stretches {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let lines = crate::products::construction::cached_construction(source, stretch.run)?;
+        let links = dashboard_base::queries::links(source, stretch.run)?;
+        let mut kept: Vec<(&Line, bool)> = Vec::new();
+        for line in lines.within(stretch.first, stretch.last) {
+            if !seen.insert(line.id) {
+                continue;
+            }
+            if line.output_alone && gap_of(line.output_reason) == Some(SpendingGap::OwnerUnknown) {
+                kept.push((line, false));
+            } else if names.tag_at(&links, line.country, line.first_read).is_some_and(|tag| query.holders.goes_by(country, tag, line.first_read)) {
+                kept.push((line, true));
+            }
+        }
+        let ids: Vec<u128> = kept.iter().map(|(line, _)| u128::from(line.id)).collect();
+        let steps = if ids.is_empty() { ReasonSteps::new() } else { reason_steps(query, stretch.run, &ids, stretch.first, stretch.last)? };
+        let mut ids = BTreeSet::new();
+        for (line, attributed) in kept {
+            let (read, repair_tick) = steps.get(&line.id).map(|(read, tick)| (read.as_slice(), *tick)).unwrap_or_default();
+            let gaps = dated_gaps(read, line.last, line.output_reason, line.had_output);
+            if !attributed {
+                out.unattributed.push(gaps.iter().find(|gap| gap.1 == SpendingGap::OwnerUnknown).map_or(line.first, |gap| gap.0));
+                continue;
+            }
+            ids.extend(line.building);
+            let leaf = leaf_keys(line)[0];
+            out.lines.push(LineFacts {
+                leaf: (leaf.1, leaf.2, leaf.3, leaf.4),
+                building: line.building,
+                new_from: (line.new_work || !line.repair_work).then_some(line.first_read),
+                repair_from: line.repair_work.then(|| repair_tick.unwrap_or(line.last).max(line.first_read)),
+                gaps,
+                before_first_read: line.before_observation.then_some(line.first_read),
+            });
+        }
+        for key in out.spent.keys() {
+            ids.extend(named(key.2));
+        }
+        super::spellings(query, stretch.run, stretch.last, &ids, &mut tokens)?;
+    }
+    queue_gaps(query, &mut out.unrecorded)?;
+    out.unrecorded.extend(missing(query, out.from, out.to).into_iter().map(|span| (span.first_hour, span.last_hour, HOURS_UNRECORDED.to_owned())));
+    let named = Content::load(source, context).name(source, &tokens, &BTreeSet::new(), &mut out.warnings);
+    out.names = named.types.into_iter().filter_map(|kind| kind.name.or(kind.token).map(|name| (kind.id, name))).collect();
+    Ok(out)
 }

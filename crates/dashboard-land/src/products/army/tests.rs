@@ -176,3 +176,19 @@ fn unit_group_titles_use_group_title_localisation_key_with_bare_fallback() {
     assert_eq!(mod_info.name, "Mod Armor");
     assert_eq!(mod_warning, None);
 }
+
+#[test]
+fn army_at_ranks_and_splits_battalion_groups_at_an_hour() {
+    let source = recording();
+    let asked = serde_json::to_value(ArmyAtParams { branch_id: "1".into(), countries: Vec::new(), top: Some(2), count_for: ArmyAttribution::Host }).unwrap();
+    let panel = dashboard_base::products::at_hour::exact_panel::<ArmyAt>(&source, &LoadContext { content: None }, &asked).unwrap();
+    let reply = (panel.exact().unwrap().cold)(1_800, &AtomicBool::new(false)).unwrap();
+    assert_eq!(reply["missing"], serde_json::Value::Null);
+    let rows = reply["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["tag"], "ITA");
+    assert_eq!(rows[0]["total"], 9);
+    assert_eq!(rows[0]["partsMissing"], serde_json::Value::Null);
+    let sum: i64 = rows[0]["values"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap_or(0)).sum();
+    assert_eq!(sum, 9);
+}

@@ -5,8 +5,9 @@ dashboard_base::register_products! {
     STYLES_COUNTRYFACTS => crate::products::styles::CountryFacts,
     STYLES_COUNTRYSTYLES => crate::products::styles::CountryStyles,
     GROUPS_COUNTRYGROUPS => crate::products::groups::CountryGroups,
+    GROUP_COUNTS_GROUPCOUNTS => crate::products::group_counts::GroupCounts,
     LAND_OWNERS_LANDOWNERSPRODUCT => crate::products::land_owners::LandOwnersProduct,
-    SCALARS_THREATEVENTS => crate::products::scalars::ThreatEvents,
+    SCALARS_WORLDTENSIONSTACK => crate::products::scalars::WorldTensionStack,
     SCALARS_FACTORYGROUPS => crate::products::scalars::FactoryGroups,
     SUBJECTS_SUBJECTS => crate::products::subjects::Subjects,
     PLACE_NAMES_PLACENAMES => crate::products::place_names::PlaceNames,
@@ -21,6 +22,7 @@ dashboard_base::register_hourly_products! {
     SCALARS_NUCLEARARSENAL => crate::products::scalars::NuclearArsenal,
     SCALARS_WORLDTENSION => crate::products::scalars::WorldTension,
     SCALARS_FACTORYPARTS => crate::products::scalars::FactoryParts,
+    AUTONOMY_LEVELS_AUTONOMYLEVELS => crate::products::autonomy_levels::AutonomyLevels,
 }
 
 use dashboard_base::{Source, products::at_hour::exact_panel};

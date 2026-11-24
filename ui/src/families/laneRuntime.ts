@@ -10,17 +10,21 @@ import { createSnapshotIdentityProvider } from './identity/provider.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
 import type { FamilyId } from './plan.ts';
 import { ensureBoundProjection, familyProjectionFailure, retryFamilyProjection, unknownProjectionReason } from './registry.ts';
-import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload, type SceneProjection, type SceneReaders } from './scene.ts';
+import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload, type SceneProjection, type SceneReaders, type SceneSources } from './scene.ts';
+import { SceneTiles, type TiledSources } from './sceneTiles.ts';
 
-export interface LaneBinding<TOptions = unknown> {
+export interface LaneBinding<TOptions = unknown> extends TiledSources {
+  readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly family: string;
   readonly kind: string;
   readonly view?: string;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
+  readonly staticShifts?: Readonly<Record<string, number>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly scrollTop: number;
+  readonly scrollLeft?: number;
   readonly theme?: FamilyTheme;
   readonly identitySnapshot?: IdentitySnapshot | null;
   readonly artResolutions?: ArtResolutions;
@@ -83,6 +87,18 @@ export interface LaneRuntimeOptions {
 
 type Field = { readonly value: unknown; readonly content: string };
 
+interface Painting {
+  readonly seek: number;
+  readonly speed: number;
+  readonly hour: number;
+  readonly owner: string | undefined;
+  readonly pin: number | null;
+  readonly kind: string;
+  readonly view: string | undefined;
+  readonly options: unknown;
+  readonly sources: unknown;
+}
+
 interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   readonly canvas: OffscreenCanvas;
   readonly ctx: OffscreenCanvasRenderingContext2D;
@@ -101,6 +117,9 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   options: unknown;
   staticPanels: unknown;
   staticAnswers: unknown;
+  tiled: unknown;
+  hovers: unknown;
+  readonly tiles: SceneTiles;
   parts: readonly (readonly unknown[])[];
   validFrom: number;
   validUntil: number;
@@ -108,6 +127,7 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   drawUntil: number;
   drawn: LaneDrawn<TBinding, TModel, TLayout> | null;
   before: LaneDrawn<TBinding, TModel, TLayout> | null;
+  painting: Painting | null;
   changedAt: number;
   demandFields: Record<string, Field>;
   layout: TLayout | null;
@@ -130,6 +150,17 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   auditField: Field | null;
 }
 
+const snapshots = new WeakMap<IdentitySnapshot, { readonly index: IdentityIndex; readonly identity: IdentityProvider }>();
+
+function indexedSnapshot(snapshot: IdentitySnapshot): { readonly index: IdentityIndex; readonly identity: IdentityProvider } {
+  let held = snapshots.get(snapshot);
+  if (!held) {
+    const index = IdentityIndex.fromSnapshot(snapshot);
+    snapshots.set(snapshot, held = { index, identity: createSnapshotIdentityProvider(index) });
+  }
+  return held;
+}
+
 const MIRROR_CADENCE_MS = 1000;
 const TOOLTIP_CADENCE_MS = 250;
 const EMPTY: Painted = { surfaces: [], fields: {}, motion: false };
@@ -147,6 +178,26 @@ function field(held: Held<LaneBinding, unknown, unknown>, slot: string, value: u
   const tag = content();
   held.kept.set(slot, { text, content: tag });
   return { value, content: tag };
+}
+
+function painting(input: PaintInput, binding: LaneBinding): Painting {
+  return {
+    seek: input.seek, speed: input.speed, hour: input.hour, owner: input.binding.owner, pin: input.binding.pin,
+    kind: binding.kind, view: binding.view, options: binding.options, sources: binding.sources,
+  };
+}
+
+function continues(last: Painting | null, next: Painting): boolean {
+  return last !== null
+    && next.speed > 0 && last.speed > 0
+    && next.seek === last.seek
+    && next.hour > last.hour
+    && next.pin === null && last.pin === null
+    && next.owner === last.owner
+    && next.kind === last.kind
+    && next.view === last.view
+    && next.options === last.options
+    && next.sources === last.sources;
 }
 
 function backing(surface: Surface): readonly [number, number, number] {
@@ -179,6 +230,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     && held.options === binding.options
     && held.staticPanels === binding.staticPanels
     && held.staticAnswers === binding.staticAnswers
+    && held.tiled === binding.tiledBySource
+    && held.hovers === binding.hovers
     && hour >= held.validFrom
     && hour < held.validUntil
     && samePictures(held.parts, scene.pictures);
@@ -209,7 +262,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       artProvider: createLaneArtProvider(art),
       projected: null, projectedArtRevision: 0,
       kind: '', viewName: undefined, options: undefined, staticPanels: undefined, staticAnswers: undefined,
-      parts: [], validFrom: Infinity, validUntil: -Infinity, drawFrom: Infinity, drawUntil: -Infinity, drawn: null, before: null, changedAt: -Infinity,
+      parts: [], validFrom: Infinity, validUntil: -Infinity, drawFrom: Infinity, drawUntil: -Infinity, drawn: null, before: null, painting: null, changedAt: -Infinity,
       demandFields: {},
       layout: null, layoutKey: [], drawKey: [], content: '', motion: false, artKey: '',
       structureKey: [], structureFields: {},
@@ -217,6 +270,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       mirrorGate, mirrorField: null, tipGate, tipField: null, focusGate, focusField: null,
       flusher: new TrailingFlushScheduler([mirrorGate, tipGate, focusGate], options?.timers),
       auditKey: [], auditField: null,
+      tiled: undefined, hovers: undefined, tiles: new SceneTiles(),
     };
     art.setOnSettle(() => {
       held.artRevision++;
@@ -226,15 +280,13 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
   }
 
   return {
-    next(scene: Scene, hour: number, state?: Map<string, unknown>): number {
+    next(scene: Scene, hour: number, state?: Map<string, unknown>): number | null {
       const binding = scene.model;
       if (!isBinding(binding)) return Infinity;
       const projection = projectionOf(binding, scene.widget);
-      if (projection === 'loading' || projection === 'unknown') return Infinity;
+      if (projection === 'loading' || projection === 'unknown') return null;
       const held = state?.get(stateKey) as Held<TBinding, TModel, TLayout> | undefined;
-      if (held && sameInputs(held, binding, scene, hour)) return Math.min(held.validUntil, Math.max(hour + 1, family.redraw(held.projected!.model, hour)));
-      if (!projection.nextChange) return Infinity;
-      return projection.nextChange(sceneReadView(scene, binding, hour, held ? readersOf(held) : undefined), binding.options);
+      return held && sameInputs(held, binding, scene, hour) ? Math.min(held.validUntil, Math.max(hour + 1, family.redraw(held.projected!.model, hour))) : null;
     },
 
     unmount(widget: number, state: Map<string, unknown>): void {
@@ -288,8 +340,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const readersChanged = keep.snapshot !== snapshot || keep.artResolutions !== binding.artResolutions;
       if (keep.snapshot !== snapshot) {
         keep.snapshot = snapshot;
-        keep.index = snapshot ? IdentityIndex.fromSnapshot(snapshot) : null;
-        keep.identity = keep.index ? createSnapshotIdentityProvider(keep.index) : undefined;
+        const indexed = snapshot ? indexedSnapshot(snapshot) : null;
+        keep.index = indexed?.index ?? null;
+        keep.identity = indexed?.identity;
       }
       if (readersChanged) {
         keep.artResolutions = binding.artResolutions;
@@ -300,6 +353,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       }
 
       const hour = input.hour;
+      const current = painting(input, binding);
+      const continuing = continues(keep.painting, current);
+      keep.painting = current;
       const readers = readersOf(keep);
       let reuse = sameInputs(keep, binding, input, hour);
       if (reuse && (readersChanged || keep.projectedArtRevision !== keep.artRevision)) {
@@ -307,7 +363,15 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.projectedArtRevision = keep.artRevision;
       }
       if (!reuse) {
-        const projected = projectScene(input, binding, hour, readers, view => projection.project(view, binding.options));
+        keep.tiles.sync(binding);
+        const base: SceneSources = {
+          sources: binding.sources,
+          ...(binding.staticPanels ? { staticPanels: binding.staticPanels } : {}),
+          ...(binding.staticAnswers ? { staticAnswers: binding.staticAnswers } : {}),
+          ...(binding.hovers ? { hovers: binding.hovers } : {}),
+        };
+        const series = keep.tiles.series(input, base, binding, hour);
+        const projected = projectScene(input, series ? { ...base, series } : base, hour, readers, view => projection.project(view, binding.options));
         const until = Math.min(
           projection.nextChange ? projection.nextChange(projected.view, binding.options) : Infinity,
           family.boundary(projected.model, hour),
@@ -320,6 +384,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.options = binding.options;
         keep.staticPanels = binding.staticPanels;
         keep.staticAnswers = binding.staticAnswers;
+        keep.tiled = binding.tiledBySource;
+        keep.hovers = binding.hovers;
         keep.parts = snapshotPictures(input.pictures);
         keep.validFrom = hour;
         keep.validUntil = until > hour ? until : hour + 1;
@@ -328,7 +394,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         if (projected.artAsks.length) demands.artDemands = field(keep, 'artDemands', projected.artAsks, content);
         keep.demandFields = demands;
         keep.drawUntil = -Infinity;
-        keep.before = keep.drawn;
+        keep.before = continuing ? keep.drawn : null;
         keep.changedAt = input.now;
       }
       const projected = keep.projected!;
@@ -402,12 +468,12 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       Object.assign(fields, keep.structureFields);
 
       const now = input.now;
-      const mirrorKey = `${binding.focusedKey ?? ''}\u0000${binding.scrollTop}`;
+      const mirrorKey = `${binding.focusedKey ?? ''}\u0000${binding.scrollLeft ?? 0}\u0000${binding.scrollTop}`;
       if (!keep.mirrorField || keep.mirrorGate.due(now, input.speed, mirrorKey)) {
         keep.mirrorField = field(keep, 'mirror', family.mirror(frame), content);
         keep.mirrorGate.record(now, mirrorKey);
       }
-      fields.mirror = keep.mirrorField;
+      if (keep.mirrorField.value !== null) fields.mirror = keep.mirrorField;
 
       if (input.inspect) {
         if (!keep.tipField || keep.tipGate.due(now, input.speed, input.inspect)) {
@@ -449,7 +515,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       return {
         ...(status === 'picture' ? { mode: 'picture' as const } : {}),
         ...nextChangeAt,
-        viewport: { width: surface.width, height: surface.height, dpr, scrollLeft: 0, scrollTop: binding.scrollTop },
+        viewport: { width: surface.width, height: surface.height, dpr, scrollLeft: binding.scrollLeft ?? 0, scrollTop: binding.scrollTop },
         surfaces: [{ source: keep.canvas, content: keep.content }],
         fields,
         motion: keep.motion,

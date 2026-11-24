@@ -549,6 +549,10 @@ fn a_series_reads_its_tags_holder_at_the_head() {
     assert!(answers.iter().any(|(id, ..)| *id == 5) && answers.iter().any(|(id, ..)| *id == 6), "both answered after the seek");
     for (id, hour, answer) in &answers {
         assert_eq!(answer, &harness.fresh(if *id == 5 { &series } else { &top }, *hour), "query {id} at hour {hour} after the seek back");
+        if *id == 6 {
+            assert_eq!(answer.not_recorded.as_deref(), Some("Countries holds a row of a country not known at this hour"), "rows no tag holds refuse the top at {hour}");
+            continue;
+        }
         assert_eq!((answer.keys[0], answer.values[0]), (100, i64::from(*hour) / 10), "query {id} at hour {hour}: AAA's first holder");
     }
 }
@@ -561,19 +565,35 @@ fn series_identity(query: &Query) -> Identity {
 #[test]
 fn a_top_breaks_a_tie_at_its_last_place_by_tag_as_the_race_does() {
     let pages = record(quiet);
-    let mut harness = harness(&pages);
     let held = |slot, id| vec![HolderRun { first: 0, last: HOURS as Hour - 1, holder: Holder::Found { slot, id }, starts_segment: true }];
-    let mut holders = Holders::default();
-    holders.tags.insert("MMM".into(), held(1, 101));
-    holders.tags.insert("ZZZ".into(), held(2, 102));
-    holders.tags.insert("AAA".into(), held(3, 103));
-    holders.tags.insert("NNN".into(), held(9, 999));
     let timeline = Stretches { id: 1, first: 0, last: HOURS as Hour - 1, stretches: vec![Stretch { run: 0, first: 0, last: HOURS as Hour - 1, join: Join::Start }], unheld: Vec::new() };
-    let identity = Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) };
-    let top = Query::series_top(&POWER, &POWER.measures[0], 2, identity.clone());
-    let least = Query::series_top(&POWER, &POWER.measures[0], 2, identity.clone()).least();
-    let none_top = Query::series_top(&POWER_NONE, &POWER_NONE.measures[0], 4, identity.clone());
-    let none_least = Query::series_top(&POWER_NONE, &POWER_NONE.measures[0], 2, identity).least();
+    let identity = |tags: &[(&str, u32, u32)]| {
+        let mut holders = Holders::default();
+        for &(tag, slot, id) in tags {
+            holders.tags.insert(tag.into(), held(slot, id));
+        }
+        Identity { holders: Arc::new(holders), timeline: Arc::new(timeline.clone()) }
+    };
+    let partly = identity(&[("MMM", 1, 101), ("ZZZ", 2, 102), ("AAA", 3, 103), ("NNN", 9, 999)]);
+    let mut first = harness(&pages);
+    let unknown = Query::series_top(&POWER, &POWER.measures[0], 2, partly.clone());
+    let unknown_none = Query::series_top(&POWER_NONE, &POWER_NONE.measures[0], 2, partly);
+    first.follow.follow(5, unknown.clone()).unwrap();
+    first.follow.follow(6, unknown_none.clone()).unwrap();
+    first.seek(0);
+    let played = first.play(50);
+    for (id, query) in [(5, &unknown), (6, &unknown_none)] {
+        let (_, hour, answer) = played.iter().flat_map(Played::answers).filter(|(at, _, _)| *at == id).next_back().expect("an answer");
+        assert_eq!(answer, first.fresh(query, hour));
+        assert_eq!(answer.not_recorded.as_deref(), Some("Countries holds a row of a country not known at this hour"), "a row no tag holds refuses the top, never drops out");
+    }
+
+    let whole = identity(&[("MMM", 1, 101), ("ZZZ", 2, 102), ("AAA", 3, 103), ("NNN", 9, 999), ("CCC", 0, 100), ("BBB", 4, 104), ("YYY", 5, 105), ("ZZY", 6, 106), ("YYZ", 7, 107)]);
+    let mut harness = harness(&pages);
+    let top = Query::series_top(&POWER, &POWER.measures[0], 2, whole.clone());
+    let least = Query::series_top(&POWER, &POWER.measures[0], 2, whole.clone()).least();
+    let none_top = Query::series_top(&POWER_NONE, &POWER_NONE.measures[0], 2, whole.clone());
+    let none_least = Query::series_top(&POWER_NONE, &POWER_NONE.measures[0], 3, whole).least();
     harness.follow.follow(7, top.clone()).unwrap();
     harness.follow.follow(8, least.clone()).unwrap();
     harness.follow.follow(9, none_top.clone()).unwrap();
@@ -581,22 +601,20 @@ fn a_top_breaks_a_tie_at_its_last_place_by_tag_as_the_race_does() {
     harness.seek(0);
     let played = harness.play(50);
     let last = |id: u32| played.iter().flat_map(Played::answers).filter(|(at, _, _)| *at == id).next_back().expect("an answer");
-    let (_, hour, answer) = last(7);
-    assert_eq!(answer, harness.fresh(&top, hour));
-    let names: Vec<&str> = (0..answer.keys.len()).filter_map(|row| answer.name(row)).collect();
-    assert_eq!(names, ["MMM", "AAA"], "value first, then tag in byte order, never key");
-    let (_, hour, answer) = last(8);
-    assert_eq!(answer, harness.fresh(&least, hour));
-    let names: Vec<&str> = (0..answer.keys.len()).filter_map(|row| answer.name(row)).collect();
-    assert_eq!(names, ["AAA", "ZZZ"], "the least first, a tie by tag in byte order");
-    for (id, query, wanted) in [(9, &none_top, &["MMM", "AAA", "NNN", "ZZZ"][..]), (10, &none_least, &["AAA", "NNN"][..])] {
+    let cases: [(u32, &Query, &[&str], &str); 4] = [
+        (7, &top, &["MMM", "CCC"], "value first"),
+        (8, &least, &["AAA", "BBB"], "the least first, a tie at the last place by tag in byte order, never key"),
+        (9, &none_top, &["MMM", "CCC"], "value first"),
+        (10, &none_least, &["AAA", "BBB", "NNN"], "a holder with no row ranks at zero, a tie by tag"),
+    ];
+    for (id, query, wanted, why) in cases {
         let (_, hour, answer) = last(id);
         assert_eq!(answer, harness.fresh(query, hour));
         let names: Vec<&str> = (0..answer.keys.len()).filter_map(|row| answer.name(row)).collect();
-        assert_eq!(names, wanted, "a holder with no row ranks at zero");
-        let nnn = names.iter().position(|name| *name == "NNN").unwrap();
-        assert_eq!((answer.keys[nnn], answer.values[nnn], answer.states[nnn]), (999, 0, State::Value));
+        assert_eq!(names, wanted, "{why}");
     }
+    let (_, _, answer) = last(10);
+    assert_eq!((answer.keys[2], answer.values[2], answer.states[2]), (999, 0, State::Value));
 }
 
 static PARTS: Series = Series {
@@ -758,14 +776,14 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
     }
     let army = serde_json::json!({ "product": "army-size", "params": { "branchId": "1", "countries": [], "top": 10, "measure": "divisions", "countFor": "owner", "byType": false } });
     match crate::parse(&army, &nobody()).unwrap() {
-        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false }, .. } => assert_eq!((series.kind, measure.name), ("army-totals", "ownerDivisions")),
+        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false, .. }, .. } => assert_eq!((series.kind, measure.name), ("army-totals", "ownerDivisions")),
         _ => panic!("a series"),
     }
     let typed = serde_json::json!({ "product": "army-size", "params": { "branchId": "1", "countries": ["GER"], "measure": "battalions", "countFor": "owner", "byType": true } });
     assert_eq!(crate::parse(&typed, &nobody()).err().unwrap().to_string(), "Army sizes by unit type are not followed at the head");
     let air = serde_json::json!({ "product": "air-force-size", "params": { "branchId": "1", "countries": [], "top": 10, "measure": "wings", "ownership": "effective" } });
     match crate::parse(&air, &nobody()).unwrap() {
-        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false }, .. } => assert_eq!((series.kind, measure.name), ("air-force-totals", "effectiveWings")),
+        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false, .. }, .. } => assert_eq!((series.kind, measure.name), ("air-force-totals", "effectiveWings")),
         _ => panic!("a series"),
     }
     let navy = serde_json::json!({ "product": "navy-size", "params": { "branchId": "1", "countries": ["GER"], "top": null, "measure": "strength", "ownership": "logical", "grouping": "type" } });
@@ -786,18 +804,21 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
     assert!(crate::parse(&one, &nobody()).is_err(), "one part is not followed");
     let territory = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "territory", "measure": "controlledStates" }, "top": 10, "hour": 5 } });
     match crate::parse(&territory, &nobody()).unwrap() {
-        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false }, .. } => assert_eq!((series.kind, measure.name), ("territory", "controlledStates")),
+        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false, .. }, .. } => assert_eq!((series.kind, measure.name), ("territory", "controlledStates")),
         _ => panic!("a ranked series"),
     }
     let unranked = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "territory", "measure": "ownedArea" }, "hour": 5 } });
     assert!(crate::parse(&unranked, &nobody()).is_err(), "a series asked for no tags ranks a top");
     let ranked = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "country-game-scores", "measure": "total" }, "top": 10 } });
     match crate::parse(&ranked, &nobody()).unwrap() {
-        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false }, .. } => assert_eq!((series.kind, measure.name), ("country-game-scores", "total")),
+        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false, .. }, .. } => assert_eq!((series.kind, measure.name), ("country-game-scores", "total")),
         _ => panic!("a ranked series"),
     }
     let chosen_top = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "country-game-scores", "measure": "total" }, "reads": [{ "country": "GER", "hour": 0 }], "top": 1 } });
-    assert!(crate::parse(&chosen_top, &nobody()).is_err(), "a top of countries names no tag");
+    match crate::parse(&chosen_top, &nobody()).unwrap() {
+        Query::Series { countries, mode: SeriesMode::Top { n: 1, least: false, .. }, .. } => assert_eq!(countries, vec!["GER".into()]),
+        _ => panic!("a top of named countries ranks them"),
+    }
     let world = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "world-tension", "measure": "tension" }, "top": 3 } });
     assert!(crate::parse(&world, &nobody()).is_err(), "a singleton is never ranked");
     let tension = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "world-tension", "measure": "tension" }, "reads": [{ "country": "World", "hour": 0 }] } });
@@ -809,7 +830,7 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
         _ => panic!("a series of every member"),
     }
     let wide = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "territory", "measure": "controlledStates" }, "top": 1_000 } });
-    assert!(matches!(crate::parse(&wide, &nobody()).unwrap(), Query::Series { mode: SeriesMode::Top { n: 1_000, least: false }, .. }));
+    assert!(matches!(crate::parse(&wide, &nobody()).unwrap(), Query::Series { mode: SeriesMode::Top { n: 1_000, least: false, .. }, .. }));
     let log =serde_json::json!({ "product": "log-page", "params": { "branchId": "1", "log": "market-events", "to": 9, "pageSize": 50, "columns": ["kind", "country"] } });
     let columns = vec![dashboard_declare::field(TableId::MarketEvents, "kind").unwrap(), dashboard_declare::field(TableId::MarketEvents, "country").unwrap()];
     match crate::parse(&log, &nobody()).unwrap() {
@@ -1421,16 +1442,104 @@ fn dated_panel_merge_keeps_the_reading_and_its_confirmation_separate() {
 }
 
 #[test]
-fn a_message_with_a_product_waiting_for_its_table_is_never_merged() {
+fn dated_panel_merge_survives_a_waiting_product_and_coalesces_siblings() {
     use crate::panel::dated;
-    let step = |hour, records: &[(u32, u8)]| {
+    let step = |hour, records: &[(u32, u8, &[u8])]| {
         let mut batch = dated::ProductBatch::new((0, 3, 9));
-        for &(id, kind) in records { batch.changed(id, hour, kind, if kind == dated::DATA { b"x" } else { b"" }); }
+        for &(id, kind, body) in records {
+            batch.changed(id, hour, kind, body);
+        }
         batch.finish(Some(hour))
     };
-    assert!(dated::merge(&step(10, &[(7, dated::DATA)]), &step(34, &[(7, dated::WAITING)])).is_err());
-    assert!(dated::merge(&step(34, &[(7, dated::WAITING)]), &step(58, &[(8, dated::DATA)])).is_err());
-    assert!(dated::merge(&step(10, &[(7, dated::DATA)]), &step(34, &[(8, dated::STANDS)])).is_ok());
+    let (merged, superseded) = dated::merge(&step(10, &[(7, dated::DATA, b"v1")]), &step(34, &[(7, dated::WAITING, b"")])).unwrap();
+    assert_eq!(superseded, 1);
+    assert_eq!(
+        dated::records(&merged).unwrap().iter().map(|r| (r.id, r.kind, r.hour, r.body)).collect::<Vec<_>>(),
+        [(7, dated::DATA, 10, &b"v1"[..]), (7, dated::WAITING, 34, &b""[..]), (0, dated::COMPLETED, 34, &b""[..])]
+    );
+    let (merged, superseded) = dated::merge(
+        &step(34, &[(7, dated::WAITING, b""), (8, dated::DATA, b"older-payload")]),
+        &step(58, &[(7, dated::WAITING, b""), (8, dated::DATA, b"newer")]),
+    ).unwrap();
+    assert_eq!(superseded, 3);
+    assert_eq!(
+        dated::records(&merged).unwrap().iter().map(|r| (r.id, r.kind, r.hour, r.body)).collect::<Vec<_>>(),
+        [(7, dated::WAITING, 34, &b""[..]), (8, dated::DATA, 58, &b"newer"[..]), (0, dated::COMPLETED, 58, &b""[..])]
+    );
+    let (merged, superseded) = dated::merge(&step(34, &[(7, dated::WAITING, b"")]), &step(58, &[(7, dated::DATA, b"ready")])).unwrap();
+    assert_eq!(superseded, 1);
+    assert_eq!(
+        dated::records(&merged).unwrap().iter().map(|r| (r.id, r.kind, r.hour, r.body)).collect::<Vec<_>>(),
+        [(7, dated::WAITING, 34, &b""[..]), (7, dated::DATA, 58, &b"ready"[..]), (0, dated::COMPLETED, 58, &b""[..])]
+    );
+    assert!(dated::merge(&step(10, &[(7, dated::DATA, b"x")]), &step(34, &[(8, dated::STANDS, b"")])).is_ok());
+}
+
+#[test]
+fn passed_panel_messages_coalesce_with_waiting_and_interleaved_steps() {
+    use crate::panel::dated;
+    use crate::push::{FOLLOW, PANEL, Push};
+    let panel_step = |hour, body: &[u8]| {
+        let mut batch = dated::ProductBatch::new((0, 0, 0));
+        batch.changed(7, hour, dated::WAITING, b"");
+        batch.changed(8, hour, dated::DATA, body);
+        batch.finish(Some(hour))
+    };
+    let payload = vec![b'a'; 512];
+    let one_panel = panel_step(10, &payload);
+    let one_step = rows_message(10, false, &[(1, 1)]);
+    let budget = playhead::ByteBudget::new(1 << 20);
+    let push = Push::with_budget(budget.clone());
+    push.head(0, 0, 5);
+    for (hour, value) in [(10, 1), (20, 2), (30, 3)] {
+        push.offer_kind(FOLLOW, rows_message(hour, false, &[(1, value)]));
+        push.offer_kind(PANEL, panel_step(hour, &payload));
+    }
+    assert_eq!(push.counters().merges, 0);
+    assert_eq!(budget.used(), 3 * (crate::answer::charge(&one_step) + crate::answer::charge(&one_panel)));
+    push.head(0, 0, 35);
+    assert_eq!(push.counters().merges, 4);
+    assert_eq!(push.counters().unmerged, 0);
+    assert_eq!(budget.used(), crate::answer::charge(&one_step) + crate::answer::charge(&one_panel));
+    let (first_kind, first_bytes, ..) = push.try_take().unwrap();
+    let (second_kind, second_bytes, ..) = push.try_take().unwrap();
+    assert!(push.try_take().is_none());
+    let panel_bytes = if first_kind == PANEL { first_bytes } else { assert_eq!(second_kind, PANEL); second_bytes };
+    let records = dated::records(&panel_bytes).unwrap();
+    assert_eq!(
+        records.iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>(),
+        [(7, dated::WAITING, 10), (8, dated::DATA, 30), (0, dated::COMPLETED, 30)]
+    );
+}
+
+#[test]
+fn panel_budget_overflow_refuses_only_the_offending_panel() {
+    use crate::panel::dated;
+    use crate::push::{PANEL, Push};
+    let mut batch = dated::ProductBatch::new((0, 0, 0));
+    batch.changed(1, 40, dated::DATA, b"small-one");
+    batch.changed(2, 40, dated::DATA, &vec![b'x'; 2048]);
+    batch.changed(3, 40, dated::DATA, b"small-three");
+    let packet = batch.finish(Some(40));
+    let budget = playhead::ByteBudget::new(2048);
+    let push = Push::with_budget(budget.clone());
+    push.offer_kind(PANEL, packet);
+    assert!(push.failed().is_none());
+    assert!(budget.used() <= 2048);
+    let (kind, sent, ..) = push.try_take().unwrap();
+    assert_eq!(kind, PANEL);
+    let records = dated::records(&sent).unwrap();
+    assert_eq!(records.len(), 4);
+    assert_eq!((records[0].id, records[0].kind, records[0].body), (1, dated::DATA, &b"small-one"[..]));
+    assert_eq!((records[1].id, records[1].kind, records[1].stepped()), (2, dated::REFUSED, true));
+    assert!(std::str::from_utf8(records[1].body).unwrap().contains("byte payload limit"));
+    assert_eq!((records[2].id, records[2].kind, records[2].body), (3, dated::DATA, &b"small-three"[..]));
+    assert_eq!((records[3].id, records[3].kind, records[3].hour), (0, dated::COMPLETED, 40));
+    let mut next = dated::ProductBatch::new((0, 0, 0));
+    next.changed(1, 50, dated::DATA, b"still-alive");
+    push.offer_kind(PANEL, next.finish(Some(50)));
+    assert!(push.failed().is_none());
+    assert!(push.try_take().is_some());
 }
 
 #[test]

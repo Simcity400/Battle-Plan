@@ -5,10 +5,10 @@ import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { boundedRuns, clipSpansToHour, countryLook, inHourSpans, nextBoundaryAfter, spanStart, timelineModel, wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection, type TimelineSpan } from '../../families/timeline/model.ts';
-import { registerTimelineProjection } from '../../families/timeline/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
-import type { CountryGroupReply, FactionGroup } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
+import { groupCountsRead, rankedCounts } from '../../dashboard/groupCounts.ts';
+import type { CountryGroupReply, FactionGroup, GroupCountsReply } from '../../generated/dashboard';
 import {
   factionChangeHours,
   factionGaps,
@@ -84,12 +84,14 @@ function selectedAt(opt: FactionsOptions, hour: number): Set<string> | null {
   }));
 }
 
-export const factionsProjection: TimelineProjection<FactionsOptions> = registerTimelineProjection<FactionsOptions>({
+export const factionsProjection: TimelineProjection<FactionsOptions> = registerFamilyProjection<TimelineProjection<FactionsOptions>>({
+  family: 'timeline',
   kind: 'factions',
 
   nextChange(readView, opt) {
     const reply = readView.panel<CountryGroupReply>('main');
-    return reply ? nextBoundaryAfter(factionChangeHours(reply, viewsOf(readView, reply, opt)), readView.hour) : Infinity;
+    const counts = readView.panel<GroupCountsReply>('counts')?.nextChange ?? Infinity;
+    return reply ? Math.min(counts, nextBoundaryAfter(factionChangeHours(reply, viewsOf(readView, reply, opt)), readView.hour)) : Infinity;
   },
 
   project(readView, opt) {
@@ -98,7 +100,8 @@ export const factionsProjection: TimelineProjection<FactionsOptions> = registerT
     const base = { hour, firstHour: opt.firstHour, labelWidth: 240 };
     if (!reply) return timelineModel(base);
     const views = viewsOf(readView, reply, opt);
-    const nextChangeAt = nextBoundaryAfter(factionChangeHours(reply, views), hour);
+    const counts = rankedCounts(readView.panel<GroupCountsReply>('counts'));
+    const nextChangeAt = Math.min(counts?.nextChange ?? Infinity, nextBoundaryAfter(factionChangeHours(reply, views), hour));
     if (!reply.factions.length) return timelineModel({ ...base, empty: 'No factions recorded', warnings: reply.warnings, nextChangeAt });
     const gaps = factionGaps(reply);
     const selected = selectedAt(opt, hour);
@@ -108,6 +111,7 @@ export const factionsProjection: TimelineProjection<FactionsOptions> = registerT
       ended: opt.showEnded,
       countries: selected,
       countryIds: selected ? views[0]?.identities.selected([...selected]) ?? null : null,
+      counts,
     }, { country: tag => ({ name: countryLook(readView, tag, hour).name }), day: formatDateOnly }, gaps, opt.firstHour);
     if (!built.lanes.length) {
       return timelineModel({ ...base, empty: selected ? 'None of the chosen countries has been in a faction yet' : 'No factions yet', warnings: reply.warnings, nextChangeAt });
@@ -192,7 +196,6 @@ export const factionsDeclaration: TimelineWidgetDeclaration<FactionsOptions> = {
   subject: 'factions',
   emptyCampaign: 'Load a campaign to see its factions.',
   icon: 'shield',
-  optionFields: OPTIONS,
   countries: { mode: 'multi', labels: true, allTagsForLabels: true },
   jumpToDate: true,
   keyByBranch: true,
@@ -212,6 +215,12 @@ export const factionsDeclaration: TimelineWidgetDeclaration<FactionsOptions> = {
         buildSpanParams: params => params,
         provenInterval: wholeBranchProof,
       },
+    }, {
+      name: 'counts',
+      source: ctx.track.source,
+      branch: ctx.branch.id,
+      offset: ctx.track.axisOffset,
+      read: groupCountsRead(ctx.branch.id, 'factions'),
     }],
   }),
   projection: factionsProjection,

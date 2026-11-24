@@ -3,7 +3,7 @@ use crate::{invalid, table_name};
 use dashboard_declare::{Measure, Series};
 use dashboard_query::{
     coverage::CoverageScope,
-    identity::{Country, Holder, Holders, NOT_IN_HISTORY},
+    identity::{Country, Holder, Holders},
     timeline::Timeline,
 };
 use replay_columnar::summary::Source;
@@ -30,7 +30,7 @@ pub struct Identity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeriesMode {
     Keyed(CoverageScope),
-    Top { n: usize, least: bool },
+    Top { n: usize, least: bool, population: bool },
     Parts { top: Option<usize> },
     NavalLosses { attribution: u8, kinds: &'static [u8], top: Option<usize> },
 }
@@ -155,13 +155,13 @@ impl Query {
 
     pub fn series_top(series: &'static Series, measure: &'static Measure, n: usize, identity: Identity) -> Self {
         let countries = identity.holders.tags.keys().map(Country::from).collect();
-        Self::Series { series, measure, countries, mode: SeriesMode::Top { n, least: false }, identity }
+        Self::Series { series, measure, countries, mode: SeriesMode::Top { n, least: false, population: true }, identity }
     }
 
     pub fn least(self) -> Self {
         match self {
-            Self::Series { series, measure, countries, mode: SeriesMode::Top { n, .. }, identity } => {
-                Self::Series { series, measure, countries, mode: SeriesMode::Top { n, least: true }, identity }
+            Self::Series { series, measure, countries, mode: SeriesMode::Top { n, population, .. }, identity } => {
+                Self::Series { series, measure, countries, mode: SeriesMode::Top { n, least: true, population }, identity }
             }
             other => other,
         }
@@ -202,7 +202,7 @@ fn tag_rows(query: &Query, hour: Hour) -> Vec<TagRow> {
             if series.key.unowned() {
                 return country.tag().and_then(|tag| series.key.fixed(tag)).map_or_else(|| TagRow::Absent(identity.holders.say(country, hour, |name| format!("{name} names no row of {}", series.kind))), TagRow::Key);
             }
-            let Some(name) = identity.holders.label(country, hour) else { return TagRow::Absent(NOT_IN_HISTORY.to_owned()) };
+            let Some(name) = identity.holders.label(country, hour) else { return TagRow::Absent(identity.holders.unnamed(country).to_owned()) };
             if let Some(reason) = unknown {
                 return TagRow::Absent(format!("Who holds {name} is not known: {reason}"));
             }

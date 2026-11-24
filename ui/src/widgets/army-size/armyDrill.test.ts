@@ -1,14 +1,12 @@
-import { gatedTime, heldCountry } from '../../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { countryValuesModel } from '../../charts/race/countryValues.ts';
 import { countryDrillSpans, countryDrillTagAt } from '../../dashboard/countryIdentity.ts';
 import { NumericReply } from '../../dashboard/numericReply.ts';
-import { createWidget } from '../../dashboard/model.ts';
 import { resolveOptions, sectionFields } from '../../dashboard/options.ts';
 import type { ArmySizeReply } from './armySizeData';
 import '../definitions.ts';
-import { armyDrillActors, armyDrillBands, armyDrillIdentityReply, armyDrillNumbers, armyDrillValue, pinArmyDrill } from './armyDrill.ts';
+import { armyDrillActors, armyDrillBands, armyDrillIdentityReply, armyDrillNumbers, armyDrillValue } from './armyDrill.ts';
 import { definition, normaliseArmyOptions, OPTIONS } from './definition.ts';
 import { mergeArmyWindows, validateArmySizeReply } from './armySizeData.ts';
 
@@ -20,7 +18,6 @@ const reply: ArmySizeReply = { branchId: 'synthetic', window: 0, windows: [], in
     mix: [{ firstHour: 100, lastHour: 105, values: [Number('9007199254740993'), null],
       rawValues: ['9007199254740993', null] }] }] };
 
-const OPAQUE = heldCountry({ tag: 'opaque country', origin: 101, slot: 1, countryId: 1 });
 test('Army drill retains exact wide parts and the native independent residual', () => {
   assert.equal(validateArmySizeReply(reply), reply);
   const at = armyDrillValue(countryValuesModel(reply), 'A', 101, 'battalions')!;
@@ -87,26 +84,6 @@ test('Army window remapping retains exact part strings and native identity dates
   assert.deepEqual(joined.series[0].identities, [identity]);
 });
 
-test('Army breakdown options and pin preserve the shown battalion measure and branch-relative date', () => {
-  const widget = { ...createWidget('army-size', 'main', 'army'), options: { view: 'mix', measure: 'strength' } };
-  const options = resolveOptions(OPTIONS, widget.options);
-  assert.equal(options.drill, 'inline');
-  assert.equal(options.view, 'mix');
-  assert.equal(options.show, undefined);
-  const breakdown = { ...options, view: 'breakdown' };
-  assert.equal(sectionFields(OPTIONS, 'options', breakdown).some(field => field.key === 'measure'), true);
-  assert.equal(sectionFields(OPTIONS, 'options', breakdown).some(field => field.key === 'view'), true);
-  const pinned = pinArmyDrill(widget, { id: 'main', branch: { firstHour: 100 } } as Parameters<typeof pinArmyDrill>[1],
-    OPAQUE, gatedTime({ mode: 'pin', windows: { main: { firstOffset: 23, lastOffset: 23 } } }), 'battalions');
-  assert.deepEqual(pinned.countries, { kind: 'tags', tags: ['opaque country'] });
-  assert.deepEqual(pinned.time.value, { mode: 'pin', windows: { main: { firstOffset: 23, lastOffset: 23 } } });
-  assert.equal(pinned.options?.measure, 'battalions');
-  assert.equal(pinned.options?.view, 'breakdown');
-  assert.equal(pinned.options?.show, undefined);
-  assert.equal(pinned.options?.drillOriginHour, 101);
-});
-
-
 test('standalone Army keeps all manual choices and a chosen identity through rank reversal', () => {
   const many: ArmySizeReply = { ...reply, types: [], series: Array.from({ length: 5_000 }, (_, index) => ({
     tag: `opaque ${index}`, membership: null, segments: [{ firstHour: 100, lastHour: 105 }],
@@ -139,38 +116,26 @@ test('Army drawn operands survive decoration and manifest refresh but preserve e
   assert.equal(retained.update('other native selection', undefined, armyDrillNumbers), undefined);
 });
 
-test('Pin as widget saves actual Follow after leaving a saved pin', () => {
-  const widget = { ...createWidget('army-size', 'main', 'army'),
-    time: { mode: 'pin' as const, windows: { main: { firstOffset: 2, lastOffset: 2 } } } };
-  const pinned = pinArmyDrill(widget, { id: 'main', branch: { firstHour: 100 } } as Parameters<typeof pinArmyDrill>[1],
-    OPAQUE, gatedTime({ mode: 'follow' }), 'strength');
-  assert.deepEqual(pinned.time.value, { mode: 'follow' });
-  assert.equal(pinned.options?.drillOriginHour, 101);
-});
-
-
 test('one army View preserves every saved chart/breakdown and only shows relevant settings', () => {
   for (const view of ['race', 'lines', 'mix']) for (const show of ['main', 'breakdown']) {
-    const saved = { configVersion: 1, options: { show, view, measure: 'battalions', byType: true, dateOverlay: true, countFor: 'host' } } as unknown as Parameters<typeof definition.migrate>[1];
+    const saved = { configVersion: 1, options: { show, view, measure: 'battalions', byType: true, countFor: 'host' } } as unknown as Parameters<typeof definition.migrate>[1];
     const migrated = definition.migrate(1, saved);
     assert.equal(migrated.configVersion, 2);
     assert.deepEqual(migrated.options, { view: show === 'breakdown' ? 'breakdown' : view,
-      measure: 'battalions', byType: true, dateOverlay: true, countFor: 'host' });
+      measure: 'battalions', byType: true, countFor: 'host' });
     assert.deepEqual(normaliseArmyOptions(migrated.options), migrated.options);
   }
   assert.deepEqual(normaliseArmyOptions(), { view: 'race' });
   assert.deepEqual(normaliseArmyOptions({ view: 'breakdown' }), { view: 'breakdown' });
   for (const view of ['race', 'lines', 'mix', 'breakdown']) {
-    const options = resolveOptions(OPTIONS, { view, measure: 'battalions', byType: true, dateOverlay: true, endLabels: false });
+    const options = resolveOptions(OPTIONS, { view, measure: 'battalions', byType: true });
     const fields = sectionFields(OPTIONS, 'options', options).map(field => field.key);
     assert.equal(fields.includes('show'), false);
     assert.equal(fields.filter(key => key === 'view').length, 1);
     assert.equal(fields.includes('measure'), view !== 'mix');
     assert.equal(fields.includes('byType'), view === 'race');
-    assert.equal(fields.includes('dateOverlay'), view === 'race');
-    assert.equal(fields.includes('endLabels'), view === 'lines');
+    assert.equal(fields.includes('dateOverlay'), false);
     assert.equal(sectionFields(OPTIONS, 'interaction', options).some(field => field.key === 'drill'), view !== 'breakdown');
     assert.equal(options.byType, true, 'hidden battalion grouping remains saved');
-    assert.equal(options.dateOverlay, true);
   }
 });

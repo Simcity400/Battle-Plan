@@ -8,9 +8,9 @@ import type {
   MeterRow,
   MeterSection,
 } from '../../families/meter/model.ts';
-import { registerMeterProjection } from '../../families/meter/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
+import { formatProgress } from '../../families/valueFormat.ts';
 import type { CipherPair } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { pairKey, percentOf, progressLabel, workingStatus } from './decryptionData.ts';
 import {
   decryptionFilterOptions,
@@ -26,7 +26,7 @@ import {
 
 const flagOf = (country: ResolvedCountry): MeterFlag => ({ tag: country.tag, result: country.flag });
 
-export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = registerMeterProjection({
+export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = registerFamilyProjection({
   family: 'meters',
   kind: 'decryption',
   nextChange(readView, options): number {
@@ -72,10 +72,10 @@ export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = re
             color: owner.colour,
             height: 8,
           },
-          figure: percent === null ? undefined : `${percent}%`,
+          figure: percent === null ? undefined : formatProgress(percent / 100),
           figureMissing: percent === null,
           spoken: `${owner.name} decrypting ${target.name}, ${progressLabel(percent)}, ${workingStatus(pair)}`,
-          audit: `${owner.tag}>${target.tag}|${percent === null ? 'not-recorded' : `${percent}%`}`,
+          audit: `${owner.tag}>${target.tag}|${percent === null ? 'not-recorded' : formatProgress(percent / 100)}`,
           tooltip: {
             title,
             hour: readView.hour,
@@ -153,7 +153,6 @@ export const decryptionDeclaration: MeterWidgetDeclaration<DecryptionFilterOptio
   subject: 'decryption',
   emptyCampaign: 'Load a campaign to see its decryption races.',
   icon: 'lock',
-  optionFields: OPTIONS,
   countries: { mode: 'filter', labels: true, colours: true },
   sources: decryptionSources,
   projection: decryptionProjection,

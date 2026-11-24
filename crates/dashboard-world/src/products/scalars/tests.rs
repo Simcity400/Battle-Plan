@@ -1,6 +1,6 @@
-use super::{factory_groups, factory_parts, game_score, nuclear_arsenal, threat_events, world_tension};
+use super::{factory_groups, factory_parts, game_score, nuclear_arsenal, world_tension, world_tension_stack};
 use replay_data::rows::{CountryFactoriesRow, CountryGameScoreRow, NukeRow, Recorded, ThreatEventRow};
-use threat_events::{Identity, Joined, Step, join};
+use world_tension_stack::{Identity, Joined, Step, join};
 
 fn source(country: u32, reason: &str, place: u32) -> Identity {
     Identity { country, second: 0, date: 100, reason: reason.as_bytes().to_vec(), place }
@@ -152,6 +152,97 @@ fn the_game_score_top_is_ranked_in_the_product_and_refused_by_name_while_any_cou
 }
 
 #[test]
+fn game_score_top_advance_invalidates_only_when_membership_coverage_or_ranking_changes() {
+    use dashboard_base::products::at_hour::Edits;
+    use dashboard_query::identity::{Holder, HolderRun, Holders};
+    use replay_data::rows::{TableId, TableRows};
+    use replay_frame::frame::{DecodedFrame, Metrics, TableView, not_selected};
+    use std::collections::BTreeMap;
+
+    let score = |country: u32, total: Recorded<i64>, army: Recorded<i64>| CountryGameScoreRow {
+        country,
+        total,
+        army,
+        navy: Recorded::Value(0),
+        air: Recorded::Value(0),
+        industry: Recorded::Value(0),
+        land: Recorded::Value(0),
+        ..CountryGameScoreRow::default()
+    };
+    let make_frame = |rows: Vec<CountryGameScoreRow>| {
+        let mut tables = std::array::from_fn(|_| not_selected());
+        tables[TableId::CountryGameScores.index()] = TableView::Complete(TableRows::CountryGameScores(rows)).into();
+        DecodedFrame { branch: 1, hour: 100, tables, metrics: Metrics::default() }
+    };
+    let holders = Holders::new(
+        BTreeMap::from([
+            ("GER".to_owned(), vec![HolderRun { first: 0, last: 200, holder: Holder::Found { slot: 1, id: 1 }, starts_segment: true }]),
+            ("ITA".to_owned(), vec![HolderRun { first: 0, last: 200, holder: Holder::Found { slot: 2, id: 2 }, starts_segment: true }]),
+            ("SOV".to_owned(), vec![HolderRun { first: 0, last: 200, holder: Holder::Found { slot: 3, id: 3 }, starts_segment: true }]),
+        ]),
+        Vec::new(),
+    );
+    let columns: [usize; 6] = std::array::from_fn(|i| {
+        dashboard_declare::field(TableId::CountryGameScores, ["total", "army", "navy", "air", "industry", "land"][i]).unwrap()
+    });
+    let base_rows = [
+        score(1, Recorded::Value(500), Recorded::Value(100)),
+        score(2, Recorded::Value(400), Recorded::Value(200)),
+        score(3, Recorded::Value(300), Recorded::Value(50)),
+    ];
+    let cells = dashboard_follow::live::Cells::default();
+    for (tag, row) in [("GER", &base_rows[0]), ("ITA", &base_rows[1]), ("SOV", &base_rows[2])] {
+        game_score::name_cells(&cells, tag, row, &columns);
+    }
+    let live = cells.finish();
+    let params = game_score::GameScoreParams {
+        branch_id: "1".into(),
+        top: Some(game_score::GameScoreTopParams { count: 2, by: "total".into() }),
+    };
+    let held_top = serde_json::json!({ "tags": ["GER", "ITA"], "missing": null });
+    let mask_of = |name: &str| 1u64 << dashboard_declare::field(TableId::CountryGameScores, name).unwrap();
+    let edit = |country: u32, mask: u64| Edits {
+        tables: BTreeMap::from([(TableId::CountryGameScores, BTreeMap::from([(u128::from(country), mask)]))]),
+        ..Edits::default()
+    };
+
+    let army_changed = make_frame(vec![
+        score(1, Recorded::Value(500), Recorded::Value(999)),
+        score(2, Recorded::Value(400), Recorded::Value(200)),
+        score(3, Recorded::Value(300), Recorded::Value(50)),
+    ]);
+    assert!(game_score::advance_keeps(&army_changed, &params, &holders, &edit(1, mask_of("army")), &live, Some(&held_top)).unwrap());
+
+    let same_order = make_frame(vec![
+        score(1, Recorded::Value(550), Recorded::Value(100)),
+        score(2, Recorded::Value(400), Recorded::Value(200)),
+        score(3, Recorded::Value(300), Recorded::Value(50)),
+    ]);
+    assert!(game_score::advance_keeps(&same_order, &params, &holders, &edit(1, mask_of("total")), &live, Some(&held_top)).unwrap());
+
+    let swapped_order = make_frame(vec![
+        score(1, Recorded::Value(500), Recorded::Value(100)),
+        score(2, Recorded::Value(600), Recorded::Value(200)),
+        score(3, Recorded::Value(300), Recorded::Value(50)),
+    ]);
+    assert!(!game_score::advance_keeps(&swapped_order, &params, &holders, &edit(2, mask_of("total")), &live, Some(&held_top)).unwrap());
+
+    let membership_changed = make_frame(vec![
+        score(1, Recorded::Value(500), Recorded::Value(100)),
+        score(2, Recorded::Value(400), Recorded::Value(200)),
+        score(3, Recorded::Value(450), Recorded::Value(50)),
+    ]);
+    assert!(!game_score::advance_keeps(&membership_changed, &params, &holders, &edit(3, mask_of("total")), &live, Some(&held_top)).unwrap());
+
+    let coverage_lost = make_frame(vec![
+        score(1, Recorded::Value(500), Recorded::Value(100)),
+        score(2, Recorded::Value(400), Recorded::Value(200)),
+        score(3, Recorded::NotRecorded, Recorded::Value(50)),
+    ]);
+    assert!(!game_score::advance_keeps(&coverage_lost, &params, &holders, &edit(3, mask_of("total")), &live, Some(&held_top)).unwrap());
+}
+
+#[test]
 fn factory_groups_are_named_by_every_type_their_flag_counts_and_an_ambiguous_type_by_none() {
     use content_reader_key_names::buildings::{Buildings, FactoryFlags};
     let flags = |military, naval, general, rocket| FactoryFlags { military_production: military, naval_production: naval, general_production: general, rocket_production: rocket };
@@ -170,4 +261,110 @@ fn factory_groups_are_named_by_every_type_their_flag_counts_and_an_ambiguous_typ
     assert!(warnings.iter().any(|warning| warning.starts_with("twice is declared more than once")));
     assert!(warnings.iter().any(|warning| warning.starts_with("rocket_site has a rocket production flag")));
     assert!(warnings.iter().any(|warning| warning.starts_with("mod_foundry: no name")));
+}
+
+#[test]
+fn world_tension_stack_computes_exact_shares_folds_other_and_clips_future() {
+    use std::collections::BTreeMap;
+    use world_tension_stack::{StackInput, TensionValueMode, compute_stack};
+
+    let tension = vec![(10, 19, 25_000), (20, 29, 100_000), (30, 39, 100_000)];
+    let sum = vec![(10, 19, 2_500_000), (20, 29, 12_000_000), (30, 39, 20_000_000)];
+    let mut slots = BTreeMap::new();
+    slots.insert(1, vec![(10, 19, Some(1_500_000)), (20, 29, Some(6_000_000)), (30, 39, Some(10_000_000))]);
+    slots.insert(2, vec![(10, 19, Some(1_000_000)), (20, 29, Some(4_000_000)), (30, 39, Some(6_000_000))]);
+    slots.insert(3, vec![(20, 29, Some(2_000_000)), (30, 39, Some(4_000_000))]);
+    let complete = [(10, 39)];
+    let input = StackInput { tension: &tension, sum: &sum, slots: &slots, aggregates_complete: &complete, missing: &[] };
+    let tag_of = |slot: u32, _: i32| match slot {
+        1 => Some(("GER".to_owned(), false)),
+        2 => Some(("JAP".to_owned(), false)),
+        3 => Some(("ITA".to_owned(), false)),
+        _ => None,
+    };
+    let (end_hour, capped, hours, total, bands, other, next_change) =
+        compute_stack(&input, 10, 25, 2, TensionValueMode::Share, None, 200, tag_of);
+    assert_eq!(end_hour, Some(25));
+    assert_eq!(capped, Some(100.0));
+    assert_eq!(hours, [10, 20]);
+    assert_eq!(total, [Some(25.0), Some(100.0)]);
+    assert_eq!(bands.len(), 2);
+    assert_eq!(bands[0].tag.as_deref(), Some("GER"));
+    assert_eq!(bands[1].tag.as_deref(), Some("JAP"));
+    assert_eq!(bands[0].end_value, Some(50.0));
+    assert!((bands[1].end_value.unwrap() - 100.0 / 3.0).abs() < 1e-9);
+    let other = other.unwrap();
+    assert_eq!(other.count, 1);
+    assert!((other.end_value.unwrap() - 100.0 / 6.0).abs() < 1e-9);
+    assert_eq!(next_change, Some(30));
+
+    let (_, _, _, rec_total, rec_bands, rec_other, _) =
+        compute_stack(&input, 10, 25, 2, TensionValueMode::Recorded, None, 200, tag_of);
+    assert_eq!(rec_total, [Some(25.0), Some(120.0)]);
+    assert_eq!(rec_bands[0].end_value, Some(60.0));
+    assert_eq!(rec_bands[1].end_value, Some(40.0));
+    assert_eq!(rec_other.unwrap().end_value, Some(20.0));
+}
+
+#[test]
+fn world_tension_stack_preserves_negative_contributions_independent_coverage_and_gap_end_labels() {
+    use dashboard_query::series::MissingSpan;
+    use std::collections::BTreeMap;
+    use world_tension_stack::{StackInput, TensionValueMode, compute_stack};
+
+    let tension = vec![(10, 19, 6_500)];
+    let sum = vec![(10, 19, 650_000)];
+    let mut slots = BTreeMap::new();
+    slots.insert(1, vec![(10, 19, Some(400_000)), (20, 29, Some(400_000))]);
+    slots.insert(2, vec![(10, 19, Some(300_000)), (20, 29, None)]);
+    slots.insert(7, vec![(10, 19, Some(-50_000))]);
+    let complete = [(10, 19)];
+    let missing = [MissingSpan { first_hour: 30, last_hour: 35, reason: "gap".into() }];
+    let input = StackInput { tension: &tension, sum: &sum, slots: &slots, aggregates_complete: &complete, missing: &missing };
+    let tag_of = |slot: u32, _: i32| match slot {
+        1 => Some(("GER".to_owned(), false)),
+        2 => Some(("JAP".to_owned(), false)),
+        7 => Some(("ITA".to_owned(), false)),
+        _ => None,
+    };
+
+    let (_, _, _, total, bands, other, _) = compute_stack(&input, 10, 19, 5, TensionValueMode::Recorded, None, 200, tag_of);
+    assert_eq!(total, [Some(6.5)]);
+    assert_eq!(bands.len(), 3);
+    assert_eq!(bands[0].end_value, Some(4.0));
+    assert_eq!(bands[1].end_value, Some(3.0));
+    assert_eq!(bands[2].end_value, Some(-0.5));
+    assert_eq!(bands[2].end_raw.as_deref(), Some("-50000"));
+    assert!(other.is_none());
+
+    let (_, _, _, total2, bands2, other2, _) = compute_stack(&input, 10, 19, 2, TensionValueMode::Recorded, None, 200, tag_of);
+    assert_eq!(total2, [Some(6.5)]);
+    assert_eq!(bands2.len(), 2);
+    let other2 = other2.unwrap();
+    assert_eq!(other2.count, 1);
+    assert_eq!(other2.end_value, Some(-0.5));
+
+    let (_, _, _, share_total, share_bands, share_other, _) = compute_stack(&input, 10, 19, 2, TensionValueMode::Share, None, 200, tag_of);
+    assert_eq!(share_total, [Some(6.5)]);
+    assert!((share_bands[0].end_value.unwrap() - 4.0).abs() < 1e-9);
+    assert!((share_bands[1].end_value.unwrap() - 3.0).abs() < 1e-9);
+    assert!((share_other.unwrap().end_value.unwrap() - (-0.5)).abs() < 1e-9);
+
+    let (end_at_25, capped_at_25, _, rec_total_25, rec_bands_25, _, _) =
+        compute_stack(&input, 10, 25, 5, TensionValueMode::Recorded, None, 200, tag_of);
+    assert_eq!(end_at_25, Some(25));
+    assert_eq!(capped_at_25, None);
+    assert_eq!(rec_total_25.last().copied().flatten(), None);
+    assert_eq!(rec_bands_25[0].end_value, Some(4.0));
+    assert_eq!(rec_bands_25[1].end_value, None);
+    assert_eq!(rec_bands_25[1].end_raw, None);
+    assert_eq!(rec_bands_25[2].end_value, None);
+
+    let (end_gap, capped_gap, _, gap_total, gap_bands, gap_other, _) =
+        compute_stack(&input, 10, 32, 2, TensionValueMode::Recorded, None, 200, tag_of);
+    assert_eq!(end_gap, None);
+    assert_eq!(capped_gap, None);
+    assert_eq!(gap_total.last().copied().flatten(), None);
+    assert!(gap_bands.iter().all(|b| b.end_value.is_none() && b.end_raw.is_none()));
+    assert_eq!(gap_other.unwrap().end_value, None);
 }

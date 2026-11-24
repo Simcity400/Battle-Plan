@@ -1,0 +1,231 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { engineHour } from '../../dashboard/calendar.ts';
+import { createBoundedReadView } from '../../families/boundedView.ts';
+import { IdentityIndex } from '../../families/identity/index.ts';
+import { createSnapshotIdentityProvider } from '../../families/identity/provider.ts';
+import { deriveTimeChartTooltip, hitTestTimeChart } from '../../families/time-chart/hitTest.ts';
+import { layoutTimeChart } from '../../families/time-chart/layout.ts';
+import { drawTimeChart } from '../../families/time-chart/painter.ts';
+import type { Canvas2D, MeasureText } from '../../charts/textWidth.ts';
+import type { WorldTensionStackReply } from '../../generated/dashboard';
+import { worldTensionEventsProjection } from './worldTensionEventsProjection.ts';
+import { worldTensionLinesProjection } from './worldTensionLinesProjection.ts';
+import { worldTensionProjection } from './worldTensionProjection.ts';
+
+const H1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
+const H1941 = engineHour({ year: 1941, month: 9, day: 15, hour: 1 })!;
+const measure: MeasureText = text => text.length * 6.5;
+
+function makeIdentity() {
+  const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: 'b', content: 0 }, [H1936, H1941 + 1000]);
+  index.setFacts({
+    branchId: 'b',
+    known: [[H1936, H1941 + 1000]],
+    names: ['German Reich', 'Japan', 'Italy'],
+    reasons: [],
+    flags: [
+      { keys: ['GER_fascism', null, null], reasons: [null, null, null] },
+      { keys: ['JAP_fascism', null, null], reasons: [null, null, null] },
+      { keys: ['ITA_fascism', null, null], reasons: [null, null, null] },
+    ],
+    countries: [
+      { tag: 'GER', runs: [[H1936, 0, 0x454545, -1, 0]] },
+      { tag: 'JAP', runs: [[H1936, 1, 0xcc4444, -1, 1]] },
+      { tag: 'ITA', runs: [[H1936, 2, 0x44aa55, -1, 2]] },
+    ],
+    warnings: [],
+  });
+  return createSnapshotIdentityProvider(index);
+}
+
+function sampleStack(): WorldTensionStackReply {
+  return {
+    branchId: '1',
+    tensionScale: 1000,
+    contributionScale: 100000,
+    ceilingRaw: '10000000',
+    endHour: H1941,
+    cappedEndTension: 100,
+    hours: [H1936, H1936 + 5000, H1936 + 20000],
+    total: [0, 35, 100],
+    bands: [
+      { slot: 1, tag: 'GER', remembered: false, values: [0, 20, 60], endValue: 60, endRaw: '6000000' },
+      { slot: 2, tag: 'JAP', remembered: false, values: [0, 10, 25], endValue: 25, endRaw: '2500000' },
+      { slot: 3, tag: 'ITA', remembered: false, values: [0, 2, 3], endValue: 3, endRaw: '300000' },
+    ],
+    other: { count: 31, values: [0, 3, 12], endValue: 12 },
+    events: [
+      { hour: H1936 + 5000, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '500000', firstRead: H1936 + 5000, lastRead: null },
+      { hour: H1941 + 200, tag: 'JAP', remembered: false, reason: 'Future event', addedRaw: '1000000', firstRead: H1941 + 200, lastRead: null },
+    ],
+    missing: [],
+    nextChangeHour: H1941 + 24,
+    warnings: [],
+  };
+}
+
+describe('world-tension projections', () => {
+  it('projects stepped stack with Other at bottom, leader on top, shortName at small, and clamps future events', () => {
+    const reply = sampleStack();
+    const readView = createBoundedReadView({
+      hour: H1941,
+      panels: new Map([['main', reply]]),
+      identity: makeIdentity(),
+    });
+    const model = worldTensionProjection.project(readView, {
+      extent: [H1936, H1941],
+      surface: '#111111',
+      layers: 5,
+      values: 'share',
+      showMarkers: true,
+      gaps: [],
+    });
+    assert.equal(model.mode, 'stack');
+    assert.equal(model.stack?.step, true);
+    assert.equal(model.stack?.bands[0]?.key, 'GER');
+    assert.equal(model.stack?.bands.at(-1)?.id, 'other');
+    assert.equal(model.stack?.bands.at(-1)?.endLabel?.name, 'Other (31)');
+    assert.equal(model.stack?.bands.at(-1)?.endLabel?.shortName, 'Other');
+    assert.equal(model.stack?.total?.endLabel?.value, '100%');
+    assert.equal(model.markers?.length, 1, 'future event after displayed hour is excluded');
+
+    const fullLayout = layoutTimeChart(model, 960, 280, 'Segoe UI', measure);
+    assert.ok(fullLayout.endLabels.some(l => l.name === 'Other (31)'));
+    const totalLabel = fullLayout.endLabels.find(l => l.seriesId === '__total__')!;
+    const labelHit = hitTestTimeChart(model, fullLayout, [totalLabel.x + 10, totalLabel.y]);
+    assert.equal(labelHit, 'label:__total__');
+    const tip = deriveTimeChartTooltip(model, fullLayout, labelHit);
+    assert.equal(tip?.payload?.title, 'World tension');
+
+    const minLayout = layoutTimeChart(model, 476, 186, 'Segoe UI', measure);
+    assert.ok(minLayout.endLabels.some(l => l.name === 'Other'), 'min layout uses shortName Other');
+    assert.equal(minLayout.endLabels.some(l => l.seriesId === 'slot:3'), false, 'thin <10px band label hidden at min size');
+
+    const ops: string[] = [];
+    const ctx = new Proxy({}, {
+      get: (_t, prop) => {
+        if (prop === 'measureText') return (t: string) => ({ width: t.length * 6.5 });
+        return (...args: unknown[]) => { ops.push(String(prop)); return args; };
+      },
+    }) as unknown as Canvas2D;
+    drawTimeChart(ctx, model, fullLayout, undefined, `plot:${H1936 + 5000}`, 1);
+    assert.ok(ops.includes('fill') && ops.includes('arc'), 'stepped stack paints bands and hover dot');
+  });
+
+  it('projects world-tension events table view with dated events clipped to displayed hour', () => {
+    const reply = sampleStack();
+    const readView = createBoundedReadView({
+      hour: H1941,
+      panels: new Map([['main', reply]]),
+      identity: makeIdentity(),
+    });
+    const table = worldTensionEventsProjection.project(readView, { branchFirst: H1936 });
+    assert.equal(table.rows.length, 1);
+    assert.equal(table.rows[0]?.name, 'Remilitarised the Rhineland');
+  });
+
+  it('projects world-tension lines view with top-8 coloured lines and stepped inline points', () => {
+    const reply = sampleStack();
+    const readView = createBoundedReadView({
+      hour: H1941,
+      panels: new Map([['main', reply]]),
+      identity: makeIdentity(),
+    });
+    const model = worldTensionLinesProjection.project(readView, {
+      extent: [H1936, H1941],
+      surface: '#111111',
+      gaps: [],
+    });
+    assert.equal(model.mode, 'lines');
+    assert.equal(model.series.length, 3);
+    assert.equal(model.series[0]?.key, 'GER');
+    assert.equal(model.series[0]?.step, true);
+    assert.equal(model.series[0]?.endLabel?.value, '60%');
+    assert.equal(model.series[0]?.points?.length, 3);
+  });
+
+  it('S2: stacks negative contributions below zero, keeps recorded world total in label and audit, preserves witnessed bands without world scalar, and omits end labels during a gap', () => {
+    const negReply: WorldTensionStackReply = {
+      branchId: '1',
+      tensionScale: 1000,
+      contributionScale: 100000,
+      ceilingRaw: '10000000',
+      endHour: H1936 + 5000,
+      cappedEndTension: 6.5,
+      hours: [H1936, H1936 + 5000],
+      total: [0, 6.5],
+      bands: [
+        { slot: 1, tag: 'GER', remembered: false, values: [0, 4], endValue: 4, endRaw: '400000' },
+        { slot: 2, tag: 'JAP', remembered: false, values: [0, 3], endValue: 3, endRaw: '300000' },
+        { slot: 3, tag: 'ITA', remembered: false, values: [0, -0.5], endValue: -0.5, endRaw: '-50000' },
+      ],
+      other: null,
+      events: [],
+      missing: [],
+      nextChangeHour: null,
+      warnings: [],
+    };
+    const negModel = worldTensionProjection.project(
+      createBoundedReadView({ hour: H1936 + 5000, panels: new Map([['main', negReply]]), identity: makeIdentity() }),
+      { extent: [H1936, H1936 + 5000], surface: '#111111', layers: 5, values: 'recorded', showMarkers: false, gaps: [] },
+    );
+    assert.equal(negModel.yAxis.min, undefined, 'negative contributions must not be clipped at min: 0');
+    const negBand = negModel.stack?.bands.find(b => b.id === 'slot:3');
+    assert.ok(negBand?.endLabel, 'negative contribution band keeps its end label');
+    assert.equal(negModel.stack?.total?.endLabel?.value, '6.5%', 'recorded world total label is 6.5%');
+    assert.ok(negModel.auditRows?.some(r => r.row === '__total__' && r.value === '6.5%'));
+    assert.ok(negModel.auditRows?.some(r => r.row === 'ITA' && r.value === '\u22120.5%'), 'negative contribution appears in audit');
+
+    const negLayout = layoutTimeChart(negModel, 720, 260, 'Segoe UI', measure);
+    assert.ok(negLayout.yDomain[0] < 0, 'stack yDomain includes room below zero for negative bands');
+    const itaLabel = negLayout.endLabels.find(l => l.seriesId === 'slot:3');
+    const gerLabel = negLayout.endLabels.find(l => l.seriesId === 'slot:1');
+    assert.ok(itaLabel && gerLabel, 'both positive and negative band labels are placed');
+    assert.ok(itaLabel!.anchorY > negLayout.toY(0), 'negative band anchors below the zero axis');
+    assert.ok(gerLabel!.anchorY < negLayout.toY(0), 'positive band anchors above the zero axis');
+
+    const negLines = worldTensionLinesProjection.project(
+      createBoundedReadView({ hour: H1936 + 5000, panels: new Map([['main', negReply]]), identity: makeIdentity() }),
+      { extent: [H1936, H1936 + 5000], surface: '#111111', gaps: [] },
+    );
+    assert.equal(negLines.yAxis.min, undefined, 'lines view must not clip negative contributions at 0');
+
+    const noWorldScalar: WorldTensionStackReply = {
+      ...negReply,
+      cappedEndTension: null,
+      total: [null, null],
+    };
+    const witnessedModel = worldTensionProjection.project(
+      createBoundedReadView({ hour: H1936 + 5000, panels: new Map([['main', noWorldScalar]]), identity: makeIdentity() }),
+      { extent: [H1936, H1936 + 5000], surface: '#111111', layers: 5, values: 'recorded', showMarkers: false, gaps: [] },
+    );
+    assert.equal(witnessedModel.empty, undefined, 'missing world scalar must not blank independently witnessed contributions');
+    assert.equal(witnessedModel.stack?.bands.length, 3);
+
+    const gapReply: WorldTensionStackReply = {
+      ...negReply,
+      endHour: null,
+      cappedEndTension: null,
+      hours: [H1936, H1936 + 5000, H1936 + 5010],
+      total: [0, 6.5, null],
+      bands: [
+        { slot: 1, tag: 'GER', remembered: false, values: [0, 4, null], endValue: null, endRaw: null },
+        { slot: 2, tag: 'JAP', remembered: false, values: [0, 3, null], endValue: null, endRaw: null },
+        { slot: 3, tag: 'ITA', remembered: false, values: [0, -0.5, null], endValue: null, endRaw: null },
+      ],
+      missing: [{ firstHour: H1936 + 5010, lastHour: H1936 + 5020, reason: 'Recording gap' }],
+    };
+    const gapStack = worldTensionProjection.project(
+      createBoundedReadView({ hour: H1936 + 5015, panels: new Map([['main', gapReply]]), identity: makeIdentity() }),
+      { extent: [H1936, H1936 + 5015], surface: '#111111', layers: 5, values: 'recorded', showMarkers: false, gaps: [] },
+    );
+    assert.equal(gapStack.stack?.total?.endLabel, null, 'total end label is absent during a gap');
+    assert.equal(gapStack.auditRows?.length, 0, 'no stale audit rows during a gap');
+    const gapLines = worldTensionLinesProjection.project(
+      createBoundedReadView({ hour: H1936 + 5015, panels: new Map([['main', gapReply]]), identity: makeIdentity() }),
+      { extent: [H1936, H1936 + 5015], surface: '#111111', gaps: [] },
+    );
+    assert.ok(gapLines.series.every(s => s.endLabel === null), 'lines omit end labels during a gap');
+  });
+});

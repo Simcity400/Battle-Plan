@@ -1,12 +1,7 @@
 import type { HourSpan } from '../../generated/dashboard';
 import { flagArtHandle } from '../art/provider.ts';
 import type { ArtHandle, BoundedReadView, DisplayedHour } from '../contract.ts';
-import { formatDateOnly } from '../valueFormat.ts';
-import type { TimelineLane, TimelineModel, TimelineSpan } from './model.ts';
-
-export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
-  return url ? { kind: 'url', url } : null;
-}
+import type { TimelineLane, TimelineModel } from './model.ts';
 
 export interface CountryLook {
   readonly tag: string;
@@ -46,10 +41,6 @@ export function spanStart(firstHour: number, branchFirst: number, unobserved: re
   return inHourSpans(unobserved, firstHour - 1) ? { startBy: true } : {};
 }
 
-export function sortedBoundaries(hours: Iterable<number>): number[] {
-  return [...new Set(hours)].sort((a, b) => a - b);
-}
-
 export function nextBoundaryAfter(hours: readonly number[], current: number): number {
   let lo = 0;
   let hi = hours.length;
@@ -72,6 +63,7 @@ export interface TimelineModelParts {
   readonly empty?: string | null;
   readonly emptyKind?: 'empty' | 'unavailable';
   readonly warnings?: readonly string[];
+  readonly notes?: readonly string[];
   readonly nextChangeAt?: number;
 }
 
@@ -86,6 +78,7 @@ export function timelineModel(parts: TimelineModelParts): TimelineModel {
     ...(parts.summaryText ? { summaryText: parts.summaryText } : {}),
     ...(parts.empty ? { empty: parts.empty, emptyKind: parts.emptyKind ?? 'empty' } : {}),
     warnings: parts.warnings ?? [],
+    ...(parts.notes?.length ? { notes: parts.notes } : {}),
     nextChangeAt: parts.nextChangeAt ?? Infinity,
   };
 }
@@ -97,14 +90,6 @@ export function boundedRuns<T extends HourSpan>(runs: readonly T[], hour: number
     out.push(run.lastHour > hour ? { ...run, lastHour: hour } : run);
   }
   return out;
-}
-
-export function untilItem(span: TimelineSpan, unobserved: readonly HourSpan[], hour: number, words: { readonly held: string; readonly until: string }): { readonly label: string; readonly value: string } {
-  if (span.open) return { label: words.until, value: words.held };
-  if (!span.endUnseen) return { label: words.until, value: formatDateOnly(span.lastHour) };
-  const gap = unobserved.find(item => item.firstHour <= span.lastHour + 1 && span.lastHour + 1 <= item.lastHour);
-  if (!gap || gap.lastHour >= hour) return { label: 'Last seen', value: formatDateOnly(span.lastHour) };
-  return { label: 'Ended by', value: formatDateOnly(gap.lastHour + 1) };
 }
 
 export function wholeBranchProof(_data: unknown, requested: readonly [number, number]): readonly [number, number] {

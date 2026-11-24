@@ -1,5 +1,6 @@
 import type { Breakdown, BreakdownPart as WirePart } from '../../generated/dashboard';
-import type { BreakdownPart, BreakdownTotal } from './model.ts';
+import { formatScalar } from '../valueFormat.ts';
+import { PATH, type BreakdownPart, type BreakdownTotal } from './model.ts';
 
 export interface BreakdownWords {
   readonly unit: string;
@@ -15,33 +16,35 @@ function scaled(raw: bigint, decimals: number): number {
   return Number(raw) / 10 ** decimals;
 }
 
-function part(wire: WirePart, decimals: number, words: BreakdownWords): BreakdownPart {
+function part(wire: WirePart, decimals: number, words: BreakdownWords, parent: string | null): BreakdownPart {
   const raw = wire.raw === null ? null : BigInt(wire.raw);
   const reason = sentence(wire.reason);
+  const key = parent === null ? wire.key : `${parent}${PATH}${wire.key}`;
   return {
-    key: wire.key,
+    key,
     name: wire.name,
     ordinal: wire.ordinal,
     value: raw === null ? null : scaled(raw, decimals),
     text: raw === null ? '' : words.format(raw, decimals),
     share: wire.share,
+    parentShare: wire.parentShare,
     ...(wire.other ? { neutral: true } : {}),
     ...(wire.state === 'notRecorded' ? { notRecorded: true, missingReason: reason ?? 'Not recorded' } : {}),
     ...(wire.state === 'partial' || wire.state === 'atLeast' ? { partial: true, ...(reason ? { partialReason: reason } : {}) } : {}),
     ...(wire.state === 'atLeast' ? { atLeast: true } : {}),
     ...(wire.count !== null ? { count: Number(wire.count) } : {}),
-    ...(wire.children.length ? { children: wire.children.map(child => part(child, decimals, words)) } : {}),
+    ...(wire.children.length ? { children: wire.children.map(child => part(child, decimals, words, key)) } : {}),
   };
 }
 
 export function breakdownParts(breakdown: Breakdown, words: BreakdownWords): readonly BreakdownPart[] {
-  return breakdown.parts.map(wire => part(wire, breakdown.decimals, words));
+  return breakdown.parts.map(wire => part(wire, breakdown.decimals, words, null));
 }
 
 function hours(count: number): string {
-  if (count < 48) return `${count.toLocaleString('en-US')} ${count === 1 ? 'hour' : 'hours'} not recorded`;
+  if (count < 48) return `${formatScalar(count, 'integer')} ${count === 1 ? 'hour' : 'hours'} not recorded`;
   const days = Math.floor(count / 24);
-  return `${days.toLocaleString('en-US')} ${days === 1 ? 'day' : 'days'} not recorded`;
+  return `${formatScalar(days, 'integer')} ${days === 1 ? 'day' : 'days'} not recorded`;
 }
 
 export function breakdownTotal(breakdown: Breakdown, words: BreakdownWords): BreakdownTotal {

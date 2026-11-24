@@ -131,18 +131,18 @@ test('frame subtitles identify only campaigns different from the sidebar, warnin
       const header = renderToStaticMarkup(createElement(CountryChip, { widget: { ...chipWidget,
         countries: { kind: 'tags', tags: countryNames.slice(0, count).map((_, i) => String(i)) } }, runtime, active: false }));
       if (count === 1) assert.doesNotMatch(header, /<span class="dash-widget-country" data-tooltip=/);
-      else assert.match(header, count === 3 ? /data-tooltip="Alpha, Beta, Gamma"/ : /data-tooltip="Alpha, Beta, Gamma and 2 more"/);
-      assert.doesNotMatch(header, /Delta|Epsilon/);
+      else assert.match(header, count === 3 ? /data-tooltip="Loading…, Loading…, Loading…"/ : /data-tooltip="Loading…, Loading…, Loading… and 2 more"/);
+      assert.doesNotMatch(header, /Alpha|Beta|Gamma|Delta|Epsilon/, 'names come from the dated identity, never from the recording metadata');
     }
     const tags = Array.from({ length: 5000 }, (_, index) => `country-${index}`);
     tracks[0].source.metadata.countries = tags.map((tag, id) => ({ id: String(id), tag, name: `Name ${id}`, observedBranchId: 'branch', observedHour: 43801000 }));
     const large = renderToStaticMarkup(createElement(CountryChip, { widget: { ...chipWidget,
       countries: { kind: 'tags', tags } }, runtime, active: false }));
-    assert.match(large, /data-tooltip="Name 0, Name 1, Name 2 and 4997 more"/);
+    assert.match(large, /data-tooltip="Loading…, Loading…, Loading… and 4997 more"/);
     assert.match(large, />\+4999</);
     const faction = renderToStaticMarkup(createElement(CountryChip, { widget: { ...chipWidget,
       countries: { kind: 'group', group: { type: 'faction', id: '42' }, membership: 'hour', aggregate: false } }, runtime, active: false }));
-    assert.match(faction, /Unnamed faction/);
+    assert.match(faction, /Loading faction…/);
     assert.doesNotMatch(faction, /Synthetic native naming refusal|data-tooltip=/);
   } finally { await vite.close(); delete (globalThis as { __frameReset?: unknown }).__frameReset; }
 });
@@ -397,16 +397,13 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
     assert.match(fallbackHtml, /data-state="loading"/, 'lazy widget fallback renders WidgetState loading');
     assert.doesNotMatch(fallbackHtml, /dash-empty|role="status"/);
 
-    const { default: Research } = await realVite.ssrLoadModule('/ui/src/widgets/research/ResearchWidget.tsx');
     const { default: ActiveResearch } = await realVite.ssrLoadModule('/ui/src/widgets/active-research/ActiveResearchView.tsx');
     const emptyRuntime = { tracks: [], campaignTracks: [], defaultRoleId: null, maps: {}, client: { available: true },
       clock: { getHour: () => 0, getSnapshot: () => ({ playing: false, hoursPerSecond: 1 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } } as unknown as WidgetRuntime;
-    const baseWidget = { id: 'r', kind: 'research', configVersion: 1, title: 'Research', campaign: 'default', trackIds: [], time: { mode: 'follow' }, countries: { kind: 'all' }, options: {} } as WidgetSpec;
-    for (const [name, Component] of [['research', Research], ['active-research', ActiveResearch]] as const) {
-      const html = renderToStaticMarkup(createElement(Component as never, { widget: baseWidget, runtime: emptyRuntime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} } as never));
-      assert.match(html, /data-state="empty"/, `${name} routes empty state through WidgetState`);
-      assert.doesNotMatch(html, /dash-empty/, `${name} does not render raw dash-empty`);
-    }
+    const baseWidget = { id: 'r', kind: 'active-research', configVersion: 1, title: 'Active research', campaign: 'default', trackIds: [], time: { mode: 'follow' }, countries: { kind: 'all' }, options: {} } as WidgetSpec;
+    const html = renderToStaticMarkup(createElement(ActiveResearch as never, { widget: baseWidget, runtime: emptyRuntime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} } as never));
+    assert.match(html, /data-state="empty"/, 'active-research routes empty state through WidgetState');
+    assert.doesNotMatch(html, /dash-empty/, 'active-research does not render raw dash-empty');
 
     const { default: WidgetViewSwitch } = await realVite.ssrLoadModule('/ui/src/dashboard/WidgetViewSwitch.tsx');
     const roSwitch = renderToStaticMarkup(createElement(WidgetViewSwitch as never, {

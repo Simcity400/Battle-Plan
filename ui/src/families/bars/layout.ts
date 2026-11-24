@@ -1,22 +1,30 @@
 import { linearTicks } from '../../charts/valueAxis.ts';
-import { FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH } from '../../draw/kit.ts';
+import { FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH, ROW_SECTION_HEIGHT } from '../../draw/kit.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { BarsDataRow, BarsForm, BarsModel, BarsTwoSidedLayout } from './model.ts';
 
 export const BARS_PAD_X = 12;
 export const BARS_PAD_TOP = 6;
 export const BARS_PAD_BOTTOM = 6;
-export const BARS_SECTION_HEIGHT = 20;
 export const BARS_HEADER_HEIGHT = 22;
 export const BARS_AXIS_HEIGHT = 20;
 export const BARS_LEGEND_ROW_HEIGHT = 22;
 export const BARS_VALUE_GAP = 6;
 export const BARS_SPLIT_CENTER_GAP = 36;
-export const BARS_REMOVE_BUTTON_SIZE = 22;
 export const BARS_GRIP_WIDTH = 10;
+export const PICK_WIDTH = 330;
+export const PICK_GAP = 24;
+export const PICK_ROW_HEIGHT = 22;
+export const PICK_DIVIDER_GAP = 8;
+
+export function pickListWidth(width: number): number {
+  return width >= PICK_WIDTH + PICK_GAP + 360 ? PICK_WIDTH : 0;
+}
 
 export interface BarsLayout {
   readonly form: BarsForm;
+  readonly bodyLeft: number;
+  readonly pickWidth: number;
   readonly twoSidedLayout: BarsTwoSidedLayout;
   readonly width: number;
   readonly height: number;
@@ -88,6 +96,9 @@ function resolveRowMetrics(model: BarsModel, bodyHeight: number): { dataRowHeigh
   if (model.form === 'stacked') {
     return { dataRowHeight: model.rowHeight ?? 28, barHeight: model.barHeight ?? 20 };
   }
+  if (model.form === 'two-sided' && model.twoSidedLayout === 'stacked-pair') {
+    return { dataRowHeight: model.rowHeight ?? 26, barHeight: model.barHeight ?? 7 };
+  }
   const dataRowHeight = model.rowHeight ?? (
     dataCount > 0 && dataCount <= 10 && bodyHeight >= dataCount * 30
       ? 30
@@ -117,6 +128,34 @@ export function layoutFamilyBars(
   model: BarsModel,
   width: number,
   height: number,
+  theme?: FamilyTheme,
+  measure?: (text: string) => number,
+): BarsLayout {
+  const pickWidth = model.pickList ? pickListWidth(width) : 0;
+  if (pickWidth <= 0) return layoutBarsBody(model, width, height, theme, measure);
+  const offset = pickWidth + PICK_GAP;
+  const body = layoutBarsBody(model, Math.max(1, width - offset), height, theme, measure);
+  return {
+    ...body,
+    width: Math.max(1, Math.floor(width)),
+    bodyLeft: offset,
+    pickWidth,
+    nameX: body.nameX + offset,
+    plotLeft: body.plotLeft + offset,
+    plotRight: body.plotRight + offset,
+    centerX: body.centerX + offset,
+    readoutX: body.readoutX + offset,
+    pairX: body.pairX + offset,
+    rightPlotLeft: body.rightPlotLeft + offset,
+    rightPlotRight: body.rightPlotRight + offset,
+    rightNameX: body.rightNameX + offset,
+  };
+}
+
+function layoutBarsBody(
+  model: BarsModel,
+  width: number,
+  height: number,
   _theme?: FamilyTheme,
   measure?: (text: string) => number,
 ): BarsLayout {
@@ -124,7 +163,7 @@ export function layoutFamilyBars(
   const h = Math.max(1, Math.floor(height));
   const form = model.form;
   const twoSidedLayout: BarsTwoSidedLayout = model.twoSidedLayout ?? 'paired';
-  const hasHeader = Boolean(model.caption || model.leftHeader || model.rightHeader);
+  const hasHeader = Boolean(model.caption || model.leftHeader || model.rightHeader || (twoSidedLayout === 'stacked-pair' && model.legend?.length));
   const headerTop = BARS_PAD_TOP;
   const headerHeight = hasHeader ? BARS_HEADER_HEIGHT : 0;
   const hasLegend = form === 'stacked' && Boolean(model.legend?.length);
@@ -150,7 +189,7 @@ export function layoutFamilyBars(
   for (let i = 0; i < model.rows.length; i++) {
     const row = model.rows[i]!;
     rowTops.push(cursorY);
-    const rh = row.kind === 'section' ? BARS_SECTION_HEIGHT : dataRowHeight;
+    const rh = row.kind === 'section' ? ROW_SECTION_HEIGHT : dataRowHeight;
     rowHeights.push(rh);
     cursorY += rh;
   }
@@ -231,6 +270,15 @@ export function layoutFamilyBars(
     rightNameWidth = sideNameW;
     rightNameX = w - BARS_PAD_X - mediaWidth - mediaGap - rightNameWidth;
     rightPlotRight = Math.max(rightPlotLeft + 24, rightNameX - 8);
+  } else if (form === 'two-sided' && twoSidedLayout === 'stacked-pair') {
+    const narrow = w < 440;
+    nameWidth = narrow ? 88 : Math.min(168, Math.max(100, Math.round(w * 0.2)));
+    showReadout = model.rows.some(r => r.kind === 'data' && Boolean(r.readout));
+    readoutWidth = showReadout ? (narrow ? 104 : 128) : 0;
+    readoutX = w - BARS_PAD_X - readoutWidth;
+    plotLeft = nameX + nameWidth + 10;
+    plotRight = Math.max(plotLeft + 40, readoutX - (showReadout ? 12 : 0));
+    centerX = Math.round((plotLeft + plotRight) / 2);
   } else if (form === 'two-sided') {
     const narrow = w < 440;
     nameWidth = narrow ? 88 : Math.min(168, Math.max(100, Math.round(w * 0.24)));
@@ -284,6 +332,8 @@ export function layoutFamilyBars(
 
   return {
     form,
+    bodyLeft: 0,
+    pickWidth: 0,
     twoSidedLayout,
     width: w,
     height: h,

@@ -1,7 +1,7 @@
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { FamilyTooltipEntry, TooltipListItem } from '../host/tooltips.ts';
 import type { BoundedSeries } from '../plan.ts';
-import { formatDateOnly, notRecordedLabel } from '../valueFormat.ts';
+import { formatDateOnly, formatRecordedPercent, formatScalar, formatShare, notRecordedLabel } from '../valueFormat.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import type { TimeChartModel, TimeChartSeriesModel } from './model.ts';
 
@@ -9,8 +9,8 @@ export type ParsedChartInspect =
   | { readonly kind: 'marker'; readonly index: number; readonly hour?: number }
   | { readonly kind: 'label'; readonly seriesId: string }
   | { readonly kind: 'gap'; readonly index: number }
-  | { readonly kind: 'fold'; readonly index: number }
-  | { readonly kind: 'month'; readonly index: number }
+  | { readonly kind: 'fold'; readonly index: number; readonly hour?: number }
+  | { readonly kind: 'month'; readonly index: number; readonly hour?: number }
   | { readonly kind: 'line'; readonly seriesId: string; readonly hour: number }
   | { readonly kind: 'plot'; readonly hour: number };
 
@@ -32,12 +32,18 @@ export function parseChartInspect(key: string | null | undefined): ParsedChartIn
     return Number.isInteger(index) && index >= 0 ? { kind: 'gap', index } : null;
   }
   if (key.startsWith('fold:')) {
-    const index = Number(key.slice(5));
-    return Number.isInteger(index) && index >= 0 ? { kind: 'fold', index } : null;
+    const [rawIndex, rawHour] = key.slice(5).split('@');
+    const index = Number(rawIndex);
+    const hour = rawHour === undefined ? undefined : Number(rawHour);
+    if (!Number.isInteger(index) || index < 0 || (hour !== undefined && !Number.isFinite(hour))) return null;
+    return hour === undefined ? { kind: 'fold', index } : { kind: 'fold', index, hour };
   }
   if (key.startsWith('month:')) {
-    const index = Number(key.slice(6));
-    return Number.isInteger(index) && index >= 0 ? { kind: 'month', index } : null;
+    const [rawIndex, rawHour] = key.slice(6).split('@');
+    const index = Number(rawIndex);
+    const hour = rawHour === undefined ? undefined : Number(rawHour);
+    if (!Number.isInteger(index) || index < 0 || (hour !== undefined && !Number.isFinite(hour))) return null;
+    return hour === undefined ? { kind: 'month', index } : { kind: 'month', index, hour };
   }
   if (key.startsWith('line:')) {
     const at = key.lastIndexOf('@');
@@ -150,7 +156,12 @@ export function hitTestTimeChart(
   if (model.mode === 'columns') {
     for (const col of layout.columns) {
       if (px >= col.x && px <= col.x + col.width) {
-        return col.kind === 'fold' ? `fold:${col.index}` : `month:${col.index}`;
+        if (col.kind === 'fold') {
+          const hour = col.foldMonths?.[0]?.firstHour;
+          return hour !== undefined ? `fold:${col.index}@${hour}` : `fold:${col.index}`;
+        }
+        const hour = col.month?.firstHour;
+        return hour !== undefined ? `month:${col.index}@${hour}` : `month:${col.index}`;
       }
     }
     return null;
@@ -185,13 +196,17 @@ export function hitTestTimeChart(
       if (model.stack.hours[i]! <= clampedHour) at = i;
       else break;
     }
-    if (at >= 0 && model.stack.bands.every(b => b.values[at] != null && Number.isFinite(b.values[at]!))) {
-      let acc = 0;
+    if (at >= 0) {
+      let posAcc = 0;
+      let negAcc = 0;
       for (const band of model.stack.bands) {
-        const v = band.values[at]!;
-        const yBot = layout.toY(acc);
-        const yTop = layout.toY(acc + v);
-        acc += v;
+        const v = band.values[at];
+        if (v == null || !Number.isFinite(v)) continue;
+        const base = v >= 0 ? posAcc : negAcc;
+        const yBot = layout.toY(base);
+        const yTop = layout.toY(base + v);
+        if (v >= 0) posAcc += v;
+        else negAcc += v;
         if (py >= Math.min(yTop, yBot) && py <= Math.max(yTop, yBot)) {
           return `line:${band.id}@${clampedHour}`;
         }
@@ -204,19 +219,17 @@ export function hitTestTimeChart(
 
 function formatExactFigure(value: number, model: TimeChartModel): string {
   if (model.yAxis.format === 'percent') {
-    return `${Math.round(value * 10) / 10}%`;
+    return model.mode === 'stack' ? formatShare(value / 100) : formatRecordedPercent(value);
   }
   if (model.yAxis.format === 'signed1') {
     if (Math.abs(value) < 1e-9) return '0';
-    return `${value < 0 ? '\u2212' : '+'}${Math.abs(value).toFixed(2).replace(/\.?0+$/, '')}`;
+    return formatScalar(value, { decimals: 0, maxDecimals: 2, signed: true });
   }
   const decimals = model.yAxis.decimals ?? 0;
-  const sign = value < 0 ? '\u2212' : '';
-  const abs = Math.abs(value);
-  if (decimals > 0 && abs < 1000) {
-    return `${sign}${abs.toLocaleString('en-US', { maximumFractionDigits: decimals })}`;
+  if (decimals > 0 && Math.abs(value) < 1000) {
+    return formatScalar(value, { decimals: 0, maxDecimals: decimals });
   }
-  return `${sign}${Math.round(abs).toLocaleString('en-US')}`;
+  return formatScalar(value, 'integer');
 }
 
 function artUrlOf(slot: { readonly art: { readonly status: string; readonly url?: string } } | undefined): string | undefined {
@@ -232,6 +245,10 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
       else break;
     }
     if (at >= 0) {
+      const totalVal = model.stack.total?.values[at];
+      const totalItem: TooltipListItem | null = totalVal !== null && totalVal !== undefined && Number.isFinite(totalVal)
+        ? { label: model.measureTitle, value: formatExactFigure(totalVal, model), strong: true }
+        : null;
       for (const band of model.stack.bands) {
         const v = band.values[at];
         if (v === null || v === undefined || !Number.isFinite(v)) continue;
@@ -246,6 +263,13 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
           },
         });
       }
+      entries.sort((a, b) => b.sortVal - a.sortVal);
+      const bandItems = entries.map(e => e.item);
+      if (totalItem) {
+        if (bandItems.length > 0) bandItems[0] = { ...bandItems[0]!, divider: true };
+        return [totalItem, ...bandItems];
+      }
+      return bandItems;
     }
   } else {
     for (const s of model.series) {
@@ -397,7 +421,21 @@ export function deriveTimeChartTooltip(
       value: seg.exactText,
       swatch: seg.color,
     }));
-    items.push({ label: 'Total', value: m.totalText, strong: true, divider: true });
+    if (m.missingParts) {
+      for (const part of m.missingParts) {
+        items.push({
+          label: part.label,
+          swatch: part.color,
+          missingReason: part.reason,
+          tone: 'muted',
+        });
+      }
+    }
+    if (m.totalMissingReason) {
+      items.push({ label: 'Total', missingReason: m.totalMissingReason, tone: 'muted', strong: true, divider: true });
+    } else {
+      items.push({ label: 'Total', value: m.totalText, strong: true, divider: true });
+    }
     return {
       hour: m.firstHour,
       rowKey: inspectKey,
@@ -405,6 +443,7 @@ export function deriveTimeChartTooltip(
         title,
         subtitle: model.measureTitle,
         items,
+        ...(m.note ? { note: m.note } : {}),
       },
     };
   }
@@ -439,6 +478,32 @@ export function deriveTimeChartTooltip(
   }
 
   if (parsed.kind === 'label') {
+    if (model.mode === 'stack' && model.stack) {
+      if (parsed.seriesId === '__total__') {
+        const items = seriesTooltipItemsAt(model, model.hour);
+        return {
+          hour: model.hour,
+          rowKey: inspectKey,
+          payload: {
+            title: model.measureTitle,
+            subtitle: formatDateOnly(model.hour),
+            items,
+          },
+        };
+      }
+      const band = model.stack.bands.find(b => b.id === parsed.seriesId);
+      if (!band) return null;
+      const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === band.name);
+      return {
+        hour: model.hour,
+        rowKey: inspectKey,
+        payload: {
+          title: band.endLabel?.fullName ?? band.name,
+          subtitle: model.measureTitle,
+          items,
+        },
+      };
+    }
     const s = model.series.find(item => item.id === parsed.seriesId);
     if (s) {
       const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === s.name);

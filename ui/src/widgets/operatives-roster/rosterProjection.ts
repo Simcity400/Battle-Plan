@@ -1,13 +1,14 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artKindCell, artState, identityFlags, identityName, newIdentityBoundary, urlArtHandle, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { urlArtHandle } from '../../families/art/provider.ts';
+import { artKindCell, artState, identityFlags, identityName, newIdentityBoundary, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableCellIconItem, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
+import { knownValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
+import { formatDateOnly, formatProgress } from '../../families/valueFormat.ts';
 import type { Country, OperativesRosterReply, OperativeTrait, RosterOperative } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
@@ -26,7 +27,7 @@ function operativeOk(item: unknown, artwork: readonly unknown[]): item is Roster
     && text(item.name) && typeof item.unnamed === 'boolean' && (!item.unnamed || item.name === null) && text(item.nameMissing)
     && art(item.portrait) && text(item.portraitMissing) && (item.skill === null || integer(item.skill))
     && typeof item.experienceRaw === 'string' && /^-?\d{1,20}$/.test(item.experienceRaw) && text(item.experienceText) && finite(item.experienceRatio)
-    && text(item.experienceMissing) && integer(item.assignment) && text(item.assignmentName) && text(item.assignmentDuration) && finite(item.assignmentProgress)
+    && text(item.experienceMissing) && typeof item.experienceAtCap === 'boolean' && integer(item.assignment) && text(item.assignmentName) && text(item.assignmentDuration) && finite(item.assignmentProgress)
     && text(item.assignmentMissing) && art(item.assignmentIcon) && text(item.assignmentIconMissing) && (item.target === null || country(item.target))
     && typeof item.captured === 'boolean' && (item.capturer === null || country(item.capturer)) && (item.capturedHour === null || integer(item.capturedHour))
     && text(item.traitsMissing) && Array.isArray(item.traits)
@@ -85,10 +86,10 @@ function traitsCell(readView: BoundedReadView, operative: RosterOperative, artwo
 
 function progressCell(operative: RosterOperative): TableCell {
   const ratio = operative.experienceRatio;
+  if (ratio === null && operative.experienceAtCap) return { value: notApplicable(operative.experienceText ?? 'Highest skill level'), bar: null };
   if (ratio === null) return { value: notRecorded(operative.experienceMissing ?? 'Progress not recorded'), bar: null };
-  const share = Math.max(0, Math.min(1, ratio));
-  const percent = Math.floor(share * 100);
-  return { value: knownValue(`${percent}%`), sortValue: knownValue(share), bar: { fraction: share === 0 ? zeroValue(0) : knownValue(share) } };
+  const painted = Math.max(0, Math.min(1, ratio));
+  return { value: knownValue(formatProgress(ratio)), sortValue: ratio === 0 ? zeroValue(0) : knownValue(ratio), bar: { fraction: painted === 0 ? zeroValue(0) : knownValue(painted) } };
 }
 
 function missionCell(readView: BoundedReadView, operative: RosterOperative, boundary: IdentityBoundary): TableCell {

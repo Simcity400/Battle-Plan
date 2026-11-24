@@ -112,6 +112,13 @@ pub(crate) fn coverage(source: &Source, query: &Query<'_>, branch: u64, from: i3
     }
     let losses: Vec<(i32, i32)> = source.replay_ref().event_losses(branch).collect();
     raised_notices(raised, &losses, notices);
+    let windows = reader.select(&[FacetFilter { name: "kind".into(), values: vec![i64::from(FeedEventRow::WINDOWS_UNRECORDED)], ..Default::default() }], query.timeline.first, to)?;
+    let page = reader.page(&windows.patterns, windows.groups.len(), from, to, 0, 3)?;
+    let total = u32::try_from(page.total()).unwrap_or(u32::MAX);
+    for (at, paged) in page.rows.iter().enumerate() {
+        let read = columns.read(&paged.row)?;
+        notices.sampled("eventWindows", "Event windows", format!("Read {}: {}", read.read_hour, String::from_utf8_lossy(&read.failure)), if at == 0 { total } else { 0 });
+    }
     Ok(())
 }
 
@@ -182,6 +189,7 @@ fn family_row(kind: EventFeedKind, hour: i32, read_hour: i32, name_hour: i32, ta
         cause: None,
         strike: None,
         decision_state: None,
+        window: None,
     }
 }
 
@@ -221,8 +229,15 @@ pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadConte
     if wanted(EventFeedKind::FactionJoined) {
         for faction in &reply.factions {
             let name = |hour: i32| {
-                let named = faction.names.iter().find(|run| run.first_hour <= hour && hour <= run.last_hour).and_then(|run| run.name.clone()).or_else(|| faction.name.clone());
-                Some(EventFeedItem { token: (!faction.recorded_name.is_empty()).then(|| faction.recorded_name.clone()), name: named, icon: None, description: None, ..Default::default() })
+                let named = faction
+                    .names
+                    .iter()
+                    .find(|run| run.first_hour <= hour && hour <= run.last_hour)
+                    .and_then(|run| run.name.as_deref())
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned);
+                let name_missing = named.is_none().then(|| "Faction name not recorded at this hour".to_owned());
+                Some(EventFeedItem { token: (!faction.recorded_name.is_empty()).then(|| faction.recorded_name.clone()), name: named, icon: None, description: None, name_missing, ..Default::default() })
             };
             for member in &faction.members {
                 if within(member.first_hour) && follows_observed(query, &reply.unobserved.factions, member.first_hour) {

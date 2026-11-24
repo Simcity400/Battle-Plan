@@ -205,7 +205,7 @@ impl AtHour for LendLeaseBalance {
     const TITLE: &'static str = "Lend-lease balance";
     const CONTENT_DEPENDENT: bool = false;
     type Params = LendLeaseBalanceParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, holder, rank, top, countries];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, holder, rank, top, countries, "countries[]"];
     type Reply = LendLeaseBalanceReply;
     type Context = ();
 
@@ -225,7 +225,7 @@ impl AtHour for LendLeaseBalance {
     }
 
 
-    const CLOCK_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
 
     fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         (table == TableId::Countries).then(|| dashboard_base::products::at_hour::field_columns(table, &["canonical_slot", "tag"]))

@@ -15,7 +15,7 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
 import { artUrlForHandle, createLaneArtProvider, flagArtHandle, laneArtDemand, mergeArtDemands, requestDemandedFlags } from '../art/provider.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
-import { NO_ART, artHandleKey, missingArt, refusedArt } from '../art/types.ts';
+import { NO_ART, artHandleKey, productArt, refusedArt } from '../art/types.ts';
 import { RefusedError } from '../../dashboard/queryError.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { ArtHandle, DisplayedHour } from '../plan.ts';
@@ -169,6 +169,30 @@ test('name change at hour 150 gives old name at 149 and new name at 150 simultan
   assert.equal(row150.nextBoundary, 501);
   assert.deepEqual(row150.flagChoice, { kind: 'known', value: FLAG_B });
   assert.equal(index.nextBoundary([countryTagKey('GER')], 149), 150);
+});
+
+test('the index answers a slot’s holder runs and a key’s runs, and counts a revision only when identities change', () => {
+  const index = new IdentityIndex(SCOPE, [0, 500]);
+  const before = index.slotRevision();
+  assert.equal(index.hasRead('identities'), false);
+  index.setIdentities({ branchId: '1', known: [], unknown: [], warnings: [], countries: [
+    { tag: 'OLD', identities: [{ firstHour: 0, lastHour: 200, slot: 5, countryId: 90 }], unresolved: [] },
+    { tag: 'NEW', identities: [{ firstHour: 150, lastHour: 200, slot: 5, countryId: 40 }], unresolved: [{ firstHour: 201, lastHour: 220 }] },
+  ] } as unknown as CountryIdentitiesReply);
+  assert.equal(index.hasRead('identities'), true);
+  assert.notEqual(index.slotRevision(), before);
+  const runs = (list: readonly { tag: string; firstHour: number; lastHour: number; unresolved?: boolean }[]) =>
+    list.map(({ tag, firstHour, lastHour, unresolved }) => ({ tag, firstHour, lastHour, ...(unresolved ? { unresolved } : {}) }));
+  assert.deepEqual(runs(index.tagRuns(5)), [{ tag: 'OLD', firstHour: 0, lastHour: 149 }, { tag: 'NEW', firstHour: 150, lastHour: 200 }], 'the lowest country id holds the slot at every hour');
+  assert.deepEqual(runs(index.runsForKey(countryKey(5))), runs(index.tagRuns(5)));
+  assert.deepEqual(runs(index.runsForKey(countryKey('NEW'))), [{ tag: 'NEW', firstHour: 150, lastHour: 200 }, { tag: 'NEW', firstHour: 201, lastHour: 220, unresolved: true }], 'a tag’s runs keep its unresolved stretch apart');
+  const settled = index.slotRevision();
+  index.setReadFailure('facts', undefined);
+  assert.equal(index.slotRevision(), settled, 'a change elsewhere in the index is not a slot change');
+  const failure = { kind: 'transient', message: 'lost' } as never;
+  index.setReadFailure('identities', failure);
+  assert.equal(index.readFailure('identities'), failure);
+  assert.notEqual(index.slotRevision(), settled);
 });
 
 test('annexed country slot is absent after annexation with valid interval and reason', () => {
@@ -741,8 +765,8 @@ test('leader, state, province and region asks each start their product read and 
         from,
         to,
         unknown: [{ firstHour: 100, lastHour: 120, reason: 'Not in this recording: the game was paused' }],
-        states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: 199, name: `State ${id}`, missing: null, absent: false }, { firstHour: 200, lastHour: to, name: `Renamed ${id}`, missing: null, absent: false }] })),
-        provinces: provinces.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: null, missing: 'Province unnamed in this map', absent: false }] })),
+        states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: 199, name: `State ${id}`, missing: null, presence: 'present' }, { firstHour: 200, lastHour: to, name: `Renamed ${id}`, missing: null, presence: 'present' }] })),
+        provinces: provinces.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: null, missing: 'Province unnamed in this map', presence: 'present' }] })),
         warnings: [],
       };
     },
@@ -752,7 +776,10 @@ test('leader, state, province and region asks each start their product read and 
         from,
         to,
         unknown: [],
-        leaders: [{ reference: 'L1', runs: [{ firstHour: from, lastHour: 179, name: null, missing: 'Not a leader of this country at this hour', absent: true }, { firstHour: 180, lastHour: to, name: 'Ada Vance', missing: null, absent: false }] }],
+        leaders: [
+          { reference: 'L1', runs: [{ firstHour: from, lastHour: 179, name: null, missing: 'Not a leader of this country at this hour', presence: 'absent' }, { firstHour: 180, lastHour: to, name: 'Ada Vance', missing: null, presence: 'present' }] },
+          { reference: 'L2', runs: [{ firstHour: from, lastHour: to, name: null, missing: "The leader's owner is not named at this hour", presence: 'unknown' }] },
+        ],
         warnings: [],
       };
     },
@@ -785,7 +812,9 @@ test('leader, state, province and region asks each start their product read and 
   assert.equal(leader!.holder.status, 'absent', 'a leader before it serves its owner is absent, not named');
   assert.deepEqual(view.who('leader', 'ALP:L1', 190).name, { status: 'ready', value: 'Ada Vance' });
   assert.deepEqual(view.who('leader', 'ALP:L1', 190).validInterval, [180, 500]);
-  assert.equal(otherLeader!.holder.status, 'absent');
+  assert.deepEqual(otherLeader!.holder, { status: 'absent', reason: "The leader's owner is not named at this hour" }, 'an unnamed owner is not known, never another owner and never ready');
+  assert.deepEqual(view.who('state', '64', 110).holder, { status: 'absent', reason: 'Not in this recording: the game was paused' }, 'a place inside a recording gap is not ready');
+  assert.deepEqual(worker.resolve('leader', 'ALP:L2', 150 as DisplayedHour).holder, otherLeader!.holder, 'unknown ownership crosses to the worker');
   assert.equal(calls.length, 3, 'answers inside their validity ask nothing again');
   broker.dispose();
 });
@@ -945,5 +974,37 @@ test('a status is carried, not rebuilt: unresolved holders, failures across the 
 
   assert.deepEqual(toFlagSlotState(refusedArt('Unsupported flag format')), { kind: 'refused', reason: 'Unsupported flag format' });
   assert.deepEqual(toFlagSlotState(NO_ART), { kind: 'none' });
-  assert.deepEqual(toFlagSlotState(missingArt('No flag file'), 'GER'), { kind: 'missing', tag: 'GER' });
+  assert.deepEqual(toFlagSlotState(productArt({ status: 'confirmedMissing', reason: 'No flag file' }), 'GER'), { kind: 'missing', tag: 'GER' });
+});
+
+test('an entity failure belongs to its window and a retryable one is asked again after its backoff', async () => {
+  let now = 0;
+  const timers: { at: number; run: () => void }[] = [];
+  const clock = { now: () => now, after: (ms: number, run: () => void) => { const timer = { at: now + ms, run }; timers.push(timer); return () => { timers.splice(timers.indexOf(timer), 1); }; } };
+  const asked: string[] = [];
+  let failNext = true;
+  const transport = {
+    loadPlaceNameRuns: async (_scope: unknown, from: number, to: number, states: readonly number[]) => {
+      asked.push(`${from}-${to}`);
+      if (from === 0 && failNext) {
+        failNext = false;
+        throw new TypeError('network dropped');
+      }
+      return { from, to, unknown: [], states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: `State ${id}`, missing: null, presence: 'present' }] })), provinces: [], warnings: [] };
+    },
+  } as unknown as IdentityTransport;
+  const broker = new IdentityBroker({ transport, clock });
+  const owner = {};
+  broker.setDemand(owner, SCOPE, { asks: [{ key: stateKey(7), hour: 10 }, { key: stateKey(7), hour: 800 }] }, undefined, [0, 2000]);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(broker.resolve(SCOPE, stateKey(7), 10).kind, 'failed');
+  assert.equal(broker.resolve(SCOPE, stateKey(7), 800).kind, 'known', 'a failure in one window never answers another');
+  assert.ok(timers.length > 0, 'the failed window stays scheduled through its backoff');
+  now = timers[0]!.at;
+  timers.shift()!.run();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.deepEqual(asked.filter(span => span === '0-719').length, 2);
+  const shown = broker.resolve(SCOPE, stateKey(7), 10);
+  assert.equal(shown.kind === 'known' && shown.name.kind === 'known' ? shown.name.value : null, 'State 7');
+  broker.dispose();
 });

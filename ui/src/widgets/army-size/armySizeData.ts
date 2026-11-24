@@ -1,27 +1,19 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { validCountryValues } from '../../charts/race/countryValues.ts';
-import type { CountryValuesModel, CountryValueAt } from '../../charts/race/countryValues';
-import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import { dayLabel } from '../../charts/draw.ts';
 import { usFiveDecimals, usNumber } from '../../charts/numberFormat.ts';
 import type { BoundTrack } from '../../dashboard/model';
 import { int, object, unsigned32 } from '../../dashboard/validation.ts';
 import { isOrderedSpans, isSpan } from '../../charts/series.ts';
 import type { Span } from '../../charts/series';
 import { compareTags } from '../../dashboard/tagOrder.ts';
-import type { OptionValue } from '../../dashboard/options';
 import type { ArmyAttribution, ArmyMeasure, ArmySeries, ArmySizeParams, ArmySizeReply as ArmySizeAnswer } from '../../generated/dashboard';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { productRequest } from '../../dashboard/request.ts';
+import { MEASURES, armyMeasure, measureName } from './armySizeMeta.ts';
+
+export { MEASURES, armyMeasure, measureName };
 
 export type ArmySizeReply = Omit<ArmySizeAnswer, 'series'> & { series: (Omit<ArmySeries, 'country'> & { tag: string })[] };
-
-export const MEASURES = [
-  { value: 'manpower', label: 'Manpower in the field' },
-  { value: 'divisions', label: 'Number of divisions' },
-  { value: 'strength', label: 'Combined strength (hit points)' },
-  { value: 'battalions', label: 'Battalions' },
-] as const satisfies readonly { value: ArmyMeasure; label: string }[];
 
 export function validateArmySizeReply(value: unknown): ArmySizeReply {
   if (object(value) && Array.isArray(value.series) && value.series.some(series => object(series) && 'country' in series)) {
@@ -130,40 +122,13 @@ export function measureChoices(reply: ArmySizeReply | undefined): { value: strin
   return MEASURES.filter(item => offersMeasure(reply, item.value)).map(item => ({ ...item }));
 }
 
-export function armyMeasure(value: OptionValue, measures: readonly ArmyMeasure[] | undefined): ArmyMeasure {
-  if (measures?.includes(value as ArmyMeasure)) return value as ArmyMeasure;
-  return MEASURES.find(item => measures?.includes(item.value))?.value ?? 'divisions';
-}
-
 export function armySizeRequest(branchId: string, resolved: { tags: readonly string[]; top?: number }, measure: ArmyMeasure,
   countFor: ArmyAttribution, byType: boolean, window: number | null = null): ArmySizeParams {
   return { branchId, countries: resolved.top == null ? resolved.tags.map(countryFromKey) : [], top: resolved.top ?? null,
     measure, countFor, byType, window };
 }
 
-export const measureName = (measure: ArmyMeasure) => MEASURES.find(item => item.value === measure)!.label;
 export const formatArmyValue = (value: number) => usFiveDecimals.format(value);
-function grouped(digits: string): string {
-  if (digits.length <= 3) return digits;
-  const head = digits.length % 3 || 3;
-  let out = digits.slice(0, head);
-  for (let at = head; at < digits.length; at += 3) out += `,${digits.slice(at, at + 3)}`;
-  return out;
-}
-
-function formatSafeArmy(raw: number, measure: ArmyMeasure): string | null {
-  if (!Number.isSafeInteger(raw)) return null;
-  const sign = raw < 0 ? '-' : '', magnitude = Math.abs(raw);
-  if (measure !== 'strength') return sign + grouped(String(magnitude));
-  const fraction = String(magnitude % 100000).padStart(5, '0').replace(/0+$/, '');
-  return `${sign}${grouped(String(Math.floor(magnitude / 100000)))}${fraction ? `.${fraction}` : ''}`;
-}
-
-export function formatArmyRawFast(raw: bigint | number, measure: ArmyMeasure): string {
-  return (typeof raw === 'number' || (raw >= -9_007_199_254_740_991n && raw <= 9_007_199_254_740_991n) ? formatSafeArmy(Number(raw), measure) : null)
-    ?? formatArmyRaw(raw.toString(), measure);
-}
-
 export function formatArmyRaw(raw: string, measure: ArmyMeasure): string {
   const value = BigInt(raw);
   if (measure !== 'strength') return usNumber.format(value);
@@ -171,27 +136,14 @@ export function formatArmyRaw(raw: string, measure: ArmyMeasure): string {
   const fraction = (magnitude % 100000n).toString().padStart(5, '0').replace(/0+$/, '');
   return `${value < 0n ? '-' : ''}${usNumber.format(magnitude / 100000n)}${fraction ? `.${fraction}` : ''}`;
 }
-export const formatArmyPart = (at: CountryValueAt, index: number) =>
-  at.values[index] === null ? 'Not known' : at.rawValues?.[index] != null
-    ? formatArmyRaw(at.rawValues[index]!, 'battalions') : formatArmyValue(at.values[index]);
 export const typeName = (type: { key: string; name: string | null }) => contentTitle(type.name, type.key, 'Battalion group name unavailable');
-
-export function* armyTooltips(model: CountryValuesModel, name: string, at: CountryValueAt, hour: number, measure: ArmyMeasure,
-  colours: ReadonlyMap<string, string>): Generator<TooltipContent> {
-  const total: TooltipRow = { label: measureName(measure), value: at.total === null ? '—' : at.rawTotal !== undefined ? formatArmyRaw(at.rawTotal, measure) : formatArmyValue(at.total), strong: true, divider: true };
-  const rows: TooltipRow[] = model.reply.types.map((type, index) => ({ label: typeName(type),
-    value: at.values[index] === null ? '—' : formatArmyPart(at, index), swatch: colours.get(type.key),
-    ...(at.values[index] === null ? { tone: 'muted' as const } : {}) }));
-  const base = { title: name, subtitle: `${dayLabel(hour)} · ${measureName(measure)}` };
-  yield { ...base, rows: [...rows, total] };
-  yield { ...base, rows: [total] };
-}
 
 const METADATA_MEASURE: ArmyMeasure = 'divisions';
 
+export const armyMetadataParams = (branchId: string) => armySizeRequest(branchId, { tags: [] }, METADATA_MEASURE, 'owner', false);
+
 export const armyMetadataRequest = (track: BoundTrack | undefined) => track ? productRequest({
-  sourceId: track.source.id, revision: track.source.revision, product: 'army-size',
-  params: armySizeRequest(track.branch.id, { tags: [] }, METADATA_MEASURE, 'owner', false),
+  sourceId: track.source.id, revision: track.source.revision, product: 'army-size', params: armyMetadataParams(track.branch.id),
 }) : null;
 
 export const armyAbsent = (manifest: ArmySizeReply) => !manifest.available;

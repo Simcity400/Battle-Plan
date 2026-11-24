@@ -7,6 +7,7 @@ import {
   resolveActiveView,
   scopedOptionFields,
   viewKey,
+  viewOwnedFields,
   type FamilyViewEntry,
   type FamilyViewModule,
   type LegacyWidgetEntry,
@@ -18,18 +19,24 @@ export { DEFAULT_VIEW, FAMILY_VIEWS, LEGACY_WIDGETS };
 
 export interface FamilyViewUiLoader {
   readonly load: () => Promise<{ default: WidgetRenderer }>;
-  readonly slots?: readonly ('render' | 'countryChip')[];
+  readonly slots?: readonly ('render' | 'countryChip' | 'subjectMenu')[];
 }
 
 export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'active-research': { load: () => import('./active-research') },
   'agency-comparison': { load: () => import('./agency-comparison') },
+  'air-kills-losses': { load: () => import('./air-kills-losses/family.tsx') },
   'air-superiority-region': { load: () => import('./air-superiority-region') },
+  'apm-graph': { load: () => import('./apm-graph') },
   'apm-table': { load: () => import('./apm-table') },
+  'army-losses-by-month': { load: () => import('./army-losses-by-month') },
+  'army-size': { load: () => import('./army-size/family.tsx') },
   'command-power': { load: () => import('./command-power'), slots: ['render', 'countryChip'] },
   'division-template': { load: () => import('./division-template') },
   'doctrine-mastery': { load: () => import('./doctrine-mastery') },
   'equipment-designs': { load: () => import('./equipment-designs') },
+  'event-choices': { load: () => import('./event-choices') },
+  'event-feed': { load: () => import('./event-feed') },
   'factions': { load: () => import('./factions') },
   'fuel': { load: () => import('./fuel') },
   'factories': { load: () => import('./factories'), slots: ['render', 'countryChip'] },
@@ -37,16 +44,15 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'industrial-organisations': { load: () => import('./industrial-organisations') },
   'international-market': { load: () => import('./international-market') },
   'minefields': { load: () => import('./minefields') },
-  'national-focus': { load: () => import('./national-focus') },
-  'national-spirits': { load: () => import('./national-spirits') },
   'navy-size': { load: () => import('./navy-size') },
-  'occupied-states': { load: () => import('./occupied-states') },
+  'occupation-reserve-manpower': { load: () => import('./occupation-reserve-manpower/family.tsx') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'production-lines': { load: () => import('./production-lines') },
+  'research': { load: () => import('./research') },
   'scoreboard': { load: () => import('./scoreboard') },
   'special-projects': { load: () => import('./special-projects/current.ts') },
   'stability': { load: () => import('./stability') },
-  'war-goals': { load: () => import('./war-goals') },
+  'war-contribution': { load: () => import('./war-contribution'), slots: ['render', 'countryChip', 'subjectMenu'] },
   'convoy-health': { load: () => import('./convoy-health'), slots: ['render', 'countryChip'] },
   'air-superiority-timeline': { load: () => import('./air-superiority-timeline'), slots: ['render', 'countryChip'] },
   'weather-by-region': { load: () => import('./weather-by-region') },
@@ -85,6 +91,26 @@ export function legacyEntriesForKind(kind: string): readonly LegacyWidgetEntry[]
 
 export function manifestFamilyView(kind: string, view?: string): FamilyViewEntry | undefined {
   return familyByPair.get(viewKey(kind, view));
+}
+
+const viewFields = new Map<string, readonly OptionField[]>();
+
+export function familyViewOptionFields(kind: string, view?: string): readonly OptionField[] {
+  const key = viewKey(kind, view);
+  const held = viewFields.get(key);
+  if (held) return held;
+  const definition = widgetDefinition(kind);
+  const fields = new Map<string, OptionField>();
+  for (const field of definition?.options ?? []) fields.set(field.key, field);
+  for (const field of familyByPair.get(key)?.options ?? []) fields.set(field.key, field);
+  const owned = viewOwnedFields([...fields.values()], view);
+  if (definition) viewFields.set(key, owned);
+  return owned;
+}
+
+export function widgetOptionFields(kind: string, storedOptions?: WidgetOptions): readonly OptionField[] {
+  const view = resolveWidgetActiveView(kind, storedOptions);
+  return familyByPair.has(viewKey(kind, view)) ? familyViewOptionFields(kind, view) : widgetDefinition(kind)?.options ?? [];
 }
 
 export function manifestLegacyEntry(kind: string, view?: string): LegacyWidgetEntry | undefined {
@@ -167,7 +193,7 @@ export function manifestKinds(): readonly string[] {
   return kinds;
 }
 
-export function manifestSlotsForKind(kind: string): readonly ('render' | 'countryChip')[] {
+export function manifestSlotsForKind(kind: string): readonly ('render' | 'countryChip' | 'subjectMenu')[] {
   const ui = Object.hasOwn(FAMILY_VIEW_UI, kind) ? FAMILY_VIEW_UI[kind] : undefined;
   if (ui?.slots?.length) return ui.slots;
   const legacy = legacyEntriesForKind(kind);

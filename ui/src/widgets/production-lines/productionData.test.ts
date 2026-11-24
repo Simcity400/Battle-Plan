@@ -97,3 +97,16 @@ test('a chosen line reads back the key it was written with, whatever the country
   assert.equal(productionLineKey('c', '2', productionLineToken('c', '1', '42#1')), null, 'another branch');
   assert.equal(productionLineKey('other', '1', productionLineToken('c', '1', '42#1')), null, 'another campaign');
 });
+
+test('a line shows its recorded maximum factories, and output counted since a later start is the figure marked partial', async () => {
+  const { productionLinesProjection } = await import('./productionLinesProjection.ts');
+  const { createBoundedReadView } = await import('../../families/boundedView.ts');
+  const at: ProductionLinesAtReply = { branchId: '1', tag: 'GER', decimals: 5, missing: null, outputMissing: null, variants: [], organisations: [], icons: [], warnings: [],
+    lines: [{ ...now('9', 0), maxFactories: 15, output: { parts: [{ variant: '100', mio: '0', exact: true }], sinceHour: 1000, wholeLife: false } }] };
+  const live = valuesOf(new Map([[liveKey('9', 'active'), 4], [liveKey('9', 'requested'), 6], [liveKey('9', 'output'), 12]]), 'not recorded');
+  const model = productionLinesProjection.project(createBoundedReadView({ hour: 1200, panels: new Map([['main', at]]), live: new Map([['main', live]]) }), {});
+  const cells = model.rows[0]!.cells;
+  assert.deepEqual([cells.factories!.value, cells.factories!.secondaryValue], [{ kind: 'known', value: 4 }, { kind: 'known', value: 15 }], 'assigned / the recorded maximum, never the requested count');
+  assert.equal(cells.total!.value.kind, 'partial');
+  assert.equal(cells.total!.value.kind === 'partial' && cells.total!.value.value, 12);
+});

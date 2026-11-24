@@ -3,14 +3,13 @@ import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { holderTagAt, inHourRanges, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import { formatValueState } from '../../families/valueFormat.ts';
 import type { GameScoreRow } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { SCORE_LABELS, scorePart, validateGameScore, type ScorePart } from './gameScoreData.ts';
 
 const PART_SURFACE = DEFAULT_CARD_SURFACE;
@@ -130,7 +129,7 @@ function compareUnrankedRows(a: BarsDataRow, b: BarsDataRow): number {
   return compareTags(a.subject ?? a.key, b.subject ?? b.key);
 }
 
-export const gameScoreRaceProjection: BarsProjection<GameScoreRaceOptions> = registerBarsProjection({
+export const gameScoreRaceProjection: BarsProjection<GameScoreRaceOptions> = registerFamilyProjection({
   kind: 'game-score',
   family: 'bars',
   nextChange(readView, options) {
@@ -246,7 +245,6 @@ export const gameScoreRaceDeclaration: BarsWidgetDeclaration<GameScoreRaceOption
   subject: 'game scores',
   emptyCampaign: 'Load a campaign to see its game scores.',
   icon: 'grid',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

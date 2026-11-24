@@ -9,6 +9,7 @@ import {
   type TableSettings,
 } from './settings.ts';
 import type { TableCellKind, TableColumnSpec, TableHeaderGroup } from './model.ts';
+import { TREE_CHEVRON_LANE, treeColumnOf } from './layout.ts';
 import './tableFamily.css';
 
 export const columnWidthVar = (key: string) => `--tf-w-${key.replace(/[^A-Za-z0-9_-]/g, '_')}`;
@@ -55,17 +56,37 @@ export interface TableHeaderColumn extends TableColumnLayout {
   cellKind?: TableCellKind;
 }
 
+export interface TableHeaderIdentity {
+  readonly name: string;
+  readonly missing: boolean;
+  readonly flag: string | null;
+  readonly flagPending: boolean;
+  readonly country: string | null;
+}
+
+function HeaderIdentity({ identity }: { identity: TableHeaderIdentity }) {
+  const initials = identity.country ?? identity.name.slice(0, 3);
+  return <span className="tf-th-identity">
+    {identity.flag
+      ? <img className="tf-th-flag" src={identity.flag} alt="" aria-hidden="true" />
+      : <span className={`tf-th-flag${identity.flagPending ? '' : ' is-missing'}`} aria-hidden="true">{identity.flagPending ? null : initials}</span>}
+    <span className={`tf-th-identity-name${identity.missing ? ' is-missing' : ''}`}>{identity.name}</span>
+  </span>;
+}
+
 export interface FamilyTableHeaderProps {
   columns: readonly TableHeaderColumn[];
   allColumns: readonly TableColumnSpec[];
   settings: TableSettings;
   unsorted?: boolean;
+  treeLane?: boolean;
   editableColumns?: boolean;
   rankWidth?: number;
   pinnedCount?: number;
   pinned: boolean;
   scrollLeft: number;
   canScrollRight?: boolean;
+  identity?: TableHeaderIdentity;
   onChange(update: (next: TableSettings) => void): void;
   onResize(column: string, width: number | null): void;
   onResizing(column: string, width: number, guideX?: number | null): void;
@@ -75,12 +96,14 @@ export function FamilyTableHeader({
   columns,
   settings,
   unsorted = false,
+  treeLane = false,
   editableColumns = true,
   rankWidth = 0,
   pinnedCount = 1,
   pinned,
   scrollLeft,
   canScrollRight = false,
+  identity,
   onChange,
   onResize,
   onResizing,
@@ -92,6 +115,7 @@ export function FamilyTableHeader({
   const sort = settings.sort;
   const hasTall = columns.some(col => Boolean(col.unit) || Boolean(col.headerGroup));
   const showPinShadow = pinned && scrollLeft > 0;
+  const treeColumn = treeColumnOf(columns);
 
   const reorderColumns = (fromKey: string, toKey: string, side: 'left' | 'right') => {
     if (fromKey === toKey) return;
@@ -108,9 +132,15 @@ export function FamilyTableHeader({
     });
   };
 
-  const renderLabel = (item: TableHeaderColumn, active: boolean, end: boolean) => {
+  const renderLabel = (item: TableHeaderColumn, active: boolean, end: boolean, index: number) => {
     if (item.cellKind === 'kind') return <span className="sr-only">{item.label}</span>;
     const arrow = active ? (sort.direction === 'descending' ? SORT_ARROW_DOWN : SORT_ARROW_UP) : null;
+    if (identity && index === 0) {
+      return <>
+        <HeaderIdentity identity={identity} />
+        {arrow && <span className="tf-sort-mark" aria-hidden="true">{arrow}</span>}
+      </>;
+    }
     if (item.headerGroup?.kind === 'shortOver') {
       return <span className="tf-th-short-over">
         <span className="tf-th-so-bar">
@@ -160,7 +190,7 @@ export function FamilyTableHeader({
         const canSort = !unsorted && item.sortable !== false && !item.notRecordedReason && item.cellKind !== 'kind';
         const canDrag = editableColumns && !unsorted && index >= pinnedCount;
         const dropClass = dropTarget?.key === item.key ? ` is-drop-${dropTarget.side}` : '';
-        const title = item.notRecordedReason ?? item.hint;
+        const title = identity && index === 0 ? identity.name : (item.notRecordedReason ?? item.hint);
         return <div
           key={item.key}
           role="columnheader"
@@ -168,7 +198,7 @@ export function FamilyTableHeader({
           className={`tf-th${end ? ' end' : ''}${active ? ' sorted' : ''}${isPinned ? ' pinned' : ''}${isLastPinned && showPinShadow ? ' pinned-shadow' : ''}${item.notRecordedReason ? ' is-unrecorded' : ''}${dropClass}`}
           style={{
             width: `var(${columnWidthVar(item.key)}, ${item.width}px)`,
-            ...(index === 0 && { paddingLeft: CELL_INSET + ROW_MARGIN_X }),
+            ...((index === 0 || (treeLane && index === treeColumn)) && { paddingLeft: CELL_INSET + (index === 0 ? ROW_MARGIN_X : 0) + (treeLane && index === treeColumn ? TREE_CHEVRON_LANE : 0) }),
             ...(index === columns.length - 1 && { paddingRight: CELL_INSET + ROW_MARGIN_X }),
             ...(isPinned && { transform: `translateX(${scrollLeft}px)` }),
           }}
@@ -212,8 +242,8 @@ export function FamilyTableHeader({
             })}
           >
             {canDrag && GRIP_DOTS}
-            {renderLabel(item, active, end)}
-          </button> : <span className="tf-th-static" title={title}>{renderLabel(item, false, end)}</span>}
+            {renderLabel(item, active, end, index)}
+          </button> : <span className="tf-th-static" title={title}>{renderLabel(item, false, end, index)}</span>}
           {editableColumns && <span
             className="tf-resize"
             title="Drag to resize. Double-click to fit."

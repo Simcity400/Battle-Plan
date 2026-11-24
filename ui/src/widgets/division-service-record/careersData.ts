@@ -74,8 +74,10 @@ export function careerTooltip(row: CareerRow, reply: DivisionCareersReply, hour:
     { label: 'Template', value: template ?? 'Template name unavailable' },
     { label: 'Medals', value: facts.medals === null ? 'Not recorded' : usNumber.format(facts.medals), divider: true },
   ];
-  for (const award of facts.awards)
-    rows.push({ label: medalName(reply.medals[award.medal]), lookupKey: reply.medals[award.medal]?.key, value: award.count === 1 ? undefined : `×${award.count}`, indent: true });
+  for (const award of facts.awards) {
+    const medal = award.medal === null ? undefined : reply.medals[award.medal];
+    rows.push({ label: award.medal === null ? 'Medal not identified' : medalName(medal), lookupKey: medal?.key, value: award.count === 1 ? undefined : `×${award.count}`, indent: true });
+  }
   const ratio = experienceRatio(facts);
   rows.push({ label: 'Experience', value: facts.levelName === null ? 'Not recorded' : `${facts.levelName}${ratio === null ? '' : ` (${Math.round(ratio * 100)}%)`}`, divider: true },
     { label: 'Casualties taken', value: facts.casualtiesTaken === null ? 'Not recorded' : usNumber.format(facts.casualtiesTaken), detail: CASUALTIES_TAKEN_NOTE });
