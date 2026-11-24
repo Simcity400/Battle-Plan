@@ -1,8 +1,9 @@
 import type { BranchToHourSourceRead, FamilyPlanContext, SourceCoverage, SourceEntry } from '../plan.ts';
 
 export const DAY_TILE_HOURS = 64 * 24;
-export const DAY_PIECE_HOURS = 8 * 24;
+const DAY_PIECE_HOURS = 8 * 24;
 const PIECES = DAY_TILE_HOURS / DAY_PIECE_HOURS;
+const DAYS = DAY_PIECE_HOURS / 24;
 
 export function dayStartOf(hour: number): number {
   return Math.floor(hour / 24) * 24;
@@ -17,7 +18,7 @@ export function dayTileCount(branch: { readonly firstHour: number; readonly last
 }
 
 export function dayHistoryNames(tiles: number): readonly string[] {
-  return [...Array.from({ length: tiles }, (_, k) => `tile:${k}`), ...Array.from({ length: PIECES - 1 }, (_, j) => `piece:${j}`)];
+  return [...Array.from({ length: tiles }, (_, k) => `tile:${k}`), ...Array.from({ length: PIECES - 1 }, (_, j) => `piece:${j}`), ...Array.from({ length: DAYS - 1 }, (_, i) => `day:${i}`)];
 }
 
 type Params = Readonly<Record<string, unknown>>;
@@ -63,10 +64,7 @@ export function dayTileEntries(ctx: Pick<FamilyPlanContext, 'track' | 'branch'>,
   const now = entry('now', {
     coverage: spec.now.coverage,
     params: spec.now.params,
-    buildSpanParams: (base, span) => {
-      const piece = origin + startOf(dayStartOf(span.lastHour) - origin, DAY_PIECE_HOURS);
-      return spec.now.span(base, Math.max(span.firstHour, piece), span.lastHour, span.firstHour);
-    },
+    buildSpanParams: (base, span) => spec.now.span(base, Math.max(span.firstHour, dayStartOf(span.lastHour)), span.lastHour, span.firstHour),
     provenInterval: (data, _requested, at) => {
       const through = spec.now.validThrough(data);
       return through === null || through < at ? null : [at, through];
@@ -83,5 +81,9 @@ export function dayTileEntries(ctx: Pick<FamilyPlanContext, 'track' | 'branch'>,
     const last = first + DAY_PIECE_HOURS - 1;
     return last < origin + startOf(today - origin, DAY_PIECE_HOURS) ? [first, last] : null;
   }, first => origin + startOf(first - origin, DAY_TILE_HOURS) + DAY_TILE_HOURS - 1));
-  return [now, ...tiles, ...pieces];
+  const days = Array.from({ length: DAYS - 1 }, (_, i) => history(`day:${i}`, today => {
+    const first = origin + startOf(today - origin, DAY_PIECE_HOURS) + i * 24;
+    return first < today ? [first, first + 23] : null;
+  }, first => origin + startOf(first - origin, DAY_PIECE_HOURS) + DAY_PIECE_HOURS - 1));
+  return [now, ...tiles, ...pieces, ...days];
 }
