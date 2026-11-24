@@ -12,8 +12,8 @@ export const SECTION_TITLES: Record<SettingsSection, string> = {
 };
 
 export function settingsSections(meta: WidgetMeta | undefined, resolved: Readonly<Record<string, OptionValue>>,
-  countries?: CountrySelection, time?: WidgetTime['mode']): SettingsSection[] {
-  const fields = meta?.options;
+  countries?: CountrySelection, time?: WidgetTime['mode'], fieldsOverride?: readonly import('./options').OptionField[]): SettingsSection[] {
+  const fields = fieldsOverride ?? meta?.options;
   const shown = (section: OptionSection) => sectionFields(fields, section, resolved, countries, time).length > 0;
   const reads = meta?.data !== false;
   const timeModes = reads && (meta?.timeModes.length ?? 0) > 1;

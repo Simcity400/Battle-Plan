@@ -14,7 +14,14 @@ import type { CountryHolder } from '../dashboard/reachedCountry';
 import type { BoundWindow, GatedHour, Outside } from '../dashboard/regionTime';
 import type { DeclaredProduct } from '../dashboard/request';
 import type { AuditRow } from '../draw/notifications';
-import type { HourSpan, MissingSpan } from '../generated/dashboard';
+import type {
+  ArtFrame as GeneratedArtFrame,
+  ArtOrigin as GeneratedArtOrigin,
+  ArtProvenance as GeneratedArtProvenance,
+  ArtResolution as GeneratedArtResolution,
+  HourSpan,
+  MissingSpan,
+} from '../generated/dashboard';
 import type { FamilyFactionRun, HolderRun, HourRanges } from './holders.ts';
 import type { CountryLooksMap } from './looks.ts';
 import type { DatedLogRow, LogTailQuery, TableRowSource } from './table/rowSource.ts';
@@ -246,84 +253,15 @@ export type ArtHandle =
       readonly frame?: number;
     };
 
-export type ArtOrigin =
-  | { readonly kind: 'baseGame' }
-  | { readonly kind: 'dlc'; readonly id: string; readonly name: string }
-  | { readonly kind: 'mod'; readonly id: string; readonly name: string }
-  | { readonly kind: 'visualMod'; readonly id: string; readonly name: string }
-  | { readonly kind: 'builtin'; readonly id: string };
-
-export interface ArtFrame {
-  readonly frameIndex: number;
-  readonly frameCount: number;
-  readonly frameWidth: number;
-  readonly frameHeight: number;
-  readonly textureWidth: number;
-  readonly textureHeight: number;
-  readonly outputWidth: number;
-  readonly outputHeight: number;
-}
-
-export interface ArtProvenance {
-  readonly fromCurrentInstall: boolean;
-  readonly label: string;
-  readonly scopeKey: string;
-}
-
-export type ArtResolution =
-  | { readonly status: 'noArtExpected' }
-  | { readonly status: 'pending' }
-  | {
-      readonly status: 'ready';
-      readonly assetId: string;
-      readonly url: string;
-      readonly origin: ArtOrigin;
-      readonly file: string;
-      readonly frame: ArtFrame;
-      readonly provenance: ArtProvenance;
-    }
-  | {
-      readonly status: 'confirmedMissing';
-      readonly reason: string;
-      readonly origin?: ArtOrigin | null;
-      readonly file?: string | null;
-    }
-  | {
-      readonly status: 'refused';
-      readonly reason: string;
-      readonly construct: string;
-      readonly origin?: ArtOrigin | null;
-      readonly file?: string | null;
-    }
-  | { readonly status: 'failed'; readonly reason: string; readonly retryable: boolean };
+export type ArtOrigin = GeneratedArtOrigin;
+export type ArtFrame = GeneratedArtFrame;
+export type ArtProvenance = GeneratedArtProvenance;
+export type ArtResolution = GeneratedArtResolution;
 
 export type ArtResult<TBitmap = ImageBitmap> =
-  | { readonly status: 'noArtExpected' }
-  | { readonly status: 'pending' }
-  | {
-      readonly status: 'ready';
-      readonly assetId: string;
-      readonly url: string;
-      readonly origin: ArtOrigin;
-      readonly file: string;
-      readonly frame: ArtFrame;
-      readonly provenance: ArtProvenance;
-      readonly bitmap?: TBitmap;
-    }
-  | {
-      readonly status: 'confirmedMissing';
-      readonly reason: string;
-      readonly origin?: ArtOrigin | null;
-      readonly file?: string | null;
-    }
-  | {
-      readonly status: 'refused';
-      readonly reason: string;
-      readonly construct: string;
-      readonly origin?: ArtOrigin | null;
-      readonly file?: string | null;
-    }
-  | { readonly status: 'failed'; readonly reason: string; readonly retryable: boolean; readonly retry?: () => void };
+  | Extract<ArtResolution, { readonly status: 'noArtExpected' | 'pending' | 'confirmedMissing' | 'refused' }>
+  | (Extract<ArtResolution, { readonly status: 'ready' }> & { readonly bitmap?: TBitmap })
+  | (Extract<ArtResolution, { readonly status: 'failed' }> & { readonly retry?: () => void });
 
 export type IdentityDemand = (kind: EntityKind, key: string, atHour: DisplayedHour) => void;
 export type ArtDemand = (handle: ArtHandle) => void;
