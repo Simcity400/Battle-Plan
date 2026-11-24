@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { countryKey } from '../../dashboard/countryKey.ts';
+import { createBoundedReadView } from '../../families/boundedView.ts';
 import {
-  createBoundedReadView,
   displayedHour,
   type BranchToHourSourceRead,
-  type ExactHoverSourceRead,
   type FamilyPlanContext,
   type IdentityProvider,
 } from '../../families/contract.ts';
+import type { ExactHoverSourceRead } from '../../families/plan.ts';
 import { deriveTimeChartTooltip } from '../../families/time-chart/hitTest.ts';
 import { layoutTimeChart } from '../../families/time-chart/layout.ts';
 import { DEFAULT_LINE_SETTINGS } from '../../families/time-chart/settings.ts';

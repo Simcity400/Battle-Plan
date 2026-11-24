@@ -8,7 +8,7 @@ import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { ROW_HEIGHT, tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
 import { nextLookChange } from '../looks.ts';
-import { resolveHeadSpan } from './declaration.ts';
+import { resolveHeadSpan } from '../broker.ts';
 import { tableHostAdapter } from './hostAdapter.ts';
 import { tableLane } from './laneView.ts';
 import { registerFamilyProjection } from '../registry.ts';
