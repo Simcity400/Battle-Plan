@@ -40,7 +40,7 @@ fn page(source: &Source, from: Option<i32>) -> LogPageReply {
 }
 
 fn counts(source: &Source, from: i32) -> LogCountsReply {
-    let params = LogCountsParams { branch_id: "1".into(), log: "market-events".into(), facets: Vec::new(), from: f64::from(from), to: f64::from(LAST), bin_hours: 6, scope: None };
+    let params = LogCountsParams { branch_id: "1".into(), log: "market-events".into(), facets: Vec::new(), from: f64::from(from), to: f64::from(LAST), bin_hours: 6 };
     LogCounts::load(source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
 }
 
@@ -55,15 +55,6 @@ fn a_log_unavailable_for_a_stretch_is_missing_there_with_its_reason_in_pages_and
     assert_eq!(spans(&counts(&source, 110).missing), [(110, UNREAD, true)], "cut to the asked range");
     assert!(page(&source, Some(UNREAD + 1)).missing.is_empty());
     assert!(counts(&source, UNREAD + 1).missing.is_empty());
-}
-
-#[test]
-fn a_scope_on_a_log_no_scope_reads_is_refused_by_name() {
-    let source = opened();
-    let scope = vec![dashboard_world::products::groups::MembershipRun { tag: "GER".into(), first_hour: FIRST, last_hour: LAST }];
-    let params = LogCountsParams { branch_id: "1".into(), log: "market-events".into(), facets: Vec::new(), from: f64::from(FIRST), to: f64::from(LAST), bin_hours: 6, scope: Some(scope) };
-    let refused = LogCounts::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap_err();
-    assert!(refused.to_string().contains("The market-events log cannot be kept to a country scope"), "{refused}");
 }
 
 #[test]
@@ -83,7 +74,7 @@ fn log_tail_and_dated_panel_match_page_in_reverse_with_exact_facet_totals() {
     let reply = LogTail::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.total, "5");
     assert_eq!(reply.rows.iter().map(|row| row.hour).collect::<Vec<_>>(), [136, 132, 128]);
-    assert_eq!(reply.facet_totals, vec![LogFacetTotal { key: "kind1".into(), total: "5".into() }]);
+    assert_eq!(reply.counts, vec![dashboard_base::products::occurrences::OccurrenceCount { key: "kind1".into(), total: "5".into() }]);
     assert_eq!(spans(&reply.missing), [(FIRST, UNREAD, true)]);
 
     let asked = serde_json::json!({
