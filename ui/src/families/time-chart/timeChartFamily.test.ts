@@ -1581,7 +1581,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
         hour: hoverAt,
         data: { decimals: 5, states: [{ country: 'GER', hour: hoverAt, run: { valueRaw: '999999999999999999' }, missing: null }] },
       }]]),
-    }), { tags: ['GER'], extent: [base, base + 95], gaps: [], surface: '#111111', showCeiling: true, showSpendTicks: false });
+    }), { tags: ['GER'], extent: [base, base + 95], gaps: [], surface: '#111111', showCeiling: true });
     assert.equal(cpModel.series[0]!.endLabel?.value, '9.99T');
     assert.equal(cpModel.series[1]!.endLabel?.value, '22');
     const cpHover = deriveTimeChartTooltip(cpModel, layoutTimeChart(cpModel, 600, 260, FONT, measure), `plot:${hoverAt}`);
