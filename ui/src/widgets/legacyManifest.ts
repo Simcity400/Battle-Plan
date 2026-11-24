@@ -58,7 +58,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'subjects', load: () => import('./subjects') },
   { kind: 'trade-flows', slots: ['render', 'countryChip'], load: () => import('./trade-flows') },
   { kind: 'fuel-branches', load: () => import('./fuel-branches') },
-  { kind: 'lend-lease-balance', load: () => import('./lend-lease-balance') },
   { kind: 'lend-lease-agreements', load: () => import('./lend-lease-agreements') },
   { kind: 'international-market', load: () => import('./international-market') },
   { kind: 'market-ledger', load: () => import('./market-ledger') },

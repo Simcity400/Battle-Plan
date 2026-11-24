@@ -1,5 +1,7 @@
 import { DEFAULT_VIEW, type FamilyViewEntry, type FamilyViewModule } from '../families/manifest.ts';
 import { bindFamilyManifest } from '../families/registry.ts';
+import type { AnyBarsWidgetDeclaration } from '../families/bars/declaration.ts';
+import type { BarsProjection } from '../families/bars/model.ts';
 import type { AnyTableWidgetDeclaration } from '../families/table/declaration.ts';
 import type { TableProjection } from '../families/table/model.ts';
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../families/time-chart/declaration.ts';
@@ -26,6 +28,18 @@ function timeChartSpec<TModule>(
   return () => load().then(mod => {
     const { projection, declaration } = pick(mod);
     return { family: 'time-chart', kind, view, projection, declaration };
+  });
+}
+
+function barsSpec<TModule>(
+  kind: string,
+  view: string,
+  load: () => Promise<TModule>,
+  pick: (mod: TModule) => { readonly projection: BarsProjection<any>; readonly declaration: AnyBarsWidgetDeclaration },
+): () => Promise<FamilyViewModule> {
+  return () => load().then(mod => {
+    const { projection, declaration } = pick(mod);
+    return { family: 'bars', kind, view, projection, declaration };
   });
 }
 
@@ -111,6 +125,17 @@ export const FAMILY_VIEWS: readonly FamilyViewEntry[] = [
       DEFAULT_VIEW,
       () => import('./political-power/politicalPowerProjection.ts'),
       mod => ({ projection: mod.politicalPowerProjection, declaration: mod.politicalPowerDeclaration }),
+    ),
+  },
+  {
+    kind: 'lend-lease-balance',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: barsSpec(
+      'lend-lease-balance',
+      DEFAULT_VIEW,
+      () => import('./lend-lease-balance/lendLeaseBalanceProjection.ts'),
+      mod => ({ projection: mod.lendLeaseBalanceProjection, declaration: mod.lendLeaseBalanceDeclaration }),
     ),
   },
 ];
