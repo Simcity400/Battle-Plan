@@ -1,7 +1,7 @@
-use engine_dlc::dlc_feature_state::{BY_BLOOD_ALONE, MAN_THE_GUNS, NO_STEP_BACK};
 use engine_executable::{
     availability::Verified,
     executable_tables::{RuntimeTable, auxiliary_part},
+    native_values::dlc_feature::{BY_BLOOD_ALONE, MAN_THE_GUNS, NO_STEP_BACK},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

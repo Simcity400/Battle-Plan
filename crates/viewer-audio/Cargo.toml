@@ -28,7 +28,6 @@ content-reader-key-names = { workspace = true, features = ["test-support"] }
 content-reader-sound = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
-engine-native-memory = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay-data = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

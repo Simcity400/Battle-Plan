@@ -18,7 +18,6 @@ content-reader-defines.workspace = true
 content-reader-layers.workspace = true
 content-reader-parser.workspace = true
 content-reader-script.workspace = true
-engine-dlc.workspace = true
 engine-executable.workspace = true
 replay-spool.workspace = true
 
@@ -39,7 +38,6 @@ test-support = ["content-reader-layers/test-support", "content-reader-script/tes
 [target.'cfg(all())'.dev-dependencies]
 content-reader-key-names = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
-engine-native-memory = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-bitflags-2 = { workspace = true }

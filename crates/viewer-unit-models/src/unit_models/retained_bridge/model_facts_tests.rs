@@ -38,13 +38,8 @@ fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {
         let mut keys = BTreeSet::new();
         let mut enabled = BTreeSet::new();
         let mut masks = 0;
-        let category = content_reader_script::test_game::category;
-        for mask in [
-            0,
-            category("armor"),
-            category("screen_ship"),
-            category("screen_ship") | category("armor") | category("fighter"),
-        ] {
+        let families = content_reader_key_names::equipment::category_families().unwrap();
+        for mask in [0, 0x80, 0x10, 0x190].map(|dlc| families.modular_categories(dlc)) {
             let view = content.model_facts().census(mask);
             let mut present = false;
             for key in ["rifles", "rifles_1", "rifles_2", "frames", "frames_1"] {

@@ -36,8 +36,8 @@ content-reader-key-names = { workspace = true, features = ["test-support"] }
 content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
+engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
-engine-native-memory = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 recorder-derive-framework = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
