@@ -203,6 +203,7 @@ mod lend_lease {
     use replay_data::rows::{CountryLinkRow, CountryRow, TableRows, WarLendLeaseHistoryRow, WarOwnedRelationRow, tables};
 
     const UNREAD: i32 = 112;
+    const ORPHAN: i32 = 118;
 
     fn history(country: u32, target: u32, industry_sent: i64, industry_received: i64) -> WarLendLeaseHistoryRow {
         WarLendLeaseHistoryRow { country, target, industry_sent, fuel_sent: 0, industry_received, fuel_received: 0 }
@@ -227,7 +228,12 @@ mod lend_lease {
                         *frame.tables[TableId::WarLendLeaseHistories.index()] = TableView::Unavailable { reason: "histories unreadable".into() };
                     } else {
                         let sent = i64::from(hour / 10) * 100;
-                        set::<tables::WarLendLeaseHistories>(&mut frame, vec![history(11, 44, 100, 0), history(44, GER, 0, sent + 100), history(GER, 44, sent, 0)]);
+                        let mut rows = vec![history(11, 44, 100, 0), history(44, GER, 0, sent + 100), history(GER, 44, sent, 0)];
+                        if hour == ORPHAN {
+                            rows.push(history(999, 44, 5_000, 0));
+                            rows.sort_by_key(|row| (row.country, row.target));
+                        }
+                        set::<tables::WarLendLeaseHistories>(&mut frame, rows);
                     }
                     frame
                 })
@@ -261,6 +267,14 @@ mod lend_lease {
             { "slot": 8, "tag": "FRA", "values": ["0", "0", "1300", "0"] },
             { "slot": 10, "tag": "MOD", "values": ["0", "0", "0", "0"] },
         ]), "chosen countries keep a recorded zero and come in rank order");
+        assert_eq!((&at["unlisted"], &at["rankMissing"]), (&json!(null), &json!(null)), "every history and roster entry resolved: absence and rank are proven");
+        let orphan = json!("1 lend-lease histories name a country with no identity; they are left out");
+        let unresolved = asked::<LendLeaseBalance>(&source, every.clone(), ORPHAN).unwrap();
+        assert_eq!(unresolved["unlisted"], orphan, "an unresolved history leaves an unlisted country unknown, never absent");
+        let top = asked::<LendLeaseBalance>(&source, json!({ "branchId": "1", "rank": "industry", "top": 1 }), ORPHAN).unwrap();
+        assert_eq!((&top["rows"], &top["rankMissing"]), (&json!([]), &orphan), "an unresolved history of 5000 could be any country's: the top is refused, not cut from the rest");
+        let chosen = asked::<LendLeaseBalance>(&source, json!({ "branchId": "1", "rank": "industry", "countries": ["MOD", 8] }), ORPHAN).unwrap();
+        assert_eq!((chosen["rows"].as_array().unwrap().len(), &chosen["rankMissing"]), (2, &orphan), "chosen countries stay, their order unproven");
         let unread = asked::<LendLeaseBalance>(&source, every, UNREAD).unwrap();
         assert_eq!(unread["rows"], json!([]));
         assert!(unread["missing"].as_str().unwrap().starts_with("Lend-lease histories are not recorded"), "unknown is not no lend-lease");

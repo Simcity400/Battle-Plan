@@ -1,7 +1,7 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
 import { knownValue, textValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
@@ -121,7 +121,7 @@ function divisionTooltip(division: TrainingDivision): TooltipExtraRow[] {
   return rows;
 }
 
-export const trainingQueueProjection: TableProjection<Record<string, never>> = registerTableProjection(
+export const trainingQueueProjection: TableProjection<Record<string, never>> = registerFamilyProjection(
   declareTableProjection<TrainingQueueReply, QueueRow, Record<string, never>>({
     kind: 'training-queue',
     validate: validateTrainingQueue,

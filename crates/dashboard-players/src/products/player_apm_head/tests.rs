@@ -1,4 +1,5 @@
 use super::*;
+use super::super::{ApmParams, query};
 use replay_capture_spool::commands;
 use replay_recording::{command_packet::{Actor, Batch, Category, Event, Kind, Origin, Packet, Span}, control::ControlRecord};
 
@@ -47,7 +48,7 @@ fn a_followed_eapm_is_the_request_paths_summary_of_the_trailing_window_at_every_
     for hour in [0, 9, 10, 100, 167, 168, 169, 250, 333, HOURS - 1] {
         let (first, last) = head.window_at(hour).unwrap();
         let amounts = head.amounts(first, last);
-        let reply = query(&index, &ApmParams { branch_id: "4".into(), group: ApmGroup::Country, registry: false, first_hour: Some(first), last_hour: Some(last),
+        let reply = query(&index, &ApmParams { branch_id: "4".into(), group: ApmGroup::Country, registry: false, hour: None, first_hour: Some(first), last_hour: Some(last),
             tags: None, membership: None, players: Vec::new(), buckets: 1 }, &AtomicBool::new(false)).unwrap();
         assert_eq!(amounts.len(), reply.series.len(), "the series at hour {hour}");
         for series in &reply.series {
@@ -106,6 +107,7 @@ fn player_display_tag_uses_only_versions_present_in_the_window() {
         branch_id: "4".into(),
         group: ApmGroup::Player,
         registry: false,
+        hour: None,
         first_hour: Some(0),
         last_hour: Some(25),
         tags: None,
@@ -172,6 +174,7 @@ fn player_apm_head_carries_dated_name_long_utf8_tag_and_explicit_missing_name_re
         branch_id: "4".into(),
         group: ApmGroup::Player,
         registry: false,
+        hour: None,
         first_hour: Some(0),
         last_hour: Some(14),
         tags: None,
@@ -236,6 +239,7 @@ fn player_apm_ranks_by_apm_descending_and_tiles_accept_countries_with_unrecorded
         branch_id: "4".into(),
         group: ApmGroup::Player,
         registry: false,
+        hour: None,
         first_hour: Some(0),
         last_hour: Some(19),
         tags: None,
@@ -260,4 +264,71 @@ fn player_apm_ranks_by_apm_descending_and_tiles_accept_countries_with_unrecorded
     assert_eq!(unrecorded.lines.len(), 2);
     assert_eq!(unrecorded.lines[0].missing.len(), 1);
     assert_eq!(unrecorded.lines[0].missing[0].reason, "Player orders were not recorded in this campaign.");
+}
+
+#[test]
+fn multi_hour_apm_tile_preserves_hourly_min_max_endpoints_and_gap_breaks() {
+    let mut session = dashboard_base::test_fixtures::session(21);
+    session.qpc_frequency = 1;
+    let actor = Actor {
+        id: 1,
+        player: 1,
+        country: 1,
+        since_qpc: 0,
+        at_qpc: 0,
+        user: b"p1".to_vec(),
+        name: b"Burst".to_vec(),
+        tag: b"GER".to_vec(),
+    };
+    let spans = vec![
+        Span { from_qpc: 0, to_qpc: 60, complete: true, hour: 0, paused: false },
+        Span { from_qpc: 60, to_qpc: 120, complete: true, hour: 1, paused: false },
+        Span { from_qpc: 240, to_qpc: 300, complete: true, hour: 4, paused: false },
+    ];
+    let mut events = Vec::new();
+    for seq in 0..20u64 {
+        events.push(Event {
+            qpc: 60 + seq,
+            hour: 1,
+            actor: 1,
+            player: 1,
+            kind: 1,
+            command_country: Some(1),
+            origin: Origin::PlayerOrder,
+            sequence: seq as u32 + 1,
+            paused: false,
+        });
+    }
+    let batch = Batch {
+        kinds: vec![Kind { id: 1, token: 1, name: "synthetic order".into(), category: Category::Army }],
+        actors: vec![actor],
+        events,
+        spans,
+        ..Default::default()
+    };
+    let packet = ControlRecord::PlayerCommands { session: 21, packet: Packet::pack(4, 1, 2, 0, 0, 300, 0, &batch).unwrap() };
+    let index = Arc::new(commands::index(&[session], &[packet], 4).unwrap());
+
+    let h0 = query(&index, &ApmParams {
+        branch_id: "4".into(), group: ApmGroup::Player, registry: false, hour: Some(0), first_hour: None, last_hour: None,
+        tags: None, membership: None, players: Vec::new(), buckets: 1,
+    }, &AtomicBool::new(false)).unwrap();
+    let h1 = query(&index, &ApmParams {
+        branch_id: "4".into(), group: ApmGroup::Player, registry: false, hour: Some(1), first_hour: None, last_hour: None,
+        tags: None, membership: None, players: Vec::new(), buckets: 1,
+    }, &AtomicBool::new(false)).unwrap();
+    assert_eq!(h0.series[0].summary.apm, Some(0.0));
+    assert_eq!(h1.series[0].summary.apm, Some(20.0));
+
+    let wanted = BTreeSet::from(["user:7031"]);
+    let per_hour = hourly_amounts(&index, ApmGroup::Player, 0, 5, None, None, &[], &wanted).unwrap();
+    let p1 = &per_hour["user:7031"];
+    assert_eq!(p1[&0].value().apm, Some(0.0));
+    assert_eq!(p1[&1].value().apm, Some(20.0));
+
+    let ask: TileAsk = dashboard_query::named::named(&serde_json::json!({ "binHours": 2, "index": 0, "countries": ["user:7031"] })).unwrap();
+    let family = TileFamily { group: ApmGroup::Player, tags: None, membership: None, players: Vec::new(), value: "apm".into() };
+    let (first, last) = tile::hours(ask.bin_hours, ask.index).unwrap();
+    let tile_reply = tile_from_index(&index, 4, 5, &family, &ask, first, last).unwrap();
+    assert!(tile_reply.lines[0].missing.iter().any(|m| m.first_hour == 5 && m.reason == GAP_REASON));
 }
