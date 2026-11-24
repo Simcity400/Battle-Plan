@@ -5362,7 +5362,11 @@ readHour: number | null,
 /**
  * Holders whose recording named no tag at this hour.
  */
-unnamed: number, missing: string | null, warnings: Array<string>, };
+unnamed: number,
+/**
+ * Why a country absent from the rows cannot be said to hold no reserve: the admissions were not read, or holders the recording names no tag for hold some.
+ */
+noneMissing: string | null, missing: string | null, warnings: Array<string>, };
 export type OccupationReserveParamsAtHour = OccupationReserveParams & { hour: number };
 export type IntelCoverageParams = { branchId: string, countries?: Array<CountryRef>, top?: number, touching?: boolean, measure?: IntelCoverageMeasure, basis?: IntelCoverageBasis,
 /**
