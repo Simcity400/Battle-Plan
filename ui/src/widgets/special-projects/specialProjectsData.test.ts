@@ -2,7 +2,7 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import { panelStructure, panelValues } from '../../draw/panels/views.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deepFreeze } from '../../testFrozen.ts';
+import { deepFreeze } from '../../test-support/frozen.ts';
 import type { CountryGroupReply, ProjectEntry, ProjectRuntimeDetails, ProjectStatus, SpecialProjectDetails, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
 import { closedLane, completedWhenFirstRecorded, completions, currentKey, currentProjects, earlierBound, heldThrough, historyCard, historyPicture, historyProject, historyStructure, historyUnrecorded, historyTooltip, iterationCount, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectStructure, projectTooltip, readLabel, runningValues, runtimeProject, shownCard, statusRead, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
