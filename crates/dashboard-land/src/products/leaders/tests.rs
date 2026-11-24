@@ -65,8 +65,8 @@ fn a_participation_takes_the_first_result_of_its_combat_read_after_it() {
 
 #[test]
 fn kinds_and_countries_choose_leaders_by_kind_and_owner_tag() {
-    assert!(LeaderKinds::All.includes(KIND_ARMY) && LeaderKinds::All.includes(KIND_NAVY));
-    assert!(!LeaderKinds::Land.includes(KIND_NAVY) && LeaderKinds::Navy.includes(KIND_NAVY));
+    assert!(LeaderKinds::Land.includes(KIND_ARMY) && !LeaderKinds::Land.includes(KIND_NAVY));
+    assert!(LeaderKinds::Navy.includes(KIND_NAVY) && !LeaderKinds::Navy.includes(KIND_ARMY));
     let countries = LeaderSelection::Countries { countries: vec!["GER".into()] };
     assert!(countries.keeps(Some((7, "GER"))));
     assert!(!countries.keeps(None), "a leader whose owner is not named is in no country");
@@ -164,7 +164,7 @@ fn a_leader_whose_role_may_have_conditions_reads_its_character_first_and_the_tri
     let mut held = source(1, 100, Some(1_000));
     let leader = UnitLeaderRow { id: 1, kind: KIND_ARMY, owner: 11, character_id: 5, visibility_choice: 1, ..Default::default() };
     held.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(vec![leader])).into();
-    let params = UnitLeadersParams { branch_id: "1".into(), selection: LeaderSelection::All, leaders: LeaderKinds::All };
+    let params = UnitLeadersParams { branch_id: "1".into(), selection: LeaderSelection::All, leaders: LeaderKinds::Land };
     let holders = dashboard_query::identity::Holders::new(Default::default(), Vec::new());
     let at = ReadsAt { holders: &holders, context: &context, run, hour: 100, since: None };
     let first: Vec<TableId> = UnitLeaders::reads_in(&params, None, 1, &held, &at).iter().map(|read| read.table).collect();

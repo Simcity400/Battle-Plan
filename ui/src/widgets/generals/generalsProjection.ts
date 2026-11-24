@@ -11,7 +11,7 @@ import { declareTableProjection, type DeclarativeColumnSpec, type TableCellIconI
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, textValue, zeroValue, type Value } from '../../families/value.ts';
 import type { LeaderKinds, LeaderSelection, SpriteFrame, UnitLeadersReply } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, LEADERS_OPTION, TABLE_BASE } from './definition.ts';
 import { attributeNames, leaderRows, traitDateText, validateLeaders, withheldLeaderState, withheldLeaders, type LeaderRow } from './generalsData.ts';
 
 export interface GeneralsOptions {
@@ -30,6 +30,7 @@ interface GeneralRow {
 }
 
 const PARTIAL = 'Battle counts are incomplete: some battles were not recorded.';
+const KIND_ARMY = 1;
 const KIND_NAVY = 2;
 const SKILLS = 5;
 
@@ -69,25 +70,20 @@ function shownRows(reply: UnitLeadersReply, hour: number, options: GeneralsOptio
   return leaderRows(reply, hour, passingAt(options.filter, hour), options.kind);
 }
 
-interface SkillHeader {
-  readonly label?: string;
-  readonly unit?: string;
-}
-
-function columnNames(reply: UnitLeadersReply, options: GeneralsOptions): readonly SkillHeader[] {
-  const roles = reply.leaders.filter(row => options.kind === 'all' || (row.role.kind === KIND_NAVY) === (options.kind === 'navy'));
+function columnNames(reply: UnitLeadersReply, options: GeneralsOptions): readonly (string | undefined)[] {
+  const kind = options.kind === 'navy' ? KIND_NAVY : KIND_ARMY;
+  const roles = reply.leaders.filter(row => row.role.kind === kind);
   return [0, 1, 2, 3].map(i => {
     const names = [...new Set(roles.map(row => attributeNames(row.role)[i]!))];
-    if (!names.length) return {};
-    return names.length === 1 ? { label: names[0]! } : { label: names[0]!, unit: `/ ${names.slice(1).join(' / ')}` };
+    return names.length ? names.join(' / ') : undefined;
   });
 }
 
 const [PORTRAIT, COUNTRY, COMMANDER, SKILL, ATTACK, DEFENSE, THIRD, FOURTH, TRAITS, WON, LOST, WIN_RATE, FOUGHT, UNRESOLVED] = COLUMNS;
 
-function skillColumn(defaults: typeof SKILL, at: number, header: SkillHeader | undefined, priority: number): DeclarativeColumnSpec<GeneralRow, GeneralsOptions> {
+function skillColumn(defaults: typeof SKILL, at: number, header: string | undefined, priority: number): DeclarativeColumnSpec<GeneralRow, GeneralsOptions> {
   return {
-    ...defaults!, ...(header?.label ? { label: header.label } : {}), ...(header?.unit ? { unit: header.unit } : {}), priority, numeric: true, cellKind: 'skill', format: 'integer', barEligible: false,
+    ...defaults!, ...(header ? { label: header } : {}), priority, numeric: true, cellKind: 'skill', format: 'integer', barEligible: false,
     art: row => row.skills[at]?.art,
     extra: row => (row.skills[at]?.artKey ? { artKey: row.skills[at]!.artKey } : {}),
     value: row => {
@@ -140,74 +136,73 @@ function traitRows(row: LeaderRow): TooltipExtraRow[] {
   }));
 }
 
-export const generalsProjection: TableProjection<GeneralsOptions> = registerFamilyProjection(
-  declareTableProjection<UnitLeadersReply, GeneralRow, GeneralsOptions>({
-    kind: 'generals',
-    validate: validateLeaders,
-    nextChange: (readView, options) => {
-      let next = nextChangeAfter(options.filter.bounds, readView.hour);
-      const raw = readView.panel('main');
-      if (!raw) return next;
-      for (const row of shownRows(validateLeaders(raw), readView.hour, options)) {
-        const key = identityKey(row);
-        if (key !== null) next = Math.min(next, readView.who('leader', key, readView.hour).nextChangeAt);
-      }
-      return next;
-    },
-    columns: generalsColumns,
-    rowHeightMode: 'media',
-    productTieBreak: true,
-    rows: (reply, _live, hour, options, readView) => {
-      if (reply.missing !== null) return { rows: [], empty: 'Leaders weren’t recorded at this time.', emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
-      const unrecorded = options.filter.unrecorded.find(([first, last]) => first <= hour && hour <= last)?.[2] ?? null;
-      if (options.filter.passing && unrecorded !== null) return { rows: [], empty: unrecorded, emptyKind: 'unavailable', warnings: reply.warnings };
-      const skillArt = (frames: readonly (SpriteFrame | null)[]) => Array.from({ length: SKILLS }, (_, at) => optionalArt(readView, spriteHandle(frames[at])));
-      const land = skillArt(reply.skillIcons.land);
-      const navy = skillArt(reply.skillIcons.navy);
-      const traitArt = reply.traits.map(trait => (trait.icon ? readView.art({ kind: 'url', url: trait.icon }) : unavailableArt('Trait icon unavailable')));
-      const shown = shownRows(reply, hour, options);
-      const rows = shown.map((leader): GeneralRow => {
-        const owner = leader.role.owner;
-        const presented = owner === null ? null : countryRowPresentation(readView, owner, undefined, undefined, hour);
-        const portrait = cellArt(readView, { kind: 'portrait', leader: leader.key, hour: leader.row.firstSeenHour ?? hour }, 'Portrait unavailable');
-        return {
-          leader,
-          name: datedName(readView, leader, hour),
-          portrait,
-          flag: presented?.media.kind === 'flag' ? presented.media.art : undefined,
-          country: presented === null ? notRecorded('Owner not recorded') : presented.labelMissing ? notRecorded('Country name not recorded') : textValue(presented.label, 'Country name not recorded'),
-          skills: leader.role.kind === KIND_NAVY ? navy : land,
-          traits: (leader.row.traits ?? []).map((at, i) => ({
-            name: contentTitle(leader.traits[i]?.name, leader.traits[i]?.token ?? String(at), 'Trait name unavailable'),
-            art: traitArt[at] ?? unavailableArt('Trait icon unavailable'),
-          })),
-        };
-      });
-      const withheld = withheldLeaders(reply, passingAt(options.filter, hour), options.kind);
-      const state = withheld.length ? withheldLeaderState(withheld) : null;
-      if (!rows.length) {
-        return state
-          ? { rows, empty: state.message, emptyDetail: state.detail, emptyKind: 'unavailable', warnings: reply.warnings }
-          : { rows, empty: 'No leaders for these countries at this time.', emptyKind: 'empty', warnings: reply.warnings };
-      }
-      const count = new Set(withheld.map(row => row.reference)).size;
-      return { rows, ...(state ? { notes: [`${count} ${count === 1 ? 'leader' : 'leaders'} of these countries can’t be shown; Details lists why.`] } : {}),
-        warnings: state ? [...reply.warnings, state.detail] : reply.warnings };
-    },
-    rowKey: row => row.leader.key,
-    rowName: row => row.name.kind === 'known' ? row.name.value : row.leader.name,
-    tooltipExtra: row => traitRows(row.leader),
-    tooltipNote: row => (row.leader.foughtPartial ? PARTIAL : undefined),
-  }),
-);
+export const generalsProjection: TableProjection<GeneralsOptions> = declareTableProjection<UnitLeadersReply, GeneralRow, GeneralsOptions>({
+  kind: 'generals',
+  validate: validateLeaders,
+  nextChange: (readView, options) => {
+    let next = nextChangeAfter(options.filter.bounds, readView.hour);
+    const raw = readView.panel('main');
+    if (!raw) return next;
+    for (const row of shownRows(validateLeaders(raw), readView.hour, options)) {
+      const key = identityKey(row);
+      if (key !== null) next = Math.min(next, readView.who('leader', key, readView.hour).nextChangeAt);
+    }
+    return next;
+  },
+  columns: generalsColumns,
+  rowHeightMode: 'media',
+  productTieBreak: true,
+  rows: (reply, _live, hour, options, readView) => {
+    if (reply.missing !== null) return { rows: [], empty: 'Leaders weren’t recorded at this time.', emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
+    const unrecorded = options.filter.unrecorded.find(([first, last]) => first <= hour && hour <= last)?.[2] ?? null;
+    if (options.filter.passing && unrecorded !== null) return { rows: [], empty: unrecorded, emptyKind: 'unavailable', warnings: reply.warnings };
+    const skillArt = (frames: readonly (SpriteFrame | null)[]) => Array.from({ length: SKILLS }, (_, at) => optionalArt(readView, spriteHandle(frames[at])));
+    const land = skillArt(reply.skillIcons.land);
+    const navy = skillArt(reply.skillIcons.navy);
+    const traitArt = reply.traits.map(trait => (trait.icon ? readView.art({ kind: 'url', url: trait.icon }) : unavailableArt('Trait icon unavailable')));
+    const shown = shownRows(reply, hour, options);
+    const rows = shown.map((leader): GeneralRow => {
+      const owner = leader.role.owner;
+      const presented = owner === null ? null : countryRowPresentation(readView, owner, undefined, undefined, hour);
+      const portrait = cellArt(readView, { kind: 'portrait', leader: leader.key, hour: leader.row.firstSeenHour ?? hour }, 'Portrait unavailable');
+      return {
+        leader,
+        name: datedName(readView, leader, hour),
+        portrait,
+        flag: presented?.media.kind === 'flag' ? presented.media.art : undefined,
+        country: presented === null ? notRecorded('Owner not recorded') : presented.labelMissing ? notRecorded('Country name not recorded') : textValue(presented.label, 'Country name not recorded'),
+        skills: leader.role.kind === KIND_NAVY ? navy : land,
+        traits: (leader.row.traits ?? []).map((at, i) => ({
+          name: contentTitle(leader.traits[i]?.name, leader.traits[i]?.token ?? String(at), 'Trait name unavailable'),
+          art: traitArt[at] ?? unavailableArt('Trait icon unavailable'),
+        })),
+      };
+    });
+    const withheld = withheldLeaders(reply, passingAt(options.filter, hour), options.kind);
+    const state = withheld.length ? withheldLeaderState(withheld) : null;
+    if (!rows.length) {
+      return state
+        ? { rows, empty: state.message, emptyDetail: state.detail, emptyKind: 'unavailable', warnings: reply.warnings }
+        : { rows, empty: 'No leaders for these countries at this time.', emptyKind: 'empty', warnings: reply.warnings };
+    }
+    const count = new Set(withheld.map(row => row.reference)).size;
+    return { rows, ...(state ? { notes: [`${count} ${count === 1 ? 'leader' : 'leaders'} of these countries can’t be shown; Details lists why.`] } : {}),
+      warnings: state ? [...reply.warnings, state.detail] : reply.warnings };
+  },
+  rowKey: row => row.leader.key,
+  rowName: row => row.name.kind === 'known' ? row.name.value : row.leader.name,
+  tooltipExtra: row => traitRows(row.leader),
+  tooltipNote: row => (row.leader.foughtPartial ? PARTIAL : undefined),
+});
+for (const choice of LEADERS_OPTION.choices) registerFamilyProjection(generalsProjection, choice.value);
 
 const optionsCache = new WeakMap<DeclaredCountryFilter, Map<LeaderKinds, GeneralsOptions>>();
-const kindOf = (value: unknown): LeaderKinds => (value === 'land' || value === 'navy' ? value : 'all');
+const kindOf = (value: unknown): LeaderKinds => (value === 'navy' ? 'navy' : 'land');
 
 export const generalsDeclaration: TableWidgetDeclaration<GeneralsOptions> = {
   family: 'table',
   kind: 'generals',
-  label: 'Generals leaderboard',
+  label: 'Leaders',
   subject: 'leaders',
   emptyCampaign: 'Load a campaign to see its leaders.',
   icon: 'star',
@@ -234,7 +229,7 @@ export const generalsDeclaration: TableWidgetDeclaration<GeneralsOptions> = {
     };
   },
   projection: generalsProjection,
-  columns: generalsColumns({ leaders: [], traits: [], withheld: [], missing: null, battlesPartialFrom: null, resultsMissing: '', skillIcons: { land: [], navy: [] }, warnings: [] }, { filter: { passing: null, unrecorded: [], bounds: [] }, kind: 'all' }),
+  columns: generalsColumns({ leaders: [], traits: [], withheld: [], missing: null, battlesPartialFrom: null, resultsMissing: '', skillIcons: { land: [], navy: [] }, warnings: [] }, { filter: { passing: null, unrecorded: [], bounds: [] }, kind: 'land' }),
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },
   projectionOptions: ctx => {
     const kind = kindOf(ctx.options.leaders);

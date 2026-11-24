@@ -20,21 +20,22 @@ test('leaderboard rows keep the kind and countries asked, with unresolved battle
   assert.equal(rows[0].unresolved, 2);
   assert.equal(rows[0].winRate, 75);
   assert.equal(rows[0].traits[0].token, 'organizer');
-  assert.deepEqual(leaderRows(data, 200, null, 'all').map(r => r.key), ['1', '2', '3', '4']);
-  assert.equal(leaderRows(data, 200, null, 'all')[1].winRate, null, 'no decided battle is no win rate, never zero');
+  assert.deepEqual(leaderRows(data, 200, null, 'land').map(r => r.key), ['1', '2', '4']);
+  assert.deepEqual(leaderRows(data, 200, null, 'navy').map(r => r.key), ['3']);
+  assert.equal(leaderRows(data, 200, null, 'land')[1].winRate, null, 'no decided battle is no win rate, never zero');
   assert.equal(topLeader(leaderRows(data, 200, null, 'land'))?.key, '2');
 });
 
 test('counts read after the battle log went unrecorded are lower bounds', () => {
   const data = reply([row('1', 'GER', 5, [10, 6, 2])], 150);
-  assert.equal(leaderRows(data, 149, null, 'all')[0].foughtPartial, false);
-  assert.equal(leaderRows(data, 150, null, 'all')[0].foughtPartial, true);
+  assert.equal(leaderRows(data, 149, null, 'land')[0].foughtPartial, false);
+  assert.equal(leaderRows(data, 150, null, 'land')[0].foughtPartial, true);
 });
 
 test('withheld leaders are kept by kind and country', () => {
   const data = reply([]);
   assert.equal(withheldLeaders(data, new Set(['ITA']), 'navy').length, 1);
-  assert.equal(withheldLeaders(data, new Set(['GER']), 'all').length, 0);
+  assert.equal(withheldLeaders(data, new Set(['GER']), 'navy').length, 0);
   assert.equal(withheldLeaders(data, null, 'land').length, 0);
 });
 

@@ -5881,7 +5881,7 @@ costRead: number | null, censusComplete: boolean,
 missing: string | null, warnings: Array<string>, };
 export type UnitLeadersParams = { branchId: string, selection: LeaderSelection, leaders: LeaderKinds, };
 export type LeaderSelection = { "kind": "all" } | { "kind": "countries", countries: Array<CountryRef>, };
-export type LeaderKinds = "all" | "land" | "navy";
+export type LeaderKinds = "land" | "navy";
 export type LeaderTrait = { token: string, name: string | null, icon: string | null,
 /**
  * Why the icon is not drawn.

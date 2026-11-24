@@ -757,7 +757,7 @@ impl Product for LeaderChoices {
                 Ok(())
             })?;
             for (hour, key, character, raw, leader_kind) in people {
-                if !super::LeaderKinds::All.includes(leader_kind) {
+                if leader_kind != super::KIND_ARMY && leader_kind != super::KIND_NAVY {
                     continue;
                 }
                 let tag = names.tag_at(&links, raw, hour).map(str::to_owned);

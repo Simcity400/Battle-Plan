@@ -16,7 +16,7 @@ import { DEFAULT_MAP_OPTIONS, flipFog } from './mapPicker';
 import { widgetDefinition } from './definitions';
 import type { WidgetRuntime, WidgetSkeletonKind } from './definitions';
 import { OptionDraft } from './optionDraft';
-import type { OptionValue } from './options';
+import { followedTitle, resolveOptions, type OptionValue } from './options';
 import WidgetHeader from './WidgetHeader';
 import { resolveDeclaredViewSwitch, WidgetFrameContext, widgetWording } from './widgetFrame';
 import type { DynamicViewSwitch, WidgetFrameValue } from './widgetFrame';
@@ -186,9 +186,14 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   const optionDraft = useRef(new OptionDraft(widget.options));
   optionDraft.current.sync(widget.options);
   const saveOptions = useCallback((values: Readonly<Record<string, OptionValue>>) => {
-    const options = optionDraft.current.updateAll(widgetOptionFields(widget.kind, widget.options), values);
-    if (options) applyWidget({ ...widget, options }, true);
-  }, [widget, applyWidget]);
+    const fields = widgetOptionFields(widget.kind, widget.options);
+    const before = resolveOptions(fields, widget.options);
+    const options = optionDraft.current.updateAll(fields, values);
+    if (!options) return;
+    const title = Object.entries(values).reduce((held, [key, value]) =>
+      followedTitle(fields.find(field => field.key === key), held, definition?.title, before[key], value), widget.title);
+    applyWidget({ ...widget, options, title }, true);
+  }, [widget, applyWidget, definition?.title]);
   const saveOption = useCallback((key: string, value: OptionValue) => saveOptions({ [key]: value }), [saveOptions]);
 
   const defaultTrack = template.tracks[0]?.id;

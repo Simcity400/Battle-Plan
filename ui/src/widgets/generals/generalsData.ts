@@ -49,7 +49,7 @@ export const attributeNames = (role: Pick<LeaderRole, 'attributeNames'>) => role
 export function leaderRows(reply: UnitLeadersReply, hour: number, countries: ReadonlySet<string> | null, kind: LeaderKinds): LeaderRow[] {
   const partial = reply.battlesPartialFrom !== null && reply.battlesPartialFrom <= hour;
   return reply.leaders.flatMap(row => {
-    if (kind !== 'all' && row.role.kind !== (kind === 'navy' ? KIND_NAVY : KIND_ARMY)) return [];
+    if (row.role.kind !== (kind === 'navy' ? KIND_NAVY : KIND_ARMY)) return [];
     if (countries && !(row.role.owner !== null && countries.has(row.role.owner))) return [];
     return [{ key: row.reference, hour, row, name: leaderName(row), role: row.role, traits: (row.traits ?? []).map(at => reply.traits[at]),
       ...battleTotals(row.fought, row.won, row.lost, partial) }];
@@ -57,7 +57,7 @@ export function leaderRows(reply: UnitLeadersReply, hour: number, countries: Rea
 }
 
 export function withheldLeaders(reply: UnitLeadersReply, countries: ReadonlySet<string> | null, kind: LeaderKinds): LeaderWithheld[] {
-  return reply.withheld.filter(leader => (kind === 'all' || leader.kind === (kind === 'navy' ? KIND_NAVY : KIND_ARMY))
+  return reply.withheld.filter(leader => leader.kind === (kind === 'navy' ? KIND_NAVY : KIND_ARMY)
     && (leader.owner === null || countries === null || countries.has(leader.owner)));
 }
 
