@@ -21,6 +21,7 @@ export interface LaneBinding<TOptions = unknown> {
   readonly staticPanels?: Readonly<Record<string, unknown>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly scrollTop: number;
+  readonly scrollLeft?: number;
   readonly theme?: FamilyTheme;
   readonly identitySnapshot?: IdentitySnapshot | null;
   readonly artResolutions?: ArtResolutions;
@@ -402,7 +403,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       Object.assign(fields, keep.structureFields);
 
       const now = input.now;
-      const mirrorKey = `${binding.focusedKey ?? ''}\u0000${binding.scrollTop}`;
+      const mirrorKey = `${binding.focusedKey ?? ''}\u0000${binding.scrollLeft ?? 0}\u0000${binding.scrollTop}`;
       if (!keep.mirrorField || keep.mirrorGate.due(now, input.speed, mirrorKey)) {
         keep.mirrorField = field(keep, 'mirror', family.mirror(frame), content);
         keep.mirrorGate.record(now, mirrorKey);
@@ -449,7 +450,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       return {
         ...(status === 'picture' ? { mode: 'picture' as const } : {}),
         ...nextChangeAt,
-        viewport: { width: surface.width, height: surface.height, dpr, scrollLeft: 0, scrollTop: binding.scrollTop },
+        viewport: { width: surface.width, height: surface.height, dpr, scrollLeft: binding.scrollLeft ?? 0, scrollTop: binding.scrollTop },
         surfaces: [{ source: keep.canvas, content: keep.content }],
         fields,
         motion: keep.motion,
