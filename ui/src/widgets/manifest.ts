@@ -31,6 +31,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'convoy-health': { load: () => import('./convoy-health'), slots: ['render', 'countryChip'] },
   'air-superiority-timeline': { load: () => import('./air-superiority-timeline'), slots: ['render', 'countryChip'] },
   'weather-by-region': { load: () => import('./weather-by-region') },
+  'naval-supremacy': { load: () => import('./naval-supremacy'), slots: ['render', 'countryChip'] },
 };
 
 const familyByKind = new Map<string, FamilyViewEntry[]>();

@@ -4,6 +4,17 @@ import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '.
 
 export const HEAT_LANES_VIEWS: readonly FamilyViewEntry[] = [
   {
+    kind: 'naval-supremacy',
+    view: 'timeline',
+    label: 'Timeline',
+    family: 'heat-lanes',
+    viewOption: 'view',
+    loadSpec: () => import('../naval-supremacy/navalSupremacyProjection.ts').then(m => ({
+      family: 'heat-lanes', kind: 'naval-supremacy', view: 'timeline',
+      projection: m.supremacyTimelineProjection, declaration: m.supremacyTimelineDeclaration,
+    })),
+  },
+  {
     kind: 'weather-by-region',
     view: DEFAULT_VIEW,
     family: 'heat-lanes',

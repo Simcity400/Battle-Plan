@@ -20,7 +20,7 @@ import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
 import { mix } from '../../shell/appearance/color.ts';
 import { OPTIONS } from './definition.ts';
 
-export const AIR_TOP_DEFAULT = 10;
+export const AIR_TOP_DEFAULT = 7;
 const LANE_FILL = '#f5f5f5';
 
 export interface AirTimelineProjectionOptions {
@@ -111,8 +111,8 @@ function cellOf(cell: AirDayCell | null, reply: AirTimelineReply, look: Look, su
     const total = friendly + enemy;
     if (total <= 0) return { cell: { kind: 'clear' }, tip: { items: [{ label: 'No activity' }] } };
     const share = friendly / total;
-    const color = share > 0.5 ? depth(look.track, look.viewpointColour, (share - 0.5) * 2)
-      : share < 0.5 ? depth(look.track, look.enemy, (0.5 - share) * 2)
+    const color = share > 0.5 ? depth(look.track, look.viewpointColour, share)
+      : share < 0.5 ? depth(look.track, look.enemy, 1 - share)
         : look.contested;
     return {
       cell: { kind: 'solid', color },
@@ -139,7 +139,7 @@ function cellOf(cell: AirDayCell | null, reply: AirTimelineReply, look: Look, su
   }
   const share = best!.score / total;
   if (share <= 0.5) return { cell: { kind: 'solid', color: look.contested }, tip: { items: [{ label: 'Contested' }, ...items] } };
-  const color = depth(look.track, sideColour(reply.sides[best!.side], surface, look.unknownSide), (share - 0.5) * 2);
+  const color = depth(look.track, sideColour(reply.sides[best!.side], surface, look.unknownSide), share);
   return { cell: { kind: 'solid', color }, tip: { items } };
 }
 

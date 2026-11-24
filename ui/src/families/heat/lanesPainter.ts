@@ -469,7 +469,12 @@ export function drawHeatLanes(
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   const axisMidY = bodyBottom + layout.axisHeight / 2;
+  const tabX = model.playhead !== null && model.playhead >= layout.firstHour && model.playhead <= layout.lastHour
+    ? hourToLaneX(model.playhead, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth)
+    : null;
+  const tabHalf = tabX === null ? 0 : textWidth(ctx, formatDateOnly(model.playhead!)) / 2 + 14;
   for (const tick of ticks) {
+    if (tabX !== null && Math.abs(tick.x - tabX) < tabHalf + textWidth(ctx, tick.label) / 2) continue;
     ctx.fillText(tick.label, tick.x, axisMidY);
   }
   ctx.restore();

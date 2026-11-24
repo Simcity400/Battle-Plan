@@ -24,7 +24,7 @@ import { mix } from '../../shell/appearance/color.ts';
 import { OPTIONS, type WeatherShow } from './definition.ts';
 
 export const WEATHER_WINDOW_HOURS = 7 * 24;
-export const WEATHER_TOP = 10;
+export const WEATHER_TOP = 7;
 const FIXED = 100_000;
 const WIDTH_STEP = 256;
 

@@ -5,7 +5,7 @@ import { regionPickerControl } from '../../families/settingsControls.ts';
 
 export const OPTIONS: readonly OptionField[] = [...AIR_OPTIONS,
   regionPickerControl({ automatic: 'Most active regions' }),
-  { key: 'regionCount', section: 'options', label: 'Most active regions shown', kind: 'number', min: 1, max: Number.MAX_SAFE_INTEGER, step: 1, default: 10 },
+  { key: 'regionCount', section: 'options', label: 'Most active regions shown', kind: 'number', min: 1, max: Number.MAX_SAFE_INTEGER, step: 1, default: 7 },
 ];
 export const definition = {
   kind: 'air-superiority-timeline', version: 1, title: 'Air superiority timeline', icon: 'plane',

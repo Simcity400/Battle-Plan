@@ -15,7 +15,7 @@ import type { ConvoyCellState, ConvoyCountry, ConvoyHealthReply, ConvoyView, Hou
 import { mix } from '../../shell/appearance/color.ts';
 import { OPTIONS } from './definition.ts';
 
-export const CONVOY_TOP_DEFAULT = 10;
+export const CONVOY_TOP_DEFAULT = 7;
 
 export interface ConvoyProjectionOptions {
   readonly view: ConvoyView;

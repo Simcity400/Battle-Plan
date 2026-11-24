@@ -71,7 +71,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'national-spirits', load: () => import('./national-spirits') },
   { kind: 'naval-battles', load: () => import('./naval-battles') },
   { kind: 'naval-losses', load: () => import('./naval-losses') },
-  { kind: 'naval-supremacy', load: () => import('./naval-supremacy') },
   { kind: 'navy-size', load: () => import('./navy-size') },
   { kind: 'next-elections', load: () => import('./next-elections') },
   { kind: 'nuclear-arsenal', playsBackDated: true, slots: ['render', 'countryChip'], load: () => import('./nuclear-arsenal') },
