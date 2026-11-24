@@ -82,7 +82,7 @@ export function forceRowIdentity(readView: BoundedReadView, row: ForceAtRow): Fo
   const pres = countryRowPresentation(readView, key);
   const identity = readView.who('country', key);
   const tag = identity.tag?.status === 'ready' ? identity.tag.value : row.tag;
-  return { key, tag, pres: identity.name.status === 'ready' ? pres : { ...pres, label: row.tag } };
+  return { key, tag, pres: pres.labelMissing ? { ...pres, label: row.tag } : pres };
 }
 
 export interface ForceAtProjectConfig {
@@ -256,7 +256,7 @@ export function projectForceAtReply(
       key,
       subject: displayTag,
       label: pres.label,
-      labelMissing: pres.labelMissing,
+      labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
       media: pres.media,
       ...(pres.color ? { color: pres.color } : {}),
       value: { value, format: config.valueFormat, label: config.valueLabel },

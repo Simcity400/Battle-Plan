@@ -9,6 +9,7 @@ import { groupSelection } from '../../families/groupSelection.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
 import { formatRational } from '../../families/valueFormat.ts';
 import type { TerritoryBreakdownReply } from '../../generated/dashboard';
+import { identityNameOr } from '../../families/table/identityCell.ts';
 
 export interface TerritoryBreakdownOptions {
   readonly measure: TerritoryMeasure;
@@ -30,10 +31,11 @@ const SLOT = 'slot:';
 
 function country(readView: BoundedReadView, part: BreakdownPart): BreakdownPart {
   if (part.neutral || !part.key.startsWith(SLOT)) return part;
-  const identity = readView.who('country', countryKey(Number(part.key.slice(SLOT.length))));
+  const key = countryKey(Number(part.key.slice(SLOT.length)));
+  const identity = readView.who('country', key);
   return {
     ...part,
-    name: identity.name.status === 'ready' ? identity.name.value : part.name,
+    name: identityNameOr(readView, 'country', key, part.name),
     flag: identity.tag?.status === 'ready' ? identity.tag.value : part.name,
     flagArt: flagChoiceArt(readView, identity.flagChoice),
     ...(identity.colour?.status === 'ready' ? { color: identity.colour.value } : {}),

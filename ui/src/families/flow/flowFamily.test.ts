@@ -122,7 +122,7 @@ test('a licence with an unknown giver stays one licence, from a partner named as
     largestLink: '1',
   };
   const model = projectCountryFlow(view(reply), TEXT);
-  assert.deepEqual(model.left.map(node => [node.key, node.label, node.numeric]), [['left:8', 'ITA', 1], ['left:unknown', 'Unknown country', 1]]);
+  assert.deepEqual(model.left.map(node => [node.key, node.label, node.numeric]), [['left:8', 'Loading name…', 1], ['left:unknown', 'Unknown country', 1]], 'a partner whose name has not arrived reads loading, never its tag');
   assert.equal(model.left[1]!.unknown, reason);
   assert.equal(findFlowTooltip(model, 'node:left:unknown')?.missingReason, reason);
   assert.equal(model.left[1]!.subject, undefined, 'an unknown partner is no country to open');
@@ -212,7 +212,7 @@ test('the trade matrix keys a partner by its recorded slot and an unproven popul
     largestLink: amount(3),
   };
   const model = projectTradeMatrix(view(reply));
-  assert.deepEqual(model.rows.map(row => [row.id, row.label]), [['1', 'USA'], ['unknown', 'Unknown country']]);
+  assert.deepEqual(model.rows.map(row => [row.id, row.label]), [['1', 'Loading name…'], ['unknown', 'Unknown country']]);
   assert.deepEqual(model.columns.map(column => column.id), ['6']);
   assert.equal(model.cells.present.size, 2);
   const absent = model.cells.absent;

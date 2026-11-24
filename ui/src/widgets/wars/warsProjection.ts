@@ -9,6 +9,7 @@ import { inHourSpans, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, type TimelineLane, type TimelineProjection, type TimelineSideLabel, type TimelineSpan } from '../../families/timeline/model.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { WarObservation, WarParticipantRun, WarTimeline, WarTimelineReply } from '../../generated/dashboard';
+import { identityName } from '../../families/table/identityCell.ts';
 
 export type WarsView = 'gantt' | 'countries';
 
@@ -85,7 +86,7 @@ function countryAt(readView: BoundedReadView, tag: string, hour: number): { read
   const who = readView.who('country', tag, Math.min(hour, readView.hour));
   const flag = flagChoiceArt(readView, who.flagChoice, 'panel');
   return {
-    name: who.name.status === 'ready' ? who.name.value : tag,
+    name: identityName(readView, 'country', tag, Math.min(hour, readView.hour)),
     flag,
     colour: who.colour?.status === 'ready' ? who.colour.value : null,
   };

@@ -111,7 +111,7 @@ function project(readView: BoundedReadView, options: CasualtiesOptions): BarsMod
     const unknown = raw(reading('unknown'));
     const taken = options.includeUnknown ? (knownTaken === null || unknown === null ? null : knownTaken + unknown) : knownTaken;
     const takenField = field(taken, atLeast, options.includeUnknown && unknown === null ? reasonOf('unknown') : reasonOf('taken'));
-    const shared = { kind: 'data' as const, key: tag, subject: tag, label: pres.label, labelMissing: pres.labelMissing, media: pres.media, ...(pres.color ? { color: pres.color } : {}) };
+    const shared = { kind: 'data' as const, key: tag, subject: tag, label: pres.label, labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}), media: pres.media, ...(pres.color ? { color: pres.color } : {}) };
     if (!butterfly) return { ...shared, value: { ...takenField.field, label: 'Casualties taken' }, numeric: takenField.numeric };
     const dealtField = field(raw(reading('dealt')), atLeast, reasonOf('dealt'));
     return { ...shared, left: { value: takenField.field, numeric: takenField.numeric }, right: { value: dealtField.field, numeric: dealtField.numeric } };

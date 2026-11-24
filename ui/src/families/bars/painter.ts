@@ -309,7 +309,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
     if (layout.nameWidth > 0) {
       const regionTools = row.region !== undefined && (isHovered || isFocused);
       const reserveRemove = regionTools ? ROW_REMOVE_SIZE + 4 : 0;
-      const nameColor = row.labelMissing || row.muted ? theme.muted : row.group === 'auto' ? tokens.autoName : theme.text;
+      const nameColor = row.labelMissing || row.labelLoading || row.muted ? theme.muted : row.group === 'auto' ? tokens.autoName : theme.text;
       const fitted = drawNameSlot(
         ctx,
         row.labelMissing ? notRecordedLabel('Name') : row.label,
@@ -486,7 +486,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           layout.rightNameWidth,
           rowH,
           theme,
-          { align: 'right', color: right.labelMissing ? theme.muted : theme.text },
+          { align: 'right', color: right.labelMissing || right.labelLoading ? theme.muted : theme.text },
         );
         if (rightName.truncated) truncatedKeys.push(right.key);
         drawMediaSlot(ctx, layout.width - BARS_PAD_X - layout.mediaWidth, middleY, layout.mediaWidth, layout.mediaHeight, right.media, theme, { artCache, radius: 2 });

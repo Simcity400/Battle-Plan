@@ -258,7 +258,7 @@ function drawNodeLabel(ctx: Canvas2D, box: FlowNodeBox, layout: FlowLayout, them
   ctx.font = `${LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
   const name = ellipsise(node.label, room, s => textWidth(ctx, s));
   const nameW = textWidth(ctx, name);
-  const muted = node.labelMissing || node.others !== undefined;
+  const muted = node.labelMissing || node.labelLoading || node.others !== undefined;
   const nameColour = muted ? theme.muted : theme.text;
   if (node.side === 'left') {
     let cursor = box.x - 6;

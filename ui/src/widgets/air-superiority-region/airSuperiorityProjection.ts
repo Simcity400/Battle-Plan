@@ -13,6 +13,7 @@ import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { AirRegion, AirSide, AirSuperiorityReply } from '../../generated/dashboard';
+import { identityNameOr } from '../../families/table/identityCell.ts';
 
 export type AirRegionOrderOption = 'contested' | 'active' | 'name';
 
@@ -56,7 +57,7 @@ function resolveSideName(side: AirSide, readView: BoundedReadView): string {
   const tag = side.tag ?? side.leader;
   if (tag) {
     const identity = readView.who('country', tag);
-    const name = identity.name.status === 'ready' ? identity.name.value : (side.name ?? tag);
+    const name = identityNameOr(readView, 'country', tag, side.name ?? tag);
     if (identity.name.status === 'ready' && side.key.startsWith('w:') && side.coBelligerents > 0) {
       return `${name} and allies`;
     }
@@ -140,8 +141,7 @@ function projectRegion(
       ? resolveSideName(side, readView)
       : cell.leader
         ? (() => {
-            const id = readView.who('country', cell.leader);
-            return id.name.status === 'ready' ? id.name.value : (reply.viewpointCountryStyle?.name ?? cell.leader);
+            return identityNameOr(readView, 'country', cell.leader, reply.viewpointCountryStyle?.name ?? cell.leader);
           })()
         : (reply.viewpointCountryStyle?.name ?? 'Viewpoint');
     const vpColor = side

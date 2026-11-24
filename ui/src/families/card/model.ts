@@ -7,6 +7,7 @@ import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
 import { assertValue, type Value } from '../value.ts';
+import { LOADING_NAME, resolveName } from '../table/identityCell.ts';
 import { formatDateHover, formatDateOnly, formatValueState, notRecordedLabel } from '../valueFormat.ts';
 
 export interface CardMedia {
@@ -40,6 +41,7 @@ export interface CardItemRow {
   readonly flag?: CardMedia;
   readonly art?: CardMedia;
   readonly title: Value<string>;
+  readonly titleLoading?: true;
   readonly subtitle?: string;
   readonly subtitleFlag?: CardMedia;
   readonly place?: string;
@@ -182,23 +184,22 @@ export function cardMediaFromIcon(readView: BoundedReadView, url: string | null 
   return { kind: 'art', art: productIconArt(readView, url, missing), ...(name ? { name } : {}) };
 }
 
-export function cardFlag(readView: BoundedReadView, tag: string, atHour?: number): { readonly media: CardMedia; readonly name: Value<string> } {
-  const identity = readView.who('country', tag, atHour);
-  const name: Value<string> = identity.name.status === 'ready'
-    ? { kind: 'known', value: identity.name.value }
-    : identity.name.status === 'pending'
-      ? { kind: 'known', value: tag }
-      : { kind: 'notRecorded', reason: identity.name.reason };
-  const art: ArtResult = flagChoiceArt(readView, identity.flagChoice);
-  return { media: { kind: 'flag', art, tag }, name };
+export function cardFlag(readView: BoundedReadView, tag: string, atHour?: number): { readonly media: CardMedia; readonly name: Value<string>; readonly loading: boolean } {
+  const { value, loading, who } = resolveName(readView, 'country', tag, atHour === undefined ? {} : { atHour });
+  const art: ArtResult = flagChoiceArt(readView, who.flagChoice);
+  return { media: { kind: 'flag', art, tag }, name: value, loading };
 }
 
 export function cardTitleText(title: Value<string>, figure = 'Name'): string {
   return title.kind === 'known' || title.kind === 'partial' ? String(title.value) : notRecordedLabel(figure);
 }
 
+export function cardTitle(row: CardItemRow | CardHeroRow): string {
+  return row.kind === 'item' && row.titleLoading ? LOADING_NAME : cardTitleText(row.title);
+}
+
 export function cardRowName(row: CardEntryRow): string {
-  return row.kind === 'meter' || row.kind === 'list' ? row.name ?? row.label ?? row.key : cardTitleText(row.title);
+  return row.kind === 'meter' || row.kind === 'list' ? row.name ?? row.label ?? row.key : cardTitle(row);
 }
 
 export function cardListText(row: CardListRow): string {
@@ -311,6 +312,7 @@ export function deriveCardAudit(model: CardModel): FamilyAuditRow[] {
       continue;
     }
     rows.push(auditCell(row.key, 'title', canonicalAuditValue(row.title)));
+    if (row.kind === 'item' && row.titleLoading) rows.push(auditCell(row.key, 'loading', 'title'));
     if (row.meter) {
       rows.push(auditCell(row.key, 'meter', canonicalAuditValue(row.meter.fraction)));
       if (row.meter.text !== undefined) rows.push(auditCell(row.key, 'meterText', row.meter.text));

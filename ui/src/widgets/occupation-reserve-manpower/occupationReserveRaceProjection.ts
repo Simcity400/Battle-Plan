@@ -38,9 +38,8 @@ function makeHolderRow(readView: BoundedReadView, holder: ReserveHolder, readHou
   const tag = holder.country.tag;
   if (tag === null) return null;
   const key = holder.slot === null ? tag : countryKey(holder.slot);
-  const identity = readView.who('country', key);
   const shown = countryRowPresentation(readView, key);
-  const pres = identity.name.status === 'ready' ? shown : { ...shown, label: tag };
+  const pres = shown.labelMissing ? { ...shown, label: tag } : shown;
   const total = holder.total;
   const value = total === 0 ? zeroValue() : knownValue(total);
 
@@ -87,7 +86,7 @@ function makeHolderRow(readView: BoundedReadView, holder: ReserveHolder, readHou
     key,
     subject: key,
     label: pres.label,
-    labelMissing: pres.labelMissing,
+    labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
     media: pres.media,
     ...(pres.color ? { color: pres.color } : {}),
     value: { value, format: { decimals: 0 }, label: 'Reserve manpower' },

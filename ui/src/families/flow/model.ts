@@ -17,6 +17,7 @@ export interface FlowNode {
   readonly side: FlowSide;
   readonly label: string;
   readonly labelMissing?: boolean;
+  readonly labelLoading?: boolean;
   readonly tag?: string;
   readonly flag?: ArtResult;
   readonly numeric: number | null;

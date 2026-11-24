@@ -7,6 +7,7 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import type { WarContributionGroup, WarMeasure, WarMeasureKey, WarMeasureMember, WarMeasureSide, WarsReply } from '../../generated/dashboard';
 import { chosenGroup, leadOf, savedWar, warContributionSources, warCountries, warsAux, type WarChoiceOptions, type WarSide } from './warContributionPlan.ts';
+import { resolveName } from '../../families/table/identityCell.ts';
 
 export const SIDES_VIEW = 'sides';
 
@@ -83,21 +84,16 @@ interface Who {
 }
 
 function who(readView: BoundedReadView, tag: string, hour: number): Who {
-  const identity = readView.who('country', tag, hour);
-  const name: Value<string> = identity.name.status === 'ready'
-    ? knownValue(identity.name.value)
-    : identity.name.status === 'pending'
-      ? knownValue(tag)
-      : notRecorded(identity.name.status === 'absent' || identity.name.status === 'failed' ? identity.name.reason : 'Country name unavailable');
+  const { value: name, name: shownName, loading, who: identity } = resolveName(readView, 'country', tag, { atHour: hour });
   const art = identity.flagChoice?.status === 'ready' ? readView.art(flagArtHandle(identity.flagChoice.value, 'small')) : null;
   const flagArt = art ?? flagChoiceArt(readView, identity.flagChoice, 'small');
   const flag = flagArt.status === 'ready' ? flagArt.url : undefined;
   const flagPending = flagArt.status === 'pending';
   const colour = identity.colour?.status === 'ready' ? identity.colour.value : undefined;
   return {
-    cell: { value: name, iconSlot: true, country: tag, art: flagArt, ...(colour ? { countryColor: colour } : {}) },
+    cell: { value: name, iconSlot: true, country: tag, art: flagArt, ...(loading ? { loading: true } : {}), ...(colour ? { countryColor: colour } : {}) },
     title: { name, country: tag, ...(flag ? { flag } : {}), ...(flagPending ? { flagPending: true } : {}) },
-    name: name.kind === 'known' ? String(name.value) : tag,
+    name: shownName,
   };
 }
 

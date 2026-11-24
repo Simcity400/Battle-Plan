@@ -4,6 +4,7 @@ import type { CountrySelection } from '../../dashboard/model';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../contract.ts';
 import { groupSelection } from '../groupSelection.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
+import { resolveName } from '../table/identityCell.ts';
 import { knownValue, notRecorded, zeroValue } from '../value.ts';
 import { formatScalar } from '../valueFormat.ts';
 import type { FactionTotalRow, FactionTotalsAtReply } from '../../generated/dashboard';
@@ -135,24 +136,25 @@ export function factionTotalsSources(
 function factionPresentation(readView: BoundedReadView, id: string, aggregated: boolean, groupLabel: string): {
   readonly label: string;
   readonly labelMissing: boolean;
+  readonly labelLoading: boolean;
   readonly color: string;
 } {
   if (aggregated) {
-    return { label: groupLabel, labelMissing: false, color: colour(DEFAULT_CARD_SURFACE, 0) };
+    return { label: groupLabel, labelMissing: false, labelLoading: false, color: colour(DEFAULT_CARD_SURFACE, 0) };
   }
-  const identity = readView.who('faction', id);
-  const labelMissing = identity.name.status === 'absent' || identity.name.status === 'failed';
-  const label = identity.name.status === 'ready' ? identity.name.value : `Faction ${id}`;
+  const { value, name, loading: labelLoading, who: identity } = resolveName(readView, 'faction', id);
+  const labelMissing = value.kind !== 'known' && !labelLoading;
+  const label = value.kind === 'known' || labelLoading ? name : `Faction ${id}`;
   const color = identity.colour?.status === 'ready' ? identity.colour.value : colour(DEFAULT_CARD_SURFACE, stableColourIndex(id));
-  return { label, labelMissing, color };
+  return { label, labelMissing, labelLoading, color };
 }
 
 function memberNames(readView: BoundedReadView, row: FactionTotalRow): string {
   const limit = 8;
   const keys = row.memberCountries.length ? row.memberCountries.map(countryKey) : row.members;
   const shown = keys.slice(0, limit).map((key, index) => {
-    const who = readView.who('country', key);
-    return who.name.status === 'ready' ? who.name.value : (row.members[index] ?? key);
+    const who = resolveName(readView, 'country', key);
+    return who.value.kind === 'known' || who.loading ? who.name : (row.members[index] ?? key);
   });
   return keys.length > limit ? `${shown.join(', ')} +${keys.length - limit} more` : shown.join(', ');
 }
@@ -206,7 +208,7 @@ export function projectFactionTotalsRace(
       key: row.id,
       subject: row.id,
       label: pres.label,
-      labelMissing: pres.labelMissing,
+      labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
       color: pres.color,
       value: { value, format: { decimals: 0 }, label: options.measureLabel },
       numeric: row.total,

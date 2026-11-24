@@ -38,5 +38,5 @@ export function nuclearArsenalSources(ctx: FamilyPlanContext, view: 'race' | 'mi
 export function nukeRowIdentity(readView: BoundedReadView, row: NukeCountry): { readonly key: string; readonly pres: CountryRowPresentation } {
   const key = row.slot === null ? row.tag : countryKey(row.slot);
   const pres = countryRowPresentation(readView, key);
-  return { key, pres: readView.who('country', key).name.status === 'ready' ? pres : { ...pres, label: row.tag } };
+  return { key, pres: pres.labelMissing ? { ...pres, label: row.tag } : pres };
 }

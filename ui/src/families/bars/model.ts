@@ -6,6 +6,7 @@ import type { ArtResult } from '../art/types.ts';
 import { canonicalAuditValue } from '../audit.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyActionPayload, FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
+import { resolveName } from '../table/identityCell.ts';
 import { assertValue, hasMeasuredValue, type Value } from '../value.ts';
 import { formatShare, formatValueState, notRecordedLabel, type ValueFormat } from '../valueFormat.ts';
 
@@ -24,6 +25,7 @@ export interface BarsRowMedia {
 export interface CountryRowPresentation {
   readonly label: string;
   readonly labelMissing: boolean;
+  readonly labelLoading: boolean;
   readonly color?: string;
   readonly media: BarsRowMedia;
 }
@@ -35,14 +37,14 @@ export function countryRowPresentation(
   dimmed?: boolean,
   atHour?: number,
 ): CountryRowPresentation {
-  const identity = readView.who('country', tag, atHour);
-  const labelMissing = identity.name.status === 'absent' || identity.name.status === 'failed';
-  const label = identity.name.status === 'ready' ? identity.name.value : tag;
+  const { value, name: label, loading: labelLoading, who: identity } = resolveName(readView, 'country', tag, atHour === undefined ? {} : { atHour });
+  const labelMissing = value.kind !== 'known' && !labelLoading;
   const color = identity.colour?.status === 'ready' ? identity.colour.value : fallbackColor;
   const art: ArtResult = flagChoiceArt(readView, identity.flagChoice);
   return {
     label,
     labelMissing,
+    labelLoading,
     color,
     media: { kind: 'flag', art, tag, dimmed },
   };
@@ -90,6 +92,7 @@ export interface BarsOppositeRow {
   readonly subject?: string;
   readonly label: string;
   readonly labelMissing?: boolean;
+  readonly labelLoading?: boolean;
   readonly media?: BarsRowMedia;
   readonly color?: string;
   readonly value: BarsValueField;
@@ -117,6 +120,7 @@ export interface BarsDataRow {
   readonly subject?: string;
   readonly label: string;
   readonly labelMissing?: boolean;
+  readonly labelLoading?: boolean;
   readonly media?: BarsRowMedia;
   readonly color?: string;
   readonly muted?: boolean;

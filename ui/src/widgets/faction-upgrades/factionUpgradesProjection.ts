@@ -9,6 +9,7 @@ import { wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { knownValue, notRecorded, type Value } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { CountryGroupReply, FactionGroup, FactionRulesReply, FactionSelectionRun, HourSpan } from '../../generated/dashboard';
+import { identityName } from '../../families/table/identityCell.ts';
 
 export interface FactionUpgradesOptions {
   readonly groups: CountryGroupReply | null;
@@ -88,8 +89,7 @@ function upgradeRows(readView: BoundedReadView, reply: FactionRulesReply, hour: 
   for (const lane of reply.members) {
     const run = runAtHour(lane.runs, hour);
     if (!run) continue;
-    const who = lane.tag ? readView.who('country', lane.tag, hour).name : null;
-    const name = who?.status === 'ready' ? who.value : lane.tag ?? 'Member not recorded';
+    const name = lane.tag ? identityName(readView, 'country', lane.tag, hour) : 'Member not recorded';
     out.push(row(`member:${lane.key}`, run, `${name} · ${groupName(lane.group)}`, gaps, branchFirst));
   }
   for (const lane of reply.doctrines) {

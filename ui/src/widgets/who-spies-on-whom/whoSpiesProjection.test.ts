@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { datedIdentity } from '../../families/identity/dated.fixture.ts';
 import { deriveMatrixAudit, deriveMatrixMirror, deriveMatrixTooltip, matrixCellAt } from '../../families/heat/matrixModel.ts';
 import type { OperativeMatrixReply } from '../../generated/dashboard';
 import { projectOperativeMatrix, projectOperativePairs } from './whoSpiesProjection.ts';
@@ -30,7 +31,8 @@ const reply: OperativeMatrixReply = {
   warnings: [],
 };
 
-const view = (data: unknown) => createBoundedReadView({ hour: HOUR, panels: new Map([['main', data]]) });
+const identity = datedIdentity(Object.fromEntries(['ENG', 'GER', 'ITA', 'SOV'].map(tag => [tag, [{ from: 0, name: tag }]])));
+const view = (data: unknown) => createBoundedReadView({ hour: HOUR, identity, panels: new Map([['main', data]]) });
 
 test('spy matrix: counter-intelligence on the diagonal, unknown pairs hatched never zero, agency capacity in the margin', () => {
   const model = projectOperativeMatrix(view(reply));

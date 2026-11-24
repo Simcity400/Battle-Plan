@@ -16,6 +16,7 @@ import { branchGapsOf, missingSpansOf } from '../../families/time-chart/seriesHe
 import type { ApmPlayer, ApmReply, ApmSeries, ApmValue } from '../../generated/dashboard';
 import { apmRateRational, formatApmOperands, formatApmRate, GAPS_NOTE, playerNames, validateApm } from '../player-apm/apmData.ts';
 import { apmHeadQuery, apmHeadRows } from '../player-apm/apmHead.ts';
+import { identityName } from '../../families/table/identityCell.ts';
 
 const TOP_NAMED = 8;
 const NOT_RECORDED_CAMPAIGN = 'Player orders were not recorded in this campaign.';
@@ -125,7 +126,7 @@ function buildHoverDetail(
     const flagRes = flagChoice ? readView.art(flagArtHandle(flagChoice, 'small')) : null;
     const label = options.group === 'player'
       ? (hoverDisambiguated?.get(row.id) ?? row.name ?? 'Name not recorded')
-      : (identity?.name.status === 'ready' ? identity.name.value : row.tag ?? row.id);
+      : (row.tag ? identityName(readView, 'country', row.tag, hover.hour) : row.id);
     const swatch = colorById.get(row.id);
     const rateText = formatApmRate(row.summary, 0);
     items.push({
@@ -269,7 +270,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
         : undefined;
       const name = options.group === 'player'
         ? (disambiguated?.get(entry.id) ?? entry.name ?? 'Name not recorded')
-        : (identity?.name.status === 'ready' ? identity.name.value : entry.tag ?? entry.id);
+        : (entry.tag ? identityName(readView, 'country', entry.tag, entry.obsHour) : entry.id);
       const color = isTop ? topColors[rank]! : CHART_MEASURE_COLOURS.mutedFallback;
       colorById.set(entry.id, color);
       const headText = entry.summary ? formatApmRate(entry.summary, 0) : null;
