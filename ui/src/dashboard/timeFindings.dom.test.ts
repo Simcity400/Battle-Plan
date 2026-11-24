@@ -55,7 +55,7 @@ const groupsOf = (tags: string[], members: { tag: string; firstHour: number; las
   countryIdentities: tags.map((tag, index) => ({ tag, identities: [{ slot: index + 1, countryId: index + 101, firstHour: 100, lastHour: 109 }] })) });
 const GER = { kind: 'tags', tags: ['GER'] }, BOTH = { kind: 'tags', tags: ['GER', 'ENG'] };
 const OUTSIDE = 'This time is outside the recording.', UNRECORDED = 'Not recorded at this time.', SETTINGS = 'Change time';
-const QUEUE = '({ readHour: hour, missing: null, orders: [], warnings: [] })';
+const QUEUE = '({ tag: "GER", readHour: hour, missing: null, orders: [], inTraining: 0, warnings: [] })';
 const REASON = 'Branch 1 block 105 – 106 is unreadable: checksum';
 
 test('1. Training queue pinned inside a declared gap 105–106 saves no country, asks nothing at 105, and says the time was not recorded with the recording’s reason', () => onPage(async act => {
