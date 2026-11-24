@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import type { WidgetDefinition, WidgetMeta, WidgetSkeletonKind } from './definitions';
 import type { WidgetSpec, WidgetTime } from './model';
 import { resolveOptions } from './options';
+import { resolveWidgetScopedOptions, resolveWidgetViewSwitch } from '../widgets/manifest';
 
 export interface DynamicViewSwitch {
   label: string;
@@ -92,15 +93,16 @@ export function useWidgetViewSwitch(spec: DynamicViewSwitch | null): void {
 }
 
 export function resolveDeclaredViewSwitch(
-  definition: Pick<WidgetDefinition, 'options' | 'viewSwitch'> | undefined,
+  definition: Pick<WidgetDefinition, 'options' | 'viewSwitch'> & Partial<Pick<WidgetDefinition, 'kind' | 'title'>> | undefined,
   widget: Pick<WidgetSpec, 'options' | 'countries' | 'time' | 'title'>,
   onChange: (option: string, value: string) => void,
 ): DynamicViewSwitch | null {
-  const spec = definition?.viewSwitch;
-  if (!spec || !definition?.options) return null;
-  const resolved = resolveOptions(definition.options, widget.options);
+  const spec = definition?.kind ? resolveWidgetViewSwitch(definition.kind, definition as Pick<WidgetMeta, 'viewSwitch' | 'options' | 'title'>) : definition?.viewSwitch;
+  const fields = definition?.kind ? resolveWidgetScopedOptions(definition.kind, widget.options, definition) : definition?.options;
+  if (!spec || !fields?.length) return null;
+  const resolved = resolveOptions(fields, widget.options);
   if (spec.when && !spec.when(resolved)) return null;
-  const field = definition.options.find(item => item.key === spec.option);
+  const field = fields.find(item => item.key === spec.option);
   if (!field || field.kind !== 'choice') return null;
   if (field.visibleWhen && !field.visibleWhen(resolved, widget.countries, widget.time.mode)) return null;
   const options = spec.choices ?? field.choices;

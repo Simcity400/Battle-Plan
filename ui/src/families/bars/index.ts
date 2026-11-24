@@ -53,6 +53,7 @@ export {
 } from './painter.ts';
 export {
   barsProjection,
+  ensureBarsProjection,
   registerBarsProjection,
   registeredBarsKinds,
 } from './registry.ts';

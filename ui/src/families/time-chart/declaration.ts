@@ -8,6 +8,13 @@ import type { MissingSpan, TilePart } from '../../generated/dashboard';
 import type { ArtResolution } from '../art/types.ts';
 import type { FamilyProjection, FamilyTheme } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
+import {
+  DEFAULT_VIEW,
+  ensureFamilyProjection,
+  familyProjection,
+  registerFamilyProjection,
+  registeredFamilyProjections,
+} from '../registry.ts';
 import type {
   AuxProductSpec,
   BoundedReadView,
@@ -70,6 +77,7 @@ export interface TimeChartWidgetDeclaration<TProjectionOptions = Record<string, 
 export interface TimeChartBinding<TOptions = unknown> {
   readonly family: 'time-chart';
   readonly kind: string;
+  readonly viewId?: string;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly extent: readonly [number, number];
@@ -98,17 +106,25 @@ export function isTimeChartBinding(value: unknown): value is TimeChartBinding {
     && typeof (value as { kind?: unknown }).kind === 'string';
 }
 
-const registry = new Map<string, TimeChartProjection>();
-
-export function registerTimeChart<TOptions>(projection: TimeChartProjection<TOptions>): TimeChartProjection<TOptions> {
-  registry.set(projection.kind, projection as TimeChartProjection);
-  return projection;
+export function registerTimeChart<TOptions>(
+  projection: TimeChartProjection<TOptions>,
+  view = DEFAULT_VIEW,
+): TimeChartProjection<TOptions> {
+  return registerFamilyProjection(projection, view, 'time-chart') as TimeChartProjection<TOptions>;
 }
 
-export function timeChartProjection(kind: string): TimeChartProjection | undefined {
-  return registry.get(kind);
+export function timeChartProjection(kind: string, view?: string): TimeChartProjection | undefined {
+  return familyProjection<TimeChartModel, any>('time-chart', kind, view) as TimeChartProjection | undefined;
+}
+
+export function ensureTimeChartProjection(
+  kind: string,
+  view: string | undefined,
+  onReady: () => void,
+): TimeChartProjection | 'loading' | 'unknown' {
+  return ensureFamilyProjection<TimeChartModel, any>('time-chart', kind, view, onReady) as TimeChartProjection | 'loading' | 'unknown';
 }
 
 export function registeredTimeCharts(): readonly string[] {
-  return [...registry.keys()];
+  return [...new Set(registeredFamilyProjections('time-chart').map(entry => entry.kind))];
 }
