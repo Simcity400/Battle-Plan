@@ -3,11 +3,8 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { formatChartAxisValue } from '../../families/time-chart/layout.ts';
 import type { ChartArtSlot, ChartGap, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import {
@@ -23,7 +20,6 @@ import {
   spendMarkersOf,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
-import { OPTIONS } from './definition.ts';
 
 export interface CommandPowerOptions {
   readonly tags: readonly string[];
@@ -41,7 +37,7 @@ function formatEndAmount(value: number): string {
   return formatChartAxisValue(value, 'power');
 }
 
-export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerTimeChart({
+export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerFamilyProjection({
   kind: 'command-power',
   family: 'time-chart',
   variant: 'rate-with-ceiling',
@@ -177,7 +173,6 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
   subject: 'command power',
   emptyCampaign: 'Load a campaign to see command power.',
   icon: 'chart-line',
-  optionFields: OPTIONS,
   countries: { mode: 'multi', labels: true, colours: true, allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
     const tags = ctx.countries.tags;

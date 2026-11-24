@@ -897,7 +897,7 @@ impl Product for IdeaHistory {
         let query = dashboard_base::queries::query(source, params.branch())?;
         let (read, recorded) = rayon::join(|| history(source, params.branch(), &params.country, cancelled), || recorded_definitions(source, &query));
         let (read, recorded) = (read?, recorded?);
-        let reply = present(&content, params, &query.holders.name(&params.country, query.timeline.last), &read.0, &read.1, (*recorded).as_ref(), cancelled)?;
+        let reply = present(&content, params, &query.holders.nearest_name(&params.country, query.timeline.last), &read.0, &read.1, (*recorded).as_ref(), cancelled)?;
         check_reply_budget(&reply)?;
         Ok(reply)
     }

@@ -167,13 +167,6 @@ impl State {
         Self { charge: budget.charge(), queue: VecDeque::new(), bytes: 0, sent: 0, released: 0, credit: budget.limit() / 2, session: 0, heads: std::collections::HashMap::new(), admitted: std::collections::HashMap::new(), next: 0, stopped: false, failed: None, counters: PushCounters::default() }
     }
 
-    fn passed(&self, stream: Stream) -> bool {
-        match stream {
-            Stream::Steps { route, seek, due } => self.heads.get(&route).is_some_and(|&(at, head)| at == seek && due <= head),
-            Stream::Panels { .. } | Stream::Notice => false,
-        }
-    }
-
     fn reached(&self, stream: Stream) -> bool {
         match stream {
             Stream::Steps { route, seek, due } | Stream::Panels { route, seek, due } => self.heads.get(&route).is_some_and(|&(at, head)| at == seek && due <= head),
@@ -223,14 +216,69 @@ impl State {
 
     fn merge_passed(&mut self) {
         let mut at = 0;
-        while at + 1 < self.queue.len() {
-            let (older, newer) = (&self.queue[at], &self.queue[at + 1]);
-            let same = older.kind == newer.kind && older.stream.version().is_some() && older.stream.version() == newer.stream.version();
-            if same && !older.kept && self.passed(older.stream) && self.passed(newer.stream) && self.merge(at, at + 1) {
+        while at < self.queue.len() {
+            let older = &self.queue[at];
+            let Some(version) = older.stream.version() else {
+                at += 1;
+                continue;
+            };
+            if older.kept || !self.reached(older.stream) {
+                at += 1;
+                continue;
+            }
+            let kind = older.kind;
+            let Some(later) = (at + 1..self.queue.len()).find(|&i| {
+                let q = &self.queue[i];
+                q.kind == kind && q.stream.version() == Some(version)
+            }) else {
+                at += 1;
+                continue;
+            };
+            if self.reached(self.queue[later].stream) && self.merge(at, later) {
                 continue;
             }
             at += 1;
         }
+    }
+
+    fn refuse_largest_panel(&mut self, reason: &str) -> bool {
+        let replacement = panel::dated::refused_record_len(reason) as i64;
+        let mut savings: std::collections::BTreeMap<u32, i64> = std::collections::BTreeMap::new();
+        for queued in &self.queue {
+            if !matches!(queued.stream, Stream::Panels { .. }) {
+                continue;
+            }
+            let Ok(records) = panel::dated::records(&queued.bytes) else {
+                continue;
+            };
+            for r in records {
+                if r.kind == panel::dated::DATA {
+                    *savings.entry(r.id).or_default() += r.byte_len() as i64 - replacement;
+                }
+            }
+        }
+        let Some((offender, _)) = savings
+            .into_iter()
+            .filter(|&(_, saved)| saved > 0)
+            .max_by_key(|&(id, saved)| (saved, std::cmp::Reverse(id)))
+        else {
+            return false;
+        };
+        let mut reduced = false;
+        for queued in &mut self.queue {
+            if !matches!(queued.stream, Stream::Panels { .. }) {
+                continue;
+            }
+            let Ok(Some(rebuilt)) = panel::dated::refuse_panel(&queued.bytes, offender, reason) else {
+                continue;
+            };
+            let before = answer::charge(&queued.bytes);
+            let after = answer::charge(&rebuilt);
+            self.bytes = self.bytes - before + after;
+            queued.bytes = rebuilt;
+            reduced = true;
+        }
+        reduced
     }
 
     fn merge(&mut self, at: usize, later: usize) -> bool {
@@ -246,6 +294,7 @@ impl State {
                 let newer = &mut self.queue[later - 1];
                 self.bytes -= answer::charge(&older.bytes) + answer::charge(&newer.bytes);
                 self.bytes += answer::charge(&bytes);
+                newer.stream = Stream::of(newer.kind, &bytes);
                 newer.bytes = bytes;
                 newer.offered = older.offered;
                 self.counters.superseded += u64::from(superseded);
@@ -325,8 +374,12 @@ impl Push {
         let session = state.session;
         state.queue.push_back(Queued { stream, kind, bytes, sequence, offered: Instant::now(), kept: false, session });
         state.compact(stream);
-        if let Err(error) = state.charged() {
-            state.overflow(&error.to_string(), sequence);
+        while let Err(error) = state.charged() {
+            let reason = error.to_string();
+            if !state.refuse_largest_panel(&reason) {
+                state.overflow(&reason, sequence);
+                break;
+            }
         }
         state.counters.most_queued = state.counters.most_queued.max(state.queue.len() as u64);
         drop(state);
@@ -384,6 +437,9 @@ impl Push {
         let mut state = lock(&self.state);
         if state.heads.insert(route, (seek, hour)) == Some((seek, hour)) { return; }
         state.merge_passed();
+        if state.failed.is_none() {
+            let _ = state.charged();
+        }
         drop(state);
         self.ready.notify_all();
     }

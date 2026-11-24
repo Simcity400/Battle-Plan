@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WidgetMeta } from '../dashboard/definitions';
-import { addOrderedToken, contentSet, moveOrderedToken, removeOrderedToken, resolveOptions, setOption } from '../dashboard/options.ts';
+import { addOrderedToken, contentSet, moveOrderedToken, parseStoredOptions, removeOrderedToken, resolveOptions, setOption, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
 import {
   DEFAULT_VIEW,
   declaredViewChoices,
@@ -38,6 +38,8 @@ import {
   resolveWidgetActiveView,
   resolveWidgetScopedOptions,
   resolveWidgetViewSwitch,
+  familyViewOptionFields,
+  widgetOptionFields,
 } from './manifest.ts';
 
 test('manifest accounts for every widget kind once across family views and legacy entries', () => {
@@ -57,7 +59,19 @@ test('manifest accounts for every widget kind once across family views and legac
   }
 });
 
-test('every manifest view reaches its own projection through the binding the host builds, and nothing registers under an undeclared view', async () => {
+function otherValue(field: OptionField): OptionValue {
+  switch (field.kind) {
+    case 'toggle': return !field.default;
+    case 'choice': return field.choices.find(choice => choice.value !== field.default)?.value ?? field.default;
+    case 'number': return field.default === field.min ? field.max : field.min;
+    case 'content-choice':
+    case 'content-set':
+    case 'ordered-set': return 'GER';
+    case 'table': return 'edited';
+  }
+}
+
+test('every manifest view reaches its own projection through the binding the host builds, every option its editors write is what the host reads after a reopen, and nothing registers under an undeclared view', async () => {
   const declared = new Set(FAMILY_VIEWS.map(entry => `${entry.family}\u0000${entry.kind}\u0000${normalizeView(entry.view)}`));
   for (const manifest of FAMILY_MANIFESTS) {
     assert.ok(manifest.hostAdapter, `${manifest.family} has a host adapter`);
@@ -67,7 +81,7 @@ test('every manifest view reaches its own projection through the binding the hos
       const declaration = spec.declaration as { readonly kind?: string } | undefined;
       assert.equal(declaration?.kind ?? entry.kind, entry.kind, `${entry.kind}/${view}: the declaration is for its own kind`);
       const ctx: FamilyBindingContext<unknown, unknown> = {
-        kind: declaration?.kind ?? entry.kind, view, options: {}, settings: {}, window: null, sources: {}, extent: [0, 100], plan: null,
+        kind: declaration?.kind ?? entry.kind, view, options: {}, settings: {}, sources: {}, extent: [0, 100], plan: null,
         viewport: { width: 400, height: 300, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null }, theme: {} as FamilyTheme, reducedMotion: false,
         identitySnapshot: null, selectedKey: null, focusedKey: null, expanded: {}, audit: false, auditId: undefined, pauseFlush: 0,
       };
@@ -79,6 +93,20 @@ test('every manifest view reaches its own projection through the binding the hos
         if (first !== 'loading') resolve(first);
       });
       assert.equal(found, spec.projection, `${entry.kind}/${view}: the worker finds this view's projection`);
+      const selected: WidgetOptions = view === DEFAULT_VIEW ? {} : { [entry.viewOption ?? 'view']: view };
+      const read = familyViewOptionFields(entry.kind, view);
+      for (const [editor, fields] of [['settings panel', resolveWidgetScopedOptions(entry.kind, selected)], ['grid', widgetOptionFields(entry.kind, selected)]] as const) {
+        for (const field of fields) {
+          if (field.key === (entry.viewOption ?? 'view')) continue;
+          const value = otherValue(field);
+          if (value === field.default) continue;
+          const written = setOption(fields, selected, field.key, value);
+          assert.ok(written, `${entry.kind}/${view}: the ${editor} writes ${field.key}`);
+          const reopened = parseStoredOptions(JSON.parse(JSON.stringify(written)));
+          assert.ok(reopened, `${entry.kind}/${view}: ${field.key} written by the ${editor} survives a save`);
+          assert.equal(resolveOptions(read, reopened)[field.key], value, `${entry.kind}/${view}: ${field.key} written by the ${editor} is what the host reads`);
+        }
+      }
     }
   }
   const kinds = new Set(FAMILY_VIEWS.map(entry => entry.kind));
@@ -237,7 +265,7 @@ test('worker projection registry loads table and bars projections lazily on dema
   const matrixWakes: number[] = [];
   const matrixView = drawnViews('heat-matrix', wid => matrixWakes.push(wid))!;
   const matrixBinding = { family: 'heat-matrix', kind: 'synthetic-heat-matrix', options: {}, sources: {}, width: 100, height: 100, scrollLeft: 0, scrollTop: 0 };
-  assert.equal(matrixView.next!({ widget: 7, subs: [], pictures: [], model: matrixBinding }, 50), 51);
+  assert.equal(matrixView.next!({ widget: 7, subs: [], pictures: [], model: matrixBinding }, 50), Infinity, 'a loading projection answers no boundary, so the lane walks no history');
   for (let i = 0; i < 16 && !matrixWakes.length; i++) await Promise.resolve();
   assert.equal(heatMatrixLoads, 1);
   assert.deepEqual(matrixWakes, [7]);

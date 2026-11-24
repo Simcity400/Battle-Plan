@@ -1,13 +1,14 @@
 import { CHART_MEASURE_COLOURS, SECONDARY_DASH } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { OptionField, OptionValue } from '../../dashboard/options';
+import type { OptionValue } from '../../dashboard/options';
 import type { AuxProductSpec, BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../contract.ts';
 import type { HolderRun, HourRanges } from '../holders.ts';
-import { registerTimeChart, type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
+import { formatScalar } from '../valueFormat.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
+import { registerFamilyProjection } from '../registry.ts';
 import { formatChartAxisValue } from './layout.ts';
 import type { ChartGap, ChartHoverDetail, ChartLegendEntry, ChartValueFormat, TimeChartSeriesModel } from './model.ts';
 import {
-  answerRowOf,
   assignCountrySeriesColours,
   branchGapsOf,
   countrySeriesIdentity,
@@ -20,6 +21,7 @@ import {
   seriesHeadAt,
   withinMapOf,
 } from './seriesHelpers.ts';
+import { answerRowOf } from '../sceneTiles.ts';
 
 export interface CountryLinesMeasure {
   readonly kind: string;
@@ -66,7 +68,6 @@ export interface CountryLinesSpec<TAux = unknown> {
   readonly format: Extract<ChartValueFormat, 'compact' | 'number' | 'percent'>;
   readonly step?: boolean;
   readonly aux?: AuxProductSpec<TAux>;
-  readonly optionFields: readonly OptionField[];
   readonly measure: (options: Readonly<Record<string, OptionValue>>, aux: TAux | undefined) => CountryLinesMeasure | null;
   readonly second?: (options: Readonly<Record<string, OptionValue>>) => CountryLinesSecond | null;
   readonly digits?: (options: Readonly<Record<string, OptionValue>>) => number;
@@ -85,18 +86,18 @@ const SECOND_SUFFIX = '\u0000second';
 export function formatCountryValue(value: number, format: CountryLinesSpec['format'], digits: number | null = null): string {
   if (format === 'compact') return formatChartAxisValue(value, 'compact');
   if (format === 'percent') {
-    const shown = digits ?? 1;
-    return `${(Math.round(value * 10 ** shown) / 10 ** shown).toLocaleString('en-US', { minimumFractionDigits: shown, maximumFractionDigits: shown })}%`;
+    return digits === null
+      ? formatScalar(value, { decimals: 0, maxDecimals: 1, fixedDecimals: true, percent: true })
+      : formatScalar(value, { decimals: digits, maxDecimals: digits, fixedDecimals: true, percent: true });
   }
-  const sign = value < 0 ? '−' : '';
-  return `${sign}${Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: digits ?? 2 })}`;
+  return formatScalar(value, { decimals: 0, maxDecimals: digits ?? 2 });
 }
 
 export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAux>): {
   readonly projection: TimeChartProjection<CountryLinesOptions>;
   readonly declaration: TimeChartWidgetDeclaration<CountryLinesOptions, TAux>;
 } {
-  const projection = registerTimeChart<CountryLinesOptions>({
+  const projection = registerFamilyProjection<TimeChartProjection<CountryLinesOptions>>({
     kind: spec.kind,
     family: 'time-chart',
     variant: 'line',
@@ -187,7 +188,6 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
     emptyCampaign: `Load a campaign to see ${spec.subject}.`,
     icon: 'chart-line',
     countries: { mode: 'multi', labels: true, colours: true, allowSlots: true },
-    optionFields: spec.optionFields,
     ...(spec.aux ? { aux: spec.aux } : {}),
     sources(ctx: FamilyPlanContext<TAux>): SourcePlan {
       const top = topOf(ctx.countries);

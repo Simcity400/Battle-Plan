@@ -8,7 +8,7 @@ import { formatScalar } from '../../families/valueFormat.ts';
 import type { NavalRepairsReply, RepairPort, YardShip } from '../../generated/dashboard';
 import { fraction, shipLabel, shipPicture, shipPictureCell, shipStrength, shipTooltip, validateRepairs } from '../refits/yardsData.ts';
 import type { ArtState } from '../../families/table/identityCell.ts';
-import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
 const ON_PORT = 'Shown on the port';
@@ -26,7 +26,7 @@ const [NAME, STRENGTH, PRIORITY, DOCKYARDS] = COLUMNS;
 const DOCK_COLUMNS: readonly DeclarativeColumnSpec<DockRow, Record<string, never>>[] = [
   { ...NAME!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Wilhelmshaven harbour'],
     value: row => row.kind === 'port' ? portName(row.port) : knownValue(shipLabel(row.ship).name),
-    iconSlot: true, extra: row => (row.kind === 'ship' ? shipPictureCell(row.ship, row.picture) : {}) },
+    extra: row => (row.kind === 'ship' ? shipPictureCell(row.ship, row.picture) : {}) },
   { ...STRENGTH!, priority: 1, numeric: true, format: PERCENT, widest: ['100.0%'],
     value: (row, live) => row.kind === 'ship' ? shipStrength(row.ship, live) : notApplicable(ON_SHIP),
     extra: row => (row.kind === 'port' ? { blank: true } : {}),
@@ -95,7 +95,6 @@ export const dockyardsDeclaration: TableWidgetDeclaration<Record<string, never>>
   subject: 'repair ports',
   emptyCampaign: 'Load a campaign to see dockyards and repairs.',
   icon: 'cube',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its dockyards.' },
   sources: ctx => {
     const params = ctx.countryTag ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) } : null;

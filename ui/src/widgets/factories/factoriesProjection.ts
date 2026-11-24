@@ -4,7 +4,7 @@ import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { contentSet } from '../../dashboard/options.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import { countryRowPresentation, formatBarsValueField, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourceEntry, SourcePlan } from '../../families/contract.ts';
 import { holderTagAt, inHourRanges, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
@@ -12,7 +12,6 @@ import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded, valueFromRawBigInt, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { FactoryGroupsReply, SeriesState, SeriesStateReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { COUNT_MODES, FACTORY_GROUPS, chosenGroups, countMode, damagedMeasure, factoryMeasure, groupName, validateFactoryGroups, type CountMode } from './factoriesData.ts';
 
 const PART_SURFACE = DEFAULT_CARD_SURFACE;
@@ -242,7 +241,7 @@ function makeRow(
   };
 }
 
-export const factoriesProjection: BarsProjection<FactoriesProjectionOptions> = registerBarsProjection({
+export const factoriesProjection: BarsProjection<FactoriesProjectionOptions> = registerFamilyProjection({
   kind: 'factories',
   family: 'bars',
   nextChange(readView, options) {
@@ -360,7 +359,6 @@ export const factoriesDeclaration: BarsWidgetDeclaration<FactoriesProjectionOpti
   subject: 'factories',
   emptyCampaign: 'Load a campaign to see factories.',
   icon: 'factory',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

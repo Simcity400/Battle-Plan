@@ -1,4 +1,3 @@
-import { OPTIONS } from './definition.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { FutureDataError, type BoundedReadView } from '../../families/contract.ts';
@@ -85,7 +84,6 @@ export const { projection: occupationLinesProjection, declaration: occupationLin
   view: 'lines',
   title: 'Occupation trend',
   subject: 'occupation trend',
-  optionFields: OPTIONS,
   format: 'percent',
   step: true,
   measure: options => ({ kind: SERIES, measure: rankOf(options), decimals: 5 }),

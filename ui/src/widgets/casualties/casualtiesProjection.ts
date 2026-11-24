@@ -3,12 +3,11 @@ import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsValueField } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/contract.ts';
 import { inHourRanges, nextMembershipChange, type HourRanges } from '../../families/holders.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
 import type { SeriesState } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 
 export const FAMILY = 'casualty-totals';
 const RANK = 'dealtAndTaken';
@@ -193,17 +192,17 @@ const countries = {
   requireGroupsWhen: (widget: FamilyPlanContext['widget']) => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
 };
 
-export const casualtiesButterflyProjection: BarsProjection<CasualtiesOptions> = registerBarsProjection({
+export const casualtiesButterflyProjection: BarsProjection<CasualtiesOptions> = registerFamilyProjection({
   kind: 'casualties', family: 'bars', nextChange, project,
 }, 'butterfly');
 
-export const casualtiesRaceProjection: BarsProjection<CasualtiesOptions> = registerBarsProjection({
+export const casualtiesRaceProjection: BarsProjection<CasualtiesOptions> = registerFamilyProjection({
   kind: 'casualties', family: 'bars', nextChange, project,
 }, 'race');
 
 export const casualtiesButterflyDeclaration: BarsWidgetDeclaration<CasualtiesOptions> = {
   family: 'bars', kind: 'casualties', label: 'Casualties taken and dealt', subject: 'casualties',
-  emptyCampaign: 'Load a campaign to see casualties.', icon: 'target', optionFields: OPTIONS, countries,
+  emptyCampaign: 'Load a campaign to see casualties.', icon: 'target', countries,
   sources: ctx => casualtySources(ctx, 'butterfly'),
   projection: casualtiesButterflyProjection,
   projectionOptions: ctx => options(ctx, 'butterfly'),

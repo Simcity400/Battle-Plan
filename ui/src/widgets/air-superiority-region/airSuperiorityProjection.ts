@@ -5,14 +5,13 @@ import { defaultCountryKey, selectedCountryKeys } from '../../dashboard/countryS
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection, BarsSegment } from '../../families/bars/model.ts';
 import { regionLabel } from '../../families/heat/scale.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/shareRows.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { AirRegion, AirSide, AirSuperiorityReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 
 export type AirRegionOrderOption = 'contested' | 'active' | 'name';
 
@@ -384,7 +383,7 @@ function projectRegion(
   };
 }
 
-export const airSuperiorityRegionProjection: BarsProjection<AirSuperiorityProjectionOptions> = registerBarsProjection({
+export const airSuperiorityRegionProjection: BarsProjection<AirSuperiorityProjectionOptions> = registerFamilyProjection({
   kind: 'air-superiority-region',
   family: 'bars',
   project(readView: BoundedReadView, options: AirSuperiorityProjectionOptions): BarsModel {
@@ -469,7 +468,6 @@ export const airSuperiorityRegionDeclaration: BarsWidgetDeclaration<AirSuperiori
   subject: 'air superiority',
   emptyCampaign: 'Load a campaign to see its air superiority.',
   icon: 'plane',
-  optionFields: OPTIONS,
   countries: { mode: 'none' },
   sources: airSuperioritySources,
   projection: airSuperiorityRegionProjection,

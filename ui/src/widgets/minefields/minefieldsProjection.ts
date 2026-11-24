@@ -5,14 +5,13 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection, BarsSegment } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/shareRows.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { regionLabel } from '../../families/heat/scale.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import type { MinedRegion } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { minesText, validateMinefields, type RegionRow } from './minefieldsData.ts';
 
 const FALLBACK_SURFACE = DEFAULT_CARD_SURFACE;
@@ -180,7 +179,7 @@ function projectMineRegion(
   };
 }
 
-export const minefieldsProjection: BarsProjection<MinefieldsProjectionOptions> = registerBarsProjection({
+export const minefieldsProjection: BarsProjection<MinefieldsProjectionOptions> = registerFamilyProjection({
   kind: 'minefields',
   family: 'bars',
   project(readView: BoundedReadView): BarsModel {
@@ -247,7 +246,6 @@ export const minefieldsDeclaration: BarsWidgetDeclaration<MinefieldsProjectionOp
   subject: 'minefields',
   emptyCampaign: 'Load a campaign to see minefields.',
   icon: 'anchor',
-  optionFields: OPTIONS,
   countries: { mode: 'none' },
   sources: minefieldsSources,
   projection: minefieldsProjection,

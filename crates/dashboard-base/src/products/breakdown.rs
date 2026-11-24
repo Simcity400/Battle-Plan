@@ -46,6 +46,8 @@ pub struct BreakdownPart {
     #[doc = " Of the whole; none where the whole is only a lower bound or the part is not positive."]
     pub share: Option<f64>,
     pub count: Option<u64>,
+    #[doc = " The latest hour one of its amounts was read; none where the product does not date them."]
+    pub last: Option<i32>,
     #[doc = " In display order."]
     pub children: Vec<BreakdownPart>,
 }
@@ -93,6 +95,7 @@ pub struct Leaf {
     pub path: Vec<Node>,
     pub amount: Amount,
     pub count: Option<u64>,
+    pub last: Option<i32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -108,10 +111,14 @@ struct Sum {
     partial: Vec<String>,
     missing: Vec<String>,
     count: Option<u64>,
+    last: Option<i32>,
 }
 
 impl Sum {
-    fn add(&mut self, amount: &Amount, count: Option<u64>) {
+    fn add(&mut self, amount: &Amount, count: Option<u64>, last: Option<i32>) {
+        if let Some(hour) = last {
+            self.last = Some(self.last.map_or(hour, |held| held.max(hour)));
+        }
         match amount {
             Amount::Known(value) => {
                 self.known = self.known.saturating_add(*value);
@@ -214,6 +221,7 @@ fn parts(children: Vec<Branch>, whole: Option<i128>) -> Vec<BreakdownPart> {
                 reason: branch.sum.reason(),
                 share,
                 count: branch.sum.count,
+                last: branch.sum.last,
                 children: parts(branch.children, whole),
             }
         })
@@ -223,11 +231,11 @@ fn parts(children: Vec<Branch>, whole: Option<i128>) -> Vec<BreakdownPart> {
 pub fn breakdown(decimals: u8, leaves: &[Leaf], unrecorded: &Unrecorded) -> Breakdown {
     let mut root = Branch::new(Node::new("", "", 0));
     for leaf in leaves {
-        root.sum.add(&leaf.amount, leaf.count);
+        root.sum.add(&leaf.amount, leaf.count, leaf.last);
         let mut at = &mut root;
         for node in &leaf.path {
             at = at.child(node);
-            at.sum.add(&leaf.amount, leaf.count);
+            at.sum.add(&leaf.amount, leaf.count, leaf.last);
         }
     }
     let mut state = root.sum.state();
