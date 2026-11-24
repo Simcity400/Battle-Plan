@@ -5,7 +5,7 @@ import { regionPickerControl } from '../../families/settingsControls.ts';
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'shares',
     choices: [{ value: 'shares', label: 'Shares' }, { value: 'timeline', label: 'Timeline' }] },
-  regionPickerControl({ automatic: 'Most active regions' }),
+  regionPickerControl({ automatic: 'Most active regions', sea: true }),
   { key: 'rowCount', section: 'options', label: 'Most active regions shown', kind: 'number', min: 1, max: Number.MAX_SAFE_INTEGER, step: 1, default: 7 },
 ];
 export const definition = {

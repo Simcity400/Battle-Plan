@@ -234,6 +234,8 @@ export interface TableModel {
   readonly notes?: readonly string[];
   readonly titleSummary?: string | null;
   readonly titleSummaryPartial?: string | null;
+  readonly windowOffset?: number;
+  readonly totalRows?: number;
 }
 
 export type FlatTableRow =

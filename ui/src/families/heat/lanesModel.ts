@@ -69,6 +69,7 @@ export interface HeatLaneRow {
   readonly flag?: ArtHandle | null;
   readonly flagPending?: boolean;
   readonly pinned?: boolean;
+  readonly region?: number;
   readonly runs: readonly HeatLaneRun[];
   readonly readout?: HeatLaneReadout;
   readonly meta?: unknown;
@@ -94,6 +95,12 @@ export interface HeatLaneLegend {
   readonly rightNote?: string;
 }
 
+export interface HeatLaneRegions {
+  readonly pickedHeading: string;
+  readonly automaticHeading: string;
+  readonly addLabel: string;
+}
+
 export interface HeatLaneGap {
   readonly firstHour: number;
   readonly lastHour: number;
@@ -109,6 +116,7 @@ export interface HeatLanesModel {
   readonly gaps?: readonly HeatLaneGap[];
   readonly legend?: HeatLaneLegend;
   readonly rows: readonly HeatLaneRow[];
+  readonly regions?: HeatLaneRegions;
   readonly readoutWidth?: number;
   readonly rowHeight?: number;
   readonly inspect?: (rowIndex: number, hour: number) => FamilyTooltipPayload | null;

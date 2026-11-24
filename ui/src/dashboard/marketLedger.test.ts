@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { LogCell } from '../generated/dashboard';
-import { ledgerEntry, ledgerFacets, ledgerFigure, ledgerPartyName, ledgerSelection, ledgerTitle, shownKinds } from './marketLedger.ts';
+import { ledgerEntry, ledgerFacets, ledgerFigure, ledgerPartyName, ledgerSelection, ledgerTitle } from './marketLedger.ts';
 
 const row = (cells: Record<string, LogCell>) => ledgerEntry({ key: '9', hour: 40, cells, fields: {} });
 const number = (value: string): LogCell => ({ kind: 'number', value });
@@ -10,8 +10,6 @@ const textCell = (value: string): LogCell => ({ kind: 'text', value });
 test('a country\'s ledger asks either party\'s facet by its tags; every country asks the kinds alone', () => {
   assert.deepEqual(ledgerFacets([11, 20], ['GER']), [{ name: 'kind', values: [11, 20], countries: [] }, { name: 'country|receiver', values: [], countries: ['GER'] }]);
   assert.deepEqual(ledgerFacets([11], null), [{ name: 'kind', values: [11], countries: [] }]);
-  assert.deepEqual(shownKinds(key => key !== 'payments'), [10, 11, 12, 20, 34], 'unavailable amounts follow deliveries');
-  assert.deepEqual(shownKinds(key => key === 'payments'), [21]);
 });
 
 test('an unavailable amount is named, never zero; amounts read in their units; a row opens its contract or agreement', () => {

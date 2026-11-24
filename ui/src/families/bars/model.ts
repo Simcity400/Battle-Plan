@@ -132,8 +132,7 @@ export interface BarsDataRow {
   readonly media?: BarsRowMedia;
   readonly color?: string;
   readonly muted?: boolean;
-  readonly removable?: boolean;
-  readonly reorderable?: boolean;
+  readonly region?: number;
   readonly group?: 'picked' | 'auto';
   readonly value?: BarsValueField;
   readonly numeric?: number | null;

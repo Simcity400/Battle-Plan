@@ -1,5 +1,3 @@
-import type { LogPage, LogRow } from '../../charts/log/logData';
-import type { LogReplyRow } from '../../charts/log/logSource';
 import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
 import { validateFeedRow } from './eventFeedData.ts';
@@ -21,21 +19,10 @@ export function validateOccurrence(value: unknown): ScriptOccurrence {
   return { id: value.id, opened: value.opened, edges };
 }
 
-export const occurrenceOf = (reply: LogReplyRow): ScriptOccurrence | null =>
-  reply.fields.occurrence === null || reply.fields.occurrence === undefined ? null : validateOccurrence(reply.fields.occurrence);
-
 export function cardFacets(kinds: readonly FeedKindCode[], openers: readonly EventFeedKind[], continuing: readonly EventFeedKind[]): Facet[] {
   const wanted = new Set<EventFeedKind>([...openers, ...continuing]);
   return [{ name: 'kind', values: kinds.filter(kind => wanted.has(kind.kind)).map(kind => kind.code), countries: [] },
     { name: 'opener', values: [-1], countries: [] }];
-}
-
-export function cutPages<T, U>(pages: readonly LogPage<T>[], at: (row: LogRow<T>) => LogRow<U> | null): readonly LogPage<U>[] {
-  return pages.map(page => {
-    if (!page.rows) return page as unknown as LogPage<U>;
-    const rows = page.rows.flatMap(row => at(row) ?? []);
-    return { ...page, rows, count: page.count - (page.rows.length - rows.length) };
-  });
 }
 
 export function occurrenceItem(occurrence: ScriptOccurrence): EventFeedItem | null {
@@ -52,21 +39,6 @@ export function lastEdge(edges: readonly ScriptEdge[], kinds: readonly EventFeed
 
 export const occurrenceMatches = (occurrence: ScriptOccurrence, country: (tag: string, hour: number) => boolean): boolean =>
   occurrence.edges.some(edge => edge.row.tags.some(tag => country(tag, edge.row.hour)));
-
-export function occurrenceCountryRequests(occurrences: readonly ScriptOccurrence[]): { hour: number; tag: string }[] {
-  const wanted = new Map<string, { hour: number; tag: string }>();
-  for (const occurrence of occurrences) for (const edge of occurrence.edges) for (const tag of edge.row.tags) {
-    const key = JSON.stringify([edge.row.nameHour, tag]);
-    if (!wanted.has(key)) wanted.set(key, { hour: edge.row.nameHour, tag });
-  }
-  return [...wanted.values()];
-}
-
-export function cardsKey(edges: readonly number[], breaks: readonly RecordingBreak[], days: boolean, hour: number): string {
-  const read = edges.filter(edge => edge <= hour).length;
-  const broken = breaks.filter(span => span.firstHour <= hour).length;
-  return `${read}|${broken}|${days ? Math.floor(hour / 24) : ''}`;
-}
 
 export interface RecordingBreak { firstHour: number; lastHour: number }
 export function recordingBreaks(branch: { gaps: readonly { firstHour: number; lastHour: number }[];
