@@ -266,26 +266,30 @@ pub fn fold_pairs(
 struct Window {
     first: i32,
     last: i32,
-    run: u32,
-    lifetimes: Vec<(u128, i64, i64)>,
+    stretches: Vec<(u32, i32, i32)>,
 }
 
-fn window(source: &Source, query: &Query<'_>, spans: &[HourSpan], index: usize) -> io::Result<Window> {
+fn window(query: &Query<'_>, spans: &[HourSpan], index: usize) -> io::Result<Window> {
     let span = spans.get(index).ok_or_else(|| invalid("Unknown casualty history window"))?;
     let (first, last) = (span.first_hour, span.last_hour);
-    let run = query.timeline.at(first).ok_or_else(|| invalid("The window's hours are not recorded"))?.run;
-    let lifetimes = dashboard_base::queries::lifetimes(source, run, TableId::CasualtyLifetimes)?
+    let stretches: Vec<(u32, i32, i32)> = query.timeline.within(first, last).map(|stretch| (stretch.run, stretch.first, stretch.last)).collect();
+    if stretches.is_empty() {
+        return Err(invalid("The window's hours are not recorded"));
+    }
+    Ok(Window { first, last, stretches })
+}
+
+fn stretch_lifetimes(source: &Source, run: u32, last: i32) -> io::Result<Vec<(u128, i64, i64)>> {
+    Ok(dashboard_base::queries::lifetimes(source, run, TableId::CasualtyLifetimes)?
         .iter()
         .filter(|&&(_, born, _)| born <= i64::from(last))
         .copied()
-        .collect();
-    Ok(Window { first, last, run, lifetimes })
+        .collect())
 }
 
-fn window_reads(query: &Query<'_>, window: &Window, lives: &[(u128, i64, i64)], identities: &[Identity], ended: &EndedCounters) -> io::Result<WindowReads> {
+fn stretch_reads(query: &Query<'_>, run: u32, first: i32, last: i32, lives: &[(u128, i64, i64)], identities: &[Identity], ended: &EndedCounters) -> io::Result<WindowReads> {
     let recording = query.replay.recording();
     let column = |table: TableId, name: &str| dashboard_declare::field(table, name).map(Column::Cell);
-    let (first, last, run) = (window.first, window.last, window.run);
     let mut reads = WindowReads {
         observed: replay_lanes::lanes::available_reads(recording, run, TableId::CasualtyLifetimes, first, last)?,
         ..WindowReads::default()
@@ -434,32 +438,43 @@ impl Product for CasualtyPairs {
             warnings: Vec::new(),
         };
         let Some(index) = params.window else { return Ok(reply) };
-        let window = window(source, &query, &windows, index)?;
+        let window = window(&query, &windows, index)?;
         dashboard_text::metadata::check_cancel(cancelled)?;
         let tags = HolderTags::new(&query);
         let chosen = |(identity, tag): (Identity, &str)| params.countries.iter().any(|country| matches(country, identity, tag));
         let keep = |a: (Identity, &str), b: (Identity, &str)| params.countries.is_empty() || if params.between { chosen(a) && chosen(b) } else { chosen(a) || chosen(b) };
-        let names = |identity| tags.names_in(identity, window.first, window.last);
-        let asked: Vec<(u128, i64, i64)> = window
-            .lifetimes
-            .iter()
-            .filter(|&&(key, ..)| {
+        let mut observed_runs: Vec<(i32, i32)> = Vec::new();
+        let mut merged: BTreeMap<(String, String, String), Vec<CasualtyPairRun>> = BTreeMap::new();
+        for &(run, s_first, s_last) in &window.stretches {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let lifetimes = stretch_lifetimes(source, run, s_last)?;
+            let names = |identity| tags.names_in(identity, s_first, s_last);
+            let asked: Vec<(u128, i64, i64)> = lifetimes
+                .iter()
+                .filter(|&&(key, ..)| {
+                    let lifetime = Lifetime::of(key);
+                    let (a, b) = (names(lifetime.a), names(lifetime.b));
+                    a.iter().any(|first| b.iter().any(|second| keep((lifetime.a, first), (lifetime.b, second))))
+                })
+                .copied()
+                .collect();
+            let identities: Vec<Identity> = asked.iter().flat_map(|&(key, ..)| {
                 let lifetime = Lifetime::of(key);
-                let (a, b) = (names(lifetime.a), names(lifetime.b));
-                a.iter().any(|first| b.iter().any(|second| keep((lifetime.a, first), (lifetime.b, second))))
-            })
-            .copied()
+                [lifetime.a, lifetime.b]
+            }).collect();
+            let ended = crate::products::casualties::cached_casualty_ends(source, run)?;
+            let reads = stretch_reads(&query, run, s_first, s_last, &asked, &identities, &ended)?;
+            observed_runs.extend_from_slice(&reads.observed);
+            for series in fold_pairs(&asked, &reads, &tags, s_first, s_last, keep) {
+                merged.entry((series.identity, series.first_country, series.second_country)).or_default().extend(series.runs);
+            }
+        }
+        reply.pairs = merged
+            .into_iter()
+            .map(|((identity, first_country, second_country), runs)| CasualtyPairSeries { identity, first_country, second_country, runs })
             .collect();
-        let identities: Vec<Identity> = asked.iter().flat_map(|&(key, ..)| {
-            let lifetime = Lifetime::of(key);
-            [lifetime.a, lifetime.b]
-        }).collect();
-        let ended = crate::products::casualties::cached_casualty_ends(source, window.run)?;
-        let reads = window_reads(&query, &window, &asked, &identities, &ended)?;
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        reply.pairs = fold_pairs(&asked, &reads, &tags, window.first, window.last, keep);
-        reply.has_gap = reads.observed != [(window.first, window.last)];
-        reply.observed = spans(&reads.observed);
+        reply.has_gap = observed_runs != [(window.first, window.last)];
+        reply.observed = spans(&observed_runs);
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
@@ -745,38 +760,58 @@ impl Product for CasualtyBreakdown {
             reply.observed = branch_observed(&query)?;
             return Ok(reply);
         };
-        let window = window(source, &query, &windows, index)?;
+        let window = window(&query, &windows, index)?;
         dashboard_text::metadata::check_cancel(cancelled)?;
         let tags = HolderTags::new(&query);
-        let holding: Vec<Identity> = tags.holding(&params.country, window.first, window.last).into_iter().map(|run| run.0).collect();
-        let asked: Vec<(u128, i64, i64)> = window
-            .lifetimes
-            .iter()
-            .filter(|&&(key, ..)| {
-                let lifetime = Lifetime::of(key);
-                holding.contains(&lifetime.a) || holding.contains(&lifetime.b)
-            })
-            .copied()
-            .collect();
-        let ended = crate::products::casualties::cached_casualty_ends(source, window.run)?;
-        let reads = window_reads(&query, &window, &asked, &holding, &ended)?;
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let (groupings, view) = if asked.is_empty() {
+        let mut per_stretch = Vec::with_capacity(window.stretches.len());
+        let mut all_keys: HashSet<u128> = HashSet::new();
+        for &(run, s_first, s_last) in &window.stretches {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let lifetimes = stretch_lifetimes(source, run, s_last)?;
+            let holding: Vec<Identity> = tags.holding(&params.country, s_first, s_last).into_iter().map(|run| run.0).collect();
+            let asked: Vec<(u128, i64, i64)> = lifetimes
+                .iter()
+                .filter(|&&(key, ..)| {
+                    let lifetime = Lifetime::of(key);
+                    holding.contains(&lifetime.a) || holding.contains(&lifetime.b)
+                })
+                .copied()
+                .collect();
+            all_keys.extend(asked.iter().map(|life| life.0));
+            per_stretch.push((run, s_first, s_last, holding, asked));
+        }
+        let (groupings, view) = if all_keys.is_empty() {
             (HashMap::new(), None)
         } else {
             let view = wars::viewpoint_wars(source, branch_id, &params.country, context, cancelled)?;
-            let keys: HashSet<u128> = asked.iter().map(|life| life.0).collect();
-            (lifetime_groupings(view.wars.iter().map(|war| (war.id.as_str(), war.relations.as_slice())), &keys), Some(view))
+            (lifetime_groupings(view.wars.iter().map(|war| (war.id.as_str(), war.relations.as_slice())), &all_keys), Some(view))
         };
-        let (countries, series) = fold_breakdown(&params.country, &asked, &reads, &tags, window.first, window.last, &groupings);
+        let mut observed_runs: Vec<(i32, i32)> = Vec::new();
+        let mut countries: Vec<CasualtyBreakdownCountryRun> = Vec::new();
+        let mut merged: BTreeMap<String, CasualtyBreakdownSeries> = BTreeMap::new();
+        for (run, s_first, s_last, holding, asked) in per_stretch {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let ended = crate::products::casualties::cached_casualty_ends(source, run)?;
+            let reads = stretch_reads(&query, run, s_first, s_last, &asked, &holding, &ended)?;
+            observed_runs.extend_from_slice(&reads.observed);
+            let (part_countries, part_series) = fold_breakdown(&params.country, &asked, &reads, &tags, s_first, s_last, &groupings);
+            countries.extend(part_countries);
+            for series in part_series {
+                merged
+                    .entry(series.id.clone())
+                    .and_modify(|held| held.runs.extend(series.runs.iter().cloned()))
+                    .or_insert(series);
+            }
+        }
+        let series: Vec<CasualtyBreakdownSeries> = merged.into_values().collect();
         if let Some(view) = view {
             reply.wars = shown_wars(&view, &series, window.last);
             reply.warnings.extend(view.warnings.iter().cloned());
         }
         reply.countries = countries;
         reply.series = series;
-        reply.has_gap = reads.observed != [(window.first, window.last)];
-        reply.observed = spans(&reads.observed);
+        reply.has_gap = observed_runs != [(window.first, window.last)];
+        reply.observed = spans(&observed_runs);
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }

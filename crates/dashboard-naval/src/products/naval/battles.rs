@@ -627,14 +627,37 @@ impl Product for NavalBattles {
         let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
         let interval = windows(&query)?.get(params.window).cloned().ok_or_else(|| invalid("Unknown history window"))?;
         let (first, last) = (interval.first_hour, interval.last_hour);
-        let run = query.timeline.at(first).ok_or_else(|| invalid("The window's hours are not recorded"))?.run;
-        let mut rows = live_battles(source, &query, run, first, last, cancelled)?;
-        rows.extend(results(source, &query, run, first, last)?);
+        let stretches: Vec<_> = query.timeline.within(first, last).collect();
+        if stretches.is_empty() {
+            return Err(invalid("The window's hours are not recorded"));
+        }
+        let mut by_id: HashMap<String, usize> = HashMap::new();
+        let mut rows: Vec<NavalBattleHistory> = Vec::new();
+        let mut obs = Vec::new();
+        for stretch in stretches {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let batch = live_battles(source, &query, stretch.run, stretch.first, stretch.last, cancelled)?
+                .into_iter()
+                .chain(results(source, &query, stretch.run, stretch.first, stretch.last)?);
+            for row in batch {
+                if let Some(&at) = by_id.get(&row.id) {
+                    let held = &mut rows[at];
+                    if row.province_id.is_some() {
+                        held.province_id = row.province_id;
+                    }
+                    held.runs.extend(row.runs);
+                } else {
+                    by_id.insert(row.id.clone(), rows.len());
+                    rows.push(row);
+                }
+            }
+            obs.extend(observed(query.replay.recording(), stretch.run, stretch.first, stretch.last)?);
+        }
         let reply = NavalBattlesReply {
             window: params.window,
             interval,
             rows,
-            observed: observed(query.replay.recording(), run, first, last)?,
+            observed: obs,
             warnings: Vec::new(),
             content_warnings: Vec::new(),
         };

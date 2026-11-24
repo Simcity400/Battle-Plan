@@ -1090,3 +1090,36 @@ fn differential_batched_completions_matches_reference_across_300_seeds() {
     assert!(total_completions > 100, "expected differential suite to exercise completions, got {total_completions}");
     assert!(total_spelled > 50, "expected differential suite to exercise spellings, got {total_spelled}");
 }
+
+#[test]
+fn sparse_stretches_skip_re_reading_already_seen_completions() {
+    let segments: Vec<_> = (0..25u32)
+        .map(|i| {
+            let at = 20 + i as i32 * 10;
+            records(
+                i as u64 + 1,
+                vec![frame(at, &Hour { history: vec![(0, M, 20)], projects_read: Some(at), history_read: Some(at), ..hour(at, COMPLETED) })],
+            )
+        })
+        .collect();
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &segments)
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let src = Source::from_replay(
+        dashboard_base::SourceKey { source_id: "sparse-completions".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let query = dashboard_base::queries::query(&src, 1).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let ((actual, _), actual_reads) = count_reads(|| counted_with(Some(&src), &query, 20, 260, &cancelled).unwrap());
+    let ((expected, _), ref_reads) = count_reads(|| reference_counted(&query, 20, 260, &cancelled).unwrap());
+    assert_eq!(actual, expected);
+    assert_eq!(actual.len(), 1);
+    assert_eq!(actual_reads[&TableId::SliceReads].opened, 1, "SliceReads should only be opened for the stretch introducing the completion: {actual_reads:?}");
+    assert!(actual_reads[&TableId::Projects].opened <= 1, "Projects should only be opened once across 25 stretches: {actual_reads:?}");
+    assert!(ref_reads[&TableId::SliceReads].opened >= 25, "reference path reads SliceReads on every stretch: {ref_reads:?}");
+}
