@@ -1235,4 +1235,25 @@ fn pieces_apart_only_across_unrecorded_hours_break_continuity_and_the_statement_
     let params = PowerSpendingParams { branch_id: "1".into(), country: dashboard_base::products::Country::Slot(SLOT), currency: SpendCurrency::Political, from: FIRST, to: 130 };
     let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.tag, "GER", "a slot is named by who held it at the statement's end, not at the branch's last hour");
+
+    let later = Holders::new([("GER".to_owned(), vec![run(110, LAST, GER)])].into(), Vec::new());
+    let query = Query { replay: &replay, timeline: query.timeline.clone(), holders: Arc::new(later) };
+    let params = PowerSpendingParams { to: FIRST, ..params };
+    let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+    assert_eq!(reply.tag, params.country.key(), "a slot held by no one at the statement's end is the slot, never its later holder");
+
+    let gap = |first: i32, last: i32| dashboard_query::timeline::Unheld { first, last, reason: "not recorded".into() };
+    let stretches = vec![Stretch { run: 0, first: FIRST, last: 140, join: Join::Start }, Stretch { run: 0, first: 144, last: 160, join: Join::Break }];
+    let timeline = Timeline { id: 1, first: FIRST, last: LAST, stretches, unheld: vec![gap(141, 143), gap(161, LAST)] };
+    let holders = Holders::new([("GER".to_owned(), vec![run(FIRST, LAST, GER)])].into(), Vec::new());
+    let query = Query { replay: &replay, timeline: Arc::new(timeline), holders: Arc::new(holders) };
+    for (from, to, why) in [
+        (FIRST, 160, "Continuity broke across a load or recording gap during this span"),
+        (FIRST, LAST, "Continuity broke across a load or recording gap during this span"),
+        (141, 143, "This span was not recorded"),
+    ] {
+        let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from, to };
+        let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+        assert_eq!(reply.reconciliation.reason.as_deref(), Some(why), "the statement {from}..{to} gives the recording gap as its reason");
+    }
 }
