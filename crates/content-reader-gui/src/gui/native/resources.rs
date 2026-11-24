@@ -274,7 +274,7 @@ mod tests {
         let mounted = ResolvedLayers::from_folders(&[(&base, &[][..]), (&addon, &[][..])]).unwrap();
         let decode = native::Decode::default();
         assert!(stack_texture(&mounted, b"gfx/plate.png", decode).unwrap().is_ok());
-        let mut layers = mounted.layers.clone();
+        let mut layers = mounted.layers;
         layers[1].art_unmounted = Some("its art folder is missing".to_owned());
         let unmounted = ResolvedLayers::from_test_layers(layers).unwrap();
         let refused = stack_texture(&unmounted, b"gfx/plate.png", decode)
