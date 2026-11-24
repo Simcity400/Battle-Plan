@@ -22,6 +22,7 @@ dashboard_base::register_hourly_products! {
     OCCUPATION_RESERVE_OCCUPATIONRESERVE => crate::products::occupation_reserve::OccupationReserve,
     OCCUPATION_STATES_OCCUPIEDSTATES => crate::products::occupation::states::OccupiedStates,
     OCCUPATION_DETAIL_OCCUPATIONDETAIL => crate::products::occupation::detail::OccupationDetail,
+    FACTION_STATE_COUNTRY_GOALS_COUNTRYFACTIONGOALS => crate::products::faction_state::country_goals::CountryFactionGoals,
     FACTION_STATE_DETAILS_FACTIONDETAILS => crate::products::faction_state::details::FactionDetails,
     WARS_CONTRIBUTIONS_WARCONTRIBUTIONS => crate::products::wars::contributions::WarContributions,
     FACTION_STATE_REWARDS_FACTIONGOALREWARDS => crate::products::faction_state::rewards::FactionGoalRewards,

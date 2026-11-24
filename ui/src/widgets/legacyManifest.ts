@@ -1,7 +1,6 @@
 import type { LegacyWidgetEntry } from '../families/manifest.ts';
 
 export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
-  { kind: 'aces', load: () => import('./aces') },
   { kind: 'active-research', playsBackDated: true, load: () => import('./active-research') },
   { kind: 'air-force-size', load: () => import('./air-force-size') },
   { kind: 'air-kills-losses', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
@@ -39,7 +38,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'event-choices', load: () => import('./event-choices') },
   { kind: 'event-feed', load: () => import('./event-feed') },
   { kind: 'experience', load: () => import('./experience') },
-  { kind: 'faction-goals', load: () => import('./faction-goals') },
   { kind: 'faction-pooled-strength', load: () => import('./faction-pooled-strength') },
   { kind: 'faction-strength', load: () => import('./faction-strength') },
   { kind: 'faction-upgrades', load: () => import('./faction-upgrades') },
@@ -60,7 +58,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'map', load: () => import('./map') },
   { kind: 'market-ledger', load: () => import('./market-ledger') },
   { kind: 'military-factory-spending', load: () => import('./military-factory-spending') },
-  { kind: 'most-decorated-divisions', load: () => import('./most-decorated-divisions') },
   { kind: 'national-focus', load: () => import('./national-focus') },
   { kind: 'national-spirits', load: () => import('./national-spirits') },
   { kind: 'naval-battles', load: () => import('./naval-battles') },

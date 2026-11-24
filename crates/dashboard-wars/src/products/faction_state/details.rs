@@ -134,7 +134,7 @@ struct HeldArt(Option<(usize, Arc<Art>)>);
 const WHOLE: [TableId; 6] =
     [TableId::Factions, TableId::ResourceDefinitions, TableId::CountryLinks, TableId::LexicalTokens, TableId::LocalPlayer, TableId::ReservedCountryNaming];
 
-fn faction_reads(faction: u64) -> Vec<Read> {
+pub(super) fn faction_reads(faction: u64) -> Vec<Read> {
     let (low, high) = super::ordinals(faction);
     let goals = u128::from(faction) << 40;
     let mut reads: Vec<Read> = WHOLE.into_iter().map(Read::all).collect();
@@ -195,12 +195,8 @@ impl AtHour for FactionDetails {
         if step != 1 {
             return Self::reads(params, owner, step, held);
         }
-        let (Ok(faction), Ok(cat)) = (super::faction_id(&params.faction), at.context.catalogue.as_deref()) else { return Vec::new() };
-        if !goals::scripted(held, faction, cat) {
-            return Vec::new();
-        }
-        let read: Vec<TableId> = faction_reads(faction).into_iter().map(|read| read.table).collect();
-        goals::text_tables().filter(|table| !read.contains(table)).map(Read::all).collect()
+        let (Ok(faction), Ok(cat)) = (super::faction_id(&params.faction), at.context.catalogue()) else { return Vec::new() };
+        text_reads(held, faction, cat)
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -225,7 +221,21 @@ impl AtHour for FactionDetails {
     }
 }
 
-fn reply(frame: &DecodedFrame, params: &FactionDetailParams, faction: u64, at: &At<'_, DetailContent>) -> io::Result<FactionDetailReply> {
+pub(super) fn text_reads(held: &DecodedFrame, faction: u64, cat: &Catalogue) -> Vec<Read> {
+    if !goals::scripted(held, faction, cat) {
+        return Vec::new();
+    }
+    let read: Vec<TableId> = faction_reads(faction).into_iter().map(|read| read.table).collect();
+    goals::text_tables().filter(|table| !read.contains(table)).map(Read::all).collect()
+}
+
+impl DetailContent {
+    pub(super) fn catalogue(&self) -> Result<&Catalogue, &String> {
+        self.catalogue.as_deref()
+    }
+}
+
+pub(super) fn reply(frame: &DecodedFrame, params: &FactionDetailParams, faction: u64, at: &At<'_, DetailContent>) -> io::Result<FactionDetailReply> {
     if let Ok(rows) = frame.complete::<tables::Factions>()
         && !rows.iter().any(|row| row.id == faction)
     {
