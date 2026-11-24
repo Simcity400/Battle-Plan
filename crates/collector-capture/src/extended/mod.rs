@@ -2334,6 +2334,7 @@ impl Captured {
             },
             captured: std::mem::replace(&mut self.governance, governance::Captured::vacant()),
             buildings: self.construction.take_buildings(),
+            buildings_lent: false,
         }
     }
 
@@ -3028,11 +3029,11 @@ impl Captured {
         let part = captured.take_variables();
         (
             crate::acquisition_jobs::IntelResidualRequest {
-                workers: Default::default(),
                 countries: engine_allocation::SharedBox::clone(countries),
                 context,
                 captured,
                 flags,
+                aux_lent: false,
             },
             crate::acquisition_jobs::ScriptVariablesRequest {
                 countries: engine_allocation::SharedBox::clone(countries),

@@ -84,6 +84,13 @@ pub enum Role {
     PresentationSettle,
     DivisionModelInputs,
     GatedProjects,
+    ProjectsRestPrimary,
+    ProjectsRestAux,
+    ProjectsRestPaths,
+    Buildings,
+    RaidStateInputs,
+    Rails,
+    IntelResidualAux,
     AirSupply,
     ScriptVariables,
 }
@@ -159,6 +166,7 @@ impl Role {
             Self::Divisions | Self::DivisionInputs | Self::DivisionInputParts => T::Divisions,
             Self::World | Self::Economy => T::ProvinceSupply,
             Self::Governance => T::Politics,
+            Self::Buildings => T::ProvinceBuildings,
             Self::Variants => T::VariantDefinitions,
             Self::Research => T::ResearchInputs,
             Self::Intel => T::UnitIntel,
@@ -169,6 +177,7 @@ impl Role {
             | Self::PresentationPreparation
             | Self::FinalInputs => T::DivisionStatus,
             Self::IntelResidual => T::Capitulation,
+            Self::IntelResidualAux => T::Subjects,
             Self::ScriptVariables => T::ScriptVariables,
             Self::SupplyTrains => T::SupplyNodes,
             Self::CharacterPortraits => T::CharacterPortraits,
@@ -184,7 +193,7 @@ impl Role {
             Self::WarOverview => T::WarOwnedRelations,
             Self::IndustrialOrganisations => T::IndustrialOrganisations,
             Self::ProductionDaily | Self::ProductionModifierParts => T::CountryProductionModifiers,
-            Self::RaidState => T::StateResourceInputs,
+            Self::RaidState | Self::RaidStateInputs => T::StateResourceInputs,
             Self::RaidLaunch => T::RaidCountryInputs,
             Self::RaidTargets => T::RaidTargetStatuses,
             Self::AirRelations => T::AirCountryRelations,
@@ -192,6 +201,7 @@ impl Role {
             Self::AirHistories => T::AirNavalPatrolHistories,
             Self::Late => T::WingEquipment,
             Self::ScoresRails => T::RaidAirScores,
+            Self::Rails => T::RailCooldowns,
             Self::AirSupply => T::AirGroundCrews,
             Self::ArmyIcons => T::ArmyIconInputs,
             Self::Orders | Self::OrderRoots => T::ArmyOrders,
@@ -201,6 +211,9 @@ impl Role {
             Self::Fronts => T::Fronts,
             Self::Gated => T::VolunteerHosts,
             Self::GatedProjects => T::Projects,
+            Self::ProjectsRestPrimary => T::Raids,
+            Self::ProjectsRestAux => T::RaidIntelInputs,
+            Self::ProjectsRestPaths => T::Scientists,
             Self::ShipModels => T::Ships,
             Self::ShipModelDetails => T::ShipModels,
             Self::Provinces => T::Provinces,
@@ -220,46 +233,60 @@ impl Role {
 impl Role {
     pub fn priority(self) -> u8 {
         match self {
-            Self::Variants
-            | Self::RaidState
+            Self::DivisionInputs
+            | Self::DivisionInputParts
+            | Self::Divisions
             | Self::PresentationPrepare
             | Self::PresentationPreparation
             | Self::PresentationSettle
             | Self::PresentationStatus
-            | Self::Presentation => 0,
-            Self::PresentationSpeedTerms
-            | Self::DivisionInputs
-            | Self::DivisionInputParts
-            | Self::Divisions
+            | Self::Presentation
             | Self::OrderRoots
             | Self::Orders
             | Self::OrdersPart
             | Self::OrdersStitch
-            | Self::GatedProjects
-            | Self::AirBases
+            | Self::Naval
+            | Self::ChildFronts
+            | Self::ArmyIcons
+            | Self::AirWing
+            | Self::AirMissions
+            | Self::Characters
             | Self::ShipModels
+            | Self::Late
+            | Self::Variants
+            | Self::FinalInputs => 0,
+            Self::RaidState
+            | Self::RaidStateInputs
+            | Self::PresentationSpeedTerms
+            | Self::GatedProjects
+            | Self::ProjectsRestPrimary
+            | Self::ProjectsRestAux
+            | Self::ProjectsRestPaths
+            | Self::AirBases
             | Self::ShipModelDetails
             | Self::OrdinaryNavies
             | Self::ScoresRails
+            | Self::Rails
             | Self::Templates
             | Self::IntelResidual
-            | Self::AirWing
+            | Self::IntelResidualAux
             | Self::Countries
             | Self::OrdinaryCombat
             | Self::OrdinaryTaskForces
             | Self::Governance
+            | Self::Buildings
             | Self::OrdinaryMap
-            | Self::AirMissions
-            | Self::Characters => 1,
-            Self::ObserverBoundary
-            | Self::ChildFronts
-            | Self::Naval
-            | Self::Late
-            | Self::Intel
             | Self::MapCombats
+            | Self::Capitulation
+            | Self::Relations
+            | Self::AdvisorRoles
+            | Self::CountryLeaderRoles
+            | Self::CharacterTraits
+            | Self::CharacterPortraits => 1,
+            Self::ObserverBoundary
+            | Self::Intel
             | Self::World
             | Self::Economy
-            | Self::FinalInputs
             | Self::PresentationMovement
             | Self::Radar
             | Self::Players
@@ -277,23 +304,16 @@ impl Role {
             | Self::Gated
             | Self::Projects
             | Self::CharacterInputs
-            | Self::AdvisorRoles
             | Self::Ordinary
             | Self::OrdinaryNaval
             | Self::Provinces
             | Self::Research
             | Self::DivisionModelInputs
-            | Self::Session
-            | Self::Relations => 2,
+            | Self::Session => 2,
             Self::States
-            | Self::Capitulation
             | Self::Wars
             | Self::ProvinceUnitOrder
-            | Self::CharacterPortraits
-            | Self::CountryLeaderRoles
-            | Self::CharacterTraits
             | Self::SupplyTrains
-            | Self::ArmyIcons
             | Self::Fronts
             | Self::Weather => 3,
             Self::Factions
@@ -306,7 +326,7 @@ impl Role {
     }
 }
 
-pub const ROLE_COUNT: usize = 82;
+pub const ROLE_COUNT: usize = 89;
 pub const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::CountryLeaderRoles,
@@ -388,7 +408,14 @@ pub const ROLES: [Role; ROLE_COUNT] = [
     Role::PresentationSettle,
     Role::DivisionModelInputs,
     Role::GatedProjects,
+    Role::ProjectsRestPrimary,
+    Role::ProjectsRestAux,
+    Role::ProjectsRestPaths,
+    Role::Buildings,
+    Role::RaidStateInputs,
+    Role::Rails,
+    Role::IntelResidualAux,
     Role::AirSupply,
     Role::ScriptVariables,
 ];
-pub const MAX_JOBS: usize = 228;
+pub const MAX_JOBS: usize = 235;

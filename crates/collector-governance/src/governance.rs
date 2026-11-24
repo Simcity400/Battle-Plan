@@ -2044,7 +2044,10 @@ fn acquire_partitioned(
         }
         _ => false,
     };
-    let preparation = if enabled[2] && b.technology_selection.force_full && dispatch.is_some() {
+    let preparation = if enabled[2]
+        && (b.technology_selection.force_full || !b.technology_changed.certified)
+        && dispatch.is_some()
+    {
         let started = qpc();
         let prepared = countries
             .as_ref()

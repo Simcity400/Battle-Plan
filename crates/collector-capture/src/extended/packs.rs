@@ -736,7 +736,6 @@ impl Captured {
         self.swap_raid_state(&mut packs);
         packs.ticks = [0; TABLE_COUNT];
         crate::acquisition_jobs::RaidStateRequest {
-            workers: Default::default(),
             countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
@@ -746,6 +745,8 @@ impl Captured {
             states_store: Some(stores.states),
             buildings_store: Some(stores.buildings),
             routes_store: stores.routes,
+            inputs_lent: false,
+            resource_ticks: [0; crate::extended::resource_map::N],
         }
     }
 
@@ -986,7 +987,6 @@ impl Captured {
         rail_store: Option<Box<naval_history::RailStore>>,
     ) -> crate::acquisition_jobs::ScoresRailsRequest {
         crate::acquisition_jobs::ScoresRailsRequest {
-            workers: Default::default(),
             countries: engine_allocation::SharedBox::clone(countries),
             base,
             game_state: state,
@@ -999,6 +999,7 @@ impl Captured {
                 .expect("scores and rails spare present"),
             air_scores,
             rail_store,
+            rails_lent: false,
         }
     }
 

@@ -284,6 +284,15 @@ fn state_cores_buffer(
     ];
     const LAYOUT: RecordLayout<'static> =
         RecordLayout::new(&FIELDS, RECORD).expect("valid record layout");
+    const PROVINCE_RECORD: usize = 36;
+    const PROVINCE_FIELDS: [RecordField; 4] = [
+        field(0, 0, 8),
+        field(cprovince::STATE, 8, 8),
+        field(cprovince::ID, 16, 4),
+        field(cprovince::STRATEGIC_LOCATIONS, 20, 16),
+    ];
+    const PROVINCE_LAYOUT: RecordLayout<'static> =
+        RecordLayout::new(&PROVINCE_FIELDS, PROVINCE_RECORD).expect("valid record layout");
     *required = 0;
     let result = (|| {
         let root = address(game_state, cgame_state::STATES)
@@ -294,8 +303,14 @@ fn state_cores_buffer(
         let province_vtable = site(base, cprovince::VTABLE_RVA)? as u64;
         let (mut len, mut used, mut unread) = (0, 0, 0_u32);
         let mut ids = [0_u32; BATCH];
+        let mut ptr_addrs = [0_usize; BATCH];
+        let mut ptr_bytes = [0_u8; BATCH * 8];
         let mut pointers = [0_usize; BATCH];
         let mut copied = [0_u8; BATCH * RECORD];
+        let mut prov_ptr_bytes = [0_u8; BATCH * 8];
+        let mut prov_ptrs = [0_usize; BATCH];
+        let mut prov_records = [0_u8; BATCH * PROVINCE_RECORD];
+        let mut province_tokens: Vec<(u32, Array)> = Vec::new();
         let mut chosen = census.iter().copied().filter(|&state| selected(state));
         loop {
             let mut count = 0;
@@ -306,18 +321,37 @@ fn state_cores_buffer(
             if count == 0 {
                 break;
             }
-            let mut words = [0_u8; 8];
             for index in 0..count {
-                let at = root
+                ptr_addrs[index] = root
                     .element(ids[index], 8)
                     .ok_or("state pointer unreadable")?;
-                if !memory.copy(at, &mut words) {
-                    return Err("state pointer unreadable");
+            }
+            if records(
+                memory,
+                &ptr_addrs[..count],
+                &ITEM_LAYOUT,
+                &mut ptr_bytes,
+                "state pointer unreadable",
+            )
+            .is_ok()
+            {
+                for index in 0..count {
+                    pointers[index] = usize::try_from(u64_at(&ptr_bytes, index * 8))
+                        .ok()
+                        .filter(|&pointer| pointer != 0)
+                        .ok_or("state pointer null")?;
                 }
-                pointers[index] = usize::try_from(u64::from_le_bytes(words))
-                    .ok()
-                    .filter(|&pointer| pointer != 0)
-                    .ok_or("state pointer null")?;
+            } else {
+                let mut words = [0_u8; 8];
+                for index in 0..count {
+                    if !memory.copy(ptr_addrs[index], &mut words) {
+                        return Err("state pointer unreadable");
+                    }
+                    pointers[index] = usize::try_from(u64::from_le_bytes(words))
+                        .ok()
+                        .filter(|&pointer| pointer != 0)
+                        .ok_or("state pointer null")?;
+                }
             }
             records(
                 memory,
@@ -340,14 +374,81 @@ fn state_cores_buffer(
                         .ok_or("state strategic location list invalid")?;
                 let provinces = Array::from_header(header16(record, 64), 8)
                     .ok_or("state province list invalid")?;
-                let province = |ordinal| {
-                    province_locations(memory, provinces, ordinal, province_vtable, pointers[index])
-                };
+                province_tokens.clear();
                 let mut province_count = 0_usize;
-                for ordinal in 0..provinces.count {
-                    province_count = province_count
-                        .checked_add(province(ordinal)?.1.count as usize)
-                        .ok_or("state core link count overflow")?;
+                let mut ordinal = 0_u32;
+                while ordinal < provinces.count {
+                    let chunk = ((provinces.count - ordinal) as usize).min(BATCH);
+                    let start = provinces
+                        .element(ordinal, 8)
+                        .ok_or("state province pointer unreadable or null")?;
+                    if !memory.copy(start, &mut prov_ptr_bytes[..chunk * 8]) {
+                        return Err("state province pointer unreadable or null");
+                    }
+                    for slot in 0..chunk {
+                        prov_ptrs[slot] = usize::try_from(u64_at(&prov_ptr_bytes, slot * 8))
+                            .ok()
+                            .filter(|&pointer| pointer != 0)
+                            .ok_or("state province pointer unreadable or null")?;
+                    }
+                    if records(
+                        memory,
+                        &prov_ptrs[..chunk],
+                        &PROVINCE_LAYOUT,
+                        &mut prov_records,
+                        "state province disagrees with its state",
+                    )
+                    .is_ok()
+                    {
+                        for slot in 0..chunk {
+                            let prec =
+                                &prov_records[slot * PROVINCE_RECORD..(slot + 1) * PROVINCE_RECORD];
+                            if u64_at(prec, 0) != province_vtable
+                                || u64_at(prec, 8) != pointers[index] as u64
+                            {
+                                return Err("state province disagrees with its state");
+                            }
+                            let id = u32_at(prec, 16);
+                            if id == 0 {
+                                return Err("state province id unreadable or zero");
+                            }
+                            let tokens = Array::from_header(header16(prec, 20), 4)
+                                .ok_or("province strategic location list invalid")?;
+                            if tokens.count != 0 {
+                                province_count = province_count
+                                    .checked_add(tokens.count as usize)
+                                    .ok_or("state core link count overflow")?;
+                                if province_tokens.len() == province_tokens.capacity() {
+                                    crate::allocation::reserve(&mut province_tokens, 1).map_err(
+                                        |_| "province strategic location allocation failed",
+                                    )?;
+                                }
+                                province_tokens.push((id, tokens));
+                            }
+                        }
+                    } else {
+                        for slot in 0..chunk {
+                            let (id, tokens) = province_locations(
+                                memory,
+                                provinces,
+                                ordinal + slot as u32,
+                                province_vtable,
+                                pointers[index],
+                            )?;
+                            if tokens.count != 0 {
+                                province_count = province_count
+                                    .checked_add(tokens.count as usize)
+                                    .ok_or("state core link count overflow")?;
+                                if province_tokens.len() == province_tokens.capacity() {
+                                    crate::allocation::reserve(&mut province_tokens, 1).map_err(
+                                        |_| "province strategic location allocation failed",
+                                    )?;
+                                }
+                                province_tokens.push((id, tokens));
+                            }
+                        }
+                    }
+                    ordinal += chunk as u32;
                 }
                 let (core_count, claim_count) = (cores.count as usize, claims.count as usize);
                 let location_count = locations.count as usize;
@@ -377,8 +478,7 @@ fn state_cores_buffer(
                 copy_links(memory, cores, core_slot, "state core list unreadable")?;
                 copy_links(memory, claims, claim_slot, "state claim list unreadable")?;
                 copy_pairs(memory, locations, location_slot)?;
-                for ordinal in 0..provinces.count {
-                    let (id, tokens) = province(ordinal)?;
+                for &(id, tokens) in &province_tokens {
                     let words = 2 * tokens.count as usize;
                     if words > rest.len() {
                         return Err("province strategic location list changed while read");

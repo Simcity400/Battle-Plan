@@ -1295,13 +1295,13 @@ impl Captured {
                 let selection = &self.project_selection;
                 let native_started = self.profile_acquisition.then(qpc);
                 let mut runtime_acquired = false;
-                let cold = if force_full && defer_runtime {
+                let cold = if (force_full || census) && defer_runtime {
                     cold_parts::capture(
                         memory,
                         base,
                         game_state,
                         &self.project_read,
-                        self.project_runtime.is_empty(),
+                        force_full && self.project_runtime.is_empty(),
                         dispatch,
                     )
                 } else {

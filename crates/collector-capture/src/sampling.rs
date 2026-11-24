@@ -3353,78 +3353,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             frame.extended.intel_pilot().intel_raw_mode = true;
             frame.extended.projects_pilot().raw_mode = projects_refresh;
             frame.extended.construction_rest_pilot().rest_raw_mode = construction_active;
-            let (gated_pending, gated_projects_pending) = out_of_line(|| {
-                let mut request = frame.extended.take_gated_request(
-                    shared.base,
-                    state,
-                    clock.hour,
-                    force_full,
-                    unsafe { take_slice_store(shared, collector_certificates::slicing::PROJECTS) },
-                    Some(engine_allocation::SharedBox::clone(&country_snapshot)),
-                );
-                let projects = request.take_projects();
-                let projects = queue!(acquisition::Job::GatedProjects(projects));
-                (queue!(acquisition::Job::Gated(request)), projects)
-            });
-            let (launch_store, state_stores) = unsafe {
-                (
-                    take_slice_store(shared, collector_certificates::slicing::RAID_LAUNCH),
-                    crate::extended::RaidStateStores {
-                        states: take_slice_store(
-                            shared,
-                            collector_certificates::slicing::RAID_STATE,
-                        ),
-                        buildings: take_slice_store(
-                            shared,
-                            collector_certificates::slicing::RAID_BUILDINGS,
-                        ),
-                        routes: take_slice_store(
-                            shared,
-                            collector_certificates::slicing::TRADE_ROUTES,
-                        ),
-                    },
-                )
-            };
-            let raid_state_pending = queue!(acquisition::Job::RaidState(
-                frame.extended.take_raid_state_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    clock.hour,
-                    force_full,
-                    state_stores,
-                )
-            ));
-            let ship_census = std::mem::replace(&mut frame.map.naval, ShipCensus::vacant());
-            let ship_models_pending = out_of_line(|| {
-                let mut request = frame.extended.take_ship_models_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    ship_census,
-                );
-                batch.arm_ship_details(&mut request);
-                queue!(acquisition::Job::ShipModels(request))
-            });
-            let countries_pending = queue!(acquisition::Job::Countries(
-                frame.extended.take_countries_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    &mut frame.countries,
-                    &mut frame.links,
-                    (clock.hour, force_full),
-                    unsafe { (*shared.appearance_store.get()).take() },
-                )
-            ));
-            let templates_pending = queue!(acquisition::Job::Templates(
-                frame.extended.take_templates_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    (clock.hour, force_full),
-                )
-            ));
             let (division_source_capacity, detail_capacities) =
                 frame.extended.division_capture_capacities();
             let divisions_ctx = DivisionsCopyContext {
@@ -3612,6 +3540,90 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     }
                 )));
             }
+            let ship_census = std::mem::replace(&mut frame.map.naval, ShipCensus::vacant());
+            let ship_models_pending = out_of_line(|| {
+                let mut request = frame.extended.take_ship_models_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    ship_census,
+                );
+                batch.arm_ship_details(&mut request);
+                queue!(acquisition::Job::ShipModels(request))
+            });
+            let (gated_pending, gated_projects_pending, projects_rest_pending) = out_of_line(|| {
+                let mut request = frame.extended.take_gated_request(
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                    unsafe { take_slice_store(shared, collector_certificates::slicing::PROJECTS) },
+                    Some(engine_allocation::SharedBox::clone(&country_snapshot)),
+                );
+                let mut projects = request.take_projects();
+                let rest = projects.take_rest().map(|(primary, aux, paths)| {
+                    (
+                        queue!(acquisition::Job::ProjectsRestPrimary(primary)),
+                        queue!(acquisition::Job::ProjectsRestAux(aux)),
+                        queue!(acquisition::Job::ProjectsRestPaths(paths)),
+                    )
+                });
+                let projects = queue!(acquisition::Job::GatedProjects(projects));
+                (queue!(acquisition::Job::Gated(request)), projects, rest)
+            });
+            let (launch_store, state_stores) = unsafe {
+                (
+                    take_slice_store(shared, collector_certificates::slicing::RAID_LAUNCH),
+                    crate::extended::RaidStateStores {
+                        states: take_slice_store(
+                            shared,
+                            collector_certificates::slicing::RAID_STATE,
+                        ),
+                        buildings: take_slice_store(
+                            shared,
+                            collector_certificates::slicing::RAID_BUILDINGS,
+                        ),
+                        routes: take_slice_store(
+                            shared,
+                            collector_certificates::slicing::TRADE_ROUTES,
+                        ),
+                    },
+                )
+            };
+            let (raid_state_pending, raid_state_inputs_pending) = out_of_line(|| {
+                let mut request = frame.extended.take_raid_state_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                    state_stores,
+                );
+                let inputs = request.take_inputs();
+                (
+                    queue!(acquisition::Job::RaidState(request)),
+                    queue!(acquisition::Job::RaidStateInputs(inputs)),
+                )
+            });
+            let countries_pending = queue!(acquisition::Job::Countries(
+                frame.extended.take_countries_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    &mut frame.countries,
+                    &mut frame.links,
+                    (clock.hour, force_full),
+                    unsafe { (*shared.appearance_store.get()).take() },
+                )
+            ));
+            let templates_pending = queue!(acquisition::Job::Templates(
+                frame.extended.take_templates_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    (clock.hour, force_full),
+                )
+            ));
             let world_pending = (frame.extended.records_any(&decode::PRODUCTION_REST)
                 || frame.extended.records_any(&decode::CONSTRUCTION_REST))
             .then(|| {
@@ -3657,8 +3669,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                         )
                     ))
                 });
-            let governance_pending = queue!(acquisition::Job::Governance(
-                frame.extended.take_governance_request(
+            let (governance_pending, buildings_pending) = out_of_line(|| {
+                let mut request = frame.extended.take_governance_request(
                     &country_snapshot,
                     shared.base,
                     state,
@@ -3671,8 +3683,13 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     unsafe { (*shared.building_store.get()).take() },
                     unsafe { (*shared.leader_store.get()).take() },
                     unsafe { (*shared.party_store.get()).take() },
+                );
+                let buildings = request.take_buildings();
+                (
+                    queue!(acquisition::Job::Governance(request)),
+                    queue!(acquisition::Job::Buildings(buildings)),
                 )
-            ));
+            });
             let variants_pending = {
                 let request = frame.extended.take_variants_request(
                     shared.base,
@@ -3682,7 +3699,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 );
                 queue!(acquisition::Job::Variants(request))
             };
-            let (mut ordinary_parts_pending, mut ordinary_slack_parts) = out_of_line(|| {
+            let ordinary_parts_pending = out_of_line(|| {
                 let parts = frame.extended.take_ordinary_parts(
                     &country_snapshot,
                     shared.base,
@@ -3701,20 +3718,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                         },
                     },
                 );
-                let mut slack: [Option<acquisition::OrdinaryPartRequest>;
-                    extended::ORDINARY_PARTS] = [const { None }; extended::ORDINARY_PARTS];
-                let mut index = 0;
-                let pending = parts.map(|part| {
-                    let slot = index;
-                    index += 1;
-                    if matches!(part.part, extended::OrdinaryPart::TaskForces(_)) {
-                        slack[slot] = Some(part);
-                        None
-                    } else {
-                        Some(queue!(acquisition::Job::OrdinaryPart(part)))
-                    }
-                });
-                (pending, slack)
+                parts.map(|part| Some(queue!(acquisition::Job::OrdinaryPart(part))))
             });
             let slow_stores = unsafe { lend_slow_stores(shared) };
             let slow_pending = queue!(acquisition::Job::Slow(frame.extended.take_slow_request(
@@ -3818,7 +3822,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     force_full,
                     relations_refresh,
                 );
-            let (intel_residual_request, script_variables_request) =
+            let (mut intel_residual_request, script_variables_request) =
                 frame.extended.take_intel_residual_request(
                     &country_snapshot,
                     collector_intel::intel::CaptureContext {
@@ -3830,6 +3834,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     unsafe { (*shared.script_flag_store.get()).take() },
                     unsafe { (*shared.script_variable_store.get()).take() },
                 );
+            let intel_residual_aux_pending =
+                queue!(acquisition::Job::IntelResidualAux(intel_residual_request.take_aux()));
             let script_variables_pending =
                 queue!(acquisition::Job::ScriptVariables(script_variables_request));
             let intel_residual_pending =
@@ -4095,12 +4101,12 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     .map
                     .take_combat_request(shared.base, state, progress, progress_recorded) };
             let combat_pending = queue!(acquisition::Job::MapCombats(combat_request));
-            let scores_rails_pending = queue!(acquisition::Job::ScoresRails({
+            let (scores_rails_pending, rails_pending) = out_of_line(|| {
                 let air_scores = unsafe { &mut *shared.raid_air_scores.get() }
                     .take()
                     .expect("raid air score loan");
                 let rail_store = unsafe { (*shared.rail_store.get()).take() };
-                frame.extended.take_scores_rails_request(
+                let mut request = frame.extended.take_scores_rails_request(
                     &country_snapshot,
                     shared.base,
                     state,
@@ -4108,8 +4114,13 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     force_full,
                     air_scores,
                     rail_store,
+                );
+                let rails = request.take_rails();
+                (
+                    queue!(acquisition::Job::ScoresRails(request)),
+                    queue!(acquisition::Job::Rails(rails)),
                 )
-            }));
+            });
             let mut air_supply_pending = if replay_data::cadence::should_walk(
                 TableId::AirGroundCrews,
                 clock.hour,
@@ -4126,6 +4137,94 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             } else {
                 None
             };
+            let capitulation_ctx = collector_intel::intel::CapitulationCopyContext {
+                base: shared.base,
+                game_state: state,
+            };
+            let mut capitulation_pending = Some(queue!(acquisition::Job::Capitulation(
+                acquisition::RawRequest {
+                    countries: engine_allocation::SharedBox::clone(&country_snapshot),
+                    context: capitulation_ctx,
+                    payload: decode::acquire_capitulation_job(),
+                }
+            )));
+            let mut relations_pending = if relations_refresh {
+                Some(queue!(acquisition::Job::Relations(
+                    acquisition::RawRequest {
+                        countries: engine_allocation::SharedBox::clone(&country_snapshot),
+                        context: relations_ctx,
+                        payload: {
+                            let mut payload = decode::acquire_relations_job();
+                            payload.selection = relations_selection.take();
+                            payload.fingerprints = Some(unsafe {
+                                take_slice_store(
+                                    shared,
+                                    collector_certificates::slicing::RELATIONS,
+                                )
+                            });
+                            payload
+                        },
+                    }
+                )))
+            } else {
+                None
+            };
+            let provinces_pending = Some(queue!(acquisition::Job::Provinces({
+                let mut request =
+                    acquisition::ProvincesRequest::take(shared.base, state, &mut frame.provinces);
+                if let Some(store) = unsafe { (*shared.area_store.get()).take() } {
+                    request.payload.area_store = Some(store);
+                } else if let Some(store) = request.payload.area_store.as_mut() {
+                    store.forget();
+                }
+                if let Some(store) = request.payload.area_store.as_mut() {
+                    store.force_full = force_full;
+                }
+                if let Some(store) = unsafe { (*shared.province_store.get()).take() } {
+                    request.payload.province_store = Some(store);
+                } else if let Some(store) = request.payload.province_store.as_mut() {
+                    store.forget();
+                }
+                if let Some(store) = request.payload.province_store.as_mut() {
+                    store.force_full = force_full;
+                }
+                request
+            })));
+            let states_pending = Some(queue!(acquisition::Job::States({
+                let mut request = frame.take_states_request(shared.base, state);
+                request.countries = Some(engine_allocation::SharedBox::clone(&country_snapshot));
+                request.store = unsafe { (*shared.state_store.get()).take() };
+                if frame.extended.records_any(&[TableId::StateResistance]) {
+                    request.occupation_store = unsafe { (*shared.occupation_store.get()).take() };
+                }
+                request
+            })));
+            let weather_ctx = collector_weather::weather::WeatherCopyContext {
+                game_state: state,
+                base: shared.base,
+            };
+            let weather_pending = Some({
+                let mut payload = decode::acquire_weather_job();
+                // SAFETY: the capture; the previous capture returned it.
+                payload.carry = unsafe { &mut *shared.weather_carry.get() }.take();
+                if let Some(carry) = payload.carry.as_mut() {
+                    carry.begin(
+                        clock.hour,
+                        force_full,
+                        collector_observers::country_input_changes::weather_writes(),
+                    );
+                }
+                queue!(acquisition::Job::Weather(acquisition::RawRequest {
+                    countries: engine_allocation::SharedBox::clone(&country_snapshot),
+                    context: weather_ctx,
+                    payload,
+                }))
+            });
+            let wars_pending = Some(queue!(acquisition::Job::Wars({
+                let mut request = frame.take_wars_request(&country_snapshot, shared.base, state);
+                request.store = unsafe { (*shared.war_store.get()).take() };
+                request
+            })));
             release!();
             segment!(0);
             let mut root_pending = Some(root_pending);
@@ -4154,12 +4253,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             let mut province_unit_order_pending = None;
             let mut model_inputs_pending = None;
             let mut ordinary_pending = None;
-            let mut provinces_pending = None;
-            let mut states_pending = None;
-            let mut weather_pending = None;
-            let mut capitulation_pending = None;
-            let mut wars_pending = None;
-            let mut relations_pending = None;
             let mut character_inputs_pending = None;
             let mut character_portraits_pending = [const { None }; PORTRAIT_PARTS];
             let mut ship_detail_pending =
@@ -4236,6 +4329,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             }
 
             let mut intel_residual_pending = Some(intel_residual_pending);
+            let mut intel_residual_aux_pending = Some(intel_residual_aux_pending);
             let mut session_pending = session_pending;
             let mut variants_pending = Some(variants_pending);
             let mut capitulation_failure = None;
@@ -4248,12 +4342,25 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             macro_rules! join_final_sources {
                 () => {{
                     out_of_line(|| {
-                        let (intel_residual_request, intel_residual_report) = collected!(
+                        let (mut intel_residual_request, mut intel_residual_report) = collected!(
                             intel_residual_pending
                                 .take()
                                 .expect("residual Intel producer"),
                             IntelResidual
                         );
+                        let (aux_request, _, aux_failure) = completed!(
+                            intel_residual_aux_pending
+                                .take()
+                                .expect("residual Intel aux producer"),
+                            IntelResidualAux
+                        );
+                        let aux_ticks = intel_residual_request
+                            .restore_aux(aux_request, aux_failure.is_none());
+                        if let Ok(report) = intel_residual_report.as_mut() {
+                            for (dst, src) in report.ticks.iter_mut().zip(aux_ticks) {
+                                *dst += src;
+                            }
+                        }
                         let flags = frame.extended.restore_intel_residual_request(
                             intel_residual_request,
                             intel_residual_report,
@@ -4484,6 +4591,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                             && !missions_done
                             && ready!(air_missions_pending)
                             && pending_complete(batch, &scores_rails_pending)
+                            && pending_complete(batch, &rails_pending)
                             && air_supply_pending
                                 .as_ref()
                                 .is_none_or(|pending| pending_complete(batch, pending))
@@ -4503,6 +4611,16 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                                     relations_pending.as_ref(),
                                 ],
                             )
+                            && intel_residual_aux_pending.as_ref().is_some_and(|pending| {
+                                matches!(
+                                    pending,
+                                    PendingAcquisition::Accepted(ticket)
+                                        if matches!(
+                                            batch.completed_report(*ticket),
+                                            Some(Ok(acquisition::Report::IntelResidualAux(())))
+                                        )
+                                )
+                            })
                     );
                     ready_step!(
                         Late,
@@ -4520,6 +4638,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                                 late_pending.is_some(),
                                 [
                                     intel_residual_pending.as_ref(),
+                                    intel_residual_aux_pending.as_ref(),
                                     capitulation_pending.as_ref(),
                                     session_pending.as_ref(),
                                     relations_pending.as_ref(),
@@ -4596,112 +4715,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                                 payload: naval_job,
                             })));
                         order_joins = Some((pending, parts));
-                        batch.hold();
-                        for (slot, part) in ordinary_parts_pending
-                            .iter_mut()
-                            .zip(ordinary_slack_parts.iter_mut())
-                        {
-                            if let Some(part) = part.take() {
-                                *slot = Some(queue!(acquisition::Job::OrdinaryPart(part)));
-                            }
-                        }
-                        provinces_pending = Some(queue!(acquisition::Job::Provinces({
-                            let mut request = acquisition::ProvincesRequest::take(
-                                shared.base,
-                                state,
-                                &mut frame.provinces,
-                            );
-                            if let Some(store) = unsafe { (*shared.area_store.get()).take() } {
-                                request.payload.area_store = Some(store);
-                            } else if let Some(store) = request.payload.area_store.as_mut() {
-                                store.forget();
-                            }
-                            if let Some(store) = request.payload.area_store.as_mut() {
-                                store.force_full = force_full;
-                            }
-                            if let Some(store) = unsafe { (*shared.province_store.get()).take() } {
-                                request.payload.province_store = Some(store);
-                            } else if let Some(store) = request.payload.province_store.as_mut() {
-                                store.forget();
-                            }
-                            if let Some(store) = request.payload.province_store.as_mut() {
-                                store.force_full = force_full;
-                            }
-                            request
-                        })));
-                        states_pending = Some(queue!(acquisition::Job::States({
-                            let mut request = frame.take_states_request(shared.base, state);
-                            request.countries =
-                                Some(engine_allocation::SharedBox::clone(&country_snapshot));
-                            request.store = unsafe { (*shared.state_store.get()).take() };
-                            if frame.extended.records_any(&[TableId::StateResistance]) {
-                                request.occupation_store =
-                                    unsafe { (*shared.occupation_store.get()).take() };
-                            }
-                            request
-                        })));
-                        let weather_ctx = collector_weather::weather::WeatherCopyContext {
-                            game_state: state,
-                            base: shared.base,
-                        };
-                        weather_pending = Some({
-                            let mut payload = decode::acquire_weather_job();
-                            // SAFETY: the capture; the previous capture returned it.
-                            payload.carry = unsafe { &mut *shared.weather_carry.get() }.take();
-                            if let Some(carry) = payload.carry.as_mut() {
-                                carry.begin(
-                                    clock.hour,
-                                    force_full,
-                                    collector_observers::country_input_changes::weather_writes(),
-                                );
-                            }
-                            queue!(acquisition::Job::Weather(acquisition::RawRequest {
-                                countries: engine_allocation::SharedBox::clone(&country_snapshot),
-                                context: weather_ctx,
-                                payload,
-                            }))
-                        });
-                        let capitulation_ctx = collector_intel::intel::CapitulationCopyContext {
-                            base: shared.base,
-                            game_state: state,
-                        };
-                        capitulation_pending = Some({
-                            queue!(acquisition::Job::Capitulation(acquisition::RawRequest {
-                                countries: engine_allocation::SharedBox::clone(&country_snapshot),
-                                context: capitulation_ctx,
-                                payload: decode::acquire_capitulation_job(),
-                            }))
-                        });
-                        wars_pending = Some(queue!(acquisition::Job::Wars({
-                            let mut request =
-                                frame.take_wars_request(&country_snapshot, shared.base, state);
-                            request.store = unsafe { (*shared.war_store.get()).take() };
-                            request
-                        })));
-                        relations_pending = if relations_refresh {
-                            Some(queue!(acquisition::Job::Relations(
-                                acquisition::RawRequest {
-                                    countries: engine_allocation::SharedBox::clone(
-                                        &country_snapshot,
-                                    ),
-                                    context: relations_ctx,
-                                    payload: {
-                                        let mut payload = decode::acquire_relations_job();
-                                        payload.selection = relations_selection.take();
-                                        payload.fingerprints = Some(unsafe {
-                                            take_slice_store(
-                                                shared,
-                                                collector_certificates::slicing::RELATIONS,
-                                            )
-                                        });
-                                        payload
-                                    },
-                                }
-                            )))
-                        } else {
-                            None
-                        };
-                        release!();
                     }
                     EarlyStep::Inputs => {
                         let mut input_handoff = input_handoff.take().expect("closed input handoff");
@@ -5434,8 +5447,10 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                         icons_done = true;
                     }
                     EarlyStep::Missions => {
-                        let (scores_rails_request, _, scores_rails_failure) =
+                        let (mut scores_rails_request, _, scores_rails_failure) =
                             completed!(scores_rails_pending, ScoresRails);
+                        let (rails_request, _, rails_failure) = completed!(rails_pending, Rails);
+                        scores_rails_request.restore_rails(rails_request, rails_failure.is_none());
                         let (air_missions_request, _, air_missions_failure) = completed!(
                             air_missions_pending.take().expect("air missions producer"),
                             AirMissions
@@ -5898,8 +5913,14 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     .extended
                     .restore_air_relations_request(request, failure.is_none());
             }
-            let (raid_state_request, _, raid_state_failure) =
+            let (mut raid_state_request, _, raid_state_failure) =
                 completed!(raid_state_pending, RaidState);
+            let (raid_state_inputs_request, _, raid_state_inputs_failure) =
+                completed!(raid_state_inputs_pending, RaidStateInputs);
+            raid_state_request.restore_inputs(
+                raid_state_inputs_request,
+                raid_state_inputs_failure.is_none(),
+            );
             let state_stores = frame
                 .extended
                 .restore_raid_state_request(raid_state_request, raid_state_failure.is_none());
@@ -5939,8 +5960,19 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 );
             };
             let (mut gated_request, _, gated_failure) = completed!(gated_pending, Gated);
-            let (projects_request, _, gated_projects_failure) =
+            let (mut projects_request, _, gated_projects_failure) =
                 completed!(gated_projects_pending, GatedProjects);
+            if let Some((primary_pending, aux_pending, paths_pending)) = projects_rest_pending {
+                let (primary, _, primary_failure) =
+                    completed!(primary_pending, ProjectsRestPrimary);
+                let (aux, _, aux_failure) = completed!(aux_pending, ProjectsRestAux);
+                let (paths, _, paths_failure) = completed!(paths_pending, ProjectsRestPaths);
+                projects_request.restore_rest(
+                    primary_failure.is_none().then_some(primary.rest),
+                    aux_failure.is_none().then_some(aux.rest),
+                    paths_failure.is_none().then_some(paths.rest),
+                );
+            }
             gated_request.restore_projects(projects_request);
             let project_store = frame.extended.restore_gated_request(
                 gated_request,
@@ -5972,8 +6004,15 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 unsafe { *shared.character_role_store.get() = Some(store) };
             }
             out_of_line(|| {
-                let (governance_request, governance_report) =
+                let (mut governance_request, mut governance_report) =
                     collected!(governance_pending, Governance);
+                let (buildings_request, _, buildings_failure) =
+                    completed!(buildings_pending, Buildings);
+                let buildings_ticks = governance_request
+                    .restore_buildings(buildings_request, buildings_failure.is_none());
+                if let Ok(report) = governance_report.as_mut() {
+                    report.buildings = buildings_ticks;
+                }
                 let (technologies, focus, building_store, leader_store, party_store) = frame
                     .extended
                     .restore_governance_request(governance_request, governance_report);

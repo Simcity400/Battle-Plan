@@ -17,31 +17,106 @@ impl Witness {
         self.spans.len() * std::mem::size_of::<(usize, u32, bool)>() + self.bytes.len()
     }
     pub(super) fn unchanged(&self, memory: &impl Memory, scratch: &mut Vec<u8>) -> bool {
-        if scratch.len() < self.longest {
-            let short = self.longest - scratch.len();
-            if engine_allocation::advisory(|| engine_allocation::reserve(scratch, short)).is_err() {
-                return false;
-            }
-            scratch.resize(self.longest, 0);
-        }
-        let mut at = 0;
-        for &(address, len, ok) in &self.spans {
-            let (len, read) = (len as usize, &mut scratch[..len as usize]);
-            if memory.copy(address, read) != ok {
-                return false;
-            }
-            if ok {
-                if self.bytes.get(at..at + len) != Some(&*read) {
+        const BATCH: usize = 16;
+        let ensure_scratch = |scratch: &mut Vec<u8>, needed: usize| -> bool {
+            if scratch.len() < needed {
+                let short = needed - scratch.len();
+                if engine_allocation::advisory(|| engine_allocation::reserve(scratch, short))
+                    .is_err()
+                {
                     return false;
                 }
-                at += len;
+                scratch.resize(needed, 0);
             }
+            true
+        };
+        if !ensure_scratch(scratch, self.longest) {
+            return false;
+        }
+        let mut index = 0;
+        let mut at = 0;
+        while index < self.spans.len() {
+            let (address, len, ok) = self.spans[index];
+            if !ok || address == 0 {
+                let len = len as usize;
+                let read = &mut scratch[..len];
+                if memory.copy(address, read) != ok {
+                    return false;
+                }
+                if ok {
+                    if self.bytes.get(at..at + len) != Some(&*read) {
+                        return false;
+                    }
+                    at += len;
+                }
+                index += 1;
+                continue;
+            }
+            let mut count = 0;
+            let mut total = 0_usize;
+            while count < BATCH && index + count < self.spans.len() {
+                let (span_addr, span_len, span_ok) = self.spans[index + count];
+                if !span_ok || span_addr == 0 {
+                    break;
+                }
+                let Some(next) = total.checked_add(span_len as usize) else {
+                    return false;
+                };
+                total = next;
+                count += 1;
+            }
+            let Some(expected) = self.bytes.get(at..at + total) else {
+                return false;
+            };
+            if count == 1 {
+                let len = len as usize;
+                let read = &mut scratch[..len];
+                if !memory.copy(address, read) || read != expected {
+                    return false;
+                }
+            } else {
+                if !ensure_scratch(scratch, total) {
+                    return false;
+                }
+                let spans = &self.spans[index..index + count];
+                let out = &mut scratch[..total];
+                let copied = match count {
+                    2..=4 => copy_scattered_batch::<4>(memory, spans, out),
+                    5..=8 => copy_scattered_batch::<8>(memory, spans, out),
+                    _ => copy_scattered_batch::<BATCH>(memory, spans, out),
+                };
+                if !copied || &*out != expected {
+                    return false;
+                }
+            }
+            at += total;
+            index += count;
         }
         at == self.bytes.len()
     }
     pub(super) fn size(&self) -> (usize, usize) {
         (self.spans.len(), self.bytes.len())
     }
+}
+
+fn copy_scattered_batch<const N: usize>(
+    memory: &impl Memory,
+    spans: &[(usize, u32, bool)],
+    out: &mut [u8],
+) -> bool {
+    let mut addresses = [0_usize; N];
+    let mut rest = out;
+    let mut destinations: [&mut [u8]; N] = std::array::from_fn(|lane| {
+        if let Some(&(span_addr, span_len, _)) = spans.get(lane) {
+            addresses[lane] = span_addr;
+            let (head, tail) = std::mem::take(&mut rest).split_at_mut(span_len as usize);
+            rest = tail;
+            head
+        } else {
+            &mut []
+        }
+    });
+    memory.copy_scattered_prefetched(addresses, &mut destinations) == N
 }
 
 static WITNESSES: Mutex<Option<HashMap<usize, Witness>>> = Mutex::new(None);
@@ -293,5 +368,56 @@ mod tests {
         recording.refused.set(true);
         walk(&recording);
         assert!(recording.witness(7, (0, false)).is_none());
+    }
+    #[test]
+    fn multi_span_witness_batches_reads_through_surviving_guard() {
+        struct Counted {
+            world: World,
+            scattered: Cell<usize>,
+        }
+        impl Memory for Counted {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.world.copy(address, output)
+            }
+            fn copy_scattered_prefetched<const N: usize>(
+                &self,
+                addresses: [usize; N],
+                destinations: &mut [&mut [u8]; N],
+            ) -> usize {
+                self.scattered.set(self.scattered.get() + 1);
+                self.world.copy_scattered(addresses, destinations)
+            }
+        }
+        let counted = Counted {
+            world: World(std::cell::RefCell::new((0u8..64).collect())),
+            scattered: Cell::new(0),
+        };
+        let recording = Recording::new(&counted, (0, 0));
+        let mut buf = [0u8; 4];
+        for offset in [4, 12, 24, 40] {
+            assert!(recording.copy(offset, &mut buf));
+        }
+        assert!(!recording.copy(1_000, &mut buf[..2]));
+        let held = recording.witness(9, (1, false)).unwrap();
+        let guard = super::repair::Surviving {
+            source: &counted,
+            removed: &[],
+            receiver: 4,
+            consumed: Cell::new(false),
+        };
+        let mut scratch = Vec::new();
+        assert!(held.unchanged(&guard, &mut scratch));
+        assert_eq!(counted.scattered.get(), 1);
+        counted.world.0.borrow_mut()[25] ^= 0xff;
+        assert!(!held.unchanged(&guard, &mut scratch));
+        counted.world.0.borrow_mut()[25] ^= 0xff;
+        let removed_guard = super::repair::Surviving {
+            source: &counted,
+            removed: &[24],
+            receiver: 4,
+            consumed: Cell::new(false),
+        };
+        assert!(!held.unchanged(&removed_guard, &mut scratch));
+        assert!(removed_guard.consumed.get());
     }
 }

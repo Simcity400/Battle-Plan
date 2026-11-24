@@ -2,7 +2,8 @@ use super::super::witness::{MAX_WITNESS_BYTES, Recording, Witness};
 use super::*;
 
 const MIN_BURST: usize = 64;
-const PARTS_PER_LANE: usize = 4;
+const PARTS_PER_LANE: usize = 2;
+const MIN_PER_PART: usize = 32;
 
 pub(in super::super) struct WalkSummary {
     pub details: bool,
@@ -137,7 +138,10 @@ pub(in super::super) fn read_marked(
         .map_err(|_| "variant boundary read allocation failed")?;
     let mut parts = match speculation {
         Some(speculation) if speculation.lanes >= 2 && marked.len() >= MIN_BURST => {
-            let per_part = marked.len().div_ceil(speculation.lanes * PARTS_PER_LANE);
+            let per_part = marked
+                .len()
+                .div_ceil(speculation.lanes * PARTS_PER_LANE)
+                .max(MIN_PER_PART);
             let part_count = marked.len().div_ceil(per_part);
             let witness_budget = MAX_WITNESS_BYTES.div_ceil(part_count.max(1));
             let mut parts = engine_allocation::vec(part_count)
