@@ -15,7 +15,8 @@ import {
   drawTrackBar,
   resolveKitTokens,
 } from '../../draw/kit.ts';
-import { toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
+import { resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
+import type { LaneArtCache } from '../art/laneCache.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import type {
@@ -381,6 +382,7 @@ function drawStandardMeterRow(
   inspectedKey: string | null,
   selectedKey: string | null,
   focusedKey: string | null,
+  artCache: LaneArtCache | undefined,
 ): void {
   const { x, y, width, height, row } = block;
   const midY = y + height / 2;
@@ -404,11 +406,11 @@ function drawStandardMeterRow(
       ctx.fillRect(cursorX + 16.5, artY + 10, 2.5, 10);
       ctx.restore();
     } else {
-      drawArtSlot(ctx, cursorX, artY, size, size, toArtSlotState(row.art.result, row.art.resolvedName), theme, { radius: row.art.radius ?? 4 });
+      drawArtSlot(ctx, cursorX, artY, size, size, toArtSlotState(resolveCachedArt(row.art.result, artCache), row.art.resolvedName), theme, { radius: row.art.radius ?? 4 });
     }
     cursorX += size + 10;
   } else if (row.flag) {
-    drawFlagSlot(ctx, cursorX, Math.round(midY - 6.5), toFlagSlotState(row.flag.result, row.flag.tag), theme, { width: 20, height: 13 });
+    drawFlagSlot(ctx, cursorX, Math.round(midY - 6.5), toArtSlotState(resolveCachedArt(row.flag.result, artCache), row.flag.tag), theme, { width: 20, height: 13 });
     cursorX += 28;
   }
 
@@ -638,6 +640,7 @@ function drawCipherMeterRow(
   inspectedKey: string | null,
   selectedKey: string | null,
   focusedKey: string | null,
+  artCache: LaneArtCache | undefined,
 ): void {
   const { x, y, width, height, row } = block;
   const midY = y + height / 2;
@@ -654,7 +657,7 @@ function drawCipherMeterRow(
   if (row.pair) {
     const flagY = Math.round(midY - 6.5);
     let cx = x;
-    drawFlagSlot(ctx, cx, flagY, toFlagSlotState(row.pair.ownerFlag.result, row.pair.ownerFlag.tag), theme, { width: 20, height: 13 });
+    drawFlagSlot(ctx, cx, flagY, toArtSlotState(resolveCachedArt(row.pair.ownerFlag.result, artCache), row.pair.ownerFlag.tag), theme, { width: 20, height: 13 });
     cx += 20;
     if (wide) {
       cx += 6;
@@ -680,7 +683,7 @@ function drawCipherMeterRow(
     cx += textWidth(ctx, '\u2192') + 5;
     ctx.restore();
 
-    drawFlagSlot(ctx, cx, flagY, toFlagSlotState(row.pair.targetFlag.result, row.pair.targetFlag.tag), theme, { width: 20, height: 13 });
+    drawFlagSlot(ctx, cx, flagY, toArtSlotState(resolveCachedArt(row.pair.targetFlag.result, artCache), row.pair.targetFlag.tag), theme, { width: 20, height: 13 });
     cx += 26;
     const remW = Math.max(24, x + pairW - cx);
     ctx.save();
@@ -722,9 +725,10 @@ function drawChipLineBlock(
   inspectedKey: string | null,
   selectedKey: string | null,
   focusedKey: string | null,
+  artCache: LaneArtCache | undefined,
 ): void {
   const firstMidY = block.y + 11;
-  drawFlagSlot(ctx, block.x, Math.round(firstMidY - 6.5), toFlagSlotState(block.ownerFlag.result, block.ownerFlag.tag), theme, { width: 20, height: 13 });
+  drawFlagSlot(ctx, block.x, Math.round(firstMidY - 6.5), toArtSlotState(resolveCachedArt(block.ownerFlag.result, artCache), block.ownerFlag.tag), theme, { width: 20, height: 13 });
   if (block.showOwnerName) {
     const maxW = Math.max(24, block.ownerWidth - 26);
     ctx.save();
@@ -744,7 +748,7 @@ function drawChipLineBlock(
     if (focusedKey === chip.key) drawRowFocusRing(ctx, placed.x - 4, placed.y, placed.width + 8, placed.height, theme, 0);
 
     let cx = placed.x;
-    drawFlagSlot(ctx, cx, Math.round(midY - 6), toFlagSlotState(chip.targetFlag.result, chip.targetFlag.tag), theme, { width: 18, height: 12 });
+    drawFlagSlot(ctx, cx, Math.round(midY - 6), toArtSlotState(resolveCachedArt(chip.targetFlag.result, artCache), chip.targetFlag.tag), theme, { width: 18, height: 12 });
     cx += 18;
     if (block.showTargetName) {
       cx += 5;
@@ -784,10 +788,11 @@ export interface DrawMeterInput {
   readonly inspectedKey: string | null;
   readonly selectedKey: string | null;
   readonly focusedKey: string | null;
+  readonly artCache?: LaneArtCache;
 }
 
 export function drawMeterModel(ctx: Canvas2D, input: DrawMeterInput): void {
-  const { layout, width, height, scrollLeft, scrollTop, theme, inspectedKey, selectedKey, focusedKey } = input;
+  const { layout, width, height, scrollLeft, scrollTop, theme, inspectedKey, selectedKey, focusedKey, artCache } = input;
   ctx.save();
   ctx.fillStyle = theme.surface;
   ctx.fillRect(0, 0, width, height);
@@ -809,13 +814,13 @@ export function drawMeterModel(ctx: Canvas2D, input: DrawMeterInput): void {
     if (block.kind === 'header') {
       drawSectionHeaderBlock(ctx, block, theme);
     } else if (block.kind === 'chip-line') {
-      drawChipLineBlock(ctx, block, theme, inspectedKey, selectedKey, focusedKey);
+      drawChipLineBlock(ctx, block, theme, inspectedKey, selectedKey, focusedKey, artCache);
     } else if (layout.mode === 'columns') {
       drawColumnMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey);
     } else if (layout.mode === 'ciphers') {
-      drawCipherMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey);
+      drawCipherMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey, artCache);
     } else {
-      drawStandardMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey);
+      drawStandardMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey, artCache);
     }
   }
   ctx.restore();

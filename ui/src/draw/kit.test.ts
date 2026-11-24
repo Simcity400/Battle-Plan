@@ -127,39 +127,43 @@ function makeFakeCtx() {
   return { ctx: ctx as unknown as CanvasRenderingContext2D, ops };
 }
 
-test('art and flag slots keep fixed geometry across every state and never hatch pending slots', () => {
+export function slotForm(ops: readonly RecordedOp[]): 'empty' | 'image' | 'missing' | 'unrecorded' | 'refused' | 'failed' {
+  if (!ops.length) return 'empty';
+  if (ops.some(op => op.op === 'drawImage')) return 'image';
+  const filled = ops.some(op => op.op === 'fill');
+  if (filled && ops.some(op => op.op === 'arc')) return 'failed';
+  if (filled && ops.some(op => op.op === 'lineTo')) return 'refused';
+  return ops.some(op => op.op === 'fillText') ? 'missing' : 'unrecorded';
+}
+
+test('art and flag slots keep fixed geometry and draw one distinct form per status', () => {
   const bitmap = { width: 64, height: 32 } as unknown as CanvasImageSource;
   const states = [
-    { kind: 'none' as const },
-    { kind: 'pending' as const },
-    { kind: 'ready' as const, bitmap, width: 64, height: 32 },
-    { kind: 'missing' as const, resolvedName: 'Heavy Tank' },
-    { kind: 'refused' as const, reason: 'Unsupported format' },
-    { kind: 'failed' as const, reason: 'Decode failed' },
-  ];
+    { state: { kind: 'none' as const }, form: 'empty' },
+    { state: { kind: 'pending' as const }, form: 'empty' },
+    { state: { kind: 'ready' as const, bitmap, width: 64, height: 32 }, form: 'image' },
+    { state: { kind: 'missing' as const, reason: 'no layer holds it', label: 'Heavy Tank' }, form: 'missing' },
+    { state: { kind: 'unrecorded' as const, reason: 'Portrait hour not recorded' }, form: 'unrecorded' },
+    { state: { kind: 'refused' as const, reason: 'Unsupported format' }, form: 'refused' },
+    { state: { kind: 'failed' as const, reason: 'Decode failed', retryable: true }, form: 'failed' },
+  ] as const;
 
-  for (const state of states) {
-    const { ctx, ops } = makeFakeCtx();
-    const res = drawArtSlot(ctx, 10, 20, 32, 32, state, THEME);
-    assert.deepEqual({ x: res.x, y: res.y, width: res.width, height: res.height }, { x: 10, y: 20, width: 32, height: 32 });
-    assert.equal(res.drawn, state.kind);
-    if (state.kind === 'none' || state.kind === 'pending') {
-      assert.equal(ops.length, 0, `${state.kind} slot must draw nothing`);
-    }
-    if (state.kind === 'missing') {
-      assert.equal(res.initials, 'HT');
-      assert.ok(ops.some(op => op.op === 'fillText' && op.args[0] === 'HT'));
-    }
-    if (state.kind === 'refused' || state.kind === 'failed') {
-      assert.ok(ops.some(op => op.op === 'arc'));
-      assert.equal(ops.some(op => op.op === 'fillText'), false);
+  for (const { state, form } of states) {
+    for (const [name, draw] of [
+      ['art', (ctx: CanvasRenderingContext2D) => drawArtSlot(ctx, 10, 20, 32, 32, state, THEME)],
+      ['flag', (ctx: CanvasRenderingContext2D) => drawFlagSlot(ctx, 10, 20, state, THEME)],
+    ] as const) {
+      const { ctx, ops } = makeFakeCtx();
+      const res = draw(ctx);
+      assert.equal(res.drawn, state.kind, `${name} ${state.kind}`);
+      assert.equal(slotForm(ops), form, `${name} ${state.kind} draws its own form`);
     }
   }
 
-  const smallMissing = makeFakeCtx();
-  const smallRes = drawArtSlot(smallMissing.ctx, 0, 0, 24, 24, { kind: 'missing', resolvedName: 'Heavy Tank' }, THEME);
-  assert.equal(smallRes.initials, undefined);
-  assert.equal(smallMissing.ops.some(op => op.op === 'fillText'), false);
+  const art = makeFakeCtx();
+  assert.equal(drawArtSlot(art.ctx, 0, 0, 32, 32, { kind: 'missing', reason: 'no layer holds it', label: 'Heavy Tank' }, THEME).label, 'HT');
+  const small = makeFakeCtx();
+  assert.equal(drawArtSlot(small.ctx, 0, 0, 16, 16, { kind: 'missing', reason: 'no layer holds it' }, THEME).label, '?', 'a confirmed miss keeps its mark at small sizes');
 
   assert.equal(artInitials('Medium Tank Chassis'), 'MTC');
   assert.equal(artInitials(undefined), '');
@@ -170,8 +174,8 @@ test('art and flag slots keep fixed geometry across every state and never hatch 
   assert.equal(flagPending.ops.length, 0);
 
   const flagMissing = makeFakeCtx();
-  const missingFlag = drawFlagSlot(flagMissing.ctx, 4, 8, { kind: 'missing', tag: 'ger' }, THEME, { dimmed: true });
-  assert.equal(missingFlag.tag, 'GER');
+  const missingFlag = drawFlagSlot(flagMissing.ctx, 4, 8, { kind: 'missing', reason: 'no layer holds it', label: 'ger' }, THEME, { dimmed: true });
+  assert.equal(missingFlag.label, 'GER');
   assert.ok(flagMissing.ops.some(op => op.op === 'fillText' && op.args[0] === 'GER' && op.alpha === FLAG_LOSER_ALPHA));
 });
 
@@ -401,15 +405,15 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
   assert.ok(outOf.ops.some(op => op.op === 'fillText' && op.args[0] === ' / 15'));
 
   const skill = makeFakeCtx();
-  drawSkillFigure(skill.ctx, 0, 80, 18, '5', { kind: 'missing', resolvedName: 'Attack' }, THEME);
+  drawSkillFigure(skill.ctx, 0, 80, 18, '5', { kind: 'missing', reason: 'no layer holds it', label: 'Attack' }, THEME);
   assert.ok(skill.ops.some(op => op.op === 'fillText' && op.args[0] === '5'));
 
   const strip = makeFakeCtx();
   const res = drawIconStrip(strip.ctx, 0, 90, 18, [
-    { state: { kind: 'missing', resolvedName: 'A' }, name: 'A' },
-    { state: { kind: 'missing', resolvedName: 'B' }, name: 'B' },
-    { state: { kind: 'missing', resolvedName: 'C' }, name: 'C' },
-    { state: { kind: 'missing', resolvedName: 'D' }, name: 'D' },
+    { state: { kind: 'missing', reason: 'no layer holds it', label: 'A' }, name: 'A' },
+    { state: { kind: 'missing', reason: 'no layer holds it', label: 'B' }, name: 'B' },
+    { state: { kind: 'missing', reason: 'no layer holds it', label: 'C' }, name: 'C' },
+    { state: { kind: 'missing', reason: 'no layer holds it', label: 'D' }, name: 'D' },
   ], THEME, { kind: 'traits' });
   assert.equal(res.drawnCount + res.overflowCount, 4);
   assert.ok(res.overflowCount > 0);

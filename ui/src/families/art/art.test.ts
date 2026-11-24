@@ -5,7 +5,7 @@ import { IdentityIndex } from '../identity/index.ts';
 import { flagChoiceKey, parseFlagChoiceKey } from '../identity/types.ts';
 import { DomArtCache, type DomArtImage } from './domCache.ts';
 import { LaneArtCache } from './laneCache.ts';
-import { drawMediaSlot, flagEntryToArt, resolveCachedArt, spriteImageToArt, toArtSlotState, toFlagSlotState } from './adapters.ts';
+import { drawMediaSlot, flagEntryToArt, resolveCachedArt, spriteImageToArt } from './adapters.ts';
 import { artUrlForHandle, collectArtUrls, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand, urlArtHandle } from './provider.ts';
 import { DEFAULT_FAMILY_THEME } from '../../draw/kit.ts';
 import { SpriteCaches, artCacheScope, artCalls, settleCall, spriteResolutions } from './transport.ts';
@@ -23,7 +23,6 @@ import {
   type ArtBitmap,
   type ArtResolution,
 } from './types.ts';
-import { IdentityBroker, type IdentityTransport } from '../identity/broker.ts';
 import type { CountryFlagChoice } from '../../generated/dashboard';
 
 const missingArt = (reason: string) => productArt({ status: 'confirmedMissing', reason });
@@ -85,8 +84,8 @@ test('LaneArtCache distinguishes all six Rust ArtResolution states, wakes on loa
   const flush = async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); };
 
   cache.requestVisible([okRes, flakyRes, slowRes]);
-  assert.equal(cache.resolve(okRes).status, 'pending');
-  assert.equal(cache.resolve(flakyRes).status, 'pending');
+  assert.deepEqual([cache.resolve(okRes).status, 'bitmap' in cache.resolve(okRes)], ['ready', false], 'undecoded art keeps its address and has no bitmap yet');
+  assert.deepEqual([cache.resolve(flakyRes).status, 'bitmap' in cache.resolve(flakyRes)], ['ready', false]);
 
   await flush();
 
@@ -111,12 +110,15 @@ test('LaneArtCache distinguishes all six Rust ArtResolution states, wakes on loa
 
   cache.requestVisible([readyArt('art://third'), readyArt('art://fourth')]);
   await flush();
-  assert.equal(cache.cachedCount, 3);
-  assert.ok(closed.includes('art://ok'), 'evicted bitmap is closed');
+  assert.equal(cache.cachedCount, 4, 'the painted window is pinned and the scrolled-away pair stays inside the inactive budget');
+  cache.requestVisible([readyArt('art://fifth'), readyArt('art://sixth')]);
+  await flush();
+  assert.equal(cache.cachedCount, 5, 'two pinned plus the inactive budget of three');
+  assert.ok(closed.includes('art://ok'), 'the least recently shown inactive bitmap is evicted and closed');
 
   cache.setContentRevision(2);
   assert.equal(cache.cachedCount, 0);
-  assert.equal(cache.resolve(flakyRes).status, 'pending', 'content revision flush clears cache');
+  assert.equal(cache.stateOfUrl(flakyRes.url), 'unrequested', 'content revision flush clears cache');
 
   cache.dispose();
 });
@@ -202,14 +204,17 @@ test('at 1,500 assets the lane decodes a bounded few at a time and holds no more
   assert.equal(started, 128, 'no decode starts that the cache could not keep');
   assert.equal(lane.cachedCount, 128);
   assert.equal(open, 128, 'every bitmap decoded is held or closed');
-  assert.equal(lane.resolve(urls[1499]!).status, 'pending', 'offscreen art beyond the limit waits, never borrowed or dropped');
+  assert.equal(lane.stateOfUrl(urls[1499]!.url), 'unrequested', 'offscreen art beyond the limit waits, never borrowed or dropped');
 
   lane.requestVisible(urls.slice(1400));
   for (let i = 0; i < 2000; i++) await Promise.resolve();
-  assert.equal(started, 228);
-  assert.equal(lane.cachedCount, 128);
-  assert.equal(open, 128, 'art scrolled away is closed to make room');
+  assert.equal(started, 228, 'the painted window loads past the inactive budget');
+  assert.equal(lane.cachedCount, 228, 'the window of 100 is pinned beside the 128 inactive bitmaps');
   assert.equal(lane.resolve(urls[1499]!).status, 'ready');
+  lane.requestVisible(urls.slice(1300, 1400));
+  for (let i = 0; i < 2000; i++) await Promise.resolve();
+  assert.equal(lane.cachedCount, 228, 'scrolling away leaves the window plus the inactive budget, never more');
+  assert.equal(open, 228, 'art evicted from the inactive set is closed');
   lane.dispose();
   assert.equal(open, 0);
 
@@ -250,6 +255,7 @@ test('ArtProvider plugs LaneArtCache and DomArtCache behind BoundedReadView.art(
 
   let wakes = 0;
   const laneCache = new LaneArtCache<ArtBitmap>({
+    maxEntries: 1,
     onSettle: () => { wakes++; },
     fetchBitmap: () => Promise.resolve(fakeBitmap()),
   });
@@ -264,7 +270,7 @@ test('ArtProvider plugs LaneArtCache and DomArtCache behind BoundedReadView.art(
   });
 
   const first = view.art(handle);
-  assert.equal(first.status, 'pending');
+  assert.deepEqual([first.status, 'bitmap' in first], ['ready', false], 'an undecoded flag keeps its address, so the painted window knows it before any decode');
   assert.deepEqual(demanded, ['art://ger-flag']);
 
   laneCache.requestVisible(demanded);
@@ -275,7 +281,17 @@ test('ArtProvider plugs LaneArtCache and DomArtCache behind BoundedReadView.art(
   assert.equal(ready.status, 'ready');
   assert.equal(ready.url, 'art://ger-flag');
   assert.equal(ready.provenance.label, 'Current installation');
-  assert.ok(ready.bitmap);
+  assert.equal('bitmap' in ready, false, 'a projection holds the address, never a decoded bitmap the cache may close under it');
+  assert.deepEqual(demanded, ['art://ger-flag', 'art://ger-flag'], 'art a projection holds stays demanded after it decodes');
+  const painted = resolveCachedArt(ready, laneCache as unknown as LaneArtCache<ImageBitmap>);
+  assert.ok(painted.status === 'ready' && painted.bitmap, 'the painter draws it from the cache');
+  const decoded = painted.bitmap as unknown as ReturnType<typeof fakeBitmap>;
+
+  laneCache.requestVisible(['art://other'], ['art://offscreen']);
+  for (let i = 0; i < 4; i++) await Promise.resolve();
+  assert.equal(decoded.closed, true, 'art scrolled away is evicted and closed to make room for other demand');
+  const repainted = resolveCachedArt(ready, laneCache as unknown as LaneArtCache<ImageBitmap>);
+  assert.ok(repainted.status === 'ready' && repainted.bitmap === undefined, 'a cached model painted again after the eviction draws its art as loading, never the closed bitmap');
 
   const domCache = new DomArtCache<DomArtImage>({
     createImage: () => ({ complete: true, naturalWidth: 41, naturalHeight: 26, src: '', onload: null, onerror: null }),
@@ -395,7 +411,7 @@ test('sprite, portrait, technology and relative-path handles are asked of their 
   assert.ok(urls.has('art://drawn'));
 });
 
-test('urlArtHandle, collectArtUrls, resolveCachedArt, and drawMediaSlot unify family media handling', () => {
+test('urlArtHandle, collectArtUrls, resolveCachedArt, and drawMediaSlot unify family media handling', async () => {
   assert.equal(urlArtHandle(null), null);
   assert.equal(urlArtHandle(''), null);
   assert.deepEqual(urlArtHandle('art://icon'), { kind: 'url', url: 'art://icon' });
@@ -413,8 +429,10 @@ test('urlArtHandle, collectArtUrls, resolveCachedArt, and drawMediaSlot unify fa
   assert.deepEqual(collected, ['art://direct', 'art://handle', 'art://ready', 'art://slot']);
 
   const bmp = fakeBitmap() as unknown as ImageBitmap;
-  const icons = new Map<string, ImageBitmap | null>([['art://cached', bmp]]);
-  const resolved = resolveCachedArt(readyArt('art://cached'), { icons });
+  const cache = new LaneArtCache({ fetchBitmap: async () => bmp });
+  cache.requestVisible(['art://cached']);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  const resolved = resolveCachedArt(readyArt('art://cached'), cache);
   assert.equal(resolved.status, 'ready');
   assert.equal(resolved.bitmap, bmp);
 
@@ -439,52 +457,14 @@ test('urlArtHandle, collectArtUrls, resolveCachedArt, and drawMediaSlot unify fa
     textBaseline: 'middle',
   } as unknown as CanvasRenderingContext2D;
 
-  drawMediaSlot(ctx, 4, 14, 18, 12, { kind: 'flag', art: readyArt('art://cached'), tag: 'GER' }, DEFAULT_FAMILY_THEME, { icons });
-  drawMediaSlot(ctx, 4, 14, 18, 18, { kind: 'art', art: readyArt('art://cached'), name: 'Tank' }, DEFAULT_FAMILY_THEME, { icons, radius: 3 });
+  drawMediaSlot(ctx, 4, 14, 18, 12, { kind: 'flag', art: readyArt('art://cached'), tag: 'GER' }, DEFAULT_FAMILY_THEME, { artCache: cache });
+  drawMediaSlot(ctx, 4, 14, 18, 18, { kind: 'art', art: readyArt('art://cached'), name: 'Tank' }, DEFAULT_FAMILY_THEME, { artCache: cache, radius: 3 });
   assert.equal(ops.filter(op => op === 'drawImage').length, 2);
 });
 
-test('a status is the product\'s to the drawn slot: an unread table, an unrecorded hour, a refusal and a failure are never a confirmed miss', async () => {
-  const unreadTable = { status: 'unavailable', reason: 'hour 300 UnitLeaders is truncated (2 missing rows)' } as const;
-  const unrecordedHour = { status: 'unavailable', reason: 'Portrait hour not recorded: gap' } as const;
-  const refused = { status: 'refused', reason: 'visual mod refused', construct: 'sprite-render' } as const;
-  const failed = { status: 'failed', reason: 'read failed', retryable: true } as const;
-  const searched = { status: 'confirmedMissing', reason: 'no layer holds it' } as const;
-  const leaders = { unread: unreadTable, gap: unrecordedHour, refused, failed, searched };
-  const portraits = Object.keys(leaders).map(leader => ({ kind: 'portrait', leader, hour: 300 }) as const);
-  const sprites = Object.keys(leaders).map(key => ({ kind: 'sprite', key, frame: 0 }) as const);
-  const answered = await answerHandles(async request => request.product === 'unit-leader-portraits'
-    ? { portraits: Object.entries(leaders).map(([reference, resolution]) => ({ reference, image: null, missing: resolution.reason, resolution })), warnings: [] }
-    : { items: Object.entries(leaders).map(([key, resolution]) => ({ key, frame: 0, icon: null, resolution })), warnings: [] },
-  { source: { id: 's', revision: 'r' }, branch: { id: '1' } } as never, [...portraits, ...sprites], new AbortController().signal);
-  const lane = createLaneArtProvider(new LaneArtCache(), { resolutions: Object.fromEntries(answered) });
-  for (const handle of [...portraits, ...sprites]) {
-    const id = handle.kind === 'portrait' ? handle.leader : handle.key;
-    const art = lane.resolve(handle);
-    assert.equal(art.status, leaders[id as keyof typeof leaders].status, `${handle.kind} ${id}`);
-    const slot = toArtSlotState(art);
-    assert.equal(slot.kind, { unread: 'missing', gap: 'missing', refused: 'refused', failed: 'failed', searched: 'missing' }[id], `${handle.kind} ${id} slot`);
-  }
-
-  const choice = (key: string): CountryFlagChoice => ({ keys: [key, key, key], reasons: [null, null, null] });
-  const flags = { unread: unreadTable, refused, searched };
-  const transport = {
-    loadFlags: async (_scope: unknown, _size: unknown, choices: readonly CountryFlagChoice[]) => ({
-      flags: [], warnings: [],
-      unavailable: choices.map((asked, flag) => ({ flag, reason: '', resolution: flags[asked.keys[0] as keyof typeof flags] })),
-    }),
-  } as unknown as IdentityTransport;
-  const broker = new IdentityBroker({ transport, clock: { now: () => 0, after: () => () => {} } });
-  const scope = { sourceId: 's', revision: 'r', branchId: '1', content: 1 };
-  broker.requestFlagChoices(scope, 'small', Object.keys(flags).map(choice));
-  for (let i = 0; i < 6; i++) await Promise.resolve();
-  for (const [key, resolution] of Object.entries(flags)) {
-    const art = flagEntryToArt(broker.flagFor(scope, 'small', choice(key)));
-    assert.equal(art.status, resolution.status, `flag ${key}`);
-    assert.equal(toFlagSlotState(art, 'AAA').kind, { unread: 'missing', refused: 'refused', searched: 'missing' }[key], `flag ${key} slot`);
-  }
+test('a completed search travels with the flag choice to the flag product', () => {
   const relayed: CountryFlagChoice = { keys: [null, 'aaa', 'aaa'], reasons: ['none drawn', null, null], searched: [true, null, null] };
-  assert.deepEqual(parseFlagChoiceKey(flagChoiceKey(relayed)), relayed, 'a completed search travels with the choice to the flag product');
+  assert.deepEqual(parseFlagChoiceKey(flagChoiceKey(relayed)), relayed);
   assert.notEqual(flagChoiceKey(relayed), flagChoiceKey({ ...relayed, searched: undefined }));
 });
 
@@ -582,4 +562,29 @@ test('the lane pins and fetches every visible bitmap past its budget; offscreen 
   for (let paint = 0; paint < 20; paint++) { cache.requestVisible(few, offscreen); await flush(); }
   assert.equal(fetched.length, before, 'a demanded bitmap is never evicted to admit another, so repeated paints fetch nothing');
   assert.ok(cache.cachedCount <= 138);
+});
+
+test('the lane pins exactly the painted window: scrolling 1,500 rows paused loads every visible image, residency stays within the window plus the inactive budget, and nothing resident is fetched again', async () => {
+  const fetched = new Map<string, number>();
+  const budget = 64;
+  const cache = new LaneArtCache({ maxEntries: budget, maxConcurrent: 6, fetchBitmap: async url => { assert.equal(cache.map.has(url), false, 'a resident image is never fetched again'); fetched.set(url, (fetched.get(url) ?? 0) + 1); await Promise.resolve(); return fakeBitmap(); } });
+  const flush = async () => { for (let i = 0; i < 200; i++) await Promise.resolve(); };
+  const rows = Array.from({ length: 1_500 }, (_, at) => readyArt(`art://row-${at}`));
+  const window = 20;
+  for (let first = 0; first + window <= rows.length; first += window) {
+    const visible = rows.slice(first, first + window);
+    for (let paint = 0; paint < 3; paint++) {
+      const before = new Map(fetched);
+      cache.requestVisible(visible, rows);
+      await flush();
+      if (paint > 0) assert.deepEqual(fetched, before, `rows ${first}: a paused repaint fetches nothing`);
+    }
+    assert.ok(visible.every(art => cache.stateOfUrl(art.url) === 'ready'), `rows ${first}: every painted image is resident`);
+    assert.ok(cache.cachedCount <= window + budget, `rows ${first}: residency ${cache.cachedCount} stays within the window plus the inactive budget`);
+  }
+  const back = rows.slice(0, window);
+  cache.requestVisible(back, rows);
+  await flush();
+  assert.ok(back.every(art => cache.stateOfUrl(art.url) === 'ready'), 'scrolling back loads the first rows again');
+  assert.ok(cache.cachedCount <= window + budget);
 });

@@ -1,3 +1,4 @@
+import { productIconArt } from '../../families/art/provider.ts';
 import { formatAmount, formatFixed, formatSigned } from '../../charts/valueAxis.ts';
 import { liveKey } from '../../charts/live.ts';
 import type { DeclaredCountryFilter, HourRanges, TableWidgetDeclaration } from '../../families/table/declaration.ts';
@@ -110,7 +111,7 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
         {
           ...byKey.get('law')!,
           iconSlot: options.lawAs === 'icon',
-          icon: row => (row.value.law !== null ? laws.get(row.value.law)?.icon ?? undefined : undefined),
+          art: (row, readView) => (row.value.law !== null ? productIconArt(readView, laws.get(row.value.law)?.icon, 'The product drew no icon for this law') : undefined),
           status: () => (options.lawAs === 'dot' ? 'dot' : undefined),
           value: row => {
             if (row.value.law === null) return notRecorded(row.value.lawMissing ?? 'Not recorded');

@@ -13,8 +13,8 @@ import type {
 } from '../../generated/dashboard';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
-import { artUrlForHandle, createLaneArtProvider, flagArtHandle, laneArtDemand, mergeArtDemands, requestDemandedFlags } from '../art/provider.ts';
-import { toFlagSlotState } from '../art/adapters.ts';
+import { artUrlForHandle, createLaneArtProvider, flagArtHandle, laneArtDemand, readArtDemands, requestDemandedFlags } from '../art/provider.ts';
+import { toArtSlotState } from '../art/adapters.ts';
 import { NO_ART, artHandleKey, productArt, refusedArt } from '../art/types.ts';
 import { RefusedError } from '../../dashboard/queryError.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
@@ -744,7 +744,7 @@ test('an identity key and an art handle keep their whole identity from demand to
   const asText: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, text: true };
   const asRecorded: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, recorded: 'GFX_y' };
   assert.equal(artHandleKey({ kind: 'sprite', key: 'GFX_x' }), artHandleKey(plain));
-  assert.deepEqual(mergeArtDemands([], [plain, asText, asRecorded, plain]), [plain, asText, asRecorded]);
+  assert.deepEqual(readArtDemands([], [plain, asText, asRecorded, plain]), [plain, asText, asRecorded]);
   assert.equal(new Set([plain, asText, asRecorded].map(artHandleKey)).size, 3);
 });
 
@@ -973,9 +973,9 @@ test('a status is carried, not rebuilt: unresolved holders, failures across the 
   assert.equal(broker.flagFor(SCOPE, 'panel', FLAG_A)?.url, 'flag://GER_a');
   broker.dispose();
 
-  assert.deepEqual(toFlagSlotState(refusedArt('Unsupported flag format')), { kind: 'refused', reason: 'Unsupported flag format' });
-  assert.deepEqual(toFlagSlotState(NO_ART), { kind: 'none' });
-  assert.deepEqual(toFlagSlotState(productArt({ status: 'confirmedMissing', reason: 'No flag file' }), 'GER'), { kind: 'missing', tag: 'GER' });
+  assert.deepEqual(toArtSlotState(refusedArt('Unsupported flag format')), { kind: 'refused', reason: 'Unsupported flag format' });
+  assert.deepEqual(toArtSlotState(NO_ART), { kind: 'none' });
+  assert.deepEqual(toArtSlotState(productArt({ status: 'confirmedMissing', reason: 'No flag file' }), 'GER'), { kind: 'missing', reason: 'No flag file', label: 'GER' });
 });
 
 test('an entity failure belongs to its window and a retryable one is asked again after its backoff', async () => {

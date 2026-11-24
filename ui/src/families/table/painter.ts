@@ -16,7 +16,7 @@ import {
 } from '../../draw/kit.ts';
 import { resolveCachedArt } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
-import { readyArt } from '../art/types.ts';
+import type { ArtResult } from '../art/types.ts';
 import { drawHatchRect, MISSING_BOX_SIZE } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';
 import { drawApprovedCell, treeLevelsOf, treeTextStart, type CellRenderContext } from './cellPainters.ts';
@@ -112,7 +112,6 @@ export interface DrawFamilyTableInput {
   readonly selectedKey?: string | null;
   readonly focusedKey?: string | null;
   readonly empty?: string;
-  readonly icons?: ReadonlyMap<string, ImageBitmap | null>;
   readonly iconVersion?: number;
   readonly artCache?: LaneArtCache;
   readonly dpr?: number;
@@ -256,7 +255,6 @@ export function drawFamilyTable(
     selectedKey,
     focusedKey,
     empty,
-    icons,
     iconVersion,
     artCache,
     dpr = 1,
@@ -356,7 +354,7 @@ export function drawFamilyTable(
   } else if (picture && picture.maxima && picture.maximaRows === rows && picture.maximaHour === hour && picture.maximaCols === maximaCols) {
     maxima = picture.maxima;
   } else {
-    maxima = computeColumnMaxima(rows, layout.columns, hour);
+    maxima = computeColumnMaxima(rows, layout.columns);
     if (picture) {
       picture.maximaRows = rows;
       picture.maximaHour = hour;
@@ -402,7 +400,6 @@ export function drawFamilyTable(
     treeColumn: treeColumnOf(layout.columns),
     treeLevels,
     hasActionColumn: layout.columns.some(col => col.cellKind === 'action'),
-    icons,
     artCache,
     measure,
     fit,
@@ -432,18 +429,19 @@ export function drawFamilyTable(
     return marker && marker.until > now ? `${item.key}\u0002${item.rank}\u0002${marker.delta}` : `${item.key}\u0002${item.rank}`;
   };
 
-  const artStateOf = (url: string): string => {
-    const resolved = resolveCachedArt(readyArt(url), { artCache, icons });
-    return resolved.status === 'ready' ? (resolved.bitmap ? 'r' : 'p') : resolved.status;
+  const artStateOf = (art: ArtResult | null | undefined): string => {
+    if (!art) return '';
+    const resolved = resolveCachedArt(art, artCache);
+    return resolved.status === 'ready' ? `${resolved.url}\u0003${resolved.bitmap ? 'r' : 'p'}` : `${resolved.status}\u0003${'reason' in resolved ? resolved.reason : ''}`;
   };
 
   const cellListSignature = (cell: TableCell): string => {
     let sig = '';
     if (cell.flags) {
-      for (const flag of cell.flags) sig += `f${flag.tag}\u0005${flag.icon ?? ''}\u0005${flag.icon ? artStateOf(flag.icon) : 0}\u0005${flag.pending ? 1 : 0}${flag.dimmed ? 1 : 0}`;
+      for (const flag of cell.flags) sig += `f${flag.tag}\u0005${artStateOf(flag.art)}\u0005${flag.dimmed ? 1 : 0}`;
     }
     if (cell.icons) {
-      for (const entry of cell.icons) sig += `i${entry.url ?? ''}\u0005${entry.url ? artStateOf(entry.url) : 0}\u0005${entry.pending ? 1 : 0}\u0005${entry.name}\u0005${entry.count ?? ''}`;
+      for (const entry of cell.icons) sig += `i${artStateOf(entry.art)}\u0005${entry.name}\u0005${entry.count ?? ''}`;
     }
     return sig;
   };
@@ -456,16 +454,14 @@ export function drawFamilyTable(
     const pixels = paintModel.bar.fraction === null ? -1 : Math.round(paintModel.bar.fraction * span);
     const fraction = paintModel.bar.fraction === null ? null : pixels / span;
     const fill = paintModel.bar.alert ? theme.red : colorOf(theme, paintModel.tone ?? undefined, paintModel.countryColor, fraction);
-    const icon = paintModel.icon ?? undefined;
-    const iconPending = paintModel.iconPending === true;
-    const art = icon === undefined && !iconPending ? '' : `${icon ?? ''}\u0003${icon === undefined ? 3 : artStateOf(icon)}`;
+    const art = artStateOf(paintModel.art);
     const treeKey = `${item.isTreeGroup ? (item.isOpen ? 'o' : 'c') : ''}${treeTextStart(item.level, treeLevels)}`;
     const textVal = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text;
     const secVal = cell?.secondaryValue ? (cell.secondaryValue.kind === 'known' || cell.secondaryValue.kind === 'zero' ? String(cell.secondaryValue.value) : cell.secondaryValue.kind) : '';
-    const unitArt = cell?.unitIcon ? `${cell.unitIcon}\u0005${artStateOf(cell.unitIcon)}` : (cell?.unitIconPending ? 'p' : '');
+    const unitArt = artStateOf(cell?.unitArt);
     const splitSig = cell?.splitBar ? cell.splitBar.map(s => `${s.fraction}:${s.fill}:${s.hatched ? 1 : 0}`).join(',') : '';
     const extraSig = `${cell?.blank ? 'blank' : ''}${cell?.subtext ?? ''}\u0004${secVal}\u0004${cell?.shortage ? 1 : 0}\u0004${cell?.stockpile ? JSON.stringify(cell.stockpile) : ''}\u0004${cell ? cellListSignature(cell) : ''}\u0004${cell?.statusKind ?? ''}\u0004${cell?.actionLabel ?? ''}\u0004${cell?.inlinePrefix ?? ''}\u0004${cell?.inlineSubtext ?? ''}\u0004${cell?.unitSuffix ?? ''}\u0004${unitArt}\u0004${cell?.boundedDate ?? ''}\u0004${cell?.missingFigure ?? ''}\u0004${splitSig}\u0004${item.showDate === false ? 0 : 1}`;
-    const key = `${formatted.kind}\u0002${textVal}\u0002${paintModel.missingName ? 1 : 0}\u0002${pixels}\u0002${fill}\u0002${paintModel.countryColor ?? ''}\u0002${art}\u0002${treeKey}\u0002${item.row.muted ? 1 : 0}\u0002${paintModel.status ?? ''}\u0002${extraSig}`;
+    const key = `${formatted.kind}\u0002${textVal}\u0002${pixels}\u0002${fill}\u0002${paintModel.countryColor ?? ''}\u0002${art}\u0002${treeKey}\u0002${item.row.muted ? 1 : 0}\u0002${paintModel.status ?? ''}\u0002${extraSig}`;
     return { paintModel, formatted, fraction, fill, key };
   };
 

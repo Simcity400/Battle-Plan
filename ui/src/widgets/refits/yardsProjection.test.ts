@@ -40,7 +40,7 @@ test('a refit line shows the product’s progress against its cost, its dockyard
   assert.deepEqual(cell(known!.children![0], 'strength'), knownValue(100));
   const shipName = known!.children![0]!.cells.name!;
   assert.equal(shipName.artShape, 'counter');
-  assert.ok(Boolean(shipName.icon) || shipName.iconPending === true, 'a ship draws its class sprite');
+  assert.equal(shipName.art?.status, 'pending', 'a ship draws its class sprite');
   assert.equal(known!.cells.name!.artShape, undefined, 'a refit line has no class picture');
   assert.deepEqual(cell(unknown!.children![0], 'strength'), notRecorded('Maximum ship strength not recorded'));
   assert.equal(model.titleSummary, '3 dockyards');

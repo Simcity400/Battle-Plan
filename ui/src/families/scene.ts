@@ -4,7 +4,8 @@ import type { Picture } from '../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../dashboard/follow/message';
 import type { Scene, Value as LaneValue } from '../draw/lane.ts';
 import { sectionLiveValues } from '../draw/views/fields.ts';
-import { artUrlForHandle, laneArtDemand, type ArtResolutions } from './art/provider.ts';
+import { artUrlForHandle, laneArtDemand, needsArtResolution, type ArtResolutions } from './art/provider.ts';
+import { artHandleKey } from './art/types.ts';
 import { createBoundedReadView } from './boundedView.ts';
 import type { ArtHandle, ArtProvider, ArtResult, BoundedReadView, BoundedSeries, DisplayedHour, EntityKind, FieldStatus, IdentityProvider, IdentityResult } from './contract.ts';
 import type { IdentityIndex } from './identity/index.ts';
@@ -192,6 +193,7 @@ export function projectScene<TModel>(
   const view = readScene(scene, sources, hour, recorded, demands, () => { windowRead = true; });
   const model = project(view);
   recording = false;
+  for (const [handle] of artReads) if (needsArtResolution(handle)) demands.asks.set(artHandleKey(handle), handle);
   let boundary = Infinity;
   for (const read of whoReads) if (read[2] === view.hour && read[3].nextChangeAt < boundary) boundary = read[3].nextChangeAt;
   return {

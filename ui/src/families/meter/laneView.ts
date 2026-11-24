@@ -36,6 +36,7 @@ export const meterLane: LaneFamily<FamilyMeterBinding, MeterModel, MeterLayout> 
       inspectedKey: inspectedRow(frame.inspect),
       selectedKey: frame.binding.selectedKey ?? null,
       focusedKey: frame.binding.focusedKey ?? null,
+      artCache: frame.art,
     });
     return false;
   },

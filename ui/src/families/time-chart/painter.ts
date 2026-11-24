@@ -17,7 +17,8 @@ import {
   type LegendStripSpec,
 } from '../../draw/kit.ts';
 import { parseColor, rgbaRgb } from '../../shell/appearance/color.ts';
-import { toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
+import { resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
+import type { LaneArtCache } from '../art/laneCache.ts';
 import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { BoundedSeries, FamilyTheme } from '../contract.ts';
 import { formatDateOnly } from '../valueFormat.ts';
@@ -27,7 +28,7 @@ import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import { seriesLookAt, type TimeChartModel, type TimeChartSeriesModel } from './model.ts';
 import { drawChartRows, parseRowsInspect } from './rows.ts';
 
-export function timeChartLegendSpec(model: TimeChartModel): LegendStripSpec | null {
+export function timeChartLegendSpec(model: TimeChartModel, artCache?: LaneArtCache): LegendStripSpec | null {
   const legend = model.legend;
   if (!legend || legend.length === 0) return null;
   const isLineLegend = model.mode === 'lines';
@@ -47,7 +48,7 @@ export function timeChartLegendSpec(model: TimeChartModel): LegendStripSpec | nu
           ...(isLineLegend && !item.hatch ? { line: true } : {}),
           dash: item.dash,
           hatch: item.hatch,
-          flag: item.flag ? toFlagSlotState(item.flag.art, item.flag.tag ?? item.flag.label) : undefined,
+          flag: item.flag ? toArtSlotState(resolveCachedArt(item.flag.art, artCache), item.flag.tag ?? item.flag.label) : undefined,
           muted: false,
         };
       },
@@ -228,6 +229,7 @@ export function drawTimeChart(
   inspectKey: string | null | undefined,
   dpr: number,
   legendFit?: LegendFit | null,
+  artCache?: LaneArtCache,
 ): void {
   const theme = themeInput ?? DEFAULT_FAMILY_THEME;
   const tokens = resolveKitTokens(theme);
@@ -244,7 +246,7 @@ export function drawTimeChart(
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, layout.width, layout.height);
   if (layout.rows) {
-    drawChartRows(ctx, model, layout.rows, theme, parseRowsInspect(inspectKey));
+    drawChartRows(ctx, model, layout.rows, theme, parseRowsInspect(inspectKey), artCache);
     return;
   }
 
@@ -254,7 +256,7 @@ export function drawTimeChart(
   const overlayFont = `${theme.fontSize.body}px ${theme.font}`;
   const textSecondary = tokens.textSecondary;
 
-  const legendSpec = layout.legendTop === null ? null : timeChartLegendSpec(model);
+  const legendSpec = layout.legendTop === null ? null : timeChartLegendSpec(model, artCache);
   if (legendSpec && layout.legendTop !== null) {
     const width = layout.width - layout.left;
     drawLegendStrip(ctx, layout.left, layout.legendTop, width, 14, legendSpec, theme,
@@ -712,10 +714,10 @@ export function drawTimeChart(
       cursorX += 9;
     }
     if (label.flag && label.flag.art.status !== 'noArtExpected') {
-      drawFlagSlot(ctx, cursorX, label.y - 6, toFlagSlotState(label.flag.art, label.flag.tag ?? label.flag.label), theme, { width: 18, height: 12 });
+      drawFlagSlot(ctx, cursorX, label.y - 6, toArtSlotState(resolveCachedArt(label.flag.art, artCache), label.flag.tag ?? label.flag.label), theme, { width: 18, height: 12 });
       cursorX += 24;
     } else if (label.icon && label.icon.art.status !== 'noArtExpected') {
-      drawArtSlot(ctx, cursorX, label.y - 7.5, 16, 15, toArtSlotState(label.icon.art, label.icon.label), theme, { radius: 0 });
+      drawArtSlot(ctx, cursorX, label.y - 7.5, 16, 15, toArtSlotState(resolveCachedArt(label.icon.art, artCache), label.icon.label), theme, { radius: 0 });
       cursorX += 22;
     }
     if (label.name) {
@@ -777,9 +779,9 @@ export function drawTimeChart(
 
   for (const m of layout.markers) {
     if (m.kind === 'flag' && m.marker.flag) {
-      drawFlagSlot(ctx, m.x - 8, m.y - 5, toFlagSlotState(m.marker.flag.art, m.marker.flag.tag ?? m.marker.flag.label), theme, { width: 16, height: 10 });
+      drawFlagSlot(ctx, m.x - 8, m.y - 5, toArtSlotState(resolveCachedArt(m.marker.flag.art, artCache), m.marker.flag.tag ?? m.marker.flag.label), theme, { width: 16, height: 10 });
     } else if (m.kind === 'icon' && m.marker.icon) {
-      drawArtSlot(ctx, m.x - 9, m.y - 9, 18, 18, toArtSlotState(m.marker.icon.art, m.marker.icon.label), theme, { radius: 0 });
+      drawArtSlot(ctx, m.x - 9, m.y - 9, 18, 18, toArtSlotState(resolveCachedArt(m.marker.icon.art, artCache), m.marker.icon.label), theme, { radius: 0 });
     } else {
       ctx.save();
       ctx.strokeStyle = m.marker.tickColor ?? tokens.markerTick;

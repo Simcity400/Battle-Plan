@@ -1,3 +1,4 @@
+import { unavailableArt } from '../../families/art/types.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
 import { formatPower, formatPowerChange } from '../../dashboard/powerDecimals.ts';
@@ -94,7 +95,7 @@ function decisionCostInfo(
       cell: {
         value: knownValue(text),
         unitSuffix: 'PP',
-        ...(sprite.status === 'ready' ? { unitIcon: sprite.url } : sprite.status === 'pending' ? { unitIconPending: true } : {}),
+        unitArt: sprite,
       },
       costText: `${text} PP`,
       costMissing: null,
@@ -107,7 +108,7 @@ function decisionCostInfo(
       cell: {
         value: knownValue(text),
         unitSuffix: 'CP',
-        ...(sprite.status === 'ready' ? { unitIcon: sprite.url } : sprite.status === 'pending' ? { unitIconPending: true } : {}),
+        unitArt: sprite,
       },
       costText: `${text} CP`,
       costMissing: null,
@@ -167,9 +168,7 @@ function buildDecisionRow(
   const muted = markInfo.muted === true;
 
   const artHandle = artwork ? urlArtHandle(card.item?.icon ?? null) : null;
-  const artResult = artHandle ? readView.art(artHandle) : null;
-  const icon = artResult?.status === 'ready' ? artResult.url : undefined;
-  const iconPending = artResult?.status === 'pending' ? true : undefined;
+  const art = artHandle ? readView.art(artHandle) : unavailableArt('The product drew no icon for this item');
 
   const rawName = card.item?.name && card.item.name.trim().length > 0 ? card.item.name : null;
   const safeName = plainScripted(rawName ?? decisionName(card)) || 'Decision name not recorded';
@@ -210,15 +209,15 @@ function buildDecisionRow(
     startedHour: firstRow.hour,
     name: rawName,
     isMission,
-    icon,
+    icon: art.status === 'ready' ? art.url : undefined,
     countryTag: card.country,
     countryName: card.country ? identityName(readView, 'country', card.country, nameHour) : null,
-    countryFlagUrl: countryFlag?.icon,
-    countryFlagPending: countryFlag?.pending,
+    countryFlagUrl: countryFlag?.art.status === 'ready' ? countryFlag.art.url : undefined,
+    countryFlagPending: countryFlag?.art.status === 'pending',
     targetTag: card.target,
     targetName: card.target ? identityName(readView, 'country', card.target, nameHour) : null,
-    targetFlagUrl: targetFlag?.icon,
-    targetFlagPending: targetFlag?.pending,
+    targetFlagUrl: targetFlag?.art.status === 'ready' ? targetFlag.art.url : undefined,
+    targetFlagPending: targetFlag?.art.status === 'pending',
     place: placeLabel,
     statusLabel: labelText,
     lifecycle: lifecycleLine(at),
@@ -260,8 +259,7 @@ function buildDecisionRow(
         kind: artwork
           ? {
               value: rawName !== null ? knownValue(safeName) : notRecorded(reasons.nameMissing ?? 'Decision icon not recorded'),
-              icon,
-              iconPending,
+              art,
               iconSlot: true,
               artShape: 'square',
               artName: safeName,

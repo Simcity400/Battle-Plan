@@ -1,3 +1,6 @@
+import { createSnapshotIdentityProvider } from '../identity/provider.ts';
+import { IdentityIndex } from '../identity/index.ts';
+import { PENDING_ART, productArt, readyArt, type ArtResult } from '../art/types.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, parseAnswer } from '../../dashboard/follow/message.ts';
@@ -290,12 +293,14 @@ test('scoreboard projection matches followed and exact audits with missing, part
       ['casualties:partial', answer({ keys: [1n, 2n, 3n, 4n], columns: 1, names: ['ITA', 'FRA', 'GER', 'ENG'], values: [1n, 0n, 0n, 0n], states: [CELL.value, CELL.value, CELL.value, CELL.value] })],
     ]),
   }), hourly);
-  const renamedLooks = { ...looks, GER: [{ from: 0, name: 'Germany' }, { from: 50, name: 'German Reich' }] };
-  const constant = { ...hourly, looks: renamedLooks };
-  const before = createBoundedReadView({ hour: 40, answers: new Map([['factories', answer({ keys: [1n], columns: 1, names: ['GER'], values: [1n], states: [CELL.value] })]]) });
-  assert.equal(scoreboardProjection.nextChange!(before, constant), 50, 'a dated name change is the next change even while the values stay constant');
-  assert.equal(scoreboardProjection.project(createBoundedReadView({ hour: 50, answers: new Map([['factories', answer({ keys: [1n], columns: 1, names: ['GER'], values: [1n], states: [CELL.value] })]]) }), constant)
-    .rows.find(row => row.key === 'GER')?.name, 'German Reich');
+  const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: '1', content: 1 });
+  const style = (name: string, valid: [number, number]) => ({ tag: 'GER', name, color: [102, 102, 102] as [number, number, number], valid, flagChoice: { keys: ['GER', null, null] as [string, null, null], reasons: [null, null, null] as [null, null, null] } });
+  index.ingestStylesReply({ branchId: '1', hour: 0, styles: [style('Germany', [0, 49])], warnings: [] });
+  index.ingestStylesReply({ branchId: '1', hour: 50, styles: [style('German Reich', [50, 100])], warnings: [] });
+  const identity = createSnapshotIdentityProvider(index);
+  const factoriesOnly = new Map([['factories', answer({ keys: [1n], columns: 1, names: ['GER'], values: [1n], states: [CELL.value] })]]);
+  assert.equal(scoreboardProjection.project(createBoundedReadView({ hour: 40, identity, answers: factoriesOnly }), hourly).rows.find(row => row.key === 'GER')?.name, 'Germany');
+  assert.equal(scoreboardProjection.project(createBoundedReadView({ hour: 50, identity, answers: factoriesOnly }), hourly).rows.find(row => row.key === 'GER')?.name, 'German Reich', 'a dated rename reaches the country cell through identity');
 
   const first = at(40, 0n);
   const quiet = at(41, 0n);
@@ -465,29 +470,29 @@ test('dirty cell painter repaints only changed cells and bounds text measurement
   }, settings);
 
   const r1 = makeRows([[100, 1.5], [90, 2.5], [80, 0], [70, 0], [60, 4.5]]);
-  const firstDraw = drawFamilyTable(ctx, { layout, rows: r1, settings, hour: 1, width: 480, height: 220, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 1, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, icons: new Map(), dpr: 1 }, picture);
+  const firstDraw = drawFamilyTable(ctx, { layout, rows: r1, settings, hour: 1, width: 480, height: 220, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 1, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, dpr: 1 }, picture);
   assert.equal(firstDraw.paintedCells, 15, 'initial paint draws all 5x3 visible cells');
 
   reset();
-  const sameDraw = drawFamilyTable(ctx, { layout, rows: r1, settings, hour: 2, width: 480, height: 220, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 2, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, icons: new Map(), dpr: 1 }, picture);
+  const sameDraw = drawFamilyTable(ctx, { layout, rows: r1, settings, hour: 2, width: 480, height: 220, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 2, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, dpr: 1 }, picture);
   assert.equal(sameDraw.paintedCells, 0, 'unchanged frame paints zero cells');
   assert.equal(sameDraw.drew, false);
   assert.equal(counts().measureCalls, 0);
 
   const r2 = makeRows([[100, 1.5], [90, 2.5], [80, 0], [70, 0], [60, 9.9]]);
   reset();
-  const oneCellDraw = drawFamilyTable(ctx, { layout, rows: r2, settings, hour: 3, width: 480, height: 220, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 3, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, icons: new Map(), dpr: 1 }, picture);
+  const oneCellDraw = drawFamilyTable(ctx, { layout, rows: r2, settings, hour: 3, width: 480, height: 220, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 3, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, dpr: 1 }, picture);
   assert.equal(oneCellDraw.paintedCells, 1, 'changing one cell without reordering repaints exactly 1 cell');
 
   const r3 = makeRows([[100, 1.5], [95, 2.5], [80, 0], [70, 0], [99, 9.9]]);
   reset();
-  const swapDraw = drawFamilyTable(ctx, { layout, rows: r3, settings, hour: 4, width: 480, height: 220, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 4, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, icons: new Map(), dpr: 1 }, picture);
+  const swapDraw = drawFamilyTable(ctx, { layout, rows: r3, settings, hour: 4, width: 480, height: 220, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 4, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, dpr: 1 }, picture);
   assert.ok(swapDraw.paintedCells > 0 && swapDraw.paintedCells <= 15, `reorder repaints only dirty rows: ${swapDraw.paintedCells}`);
 
   reset();
   for (let frame = 0; frame < 60; frame++) {
     const stepRows = makeRows([[100, 1.5], [90, 2.5], [80, 0], [70, 0], [60, (frame % 5) + 0.5]]);
-    drawFamilyTable(ctx, { layout, rows: stepRows, settings, hour: 10 + frame, width: 480, height: 220, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 10 + frame, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, icons: new Map(), dpr: 1 }, picture);
+    drawFamilyTable(ctx, { layout, rows: stepRows, settings, hour: 10 + frame, width: 480, height: 220, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 10 + frame, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, dpr: 1 }, picture);
   }
   assert.ok(counts().measureCalls <= 15, `text measurements stay bounded after warm-up: ${counts().measureCalls} across 60 frames`);
 });
@@ -539,7 +544,7 @@ test('1,500 countries project, sort, audit identically, and paint only visible r
   const layout = layoutFamilyTable(buildColumnLayouts(specs, settings, fixedWidths), 480, { rankShown: true, rankWidth: 36 });
   const picture = createTablePicture();
   reset();
-  const draw = drawFamilyTable(ctx, { layout, rows: followedRows, settings, hour: 200, width: 480, height: 320, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 1, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, icons: new Map(), dpr: 1 }, picture);
+  const draw = drawFamilyTable(ctx, { layout, rows: followedRows, settings, hour: 200, width: 480, height: 320, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 1, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, dpr: 1 }, picture);
   assert.ok(draw.paintedCells <= 30, `only visible viewport rows painted out of 1,500: ${draw.paintedCells} cells`);
   assert.ok(counts().measureCalls <= 50, `bounded text measurements for 1,500-country table: ${counts().measureCalls}`);
 });
@@ -569,15 +574,20 @@ test('occupied-states projection carries country looks at hour, filter ranges, u
     [liveKey('1', 'garrison'), 250_000],
     [liveKey('1', 'garrisonStrength'), 87_500],
   ]), NOT_NAMED);
+  const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: '1', content: 1 });
+  const style = (tag: string, name: string, valid: [number, number]) => ({ tag, name, color: [102, 102, 102] as [number, number, number], valid, flagChoice: { keys: [tag, null, null] as [string, null, null], reasons: [null, null, null] as [null, null, null] } });
+  index.ingestStylesReply({ branchId: '1', hour: 0, styles: [style('GER', 'Germany', [0, 19]), style('POL', 'Poland', [0, 100])], warnings: [] });
+  index.ingestStylesReply({ branchId: '1', hour: 20, styles: [style('GER', 'German Reich', [20, 100])], warnings: [] });
+  const identity = createSnapshotIdentityProvider(index);
   const run = (hour: number) => occupiedStatesProjection.project(
-    createBoundedReadView({ hour, panels: new Map([['main', reply]]), live: new Map([['main', live]]) }),
+    createBoundedReadView({ hour, identity, panels: new Map([['main', reply]]), live: new Map([['main', live]]) }),
     { filter, role: 'occupier', labels, lawAs: 'dot', filterAll: false },
   );
   const at15 = run(15);
   assert.deepEqual(at15.rows.map(r => r.key), ['1']);
   const settings = tableSettingsOf(undefined, OCCUPIED_DEFAULTS, OCCUPIED_BASE);
   const flat15 = resolveTableRows(at15, settings);
-  const tip = deriveTableTooltip(flat15, '1', at15.columns, 15);
+  const tip = deriveTableTooltip(flat15, '1', at15.columns);
   assert.ok(tip);
   assert.equal(tip.rows.find(r => r.label === 'Resistance')?.valueState?.text, '25%');
   assert.equal(tip.rows.find(r => r.label === 'Assigned manpower')?.valueState?.text, '0', 'known assigned with no live cell reads 0');
@@ -812,9 +822,9 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
       ],
     }, numSettings);
     const pic = createTablePicture();
-    drawFamilyTable(ctx, { layout: numLayout, rows: numRows, settings: numSettings, hour: 1, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 1, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, icons: new Map(), dpr: 1 }, pic);
+    drawFamilyTable(ctx, { layout: numLayout, rows: numRows, settings: numSettings, hour: 1, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 1, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, dpr: 1 }, pic);
     const firstMaxima = pic.maxima;
-    drawFamilyTable(ctx, { layout: numLayout, rows: numRows, settings: numSettings, hour: 1, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 2, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: 'A', selectedKey: null, focusedKey: null, icons: new Map(), dpr: 1 }, pic);
+    drawFamilyTable(ctx, { layout: numLayout, rows: numRows, settings: numSettings, hour: 1, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 2, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: 'A', selectedKey: null, focusedKey: null, dpr: 1 }, pic);
     assert.equal(pic.maxima, firstMaxima, 'hover repaint reuses cached column maxima without scanning all rows');
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
@@ -915,7 +925,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
     cells: { name: { value: knownValue(`Row ${i}`) }, rate: { value: knownValue(15 - i), format: 'decimal1' as const, country: 'GER' } },
   }));
   const flatMany = resolveTableRows({ columns: cols, hour: 10, rows: manyRows }, settings);
-  const mirror = deriveTableMirror(flatMany, cols, 10, false, { first: 5, count: 3 }, 'R0');
+  const mirror = deriveTableMirror(flatMany, cols, false, { first: 5, count: 3 }, 'R0');
   assert.equal(mirror.rows[0]!.key, 'R0');
   assert.equal(mirror.rows[0]!.rowIndex, 0, 'off-screen focused row carries its true rowIndex, not window offset');
 
@@ -942,10 +952,10 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
     (origFill as (...b: unknown[]) => void)(...a);
   };
   const shortFlat = resolveTableRows({ columns: cols, hour: 10, rows: manyRows.slice(0, 2) }, settings);
-  drawFamilyTable(ctx, { layout, rows: shortFlat, settings, hour: 10, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: datedTheme, now: 1, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), icons: new Map(), dpr: 1 }, pic);
+  drawFamilyTable(ctx, { layout, rows: shortFlat, settings, hour: 10, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: datedTheme, now: 1, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), dpr: 1 }, pic);
   assert.ok(fills.includes('rgb(10, 20, 30)'), 'paints dated country colour at hour 10');
   const compactSettings = { ...settings, density: 'compact' as const };
-  const afterDensity = drawFamilyTable(ctx, { layout, rows: shortFlat, settings: compactSettings, hour: 25, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: datedTheme, now: 2, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), icons: new Map(), dpr: 1 }, pic);
+  const afterDensity = drawFamilyTable(ctx, { layout, rows: shortFlat, settings: compactSettings, hour: 25, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: datedTheme, now: 2, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), dpr: 1 }, pic);
   assert.equal(afterDensity.drew, true, 'density change invalidates frameKey and repaints');
   assert.ok(fills.includes('rgb(200, 10, 10)'), 'paints updated dated country colour at hour 25');
 
@@ -1036,7 +1046,8 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
             value: opts.missingName ? notRecorded('Name absent') : knownValue('Germany'),
             iconSlot: true,
             country: 'GER',
-            looks: [{ from: 0, name: opts.missingName ? null : 'Germany', flag: opts.flag, ...(opts.missingName ? { status: 'Name absent' } : {}) }],
+            art: readyArt(opts.flag),
+            artKey: opts.flag,
           },
           garrison: {
             value: knownValue(12),
@@ -1155,7 +1166,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
     null,
     'P1: tooltip audit omits presentation hour so valid picture at hour 10 matches exact audit at hour 12',
   );
-  const tip10 = deriveTableTooltip(flat10, 'GER', cols, 10)!;
+  const tip10 = deriveTableTooltip(flat10, 'GER', cols)!;
   assert.equal(tip10.subtitle, undefined, 'P1: deriveRowTooltip carries no hour-derived subtitle');
   const auditColorDiff = deriveTableAudit({ model: m10, flatRows: flat10, visibleColumns: layouts, rankShown: true, countryColors: colorsB });
   assert.notEqual(
@@ -1320,7 +1331,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
     cells: { country: { value: knownValue(`Row ${i}`) }, score: { value: knownValue(10 - i) } },
   }));
   const flatMirror = resolveTableRows({ columns: cols, hour: 10, rows: mirrorRows }, settings);
-  const mirrorWithIdx = deriveTableMirror(flatMirror, cols, 10, false, { first: 5, count: 2 }, 'R1', 1);
+  const mirrorWithIdx = deriveTableMirror(flatMirror, cols, false, { first: 5, count: 2 }, 'R1', 1);
   assert.equal(mirrorWithIdx.rows[0]!.key, 'R1', 'M9: deriveTableMirror uses supplied O(1) focusedIndex');
   assert.equal(mirrorWithIdx.rows[0]!.rowIndex, 1);
 });
@@ -1378,11 +1389,7 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
                 value: knownValue(tag),
                 iconSlot: true,
                 country: tag,
-                looks: [
-                  { from: 0, name: tag, flag: `/flags/${tag}_early.png` },
-                  { from: 100, name: tag, flag: `/flags/${tag}_mid.png` },
-                  { from: 200, name: tag, flag: `/flags/${tag}_late.png` },
-                ],
+                art: readView.art({ kind: 'url', url: `/flags/${tag}_${readView.hour < 100 ? 'early' : readView.hour < 200 ? 'mid' : 'late'}.png` }),
               },
               val: { value: knownValue(i + 1) },
             },
@@ -1533,7 +1540,7 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   const mAtLeast = mkTipModel(partialValue(1.001, 'Missing corps', { atLeast: true }));
   const mPlainPartial = mkTipModel(partialValue(1.001, 'Missing corps', { atLeast: false }));
   const mDiffUnderlying = mkTipModel(partialValue(1.004, 'Missing corps', { atLeast: true }));
-  const tipAtLeast = deriveTableTooltip(resolveTableRows(mAtLeast, settings), 'GER', cols, 10)!;
+  const tipAtLeast = deriveTableTooltip(resolveTableRows(mAtLeast, settings), 'GER', cols)!;
   const extraRow = tipAtLeast.rows.find(r => r.label === 'Strength')!;
   assert.equal(extraRow.value, undefined, 'F8: tooltip row keeps typed ValueState instead of flattened string');
   assert.equal(extraRow.valueState?.kind, 'partial');
@@ -1588,7 +1595,7 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
   let prevFlat = resolveTableRows(prevModel, settings);
   let prevIndex = new Map<string, number>();
   prevFlat.forEach((item, idx) => { if (item.kind === 'data') prevIndex.set(item.key, idx); });
-  let prevMaxima = computeColumnMaxima(prevFlat, layouts, 1);
+  let prevMaxima = computeColumnMaxima(prevFlat, layouts);
 
   for (let step = 2; step <= 65; step++) {
     const k = step % 7 === 0 ? 0 : 1 + (nextRand() % 8);
@@ -1638,8 +1645,8 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
       assert.equal(incItem.rank, fullItem.rank, `step ${step} rank at ${i} (${incItem.key})`);
       assert.equal(inc.rowIndex.get(incItem.key), i, `step ${step} rowIndex for ${incItem.key}`);
     }
-    const incMax = updateColumnMaximaIncremental(prevMaxima, prevFlat, prevIndex, incRows, inc.rowIndex, layouts, changedKeys, prevModel.hour, step);
-    const fullMax = computeColumnMaxima(full, layouts, step);
+    const incMax = updateColumnMaximaIncremental(prevMaxima, prevFlat, prevIndex, incRows, inc.rowIndex, layouts, changedKeys);
+    const fullMax = computeColumnMaxima(full, layouts);
     assert.deepEqual([...incMax.entries()].sort(), [...fullMax.entries()].sort(), `step ${step} maxima match`);
 
     rows = nextRows;
@@ -1670,7 +1677,7 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
     ],
   }, scrollSettings);
   const pic = createTablePicture();
-  drawFamilyTable(ctx, { layout: scrollLayout, rows: groupedRows, settings: scrollSettings, hour: 1, width: 260, height: 100, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 1, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), icons: new Map(), dpr: 1 }, pic);
+  drawFamilyTable(ctx, { layout: scrollLayout, rows: groupedRows, settings: scrollSettings, hour: 1, width: 260, height: 100, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 1, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), dpr: 1 }, pic);
   const fillsAfterFull = counts().fillTextCalls;
   const offscreenMutated = groupedRows.slice();
   const lastIdx = offscreenMutated.length - 1;
@@ -1678,7 +1685,7 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
   if (lastItem.kind === 'data') {
     offscreenMutated[lastIdx] = { ...lastItem, row: { ...lastItem.row, cells: { ...lastItem.row.cells, score: { value: knownValue(19), format: 'integer' } } } };
   }
-  const offscreenRes = drawFamilyTable(ctx, { layout: scrollLayout, rows: offscreenMutated, settings: scrollSettings, hour: 2, width: 260, height: 100, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 2, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), icons: new Map(), dpr: 1 }, pic);
+  const offscreenRes = drawFamilyTable(ctx, { layout: scrollLayout, rows: offscreenMutated, settings: scrollSettings, hour: 2, width: 260, height: 100, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 2, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), dpr: 1 }, pic);
   assert.equal(offscreenRes.drew, false, 'off-screen row change in scrollable grouped table performs zero paint');
   assert.equal(counts().fillTextCalls, fillsAfterFull, 'off-screen row change emits zero fillText calls');
 
@@ -1687,7 +1694,7 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
   if (visItem.kind === 'data') {
     visibleMutated[2] = { ...visItem, row: { ...visItem.row, cells: { ...visItem.row.cells, score: { value: knownValue(81), format: 'integer' } } } };
   }
-  const visRes = drawFamilyTable(ctx, { layout: scrollLayout, rows: visibleMutated, settings: scrollSettings, hour: 3, width: 260, height: 100, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 3, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), icons: new Map(), dpr: 1 }, pic);
+  const visRes = drawFamilyTable(ctx, { layout: scrollLayout, rows: visibleMutated, settings: scrollSettings, hour: 3, width: 260, height: 100, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 3, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), dpr: 1 }, pic);
   assert.equal(visRes.drew, true);
   assert.equal(visRes.paintedCells, 1, 'scrollable grouped single-cell change repaints only 1 dirty cell');
   assert.ok(counts().fillTextCalls - fillsAfterFull < fillsAfterFull, `scrollable grouped single-cell change draws fewer texts (${counts().fillTextCalls - fillsAfterFull} vs full ${fillsAfterFull})`);
@@ -2083,7 +2090,7 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     { key: 'A', name: 'A', cells: { name: { value: knownValue('A') }, net: { value: knownValue(-30) } } },
     { key: 'B', name: 'B', cells: { name: { value: knownValue('B') }, net: { value: knownValue(10) } } },
   ] }, kindSettings);
-  assert.equal(computeColumnMaxima(signedRows, grown.columns, 1).get('net'), 30, 'a two-way column scales by the largest magnitude');
+  assert.equal(computeColumnMaxima(signedRows, grown.columns).get('net'), 30, 'a two-way column scales by the largest magnitude');
   const netColumn = grown.columns.find(col => col.key === 'net')!;
   const loss = signedRows.find(item => item.kind === 'data' && item.key === 'A');
   assert.equal(loss?.kind === 'data' ? resolveCellPaintModel(loss.row.cells.net, netColumn, 1, new Map([['net', 30]])).bar.fraction : null, 1, 'a loss draws its bar at its magnitude');
@@ -2103,12 +2110,12 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     { key: 'A', name: 'A', cells: { name: { value: knownValue('A') }, oil: { value: knownValue(-40) } } },
     { key: 'B', name: 'B', cells: { name: { value: knownValue('B') }, oil: { value: knownValue(12) } } },
   ] }, shadedSettings);
-  assert.equal(computeColumnMaxima(shadedRows, shadedLayout.columns, 1).get('oil'), 40, 'a shaded column scales imports and exports by the largest magnitude');
+  assert.equal(computeColumnMaxima(shadedRows, shadedLayout.columns).get('oil'), 40, 'a shaded column scales imports and exports by the largest magnitude');
 
   const extraProjection = declareTableProjection<{ rows: { id: string; group: boolean }[] }, { id: string; group: boolean }, Record<string, never>>({
     kind: 'test-cell-extras',
     columns: [
-      { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, field: 'id', text: true, extra: row => ({ subtext: `${row.id} stored`, flags: [{ tag: 'GER' }, { tag: 'SOV', dimmed: true }] }) },
+      { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, field: 'id', text: true, extra: row => ({ subtext: `${row.id} stored`, flags: [{ tag: 'GER', art: PENDING_ART }, { tag: 'SOV', art: PENDING_ART, dimmed: true }] }) },
       { key: 'total', label: 'Total', as: 'plain', offered: ['plain'], priority: 1, numeric: true, value: () => notApplicable('Group rows only'), extra: row => (row.group ? {} : { blank: true }) },
     ],
     rows: reply => ({ rows: reply.rows }),
@@ -2123,7 +2130,7 @@ test('cell kinds for converted tables: an item column takes the spare width, two
   const grid = gridContext(400, 120);
   const extraSettings = tableSettingsOf(undefined, extraModel.columns, { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
   const extraLayout = layoutFamilyTable(buildColumnLayouts(extraModel.columns, extraSettings, { name: 200, total: 120 }), 400);
-  drawFamilyTable(grid.ctx as unknown as CanvasRenderingContext2D, { layout: extraLayout, rows: resolveTableRows(extraModel, extraSettings), settings: extraSettings, hour: 1, width: 400, height: 120, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 1, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), icons: new Map(), dpr: 1 });
+  drawFamilyTable(grid.ctx as unknown as CanvasRenderingContext2D, { layout: extraLayout, rows: resolveTableRows(extraModel, extraSettings), settings: extraSettings, hour: 1, width: 400, height: 120, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 1, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), dpr: 1 });
   const texts = [...grid.marks.values()];
   assert.equal(texts.filter(t => t === '—').length, 1, 'the group row shows its not-applicable dash; the blank child cell draws nothing');
 
@@ -2177,7 +2184,7 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     key: 'org', name: named, tooltipAction: 'Open its organisation window',
     cells: { pic: { value: knownValue(named), iconSlot: true }, name: { value: knownValue(named) }, size: { value: zeroValue(0) }, spare: { value: knownValue('stray') }, view: { value: knownValue('View'), actionLabel: 'View' } },
   }] }, tableSettingsOf(undefined, withAction, { density: 'normal', sort: { column: 'size', direction: 'descending' } }));
-  const tip = deriveTableTooltip(tipRows, 'org', withAction, 1)!;
+  const tip = deriveTableTooltip(tipRows, 'org', withAction)!;
   assert.equal(tip.title, named, 'the name column, not the picture before it, is the title');
   assert.deepEqual(tip.rows.map(row => row.label), ['Size'], 'no unlabelled row, no repeated name, no action word');
   assert.equal(tip.note, 'Open its organisation window', 'an action column contributes only its hint');
@@ -2252,7 +2259,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
     cells: {
       date: { value: knownValue(hour), ...(opts.boundedDate ? { boundedDate: opts.boundedDate } : {}) },
       kind: { value: knownValue('dec'), iconSlot: true, artShape: 'square', artName: 'Decision' },
-      country: { value: knownValue('GER'), flags: [{ tag: 'GER' }] },
+      country: { value: knownValue('GER'), flags: [{ tag: 'GER', art: PENDING_ART }] },
       item: {
         value: knownValue(opts.title ?? key),
         ...(opts.inlinePrefix ? { inlinePrefix: opts.inlinePrefix } : {}),
@@ -2314,10 +2321,10 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
   assert.ok(queueGeom.tops[deep.first + deep.count - TABLE_WINDOW_OVERSCAN - 1]! < queueGeom.tops[100]! + 200, 'and ends at the last row the viewport shows');
   const gapTop = geom.tops[6]!;
   assert.deepEqual(hitFamilyTable(grown, flatExpanded, { x: 40, y: gapTop + 10 }, 36, 0, 0, false, 0, undefined, undefined, undefined, geom), { kind: 'row', rowKey: 'gap:1' });
-  const gapTip = deriveTableTooltip(flatExpanded, 'gap:1', logColumns, DAY3 + 12);
+  const gapTip = deriveTableTooltip(flatExpanded, 'gap:1', logColumns);
   assert.equal(gapTip?.title, 'Not recorded');
   assert.equal(gapTip?.detail, 'Collector detached');
-  const boundedTip = deriveTableTooltip(flatExpanded, 'h3', logColumns, DAY3 + 12);
+  const boundedTip = deriveTableTooltip(flatExpanded, 'h3', logColumns);
   assert.ok(boundedTip?.rows.some(r => r.valueState?.text?.startsWith('By ')), 'bounded date hover carries By prefix and hour');
   const audit = deriveTableAudit({ model: slottedModel, flatRows: flatExpanded, visibleColumns: grown.columns });
   assert.ok(audit.some(r => r.key === 'gap:1:gap'));
@@ -2842,15 +2849,15 @@ test('the audit compares which art a cell shows, never whether its bytes have ar
     available: true, recordedSeconds: 3661, playingSeconds: 2400, pausedSeconds: 1261, complete: true, warnings: [],
   } as CampaignClockReply]]) }), {});
   const column = CLOCK_COLUMNS[0]!.key;
-  const withArt = (art: { readonly icon?: string; readonly iconPending?: boolean }): TableModel => ({
+  const withArt = (art: ArtResult, artKey = JSON.stringify(['sprite', 'GFX_counter', 0, null, false])): TableModel => ({
     ...base,
-    rows: base.rows.map(row => ({ ...row, cells: { ...row.cells, [column]: { ...row.cells[column]!, iconSlot: true, iconArt: JSON.stringify(['sprite', 'GFX_counter', 0, null, false]), ...art } } })),
+    rows: base.rows.map(row => ({ ...row, cells: { ...row.cells, [column]: { ...row.cells[column]!, iconSlot: true, artKey, art } } })),
   });
   const audit = (model: TableModel) => deriveTableAudit({ model, flatRows: resolveTableRows(model, settings), visibleColumns: layouts });
-  const arrived = audit(withArt({ icon: 'http://artwork.localhost/0123456789abcdef0123456789abcdef.png' }));
-  const arriving = audit(withArt({ iconPending: true }));
+  const arrived = audit(withArt(readyArt('http://artwork.localhost/0123456789abcdef0123456789abcdef.png')));
+  const arriving = audit(withArt(PENDING_ART));
   assert.equal(pictureError('table', arrived, { values: new Map(arriving.map(row => [row.key, row.value!])), ordered: true }), null);
-  const other = audit({ ...base, rows: base.rows.map(row => ({ ...row, cells: { ...row.cells, [column]: { ...row.cells[column]!, iconSlot: true, iconArt: JSON.stringify(['sprite', 'GFX_other', 0, null, false]), iconPending: true } } })) });
+  const other = audit(withArt(PENDING_ART, JSON.stringify(['sprite', 'GFX_other', 0, null, false])));
   assert.notEqual(pictureError('table', arrived, { values: new Map(other.map(row => [row.key, row.value!])), ordered: true }), null, 'a different picture is still a difference');
 });
 
@@ -2886,12 +2893,12 @@ test('cold table art and flag slots waiting behind the fetch concurrency limit p
           value: knownValue(`Country ${i + 1}`),
           country: `T0${i + 1}`,
           iconSlot: true,
-          icon: flagUrls[i]!,
+          art: readyArt(flagUrls[i]!),
         },
         badge: {
           value: knownValue(`Icon ${i + 1}`),
           iconSlot: true,
-          icon: iconUrls[i]!,
+          art: readyArt(iconUrls[i]!),
           artName: `Icon ${i + 1}`,
         },
       },
@@ -2930,7 +2937,6 @@ test('cold table art and flag slots waiting behind the fetch concurrency limit p
     glideDuration: 0,
     glide: NO_GLIDE,
     artCache,
-    icons: artCache.map,
     iconVersion: artCache.version,
     dpr: 1,
   });
@@ -2945,8 +2951,8 @@ test('cold table art and flag slots waiting behind the fetch concurrency limit p
       key: 'M1',
       name: 'No Art',
       cells: {
-        country: { value: knownValue('No Art'), country: 'MIS', iconSlot: true },
-        badge: { value: knownValue('Missing'), iconSlot: true, artName: 'Missing' },
+        country: { value: knownValue('No Art'), country: 'MIS', iconSlot: true, art: productArt({ status: 'confirmedMissing', reason: 'no layer holds it' }) },
+        badge: { value: knownValue('Missing'), iconSlot: true, artName: 'Missing', art: productArt({ status: 'confirmedMissing', reason: 'no layer holds it' }) },
       },
     }],
   }, settings);
@@ -2968,11 +2974,10 @@ test('cold table art and flag slots waiting behind the fetch concurrency limit p
     glideDuration: 0,
     glide: NO_GLIDE,
     artCache,
-    icons: artCache.map,
     iconVersion: artCache.version,
     dpr: 1,
   });
-  assert.ok(roundRectCalls > 0, 'confirmed-unavailable table art and flag slots still paint the hatched missing box');
-  assert.ok(texts.includes('MIS'), 'confirmed-unavailable flag slot still paints the country tag');
+  assert.ok(roundRectCalls > 0, 'confirmed-missing table art and flag slots paint the hatched missing box');
+  assert.ok(texts.includes('MIS'), 'a confirmed-missing flag slot paints the country tag');
   artCache.dispose();
 });

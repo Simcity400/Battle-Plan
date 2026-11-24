@@ -1,3 +1,4 @@
+import { unavailableArt } from '../../families/art/types.ts';
 import { CHART_MEASURE_COLOURS, readableColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
@@ -47,7 +48,7 @@ export function projectIntelCoverage(readView: BoundedReadView, options: IntelCo
   const readHour = reply.readHour ?? hour;
   const shown = displayed.map(country => {
     const tag = country.tag ?? null;
-    return { tag, resolved: tag ? resolveEntityFromReadView(readView, 'country', tag, hour, tag, null, options.surface) : { label: 'Country not recorded', validFrom: -Infinity } };
+    return { tag, resolved: tag ? resolveEntityFromReadView(readView, 'country', tag, hour, tag, null, options.surface) : { label: 'Country not recorded', flag: unavailableArt('The country has no tag at this date'), validFrom: -Infinity } };
   });
   const labelAt = labelsAtReadings(readView, shown.map(({ tag, resolved }) => ({ tag, label: resolved.label, validFrom: resolved.validFrom })), [readHour]);
   const entities: MatrixAxisEntity[] = displayed.map((country, index) => {
@@ -58,8 +59,7 @@ export function projectIntelCoverage(readView: BoundedReadView, options: IntelCo
       shortLabel: tag ?? '?',
       ...(tag ? { tag } : {}),
       ...('nameMissing' in resolved && resolved.nameMissing ? { nameMissing: resolved.nameMissing } : {}),
-      flag: 'flag' in resolved ? resolved.flag ?? null : null,
-      flagPending: 'pending' in resolved && resolved.pending === true,
+      ...(resolved.flag ? { flag: resolved.flag } : {}),
       meta: { countryId: country.id },
     };
   });

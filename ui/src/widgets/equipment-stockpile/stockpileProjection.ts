@@ -112,8 +112,9 @@ function variantRow(readView: BoundedReadView, parent: string, variant: StockVar
     cells: {
       equipment: {
         value: knownValue(name),
-        ...(origin?.icon ? { icon: origin.icon } : {}),
-        ...(origin?.iconPending ? { iconPending: true } : {}),
+        ...(origin?.art ? { art: origin.art } : {}),
+        ...(origin?.artKey ? { artKey: origin.artKey } : {}),
+        ...(variant.origin ? { country: variant.origin } : {}),
         ...(origin ? { iconSlot: true } : {}),
       },
       net: { value: notApplicable('Shown for each type'), blank: true },
@@ -135,7 +136,7 @@ function typeRow(readView: BoundedReadView, row: StockTypeRow, art: ReadonlyMap<
     key: row.key,
     name,
     cells: {
-      picture: artKindCell(readView, urlArtHandle(picture?.icon ?? null), 'equipment', name),
+      picture: artKindCell(readView, urlArtHandle(picture?.icon ?? null), 'equipment', name, picture?.reason ?? 'Equipment picture unavailable'),
       equipment: { value: row.name ? knownValue(row.name) : notRecorded(name), subtext: storedText(row.stored) },
       net: { value: row.share === null ? notApplicable(row.balance.missing ?? 'No need to measure against') : knownValue(row.share), stockpile: stockpileCell(row, ai) },
       sum: { value: row.balance.raw === null ? notRecorded(row.balance.missing ?? 'Balance not recorded') : knownValue(BigInt(row.balance.raw)), stockpile: stockpileCell(row, ai) },

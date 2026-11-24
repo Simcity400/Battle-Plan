@@ -7,7 +7,7 @@ import type { StatusMarkKind } from '../../draw/kit.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artState, newIdentityBoundary } from '../../families/table/identityCell.ts';
+import { cellArt, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import {
   LOG_TABLE_BASE,
   logCountryCell,
@@ -243,7 +243,7 @@ function buildRaidRow(
           iconSlot: true,
           artShape: 'square',
           artName: itemTitle,
-          ...artState(readView, artHandle),
+          ...cellArt(readView, artHandle, row.iconMissing ?? 'Raid icon not recorded'),
         }
       : {
           value: notRecorded(row.iconMissing ?? 'Raid icon not recorded'),

@@ -86,8 +86,7 @@ export const heatMatrixLane: LaneFamily<FamilyHeatMatrixBinding, HeatMatrixModel
       scrollTop: frame.binding.scrollTop,
       hoveredCell: hoveredCellOf(frame.inspect),
       focusedCell: parseMatrixCellKey(frame.binding.focusedKey ?? null),
-      artProvider: frame.artProvider,
-      identityIndex: frame.index,
+      artCache: frame.art,
     });
     return false;
   },
@@ -137,5 +136,5 @@ export const heatMatrixLane: LaneFamily<FamilyHeatMatrixBinding, HeatMatrixModel
     const window = shown(frame);
     return deriveMatrixAudit(frame.model, { firstRow: window.firstRow, endRow: window.endRow, firstCol: window.firstCol, endCol: window.endCol });
   },
-  visibleArt: frame => collectVisibleMatrixArt(frame.model, shown(frame), frame.index),
+  visibleArt: frame => collectVisibleMatrixArt(frame.model, shown(frame)),
 };

@@ -1,3 +1,4 @@
+import { unavailableArt } from '../../families/art/types.ts';
 import { CHART_MEASURE_COLOURS, colour, readableColour } from '../../charts/palette.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { Lineage } from '../../dashboard/identity.ts';
@@ -117,7 +118,7 @@ export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerF
         ...(heading ? {} : { depth: 1, parentKey: headerKey }),
         label: name,
         subtitle: source.label,
-        ...(look ? { flag: look.flag, flagTag: look.tag } : { flagTag: '?' }),
+        ...(look ? { flag: look.flag, flagTag: look.tag } : { flag: unavailableArt('The country is not recorded at this hour'), flagTag: '?' }),
         ...(heading && look?.colour ? { ruleColor: look.colour } : {}),
         spans,
         auditValue: `${name}|${source.label}`,

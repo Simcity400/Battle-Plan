@@ -1,4 +1,5 @@
-import type { ArtHandle } from '../../families/contract.ts';
+import { unavailableArt } from '../../families/art/types.ts';
+import type { ArtResult } from '../../families/contract.ts';
 import type { TimelineLane } from '../../families/timeline/model.ts';
 import type { DiplomacyKind, DiplomacyPact, DiplomacyPactsReply } from '../../generated/dashboard';
 
@@ -82,7 +83,7 @@ export function agreementsOf(pacts: readonly Pact[], tag: string, kinds: Readonl
 export interface AgreementLaneMeta { readonly agreement: Agreement; readonly title: string; readonly mutual: boolean }
 export interface AgreementText {
   readonly name: string;
-  readonly country: (tag: string, hour: number) => { readonly name: string; readonly flag: ArtHandle | null };
+  readonly country: (tag: string, hour: number) => { readonly name: string; readonly flag: ArtResult };
   readonly kindName: (kind: string) => string;
   readonly colour: (kind: string) => string;
 }
@@ -112,7 +113,7 @@ export function agreementLanes(agreements: readonly Agreement[], ended: boolean,
       if (!side.items.length) continue;
       if (side.label) lanes.push({ key: `side:${kind}:${side.label}`, kind: 'heading', depth: 1, parentKey: kindKey, label: side.label, spans: [], auditValue: side.label });
       for (const item of [...side.items].sort(order)) {
-        const look = item.partner === null ? { name: 'Country not recorded', flag: null } : text.country(item.partner, live(item) ? hour : Math.min(hour, item.lastSeen));
+        const look = item.partner === null ? { name: 'Country not recorded', flag: unavailableArt('The partner country is not recorded') } : text.country(item.partner, live(item) ? hour : Math.min(hour, item.lastSeen));
         const open = live(item);
         const meta: AgreementLaneMeta = { agreement: item, title: spec?.one ?? title, mutual: !!spec && !spec.out };
         const status = open ? 'In force' : item.state.state === 'gone' ? 'Ended' : 'Not recorded';
@@ -122,7 +123,8 @@ export function agreementLanes(agreements: readonly Agreement[], ended: boolean,
           depth: 1,
           parentKey: kindKey,
           label: look.name,
-          ...(item.partner !== null ? { flag: look.flag, flagTag: item.partner } : { flagTag: '?' }),
+          flag: look.flag,
+          flagTag: item.partner ?? '?',
           spans: [{
             id: 'bar',
             firstHour: item.since,

@@ -1,3 +1,4 @@
+import { unavailableArt } from '../../families/art/types.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
@@ -68,9 +69,7 @@ function buildChoiceRow(
   const chosenLine = lines.find(line => line.chosen) ?? null;
 
   const artHandle = artwork ? urlArtHandle(card.item?.icon ?? null) : null;
-  const artResult = artHandle ? readView.art(artHandle) : null;
-  const icon = artResult?.status === 'ready' ? artResult.url : undefined;
-  const iconPending = artResult?.status === 'pending' ? true : undefined;
+  const art = artHandle ? readView.art(artHandle) : unavailableArt('The product drew no icon for this item');
 
   const countryEntries: { readonly tag: string | null; readonly missingLabel?: string }[] = [
     { tag: card.country, missingLabel: 'Country not identified' },
@@ -114,8 +113,8 @@ function buildChoiceRow(
     title: rawTitle,
     countryTag: card.country,
     countryName,
-    flagUrl: countryFlag?.icon,
-    flagPending: countryFlag?.pending,
+    flagUrl: countryFlag?.art.status === 'ready' ? countryFlag.art.url : undefined,
+    flagPending: countryFlag?.art.status === 'pending',
     item: card.item,
     chosenOrdinal: at.choice?.option ?? null,
     awaiting: open,
@@ -145,8 +144,7 @@ function buildChoiceRow(
       kind: artwork
         ? {
             value: rawTitle !== null ? knownValue(safeChoiceText) : notRecorded(reasons.nameMissing ?? 'Event picture not recorded'),
-            icon,
-            iconPending,
+            art,
             iconSlot: true,
             artShape: 'wide',
             artName: safeChoiceText,

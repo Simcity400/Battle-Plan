@@ -374,14 +374,15 @@ test('BoundedReadView rejects any read after displayed hour H across panels, hov
 
   assert.throws(() => view.who('country', 'GER', 101), FutureDataError);
 
-  const readyArtResult = view.art({ kind: 'flag', choice: 'ready-flag', size: 'panel' });
+  const readyHandle: ArtHandle = { kind: 'flag', choice: 'ready-flag', size: 'panel' };
+  const readyArtResult = view.art(readyHandle);
   assert.equal(readyArtResult.status, 'ready');
-  assert.equal(artDemands.length, 0);
+  assert.deepEqual(artDemands, [readyHandle], 'an address without its bytes is demanded, so the image is fetched');
 
   const pendingHandle: ArtHandle = { kind: 'flag', choice: 'pending-flag', size: 'panel' };
   const pendingArt = view.art(pendingHandle);
   assert.equal(pendingArt.status, 'pending');
-  assert.deepEqual(artDemands, [pendingHandle]);
+  assert.deepEqual(artDemands, [readyHandle, pendingHandle]);
 });
 
 test('coverage contract rejects row coverage on population forms and top/least on keyed forms', () => {
@@ -1358,7 +1359,7 @@ test('ArtHandle discriminated union covers flag, sprite, portrait, path, and url
   assert.deepEqual(identityResolveArgs, [3]);
 
   const spriteRes = view.art(handles[1]!);
-  assert.equal(spriteRes.status, 'pending');
+  assert.deepEqual([spriteRes.status, 'bitmap' in spriteRes], ['ready', false], 'a resolved sprite keeps its address before its bytes arrive');
   assert.equal(artDemandCount, 1);
 
   const portraitRes = view.art(handles[2]!);

@@ -67,7 +67,7 @@ export const designsProjection: TableProjection<DesignsProjectionOptions> = regi
         key: design.id,
         name: design.name ?? design.id,
         cells: {
-          kind: artKindCell(readView, urlArtHandle(image), 'equipment', design.name),
+          kind: artKindCell(readView, urlArtHandle(image), 'equipment', design.name, design.icon ? 'The product drew no icon for this design' : 'The design names no icon'),
           design: { value: design.name ? knownValue(design.name) : notRecorded(design.nameUnknown ?? 'Design name not recorded') },
           type: { value: design.typeName ? knownValue(design.typeName) : notRecorded(design.nameUnknown ?? 'Equipment type name not recorded') },
           state: { value: knownValue(obsolete ? 'Obsolete' : 'Current'), statusKind: obsolete ? 'ended' : 'running', sortValue: knownValue(obsolete ? 1 : 0) },

@@ -1,7 +1,8 @@
 import { mix } from '../../shell/appearance/color.ts';
 import { readableColour, reservedGrey } from '../../charts/palette.ts';
-import type { ArtHandle, BoundedReadView, EntityKind } from '../contract.ts';
-import { flagArtHandle } from '../art/provider.ts';
+import type { BoundedReadView, EntityKind } from '../contract.ts';
+import { flagChoiceArt } from '../art/provider.ts';
+import type { ArtResult } from '../art/types.ts';
 
 export interface HeatPart {
   readonly id: string;
@@ -73,7 +74,7 @@ export interface ResolvedEntityPresentation {
   readonly nameFailed?: { readonly reason: string; readonly retryable: boolean };
   readonly pending?: boolean;
   readonly color?: string;
-  readonly flag?: ArtHandle | null;
+  readonly flag?: ArtResult;
   readonly validFrom: number;
 }
 
@@ -109,14 +110,7 @@ export function resolveEntityFromReadView(
     color = surface ? readableOn(identity.colour.value, surface) : identity.colour.value;
   }
 
-  let flag: ArtHandle | null | undefined;
-  if (kind === 'country') {
-    if (identity.flagChoice?.status === 'ready') {
-      flag = flagArtHandle(identity.flagChoice.value, 'panel');
-    } else {
-      flag = null;
-    }
-  }
+  const flag = kind === 'country' ? flagChoiceArt(readView, identity.flagChoice, 'panel') : undefined;
 
   return {
     label,

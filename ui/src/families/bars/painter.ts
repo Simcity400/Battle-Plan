@@ -7,7 +7,6 @@ import {
   barCornerRadius,
   contrastInkForFill,
   drawShareBar,
-  drawArtSlot,
   drawBar,
   drawLegendStrip,
   drawMissingMark,
@@ -28,10 +27,9 @@ import {
   rowGripBox,
   rowRemoveBox,
 } from '../../draw/kit.ts';
-import { drawMediaSlot, toArtSlotState, urlToArt } from '../art/adapters.ts';
+import { drawMediaSlot } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
-import type { ArtResult } from '../art/types.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import { formatCompactScalar, formatShare, formatValueState, notRecordedLabel } from '../valueFormat.ts';
 import { mix } from '../../shell/appearance/color.ts';
@@ -55,9 +53,6 @@ export interface BarsGlideOffset {
   readonly startedAt: number;
 }
 
-export interface BarsIconLookup {
-  get(url: string): ImageBitmap | null | undefined;
-}
 
 export interface DrawFamilyBarsInput {
   readonly model: BarsModel;
@@ -67,7 +62,6 @@ export interface DrawFamilyBarsInput {
   readonly now: number;
   readonly glideDuration: number;
   readonly glide?: ReadonlyMap<string, BarsGlideOffset>;
-  readonly icons?: BarsIconLookup;
   readonly artCache?: LaneArtCache;
   readonly inspectedKey?: string | null;
   readonly selectedKey?: string | null;
@@ -246,13 +240,13 @@ function drawAxis(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: Fa
 }
 
 export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsPaintStats {
-  const { model, layout, theme, scrollTop, now, glideDuration, glide, icons, artCache, inspectedKey, selectedKey, focusedKey } = input;
+  const { model, layout, theme, scrollTop, now, glideDuration, glide, artCache, inspectedKey, selectedKey, focusedKey } = input;
   const tokens = resolveKitTokens(theme);
   ctx.clearRect(0, 0, layout.width, layout.height);
 
   drawHeader(ctx, model, layout, theme);
   if (model.captionSides?.length && layout.headerHeight > 0) {
-    drawCaptionSides(ctx, model.captionSides, layout.width - BARS_PAD_X, layout.headerTop + layout.headerHeight / 2, theme, { ...(icons ? { icons } : {}), ...(artCache ? { artCache } : {}) });
+    drawCaptionSides(ctx, model.captionSides, layout.width - BARS_PAD_X, layout.headerTop + layout.headerHeight / 2, theme, artCache);
   }
   if (layout.showAxis) drawAxis(ctx, model, layout, theme);
 
@@ -310,7 +304,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
       drawRowHairline(ctx, layout.bodyLeft + BARS_PAD_X, layout.width - BARS_PAD_X, y + rowH - 1, theme, 'normal');
     }
 
-    drawMediaSlot(ctx, layout.bodyLeft + BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, { icons, artCache, radius: 2 });
+    drawMediaSlot(ctx, layout.bodyLeft + BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, { artCache, radius: 2 });
 
     if (layout.nameWidth > 0) {
       const regionTools = row.region !== undefined && (isHovered || isFocused);
@@ -495,7 +489,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           { align: 'right', color: right.labelMissing ? theme.muted : theme.text },
         );
         if (rightName.truncated) truncatedKeys.push(right.key);
-        drawMediaSlot(ctx, layout.width - BARS_PAD_X - layout.mediaWidth, middleY, layout.mediaWidth, layout.mediaHeight, right.media, theme, { icons, artCache, radius: 2 });
+        drawMediaSlot(ctx, layout.width - BARS_PAD_X - layout.mediaWidth, middleY, layout.mediaWidth, layout.mediaHeight, right.media, theme, { artCache, radius: 2 });
       }
       continue;
     }
@@ -640,23 +634,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
       }
       ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
       ctx.fillStyle = row.readout.tone === 'shortage' ? tokens.shortage : theme.text;
-      const primaryW = textWidth(ctx, row.readout.primary);
       ctx.fillText(ellipsise(row.readout.primary, Math.max(12, cursorRight - layout.readoutX), s => textWidth(ctx, s)), cursorRight, middleY);
-      if (row.readout.iconUrl || row.readout.iconMissing) {
-        const iconSize = 16;
-        const iconX = cursorRight - primaryW - iconSize - 5;
-        if (iconX >= layout.readoutX) {
-          const res = urlToArt(row.readout.iconUrl, { pending: !row.readout.iconMissing && !row.readout.iconUrl });
-          const resolvedArt: ArtResult = artCache && res.status === 'ready' ? artCache.resolve(res) : res;
-          const fallbackBmp = row.readout.iconUrl ? icons?.get(row.readout.iconUrl) : undefined;
-          const artState = toArtSlotState(
-            resolvedArt.status === 'ready' && !resolvedArt.bitmap && fallbackBmp
-              ? { ...resolvedArt, bitmap: fallbackBmp }
-              : resolvedArt,
-          );
-          drawArtSlot(ctx, iconX, Math.round(middleY - iconSize / 2), iconSize, iconSize, artState, theme, { radius: 2 });
-        }
-      }
       ctx.restore();
     } else if (formatted) {
       ctx.save();
@@ -799,7 +777,7 @@ export function collectVisibleBarsIcons(model: BarsModel, layout: BarsLayout, sc
   for (let i = first; i < last; i++) {
     const item = model.rows[i]!;
     if (item.kind !== 'data') continue;
-    items.push(item.media, item.rightSide?.media, item.readout?.iconUrl, item.target?.iconUrl);
+    items.push(item.media, item.rightSide?.media);
   }
   for (const side of model.captionSides ?? []) items.push(side.media);
   return collectArtUrls(items);

@@ -82,7 +82,7 @@ function drawDuel(ctx: Canvas2D, row: BarsPickRow, x: number, y: number, track: 
   if (DUEL_WIDTH - leftWidth > 0) drawBar(ctx, x + leftWidth, y, DUEL_WIDTH - leftWidth, DUEL_HEIGHT, row.right.color ?? unknown, 'right');
 }
 
-export function drawCaptionSides(ctx: Canvas2D, sides: readonly BarsCaptionSide[], right: number, middle: number, theme: FamilyTheme, art?: { readonly icons?: { get(url: string): ImageBitmap | null | undefined }; readonly artCache?: LaneArtCache }): void {
+export function drawCaptionSides(ctx: Canvas2D, sides: readonly BarsCaptionSide[], right: number, middle: number, theme: FamilyTheme, artCache?: LaneArtCache): void {
   const flagW = 20;
   const flagH = 13;
   const label = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
@@ -103,7 +103,7 @@ export function drawCaptionSides(ctx: Canvas2D, sides: readonly BarsCaptionSide[
     x -= piece.width;
     const flagX = piece.at === pieces.length - 1 ? x + piece.labelW + 5 + piece.valueW + 6 : x;
     const textX = piece.at === pieces.length - 1 ? x : x + flagW + 6;
-    drawMediaSlot(ctx, flagX, middle, flagW, flagH, piece.side.media, theme, { ...(art?.icons ? { icons: art.icons } : {}), ...(art?.artCache ? { artCache: art.artCache } : {}), radius: 2 });
+    drawMediaSlot(ctx, flagX, middle, flagW, flagH, piece.side.media, theme, { artCache, radius: 2 });
     ctx.font = label;
     ctx.fillStyle = theme.muted;
     ctx.fillText(piece.side.label, textX, middle);
