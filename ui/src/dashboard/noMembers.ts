@@ -1,6 +1,5 @@
 export const NO_MEMBERS = {
   ever: 'This group has no members in this campaign.',
-  end: 'This group has no members at the end of this campaign.',
   hour: 'This group has no members at this moment.',
   date: 'This group has no members at this date.',
 } as const;
