@@ -11,16 +11,14 @@ import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
-import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
-import { DeclaredFamilyWidget, DetailWindowHost } from '../../families/host/index.ts';
+import { DetailWindowHost } from '../../families/host/index.ts';
+import { FamilyWidget } from '../../families/host/registry.tsx';
 import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
-import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import type { InstalledAction } from '../../families/plan.ts';
 import type { FactoryPartsReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import { COUNT_MODES, countMode, factoryMeasure, factoryParts, partRows, validateFactoryGroups, validateFactoryParts } from './factoriesData.ts';
-import { factoriesLinesDeclaration } from './factoriesLinesProjection.ts';
-import { factoriesDeclaration, type FactoriesRowMeta } from './factoriesProjection.ts';
+import type { FactoriesRowMeta } from './factoriesProjection.ts';
 
 const NO_WARNINGS: string[] = [];
 const format = (raw: string, decimals: number) => formatRaw(raw, decimals);
@@ -48,14 +46,14 @@ function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pic
 }
 
 export default function FactoriesWidget(props: WidgetProps) {
-  const { widget, runtime, active, onDiagnostics, countrySlot } = props;
+  const { widget, runtime, active, onDiagnostics, countrySlot, manifestDeclaration } = props;
   const options = resolveOptions(OPTIONS, widget.options);
-  const view = (['race', 'lines', 'mix'].includes(String(options.view)) ? options.view : 'race') as RaceView;
+  const view = (['race', 'lines', 'mix'].includes(String(props.view)) ? props.view : 'race') as RaceView;
   const mode = countMode(options.count);
   const types = useMemo(() => contentSet(options.types), [options.types]);
-  const isBarsRace = view === 'race' && options.show !== 'breakdown';
-  const isLines = view === 'lines';
-  const isFamily = isBarsRace || isLines;
+  const isLines = manifestDeclaration?.family === 'time-chart';
+  const familyDeclaration = manifestDeclaration && (isLines || options.show !== 'breakdown') ? manifestDeclaration : undefined;
+  const isFamily = familyDeclaration !== undefined;
 
   const anchorRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
@@ -86,17 +84,17 @@ export default function FactoriesWidget(props: WidgetProps) {
     setDetail({ tag: rowMeta?.tag ?? action.subject, key: rowMeta?.key ?? action.subject, hour: gated });
   }, [gate, isLines]);
 
-  if (isFamily) {
+  if (familyDeclaration) {
     return (
       <div ref={anchorRef} className="fh-frame">
-        {isLines ? <DeclaredFamilyWidget {...props} view="lines" adapter={timeChartHostAdapter} declaration={factoriesLinesDeclaration} onActivate={onActivate} /> : <DeclaredFamilyWidget
+        <FamilyWidget
           {...props}
-          view="race"
-          adapter={barsHostAdapter}
-          declaration={factoriesDeclaration}
-          selectedKey={detail?.key ?? null}
+          family={familyDeclaration.family}
+          view={view}
+          declaration={familyDeclaration}
+          {...(isLines ? {} : { selectedKey: detail?.key ?? null })}
           onActivate={onActivate}
-        />}
+        />
         <DetailWindowHost
           open={detail !== null}
           subject={detail?.tag ?? null}
