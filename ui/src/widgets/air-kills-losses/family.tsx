@@ -9,7 +9,6 @@ import type { InstalledAction } from '../../families/plan.ts';
 import type { MilitaryAirRowMeta } from '../bombing-damage/militaryAirAt.ts';
 import { AirLossCausesDetail } from './AirLossCausesDetail.tsx';
 import { airKillsLossesDeclaration, airKillsLossesPairedDeclaration, airLossCausesDeclaration } from './airKillsLossesProjection.ts';
-import AirLossCountryChip from './AirLossCountryChip';
 
 const DECLARATIONS = { butterfly: airKillsLossesDeclaration, paired: airKillsLossesPairedDeclaration, breakdown: airLossCausesDeclaration } as const;
 type FamilyView = keyof typeof DECLARATIONS;
@@ -68,4 +67,4 @@ function AirKillsLossesFamilyWidget(props: WidgetProps) {
   );
 }
 
-export default { render: AirKillsLossesFamilyWidget, countryChip: AirLossCountryChip } satisfies WidgetRenderer;
+export default { render: AirKillsLossesFamilyWidget } satisfies WidgetRenderer;
