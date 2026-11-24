@@ -970,7 +970,6 @@ export interface TableAuditInput {
   readonly model: TableModel;
   readonly flatRows: readonly FlatTableRow[];
   readonly visibleColumns: readonly Pick<FamilyColumnLayout, 'key' | 'label' | 'display' | 'tone' | 'numeric' | 'valueFormat' | 'barEligible'>[];
-  readonly hiddenKeys?: ReadonlySet<string>;
   readonly rankShown?: boolean;
   readonly maxima?: ReadonlyMap<string, number>;
   readonly window?: { readonly first: number; readonly count: number };
@@ -978,17 +977,14 @@ export interface TableAuditInput {
   readonly rowAuditCache?: WeakMap<TableRow, { readonly sig: string; readonly rows: readonly AuditRow[] }>;
 }
 
-const EMPTY_HIDDEN: ReadonlySet<string> = new Set();
-
 export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
   const { model, flatRows, visibleColumns, window, countryColors, rowAuditCache } = input;
   const hour = model.hour;
-  const hiddenKeys = input.hiddenKeys ?? EMPTY_HIDDEN;
   const rankShown = input.rankShown === true;
   const maxima = input.maxima ?? computeColumnMaxima(flatRows, visibleColumns, hour);
   const hasData = flatRows.some(item => item.kind === 'data' || item.kind === 'gap' || item.kind === 'refused');
   const colsSig = rowAuditCache
-    ? `${visibleColumns.map(c => `${c.key}:${c.display}:${c.tone ?? ''}:${maxima.get(c.key) ?? ''}`).join('|')}|${[...hiddenKeys].join(',')}`
+    ? `${visibleColumns.map(c => `${c.key}:${c.display}:${c.tone ?? ''}:${maxima.get(c.key) ?? ''}`).join('|')}`
     : '';
   const out: AuditRow[] = [
     {
@@ -1092,7 +1088,7 @@ export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
     rowOut.push({
       row: item.key,
       key: `${item.key}:_tooltip`,
-      value: canonicalAuditData(deriveRowTooltip(item, model.columns, hiddenKeys, hour)),
+      value: canonicalAuditData(deriveRowTooltip(item, model.columns, hour)),
     });
     if (rowAuditCache && model.rowTimeBoundaries === false) {
       rowAuditCache.set(item.row, { sig: rowSig, rows: rowOut });
@@ -1199,7 +1195,6 @@ const BOUNDED_HOVER_PREFIX: Readonly<Record<DateBoundKind, string>> = {
 export function deriveRowTooltip(
   found: Extract<FlatTableRow, { kind: 'data' }>,
   allColumns: readonly TableColumnSpec[],
-  hiddenKeys: ReadonlySet<string>,
   hour: number,
 ): TooltipContent {
   const { row } = found;
@@ -1211,7 +1206,7 @@ export function deriveRowTooltip(
   const title = row.tooltipTitle ?? (firstCol?.cellKind === 'date' ? found.name : (firstText ?? found.name));
   for (let i = 0; i < allColumns.length; i++) {
     const col = allColumns[i]!;
-    if (i === 0 && col.cellKind !== 'date' && !hiddenKeys.has(col.key) && !row.tooltipExtra && (firstText === undefined || firstText === title)) continue;
+    if (i === 0 && col.cellKind !== 'date' && !row.tooltipExtra && (firstText === undefined || firstText === title)) continue;
     const cell = row.cells[col.key];
     if (!cell) continue;
     const resolved = resolveCellAtHour(cell, hour);
@@ -1250,7 +1245,6 @@ export function deriveTableTooltip(
   flatRows: readonly FlatTableRow[],
   itemKey: string,
   allColumns: readonly TableColumnSpec[],
-  hiddenKeys: ReadonlySet<string>,
   hour: number,
 ): TooltipContent | null {
   const found = flatRows.find(item => item.key === itemKey);
@@ -1272,7 +1266,7 @@ export function deriveTableTooltip(
     };
   }
   if (found.kind !== 'data') return null;
-  return deriveRowTooltip(found, allColumns, hiddenKeys, hour);
+  return deriveRowTooltip(found, allColumns, hour);
 }
 
 const pathPartsCache = new Map<string, readonly string[]>();

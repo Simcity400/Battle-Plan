@@ -25,8 +25,8 @@ export const TEMPLATE_COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'fill', label: 'Equipment fill', as: 'meterBefore', tone: 'grey', offered: OFFERED.number },
   { key: 'short', label: 'Types short', as: 'faint', tone: 'grey', offered: OFFERED.number },
 ];
-export const TYPE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'tooltip', sort: { column: 'missing', direction: 'descending' } };
-export const TEMPLATE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'tooltip', sort: { column: 'fill', direction: 'ascending' } };
+export const TYPE_BASE: TableBase = { density: 'normal', barsBehind: 'all', sort: { column: 'missing', direction: 'descending' } };
+export const TEMPLATE_BASE: TableBase = { density: 'normal', barsBehind: 'all', sort: { column: 'fill', direction: 'ascending' } };
 export const TYPE_TABLE_KEY = 'equipmentTable';
 export const TEMPLATE_TABLE_KEY = 'templateTable';
 

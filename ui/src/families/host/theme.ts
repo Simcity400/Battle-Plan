@@ -82,16 +82,19 @@ export function useFamilyTheme(
     reducedMotion: reducedMotionEnabled(),
   }));
 
+  const snapRef = useRef(snap);
+  snapRef.current = snap;
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const refresh = () => {
       const nextTheme = readFamilyTheme();
       const nextReduced = reducedMotionEnabled();
-      setSnap(prev => (
-        prev.reducedMotion === nextReduced && sameFamilyTheme(prev.baseTheme, nextTheme)
-          ? prev
-          : { baseTheme: nextTheme, reducedMotion: nextReduced }
-      ));
+      const shown = snapRef.current;
+      if (shown.reducedMotion === nextReduced && sameFamilyTheme(shown.baseTheme, nextTheme)) return;
+      const next = { baseTheme: nextTheme, reducedMotion: nextReduced };
+      snapRef.current = next;
+      setSnap(next);
     };
     const stopTokens = subscribeTokens(refresh);
     const cleanups: (() => void)[] = [stopTokens];
