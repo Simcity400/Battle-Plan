@@ -21,10 +21,12 @@ use content_reader_military::{
     industrial_organisations::{self, Database as OrganisationDatabase, policies::Policy},
     mio_traits::{self, Bonus, TraitName, Tree, is_production_stat},
 };
-use content_reader_script::equipment_stats;
 use dashboard_text::metadata::link_slot;
 use content_reader_layers::content::ResolvedContent;
+use dashboard_effects::effect_description::{Content, Context, MioText, mio_text};
+use content_reader_parser::parser::Item;
 use dashboard_text::scripted_text::{EventScopes, ScriptedContent, ScriptedText};
+use dashboard_text::triggers::{Evaluator, OrganisationCondition, Undecided};
 use replay::campaign::SeekResult;
 use replay_frame::frame::DecodedFrame;
 use std::cell::RefCell;
@@ -70,6 +72,7 @@ const REQUIRED_TABLES: &[TableId] = &[
     TableId::CountryLinks,
     TableId::CountryAppearance,
     TableId::LexicalTokens,
+    TableId::ModifierDefinitions,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -202,6 +205,7 @@ pub fn history_lists(entries: &[HistoryEntry]) -> [HistoryList<'_>; 2] {
 pub enum TraitStatus {
     Unlocked,
     Queued(usize),
+    Available,
     Locked,
     Unknown(String),
 }
@@ -664,6 +668,50 @@ impl<'a> Loc<'a> {
         }
     }
 
+    pub fn mio_lines(&self, text: MioText<'_>) -> Vec<Result<String, String>> {
+        let scripted = match &self.scripted {
+            Ok(scripted) => scripted,
+            Err(why) => return vec![Err(why.clone())],
+        };
+        let context = Context::new(
+            scripted,
+            self.localisation,
+            0,
+            "industrial organisation window",
+            Content::default(),
+        );
+        mio_text(text, &context, &self.scopes)
+            .into_iter()
+            .map(|line| line.map(|text| strip_markup(&text)))
+            .collect()
+    }
+
+    fn evaluate<R>(
+        &self,
+        work: impl FnOnce(&Evaluator<'_, '_>) -> Result<R, Undecided>,
+    ) -> Result<R, String> {
+        let scripted = self.scripted.as_ref().map_err(Clone::clone)?;
+        let world = scripted.trigger_world()?;
+        work(&Evaluator::new(world, None)).map_err(String::from)
+    }
+
+    pub fn trait_condition(
+        &self,
+        organisation: u64,
+        token: &str,
+        condition: OrganisationCondition,
+    ) -> Result<bool, String> {
+        self.evaluate(|evaluator| evaluator.trait_condition(organisation, token, condition))
+    }
+
+    pub fn organisation_conditions(
+        &self,
+        organisation: u64,
+        order: &[(OrganisationCondition, &[Item])],
+    ) -> Result<bool, String> {
+        self.evaluate(|evaluator| evaluator.organisation_conditions(organisation, order))
+    }
+
     pub fn date(&self, hour: i32) -> String {
         match self
             .scripted
@@ -756,61 +804,6 @@ fn format_signed_percent_fixed5(raw: i64) -> String {
     }
 }
 
-fn format_signed_value_fixed5(raw: i64) -> String {
-    let val = raw as f64 / FIXED5_SCALE;
-    if (val.fract()).abs() < 0.005 {
-        format!("{:+.0}", val)
-    } else {
-        format!("{:+.2}", val)
-    }
-}
-
-fn stat_is_percent(name: &str) -> bool {
-    if is_production_stat(name) || name.ends_with("_factor") || name.ends_with("_bonus") {
-        return true;
-    }
-    equipment_stats::stat_metadata()
-        .iter()
-        .find(|(keyword, _, _)| *keyword == name)
-        .is_some_and(|(_, _, is_pct)| *is_pct)
-}
-
-fn stat_label(name: &str, loc: &Loc<'_>) -> String {
-    let upper = name.to_ascii_uppercase();
-    let declared = equipment_stats::stat_metadata()
-        .iter()
-        .find(|(keyword, _, _)| *keyword == name)
-        .map(|(_, key, _)| (*key).to_owned());
-    let candidates = declared.into_iter().chain([
-        format!("BONUS_{upper}"),
-        format!("MODIFIER_{upper}"),
-        format!("STAT_COMMON_{upper}"),
-        format!("STAT_ARMY_{upper}"),
-        format!("STAT_NAVY_{upper}"),
-        format!("STAT_AIR_{upper}"),
-        upper,
-        name.to_owned(),
-    ]);
-    for candidate in candidates {
-        if loc.has(&candidate) {
-            return loc.get(&candidate).trim_end_matches(':').trim().to_owned();
-        }
-    }
-    loc.get(name)
-}
-
-fn format_bonus_plain(name: &str, raw: i64, loc: &Loc<'_>) -> String {
-    let value = if stat_is_percent(name) {
-        format_signed_percent_fixed5(raw)
-    } else {
-        format_signed_value_fixed5(raw)
-    };
-    loc.fill(
-        "INDUSTRIAL_ORG_DETAIL_MIO_MODIFIER_ITEM",
-        &[("NAME", &stat_label(name, loc)), ("VALUE", &value)],
-    )
-}
-
 fn modifier_item(loc: &Loc<'_>, name_key: &str, value: &str) -> String {
     loc.fill(
         "INDUSTRIAL_ORG_DETAIL_MIO_MODIFIER_ITEM",
@@ -822,22 +815,50 @@ fn format_points_line(loc: &Loc<'_>, value_str: &str) -> String {
     loc.fill("INDUSTRIAL_ORG_DETAIL_TRAIT_POINTS", &[("VALUE", value_str)])
 }
 
-fn aggregate_bonuses(
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BonusTarget {
+    Organisation,
+    Equipment(Vec<Vec<u8>>),
+    Group(Vec<u8>),
+}
+
+fn trait_target(trait_def: &TraitName) -> BonusTarget {
+    if trait_def.equipment_types.is_empty() {
+        return BonusTarget::Organisation;
+    }
+    let mut types: Vec<Vec<u8>> = trait_def
+        .equipment_types
+        .iter()
+        .map(|name| name.to_ascii_lowercase())
+        .collect();
+    types.sort();
+    types.dedup();
+    BonusTarget::Equipment(types)
+}
+
+pub fn aggregate_bonuses(
     details: &OrganisationDetails,
     tree: &Tree<'_>,
     policy: Option<&Policy>,
-) -> Vec<(String, i64)> {
-    let mut totals: Vec<(String, i64)> = Vec::new();
-    let mut add = |bonus: &Bonus| {
-        if let Some((_, existing)) = totals.iter_mut().find(|(k, _)| k == &bonus.name) {
-            *existing = existing.wrapping_add(bonus.value);
-        } else {
-            totals.push((bonus.name.clone(), bonus.value));
+) -> Vec<(BonusTarget, Vec<Bonus>)> {
+    let mut totals: Vec<(BonusTarget, Vec<Bonus>)> = vec![(BonusTarget::Organisation, Vec::new())];
+    let mut add = |target: BonusTarget, bonus: &Bonus| {
+        let index = match totals.iter().position(|(kept, _)| *kept == target) {
+            Some(index) => index,
+            None => {
+                totals.push((target, Vec::new()));
+                totals.len() - 1
+            }
+        };
+        let bonuses = &mut totals[index].1;
+        match bonuses.iter_mut().find(|kept| kept.name == bonus.name) {
+            Some(kept) => kept.value = kept.value.wrapping_add(bonus.value),
+            None => bonuses.push(bonus.clone()),
         }
     };
     if let Some(initial) = tree.initial {
         for bonus in &initial.bonuses {
-            add(bonus);
+            add(trait_target(initial), bonus);
         }
     }
     let unlocked: BTreeSet<String> = details
@@ -849,19 +870,47 @@ fn aggregate_bonuses(
     for trait_def in tree.traits {
         if unlocked.contains(&trait_def.token.to_ascii_lowercase()) {
             for bonus in &trait_def.bonuses {
-                add(bonus);
+                add(trait_target(trait_def), bonus);
             }
         }
     }
     if let Some(policy) = policy {
-        for (_, group_bonuses) in &policy.groups {
+        for (group, group_bonuses) in &policy.groups {
             for bonus in group_bonuses {
-                add(bonus);
+                add(BonusTarget::Group(group.to_ascii_lowercase()), bonus);
             }
         }
     }
-    totals.retain(|(_, value)| *value != 0);
+    for (_, bonuses) in &mut totals {
+        bonuses.retain(|bonus| bonus.value != 0);
+    }
+    totals.retain(|(_, bonuses)| !bonuses.is_empty());
     totals
+}
+
+fn equipment_label(types: &[Vec<u8>], loc: &Loc<'_>) -> String {
+    types
+        .iter()
+        .map(|name| loc.get(&String::from_utf8_lossy(name)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn shown_lines(lines: Vec<Result<String, String>>) -> impl Iterator<Item = String> {
+    lines.into_iter().map(|line| match line {
+        Ok(text) => text,
+        Err(reason) => format!("{NOT_RECORDED_VALUE} ({reason})"),
+    })
+}
+
+fn policy_lines(policy: &Policy, loc: &Loc<'_>) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (group, bonuses) in &policy.groups {
+        lines.push(loc.get(&String::from_utf8_lossy(group)));
+        lines.extend(shown_lines(loc.mio_lines(MioText::Bonuses(bonuses))));
+    }
+    lines.extend(shown_lines(loc.mio_lines(MioText::Modifiers(&policy.organisation_modifiers))));
+    lines
 }
 
 struct PreparedMio {
@@ -1107,7 +1156,7 @@ fn configure_detail_main(
                 tooltips.insert(
                     size_el.path.clone(),
                     GameWindowTooltip {
-                        title: loc.get("INDUSTRIAL_ORG_SIZE"),
+                        title: "Size".to_owned(),
                         body: Some(body),
                         detail: None,
                     },
@@ -1179,22 +1228,7 @@ fn configure_detail_main(
                         lines.push(format!("Policy cooldown: {days} days remaining"));
                     }
                     if let Some(def) = policy_def {
-                        for (_, group_bonuses) in &def.groups {
-                            for bonus in group_bonuses {
-                                lines.push(format_bonus_plain(
-                                    &bonus.name,
-                                    bonus.value,
-                                    loc,
-                                ));
-                            }
-                        }
-                        for modifier in def.organisation_modifiers.listed() {
-                            lines.push(format_bonus_plain(
-                                &modifier.name,
-                                modifier.value,
-                                loc,
-                            ));
-                        }
+                        lines.extend(policy_lines(def, loc));
                     }
                     tooltips.insert(
                         btn.path.clone(),
@@ -1208,18 +1242,6 @@ fn configure_detail_main(
             } else {
                 hide_by_name(instance, root, "open_policies_window/attached_policy_icon");
                 hide_by_name(instance, root, "open_policies_window/attached_policy_name");
-                set_text_by_name(
-                    instance,
-                    root,
-                    "open_policies_window/open_policies_text",
-                    loc.get("INDUSTRIAL_ORG_POLICY_BUTTON"),
-                );
-                set_text_by_name(
-                    instance,
-                    root,
-                    "open_policies_window/click_to_open_policies_text",
-                    loc.get("NONE"),
-                );
                 if let Some(btn) = find_direct(root, "open_policies_window/open_policies") {
                     tooltips.insert(
                         btn.path.clone(),
@@ -1306,12 +1328,6 @@ fn configure_detail_main(
             );
             hide_by_name(instance, root, "open_policies_window/attached_policy_icon");
             hide_by_name(instance, root, "open_policies_window/attached_policy_name");
-            set_text_by_name(
-                instance,
-                root,
-                "open_policies_window/open_policies_text",
-                loc.get("INDUSTRIAL_ORG_POLICY_BUTTON"),
-            );
             set_text_by_name(
                 instance,
                 root,
@@ -1660,8 +1676,29 @@ fn compose_aggregated_bonuses(
                         rows.separator(
                             loc.get("INDUSTRIAL_ORG_DETAIL_EQUIPMENT_BONUSES"),
                         )?;
-                        for (name, value) in totals {
-                            rows.bonus(format_bonus_plain(&name, value, loc))?;
+                        for (target, bonuses) in totals {
+                            match &target {
+                                BonusTarget::Organisation => {}
+                                BonusTarget::Equipment(types) => {
+                                    rows.separator(equipment_label(types, loc))?;
+                                }
+                                BonusTarget::Group(group) => {
+                                    rows.separator(loc.get(&String::from_utf8_lossy(group)))?;
+                                }
+                            }
+                            for line in loc.mio_lines(MioText::Bonuses(&bonuses)) {
+                                match line {
+                                    Ok(text) => rows.bonus(text)?,
+                                    Err(reason) => rows.modifier(
+                                        NOT_RECORDED_VALUE.to_owned(),
+                                        Some(GameWindowTooltip {
+                                            title: "Not available".to_owned(),
+                                            body: Some(format!("This bonus cannot be described: {reason}.")),
+                                            detail: None,
+                                        }),
+                                    )?,
+                                }
+                            }
                         }
                     }
                 }
@@ -1825,16 +1862,11 @@ fn format_trait_tooltip(
     loc: &Loc<'_>,
 ) -> GameWindowTooltip {
     let mut lines = vec![status_line.to_owned()];
-    for bonus in &trait_def.bonuses {
-        lines.push(format_bonus_plain(&bonus.name, bonus.value, loc));
+    if !trait_def.equipment_types.is_empty() {
+        lines.push(equipment_label(&trait_def.equipment_types, loc));
     }
-    for modifier in trait_def.organisation_modifiers.listed() {
-        lines.push(format_bonus_plain(
-            &modifier.name,
-            modifier.value,
-            loc,
-        ));
-    }
+    lines.extend(shown_lines(loc.mio_lines(MioText::Bonuses(&trait_def.bonuses))));
+    lines.extend(shown_lines(loc.mio_lines(MioText::TraitModifiers(trait_def))));
     GameWindowTooltip {
         title: name.to_owned(),
         body: Some(lines.join("\n")),
@@ -1960,7 +1992,33 @@ fn compose_trait_tree(
     ]);
     traits_box.before = tree_before;
 
-    let status_of = |token: &str| trait_status(&prepared.data.details, token);
+    let organisation = prepared.data.organisation_id;
+    let status_of = |token: &str| match trait_status(&prepared.data.details, token) {
+        TraitStatus::Locked => match loc.trait_condition(organisation, token, OrganisationCondition::Available) {
+            Ok(true) => TraitStatus::Available,
+            Ok(false) => TraitStatus::Locked,
+            Err(why) => TraitStatus::Unknown(format!(
+                "Not decided: whether the trait can be unlocked cannot be evaluated at this hour ({why})."
+            )),
+        },
+        recorded => recorded,
+    };
+    let mut hidden_why: HashMap<String, String> = HashMap::new();
+    let positions: Vec<(&TraitName, [i32; 2])> = positions
+        .into_iter()
+        .filter(|(trait_def, _)| {
+            match loc.trait_condition(organisation, &trait_def.token, OrganisationCondition::Visible) {
+                Ok(visible) => visible,
+                Err(why) => {
+                    hidden_why.insert(
+                        trait_def.token.to_ascii_lowercase(),
+                        format!("Not decided: whether the trait is visible cannot be evaluated at this hour ({why})."),
+                    );
+                    true
+                }
+            }
+        })
+        .collect();
 
     let pixel_of = |grid: [i32; 2]| -> [i32; 2] {
         [(grid[0] - min_x) * step_x, (grid[1] - min_y) * step_y]
@@ -2038,7 +2096,10 @@ fn compose_trait_tree(
 
     for (idx, (trait_def, grid)) in positions.iter().enumerate() {
         let px = pixel_of(*grid);
-        let status = status_of(&trait_def.token);
+        let status = match hidden_why.get(&trait_def.token.to_ascii_lowercase()) {
+            Some(why) => TraitStatus::Unknown(why.clone()),
+            None => status_of(&trait_def.token),
+        };
         let queue_pos = match status {
             TraitStatus::Queued(position) => Some(position),
             _ => None,
@@ -2046,7 +2107,7 @@ fn compose_trait_tree(
         let frame = match status {
             TraitStatus::Unlocked => Some(1),
             TraitStatus::Queued(_) => Some(2),
-            TraitStatus::Locked => Some(3),
+            TraitStatus::Available | TraitStatus::Locked => Some(3),
             TraitStatus::Unknown(_) => None,
         };
         let frame_sprite = if trait_def.special_background
@@ -2067,6 +2128,7 @@ fn compose_trait_tree(
             TraitStatus::Unknown(reason) => format!("Status: {NOT_RECORDED_VALUE} ({reason})"),
             TraitStatus::Unlocked => "Status: Unlocked".to_owned(),
             TraitStatus::Queued(pos) => format!("Status: Queued (#{pos})"),
+            TraitStatus::Available => "Status: Available".to_owned(),
             TraitStatus::Locked => "Status: Locked".to_owned(),
         };
 
@@ -2398,7 +2460,32 @@ fn compose_policy_list(
             });
         }
         RecordedDetails::Available(details) => {
-            let mut entries: Vec<Spelled> = details.allowed_policies.clone();
+            let mut undecided: HashMap<String, String> = HashMap::new();
+            let mut entries: Vec<Spelled> = details
+                .allowed_policies
+                .iter()
+                .filter(|entry| {
+                    let Some(token) = entry.text() else { return true };
+                    if details.policy.as_ref() == Some(*entry) {
+                        return true;
+                    }
+                    let Ok(policy) = org_db.policies.policy(token.as_bytes()) else { return true };
+                    match loc.organisation_conditions(
+                        prepared.data.organisation_id,
+                        &[(OrganisationCondition::Visible, policy.visible.as_slice())],
+                    ) {
+                        Ok(visible) => visible,
+                        Err(why) => {
+                            undecided.insert(
+                                token.to_ascii_lowercase(),
+                                format!("Not decided: whether this policy is visible cannot be evaluated at this hour ({why})."),
+                            );
+                            true
+                        }
+                    }
+                })
+                .cloned()
+                .collect();
             if let Some(attached) = &details.policy
                 && !entries.contains(attached)
             {
@@ -2484,24 +2571,10 @@ fn compose_policy_list(
                 let mut overrides = BTreeMap::new();
                 if let Some(btn) = find_direct(item_tpl, "background_button") {
                     let mut lines = Vec::new();
+                    lines.extend(undecided.get(&key).cloned());
                     lines.extend(cost_missing);
                     if let Some(def) = policy_def {
-                        for (_, group_bonuses) in &def.groups {
-                            for bonus in group_bonuses {
-                                lines.push(format_bonus_plain(
-                                    &bonus.name,
-                                    bonus.value,
-                                    loc,
-                                ));
-                            }
-                        }
-                        for modifier in def.organisation_modifiers.listed() {
-                            lines.push(format_bonus_plain(
-                                &modifier.name,
-                                modifier.value,
-                                loc,
-                            ));
-                        }
+                        lines.extend(policy_lines(def, loc));
                     }
                     overrides.insert(
                         btn.path.clone(),

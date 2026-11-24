@@ -5,7 +5,7 @@ import type { CountryFlowReply, FlowEndpoint, FlowLink, FlowSide } from '../../g
 import { projectCountryFlow, type CountryFlowText } from './countryFlow.ts';
 import { deriveFlowAudit, deriveFlowNav, findFlowTooltip } from './model.ts';
 import { hitFlow, layoutFlow } from './painter.ts';
-import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, assertTooltipDated, LANE_THEME } from '../laneRuntime.fixture.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { flowLane } from './laneView.ts';
 import { projectTradeMatrix, projectTradeTable } from '../../widgets/trade-flows/tradeFlowsProjection.ts';
@@ -173,6 +173,7 @@ test('the layout gives every ribbon its width at both ends, keeps labels apart, 
     { label: 'seek back', binding: held, hour: HOUR, check: true },
     { label: 'correction', binding: lane(corrected), hour: HOUR, check: true },
   ], surface);
+  assertTooltipDated(() => createLaneView(flowLane, () => {}), { label: 'flow', binding: held, hour: HOUR }, 'node:left:2', 5, surface);
 });
 
 test('a group subject is a bipartite flow of the product\'s senders and receivers, a country on both sides drawn on both', () => {
