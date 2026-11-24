@@ -10,7 +10,7 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
 import { formatDateOnly, formatShare } from '../../families/valueFormat.ts';
 import type { LeaderHourReply, LeaderSelection, LeaderTrait } from '../../generated/dashboard';
-import { experienceText } from './experience.ts';
+import { experienceText, experienceWhole } from './experience.ts';
 
 export const DOSSIER_VIEW = 'dossier';
 
@@ -53,7 +53,7 @@ function experience(live: Live, key: string): { readonly raw: string | null; rea
 
 function progress(raw: string | null, required: string | null, reason: string, needed: string): { readonly fraction: Value<number>; readonly figure: Value<string> } {
   if (raw === null) return { fraction: notRecorded(reason), figure: notRecorded(reason) };
-  const figure = knownValue(experienceText(raw, required));
+  const figure = knownValue(experienceWhole(raw, required));
   if (required === null) return { fraction: notRecorded(needed), figure };
   const of = Number(required);
   return { fraction: knownValue(of > 0 ? Math.max(0, Math.min(1, Number(raw) / of)) : 1), figure };
@@ -181,6 +181,13 @@ function trainingRows(reply: LeaderHourReply, live: Live): CardRow[] {
       name,
       bar: { kind: 'meter', fraction: shown.fraction },
       figure: { value: shown.figure, figure: 'Experience' },
+      tooltip: {
+        title: name,
+        items: [
+          xp.raw === null ? { label: 'Training experience', missingReason: xp.reason } : { label: 'Training experience', value: experienceText(xp.raw, null) },
+          trait.requiredRaw === null ? { label: 'Needed', missingReason: 'The experience this trait needs is not recorded' } : { label: 'Needed', value: experienceText(trait.requiredRaw, null) },
+        ],
+      },
     };
   });
 }

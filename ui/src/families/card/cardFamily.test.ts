@@ -297,7 +297,7 @@ test('a general’s dossier splits the record won and lost, measures experience 
   const xp = row('experience');
   assert.ok(xp.kind === 'meter' && xp.bar.kind === 'meter');
   assert.deepEqual(xp.bar.fraction, { kind: 'known', value: 0.76 });
-  assert.deepEqual(xp.figure?.value, { kind: 'known', value: '1900.0 / 2500.0' });
+  assert.deepEqual(xp.figure?.value, { kind: 'known', value: '1,900 / 2,500' });
   const traits = row('traits');
   assert.ok(traits.kind === 'list');
   assert.deepEqual(traits.items, ['Invented trait A · 1938', 'Invented trait B · date not recorded']);
