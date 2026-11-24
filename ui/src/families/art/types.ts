@@ -29,6 +29,10 @@ export function defaultArtFrame(width = 0, height = 0, frameIndex = 0, frameCoun
   };
 }
 
+export function spriteArtKey(key: string, frame: number): string {
+  return `${key}#${frame}`;
+}
+
 export const NO_ART: ArtResolution = Object.freeze({ status: 'noArtExpected' });
 export const PENDING_ART: ArtResolution = Object.freeze({ status: 'pending' });
 

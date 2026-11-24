@@ -96,11 +96,20 @@ fn mission_registered_ships_match_panel_count_and_refuse_missing_tables() {
     *frame.tables[TableId::AirCountryRelations.index()] = TableView::Complete(TableRows::AirCountryRelations(vec![
         AirCountryRelationRow { country: 4, kind: AirCountryRelationRow::ENEMY, ordinal: 0, other: 50 },
     ]));
-    let counts = mission_registered_ships(&frame, 4).unwrap();
-    assert_eq!(counts.get(&7), Some(&(5, 1)), "duplicate task-force registrations count each time as in the panel");
+    let counts = mission_registered_ships(&frame, 4);
+    assert_eq!(counts.own.as_ref().unwrap().get(&7), Some(&5), "duplicate task-force registrations count each time as in the panel");
+    assert_eq!(counts.enemy.as_ref().unwrap().get(&7), Some(&1));
+
+    let relations = frame.tables[TableId::AirCountryRelations.index()].clone();
+    *frame.tables[TableId::AirCountryRelations.index()] = TableView::Unavailable { reason: "not recorded".into() };
+    let counts = mission_registered_ships(&frame, 4);
+    assert_eq!(counts.own.as_ref().unwrap().get(&7), Some(&5), "an unknown enemy roster withholds only the enemy count");
+    assert!(counts.enemy.is_err());
+    frame.tables[TableId::AirCountryRelations.index()] = relations;
 
     *frame.tables[TableId::NavalMissionLedgers.index()] = TableView::Unavailable { reason: "not recorded".into() };
-    assert!(mission_registered_ships(&frame, 4).is_err(), "missing ledger table refuses instead of returning zero");
+    let counts = mission_registered_ships(&frame, 4);
+    assert!(counts.own.is_err() && counts.enemy.is_err(), "missing ledger table refuses both sides instead of returning zero");
 }
 
 #[test]
@@ -109,9 +118,8 @@ fn naval_supremacy_legend_includes_only_states_present_in_displayed_regions() {
         id: "7".into(),
         name: "North Sea".into(),
         pinned: false,
-        own_mission_ships: Some(5),
-        enemy_mission_ships: Some(1),
-        ships_missing: None,
+        own_ships: MissionShips::Counted { ships: 5 },
+        enemy_ships: MissionShips::Counted { ships: 1 },
         readout: None,
         runs: vec![SupremacyRun { first_day: 0, last_day: 2, control: Some(1), ..Default::default() }],
     };
@@ -119,4 +127,102 @@ fn naval_supremacy_legend_includes_only_states_present_in_displayed_regions() {
     assert_eq!(legend.len(), 1);
     assert_eq!(legend[0].id, "friendly");
     assert_eq!(legend[0].label, "German Reich and friends");
+}
+
+#[test]
+fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
+    use dashboard_base::{
+        Source,
+        products::Product,
+        test_fixtures::{content_identity, records, source, with_facts},
+    };
+    use replay_capture_spool::spool::Record;
+    use replay_data::rows::{CountryLinkRow, CountryRow, NavalMissionLedgerRow, ShipRow, TableSchema};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let root = std::env::temp_dir().join(format!("naval-supremacy-gap-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("user")).unwrap();
+    for (path, text) in [("hoi4.exe", "test"), ("user/settings.txt", "language=l_english force_pow2_textures=no"), ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#)] {
+        std::fs::write(root.join(path), text).unwrap();
+    }
+    let (options, identity) = content_identity(&root);
+
+    let make_frame = |hour: i32| {
+        let mut frame = source(1, hour, Some(1));
+        let set_complete = |f: &mut DecodedFrame, idx: usize, rows| {
+            *f.tables[idx] = TableView::Complete(rows);
+            f.metrics.table_ns[idx] = 1;
+        };
+        set_complete(
+            &mut frame,
+            TableId::Countries.index(),
+            tables::Countries::wrap(vec![
+                CountryRow { id: 40, canonical_slot: 4, tag: b"GER".to_vec(), ..Default::default() },
+                CountryRow { id: 50, canonical_slot: 5, tag: b"ENG".to_vec(), ..Default::default() },
+            ]),
+        );
+        set_complete(
+            &mut frame,
+            TableId::CountryLinks.index(),
+            tables::CountryLinks::wrap(vec![CountryLinkRow { id: 40, canonical_slot: 4 }, CountryLinkRow { id: 50, canonical_slot: 5 }]),
+        );
+        set_complete(
+            &mut frame,
+            TableId::AirCountryRelations.index(),
+            tables::AirCountryRelations::wrap(vec![AirCountryRelationRow { country: 4, kind: AirCountryRelationRow::ENEMY, ordinal: 0, other: 50 }]),
+        );
+        set_complete(
+            &mut frame,
+            TableId::Ships.index(),
+            tables::Ships::wrap(vec![
+                ShipRow { id: 1, task_force: 100, ..Default::default() },
+                ShipRow { id: 2, task_force: 100, ..Default::default() },
+                ShipRow { id: 3, task_force: 300, ..Default::default() },
+            ]),
+        );
+        set_complete(
+            &mut frame,
+            TableId::NavalMissionLedgers.index(),
+            tables::NavalMissionLedgers::wrap(vec![
+                NavalMissionLedgerRow { owner: 40, region: 7, task_forces: vec![100], ..Default::default() },
+                NavalMissionLedgerRow { owner: 50, region: 7, task_forces: vec![300], ..Default::default() },
+            ]),
+        );
+        frame
+    };
+
+    let mut frames = Vec::new();
+    for h in 0..=10 {
+        frames.push(make_frame(h));
+    }
+    for h in 30..=32 {
+        frames.push(make_frame(h));
+    }
+    let mut input = records(1, frames);
+    let Record::SessionStart(session) = &mut input[0] else { unreachable!() };
+    session.identity = identity.clone();
+    let replay = with_facts(&options, &identity, input).into_timelines(&Default::default()).unwrap();
+    let src = Source::from_replay(dashboard_base::SourceKey { source_id: "naval-gap".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let reply = NavalSupremacy::load(
+        &src,
+        &NavalSupremacyParams {
+            branch_id: "1".into(),
+            country: Country::Tag("GER".into()),
+            window: None,
+            first_hour: Some(0),
+            last_hour: Some(20),
+            regions: Some(vec![7]),
+            pinned_regions: None,
+            hidden_regions: None,
+            top: None,
+        },
+        &LoadContext { content: Some(options) },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+    let region = reply.regions.iter().find(|r| r.id == "7").unwrap();
+    assert_eq!(region.own_ships, MissionShips::Counted { ships: 2 });
+    assert_eq!(region.enemy_ships, MissionShips::Counted { ships: 1 });
 }
