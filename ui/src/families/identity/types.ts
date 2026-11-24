@@ -7,6 +7,7 @@ import type {
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyle,
+  HourSpan,
 } from '../../generated/dashboard';
 
 export type HourInterval = readonly [firstHour: number, lastHour: number];
@@ -57,6 +58,13 @@ export interface RegionIdentityKey {
   readonly kind: 'region';
   readonly id: number | string;
 }
+
+export type EntityIdentityKey =
+  | LeaderIdentityKey
+  | DesignIdentityKey
+  | StateIdentityKey
+  | ProvinceIdentityKey
+  | RegionIdentityKey;
 
 export type IdentityKey =
   | CountryIdentityKey
@@ -190,6 +198,8 @@ export interface IdentitySnapshot {
   readonly entities?: Readonly<Record<string, readonly EntityRunEntry[]>>;
   readonly drawnFlags?: Readonly<Record<string, DrawnFlagEntry>>;
 }
+
+export type { HourSpan };
 
 export interface IdentityAsk {
   readonly key: IdentityKey;
