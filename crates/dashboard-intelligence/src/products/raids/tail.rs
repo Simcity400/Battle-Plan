@@ -117,10 +117,11 @@ pub struct RaidRaider {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RaidPlaceAt {
-    #[doc = " The hour the target's place was first read."]
-    pub hour: i32,
+    #[doc = " The target's province and state, each from the hour it was first read."]
     pub province: Option<u32>,
+    pub province_hour: Option<i32>,
     pub state: Option<u32>,
+    pub state_hour: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -331,7 +332,7 @@ fn id_of(key: &str) -> io::Result<u128> {
 }
 
 fn changes_of(episode: &RaidEpisode, last: i32) -> Vec<i32> {
-    let mut hours: Vec<i32> = [Some(episode.first_hour), episode.raid_type_hour, episode.place_hour, episode.launched_hour, episode.disappeared_hour]
+    let mut hours: Vec<i32> = [Some(episode.first_hour), episode.raid_type_hour, episode.icon_hour, episode.place_hour, episode.state_hour, episode.launched_hour, episode.disappeared_hour]
         .into_iter()
         .flatten()
         .chain(episode.runs.iter().flat_map(|run| [run.first_hour, run.last_hour.saturating_add(1)]))
@@ -451,7 +452,7 @@ fn row(tail: &Tail, holders: &Holders, raid: &Raid, shown_ordinal: u64, live: bo
         },
     };
     let victim = at.victims.last().cloned().unwrap_or(RaidVictimAt { hour: date, tag: None, missing: Some("The raid's target is not recorded".to_owned()), source: None });
-    let place = at.place_hour.map(|place_hour| RaidPlaceAt { hour: place_hour, province: at.province, state: at.state });
+    let place = (at.place_hour.is_some() || at.state_hour.is_some()).then(|| RaidPlaceAt { province: at.province, province_hour: at.place_hour, state: at.state, state_hour: at.state_hour });
     let icon = at.icon.as_ref().and_then(|key| tail.icons.get(key).cloned().flatten());
     let icon_missing = at.icon_missing.clone().or_else(|| at.icon.as_ref().filter(|_| icon.is_none()).map(|key| format!("raid sprite {key} is unavailable")));
     Some(RaidLogRow {

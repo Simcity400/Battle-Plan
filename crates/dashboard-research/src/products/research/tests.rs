@@ -359,6 +359,10 @@ fn an_assignment_is_drawn_only_where_its_holder_and_slot_were_read_and_kept_with
     assert_eq!(history::answer(&index, &asked(-5)).reply.unrecorded.as_deref(), Some("This date is before the branch begins"));
     let late = history::Index { runs: vec![(0, 400)], coverage: vec![cover(100, 400)], ..Default::default() }.finish();
     assert_eq!(history::answer(&late, &asked(300)).reply.partial.as_deref(), Some(history::UNREAD), "hours before the first read are unread too");
+    let unrecorded = history::Index { runs: vec![(200, 400)], gaps: vec![(0, 199)], coverage: vec![cover(200, 400)], ..Default::default() }.finish();
+    assert_eq!(history::answer(&unrecorded, &asked(300)).reply.partial.as_deref(), Some(history::UNREAD), "a recording gap before the country is first held may hide completions");
+    let fresh = history::Index { runs: vec![(200, 400)], coverage: vec![cover(200, 400)], ..Default::default() }.finish();
+    assert_eq!(history::answer(&fresh, &asked(300)).reply.partial, None, "recorded hours before a country exists hide nothing");
 }
 
 #[test]

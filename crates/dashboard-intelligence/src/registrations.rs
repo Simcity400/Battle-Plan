@@ -17,6 +17,7 @@ dashboard_base::register_hourly_products! {
 dashboard_base::register_products! {
     RAIDS_RAIDLOG => crate::products::raids::RaidLog,
     RAIDS_TAIL_RAIDLOGTAIL => crate::products::raids::tail::RaidLogTail,
+    RAIDS_RAIDTALLYAT => crate::products::raids::RaidTallyAt,
 }
 
 dashboard_base::register_hourly_products! {
