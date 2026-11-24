@@ -5,8 +5,9 @@ import { createBoundedReadView, displayedHour } from '../../families/boundedView
 import type { BranchToHourSourceRead, ExactHoverSourceRead, FamilyPlanContext, IdentityProvider } from '../../families/plan.ts';
 import { deriveTimeChartTooltip } from '../../families/time-chart/hitTest.ts';
 import { hoverTimeChartLayout, layoutTimeChart } from '../../families/time-chart/layout.ts';
-import { timeChartLaneView } from '../../families/time-chart/laneView.ts';
+import { timeChartLane } from '../../families/time-chart/laneView.ts';
 import { LANE_THEME } from '../../families/laneRuntime.fixture.ts';
+import { createLaneView } from '../../families/laneRuntime.ts';
 import type { CountryIdentitiesReply, OccupationReserveReply, ReserveHistoryReply } from '../../generated/dashboard';
 import { FAMILY_VIEWS } from '../familyManifest.ts';
 import { occupationReserveBreakdownDeclaration, occupationReserveBreakdownProjection } from './occupationReserveBreakdownProjection.ts';
@@ -274,7 +275,7 @@ test('occupation-reserve-manpower breakdown asks history to the hour, asks hover
   assert.equal(unreadHeadModel.empty?.message, 'Occupation settings were not recorded at these hours');
   assert.deepEqual(unreadHeadModel.auditRows, []);
 
-  const lane = timeChartLaneView(() => {});
+  const lane = createLaneView(timeChartLane, () => {});
   assert.ok(lane);
   const unchosen = occupationReserveBreakdownProjection.project(view, {
     holder: null,

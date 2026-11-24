@@ -7,8 +7,9 @@ import { deriveFlowAudit, findFlowTooltip } from './model.ts';
 import { hitFlow, layoutFlow } from './painter.ts';
 import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
 import { registerFamilyProjection } from '../registry.ts';
-import { familyFlowLaneView } from './laneView.ts';
+import { flowLane } from './laneView.ts';
 import { projectTradeMatrix, projectTradeTable } from '../../widgets/trade-flows/tradeFlowsProjection.ts';
+import { createLaneView } from '../laneRuntime.ts';
 
 const HOUR = 60_810_000;
 const TEXT: CountryFlowText = {
@@ -163,8 +164,8 @@ test('the layout gives every ribbon its width at both ends, keeps labels apart, 
   const held = lane(centred);
   const corrected: CountryFlowReply = { ...centred, outgoing: side([link(USA, ENG, [[0, 70]])], amount(70)) };
   const surface = { width: 846, height: 360, dpr: 1 };
-  assertQuietFrames(() => familyFlowLaneView(() => {}), { label: 'flow', binding: held, hour: HOUR }, 24, surface);
-  assertFreshPaint(() => familyFlowLaneView(() => {}), [
+  assertQuietFrames(() => createLaneView(flowLane, () => {}), { label: 'flow', binding: held, hour: HOUR }, 24, surface);
+  assertFreshPaint(() => createLaneView(flowLane, () => {}), [
     { label: 'held', binding: held, hour: HOUR, check: true },
     { label: 'later', binding: held, hour: HOUR + 30, speed: 24 },
     { label: 'seek back', binding: held, hour: HOUR, check: true },

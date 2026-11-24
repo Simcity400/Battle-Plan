@@ -1,6 +1,5 @@
-import type { LaneView } from '../../draw/lane.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
-import { createLaneView, type LaneBinding, type LaneFamily, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import { parseRegionHitKey, REGION_ADD_KEY, regionHitKey, type RegionRowsField } from '../regions/regionRows.ts';
 import { hitHeatLanes, LANE_PAD, lanesWindow, layoutHeatLanes, type HeatLanesLayout } from './lanesLayout.ts';
 import {
@@ -62,7 +61,7 @@ function shown(frame: { readonly model: HeatLanesModel; readonly layout: HeatLan
   return layout;
 }
 
-const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, HeatLanesLayout> = {
+export const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, HeatLanesLayout> = {
   family: 'heat-lanes',
   boundary: () => Infinity,
   redraw: () => Infinity,
@@ -147,7 +146,3 @@ const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, HeatLane
   },
   visibleArt: frame => collectVisibleLaneArt(frame.model, shown(frame), frame.index),
 };
-
-export function familyHeatLanesLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(heatLanesLane, wake, options);
-}

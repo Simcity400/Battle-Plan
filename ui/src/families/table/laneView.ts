@@ -1,9 +1,9 @@
 import { canvasMeasureText } from '../../charts/textWidth.ts';
 import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { FamilyAuditRow } from '../auditRow.ts';
-import type { LaneView, Surface } from '../../draw/lane.ts';
+import type { Surface } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
-import { createLaneView, type LaneBinding, type LaneFamily, type LaneFrame, type LaneRuntimeOptions, type LaneStep } from '../laneRuntime.ts';
+import type { LaneBinding, LaneFamily, LaneFrame, LaneStep } from '../laneRuntime.ts';
 import { buildColumnLayouts, computeRowLayout, layoutFamilyTable, measureFixedColumnWidths, tableRowWindow, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
 import {
   computeColumnMaxima,
@@ -22,8 +22,8 @@ import {
   type TableModel,
   type TableRow,
 } from './model.ts';
-import { createTablePicture, drawFamilyTable, glideDurationForSpeed, hitFamilyTable, rankHoldForSpeed, type FamilyTablePicture } from './painter.ts';
-import { combinedPaneGeometry, combinedPaneRows, drawPaneFrame, hitPanes, paneGeometry, paneOfRow, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
+import { createTablePicture, drawFamilyTable, drawPaneFrame, glideDurationForSpeed, hitFamilyTable, hitPanes, rankHoldForSpeed, type FamilyTablePicture } from './painter.ts';
+import { combinedPaneGeometry, combinedPaneRows, paneGeometry, paneOfRow, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
 import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, showsIcon, type GlideOffset, type RankMarker, type TableSettings } from './settings.ts';
 
 export interface FamilyTableBinding<TOptions = unknown> extends LaneBinding<TOptions> {
@@ -288,7 +288,7 @@ function visibleRange(layout: TableLayout, gliding: boolean): readonly [number, 
 
 const inspectedRow = (inspect: string | null): string | null => (inspect?.startsWith('row:') ? inspect.slice(4) : null);
 
-const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> = {
+export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> = {
   family: 'table',
   boundary: nextTableChange,
   redraw: () => Infinity,
@@ -508,8 +508,4 @@ function visibleCellArtItems(
     }
   }
   return items;
-}
-
-export function familyTableLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(tableLane, wake, options);
 }
