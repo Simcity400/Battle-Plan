@@ -161,6 +161,14 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
   if (raw === 0 || raw === 0n) {
     return `${format.percent ? '0%' : '0'}${suffix}`;
   }
+  if (format.maxDecimals !== undefined && format.decimals > format.maxDecimals) {
+    const scaled = typeof raw === 'bigint' ? raw : exactTruncBigInt(raw);
+    const negative = scaled < 0n;
+    const divisor = 10n ** BigInt(format.decimals - format.maxDecimals);
+    const rounded = ((negative ? -scaled : scaled) + divisor / 2n) / divisor;
+    if (rounded === 0n) return `${format.percent ? '0%' : '0'}${suffix}`;
+    return `${negative ? '−' : sign}${amountText(rounded, format.maxDecimals, format.percent)}${suffix}`;
+  }
   if (format.maxDecimals !== undefined && format.decimals === 0) {
     const formatted = formatFixedDecimal(raw, format.maxDecimals, false, true, '\u2212', format.signed === true);
     return `${formatted}${format.percent ? '%' : ''}${suffix}`;

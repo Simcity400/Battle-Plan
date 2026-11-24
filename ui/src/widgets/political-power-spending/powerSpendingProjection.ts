@@ -5,7 +5,7 @@ import type { TableWidgetDeclaration } from '../../families/table/declaration.ts
 import type { TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY, tableFamilyOptions, type TableBase } from '../../families/table/settings.ts';
-import { knownValue, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { BreakdownPart, PowerSpendingBreakdownReply, SpendCurrency } from '../../generated/dashboard';
 
@@ -47,7 +47,7 @@ function amountOf(part: Pick<BreakdownPart, 'raw' | 'state' | 'reason'>, what: s
 
 function row(part: BreakdownPart, decimals: number, top: boolean, keyPrefix: string): TableRow {
   const key = `${keyPrefix}${part.key}`;
-  const format = { decimals };
+  const format = { decimals, maxDecimals: 0 };
   return {
     key,
     name: part.name,
@@ -56,7 +56,7 @@ function row(part: BreakdownPart, decimals: number, top: boolean, keyPrefix: str
       spent: { value: amountOf(part, part.name), format },
       share: top
         ? { value: part.share === null ? notRecorded(part.reason ?? 'No share where the whole is a lower bound') : knownValue(part.share * 100), format: { decimals: 0, maxDecimals: 0, percent: true } }
-        : { value: knownValue(''), blank: true },
+        : { value: notApplicable('A share is shown for each category'), blank: true },
       last: { value: part.last === null ? notRecorded('Date not recorded') : knownValue(part.last) },
     },
     ...(part.reason ? { tooltipNote: part.reason } : {}),
@@ -66,7 +66,7 @@ function row(part: BreakdownPart, decimals: number, top: boolean, keyPrefix: str
 
 function summary(reply: PowerSpendingBreakdownReply, currency: SpendCurrency): { readonly text: string; readonly partial: string | null } {
   const decimals = reply.breakdown.decimals;
-  const amount = (raw: string) => formatScalar(BigInt(raw), { decimals });
+  const amount = (raw: string) => formatScalar(BigInt(raw), { decimals, maxDecimals: 0 });
   const total = reply.breakdown.total;
   const parts = [`${total.raw === null ? 'Not recorded' : amount(total.raw)} spent`];
   if (reply.gainedRaw !== null) parts.push(`${amount(reply.gainedRaw)} gained`);
@@ -102,6 +102,9 @@ function projectSpending(readView: BoundedReadView, options: PowerSpendingProjec
   if (rows.length) return base;
   if (reply.breakdown.total.state === 'notRecorded') {
     return { ...base, empty: 'Not recorded at this time.', emptyDetail: reply.breakdown.total.reason ?? 'Spending was not recorded.', emptyKind: 'unavailable' };
+  }
+  if (reply.breakdown.total.state !== 'known') {
+    return { ...base, empty: 'No spending recorded', emptyDetail: reply.breakdown.total.reason ?? 'Some hours were not recorded.', emptyKind: 'unavailable' };
   }
   return { ...base, empty: 'Nothing spent yet' };
 }
