@@ -4620,8 +4620,9 @@ weekChangeTenths: number | null,
 weekChangeUnknown: string | null, };
 export type DecryptionReply = {
 /**
- * The pairs with an attempt or a broken cipher, in the game's race order: broken first, then
- * by progress (unknown last), then by decryptor and target.
+ * The pairs with an attempt or a broken cipher, in the game's race order: broken first (the
+ * newest break first, an undated one last), then by progress (unknown last), then by decryptor
+ * and target.
  */
 pairs: Array<CipherPair>,
 /**

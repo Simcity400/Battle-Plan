@@ -99,15 +99,8 @@ export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = re
         group.items.push(pair);
         grouped.set(pair.owner.id, group);
       }
-      const lines = [...grouped.values()].sort((a, b) =>
-        b.items.length - a.items.length || a.owner.name.localeCompare(b.owner.name),
-      );
-      const chipLines: MeterChipLine[] = lines.map(group => {
-        const sortedItems = [...group.items].sort((a, b) =>
-          (b.brokenAt?.hour ?? -Infinity) - (a.brokenAt?.hour ?? -Infinity)
-          || country(a.target).name.localeCompare(country(b.target).name),
-        );
-        const chips: MeterChip[] = sortedItems.map(pair => {
+      const chipLines: MeterChipLine[] = [...grouped.values()].map(group => {
+        const chips: MeterChip[] = group.items.map(pair => {
           const target = country(pair.target, pair.brokenAt?.hour);
           const numbers = readCipherNumbers(frame.live, pair);
           const percent = percentOf(pair, numbers);

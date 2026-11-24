@@ -117,8 +117,9 @@ pub struct CipherPair {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DecryptionReply {
-    #[doc = " The pairs with an attempt or a broken cipher, in the game's race order: broken first, then"]
-    #[doc = " by progress (unknown last), then by decryptor and target."]
+    #[doc = " The pairs with an attempt or a broken cipher, in the game's race order: broken first (the"]
+    #[doc = " newest break first, an undated one last), then by progress (unknown last), then by decryptor"]
+    #[doc = " and target."]
     pub pairs: Vec<CipherPair>,
     #[doc = " How many of the pairs are in each status."]
     pub counts: CipherCounts,
@@ -151,8 +152,10 @@ struct Ranked {
 fn race_order(a: &Ranked, b: &Ranked) -> Ordering {
     let broken = |item: &Ranked| item.pair.broken == Some(true);
     let tag = |country: &Country| (country.tag.is_none(), country.tag.clone(), country.id);
+    let broke = |item: &Ranked| item.pair.broken_at.filter(|_| broken(item)).map(|seen| seen.hour);
     broken(b)
         .cmp(&broken(a))
+        .then_with(|| broke(b).cmp(&broke(a)))
         .then_with(|| a.percent.is_none().cmp(&b.percent.is_none()))
         .then_with(|| b.percent.cmp(&a.percent))
         .then_with(|| match (a.required, b.required) {
@@ -693,6 +696,15 @@ mod tests {
         race.sort_by(race_order);
         let owners: Vec<&str> = race.iter().map(|item| item.pair.owner.tag.as_deref().unwrap()).collect();
         assert_eq!(owners, ["ITA", "SOV", "JAP", "GER", "ENG"]);
+        let dated = |tag: &str, hour: Option<i32>| {
+            let mut item = ranked(tag, "GER", 1_000, Some(1_000), Some(true));
+            item.pair.broken_at = hour.map(|hour| Observation { hour, upper_bound: false });
+            item
+        };
+        let mut breaks = [dated("AAA", Some(10)), dated("BBB", None), dated("CCC", Some(30))];
+        breaks.sort_by(race_order);
+        let order: Vec<&str> = breaks.iter().map(|item| item.pair.owner.tag.as_deref().unwrap()).collect();
+        assert_eq!(order, ["CCC", "AAA", "BBB"], "the newest break first, an undated one last");
     }
 
     #[test]
