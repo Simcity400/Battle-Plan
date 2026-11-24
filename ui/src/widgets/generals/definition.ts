@@ -36,5 +36,5 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   minSize: { w: 6, h: 6 }, defaultSize: { w: 12, h: 10 }, options: OPTIONS,
-  variants: choiceVariants(LEADERS_OPTION, choice => choice.label),
+  variants: choiceVariants(LEADERS_OPTION, choice => choice.label, undefined, choice => (choice.value === 'navy' ? 'Navy' : undefined)),
 } as const satisfies WidgetMeta;

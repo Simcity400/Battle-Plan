@@ -62,13 +62,18 @@ test('one kind of leader per table: Generals shows only army leaders and Admiral
   assert.equal(url(generals.rows[0]!.cells.skill!.art), `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_skill', frame: 0 })}`);
   assert.equal(url(generals.rows[0]!.cells.attack!.art), `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_attack', frame: 0 })}`);
   assert.equal(generals.rows[0]!.cells.defense!.art, undefined, 'an icon the interface lacks is no icon');
-  assert.deepEqual(generals.notes, ['1 leader of these countries can’t be shown; Details lists why.'], 'the note counts only generals');
+  assert.equal(generals.titleSummary, '1 not shown', 'the header marker counts only generals');
+  assert.equal(generals.titleSummaryPartial, '1 leader of these countries can’t be shown; Details lists why.\nLeader 8: not decided', 'the header marker carries the full sentence and per-leader reason');
+  assert.ok(generals.warnings?.includes('Leader 8: not decided'), 'Details still lists the per-leader reason');
+  assert.equal('notes' in generals, false, 'no body note row is emitted');
   const admirals = generalsProjection.project(view(mixed), ADMIRALS);
   assert.deepEqual(admirals.rows.map(row => row.key), ['2']);
   assert.deepEqual(headers(admirals), [['Attack', undefined], ['Defense', undefined], ['Maneuvering', undefined], ['Coordination', undefined]]);
   assert.equal(url(admirals.rows[0]!.cells.attack!.art), `art:${artHandleKey({ kind: 'sprite', key: 'GFX_mod_naval_attack', frame: 0 })}`);
   assert.equal(admirals.rows[0]!.cells.fourth!.art, undefined);
-  assert.deepEqual(admirals.notes, ['2 leaders of these countries can’t be shown; Details lists why.'], 'the note counts only admirals');
+  assert.equal(admirals.titleSummary, '2 not shown', 'the header marker counts only admirals');
+  assert.equal(admirals.titleSummaryPartial, '2 leaders of these countries can’t be shown; Details lists why.\nLeader 9: not decided\nLeader 7: not decided', 'the header marker carries every withheld admiral reason');
+  assert.equal('notes' in admirals, false, 'no body note row is emitted');
   const modded = generalsProjection.project(view(reply([leader('3', { ...navy, attributeNames: ['Gunnery', 'Screening', 'Manoeuvre', 'Command'] })])), ADMIRALS);
   assert.deepEqual(headers(modded).map(([label]) => label), ['Gunnery', 'Screening', 'Manoeuvre', 'Command'], 'a mod’s recorded names are the headers');
 });
@@ -93,10 +98,13 @@ test('the header toggle is the manifest view switch, Generals | Admirals, and th
   assert.equal(widgetOptionFields('generals', { leaders: 'navy' }).find(field => field.key === TABLE_SETTINGS_KEY)?.storeAs, `${TABLE_SETTINGS_KEY}@navy`, 'each view keeps its own table settings');
 });
 
-test('the catalogue offers Generals and Admirals, each placing its own view, and the title follows the view', () => {
-  const [group] = catalogueEntries(widgetGroups([definition]), new Map());
-  assert.deepEqual(group!.map(entry => [entry.title, entry.match]), [['Generals', { leaders: 'land' }], ['Admirals', { leaders: 'navy' }]]);
-  const placed = presetWidget('generals', group![1]!.initial as PresetWidget);
+test('the catalogue offers Generals under Army and Admirals under Navy, each placing its own view, and the title follows the view', () => {
+  const groups = widgetGroups([definition]);
+  assert.deepEqual(groups.map(group => group.label), ['Army', 'Navy']);
+  const [army, navy] = catalogueEntries(groups, new Map());
+  assert.deepEqual(army!.map(entry => [entry.title, entry.group.label, entry.match]), [['Generals', 'Army', { leaders: 'land' }]]);
+  assert.deepEqual(navy!.map(entry => [entry.title, entry.group.label, entry.match]), [['Admirals', 'Navy', { leaders: 'navy' }]]);
+  const placed = presetWidget('generals', navy![0]!.initial as PresetWidget);
   assert.equal(placed.title, 'Admirals');
   assert.equal(resolveWidgetActiveView('generals', placed.options), 'navy');
   const field = definition.options.find(item => item.key === 'leaders');

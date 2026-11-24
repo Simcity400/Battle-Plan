@@ -147,10 +147,10 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
       if (reply.missing !== null) {
         return { rows: [], empty: empty ?? reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
       }
-      const notes: string[] = [];
-      if (!reply.complete) notes.push('Some occupied states are missing.');
+      const partial: string[] = [];
+      if (!reply.complete) partial.push('Some occupied states are missing.');
       if (!options.filterAll && reply.states.some(state => state[options.role] === null)) {
-        notes.push('Some states couldn’t be matched to these countries.');
+        partial.push('Some states couldn’t be matched to these countries.');
       }
       const boundary = newIdentityBoundary();
       const rows = view.rows.map(row => ({
@@ -160,8 +160,8 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
       return {
         rows,
         ...(empty !== null ? { empty, emptyKind: view.membership || view.selectionUnknown || !reply.complete ? 'unavailable' : 'empty' } : {}),
-        notes,
-        warnings: reply.warnings,
+        ...(partial.length ? { titleSummary: 'Partial', titleSummaryPartial: partial.join(' ') } : {}),
+        warnings: partial.length ? [...reply.warnings, ...partial] : reply.warnings,
         nextChangeAt: boundary.next,
       };
     },

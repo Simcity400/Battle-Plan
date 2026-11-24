@@ -106,7 +106,7 @@ export const listedChoices = (choices: OptionChoices[string] | undefined): reado
 export const unavailableChoices = (choices: OptionChoices[string] | undefined): ChoicesUnavailable | undefined =>
   choices !== undefined && ('loading' in choices || 'error' in choices) ? choices : undefined;
 
-export interface WidgetPreset { key: string; initial: Pick<WidgetSpec, 'title' | 'options'> }
+export interface WidgetPreset { key: string; initial: Pick<WidgetSpec, 'title' | 'options'>; category?: string }
 export interface WidgetPresets { presets: readonly WidgetPreset[]; reason: string | null; detail?: string }
 
 export type WidgetCountryChipProps = Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {

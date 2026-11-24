@@ -82,3 +82,35 @@ test('a widget keeps its own card and lists each of its views right after it', (
     presets: [{ key: 'laws', initial: { title: 'Laws', options: { category: 'laws' } } }] }]]));
   assert.deepEqual(politics.map(entry => entry.key), ['idea-timeline:laws', 'idea-timeline:view=list'], 'content presets still replace the own card; views follow them');
 });
+
+test('a preset with its own category moves into that category group and keeps match counting intact', () => {
+  const leaders = { key: 'leaders', section: 'options', label: 'Leaders', kind: 'choice', default: 'land',
+    choices: [{ value: 'land', label: 'Generals' }, { value: 'navy', label: 'Admirals' }] } as const;
+  const generals = {
+    ...widget('generals', 'Generals', 'Army'),
+    options: [leaders],
+    variants: [{ key: 'leaders=navy', initial: { title: 'Admirals', options: { leaders: 'navy' } }, category: 'Navy' }],
+  };
+  const navalPages = [...pages, page('land', 'Army', 'helmet', 'generals'), page('navy', 'Navy', 'anchor', 'navy-size')];
+  const groups = widgetGroups([generals], navalPages);
+  assert.deepEqual(groups.map(group => [group.label, group.page]), [['Army', 'land'], ['Navy', 'navy']]);
+  const [army, navy] = catalogueEntries(groups, new Map());
+  assert.deepEqual(army!.map(entry => [entry.key, entry.title, entry.group.label, entry.match]), [
+    ['generals', 'Generals', 'Army', { leaders: 'land' }],
+  ]);
+  assert.deepEqual(navy!.map(entry => [entry.key, entry.title, entry.group.label, entry.match]), [
+    ['generals:leaders=navy', 'Admirals', 'Navy', { leaders: 'navy' }],
+  ]);
+  const placed = [{ kind: 'generals', options: { leaders: 'navy' } }];
+  assert.equal(placedCount(army![0]!, placed), 0);
+  assert.equal(placedCount(navy![0]!, placed), 1);
+
+  const dynamic = widgetGroups([widget('idea-timeline', 'Idea timeline'), widget('aces', 'Aces')], pages);
+  const byGroup = catalogueEntries(dynamic, new Map([['idea-timeline', { reason: null, presets: [
+    { key: 'air-laws', initial: { title: 'Air laws', options: { category: 'air' } }, category: 'Air' },
+  ] }]]));
+  assert.deepEqual(byGroup.map((entries, i) => [dynamic[i]!.label, entries.map(entry => [entry.key, entry.group.label])]), [
+    ['Politics', []],
+    ['Air', [['idea-timeline:air-laws', 'Air'], ['aces', 'Air']]],
+  ]);
+});

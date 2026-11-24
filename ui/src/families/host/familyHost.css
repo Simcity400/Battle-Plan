@@ -109,6 +109,16 @@
   height: 100%;
 }
 
+.fh-summary-partial {
+  cursor: default;
+  border-radius: 3px;
+}
+
+.fh-summary-partial:focus-visible {
+  outline: 1.5px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .fh-summary-hatch {
   display: inline-block;
   margin-left: 6px;
