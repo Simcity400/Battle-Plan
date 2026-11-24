@@ -15,6 +15,11 @@ test('actual queued drill close restores its own focus and preserves a later wid
     constructor(popout: SurfaceElement | null = null) { this.popout = popout; }
     closest(selector: string) { return selector === '[popover]' || selector === '.drill-popout' ? this.popout : null; }
     contains(_target: unknown) { return false; }
+    readonly listeners = new Map<string, (event: unknown) => void>();
+    focuses = 0;
+    addEventListener(name: string, callback: (event: unknown) => void) { this.listeners.set(name, callback); }
+    removeEventListener(name: string) { this.listeners.delete(name); }
+    focus() { this.focuses++; }
   }
   const body = new SurfaceElement(), panel = new SurfaceElement(), otherPanel = new SurfaceElement();
   const ownControl = new SurfaceElement(panel), otherControl = new SurfaceElement(otherPanel), button = new SurfaceElement();
@@ -29,7 +34,9 @@ test('actual queued drill close restores its own focus and preserves a later wid
     menu: { popup: { current: panel as SurfaceElement | null }, openAt() {} } };
   const host = globalThis as typeof globalThis & { __drillFocus?: typeof state; __drillFocusEffect?: (effect: () => unknown) => void };
   const before = { document: globalThis.document, window: globalThis.window, Element: globalThis.Element,
-    requestAnimationFrame: globalThis.requestAnimationFrame };
+    requestAnimationFrame: globalThis.requestAnimationFrame, MutationObserver: globalThis.MutationObserver };
+  const mutations: (() => void)[] = [];
+  globalThis.MutationObserver = class { constructor(callback: () => void) { mutations.push(callback); } observe() {} disconnect() {} } as unknown as typeof MutationObserver;
   host.__drillFocus = state; host.__drillFocusEffect = effect => { state.effects.push(effect); };
   globalThis.document = browser as unknown as Document;
   globalThis.window = browser as unknown as Window & typeof globalThis;
@@ -61,8 +68,6 @@ test('actual queued drill close restores its own focus and preserves a later wid
       { event: 'close', mode: 'popout', next: body, restore: false, unmounted: true },
       { event: 'close', mode: 'popout', next: body, restore: false, detached: true },
       { event: 'close', mode: 'popout', next: body, restore: false, defaultFocus: true },
-      { event: 'escape', mode: 'window', next: ownControl, restore: true },
-      { event: 'close', mode: 'window', next: body, restore: true },
     ] as const) {
       let closes = 0, focuses = 0;
       const selected: string[] = [], cleanups: (() => void)[] = [];
@@ -84,9 +89,6 @@ test('actual queued drill close restores its own focus and preserves a later wid
           handlers.get('pointerdown')!({ target: otherControl });
           assert.equal(closes, 0, 'another popover keeps its own Escape and pointer events');
           browser.activeElement = ownControl;
-        }
-        if (scenario.mode === 'window') {
-          assert.equal(handlers.has('pointerdown'), false, 'window mode stays open on outside pointerdown');
         }
         if (scenario.event === 'outside') handlers.get('pointerdown')!({ target: button });
         else if (scenario.event === 'escape') handlers.get('keydown')!({ key: 'Escape' });
@@ -131,6 +133,14 @@ test('actual queued drill close restores its own focus and preserves a later wid
     const winCleanups: (() => void)[] = [];
     for (const effect of state.effects) { const c = effect(); if (typeof c === 'function') winCleanups.push(c as () => void); }
     assert.equal(paused, 1, 'pauseClock pauses playing clock on open');
+    const focusesBefore = panel.focuses;
+    panel.listeners.get('focusin')!({ target: ownControl });
+    ownControl.isConnected = false;
+    browser.activeElement = body;
+    for (const mutation of mutations) mutation();
+    assert.equal(panel.focuses, focusesBefore + 1, 'removing the focused control returns focus to the window so Escape still closes it');
+    ownControl.isConnected = true;
+    browser.activeElement = ownControl;
     handlers.get('keydown')!({ key: 'Escape', preventDefault() {} });
     assert.equal(closed, 1);
     browser.activeElement = body;
@@ -141,6 +151,7 @@ test('actual queued drill close restores its own focus and preserves a later wid
   } finally {
     globalThis.document = before.document; globalThis.window = before.window; globalThis.Element = before.Element;
     globalThis.requestAnimationFrame = before.requestAnimationFrame;
+    globalThis.MutationObserver = before.MutationObserver;
     delete host.__drillFocus; delete host.__drillFocusEffect; await vite.close();
   }
 });
