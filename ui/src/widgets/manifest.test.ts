@@ -454,3 +454,48 @@ test('a preset is stored through the mapping of the view it opens, so the view r
   assert.equal(widgetViewOptions('army-size', race).countFor, 'host', 'R3-S2: a race preset counting expeditionary forces for the host is what the race view and its detail read');
   assert.equal(viewSlotProps('army-size', { widget: { kind: 'army-size', options: race } as unknown as WidgetSpec }).options.countFor, 'host');
 });
+
+test('every setting a time-chart view shows reaches what that view reads or projects (rv11 S19)', async () => {
+  const silent: string[] = [];
+  const checked: string[] = [];
+  const owned = new Set(['political-power', 'command-power', 'stability', 'fuel', 'experience', 'supply-health', 'ruling-party', 'army-size', 'navy-size', 'air-force-size', 'factories', 'occupation-trend']);
+  for (const entry of FAMILY_VIEWS.filter(item => item.family === 'time-chart' && owned.has(item.kind))) {
+    const view = normalizeView(entry.view);
+    const spec = await entry.loadSpec();
+    const declaration = spec.declaration as {
+      readonly sources: (ctx: unknown, viewport: unknown) => unknown;
+      readonly projectionOptions: (ctx: unknown, extra: unknown) => unknown;
+    };
+    const selected: WidgetOptions = view === DEFAULT_VIEW ? {} : { [entry.viewOption ?? 'view']: view };
+    const read = familyViewOptionFields(entry.kind, view);
+    const fields = read;
+    const seen = (stored: WidgetOptions) => {
+      const options = resolveOptions(read, stored);
+      const ctx = {
+        track: { source: { id: 's', revision: '1' }, branch: { id: '1', firstHour: 0, lastHour: 1000, gaps: [] }, axisOffset: 0 },
+        branch: { id: '1', firstHour: 0, lastHour: 1000, gaps: [] }, lastRecordedHour: 1000, widget: { kind: entry.kind, options: stored, countries: { kind: 'tags', tags: ['GER'] } },
+        options, following: false, aux: undefined, countryTag: 'GER', countrySubject: 'GER', countryName: 'Germany',
+        countries: { all: false, tags: ['GER'], holders: null, every: ['GER'], top: null, membership: null, membershipRuns: null, unobserved: [],
+          filter: { passing: null, unrecorded: [], bounds: [] }, labels: {}, factions: null, factionUnobserved: [], factionIncomplete: [],
+          rankedAt: () => ['GER'], reason: null, known: () => true, unobservedIn: () => false },
+        gateSpan: () => null, staticSpan: null,
+      };
+      return JSON.stringify([declaration.sources(ctx, { width: 800, height: 300 }), declaration.projectionOptions(ctx, { extent: [0, 1000], surface: '#111111' })],
+        (_key, value) => typeof value === 'function' ? String(value) : typeof value === 'bigint' ? String(value) : value);
+    };
+    const base = seen(selected);
+    for (const field of fields) {
+      if (field.key === (entry.viewOption ?? 'view')) continue;
+      const value = otherValue(field);
+      if (value === field.default) continue;
+      const written = setOption(fields, selected, field.key, value);
+      if (!written) continue;
+      const shown = field.visibleWhen ? field.visibleWhen(resolveOptions(read, written), undefined as never) : true;
+      if (!shown) continue;
+      checked.push(`${entry.kind}/${view}: ${field.key}`);
+      if (seen(written) === base) silent.push(`${entry.kind}/${view}: ${field.key}`);
+    }
+  }
+  assert.ok(checked.length > 30, `the walk reaches the views' settings: ${checked.length}`);
+  assert.deepEqual(silent, [], 'a setting that changes neither the read nor the projection does nothing: wire it or remove it');
+});

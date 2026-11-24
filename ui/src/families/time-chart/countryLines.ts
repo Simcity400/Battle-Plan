@@ -7,6 +7,7 @@ import { formatCompactRational, formatRational, formatRecordedPercent, formatSca
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { formatChartAxisValue } from './layout.ts';
+import { chartAxis, chartWindow, DEFAULT_LINE_SETTINGS, lineChartSettings, type LineChartSettings } from './settings.ts';
 import type { ChartGap, ChartHoverDetail, ChartLegendEntry, ChartValueFormat, TimeChartSeriesModel } from './model.ts';
 import { seriesLookAt } from './model.ts';
 import {
@@ -64,6 +65,7 @@ export interface CountryLinesOptions {
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
   readonly surface: string;
+  readonly settings?: LineChartSettings;
 }
 
 export interface CountryLinesHover {
@@ -82,7 +84,6 @@ export interface CountryLinesSpec<TAux = unknown> {
   readonly measure: (options: Readonly<Record<string, OptionValue>>, aux: TAux | undefined) => CountryLinesMeasure | CountryLinesUnavailable | null;
   readonly second?: (options: Readonly<Record<string, OptionValue>>) => CountryLinesSecond | null;
   readonly digits?: (options: Readonly<Record<string, OptionValue>>) => number;
-  readonly endLabels?: (options: Readonly<Record<string, OptionValue>>) => boolean;
   readonly hover?: CountryLinesHover;
 }
 
@@ -150,6 +151,8 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
         };
       }
       const top = options.top !== null;
+      const settings = options.settings ?? DEFAULT_LINE_SETTINGS;
+      const view = chartWindow(settings, hour, options.extent[0]);
       const drawn = readView.series('main');
       const tags = top ? (drawn ? [...drawn.keys()] : rankedPanelKeys(readView, 'main')) : options.tags;
       const rowOf = new Map(tags.map((tag, row) => [tag, row]));
@@ -200,9 +203,11 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
             ? null
             : { flag, name, fullName: name, value: format(reading) },
         };
-        const secondBounded = secondLines?.get(tag);
-        if (!options.second || !secondBounded) return [main];
-        const secondReading = presentSet.has(tag) ? headReading(readView, 'second', { tag }, options.decimals) : undefined;
+        if (!options.second) return [main];
+        const secondBounded = secondLines?.get(tag) ?? null;
+        const secondReading = presentSet.has(tag)
+          ? headReading(readView, 'second', { tag }, options.decimals) ?? (top ? headReading(readView, 'main', { tag, reading: 1 }, options.decimals) : null)
+          : undefined;
         if (secondReading !== undefined) readings.push([`${tag}${SECOND_SUFFIX}`, secondReading]);
         return [main, {
           id: `${tag}${SECOND_SUFFIX}`,
@@ -230,7 +235,8 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
         mode: 'lines',
         hour,
         extent: options.extent,
-        yAxis: { format: spec.format, decimals: options.digits ?? options.decimals },
+        ...(view ? { view } : {}),
+        yAxis: { format: spec.format, decimals: options.digits ?? options.decimals, ...chartAxis(settings) },
         series,
         ...(legend ? { legend } : {}),
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
@@ -273,7 +279,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
               tags: [],
               top: { n: top },
               headQuery: { product: 'series-state', params },
-              params,
+              params: second ? { ...params, measures: [second.measure] } : params,
               exactProduct: 'series-rank',
             },
           },
@@ -324,6 +330,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
                 tags,
                 ...(within ? { within } : {}),
                 headQuery: { product: 'series-state' as const, params: { branchId: ctx.branch.id, family: secondFamily, reads } },
+                exactProduct: 'series-state' as const,
               },
             }]
           : []),
@@ -351,12 +358,13 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
           return chosen && 'unavailable' in chosen ? chosen.unavailable : null;
         })(),
         digits: spec.digits?.(ctx.options) ?? null,
-        endLabels: spec.endLabels?.(ctx.options) ?? true,
+        endLabels: ctx.options.endLabels !== false,
         second: spec.second?.(ctx.options) ?? null,
         options: ctx.options,
         extent,
         gaps: branchGapsOf(ctx.branch),
         surface,
+        settings: lineChartSettings(ctx.options),
       };
     },
   };

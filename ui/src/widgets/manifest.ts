@@ -1,4 +1,4 @@
-import { widgetDefinition, type FamilyViewRenderer, type WidgetMeta, type WidgetViewSwitch } from '../dashboard/definitions.ts';
+import { widgetDefinition, type FamilyViewRenderer, type WidgetMeta, type WidgetRenderer, type WidgetViewSwitch } from '../dashboard/definitions.ts';
 import { resolveOptions, setOption, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
 import {
   DEFAULT_VIEW,
