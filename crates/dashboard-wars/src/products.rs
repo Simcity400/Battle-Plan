@@ -5,6 +5,7 @@ pub mod casualties;
 pub mod peace;
 pub mod volunteers;
 pub mod wargoals;
+pub mod wargoal_dates;
 pub mod occupation;
 pub mod occupation_reserve;
 pub mod faction_state;
