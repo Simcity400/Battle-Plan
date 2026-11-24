@@ -2,7 +2,6 @@ import type { LiveValues } from '../../charts/live';
 import type { PanelGeometry, PanelView } from './view';
 import type { Structure } from '../views/fields';
 import type { DoctrineMasteryReply, ResearchSlotsReply, WargoalsReply } from '../../generated/dashboard';
-import { arsenalNotice, arsenalStructure, arsenalStructureRows, validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { liveKey } from '../../charts/live.ts';
 import { slotsStructure, slotValues } from '../../widgets/research/researchSlots.ts';
 import { validateResearchSlots } from '../../widgets/research/researchData.ts';
@@ -70,7 +69,6 @@ export function panelValues(product: string, raw: unknown, live: LiveValues<numb
 }
 
 export function recordedPanelRows(product: string, raw: unknown): string[] {
-  if (product === 'nuclear-arsenal') return arsenalStructureRows(validateNuclearArsenal(raw));
   if (product === 'wargoals') {
     const r = raw as WargoalsReply;
     return [...r.goals.map(g => JSON.stringify(['goal', g.handle, g.actor, g.recipient, g.name, g.available, g.expires])),
@@ -99,14 +97,6 @@ export function recordedPanelRows(product: string, raw: unknown): string[] {
 const nextDay = (hour: number) => (Math.floor(hour / 24) + 1) * 24;
 
 export const panelViews: Readonly<Record<string, PanelView>> = {
-  'nuclear-arsenal': {
-    nextChange: (_reply, hour) => nextDay(hour),
-    structure: raw => arsenalStructure(validateNuclearArsenal(raw)),
-    values(raw, _live, hour) {
-      const reply = validateNuclearArsenal(raw);
-      return new Map([['empty', arsenalNotice(reply, hour)]]);
-    },
-  },
   'research-slots': recordView(validateResearchSlots, slotsStructure, (reply, source, hour) =>
     slotValues(reply, hour, slot => source.get(liveKey(String(slot), 'progress'))),
     { rowAttribute: 'data-research-slot', layers: '.research-lanes,.active-rows', meters: '.research-now-meter' },

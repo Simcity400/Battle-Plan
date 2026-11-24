@@ -1,4 +1,5 @@
 import { ellipsise, layoutEndLabels } from '../../charts/labels.ts';
+import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { MeasureText } from '../../charts/textWidth.ts';
 import { linearTicks } from '../../charts/valueAxis.ts';
 import { monthNames } from '../../dashboard/calendar.ts';
@@ -459,14 +460,14 @@ export function layoutTimeChart(
         id: s.id,
         seriesId: s.id,
         anchorVal: end.value,
-        color: isNegative ? '#ff6b6f' : s.color,
+        color: isNegative ? CHART_MEASURE_COLOURS.shortInk : s.color,
         faded: hoveredSeriesId != null && hoveredSeriesId !== s.id,
         flag: s.endLabel.flag,
         icon: s.endLabel.icon,
         name: nameText,
         fullName: s.endLabel.fullName ?? s.name,
         value: s.endLabel.value,
-        valueColor: isNegative ? '#ff6b6f' : s.endLabel.valueColor,
+        valueColor: isNegative ? CHART_MEASURE_COLOURS.shortInk : s.endLabel.valueColor,
         valueMuted: s.endLabel.valueMuted,
         estWidth,
       });
@@ -519,7 +520,7 @@ export function layoutTimeChart(
           id: '__total__',
           seriesId: '__total__',
           anchorVal: tv,
-          color: model.stack.total.color ?? '#f5f5f5',
+          color: model.stack.total.color ?? CHART_MEASURE_COLOURS.lightInk,
           faded: false,
           icon: el.icon,
           name: null,

@@ -3,6 +3,7 @@ import type { IconName } from '../../components/Icons';
 import type { MenuItem } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
+import { DEFAULT_DARK_SURFACE } from '../../charts/palette.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
@@ -206,7 +207,7 @@ export default function DeclaredFamilyWidget<
     () => (plan.displayedCtx && settingsPolicy ? { ...plan.displayedCtx, settings } : plan.displayedCtx),
     [plan.displayedCtx, settingsPolicy, settings],
   );
-  const surfaceColor = theme?.surface ?? '#111111';
+  const surfaceColor = theme?.surface ?? DEFAULT_DARK_SURFACE;
   const projectionOptions = useMemo(
     () => (displayedCtx ? declaration.projectionOptions(displayedCtx, { extent, surface: surfaceColor }) : ({} as TProjectionOptions)),
     [displayedCtx, declaration.projectionOptions, extent, surfaceColor],

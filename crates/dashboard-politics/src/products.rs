@@ -14,7 +14,6 @@ pub mod technology_artwork;
 pub mod focus_dto;
 
 dashboard_base::reply_warnings!(
-    focus_artwork::FocusArtworkReply,
     national_focus::FocusReply,
     technology_artwork::TechnologyArtworkReply,
 );
