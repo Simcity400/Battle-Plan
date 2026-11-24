@@ -1,13 +1,13 @@
 import type { BoundedReadView } from '../../families/contract.ts';
-import { projectCountryFlow, scaledAmount } from '../../families/flow/countryFlow.ts';
-import { countryFlowPlan, flowPerSide } from '../../families/flow/countryFlowPlan.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
+import { flowEndpointKey, flowSideNotes, presentFlowEndpoint, projectCountryFlow, scaledAmount, UNKNOWN_COUNTRY } from '../../families/flow/countryFlow.ts';
+import { countryFlowPlan, flowPerSide, flowUnavailable } from '../../families/flow/countryFlowPlan.ts';
 import type { FlowWidgetDeclaration } from '../../families/flow/declaration.ts';
 import type { FlowProjection } from '../../families/flow/model.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
 import { resolveEntityFromReadView } from '../../families/heat/scale.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { countryRowPresentation } from '../../families/bars/model.ts';
 import type { TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import { formatCompactScalar, formatScalar, type ValueFormat } from '../../families/valueFormat.ts';
@@ -48,6 +48,7 @@ export const tradeFlowDeclaration: FlowWidgetDeclaration = {
   sources: (ctx, view) => countryFlowPlan(ctx, 'trade-flow', { limit: flowPerSide(view) }),
   projection: tradeFlowProjection,
   projectionOptions: () => EMPTY_OPTIONS,
+  unavailable: flowUnavailable,
   jumpToDate: true,
 };
 
@@ -69,7 +70,10 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
   if (!reply) return blank({ empty: NOT_RECORDED, emptyKind: 'unavailable' });
   if (reply.missing) return blank({ empty: NOT_RECORDED, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings });
   if (reply.subject === null) return blank({ empty: 'Choose one country to see its trade by partner and resource.', emptyKind: 'unavailable' });
-  if (!reply.table.length) return blank({ empty: NO_TRADE, warnings: reply.warnings });
+  const notes = flowSideNotes(reply.incoming, reply.outgoing);
+  if (!reply.table.length) {
+    return notes.length ? blank({ empty: NOT_RECORDED, emptyDetail: notes.join(' '), emptyKind: 'unavailable', warnings: reply.warnings }) : blank({ empty: NO_TRADE, warnings: reply.warnings });
+  }
   const used = reply.parts.map((_, part) => reply.table.some(row => row.cells[part] !== '0'));
   const signedCellFormat = signedFormat(reply.decimals);
   const partColumns: TableColumnSpec[] = reply.parts.flatMap((part, at) => used[at] ? [{
@@ -85,14 +89,14 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
     sortable: false,
     hideable: true,
   } satisfies TableColumnSpec] : []);
-  const subject = countryRowPresentation(readView, reply.countries[reply.subject]!);
+  const subject = presentFlowEndpoint(readView, reply.endpoints[reply.subject]!);
   const rows: TableRow[] = reply.table.map(row => {
-    const tag = reply.countries[row.country]!;
-    const partner = countryRowPresentation(readView, tag);
-    const name: Value = partner.labelMissing ? notRecorded('Country name not recorded at this date') : knownValue(partner.label);
-    const icon = partner.media.iconUrl;
+    const partner = presentFlowEndpoint(readView, reply.endpoints[row.partner]!);
+    const name: Value = partner.labelMissing ? notRecorded(partner.unknown ?? 'Country name not recorded at this date') : knownValue(partner.label);
+    const icon = partner.flag?.status === 'ready' ? partner.flag.url : undefined;
+    const flags = partner.unknown ? {} : { flags: [{ tag: partner.tag ?? partner.label, ...(icon ? { icon } : {}), ...(partner.flag?.status === 'pending' ? { pending: true } : {}) }] };
     const cells: Record<string, TableRow['cells'][string]> = {
-      partner: { value: name, flags: [{ tag, ...(icon ? { icon } : {}), ...(partner.media.art.status === 'pending' ? { pending: true } : {}) }] },
+      partner: { value: name, ...flags },
       net: { value: signed(row.net, 'An amount with this partner was not recorded'), format: signedCellFormat },
     };
     reply.parts.forEach((part, at) => {
@@ -103,7 +107,7 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
         ? { value, blank: true }
         : { value, format: signedCellFormat };
     });
-    return { key: tag, name: partner.label, cells, tooltipTitle: `${partner.label} and ${subject.label}` };
+    return { key: partner.key, name: partner.label, cells, tooltipTitle: `${partner.label} and ${subject.label}` };
   });
   return {
     hour,
@@ -111,7 +115,7 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
     rows,
     unsorted: true,
     titleSummary: `Per day · + imports into ${subject.label}, − exports from it`,
-    ...(reply.partial ? { notes: [reply.partial] } : {}),
+    ...(notes.length ? { notes } : {}),
     warnings: reply.warnings,
   };
 }
@@ -146,31 +150,36 @@ export function projectTradeMatrix(readView: BoundedReadView): HeatMatrixModel {
   const reply = readView.panel<CountryFlowReply>('main');
   if (!reply) return blank({ empty: NOT_RECORDED, emptyKind: 'unavailable' });
   if (reply.missing) return blank({ empty: NOT_RECORDED, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings });
-  if (!reply.links.length) return blank({ empty: NO_TRADE, warnings: reply.warnings });
+  const notes = flowSideNotes(reply.senders, reply.receivers);
+  if (!reply.links.length) {
+    return notes.length ? blank({ empty: NOT_RECORDED, emptyDetail: notes.join(' '), emptyKind: 'unavailable', warnings: reply.warnings }) : blank({ empty: NO_TRADE, warnings: reply.warnings });
+  }
   const entity = (index: number): MatrixAxisEntity => {
-    const tag = reply.countries[index]!;
-    const shown = resolveEntityFromReadView(readView, 'country', tag, hour, tag);
+    const endpoint = reply.endpoints[index]!;
+    const id = flowEndpointKey(endpoint);
+    if (endpoint.slot === null) return { id, label: UNKNOWN_COUNTRY, shortLabel: '?', nameMissing: endpoint.unknown ?? UNKNOWN_COUNTRY, flag: null, flagPending: false };
+    const shown = resolveEntityFromReadView(readView, 'country', countryKey(endpoint.slot), hour, endpoint.tag ?? UNKNOWN_COUNTRY, endpoint.unknown);
     return {
-      id: tag,
+      id,
       label: shown.label,
-      shortLabel: tag,
-      tag,
+      shortLabel: endpoint.tag ?? id,
+      ...(endpoint.tag ? { tag: endpoint.tag } : {}),
       ...(shown.nameMissing ? { nameMissing: shown.nameMissing } : {}),
       ...(shown.color ? { color: shown.color } : {}),
       flag: shown.flag ?? null,
       flagPending: shown.pending === true,
     };
   };
-  const rows = reply.senders.flatMap(link => (link.from === null ? [] : [entity(link.from)]));
-  const columns = reply.receivers.flatMap(link => (link.to === null ? [] : [entity(link.to)]));
-  const rowAt = new Map(rows.map((row, at) => [row.id, at]));
-  const columnAt = new Map(columns.map((column, at) => [column.id, at]));
+  const rowOf = new Map<number, number>();
+  const columnOf = new Map<number, number>();
+  const rows = reply.senders.links.flatMap(link => (link.from === null ? [] : (rowOf.set(link.from, rowOf.size), [entity(link.from)])));
+  const columns = reply.receivers.links.flatMap(link => (link.to === null ? [] : (columnOf.set(link.to, columnOf.size), [entity(link.to)])));
   const width = columns.length;
   const cells = new Map<number, CountryFlowReply['links'][number]>();
   for (const link of reply.links) {
     if (link.from === null || link.to === null) continue;
-    const r = rowAt.get(reply.countries[link.from]!);
-    const c = columnAt.get(reply.countries[link.to]!);
+    const r = rowOf.get(link.from);
+    const c = columnOf.get(link.to);
     if (r !== undefined && c !== undefined) cells.set(r * width + c, link);
   }
   const shownFmt = amountFormat(reply.decimals);
@@ -190,7 +199,7 @@ export function projectTradeMatrix(readView: BoundedReadView): HeatMatrixModel {
     hour,
     rows,
     columns,
-    cells: { present, absent: { kind: 'empty', label: 'No trade', audit: '0' }, self: { kind: 'diagonal', text: '—' } },
+    cells: { present, absent: notes.length ? { kind: 'missing', reason: notes.join(' ') } : { kind: 'empty', label: 'No trade', audit: '0' }, self: { kind: 'diagonal', text: '—' } },
     shape: 'wide',
     ramp: 'accent',
     corner: 'Exporter ↓ · importer →',
@@ -213,7 +222,7 @@ export function projectTradeMatrix(readView: BoundedReadView): HeatMatrixModel {
         })),
       };
     },
-    ...(reply.partial ? { notes: [reply.partial] } : {}),
+    ...(notes.length ? { notes } : {}),
     warnings: reply.warnings,
   };
 }
@@ -235,5 +244,6 @@ export const tradeMatrixDeclaration: HeatMatrixWidgetDeclaration = {
   sources: ctx => countryFlowPlan(ctx, 'trade-flow', {}, null),
   projection: tradeMatrixProjection,
   projectionOptions: () => EMPTY_OPTIONS,
+  unavailable: flowUnavailable,
   jumpToDate: true,
 };

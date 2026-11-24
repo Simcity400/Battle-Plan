@@ -23,6 +23,20 @@ fn name(raw: u32) -> Option<&'static str> {
 }
 
 #[test]
+fn a_region_total_and_its_rank_need_every_owner_there_known() {
+    let sea = BTreeSet::from([3, 4]);
+    let rows = vec![witness(1, 10), amount(1, 3, 100), amount(1, 4, 900), witness(2, 4)];
+    let fold = fold(&rows, name, |_| true, false, &sea);
+    assert_eq!(fold.mined.iter().map(|region| (region.region, region.unknown_owners)).collect::<Vec<_>>(), [(3, 0), (4, 1)],
+        "a proven total of 100 ranks before a partial sum of 900 beside ENG, whose read does not reach region 4");
+    assert_eq!(fold.proven, BTreeSet::from([3]));
+    let cells = dashboard_follow::live::Cells::default();
+    register_live(&fold, &cells).unwrap();
+    let summed: Vec<u128> = cells.finish().groups.into_iter().filter(|group| group.scope == dashboard_query::coverage::CoverageScope::Table).flat_map(|group| group.keys).collect();
+    assert_eq!(summed, [u128::from(1u32) << 33 | 1 << 32 | 3], "only the proven region has a total, so no share is drawn beside an unknown owner");
+}
+
+#[test]
 fn a_witness_proves_regions_below_it_empty_and_everything_else_stays_unknown() {
     let sea = BTreeSet::from([3, 5, 12, 15]);
     let fold = fold(&rows(), name, |_| true, false, &sea);
@@ -42,7 +56,9 @@ fn owners_not_asked_are_not_shown_and_lost_rows_leave_every_region_unknown() {
     let sea = BTreeSet::from([3]);
     let fold = fold(&rows(), name, |tag| tag == "GER", true, &sea);
     assert_eq!(fold.mined[0].owners.len(), 1);
-    assert_eq!(fold.mined[0].unknown_owners, 2, "the unnamed owner and the rows the hour lost");
+    assert_eq!(fold.mined[0].unknown_owners, 1, "the unnamed owner; how many owners the lost rows hid is not known, so never counted");
+    assert_eq!(fold.mined[0].missing.as_deref(), Some(UNREAD), "the lost rows are named as such instead");
+    assert!(fold.proven.is_empty(), "a region with an unknown owner has no total");
     let empty = super::fold(&[witness(1, 10)], name, |_| true, false, &BTreeSet::from([3]));
     assert_eq!(empty, Fold::default(), "a complete witness with no rows is no mines and nothing unknown");
 }

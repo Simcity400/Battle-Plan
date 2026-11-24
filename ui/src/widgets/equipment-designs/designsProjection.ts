@@ -5,7 +5,7 @@ import type { TableWidgetDeclaration } from '../../families/table/declaration.ts
 import { urlArtHandle } from '../../families/art/provider.ts';
 import { artKindCell } from '../../families/table/identityCell.ts';
 import type { TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import type { EquipmentDesignsReply } from '../../generated/dashboard';
@@ -46,7 +46,7 @@ export const DESIGN_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(column => 
   ...(column.key === 'view' ? { cellKind: 'action' as const, sortable: false } : {}),
 }));
 
-export const designsProjection: TableProjection<DesignsProjectionOptions> = registerTableProjection({
+export const designsProjection: TableProjection<DesignsProjectionOptions> = registerFamilyProjection({
   kind: 'equipment-designs',
   family: 'table',
   project(readView, options): TableModel {

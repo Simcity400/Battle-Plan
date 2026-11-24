@@ -3,24 +3,25 @@ import { test } from 'node:test';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
-import type { CountryFactionGoalsReply, FactionDetailReply, FactionGoalDefinition } from '../../generated/dashboard';
-import { factionGoalsProjection } from './factionGoalsProjection.ts';
+import type { CountryFactionGoalsReply, CountryGoal, FactionGoalDefinition } from '../../generated/dashboard';
+import { factionGoalsDeclaration, factionGoalsProjection } from './factionGoalsProjection.ts';
+import type { FamilyPlanContext } from '../../families/plan.ts';
 
 const definition = (name: string | null): FactionGoalDefinition => ({
   token: name, name, description: null, icon: null, category: null, categoryName: null, bands: [], reason: name ? null : 'Goal name is not localised',
 } as FactionGoalDefinition);
 
-const detail = (extra: Partial<FactionDetailReply> = {}): FactionDetailReply => ({
-  branchId: '1', faction: '9', logo: null, definitions: [definition('Conquest and Domination'), definition('Secure North Africa'), definition(null)],
-  manifest: null, goals: [{ ordinal: 0, definition: 0, status: 0, activeSections: [] }, { ordinal: 1, definition: 1, status: 0, activeSections: [] }],
-  completed: [2], cancelled: [], goalReason: null, resources: null, manpower: null, manpowerUnlocked: null, researchUnlocked: null,
-  researchCountries: null, doctrineFolders: null, refusals: [], warnings: [], ...extra,
+const goal = (key: string, definition: number, state: CountryGoal['state'], ordinal: number | null, unrecognisedStatus: number | null = null): CountryGoal =>
+  ({ key, definition, state, ordinal, unrecognisedStatus });
+
+const reply = (extra: Partial<CountryFactionGoalsReply> = {}): CountryFactionGoalsReply => ({
+  faction: '9', definitions: [definition('Conquest and Domination'), definition('Secure North Africa'), definition(null)],
+  goals: [goal('goal:0', 0, 'inProgress', 0), goal('goal:1', 1, 'inProgress', 1), goal('completed:0', 2, 'completed', null)],
+  goalReason: null, membershipMissing: null, warnings: [], ...extra,
 });
 
-const reply = (extra: Partial<CountryFactionGoalsReply> = {}): CountryFactionGoalsReply => ({ faction: detail(), membershipMissing: null, warnings: [], ...extra });
-
-const project = (raw: unknown, live: Map<string, number> = new Map(), goals: 'all' | 'inProgress' | 'completed' = 'all') =>
-  factionGoalsProjection.project(createBoundedReadView({ hour: 50, panels: new Map([['main', raw]]), live: new Map([['main', valuesOf(live, 'Not in the answer')]]) }), { goals });
+const project = (raw: unknown, live: Map<string, number> = new Map()) =>
+  factionGoalsProjection.project(createBoundedReadView({ hour: 50, panels: new Map([['main', raw]]), live: new Map([['main', valuesOf(live, 'Not in the answer')]]) }), {});
 
 test('a held goal shows its recorded progress; one without a measure does not apply; a completed goal holds none; a missing cell is missing', () => {
   const model = project(reply(), new Map([[liveKey('goal:0', 'progress'), 96100], [liveKey('goal:1', 'progress'), 92233720124192]]));
@@ -33,10 +34,17 @@ test('a held goal shows its recorded progress; one without a measure does not ap
   assert.equal(project(reply()).rows[0]!.cells.progress!.value.kind, 'notRecorded', 'no progress cell is never zero');
 });
 
-test('the goals filter keeps the chosen state; membership unknown, no faction and unrecorded goals are the body states', () => {
-  assert.deepEqual(project(reply(), new Map(), 'completed').rows.map(row => row.key), ['completed:0']);
+test('the goals filter goes to the product; an unrecognised state is not called in progress; membership unknown, no faction and unrecorded goals are the body states', () => {
+  const params = (goals: string | undefined) => {
+    const ctx = { track: { source: { id: 's', revision: 'r' }, axisOffset: 0 }, branch: { id: '1' }, countryTag: 'GER', options: goals === undefined ? {} : { goals } } as unknown as FamilyPlanContext;
+    return (factionGoalsDeclaration.sources(ctx, { following: true, staticSpan: null }).entries[0]!.read as unknown as { params: { goals: string } }).params.goals;
+  };
+  assert.deepEqual([params('completed'), params('inProgress'), params(undefined)], ['completed', 'inProgress', 'all']);
+  const strange = project(reply({ goals: [goal('goal:5', 0, 'unrecognised', 5, 9)] })).rows[0]!;
+  assert.equal(strange.cells.state!.value.kind, 'notRecorded');
+  assert.equal(strange.cells.state!.tone, 'grey');
   const unknown = project(reply({ faction: null, membershipMissing: 'Faction memberships are not known at this hour' }));
   assert.deepEqual([unknown.emptyKind, unknown.empty], ['unavailable', 'Faction memberships are not known at this hour']);
   assert.equal(project(reply({ faction: null })).emptyKind, 'empty');
-  assert.equal(project(reply({ faction: detail({ goals: [], completed: [], goalReason: 'Goals were not read at this hour' }) })).emptyKind, 'unavailable');
+  assert.equal(project(reply({ goals: [], definitions: [], goalReason: 'Goals were not read at this hour' })).emptyKind, 'unavailable');
 });

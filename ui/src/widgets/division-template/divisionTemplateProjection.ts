@@ -7,7 +7,7 @@ import {
   type TableProjection,
   type TooltipExtraRow,
 } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, valueFromNullable, type Value } from '../../families/value.ts';
 import { formatDateHover, formatScalar } from '../../families/valueFormat.ts';
@@ -158,7 +158,7 @@ export function divisionTemplateColumns(): TableColumnSpec[] {
 const yesNoValue = (value: boolean | null): Value<string> =>
   value === null ? notRecorded('Setting not recorded') : knownValue(value ? 'Yes' : 'No');
 
-export const divisionTemplateProjection: TableProjection<DivisionTemplateProjectionOptions> = registerTableProjection(
+export const divisionTemplateProjection: TableProjection<DivisionTemplateProjectionOptions> = registerFamilyProjection(
   declareTableProjection<DivisionTemplatesReply, TemplateRow, DivisionTemplateProjectionOptions>({
     kind: 'division-template',
     validate: validateDivisionTemplates,
