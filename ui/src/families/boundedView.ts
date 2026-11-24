@@ -52,6 +52,14 @@ export interface BoundedWorkCounter {
   allocations: number;
 }
 
+const sliceSources = new WeakMap<readonly unknown[], object>();
+
+function sliceSourceOf(source: readonly unknown[]): object {
+  let token = sliceSources.get(source);
+  if (!token) sliceSources.set(source, token = {});
+  return token;
+}
+
 export function createBoundedSlice<T>(
   source: readonly T[],
   closedLength: number,
@@ -60,6 +68,7 @@ export function createBoundedSlice<T>(
   const hasTail = tail !== undefined;
   const length = closedLength + (hasTail ? 1 : 0);
   return {
+    source: sliceSourceOf(source),
     closedLength,
     length,
     ...(hasTail ? { tail } : {}),

@@ -169,6 +169,7 @@ export interface CompiledFollowSubscription {
 }
 
 export interface BoundedSlice<T> extends Iterable<T> {
+  readonly source: object;
   readonly closedLength: number;
   readonly length: number;
   readonly tail?: T;
