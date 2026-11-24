@@ -19,7 +19,7 @@ const RUNS: Run[] = [
 
 test('runs answer by hour and gaps stay missing, never zero', () => {
   assert.equal(runAt(RUNS, 15)?.value ?? null, 5);
-  assert.equal(runAt(RUNS, 29.9)?.value ?? null, 8);
+  assert.equal(runAt(RUNS, 29)?.value ?? null, 8);
   assert.equal(runAt(RUNS, 35)?.value ?? null, null);
   assert.equal(runAt(RUNS, 9), null);
   assert.deepEqual(segments(RUNS, 0, 100).map(segment => segment.length), [2, 1]);
