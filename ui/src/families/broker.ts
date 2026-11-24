@@ -464,6 +464,7 @@ export function playbackIdleInterval(
     return read.params && read.buildExactParams ? [raw, raw] : [-Infinity, Infinity];
   }
   if (read.shape !== 'branch-to-hour' && read.shape !== 'trailing-window' && read.shape !== 'range') return [-Infinity, Infinity];
+  if (read.shape === 'branch-to-hour' && gap) return unrecorded();
   if (!read.params) return [-Infinity, Infinity];
   if (read.buildSpanParams || (read.shape === 'trailing-window' && options.countriesKnown)) return [raw, raw];
   return unrecorded();
@@ -501,6 +502,7 @@ export function buildPlaybackBoundedRequest(
 
   if (read.shape === 'branch-to-hour') {
     if (read.followQuery !== null) return null;
+    if (options.gate.recorded(cur) === null) return null;
     return spanSpec(read, first);
   }
 
