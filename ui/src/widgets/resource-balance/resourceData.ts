@@ -1,3 +1,7 @@
+import { drawGapSummary, drawLineSummary, summaryExtent } from '../../charts/chartSummary.ts';
+import type { ChartSummary } from '../../charts/chartSummary';
+import { SECONDARY_DASH } from '../../charts/palette.ts';
+import type { ChartLayer } from '../../charts/TimeChart';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { artworkUrlValue } from '../../dashboard/payload.ts';
 import { chosenShown, largestToken, toggleChosen as toggleKit } from '../../dashboard/chosen.ts';
@@ -300,3 +304,32 @@ export const segmentLook = (raw: bigint, colour: string | undefined) => raw < 0n
 
 export const legendFlags = (balances: readonly (Balance | null)[]) =>
   `${balances.some(balance => balance && balance.fromSubjects !== 0n)}|${balances.some(balance => balance && balance.toOverlord !== 0n)}`;
+
+export interface ResourceTimeLine { id: string; color: string }
+
+export function resourceTimeLayers(lines: readonly ResourceTimeLine[], shade: boolean,
+  supplyOf: (id: string) => ChartSummary | undefined, demandOf: (id: string) => ChartSummary | undefined,
+  untilOf: () => number | null): ChartLayer[] {
+  return [
+    ...shade && lines.length === 1 ? [{ draw: (ctx, frame, chartTokens, state) => {
+      const id = lines[0].id, high = supplyOf(id), low = demandOf(id);
+      if (high && low) drawGapSummary(ctx, frame, chartTokens, high, low, chartTokens.positive, chartTokens.error, state.playhead);
+    } } satisfies ChartLayer] : [],
+    ...lines.flatMap(line => [
+      {
+        draw: (ctx, frame, chartTokens, state) => {
+          const drawn = supplyOf(line.id);
+          if (drawn) drawLineSummary(ctx, frame, chartTokens, drawn, line.color, false, state.playhead);
+        },
+        extent: x => { const drawn = supplyOf(line.id); return drawn ? summaryExtent(drawn, x, untilOf()) : null; },
+      },
+      {
+        draw: (ctx, frame, chartTokens, state) => {
+          const drawn = demandOf(line.id);
+          if (drawn) drawLineSummary(ctx, frame, chartTokens, drawn, line.color, false, state.playhead, { dash: SECONDARY_DASH, endDot: false });
+        },
+        extent: x => { const drawn = demandOf(line.id); return drawn ? summaryExtent(drawn, x, untilOf()) : null; },
+      },
+    ] satisfies ChartLayer[]),
+  ];
+}
