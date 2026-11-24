@@ -77,6 +77,8 @@ export interface ResolvedBreakdownLevel {
   readonly total: BreakdownTotal;
 }
 
+const TOOLTIP_PARTS = 8;
+
 export function formatShare(share: number | null | undefined): string {
   if (share == null || !Number.isFinite(share) || share < 0) return '';
   const pct = share * 100;
@@ -243,6 +245,13 @@ export function buildBreakdownTooltip(
   if (part.detailRows) {
     for (const row of part.detailRows) items.push(row);
   }
+  const shown = part.notRecorded ? [] : (part.children ?? []).slice(0, TOOLTIP_PARTS);
+  shown.forEach((child, at) => items.push({
+    label: child.name,
+    ...(child.notRecorded || child.value === null ? { missingReason: child.missingReason ?? 'Not recorded' } : { value: unit ? `${child.text} ${unit}` : child.text }),
+    indent: true,
+    ...(at === 0 ? { divider: true } : {}),
+  }));
   const subtitle = part.subtitle ?? (parent ? parent.name : undefined);
   const note = [part.note, level.total.atLeast ? level.total.reason : undefined]
     .filter((entry): entry is string => Boolean(entry && entry.trim()))
