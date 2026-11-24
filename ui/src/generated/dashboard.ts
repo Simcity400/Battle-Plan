@@ -5022,11 +5022,20 @@ export type DoctrineRewardsReply = {
  */
 sub: string | null, rewards: Array<DescribedReward>, warnings: Array<string>, };
 export type DoctrineRewardsParamsAtHour = DoctrineRewardsParams & { hour: number };
+export type MinefieldOrder = "mines" | "name";
 export type MinefieldsParams = { branchId: string,
 /**
  * The owners shown; every owner when none.
  */
-countries: Array<CountryRef> | null, };
+countries: Array<CountryRef> | null,
+/**
+ * The sea regions shown; every mined region when none.
+ */
+regions?: Array<number>,
+/**
+ * Region ordering; defaults to most mines.
+ */
+order?: MinefieldOrder, };
 export type MineOwner = { tag: string, };
 export type MinedRegion = { region: number, owners: Array<MineOwner>, unknownOwners: number, };
 export type UnknownRegion = { region: number, unknownOwners: number, };
@@ -6139,7 +6148,11 @@ regions?: Array<number>,
 /**
  * The air theatres whose regions are shown; all when none.
  */
-theatres?: Array<string>, };
+theatres?: Array<string>,
+/**
+ * Region ordering; omitted preserves region-id order.
+ */
+order?: AirRegionOrder, };
 export type AirSuperiorityReply = {
 /**
  * Why no comparison is shown at the hour.
@@ -6158,6 +6171,7 @@ viewpoint: number | null, viewpointCountryStyle?: AirCountryStyle, regions: Arra
  */
 fallback: AirCell, scale: number, badBelow: number, goodAbove: number, warnings: Array<string>, };
 export type AirMode = "sides" | "viewpoint";
+export type AirRegionOrder = "contested" | "active" | "name";
 export type AirAnchor = { tag: string, hour: number, };
 export type AirSide = { key: string,
 /**
@@ -6517,7 +6531,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "air-missions": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "air-statistics": { "branchId": "leaf", "channel": "leaf", "country": "any", "hour": "leaf" },
   "air-statistics-regions": { "branchId": "leaf", "country": "any" },
-  "air-superiority": { "branchId": "leaf", "hour": "leaf", "mode": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
+  "air-superiority": { "branchId": "leaf", "hour": "leaf", "mode": "leaf", "order": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "air-superiority-choices": { "branchId": "leaf" },
   "air-superiority-ranking": { "branchId": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "mode": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "tile": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "air-superiority-timeline": { "branchId": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "mode": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "tile": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
@@ -6619,7 +6633,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "military-air-ledger": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "family": "leaf", "fromHour": "leaf", "regions": "node", "regions[]": "leaf", "top": "node", "top.count": "leaf", "top.metric": "leaf", "window": "leaf" },
   "minefield-history": { "branchId": "leaf", "countries": "node", "countries[]": "any", "firstHour": "leaf", "lastHour": "leaf", "region": "leaf" },
   "minefield-reports": { "branchId": "leaf", "hour": "leaf", "region": "leaf" },
-  "minefields": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
+  "minefields": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "order": "leaf", "regions": "node", "regions[]": "leaf" },
   "national-focus": { "branchId": "leaf", "country": "any" },
   "naval-battle-details": { "battles": "node", "battles[]": "node", "battles[].hour": "leaf", "battles[].id": "leaf", "branchId": "leaf" },
   "naval-battles": { "branchId": "leaf", "window": "leaf" },

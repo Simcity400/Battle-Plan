@@ -22,6 +22,7 @@ import {
   FutureBarsDataError,
   hitFamilyBars,
   InvalidBarsModelError,
+  axisCeiling,
   layoutFamilyBars,
   registerBarsProjection,
   type BarsModel,
@@ -455,4 +456,14 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
   } finally {
     (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = origOffscreen;
   }
+});
+
+test('an ordered scale with an axis ends on the next round tick, so the largest bar stops short of it', () => {
+  assert.equal(axisCeiling(293), 300);
+  assert.equal(axisCeiling(300), 300);
+  assert.equal(axisCeiling(1061), 1500);
+  assert.equal(axisCeiling(0), 0);
+  const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
+  const layout = layoutFamilyBars({ form: 'ordered', hour: h, showAxis: true, rows: [{ kind: 'data', key: 'GER', label: 'German Reich', value: { value: knownValue(293) }, numeric: 293 }] }, 600, 300);
+  assert.equal(layout.scaleMax, 300);
 });
