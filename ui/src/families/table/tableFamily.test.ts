@@ -40,6 +40,7 @@ import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partia
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { computeColumnMaxima, declareTableProjection, tableRank, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
 import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
+import { LaneArtCache } from '../art/laneCache.ts';
 import { treeLevelsOf, treeTextStart } from './cellPainters.ts';
 import { TREE_CHEVRON_LANE } from './layout.ts';
 import { computeRowLayout, TABLE_WINDOW_OVERSCAN, tableRowWindow } from './layout.ts';
@@ -2717,4 +2718,127 @@ test('the audit compares which art a cell shows, never whether its bytes have ar
   assert.equal(pictureError('table', arrived, { values: new Map(arriving.map(row => [row.key, row.value!])), ordered: true }), null);
   const other = audit({ ...base, rows: base.rows.map(row => ({ ...row, cells: { ...row.cells, [column]: { ...row.cells[column]!, iconSlot: true, iconArt: JSON.stringify(['sprite', 'GFX_other', 0, null, false]), iconPending: true } } })) });
   assert.notEqual(pictureError('table', arrived, { values: new Map(other.map(row => [row.key, row.value!])), ordered: true }), null, 'a different picture is still a difference');
+});
+
+test('cold table art and flag slots waiting behind the fetch concurrency limit paint as pending, not confirmed missing', () => {
+  const artCache = new LaneArtCache({
+    maxConcurrent: 6,
+    fetchBitmap: () => new Promise<ImageBitmap>(() => {}),
+  });
+  const columns: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true, widest: ['Country 7'] },
+    { key: 'badge', label: 'Kind', as: 'plain', offered: ['plain'], priority: 1, cellKind: 'kind', widest: ['Kind'] },
+  ];
+  const settings = tableSettingsOf(undefined, columns, { density: 'compact', sort: { column: 'country', direction: 'ascending' } });
+  const baseCols = buildColumnLayouts(columns, settings);
+  const fixedWidths = measureFixedColumnWidths(baseCols, settings, TEST_THEME, text => text.length * 7);
+  const layout = layoutFamilyTable(buildColumnLayouts(columns, settings, fixedWidths), 320, { rankShown: false, rankWidth: 0 });
+
+  const flagUrls = Array.from({ length: 7 }, (_, i) => `art://flag-${i + 1}`);
+  const iconUrls = Array.from({ length: 7 }, (_, i) => `art://icon-${i + 1}`);
+  artCache.requestVisible([...flagUrls, ...iconUrls]);
+  assert.equal(artCache.stateOfUrl(flagUrls[0]!), 'pending');
+  assert.equal(artCache.stateOfUrl(flagUrls[6]!), 'unrequested');
+  assert.equal(artCache.stateOfUrl(iconUrls[6]!), 'unrequested');
+
+  const rows = resolveTableRows({
+    columns,
+    hour: 10,
+    rows: Array.from({ length: 7 }, (_, i) => ({
+      key: `R${i + 1}`,
+      name: `Country ${i + 1}`,
+      cells: {
+        country: {
+          value: knownValue(`Country ${i + 1}`),
+          country: `T0${i + 1}`,
+          iconSlot: true,
+          icon: flagUrls[i]!,
+        },
+        badge: {
+          value: knownValue(`Icon ${i + 1}`),
+          iconSlot: true,
+          icon: iconUrls[i]!,
+          artName: `Icon ${i + 1}`,
+        },
+      },
+    })),
+  }, settings);
+
+  const texts: string[] = [];
+  let roundRectCalls = 0;
+  const base = instrumentedContext().ctx;
+  const recordingCtx = {
+    ...base,
+    measureText(text: string) {
+      return { width: text.length * 5 };
+    },
+    fillText(text: string) {
+      texts.push(text);
+    },
+    roundRect() {
+      roundRectCalls++;
+    },
+  } as unknown as CanvasRenderingContext2D;
+
+  drawFamilyTable(recordingCtx, {
+    layout,
+    rows,
+    settings,
+    hour: 10,
+    width: 320,
+    height: 400,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 1,
+    glideDuration: 0,
+    glide: new Map(),
+    artCache,
+    icons: artCache.map,
+    iconVersion: artCache.version,
+    dpr: 1,
+  });
+
+  assert.equal(texts.includes('T07'), false, '7th queued flag waiting behind concurrency limit must not draw missing tag text');
+  assert.equal(roundRectCalls, 0, 'queued unrequested art and flag slots must stay pending with no hatched missing box');
+
+  const missingRows = resolveTableRows({
+    columns,
+    hour: 10,
+    rows: [{
+      key: 'M1',
+      name: 'No Art',
+      cells: {
+        country: { value: knownValue('No Art'), country: 'MIS', iconSlot: true },
+        badge: { value: knownValue('Missing'), iconSlot: true, artName: 'Missing' },
+      },
+    }],
+  }, settings);
+  texts.length = 0;
+  roundRectCalls = 0;
+  drawFamilyTable(recordingCtx, {
+    layout,
+    rows: missingRows,
+    settings,
+    hour: 10,
+    width: 320,
+    height: 120,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 2,
+    glideDuration: 0,
+    glide: new Map(),
+    artCache,
+    icons: artCache.map,
+    iconVersion: artCache.version,
+    dpr: 1,
+  });
+  assert.ok(roundRectCalls > 0, 'confirmed-unavailable table art and flag slots still paint the hatched missing box');
+  assert.ok(texts.includes('MIS'), 'confirmed-unavailable flag slot still paints the country tag');
+  artCache.dispose();
 });

@@ -13,6 +13,7 @@ import {
   failedArt,
   productArt,
   readyArt,
+  unavailableArt,
   type ArtOrigin,
   type ArtProvenance,
   type ArtResolution,
@@ -155,6 +156,7 @@ export function resolveCachedArt(
     const url = options?.iconUrl ?? art.url;
     const bmp = options?.icons?.get(url);
     if (bmp) return { ...art, bitmap: bmp };
+    if (bmp === null) return unavailableArt('Artwork unavailable');
   }
   return art;
 }
