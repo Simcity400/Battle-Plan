@@ -397,6 +397,39 @@ test('a changed static answer, option or source mapping crosses once and rebuild
   }
 });
 
+registerFamilyProjection<FamilyProjection<Model, Options>>({
+  kind: 'windowed',
+  family: 'test-lane',
+  project(view: BoundedReadView): Model {
+    counts.project++;
+    const first = view.rowWindow?.first ?? 0;
+    return { hour: view.hour, bucket: 0, rows: [{ key: `row ${first}`, v: first }], name: '' };
+  },
+});
+
+test('a row window change re-projects only a projection that read the window', () => {
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(family, () => {}), recording.canvases);
+    const rows = rowsAt([{ key: 'A', v: 1 }]);
+    const at = (first: number) => ({ first, count: 10 });
+    lane.paint({ label: 'plain', binding: binding(rows, DOWN, { window: at(0) }), hour: 12 });
+    reset();
+    lane.paint({ label: 'plain, scrolled', binding: binding(rows, DOWN, { window: at(40) }), hour: 12 });
+    assert.equal(counts.project, 0, 'a projection that never read the window is reused');
+    const windowed = (first: number) => ({ ...binding(rows, DOWN, { window: at(first) }), kind: 'windowed' });
+    lane.paint({ label: 'windowed', binding: windowed(0), hour: 12 });
+    reset();
+    lane.paint({ label: 'windowed, same window', binding: windowed(0), hour: 12 });
+    assert.equal(counts.project, 0);
+    lane.paint({ label: 'windowed, scrolled', binding: windowed(40), hour: 12 });
+    assert.equal(counts.project, 1, 'a projection that read the window projects the new one');
+    assert.deepEqual(lane.picture(), ['t:0:0=#eef1f6|row 40 40  0']);
+  } finally {
+    recording.restore();
+  }
+});
+
 const GLIDE_MS = 100;
 const gliding: LaneFamily<Binding, Model, Layout> = {
   ...family,

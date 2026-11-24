@@ -1,6 +1,7 @@
 dashboard_base::register_products! {
     RESEARCH_RESEARCH => crate::products::research::Research,
     RESEARCH_BREAKDOWN_RESEARCHBREAKDOWN => crate::products::research::breakdown::ResearchBreakdown,
+    RESEARCH_HISTORY_RESEARCHHISTORYAT => crate::products::research::history::ResearchHistoryAt,
 }
 
 dashboard_base::register_hourly_products! {
