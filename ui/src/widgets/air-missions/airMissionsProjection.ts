@@ -15,7 +15,7 @@ const NO_OPTIONS: Record<string, never> = {};
 type MissionRow = { readonly region: AirMissionRegion; readonly flown: ReadonlySet<string> };
 
 const REGION_COLUMN: DeclarativeColumnSpec<MissionRow, Record<string, never>> = {
-  ...COLUMNS[0]!, priority: 0, text: true, hideable: false, widest: ['Eastern Poland'],
+  ...COLUMNS[0]!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Eastern Poland'],
   value: row => textValue(row.region.name, row.region.missing ?? 'Region name unavailable'),
 };
 
@@ -77,7 +77,7 @@ export const airMissionsDeclaration: TableWidgetDeclaration<Record<string, never
   label: 'Air missions by region',
   subject: 'air missions',
   emptyCampaign: 'Load a campaign to see air missions.',
-  icon: 'plane',
+  icon: 'chart-line',
   optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its air missions.' },
   sources: ctx => {
