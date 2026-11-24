@@ -90,9 +90,9 @@ fn a_countrys_ideas_are_spans_of_held_tokens_and_an_advisor_span_keeps_its_seat_
 fn identity_starts_are_named_through_one_seeker_as_each_hour_alone_names_them() {
     let source = recording();
     let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let read = super::history(&source, 1, &"GER".into(), &AtomicBool::new(false)).unwrap();
-    assert_eq!(read.0.identity_starts, [100, 116]);
-    for (named, &hour) in read.1.iter().zip(&read.0.identity_starts) {
+    let read = super::history(&source, 1, &"GER".into()).unwrap();
+    assert_eq!(read.ideas.identity_starts, [100, 116]);
+    for (named, &hour) in read.naming.iter().zip(&read.ideas.identity_starts) {
         let mut alone = dashboard_base::products::at_hour::Frames::new(&query).unwrap();
         assert_eq!(*named, super::naming_at(&mut alone, hour, GER).unwrap(), "hour {hour}: a seeker moved on from the start before names it as a fresh read does");
     }

@@ -113,6 +113,7 @@ export const ideaTimelineDeclaration: TimelineWidgetDeclaration<IdeaTimelineOpti
             params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
             buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
             provenInterval: ideaHistoryProof,
+            dynamicKeys: ['hour'],
             validate: validateIdeaHistoryReply,
           },
         }]

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::{Arc, PoisonError, atomic::AtomicBool},
+    sync::{Arc, Mutex, PoisonError, Weak, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -891,14 +891,14 @@ pub(crate) struct Asked<'a> {
 }
 
 pub(crate) fn present(
-    content: &PoliticsContent,
+    content: &Arc<PoliticsContent>,
     asked: &Asked<'_>,
-    ideas: &Ideas,
-    naming: &[NamingCountry],
+    read: &Read,
     recorded: Option<&BTreeMap<String, ModifierDefinitionRow>>,
     cancelled: &AtomicBool,
 ) -> io::Result<IdeaHistoryReply> {
     let (tag, hour) = (asked.tag, asked.hour);
+    let ideas = &read.ideas;
     let mut warnings = vec![format!(
         "{}; visual assets are outside content hash coverage.",
         dashboard_base::products::artwork::CURRENT_INSTALL_ART_LABEL
@@ -910,7 +910,6 @@ pub(crate) fn present(
         warnings.push(format!("Idea categories and laws may be incomplete: {gap}."));
     }
     warnings.extend(ideas.warnings.iter().filter(|(_, at)| **at <= hour).map(|(warning, _)| (*warning).to_owned()));
-    let unnamed = NamingCountry::default();
     let mut looks: Vec<IdeaLook> = Vec::new();
     let mut keyed: BTreeMap<(HoldingKey<'_>, Option<usize>), u32> = BTreeMap::new();
     let mut unplaced: BTreeSet<&str> = BTreeSet::new();
@@ -923,8 +922,7 @@ pub(crate) fn present(
         let at = match keyed.get(&key) {
             Some(&at) => at,
             None => {
-                let named = identity.and_then(|identity| naming.get(identity)).unwrap_or(&unnamed);
-                let (found, problem) = look(content, span, ideas.templates.get(&holding.span), named.for_tag(tag));
+                let (found, problem) = read.looked(content, tag, holding.span);
                 if found.info.category.is_none() {
                     unplaced.insert(span.token.as_str());
                 }
@@ -987,17 +985,61 @@ pub(crate) fn present(
     })
 }
 
-#[derive(Default)]
-struct Kept(Option<(u64, Country, Arc<(Ideas, Vec<NamingCountry>)>)>);
+type Looked = (IdeaLook, Option<String>);
 
-pub(crate) fn history(source: &Source, branch: u64, tag: &Country, cancelled: &AtomicBool) -> io::Result<Arc<(Ideas, Vec<NamingCountry>)>> {
-    let state = source.state::<Kept>();
-    let held = state.lock().unwrap_or_else(PoisonError::into_inner).0.as_ref().filter(|(at, held, _)| *at == branch && *held == *tag).map(|(_, _, read)| Arc::clone(read));
-    if let Some(read) = held {
-        return Ok(read);
+pub(crate) struct Read {
+    pub ideas: Ideas,
+    pub naming: Vec<NamingCountry>,
+    looks: Mutex<(Weak<PoliticsContent>, Vec<Option<Looked>>)>,
+}
+
+impl Read {
+    fn looked(&self, content: &Arc<PoliticsContent>, tag: &str, run: usize) -> Looked {
+        let mut kept = self.looks.lock().unwrap_or_else(PoisonError::into_inner);
+        if !kept.0.upgrade().is_some_and(|held| Arc::ptr_eq(&held, content)) {
+            *kept = (Arc::downgrade(content), vec![None; self.ideas.spans.len()]);
+        }
+        kept.1[run]
+            .get_or_insert_with(|| {
+                let span = &self.ideas.spans[run];
+                let unnamed = NamingCountry::default();
+                let identity = self.ideas.identity_starts.partition_point(|start| *start <= span.first_hour).checked_sub(1);
+                let named = identity.and_then(|identity| self.naming.get(identity)).unwrap_or(&unnamed);
+                look(content, span, self.ideas.templates.get(&run), named.for_tag(tag))
+            })
+            .clone()
+    }
+}
+
+type HeldHistory = Arc<Read>;
+
+const KEPT_HISTORIES: usize = 8;
+
+#[derive(Default)]
+struct Kept(Vec<((u64, Country), Arc<Mutex<Option<HeldHistory>>>)>);
+
+pub(crate) fn history(source: &Source, branch: u64, tag: &Country) -> io::Result<HeldHistory> {
+    let slot = {
+        let state = source.state::<Kept>();
+        let mut kept = state.lock().unwrap_or_else(PoisonError::into_inner);
+        let key = (branch, tag.clone());
+        let entry = match kept.0.iter().position(|(held, _)| *held == key) {
+            Some(at) => kept.0.remove(at),
+            None => (key, Arc::new(Mutex::new(None))),
+        };
+        let slot = Arc::clone(&entry.1);
+        kept.0.push(entry);
+        if kept.0.len() > KEPT_HISTORIES {
+            kept.0.remove(0);
+        }
+        slot
+    };
+    let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(read) = held.as_ref() {
+        return Ok(Arc::clone(read));
     }
     let query = dashboard_base::queries::query(source, branch)?;
-    let ideas = read(&query, tag, cancelled)?;
+    let ideas = read(&query, tag, &AtomicBool::new(false))?;
     let mut frames = dashboard_base::products::at_hour::Frames::new(&query)?;
     let naming = ideas
         .identity_starts
@@ -1005,8 +1047,8 @@ pub(crate) fn history(source: &Source, branch: u64, tag: &Country, cancelled: &A
         .zip(&ideas.starts)
         .map(|(&hour, &(_, _, id))| naming_at(&mut frames, hour, id))
         .collect::<io::Result<Vec<_>>>()?;
-    let read = Arc::new((ideas, naming));
-    state.lock().unwrap_or_else(PoisonError::into_inner).0 = Some((branch, tag.clone(), Arc::clone(&read)));
+    let read = Arc::new(Read { ideas, naming, looks: Mutex::new((Weak::new(), Vec::new())) });
+    *held = Some(Arc::clone(&read));
     Ok(read)
 }
 
@@ -1049,17 +1091,17 @@ impl Product for IdeaHistory {
         let content = politics_content(source, context.content()?)?;
         let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
         let query = dashboard_base::queries::query(source, branch)?;
-        let (read, recorded) = rayon::join(|| history(source, branch, &params.country, cancelled), || recorded_definitions(source, &query));
+        let (read, recorded) = rayon::join(|| history(source, branch, &params.country), || recorded_definitions(source, &query));
         let (read, recorded) = (read?, recorded?);
         let hour = params.hour.min(query.timeline.last);
         let unrecorded = if hour < query.timeline.first {
             Some(BEFORE_BRANCH.to_owned())
         } else {
-            read.0.unread_at(hour).then(|| NOT_READ.to_owned())
+            read.ideas.unread_at(hour).then(|| NOT_READ.to_owned())
         };
         let tag = query.holders.name(&params.country, hour);
         let asked = Asked { params, tag: &tag, hour, unrecorded };
-        let reply = present(&content, &asked, &read.0, &read.1, (*recorded).as_ref(), cancelled)?;
+        let reply = present(&content, &asked, &read, (*recorded).as_ref(), cancelled)?;
         check_reply_budget(&reply)?;
         Ok(reply)
     }

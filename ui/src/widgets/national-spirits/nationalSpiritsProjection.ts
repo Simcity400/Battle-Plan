@@ -100,6 +100,7 @@ export const nationalSpiritsDeclaration: CardWidgetDeclaration<NationalSpiritsOp
             params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
             buildSpanParams: (base, span) => ({ ...base, hour: span.lastHour }),
             provenInterval: ideaHistoryProof,
+            dynamicKeys: ['hour'],
             validate: validateIdeaHistoryReply,
           },
         }]
