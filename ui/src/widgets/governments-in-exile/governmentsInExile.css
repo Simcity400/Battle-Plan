@@ -1,4 +1,0 @@
-.governments-in-exile { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.governments-in-exile > .chart-table { flex: 1; }
-.exile-legitimacy { display: flex; align-items: stretch; gap: var(--space-1); flex-direction: column; min-width: 0; line-height: var(--type-md); }
-.exile-header-count { margin-left: 8px; }
