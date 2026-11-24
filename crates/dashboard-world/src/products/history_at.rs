@@ -4,7 +4,7 @@ use super::subjects::{LevelStep, SubjectReply, SubjectRun};
 use dashboard_base::products::{BranchParams, LoadContext, Product};
 use dashboard_base::{Source, span::HourSpan};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, io, sync::atomic::AtomicBool};
+use std::{io, sync::atomic::AtomicBool};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -147,10 +147,9 @@ pub(crate) fn subjects_at(reply: &SubjectReply, hour: i32) -> (SubjectReply, Opt
         }
         runs.push(SubjectRun { last_hour: last, steps: cut(&run.steps, last, &[]), ..run.clone() });
     }
-    let named: BTreeSet<&str> = runs.iter().flat_map(|run| run.steps.iter().filter_map(|step| step.level.as_deref())).collect();
     let cut_reply = SubjectReply {
         branch_id: reply.branch_id.clone(),
-        levels: reply.levels.iter().filter(|level| named.contains(level.token.as_str())).cloned().collect(),
+        levels: reply.levels.clone(),
         runs,
         unobserved: cut(&reply.unobserved, hour, &[]),
         warnings: reply.warnings.clone(),
