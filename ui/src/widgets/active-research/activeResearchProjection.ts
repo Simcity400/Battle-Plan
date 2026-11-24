@@ -239,6 +239,9 @@ export const activeResearchProjection: MeterProjection<ActiveResearchProjectionO
     const staleCaption = readView.hour - oldestReadHour >= 24
       ? `As of ${formatDateOnly(oldestReadHour)}`
       : undefined;
+    if (oldestReadHour + 24 > readView.hour) nextBoundary = Math.min(nextBoundary, oldestReadHour + 24);
+    const unread = items.filter(item => item.kind === 'unavailable').length;
+    const slotsText = `${researchingCount} of ${items.length} ${items.length === 1 ? 'slot' : 'slots'}`;
 
     return {
       hour: readView.hour,
@@ -247,7 +250,7 @@ export const activeResearchProjection: MeterProjection<ActiveResearchProjectionO
       sections: [{
         key: 'researching',
         title: 'Researching',
-        count: `${researchingCount} of ${items.length} ${items.length === 1 ? 'slot' : 'slots'}`,
+        count: unread ? `${slotsText} · ${unread} not recorded` : slotsText,
         rightCaption: staleCaption,
         rows,
       }],

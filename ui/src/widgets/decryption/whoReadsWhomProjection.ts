@@ -1,14 +1,14 @@
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import type { HeatMatrixModel, HeatMatrixProjection, MatrixAxisEntity, MatrixCell, MatrixCells } from '../../families/heat/matrixModel.ts';
 import { registerHeatMatrixProjection } from '../../families/heat/matrixRegistry.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
-import type { CipherPair } from '../../generated/dashboard';
+import type { CipherCounts, CipherPair } from '../../generated/dashboard';
 import { OPTIONS } from './definition.ts';
 import { pairKey, percentOf } from './decryptionData.ts';
 import {
   decryptionFilterOptions,
   decryptionNextChange,
   decryptionSources,
+  brokenText,
   pairTooltipItems,
   readCipherNumbers,
   readDecryption,
@@ -27,6 +27,15 @@ function entity(country: ResolvedCountry, trailing?: string): MatrixAxisEntity {
     flag: country.flagHandle,
     ...(trailing ? { trailing } : {}),
   };
+}
+
+function ownerTotal(counts: CipherCounts): string {
+  return [
+    `Broken ${counts.broken}`,
+    `Decrypting ${counts.decrypting}`,
+    ...(counts.paused ? [`Paused ${counts.paused}`] : []),
+    ...(counts.breakUnknown ? [`Not known ${counts.breakUnknown}`] : []),
+  ].join(' · ');
 }
 
 function firstSeen(pairs: readonly CipherPair[], side: 'owner' | 'target'): number[] {
@@ -68,12 +77,11 @@ export const whoReadsWhomProjection: HeatMatrixProjection<DecryptionFilterOption
     }
 
     const { pairs, country, reply, live } = frame;
-    const byOwner = new Map<number, { broken: number; decrypting: number; country: ResolvedCountry }>();
+    const byOwner = new Map<number, { counts: CipherCounts; country: ResolvedCountry }>();
     const byCell = new Map<string, CipherPair>();
     for (const pair of pairs) {
-      const held = byOwner.get(pair.owner.id) ?? { broken: 0, decrypting: 0, country: country(pair.owner) };
-      if (pair.broken === true) held.broken++;
-      else held.decrypting++;
+      const held = byOwner.get(pair.owner.id) ?? { counts: { broken: 0, decrypting: 0, paused: 0, breakUnknown: 0 }, country: country(pair.owner) };
+      held.counts[pair.status]++;
       byOwner.set(pair.owner.id, held);
       byCell.set(`${pair.owner.id}:${pair.target.id}`, pair);
     }
@@ -82,7 +90,7 @@ export const whoReadsWhomProjection: HeatMatrixProjection<DecryptionFilterOption
     const targetIds = firstSeen(pairs, 'target');
     const rows = ownerIds.map(id => {
       const held = byOwner.get(id)!;
-      return entity(held.country, `Broken ${held.broken} · Decrypting ${held.decrypting}`);
+      return entity(held.country, ownerTotal(held.counts));
     });
     const columns = targetIds.map(id => entity(country(targetsById.get(id)!)));
 
@@ -103,8 +111,8 @@ export const whoReadsWhomProjection: HeatMatrixProjection<DecryptionFilterOption
         items: pairTooltipItems(pair, reply, numbers, owner, target, percent),
       };
       const color = owner.colour ?? '';
-      if (pair.broken === true) {
-        const date = pair.brokenAt ? formatDateOnly(pair.brokenAt.hour) : 'Date not recorded';
+      if (pair.status === 'broken') {
+        const date = brokenText(pair.brokenAt) ?? 'Date not recorded';
         present.set(at, { kind: 'value', mark: 'square', color, tooltip, audit: `${pairKey(pair)}|broken|${date}`, selectable: true });
       } else if (percent === null) {
         const reason = pair.thresholdUnknown ?? (numbers.missing || 'Progress not recorded');

@@ -13,7 +13,8 @@ const reward = (value: unknown): value is MasteryReward => !!value && typeof val
 const track = (value: unknown): value is MasteryTrack => {
   const item = value as MasteryTrack;
   return !!item && typeof item === 'object' && Number.isSafeInteger(item.ordinal) && optional(item.name) && (item.sub === null || choice(item.sub))
-    && Array.isArray(item.rewards) && item.rewards.every(reward) && Number.isSafeInteger(item.unlocked);
+    && Array.isArray(item.rewards) && item.rewards.every(reward) && Number.isSafeInteger(item.unlocked)
+    && (item.rewardsUnknown === null || (typeof item.rewardsUnknown === 'string' && item.rewardsUnknown.length > 0 && item.rewards.length === 0));
 };
 
 export function validateDoctrineMastery(value: unknown): DoctrineMasteryReply {
