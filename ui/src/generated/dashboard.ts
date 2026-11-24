@@ -4177,14 +4177,20 @@ measure: string,
  */
 rule: string,
 /**
- * The countries whose territory is shown, by tag or `slot:N`; every country when none.
+ * The chosen countries: a tag is its holder at the hour, a slot is that recorded slot. Every country when
+ * empty and no group.
  */
-tags?: Array<string>, };
+countries: Array<CountryRef>,
+/**
+ * A group: its members at the hour (or every member so far), resolved in Rust; replaces `countries`.
+ */
+group?: GroupSelection, };
 export type TerritoryBreakdownReply = { hour: number,
 /**
- * Countries (key: the tag held at the hour, or `slot:N` for a slot no tag names, or `~unheld` for
- * land no country holds), each split by strategic region (`~region` where the region is not
- * recorded). States are counted to two decimals: a state split between holders counts by its share.
+ * Countries (key: `slot:N`, the recorded slot, named by the tag it holds at the hour or `other` where no
+ * tag names it; `~unheld` for land no country holds), each split by strategic region (`~region` where
+ * the region is not recorded). States are counted to two decimals: a state split between holders counts
+ * by its share.
  */
 breakdown: Breakdown, warnings: Array<string>, };
 export type TerritoryBreakdownParamsAtHour = TerritoryBreakdownParams & { hour: number };
@@ -7084,7 +7090,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "technology-artwork": { "recorded": "node", "recorded.*": "node", "recorded.*[]": "leaf", "tokens": "node", "tokens[]": "leaf" },
   "technology-effects": { "branchId": "leaf", "country": "any", "databaseIndex": "leaf", "hour": "leaf", "token": "leaf" },
   "template-roster": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "territory-breakdown": { "branchId": "leaf", "hour": "leaf", "measure": "leaf", "rule": "leaf", "tags": "node", "tags[]": "leaf" },
+  "territory-breakdown": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "measure": "leaf", "rule": "leaf" },
   "territory-share": { "branchId": "leaf", "hour": "leaf", "measure": "leaf" },
   "territory-transfers": { "branchId": "leaf", "through": "leaf" },
   "trade-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "resource": "leaf", "subject": "any", "table": "leaf" },
