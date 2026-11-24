@@ -196,9 +196,13 @@ pub struct SpendReconciliation {
     pub lost_at_cap_raw: Option<String>,
     #[doc = " Total recorded spending across the span, fixed5; none when not recorded whole."]
     pub spent_raw: Option<String>,
+    #[doc = " Total command power newly allocated to continuous assignments across the span, fixed5; none when not recorded whole."]
+    pub allocated_raw: Option<String>,
+    #[doc = " Total command power released from continuous assignments across the span, fixed5; none when not recorded whole."]
+    pub released_raw: Option<String>,
     #[doc = " Balance at the end of the span (`to`), fixed5; none when not recorded."]
     pub closing_raw: Option<String>,
-    #[doc = " Signed difference `closing - opening - (gained - lost_at_cap - spent)`, fixed5; none when any operand was not recorded."]
+    #[doc = " Signed difference `closing - opening - (gained - lost_at_cap - spent - allocated + released)`, fixed5; none when any operand was not recorded."]
     pub other_changes_raw: Option<String>,
     #[doc = " Why `other_changes_raw` or an operand was not recorded; none when all operands are recorded."]
     pub reason: Option<String>,
@@ -825,12 +829,41 @@ fn maps_to_slot(steps: &[(i32, Option<u32>)], hour: i32, slot: u32) -> bool {
     at > 0 && steps[at - 1].1 == Some(slot)
 }
 
+struct AllocationTotals {
+    allocated: Option<i128>,
+    released: Option<i128>,
+    unknown: u32,
+}
+
+impl Default for AllocationTotals {
+    fn default() -> Self {
+        Self { allocated: Some(0), released: Some(0), unknown: 0 }
+    }
+}
+
+impl AllocationTotals {
+    fn add_allocated(&mut self, amount: i128) {
+        self.allocated = self.allocated.and_then(|held| held.checked_add(amount));
+    }
+
+    fn add_released(&mut self, amount: i128) {
+        self.released = self.released.and_then(|held| held.checked_add(amount));
+    }
+
+    fn mark_unknown(&mut self) {
+        self.allocated = None;
+        self.released = None;
+        self.unknown = self.unknown.saturating_add(1);
+    }
+}
+
 fn instant_gains(
     query: &Query<'_>,
     piece: &Piece,
     currency: SpendCurrency,
     gain_coverage: &mut Vec<SpendCoverage>,
     buckets: &mut BTreeMap<(i32, Option<i32>), GainBucket>,
+    allocations: &mut AllocationTotals,
 ) -> io::Result<()> {
     let change_statuses = status_runs(query, piece.run, TableId::CountryPowerChanges, piece.first, piece.last, "Power changes")?;
     let link_statuses = status_runs(query, piece.run, TableId::CountryLinks, piece.first, piece.last, "Country links")?;
@@ -914,13 +947,46 @@ fn instant_gains(
             let Some(site) = Value::of(cells[order[8]]).number().and_then(|value| u16::try_from(value).ok()).and_then(|value| PowerSite::try_from(value).ok()) else {
                 continue;
             };
-            if is_hold(row_currency, site, cause) || matches!(cause, PowerCause::DailyGain | PowerCause::CapCorrection | PowerCause::ResetSetup | PowerCause::Console) {
-                continue;
-            }
             let event_hour = Value::of(cells[order[1]]).number().map(|value| value as i32);
             let before = Value::of(cells[order[4]]).number();
             let after = Value::of(cells[order[5]]).number();
             let requested = Value::of(cells[order[6]]).number();
+            if is_hold(row_currency, site, cause) {
+                match operation {
+                    PowerOperation::Clamp => {}
+                    PowerOperation::AllocationClamp => match before.zip(after) {
+                        Some((b, a)) => {
+                            let delta = i128::from(a) - i128::from(b);
+                            if delta < 0 {
+                                buckets.entry((step.hour, event_hour)).or_default().push(Some(0), Some(-delta), 0, 0, 0);
+                            }
+                        }
+                        None => {
+                            buckets.entry((step.hour, event_hour)).or_default().push(Some(0), None, 0, 1, 0);
+                        }
+                    },
+                    _ => match before.zip(after) {
+                        Some((b, a)) => {
+                            let delta = i128::from(a) - i128::from(b);
+                            if operation == PowerOperation::Refund
+                                && let Some(req) = requested.map(i128::from).filter(|&req| req > delta && delta >= 0)
+                            {
+                                allocations.add_released(req);
+                                buckets.entry((step.hour, event_hour)).or_default().push(Some(0), Some(req - delta), 0, 0, 0);
+                            } else if delta < 0 {
+                                allocations.add_allocated(-delta);
+                            } else if delta > 0 {
+                                allocations.add_released(delta);
+                            }
+                        }
+                        None => allocations.mark_unknown(),
+                    },
+                }
+                continue;
+            }
+            if matches!(cause, PowerCause::DailyGain | PowerCause::CapCorrection | PowerCause::ResetSetup | PowerCause::Console) {
+                continue;
+            }
             let entry = match operation {
                 PowerOperation::Grant | PowerOperation::Refund | PowerOperation::Add => match requested {
                     Some(req) if req > 0 => {
@@ -1061,7 +1127,7 @@ fn balance_at(runs: &[SpendBalanceRun], hour: i32) -> (Option<i128>, Option<Stri
     }
 }
 
-fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpendingReply) -> SpendReconciliation {
+fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpendingReply, allocations: &AllocationTotals) -> SpendReconciliation {
     let (from, to) = (params.from, params.to);
     let continuity_reason = if held.is_empty() {
         Some("Country was not held during this span".to_owned())
@@ -1150,11 +1216,20 @@ fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpending
     let gained = gains_ok.then_some(gained_sum).flatten();
     let lost_at_cap = gains_ok.then_some(capped_sum).flatten();
 
-    let (other_changes, reason) = match (continuity_reason.is_none(), opening, gained, lost_at_cap, spent, closing) {
-        (true, Some(open), Some(gain), Some(capped), Some(spend), Some(close)) => {
-            let other = close
-                .checked_sub(open)
-                .and_then(|delta| gain.checked_sub(capped).and_then(|net| net.checked_sub(spend)).and_then(|attributed| delta.checked_sub(attributed)));
+    let alloc_item_reason = (allocations.unknown > 0 || allocations.allocated.is_none() || allocations.released.is_none())
+        .then(|| "Some command power allocations were not recorded".to_owned());
+    let alloc_ok = continuity_reason.is_none() && spend_coverage_reason.is_none() && gain_coverage_reason.is_none() && alloc_item_reason.is_none();
+    let allocated = alloc_ok.then_some(allocations.allocated).flatten();
+    let released = alloc_ok.then_some(allocations.released).flatten();
+
+    let (other_changes, reason) = match (continuity_reason.is_none(), opening, gained, lost_at_cap, spent, allocated, released, closing) {
+        (true, Some(open), Some(gain), Some(capped), Some(spend), Some(alloc), Some(rel), Some(close)) => {
+            let attributed = gain
+                .checked_sub(capped)
+                .and_then(|net| net.checked_sub(spend))
+                .and_then(|net| net.checked_sub(alloc))
+                .and_then(|net| net.checked_add(rel));
+            let other = close.checked_sub(open).and_then(|delta| attributed.and_then(|value| delta.checked_sub(value)));
             let why = other.is_none().then(|| "Reconciliation arithmetic overflowed".to_owned());
             (other, why)
         }
@@ -1165,7 +1240,8 @@ fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpending
                 .or(opening_reason)
                 .or(closing_reason)
                 .or(spent_item_reason)
-                .or(gain_item_reason);
+                .or(gain_item_reason)
+                .or(alloc_item_reason);
             (None, why)
         }
     };
@@ -1175,6 +1251,8 @@ fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpending
         gained_raw: gained.map(|value| value.to_string()),
         lost_at_cap_raw: lost_at_cap.map(|value| value.to_string()),
         spent_raw: spent.map(|value| value.to_string()),
+        allocated_raw: allocated.map(|value| value.to_string()),
+        released_raw: released.map(|value| value.to_string()),
         closing_raw: closing.map(|value| value.to_string()),
         other_changes_raw: other_changes.map(|value| value.to_string()),
         reason,
@@ -1215,6 +1293,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     let mut credits: BTreeMap<u32, u32> = BTreeMap::new();
     let mut day_gap_hours: BTreeMap<String, u64> = BTreeMap::new();
     let mut gain_buckets: BTreeMap<(i32, Option<i32>), GainBucket> = BTreeMap::new();
+    let mut allocations = AllocationTotals::default();
     let mut unmatched = 0_u64;
     let has_day_log = query.replay.recording().predates(TableId::PowerSpendDays.index()).is_none();
     let held = pieces(query, &params.country, params.from, params.to)?;
@@ -1223,7 +1302,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         let coverage_start = reply.coverage.len();
         coverage(query, piece, currency, &mut reply.coverage)?;
         balances(query, piece, currency, &mut reply.balances)?;
-        instant_gains(query, piece, currency, &mut reply.gain_coverage, &mut gain_buckets)?;
+        instant_gains(query, piece, currency, &mut reply.gain_coverage, &mut gain_buckets, &mut allocations)?;
         let items = items_at(query, piece.slot, piece.last)?;
         let low = u128::from(piece.slot) << 40 | u128::from(currency.code()) << 32;
         let mut missing = 0_u64;
@@ -1298,7 +1377,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
             unmatched: bucket.unmatched,
         })
         .collect();
-    reply.reconciliation = reconcile(params, &held, &reply);
+    reply.reconciliation = reconcile(params, &held, &reply, &allocations);
     let rows: Vec<naming::Asked<'_>> = asked.iter().map(|(run, row)| naming::Asked { run: *run, row }).collect();
     let mut icons = BTreeMap::new();
     let named = naming::name(query, &rows, naming, &mut icons, cancelled)?;

@@ -3982,11 +3982,19 @@ lostAtCapRaw: string | null,
  */
 spentRaw: string | null,
 /**
+ * Total command power newly allocated to continuous assignments across the span, fixed5; none when not recorded whole.
+ */
+allocatedRaw: string | null,
+/**
+ * Total command power released from continuous assignments across the span, fixed5; none when not recorded whole.
+ */
+releasedRaw: string | null,
+/**
  * Balance at the end of the span (`to`), fixed5; none when not recorded.
  */
 closingRaw: string | null,
 /**
- * Signed difference `closing - opening - (gained - lost_at_cap - spent)`, fixed5; none when any operand was not recorded.
+ * Signed difference `closing - opening - (gained - lost_at_cap - spent - allocated + released)`, fixed5; none when any operand was not recorded.
  */
 otherChangesRaw: string | null,
 /**
