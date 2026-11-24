@@ -268,7 +268,7 @@ test('worker projection registry loads table and bars projections lazily on dema
   const matrixWakes: number[] = [];
   const matrixView = drawnViews('heat-matrix', wid => matrixWakes.push(wid))!;
   const matrixBinding = { family: 'heat-matrix', kind: 'synthetic-heat-matrix', options: {}, sources: {}, width: 100, height: 100, scrollLeft: 0, scrollTop: 0 };
-  assert.equal(matrixView.next!({ widget: 7, subs: [], pictures: [], model: matrixBinding }, 50), null, 'a loading projection proves no boundary, so the lane paints at its target and walks no history');
+  assert.equal(matrixView.next!({ widget: 7, subs: [], pictures: [], model: matrixBinding }, 50), null, 'a loading projection locates no change, so the lane paints at its target and walks no history');
   for (let i = 0; i < 16 && !matrixWakes.length; i++) await Promise.resolve();
   assert.equal(heatMatrixLoads, 1);
   assert.deepEqual(matrixWakes, [7]);
@@ -277,7 +277,7 @@ test('worker projection registry loads table and bars projections lazily on dema
   const lanesWakes: number[] = [];
   const lanesView = drawnViews('heat-lanes', wid => lanesWakes.push(wid))!;
   const lanesBinding = { family: 'heat-lanes', kind: 'synthetic-heat-lanes', options: {}, sources: {}, width: 100, height: 100, scrollTop: 0 };
-  assert.equal(lanesView.next!({ widget: 9, subs: [], pictures: [], model: lanesBinding }, 50), null, 'a loading projection proves no boundary, so the lane paints at its target and walks no history');
+  assert.equal(lanesView.next!({ widget: 9, subs: [], pictures: [], model: lanesBinding }, 50), null, 'a loading projection locates no change, so the lane paints at its target and walks no history');
   for (let i = 0; i < 16 && !lanesWakes.length; i++) await Promise.resolve();
   assert.equal(heatLanesLoads, 1);
   assert.deepEqual(lanesWakes, [9]);
