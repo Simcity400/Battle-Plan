@@ -17,7 +17,7 @@ const input = { war, observation, losses: null, hour: 15, until: 40, branchLast:
 test('participant contribution hovers preserve exact fixed-point credit and negative lend-lease', () => {
   const content = warTooltip({ ...input,
     participant: { tag: 'other', run: { tag: 'other', side: 'opponent', firstHour: 10, lastHour: 20, joinedBy: false, leftBy: false } },
-    contributions: { viewpointSide: ['opaque-player'], opposingSide: ['other'], reason: null, participants: [{
+    contributions: { viewpointSide: ['opaque-player'], opposingSide: ['other'], reason: null, measures: [], participants: [{
       tag: 'other', side: 'opponent', equipmentDamage: '9007199254740993', occupation: '1', airDamage: '2', strategicBombing: '3',
       shipDamage: '4', convoyDamage: '5', casualties: '6', unknownCasualties: '7', lendLeaseSent: '8', lendLeaseReceived: '-12345',
       score: '54321', participation: '32768',
