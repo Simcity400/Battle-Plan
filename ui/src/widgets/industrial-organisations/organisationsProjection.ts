@@ -28,10 +28,10 @@ const HOURS_A_DAY = 24;
 
 export function validateOrganisations(value: unknown): IndustrialOrganisationsReply {
   const reply = value as IndustrialOrganisationsReply;
-  if (!object(reply) || typeof reply.tag !== 'string' || !TEXT(reply.missing) || !TEXT(reply.detailsMissing) || !Array.isArray(reply.warnings)
+  if (!object(reply) || typeof reply.tag !== 'string' || !TEXT(reply.missing) || !Array.isArray(reply.warnings)
     || !Array.isArray(reply.icons) || !reply.icons.every(icon => object(icon) && typeof icon.key === 'string' && typeof icon.image === 'string')
     || !Array.isArray(reply.organisations) || !reply.organisations.every(row => object(row) && /^\d{1,20}$/.test(row.id) && typeof row.token === 'string'
-      && [row.name, row.nameUnknown, row.icon, row.iconUnknown, row.policyToken, row.policyName, row.policyUnknown].every(TEXT)
+      && [row.name, row.nameUnknown, row.icon, row.iconUnknown, row.policyToken, row.policyName, row.policyUnknown, row.detailsMissing].every(TEXT)
       && [row.size, row.traits, row.cooldownHour].every(COUNT))) {
     throw new Error('Invalid industrial organisations reply');
   }
@@ -58,10 +58,10 @@ export function cooldownDays(cooldownHour: number | null, hour: number): number 
   return days > 0 ? days : null;
 }
 
-function policyValue(row: OrganisationNow, detailsMissing: string | null): Value<string> {
+function policyValue(row: OrganisationNow): Value<string> {
   if (row.policyName) return knownValue(row.policyName);
   if (row.policyToken !== null || row.policyUnknown !== null) return notRecorded(row.policyUnknown ?? 'Policy name not recorded');
-  return row.size === null ? notRecorded(detailsMissing ?? 'Policy not recorded') : knownValue('None');
+  return row.size === null ? notRecorded(row.detailsMissing ?? 'Policy not recorded') : knownValue('None');
 }
 
 function funds(value: Value): Value {
@@ -102,10 +102,10 @@ export const organisationsProjection: TableProjection<OrganisationsProjectionOpt
         cells: {
           kind: artKindCell(readView, urlArtHandle(image), 'wide', row.name),
           organisation: { value: row.name ? knownValue(row.name) : notRecorded(row.nameUnknown ?? 'Organisation name not recorded') },
-          size: { value: count(row.size, reply.detailsMissing ?? 'Size not recorded'), format: 'integer' },
-          funds: { value: funds(valueFromLive(live, liveKey(row.id, 'funds'), reply.detailsMissing ? { overrideMissing: reply.detailsMissing } : undefined)), format: 'integer' },
-          traits: { value: count(row.traits, reply.detailsMissing ?? 'Traits not recorded'), format: 'integer' },
-          policy: { value: policyValue(row, reply.detailsMissing) },
+          size: { value: count(row.size, row.detailsMissing ?? 'Size not recorded'), format: 'integer' },
+          funds: { value: funds(valueFromLive(live, liveKey(row.id, 'funds'), row.detailsMissing ? { overrideMissing: row.detailsMissing } : undefined)), format: 'integer' },
+          traits: { value: count(row.traits, row.detailsMissing ?? 'Traits not recorded'), format: 'integer' },
+          policy: { value: policyValue(row) },
           view: { value: options.canOpen ? knownValue('View') : notApplicable('The policy window is not available yet') },
         },
         tooltipExtra: extra,

@@ -5,7 +5,7 @@ import { identityCell, newIdentityBoundary } from '../../families/table/identity
 import type { TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
+import { knownValue, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { TerritoryTransfersReply } from '../../generated/dashboard';
 import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
@@ -22,9 +22,9 @@ export function validateTransfers(value: unknown): TerritoryTransfersReply {
   if (!object(value) || typeof value.branchId !== 'string' || !integer(value.through) || !count(value.transfers)
     || !(value.nextChange === null || integer(value.nextChange))
     || !Array.isArray(value.countries) || !value.countries.every(row => object(row) && typeof row.key === 'string' && opaqueTag(row.tag) && integer(row.hour)
-      && count(row.gained) && count(row.lost) && integer(row.net)
+      && count(row.gained) && count(row.lost) && (row.net === null || integer(row.net))
       && (row.netVictoryPoints === null || (typeof row.netVictoryPoints === 'string' && /^-?\d+$/.test(row.netVictoryPoints))) && optionalText(row.victoryPointsMissing))
-    || !Array.isArray(value.unobserved) || !value.unobserved.every(span => object(span) && integer(span.firstHour) && integer(span.lastHour))
+    || !optionalText(value.partial)
     || !Array.isArray(value.warnings) || value.warnings.some(warning => typeof warning !== 'string'))
     throw new Error('The territory transfers reply is malformed.');
   return value as unknown as TerritoryTransfersReply;
@@ -53,6 +53,7 @@ function filterNext(filter: DeclaredCountryFilter, hour: number): number {
 }
 
 const whole = (value: number): Value => (value === 0 ? zeroValue(0) : knownValue(value));
+const observed = (value: number, partial: string | null): Value => (partial === null ? whole(value) : partialValue(value, partial, { atLeast: true }));
 
 export const transfersProjection: TableProjection<TransfersProjectionOptions> = registerTableProjection({
   kind: 'territory-transfers',
@@ -75,9 +76,9 @@ export const transfersProjection: TableProjection<TransfersProjectionOptions> = 
         name: country.tag,
         cells: {
           country: identityCell(readView, 'country', country.tag, { atHour: Math.min(country.hour, hour), boundary }),
-          gained: { value: whole(country.gained), format: 'integer' },
-          lost: { value: whole(country.lost), format: 'integer' },
-          net: { value: whole(country.net) },
+          gained: { value: observed(country.gained, reply.partial), format: 'integer' },
+          lost: { value: observed(country.lost, reply.partial), format: 'integer' },
+          net: { value: country.net === null ? notRecorded(reply.partial ?? 'Net not recorded') : whole(country.net) },
           victoryPoints: { value: points === null ? notRecorded(country.victoryPointsMissing ?? 'Victory points not recorded') : points === 0n ? zeroValue(0n) : knownValue(points) },
         },
       });
@@ -88,9 +89,14 @@ export const transfersProjection: TableProjection<TransfersProjectionOptions> = 
       hour,
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
-      titleSummary: `${formatScalar(reply.transfers, 'integer')} ${reply.transfers === 1 ? 'transfer' : 'transfers'}`,
-      ...(rows.length === 0 ? { empty: 'No territory transfers yet', emptyKind: 'empty' as const } : {}),
-      warnings: reply.unobserved.length ? [...reply.warnings, 'Some settlements or ownership were not recorded before this date: the totals may be partial.'] : reply.warnings,
+      titleSummary: `${reply.partial === null ? '' : 'At least '}${formatScalar(reply.transfers, 'integer')} ${reply.transfers === 1 ? 'transfer' : 'transfers'}`,
+      ...(reply.partial !== null ? { titleSummaryPartial: reply.partial } : {}),
+      ...(rows.length === 0
+        ? reply.partial === null
+          ? { empty: 'No territory transfers yet', emptyKind: 'empty' as const }
+          : { empty: 'No transfers observed', emptyDetail: reply.partial, emptyKind: 'unavailable' as const }
+        : {}),
+      warnings: reply.warnings,
     };
   },
 });
