@@ -58,7 +58,7 @@ fn force_at_hour_ranks_top_and_withholds_unreconciled_parts() {
     use dashboard_follow::live::Cells;
     use dashboard_query::identity::{Holder, HolderRun, Holders};
     use replay_data::rows::{AirForcePartRow, AirForceTotalRow, Recorded, TableRows};
-    use replay_frame::frame::{DecodedFrame, Metrics, TableView};
+    use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TABLE_COUNT, TableView};
     use std::sync::atomic::AtomicBool;
 
     let mut holders = Holders::default();
@@ -66,7 +66,7 @@ fn force_at_hour_ranks_top_and_withholds_unreconciled_parts() {
     holders.tags.insert("ENG".into(), vec![HolderRun { first: 0, last: 100, holder: Holder::Found { slot: 2, id: 20 }, starts_segment: true }]);
     holders.tags.insert("FRA".into(), vec![HolderRun { first: 0, last: 100, holder: Holder::Found { slot: 3, id: 30 }, starts_segment: true }]);
 
-    let mut tables = std::array::from_fn(|_| TableView::Unavailable { reason: "outside test".into() }.into());
+    let mut tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| TableView::Unavailable { reason: "outside test".into() }.into());
     *tables[TableId::AirForceTotals.index()] = TableView::Complete(TableRows::AirForceTotals(vec![
         AirForceTotalRow { slot: 1, roster_planes: Recorded::Value(50), ..AirForceTotalRow::default() },
         AirForceTotalRow { slot: 2, roster_planes: Recorded::Value(80), ..AirForceTotalRow::default() },
@@ -97,7 +97,7 @@ fn force_at_hour_ranks_top_and_withholds_unreconciled_parts() {
     assert_eq!(reply.rows[1].values, vec![None]);
 
     let truncated_params = AirForceAtParams { countries: vec![Country::from("ENG"), Country::from("GER")], top: None, ..params };
-    let mut trunc_tables = std::array::from_fn(|_| TableView::Unavailable { reason: "outside test".into() }.into());
+    let mut trunc_tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| TableView::Unavailable { reason: "outside test".into() }.into());
     *trunc_tables[TableId::AirForceTotals.index()] = TableView::Truncated {
         rows: TableRows::AirForceTotals(vec![AirForceTotalRow { slot: 2, roster_planes: Recorded::Value(80), ..AirForceTotalRow::default() }]),
         missing: 1,
