@@ -2,8 +2,8 @@ import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import {
-  nextSeriesRaceChange,
   projectSeriesRace,
+  seriesRaceSelection,
   seriesRaceSources,
   seriesRaceUnavailable,
   seriesRaceWarnings,
@@ -18,12 +18,9 @@ export type WorldTensionRaceOptions = SeriesRaceBaseOptions;
 export const worldTensionRaceProjection: BarsProjection<WorldTensionRaceOptions> = registerFamilyProjection({
   kind: 'world-tension',
   family: 'bars',
-  nextChange(readView, options) {
-    return nextSeriesRaceChange(readView.hour, options);
-  },
+  nextChange: () => Infinity,
   project(readView: BoundedReadView, options: WorldTensionRaceOptions): BarsModel {
     return projectSeriesRace(readView, options, {
-      decimals: 5,
       valueFormat: { decimals: 0, maxDecimals: 2, percent: true },
       scaleFormat: { decimals: 0, maxDecimals: 1, percent: true },
       scaleUnit: 'World tension',
@@ -59,17 +56,7 @@ export const worldTensionRaceDeclaration: BarsWidgetDeclaration<WorldTensionRace
   },
   sources: worldTensionRaceSources,
   projection: worldTensionRaceProjection,
-  projectionOptions: ctx => {
-    const ranked = ctx.countries.top != null || ctx.countries.all;
-    return {
-      candidates: ranked ? ctx.countries.every : ctx.countries.tags,
-      holders: ranked ? null : ctx.countries.holders,
-      membership: ranked ? null : ctx.countries.membership,
-      unobserved: ranked ? [] : ctx.countries.unobserved,
-      top: ctx.countries.top,
-      all: ctx.countries.all,
-    };
-  },
+  projectionOptions: seriesRaceSelection,
   unavailable: seriesRaceUnavailable,
   warnings: (_ctx, followRefused) => seriesRaceWarnings(followRefused),
   jumpToDate: true,

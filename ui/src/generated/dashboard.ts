@@ -529,6 +529,10 @@ export type SeriesRankedReply = { branchId: string, measure: string, decimals: n
 export type SeriesRankMeasure = { name: string, decimals: number, };
 export type SeriesRankRow = { country: CountryRef,
 /**
+ * The recorded slot holding the country at the hour; none where its holder is not resolved.
+ */
+slot: number | null,
+/**
  * One reading per measure of the reply, in the reply's order, each with its own missing reason.
  */
 readings: Array<SeriesState>, };
