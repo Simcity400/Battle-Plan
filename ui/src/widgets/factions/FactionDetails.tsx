@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { useFactionDetails } from '../../dashboard/factionChoice';
-import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import type { BoundTrack, WidgetBase } from '../../dashboard/model';
 import { urlToArt } from '../../families/art/adapters.ts';
 import { useDomArt } from '../../families/art/react.ts';
 import { countryTagKey, useIdentity, useIdentityScope } from '../../families/identity/react.ts';
@@ -13,7 +13,7 @@ import './factionDetails.css';
 
 interface Props {
   readonly runtime: WidgetRuntime;
-  readonly widget: WidgetSpec;
+  readonly widget: WidgetBase;
   readonly track: BoundTrack;
   readonly view: FactionView;
   readonly hour: number;

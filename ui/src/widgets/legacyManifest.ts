@@ -2,7 +2,6 @@ import type { LegacyWidgetEntry } from '../families/manifest.ts';
 
 export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'air-kills-losses', view: 'lines', label: 'Lines', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
-  { kind: 'army-size', view: 'breakdown', label: 'Army breakdown', slots: ['render', 'countryChip'], load: () => import('./army-size') },
   { kind: 'autonomy', view: 'lines', label: 'Lines', load: () => import('./autonomy') },
   { kind: 'bombing-damage-breakdown', slots: ['render', 'countryChip'], load: () => import('./bombing-damage-breakdown') },
   { kind: 'casualties-breakdown', load: () => import('./casualties-breakdown') },
@@ -36,5 +35,4 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'resource-balance', load: () => import('./resource-balance') },
   { kind: 'ships-sunk', load: () => import('./ships-sunk') },
   { kind: 'territory', load: () => import('./territory') },
-  { kind: 'wars', load: () => import('./wars') },
 ];

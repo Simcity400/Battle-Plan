@@ -1,5 +1,4 @@
 import type { ChartBucket } from '../charts/chartSummary';
-import type { MarkSummary } from '../charts/markSummary';
 import type { Run } from '../charts/series';
 import { rowName, type FollowedAnswer } from '../dashboard/follow/message.ts';
 import { rowAmount } from '../dashboard/follow/painters.ts';
@@ -25,7 +24,6 @@ export interface SerializedTiledLine {
   readonly runs?: readonly Run[];
   readonly missing: readonly MissingSpan[];
   readonly parts: readonly TilePart[];
-  readonly marks: MarkSummary | null;
 }
 
 export interface SeriesHeadSource {
@@ -59,7 +57,7 @@ function hydrateTiledLine(raw: SerializedTiledLine): TiledLine {
     },
     missing: [...raw.missing],
     parts: [...raw.parts],
-    marks: raw.marks,
+    marks: null,
   });
   return line;
 }

@@ -102,11 +102,10 @@ function entryAt<E extends { hour: number }>(list: readonly E[], hour: number): 
   return list[low];
 }
 
-export function joinTagChanges<R extends { tag: string; firstHour: number; lastHour: number }>(runs: readonly R[], lineage: Lineage,
-  relatedTags: (run: R) => readonly string[] = () => []): R[][] {
+function joinTagChanges<R extends { tag: string; firstHour: number; lastHour: number }>(runs: readonly R[], lineage: Lineage): R[][] {
   const groups = new Map<string, R[]>();
   for (const run of runs) {
-    const changes = [run.tag, ...relatedTags(run)].flatMap(tag => lineage.changeHours(tag, run.firstHour + 1, run.lastHour));
+    const changes = lineage.changeHours(run.tag, run.firstHour + 1, run.lastHour);
     const starts = [run.firstHour, ...new Set(changes.sort((a, b) => a - b))];
     for (let index = 0; index < starts.length; index++) {
       const firstHour = starts[index];

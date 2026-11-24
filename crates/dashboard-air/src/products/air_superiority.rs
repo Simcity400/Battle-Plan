@@ -1,5 +1,5 @@
 
-use dashboard_base::products::{BranchParams, LoadContext, Product};
+use dashboard_base::products::{BranchParams, LoadContext, Product, regions::{ActiveRegions, NoRegions, no_regions}};
 use dashboard_base::{Source, catalogue::{self, Catalogue}, products::at_hour::{At, AtHour, Read}};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::identity::{Holder, Holders};
@@ -225,6 +225,9 @@ pub struct AirSuperiorityReply {
     pub regions: Vec<AirRegion>,
     #[doc = " Why a region not listed may still hold scores or wings: a read that lists regions was not whole at the hour."]
     pub unlisted: Option<String>,
+    #[doc = " Why the comparison lists no region; set only when it is shown and `regions` is empty."]
+    pub empty: Option<NoRegions>,
+    pub active_unlisted: ActiveRegions,
     #[doc = " The comparison of a region no country scores in."]
     pub fallback: AirCell,
     pub scale: i32,
@@ -731,6 +734,8 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
         viewpoint_country_style: None,
         regions: Vec::new(),
         unlisted: None,
+        empty: None,
+        active_unlisted: ActiveRegions::default(),
         fallback: AirCell::Reason { reason: "scores-unavailable".into() },
         scale: SCALE,
         bad_below: BAD_BELOW,
@@ -779,12 +784,8 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
     let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().filter(|id| !pin_rank.contains_key(id)).collect();
     let mut ids: BTreeSet<u32> = scores.pairs.keys().chain(&scores.active).copied().collect();
     ids.extend(wings.iter().flat_map(|wings| wings.iter().filter(|(_, count)| **count != 0).map(|(region, _)| *region)));
-    if params.order == Some(AirRegionOrder::Name)
-        && theatres.is_none()
-        && let Ok(all) = &context.names.regions
-    {
-        ids.extend(all.regions.keys().copied());
-    }
+    let hidden_ids: Vec<u32> = ids.iter().copied().filter(|region| hidden.contains(region) && (scores.active.contains(region) || wings.as_ref().is_some_and(|wings| wings.get(region).is_some_and(|count| *count != 0)))).collect();
+    let hidden_active = hidden_ids.len() as u32;
     ids.retain(|region| !hidden.contains(region));
     ids.extend(pinned.iter().copied());
     let filter = |region: Option<u32>| match &theatres {
@@ -813,16 +814,19 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
     let resolved_sides: Vec<AirSide> = dictionary.at.keys().map(|position| side_of(index, &sides[*position as usize], hour, resolver)).collect();
     let ranks = ordered.then(|| side_ranks(&resolved_sides));
     let mut ordered_regions: Vec<(AirRegion, f64, i64, i64)> = Vec::with_capacity(cells.len());
+    let mut outside = 0u32;
     for (region, cell) in cells {
         let (lead, total) = if ordered { region_lead_and_total(&cell, scores.pairs.get(&region).map(Vec::as_slice)) } else { (f64::INFINITY, 0) };
         let wing_count = wings.as_ref().and_then(|map| map.get(&region)).copied().unwrap_or(0);
         let active = scores.active.contains(&region);
         let is_pinned = pin_rank.contains_key(&region);
-        if let Some(order) = params.order {
+        if params.order.is_some() {
+            let idle = !active && total <= 0 && wing_count <= 0;
             if !is_pinned && matches!(cell, compose::Cell::Reason("outside-theatres")) {
+                outside += u32::from(active || wing_count != 0);
                 continue;
             }
-            if !is_pinned && order != AirRegionOrder::Name && !active && total <= 0 && wing_count <= 0 {
+            if !is_pinned && idle {
                 continue;
             }
         }
@@ -859,6 +863,7 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
     }
     ordered_regions.sort_by_key(|(region, ..)| pin_rank.get(&region.id).copied().unwrap_or(usize::MAX));
     let regions: Vec<AirRegion> = ordered_regions.into_iter().map(|(region, ..)| region).collect();
+    let empty = no_regions(!regions.is_empty(), unlisted.as_deref(), hidden_active, outside);
     let fallback = shown(fallback, 0, &dictionary, live, columns, enemy, false);
     if let Some(error) = &wings_whole {
         warnings.push(format!("Air wings by region are not all known at this hour: {error}"));
@@ -885,7 +890,9 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
         viewpoint: viewpoint_index,
         viewpoint_country_style,
         regions,
+        active_unlisted: ActiveRegions { ids: hidden_ids, missing: unlisted.clone() },
         unlisted,
+        empty,
         fallback,
         scale: SCALE,
         bad_below: BAD_BELOW,
@@ -925,6 +932,8 @@ impl AtHour for AirSuperiorityAt {
             AirSidesCell::decl(),
             AirWings::decl(),
             AirRegion::decl(),
+            NoRegions::decl(),
+            ActiveRegions::decl(),
             HourSpan::decl(),
         ]
     }

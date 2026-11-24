@@ -20,7 +20,7 @@ import type {
   ChartMarkerItem,
   TimeChartSeriesModel,
 } from '../../families/time-chart/model.ts';
-import { formatRecordedPercent, notRecordedLabel } from '../../families/valueFormat.ts';
+import { formatRational, formatRecordedPercent, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { StabilityBreakdownReply, StabilityMarker, StabilityMarkersReply } from '../../generated/dashboard';
 import {
   branchGapsOf,
@@ -34,6 +34,7 @@ import {
   headReading,
   headValueOf,
   type HeadReading,
+  type KnownHeadReading,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 import { breakdownRows, linesPerMeasure, type Measure } from './stabilityData.ts';
@@ -50,6 +51,15 @@ export interface StabilityOptions {
   readonly zoom: boolean;
 }
 
+
+const PERCENT_SCALE = { numerator: 100n } as const;
+
+function formatStabilityReading(reading: KnownHeadReading): string {
+  if (reading.raw !== undefined && reading.denominator !== undefined) {
+    return formatRational(reading.raw, reading.denominator, { maxDecimals: 5, percent: true });
+  }
+  return formatRecordedPercent(reading.value);
+}
 
 const FACTION_VERBS = { founded: 'Founded', joined: 'Joined', left: 'Left' } as const;
 
@@ -138,22 +148,22 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
     const warMap = options.showWarSupport ? readView.series('warSupport') : undefined;
 
     const rowOf = new Map(tags.map((tag, row) => [tag, row]));
-    const stabByTag = new Map<string, number | null>();
-    const warByTag = new Map<string, number | null>();
+    const stabByTag = new Map<string, HeadReading | null>();
+    const warByTag = new Map<string, HeadReading | null>();
     const readings: [string, HeadReading | null][] = [];
     for (let i = 0; i < tags.length; i++) {
       const tag = tags[i]!;
       const member = memberAt(options.membership, tag, hour);
       if (!member) continue;
       if (options.showStability) {
-        const reading = headReading(readView, 'stability', { tag }, 5, 100);
+        const reading = headReading(readView, 'stability', { tag }, 5, PERCENT_SCALE);
         readings.push([single ? 'stability' : `${tag}:stability`, reading]);
-        stabByTag.set(tag, headValueOf(reading));
+        stabByTag.set(tag, reading);
       }
       if (options.showWarSupport) {
-        const reading = headReading(readView, 'warSupport', { tag }, 5, 100);
+        const reading = headReading(readView, 'warSupport', { tag }, 5, PERCENT_SCALE);
         readings.push([single ? 'warSupport' : `${tag}:warSupport`, reading]);
-        warByTag.set(tag, headValueOf(reading));
+        warByTag.set(tag, reading);
       }
     }
 
@@ -186,7 +196,8 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
 
       if (options.showStability) {
         const bounded = stabMap?.get(tag) ?? null;
-        const headValue = stabByTag.get(tag) ?? null;
+        const stabReading = stabByTag.get(tag) ?? null;
+        const headValue = headValueOf(stabReading);
         series.push({
           id: single ? 'stability' : `${tag}:stability`,
           key: single ? 'stability' : `${tag}:stability`,
@@ -204,20 +215,21 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
           icon: single ? stabIcon : undefined,
           missingSpans: missingSpansOf(bounded),
           rank,
-          endLabel: isTail || headValue === null
+          endLabel: isTail || !stabReading || !('value' in stabReading)
             ? null
             : {
                 ...(single ? { icon: stabIcon } : { flag }),
                 name: single ? 'Stability' : `${name} · Stability`,
                 fullName: single ? 'Stability' : `${name} Stability`,
-                value: formatRecordedPercent(headValue),
+                value: formatStabilityReading(stabReading),
               },
         });
       }
 
       if (options.showWarSupport) {
         const bounded = warMap?.get(tag) ?? null;
-        const headValue = warByTag.get(tag) ?? null;
+        const warReading = warByTag.get(tag) ?? null;
+        const headValue = headValueOf(warReading);
         series.push({
           id: single ? 'warSupport' : `${tag}:warSupport`,
           key: single ? 'warSupport' : `${tag}:warSupport`,
@@ -236,13 +248,13 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
           icon: single ? warIcon : undefined,
           missingSpans: missingSpansOf(bounded),
           rank,
-          endLabel: isTail || headValue === null
+          endLabel: isTail || !warReading || !('value' in warReading)
             ? null
             : {
                 ...(single ? { icon: warIcon } : { flag }),
                 name: single ? 'War support' : `${name} · War support`,
                 fullName: single ? 'War support' : `${name} War support`,
-                value: formatRecordedPercent(headValue),
+                value: formatStabilityReading(warReading),
               },
         });
       }
@@ -295,7 +307,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
       empty: !options.showStability && !options.showWarSupport
         ? { message: 'Both lines are switched off in the settings.' }
         : null,
-      auditRows: readings.map(([row, reading]) => auditReading(row, reading, formatRecordedPercent)),
+      auditRows: readings.map(([row, reading]) => auditReading(row, reading, formatStabilityReading)),
     };
   },
 });
@@ -328,7 +340,6 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
           family,
           tags,
           ...(within ? { within } : {}),
-          marks: false,
           headQuery: tags.length
             ? { product: 'series-state', params: { branchId: ctx.branch.id, family, reads: countries.map(country => ({ country })) } }
             : null,
@@ -349,7 +360,6 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
           family,
           tags,
           ...(within ? { within } : {}),
-          marks: false,
           headQuery: tags.length
             ? { product: 'series-state', params: { branchId: ctx.branch.id, family, reads: countries.map(country => ({ country })) } }
             : null,

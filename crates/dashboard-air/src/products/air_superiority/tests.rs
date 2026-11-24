@@ -263,9 +263,9 @@ fn non_merging_factions_keep_unchanged_region_sides_and_filtered_ranking() {
     let rows = Rows(vec![score(1, 10, 500, 100), score(3, 10, 200, 600), score(3, 11, 400, 0)]);
     let filter = timeline::AirTimelineParams { branch_id: "1".into(), first_hour: 24, last_hour: 50, sides: Some(vec!["f:10".into()]), ..Default::default() };
     let ranked = timeline::Days { index: &index, holders: &holders, days: &days, rows: &rows, params: &filter, theatres: None }
-        .rank(&[10, 11], None, 1, None, &AtomicBool::new(false))
+        .rank_at(&[10, 11], &AtomicBool::new(false))
         .unwrap();
-    assert_eq!(ranked, [11, 10]);
+    assert_eq!(ranked.regions, [11, 10]);
 }
 
 #[test]
@@ -298,7 +298,7 @@ fn ordered_air_superiority_ranks_regions_and_registers_live_totals() {
     named.order = Some(AirRegionOrder::Name);
     let (named_reply, _) = moment_of(&frame(contested_scores, true), &named);
     let named_ids: Vec<u32> = named_reply.regions.iter().map(|region| region.id).collect();
-    assert_eq!(named_ids, [10, 11, 12], "name ordering retains inactive regions");
+    assert_eq!(named_ids, [10, 11], "a Name sort orders the active regions; it never adds an idle one");
 }
 
 #[test]
@@ -323,4 +323,32 @@ fn a_truncated_wings_read_keeps_each_witnessed_count_and_says_why_unlisted_regio
     assert!(reply.unlisted.as_deref().is_some_and(|why| why.contains("read only in part")), "{:?}", reply.unlisted);
     let (whole, _) = moment_of(&frame(scores(), true), &params(AirMode::Sides));
     assert_eq!((whole.unlisted, whole.regions.iter().find(|region| region.id == 11).map(|region| region.wings)), (None, Some(AirWings::None)));
+}
+
+#[test]
+fn an_empty_comparison_says_whether_the_widget_left_every_active_region_out_the_read_was_partial_or_none_was_active() {
+    let mut chosen = params(AirMode::Sides);
+    chosen.order = Some(AirRegionOrder::Contested);
+    chosen.hidden_regions = Some(vec![10]);
+    let (hidden, _) = moment_of(&frame(vec![score(1, 10, 500, 0)], true), &chosen);
+    assert_eq!((hidden.regions.len(), hidden.empty), (0, Some(NoRegions::Filtered { hidden: 1, outside: 0 })), "hiding the only active region is not \"no air activity\"");
+    let (partial, _) = moment_of(&frame(vec![score(1, 10, 500, 0)], false), &chosen);
+    assert!(matches!(partial.empty, Some(NoRegions::Unread { .. })), "{:?}", partial.empty);
+    let mut quiet = frame(vec![score(4, 11, 0, 0)], true);
+    *quiet.tables[TableId::AirRegionWings.index()] = TableView::Complete(TableRows::AirRegionWings(Vec::new()));
+    let mut automatic = params(AirMode::Sides);
+    automatic.order = Some(AirRegionOrder::Contested);
+    let (none, _) = moment_of(&quiet, &automatic);
+    assert_eq!((none.regions.len(), none.empty), (0, Some(NoRegions::None)));
+    let (shown, _) = moment_of(&frame(scores(), true), &automatic);
+    assert_eq!(shown.empty, None, "a listed region: nothing to explain");
+    let mut theatres = automatic;
+    theatres.theatres = Some(vec!["5".into()]);
+    let mut elsewhere = frame(vec![score(1, 10, 500, 0)], true);
+    *elsewhere.tables[TableId::AirTheatres.index()] = TableView::Complete(TableRows::AirTheatres(vec![AirTheatreRow { id: 5, owner: 1, ordinal: 0, name: Vec::new() }]));
+    *elsewhere.tables[TableId::AirTheatreGroups.index()] = TableView::Complete(TableRows::AirTheatreGroups(vec![AirTheatreGroupRow { id: 50, theatre: 5, ..Default::default() }]));
+    *elsewhere.tables[TableId::AirTheatreMembers.index()] = TableView::Complete(TableRows::AirTheatreMembers(vec![AirTheatreMemberRow { group: 50, wing: 900, ..Default::default() }]));
+    *elsewhere.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(vec![AirWingRow { id: 900, owner: 1, mission_region: Some(12), ..Default::default() }]));
+    let (outside, _) = moment_of(&elsewhere, &theatres);
+    assert_eq!((outside.regions.len(), outside.empty), (0, Some(NoRegions::Filtered { hidden: 0, outside: 1 })), "the only active region lies outside the chosen theatres");
 }

@@ -1,35 +1,27 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
-import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { WidgetProps } from '../../dashboard/definitions';
-import { MARKET, partyTags, validateMarketReply } from '../../dashboard/market.ts';
-import { resolveOptions } from '../../dashboard/options';
+import type { FamilyViewProps } from '../../dashboard/definitions';
+import { MARKET, validateMarketReply } from '../../dashboard/market.ts';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
-import { SPEC, type GatedHour } from '../../dashboard/regionTime';
-import { productRequest } from '../../dashboard/request.ts';
+import { SPEC } from '../../dashboard/regionTime';
 import type { InstalledAction } from '../../families/contract.ts';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
 import { countryTagKey, useIdentity, useIdentityScope } from '../../families/identity/react.ts';
 import { FamilyWidget } from '../../families/host/registry';
+import { rowRequest, rowScope, rowSource, selectionTrack, useOpenedRow, type RowSource } from '../../families/table/rowSelection.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { MarketLendLeaseReply } from '../../generated/dashboard';
-import { DETAILS, OPTIONS } from './definition';
-import { MARKET_DECLARATIONS } from './internationalMarketProjection.ts';
-import { marketDetail, type MarketDetailLine } from './marketData.ts';
+import { DETAILS } from './definition';
+import { marketDetail, type MarketDetailLine, type MarketRowMeta } from './marketData.ts';
 import '../../families/table/gameWindowTable.css';
 import './marketDetail.css';
 
-interface Opened {
-  readonly title: string;
-  readonly tags: readonly string[];
-  readonly selected: string;
-  readonly hour: GatedHour;
-}
+type MarketSelection = RowSource & MarketRowMeta;
 
 interface Naming {
-  readonly runtime: WidgetProps['runtime'];
-  readonly source: NonNullable<WidgetProps['runtime']['tracks'][number]>['source'];
+  readonly runtime: FamilyViewProps['runtime'];
+  readonly source: NonNullable<FamilyViewProps['runtime']['tracks'][number]>['source'];
   readonly scope: ReturnType<typeof useIdentityScope>;
   readonly hour: number;
   readonly active: boolean;
@@ -54,27 +46,20 @@ function Lines({ lines, naming }: { readonly lines: readonly MarketDetailLine[];
   );
 }
 
-function MarketRowDetail({ runtime, trackId, opened, active }: {
-  readonly runtime: WidgetProps['runtime'];
-  readonly trackId: string | undefined;
-  readonly opened: Opened;
+function MarketRowDetail({ runtime, selection, active }: {
+  readonly runtime: FamilyViewProps['runtime'];
+  readonly selection: MarketSelection;
   readonly active: boolean;
 }) {
-  const track = runtime.tracks.find(item => item.id === trackId);
-  const only = opened.selected.startsWith('offer:') ? 'offers' : 'contracts';
-  const request = track ? productRequest({
-    sourceId: track.source.id,
-    revision: track.source.revision,
-    product: MARKET,
-    params: { branchId: track.branch.id, countries: opened.tags.map(countryFromKey), only, hour: opened.hour },
-  }) : null;
+  const track = selectionTrack(runtime.tracks, selection);
+  const request = track ? rowRequest(selection, MARKET, { countries: [], only: selection.section, row: selection.row }) : null;
   const { data, error, retry } = useProduct<MarketLendLeaseReply>(runtime.client, request, active, validateMarketReply, track?.source);
-  const scope = useIdentityScope(runtime.client, track?.source, track?.branch.id ?? null, active);
+  const scope = useIdentityScope(runtime.client, track?.source, track ? selection.branchId : null, active);
   if (!track) return null;
-  const naming: Naming = { runtime, source: track.source, scope, hour: opened.hour, active };
+  const naming: Naming = { runtime, source: track.source, scope, hour: selection.hour, active };
   if (error) return <WidgetState kind="error" what="the market details" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading the market…" />;
-  const detail = marketDetail(data, opened.selected);
+  const detail = marketDetail(data, selection);
   if (detail.missing !== null) return <WidgetState kind="unavailable" message={detail.missing} />;
   return (
     <div className="market-detail">
@@ -88,35 +73,34 @@ function MarketRowDetail({ runtime, trackId, opened, active }: {
   );
 }
 
-export default function InternationalMarketWidget(props: WidgetProps) {
-  const { widget, runtime, active } = props;
-  const view = resolveOptions(OPTIONS, widget.options).view;
-  const tab = view === 'requests' || view === 'inventory' ? view : 'contracts';
+export default function InternationalMarketWidget(props: FamilyViewProps) {
+  const { widget, runtime, active, manifestDeclaration } = props;
   const anchor = useRef<HTMLDivElement>(null);
   const gate = useGate(runtime, widget, SPEC, active);
-  const [opened, setOpened] = useState<Opened | null>(null);
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const [opened, open, close] = useOpenedRow<MarketSelection>(rowScope(track, widget));
 
-  const onActivate = useCallback(({ meta, hour }: InstalledAction) => {
-    const info = meta as { title?: string; tags?: (string | null)[]; selected?: string } | undefined;
-    const tags = info?.tags ? partyTags(...info.tags) : null;
+  const onActivate = useCallback(({ subject, meta, hour }: InstalledAction) => {
+    const row = meta as MarketRowMeta | undefined;
     const at = gate.recorded(Math.floor(hour));
-    if (!tags || !info?.selected || at === null) return;
-    setOpened({ title: info.title ?? DETAILS.label, tags, selected: info.selected, hour: at });
-  }, [gate]);
+    if (!track || !row || at === null) return;
+    open(subject, { ...rowSource(track, at), title: row.title, section: row.section, row: row.row, variant: row.variant });
+  }, [gate, track, open]);
 
+  const selection = opened?.selection ?? null;
   return (
     <div ref={anchor} className="game-window-table">
-      <FamilyWidget family="table" view={tab} declaration={MARKET_DECLARATIONS[tab]} {...props} onActivate={onActivate} />
+      {manifestDeclaration ? <FamilyWidget {...props} family="table" declaration={manifestDeclaration} onActivate={onActivate} /> : null}
       <DetailWindowHost
-        open={opened !== null}
-        subject={opened?.selected ?? null}
-        hour={opened?.hour ?? null}
-        title={opened?.title ?? DETAILS.label}
-        day={opened ? formatDateOnly(opened.hour) : ''}
+        open={selection !== null}
+        subject={opened?.key ?? null}
+        hour={selection?.hour ?? null}
+        title={selection?.title ?? DETAILS.label}
+        day={selection ? formatDateOnly(selection.hour) : ''}
         anchor={anchor}
-        onClose={() => setOpened(null)}
+        onClose={close}
       >
-        {opened ? <MarketRowDetail runtime={runtime} trackId={widget.trackIds[0]} opened={opened} active={active} /> : null}
+        {selection ? <MarketRowDetail runtime={runtime} selection={selection} active={active} /> : null}
       </DetailWindowHost>
     </div>
   );

@@ -50,8 +50,3 @@ export function equipmentOf(reply: Pick<MarketLendLeaseReply, 'variants' | 'icon
       missing: held ? held.nameUnknown ?? null : 'The recording does not name this design at this hour.' };
   };
 }
-
-export const partyTags = (...tags: readonly (string | null)[]): string[] | null => {
-  const known = [...new Set(tags.filter((tag): tag is string => tag !== null))];
-  return known.length ? known.sort() : null;
-};

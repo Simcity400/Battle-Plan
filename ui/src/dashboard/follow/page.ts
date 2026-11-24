@@ -37,6 +37,7 @@ export interface Entry<B extends Bitmap = Bitmap> {
   content: Readonly<Record<string, string>>;
   fields: Readonly<Record<string, unknown>>;
   ms?: number;
+  stamp?: number;
 }
 
 export interface Presentation<B extends Bitmap = Bitmap> {
@@ -157,6 +158,7 @@ export class Page<B extends Bitmap = Bitmap> {
   private readonly targets: number[];
   private readonly acks: Ack[][];
   private readonly refusals: Refusal[][];
+  private failures: [widget: number, stamp: number | undefined][] = [];
   private readonly routes = new Map<number, RouteState>();
   private readonly laneConfirmed: Map<number, { followed: { hour: number }; panel: { hour: number } }>[];
   private readonly byRoute = new Map<number, Set<Widget<B>>>();
@@ -586,6 +588,7 @@ export class Page<B extends Bitmap = Bitmap> {
       this.disown(entry);
       this.stats.failed++;
       widget.failed = true;
+      this.failures.push([widget.id, entry.stamp]);
       this.clear(widget, 'failed', 'drawing failed', 'local');
       this.refusals[widget.lane]!.push({ widget: widget.id, id: entry.id, reason: 'drawing failed' });
       return;
@@ -710,6 +713,12 @@ export class Page<B extends Bitmap = Bitmap> {
     this.retireEarly(widget, status === 'reading' ? 'binding' : status);
     this.clear(widget, status, reason, status === 'failed' ? (failureOrigin ?? 'stream') : undefined);
     this.tell();
+  }
+
+  takeFailures(): readonly [widget: number, stamp: number | undefined][] {
+    const failures = this.failures;
+    this.failures = [];
+    return failures;
   }
 
   retryLocal(id: number) {

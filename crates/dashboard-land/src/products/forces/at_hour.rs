@@ -13,7 +13,9 @@ use dashboard_base::{
 use dashboard_query::{
     coverage::{Witness, population, witnessed},
     identity::{Holder, Holders},
+    series::ranked::GroupSelection,
 };
+use dashboard_world::products::group_members::GroupsAt;
 use replay_data::rows::{AirForcePartRow, AirForceWingKindRow, NavyClassRow, Recorded, TableId, tables};
 use replay_frame::frame::{DecodedFrame, Keys, TableView};
 use serde::{Deserialize, Serialize};
@@ -38,6 +40,10 @@ pub struct AirForceAtParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<u32>,
+    #[doc = " The group whose members at the hour are the rows; never with countries or a top."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
     pub measure: AirForceMeasure,
     pub ownership: AirForceOwnership,
 }
@@ -52,6 +58,10 @@ pub struct NavyAtParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<u32>,
+    #[doc = " The group whose members at the hour are the rows; never with countries or a top."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
     pub ownership: NavyOwnership,
     pub grouping: NavyGrouping,
     pub measure: NavyMeasure,
@@ -62,6 +72,8 @@ pub struct NavyAtParams {
 #[serde(rename_all = "camelCase")]
 pub struct ForceAtRow {
     pub country: Country,
+    #[doc = " The recorded slot holding the country at the hour; none where its holder is not resolved."]
+    pub slot: Option<u32>,
     pub tag: String,
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "number | null"))]
     pub total: Option<i64>,
@@ -86,12 +98,44 @@ pub struct ForceAtReply {
 
 dashboard_base::reply_warnings!(ForceAtReply);
 
-pub type ForceContext = (Option<Arc<Catalogue>>, Vec<String>);
+pub struct ForceContext {
+    pub(crate) catalogue: Option<Arc<Catalogue>>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) groups: GroupsAt,
+}
 
 pub(crate) fn load_context(source: &Source, load: &LoadContext, what: &str) -> ForceContext {
     let mut warnings = Vec::new();
     let content = Content::read(source, load, what, &mut warnings);
-    (content.catalogue, warnings)
+    ForceContext { catalogue: content.catalogue, warnings, groups: GroupsAt::default() }
+}
+
+pub(crate) fn load_context_for(source: &Source, load: &LoadContext, what: &str, branch_id: &str, group: Option<&GroupSelection>) -> io::Result<ForceContext> {
+    Ok(ForceContext { groups: GroupsAt::load(source, load, branch_id, group)?, ..load_context(source, load, what) })
+}
+
+pub(crate) enum Chosen {
+    Population,
+    These(Vec<Country>),
+    Refused(String),
+}
+
+pub(crate) fn chosen(countries: &[Country], group: Option<&GroupSelection>, groups: &GroupsAt, hour: i32) -> io::Result<Chosen> {
+    let Some(group) = group else {
+        return Ok(if countries.is_empty() { Chosen::Population } else { Chosen::These(countries.to_vec()) });
+    };
+    let members = groups.members(group, hour)?;
+    Ok(match members.refused {
+        Some(reason) => Chosen::Refused(reason),
+        None => Chosen::These(members.tags.into_iter().map(Country::from).collect()),
+    })
+}
+
+pub(crate) fn validate_group(group: Option<&GroupSelection>, countries: &[Country], top: Option<u32>) -> Result<(), &'static str> {
+    if group.is_some() && (top.is_some() || !countries.is_empty()) {
+        return Err("A selection names a group, a top or countries, one of them");
+    }
+    Ok(())
 }
 
 fn holders_unresolved(holders: &Holders, hour: i32) -> bool {
@@ -228,12 +272,18 @@ pub(crate) fn select_explicit<T: replay_data::rows::TableSchema>(
     label: &str,
 ) -> Vec<SelectedRow> {
     let mut seen = BTreeSet::new();
+    let mut held_slots = BTreeSet::new();
     let mut out = Vec::new();
     for country in countries {
         if !seen.insert(country.clone()) {
             continue;
         }
         let Some(run) = holders.at(country, hour) else { continue };
+        if let Holder::Found { slot, .. } = run.holder
+            && !held_slots.insert(slot)
+        {
+            continue;
+        }
         let tag = holders.name(country, hour);
         match run.holder {
             Holder::Found { slot, .. } => match witnessed::<T>(frame, u128::from(slot)) {
@@ -432,6 +482,7 @@ pub(crate) fn attach_parts(selected: Vec<SelectedRow>, named: Named, by_slot: &H
             if let Some(reason) = &parts_error {
                 return ForceAtRow {
                     country: row.country,
+                    slot: row.slot,
                     tag: row.tag,
                     total: row.total,
                     reference_total: row.reference_total,
@@ -455,6 +506,7 @@ pub(crate) fn attach_parts(selected: Vec<SelectedRow>, named: Named, by_slot: &H
             };
             ForceAtRow {
                 country: row.country,
+                slot: row.slot,
                 tag: row.tag,
                 total: row.total,
                 reference_total: row.reference_total,
@@ -471,9 +523,9 @@ impl AtHour for AirForceAt {
     const KEY: &'static str = "air-force-at";
     const TITLE: &'static str = "Air force size";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = AirForceAtParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, measure, ownership, "countries[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, group, measure, ownership, "countries[]"];
     type Reply = ForceAtReply;
     type Context = ForceContext;
 
@@ -483,7 +535,8 @@ impl AtHour for AirForceAt {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        validate_selection(&params.branch_id, &params.countries, params.top.map(|n| n as usize))
+        validate_selection(&params.branch_id, &params.countries, params.top.map(|n| n as usize))?;
+        validate_group(params.group.as_ref(), &params.countries, params.top)
     }
 
     fn tables(params: &Self::Params) -> Vec<TableId> {
@@ -537,9 +590,17 @@ impl AtHour for AirForceAt {
         Ok(load_context(source, load, "Air equipment type names"))
     }
 
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        load_context_for(source, load, "Air equipment type names", &params.branch_id, params.group.as_ref())
+    }
+
+    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        at.context.groups.valid_through(params.group.as_ref(), at.hour)
+    }
+
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let mut warnings = at.context.1.clone();
-        let content = Content { catalogue: at.context.0.clone() };
+        let mut warnings = at.context.warnings.clone();
+        let content = Content { catalogue: at.context.catalogue.clone() };
         let total_of = |row: &replay_data::rows::AirForceTotalRow| match (params.measure, params.ownership) {
             (AirForceMeasure::Planes, AirForceOwnership::Roster) => recorded_value(row.roster_planes),
             (AirForceMeasure::Wings, AirForceOwnership::Roster) => recorded_value(row.roster_wings),
@@ -550,17 +611,19 @@ impl AtHour for AirForceAt {
             AirForceMeasure::Planes => "air planes",
             AirForceMeasure::Wings => "air wings",
         };
-        let selected = if params.countries.is_empty() {
-            let totals = match population::<tables::AirForceTotals>(frame, &Keys::All) {
-                Ok(rows) => rows,
-                Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
-            };
-            match select_population(totals, |row| row.slot, total_of, |_| None, at.holders, frame.hour, params.top, label) {
-                Ok(rows) => rows,
-                Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+        let selected = match chosen(&params.countries, params.group.as_ref(), &at.context.groups, frame.hour)? {
+            Chosen::Refused(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+            Chosen::Population => {
+                let totals = match population::<tables::AirForceTotals>(frame, &Keys::All) {
+                    Ok(rows) => rows,
+                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+                };
+                match select_population(totals, |row| row.slot, total_of, |_| None, at.holders, frame.hour, params.top, label) {
+                    Ok(rows) => rows,
+                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+                }
             }
-        } else {
-            select_explicit::<tables::AirForceTotals>(frame, &params.countries, total_of, |_| None, None, at.holders, frame.hour, label)
+            Chosen::These(countries) => select_explicit::<tables::AirForceTotals>(frame, &countries, total_of, |_| None, None, at.holders, frame.hour, label),
         };
         let selected_slots: BTreeSet<u32> = selected.iter().filter_map(|row| row.slot).collect();
         let owner_code = if params.ownership == AirForceOwnership::Effective { 1 } else { 0 };
@@ -616,9 +679,9 @@ impl AtHour for NavyAt {
     const KEY: &'static str = "navy-at";
     const TITLE: &'static str = "Navy size";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = NavyAtParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, ownership, grouping, measure, "countries[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, group, ownership, grouping, measure, "countries[]"];
     type Reply = ForceAtReply;
     type Context = ForceContext;
 
@@ -628,7 +691,8 @@ impl AtHour for NavyAt {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        validate_selection(&params.branch_id, &params.countries, params.top.map(|n| n as usize))
+        validate_selection(&params.branch_id, &params.countries, params.top.map(|n| n as usize))?;
+        validate_group(params.group.as_ref(), &params.countries, params.top)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -656,9 +720,17 @@ impl AtHour for NavyAt {
         Ok(load_context(source, load, "Ship class names"))
     }
 
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        load_context_for(source, load, "Ship class names", &params.branch_id, params.group.as_ref())
+    }
+
+    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        at.context.groups.valid_through(params.group.as_ref(), at.hour)
+    }
+
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let mut warnings = at.context.1.clone();
-        let content = Content { catalogue: at.context.0.clone() };
+        let mut warnings = at.context.warnings.clone();
+        let content = Content { catalogue: at.context.catalogue.clone() };
         let total_of = |row: &replay_data::rows::NavyTotalRow| match (params.measure, params.ownership) {
             (NavyMeasure::Ships, NavyOwnership::Roster) => recorded_value(row.roster_ships),
             (NavyMeasure::Strength, NavyOwnership::Roster) => recorded_value(row.roster_strength_raw),
@@ -675,17 +747,19 @@ impl AtHour for NavyAt {
             NavyMeasure::Ships => "ships",
             NavyMeasure::Strength => "hull strength",
         };
-        let selected = if params.countries.is_empty() {
-            let totals = match population::<tables::NavyTotals>(frame, &Keys::All) {
-                Ok(rows) => rows,
-                Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
-            };
-            match select_population(totals, |row| row.slot, total_of, reference_of, at.holders, frame.hour, params.top, label) {
-                Ok(rows) => rows,
-                Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+        let selected = match chosen(&params.countries, params.group.as_ref(), &at.context.groups, frame.hour)? {
+            Chosen::Refused(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+            Chosen::Population => {
+                let totals = match population::<tables::NavyTotals>(frame, &Keys::All) {
+                    Ok(rows) => rows,
+                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+                };
+                match select_population(totals, |row| row.slot, total_of, reference_of, at.holders, frame.hour, params.top, label) {
+                    Ok(rows) => rows,
+                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+                }
             }
-        } else {
-            select_explicit::<tables::NavyTotals>(frame, &params.countries, total_of, reference_of, absent_reference, at.holders, frame.hour, label)
+            Chosen::These(countries) => select_explicit::<tables::NavyTotals>(frame, &countries, total_of, reference_of, absent_reference, at.holders, frame.hour, label),
         };
         let selected_slots: BTreeSet<u32> = selected.iter().filter_map(|row| row.slot).collect();
         let owner_code = if params.ownership == NavyOwnership::Logical { 1 } else { 0 };

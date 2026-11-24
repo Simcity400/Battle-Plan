@@ -2,7 +2,7 @@ use super::{PowerSpendingParams, PowerSpendingReply, SpendCoverage, SpendCurrenc
 use dashboard_base::products::breakdown::{self, Amount, Breakdown, Dated, History, HistoryBuilder, Node};
 use dashboard_base::products::{Country, LoadContext, Product, check_reply_budget, validate_country};
 use dashboard_base::Source;
-use dashboard_query::{Query, identity::Holder};
+use dashboard_query::{identity::{Holder, Holders}, timeline::Timeline};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io, sync::atomic::AtomicBool};
 #[cfg(any(test, feature = "export-types"))]
@@ -41,6 +41,8 @@ pub struct PowerSpendingBreakdownReply {
     pub lost_at_cap_raw: Option<String>,
     #[doc = " Why the gain is not known, or (with `gained_raw`) why it is partial."]
     pub gained_reason: Option<String>,
+    #[doc = " Why the loss at the cap is not known, or (with `lost_at_cap_raw`) why it is partial."]
+    pub lost_at_cap_reason: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -90,8 +92,8 @@ impl Product for PowerSpendingBreakdown {
         let held = breakdown::held(source, context, span.clone(), || {
             let naming = naming::context(source, context)?;
             let whole = spending(source, &query, &span, &naming, cancelled)?;
-            let spend = unrecorded(&query, &span.country, &whole.coverage, whole.from, whole.to);
-            let gain = unrecorded(&query, &span.country, &whole.gain_coverage, whole.from, whole.to);
+            let spend = unrecorded(&query.timeline, &query.holders, &span.country, &whole.coverage, whole.from, whole.to);
+            let gain = unrecorded(&query.timeline, &query.holders, &span.country, &whole.gain_coverage, whole.from, whole.to);
             Ok(index(&whole, &spend, &gain))
         })?;
         let reply = held.at(params.hour);
@@ -119,18 +121,24 @@ fn holes(runs: &[SpendCoverage], from: i32, to: i32) -> Vec<(i32, i32)> {
     out
 }
 
-pub(super) fn unrecorded(query: &Query<'_>, country: &Country, runs: &[SpendCoverage], from: i32, to: i32) -> Vec<(i32, i32, String)> {
+pub(super) fn unrecorded(timeline: &Timeline, holders: &Holders, country: &Country, runs: &[SpendCoverage], from: i32, to: i32) -> Vec<(i32, i32, String)> {
     let mut out: Vec<(i32, i32, String)> = runs
         .iter()
         .filter(|run| !run.covered && run.first_hour.max(from) <= run.last_hour.min(to))
         .map(|run| (run.first_hour.max(from), run.last_hour.min(to), run.reason.clone().unwrap_or_else(|| "Spending was not recorded".into())))
         .collect();
     for (first, last) in holes(runs, from, to) {
-        for gap in query.timeline.unheld_within(first, last) {
+        for gap in timeline.unheld_within(first, last) {
             out.push((gap.first, gap.last, gap.reason));
         }
-        for stretch in query.timeline.within(first, last) {
-            for run in query.holders.within(country, stretch.first, stretch.last) {
+        for &(unknown_first, unknown_last, ref reason) in &holders.unknown {
+            let (unknown_first, unknown_last) = (unknown_first.max(first), unknown_last.min(last));
+            if unknown_first <= unknown_last {
+                out.push((unknown_first, unknown_last, reason.clone()));
+            }
+        }
+        for stretch in timeline.within(first, last) {
+            for run in holders.within(country, stretch.first, stretch.last) {
                 if run.holder == Holder::Unresolved {
                     out.push((run.first.max(stretch.first), run.last.min(stretch.last), "The country's holder was not recorded".into()));
                 }
@@ -148,8 +156,9 @@ fn parse(raw: Option<&str>) -> Option<i128> {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Gain {
     gained: Option<i128>,
+    gained_reason: Option<String>,
     lost: Option<i128>,
-    reason: Option<String>,
+    lost_reason: Option<String>,
 }
 
 pub(super) struct PowerHistory {
@@ -170,7 +179,8 @@ impl PowerHistory {
             breakdown,
             gained_raw: gain.gained.map(|value| value.to_string()),
             lost_at_cap_raw: gain.lost.map(|value| value.to_string()),
-            gained_reason: gain.reason,
+            gained_reason: gain.gained_reason,
+            lost_at_cap_reason: gain.lost_reason,
             warnings: self.warnings.at(hour).cloned().unwrap_or_default(),
         }
     }
@@ -213,35 +223,69 @@ fn entries(reply: &PowerSpendingReply) -> Vec<Entry> {
     entries
 }
 
+fn first_read(from: i32, to: i32, unread: &[(i32, i32, String)]) -> Option<i32> {
+    let mut spans: Vec<(i32, i32)> = unread.iter().map(|(first, last, _)| (*first, *last)).collect();
+    spans.sort_unstable();
+    let mut cursor = from;
+    for (first, last) in spans {
+        if first > cursor {
+            break;
+        }
+        cursor = cursor.max(last.saturating_add(1));
+    }
+    (cursor <= to).then_some(cursor)
+}
+
+#[derive(Default)]
+struct Measure {
+    sum: i128,
+    reason: Option<String>,
+}
+
+impl Measure {
+    fn add(&mut self, raw: Option<&str>, exact: bool, missing: &str) {
+        match parse(raw) {
+            Some(value) => self.sum = self.sum.saturating_add(value),
+            None => {
+                self.reason.get_or_insert_with(|| missing.to_owned());
+            }
+        }
+        if !exact {
+            self.reason.get_or_insert_with(|| missing.to_owned());
+        }
+    }
+}
+
 fn gains(reply: &PowerSpendingReply, unread: &[(i32, i32, String)]) -> Dated<Gain> {
-    let mut held = Gain { gained: Some(0), lost: Some(0), reason: None };
-    let mut values = vec![(reply.from, held.clone())];
+    let (mut gained, mut lost) = (Measure::default(), Measure::default());
+    let read_from = first_read(reply.from, reply.to, unread);
+    let mut seen = read_from == Some(reply.from);
     let mut events: Vec<(i32, Option<&SpendGain>, Option<&str>)> =
         reply.gains.iter().filter(|gain| gain.read >= reply.from).map(|gain| (gain.read, Some(gain), None)).collect();
     events.extend(unread.iter().map(|(first, _, reason)| ((*first).max(reply.from), None, Some(reason.as_str()))));
+    events.extend(read_from.map(|hour| (hour, None, None)));
     events.sort_by_key(|event| event.0);
+    let held = |seen: bool, gained: &Measure, lost: &Measure| Gain {
+        gained: seen.then_some(gained.sum),
+        gained_reason: gained.reason.clone(),
+        lost: seen.then_some(lost.sum),
+        lost_reason: lost.reason.clone(),
+    };
+    let mut values = vec![(reply.from, held(seen, &gained, &lost))];
     for (hour, gain, unread) in events {
-        if let Some(reason) = unread
-            && held.gained.is_some()
-        {
-            held.reason.get_or_insert_with(|| format!("Gains in hours when power changes were not read are not counted: {reason}."));
+        seen |= read_from.is_some_and(|from| from <= hour);
+        if let Some(reason) = unread {
+            let text = format!("Gains in hours when power changes were not read are not counted: {reason}.");
+            gained.reason.get_or_insert_with(|| text.clone());
+            lost.reason.get_or_insert(text);
         }
         if let Some(gain) = gain {
-            match parse(gain.gained_raw.as_deref()) {
-                Some(value) if gain.unknown_days == 0 && gain.unmatched == 0 => held.gained = held.gained.map(|sum| sum.saturating_add(value)),
-                _ => {
-                    if held.gained.is_some() {
-                        held.reason = Some("Some gains were not recorded.".to_owned());
-                    }
-                    held.gained = None;
-                }
-            }
-            held.lost = match (held.lost, parse(gain.capped_raw.as_deref())) {
-                (Some(sum), Some(value)) if gain.unknown_days == 0 && gain.unmatched == 0 => Some(sum.saturating_add(value)),
-                _ => None,
-            };
+            seen = true;
+            let exact = gain.unknown_days == 0 && gain.unmatched == 0;
+            gained.add(gain.gained_raw.as_deref(), exact, "Some gains were not recorded.");
+            lost.add(gain.capped_raw.as_deref(), exact, "Some losses at the cap were not recorded.");
         }
-        values.push((hour, held.clone()));
+        values.push((hour, held(seen, &gained, &lost)));
     }
     Dated::new(values)
 }
@@ -259,7 +303,7 @@ pub(super) fn index(reply: &PowerSpendingReply, spend_unread: &[(i32, i32, Strin
     let mut kinds: HashMap<String, u32> = HashMap::new();
     let mut groups: HashMap<String, u32> = HashMap::new();
     let mut built = HistoryBuilder::new(reply.decimals, reply.from, reply.to).dated();
-    let mut credited: Vec<(i32, String)> = Vec::new();
+    let mut dated_warnings: Vec<(i32, String)> = Vec::new();
     for entry in &entries {
         let Some(item) = reply.items.get(entry.item as usize) else { continue };
         let next = categories.len() as u32;
@@ -297,8 +341,14 @@ pub(super) fn index(reply: &PowerSpendingReply, spend_unread: &[(i32, i32, Strin
         if entry.credits > 0 {
             let label = item.name.as_deref().unwrap_or(&item.action);
             let warning = format!("Negative daily cost component {label}: its credit is not counted as spending");
-            if !credited.iter().any(|(_, held)| *held == warning) {
-                credited.push((entry.read, warning));
+            if !dated_warnings.iter().any(|(_, held)| *held == warning) {
+                dated_warnings.push((entry.read, warning));
+            }
+        }
+        if let Some(reason) = item.unknown.as_deref().filter(|_| item.category == OTHER_CATEGORY) {
+            let warning = format!("The item of some spending was not recorded: {reason}");
+            if !dated_warnings.iter().any(|(_, held)| *held == warning) {
+                dated_warnings.push((entry.read, warning));
             }
         }
     }
@@ -310,7 +360,8 @@ pub(super) fn index(reply: &PowerSpendingReply, spend_unread: &[(i32, i32, Strin
         built.change(hour);
     }
     let mut warnings: Vec<(i32, Vec<String>)> = Vec::new();
-    for (hour, warning) in credited {
+    dated_warnings.sort_by_key(|(hour, _)| *hour);
+    for (hour, warning) in dated_warnings {
         built.change(hour);
         let mut list = warnings.last().map(|(_, list)| list.clone()).unwrap_or_default();
         list.push(warning);

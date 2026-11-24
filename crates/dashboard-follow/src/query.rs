@@ -202,7 +202,7 @@ fn tag_rows(query: &Query, hour: Hour) -> Vec<TagRow> {
             if series.key.unowned() {
                 return country.tag().and_then(|tag| series.key.fixed(tag)).map_or_else(|| TagRow::Absent(identity.holders.say(country, hour, |name| format!("{name} names no row of {}", series.kind))), TagRow::Key);
             }
-            let Some(name) = identity.holders.label(country, hour) else { return TagRow::Absent(identity.holders.unnamed(country).to_owned()) };
+            let Some(name) = identity.holders.label(country, hour) else { return TagRow::Absent(identity.holders.unnamed(country, hour)) };
             if let Some(reason) = unknown {
                 return TagRow::Absent(format!("Who holds {name} is not known: {reason}"));
             }
