@@ -29,8 +29,10 @@ const MARKET: u8 = 6;
 const NO_ROUTE: u8 = 0;
 const NAVAL_ROUTE: u8 = 2;
 pub const TRAFFIC_NOT_RECORDED: &str = "regional convoy traffic was not recorded";
+const GAP_NOT_RECORDED: &str = "The recording holds no hour here";
 
 const REGION_EFFICIENCY: usize = 0;
+const LINK_SLOT: usize = 0;
 const DEAL_EXPORTER: usize = 0;
 const DEAL_IMPORTER: usize = 1;
 const DEAL_RESOURCE: usize = 2;
@@ -242,7 +244,7 @@ pub struct ConvoyHealthReply {
     #[doc = " deals, convoy clients), in the hours asked: outside them a row not shown is not recorded,"]
     #[doc = " not absent; an hour read but refused holds no rows and is not known."]
     pub known: Vec<Vec<HourSpan>>,
-    #[doc = " Hours the tag had no country, or the recording holds none: nothing is known of it there."]
+    #[doc = " Hours no country held the tag: nothing is known of it there. Recording gaps are `gaps`."]
     pub unheld: Vec<HourSpan>,
     pub gaps: Vec<HourSpan>,
     pub regions: Vec<ConvoyRegion>,
@@ -327,24 +329,40 @@ pub(crate) fn rows_of(owned: &Owned, country: u32, first: i32, last: i32) -> BTr
     out
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum TrafficProof {
-    Proven(BTreeSet<u32>),
-    Unknown(String),
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TrafficProof {
+    pub(crate) crossed: BTreeSet<u32>,
+    pub(crate) unknown: Option<String>,
 }
 
+impl TrafficProof {
+    pub(crate) fn unknown(reason: impl Into<String>) -> Self {
+        Self { crossed: BTreeSet::new(), unknown: Some(reason.into()) }
+    }
+}
+
+pub(crate) const TRAFFIC_TABLES: [(TableId, &str); 4] = [
+    (TableId::CountryLinks, "Country links were not recorded at this hour"),
+    (TableId::ConvoyClients, "Convoy clients were not recorded at this hour"),
+    (TableId::ResourceOrigins, "Resource origins were not recorded at this hour"),
+    (TableId::TradeRoutes, "Trade routes were not recorded at this hour"),
+];
+const ROUTE_NOT_RECORDED: &str = "A convoy route was not recorded at this hour";
+const PORTS_NOT_RECORDED: &str = "A naval convoy route's ports were not recorded at this hour";
+const NO_PATH: &str = "A convoy route with assigned convoys has no recorded path";
+
 pub(crate) fn traffic_in_frame(frame: &DecodedFrame, slot: u32) -> TrafficProof {
-    let Ok(links_rows) = frame.complete::<tables::CountryLinks>() else {
-        return TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned());
-    };
-    let Ok(clients) = frame.complete::<tables::ConvoyClients>() else {
-        return TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned());
-    };
-    let Ok(origins) = frame.complete::<tables::ResourceOrigins>() else {
-        return TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned());
-    };
-    let Ok(route_rows) = frame.complete::<tables::TradeRoutes>() else {
-        return TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned());
+    let (Ok(links_rows), Ok(clients), Ok(origins), Ok(route_rows)) =
+        (frame.complete::<tables::CountryLinks>(), frame.complete::<tables::ConvoyClients>(), frame.complete::<tables::ResourceOrigins>(), frame.complete::<tables::TradeRoutes>())
+    else {
+        let missing = [
+            frame.complete::<tables::CountryLinks>().is_err(),
+            frame.complete::<tables::ConvoyClients>().is_err(),
+            frame.complete::<tables::ResourceOrigins>().is_err(),
+            frame.complete::<tables::TradeRoutes>().is_err(),
+        ];
+        let at = missing.iter().position(|missing| *missing).unwrap_or(0);
+        return TrafficProof::unknown(TRAFFIC_TABLES[at].1);
     };
     let links: HashMap<u32, u32> = links_rows.iter().map(|row| (row.id, row.canonical_slot)).collect();
     let routes: HashMap<(u8, u32, u32), &TradeRouteRow> = route_rows.iter().map(|row| ((row.class, row.country, row.other), row)).collect();
@@ -355,24 +373,27 @@ pub(crate) fn traffic_in_frame(frame: &DecodedFrame, slot: u32) -> TrafficProof 
         _ => false,
     }).map(|row| (row.convoys_assigned, (row.route_class, row.route_country, row.route_other)));
     let origin_routes = origins.iter().filter(|row| row.list == 0 && ours(row.country)).map(|row| (row.convoys_assigned, (0u8, row.country, row.state)));
-    let mut crossed = BTreeSet::new();
+    let mut proof = TrafficProof::default();
     for (convoys, key) in client_routes.chain(origin_routes) {
         if convoys == 0 {
             continue;
         }
         let Some(route) = routes.get(&key).copied() else {
-            return TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned());
+            proof.unknown.get_or_insert_with(|| ROUTE_NOT_RECORDED.to_owned());
+            continue;
         };
         match route.kind {
             NAVAL_ROUTE if route.path.is_empty() && (route.from == 0 || route.to == 0) => {
-                return TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned());
+                proof.unknown.get_or_insert_with(|| PORTS_NOT_RECORDED.to_owned());
             }
-            NAVAL_ROUTE => crossed.extend(route.path.iter().copied()),
-            NO_ROUTE => return TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned()),
+            NAVAL_ROUTE => proof.crossed.extend(route.path.iter().copied()),
+            NO_ROUTE => {
+                proof.unknown.get_or_insert_with(|| NO_PATH.to_owned());
+            }
             _ => {}
         }
     }
-    TrafficProof::Proven(crossed)
+    proof
 }
 
 fn intersect_spans(a: &[(i32, i32)], b: &[(i32, i32)]) -> Vec<(i32, i32)> {
@@ -388,6 +409,33 @@ fn intersect_spans(a: &[(i32, i32)], b: &[(i32, i32)]) -> Vec<(i32, i32)> {
             i += 1;
         } else {
             j += 1;
+        }
+    }
+    out
+}
+
+pub(crate) fn missing_traffic(complete: &[Vec<(i32, i32)>], spans: &[(i32, i32)], first: i32, last: i32) -> Vec<(i32, i32, TrafficProof)> {
+    let mut out: Vec<(i32, i32, TrafficProof)> = Vec::new();
+    let inside = |held: &[(i32, i32)], hour: i32| held.iter().any(|&(a, b)| a <= hour && hour <= b);
+    let mut cuts = BTreeSet::from([first]);
+    for &(a, b) in complete.iter().flatten().chain(spans) {
+        for edge in [a, b.saturating_add(1)] {
+            if first <= edge && edge <= last {
+                cuts.insert(edge);
+            }
+        }
+    }
+    let points: Vec<i32> = cuts.into_iter().collect();
+    for (i, &start) in points.iter().enumerate() {
+        let end = points.get(i + 1).map_or(last, |&next| next - 1);
+        if inside(spans, start) {
+            continue;
+        }
+        let at = complete.iter().position(|held| !inside(held, start)).unwrap_or(0);
+        let proof = TrafficProof::unknown(TRAFFIC_TABLES[at].1);
+        match out.last_mut() {
+            Some(prev) if prev.2 == proof && i64::from(prev.1) + 1 == i64::from(start) => prev.1 = end,
+            _ => out.push((start, end, proof)),
         }
     }
     out
@@ -418,6 +466,7 @@ pub(crate) fn build_region_cells(
     traffic: &[(i32, i32, TrafficProof)],
     known: &[HourSpan],
     unheld: &[HourSpan],
+    gaps: &[(HourSpan, &str)],
     from: i32,
     to: i32,
 ) -> Vec<ConvoyCellRun> {
@@ -446,6 +495,9 @@ pub(crate) fn build_region_cells(
     for span in unheld {
         mark(span.first_hour, span.last_hour);
     }
+    for (span, _) in gaps {
+        mark(span.first_hour, span.last_hour);
+    }
     let points: Vec<i32> = cuts.into_iter().collect();
     let in_spans = |spans: &[HourSpan], h: i32| {
         let idx = spans.partition_point(|s| s.last_hour < h);
@@ -462,7 +514,10 @@ pub(crate) fn build_region_cells(
     let mut out: Vec<ConvoyCellRun> = Vec::new();
     for (i, &start) in points.iter().enumerate() {
         let end = points.get(i + 1).map_or(to, |&next| next - 1);
-        let state = if in_spans(unheld, start) {
+        let gap = gaps.iter().find(|(span, _)| span.first_hour <= start && start <= span.last_hour);
+        let state = if let Some((_, reason)) = gap {
+            ConvoyCellState::NotRecorded { reason: if reason.is_empty() { GAP_NOT_RECORDED.to_owned() } else { (*reason).to_owned() } }
+        } else if in_spans(unheld, start) {
             ConvoyCellState::NotRecorded { reason: "No country holds this tag at this hour".into() }
         } else if !in_spans(known, start) {
             ConvoyCellState::NotRecorded { reason: "Regional convoy efficiency was not recorded".into() }
@@ -470,9 +525,9 @@ pub(crate) fn build_region_cells(
             ConvoyCellState::Efficiency { value }
         } else {
             match traffic_at(start) {
-                Some(TrafficProof::Proven(active)) if active.contains(&region) => ConvoyCellState::Efficiency { value: i64::from(SCALE) },
-                Some(TrafficProof::Proven(_)) => ConvoyCellState::NoTraffic,
-                Some(TrafficProof::Unknown(reason)) => ConvoyCellState::NotRecorded { reason: reason.clone() },
+                Some(proof) if proof.crossed.contains(&region) => ConvoyCellState::Efficiency { value: i64::from(SCALE) },
+                Some(TrafficProof { unknown: Some(reason), .. }) => ConvoyCellState::NotRecorded { reason: reason.clone() },
+                Some(TrafficProof { unknown: None, .. }) => ConvoyCellState::NoTraffic,
                 None => ConvoyCellState::NotRecorded { reason: TRAFFIC_NOT_RECORDED.to_owned() },
             }
         };
@@ -560,6 +615,28 @@ pub(crate) fn outside(held: &[(i32, i32)], first: i32, last: i32) -> Vec<HourSpa
     out
 }
 
+pub(crate) fn without(spans: &[HourSpan], gaps: &[(HourSpan, &str)]) -> Vec<HourSpan> {
+    let mut out = Vec::new();
+    for span in spans {
+        let mut at = i64::from(span.first_hour);
+        let last = i64::from(span.last_hour);
+        for (gap, _) in gaps {
+            let (a, b) = (i64::from(gap.first_hour), i64::from(gap.last_hour));
+            if b < at || a > last {
+                continue;
+            }
+            if a > at {
+                out.push(HourSpan { first_hour: at as i32, last_hour: (a - 1) as i32 });
+            }
+            at = at.max(b + 1);
+        }
+        if at <= last {
+            out.push(HourSpan { first_hour: at as i32, last_hour: last as i32 });
+        }
+    }
+    out
+}
+
 fn reads(recording: &Recording, run: u32, table: TableId, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
     dashboard_query::cost::storage(|| lanes::available_reads(recording, run, table, first, last))
 }
@@ -581,7 +658,11 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
             ConvoyView::Trade => &[(1, TableId::ResourceExchanges), (2, TableId::ConvoyClients)],
         };
         for &(at, table) in tables {
-            gathered.known[at].extend(spans(reads(recording, run, table, stretch.first, stretch.last)?));
+            let read = match params.view {
+                ConvoyView::Regions => complete_spans(recording, run, table, stretch.first, stretch.last)?,
+                ConvoyView::Trade => reads(recording, run, table, stretch.first, stretch.last)?,
+            };
+            gathered.known[at].extend(spans(read));
         }
         let (links, index) = match params.view {
             ConvoyView::Regions => (None, None),
@@ -601,19 +682,24 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                             push(region, run);
                         }
                     }
-                    let mut spans = complete_spans(recording, run, TableId::ConvoyClients, first, last)?;
-                    for table in [TableId::ResourceOrigins, TableId::TradeRoutes, TableId::CountryLinks] {
-                        if spans.is_empty() {
-                            break;
-                        }
-                        let other = complete_spans(recording, run, table, first, last)?;
-                        spans = intersect_spans(&spans, &other);
-                    }
+                    let complete: Vec<Vec<(i32, i32)>> = TRAFFIC_TABLES.iter().map(|&(table, _)| complete_spans(recording, run, table, first, last)).collect::<io::Result<_>>()?;
+                    let spans = complete.iter().skip(1).fold(complete[0].clone(), |held, other| intersect_spans(&held, other));
+                    let mut traffic: Vec<(i32, i32, TrafficProof)> = missing_traffic(&complete, &spans, first, last);
                     if !spans.is_empty() {
                         let mut eval_hours = BTreeSet::new();
                         for &(a, b) in &spans {
                             eval_hours.insert(a);
                             eval_hours.insert(b);
+                        }
+                        let links_h = history(recording, run, TableId::CountryLinks, &[LINK_SLOT], Keys::All, first, last)?;
+                        let slot_i = at(&links_h, LINK_SLOT);
+                        let mut raw_ids = HashSet::from([id]);
+                        for (key, steps) in &links_h.keys {
+                            let ours = steps.iter().any(|step| step.cells.as_deref().is_some_and(|cells| number(cells, slot_i) == Some(i64::from(slot))));
+                            if ours && let Ok(raw) = u32::try_from(*key) {
+                                raw_ids.insert(raw);
+                                eval_hours.extend(steps.iter().map(|step| step.hour));
+                            }
                         }
                         let clients_h = history(recording, run, TableId::ConvoyClients, &[CLIENT_CATEGORY, CLIENT_OWNER, CLIENT_OTHER, 3, 4, 5, CLIENT_ASSIGNED], Keys::All, first, last)?;
                         let mut route_keys: Vec<u128> = Vec::new();
@@ -623,13 +709,12 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                         let rc_i = at(&clients_h, 3);
                         let rcty_i = at(&clients_h, 4);
                         let roth_i = at(&clients_h, 5);
+                        let held_raw = |value: Option<i64>| value.and_then(|v| u32::try_from(v).ok()).is_some_and(|raw| raw_ids.contains(&raw));
                         for (_, steps) in &clients_h.keys {
                             let relevant = steps.iter().any(|step| {
                                 step.cells.as_deref().is_some_and(|cells| {
                                     let cat = number(cells, cat_i);
-                                    let own = number(cells, own_i).and_then(|v| u32::try_from(v).ok());
-                                    let oth = number(cells, oth_i).and_then(|v| u32::try_from(v).ok());
-                                    matches!(cat, Some(1 | 2)) && own == Some(id) || matches!(cat, Some(4 | 6)) && oth == Some(id)
+                                    matches!(cat, Some(1 | 2)) && held_raw(number(cells, own_i)) || matches!(cat, Some(4 | 6)) && held_raw(number(cells, oth_i))
                                 })
                             });
                             if relevant {
@@ -649,10 +734,10 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                         }
                         let origins_h = history(recording, run, TableId::ResourceOrigins, &[0, 5], Keys::All, first, last)?;
                         for (key, steps) in &origins_h.keys {
-                            let key = *key;
-                            if key as u32 == id {
-                                let state = (key >> 32) as u32;
-                                route_keys.push((u128::from(id) << 40) | u128::from(state));
+                            let raw = *key as u32;
+                            if raw_ids.contains(&raw) {
+                                let state = (*key >> 32) as u32;
+                                route_keys.push((u128::from(raw) << 40) | u128::from(state));
                                 for step in steps {
                                     eval_hours.insert(step.hour);
                                 }
@@ -669,12 +754,7 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                             }
                         }
                         let mut seeker = Seeker::new(recording)?;
-                        let traffic_tables = [
-                            replay_lanes::at::Read::all(TableId::CountryLinks),
-                            replay_lanes::at::Read::all(TableId::ConvoyClients),
-                            replay_lanes::at::Read::all(TableId::ResourceOrigins),
-                            replay_lanes::at::Read::all(TableId::TradeRoutes),
-                        ];
+                        let traffic_tables = TRAFFIC_TABLES.map(|(table, _)| replay_lanes::at::Read::all(table));
                         for &(span_a, span_b) in &spans {
                             let hours: Vec<i32> = eval_hours.range(span_a..=span_b).copied().collect();
                             for (idx, &hour) in hours.iter().enumerate() {
@@ -682,16 +762,18 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                                 let seg_end = hours.get(idx + 1).map_or(span_b, |&next| next - 1);
                                 let frame = dashboard_query::cost::storage(|| seeker.frame(run, hour, &traffic_tables))?;
                                 let proof = traffic_in_frame(&frame, slot);
-                                if let TrafficProof::Proven(active) = &proof {
-                                    for &r in active {
-                                        gathered.regions.entry(r).or_default();
-                                    }
+                                for &region in &proof.crossed {
+                                    gathered.regions.entry(region).or_default();
                                 }
-                                match gathered.traffic.last_mut() {
-                                    Some(prev) if prev.2 == proof && i64::from(prev.1) + 1 == i64::from(hour) => prev.1 = seg_end,
-                                    _ => gathered.traffic.push((hour, seg_end, proof)),
-                                }
+                                traffic.push((hour, seg_end, proof));
                             }
+                        }
+                    }
+                    traffic.sort_by_key(|run| run.0);
+                    for (a, b, proof) in traffic {
+                        match gathered.traffic.last_mut() {
+                            Some(prev) if prev.2 == proof && i64::from(prev.1) + 1 == i64::from(a) => prev.1 = b,
+                            _ => gathered.traffic.push((a, b, proof)),
                         }
                     }
                 }
@@ -819,19 +901,19 @@ impl Product for ConvoyHealth {
         let mut warnings = Vec::new();
         let (mut gathered, mut held) = if from <= to { gather(source, &query, params, (from, to), cancelled)? } else { (Gathered::default(), Vec::new()) };
         held.sort_unstable();
-        let unheld = outside(&held, from, to);
-        let [regional, deals_known, clients_known] = gathered.known;
-        let known = [regional, deals_known, clients_known].map(dashboard_world::products::subjects::settle).to_vec();
-        let gaps: Vec<HourSpan> = query
+        let recorded_gaps: Vec<(HourSpan, &str)> = query
             .timeline
             .unheld
             .iter()
             .filter_map(|gap| {
-                let a = gap.first.max(from);
-                let b = gap.last.min(to);
-                (a <= b).then_some(HourSpan { first_hour: a, last_hour: b })
+                let (a, b) = (gap.first.max(from), gap.last.min(to));
+                (a <= b).then_some((HourSpan { first_hour: a, last_hour: b }, gap.reason.as_str()))
             })
             .collect();
+        let unheld = without(&outside(&held, from, to), &recorded_gaps);
+        let [regional, deals_known, clients_known] = gathered.known;
+        let known = [regional, deals_known, clients_known].map(dashboard_world::products::subjects::settle).to_vec();
+        let gaps: Vec<HourSpan> = recorded_gaps.iter().map(|(span, _)| *span).collect();
         let mut region_ids: BTreeSet<u32> = gathered.regions.keys().copied().collect();
         region_ids.extend(params.regions.iter().flatten().copied());
         region_ids.extend(params.pinned_regions.iter().flatten().copied());
@@ -840,7 +922,7 @@ impl Product for ConvoyHealth {
             .into_iter()
             .map(|region| {
                 let efficiency = gathered.regions.remove(&region).unwrap_or_default();
-                let cells = build_region_cells(region, &efficiency, &gathered.traffic, &known[0], &unheld, from, to);
+                let cells = build_region_cells(region, &efficiency, &gathered.traffic, &known[0], &unheld, &recorded_gaps, from, to);
                 let readout = cells.last().map(|run| run.state.clone());
                 let (name, missing) = match named.get(&region) {
                     Some(Ok(name)) => (Some(name.clone()), None),
