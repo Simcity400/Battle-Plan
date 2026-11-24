@@ -1027,7 +1027,7 @@ export type PoliticsHistoryParams = { branchId: string, mode: PoliticsHistoryMod
 /**
  * The country, for [`PoliticsHistoryMode::Country`].
  */
-country?: CountryRef, };
+country?: CountryRef, hour?: number, };
 export type PoliticsHistoryReply = { branchId: string, mode: PoliticsHistoryMode,
 /**
  * The branch's last hour: the history reads through it.
@@ -3961,22 +3961,22 @@ export type AirStatisticsRegion = { region: string, name: string | null,
 missing: string | null, };
 export type AirMissionTheatre = { id: string, name: string, regions: Array<string>, };
 export type AirStatisticsParamsAtHour = AirStatisticsParams & { hour: number };
-export type PoliticsStateParams = { branchId: string, view: PoliticsView, };
+export type PoliticsStateParams = { branchId: string, view: PoliticsView, country?: CountryRef, };
 export type PoliticsStateReply = { branchId: string, view: PoliticsView, exiles: Array<StateExile>, balances: Array<BalanceRecord>,
 /**
  * Null when the membership cannot say which record each country shows.
  */
 current: Array<CurrentBalance> | null, unavailable: Array<PoliticsUnavailable>, warnings: Array<string>, };
 export type PoliticsView = "exiles" | "balances";
-export type BalanceSide = { token: string, name: string | null, };
-export type BalanceRange = { token: string, name: string | null,
+export type BalanceSide = { token: string, name: string | null, reason?: string, };
+export type BalanceRange = { token: string, name: string | null, reason?: string,
 /**
  * Fixed5 bounds; null where the recorded content does not establish them.
  */
 min: string | null, max: string | null, };
 export type BalanceMember = { tag: string | null, daily: string | null, weekly: string | null, };
 export type BalanceSource = { token: string, name: string | null, daily: string, weekly: string, };
-export type BalanceRecord = { ordinal: number, token: string, name: string | null, left: BalanceSide, right: BalanceSide,
+export type BalanceRecord = { ordinal: number, token: string, name: string | null, nameReason?: string, left: BalanceSide, right: BalanceSide,
 /**
  * The side it is moving toward, when the record names one.
  */
@@ -6668,8 +6668,8 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "place-name-runs": { "branchId": "leaf", "from": "leaf", "land": "leaf", "provinces": "node", "provinces[]": "leaf", "states": "node", "states[]": "leaf", "to": "leaf" },
   "place-names": { "branchId": "leaf", "land": "leaf", "places": "node", "places[]": "node", "places[].hour": "leaf", "places[].provinceId": "leaf", "states": "node", "states[]": "node", "states[].hour": "leaf", "states[].stateId": "leaf" },
   "player-apm": { "branchId": "leaf", "buckets": "leaf", "firstHour": "leaf", "group": "leaf", "lastHour": "leaf", "membership": "node", "membership[]": "node", "membership[].firstHour": "leaf", "membership[].lastHour": "leaf", "membership[].tag": "leaf", "players": "node", "players[]": "leaf", "registry": "leaf", "tags": "node", "tags[]": "leaf" },
-  "politics-state": { "branchId": "leaf", "hour": "leaf", "view": "leaf" },
-  "politics-state-history": { "branchId": "leaf", "country": "any", "mode": "leaf" },
+  "politics-state": { "branchId": "leaf", "country": "any", "hour": "leaf", "view": "leaf" },
+  "politics-state-history": { "branchId": "leaf", "country": "any", "hour": "leaf", "mode": "leaf" },
   "power-spending": { "branchId": "leaf", "country": "any", "currency": "leaf", "from": "leaf", "to": "leaf" },
   "power-spending-breakdown": { "branchId": "leaf", "country": "any", "currency": "leaf", "from": "leaf", "hour": "leaf" },
   "production-licences": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "limit": "leaf", "subject": "any" },

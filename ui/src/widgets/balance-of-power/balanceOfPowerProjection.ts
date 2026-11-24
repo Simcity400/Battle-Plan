@@ -184,7 +184,7 @@ function buildHoverDetail(
     items.push({
       label: title,
       value: exactValue(at.value),
-      color: CHART_MEASURE_COLOURS.bopRight,
+      swatch: CHART_MEASURE_COLOURS.bopRight,
       strong: true,
     });
   } else {
@@ -234,7 +234,7 @@ function buildHoverDetail(
 export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions> = registerTimeChart({
   kind: 'balance-of-power',
   family: 'time-chart',
-  variant: 'balance-of-power',
+  variant: 'line',
   joinMode: 'step',
   measureTitle: 'Balance of power',
   project(readView: BoundedReadView, options: BalanceOfPowerOptions) {
@@ -252,8 +252,8 @@ export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions
         empty: { message: 'Choose a country in widget settings.', kind: 'empty' },
       };
     }
-    const history = readView.answer<PoliticsHistoryReply>('history');
-    const state = readView.answer<PoliticsStateReply>('state');
+    const history = readView.panel<PoliticsHistoryReply>('history');
+    const state = readView.panel<PoliticsStateReply>('state');
     if (!history) {
       return {
         kind: 'balance-of-power',
@@ -269,7 +269,8 @@ export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions
     const subject = countryHolder(history, tag, hour);
     const choice = subject ? chooseBalance(subject, '', hour, hour) : null;
     const balance = choice?.balance ?? null;
-    const countryName = readView.country(tag)?.name ?? tag;
+    const countryWho = readView.who('country', tag, hour);
+    const countryName = countryWho.name.status === 'ready' ? countryWho.name.value : tag;
     if (!subject || !balance) {
       const absence = balanceAbsence(history.known, hour, hour, unknown);
       const empty = absence.kind === 'unread'

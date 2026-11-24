@@ -290,6 +290,10 @@ fn balance_scripted_names_respect_scopes_causality_staged_reads_and_named_refusa
             ),
         ),
         (
+            "common/ideologies/00_ideologies.txt",
+            "ideologies = { democratic = { types = { liberalism = {} } } fascism = { types = { fascism_ideology = {} } } }\n",
+        ),
+        (
             "common/scripted_localisation/synthetic.txt",
             concat!(
                 "defined_text = {\n",
@@ -322,6 +326,14 @@ fn balance_scripted_names_respect_scopes_causality_staged_reads_and_named_refusa
         let ruling_eng = if hour < 115 { 1 } else { 0 };
         set(
             &mut f,
+            TableId::CountryCounterInputs,
+            TableRows::CountryCounterInputs(vec![
+                CountryCounterInputRow { country: GER, owned_state_count: 5, ..Default::default() },
+                CountryCounterInputRow { country: ENG, owned_state_count: 3, ..Default::default() },
+            ]),
+        );
+        set(
+            &mut f,
             TableId::Politics,
             TableRows::Politics(vec![
                 PoliticsRow { country: GER, ruling_party: Some(1), ..Default::default() },
@@ -332,8 +344,8 @@ fn balance_scripted_names_respect_scopes_causality_staged_reads_and_named_refusa
             &mut f,
             TableId::PoliticalParties,
             TableRows::PoliticalParties(vec![
-                PoliticalPartyRow { country: ENG, id: 0, token: b"democratic".to_vec(), ..Default::default() },
-                PoliticalPartyRow { country: ENG, id: 1, token: b"fascism".to_vec(), ..Default::default() },
+                PoliticalPartyRow { country: ENG, id: 0, token: b"democratic".to_vec(), is_ruling: u8::from(ruling_eng == 0), ..Default::default() },
+                PoliticalPartyRow { country: ENG, id: 1, token: b"fascism".to_vec(), is_ruling: u8::from(ruling_eng == 1), ..Default::default() },
             ]),
         );
         set(
@@ -393,9 +405,9 @@ fn balance_scripted_names_respect_scopes_causality_staged_reads_and_named_refusa
     assert!(!early_reads.contains_key(&TableId::States), "staged reads must never touch States");
     assert!(!early.names.contains_key("GER_left"));
     let ger_early = &early.holder_balances[0].balances[0];
-    assert_eq!(ger_early.left.as_ref().unwrap().name.as_deref(), Some("Fascist Council"));
-    assert_eq!(ger_early.right.as_ref().unwrap().name.as_deref(), Some(""));
-    assert_eq!(ger_early.ranges.iter().find(|r| r.token == "GER_low").unwrap().name.as_deref(), Some("GER low"));
+    assert_eq!(ger_early.left.as_ref().unwrap().name.as_deref(), Some("Fascist Council"), "left={:?}", ger_early.left);
+    assert_eq!(ger_early.right.as_ref().unwrap().name.as_deref(), Some(""), "right={:?}", ger_early.right);
+    assert_eq!(ger_early.ranges.iter().find(|r| r.token == "GER_low").unwrap().name.as_deref(), Some("GER low"), "ranges={:?}", ger_early.ranges);
 
     let late = history::answer(
         &query,

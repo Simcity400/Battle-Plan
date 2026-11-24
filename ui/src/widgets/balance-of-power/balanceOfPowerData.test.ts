@@ -135,9 +135,9 @@ test('balance-of-power time-chart projection renders pre-first-reading hatched g
 
   const view = createBoundedReadView({
     hour: 800,
-    answers: new Map<string, unknown>([['history', hist], ['state', stateAt800]]),
-    hover: new Map([['hover', { hour: 600, data: hoverAt600 }]]),
-    art: () => NO_ART,
+    panels: new Map<string, unknown>([['history', hist], ['state', stateAt800]]),
+    hovers: new Map([['hover', { hour: 600, data: hoverAt600 }]]),
+    art: { resolve: () => NO_ART },
   });
   const model = balanceOfPowerProjection.project(view, {
     tag: 'ITA',

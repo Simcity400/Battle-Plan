@@ -2397,7 +2397,13 @@ pub fn probe_unselected_tables(
                     }
                 }
             }
-            crate::triggers::inputs::Key::World(_) => {}
+            crate::triggers::inputs::Key::World(query) => {
+                if let Some(reads) = query.dependence() {
+                    for read in reads {
+                        keep(read.table);
+                    }
+                }
+            }
         }
     }
     for failure in &failures {
