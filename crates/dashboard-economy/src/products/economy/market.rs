@@ -253,7 +253,7 @@ fn chosen(holders: &Holders, tags: &[Country], hour: i32, warnings: &mut Vec<Str
             Some(Holder::Found { slot, .. }) => {
                 slots.insert(slot);
             }
-            _ => warnings.push(format!("{} is not held by any country at this hour", holders.name(tag, hour))),
+            _ => warnings.push(holders.say(tag, hour, |name| format!("{name} is not held by any country at this hour"))),
         }
     }
     Some(slots)
