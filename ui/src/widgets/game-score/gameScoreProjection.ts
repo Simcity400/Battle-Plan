@@ -21,10 +21,10 @@ import {
   type TooltipExtraRow,
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
-import { OFFERED } from '../../families/table/settings.ts';
+import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { compareValues, hasMeasuredValue, knownValue, notRecorded, valueFromLive, type Value } from '../../families/value.ts';
 import type { GameScoreRow } from '../../generated/dashboard';
-import { DEFAULT_SORT, OPTIONS } from './definition.ts';
+import { OPTIONS, TABLE_BASE } from './definition.ts';
 import { SCORE_LABELS, SCORE_PARTS, scoreHint, scorePart, validateGameScore, type GameScoreReply, type ScorePart } from './gameScoreData.ts';
 
 export type FactionRun = DeclaredFactionRun;
@@ -42,7 +42,6 @@ export interface GameScoreProjectionOptions {
   readonly factionUnobserved?: HourRanges;
   readonly factionIncomplete?: HourRanges;
   readonly rankMarkers: boolean;
-  readonly cellBars: boolean;
   readonly labels: CountryLooksMap;
 }
 
@@ -110,13 +109,14 @@ function nextGameScoreChange(hour: number, options: GameScoreProjectionOptions):
   );
 }
 
-export function gameScoreColumns(hints?: GameScoreReply['hints'], cellBars = false): TableColumnSpec[] {
-  const numDisplay = cellBars ? 'faint' : 'plain';
+export function gameScoreColumns(hints?: GameScoreReply['hints']): TableColumnSpec[] {
   return [
     {
       key: 'country',
       label: SCORE_LABELS.country,
       as: 'flagName',
+      showNamesDefault: true,
+      pinned: true,
       offered: OFFERED.country,
       priority: 0,
       text: true,
@@ -127,8 +127,9 @@ export function gameScoreColumns(hints?: GameScoreReply['hints'], cellBars = fal
     ...SCORE_PARTS.map((part, index): TableColumnSpec => ({
       key: part,
       label: SCORE_LABELS[part],
-      as: numDisplay,
-      tone: 'blue',
+      as: 'faint',
+      barEligible: true,
+      tone: 'country',
       offered: OFFERED.number,
       priority: index + 1,
       numeric: true,
@@ -147,8 +148,8 @@ export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = 
     incrementalLive: options => options.top == null,
     rank: true,
     rankMarkers: options => options.rankMarkers,
-    columns: (reply, options): readonly DeclarativeColumnSpec<GameScoreRow, GameScoreProjectionOptions>[] => {
-      const specs = gameScoreColumns(reply.hints, options.cellBars);
+    columns: (reply): readonly DeclarativeColumnSpec<GameScoreRow, GameScoreProjectionOptions>[] => {
+      const specs = gameScoreColumns(reply.hints);
       return [
         { ...specs[0]!, countryField: 'tag' },
         ...SCORE_PARTS.map((part, idx): DeclarativeColumnSpec<GameScoreRow, GameScoreProjectionOptions> => ({
@@ -227,6 +228,7 @@ export const gameScoreDeclaration: TableWidgetDeclaration<GameScoreProjectionOpt
   countries: {
     mode: 'multi',
     labels: true,
+    colours: true,
     factions: true,
     allowSlots: true,
     allTagsForLabels: true,
@@ -251,8 +253,8 @@ export const gameScoreDeclaration: TableWidgetDeclaration<GameScoreProjectionOpt
     }],
   }),
   projection: gameScoreProjection,
-  columns: ctx => gameScoreColumns(undefined, ctx.options.cellBars === true),
-  settings: { kind: 'options', defaultSort: DEFAULT_SORT },
+  columns: () => gameScoreColumns(),
+  settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },
   projectionOptions: ctx => ({
     all: ctx.countries.all,
     holders: ctx.countries.holders,
@@ -265,7 +267,6 @@ export const gameScoreDeclaration: TableWidgetDeclaration<GameScoreProjectionOpt
     factionUnobserved: ctx.countries.factionUnobserved,
     factionIncomplete: ctx.countries.factionIncomplete,
     rankMarkers: ctx.options.rankMarkers === true,
-    cellBars: ctx.options.cellBars === true,
     labels: ctx.countries.labels,
   }),
   jumpToDate: true,

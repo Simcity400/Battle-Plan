@@ -460,30 +460,21 @@ export function deriveBarsAudit(
     const item = model.rows[i]!;
     if (item.kind !== 'data') continue;
     const label = item.labelMissing ? notRecordedLabel('Name') : item.label;
-    rows.push({ row: item.key, key: 'label', value: label });
-    if (item.value) {
-      rows.push({ row: item.key, key: 'value', value: canonicalAuditValue(item.value.value) });
-    }
-    if (item.left) {
-      rows.push({ row: item.key, key: 'left', value: canonicalAuditValue(item.left.value.value) });
-    }
-    if (item.right) {
-      rows.push({ row: item.key, key: 'right', value: canonicalAuditValue(item.right.value.value) });
-    }
-    if (item.rightSide) {
-      rows.push({ row: item.rightSide.key, key: 'rightSide', value: canonicalAuditValue(item.rightSide.value.value) });
-    }
-    if (item.target) {
-      rows.push({ row: item.key, key: 'target', value: canonicalAuditValue(item.target.value) });
-    }
+    const cell = (row: string, name: string, value: string) => rows.push({ row, key: `${row}\u0000${name}`, value });
+    cell(item.key, 'label', label);
+    if (item.value) cell(item.key, 'value', canonicalAuditValue(item.value.value));
+    if (item.left) cell(item.key, 'left', canonicalAuditValue(item.left.value.value));
+    if (item.right) cell(item.key, 'right', canonicalAuditValue(item.right.value.value));
+    if (item.rightSide) cell(item.rightSide.key, 'rightSide', canonicalAuditValue(item.rightSide.value.value));
+    if (item.target) cell(item.key, 'target', canonicalAuditValue(item.target.value));
     if (item.pair) {
-      rows.push({ row: item.key, key: 'pairTop', value: canonicalAuditValue(item.pair.topValue) });
-      rows.push({ row: item.key, key: 'pairBottom', value: canonicalAuditValue(item.pair.bottomValue) });
+      cell(item.key, 'pairTop', canonicalAuditValue(item.pair.topValue));
+      cell(item.key, 'pairBottom', canonicalAuditValue(item.pair.bottomValue));
     }
     if (item.segments?.length) {
       for (let s = 0; s < item.segments.length; s++) {
         const seg = item.segments[s]!;
-        rows.push({ row: item.key, key: `segment:${seg.key}`, value: `${Math.round(seg.share * 10000)}:${canonicalAuditValue(seg.value)}` });
+        cell(item.key, `segment:${seg.key}`, `${Math.round(seg.share * 10000)}:${canonicalAuditValue(seg.value)}`);
       }
     }
   }

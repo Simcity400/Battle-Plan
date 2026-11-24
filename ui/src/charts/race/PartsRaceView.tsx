@@ -73,6 +73,7 @@ export interface PartsRaceViewConfig {
   chartOptions?: (options: Readonly<Record<string, OptionValue>>) => Readonly<Record<string, OptionValue>>;
   zeroMix: (options: Readonly<Record<string, OptionValue>>) => string;
   positiveTop?: boolean;
+  canFollow?: (options: Readonly<Record<string, OptionValue>>) => boolean;
   formatValue?: (value: number, options: Readonly<Record<string, OptionValue>>) => string;
   formatTick?: (options: Readonly<Record<string, OptionValue>>) => ((value: number, ticks: readonly number[]) => string) | undefined;
   referenceLabel?: (options: Readonly<Record<string, OptionValue>>) => string | undefined;
@@ -209,8 +210,9 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   useLayoutEffect(() => { if (anchor.current !== rootElement) setRoot(anchor.current); });
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
-  const followQuery = useMemo(() => liveRaceView && params && !split ? gate.follow({ product: config.product, params }) : null,
-    [liveRaceView, JSON.stringify(params), split, config.product, gate.follow]);
+  const canFollow = config.canFollow?.(options) ?? true;
+  const followQuery = useMemo(() => liveRaceView && canFollow && params && !split ? gate.follow({ product: config.product, params }) : null,
+    [liveRaceView, canFollow, JSON.stringify(params), split, config.product, gate.follow]);
   const sticky = useRef<StickyMembers | null>(null);
   const followKey = followQuery ? canonical(followQuery) : '';
   const top = resolved.top ?? null;

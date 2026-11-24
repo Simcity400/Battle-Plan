@@ -61,7 +61,6 @@ export function createBoundedSlice<T>(
   const hasTail = tail !== undefined;
   const length = closedLength + (hasTail ? 1 : 0);
   return {
-    source,
     closedLength,
     length,
     ...(hasTail ? { tail } : {}),
@@ -350,6 +349,73 @@ export function clipMarks(clusters: readonly MarkCluster[], hour: DisplayedHour)
 
 export function clipRuns(runs: readonly Run[], hour: DisplayedHour): Run[] {
   return [...sliceRuns(runs, hour).slice];
+}
+
+export interface UnrecordedLine {
+  readonly summary: { readonly from: number; readonly to: number };
+  readonly missing: readonly MissingSpan[];
+}
+
+export interface BoundedUnrecorded {
+  readonly reason: string | null;
+  readonly validInterval: readonly [lo: number, hi: number];
+}
+
+const NOTHING_UNRECORDED: BoundedUnrecorded = Object.freeze({ reason: null, validInterval: Object.freeze([-Infinity, Infinity]) as readonly [number, number] });
+
+export function boundedUnrecorded(lines: Iterable<UnrecordedLine>, hour: number): BoundedUnrecorded {
+  const h = Math.floor(hour);
+  let any = false;
+  let recordedFrom = Infinity;
+  let lo = -Infinity;
+  let hi = Infinity;
+  let started = true;
+  const reasons: string[] = [];
+  for (const line of lines) {
+    any = true;
+    const { from, to } = line.summary;
+    let at = from;
+    let reasonAt: string | null = null;
+    let spanLo = from;
+    let spanHi = Infinity;
+    for (const span of line.missing) {
+      if (span.lastHour < at) continue;
+      if (span.firstHour > at || at > to) break;
+      const target = Math.min(h, to);
+      if (reasonAt === null && span.firstHour <= target && target <= span.lastHour) {
+        reasonAt = span.reason;
+        spanLo = Math.max(from, span.firstHour);
+        spanHi = span.lastHour >= to ? Infinity : span.lastHour;
+      }
+      at = span.lastHour + 1;
+    }
+    const prefixEnd = at > to ? Infinity : at - 1;
+    recordedFrom = Math.min(recordedFrom, prefixEnd + 1);
+    if (h < from) {
+      started = false;
+      hi = Math.min(hi, from - 1);
+    } else if (h <= prefixEnd && reasonAt !== null) {
+      reasons.push(reasonAt);
+      lo = Math.max(lo, spanLo);
+      hi = Math.min(hi, spanHi);
+    }
+  }
+  if (!any) return NOTHING_UNRECORDED;
+  if (h >= recordedFrom) return { reason: null, validInterval: [recordedFrom, Infinity] };
+  hi = Math.min(hi, recordedFrom - 1);
+  if (!started) return { reason: null, validInterval: [Math.min(lo, h), Math.max(h, hi)] };
+  let best: string | null = null;
+  let most = 0;
+  const counts = new Map<string, number>();
+  for (const reason of reasons) {
+    const count = (counts.get(reason) ?? 0) + 1;
+    counts.set(reason, count);
+    if (count > most) {
+      best = reason;
+      most = count;
+    }
+  }
+  return { reason: best, validInterval: [lo, hi] };
 }
 
 export interface BoundSeriesOptions {

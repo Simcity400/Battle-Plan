@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SpriteCaches, spriteFrames, spriteIcons, spriteId } from './spriteArtwork.ts';
+import { SPRITE_BATCH, SpriteCaches, spriteFrames, spriteHandle, spriteIcons, spriteId } from './spriteArtwork.ts';
+import { artHandleKey, readyArt } from '../families/art/types.ts';
+import type { ArtHandle } from '../families/plan.ts';
 
 const png = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png';
 
 test('sprite frames are asked once each, in a stable order, without missing keys', () => {
   assert.deepEqual(spriteFrames([{ key: 'GFX_b', frame: 0 }, null, { key: 'GFX_a', frame: 2 }, undefined, { key: '', frame: 0 },
-    { key: 'GFX_b', frame: 0 }, { key: 'GFX_a', frame: -1 }]), [{ key: 'GFX_b', frame: 0 }, { key: 'GFX_a', frame: 2 }]);
+    { key: 'GFX_b', frame: 0 }, { key: 'GFX_a', frame: -1 }]), [{ key: 'GFX_a', frame: 2 }, { key: 'GFX_b', frame: 0 }]);
 });
 
 test('sprite art maps each asked frame to its drawable image or null', () => {
@@ -68,4 +70,49 @@ test('two recordings mounting together keep their own icons whatever order their
   b.set('icon', png);
   assert.equal(caches.icons('b').get('icon'), png);
   releaseA(); releaseB();
+});
+
+test('sprite requests from multiple callers in the same tick coalesce into bounded batches without duplicate or cancelled calls', async () => {
+  const caches = new SpriteCaches();
+  const release = caches.hold('s');
+  const calls: number[] = [];
+  let aborted = 0;
+  const fetcher = async (batch: readonly ArtHandle[], signal: AbortSignal) => {
+    calls.push(batch.length);
+    signal.addEventListener('abort', () => { aborted++; });
+    await Promise.resolve();
+    return new Map(batch.map(handle => [artHandleKey(handle), readyArt(png)] as const));
+  };
+  const first = Array.from({ length: 10 }, (_, i) => ({ key: `GFX_${i}`, frame: 0 }));
+  const second = Array.from({ length: 10 }, (_, i) => ({ key: `GFX_${i + 5}`, frame: 0 }));
+  const flush = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  caches.request('s', first.map(spriteHandle), fetcher);
+  caches.request('s', second.map(spriteHandle), fetcher);
+  await flush();
+  assert.deepEqual(calls, [15]);
+  assert.equal(aborted, 0);
+  assert.equal(caches.icons('s').get(spriteId({ key: 'GFX_14', frame: 0 })), png);
+  assert.equal(caches.resolutions('s').get(spriteId({ key: 'GFX_14', frame: 0 }))?.status, 'ready');
+  const large = Array.from({ length: SPRITE_BATCH + 10 }, (_, i) => ({ key: `GFX_L_${i}`, frame: 0 }));
+  caches.request('s', large.map(spriteHandle), fetcher);
+  await flush();
+  assert.deepEqual(calls, [15, SPRITE_BATCH, 10]);
+  release();
+});
+
+test('failed sprite batches record errors without marking sprites as missing and notify watchers', async () => {
+  const caches = new SpriteCaches();
+  const release = caches.hold('err');
+  let notified = 0;
+  const stop = caches.watch('err', () => { notified++; });
+  const failing = async () => { throw new Error('disk offline'); };
+  caches.request('err', [spriteHandle({ key: 'GFX_fail', frame: 0 })], failing);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  const id = spriteId({ key: 'GFX_fail', frame: 0 });
+  assert.equal(caches.icons('err').has(id), false);
+  assert.equal(caches.errors('err').get(id), 'disk offline');
+  assert.equal(caches.resolutions('err').has(id), false);
+  assert.equal(notified, 1);
+  stop();
+  release();
 });

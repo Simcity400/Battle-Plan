@@ -1,4 +1,6 @@
+import { LABEL_WEIGHT } from '../../charts/draw.ts';
 import type { LiveValues } from '../../charts/live';
+import { textWidth } from '../../charts/textWidth.ts';
 import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
 import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
@@ -14,7 +16,7 @@ import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import { nextLookChange } from '../looks.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
-import { layoutFamilyBars, type BarsLayout } from './layout.ts';
+import { layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
 import {
   assertBarsModelValid,
   deriveBarsAudit,
@@ -88,6 +90,9 @@ interface HeldFamilyBars {
   priorHour: number;
   glide: Map<string, BarsGlideOffset>;
   kept: Map<string, { text: string; content: string }>;
+  metaField: FieldEntry | null;
+  navField: FieldEntry | null;
+  boundsField: FieldEntry | null;
   mirrorGate: CadenceGate;
   mirrorField: FieldEntry | null;
   tipGate: CadenceGate;
@@ -319,6 +324,9 @@ export function familyBarsLaneView(
           priorHour: NaN,
           glide: new Map(),
           kept: new Map(),
+          metaField: null,
+          navField: null,
+          boundsField: null,
           mirrorGate,
           mirrorField: null,
           tipGate,
@@ -401,7 +409,7 @@ export function familyBarsLaneView(
         held.prevStaticPanels = bound.staticPanels;
         held.prevStaticAnswers = bound.staticAnswers;
         held.prevThemeLooks = bound.theme.countryLooks;
-        held.validFrom = validFrom;
+        held.validFrom = Math.max(validFrom, hour);
         held.validUntil = validUntil;
         const projNext = proj.nextChange ? proj.nextChange(readView, bound.options) : Infinity;
         const lookNext = bound.theme.countryLooks ? nextLookChange(bound.theme.countryLooks, hour) : Infinity;
@@ -413,7 +421,12 @@ export function familyBarsLaneView(
       const layoutSig = `${surface.width}:${surface.height}:${model.form}:${model.rows.length}:${model.rowHeight ?? ''}:${model.showAxis ? 1 : 0}`;
       let layoutChanged = false;
       if (!held.cachedLayout || modelChanged || held.layoutSig !== layoutSig) {
-        held.cachedLayout = layoutFamilyBars(model, surface.width, surface.height, bound.theme);
+        const measureCtx = held.ctx;
+        const labelFont = `${LABEL_WEIGHT} ${bound.theme.fontSize.body}px ${bound.theme.font}`;
+        held.cachedLayout = layoutFamilyBars(model, surface.width, surface.height, bound.theme, text => {
+          measureCtx.font = labelFont;
+          return textWidth(measureCtx, text);
+        });
         held.layoutSig = layoutSig;
         layoutChanged = true;
       }
@@ -481,31 +494,40 @@ export function familyBarsLaneView(
       const fields: Record<string, FieldEntry> = {};
       if (held.identityDemandsField) fields.identityDemands = held.identityDemandsField;
 
-      const metaValue = {
-        form: model.form,
-        count: model.rows.length,
-        totalHeight: layout.totalHeight,
-        bodyHeight: layout.bodyHeight,
-        summaryText: model.summaryText ?? null,
-        empty: model.empty ?? null,
-        emptyDetail: model.emptyDetail ?? null,
-        emptyKind: model.emptyKind ?? 'empty',
-        notes: model.notes ?? [],
-        warnings: model.warnings ?? [],
-      };
-      fields.meta = { value: metaValue, content: cachedField(held, 'meta', JSON.stringify(metaValue), content) };
+      if (modelChanged || layoutChanged || !held.metaField || !held.navField || !held.boundsField) {
+        const metaValue = {
+          form: model.form,
+          count: model.rows.length,
+          totalHeight: layout.totalHeight,
+          bodyHeight: layout.bodyHeight,
+          rowHeight: layout.dataRowHeight,
+          bodyTop: layout.bodyTop,
+          summaryText: model.summaryText ?? null,
+          empty: model.empty ?? null,
+          emptyDetail: model.emptyDetail ?? null,
+          emptyKind: model.emptyKind ?? 'empty',
+          notes: model.notes ?? [],
+          warnings: model.warnings ?? [],
+        };
+        held.metaField = { value: metaValue, content: cachedField(held, 'meta', JSON.stringify(metaValue), content) };
+        const navItems = model.rows.flatMap((row, index) => (
+          row.kind === 'section'
+            ? []
+            : [[row.key, row.label, index, -1, '', row.kind === 'data' ? (row.meta ?? null) : null] as const]
+        ));
+        held.navField = { value: navItems, content: content() };
+        held.boundsField = { value: { tops: layout.rowTops, heights: layout.rowHeights, bodyTop: layout.bodyTop }, content: content() };
+      }
+      fields.meta = held.metaField;
+      fields.nav = held.navField;
+      fields.rowBounds = held.boundsField;
 
-      const navItems = model.rows.flatMap((row, index) => (
-        row.kind === 'section'
-          ? []
-          : [[row.key, row.label, index, -1, '', row.kind === 'data' ? (row.meta ?? null) : null] as const]
-      ));
-      fields.nav = { value: navItems, content: cachedField(held, 'nav', JSON.stringify(navItems), content) };
-
-      const mirrorKey = `${bound.window ? `${bound.window.first}:${bound.window.count}` : ''}\u0000${bound.focusedKey ?? ''}`;
+      const shown = visibleBarsRange(layout, bound.scrollTop);
+      const mirrorWindow = bound.window ?? { first: shown.first, count: Math.max(0, shown.last - shown.first) };
+      const mirrorKey = `${mirrorWindow.first}:${mirrorWindow.count}\u0000${bound.focusedKey ?? ''}`;
       if (modelChanged || layoutChanged) held.mirrorGate.invalidate();
       if (!held.mirrorField || held.mirrorGate.due(now, input.speed, mirrorKey)) {
-        const mirror = deriveBarsMirror(model, bound.window, bound.focusedKey);
+        const mirror = deriveBarsMirror(model, mirrorWindow, bound.focusedKey);
         held.mirrorField = { value: mirror, content: cachedField(held, 'mirror', JSON.stringify(mirror), content) };
         held.mirrorGate.record(now, mirrorKey);
       }
@@ -559,8 +581,11 @@ export function familyBarsLaneView(
 
       const glideSnapshot = moving ? new Map(held.glide) : undefined;
       const scrollSnapshot = bound.scrollTop;
+      const removeShown = new Set<string>();
+      if (inspectedKey) removeShown.add(inspectedKey);
+      if (bound.focusedKey) removeShown.add(bound.focusedKey);
       const hit = (point: readonly [number, number]) => {
-        const res = hitFamilyBars(layout, model, { x: point[0], y: point[1] }, scrollSnapshot, glideSnapshot, now, glideMs);
+        const res = hitFamilyBars(layout, model, { x: point[0], y: point[1] }, scrollSnapshot, glideSnapshot, now, glideMs, removeShown);
         if (res.kind === 'none' || !res.rowKey) return null;
         if (res.kind === 'add-region') return `add:${res.rowKey}`;
         if (res.kind === 'remove-region') return `remove:${res.rowKey}`;
@@ -572,6 +597,13 @@ export function familyBarsLaneView(
       return {
         ...(handledPicture ? { mode: 'picture' as const } : {}),
         ...(Number.isFinite(held.cachedModelNextAt) ? { nextChangeAt: held.cachedModelNextAt } : {}),
+        viewport: {
+          width: bound.width,
+          height: bound.height,
+          dpr: input.binding.surfaces[0]?.dpr ?? 1,
+          scrollLeft: 0,
+          scrollTop: bound.scrollTop,
+        },
         surfaces: [{ source: held.canvas, content: held.content }],
         fields,
         motion: moving,

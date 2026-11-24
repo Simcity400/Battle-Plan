@@ -73,9 +73,7 @@ export type FamilyNavigationKind = 'rows' | 'grid' | 'points';
 export type FamilyMirrorKind = 'listbox' | 'table' | 'none';
 export type FamilySkeletonKind = 'table' | 'chart';
 
-export type FamilyArtDemand =
-  | ArtHandle
-  | { readonly key: string; readonly frame: number };
+export type FamilyArtDemand = ArtHandle;
 
 export interface FamilyStaticSources {
   readonly panels?: Readonly<Record<string, unknown>>;
@@ -141,13 +139,14 @@ export interface FamilyMetaState {
 
 export interface FamilyBindingContext<TOptions> {
   readonly kind: string;
+  readonly view: string;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
-  readonly spriteResolutions?: Readonly<Record<string, ArtResolution>>;
+  readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
   readonly extent: readonly [number, number] | null;
   readonly plan: SourcePlan | null;
   readonly viewport: FamilyViewportState;
@@ -156,9 +155,14 @@ export interface FamilyBindingContext<TOptions> {
   readonly identitySnapshot: IdentitySnapshot | null;
   readonly selectedKey: string | null;
   readonly focusedKey: string | null;
+  readonly expanded: Readonly<Record<string, boolean>>;
   readonly audit: boolean;
   readonly auditId: number | undefined;
   readonly pauseFlush: number;
+}
+
+export interface FamilyAuditContext {
+  readonly viewport: FamilyViewportState;
 }
 
 export interface FamilyContextHit {
@@ -206,7 +210,7 @@ export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBindin
   readonly getGridMetrics?: (fields: Readonly<Record<string, unknown>>) => FamilyGridMetrics | null;
   readonly parseGridKey?: (key: string | null) => { readonly row: number; readonly column: number } | null;
   readonly formatGridKey?: (row: number, column: number) => string;
-  readonly deriveAuditRows?: (model: TModel, hour: number) => readonly AuditRow[];
+  readonly deriveAuditRows?: (model: TModel, hour: number, context: FamilyAuditContext) => readonly AuditRow[];
   readonly auditOrdered?: boolean;
   readonly gestures?: FamilyGestureHandlers;
 }

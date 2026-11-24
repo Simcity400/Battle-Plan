@@ -208,3 +208,61 @@ fn a_holders_schedule_across_its_raw_ids_is_in_hour_order() {
     assert_eq!(ger.interval, [run(FIRST, LAST, 48)]);
     assert_eq!(ger.last, [run(FIRST, LAST, last_election())]);
 }
+
+#[test]
+fn next_elections_at_hour_is_bounded_by_asked_countries_and_independent_of_stretches() {
+    let make = |stretches: i32| {
+        let mut records = Vec::new();
+        for s in 0..stretches {
+            let hour = FIRST + s * 10;
+            records.push(snapshot_records(s as u64 + 1, vec![frame(hour)]));
+        }
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &records).unwrap().into_timelines(&Default::default()).unwrap();
+        Source::from_replay(dashboard_base::SourceKey { source_id: format!("elections-{stretches}"), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
+    };
+    let one = make(1);
+    let many = make(40);
+    let _ = dashboard_base::queries::query(&one, 1).unwrap();
+    let _ = dashboard_base::queries::query(&many, 1).unwrap();
+    let load = dashboard_base::products::LoadContext { content: None };
+    let cancelled = AtomicBool::new(false);
+    let ask = |src: &Source, params: serde_json::Value| {
+        let mut req = params;
+        req.as_object_mut().unwrap().insert("hour".into(), FIRST.into());
+        let (result, reads) = replay_recording::cells::count_reads(|| (crate::registrations::POLITICS_ELECTIONS_NEXTELECTIONS.registered.load)(src, "lease", req, &load, &cancelled));
+        (serde_json::from_str::<serde_json::Value>(&result.unwrap()).unwrap()["data"].clone(), reads)
+    };
+    let (all_one, reads_one) = ask(&one, serde_json::json!({ "branchId": "1" }));
+    let (all_many, reads_many) = ask(&many, serde_json::json!({ "branchId": "1" }));
+    assert_eq!(all_one, all_many, "reply at an hour does not grow with stretch count");
+    assert_eq!(reads_one.get(&TableId::Politics), reads_many.get(&TableId::Politics), "Politics storage reads at an hour do not grow with stretch count");
+    assert_eq!(reads_one.get(&TableId::CountryCounterInputs), reads_many.get(&TableId::CountryCounterInputs), "CountryCounterInputs storage reads at an hour do not grow with stretch count");
+    assert_eq!(all_one["recorded"], true);
+    assert_eq!(all_one["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(all_one["rows"][0]["tag"], "GER");
+    assert_eq!(all_one["rows"][0]["interval"], 48);
+    assert_eq!(all_one["rows"][0]["next"], crate::products::country_people::election_date(last_election(), 48));
+    assert_eq!(all_one["rows"][0]["last"], last_election());
+    assert_eq!(all_one["unknown"], 1, "ENG has unrecorded eligibility");
+
+    let (only_ger, _) = ask(&many, serde_json::json!({ "branchId": "1", "countries": ["GER"] }));
+    assert_eq!(only_ger["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(only_ger["rows"][0]["tag"], "GER");
+    assert_eq!(only_ger["unknown"], 0, "unasked ENG is never read or counted");
+
+    let (only_eng, _) = ask(&many, serde_json::json!({ "branchId": "1", "countries": ["ENG"] }));
+    assert!(only_eng["rows"].as_array().unwrap().is_empty());
+    assert_eq!(only_eng["unknown"], 1);
+
+    let after_loss = recording();
+    let lost = (crate::registrations::POLITICS_ELECTIONS_NEXTELECTIONS.registered.load)(
+        &after_loss,
+        "lease",
+        serde_json::json!({ "branchId": "1", "hour": 116, "countries": ["GER"] }),
+        &load,
+        &cancelled,
+    );
+    let lost: serde_json::Value = serde_json::from_str::<serde_json::Value>(&lost.unwrap()).unwrap()["data"].clone();
+    assert!(lost["rows"].as_array().unwrap().is_empty(), "GER owns no states at hour 116");
+    assert_eq!(lost["unknown"], 0);
+}

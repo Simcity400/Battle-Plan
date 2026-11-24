@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readableColour } from '../../charts/palette.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { PaintInput } from '../../draw/lane.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
@@ -22,6 +23,7 @@ import {
   FutureBarsDataError,
   hitFamilyBars,
   InvalidBarsModelError,
+  axisCeiling,
   layoutFamilyBars,
   registerBarsProjection,
   type BarsModel,
@@ -285,10 +287,32 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
   const removeHit = hitFamilyBars(
     shareLayoutWide,
     shareModel,
-    { x: shareLayoutWide.nameX + shareLayoutWide.nameWidth - 4, y: shareLayoutWide.bodyTop + shareLayoutWide.rowTops[1]! + 10 },
+    { x: shareLayoutWide.nameX + shareLayoutWide.nameWidth - 4, y: shareLayoutWide.bodyTop + shareLayoutWide.rowTops[1]! + shareLayoutWide.rowHeights[1]! / 2 },
     0,
+    undefined,
+    0,
+    0,
+    new Set(['reg:poland']),
   );
   assert.deepEqual(removeHit, { kind: 'remove-region', rowKey: 'reg:poland' });
+  const hiddenRemove = hitFamilyBars(
+    shareLayoutWide,
+    shareModel,
+    { x: shareLayoutWide.nameX + shareLayoutWide.nameWidth - 4, y: shareLayoutWide.bodyTop + shareLayoutWide.rowTops[1]! + shareLayoutWide.rowHeights[1]! / 2 },
+    0,
+  );
+  assert.equal(hiddenRemove.kind, 'row', 'no remove action where no remove button is drawn');
+  const besideButton = hitFamilyBars(
+    shareLayoutWide,
+    shareModel,
+    { x: shareLayoutWide.nameX + shareLayoutWide.nameWidth - 4, y: shareLayoutWide.bodyTop + shareLayoutWide.rowTops[1]! + 1 },
+    0,
+    undefined,
+    0,
+    0,
+    new Set(['reg:poland']),
+  );
+  assert.equal(besideButton.kind, 'row', 'the remove action is the button bounds, not the row height');
   const addHit = hitFamilyBars(
     shareLayoutWide,
     shareModel,
@@ -455,4 +479,139 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
   } finally {
     (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = origOffscreen;
   }
+});
+
+test('an ordered scale with an axis ends on the next round tick, so the largest bar stops short of it', () => {
+  assert.equal(axisCeiling(293), 300);
+  assert.equal(axisCeiling(300), 300);
+  assert.equal(axisCeiling(1061), 1500);
+  assert.equal(axisCeiling(0), 0);
+  const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
+  const layout = layoutFamilyBars({ form: 'ordered', hour: h, showAxis: true, rows: [{ kind: 'data', key: 'GER', label: 'German Reich', value: { value: knownValue(293) }, numeric: 293 }] }, 600, 300);
+  assert.equal(layout.scaleMax, 300);
+});
+
+test('audit rows keep one key per row and cell, so two bars never collapse in the verifier', () => {
+  const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
+  const rows = deriveBarsAudit({ form: 'ordered', hour: h, rows: [
+    { kind: 'data', key: 'GER', label: 'German Reich', value: { value: knownValue(293) }, numeric: 293 },
+    { kind: 'data', key: 'USA', label: 'United States', value: { value: knownValue(292) }, numeric: 292 },
+  ] });
+  assert.equal(new Map(rows.map(row => [row.key, row.value])).size, rows.length);
+});
+
+test('a backward seek drops a cached model from a later hour', () => {
+  registerBarsProjection<Record<string, never>>({
+    kind: 'test-bars-seek-back',
+    family: 'bars',
+    project(readView) {
+      return { form: 'ordered', hour: readView.hour, rows: [{ kind: 'data', key: 'A', label: readView.hour >= 10 ? 'After' : 'Before', value: { value: knownValue(1) }, numeric: 1 }] };
+    },
+    nextChange(readView) {
+      return readView.hour < 10 ? 10 : Infinity;
+    },
+  });
+  const origOffscreen = globalThis.OffscreenCanvas;
+  class FakeOffscreenCanvas {
+    width: number;
+    height: number;
+    private readonly fake = makeFakeCtx();
+    constructor(width: number, height: number) { this.width = width; this.height = height; }
+    getContext() { return this.fake.ctx; }
+  }
+  (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
+  try {
+    const view = familyBarsLaneView(() => {});
+    const state = new Map<string, unknown>();
+    let seq = 0;
+    const options: Record<string, never> = {};
+    const input = (hour: number): PaintInput => ({
+      widget: 1, subs: [], pictures: [], hour, speed: 24, now: hour, inspect: null,
+      binding: { surfaces: [{ width: 480, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'],
+      model: { family: 'bars', kind: 'test-bars-seek-back', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME, audit: true, auditId: 1 } satisfies FamilyBarsBinding<Record<string, never>>,
+    });
+    const label = (painted: ReturnType<typeof view.paint>) => (painted.fields.audit?.value as { rows: readonly { key: string; value?: string }[] }).rows.find(row => row.key.endsWith('label'))?.value;
+    assert.equal(label(view.paint(input(20), state, () => `c${++seq}`)), 'After');
+    assert.equal(label(view.paint(input(5), state, () => `c${++seq}`)), 'Before', 'after seeking back the picture equals a fresh paint');
+  } finally {
+    (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = origOffscreen;
+  }
+});
+
+test('the top painted gliding row takes the hit where two rows overlap', () => {
+  const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
+  const model: BarsModel = { form: 'ordered', hour: h, rows: [
+    { kind: 'data', key: 'A', label: 'A', value: { value: knownValue(2) }, numeric: 2 },
+    { kind: 'data', key: 'B', label: 'B', value: { value: knownValue(1) }, numeric: 1 },
+  ] };
+  const layout = layoutFamilyBars(model, 480, 240);
+  const glide = new Map([['B', { fromY: layout.bodyTop + layout.rowTops[0]!, startedAt: 0 }]]);
+  const y = layout.bodyTop + layout.rowTops[0]! + 4;
+  const hit = hitFamilyBars(layout, model, { x: 200, y }, 0, glide, 0, 1000);
+  assert.equal(hit.kind === 'row' ? hit.rowKey : null, 'B');
+});
+
+test('a known 40 percent share beside an unavailable part fills 40 percent and marks the rest unavailable', () => {
+  const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
+  const model: BarsModel = { form: 'share', hour: h, rows: [{ kind: 'data', key: 'R', label: 'Region', segments: [
+    { key: 'AX', label: 'Axis', share: 0.4, value: knownValue(4), color: '#aa3344' },
+    { key: 'UN', label: 'Unrecorded side', share: 0, value: notRecorded('Score unknown'), color: '#777777', hatched: true },
+  ] }] };
+  const layout = layoutFamilyBars(model, 640, 200);
+  const { ctx, ops } = makeFakeCtx();
+  drawFamilyBars(ctx, { model, layout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
+  const known = ops.filter(op => op.op === 'fillRect' && op.fillStyle === readableColour('#aa3344', THEME.surface));
+  assert.equal(known.length, 1);
+  assert.ok(Math.abs((known[0]!.args[2] as number) - layout.plotWidth * 0.4) < 2, 'the known part is drawn at its own fraction');
+});
+
+test('a hover over 1,500 rows reuses navigation, meta and row bounds, and the mirror holds only visible rows', () => {
+  const rows = Array.from({ length: 1500 }, (_, i) => ({ kind: 'data' as const, key: `K${i}`, label: `Country ${i}`, value: { value: knownValue(1500 - i) }, numeric: 1500 - i }));
+  registerBarsProjection<Record<string, never>>({
+    kind: 'test-bars-hover',
+    family: 'bars',
+    project(readView) { return { form: 'ordered', hour: readView.hour, rows }; },
+  });
+  const origOffscreen = globalThis.OffscreenCanvas;
+  class FakeOffscreenCanvas {
+    width: number;
+    height: number;
+    private readonly fake = makeFakeCtx();
+    constructor(width: number, height: number) { this.width = width; this.height = height; }
+    getContext() { return this.fake.ctx; }
+  }
+  (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
+  try {
+    const view = familyBarsLaneView(() => {});
+    const state = new Map<string, unknown>();
+    const options: Record<string, never> = {};
+    let seq = 0;
+    const input = (inspect: string | null, now: number): PaintInput => ({
+      widget: 1, subs: [], pictures: [], hour: 50, speed: 24, now, inspect,
+      binding: { surfaces: [{ width: 480, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'],
+      model: { family: 'bars', kind: 'test-bars-hover', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME } satisfies FamilyBarsBinding<Record<string, never>>,
+    });
+    const first = view.paint(input(null, 0), state, () => `c${++seq}`);
+    const hovered = view.paint(input('row:K3', 16), state, () => `c${++seq}`);
+    assert.equal(hovered.fields.nav, first.fields.nav);
+    assert.equal(hovered.fields.meta, first.fields.meta);
+    assert.equal(hovered.fields.rowBounds, first.fields.rowBounds);
+    const mirror = first.fields.mirror?.value as { rows: readonly unknown[]; total: number };
+    assert.equal(mirror.total, 1500);
+    assert.ok(mirror.rows.length < 40, `mirror holds ${mirror.rows.length} rows`);
+  } finally {
+    (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = origOffscreen;
+  }
+});
+
+test('bar fills are the identity colour raised to 3:1 against the surface, at full opacity', () => {
+  const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
+  const dark = '#2a2a2a';
+  const model: BarsModel = { form: 'ordered', hour: h, rows: [{ kind: 'data', key: 'GER', label: 'German Reich', color: dark, value: { value: knownValue(5) }, numeric: 5 }] };
+  const layout = layoutFamilyBars(model, 480, 200);
+  const { ctx, ops } = makeFakeCtx();
+  drawFamilyBars(ctx, { model, layout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
+  const fills = ops.filter(op => op.op === 'fill').map(op => op.fillStyle);
+  assert.ok(fills.includes(readableColour(dark, THEME.surface)));
+  assert.ok(!fills.includes(dark), 'a near-invisible map colour is never drawn raw');
 });

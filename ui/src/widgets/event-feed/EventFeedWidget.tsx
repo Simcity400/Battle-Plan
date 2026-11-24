@@ -23,6 +23,8 @@ import { countryMatch, countryScope } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
+import { useProductWindows } from '../../dashboard/productWindows';
+import { WINDOW_HOURS, windowOf, windowsOf } from '../../dashboard/heldWindows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useAheadHour } from '../../dashboard/aheadHour';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -31,7 +33,7 @@ import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import type { LogCut, LogSpec } from '../../dashboard/useLogPages';
 import type { EventFeedSpanReply, EventFeedUnavailable } from '../../generated/dashboard';
 import { CATEGORIES, EVENT_ICONS, OPTIONS } from './definition';
-import { eventCountryName, eventDescription, eventSentence, eventTags, eventTooltip, familyReveals, familyRows, familyShown, FEED_PAGE_SIZE, feedFacets, feedRow, kindsRequest, pageNotes, pagesNoted,
+import { eventCountryName, eventDescription, eventSentence, eventTags, eventTooltip, familyReveals, familyRows, familyShown, FEED_PAGE_SIZE, feedFacets, feedRow, kindsRequest, mergeSpanReplies, pageNotes, pagesNoted,
   spanNotes, validateSpan, withFamilyRows } from './eventFeedData';
 import type { FeedEvent } from './eventFeedData';
 import ScriptedText from './ScriptedText';
@@ -69,8 +71,26 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const fallback = useMemo<string[]>(() => JSON.parse(tagsKey), [tagsKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  const span = useProduct<EventFeedSpanReply>(runtime.client, track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'event-feed-span',
-    params: { branchId: track.branch.id, categories: [...categories] } }) : null, active, validateSpan, track?.source);
+  const spanFirst = track ? from ?? track.branch.firstHour : 0;
+  const spanWindowEnd = useCallback((clockHour: number) => (windowOf(Math.floor(clockHour) + offset) + 1) * WINDOW_HOURS - offset, [offset]);
+  const spanWindowBlock = useAheadHour(runtime.clock, active && cut.follow && !!track && categories.size > 0, spanWindowEnd);
+  const spanLast = track ? Math.min(track.branch.lastHour, Math.max(spanFirst, cut.follow ? spanWindowBlock.until - 1 + offset : cut.hour ?? track.branch.lastHour)) : -1;
+  const wantedSpanWindows = useMemo(() => track && categories.size > 0 ? windowsOf(spanFirst, spanLast) : [], [track?.branch.id, spanFirst, spanLast, categories.size > 0]);
+  const spanIdentity = track && categories.size > 0 ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, categoriesKey]) : null;
+  const spanRequest = useCallback((w: number) => {
+    const wFirst = Math.max(track!.branch.firstHour, w * WINDOW_HOURS);
+    const wLast = Math.min(track!.branch.lastHour, (w + 1) * WINDOW_HOURS - 1);
+    const bound = gate.span(wFirst, wLast);
+    return productRequest({ sourceId: track!.source.id, revision: track!.source.revision, product: 'event-feed-span',
+      params: { branchId: track!.branch.id, ...(bound ? { from: bound.firstHour, to: bound.lastHour } : {}), categories: [...categories] } });
+  }, [track, categories, gate]);
+  const spanWindows = useProductWindows<EventFeedSpanReply>(runtime.client, spanIdentity, spanRequest, wantedSpanWindows, active && !!track && categories.size > 0, validateSpan, track?.source);
+  const spanData = useMemo(() => {
+    if (!wantedSpanWindows.length) return null;
+    const replies = wantedSpanWindows.flatMap(w => { const reply = spanWindows.data.get(w); return reply ? [reply] : []; });
+    return mergeSpanReplies(replies);
+  }, [wantedSpanWindows, spanWindows.data]);
+  const spanError = spanWindows.errors.values().next().value;
   const coded = useProduct<EventFeedSpanReply>(runtime.client, track ? kindsRequest(track) : null, active, validateSpan, track?.source);
   const kinds = coded.data?.kinds;
   const facets = useMemo(() => kinds ? feedFacets(kinds, categories) : null, [kinds, categories]);
@@ -83,13 +103,13 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   [track, facets, logSpan?.firstHour, logSpan?.lastHour, filtered, scope]);
   const feed = useLogPages<FeedEvent, EventFeedUnavailable>(runtime.client, runtime.clock, spec, cut, active && match.ready, feedRow, FEED_PAGE_SIZE, pageNotes);
   const country = filtered ? match.matches : null;
-  const family = useMemo(() => span.data ? familyRows(span.data, categories, from, country) : NO_ROWS, [span.data, categories, from, country]);
+  const family = useMemo(() => spanData ? familyRows(spanData, categories, from, country) : NO_ROWS, [spanData, categories, from, country]);
   const reveals = useMemo(() => familyReveals(family), [family]);
   const familyEnd = useCallback((clockHour: number) => {
     const { hoursPerSecond, playing } = runtime.clock.getSnapshot();
     return aheadEnd(reveals, Math.floor(clockHour) + offset, hoursPerSecond, playing) - offset;
   }, [runtime.clock, reveals, offset]);
-  const familyBlock = useAheadHour(runtime.clock, active && follow && spanOnly && !!span.data, familyEnd);
+  const familyBlock = useAheadHour(runtime.clock, active && follow && spanOnly && !!spanData, familyEnd);
   const through = !spanOnly ? feed.through : cut.follow ? familyBlock.until - 1 + offset : cut.hour;
   const shownFamily = familyShown(family, through);
   const trackHour = useCallback((clockHour: number) => Math.floor(clockHour) + offset, [offset]);
@@ -120,19 +140,19 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       return { ...label, name: eventCountryName(tag, label) };
     };
   }, [labelAt]);
-  const notes = useMemo(() => span.data ? [...new Set([...spanNotes(span.data), ...pagesNoted(feed.notes)])] : null, [span.data, feed.notes]);
+  const notes = useMemo(() => spanData ? [...new Set([...spanNotes(spanData), ...pagesNoted(feed.notes)])] : null, [spanData, feed.notes]);
   useDiagnostics(onDiagnostics, notes);
 
   if (!track) return <WidgetState kind="empty" icon="clock" message="Load a campaign to see its key moments." />;
   const groupFailure = filtered && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
-  const spanFailure = span.error ?? coded.error;
-  if (spanFailure) return <WidgetState kind="error" failure={spanFailure} onRetry={() => { span.retry(); coded.retry(); }} />;
+  const spanFailure = spanError ?? coded.error;
+  if (spanFailure) return <WidgetState kind="error" failure={spanFailure} onRetry={() => { spanWindows.retry(); coded.retry(); }} />;
   if (feed.error) return <WidgetState kind="error" failure={feed.error} onRetry={feed.retry} />;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (!kinds || !match.ready || (spec && !feed.counts)) return <>{groupFailure}<WidgetState kind="loading" label="Loading the event feed…" /></>;
   const hour = cut.follow ? Math.floor(runtime.clock.getHour()) + offset : cut.hour;
-  const empty = categories.size > 0 && !span.data ? <span data-state="loading">Loading the event feed…</span>
+  const empty = categories.size > 0 && !spanData ? <span data-state="loading">Loading the event feed…</span>
     : 'No recorded events match these settings.';
   const chips = CATEGORIES.map(category => ({ value: category.value, label: category.label, colour: tokens.categories[category.palette] }));
   return <div className="log-widget event-feed-widget">{groupFailure}

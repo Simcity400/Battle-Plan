@@ -69,9 +69,9 @@ function readSignature(read: SourceTimeShape): unknown {
     case 'range':
       return ['range', read.coverage, read.product, read.firstHour, read.lastHour, read.params, read.dynamicKeys ?? []];
     case 'branch-to-hour':
-      return ['branch-to-hour', read.coverage, read.product, read.followQuery, read.params, read.chunkHours ?? null, read.dynamicKeys ?? []];
+      return ['branch-to-hour', read.coverage, read.product, read.followQuery, read.params, read.dynamicKeys ?? []];
     case 'trailing-window':
-      return ['trailing-window', read.coverage, read.product, read.windowHours, read.followQuery, read.params, read.chunkHours ?? null, read.dynamicKeys ?? []];
+      return ['trailing-window', read.coverage, read.product, read.windowHours, read.followQuery, read.params, read.dynamicKeys ?? []];
     case 'pixel-binned':
       return ['pixel-binned', read.coverage, read.family, read.tags, read.within ? [...read.within.entries()] : null, read.marks === true, read.headQuery ?? null, read.exactProduct ?? '', read.params ?? null];
     case 'exact-hover':
@@ -91,8 +91,8 @@ export function planSignature(plan: SourcePlan | null): string {
   return canonical({
     owner: plan.owner,
     entries: plan.entries.map(entrySignature),
-    staticEntry: entrySignature(plan.staticEntry),
-    exactEntry: entrySignature(plan.exactEntry),
+    staticEntry: plan.staticEntry === undefined ? 'omitted' : entrySignature(plan.staticEntry),
+    exactEntry: plan.exactEntry === undefined ? 'omitted' : entrySignature(plan.exactEntry),
     allowEmptyFollow: plan.allowEmptyFollow === true,
     unavailable: plan.unavailable ?? null,
     refused: plan.refused ?? null,
@@ -236,7 +236,7 @@ export interface StaticRequestSpec {
 }
 
 export function buildStaticRequest(
-  plan: SourcePlan,
+  entry: SourceEntry | null,
   options: {
     readonly timeMode: WidgetTime['mode'];
     readonly branch: { readonly firstHour: number; readonly lastHour: number };
@@ -246,7 +246,6 @@ export function buildStaticRequest(
     readonly countriesKnown?: (first: number, last: number) => boolean;
   },
 ): StaticRequestSpec | null {
-  const entry = primaryStaticEntry(plan);
   if (!entry) return null;
   const read = entry.read;
 
@@ -294,7 +293,7 @@ export function buildStaticRequest(
     return {
       queryKey: planQueryKey(entry.source, entry.branch, read.product, params),
       request,
-      dynamicKeys: read.dynamicKeys ?? [],
+      dynamicKeys: spanDynamicKeys(read),
       validate: read.validate,
       entry,
       span: [resolved.first, resolved.last] as const,
@@ -302,7 +301,8 @@ export function buildStaticRequest(
   }
 
   if (read.shape === 'range') {
-    const span = options.gate.span(read.firstHour, read.lastHour);
+    if (!options.window) return null;
+    const span = options.gate.span(read.firstHour, Math.min(read.lastHour, Math.floor(options.window.lastHour)));
     if (!span) return null;
     const params = produceSpanParams(read.params, span, read.buildSpanParams);
     if (!params) return null;
@@ -310,7 +310,7 @@ export function buildStaticRequest(
     return {
       queryKey: planQueryKey(entry.source, entry.branch, read.product, params),
       request,
-      dynamicKeys: read.dynamicKeys ?? [],
+      dynamicKeys: spanDynamicKeys(read),
       validate: read.validate,
       entry,
       span: [span.firstHour, span.lastHour] as const,
@@ -332,149 +332,182 @@ export function stabilizeCanvasDimension(
   return Math.max(1, Math.round(measured));
 }
 
+function readsWithoutFollow(read: SourceTimeShape): boolean {
+  if (read.shape === 'range') return true;
+  return (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point') && read.followQuery === null;
+}
+
+function boundedReadable(read: SourceTimeShape): boolean {
+  return read.shape === 'point' || read.shape === 'range' || read.shape === 'branch-to-hour' || read.shape === 'trailing-window';
+}
+
+const NO_ENTRIES: readonly SourceEntry[] = [];
+
+export function boundedEntries(
+  plan: SourcePlan | null,
+  following: boolean,
+  subscriptions: readonly CompiledFollowSubscription[],
+): readonly SourceEntry[] {
+  if (!plan || plan.refused || plan.unavailable) return NO_ENTRIES;
+  const primary = primaryStaticEntry(plan);
+  const out: SourceEntry[] = [];
+  if (!following) {
+    if (primary && boundedReadable(primary.read)) out.push(primary);
+  } else if (primary && subscriptions.length === 0 && !plan.allowEmptyFollow && readsWithoutFollow(primary.read)) {
+    out.push(primary);
+  }
+  const followed = new Set(subscriptions.map(sub => sub.name));
+  for (const entry of plan.entries) {
+    if (entry === primary || followed.has(entry.name) || !readsWithoutFollow(entry.read)) continue;
+    out.push(entry);
+  }
+  return out.length ? out : NO_ENTRIES;
+}
+
 export function needsPlaybackBoundedRead(
   plan: SourcePlan | null,
   subscriptions: readonly CompiledFollowSubscription[],
 ): boolean {
-  if (!plan || subscriptions.length > 0 || plan.allowEmptyFollow || plan.refused || plan.unavailable) {
-    return false;
-  }
-  const entry = primaryStaticEntry(plan);
-  if (!entry) return false;
-  const read = entry.read;
-  if (read.shape === 'range') return true;
-  if (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point') {
-    return read.followQuery === null;
-  }
-  return false;
+  return boundedEntries(plan, true, subscriptions).length > 0;
 }
 
 export interface PlaybackBoundedSpec extends StaticRequestSpec {
-  readonly provenInterval: readonly [lo: number, hi: number];
   readonly anchorHour: number;
 }
+
+export interface PlaybackBoundedOptions {
+  readonly branch: { readonly firstHour: number; readonly lastHour: number };
+  readonly effectiveEndHour: number;
+  readonly currentHour: number;
+  readonly gate: FrozenGate;
+  readonly countriesKnown?: (first: number, last: number) => boolean;
+}
+
+function playbackEnd(options: PlaybackBoundedOptions): number {
+  const first = options.branch.firstHour;
+  return Math.min(options.branch.lastHour, Math.max(first, Math.floor(options.effectiveEndHour)));
+}
+
+function spanDynamicKeys(read: { readonly dynamicKeys?: readonly string[]; readonly buildSpanParams?: unknown }): readonly string[] {
+  return read.dynamicKeys ?? (read.buildSpanParams ? [] : SPAN_KEYS);
+}
+
+const SPAN_KEYS: readonly string[] = ['firstHour', 'lastHour'];
 
 export function resolvePlaybackProvenInterval(
   read: SourceTimeShape,
   data: unknown,
-  requested: readonly [number, number],
-  hour: number,
+  asked: { readonly anchorHour: number; readonly span: readonly [number, number] | null },
+  endHour: number,
 ): readonly [number, number] {
-  if (read.shape === 'point') {
-    return read.provenInterval?.(data, hour) ?? requested;
+  const anchor = asked.anchorHour;
+  let hi = anchor;
+  const requested = asked.span ?? [anchor, anchor] as const;
+  const evidence = read.shape === 'point'
+    ? read.provenInterval?.(data, anchor) ?? null
+    : read.shape === 'branch-to-hour' || read.shape === 'trailing-window'
+      ? read.provenInterval?.(data, requested, anchor) ?? null
+      : null;
+  if (evidence && evidence[0] <= anchor && anchor <= evidence[1]) hi = Math.max(hi, evidence[1]);
+  if (read.shape === 'range' && anchor >= read.lastHour) hi = Infinity;
+  if (anchor >= endHour) hi = Infinity;
+  return [anchor, hi];
+}
+
+export function composeProof(
+  readings: readonly { readonly anchorHour: number; readonly proof: readonly [number, number] }[],
+): readonly [number, number] | null {
+  if (!readings.length) return null;
+  let lo = -Infinity;
+  let hi = Infinity;
+  for (const reading of readings) {
+    lo = Math.max(lo, reading.anchorHour, reading.proof[0]);
+    hi = Math.min(hi, reading.proof[1]);
   }
-  if (read.shape === 'branch-to-hour' || read.shape === 'trailing-window') {
-    return read.provenInterval?.(data, requested, hour) ?? requested;
+  return lo <= hi ? [lo, hi] : null;
+}
+
+export function playbackIdleInterval(
+  entry: SourceEntry | null,
+  options: PlaybackBoundedOptions,
+): readonly [number, number] {
+  const first = options.branch.firstHour;
+  const end = playbackEnd(options);
+  const raw = Math.floor(options.currentHour);
+  if (raw < first) return [-Infinity, first - 1];
+  const read = entry?.read;
+  if (read?.shape === 'range' && raw < read.firstHour) return [-Infinity, read.firstHour - 1];
+  if (raw > end) return [end + 1, Infinity];
+  if (read?.shape === 'point' && options.gate.recorded(raw) === null) {
+    return options.gate.recordedRun?.(raw) ?? [raw, raw];
   }
-  return requested;
+  const hourDependent = (read?.shape === 'trailing-window' && !!options.countriesKnown)
+    || ((read?.shape === 'branch-to-hour' || read?.shape === 'trailing-window' || read?.shape === 'range') && !!read.buildSpanParams);
+  return hourDependent ? [raw, raw] : [-Infinity, Infinity];
 }
 
 export function buildPlaybackBoundedRequest(
-  plan: SourcePlan,
-  options: {
-    readonly branch: { readonly firstHour: number; readonly lastHour: number };
-    readonly effectiveEndHour: number;
-    readonly currentHour: number;
-    readonly gate: FrozenGate;
-    readonly previousProven?: readonly [number, number] | null;
-    readonly previousAnchorHour?: number | null;
-    readonly countriesKnown?: (first: number, last: number) => boolean;
-  },
+  entry: SourceEntry | null,
+  options: PlaybackBoundedOptions,
 ): PlaybackBoundedSpec | null {
-  const entry = primaryStaticEntry(plan);
   if (!entry) return null;
   const read = entry.read;
   const first = options.branch.firstHour;
-  const end = Math.min(options.branch.lastHour, Math.max(first, Math.floor(options.effectiveEndHour)));
-  const cur = Math.max(first, Math.min(end, Math.floor(options.currentHour)));
-  const prev = options.previousProven;
-  const covered = !!prev && cur >= prev[0] && cur <= prev[1];
+  const end = playbackEnd(options);
+  if (Math.floor(options.currentHour) < first) return null;
+  const cur = Math.min(end, Math.floor(options.currentHour));
+
+  const spanSpec = (
+    spanRead: Extract<SourceTimeShape, { shape: 'branch-to-hour' | 'trailing-window' | 'range' }>,
+    spanFirst: number,
+  ): PlaybackBoundedSpec | null => {
+    const span = options.gate.span(spanFirst, cur);
+    if (!span) return null;
+    const params = produceSpanParams(spanRead.params, span, spanRead.buildSpanParams);
+    if (!params) return null;
+    return {
+      queryKey: planQueryKey(entry.source, entry.branch, spanRead.product, params),
+      request: productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: spanRead.product, params }),
+      dynamicKeys: spanDynamicKeys(spanRead),
+      validate: spanRead.validate,
+      entry,
+      span: [span.firstHour, span.lastHour] as const,
+      anchorHour: cur,
+    };
+  };
 
   if (read.shape === 'branch-to-hour') {
     if (read.followQuery !== null) return null;
-    let spanFirst = first;
-    let spanLast = end;
-    if (covered) {
-      spanFirst = prev[0];
-      spanLast = prev[1];
-    } else if (read.chunkHours && read.chunkHours > 0) {
-      const chunk = Math.max(1, Math.floor(read.chunkHours));
-      const offset = cur - first;
-      const chunkIndex = Math.floor(offset / chunk);
-      spanLast = Math.min(end, first + (chunkIndex + 1) * chunk - 1);
-    }
-    const span = options.gate.span(spanFirst, spanLast);
-    if (!span) return null;
-    const params = produceSpanParams(read.params, span, read.buildSpanParams);
-    if (!params) return null;
-    const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
-    const interval: readonly [number, number] = [span.firstHour, span.lastHour];
-    return {
-      queryKey: planQueryKey(entry.source, entry.branch, read.product, params),
-      request,
-      dynamicKeys: read.dynamicKeys ?? [],
-      validate: read.validate,
-      entry,
-      span: interval,
-      provenInterval: interval,
-      anchorHour: span.lastHour,
-    };
+    return spanSpec(read, first);
   }
 
   if (read.shape === 'range') {
-    const span = options.gate.span(read.firstHour, read.lastHour);
+    if (cur < read.firstHour) return null;
+    const span = options.gate.span(read.firstHour, Math.min(read.lastHour, cur));
     if (!span) return null;
     const params = produceSpanParams(read.params, span, read.buildSpanParams);
     if (!params) return null;
-    const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
-    const interval: readonly [number, number] = [span.firstHour, span.lastHour];
     return {
       queryKey: planQueryKey(entry.source, entry.branch, read.product, params),
-      request,
-      dynamicKeys: read.dynamicKeys ?? [],
+      request: productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params }),
+      dynamicKeys: spanDynamicKeys(read),
       validate: read.validate,
       entry,
-      span: interval,
-      provenInterval: interval,
-      anchorHour: span.lastHour,
+      span: [span.firstHour, span.lastHour] as const,
+      anchorHour: cur,
     };
   }
 
   if (read.shape === 'trailing-window') {
     if (read.followQuery !== null) return null;
-    let spanFirst: number;
-    let spanLast: number;
-    if (covered) {
-      spanFirst = prev[0];
-      spanLast = prev[1];
-    } else {
-      const lookahead = read.chunkHours && read.chunkHours > 0 ? Math.floor(read.chunkHours) : 0;
-      spanFirst = Math.max(first, cur - Math.max(1, read.windowHours) + 1);
-      spanLast = Math.min(end, cur + lookahead);
-    }
-    if (options.countriesKnown && !options.countriesKnown(spanFirst, spanLast)) return null;
-    const span = options.gate.span(spanFirst, spanLast);
-    if (!span) return null;
-    const params = produceSpanParams(read.params, span, read.buildSpanParams);
-    if (!params) return null;
-    const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
-    const interval: readonly [number, number] = [span.firstHour, span.lastHour];
-    return {
-      queryKey: planQueryKey(entry.source, entry.branch, read.product, params),
-      request,
-      dynamicKeys: read.dynamicKeys ?? [],
-      validate: read.validate,
-      entry,
-      span: interval,
-      provenInterval: interval,
-      anchorHour: span.lastHour,
-    };
+    const spanFirst = Math.max(first, cur - Math.max(1, read.windowHours) + 1);
+    if (options.countriesKnown && !options.countriesKnown(spanFirst, cur)) return null;
+    return spanSpec(read, spanFirst);
   }
 
   if (read.shape === 'point') {
     if (read.followQuery !== null) return null;
-    const targetHour = covered && options.previousAnchorHour != null ? options.previousAnchorHour : cur;
-    const recorded = options.gate.recorded(targetHour);
+    const recorded = options.gate.recorded(cur);
     if (recorded === null) return null;
     const params = producePointParams(read, recorded, 'static');
     if (!params) return null;
@@ -483,7 +516,6 @@ export function buildPlaybackBoundedRequest(
       ? forwardRequest(entry.source, product, params)
       : productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product, params });
     const dynamicKeys = read.dynamicKeys ?? (read.channel === 'panel' && !read.exactProduct ? [read.hourParam ?? 'hour'] : []);
-    const interval: readonly [number, number] = covered ? prev : [recorded, recorded];
     return {
       queryKey: planQueryKey(entry.source, entry.branch, product, params),
       request,
@@ -491,8 +523,7 @@ export function buildPlaybackBoundedRequest(
       validate: read.validate,
       entry,
       span: null,
-      provenInterval: interval,
-      anchorHour: recorded,
+      anchorHour: cur,
     };
   }
 
@@ -624,6 +655,54 @@ export async function readPlanExact(
   return null;
 }
 
+export interface HoverAsk {
+  readonly name: string;
+  readonly key: string;
+  readonly hour: number;
+  readonly request: ProductRequest;
+  readonly validate?: (raw: unknown) => unknown;
+}
+
+export interface HeldHover {
+  readonly key: string;
+  readonly hour: number;
+  readonly data: unknown;
+}
+
+export function hoverAsks(plan: SourcePlan, hoverHour: number | null | undefined): readonly HoverAsk[] {
+  if (hoverHour === null || hoverHour === undefined || !Number.isFinite(hoverHour)) return NO_HOVER_ASKS;
+  const hour = Math.floor(hoverHour);
+  const asks: HoverAsk[] = [];
+  for (const entry of plan.entries) {
+    const read = entry.read;
+    if (read.shape !== 'exact-hover' || !read.params) continue;
+    const params = { ...read.params, [read.hourParam ?? 'hour']: hour };
+    asks.push({
+      name: entry.name,
+      key: planQueryKey(entry.source, entry.branch, read.product, params),
+      hour,
+      request: productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params }),
+      ...(read.validate ? { validate: read.validate } : {}),
+    });
+  }
+  return asks.length ? asks : NO_HOVER_ASKS;
+}
+
+const NO_HOVER_ASKS: readonly HoverAsk[] = [];
+const NO_HOVERS: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>> = Object.freeze({});
+
+export function currentHovers(
+  asks: readonly HoverAsk[],
+  held: Readonly<Record<string, HeldHover>>,
+): Readonly<Record<string, { readonly hour: number; readonly data: unknown }>> {
+  let out: Record<string, { readonly hour: number; readonly data: unknown }> | null = null;
+  for (const ask of asks) {
+    const hover = held[ask.name];
+    if (hover && hover.key === ask.key) (out ??= {})[ask.name] = { hour: hover.hour, data: hover.data };
+  }
+  return out ?? NO_HOVERS;
+}
+
 interface InFlightRequest {
   readonly controller: AbortController;
   readonly promise: Promise<unknown>;
@@ -636,7 +715,7 @@ export interface BrokerSlotHandle {
 
 export class FamilySourceBroker {
   private readonly inflight = new Map<string, InFlightRequest>();
-  private readonly slots = new Map<string, { seq: number; cleanup: () => void }>();
+  private readonly slots = new Map<string, { readonly cleanup: () => void }>();
 
   get activeRequestCount(): number {
     return this.inflight.size;
@@ -689,36 +768,34 @@ export class FamilySourceBroker {
     onResult: (value: T) => void,
     onError?: (error: unknown) => void,
   ): BrokerSlotHandle {
-    const prev = this.slots.get(slotId);
-    const seq = (prev?.seq ?? 0) + 1;
-    prev?.cleanup();
+    this.slots.get(slotId)?.cleanup();
 
     const { promise, release } = this.request(key, load);
     let cancelled = false;
-    const cleanup = () => {
-      if (cancelled) return;
-      cancelled = true;
-      release();
+    const slot = {
+      cleanup: () => {
+        if (cancelled) return;
+        cancelled = true;
+        release();
+      },
     };
-    this.slots.set(slotId, { seq, cleanup });
+    this.slots.set(slotId, slot);
 
     void promise.then(
       value => {
-        if (cancelled || this.slots.get(slotId)?.seq !== seq) return;
+        if (cancelled || this.slots.get(slotId) !== slot) return;
         onResult(value);
       },
       error => {
-        if (cancelled || this.slots.get(slotId)?.seq !== seq) return;
+        if (cancelled || this.slots.get(slotId) !== slot) return;
         onError?.(error);
       },
     );
 
     return {
       cancel: () => {
-        if (this.slots.get(slotId)?.seq === seq) {
-          this.slots.delete(slotId);
-        }
-        cleanup();
+        if (this.slots.get(slotId) === slot) this.slots.delete(slotId);
+        slot.cleanup();
       },
     };
   }
