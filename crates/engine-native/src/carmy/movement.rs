@@ -239,7 +239,6 @@ fn prefetch_movement_seed(memory: &impl Memory, seed: &DivisionSeed) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn capture_movement_inputs(
     memory: &impl Memory,
     base: usize,
@@ -261,7 +260,10 @@ pub fn capture_movement_inputs(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the seeds and source come from earlier walks, the geometry and packet are caller-owned, and the hour is optional"
+)]
 pub fn capture_movement_inputs_with_combat_references(
     memory: &impl Memory,
     base: usize,
@@ -285,7 +287,10 @@ pub fn capture_movement_inputs_with_combat_references(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the seeds and source come from earlier walks, the geometry, packet and observer are caller-owned, and the hour is optional"
+)]
 pub fn capture_movement_inputs_with_extra(
     memory: &impl Memory,
     base: usize,
@@ -729,7 +734,10 @@ pub fn walk_movement(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the sources come from earlier walks, and the output, paths and inputs are caller-owned"
+)]
 #[cfg(test)]
 pub fn walk_movement_with_inputs(
     memory: &impl Memory,
@@ -756,7 +764,10 @@ pub fn walk_movement_with_inputs(
     result
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the sources come from earlier walks, and the output, paths and optional inputs are caller-owned"
+)]
 #[cfg(test)]
 fn walk_movement_internal(
     memory: &impl Memory,

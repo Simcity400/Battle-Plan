@@ -495,7 +495,10 @@ impl Prepared {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the orders, plans, source and country context come from earlier walks"
+    )]
     pub fn capture_orders<M: Memory>(
         &mut self,
         memory: &M,
@@ -648,7 +651,10 @@ impl Prepared {
         }
         Ok(true)
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the orders, order row, group and country context come from earlier walks"
+    )]
     fn preparation(
         &self,
         memory: &impl Memory,
@@ -723,7 +729,10 @@ impl Prepared {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the seeds, source, orders, plans and country context come from earlier walks"
+    )]
     pub fn capture_units<M: Memory>(
         &mut self,
         memory: &M,

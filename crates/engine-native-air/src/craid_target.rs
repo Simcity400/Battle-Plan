@@ -30,7 +30,10 @@ pub fn reads_leader(building: bool, province: u32, state: u32) -> bool {
     !building && province == 0 && state == 0
 }
 
-#[allow(clippy::result_unit_err)]
+#[expect(
+    clippy::result_unit_err,
+    reason = "both callers only tell a refused leader read from a captor, so the error carries no detail"
+)]
 pub fn leader_captor(memory: &impl Memory, base: usize, handle: u64) -> Result<Option<i32>, ()> {
     let Some(leader) = engine_native_parts::creference_registry::resolve(memory, base, handle).map_err(|_| ())?
     else {

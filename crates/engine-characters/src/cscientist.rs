@@ -17,7 +17,7 @@ const VISIBLE_SOURCE: usize = 0x2c;
 const VISIBLE_HAS_SOURCE: usize = 0x34;
 const SOURCE_FILES_RVA: Rva = Rva(0x0369_19e0);
 
-#[allow(
+#[expect(
     clippy::type_complexity,
     reason = "Retain visibility status and the independently optional filename span and source line."
 )]

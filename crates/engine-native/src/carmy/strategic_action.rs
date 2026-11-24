@@ -3,7 +3,10 @@ use super::*;
 
 pub use game_model::strategic_action::{StrategicAction, StrategicActionFailure, StrategicRedeploymentInputs};
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the unit, path total, target, retreat and strategic flags are separate facts of one action"
+)]
 pub(super) fn capture(
     memory: &impl Memory,
     base: usize,
@@ -67,7 +70,6 @@ pub(super) fn capture(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn read_inputs(
     memory: &impl Memory,
     base: usize,

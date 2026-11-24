@@ -179,7 +179,6 @@ impl Output<'_> {
         }
         Ok(())
     }
-    #[allow(clippy::too_many_arguments)]
     fn modified(
         &mut self,
         kind: Kind,
@@ -242,7 +241,7 @@ pub fn walk_country_buffer<M: Memory>(
     )
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "Keep the certified capture operands and caller-owned output explicit without new capture state."
 )]
@@ -268,7 +267,7 @@ pub fn walk_country_buffer_certified<M: Memory>(
     )
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "Keep roster demand separate from the acquired research inputs and caller-owned output."
 )]
@@ -695,7 +694,6 @@ struct Scientist {
     mask: u32,
     overflow: u8,
 }
-#[allow(clippy::too_many_arguments)]
 fn scientist_bonus<M: Memory>(
     memory: &M,
     base: usize,

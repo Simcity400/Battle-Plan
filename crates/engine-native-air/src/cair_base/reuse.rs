@@ -36,7 +36,10 @@ pub trait RegistrationReuse {
 }
 
 impl<M: Memory> Reader<'_, M> {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "reuse updates the same resolver, buffers and state as a fresh registration"
+    )]
     pub(super) fn reuse_registration(
         &self,
         observed: RegistrationBase,

@@ -483,7 +483,7 @@ pub fn walk_members(
     )
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "Fixed and growing entry points share the same walker and caller-owned buffers."
 )]

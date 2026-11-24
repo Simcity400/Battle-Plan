@@ -138,7 +138,7 @@ pub(crate) fn manager(
     Ok(pointer)
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the independent deployment rows and literal arenas share one original graph"
 )]
@@ -166,7 +166,7 @@ pub fn walk(
     )
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the independent deployment rows and literal arenas share one original graph"
 )]

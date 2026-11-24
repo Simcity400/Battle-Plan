@@ -651,7 +651,10 @@ impl MemberBatch {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pointer and member header identify one member, and the group keys, bytes and counts are caller-owned"
+)]
 pub fn inputs_growing(
     memory: &impl Memory,
     base: usize,

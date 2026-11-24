@@ -88,7 +88,6 @@ pub trait Visitor {
 }
 impl Visitor for () {}
 
-#[allow(clippy::too_many_arguments)]
 pub fn walk_with(
     memory: &impl Memory,
     base: usize,

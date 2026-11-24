@@ -5,7 +5,7 @@ pub fn qpc() -> i64 {
         fn QueryPerformanceCounter(count: *mut i64) -> i32;
     }
     let mut ticks = 0;
-    unsafe { QueryPerformanceCounter(&mut ticks) };
+    unsafe { QueryPerformanceCounter(&raw mut ticks) };
     ticks
 }
 
