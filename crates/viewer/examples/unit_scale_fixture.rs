@@ -376,7 +376,7 @@ fn main() -> io::Result<()> {
             TableView::Complete(TableRows::LandCombats(hour_combats)).into();
         records.push(Record::Frame(encoder.encode(hour, offset == 0)?));
     }
-    let output = Replay::from_records(recorder_derive::writers(), replay.campaign_id.clone(), &[records])?;
+    let output = Replay::from_records(recorder_derive::writers(), replay.campaign_id, &[records])?;
     fs::write(&args[2], output.bytes())?;
     println!(
         "synthetic countries={count} hours={hours} first_hour={first} land_provinces={land} bytes={} source_country_count={}",

@@ -2010,7 +2010,7 @@ impl Political {
         (self.links_from, self.appearance_reslotted) = (None, false);
     }
 
-    #[allow(clippy::type_complexity, reason = "per key its dated colours, and the hour they stop being followed")]
+    #[expect(clippy::type_complexity, reason = "per key its dated colours, and the hour they stop being followed")]
     fn colour_hours(&self, before: &BTreeMap<u32, (Option<[u8; 3]>, u32)>, appearance: &[(Hour, Vec<(u32, usize, Option<u32>)>)], recoloured_at: Option<Hour>) -> (BTreeMap<u32, Vec<(Hour, Option<[u8; 3]>)>>, Option<Hour>) {
         let first_write = |country: u32, before: Option<Hour>| appearance.iter().filter(|(at, _)| before.is_none_or(|before| *at < before)).find(|(_, written)| written.iter().any(|&(held, ..)| held == country)).map(|(at, _)| *at);
         let mut undated: Option<Hour> = None;

@@ -380,7 +380,7 @@ impl Fold {
         let bound = self.geometry.as_ref().is_some_and(|geometry| {
             geometry.bank.ptr_eq(&bank)
                 && bank.strong_count() != 0
-                && bank.as_ptr() == inputs.map as *const MapData
+                && bank.as_ptr() == std::ptr::from_ref::<MapData>(inputs.map)
         });
         if !bound {
             self.geometry = Some(Geometry::build(content, inputs, bank)?);

@@ -445,7 +445,7 @@ impl Layer for MapText {
                 Slot::Ready(presented) => Some(presented.at().1),
                 Slot::Pending { .. } => None,
             })
-            .last();
+            .next_back();
         before.or(self.presented).map_or(Published::Nothing, Published::At)
     }
 

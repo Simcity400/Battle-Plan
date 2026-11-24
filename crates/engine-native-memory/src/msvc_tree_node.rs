@@ -49,7 +49,11 @@ pub fn walk_set<E>(
         budget = budget
             .checked_sub(1)
             .ok_or_else(|| error(SetError::Cycle))?;
-        read_node(address)
+        let bytes = read_node(address)?;
+        if bytes[NIL] != 0 && address != head {
+            return Err(error(SetError::ForeignSentinel));
+        }
+        Ok(bytes)
     };
     let mut visited = 0;
     let mut current = link(&sentinel, LEFT);
@@ -58,9 +62,6 @@ pub fn walk_set<E>(
             return Err(error(SetError::ExcessNodes));
         }
         let bytes = step(current)?;
-        if bytes[NIL] != 0 {
-            return Err(error(SetError::ForeignSentinel));
-        }
         visit(u64::from_le_bytes(bytes[PAYLOAD..].try_into().unwrap()))?;
         visited += 1;
         let right = link(&bytes, RIGHT);

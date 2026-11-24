@@ -149,7 +149,6 @@ fn template_countries(template: &DivisionTemplateIconRow) -> Result<(u32, u32), 
     Ok((initial, suffix_country))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn evaluate<'a>(
     inputs: &Inputs<'_, 'a>,
     roster: &[legacy::Variant<'a>],
@@ -227,7 +226,7 @@ fn evaluate<'a>(
     second_row(&inputs.labels.default_label()?, variant_bins, suffix_bins)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the bins and seen names it fills, and each recorded fact one variant row is admitted on")]
 fn admit_variant_rows(
     bins: &mut [Vec<Row>; 3],
     seen: &mut BTreeSet<String>,

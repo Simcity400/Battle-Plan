@@ -798,7 +798,7 @@ impl<'w, 'a> Launcher<'w, 'a> {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the local search state, the raid kind, the prepared rows, the source, scope and target")]
     fn search_one(
         &self,
         local: &Local<'_, 'a>,
@@ -2163,7 +2163,7 @@ impl<'w, 'a> Context<'w, 'a> {
         if Self::has_air_sources(kind) {
             let continued = match self.air_sources(kind, visit) {
                 Ok(continued) => continued,
-                Err(reason) => visit(Source::unknown(reason.to_string())),
+                Err(reason) => visit(Source::unknown(reason)),
             };
             if !continued {
                 return false;
@@ -2175,7 +2175,7 @@ impl<'w, 'a> Context<'w, 'a> {
                 .and_then(|faction| self.naval_sources(faction, visit))
             {
                 Ok(continued) => continued,
-                Err(reason) => visit(Source::unknown(reason.to_string())),
+                Err(reason) => visit(Source::unknown(reason)),
             };
             if !continued {
                 return false;
@@ -2191,7 +2191,7 @@ impl<'w, 'a> Context<'w, 'a> {
                 .and_then(|faction| self.building_sources(kind, faction, visit, true))
             {
                 Ok(continued) => continued,
-                Err(reason) => visit(Source::unknown(reason.to_string())),
+                Err(reason) => visit(Source::unknown(reason)),
             };
             if !continued {
                 return false;

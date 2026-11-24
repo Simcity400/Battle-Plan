@@ -867,7 +867,7 @@ fn the_exact_comparator_tells_signed_zeros_apart() {
         hour: 100,
         shrink_distance: assets.defines.shrink_distance,
         popup_speed: assets.defines.popup_speed,
-        slots: built.slots.clone(),
+        slots: built.slots,
         groups: Arc::clone(&assets.groups),
         city_damage: Default::default(),
     };
@@ -1218,7 +1218,6 @@ fn immutable_city_bank_reuses_hub_operands_and_rejects_replaced_bank() {
     let same = CityBank::new(&city, &pixels).unwrap();
     assert!(first.ptr_eq(base.city_for(&same, assets.id).unwrap()));
     assert!(base.city_for(&same, assets.id.wrapping_add(1)).is_none());
-    drop(city);
     Arc::make_mut(&mut pixels)[0] = true;
     let replaced = CityTerrain {
         width: 16,

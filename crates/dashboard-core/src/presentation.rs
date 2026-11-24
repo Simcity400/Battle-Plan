@@ -232,7 +232,7 @@ pub struct Admitted {
     content_work: bool,
     recorded: bool,
     cancel: Arc<dyn Cancel>,
-    mount: Option<Result<Arc<Presented>, (io::ErrorKind, String)>>,
+    mount: Option<Result<Arc<Presented>, Arc<io::Error>>>,
 }
 
 static RECORDED: Presentation = Presentation {
@@ -318,14 +318,14 @@ impl Admitted {
     pub fn set_mount(&mut self, mount: &io::Result<Arc<Presented>>) {
         self.mount = Some(match mount {
             Ok(presented) => Ok(Arc::clone(presented)),
-            Err(error) => Err((error.kind(), error.to_string())),
+            Err(error) => Err(Arc::new(crate::duplicate(error))),
         });
     }
 
     pub fn mount(&self) -> Option<io::Result<Arc<Presented>>> {
         self.mount.as_ref().map(|mount| match mount {
             Ok(presented) => Ok(Arc::clone(presented)),
-            Err((kind, message)) => Err(io::Error::new(*kind, message.clone())),
+            Err(error) => Err(crate::duplicate(error)),
         })
     }
 }
@@ -362,9 +362,8 @@ impl<T: Clone> Config<T> {
 
     pub fn update<R>(&self, change: impl FnOnce(&mut T) -> R) -> R {
         let mut state = self.lock();
-        let result = change(&mut state.value);
         state.generation += 1;
-        result
+        change(&mut state.value)
     }
 
     pub fn close(&self) {
@@ -426,5 +425,35 @@ impl PartialEq<Presentation> for Admitted {
 impl std::fmt::Debug for Admitted {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.identity().fmt(formatter)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_mount_is_still_a_refusal_when_read_back() {
+        let mut admitted = Admitted::default();
+        admitted.set_mount(&Err(crate::refused("Synthetic visual mods are refused")));
+        let Some(Err(error)) = admitted.clone().mount() else {
+            panic!("the failed mount is kept");
+        };
+        assert_eq!(crate::refusal(&error), Some("Synthetic visual mods are refused"));
+        assert_eq!(error.to_string(), "Synthetic visual mods are refused");
+    }
+
+    #[test]
+    fn an_update_that_panics_still_retires_older_snapshots() {
+        let config = Config::new(0);
+        let (_, generation) = config.snapshot().unwrap();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            config.update(|value| {
+                *value = 1;
+                panic!("synthetic panic part way through an update");
+            })
+        }));
+        assert!(panicked.is_err());
+        assert!(!config.install_if(generation, |_| {}), "a result derived before the update is stale");
     }
 }

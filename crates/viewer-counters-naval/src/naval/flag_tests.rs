@@ -74,7 +74,7 @@ fn mixed_port_flag_uses_lowest_owner_strength_then_native_reference_order() {
     };
     let other = TaskForceRow {
         roster_owner: 20,
-        ..first.clone()
+        ..first
     };
     let a = unit(&first, 2, 40);
     let b = unit(&other, 8, 70);

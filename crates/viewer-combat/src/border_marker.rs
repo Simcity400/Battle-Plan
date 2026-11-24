@@ -151,7 +151,7 @@ fn event_description(
     out
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the text resources, the border, the name lookups and the outputs of one marker")]
 fn build(
     icons: &dyn TextIcons,
     loc: &Localisation,

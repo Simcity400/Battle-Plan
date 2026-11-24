@@ -360,7 +360,7 @@ fn a_port_force_dropped_for_a_missing_operand_leaves_its_roster_undecided() {
         roster_owner: 1,
         ..Default::default()
     };
-    let forces = [force.clone()];
+    let forces = [force];
     let order =
         counter_order::RecordedOrder::from_rows(&[replay_data::rows::ProvinceUnitOrderRow {
             province: 12,
@@ -398,7 +398,7 @@ fn an_incomplete_ship_census_leaves_task_force_counts_unknown() {
         roster_owner: 1,
         ..Default::default()
     };
-    let forces = [force.clone()];
+    let forces = [force];
     let owner = |raw: u32| (raw < 100).then_some(raw);
     with_port_context(&forces, |context| {
         context.ships = Arc::new(BTreeMap::from([(7, (2, 0))]));

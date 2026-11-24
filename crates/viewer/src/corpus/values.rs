@@ -131,7 +131,6 @@ impl Output {
             return Err(io::Error::other(format!("{} is a link; mod-corpus writes only into its own folders", stack.display())));
         }
         let file = fs::OpenOptions::new()
-            .write(true)
             .append(true)
             .create_new(true)
             .open(path)

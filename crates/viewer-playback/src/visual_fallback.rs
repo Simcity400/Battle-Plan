@@ -387,7 +387,7 @@ mod tests {
         let for_oak = built(&fallbacks, &k);
         assert!(fallbacks.current(&for_oak));
         let for_elm = Built {
-            key: k.clone(),
+            key: k,
             under: Under::Recording {
                 failures: names(&["elm"]),
             },
@@ -395,7 +395,7 @@ mod tests {
         assert!(!fallbacks.current(&for_elm));
         let elsewhere = Built {
             key: key("B", "r1"),
-            under: for_oak.under.clone(),
+            under: for_oak.under,
         };
         assert!(!fallbacks.current(&elsewhere));
     }

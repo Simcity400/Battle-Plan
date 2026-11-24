@@ -2287,11 +2287,11 @@ fn a_fixed_window_attaches_as_the_game_attaches() {
     let find = |find, name: &str| fixed::fixed_window_find(window, find, name);
     assert!(std::ptr::eq(
         find(fixed::FixedFind::Button, "B").unwrap(),
-        &window.children[3]
+        &raw const window.children[3]
     ));
     assert!(std::ptr::eq(
         find(fixed::FixedFind::Icon, "a").unwrap(),
-        &window.children[1]
+        &raw const window.children[1]
     ));
     assert!(find(fixed::FixedFind::InstantTextBox, "a").is_none());
     for lookup in [
@@ -2314,7 +2314,7 @@ fn a_fixed_window_attaches_as_the_game_attaches() {
     }
     assert!(std::ptr::eq(
         find(fixed::FixedFind::DropDownBox, "d").unwrap(),
-        &window.children[4]
+        &raw const window.children[4]
     ));
     let kinds = |name: &[u8]| {
         laid(name)
@@ -3411,7 +3411,7 @@ Effect Up { VertexShader = V PixelShader = P }
         file: "mod-owned.shader".into(),
         techniques: Vec::new(),
         samplers: [None; 6],
-        compiled: Some(asset.clone()),
+        compiled: Some(asset),
     });
     let tree = gui("scale = 2 iconType = { name = \"a\" spriteType = \"GFX_even\" frame = 2 }");
     let window = tree.template("w").unwrap();
@@ -3543,7 +3543,7 @@ Effect Up { VertexShader = V PixelShader = P }
     let (pixels, refused, _) = sequence(Some(not_resident(&kept)));
     assert_eq!(refused.values().sum::<u64>(), 1, "{refused:?}");
     assert_eq!(pixels, kept_pixels, "`c` runs the program `a` bound");
-    let (pixels, refused, _) = sequence(Some(failing.clone()));
+    let (pixels, refused, _) = sequence(Some(failing));
     assert_eq!(refused.values().sum::<u64>(), 2, "{refused:?}");
     assert!(
         refused

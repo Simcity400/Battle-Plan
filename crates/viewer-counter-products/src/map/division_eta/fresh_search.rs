@@ -103,8 +103,7 @@ impl<'a> Inputs<'a> {
             let health = if row.cooldown_ticks <= 0 && edge.is_some() {
                 (*row
                     .building
-                    .require("RailCooldowns.building")
-                    .map_err(|error| error.to_string())?)
+                    .require("RailCooldowns.building")?)
                 .map(|state| fresh_inputs::RailwayBuildingState {
                     building: state
                         .building
@@ -172,8 +171,7 @@ impl viewer_unit_reads::movement_reads::CounterFacts for Inputs<'_> {
             }
             let selected = row
                 .building
-                .require("RailCooldowns.building")
-                .map_err(|error| error.to_string())?
+                .require("RailCooldowns.building")?
                 .as_ref()
                 .ok_or("fresh ETA railway selected building was refused")?;
             if selected.building.is_none_or(|health| health.level <= 0) {
@@ -187,8 +185,7 @@ impl viewer_unit_reads::movement_reads::CounterFacts for Inputs<'_> {
         let fresh = self
             .railway(handle)?
             .fresh
-            .require("RailwayGunCounterInputs.fresh")
-            .map_err(|error| error.to_string())?
+            .require("RailwayGunCounterInputs.fresh")?
             .as_ref()
             .ok_or("fresh ETA railway inputs were refused")?;
         if !fresh.sample_hour.fresh_at(self.hour) {

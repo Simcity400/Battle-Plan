@@ -929,7 +929,7 @@ impl History {
             .untake_frame(restore);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the camera and viewport, the time and gates, the limit, and the building history")]
     pub fn update_models(
         &mut self,
         camera: Camera,
@@ -964,7 +964,7 @@ impl History {
         self.held_walks = if held == 0 { 0 } else { self.held_walks + 1 };
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the camera and viewport, the time and gates, the limit, the building history and the province frame")]
     pub fn update_models_with_frame(
         &mut self,
         camera: Camera,
@@ -1052,7 +1052,7 @@ impl History {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the time and gates, what is shown and in view, the budget, and the building step")]
     fn step_with(
         &mut self,
         time: f32,
@@ -1088,7 +1088,7 @@ impl History {
         placed
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the time and gates, what is shown and in view, the budget, the building step, the province frame and deadline")]
     fn step_with_frame(
         &mut self,
         time: f32,

@@ -286,7 +286,7 @@ fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {
         );
     }
     let countries = 5000_u32;
-    let mut sizing = base.clone();
+    let mut sizing = base;
     set(&mut sizing, TableRows::LexicalTokens(tokens(0)));
     set(
         &mut sizing,

@@ -120,7 +120,7 @@ pub(super) fn locked(
     Ok(text)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the text resources, the context, the candidate and its definition, and its weights")]
 pub(super) fn status(
     icons: &dyn TextIcons,
     loc: &Localisation,

@@ -137,7 +137,7 @@ pub fn build_from(input: Inputs<'_>) -> Tooltip {
     };
     result.unwrap_or_else(|reason| {
         let mut out = Tooltip::default();
-        out.refuse("raid tooltip", reason.to_string());
+        out.refuse("raid tooltip", reason);
         out
     })
 }

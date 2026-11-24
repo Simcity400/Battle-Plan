@@ -83,7 +83,7 @@ impl PickerState {
             || (self.find.open && self.find.field.blinking())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the document and mode, the toggles and extent, and the frame's clock and input")]
     fn draw(
         &mut self,
         document: &Document,

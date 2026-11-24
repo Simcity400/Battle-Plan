@@ -583,7 +583,6 @@ fn unordered_screen_fraction_retires_all_screen_actors_and_death_roots_keep_runn
 }
 
 #[test]
-#[allow(clippy::field_reassign_with_default)]
 fn creation_damage_and_death_setters_precede_the_single_rendered_frame_update() {
     let mut battle = battle(COMBAT, 100);
     battle.death_time = 0.0;
@@ -779,7 +778,6 @@ fn creation_damage_and_death_setters_precede_the_single_rendered_frame_update() 
 }
 
 #[test]
-#[allow(clippy::field_reassign_with_default)]
 fn cached_visits_probe_copied_timings_once_while_active_or_inactive_but_placing_does_not() {
     let mut battle = battle(COMBAT, 100);
     battle.offered = [true, false, false, false, true, false, false, false];

@@ -1436,7 +1436,7 @@ fn listed_for(definition: &Definition, context: &Context, ours: u32) -> Evaluati
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the text resources and each recorded fact of one tactic entry")]
 fn entry_values(
     icons: &dyn TextIcons,
     has_sprite: &dyn Fn(&str) -> bool,

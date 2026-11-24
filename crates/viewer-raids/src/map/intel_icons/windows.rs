@@ -365,7 +365,7 @@ fn shapes(
 }
 
 impl PreparedIntel {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the assets and context, the priority and view, and the batch, hits and report it fills")]
     pub fn draw(
         &self,
         assets: &IntelAssets,
@@ -437,7 +437,7 @@ impl PreparedIntel {
         drawn
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the windows and context, the view, the icon and its placement, the frame's tick and layer, and what it fills")]
     fn present(
         &self,
         windows: &Windows<'_>,

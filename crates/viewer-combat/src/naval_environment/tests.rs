@@ -182,7 +182,7 @@ fn terrain_hover_uses_recorded_region_then_province_modifier_sources() {
         hover,
         "\u{11}HWestern Sea\u{11}!\n\n\u{11}HWeather: Heavy Rain, Snow\u{11}!\n  - Weather range: \u{11}R+0\u{11}!\n\n\n\u{11}HNight\u{11}!\n  - Night range: \u{11}R+0\u{11}!"
     );
-    let mut only_air_weather = context.clone();
+    let mut only_air_weather = context;
     only_air_weather.sources[0]
         .terms
         .retain(|term| term.key == 9);
@@ -408,7 +408,7 @@ fn carrier_penalty_uses_opponent_silhouette_and_actual_multiplier() {
         carrier_penalty_values(&side, &opposing, models, 1, &defines).map(|value| value.0),
         Ok(ONE)
     );
-    let mut no_effect = defines.clone();
+    let mut no_effect = defines;
     no_effect.plane_stacking_penalty_effect = 0;
     assert_eq!(
         carrier_penalty_values(&side, &opponents, models, 1, &no_effect).map(|value| value.0),

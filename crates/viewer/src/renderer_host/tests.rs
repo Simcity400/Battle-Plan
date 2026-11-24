@@ -211,6 +211,7 @@ fn composite(
 
 #[test]
 #[ignore = "needs a GPU device"]
+#[expect(clippy::redundant_clone, reason = "the test checks that a cloned render state binds the same session")]
 fn local_commands_preserve_script_pixels_and_texture_lifetimes() {
     let (_serial, [state, unbound]) = render_states(wgpu::TextureFormat::Rgba8Unorm);
     assert!(local(&unbound).is_none());

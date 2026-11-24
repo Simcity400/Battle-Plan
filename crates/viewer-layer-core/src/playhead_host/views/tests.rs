@@ -264,7 +264,7 @@ fn a_reader_of_some_columns_or_of_keys_alone_holds_only_those_and_any_other_fiel
     assert!(apart.drive(3), "the store never reached hour 3");
     let frame = reader.wait(|frame| frame.hour == 3, LIMIT).expect("the rows of hour 3");
     let countries = frame.complete_fields::<tables::Countries>(named).unwrap();
-    let mut sorted = hourly(3).country_rows.clone();
+    let mut sorted = hourly(3).country_rows;
     sorted.sort_by_key(|(key, _)| *key);
     assert_eq!(countries.iter().map(|row| u128::from(row.id)).collect::<Vec<_>>(), sorted.iter().map(|(key, _)| *key).collect::<Vec<_>>(), "every live row by key");
     for (row, (_, cells)) in countries.iter().zip(&sorted) {

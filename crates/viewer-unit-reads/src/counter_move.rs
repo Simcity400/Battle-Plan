@@ -1103,7 +1103,6 @@ pub struct Movement {
 }
 
 impl Movement {
-    #[allow(clippy::too_many_arguments)]
     fn build(
         province: u32,
         path: &[u32],

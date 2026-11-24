@@ -503,7 +503,7 @@ pub(super) struct Site {
 impl Site {
     pub(super) fn new(element: &Element, via: Option<Via>) -> Self {
         Self {
-            element: element as *const Element,
+            element: std::ptr::from_ref::<Element>(element),
             via,
         }
     }
@@ -1635,7 +1635,7 @@ impl<'a> Walk<'a> {
     }
 
     fn built<T>(&mut self, owner: &Element, role: Role, draw: impl FnOnce(&mut Self) -> T) -> T {
-        let outer = self.via.replace((owner as *const Element, role));
+        let outer = self.via.replace((std::ptr::from_ref::<Element>(owner), role));
         let outer_owner = self.region_owner.clone();
         if outer_owner.is_none() {
             self.region_owner = Some(owner.path.clone());
@@ -2158,7 +2158,7 @@ impl<'a> Walk<'a> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the element, the sprite's name and frame, and its scale, rotation, placement and clip")]
     fn sprite_part(
         &mut self,
         element: &Element,
@@ -2192,7 +2192,10 @@ impl<'a> Walk<'a> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the element, the sprite's name, frame and state, and its scale, rotation, placement and clip"
+    )]
     fn state_part(
         &mut self,
         element: &Element,
@@ -2381,7 +2384,7 @@ impl<'a> Walk<'a> {
                                 offsets: [ox, oy, nx, ny],
                                 effect: effect.file.clone(),
                                 technique: state.technique(),
-                                records: records.clone(),
+                                records: records,
                                 masked: info.masked,
                             }))
                         }
@@ -2523,7 +2526,7 @@ impl<'a> Walk<'a> {
                             offsets: [0.; 4],
                             effect: effect.file.clone(),
                             technique: state.technique(),
-                            records: records.clone(),
+                            records: records,
                             masked: info.masked,
                         }))
                     },
@@ -2777,7 +2780,6 @@ impl<'a> Walk<'a> {
         .map(|_| ())
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn button(
         &mut self,
         element: &Element,
@@ -4192,7 +4194,7 @@ fn collect_assets<'a>(
     assets: &mut Assets,
     seen: &mut Vec<*const Element>,
 ) {
-    if seen.contains(&(element as *const Element)) {
+    if seen.contains(&std::ptr::from_ref::<Element>(element)) {
         return;
     }
     seen.push(element);

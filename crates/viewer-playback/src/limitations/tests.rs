@@ -167,7 +167,7 @@ fn every_wording_todays_limitation_maker_can_give_has_an_owner() {
     };
     let facts = RowFacts { unreadable_naval_bases: 1, divisions: true, task_forces: true, unreadable_templates: 1, ship_counters: Some(true), weather: true, weather_display: Some(Some(DISPLAY_NOT_RECORDED)) };
     let mut lines = table_limitations(&Unread, &facts).into_lines();
-    lines.extend(table_limitations(&Unread, &RowFacts { ship_counters: Some(false), weather_display: Some(None), ..facts.clone() }).into_lines());
+    lines.extend(table_limitations(&Unread, &RowFacts { ship_counters: Some(false), weather_display: Some(None), ..facts }).into_lines());
     let mut out = Limitations::default();
     out.note_trains(&Unread);
     out.note_aircraft(&Unread);

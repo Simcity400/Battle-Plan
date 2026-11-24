@@ -1519,7 +1519,7 @@ pub struct PlateBinding<'a> {
     pub tint: [f32; 4],
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the plate, pointer state and timing bind to the same native control"
 )]

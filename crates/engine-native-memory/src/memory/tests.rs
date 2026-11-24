@@ -718,6 +718,10 @@ fn scattered_fields_preserve_unaligned_full_width_values() {
     assert_eq!(u16::from_le_bytes(narrow), u16::MAX);
     assert_eq!(u32::from_le_bytes(medium), u32::MAX - 1);
     assert_eq!(i64::from_le_bytes(wide), i64::MIN + 0x1234);
+    let batch = FieldBatch::gather(&memory, [(0x1005, 4), (0x100b, 8)]);
+    assert_eq!(batch.get::<u32>(&memory, 0), Some(u32::MAX - 1));
+    assert_eq!(batch.get::<u64>(&memory, 0), None);
+    assert_eq!(batch.get::<u32>(&memory, 1), None);
 }
 
 #[test]

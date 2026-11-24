@@ -250,7 +250,7 @@ fn selected_enemy_occurrences_keep_order_zero_and_repeats_and_refuse_carried_or_
         Recorded::Value(None),
         Some(OrderedEnemyInputs {
             sample_hour: replay_data::rows::PacketHour::Stamped(11),
-            ..packet.clone()
+            ..packet
         })
         .into(),
     ] {

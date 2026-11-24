@@ -392,7 +392,7 @@ impl Retained {
         Some(size)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the window's root, values and groups, its resources, the frame's clock and input, and the refusals it fills")]
     pub(crate) fn prepare<'v>(
         &mut self,
         root: &Element,
@@ -1507,7 +1507,7 @@ impl Windows {
             .or_else(|| self.root.as_ref().and_then(Retained::highlighted))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the window's resources and bindings, its placement and tactics state, and the frame's clock and input")]
     pub fn draw(
         &mut self,
         windows: &NativeWindows,
