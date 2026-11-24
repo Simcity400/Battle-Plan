@@ -480,6 +480,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     flagSize: 'panel',
     branchBounds,
   });
+  const identityRevision = identityState.index?.resolveRevision() ?? -1;
   useEffect(() => {
     if (!active || !wantsLabels || !identityScope || !track || !identityState.index?.hasFacts()) return;
     const seen = new Set<string>();
@@ -503,7 +504,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       }
     }
     if (choices.length) identityBrokerFor(runtime.client).requestFlagChoices(identityScope, 'panel', choices, track.source);
-  }, [active, wantsLabels, identityScope, runtime.client, track, identityState.index, identityState.version, labelTags, firstHour, lastHour]);
+  }, [active, wantsLabels, identityScope, runtime.client, track, identityState.index, identityRevision, labelTags, firstHour, lastHour]);
 
   const builtLooks = useMemo(
     () => (wantsLabels ? buildCountryLooksFromIdentity(identityState.index, labelTags, firstHour, lastHour, identityState.flagFor, wantsColours) : NO_LOOKS),

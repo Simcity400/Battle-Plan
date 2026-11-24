@@ -28,7 +28,8 @@ test('a template row carries the product’s manpower total and the title its di
   const model = project(reply());
   const [order] = model.rows;
   assert.deepEqual(order!.cells.division!.value, knownValue('Infantry 1940 A'));
-  assert.deepEqual(order!.cells.manpower!.value, knownValue('23,520 / 23,520'));
+  assert.deepEqual([order!.cells.manpower!.value, order!.cells.manpower!.secondaryValue], [knownValue(23520), knownValue('23,520')]);
+  assert.equal(order!.cells.division!.subtext, '2 divisions · Brandenburg · Medium equipment priority');
   assert.deepEqual(order!.cells.training!.value, notApplicable('Shown on each division'));
   assert.equal(model.titleSummary, '34 in training');
   const [first, second] = order!.children!;

@@ -84,7 +84,6 @@ fn run_parts(source: &Source, run: u32) -> Vec<Part<'_>> {
         Box::new(move || dashboard_production::products::production::cached_production_lines(source, run).map(drop)),
         Box::new(move || dashboard_economy::products::convoys::cached_convoys(source, run).map(drop)),
         Box::new(move || dashboard_production::products::construction::cached_construction(source, run).map(drop)),
-        Box::new(move || dashboard_economy::products::economy::market::history::run_ended(source, run).map(drop)),
         Box::new(move || dashboard_wars::products::wars::cached_wars(source, run).map(drop)),
         Box::new(move || dashboard_wars::products::casualties::cached_casualty_ends(source, run).map(drop)),
     ];
