@@ -9,7 +9,6 @@ import { knownValue, notRecorded, valueFromLive, type Value } from '../../famili
 import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
 import type { WargoalEntry, WargoalJustification, WargoalRemoved, WargoalState, WargoalsReply } from '../../generated/dashboard';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
-import { OPTIONS } from './definition.ts';
 import { validateWargoalsReply } from './warGoalsData.ts';
 
 export interface WarGoalsOptions {
@@ -17,12 +16,13 @@ export interface WarGoalsOptions {
 }
 
 const UNNAMED_GOAL = 'Not recorded';
-const STATE: Readonly<Record<WargoalState, { readonly mark: StatusMarkKind; readonly label: string }>> = {
+const STATE: Readonly<Record<Exclude<WargoalState, 'unknown'>, { readonly mark: StatusMarkKind; readonly label: string }>> = {
   atWar: { mark: 'running', label: 'At war' },
   ready: { mark: 'waiting', label: 'Ready' },
   inUse: { mark: 'running', label: 'In use' },
   expired: { mark: 'ended', label: 'Expired' },
 };
+const WAR_UNREAD = 'Whether the two countries are at war was not recorded';
 
 const dayCount = (days: number) => `${days} ${days === 1 ? 'day' : 'days'} left`;
 
@@ -45,8 +45,8 @@ function placeOf(reply: WargoalsReply, readView: BoundedReadView, states: readon
   return parts.join(' · ');
 }
 
-function titled(readView: BoundedReadView, recipient: string, name: string, options: WarGoalsOptions): Pick<CardItemRow, 'flag' | 'title' | 'subtitle' | 'subject'> {
-  const target = cardFlag(readView, recipient);
+function titled(readView: BoundedReadView, recipient: string, name: string, options: WarGoalsOptions, atHour?: number): Pick<CardItemRow, 'flag' | 'title' | 'subtitle' | 'subject'> {
+  const target = cardFlag(readView, recipient, atHour);
   const kind = kindOf(name);
   if (!options.targetNames) return { flag: target.media, title: kind, subject: recipient };
   const kindText = kind.kind === 'known' ? kind.value : 'Kind not recorded';
@@ -90,7 +90,7 @@ function tipTitle(row: Pick<CardItemRow, 'title'>): string {
 
 function removedRow(readView: BoundedReadView, removed: WargoalRemoved, options: WarGoalsOptions): CardItemRow {
   const base = removed.recipient
-    ? titled(readView, removed.recipient, removed.name ?? UNNAMED_GOAL, options)
+    ? titled(readView, removed.recipient, removed.name ?? UNNAMED_GOAL, options, removed.seen)
     : { title: removed.name ? knownValue(removed.name) : notRecorded('The kind of war goal was not recorded') };
   const date = formatDateOnly(removed.removed);
   return {
@@ -113,9 +113,11 @@ function removedRow(readView: BoundedReadView, removed: WargoalRemoved, options:
 }
 
 function goalRow(reply: WargoalsReply, readView: BoundedReadView, goal: WargoalEntry, options: WarGoalsOptions): CardItemRow {
-  const state = STATE[goal.state];
+  const state = goal.state === 'unknown' ? null : STATE[goal.state];
   let figure: CardItemRow['figure'];
-  if (goal.state === 'ready') {
+  if (goal.state === 'unknown') {
+    figure = { value: notRecorded(WAR_UNREAD), figure: 'State' };
+  } else if (goal.state === 'ready') {
     figure = goal.expires === null
       ? { value: notRecorded('The war goal’s expiry was not recorded'), figure: 'Expiry' }
       : { value: knownValue(`Expires ${formatDateOnly(goal.expires)}`), figure: 'Expiry' };
@@ -128,13 +130,13 @@ function goalRow(reply: WargoalsReply, readView: BoundedReadView, goal: WargoalE
     ...titled(readView, goal.recipient, goal.name, options),
     place: placeOf(reply, readView, goal.states, goal.liberate, goal.puppets),
     ...(figure ? { figure } : {}),
-    state,
+    ...(state ? { state } : {}),
     ...(goal.state === 'expired' ? { muted: true } : {}),
     tooltip: {
       title: kindOf(goal.name).kind === 'known' ? goal.name : 'Kind not recorded',
       hour: readView.hour,
       items: [
-        { label: 'State', value: state.label },
+        state ? { label: 'State', value: state.label } : { label: 'State', missingReason: WAR_UNREAD },
         ...(goal.expires !== null ? [{ label: 'Expires', value: formatDateHover(goal.expires) }] : []),
         ...grantItems(goal.granted, goal.grantedMissing),
       ],
@@ -175,7 +177,6 @@ export const warGoalsDeclaration: CardWidgetDeclaration<WarGoalsOptions> = {
   subject: 'war goals',
   emptyCampaign: 'Load a campaign to see war goals.',
   icon: 'handshake',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its war goals.' },
   keyByBranch: true,
   jumpToDate: true,

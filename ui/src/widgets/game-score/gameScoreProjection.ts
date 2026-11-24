@@ -24,7 +24,7 @@ import { registerTableProjection } from '../../families/table/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, valueFromLive, type Value } from '../../families/value.ts';
 import type { GameScoreRow } from '../../generated/dashboard';
-import { OPTIONS, TABLE_BASE } from './definition.ts';
+import { TABLE_BASE } from './definition.ts';
 import { SCORE_LABELS, SCORE_PARTS, scoreHint, scorePart, validateGameScore, type GameScoreReply, type ScorePart } from './gameScoreData.ts';
 
 export type FactionRun = DeclaredFactionRun;
@@ -221,7 +221,6 @@ export const gameScoreDeclaration: TableWidgetDeclaration<GameScoreProjectionOpt
   subject: 'game scores',
   emptyCampaign: 'Load a campaign to see its game scores.',
   icon: 'grid',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

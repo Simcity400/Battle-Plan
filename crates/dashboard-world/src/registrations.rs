@@ -21,6 +21,7 @@ dashboard_base::register_hourly_products! {
     SCALARS_NUCLEARARSENAL => crate::products::scalars::NuclearArsenal,
     SCALARS_WORLDTENSION => crate::products::scalars::WorldTension,
     SCALARS_FACTORYPARTS => crate::products::scalars::FactoryParts,
+    AUTONOMY_LEVELS_AUTONOMYLEVELS => crate::products::autonomy_levels::AutonomyLevels,
 }
 
 use dashboard_base::{Source, products::at_hour::exact_panel};

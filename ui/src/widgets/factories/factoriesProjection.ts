@@ -12,7 +12,6 @@ import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded, valueFromRawBigInt, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { FactoryGroupsReply, SeriesState, SeriesStateReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { COUNT_MODES, FACTORY_GROUPS, chosenGroups, countMode, damagedMeasure, factoryMeasure, groupName, validateFactoryGroups, type CountMode } from './factoriesData.ts';
 
 const PART_SURFACE = DEFAULT_CARD_SURFACE;
@@ -360,7 +359,6 @@ export const factoriesDeclaration: BarsWidgetDeclaration<FactoriesProjectionOpti
   subject: 'factories',
   emptyCampaign: 'Load a campaign to see factories.',
   icon: 'factory',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,
