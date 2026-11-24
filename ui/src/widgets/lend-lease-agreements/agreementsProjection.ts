@@ -3,12 +3,11 @@ import type { LiveValues } from '../../charts/live';
 import { FIXED5, fixedText, FUEL_QUANTITY, MARKET, SHARE, validateMarketReply } from '../../dashboard/market.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artNameCell, identityCell, newIdentityBoundary } from '../../families/table/identityCell.ts';
+import { artNameCell, identityFlags, identityName, newIdentityBoundary, urlArtHandle } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { LeaseTerms, MarketItem, MarketLendLeaseReply } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
@@ -19,13 +18,16 @@ export interface AgreementsProjectionOptions {
   readonly direction: Direction;
 }
 
-const PRIORITY: Readonly<Record<string, number>> = { equipment: 0, delivered: 1, receiver: 2, giver: 3, monthly: 4, last: 5, since: 6 };
+const PRIORITY: Readonly<Record<string, number>> = { equipment: 0, delivered: 1, country: 2, monthly: 3, last: 4, since: 5 };
 export const AGREEMENT_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(column => ({
   ...column,
   priority: PRIORITY[column.key] ?? 9,
   numeric: column.key === 'monthly' || column.key === 'delivered' || column.key === 'last' || column.key === 'since',
-  text: column.key === 'equipment' || column.key === 'giver' || column.key === 'receiver',
-  ...(column.key === 'last' || column.key === 'since' ? { widest: ['30 Sep 1944'] } : {}),
+  text: column.key === 'equipment' || column.key === 'country',
+  ...(column.key === 'country' ? { pinned: true, sortable: false, widest: ['MMMMMMMMMM'] } : {}),
+  ...(column.key === 'equipment' ? { cellKind: 'item' as const, pinned: true } : {}),
+  ...(column.key === 'monthly' || column.key === 'delivered' ? { barEligible: true, format: 'integer' as const } : {}),
+  ...(column.key === 'last' || column.key === 'since' ? { cellKind: 'date' as const, widest: ['30 Sep'] } : {}),
 }));
 
 const passes = (filter: DeclaredCountryFilter, tag: string | null, hour: number): boolean =>
@@ -44,9 +46,7 @@ const whole = (raw: bigint, denominator: bigint): Value => {
   return units === 0n ? zeroValue(0n) : knownValue(units);
 };
 
-const dateCell = (hour: number | null, none: Value): TableCell => hour === null
-  ? { value: none }
-  : { value: knownValue(formatDateOnly(hour)), sortValue: knownValue(hour) };
+const dateCell = (hour: number | null, none: Value): TableCell => (hour === null ? { value: none } : { value: knownValue(hour) });
 
 function amounts(list: readonly MarketItem[]): Map<string, bigint> {
   const out = new Map<string, bigint>();
@@ -81,8 +81,10 @@ function agreementRows(
   const once = amounts(terms.once);
   const delivered = amounts(terms.delivered);
   const sunk = amounts(terms.sunk);
-  const giver = identityCell(readView, 'country', terms.giver, { boundary });
-  const receiver = identityCell(readView, 'country', terms.receiver, { boundary });
+  const flags = identityFlags(readView, 'country', [terms.giver, terms.receiver].filter((tag): tag is string => tag !== null), { boundary });
+  const sideName = (tag: string | null) => (tag === null ? 'Country not recorded' : identityName(readView, 'country', tag));
+  const pair = `${sideName(terms.giver)} → ${sideName(terms.receiver)}`;
+  const country: TableCell = { value: knownValue(pair), flags };
   const last = dateCell(terms.lastDelivery > 0 ? terms.lastDelivery : null, notApplicable('No delivery yet'));
   const since = dateCell(terms.activeSince, notRecorded('Start date not recorded'));
   const extra = (lost: Value, schedule: string | null): readonly TooltipExtraRow[] => [
@@ -102,14 +104,14 @@ function agreementRows(
       key: `${terms.key}:${variant}`,
       name: named?.name ?? variant,
       cells: {
-        giver,
-        receiver,
-        equipment: artNameCell(readView, named?.name ?? null, image ? { kind: 'url', url: image } : null, named?.nameUnknown ?? 'The recording does not name this design at this hour'),
+        country,
+        equipment: artNameCell(readView, named?.name ?? null, urlArtHandle(image), named?.nameUnknown ?? 'The recording does not name this design at this hour', 'equipment'),
         monthly: month === undefined ? { value: notApplicable(schedule!) } : { value: whole(month, FIXED5), format: 'integer' },
         delivered: { value: whole(delivered.get(variant) ?? 0n, FIXED5), format: 'integer' },
         last,
         since,
       },
+      tooltipTitle: pair,
       tooltipExtra: () => extra(lost, schedule),
       meta,
     });
@@ -126,14 +128,14 @@ function agreementRows(
       key: `${terms.key}:fuel`,
       name: 'Fuel',
       cells: {
-        giver,
-        receiver,
+        country,
         equipment: { value: knownValue('Fuel') },
         monthly: { value: notApplicable(schedule) },
         delivered: { value: scaled(sent), format: 'integer' },
         last,
         since,
       },
+      tooltipTitle: pair,
       tooltipExtra: () => extra(scaled(lost), schedule),
       meta,
     });

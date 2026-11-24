@@ -20,7 +20,7 @@ import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { ArtHandle, DisplayedHour } from '../plan.ts';
 import { IdentityBroker, type IdentityTransport } from './broker.ts';
 import { createBrokerIdentityProvider, createSnapshotIdentityProvider, parseEntityKey } from './provider.ts';
-import { readIdentityAtHeadHour, subscribeIdentityAtHead } from './react.ts';
+import { UNHELD_HEAD_HOUR, readIdentityAtHeadHour, subscribeIdentityAtHead, type HeldHeadHour } from './react.ts';
 import {
   IdentityIndex,
   countrySlotKey,
@@ -528,7 +528,7 @@ test('useIdentityAtHead does not subscribe to the frame clock or churn snapshots
     subscribeFrame: (_cb: () => void) => { frameSubscribes++; return () => {}; },
     subscribe: (_cb: () => void) => { anchorSubscribes++; return () => {}; },
   };
-  const held = { current: { key: '', hour: null as number | null } };
+  const held: { current: HeldHeadHour } = { current: UNHELD_HEAD_HOUR };
 
   const unsubNoScope = subscribeIdentityAtHead(broker, clock, null, true, true, true, null, undefined, () => {});
   const unsubNoKeys = subscribeIdentityAtHead(broker, clock, SCOPE, true, true, false, null, undefined, () => {});
@@ -557,6 +557,68 @@ test('useIdentityAtHead does not subscribe to the frame clock or churn snapshots
   const h3 = readIdentityAtHeadHour(broker, clock, SCOPE, true, [countryTagKey('GER')], h => h, null, [0, 500], held);
   assert.equal(h3, 150, 'crossing the run boundary advances the hour');
   unsubActive();
+  broker.dispose();
+});
+
+test('1,500 keys at the head resolve once per proven interval, not per frame, and settled flags do not invalidate them', async () => {
+  const countries = Array.from({ length: 1500 }, (_, i) => `X${String(i).padStart(4, '0')}`);
+  const flags: CountryFlagChoice[] = countries.map(tag => ({ keys: [tag, null, null], reasons: [null, null, null] }));
+  const factsReply: CountryFactsReply = {
+    branchId: '1',
+    known: [[0, 1000]],
+    names: [...countries.map(tag => `Country ${tag}`), 'Renamed'],
+    reasons: [],
+    flags,
+    countries: countries.map((tag, i) => ({ tag, runs: i === 7 ? [[0, i, i, -1, i], [600, 1500, i, -1, i]] : [[0, i, i, -1, i]] })),
+    warnings: [],
+  };
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => factsReply,
+    loadIdentities: async () => ({ branchId: '1', known: [], countries: [], unknown: [], warnings: [] }),
+    loadGroups: async () => sampleGroups(),
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size, batch) => ({
+      size,
+      flags: batch.map((choice, i) => ({ flag: i, asset: `${choice.keys[0]}.tga`, key: `${choice.keys[0]}:${size}`, width: 41, height: 26, png: `flag://${choice.keys[0]}` })),
+      unavailable: [],
+      warnings: [],
+    }),
+  };
+  const broker = new IdentityBroker({ transport });
+  const keys = countries.map(countryTagKey);
+  broker.setDemand({}, SCOPE, { asks: keys.map(key => ({ key, hour: 100 })), needFlags: true, flagSize: 'panel' }, undefined, [0, 1000]);
+  for (let i = 0; i < 120; i++) await Promise.resolve();
+
+  const index = broker.indexOf(SCOPE);
+  assert.equal(broker.flagFor(SCOPE, 'panel', flags[1499]!)?.url, 'flag://X1499', 'every flag batch settled');
+  const revision = index.resolveRevision();
+  let resolved = 0;
+  const resolve = index.resolve.bind(index);
+  index.resolve = ((key, hour) => { resolved++; return resolve(key, hour); }) as typeof index.resolve;
+
+  let clockHour = 100;
+  const clock = { getHour: () => clockHour };
+  const held: { current: HeldHeadHour } = { current: UNHELD_HEAD_HOUR };
+  const read = () => readIdentityAtHeadHour(broker, clock, SCOPE, true, keys, h => h, null, [0, 1000], held);
+  assert.equal(read(), 100);
+  assert.equal(resolved, 1500, 'the first frame resolves each key once');
+  for (let frame = 0; frame < 600; frame++) {
+    clockHour = 100 + frame * 0.8;
+    assert.equal(read(), 100, 'a frame inside the proven interval keeps the held hour');
+  }
+  assert.equal(resolved, 1500, 'frames inside the proven interval resolve nothing');
+
+  broker.requestFlagChoices(SCOPE, 'small', flags, undefined);
+  for (let i = 0; i < 120; i++) await Promise.resolve();
+  assert.equal(broker.flagFor(SCOPE, 'small', flags[1499]!)?.url, 'flag://X1499');
+  assert.equal(index.resolveRevision(), revision, 'settled flag batches leave every resolve answer, and the host scan keyed on it, untouched');
+  assert.equal(read(), 100);
+  assert.equal(resolved, 1500);
+
+  clockHour = 600;
+  assert.equal(read(), 600, 'crossing the next boundary advances the hour');
+  assert.equal(resolved, 3000, 'one resolve per key at the boundary');
   broker.dispose();
 });
 

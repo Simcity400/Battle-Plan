@@ -5,11 +5,11 @@ import { declareTableProjection, type DeclarativeColumnSpec, type TableProjectio
 import type { BoundedReadView } from '../../families/plan.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, textValue, notRecorded, valueFromNullable, type Value } from '../../families/value.ts';
+import { knownValue, textValue, notRecorded, type Value } from '../../families/value.ts';
 import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
 import type { AirAce, AirAcesReply } from '../../generated/dashboard';
 import { validateAces } from './acesData.ts';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
 
 export interface AcesOptions { readonly filter: DeclaredCountryFilter }
 
@@ -40,10 +40,6 @@ function countryOf(tag: string | null, readView: BoundedReadView): { readonly fl
   };
 }
 
-export function aceSince(ace: AirAce): Value<string> {
-  return ace.firstSeen === null ? notRecorded('First sighting not recorded') : knownValue(formatDateOnly(ace.firstSeen));
-}
-
 const wingValue = (ace: AirAce): Value<string> => ace.wing === null
   ? knownValue('No wing')
   : textValue(ace.wingName, 'Wing name not recorded');
@@ -57,15 +53,25 @@ function aircraftValue(ace: AirAce): Value<string> {
 
 const [PORTRAIT, COUNTRY, ACE, WING, SINCE] = COLUMNS;
 
+const nickname = (ace: AirAce): string | undefined => ace.callsign?.trim() ? `“${ace.callsign}”` : undefined;
+
+function aircraftLine(ace: AirAce): string | undefined {
+  const value = aircraftValue(ace);
+  return ace.wing !== null && value.kind === 'known' ? value.value : undefined;
+}
+
 const ACE_COLUMNS: readonly DeclarativeColumnSpec<AceRow, AcesOptions>[] = [
-  { ...PORTRAIT!, priority: 4, sortable: false, iconSlot: true, icon: row => row.portrait.icon, iconPending: row => row.portrait.pending,
+  { ...PORTRAIT!, priority: 4, sortable: false, cellKind: 'kind', iconSlot: true, icon: row => row.portrait.icon, iconPending: row => row.portrait.pending,
+    extra: row => ({ artShape: 'portrait', ...(row.ace.name ? { artName: row.ace.name } : {}) }),
     value: row => row.ace.portrait === null ? notRecorded(row.ace.portraitMissing ?? 'Portrait not recorded') : textValue(row.ace.name, 'Ace name not recorded') },
   { ...COUNTRY!, priority: 1, iconSlot: true, icon: row => row.flag.icon, iconPending: row => row.flag.pending, country: row => row.ace.tag, value: row => row.country },
-  { ...ACE!, priority: 0, text: true, hideable: false, widest: ['Philipp Schultz'],
+  { ...ACE!, priority: 0, text: true, hideable: false, cellKind: 'item', widest: ['The Blond Knight of Germany'],
+    extra: row => (nickname(row.ace) ? { subtext: nickname(row.ace) } : {}),
     value: row => textValue(row.ace.name, 'Ace name not recorded') },
-  { ...WING!, priority: 2, text: true, widest: ['Sturzkampfgeschwader 2'], value: row => wingValue(row.ace) },
-  { ...SINCE!, priority: 3, numeric: true, widest: ['30 Sep 1941'], value: row => aceSince(row.ace),
-    sortValue: row => valueFromNullable(row.ace.firstSeen, { kind: 'notRecorded', reason: 'First sighting not recorded' }) },
+  { ...WING!, priority: 2, text: true, widest: ['Sturzkampfgeschwader 2'], value: row => wingValue(row.ace),
+    extra: row => (aircraftLine(row.ace) ? { subtext: aircraftLine(row.ace) } : {}) },
+  { ...SINCE!, priority: 3, numeric: true, cellKind: 'date', widest: ['30 Sep 1941'],
+    value: row => row.ace.firstSeen === null ? notRecorded('First sighting not recorded') : knownValue(row.ace.firstSeen) },
 ];
 
 function aceTooltip(row: AceRow): TooltipExtraRow[] {
@@ -73,6 +79,7 @@ function aceTooltip(row: AceRow): TooltipExtraRow[] {
   const rows: TooltipExtraRow[] = [
     ...(ace.callsign ? [{ label: 'Nickname', value: knownValue(`“${ace.callsign}”`) }] : []),
     { label: 'Aircraft', value: aircraftValue(ace) },
+    { label: 'Portrait', value: ace.portrait === null ? notRecorded(ace.portraitMissing ?? 'Portrait not recorded') : knownValue('Current installation') },
     { label: 'Became an ace', value: ace.firstSeen === null ? notRecorded('First sighting not recorded') : knownValue(`by ${formatDateHover(ace.firstSeen)}`), divider: true },
     { label: 'Status', value: knownValue(ace.alive ? 'Alive' : 'Killed') },
   ];
@@ -120,6 +127,7 @@ export const acesDeclaration: TableWidgetDeclaration<AcesOptions> = {
   subject: 'aces',
   emptyCampaign: 'Load a campaign to see its aces.',
   icon: 'star',
+  optionFields: OPTIONS,
   countries: { mode: 'filter' },
   sources: ctx => ({
     owner: `aces:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,

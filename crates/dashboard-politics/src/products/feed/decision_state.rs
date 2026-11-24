@@ -122,7 +122,7 @@ pub(crate) fn resolve_in_pack(event: &FeedEvent, pack: &EventFeedHistoryRow) -> 
     if event.lifecycle.is_none() && script.lifecycle.is_none() {
         let expects_lifecycle = matches!(
             EventFeedKind::of_code(event.code),
-            Some(EventFeedKind::DecisionTimedOut | EventFeedKind::DecisionCompleted)
+            Some(EventFeedKind::DecisionTimedOut | EventFeedKind::DecisionCompleted | EventFeedKind::DecisionActivated | EventFeedKind::DecisionDurationChanged)
         );
         if expects_lifecycle {
             return not_recorded(DECISION_CONTAINER_NOT_RECORDED);
