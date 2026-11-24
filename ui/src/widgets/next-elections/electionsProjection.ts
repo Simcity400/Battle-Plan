@@ -1,8 +1,7 @@
-import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { int, object, opaqueTag } from '../../dashboard/validation.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
-import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { filterCandidates } from '../../families/holders.ts';
+import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import { occurrenceSelection } from '../../families/table/logHelpers.ts';
 import { identityCell, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -12,16 +11,16 @@ import { formatProgress, formatScalar } from '../../families/valueFormat.ts';
 import type { ElectionEntry, NextElectionsReply } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
-export interface ElectionsProjectionOptions {
-  readonly filter: DeclaredCountryFilter;
-}
+export type ElectionsProjectionOptions = Record<string, never>;
+
+const NO_OPTIONS: ElectionsProjectionOptions = {};
 
 const HOURS_A_DAY = 24;
 
 export function validateElections(value: unknown): NextElectionsReply {
   const reply = value as Record<string, unknown>;
   const ok = object(reply) && typeof reply.branchId === 'string' && typeof reply.recorded === 'boolean'
-    && int(reply.unknown) && reply.unknown >= 0
+    && int(reply.unknown) && reply.unknown >= 0 && (reply.refused === null || typeof reply.refused === 'string')
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
     && Array.isArray(reply.rows) && reply.rows.every(entry => object(entry)
       && typeof entry.key === 'string' && entry.key.length > 0 && opaqueTag(entry.tag)
@@ -43,17 +42,6 @@ export const ELECTION_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(column =
   ...(column.key === 'days' ? { barEligible: false, format: 'integer' as const, widest: ['9,999'] } : {}),
   ...(column.key === 'election' ? { cellKind: 'date' as const, widest: ['30 Sep'] } : {}),
 }));
-
-const passes = (filter: DeclaredCountryFilter, tag: string, hour: number): boolean =>
-  filter.passing === null || !!filter.passing[tag]?.some(([first, last]) => first <= hour && hour <= last);
-
-const unrecordedAt = (filter: DeclaredCountryFilter, hour: number): string | null =>
-  filter.unrecorded.find(([first, last]) => first <= hour && hour <= last)?.[2] ?? null;
-
-function filterNext(filter: DeclaredCountryFilter, hour: number): number {
-  for (const bound of filter.bounds) if (bound > hour) return bound;
-  return Infinity;
-}
 
 const day = (hour: number) => Math.floor(hour / HOURS_A_DAY);
 const nextDay = (hour: number) => (day(hour) + 1) * HOURS_A_DAY;
@@ -83,21 +71,23 @@ function electionExtra(entry: ElectionEntry): readonly TooltipExtraRow[] {
 export const electionsProjection: TableProjection<ElectionsProjectionOptions> = registerFamilyProjection({
   kind: 'next-elections',
   family: 'table',
-  nextChange: (readView: BoundedReadView, options: ElectionsProjectionOptions) => Math.min(filterNext(options.filter, readView.hour), nextDay(readView.hour)),
-  project(readView, options): TableModel {
+  nextChange: (readView: BoundedReadView) => nextDay(readView.hour),
+  project(readView): TableModel {
     const hour = readView.hour;
     const refused = readView.refused('main');
     if (refused !== undefined) return { columns: ELECTION_COLUMNS, rows: [], hour, refused };
     const raw = readView.panel('main');
     if (raw === undefined) return { columns: ELECTION_COLUMNS, rows: [], hour };
     const reply = validateElections(raw);
+    if (reply.refused !== null) {
+      return { columns: ELECTION_COLUMNS, rows: [], hour, empty: 'Not recorded', emptyDetail: reply.refused, emptyKind: 'unavailable', warnings: reply.warnings };
+    }
     if (!reply.recorded) {
       return { columns: ELECTION_COLUMNS, rows: [], hour, empty: 'Not recorded', emptyDetail: 'Politics are not in this recording at this date', emptyKind: 'unavailable', warnings: reply.warnings };
     }
     const boundary = newIdentityBoundary();
     const rows: TableRow[] = [];
     for (const entry of reply.rows) {
-      if (!passes(options.filter, entry.tag, hour)) continue;
       const days = entry.next === null ? null : Math.max(0, day(entry.next) - day(hour));
       rows.push({
         key: entry.key,
@@ -111,7 +101,6 @@ export const electionsProjection: TableProjection<ElectionsProjectionOptions> = 
         tooltipExtra: () => electionExtra(entry),
       });
     }
-    const membership = unrecordedAt(options.filter, hour);
     const unknown = reply.unknown ? `${reply.unknown} countries' election schedule or eligibility was not recorded at this date` : null;
     return {
       columns: ELECTION_COLUMNS,
@@ -121,11 +110,9 @@ export const electionsProjection: TableProjection<ElectionsProjectionOptions> = 
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
       ...(rows.length === 0
-        ? membership !== null
-          ? { empty: 'Not recorded', emptyDetail: membership, emptyKind: 'unavailable' as const }
-          : reply.unknown
-            ? { empty: 'Not recorded', emptyDetail: 'Election eligibility is not in this recording at this date', emptyKind: 'unavailable' as const }
-            : { empty: 'No elections due', emptyKind: 'empty' as const }
+        ? reply.unknown
+          ? { empty: 'Not recorded', emptyDetail: 'Election eligibility is not in this recording at this date', emptyKind: 'unavailable' as const }
+          : { empty: 'No elections due', emptyKind: 'empty' as const }
         : {}),
       warnings: unknown !== null ? [...reply.warnings, unknown] : reply.warnings,
     };
@@ -141,8 +128,8 @@ export const electionsDeclaration: TableWidgetDeclaration<ElectionsProjectionOpt
   icon: 'ballot',
   countries: { mode: 'filter' },
   sources: ctx => {
-    const chosen = filterCandidates(ctx.countries.filter.passing);
-    const params = { branchId: ctx.branch.id, ...(chosen !== null ? { countries: chosen.map(countryFromKey) } : {}) };
+    const selection = occurrenceSelection(ctx);
+    const params = { branchId: ctx.branch.id, ...selection };
     return {
       owner: `next-elections:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
       entries: [{
@@ -153,7 +140,7 @@ export const electionsDeclaration: TableWidgetDeclaration<ElectionsProjectionOpt
         read: {
           shape: 'point',
           channel: 'panel',
-          coverage: chosen !== null ? { mode: 'keyed', keys: chosen } : { mode: 'population', form: 'all' },
+          coverage: selection?.countries ? { mode: 'keyed', keys: ctx.countries.tags } : { mode: 'population', form: 'all' },
           product: 'next-elections',
           followQuery: { panel: 'next-elections', ...params },
           params,
@@ -165,5 +152,5 @@ export const electionsDeclaration: TableWidgetDeclaration<ElectionsProjectionOpt
   projection: electionsProjection,
   columns: ELECTION_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },
-  projectionOptions: ctx => ({ filter: ctx.countries.filter }),
+  projectionOptions: () => NO_OPTIONS,
 };

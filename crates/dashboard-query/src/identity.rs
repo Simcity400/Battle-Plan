@@ -166,11 +166,7 @@ impl Holders {
     pub fn tag_at<'a>(&'a self, country: &'a Country, hour: i32) -> Option<&'a str> {
         match country {
             Country::Tag(tag) => Some(tag),
-            Country::Slot(slot) => {
-                let Holder::Found { id, .. } = self.at(country, hour)?.holder else { return None };
-                let held = self.slots().get(slot)?;
-                held.tags.iter().find(|(first, last, holder, _)| *first <= hour && hour <= *last && *holder == id).map(|(.., tag)| tag.as_str())
-            }
+            Country::Slot(slot) => self.slot_tag(*slot, hour),
         }
     }
 
@@ -247,9 +243,8 @@ impl Holders {
     }
 
     pub fn slot_tag(&self, slot: u32, hour: i32) -> Option<&str> {
-        let held = self.slots().get(&slot)?;
-        let end = held.tags.partition_point(|(first, ..)| *first <= hour);
-        held.tags[..end].iter().rev().find(|(_, last, ..)| hour <= *last).map(|(.., tag)| tag.as_str())
+        let Holder::Found { id, .. } = self.at(&Country::Slot(slot), hour)?.holder else { return None };
+        self.slots().get(&slot)?.tags.iter().find(|(first, last, holder, _)| *first <= hour && hour <= *last && *holder == id).map(|(.., tag)| tag.as_str())
     }
 }
 

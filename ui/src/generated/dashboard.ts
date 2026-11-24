@@ -4268,7 +4268,11 @@ export type NextElectionsParams = { branchId: string,
 /**
  * When given, reads only these countries' election schedules at this hour.
  */
-countries?: Array<CountryRef>, };
+countries?: Array<CountryRef>,
+/**
+ * The group whose members at this hour are read; never with `countries`.
+ */
+group?: GroupSelection, };
 export type ElectionEntry = { key: string, tag: string,
 /**
  * Signed months; null when not recorded.
@@ -4290,7 +4294,11 @@ recorded: boolean, rows: Array<ElectionEntry>,
 /**
  * Asked or listed countries whose schedule or eligibility was not recorded at this hour: `rows` may miss them.
  */
-unknown: number, warnings: Array<string>, };
+unknown: number,
+/**
+ * Why the asked group's members are not known at this hour; `rows` is then empty.
+ */
+refused: string | null, warnings: Array<string>, };
 export type NextElectionsParamsAtHour = NextElectionsParams & { hour: number };
 export type TerritoryShareParams = { branchId: string,
 /**
@@ -6292,13 +6300,17 @@ export type MarketLendLeaseParams = { branchId: string,
  */
 countries: Array<CountryRef>,
 /**
- * The one section read; every section when absent.
+ * The one section read (`contracts` and `requests` are the two kinds of terms); every section when absent.
  */
 only?: MarketSection,
 /**
  * Lend-lease rows the chosen countries give (`sent`) or receive (`received`); either side when absent.
  */
 leaseSide?: LeaseSide,
+/**
+ * The group whose members at this hour take part in the rows; never with `countries`.
+ */
+group?: GroupSelection,
 /**
  * The one row read, by its recorded key in the `only` section: an offer's seller raw id, a
  * contract's `key`. With it, `countries` is empty.
@@ -6316,8 +6328,12 @@ purchasesMissing: string | null,
 /**
  * Rows left out because a country on the chosen side has no country at the hour: a chosen country may be theirs.
  */
-unattributed: number, variants: Array<VariantName>, icons: Array<EquipmentIcon>, warnings: Array<string>, };
-export type MarketSection = "offers" | "contracts" | "agreements";
+unattributed: number,
+/**
+ * Why the asked group's members are not known at this hour; every section is then null.
+ */
+refused: string | null, variants: Array<VariantName>, icons: Array<EquipmentIcon>, warnings: Array<string>, };
+export type MarketSection = "offers" | "contracts" | "requests" | "agreements";
 export type LeaseSide = "sent" | "received";
 export type MarketItem = { variant: string, name: string | null, amountRaw: string, };
 export type MarketLevel = { variant: string, name: string | null,
@@ -7241,7 +7257,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "log-page": { "branchId": "leaf", "columns": "node", "columns[]": "leaf", "cursor": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "log": "leaf", "pageSize": "leaf", "to": "leaf" },
   "log-tail": { "branchId": "leaf", "columns": "node", "columns[]": "leaf", "countFacets": "node", "countFacets[]": "node", "countFacets[].facets": "node", "countFacets[].facets[]": "node", "countFacets[].facets[].countries": "node", "countFacets[].facets[].countries[]": "any", "countFacets[].facets[].deduplicate": "leaf", "countFacets[].facets[].membership": "node", "countFacets[].facets[].membership[]": "node", "countFacets[].facets[].membership[].country": "any", "countFacets[].facets[].membership[].firstHour": "leaf", "countFacets[].facets[].membership[].lastHour": "leaf", "countFacets[].facets[].name": "leaf", "countFacets[].facets[].unobserved": "node", "countFacets[].facets[].unobserved[]": "node", "countFacets[].facets[].unobserved[].firstHour": "leaf", "countFacets[].facets[].unobserved[].lastHour": "leaf", "countFacets[].facets[].values": "node", "countFacets[].facets[].values[]": "leaf", "countFacets[].key": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "hour": "leaf", "limit": "leaf", "log": "leaf", "offset": "leaf" },
   "market-ledger-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "statuses": "node", "statuses[]": "leaf", "to": "leaf" },
-  "market-lendlease": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "leaseSide": "leaf", "only": "leaf", "row": "leaf" },
+  "market-lendlease": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "leaseSide": "leaf", "only": "leaf", "row": "leaf" },
   "military-air-at": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "countries": "node", "countries[]": "any", "family": "leaf", "fromHour": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "metric": "leaf", "regions": "node", "regions[]": "leaf", "top": "leaf" },
   "military-air-ledger": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "family": "leaf", "fromHour": "leaf", "regions": "node", "regions[]": "leaf", "top": "node", "top.count": "leaf", "top.metric": "leaf", "window": "leaf" },
   "minefields": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "hour": "leaf", "order": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf" },
@@ -7257,7 +7273,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "naval-repairs": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "naval-supremacy": { "branchId": "leaf", "country": "any", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "top": "leaf", "window": "leaf" },
   "navy-at": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "grouping": "leaf", "hour": "leaf", "measure": "leaf", "ownership": "leaf", "top": "leaf" },
-  "next-elections": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
+  "next-elections": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf" },
   "nuclear-arsenal": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "top": "leaf" },
   "occupation-at": { "branchId": "leaf", "collaboration": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
   "occupation-reserve-history": { "branchId": "leaf", "holder": "leaf", "hour": "leaf" },
