@@ -20,6 +20,8 @@ import { timeChartLaneView } from './laneView.ts';
 import { formatChartAxisValue, layoutTimeChart, niceChartTicks } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
 import { buildLineSubpaths } from './painter.ts';
+import { parseFollowed } from '../../dashboard/follow/message.ts';
+import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { seriesHeadValue } from './seriesHelpers.ts';
 import { sampleSeriesValueAt } from './hitTest.ts';
 import { politicalPowerProjection } from '../../widgets/political-power/politicalPowerProjection.ts';
@@ -769,5 +771,43 @@ describe('time-chart picture authority', () => {
     const before = created.ops.filter(op => op === 'clearRect').length;
     paint(2, 30, 10);
     assert.equal(created.ops.filter(op => op === 'clearRect').length, before + 1, 'the corrected history is drawn');
+  });
+  it('reads head rows by an index, not a scan per tag', () => {
+    registerTimeChart({
+      kind: 'test-head-index',
+      family: 'series',
+      variant: 'line',
+      joinMode: 'join',
+      measureTitle: 'Index',
+      project: readView => {
+        const bounded = readView.series('main')?.get('ITA') ?? null;
+        const head = bounded?.headValue;
+        return {
+          kind: 'test-head-index', measureTitle: 'Index', mode: 'lines', hour: readView.hour, extent: [H1936, H1936 + 95], yAxis: { format: 'number' },
+          series: [], auditRows: [{ row: 'ITA', key: 'ITA', value: head && head.kind === 'known' ? String(head.value) : 'none' }],
+        };
+      },
+    });
+    const tags = ['GER', 'ITA'];
+    Object.defineProperty(tags, 'indexOf', { value: () => { throw new Error('scanned the tag list'); } });
+    const answer = parseFollowed(message(10, [{ id: 1, answer: { keys: [1n, 2n], columns: 1, values: [5n, 7n] } }])).answers[0]!.answer;
+    const created = mockCanvas(600, 240);
+    const view = timeChartLaneView(undefined, { createCanvas: () => ({ canvas: created.canvas, ctx: created.ctx }) });
+    const hour = H1936 + 95;
+    const line = (tag: string) => ({ rev: tag === 'GER' ? 11 : 12, source: 'main', tag, head: 'h', decimals: 0, binHours: 96, from: H1936, to: hour, width: 1,
+      buckets: [makeBucket(H1936, hour, 1)], missing: [], parts: [], marks: null });
+    const painted = view.paint({
+      widget: 1, subs: [], pictures: [],
+      model: {
+        family: 'time-chart', kind: 'test-head-index', options: {}, sources: {}, extent: [H1936, hour], width: 600, height: 240, audit: true, auditId: 1,
+        tiledLines: [line('GER'), line('ITA')], keepTiled: [11, 12], tiledBySource: { main: { GER: 11, ITA: 12 } },
+        headSourceBySeries: { main: { answerName: 'main', tags } },
+        staticAnswers: { main: answer },
+      } satisfies TimeChartBinding,
+      hour, speed: 0,
+      binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
+      inspect: null, now: 0,
+    }, new Map(), () => 'c');
+    assert.deepEqual((painted.fields.audit?.value as { rows: readonly { value?: string }[] }).rows.map(row => row.value), ['7']);
   });
 });

@@ -119,6 +119,17 @@ function objectId(value: unknown): number {
   return id;
 }
 
+const rowIndexes = new WeakMap<readonly string[], ReadonlyMap<string, number>>();
+
+export function rowIndexOf(tags: readonly string[]): ReadonlyMap<string, number> {
+  let index = rowIndexes.get(tags);
+  if (!index) {
+    index = new Map(tags.map((tag, row) => [tag, row]));
+    rowIndexes.set(tags, index);
+  }
+  return index;
+}
+
 function contentKey(binding: TimeChartBinding, revisions: Readonly<Record<string, number>>): string {
   return JSON.stringify([
     binding.keepTiled ?? [],
@@ -192,7 +203,7 @@ function buildReadView(
         let headPoint: WitnessedPoint | null = null;
         let headValue = undefined;
         if (headAnswer && headCfg) {
-          const tagIdx = headCfg.tags.indexOf(tag);
+          const tagIdx = rowIndexOf(headCfg.tags).get(tag) ?? -1;
           if (tagIdx >= 0) {
             const val = rowAmount(headAnswer, tagIdx, headCfg.decimals ?? line.decimals);
             if (val !== undefined && val !== null && Number.isFinite(val)) {
