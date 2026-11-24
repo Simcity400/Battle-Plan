@@ -259,7 +259,7 @@ pub(super) fn context(
 
 #[expect(
     clippy::type_complexity,
-    reason = "the inputs, the name span, the optional location and the optional fuel ratio are returned together from one wing read"
+    reason = "the inputs, the weather span, the optional context index and the optional raw owner and country override are returned together from one wing read"
 )]
 fn inputs<M: Memory>(
     memory: &M,

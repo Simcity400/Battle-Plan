@@ -225,7 +225,7 @@ fn independent_string(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the scalar, group, custom and cached kinds of one member are separate fields, and the sink is caller-owned"
+    reason = "the caller selects the scalar, group, custom and cached output kinds that label the rows, and the sink is caller-owned"
 )]
 fn member(
     m: &impl Memory,

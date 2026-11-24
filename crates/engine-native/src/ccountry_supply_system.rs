@@ -742,7 +742,7 @@ pub fn walk_trains(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the output, entries, access and runs arenas are caller-owned, and the selection picks the trains"
+    reason = "the output, entries, access and runs arenas are caller-owned, and the selection picks the countries"
 )]
 pub fn walk_trains_selected(
     memory: &impl Memory,
@@ -768,7 +768,7 @@ pub fn walk_trains_selected(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the output, entries, access and runs buffers are caller-owned, and the selection picks the trains"
+    reason = "the output, entries, access and runs buffers are caller-owned, and the selection picks the countries"
 )]
 pub fn walk_trains_buffer(
     memory: &impl Memory,

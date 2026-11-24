@@ -354,7 +354,7 @@ pub fn walk_prepared<T>(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the caller's prepare, select and group callbacks share its state, and the rows and memo are caller-owned"
+    reason = "the caller's prepare and select callbacks share its state, visit_group observes separately, and the rows and memo are caller-owned"
 )]
 pub fn walk_prepared_observed<T>(
     memory: &impl Memory,
@@ -382,7 +382,7 @@ pub fn walk_prepared_observed<T>(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the caller's prepare, select and group callbacks share its state, and the rows buffer and memo are caller-owned"
+    reason = "the caller's prepare and select callbacks share its state, visit_group observes separately, and the rows buffer and memo are caller-owned"
 )]
 fn walk_prepared_buffer<T>(
     memory: &impl Memory,
