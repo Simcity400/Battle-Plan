@@ -1,6 +1,7 @@
 import { displayedHour } from '../boundedView.ts';
 import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import type { LaneActivation } from './lanesDeclaration.ts';
+import { layoutHeatLanes } from './lanesLayout.ts';
 import type { FamilyHeatLanesBinding } from './lanesLaneView.ts';
 import {
   deriveLanesAudit,
@@ -112,6 +113,7 @@ export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, 
   buildBinding: ctx => ({
     family: 'heat-matrix',
     kind: ctx.kind,
+    view: ctx.view,
     options: ctx.options,
     sources: ctx.sources,
     ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
@@ -171,11 +173,26 @@ export const heatLanesHostAdapter: FamilyHostAdapter<HeatLanesModel, unknown, Fa
       meta: activation,
     };
   },
-  deriveAuditRows: model => deriveLanesAudit(model),
+  deriveAuditRows: (model, _hour, { viewport }) => {
+    const layout = layoutHeatLanes({
+      width: viewport.width,
+      height: viewport.height,
+      scrollTop: viewport.scrollTop,
+      firstHour: model.firstHour,
+      lastHour: model.lastHour,
+      displayedHour: model.hour,
+      rows: model.rows,
+      legend: model.legend,
+      requestedReadoutWidth: model.readoutWidth,
+      requestedRowHeight: model.rowHeight,
+    });
+    return deriveLanesAudit(model, { firstRow: layout.firstRow, endRow: layout.endRow });
+  },
   auditOrdered: true,
   buildBinding: ctx => ({
     family: 'heat-lanes',
     kind: ctx.kind,
+    view: ctx.view,
     options: ctx.options,
     sources: ctx.sources,
     ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),

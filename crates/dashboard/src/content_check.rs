@@ -151,7 +151,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
     use dashboard_world::products::{country_flags, identities, subjects};
     use dashboard_land::products::{army, army_losses, divisions, doctrine_mastery, doctrines, experience, forces, leaders, training_queue};
     use dashboard_naval::products::naval;
-    use dashboard_wars::products::{casualties, diplomacy, faction_state, occupation, peace, scoreboard, volunteers, wargoals, wars};
+    use dashboard_wars::products::{casualties, diplomacy, faction_state, occupation, peace, scoreboard, territory_transfers, volunteers, wargoals, wars};
     use dashboard_politics::products::{feed, focus_artwork, national_focus, stability, technology_artwork};
     use dashboard_economy::products::{convoys, economy, trade_flows};
     use dashboard_production::products::{construction, equipment_losses, equipment_produced, production, production_spending};
@@ -395,7 +395,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             take(catalogue, "casualty labels", findings);
             Ok("The name of losses from unknown attackers checked through the recorded content stack.".into())
         }
-        peace::PeaceDeals::KEY => {
+        peace::PeaceDeals::KEY | territory_transfers::TerritoryTransfers::KEY => {
             let catalogue = content.catalogue()?;
             if catalogue.localised("PEACE_TAKE_STATES_DEMAND", dashboard_base::catalogue::View::Scripted).is_none() {
                 findings.push(Finding::new(Kind::Refused, "peace action names", "localisation PEACE_TAKE_STATES_DEMAND is missing; state transfers are unnamed"));

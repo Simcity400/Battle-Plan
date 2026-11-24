@@ -155,14 +155,29 @@ fn settle(spans: &mut Vec<HourSpan>) {
     *spans = out;
 }
 
-fn joined<R: Clone>(mut runs: Vec<R>, hours: impl Fn(&R) -> (i32, i32), extend: impl Fn(&mut R, i32), same: impl Fn(&R, &R) -> bool) -> Vec<R> {
-    runs.sort_by_key(|run| hours(run));
+fn gap_covered(gaps: &[HourSpan], first: i32, last: i32) -> bool {
+    if first > last {
+        return true;
+    }
+    let at = gaps.partition_point(|span| span.last_hour < first);
+    gaps.get(at).is_some_and(|span| span.first_hour <= first && last <= span.last_hour)
+}
+
+fn joined_across<R, K: Ord>(
+    mut runs: Vec<R>,
+    gaps: &[HourSpan],
+    key: impl Fn(&R) -> K,
+    hours: impl Fn(&R) -> (i32, i32),
+    extend: impl Fn(&mut R, i32),
+    same: impl Fn(&R, &R) -> bool,
+) -> Vec<R> {
+    runs.sort_by(|a, b| key(a).cmp(&key(b)).then_with(|| hours(a).cmp(&hours(b))));
     let mut out: Vec<R> = Vec::with_capacity(runs.len());
     for run in runs {
+        let (first, last) = hours(&run);
         match out.last_mut() {
-            Some(held) if same(held, &run) && i64::from(hours(held).1) + 1 >= i64::from(hours(&run).0) => {
-                let last = hours(held).1.max(hours(&run).1);
-                extend(held, last);
+            Some(held) if same(held, &run) && gap_covered(gaps, hours(held).1.saturating_add(1), first.saturating_sub(1)) => {
+                extend(held, hours(held).1.max(last));
             }
             _ => out.push(run),
         }
@@ -474,25 +489,43 @@ pub fn groups(source: &Source, query: &Query<'_>, branch_id: &str, context: &Loa
             }
         }
     }
+    let mut identity_gaps = Vec::new();
     for (first, last, _) in &query.holders.unknown {
+        mark(&mut identity_gaps, *first, *last);
         for spans in [&mut unobserved.humans, &mut unobserved.factions, &mut unobserved.wars] {
             mark(spans, *first, *last);
         }
     }
     for gap in &timeline.unheld {
+        mark(&mut identity_gaps, gap.first, gap.last);
         for spans in [&mut unobserved.humans, &mut unobserved.factions, &mut unobserved.wars] {
             mark(spans, gap.first, gap.last);
         }
     }
+    settle(&mut identity_gaps);
     for spans in [&mut unobserved.humans, &mut unobserved.factions, &mut unobserved.wars] {
         settle(spans);
     }
-    let membership = |runs: Vec<MembershipRun>| {
-        joined(runs, |run| (run.first_hour, run.last_hour), |run, last| run.last_hour = last, |a, b| a.tag == b.tag)
+    let membership = |runs: Vec<MembershipRun>, gaps: &[HourSpan]| {
+        joined_across(
+            runs,
+            gaps,
+            |run| run.tag.clone(),
+            |run| (run.first_hour, run.last_hour),
+            |run, last| run.last_hour = last,
+            |a, b| a.tag == b.tag,
+        )
     };
-    let mut humans = membership(humans);
+    let mut humans = membership(humans, &unobserved.humans);
     humans.sort_by(|a, b| (a.first_hour, &a.tag).cmp(&(b.first_hour, &b.tag)));
-    let mut wars = joined(wars, |run| (run.first_hour, run.last_hour), |run, last| run.last_hour = last, |a, b| (&a.first, &a.second) == (&b.first, &b.second));
+    let mut wars = joined_across(
+        wars,
+        &unobserved.wars,
+        |run| (run.first.clone(), run.second.clone()),
+        |run| (run.first_hour, run.last_hour),
+        |run, last| run.last_hour = last,
+        |a, b| (&a.first, &a.second) == (&b.first, &b.second),
+    );
     wars.sort_by(|a, b| (a.first_hour, &a.first, &a.second).cmp(&(b.first_hour, &b.first, &b.second)));
     let mut invalid_names = 0;
     let factions: Vec<FactionGroup> = factions
@@ -503,8 +536,10 @@ pub fn groups(source: &Source, query: &Query<'_>, branch_id: &str, context: &Loa
             if std::str::from_utf8(&recorded).is_err() {
                 invalid_names += 1;
             }
-            let names = joined(
+            let names = joined_across(
                 faction.names.into_iter().map(|(run, _)| run).collect(),
+                &unobserved.factions,
+                |_| 0u8,
                 |run| (run.first_hour, run.last_hour),
                 |run, last| run.last_hour = last,
                 |a, b| (&a.name, &a.reason) == (&b.name, &b.reason),
@@ -513,9 +548,9 @@ pub fn groups(source: &Source, query: &Query<'_>, branch_id: &str, context: &Loa
                 Some(latest) => (latest.name.clone(), latest.reason.clone()),
                 None => (None, Some("Faction has no recorded name read".to_owned())),
             };
-            let mut members = membership(faction.members);
+            let mut members = membership(faction.members, &unobserved.factions);
             members.sort_by(|a, b| (a.first_hour, &a.tag).cmp(&(b.first_hour, &b.tag)));
-            let mut leaders = membership(faction.leaders);
+            let mut leaders = membership(faction.leaders, &unobserved.factions);
             leaders.sort_by_key(|run| run.first_hour);
             settle(&mut faction.incomplete);
             FactionGroup {
@@ -563,15 +598,18 @@ pub fn groups(source: &Source, query: &Query<'_>, branch_id: &str, context: &Loa
         .holders
         .tags
         .iter()
-        .map(|(tag, runs)| CountryIdentityHistory {
-            tag: tag.clone(),
-            identities: runs
-                .iter()
-                .filter_map(|run| match run.holder {
-                    Holder::Found { slot, id } => Some(CountryIdentityRun { first_hour: run.first, last_hour: run.last, slot, country_id: id }),
-                    Holder::Unresolved => None,
-                })
-                .collect(),
+        .map(|(tag, runs)| {
+            let mut identities: Vec<CountryIdentityRun> = Vec::new();
+            for run in runs {
+                let Holder::Found { slot, id } = run.holder else { continue };
+                match identities.last_mut() {
+                    Some(held) if held.slot == slot && held.country_id == id && gap_covered(&identity_gaps, held.last_hour.saturating_add(1), run.first.saturating_sub(1)) => {
+                        held.last_hour = held.last_hour.max(run.last);
+                    }
+                    _ => identities.push(CountryIdentityRun { first_hour: run.first, last_hour: run.last, slot, country_id: id }),
+                }
+            }
+            CountryIdentityHistory { tag: tag.clone(), identities }
         })
         .filter(|history| !history.identities.is_empty())
         .collect();
@@ -653,6 +691,69 @@ pub fn cached_groups(source: &dashboard_base::Source, run: u32) -> io::Result<st
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sparse_stretches_coalesce_group_runs_independent_of_stretch_count() {
+        let mut gaps = Vec::new();
+        let mut members = Vec::new();
+        let mut wars = Vec::new();
+        for i in 0..200i32 {
+            let hour = i * 10;
+            if i > 0 {
+                gaps.push(HourSpan { first_hour: hour - 9, last_hour: hour - 1 });
+            }
+            for tag in ["GER", "ITA", "JAP"] {
+                members.push(MembershipRun { tag: tag.to_owned(), first_hour: hour, last_hour: hour });
+            }
+            wars.push(WarPairRun { first: "ENG".to_owned(), second: "GER".to_owned(), first_hour: hour, last_hour: hour });
+        }
+        settle(&mut gaps);
+        let coalesced_members = joined_across(
+            members,
+            &gaps,
+            |run| run.tag.clone(),
+            |run| (run.first_hour, run.last_hour),
+            |run, last| run.last_hour = last,
+            |a, b| a.tag == b.tag,
+        );
+        assert_eq!(coalesced_members.len(), 3);
+        for run in &coalesced_members {
+            assert_eq!((run.first_hour, run.last_hour), (0, 1990));
+        }
+        let coalesced_wars = joined_across(
+            wars,
+            &gaps,
+            |run| (run.first.clone(), run.second.clone()),
+            |run| (run.first_hour, run.last_hour),
+            |run, last| run.last_hour = last,
+            |a, b| (&a.first, &a.second) == (&b.first, &b.second),
+        );
+        assert_eq!(coalesced_wars.len(), 1);
+        assert_eq!((coalesced_wars[0].first_hour, coalesced_wars[0].last_hour), (0, 1990));
+    }
+
+    #[test]
+    fn group_runs_do_not_coalesce_across_observed_hour_of_absence() {
+        let gaps = vec![HourSpan { first_hour: 1, last_hour: 9 }, HourSpan { first_hour: 11, last_hour: 19 }];
+        let members = vec![
+            MembershipRun { tag: "GER".to_owned(), first_hour: 0, last_hour: 0 },
+            MembershipRun { tag: "GER".to_owned(), first_hour: 20, last_hour: 20 },
+        ];
+        let coalesced = joined_across(
+            members,
+            &gaps,
+            |run| run.tag.clone(),
+            |run| (run.first_hour, run.last_hour),
+            |run, last| run.last_hour = last,
+            |a, b| a.tag == b.tag,
+        );
+        assert_eq!(coalesced.len(), 2);
+    }
+}
+
+#[cfg(test)]
 mod faction_name_tests {
     use super::*;
 
@@ -675,5 +776,40 @@ mod faction_name_tests {
         };
         assert_eq!(faction_name_at(&faction, 47), (None, Some("Faction name was not recorded".into())));
         assert_eq!(faction_name_at(&faction, 72), (Some("New League".into()), None));
+    }
+
+    #[test]
+    fn faction_names_never_coalesce_across_observed_absence_or_unnamed_run() {
+        let gaps = vec![HourSpan { first_hour: 1, last_hour: 9 }, HourSpan { first_hour: 11, last_hour: 19 }];
+        let runs = vec![
+            FactionNameRun { first_hour: 0, last_hour: 0, name: Some("Axis".into()), reason: None },
+            FactionNameRun { first_hour: 20, last_hour: 20, name: Some("Axis".into()), reason: None },
+            FactionNameRun { first_hour: 21, last_hour: 25, name: None, reason: Some("Faction name was not recorded".into()) },
+            FactionNameRun { first_hour: 26, last_hour: 30, name: Some("Axis".into()), reason: None },
+        ];
+        let coalesced = joined_across(
+            runs,
+            &gaps,
+            |_| 0u8,
+            |run| (run.first_hour, run.last_hour),
+            |run, last| run.last_hour = last,
+            |a, b| (&a.name, &a.reason) == (&b.name, &b.reason),
+        );
+        assert_eq!(coalesced.len(), 4);
+        let faction = FactionGroup {
+            id: "1".into(),
+            name: Some("Axis".into()),
+            name_reason: None,
+            names: coalesced,
+            recorded_name: "Axis".into(),
+            first_hour: 0,
+            last_hour: 30,
+            members: Vec::new(),
+            leaders: Vec::new(),
+            incomplete: Vec::new(),
+        };
+        assert_eq!(faction_name_at(&faction, 10), (None, Some("Faction name was not recorded at this hour".into())));
+        assert_eq!(faction_name_at(&faction, 22), (None, Some("Faction name was not recorded".into())));
+        assert_eq!(faction_name_at(&faction, 26), (Some("Axis".into()), None));
     }
 }

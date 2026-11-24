@@ -4,10 +4,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'vite';
 import { widgetMetas } from './definitions.ts';
 import { manifestSlotsForKind } from './manifest.ts';
-import { isPlaybackActive, loadWidgetRenderer, preloadAllWidgetRenderers, rendererLoaders, setPlaybackActive } from './rendererLoaders.ts';
+import { buildRendererLoaders, isPlaybackActive, loadWidgetRenderer, preloadAllWidgetRenderers, rendererKinds, setPlaybackActive } from './rendererLoaders.ts';
+import { viewKey } from '../families/manifest.ts';
 
 test('all installed kinds have independent lazy loaders and unknown saved kinds remain unknown', async () => {
-  assert.deepEqual(Object.keys(rendererLoaders).sort(), widgetMetas.map(meta => meta.kind).sort());
+  assert.deepEqual([...rendererKinds()].sort(), widgetMetas.map(meta => meta.kind).sort());
   assert.equal(await loadWidgetRenderer('uninstalled-synthetic-kind'), undefined);
   const registry = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(registry, /import \w+ from ['"]\.\/[^'"]+['"]/);
@@ -34,6 +35,7 @@ test('every widget module loads with its registered lazy body and the catalogue 
     await vite.ssrLoadModule('/ui/src/widgets/index.ts');
     const { loadWidgetRenderer: load, setPlaybackActive: setPlaying } = await vite.ssrLoadModule('/ui/src/widgets/rendererLoaders.ts');
     const { widgetDefinition } = await vite.ssrLoadModule('/ui/src/dashboard/definitions.ts');
+    const { familyHost } = await vite.ssrLoadModule('/ui/src/families/host/registry.tsx');
     const clock = {};
     setPlaying(clock, true);
     try {
@@ -46,7 +48,7 @@ test('every widget module loads with its registered lazy body and the catalogue 
       const registered = widgetDefinition(meta.kind);
       const renderer = await load(meta.kind);
       assert.ok(
-        typeof renderer.render === 'function' || renderer.declaration?.family === 'table',
+        typeof renderer.render === 'function' || (renderer.declaration !== undefined && familyHost(renderer.declaration.family) !== undefined),
         `${meta.kind} body or family declaration loads`,
       );
       if (renderer.declaration) {
@@ -117,4 +119,19 @@ test('idle preloading never runs while playback is active, respects idle budget,
     setPlaybackActive(clock, false);
     stop();
   }
+});
+
+test('two family views of one kind get their own loader, each loading its own declaration', async () => {
+  const declarationA = { name: 'A' };
+  const declarationB = { name: 'B' };
+  const spec = (view: string, declaration: object) => async () => ({ family: 'bars', kind: 'synthetic-two-views', view, projection: {} as never, declaration });
+  const loaders = buildRendererLoaders([], [
+    { kind: 'synthetic-two-views', view: 'shares', family: 'bars', loadSpec: spec('shares', declarationA) },
+    { kind: 'synthetic-two-views', view: 'race', family: 'bars', loadSpec: spec('race', declarationB) },
+  ], {});
+  const shares = loaders.get(viewKey('synthetic-two-views', 'shares'));
+  const race = loaders.get(viewKey('synthetic-two-views', 'race'));
+  assert.ok(shares && race && shares !== race);
+  assert.equal((await shares.load()).default.declaration, declarationA);
+  assert.equal((await race.load()).default.declaration, declarationB);
 });

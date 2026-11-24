@@ -9,6 +9,7 @@ const paths = {
   map: <><path d="M9 4 3.5 6v14L9 18l6 2 5.5-2V4L15 6 9 4Z" /><path d="M9 4v14M15 6v14" /></>,
   globe: <><circle cx="12" cy="12" r="8.75" /><path d="M3.5 12h17" /><path d="M12 3.25c2.4 2.4 3.6 5.3 3.6 8.75s-1.2 6.35-3.6 8.75c-2.4-2.4-3.6-5.3-3.6-8.75S9.6 5.65 12 3.25Z" /></>,
   grid: <><rect x="3.5" y="3.5" width="7" height="7" rx="1.75" /><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5" /><rect x="13.5" y="11" width="7" height="9.5" rx="1.75" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.75" /></>,
+  table: <><rect x="3.5" y="4.5" width="17" height="15" rx="2" /><path d="M3.5 9.5h17M9 9.5v10" /></>,
   'chart-bars': <><path d="M4 3.5v17h17" /><path d="M8 16V11M13 16V6M18 16V9" /></>,
   'chart-line': <><path d="M4 18.5h16" /><path d="m5.5 14 4.5-4.5 3.5 3 5-6" /></>,
   parliament: <path d="m3 8 9-5 9 5H3ZM3 21h18M5 18h14M6 8v10M10 8v10M14 8v10M18 8v10" />,
@@ -90,6 +91,7 @@ const paths = {
   'users-minus': <><circle cx="9" cy="8" r="3.25" /><path d="M3 19.5c.6-3.3 3-5.3 6-5.3s5.4 2 6 5.3" /><path d="M16 10.5h5" /></>,
   'shield-check': <><path d="M12 3.5 19 6v5.5c0 4.3-2.9 7.6-7 9-4.1-1.4-7-4.7-7-9V6l7-2.5Z" /><path d="m8.75 12 2.25 2.25 4.25-4.5" /></>,
   ballot: <><path d="M4 11h16v9.5H4z" /><path d="M8.5 11 9 3.5h6l.5 7.5" /><path d="m10 7.5 1.5 1.5 3-3" /><path d="M8.5 14.5h7" /></>,
+  lock: <><rect x="5" y="11" width="14" height="9.5" rx="2" /><path d="M8 11V7.5a4 4 0 0 1 8 0V11" /></>,
 } satisfies Record<IconName, ReactNode>;
 
 export function Icon({ name, ...props }: SVGProps<SVGSVGElement> & { name: IconName }) {

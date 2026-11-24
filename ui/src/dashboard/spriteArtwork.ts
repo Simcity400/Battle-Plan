@@ -1,10 +1,15 @@
-import type { ArtResolution, SpriteImage } from '../generated/dashboard';
+import type { ArtResolution, LeaderPortraitsReply, SpriteImage } from '../generated/dashboard';
+import type { ArtHandle } from '../families/plan.ts';
 import { spriteImageToArt } from '../families/art/adapters.ts';
+import { artHandleKey } from '../families/art/types.ts';
 import { drawableIcon } from './artwork.ts';
+import { asFailure } from './queryError.ts';
 
 export interface SpriteFrame { key: string; frame: number; recorded?: string; text?: boolean }
 
-export const spriteId = (sprite: SpriteFrame) => JSON.stringify([sprite.frame, sprite.key, sprite.recorded ?? null, sprite.text === true]);
+export const spriteHandle = (sprite: SpriteFrame): ArtHandle => ({ kind: 'sprite', ...sprite });
+
+export const spriteId = (sprite: SpriteFrame) => artHandleKey(spriteHandle(sprite));
 
 export const optionalKey = (value: unknown) => value === undefined || typeof value === 'string' && value.length > 0;
 
@@ -59,12 +64,57 @@ export function spriteResolutions(reply: unknown, asked: readonly SpriteFrame[])
   return resolutions;
 }
 
-export class SpriteCaches {
-  private scopes = new Map<string, { users: number; icons: Map<string, string | null>; resolutions: Map<string, ArtResolution> }>();
+export function textureResolutions(reply: unknown, asked: readonly ArtHandle[]): Map<string, ArtResolution> {
+  const value = reply as { textures?: unknown };
+  const out = new Map<string, ArtResolution>();
+  if (value.textures === undefined) return out;
+  if (!Array.isArray(value.textures)) throw new Error('The sprite artwork reply is malformed.');
+  const ids = new Set(asked.map(artHandleKey));
+  for (const item of value.textures as { path?: unknown; frame?: unknown; frames?: unknown; resolution?: unknown }[]) {
+    if (!item || typeof item.path !== 'string' || typeof item.frame !== 'number' || typeof item.frames !== 'number' || !item.resolution) {
+      throw new Error('The sprite artwork reply is malformed.');
+    }
+    const id = artHandleKey({ kind: 'path', path: item.path, frame: item.frame, frames: item.frames });
+    if (ids.has(id)) out.set(id, item.resolution as ArtResolution);
+  }
+  return out;
+}
 
-  private held(scope: string) {
+export function portraitResolutions(reply: LeaderPortraitsReply, hour: number): Map<string, ArtResolution> {
+  if (!reply || !Array.isArray(reply.portraits)) throw new Error('The unit leader portraits reply is malformed.');
+  return new Map(reply.portraits.map(portrait => [artHandleKey({ kind: 'portrait', leader: portrait.reference, hour }), portrait.resolution]));
+}
+
+export const SPRITE_BATCH = 64;
+export const MAX_SPRITE_CONCURRENCY = 2;
+
+export type ArtFetcher = (handles: readonly ArtHandle[], signal: AbortSignal) => Promise<ReadonlyMap<string, ArtResolution>>;
+
+type SpriteWatcher = (icons: ReadonlyMap<string, string | null>, errors: ReadonlyMap<string, string>) => void;
+
+interface SpriteScope {
+  users: number;
+  icons: Map<string, string | null>;
+  resolutions: Map<string, ArtResolution>;
+  errors: Map<string, string>;
+  inFlight: Set<string>;
+  queued: Map<string, ArtHandle>;
+  watchers: Set<SpriteWatcher>;
+  controllers: Set<AbortController>;
+  scheduled: boolean;
+  running: number;
+}
+
+export class SpriteCaches {
+  private scopes = new Map<string, SpriteScope>();
+
+  private held(scope: string): SpriteScope {
     let held = this.scopes.get(scope);
-    if (!held) { held = { users: 0, icons: new Map(), resolutions: new Map() }; this.scopes.set(scope, held); }
+    if (!held) {
+      held = { users: 0, icons: new Map(), resolutions: new Map(), errors: new Map(), inFlight: new Set(), queued: new Map(), watchers: new Set(),
+        controllers: new Set(), scheduled: false, running: 0 };
+      this.scopes.set(scope, held);
+    }
     return held;
   }
 
@@ -72,9 +122,83 @@ export class SpriteCaches {
 
   resolutions(scope: string): Map<string, ArtResolution> { return this.held(scope).resolutions; }
 
+  errors(scope: string): Map<string, string> { return this.held(scope).errors; }
+
+  watch(scope: string, watcher: SpriteWatcher): () => void {
+    const held = this.held(scope);
+    held.watchers.add(watcher);
+    return () => { held.watchers.delete(watcher); };
+  }
+
+  request(scope: string, handles: readonly ArtHandle[], fetch: ArtFetcher): void {
+    const held = this.held(scope);
+    let added = false;
+    for (const handle of handles) {
+      const id = artHandleKey(handle);
+      if (held.resolutions.has(id) || held.errors.has(id) || held.inFlight.has(id)) continue;
+      held.inFlight.add(id);
+      held.queued.set(id, handle);
+      added = true;
+    }
+    if (!added || held.scheduled) return;
+    held.scheduled = true;
+    queueMicrotask(() => {
+      held.scheduled = false;
+      if (this.scopes.get(scope) !== held) return;
+      this.pump(scope, held, fetch);
+    });
+  }
+
+  private pump(scope: string, held: SpriteScope, fetch: ArtFetcher): void {
+    while (held.running < MAX_SPRITE_CONCURRENCY && held.queued.size > 0) {
+      const entries = [...held.queued.entries()].slice(0, SPRITE_BATCH);
+      for (const [id] of entries) held.queued.delete(id);
+      const batch = entries.map(([, sprite]) => sprite);
+      const controller = new AbortController();
+      held.controllers.add(controller);
+      held.running++;
+      void fetch(batch, controller.signal).then(parsed => {
+        if (controller.signal.aborted || this.scopes.get(scope) !== held) return;
+        for (const [id] of entries) {
+          held.inFlight.delete(id);
+          const resolution = parsed.get(id);
+          if (!resolution) {
+            held.errors.set(id, 'The artwork reply left this handle out.');
+            continue;
+          }
+          held.errors.delete(id);
+          held.icons.set(id, resolution.status === 'ready' ? drawableIcon(resolution.url) : null);
+          held.resolutions.set(id, resolution);
+        }
+        for (const watcher of [...held.watchers]) watcher(held.icons, held.errors);
+      }).catch(error => {
+        if (this.scopes.get(scope) !== held) return;
+        const reason = controller.signal.aborted ? null : asFailure(error).message;
+        for (const [id] of entries) {
+          held.inFlight.delete(id);
+          if (reason !== null && !held.resolutions.has(id)) held.errors.set(id, reason);
+        }
+        if (reason !== null) for (const watcher of [...held.watchers]) watcher(held.icons, held.errors);
+      }).finally(() => {
+        held.controllers.delete(controller);
+        held.running--;
+        if (this.scopes.get(scope) === held) this.pump(scope, held, fetch);
+      });
+    }
+  }
+
   hold(scope: string): () => void {
     const held = this.held(scope);
     held.users++;
-    return () => { if (--held.users === 0 && this.scopes.get(scope) === held) this.scopes.delete(scope); };
+    return () => {
+      if (--held.users === 0 && this.scopes.get(scope) === held) {
+        for (const controller of held.controllers) controller.abort();
+        held.controllers.clear();
+        held.queued.clear();
+        held.inFlight.clear();
+        held.errors.clear();
+        this.scopes.delete(scope);
+      }
+    };
   }
 }

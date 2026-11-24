@@ -232,7 +232,7 @@
 .dash-widget-icon svg { width: 15px; height: 15px; }
 .dash-widget-title { display: flex; flex-direction: column; flex: 0 1 auto; min-width: 0; overflow: hidden; }
 .dash-widget-title h2 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(var(--font-size-display) * 1); font-weight: 500; line-height: 1.25; }
-.dash-widget-summary { display: inline-flex; align-items: center; flex: none; max-width: 26ch; overflow: hidden; color: var(--muted); font-family: var(--font-ui); font-weight: 500; }
+.dash-widget-summary { display: inline-flex; align-items: center; flex: none; max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-family: var(--font-ui); font-size: 0.75rem; font-weight: 400; }
 .dash-widget-summary:empty { display: none; }
 .dash-widget-summary .pill { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .dash-widget-subtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 0.6875rem; line-height: 1.15; }

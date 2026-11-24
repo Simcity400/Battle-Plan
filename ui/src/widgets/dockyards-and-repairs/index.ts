@@ -1,3 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import DockyardsWidget from './DockyardsWidget';
-export default { render: DockyardsWidget } satisfies WidgetRenderer;
+import { dockyardsDeclaration } from './dockyardsProjection';
+
+export default { declaration: dockyardsDeclaration } satisfies WidgetRenderer;
