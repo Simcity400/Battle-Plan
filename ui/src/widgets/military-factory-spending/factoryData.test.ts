@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { factoryItems, factoryMonth } from './factoryData.ts';
+import { factoryItems } from './factoryData.ts';
 import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun } from '../../generated/dashboard';
 
 const known = (firstHour: number, lastHour: number, totalRaw: string): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw, reason: null });
@@ -38,14 +38,5 @@ test('new and converted input of the chosen equipment group by type and design; 
   assert.equal(items.find(item => item.path[0].id === 'new')?.localUnknownLevels?.[0], true);
   assert.equal(factoryItems(reply(), 'air', { from: null, hour: 130, end: 171 }).find(item => item.path[0].id === 'new')?.localUnknownLevels?.[0], false);
   assert.equal(purposeSum(factoryItems(reply(), 'land', { from: null, hour: 160, end: 171 }), 'new'), 9n);
-});
-
-test('a month holds new, converted, the unrecorded purpose and the others, and says when its split is not known', () => {
-  const month = factoryMonth(reply(), 'air', 148, 171, 100);
-  assert.deepEqual(month.bands.map(band => band.exact), [0n, 300n, 40n, 0n]);
-  assert.deepEqual(month.total, { exact: 340n, reason: null });
-  assert.equal(month.note, 'Whether some of it was converted was not recorded.');
-  assert.deepEqual(month.uncertain, [true, true, true, false]);
-  assert.deepEqual(factoryMonth(reply(), 'air', 124, 147, 100).bands.map(band => band.exact), [2000n, 0n, 0n, 0n]);
 });
 

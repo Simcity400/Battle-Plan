@@ -196,12 +196,17 @@ export interface SnapshotFailure {
   readonly refused: boolean;
 }
 
+export interface SpanFailure extends SnapshotFailure {
+  readonly from: number;
+  readonly to: number;
+}
+
 export interface SnapshotFailures {
   readonly facts?: SnapshotFailure;
   readonly identities?: SnapshotFailure;
   readonly groups?: SnapshotFailure;
   readonly styles?: Readonly<Record<string, SnapshotFailure>>;
-  readonly entities?: Readonly<Record<string, SnapshotFailure>>;
+  readonly entities?: Readonly<Record<string, readonly SpanFailure[]>>;
 }
 
 export interface IdentitySnapshot {

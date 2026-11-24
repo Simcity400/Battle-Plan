@@ -167,6 +167,10 @@ test('formatting and spoken forms render zero as 0, never None or dash, and carr
   assert.equal(spokenValue(notRecorded('No sensor'), 'integer'), 'Not recorded: No sensor');
   assert.equal(spokenValue(notApplicable('Peacetime'), 'integer'), 'Not applicable: Peacetime');
   assert.equal(spokenValue(partialValue(15, 'Gaps'), 'integer'), '15, partial: Gaps');
+  const partialAtLeast = formatValueState(partialValue(15, 'Gaps', { atLeast: true }), 'integer');
+  assert.equal(partialAtLeast.kind, 'partial');
+  assert.equal(partialAtLeast.atLeast, true);
+  assert.equal(partialAtLeast.spoken, '15, partial: Gaps');
 
   assert.equal(auditValue(zeroValue(0), 'integer'), JSON.stringify(['zero', ['int', '0']]));
   assert.equal(auditValue(notRecorded('No sensor'), 'integer'), JSON.stringify(['notRecorded', 'No sensor']));
@@ -392,4 +396,7 @@ test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and sig
   assert.equal(formatRecordedPercent(15.5, { signed: true }), '+15.5%');
   assert.equal(formatRecordedPercent(-10.2, { signed: true }), '−10.2%');
   assert.equal(formatRecordedPercent(0, { signed: true }), '0%');
+  assert.equal(formatScalar(11 / 5975, 'share'), '0.2%');
+  assert.equal(formatScalar(0, 'share'), '0%');
+  assert.deepEqual(formatValueState(knownValue(0.24), 'share'), { kind: 'known', text: '24%', spoken: '24%', audit: '24%' });
 });

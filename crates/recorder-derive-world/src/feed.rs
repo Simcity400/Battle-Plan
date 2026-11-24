@@ -160,6 +160,10 @@ impl Feed {
             }
         }
         let charges = if executions.is_empty() { None } else { inputs::charges(hour)? };
+        let verdicts = match &pack.windows {
+            Recorded::Value(windows) => windows.verdicts.as_ref().ok().map(|verdicts| verdicts.iter().map(|entry| (entry.sequence, u32::from(entry.verdict.code()))).collect::<HashMap<_, _>>()),
+            Recorded::NotRecorded => None,
+        };
         for event in &pack.events {
             if event.generation == FeedEventRow::DERIVED {
                 return Err(invalid("An occurrence of the generation derived rows are keyed by"));
@@ -220,6 +224,10 @@ impl Feed {
                 dated: None,
                 political_power,
                 command_power,
+                window: match event.source {
+                    Source::ScriptEvent | Source::NewsEvent => verdicts.as_ref().and_then(|verdicts| verdicts.get(&event.sequence)).map_or(Recorded::NotRecorded, |code| Recorded::Value(Some(*code))),
+                    _ => Recorded::Value(None),
+                },
                 ..FeedEventRow::default()
             };
             match event.cause {
@@ -255,6 +263,46 @@ impl Feed {
                 }
             }
             self.write(out, &row)?;
+        }
+        self.windows(hour, names, pack, ordinal, out)?;
+        Ok(())
+    }
+
+    fn windows(&mut self, hour: &Hour<'_>, names: Option<&Names<'_>>, pack: &EventFeedHistoryRow, ordinal: &mut u32, out: &mut Rows) -> io::Result<()> {
+        let Recorded::Value(windows) = &pack.windows else {
+            return Ok(());
+        };
+        let mut unrecorded = 0;
+        let mut failure = Vec::new();
+        for (bit, outcome) in [(FeedEventRow::VERDICTS_UNRECORDED, windows.verdicts.as_ref().err()), (FeedEventRow::PRESENTATIONS_UNRECORDED, windows.presentations_unrecorded.as_ref())] {
+            if let Some(reason) = outcome {
+                unrecorded |= bit;
+                if !failure.is_empty() {
+                    failure.extend_from_slice(b"; ");
+                }
+                failure.extend_from_slice(reason);
+            }
+        }
+        if unrecorded != 0 {
+            self.derived(out, hour.hour, ordinal, FeedEventRow::WINDOWS_UNRECORDED, |row| {
+                row.read_hour = pack.read_hour;
+                row.incomplete = Some(unrecorded);
+                row.failure = failure;
+            })?;
+        }
+        for presentation in &windows.presentations {
+            let presentation = presentation.clone();
+            self.derived(out, hour.hour, ordinal, FeedEventRow::WINDOW_PRESENTED, |row| {
+                row.hour = presentation.native_hour.unwrap_or(pack.read_hour);
+                row.read_hour = pack.read_hour;
+                row.actor_reference = presentation.actor;
+                row.actor_slot = inputs::slot(names, presentation.actor, None);
+                row.native_event_kind = Some(presentation.event_kind);
+                row.native_event_id = Some(presentation.event_id);
+                row.instance = Some(presentation.instance);
+                row.token = presentation.token.clone();
+                row.presentation = Recorded::Value(Some(presentation));
+            })?;
         }
         Ok(())
     }

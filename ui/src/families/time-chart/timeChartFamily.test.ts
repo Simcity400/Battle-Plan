@@ -438,7 +438,7 @@ describe('time-chart laneView integration', () => {
       pictures: [],
       model: binding,
       hour: H1936 + 100 * 24,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 0,
@@ -462,7 +462,7 @@ describe('time-chart laneView integration', () => {
       pictures: [],
       model: { ...binding, focusedKey: `plot:${H1936 + 100 * 24}` },
       hour: H1936 + 100 * 24,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 0,
@@ -477,7 +477,7 @@ describe('time-chart laneView integration', () => {
       pictures: [],
       model: binding,
       hour: H1936 + 100 * 24,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: hit ?? null,
       now: 1,
@@ -493,7 +493,7 @@ describe('time-chart laneView integration', () => {
       pictures: [],
       model: { ...binding, zoom: { x: zoomWindow } },
       hour: H1936 + 100 * 24,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 2, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 2,
@@ -807,7 +807,7 @@ describe('time-chart picture authority', () => {
         tiledLines: [tiled(rev, first, last)], keepTiled: [rev], tiledBySource: { main: { GER: rev } },
       } satisfies TimeChartBinding,
       hour,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 0,
@@ -831,7 +831,7 @@ describe('time-chart picture authority', () => {
       { label: 'corrected history', binding: bound(2, 30, 10), hour, check: true },
     ], surface);
   });
-  it('reads head rows by an index, not a scan per tag', () => {
+  it('reads head rows by an index, not a scan per tag, and a missing head cell travels as missing with its reason', () => {
     registerFamilyProjection({
       kind: 'test-head-index',
       family: 'time-chart',
@@ -843,7 +843,7 @@ describe('time-chart picture authority', () => {
         const head = bounded?.headValue;
         return {
           kind: 'test-head-index', measureTitle: 'Index', mode: 'lines', hour: readView.hour, extent: [H1936, H1936 + 95], yAxis: { format: 'number' },
-          series: [], auditRows: [{ row: 'ITA', key: 'ITA', value: head && head.kind === 'known' ? String(head.value) : 'none' }],
+          series: [], auditRows: [{ row: 'ITA', key: 'ITA', value: head?.kind === 'known' ? String(head.value) : head?.kind === 'notRecorded' ? head.reason : `last bucket ${seriesHeadValue(bounded, undefined, 0, 0)}` }],
         };
       },
     });
@@ -855,19 +855,21 @@ describe('time-chart picture authority', () => {
     const hour = H1936 + 95;
     const line = (tag: string) => ({ rev: tag === 'GER' ? 11 : 12, source: 'main', tag, head: 'h', decimals: 0, binHours: 96, from: H1936, to: hour, width: 1,
       buckets: [makeBucket(H1936, hour, 1)], missing: [], parts: [], marks: null });
-    const painted = view.paint({
+    const paint = (followed: typeof answer) => (view.paint({
       widget: 1, subs: [], pictures: [],
       model: {
         family: 'time-chart', kind: 'test-head-index', options: {}, sources: {}, extent: [H1936, hour], width: 600, height: 240, scrollTop: 0, theme: LANE_THEME, audit: true, auditId: 1,
         tiledLines: [line('GER'), line('ITA')], keepTiled: [11, 12], tiledBySource: { main: { GER: 11, ITA: 12 } },
         headSourceBySeries: { main: { answerName: 'main', tags } },
-        staticAnswers: { main: answer },
+        staticAnswers: { main: followed },
       } satisfies TimeChartBinding,
-      hour, speed: 0,
+      hour, seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null, now: 0,
-    }, new Map(), () => 'c');
-    assert.deepEqual((painted.fields.audit?.value as { rows: readonly { value?: string }[] }).rows.map(row => row.value), ['7']);
+    }, new Map(), () => 'c').fields.audit?.value as { rows: readonly { value?: string }[] }).rows.map(row => row.value);
+    assert.deepEqual(paint(answer), ['7']);
+    const unread = parseFollowed(message(10, [{ id: 1, answer: { keys: [1n, 2n], columns: 1, values: [5n, 0n], states: [0, 1], reasons: [null, 'Popularity not read at this hour'] } }])).answers[0]!.answer;
+    assert.deepEqual(paint(unread), ['Popularity not read at this hour'], 'an unread followed cell after a known earlier bucket is missing, never the bucket');
   });
 });
 
@@ -1203,6 +1205,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
           theme: LANE_THEME,
         },
         hour: H1936 + 200,
+        seek: 0,
         speed: 0,
         binding: { surfaces: [{ width: 480, height: 180, dpr: 1 }], generation: 1, offset: 0, pin: null },
         inspect: null,

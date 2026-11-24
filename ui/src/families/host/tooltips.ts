@@ -149,6 +149,7 @@ export class FamilyTooltipController {
   private tipVisible = false;
   private hoverTimer: ReturnType<typeof setTimeout> | null = null;
   private leaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private dismissed: string | null = null;
 
   constructor(owner: string) {
     this.owner = owner;
@@ -188,6 +189,10 @@ export class FamilyTooltipController {
     viewportHeight: number,
   ): void {
     if (this.pinned) return;
+    if (tip && this.dismissed !== null) {
+      if (tip.rowKey === this.dismissed) return;
+      this.dismissed = null;
+    }
     if (!tip || !pos) {
       this.hoverShown = false;
       if (this.tipVisible) {
@@ -206,7 +211,15 @@ export class FamilyTooltipController {
     return this.hoverShown;
   }
 
+  dismissActivated(rowKey: string): void {
+    this.clearPinAndHide();
+    this.dismissed = rowKey;
+  }
+
   syncFromInstall(input: TooltipSyncInput): void {
+    const hovering = input.inspectedKey ?? null;
+    const focused = input.focusInside ? input.focusedKey ?? null : null;
+    if (this.dismissed !== null && hovering !== this.dismissed && focused !== this.dismissed) this.dismissed = null;
     if (!input.dim && !input.held) {
       if (input.inspectedKey && input.pointerPos) {
         if (input.hoverTip && input.hoverTip.rowKey === input.inspectedKey) {

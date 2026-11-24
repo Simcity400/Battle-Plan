@@ -416,6 +416,28 @@ test('tooltip payloads carry full truncated text, exact hours, date bounds, miss
   assert.equal(action.hour, hour);
 });
 
+test('activating a row closes its tooltip, which stays closed under the opened window until the pointer or focus reaches another row', () => {
+  const tooltips = new FamilyTooltipController('activated-row');
+  const tip = (rowKey: string): FamilyTooltipEntry => ({ hour: 10, rowKey, content: { title: rowKey, rows: [] } });
+  const sync = (inspectedKey: string | null, focusedKey: string | null = null) => tooltips.syncFromInstall({
+    dim: false, held: false, inspectedKey, pointerPos: inspectedKey ? { x: 5, y: 5 } : null, hoverTip: inspectedKey ? tip(inspectedKey) : null,
+    focusInside: focusedKey !== null, focusedKey, focusAnchor: { x: 0, y: 0 }, focusTip: focusedKey ? tip(focusedKey) : null, viewportHeight: 800,
+  });
+  sync('org');
+  assert.equal(tooltips.isHoverShown(), true);
+  tooltips.dismissActivated('org');
+  assert.equal(tooltips.isHoverShown(), false, 'activation closes the tooltip');
+  sync('org');
+  assert.equal(tooltips.isHoverShown(), false, 'a later install does not reopen it over the window');
+  sync(null, 'org');
+  assert.equal(tooltips.isHoverShown(), false, 'the focused activated row stays quiet too');
+  sync('other');
+  assert.equal(tooltips.isHoverShown(), true, 'another row shows its tooltip');
+  sync('org');
+  assert.equal(tooltips.isHoverShown(), true, 'coming back to the row shows it again');
+  tooltips.dispose();
+});
+
 test('window placement clamps and centres within viewport bounds and sameFamilyTheme detects presentation token changes', () => {
   assert.deepEqual(centerWindowPosition(400, 300, 1200, 800), { left: 400, top: 250 });
   assert.deepEqual(clampWindowPosition(-50, 999, 400, 300, 1200, 800), { left: 12, top: 488 });
@@ -964,9 +986,9 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
 });
 
 test('a followed bounded read dates its picture by its proof even when the widget also has subscriptions', () => {
-  const followed = { hour: 120, follows: true, provenInterval: [100, 140] as const };
-  assert.deepEqual(boundDated(followed, true, false, null), { h: 100, c: 140 }, 'held back between a seek back and the new bounded reply');
-  assert.equal(boundDated({ hour: 120 }, true, false, null), undefined, 'a pinned read beside subscriptions is dated by the stream');
-  assert.deepEqual(boundDated({ hour: 120 }, false, false, null), { h: 120, c: 120 });
-  assert.deepEqual(boundDated(null, false, true, [0, 500]), { h: 0, c: 500 });
+  const followed = { hour: 120, follows: true };
+  assert.deepEqual(boundDated(followed, [100, 140], true, false, null), { h: 100, c: 140 }, 'held back between a seek back and the new bounded reply');
+  assert.equal(boundDated({ hour: 120 }, null, true, false, null), undefined, 'a pinned read beside subscriptions is dated by the stream');
+  assert.deepEqual(boundDated({ hour: 120 }, null, false, false, null), { h: 120, c: 120 });
+  assert.deepEqual(boundDated(null, null, false, true, [0, 500]), { h: 0, c: 500 });
 });

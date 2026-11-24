@@ -32,8 +32,9 @@ export function countryRowPresentation(
   tag: string,
   fallbackColor?: string,
   dimmed?: boolean,
+  atHour?: number,
 ): CountryRowPresentation {
-  const identity = readView.who('country', tag);
+  const identity = readView.who('country', tag, atHour);
   const labelMissing = identity.name.status === 'absent' || identity.name.status === 'failed';
   const label = identity.name.status === 'ready' ? identity.name.value : tag;
   const color = identity.colour?.status === 'ready' ? identity.colour.value : fallbackColor;
@@ -163,8 +164,35 @@ export interface BarsLegendItem {
   readonly hatched?: boolean;
 }
 
+export interface BarsPickSide {
+  readonly fraction: number | null;
+  readonly color?: string;
+}
+
+export interface BarsPickRow {
+  readonly key: string;
+  readonly label: string;
+  readonly left: BarsPickSide;
+  readonly right: BarsPickSide;
+  readonly divided?: boolean;
+  readonly tooltip?: FamilyTooltipPayload;
+}
+
+export interface BarsPickList {
+  readonly rows: readonly BarsPickRow[];
+  readonly selectedKey: string | null;
+}
+
+export interface BarsCaptionSide {
+  readonly media: BarsRowMedia;
+  readonly label: string;
+  readonly value: string;
+}
+
 export interface BarsModel {
   readonly form: BarsForm;
+  readonly pickList?: BarsPickList;
+  readonly captionSides?: readonly BarsCaptionSide[];
   readonly hour: number;
   readonly rows: readonly BarsRow[];
   readonly scaleMax?: number | null;

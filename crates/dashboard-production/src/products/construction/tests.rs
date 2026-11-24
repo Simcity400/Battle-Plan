@@ -1,7 +1,7 @@
 use super::{
     col,
     log::{Assembled, EndKind, LevelsBuilt, ProjectRun, ProjectSource, Rises, UnknownEnd, assemble, rise_hours},
-    spending::{deltas, identity_keys, leaf_keys, leaf_of, line_gap, totals},
+    spending::{dated_gaps, deltas, identity_keys, leaf_keys, leaf_of, totals},
     *,
 };
 use replay_lanes::lanes::Step;
@@ -257,10 +257,11 @@ fn a_line_works_on_its_kinds_leaves_and_lacks_only_output_it_had() {
     assert!(line.repair_work && !line.new_work && line.before_observation && line.had_output);
     let none = TagHolderRow::NONE;
     assert_eq!(leaf_keys(&line), [(true, false, 300, 12, none)]);
-    let gap = line_gap(&line, Some(141)).unwrap();
-    assert_eq!((gap.known_at, gap.reason, gap.until), (90, SpendingGap::LinkedOutput, Some(141)));
-    let quiet = Line { output_reason: P::OUTPUT_NOT_RECORDED, had_output: false, ..line };
-    assert_eq!(line_gap(&quiet, None), None, "a line the output table never listed lacks nothing");
+    let linked = Some(P::OUTPUT_LINKED);
+    let read = [(90, Some(P::OUTPUT_KNOWN), true), (100, linked, true), (110, linked, true)];
+    assert_eq!(dated_gaps(&read, 140, line.output_reason, line.had_output), [(100, SpendingGap::LinkedOutput)], "a gap is dated at the first read carrying it");
+    assert_eq!(dated_gaps(&read[..1], 140, P::OUTPUT_FINAL_MISSING, true), [(140, SpendingGap::FinalOutputMissing)], "a final output missing is known at the line's end");
+    assert_eq!(dated_gaps(&[(90, Some(P::OUTPUT_NOT_RECORDED), false)], 140, P::OUTPUT_NOT_RECORDED, false), Vec::<(i32, SpendingGap)>::new(), "a line the output table never listed lacks nothing");
     let idle = Line { repair_work: false, ..line };
     assert_eq!(leaf_keys(&idle), [(false, false, 300, 12, none)], "a line with no work yet is a new building");
     let railway = Line { railway: true, to_state: Some(14), ..idle };

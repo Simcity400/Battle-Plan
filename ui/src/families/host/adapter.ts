@@ -83,9 +83,14 @@ export type FamilyArtDemand = ArtHandle;
 export interface FamilyStaticSources {
   readonly panels?: Readonly<Record<string, unknown>>;
   readonly answers?: Readonly<Record<string, FollowedAnswer>>;
+  readonly shifts?: Readonly<Record<string, number>>;
   readonly hour: number;
   readonly follows?: boolean;
-  readonly provenInterval?: readonly [lo: number, hi: number];
+}
+
+export interface FamilyStaticProof {
+  read(): { readonly hour: number; readonly proof: readonly [lo: number, hi: number] } | null;
+  subscribe(changed: () => void): () => void;
 }
 
 export interface ParsedFamilyHit {
@@ -155,8 +160,6 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly options: TOptions;
   readonly settings: TSettings | undefined;
   readonly sources: Readonly<Record<string, number>>;
-  readonly staticPanels?: Readonly<Record<string, unknown>>;
-  readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
@@ -166,7 +169,6 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly viewport: FamilyViewportState;
   readonly theme: FamilyTheme | undefined;
   readonly reducedMotion: boolean;
-  readonly identitySnapshot: IdentitySnapshot | null;
   readonly selectedKey: string | null;
   readonly focusedKey: string | null;
   readonly expanded: Readonly<Record<string, boolean>>;
@@ -255,14 +257,11 @@ export function familyBinding<TOptions, TBinding, TSettings>(
     view: normalizeView(ctx.view),
     options: ctx.options,
     sources: ctx.sources,
-    ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-    ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
     width: ctx.viewport.width,
     height: ctx.viewport.height,
     scrollTop: ctx.viewport.scrollTop,
     scrollLeft: ctx.viewport.scrollLeft,
     theme: ctx.theme,
-    ...(ctx.identitySnapshot ? { identitySnapshot: ctx.identitySnapshot } : {}),
     ...(ctx.artResolutions ? { artResolutions: ctx.artResolutions } : {}),
     selectedKey: ctx.selectedKey,
     focusedKey: ctx.focusedKey,

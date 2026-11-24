@@ -24,6 +24,7 @@ pub mod doctrine_changes;
 pub mod crew_changes;
 pub mod event_feed_history;
 pub mod event_feed_observer;
+pub mod event_window_observer;
 pub mod event_ledger;
 pub mod market_changes;
 pub mod fleet_region_changes;

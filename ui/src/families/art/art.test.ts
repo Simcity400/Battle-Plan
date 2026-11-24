@@ -8,7 +8,7 @@ import { LaneArtCache } from './laneCache.ts';
 import { drawMediaSlot, flagEntryToArt, resolveCachedArt, spriteImageToArt, toArtSlotState, toFlagSlotState } from './adapters.ts';
 import { artUrlForHandle, collectArtUrls, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand, urlArtHandle } from './provider.ts';
 import { DEFAULT_FAMILY_THEME } from '../../draw/kit.ts';
-import { fetchArtHandles, spriteResolutions } from './transport.ts';
+import { MAX_ART_CALLS, SpriteCaches, artCacheScope, fetchArtHandles, spriteResolutions } from './transport.ts';
 import type { ArtHandle } from '../plan.ts';
 import {
   artHandleKey,
@@ -480,4 +480,70 @@ test('a status is the product\'s to the drawn slot: an unread table, an unrecord
   const relayed: CountryFlagChoice = { keys: [null, 'aaa', 'aaa'], reasons: ['none drawn', null, null], searched: [true, null, null] };
   assert.deepEqual(parseFlagChoiceKey(flagChoiceKey(relayed)), relayed, 'a completed search travels with the choice to the flag product');
   assert.notEqual(flagChoiceKey(relayed), flagChoiceKey({ ...relayed, searched: undefined }));
+});
+
+test('a portrait is cached per branch: two branches with the same leader reference and hour draw their own portrait', async () => {
+  const caches = new SpriteCaches();
+  const portrait: ArtHandle = { kind: 'portrait', leader: '12', hour: 300 };
+  const tracks = ['1', '2'].map(id => ({ source: { id: 's', revision: 'r' }, branch: { id } }) as never as Parameters<typeof artCacheScope>[0]);
+  const asked: string[] = [];
+  for (const track of tracks) {
+    const scope = artCacheScope(track, 4);
+    caches.hold(scope);
+    caches.request(scope, [portrait], (batch, signal) => fetchArtHandles(async request => {
+      const params = request.params as { branchId: string };
+      asked.push(params.branchId);
+      return { portraits: [{ reference: '12', image: `art://branch-${params.branchId}`, missing: null, resolution: readyArt(`art://branch-${params.branchId}`) }], warnings: [] };
+    }, track as never, batch, signal));
+  }
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.deepEqual(asked.sort(), ['1', '2'], 'each branch asks its own portrait');
+  const shown = tracks.map(track => caches.resolutions(artCacheScope(track, 4)).get(artHandleKey(portrait)));
+  assert.deepEqual(shown.map(art => art?.status === 'ready' ? art.url : null), ['art://branch-1', 'art://branch-2']);
+  assert.notEqual(artCacheScope(tracks[0]!, 4), artCacheScope(tracks[0]!, 5), 'a content revision (mod stack or presentation) is its own scope');
+});
+
+test('portrait calls are bounded and settle one by one; a retryable failure is retried per handle after its backoff and a refusal stays', async () => {
+  const portraits: ArtHandle[] = Array.from({ length: 64 }, (_, hour) => ({ kind: 'portrait', leader: '12', hour: 100 + hour }));
+  let open = 0;
+  let most = 0;
+  const calls: number[] = [];
+  const answered = await fetchArtHandles(async request => {
+    const hour = (request.params as { hour: number }).hour;
+    calls.push(hour);
+    open++;
+    most = Math.max(most, open);
+    await Promise.resolve();
+    open--;
+    if (hour === 103) throw new Error('Request timed out');
+    return { portraits: [{ reference: '12', image: `art://${hour}`, missing: null, resolution: readyArt(`art://${hour}`) }], warnings: [] };
+  }, { source: { id: 's', revision: 'r' }, branch: { id: '1' } } as never, portraits, new AbortController().signal);
+  assert.equal(calls.length, 64);
+  assert.ok(most <= MAX_ART_CALLS, `at most ${MAX_ART_CALLS} product calls at once, saw ${most}`);
+  assert.equal([...answered.values()].filter(art => art.status === 'ready').length, 63, 'one rejected call discards none of its siblings');
+  assert.equal(answered.get(artHandleKey(portraits[3]!))?.status, 'failed');
+
+  let now = 0;
+  const timers: { at: number; run: () => void }[] = [];
+  const caches = new SpriteCaches({ now: () => now, after: (ms, run) => { const timer = { at: now + ms, run }; timers.push(timer); return () => { timers.splice(timers.indexOf(timer), 1); }; } });
+  const flaky: ArtHandle = { kind: 'sprite', key: 'GFX_flaky', frame: 0 };
+  const refused: ArtHandle = { kind: 'sprite', key: 'GFX_refused', frame: 0 };
+  let attempts = 0;
+  const fetch = async (batch: readonly ArtHandle[]) => new Map(batch.map(handle => [artHandleKey(handle), handle === refused || (handle.kind === 'sprite' && handle.key === 'GFX_refused')
+    ? refusedArt('unsupported sprite', 'sprite-render')
+    : ++attempts === 1 ? failedArt('transport dropped', true) : readyArt('art://flaky')]));
+  caches.hold('scope');
+  caches.request('scope', [flaky, refused], fetch);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(caches.failures('scope').get(artHandleKey(flaky))?.retryable, true);
+  assert.equal(caches.resolutions('scope').get(artHandleKey(refused))?.status, 'refused', 'a refusal is settled, never retried');
+  caches.request('scope', [flaky], fetch);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.equal(attempts, 1, 'no new request inside the backoff');
+  now = timers[0]!.at;
+  timers.shift()!.run();
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.equal(attempts, 2, 'the failed handle is asked again once its backoff ends');
+  assert.equal(caches.resolutions('scope').get(artHandleKey(flaky))?.status, 'ready');
+  assert.equal(caches.failures('scope').size, 0);
 });
