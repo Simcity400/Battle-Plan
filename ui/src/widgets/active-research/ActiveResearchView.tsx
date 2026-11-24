@@ -8,7 +8,7 @@ import type { InstalledAction } from '../../families/contract.ts';
 import { DetailWindowHost } from '../../families/host/index.ts';
 import DeclaredFamilyWidget from '../../families/host/DeclaredFamilyWidget.tsx';
 import { meterHostAdapter } from '../../families/meter/hostAdapter.ts';
-import { useArtResolutions } from '../../dashboard/useSpriteArtwork.ts';
+import { useArtResolutions } from '../../families/art/react.ts';
 import type { ArtHandle } from '../../families/plan.ts';
 import { researchAt } from '../research/researchData';
 import ResearchExplanation from '../research/ResearchExplanation';

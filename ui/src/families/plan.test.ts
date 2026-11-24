@@ -1264,13 +1264,13 @@ test('canvas pixel dimensions stay stable across sub-pixel jitter without changi
 test('FieldStatus failed distinguishes retryable transport errors and non-retryable refusals from genuine absence', () => {
   const scope = { sourceId: 's1', revision: 'r1', branchId: '1', content: 1 };
   const retryableIndex = new IdentityIndex(scope, [0, 500]);
-  retryableIndex.setFactsFailure(new Error('IPC timeout'));
+  retryableIndex.setReadFailure('facts', new Error('IPC timeout'));
   const retryableRes = identityResultFromIndex(retryableIndex, 'country', 'GER', displayedHour(100));
   assert.deepEqual(retryableRes.name, { status: 'failed', reason: 'IPC timeout', retryable: true });
   assert.deepEqual(retryableRes.holder, { status: 'failed', reason: 'IPC timeout', retryable: true });
 
   const refusedIndex = new IdentityIndex(scope, [0, 500]);
-  refusedIndex.setFactsFailure(new RefusedError('Unsupported mod table'));
+  refusedIndex.setReadFailure('facts', new RefusedError('Unsupported mod table'));
   const refusedRes = identityResultFromIndex(refusedIndex, 'country', 'GER', displayedHour(100));
   assert.deepEqual(refusedRes.name, { status: 'failed', reason: 'Unsupported mod table', retryable: false });
 

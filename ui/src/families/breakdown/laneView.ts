@@ -1,18 +1,14 @@
-import type { LiveValues } from '../../charts/live';
-import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
-import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
-import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
-import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
+import type { LaneView, Painted, PaintInput, Scene } from '../../draw/lane.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
-import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
-import { createBoundedReadView } from '../boundedView.ts';
-import type { BoundedReadView, FamilyTheme } from '../contract.ts';
+import { createLaneArtProvider } from '../art/provider.ts';
+import type { FamilyTheme } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import { nextLookChange } from '../looks.ts';
-import type { ArtProvider, EntityKind, IdentityProvider } from '../plan.ts';
+import type { ArtProvider, IdentityProvider } from '../plan.ts';
+import { projectScene, samePictures, snapshotPictures } from '../scene.ts';
 import type { BreakdownViewOptions } from './declaration.ts';
 import {
   buildBreakdownTooltip,
@@ -94,115 +90,12 @@ interface HeldStructure {
   audit: { readonly value: { readonly id: number; readonly rows: readonly unknown[] }; readonly content: string } | null;
 }
 
-const liveAdapter = (map: LiveMap | null): LiveValues<number | bigint | string> | null => map && {
-  get: (key: string) => {
-    const value = map.get(key);
-    return typeof value === 'number' || typeof value === 'bigint' ? value : undefined;
-  },
-  raw: (key: string) => {
-    const value = map.get(key);
-    return typeof value === 'bigint' ? value : typeof value === 'number' && Number.isSafeInteger(value) ? BigInt(value) : undefined;
-  },
-  missing: (key: string) => {
-    if (!map.has(key)) return NOT_LIVE_CELL;
-    const value = map.get(key);
-    return typeof value === 'string' && value.length > 0 ? value : NOT_RECORDED;
-  },
-};
-
-function samePictures(prev: readonly (readonly unknown[])[], pictures: readonly Picture<LaneValue>[]): boolean {
-  if (prev.length !== pictures.length) return false;
-  for (let i = 0; i < pictures.length; i++) {
-    const a = prev[i]!;
-    const b = pictures[i]!.parts;
-    if (a.length !== b.length) return false;
-    for (let j = 0; j < b.length; j++) if (a[j] !== b[j]) return false;
-  }
-  return true;
-}
-
-function snapshotPictures(pictures: readonly Picture<LaneValue>[]): readonly (readonly unknown[])[] {
-  return pictures.map(picture => picture.parts.slice());
-}
-
 function cachedField(held: HeldBreakdown, name: string, text: string, content: () => string): string {
   const existing = held.kept.get(name);
   if (existing && existing.text === text) return existing.content;
   const next = { text, content: content() };
   held.kept.set(name, next);
   return next.content;
-}
-
-function readViewFromScene(
-  scene: Scene,
-  binding: FamilyBreakdownBinding,
-  hour: number,
-  providers: {
-    readonly identity?: IdentityProvider;
-    readonly onIdentityDemand?: (kind: EntityKind, key: string, atHour: number) => void;
-    readonly art?: ArtProvider;
-    readonly onArtDemand?: (handle: Parameters<ArtProvider['resolve']>[0]) => void;
-  },
-): BoundedReadView {
-  const liveCache = new Map<string, LiveValues<number | bigint | string> | null>();
-  const resolveLive = (name: string): LiveValues<number | bigint | string> | null | undefined => {
-    if (liveCache.has(name)) return liveCache.get(name);
-    if (binding.staticPanels && Object.hasOwn(binding.staticPanels, name)) {
-      const val = repliedCells(binding.staticPanels[name]).read();
-      liveCache.set(name, val);
-      return val;
-    }
-    if (Object.hasOwn(binding.sources, name)) {
-      const subId = binding.sources[name]!;
-      const at = scene.subs.findIndex(sub => sub.id === subId);
-      const picture = at < 0 ? undefined : scene.pictures[at];
-      const head = picture?.parts[0]?.value;
-      if (head && head.kind === 'panel' && head.refused === null) {
-        const val = liveAdapter(liveValues(picture!));
-        liveCache.set(name, val);
-        return val;
-      }
-    }
-    return undefined;
-  };
-  const revisions: Record<string, number> = {};
-  for (const [name, subId] of Object.entries(binding.sources)) {
-    const at = scene.subs.findIndex(sub => sub.id === subId);
-    const rev = at < 0 ? undefined : scene.pictures[at]?.parts[0]?.version;
-    if (rev !== undefined) revisions[name] = rev;
-  }
-  return createBoundedReadView({
-    hour,
-    revisions,
-    ensureNonLive: () => {
-      const answers = new Map<string, FollowedAnswer | undefined>();
-      const panels = new Map<string, unknown>();
-      const refused = new Map<string, string>();
-      if (binding.staticAnswers) {
-        for (const [name, answer] of Object.entries(binding.staticAnswers)) answers.set(name, answer);
-      }
-      if (binding.staticPanels) {
-        for (const [name, data] of Object.entries(binding.staticPanels)) panels.set(name, data);
-      }
-      for (const [name, subId] of Object.entries(binding.sources)) {
-        const at = scene.subs.findIndex(sub => sub.id === subId);
-        const picture = at < 0 ? undefined : scene.pictures[at];
-        const head = picture?.parts[0]?.value;
-        if (!head) continue;
-        if (head.kind === 'answer') answers.set(name, head.answer);
-        else if (head.kind === 'panel') {
-          if (head.refused === null) panels.set(name, head.data);
-          else refused.set(name, head.refused);
-        }
-      }
-      return { panels, answers, refused };
-    },
-    resolveLive,
-    ...(providers.identity ? { identity: providers.identity } : {}),
-    ...(providers.onIdentityDemand ? { onIdentityDemand: providers.onIdentityDemand } : {}),
-    ...(providers.art ? { art: providers.art } : {}),
-    ...(providers.onArtDemand ? { onArtDemand: providers.onArtDemand } : {}),
-  });
 }
 
 function collectArtUrls(parts: readonly BreakdownPart[], out: Set<string>): void {
@@ -323,23 +216,16 @@ export function familyBreakdownLaneView(
       if (canReuseModel) {
         model = held.cachedModel!;
       } else {
-        const pendingIdentityDemands = new Map<string, readonly [EntityKind, string, number]>();
-        const demandedArt = new Set<string>();
-        const readView = readViewFromScene(input, bound, input.hour, {
+        const projected = projectScene(input, bound, input.hour, {
           identity: held.identityProvider,
-          onIdentityDemand: (kind, key, atHour) => {
-            pendingIdentityDemands.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]);
-          },
           art: held.artProvider,
-          onArtDemand: handle => {
-            const url = artUrlForHandle(handle, held!.identityIndex);
-            if (url) demandedArt.add(url);
-          },
-        });
-        model = projection.project(readView, bound.options);
+          index: held.identityIndex,
+        }, view => projection.project(view, bound.options));
+        model = projected.model;
+        const demandedArt = new Set(projected.artUrls);
         collectArtUrls(model.parts, demandedArt);
         held.demandedArtUrls = [...demandedArt];
-        const demandsList = [...pendingIdentityDemands.values()];
+        const demandsList = projected.identityDemands;
         if (demandsList.length) {
           const dText = JSON.stringify(demandsList);
           held.identityDemandsField = { value: demandsList, content: cachedField(held, 'identityDemands', dText, content) };
