@@ -95,17 +95,31 @@ function resolveSeriesColors(
   return out;
 }
 
+function datedPlayerIdentity(
+  player: ApmPlayer | undefined,
+  atHour: number,
+): { readonly name: string | null; readonly tag: string | null } {
+  if (!player) return { name: null, tag: null };
+  let chosen: ApmPlayer['runs'][number] | null = null;
+  for (const run of player.runs ?? []) {
+    if (run.firstHour <= atHour) chosen = run;
+    else break;
+  }
+  if (!chosen) return { name: null, tag: null };
+  return { name: chosen.name, tag: chosen.tag };
+}
+
 function buildHoverDetail(
   readView: BoundedReadView,
   options: ApmGraphOptions,
   colorById: ReadonlyMap<string, string>,
-  disambiguated: ReadonlyMap<string, string> | null,
   hour: number,
 ): TimeChartModel['hoverDetail'] {
   const hover = readView.hover<ApmReply>('hover');
   if (!hover || hover.hour > hour || !hover.data) return null;
   const reply = hover.data;
   if (!reply.available) return null;
+  const hoverDisambiguated = options.group === 'player' ? playerNames(reply.series) : null;
   const items: TooltipListItem[] = [];
   let anyGaps = false;
   for (const row of reply.series) {
@@ -114,7 +128,7 @@ function buildHoverDetail(
     const flagChoice = identity?.flagChoice?.status === 'ready' ? identity.flagChoice.value : null;
     const flagRes = flagChoice ? readView.art(flagArtHandle(flagChoice, 'small')) : null;
     const label = options.group === 'player'
-      ? (disambiguated?.get(row.id) ?? row.name ?? 'Name not recorded')
+      ? (hoverDisambiguated?.get(row.id) ?? row.name ?? 'Name not recorded')
       : (identity?.name.status === 'ready' ? identity.name.value : row.tag ?? row.id);
     const swatch = colorById.get(row.id);
     items.push({
@@ -212,10 +226,11 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
         const lastHour = bounded?.buckets.length
           ? Math.min(bounded.buckets.at(bounded.buckets.length - 1)?.lastHour ?? hour, hour)
           : hour;
+        const dated = options.group === 'player' ? datedPlayerIdentity(reg, lastHour) : { name: id, tag: id };
         entries.push({
           id,
-          name: options.group === 'player' ? (reg?.name ?? null) : id,
-          tag: options.group === 'player' ? (reg?.tags[0] ?? null) : id,
+          name: dated.name,
+          tag: dated.tag,
           obsHour: lastHour,
           headValue: null,
           gaps: false,
@@ -236,7 +251,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
         ...(ready ? { empty: { message: 'No eAPM is available for these countries, players and dates.', kind: 'empty' as const } } : {}),
       };
     }
-    const disambiguated = options.group === 'player' ? playerNames(entries, options.players) : null;
+    const disambiguated = options.group === 'player' ? playerNames(entries) : null;
     const topEntries = entries.slice(0, TOP_NAMED);
     const topColors = resolveSeriesColors(readView, topEntries, hour, options.surface);
     const colorById = new Map<string, string>();
@@ -277,7 +292,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
       };
     });
     const anyHeadGaps = entries.some(e => e.gaps);
-    const hoverDetail = buildHoverDetail(readView, options, colorById, disambiguated, hour);
+    const hoverDetail = buildHoverDetail(readView, options, colorById, hour);
     const auditRows = series
       .filter(s => s.role === 'primary' && s.headValue !== null && s.headValue !== undefined)
       .map(s => (auditRow(s.id, formatApm(s.headValue!))));

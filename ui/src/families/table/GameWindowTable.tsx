@@ -19,6 +19,7 @@ import {
 } from '../../dashboard/gameWindows';
 import type { BoundTrack } from '../../dashboard/model';
 import { TimeRegion, useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
+import { pageClock } from '../../dashboard/widgetClock.ts';
 import { DetailWindowHost } from '../host/DetailWindowHost';
 import type { InstalledAction } from '../contract.ts';
 import { FamilyWidget } from '../host/registry';
@@ -80,7 +81,10 @@ export default function GameWindowTable<S extends GameWindowSelection>({ window:
   }, [Window, track, row, slotOwner, handOver, scope, dispatch]);
 
   const open = drill.state.breakdown !== null && opened !== null && Window !== null;
-  const at = useRegionHour(runtime, drill.region, active && open);
+  const at = useRegionHour(runtime, drill.region, active && open, undefined, true);
+  const page = pageClock(runtime.clock);
+  const seeks = useSyncExternalStore(page.subscribe, () => page.getSnapshot().seekSequence, () => page.getSnapshot().seekSequence);
+  const generation = drill.following ? seeks : at ?? -1;
   const shut = drill.gate.stage.stage !== 'open' && drill.gate.stage.stage !== 'unbound';
   const selection = open && at !== null ? gameWindowSelectionAt(opened, at) : null;
   openedKey.current = opened?.key ?? null;
@@ -121,6 +125,7 @@ export default function GameWindowTable<S extends GameWindowSelection>({ window:
           : open && at === null ? <WidgetState kind="outside" />
           : selection && Window ? <Window
             selection={selection}
+            generation={generation}
             active={active}
             client={runtime.client}
             onDiagnostics={onWindowDiagnostics}

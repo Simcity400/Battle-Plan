@@ -49,6 +49,7 @@ export interface WidgetProps {
   mapOptions: MapOptions;
   headerSlot: HTMLElement | null;
   countrySlot?: HTMLElement | null;
+  filterSlot?: HTMLElement | null;
   onDiagnostics: (warnings: string[]) => void;
   setOption?: (key: string, value: OptionValue) => void;
   setOptions?: (values: Readonly<Record<string, OptionValue>>) => void;

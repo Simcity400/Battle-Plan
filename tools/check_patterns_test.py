@@ -478,6 +478,20 @@ class FamilyKitPatterns(unittest.TestCase):
             "ui/src/shell/AnalyticsNav.tsx": "const s = 'Choose at least one page';\n",
         })[0], 0)
 
+    def test_family_private_art_cache_is_refused_outside_art_module(self):
+        code, out = check({}, {
+            "ui/src/families/table/cellPainters.ts": "function resolveArtState(url: string) { return cache.stateOfUrl(url); }\n",
+            "ui/src/families/table/painter.ts": "export function collectVisibleCellIcons() { return []; }\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("family-private-art-cache", out)
+        self.assertIn("resolveCachedArt", out)
+        self.assertIn("collectArtUrls", out)
+        self.assertEqual(check({}, {
+            "ui/src/families/art/react.ts": "const s = cache.stateOfUrl(url);\n",
+            "ui/src/families/table/tableFamily.test.ts": "const s = cache.stateOfUrl(url);\n",
+        })[0], 0)
+
     def test_widget_stored_option_reads_are_refused_outside_the_mapping(self):
         code, out = check({}, {
             "ui/src/widgets/foo/FooWidget.tsx": "const raw = widget.options?.countFor;\nconst view = props.widget.options?.['view'];\n",

@@ -107,6 +107,7 @@ export default function DivisionTemplateWidget(props: FamilyViewProps) {
           template: opened.template,
           designer: opened.designer,
         }}
+        generation={drillAt}
         active={active}
         client={runtime.client}
         onDiagnostics={onWindowDiagnostics}

@@ -8,10 +8,6 @@ export function approach(current: number, target: number, dtMs: number, tauMs: n
   return Math.abs(next - target) < Math.max(within, 1e-6 * Math.max(1, Math.abs(target))) ? target : next;
 }
 
-export function approachAcrossGap(current: number | null, target: number | null, dtMs: number, tauMs: number, gap: boolean): number | null {
-  return gap || current == null || target == null ? target : approach(current, target, dtMs, tauMs);
-}
-
 export const motionOf = (playback: { playing?: boolean; hoursPerSecond: number }): number | undefined =>
   playback.playing ? playback.hoursPerSecond : undefined;
 

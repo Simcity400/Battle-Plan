@@ -16,15 +16,25 @@ export function validateOccupationReserve(value: unknown): OccupationReserveRepl
 }
 
 export function validateReserveHistory(value: unknown): ReserveHistoryReply {
-  const ok = object(value) && warnings(value) && Array.isArray(value.segments) && value.segments.every((segment, index, all) => object(segment)
+  const ok = object(value) && integer(value.hour)
+    && (value.nextChange === null || (integer(value.nextChange) && (value.nextChange as number) > (value.hour as number)))
+    && warnings(value) && Array.isArray(value.segments) && value.segments.every((segment, index, all) => object(segment)
       && integer(segment.firstHour) && integer(segment.lastHour) && (segment.firstHour as number) <= (segment.lastHour as number)
+      && (segment.lastHour as number) <= (value.hour as number)
       && (index === 0 || (all[index - 1] as ReserveSegment).lastHour < (segment.firstHour as number)) && typeof segment.admitted === 'boolean'
       && (segment.entries === null ? typeof segment.unknown === 'string' : segment.unknown === null && Array.isArray(segment.entries)
         && segment.entries.every(entry => object(entry) && integer(entry.source) && integer(entry.amount))))
     && Array.isArray(value.sources) && value.sources.every(source => object(source) && integer(source.id) && Array.isArray(source.tags)
-      && source.tags.every(tag => object(tag) && (tag.tag === null || typeof tag.tag === 'string') && integer(tag.firstHour) && integer(tag.lastHour)));
+      && source.tags.every(tag => object(tag) && (tag.tag === null || typeof tag.tag === 'string')
+        && integer(tag.firstHour) && integer(tag.lastHour) && (tag.lastHour as number) <= (value.hour as number)));
   if (!ok) throw new Error('The occupation reserve history is malformed.');
   return value as unknown as ReserveHistoryReply;
+}
+
+export function reserveHistoryProof(data: unknown, _requested: readonly [number, number], at: number): readonly [number, number] | null {
+  const reply = data as ReserveHistoryReply;
+  const last = reply.nextChange === null ? Number.MAX_SAFE_INTEGER : reply.nextChange - 1;
+  return reply.hour <= at && at <= last ? [reply.hour, last] : null;
 }
 
 export const persons = (value: number) => value.toLocaleString('en-US');

@@ -38,7 +38,7 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string", "family-measure-text-loop", "family-hand-percent", "family-at-least-wording", "widget-stored-option")
+RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string", "family-measure-text-loop", "family-hand-percent", "family-at-least-wording", "family-private-art-cache", "widget-stored-option")
 RULE_HINTS = {
     "local-contrast-ink": "use contrastInkForFill from ui/src/draw/kit.ts",
     "local-tick-engine": "use computeTimeAxisTicks from ui/src/draw/kit.ts or linearTicks from ui/src/charts/valueAxis.ts",
@@ -47,6 +47,7 @@ RULE_HINTS = {
     "family-measure-text-loop": "use textWidth or measureCanvasText from ui/src/charts/textWidth.ts, or fitLabelWidth / fitLabel from ui/src/charts/labels.ts",
     "family-hand-percent": "use formatShare, formatProgress, or formatRecordedPercent from ui/src/families/valueFormat.ts",
     "family-at-least-wording": "show the figure with the partial mark and a plain missing reason; never print 'at least', '≥', or '+ means'",
+    "family-private-art-cache": "use resolveCachedArt, toArtSlotState, and toFlagSlotState from ui/src/families/art/adapters.ts, and collectArtUrls from ui/src/families/art/provider.ts",
     "widget-stored-option": "read the options the host hands the view (props.options), or widgetViewOptions / setWidgetViewOption from ui/src/widgets/manifest.ts",
 }
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
@@ -71,6 +72,9 @@ FAMILY_LOCALE_CODE = re.compile(r"""\.toLocaleString\s*\(|\.toFixed\s*\(|\bnew\s
 FAMILY_LOCALE_IMPORT = re.compile(r"""from\s+['"][^'"]*charts/numberFormat(?:\.ts)?['"]""")
 FAMILY_HAND_PERCENT = re.compile(
     r"""\$\{[^}\n]*(?:\bMath\.(?:round|floor|trunc|ceil)\s*\(|\.toFixed\s*\()[^}\n]*\}\s*%|(?:\bMath\.(?:round|floor|trunc|ceil)\s*\(|\.toFixed\s*\()[^;\n]*\+\s*['"`]%"""
+)
+FAMILY_PRIVATE_ART_CACHE = re.compile(
+    rf"\.stateOfUrl\s*\(|\b(?:function\s+(?:resolve(?:Art|Flag)State|collect(?:Visible)?(?:Cell)?Icons)\b|(?:const|let)\s+(?:resolve(?:Art|Flag)State|collect(?:Visible)?(?:Cell)?Icons)\s*=\s*{TS_FN_RHS})"
 )
 TS_LOOP_HEAD = re.compile(r"\b(?:for|while)\s*\(|\bdo\s*\{|\.(?:forEach|map|reduce|flatMap|filter|some|every)\s*\(")
 TS_MEASURE_TEXT = re.compile(r"\.measureText\s*\(")
@@ -736,6 +740,10 @@ def family_ts_matches(name, text):
     at_least_lines = at_least_wording_lines(text)
     if at_least_lines:
         found["family-at-least-wording"] = at_least_lines
+    if not name.startswith("ui/src/families/art/"):
+        art_lines = [line_of(text, m.start()) for m in FAMILY_PRIVATE_ART_CACHE.finditer(code)]
+        if art_lines:
+            found["family-private-art-cache"] = art_lines
     if WIDGET_TS.match(name) and name != OPTION_MAPPING_MODULE:
         stored_lines = [line_of(text, m.start()) for m in STORED_OPTION_READ.finditer(code)]
         if stored_lines:

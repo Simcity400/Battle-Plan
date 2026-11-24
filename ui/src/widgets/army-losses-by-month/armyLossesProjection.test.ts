@@ -241,4 +241,53 @@ describe('army-losses-by-month projection (acceptance cases 1-9)', () => {
       assert.equal(withTotal.rows[1]?.equipmentMissing, 'Combat Log equipment of this hour was not read');
     }
   });
+
+  it('S21: binds archetype and army-group colours to stable identity, not current loss rank', () => {
+    const may = 1941 * 12 + 4;
+    const baseOpts = {
+      measure: 'equipment' as const,
+      ledger: 'combat' as const,
+      stack: 'type' as const,
+      foldUnrecorded: true,
+      countryName: 'German Reich',
+      following: true,
+      extent: [H1936, H1941_SEP15] as readonly [number, number],
+    };
+    const orderA = makeReply({
+      rollup: {
+        unitScale: 100000,
+        wrapI32: false,
+        parts: [
+          { key: 'archetype:infantry_equipment', label: 'Infantry Equipment', otherCount: 0 },
+          { key: 'archetype:artillery_equipment', label: 'Artillery', otherCount: 0 },
+          { key: 'other', label: 'Other (2)', otherCount: 2 },
+        ],
+        months: [
+          { month: may, firstHour: firstHourOfMonth(may), lastHour: firstHourOfMonth(may + 1) - 1, liveRow: null, missing: null, values: ['500000', '300000', '100000'], total: '900000' },
+        ],
+      },
+    });
+    const orderB = makeReply({
+      rollup: {
+        unitScale: 100000,
+        wrapI32: false,
+        parts: [
+          { key: 'archetype:artillery_equipment', label: 'Artillery', otherCount: 0 },
+          { key: 'archetype:infantry_equipment', label: 'Infantry Equipment', otherCount: 0 },
+          { key: 'other', label: 'Other (2)', otherCount: 2 },
+        ],
+        months: [
+          { month: may, firstHour: firstHourOfMonth(may), lastHour: firstHourOfMonth(may + 1) - 1, liveRow: null, missing: null, values: ['300000', '500000', '100000'], total: '900000' },
+        ],
+      },
+    });
+    const modelA = armyLossesProjection.project(createBoundedReadView({ hour: H1941_SEP15, panels: new Map([['main', orderA]]) }), baseOpts);
+    const modelB = armyLossesProjection.project(createBoundedReadView({ hour: H1941_SEP15, panels: new Map([['main', orderB]]) }), baseOpts);
+    const segColor = (m: typeof modelA, id: string) => m.columns!.months.find(mo => mo.year === 1941 && mo.month === 5)!.segments.find(s => s.id === id)!.color;
+    const legColor = (m: typeof modelA, id: string) => m.legend!.find(l => l.id === id)!.color;
+    assert.equal(segColor(modelA, 'archetype:infantry_equipment'), segColor(modelB, 'archetype:infantry_equipment'), 'infantry colour must stay identical when rank swaps');
+    assert.equal(segColor(modelA, 'archetype:artillery_equipment'), segColor(modelB, 'archetype:artillery_equipment'), 'artillery colour must stay identical when rank swaps');
+    assert.equal(legColor(modelA, 'archetype:infantry_equipment'), legColor(modelB, 'archetype:infantry_equipment'));
+    assert.equal(legColor(modelA, 'archetype:artillery_equipment'), legColor(modelB, 'archetype:artillery_equipment'));
+  });
 });

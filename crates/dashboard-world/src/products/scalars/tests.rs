@@ -14,23 +14,47 @@ fn row(hour: i32, kind: u8, identity: &Identity, final_raw: i64) -> Step {
 fn a_threat_source_is_one_event_from_its_listing_to_its_drop_across_a_stretch() {
     let (a, b, twin) = (source(1, "annexed", 0), source(2, "justified", 0), source(1, "annexed", 1));
     let (events, unmatched) = join([
-        Step::Stretch { first: 10, last: 19, listed: vec![(a.clone(), 500, Some(1001))] },
+        Step::Stretch { first: 10, last: 19, listed: Some(vec![(a.clone(), 500, Some(1001))]) },
         row(12, ThreatEventRow::LISTED, &b, 300),
         row(13, ThreatEventRow::LISTED, &twin, 500),
         row(14, ThreatEventRow::CHANGED, &a, 700),
         row(15, ThreatEventRow::DROPPED, &b, 300),
-        Step::Stretch { first: 30, last: 39, listed: vec![(a.clone(), 700, Some(1001))] },
+        Step::Stretch { first: 20, last: 29, listed: None },
+        Step::Stretch { first: 30, last: 39, listed: Some(vec![(a.clone(), 700, Some(1001))]) },
         row(31, ThreatEventRow::DROPPED, &source(9, "never listed", 0), 0),
     ]);
-    assert_eq!(unmatched, 1);
+    assert_eq!(unmatched, [31]);
     assert_eq!(
         events,
         [
-            Joined { identity: a, slot: Some(1001), added: vec![(10, 500), (14, 700)], first_read: 10, last_read: None },
-            Joined { identity: b, slot: Some(1002), added: vec![(12, 300)], first_read: 12, last_read: Some(14) },
-            Joined { identity: twin, slot: Some(1001), added: vec![(13, 500)], first_read: 13, last_read: Some(19) },
+            Joined { identity: a, slot: Some(1001), added: vec![(10, 500), (14, 700)], first_read: 10, last_read: None, removed_at: None },
+            Joined { identity: b, slot: Some(1002), added: vec![(12, 300)], first_read: 12, last_read: Some(14), removed_at: Some(15) },
+            Joined { identity: twin, slot: Some(1001), added: vec![(13, 500)], first_read: 13, last_read: Some(19), removed_at: Some(30) },
         ]
     );
+}
+
+#[test]
+fn unread_threat_source_snapshot_keeps_open_events_and_dates_removals() {
+    let a = source(1, "annexed", 0);
+    let (events, unmatched) = join([
+        Step::Stretch { first: 10, last: 19, listed: Some(vec![(a, 500, Some(1001))]) },
+        Step::Stretch { first: 20, last: 29, listed: None },
+    ]);
+    assert!(unmatched.is_empty());
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].last_read, None);
+    assert_eq!(events[0].removed_at, None);
+
+    let dated = [(50, "later failure".to_owned())];
+    let mut next_change = None;
+    let early = world_tension_stack::filter_dated_warnings(&dated, &[60], &[70], 20, &mut next_change);
+    assert!(early.is_empty(), "later failures must not appear on earlier dates");
+    assert_eq!(next_change, Some(50));
+    let mut next_change_late = None;
+    let late = world_tension_stack::filter_dated_warnings(&dated, &[60], &[70], 65, &mut next_change_late);
+    assert_eq!(late.len(), 2);
+    assert_eq!(next_change_late, Some(70));
 }
 
 #[test]
@@ -282,28 +306,28 @@ fn world_tension_stack_computes_exact_shares_folds_other_and_clips_future() {
         3 => Some(("ITA".to_owned(), false)),
         _ => None,
     };
-    let (end_hour, capped, hours, total, bands, other, next_change) =
-        compute_stack(&input, 10, 25, 2, TensionValueMode::Share, None, 200, tag_of);
-    assert_eq!(end_hour, Some(25));
-    assert_eq!(capped, Some(100.0));
-    assert_eq!(hours, [10, 20]);
-    assert_eq!(total, [Some(25.0), Some(100.0)]);
-    assert_eq!(bands.len(), 2);
-    assert_eq!(bands[0].tag.as_deref(), Some("GER"));
-    assert_eq!(bands[1].tag.as_deref(), Some("JAP"));
-    assert_eq!(bands[0].end_value, Some(50.0));
-    assert!((bands[1].end_value.unwrap() - 100.0 / 3.0).abs() < 1e-9);
-    let other = other.unwrap();
+    let no_change = |_: u32, _: i32| None;
+    let out = compute_stack(&input, 10, 25, 2, TensionValueMode::Share, None, None, None, 200, tag_of, no_change);
+    assert_eq!(out.end_hour, Some(25));
+    assert_eq!(out.capped_end_tension, Some(100.0));
+    assert!(!out.downsampled);
+    assert_eq!(out.hours, [10, 20]);
+    assert_eq!(out.total, [Some(25.0), Some(100.0)]);
+    assert_eq!(out.bands.len(), 2);
+    assert_eq!(out.bands[0].tag.as_deref(), Some("GER"));
+    assert_eq!(out.bands[1].tag.as_deref(), Some("JAP"));
+    assert_eq!(out.bands[0].end_value, Some(50.0));
+    assert!((out.bands[1].end_value.unwrap() - 100.0 / 3.0).abs() < 1e-9);
+    let other = out.other.unwrap();
     assert_eq!(other.count, 1);
     assert!((other.end_value.unwrap() - 100.0 / 6.0).abs() < 1e-9);
-    assert_eq!(next_change, Some(30));
+    assert_eq!(out.next_change_hour, Some(30));
 
-    let (_, _, _, rec_total, rec_bands, rec_other, _) =
-        compute_stack(&input, 10, 25, 2, TensionValueMode::Recorded, None, 200, tag_of);
-    assert_eq!(rec_total, [Some(25.0), Some(120.0)]);
-    assert_eq!(rec_bands[0].end_value, Some(60.0));
-    assert_eq!(rec_bands[1].end_value, Some(40.0));
-    assert_eq!(rec_other.unwrap().end_value, Some(20.0));
+    let rec = compute_stack(&input, 10, 25, 2, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
+    assert_eq!(rec.total, [Some(25.0), Some(120.0)]);
+    assert_eq!(rec.bands[0].end_value, Some(60.0));
+    assert_eq!(rec.bands[1].end_value, Some(40.0));
+    assert_eq!(rec.other.unwrap().end_value, Some(20.0));
 }
 
 #[test]
@@ -328,43 +352,205 @@ fn world_tension_stack_preserves_negative_contributions_independent_coverage_and
         _ => None,
     };
 
-    let (_, _, _, total, bands, other, _) = compute_stack(&input, 10, 19, 5, TensionValueMode::Recorded, None, 200, tag_of);
-    assert_eq!(total, [Some(6.5)]);
-    assert_eq!(bands.len(), 3);
-    assert_eq!(bands[0].end_value, Some(4.0));
-    assert_eq!(bands[1].end_value, Some(3.0));
-    assert_eq!(bands[2].end_value, Some(-0.5));
-    assert_eq!(bands[2].end_raw.as_deref(), Some("-50000"));
-    assert!(other.is_none());
+    let no_change = |_: u32, _: i32| None;
+    let out = compute_stack(&input, 10, 19, 5, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
+    assert_eq!(out.total, [Some(6.5)]);
+    assert_eq!(out.bands.len(), 3);
+    assert_eq!(out.bands[0].end_value, Some(4.0));
+    assert_eq!(out.bands[1].end_value, Some(3.0));
+    assert_eq!(out.bands[2].end_value, Some(-0.5));
+    assert_eq!(out.bands[2].end_raw.as_deref(), Some("-50000"));
+    assert!(out.other.is_none());
 
-    let (_, _, _, total2, bands2, other2, _) = compute_stack(&input, 10, 19, 2, TensionValueMode::Recorded, None, 200, tag_of);
-    assert_eq!(total2, [Some(6.5)]);
-    assert_eq!(bands2.len(), 2);
-    let other2 = other2.unwrap();
+    let out2 = compute_stack(&input, 10, 19, 2, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
+    assert_eq!(out2.total, [Some(6.5)]);
+    assert_eq!(out2.bands.len(), 2);
+    let other2 = out2.other.unwrap();
     assert_eq!(other2.count, 1);
     assert_eq!(other2.end_value, Some(-0.5));
 
-    let (_, _, _, share_total, share_bands, share_other, _) = compute_stack(&input, 10, 19, 2, TensionValueMode::Share, None, 200, tag_of);
-    assert_eq!(share_total, [Some(6.5)]);
-    assert!((share_bands[0].end_value.unwrap() - 4.0).abs() < 1e-9);
-    assert!((share_bands[1].end_value.unwrap() - 3.0).abs() < 1e-9);
-    assert!((share_other.unwrap().end_value.unwrap() - (-0.5)).abs() < 1e-9);
+    let share = compute_stack(&input, 10, 19, 2, TensionValueMode::Share, None, None, None, 200, tag_of, no_change);
+    assert_eq!(share.total, [Some(6.5)]);
+    assert!((share.bands[0].end_value.unwrap() - 4.0).abs() < 1e-9);
+    assert!((share.bands[1].end_value.unwrap() - 3.0).abs() < 1e-9);
+    assert!((share.other.unwrap().end_value.unwrap() - (-0.5)).abs() < 1e-9);
 
-    let (end_at_25, capped_at_25, _, rec_total_25, rec_bands_25, _, _) =
-        compute_stack(&input, 10, 25, 5, TensionValueMode::Recorded, None, 200, tag_of);
-    assert_eq!(end_at_25, Some(25));
-    assert_eq!(capped_at_25, None);
-    assert_eq!(rec_total_25.last().copied().flatten(), None);
-    assert_eq!(rec_bands_25[0].end_value, Some(4.0));
-    assert_eq!(rec_bands_25[1].end_value, None);
-    assert_eq!(rec_bands_25[1].end_raw, None);
-    assert_eq!(rec_bands_25[2].end_value, None);
+    let rec_25 = compute_stack(&input, 10, 25, 5, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
+    assert_eq!(rec_25.end_hour, Some(25));
+    assert_eq!(rec_25.capped_end_tension, None);
+    assert_eq!(rec_25.total.last().copied().flatten(), None);
+    assert_eq!(rec_25.bands[0].end_value, Some(4.0));
+    assert_eq!(rec_25.bands[1].end_value, None);
+    assert_eq!(rec_25.bands[1].end_raw, None);
+    assert_eq!(rec_25.bands[2].end_value, None);
 
-    let (end_gap, capped_gap, _, gap_total, gap_bands, gap_other, _) =
-        compute_stack(&input, 10, 32, 2, TensionValueMode::Recorded, None, 200, tag_of);
-    assert_eq!(end_gap, None);
-    assert_eq!(capped_gap, None);
-    assert_eq!(gap_total.last().copied().flatten(), None);
-    assert!(gap_bands.iter().all(|b| b.end_value.is_none() && b.end_raw.is_none()));
-    assert_eq!(gap_other.unwrap().end_value, None);
+    let gap = compute_stack(&input, 10, 32, 2, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
+    assert_eq!(gap.end_hour, None);
+    assert_eq!(gap.capped_end_tension, None);
+    assert_eq!(gap.total.last().copied().flatten(), None);
+    assert!(gap.bands.iter().all(|b| b.end_value.is_none() && b.end_raw.is_none()));
+    assert_eq!(gap.other.unwrap().end_value, None);
+}
+
+#[test]
+fn downsampled_world_tension_stack_preserves_band_min_max_bounds() {
+    use std::collections::BTreeMap;
+    use world_tension_stack::{StackInput, TensionValueMode, compute_stack};
+
+    let mut runs = Vec::new();
+    let vals = [0_i64, 1_000_000, 4_000_000, 2_000_000, 2_500_000, 3_000_000, 3_500_000, 5_000_000];
+    for (i, &v) in vals.iter().enumerate() {
+        let h = (i as i32) * 10;
+        runs.push((h, h + 9, Some(v)));
+    }
+    let sum: Vec<(i32, i32, i64)> = runs.iter().map(|&(a, b, v)| (a, b, v.unwrap())).collect();
+    let mut slots = BTreeMap::new();
+    slots.insert(1, runs);
+    let complete = [(0, 79)];
+    let input = StackInput { tension: &[], sum: &sum, slots: &slots, aggregates_complete: &complete, missing: &[] };
+    let out = compute_stack(
+        &input,
+        0,
+        79,
+        5,
+        TensionValueMode::Recorded,
+        None,
+        None,
+        None,
+        4,
+        |slot, _| (slot == 1).then(|| ("GER".to_owned(), false)),
+        |_, _| None,
+    );
+    assert!(out.downsampled);
+    let band = &out.bands[0];
+    assert_eq!(band.min_values.len(), band.values.len());
+    assert_eq!(band.max_values.len(), band.values.len());
+    assert!(
+        band.max_values.contains(&Some(40.0)),
+        "intermediate 40% spike must survive in max_values when bucketed: {:?}",
+        (&out.hours, &band.values, &band.min_values, &band.max_values),
+    );
+    assert!(
+        band.min_values.iter().zip(&band.max_values).any(|(lo, hi)| lo < hi),
+        "at least one downsampled bucket carries distinct min/max interval bounds",
+    );
+}
+
+#[test]
+fn world_tension_stack_resolves_slot_identity_at_drawn_hour_and_bounds_holder_transitions() {
+    use super::Named;
+    use dashboard_query::identity::{Holder, HolderRun, Holders};
+    use std::collections::BTreeMap;
+    use world_tension_stack::{StackInput, TensionValueMode, compute_stack};
+
+    let holders = Holders::new(
+        BTreeMap::from([
+            ("GER".to_owned(), vec![HolderRun { first: 10, last: 25, holder: Holder::Found { slot: 1, id: 1 }, starts_segment: true }]),
+            ("D01".to_owned(), vec![HolderRun { first: 26, last: 50, holder: Holder::Found { slot: 1, id: 2 }, starts_segment: true }]),
+        ]),
+        Vec::new(),
+    );
+    let mut slots = BTreeMap::new();
+    slots.insert(1, vec![(10, 19, Some(400_000))]);
+    let complete = [(10, 19)];
+    let input = StackInput { tension: &[], sum: &[(10, 19, 400_000)], slots: &slots, aggregates_complete: &complete, missing: &[] };
+
+    let named_20 = Named::new(&holders, 20);
+    assert_eq!(named_20.next_change(1, 20), Some(26));
+    let out_20 = compute_stack(
+        &input,
+        10,
+        20,
+        5,
+        TensionValueMode::Recorded,
+        None,
+        None,
+        None,
+        200,
+        |slot, hour| named_20.slot(slot, hour).map(|(tag, rem)| (tag.to_owned(), rem)),
+        |slot, hour| named_20.next_change(slot, hour),
+    );
+    assert_eq!(out_20.bands[0].tag.as_deref(), Some("GER"));
+    assert_eq!(out_20.next_change_hour, Some(26), "holder transition at hour 26 must bound validity");
+
+    let named_30 = Named::new(&holders, 30);
+    let out_30 = compute_stack(
+        &input,
+        10,
+        30,
+        5,
+        TensionValueMode::Recorded,
+        None,
+        None,
+        None,
+        200,
+        |slot, hour| named_30.slot(slot, hour).map(|(tag, rem)| (tag.to_owned(), rem)),
+        |slot, hour| named_30.next_change(slot, hour),
+    );
+    assert_eq!(out_30.bands[0].tag.as_deref(), Some("D01"), "slot identity resolves at drawn hour 30, not rank_hour 19");
+}
+
+#[test]
+fn world_tension_stack_applies_dated_group_membership_and_top_limit() {
+    use crate::products::groups::{CountryGroupReply, FactionGroup, MembershipRun, UnobservedHours};
+    use dashboard_query::series::ranked::{GroupKind, GroupMembership, GroupSelection};
+    use std::collections::BTreeMap;
+    use world_tension_stack::{DatedGroupFilter, StackInput, TensionValueMode, compute_stack};
+
+    let groups_reply = CountryGroupReply {
+        branch_id: "1".into(),
+        humans: Vec::new(),
+        factions: vec![FactionGroup {
+            id: "42".into(),
+            name: Some("Axis".into()),
+            name_reason: None,
+            names: Vec::new(),
+            recorded_name: "Axis".into(),
+            first_hour: 10,
+            last_hour: 40,
+            members: vec![
+                MembershipRun { tag: "GER".into(), first_hour: 10, last_hour: 40 },
+                MembershipRun { tag: "ITA".into(), first_hour: 25, last_hour: 40 },
+            ],
+            leaders: Vec::new(),
+            incomplete: Vec::new(),
+        }],
+        wars: Vec::new(),
+        war_starts: Vec::new(),
+        capitulations: Vec::new(),
+        identity_changes: Vec::new(),
+        country_identities: Vec::new(),
+        unobserved: UnobservedHours::default(),
+        warnings: Vec::new(),
+    };
+    let mut slots = BTreeMap::new();
+    slots.insert(1, vec![(10, 40, Some(500_000))]);
+    slots.insert(2, vec![(10, 40, Some(300_000))]);
+    slots.insert(3, vec![(10, 40, Some(200_000))]);
+    let complete = [(10, 40)];
+    let input = StackInput {
+        tension: &[],
+        sum: &[(10, 40, 1_000_000)],
+        slots: &slots,
+        aggregates_complete: &complete,
+        missing: &[],
+    };
+    let tag_of = |slot: u32, _: i32| match slot {
+        1 => Some(("GER".to_owned(), false)),
+        2 => Some(("ITA".to_owned(), false)),
+        3 => Some(("JAP".to_owned(), false)),
+        _ => None,
+    };
+    let sel = GroupSelection { kind: GroupKind::Faction, id: Some("42".into()), tag: None, membership: GroupMembership::Hour };
+    let gf = DatedGroupFilter::from_reply(&groups_reply, &sel, vec!["GER".into(), "ITA".into()], 30);
+    let out = compute_stack(&input, 10, 30, 5, TensionValueMode::Recorded, None, Some(&gf), None, 200, tag_of, |_, _| None);
+    assert_eq!(out.bands.len(), 2);
+    assert_eq!(out.hours, [10, 25], "ITA joining at hour 25 introduces a step change");
+    let ita = out.bands.iter().find(|b| b.tag.as_deref() == Some("ITA")).unwrap();
+    assert_eq!(ita.values, [None, Some(3.0)], "ITA has no contribution before joining Axis at hour 25");
+    assert_eq!(out.total, [Some(5.0), Some(8.0)], "group total sums only current members at each hour");
+
+    let top_out = compute_stack(&input, 10, 30, 5, TensionValueMode::Recorded, None, None, Some(2), 200, tag_of, |_, _| None);
+    assert_eq!(top_out.bands.len(), 2);
+    assert!(top_out.other.is_none(), "Top-N selection omits Other band");
 }
