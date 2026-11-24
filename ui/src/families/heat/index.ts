@@ -49,7 +49,12 @@ export {
   type DrawHeatMatrixInput,
   type HeatMatrixPicture,
 } from './matrixPainter.ts';
-export { ensureHeatMatrixProjection } from './matrixRegistry.ts';
+export {
+  ensureHeatMatrixProjection,
+  heatMatrixProjection,
+  registeredHeatMatrixKinds,
+  registerHeatMatrixProjection,
+} from './matrixRegistry.ts';
 export {
   isHeatMatrixWidgetDeclaration,
   type AnyHeatMatrixWidgetDeclaration,
@@ -113,7 +118,12 @@ export {
   type DrawHeatLanesInput,
   type HeatLanesPicture,
 } from './lanesPainter.ts';
-export { ensureHeatLanesProjection } from './lanesRegistry.ts';
+export {
+  ensureHeatLanesProjection,
+  heatLanesProjection,
+  registeredHeatLanesKinds,
+  registerHeatLanesProjection,
+} from './lanesRegistry.ts';
 export {
   isHeatLanesWidgetDeclaration,
   type AnyHeatLanesWidgetDeclaration,

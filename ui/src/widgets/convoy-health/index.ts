@@ -2,7 +2,7 @@ import type { OptionChoices, WidgetRenderer, WidgetRuntime } from '../../dashboa
 import CountryChip from '../../dashboard/CountryChip';
 import type { WidgetSpec } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { useRegionChoices } from '../../families/useRegionChoices.ts';
+import { useRegionChoices } from '../../families/host/useRegionChoices.ts';
 import { convoyHealthDeclaration } from './convoyHealthProjection.ts';
 import { OPTIONS } from './definition';
 

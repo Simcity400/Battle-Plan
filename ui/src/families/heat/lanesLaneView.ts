@@ -25,6 +25,7 @@ import { readViewFromHeatScene, samePictures, snapshotPictures, stringifyTooltip
 export interface FamilyHeatLanesBinding<TOptions = unknown> {
   readonly family: 'heat-lanes';
   readonly kind: string;
+  readonly view?: string;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
@@ -118,8 +119,9 @@ export function familyHeatLanesLaneView(
     next(scene: Scene, hour: number): number {
       const bound = scene.model;
       if (!isFamilyHeatLanesBinding(bound)) return Infinity;
-      const projection = ensureHeatLanesProjection(bound.kind, undefined, () => wake(scene.widget));
-      if (typeof projection === 'string') return Infinity;
+      const projection = ensureHeatLanesProjection(bound.kind, bound.view, () => wake(scene.widget));
+      if (projection === 'loading') return hour + 1;
+      if (projection === 'unknown') return Infinity;
       let soonest = nextLookChange(bound.theme?.countryLooks, hour);
       if (projection.nextChange) {
         const readView = readViewFromHeatScene(scene, bound, hour);
@@ -139,8 +141,10 @@ export function familyHeatLanesLaneView(
       const bound = input.model;
       const surface = input.binding.surfaces[0];
       if (!isFamilyHeatLanesBinding(bound) || !surface) return { surfaces: [], fields: {}, motion: false };
-      const projection = ensureHeatLanesProjection(bound.kind, undefined, () => wake(input.widget));
-      if (projection === 'loading') return { surfaces: [], fields: {}, motion: false };
+      const projection = ensureHeatLanesProjection(bound.kind, bound.view, () => wake(input.widget));
+      if (projection === 'loading') {
+        return { surfaces: [], fields: {}, motion: false, nextChangeAt: input.hour + 1 };
+      }
       if (projection === 'unknown') {
         return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown timeline declaration: ${bound.kind}` };
       }

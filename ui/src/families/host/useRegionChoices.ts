@@ -1,10 +1,10 @@
 import { useMemo } from 'react';
-import type { OptionChoice, WidgetRuntime } from '../dashboard/definitions';
-import type { WidgetSpec } from '../dashboard/model';
-import { useProduct } from '../dashboard/products';
-import { productRequest } from '../dashboard/request.ts';
-import type { StrategicRegionsReply } from '../generated/dashboard';
-import { regionIds, regionToken } from './regionTokens.ts';
+import type { OptionChoice, WidgetRuntime } from '../../dashboard/definitions';
+import type { WidgetSpec } from '../../dashboard/model';
+import { useProduct } from '../../dashboard/products';
+import { productRequest } from '../../dashboard/request.ts';
+import type { StrategicRegionsReply } from '../../generated/dashboard';
+import { regionIds, regionToken } from '../regionTokens.ts';
 
 export function useRegionChoices(widget: WidgetSpec, runtime: WidgetRuntime, chosen: string, options?: { readonly sea?: boolean }): readonly OptionChoice[] {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);

@@ -1,7 +1,7 @@
 import type { OptionChoices, WidgetRenderer, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { useRegionChoices } from '../../families/useRegionChoices.ts';
+import { useRegionChoices } from '../../families/host/useRegionChoices.ts';
 import { OPTIONS } from './definition';
 import { useWeatherModifiers } from './useWeatherModifiers.ts';
 import { weatherDeclaration } from './weatherProjection.ts';
