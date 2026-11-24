@@ -32,7 +32,6 @@ const TABLES: &[TableId] = &[
 ];
 
 pub struct AirAcesAt;
-pub struct AirAcePortraits;
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -82,6 +81,9 @@ pub struct AirAce {
     #[doc = " The first hour the timeline held its row: an upper bound of when it became an ace."]
     pub first_seen: Option<i32>,
     pub death: Option<AirAceDeath>,
+    #[doc = " The ace's portrait through the recorded content stack; none with `portrait_missing` saying why."]
+    pub portrait: Option<String>,
+    pub portrait_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -97,32 +99,6 @@ pub struct AirAcesReply {
 }
 
 dashboard_base::reply_warnings!(AirAcesReply);
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AirAcePortraitParams {
-    pub branch_id: String,
-    pub ids: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct AirAcePortrait {
-    pub id: String,
-    pub image: Option<String>,
-    pub missing: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-pub struct AirAcePortraitReply {
-    pub portraits: Vec<AirAcePortrait>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(AirAcePortraitReply);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Death {
@@ -400,6 +376,8 @@ pub(crate) fn roster(frame: &DecodedFrame, history: &History, cat: Option<&Catal
             alive,
             first_seen: dates.and_then(|dates| dates.first_seen),
             death,
+            portrait: None,
+            portrait_missing: None,
         });
     }
     warnings.extend(refusals.counts("ace fields/reads"));
@@ -476,7 +454,8 @@ impl AtHour for AirAcesAt {
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let history = at.context.history(&params.branch_id)?;
         let mut warnings = Vec::new();
-        let (missing, aces) = roster(frame, &history, at.context.cat.as_deref().ok(), &mut warnings);
+        let (missing, mut aces) = roster(frame, &history, at.context.cat.as_deref().ok(), &mut warnings);
+        portraits(frame, &mut aces, at)?;
         at.context.warnings(&mut warnings);
         let reply = AirAcesReply { read_hour: frame.tables[TableId::AirAces.index()].sampled_at(), missing, aces, warnings };
         dashboard_base::products::check_reply_budget(&reply).map_err(|_| dashboard_core::invalid("Ace roster reply exceeds transport budget; no aces were truncated"))?;
@@ -570,74 +549,24 @@ fn cached_portrait(cache: &Mutex<PortraitCache>, facts: &PortraitOperands, cat: 
     found.get().clone()
 }
 
-impl AtHour for AirAcePortraits {
-    const KEY: &'static str = "air-ace-portraits";
-    const TITLE: &'static str = "Ace portraits";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = AirAcePortraitParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, ids];
-    type Reply = AirAcePortraitReply;
-    type Context = Context;
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        if params.branch_id.parse::<u64>().is_err() || params.ids.is_empty() || params.ids.iter().any(|id| id.parse::<u64>().is_err()) {
-            return Err("Invalid ace portrait request");
+fn portraits(frame: &DecodedFrame, aces: &mut [AirAce], at: &At<'_, Context>) -> io::Result<()> {
+    let rows: BTreeMap<u64, &AirAceRow> = frame.complete::<tables::AirAces>().map(|rows| rows.iter().map(|row| (row.id, row)).collect()).unwrap_or_default();
+    for ace in aces {
+        dashboard_text::metadata::check_cancel(at.cancelled)?;
+        let found = ace
+            .id
+            .parse::<u64>()
+            .ok()
+            .and_then(|id| rows.get(&id))
+            .ok_or_else(|| "Ace not recorded at this hour".to_owned())
+            .and_then(|row| {
+                let cat = at.context.cat.as_ref().map_err(Clone::clone)?;
+                cached_portrait(&at.context.portraits, &PortraitOperands::of(row, ace.tag.clone()), cat)
+            });
+        match found {
+            Ok(image) => ace.portrait = Some(image),
+            Err(reason) => ace.portrait_missing = Some(reason),
         }
-        Ok(())
     }
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![AirAcePortraitParams::decl(), AirAcePortraitReply::decl(), AirAcePortrait::decl()]
-    }
-
-    fn tables(_params: &Self::Params) -> Vec<TableId> {
-        vec![TableId::AirAces, TableId::CountryLinks]
-    }
-
-    fn reads(params: &Self::Params, _owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
-        if step > 0 {
-            return Vec::new();
-        }
-        vec![Read::these(TableId::AirAces, params.ids.iter().filter_map(|id| id.parse::<u64>().ok()).map(u128::from)), Read::all(TableId::CountryLinks)]
-    }
-
-    fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(Context::of(source, load))
-    }
-
-    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let history = at.context.history(&params.branch_id)?;
-        let rows: BTreeMap<u64, &AirAceRow> = frame.complete::<tables::AirAces>().map(|rows| rows.iter().map(|row| (row.id, row)).collect()).unwrap_or_default();
-        let links = frame.complete::<tables::CountryLinks>().ok();
-        let mut refusals = Refusals::default();
-        let mut portraits = Vec::with_capacity(params.ids.len());
-        for id in &params.ids {
-            dashboard_text::metadata::check_cancel(at.cancelled)?;
-            let found = id
-                .parse::<u64>()
-                .ok()
-                .and_then(|id| rows.get(&id))
-                .ok_or_else(|| "Ace not recorded at this hour".to_owned())
-                .and_then(|row| {
-                    let tag = links.and_then(|links| history.tag(links, row.country, frame.hour));
-                    let cat = at.context.cat.as_ref().map_err(Clone::clone)?;
-                    cached_portrait(&at.context.portraits, &PortraitOperands::of(row, tag), cat)
-                });
-            let (image, missing) = match found {
-                Ok(image) => (Some(image), None),
-                Err(reason) => {
-                    refusals.note(&reason, format!("Ace {id}"));
-                    (None, Some(reason))
-                }
-            };
-            portraits.push(AirAcePortrait { id: id.clone(), image, missing });
-        }
-        let mut warnings = Vec::new();
-        at.context.warnings(&mut warnings);
-        warnings.extend(refusals.counts("ace portraits"));
-        let reply = AirAcePortraitReply { portraits, warnings };
-        dashboard_base::products::check_reply_budget(&reply).map_err(|_| dashboard_core::invalid("Ace portrait reply exceeds transport budget; no portraits were truncated"))?;
-        Ok(reply)
-    }
+    Ok(())
 }

@@ -39,7 +39,6 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_land::registrations::LEADERS_CAREER_LEADERHOUR,
     dashboard_naval::registrations::NAVAL_MANAGEMENT_NAVALMANAGEMENT,
     dashboard_air::registrations::AIR_ACES_AIRACESAT,
-    dashboard_air::registrations::AIR_ACES_AIRACEPORTRAITS,
     dashboard_air::registrations::REGIONAL_WEATHER_WEATHERPROVINCES,
     dashboard_politics::registrations::FOCUS_FOCUSUNAVAILABLEAT,
     dashboard_politics::registrations::STABILITY_COUNTRYSTABILITYBREAKDOWN,

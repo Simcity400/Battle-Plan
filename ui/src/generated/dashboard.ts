@@ -5164,7 +5164,11 @@ aircraft: Array<AirAceAircraft> | null, alive: boolean,
 /**
  * The first hour the timeline held its row: an upper bound of when it became an ace.
  */
-firstSeen: number | null, death: AirAceDeath | null, };
+firstSeen: number | null, death: AirAceDeath | null,
+/**
+ * The ace's portrait through the recorded content stack; none with `portrait_missing` saying why.
+ */
+portrait: string | null, portraitMissing: string | null, };
 export type AirAceAircraft = { id: string, name: string | null,
 /**
  * Why the name is not shown, without one.

@@ -147,6 +147,39 @@ export const FAMILY_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'aces',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'aces',
+      DEFAULT_VIEW,
+      () => import('./aces/acesProjection.ts'),
+      mod => ({ projection: mod.acesProjection, declaration: mod.acesDeclaration }),
+    ),
+  },
+  {
+    kind: 'faction-goals',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'faction-goals',
+      DEFAULT_VIEW,
+      () => import('./faction-goals/factionGoalsProjection.ts'),
+      mod => ({ projection: mod.factionGoalsProjection, declaration: mod.factionGoalsDeclaration }),
+    ),
+  },
+  {
+    kind: 'most-decorated-divisions',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'most-decorated-divisions',
+      DEFAULT_VIEW,
+      () => import('./most-decorated-divisions/mostDecoratedProjection.ts'),
+      mod => ({ projection: mod.mostDecoratedProjection, declaration: mod.mostDecoratedDeclaration }),
+    ),
+  },
+  {
     kind: 'political-power',
     view: DEFAULT_VIEW,
     family: 'time-chart',

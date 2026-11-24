@@ -47,6 +47,7 @@ export interface TableCell {
   readonly format?: ValueFormat;
   readonly icon?: string;
   readonly iconSlot?: boolean;
+  readonly iconPending?: boolean;
   readonly looks?: readonly CountryLook[];
   readonly lookHour?: number;
   readonly country?: string;
@@ -148,7 +149,7 @@ export function resolveCellAtHour(cell: TableCell, hour: number): { readonly val
   assertValue(cell.value, 'table cell');
   if (cell.bar) assertValue(cell.bar.fraction, 'table cell bar');
   if (cell.sortValue) assertValue(cell.sortValue, 'table cell sortValue');
-  return { value: cell.value, icon: cell.icon, missingName: false };
+  return { value: cell.value, icon: cell.icon, ...(cell.iconPending ? { iconPending: true } : {}), missingName: false };
 }
 
 export function rowNameAtHour(row: TableRow, firstColumnKey: string | undefined, hour: number): string {
@@ -884,6 +885,7 @@ export interface DeclarativeColumnSpec<TRow, TOptions = unknown> extends TableCo
   readonly whenNull?: DeclarativeNullable<TRow, TOptions>;
   readonly partial?: (row: TRow, live: LiveValues<number | bigint | string> | null, options: TOptions) => string | null;
   readonly icon?: (row: TRow, options: TOptions) => string | undefined;
+  readonly iconPending?: (row: TRow, options: TOptions) => boolean;
   readonly iconSlot?: boolean;
   readonly country?: string | ((row: TRow, options: TOptions) => string | null);
   readonly looks?: (row: TRow, options: TOptions) => readonly CountryLook[] | undefined;
@@ -1185,6 +1187,7 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
         value: cellValue,
         ...(col.format ? { format: col.format } : {}),
         ...(col.icon ? { icon: col.icon(row, options) } : {}),
+        ...(col.iconPending?.(row, options) ? { iconPending: true } : {}),
         ...(iconSlot ? { iconSlot: true } : {}),
         ...(looks ? { looks } : {}),
         ...(cellLookHour !== undefined ? { lookHour: cellLookHour } : {}),
@@ -1201,6 +1204,7 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
       value: cellValue,
       ...(col.format ? { format: col.format } : {}),
       ...(col.icon ? { icon: col.icon(row, options) } : {}),
+      ...(col.iconPending?.(row, options) ? { iconPending: true } : {}),
       ...(iconSlot ? { iconSlot: true } : {}),
       ...(looks ? { looks } : {}),
       ...(countryTag ? { country: countryTag } : {}),
