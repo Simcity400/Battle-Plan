@@ -5,8 +5,7 @@ use crate::products::focus_dto::{FocusEntry, FocusHistory, FocusOrder, FocusProg
 use dashboard_base::Source;
 use dashboard_text::metadata::check_cancel;
 use dashboard_query::{Query, cost, identity::Holder};
-use replay_columnar::manifest::Status;
-use replay_lanes::lanes::{self, Cell, History, Keys, StatusRun};
+use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::{FocusRow, TableId, tables};
 use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
@@ -66,7 +65,7 @@ struct Order {
 struct CarryState {
     who: (u32, u32),
     last_hour: i32,
-    dates: BTreeMap<Vec<u8>, Option<i32>>,
+    dates: BTreeMap<Vec<u8>, i32>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -187,10 +186,10 @@ impl Fold {
         let key = u128::from(who.1);
         let focus = cost::storage(|| lanes::history(recording, run, TableId::Focus, &columns.focus(), Keys::These(&[key]), first, last))?;
         let done = cost::storage(|| lanes::history(recording, run, TableId::CompletedFocuses, &[columns.token], Keys::Range(key << 32, key << 32 | 0xFFFF_FFFF), first, last))?;
-        let done_statuses = if recording.predates(TableId::CompletedFocuses.index()).is_some() {
+        let done_reads = if recording.predates(TableId::CompletedFocuses.index()).is_some() {
             Vec::new()
         } else {
-            cost::storage(|| lanes::statuses(recording, run, TableId::CompletedFocuses, first, last))?
+            cost::storage(|| lanes::complete_reads(recording, run, TableId::CompletedFocuses, first, last))?
         };
         check_cancel(cancelled)?;
         let [tree, current, continuous, progress, paused, count] = columns.focus().map(|column| place(&focus, column));
@@ -207,7 +206,7 @@ impl Fold {
             .iter()
             .map(|step| step.hour)
             .chain(rows.iter().map(|(hour, ..)| *hour))
-            .chain(done_statuses.iter().map(|status| status.first))
+            .chain(done_reads.iter().flat_map(|&(start, end)| [Some(start), (end < last).then_some(end + 1)]).flatten())
             .chain([first])
             .collect();
         hours.sort_unstable();
@@ -219,6 +218,7 @@ impl Fold {
         for (index, &hour) in hours.iter().enumerate() {
             let end = hours.get(index + 1).map_or(last, |next| next - 1);
             let mut changed = known.is_none();
+            let mut listed_changed = false;
             while let Some(next) = steps.get(step).filter(|next| next.hour <= hour) {
                 let before = cells;
                 cells = next.cells.as_deref();
@@ -231,9 +231,10 @@ impl Fold {
                     None => listed.remove(&ordinal),
                 };
                 changed = true;
+                listed_changed = true;
                 row += 1;
             }
-            let done_complete = status_complete(&done_statuses, hour);
+            let done_complete = read_complete(&done_reads, hour, end);
             let order = if changed {
                 order_of(&done, &written, cells, &listed, [tree, current, continuous, paused, count])
             } else {
@@ -243,26 +244,26 @@ impl Fold {
             match (order, raw) {
                 (Ok(order), Some(Cell::Number(raw))) => {
                     known = Some(order.clone());
-                    self.observe(hour, end, who, order, raw, done_complete);
+                    self.observe(hour, end, who, order, raw, done_complete, listed_changed);
                 }
                 (Ok(_), _) => {
                     known = None;
                     self.miss(hour, end, UNRECORDED);
                     self.last = None;
-                    self.advance_carry_without_segment(hour, end, who, done_complete, &done, &listed);
+                    self.advance_carry_without_segment(hour, end, who, done_complete, listed_changed, &done, &listed);
                 }
                 (Err(reason), _) => {
                     known = None;
                     self.miss(hour, end, reason);
                     self.last = None;
-                    self.advance_carry_without_segment(hour, end, who, done_complete, &done, &listed);
+                    self.advance_carry_without_segment(hour, end, who, done_complete, listed_changed, &done, &listed);
                 }
             }
         }
         Ok(())
     }
 
-    fn advance_carry_without_segment(&mut self, hour: i32, end: i32, who: (u32, u32), done_complete: bool, done: &History, listed: &BTreeMap<u32, Cell>) {
+    fn advance_carry_without_segment(&mut self, hour: i32, end: i32, who: (u32, u32), done_complete: bool, listed_changed: bool, done: &History, listed: &BTreeMap<u32, Cell>) {
         if !done_complete {
             self.carry = None;
             return;
@@ -271,6 +272,10 @@ impl Fold {
             self.carry = None;
             return;
         };
+        if !listed_changed || carry.dates.is_empty() {
+            carry.last_hour = end;
+            return;
+        }
         let mut counts: BTreeMap<&[u8], usize> = BTreeMap::new();
         for &cell in listed.values() {
             let Some(bytes) = done.text(cell).filter(|token| !token.is_empty() && token.len() <= TOKEN_BYTES) else {
@@ -285,7 +290,7 @@ impl Fold {
         carry.last_hour = end;
     }
 
-    fn observe(&mut self, hour: i32, end: i32, who: (u32, u32), order: Order, raw: i64, done_complete: bool) {
+    fn observe(&mut self, hour: i32, end: i32, who: (u32, u32), order: Order, raw: i64, done_complete: bool, listed_changed: bool) {
         let continuing = self.last.is_some_and(|(end, held)| i64::from(end) + 1 == i64::from(hour) && held == who);
         let unchanged = continuing && self.held.as_ref().is_some_and(|(held, before)| *held == who && *before == order);
         if unchanged {
@@ -296,7 +301,7 @@ impl Fold {
                 if let Some(carry) = self.carry.as_mut().filter(|carry| carry.who == who && i64::from(carry.last_hour) + 1 == i64::from(hour)) {
                     carry.last_hour = end;
                 } else {
-                    self.carry = None;
+                    self.carry = Some(CarryState { who, last_hour: end, dates: BTreeMap::new() });
                 }
             } else {
                 self.carry = None;
@@ -312,18 +317,23 @@ impl Fold {
                 (Some(_), Some(segment)) if extends => &segment.order.completed,
                 _ => &[],
             };
-            let mut now_counts: BTreeMap<&[u8], usize> = BTreeMap::new();
-            for bytes in &order.completed_bytes {
-                if std::str::from_utf8(bytes).is_ok() {
-                    *now_counts.entry(bytes.as_slice()).or_default() += 1;
-                }
-            }
-            let carry_dates = if extends || !done_complete {
-                None
-            } else {
-                self.carry.as_ref().filter(|carry| carry.who == who && i64::from(carry.last_hour) + 1 == i64::from(hour)).map(|carry| &carry.dates)
-            };
+            let prev_carry = done_complete
+                .then(|| self.carry.as_ref().filter(|carry| carry.who == who && i64::from(carry.last_hour) + 1 == i64::from(hour)))
+                .flatten();
             let held = if extends { before.as_ref().map_or(0, |before| before.completed_bytes.len()) } else { 0 };
+            let keep_carry = !listed_changed && extends && held == order.completed_bytes.len() && prev_carry.is_some();
+            let now_counts = if done_complete && !keep_carry {
+                let mut counts: BTreeMap<&[u8], usize> = BTreeMap::new();
+                for bytes in &order.completed_bytes {
+                    if std::str::from_utf8(bytes).is_ok() {
+                        *counts.entry(bytes.as_slice()).or_default() += 1;
+                    }
+                }
+                Some(counts)
+            } else {
+                None
+            };
+            let carry_dates = if extends { None } else { prev_carry.map(|carry| &carry.dates) };
             let completed: Vec<FocusEntry> = order
                 .completed
                 .iter()
@@ -336,8 +346,8 @@ impl Fold {
                         prior.get(position).and_then(|entry| entry.completed_by_hour)
                     } else if extends {
                         continuing.then_some(hour)
-                    } else if now_counts.get(bytes.as_slice()) == Some(&1) {
-                        carry_dates.and_then(|dates| dates.get(bytes.as_slice())).copied().flatten()
+                    } else if now_counts.as_ref().is_some_and(|counts| counts.get(bytes.as_slice()) == Some(&1)) {
+                        carry_dates.and_then(|dates| dates.get(bytes.as_slice())).copied()
                     } else {
                         None
                     },
@@ -346,16 +356,29 @@ impl Fold {
             if extends {
                 self.completions.extend(completed[held..].iter().filter(|entry| entry.completed_by_hour.is_some()).cloned());
             }
-            self.carry = if done_complete {
-                let dates = completed
-                    .iter()
-                    .zip(&order.completed_bytes)
-                    .filter(|(_, bytes)| now_counts.get(bytes.as_slice()) == Some(&1))
-                    .map(|(entry, bytes)| (bytes.clone(), entry.completed_by_hour))
-                    .collect();
-                Some(CarryState { who, last_hour: end, dates })
-            } else {
+            self.carry = if !done_complete {
                 None
+            } else if keep_carry {
+                let mut carry = prev_carry.expect("checked").clone();
+                carry.last_hour = end;
+                Some(carry)
+            } else {
+                let counts = now_counts.as_ref().expect("built when done_complete and !keep_carry");
+                let mut next_dates = BTreeMap::new();
+                for (position, bytes) in order.completed_bytes.iter().enumerate() {
+                    if counts.get(bytes.as_slice()) != Some(&1) {
+                        continue;
+                    }
+                    let eligible = if extends && position >= held {
+                        continuing.then_some(hour)
+                    } else {
+                        prev_carry.and_then(|carry| carry.dates.get(bytes.as_slice())).copied()
+                    };
+                    if let Some(date) = eligible {
+                        next_dates.insert(bytes.clone(), date);
+                    }
+                }
+                Some(CarryState { who, last_hour: end, dates: next_dates })
             };
             self.segments.push(Segment {
                 first: hour,
@@ -435,9 +458,9 @@ fn written_rows(recording: &replay_recording::columnar_frames::Recording, run: u
     Ok(rows)
 }
 
-fn status_complete(statuses: &[StatusRun], hour: i32) -> bool {
-    let at = statuses.partition_point(|run| run.last < hour);
-    statuses.get(at).is_some_and(|run| run.first <= hour && run.status == Status::Complete)
+fn read_complete(reads: &[(i32, i32)], hour: i32, end: i32) -> bool {
+    let at = reads.partition_point(|&(_, last)| last < hour);
+    reads.get(at).is_some_and(|&(first, last)| first <= hour && end <= last)
 }
 
 fn order_of(done: &History, written: &BTreeMap<i32, FocusRow>, cells: Option<&[Cell]>, listed: &BTreeMap<u32, Cell>, places: [usize; 5]) -> Result<Order, &'static str> {
