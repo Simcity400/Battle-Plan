@@ -52,6 +52,24 @@ pub(super) fn compare_variants(
         compare_variant_stats(frame, saved, report)?;
         mios::compare_designs(frame, saved, tokens, report)
     });
+    complete &= report.attempt("equipment category families", |report| {
+        let Some(tables) = engine_executable::executable_tables::current() else {
+            report.limitation(
+                "the game's executable tables are not loaded",
+                "equipment category families",
+            );
+            return Ok(());
+        };
+        let auxiliary = tables
+            .auxiliary
+            .as_ref()
+            .map_err(|withheld| invalid(withheld.to_string()))?;
+        let families = auxiliary
+            .category_families
+            .as_ref()
+            .map_err(|withheld| invalid(withheld.to_string()))?;
+        compare_category_families(frame, saved, families, report)
+    });
     report.limitation("the variant writer does not serialize the classifier_flags or mission_mask caches; their captured native operands have no direct save comparison", "VariantDefinitions.classifier_flags, VariantDefinitions.mission_mask");
     report.limitation("native boolean serialization maps every nonzero byte to yes; text flags cannot certify raw byte values beyond truthiness", "VariantDefinitions.append_variant_name, VariantDefinitions.obsolete, VariantDefinitions.icon_active, VariantModules.definition_active");
     report.limitation("the variant writer writes an active icon entry's string without its kind (the loader reclassifies a string holding / or . as a path), and nothing of an inactive entry", "VariantDefinitions.icon_kind, VariantDefinitions.icon of inactive entries");
@@ -242,6 +260,47 @@ fn compare_variant_definitions(
         report.difference(format!("variant {id}"), "present", "absent");
     }
     report.compared("VariantDefinitions", definition_matches);
+    Ok(())
+}
+
+pub(super) fn compare_category_families(
+    frame: &DecodedFrame,
+    saved: &production::Pack,
+    families: &engine_executable::executable_tables::auxiliary::CategoryFamilies,
+    report: &mut Report,
+) -> io::Result<()> {
+    let saved_variants = saved
+        .variants
+        .as_ref()
+        .ok_or_else(|| invalid("save lacks the equipment variant registry"))?;
+    let designers = families.ship_designer | families.tank_designer | families.plane_designer;
+    let mut compared = 0;
+    for row in complete::<tables::VariantDefinitions>(frame)? {
+        let flags = row.classifier_flags;
+        let held = [families.land, families.air, families.naval]
+            .into_iter()
+            .filter(|&family| flags & family != 0)
+            .count();
+        if held > 1 {
+            report.difference(
+                format!("variant {}.classifier_flags families", row.id),
+                format!("{held} of land, air and naval"),
+                "at most one",
+            );
+        }
+        let designed = saved_variants
+            .get(&row.id)
+            .is_some_and(|variant| variant.modules.is_some());
+        if designed && flags & designers == 0 {
+            report.difference(
+                format!("variant {} designer", row.id),
+                "none of the recorded designer categories",
+                "a designer category, since the save holds its modules",
+            );
+        }
+        compared += 1;
+    }
+    report.compared("equipment category families", compared);
     Ok(())
 }
 

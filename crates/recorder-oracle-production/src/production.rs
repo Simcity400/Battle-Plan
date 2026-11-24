@@ -1464,6 +1464,8 @@ fn icon_field(report: &mut Report, label: &str, active: u8, icon: &[u8], saved: 
 mod variants;
 pub use variants::compare_variant_archetypes;
 use variants::compare_variants;
+#[cfg(test)]
+use variants::compare_category_families;
 
 mod army_upgrades;
 use army_upgrades::compare_army_upgrades;

@@ -2627,3 +2627,33 @@ fn variant_stats_oracle_checks_published_invariants_and_reports_withheld_lanes()
         fighter_bad.differences
     );
 }
+
+#[test]
+fn a_designed_variant_outside_the_recorded_designers_or_in_two_families_is_a_difference() {
+    let families = engine_executable::executable_tables::auxiliary::CategoryFamilies {
+        land: 0x3c,
+        air: 0xfc00,
+        naval: 0x3c1,
+        ship_designer: 0x1c0,
+        tank_designer: 0x4,
+        plane_designer: 0x3c00,
+    };
+    let saved = production::parse(
+        &parser::parse(b"equipments={tank={id={id=1 type=70} modules={main=m}} rifle={id={id=2 type=70}}}")
+            .unwrap()
+            .items,
+    )
+    .unwrap();
+    let row = |id: u64, classifier_flags| VariantDefinitionRow { id: (id << 32) | 70, classifier_flags, ..Default::default() };
+    let run = |rows| {
+        let mut frame = output_frame(22, false, &[], &[]);
+        *frame.tables[TableId::VariantDefinitions.index()] = TableView::Complete(TableRows::VariantDefinitions(rows));
+        let mut report = Report::default();
+        compare_category_families(&frame, &saved, &families, &mut report).unwrap();
+        report
+    };
+    let report = run(vec![row(1, 0x4), row(2, 0x8)]);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    let report = run(vec![row(1, 0x8), row(2, 0x8 | 0x400)]);
+    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+}
