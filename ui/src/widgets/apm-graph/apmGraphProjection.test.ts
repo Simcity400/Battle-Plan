@@ -93,4 +93,72 @@ describe('apm-graph projection', () => {
     assert.equal(model.series[8]?.endLabel, null);
     assert.equal(model.auditRows?.length, 8);
   });
+
+  it('S7: retains departed players from tiles, surfaces product gap flag, and uses exact hovered-hour rates', () => {
+    const departedId = 'user:departed';
+    const activeId = 'user:active';
+    const head: ApmReply = {
+      available: true,
+      players: [],
+      series: [{
+        id: activeId,
+        name: 'Active',
+        nameMissing: null,
+        tag: 'ITA',
+        hour: H1943,
+        summary: { apm: 42, confirmedApm: 42, orders: '42', pausedOrders: '0', unpausedMinutes: 1, complete: true, gaps: true },
+        points: [],
+      }],
+      warnings: [],
+    };
+    const hoverReply: ApmReply = {
+      available: true,
+      players: [],
+      series: [{
+        id: departedId,
+        name: 'Departed',
+        nameMissing: null,
+        tag: 'GER',
+        hour: H1936 + 1,
+        summary: { apm: 20, confirmedApm: 20, orders: '20', pausedOrders: '0', unpausedMinutes: 1, complete: true, gaps: true },
+        points: [],
+      }],
+      warnings: [],
+    };
+    const tiledMap = new Map([
+      [activeId, boundTiledSeries(makeTiled(activeId, 42), displayedHour(H1943))],
+      [departedId, boundTiledSeries(makeTiled(departedId, 20), displayedHour(H1943))],
+    ]);
+    const readView = createBoundedReadView({
+      hour: H1943,
+      panels: new Map([['head', head]]),
+      series: new Map([['apm', tiledMap]]),
+      hovers: new Map([['hover', { hour: H1936 + 1, data: hoverReply }]]),
+    });
+    const model = apmGraphProjection.project(readView, {
+      group: 'player',
+      extent: [H1936, H1943],
+      surface: '#111111',
+      gaps: [],
+      yMin: null,
+      yMax: null,
+      available: true,
+      players: [
+        { id: activeId, name: 'Active', nameMissing: null, tags: ['ITA'] },
+        { id: departedId, name: 'Departed', nameMissing: null, tags: ['GER'] },
+      ],
+    } as Parameters<typeof apmGraphProjection.project>[1]);
+    const departed = model.series.find(s => s.id === departedId);
+    assert.ok(departed, 'departed player who left the trailing window keeps their recorded line');
+    assert.equal(departed?.headValue, null);
+    assert.equal(departed?.endLabel, null);
+    assert.equal(departed?.name, 'Departed');
+    const activeSeries = model.series.find(s => s.id === activeId);
+    assert.equal(activeSeries?.endLabel?.valueMuted, true, 'gap flag marks end label muted');
+    assert.ok(model.note?.includes('not recorded'), 'product gap flag surfaces in chart note');
+    assert.ok(model.hoverDetail, 'exact hovered-hour reply builds hoverDetail');
+    assert.equal(model.hoverDetail?.hour, H1936 + 1);
+    assert.ok(model.hoverDetail?.items.some(item => item.label === 'Departed' && item.value === '20'));
+    assert.ok(model.hoverDetail?.items.some(item => item.tone === 'muted' && item.label.includes('not recorded')));
+  });
 });
