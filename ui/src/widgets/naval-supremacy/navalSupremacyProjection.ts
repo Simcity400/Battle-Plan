@@ -4,7 +4,7 @@ import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection, BarsSegment } from '../../families/bars/model.ts';
 import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/shareRows.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
-import { dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
+import { dayHistoryNames, dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
 import { findRunAtHour, spanIndexAt, type HeatLaneCell, type HeatLaneReadout, type HeatLaneRow, type HeatLaneRun, type HeatLanesModel, type HeatLanesProjection } from '../../families/heat/lanesModel.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
@@ -126,8 +126,8 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
     pickedHeading: PICKED_REGIONS_HEADING,
     automaticHeading: mostActiveHeading(look.viewer),
     addRegionLabel: ADD_REGION_LABEL,
-    ...(reply.regions.length ? {} : { empty: `No naval activity for ${look.viewer} at this date.` }),
-    warnings: reply.warnings,
+    ...(reply.regions.length ? {} : reply.unranked ? { empty: reply.unranked, emptyKind: 'unavailable' as const } : { empty: `No naval activity for ${look.viewer} at this date.` }),
+    warnings: reply.regions.length && reply.unranked ? [...reply.warnings, reply.unranked] : reply.warnings,
   });
 }
 
@@ -228,8 +228,8 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
   const now = readView.panel<NavalSupremacyReply>('now');
   if (!now || !options.surface || now.lastHour > hour) return emptyLanes(hour, {});
   const tiles: NavalSupremacyReply[] = [];
-  for (let k = 0; k < options.tiles; k++) {
-    const tile = readView.panel<NavalSupremacyReply>(`tile:${k}`);
+  for (const name of dayHistoryNames(options.tiles)) {
+    const tile = readView.panel<NavalSupremacyReply>(name);
     if (tile && tile.lastHour < now.firstHour) tiles.push(tile);
   }
   const look = lookOf(readView, now, options);
@@ -275,13 +275,13 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
       const readoutDay = reply === now && Math.floor((at - now.firstDayHour) / now.dayHours) === lastDay;
       return inspectDay(reply, region, row.label, at, look, findRunAtHour(row.runs, at, through)?.cell, readoutDay);
     },
-    ...(rows.length ? {} : { empty: `No naval activity for ${look.viewer} at this date.` }),
-    warnings: [...new Set(pieces.flatMap(reply => reply.warnings))],
+    ...(rows.length ? {} : now.unranked ? { empty: now.unranked, emptyKind: 'unavailable' as const } : { empty: `No naval activity for ${look.viewer} at this date.` }),
+    warnings: [...new Set(pieces.flatMap(reply => reply.warnings).concat(rows.length && now.unranked ? [now.unranked] : []))],
   };
 }
 
 function refusedOf(readView: BoundedReadView, tiles: number): string | undefined {
-  return readView.refused('now') ?? Array.from({ length: tiles }, (_, k) => readView.refused(`tile:${k}`)).find(Boolean);
+  return readView.refused('now') ?? dayHistoryNames(tiles).map(name => readView.refused(name)).find(Boolean);
 }
 
 function supremacySources(ctx: FamilyPlanContext, shares: boolean): SourcePlan {
@@ -296,7 +296,7 @@ function supremacySources(ctx: FamilyPlanContext, shares: boolean): SourcePlan {
     now: {
       params,
       coverage: { mode: 'population', form: 'top', limit: top },
-      span: (params, first, last, rankFrom) => ({ ...params, firstHour: first, lastHour: last, rankFrom }),
+      span: (params, first, last) => ({ ...params, firstHour: first, lastHour: last }),
       validThrough: data => (data as NavalSupremacyReply | undefined)?.validThrough ?? null,
     },
     tile: {

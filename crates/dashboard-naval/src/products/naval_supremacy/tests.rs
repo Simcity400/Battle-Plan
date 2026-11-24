@@ -216,7 +216,6 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
             pinned_regions: None,
             hidden_regions: None,
             top: None,
-            rank_from: None,
         },
         &LoadContext { content: Some(options) },
         &AtomicBool::new(false),
@@ -230,10 +229,12 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
 }
 
 #[test]
-fn completed_days_rank_the_regions_and_a_region_active_only_today_follows_them() {
-    let today = || [(7, 900), (8, 10), (9, 0), (11, 5)].into_iter();
-    assert_eq!(ranked(today(), None, Some(2)), vec![7, 8], "today alone");
-    let completed = HashMap::from([(8, 5_000), (9, 4_000), (10, 0)]);
-    assert_eq!(ranked(today(), Some(completed.clone()), None), vec![8, 9, 7, 11], "held totals order the regions; one active only today comes after, by id; one never active is not ranked");
-    assert_eq!(ranked(today(), Some(completed), Some(1)), vec![8]);
+fn the_automatic_regions_are_ranked_by_the_score_of_the_day_read_at_the_hour() {
+    let run = |first_day, last_day, friendly: &str, enemy: &str| SupremacyRun { first_day, last_day, control: Some(0), friendly: Some(friendly.into()), enemy: Some(enemy.into()), share: None, own: None };
+    let busy_before = vec![run(0, 4, "900", "900"), run(5, 5, "1", "0")];
+    let busy_now = vec![run(0, 4, "0", "0"), run(5, 5, "40", "2")];
+    let idle = vec![run(0, 5, "0", "0")];
+    let regions = [(7, busy_before), (8, busy_now), (9, idle)];
+    assert_eq!(ranked(regions.iter().map(|(id, runs)| (*id, activity_on(runs, 5))), None), vec![8, 7], "the day read at the hour decides, not the days before it; an idle region is not ranked");
+    assert_eq!(ranked(regions.iter().map(|(id, runs)| (*id, activity_on(runs, 2))), Some(1)), vec![7]);
 }

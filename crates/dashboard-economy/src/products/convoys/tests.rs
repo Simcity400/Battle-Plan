@@ -222,7 +222,7 @@ fn regions(from: i32, to: i32) -> ConvoyHealthParams {
         pinned_regions: None,
         hidden_regions: None,
         top: None,
-        rank_from: None,
+        list_from: None,
         every: None,
     }
 }
@@ -265,19 +265,25 @@ fn a_reply_holds_nothing_after_its_hour_and_names_the_last_hour_nothing_shown_ch
 }
 
 #[test]
-fn rank_from_ranks_over_the_completed_days_and_every_lists_each_region_unranked() {
+fn the_automatic_regions_are_ranked_at_the_asked_hour_and_every_lists_each_region_unranked() {
     let hours: Vec<_> = (0..48).map(|hour| (hour, true, if hour < 24 { vec![(17, 40_000), (18, 90_000)] } else { vec![(17, 90_000), (18, 10_000)] })).collect();
     let source = synthetic("convoy-rank", &hours);
-    let today = ConvoyHealthParams { top: Some(1), ..regions(24, 30) };
-    assert_eq!(health_of(&source, &today).regions[0].region, 18, "today alone, 18 lost more");
-    assert_eq!(health_of(&source, &today).valid_through, 30, "an order over today's hours holds for its hour only");
-    let ranked = health_of(&source, &ConvoyHealthParams { rank_from: Some(0), ..today });
-    assert_eq!(ranked.regions.iter().map(|r| r.region).collect::<Vec<_>>(), vec![17], "over the completed day, 17 lost more");
-    assert_eq!(ranked.valid_through, 47, "the order and every cell hold to the day's end");
-    assert!(ranked.regions[0].cells.iter().all(|cell| cell.first_hour >= 24 && cell.last_hour <= 30));
-    let next = health_of(&source, &ConvoyHealthParams { rank_from: Some(0), top: Some(1), ..regions(24, 31) });
-    assert_eq!(next.regions[0].region, 17, "the held totals give the same order an hour on");
+    let today = health_of(&source, &ConvoyHealthParams { top: Some(1), ..regions(24, 30) });
+    assert_eq!(today.regions.iter().map(|r| r.region).collect::<Vec<_>>(), vec![18], "at hour 30, 18 loses more, whatever the day before held");
+    assert_eq!(today.valid_through, 47, "the order and every cell hold to the end of the day");
+    assert!(today.regions[0].cells.iter().all(|cell| cell.first_hour >= 24 && cell.last_hour <= 30));
+    assert_eq!(today.unranked, None);
+    let before = health_of(&source, &ConvoyHealthParams { top: Some(2), ..regions(0, 23) });
+    assert_eq!(before.regions.iter().map(|r| r.region).collect::<Vec<_>>(), vec![17, 18], "most loss first, a full route after it");
+    assert_eq!(before.valid_through, 23, "both readings change at hour 24");
     let every = health_of(&source, &ConvoyHealthParams { every: Some(true), top: Some(1), ..regions(0, 23) });
     assert_eq!(every.regions.iter().map(|r| r.region).collect::<Vec<_>>(), vec![17, 18]);
     assert!(every.absent.as_ref().is_some_and(|cells| cells.iter().all(|cell| cell.state == ConvoyCellState::NoTraffic)));
+}
+
+#[test]
+fn an_hour_whose_convoy_state_is_not_recorded_ranks_no_automatic_region_and_says_why() {
+    let reply = health_of(&gapped(), &ConvoyHealthParams { top: Some(7), pinned_regions: Some(vec![17]), ..regions(24, 30) });
+    assert!(reply.unranked.is_some());
+    assert_eq!(reply.regions.iter().map(|r| (r.region, r.pinned)).collect::<Vec<_>>(), vec![(17, true)], "the pin stays");
 }

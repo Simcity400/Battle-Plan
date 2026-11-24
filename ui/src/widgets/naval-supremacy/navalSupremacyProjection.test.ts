@@ -113,12 +113,12 @@ test('a hundred played hours ask each completed tile once, the current tile once
       const units = askUnits(plan.entries, { following: true, trackOffset: 0, content: 0, hour, playback: () => ({ branch, effectiveEndHour: end, gate }) });
       for (const unit of units) {
         if (unit.key !== null && unit.key !== keys.get(unit.name)) {
-          const asked = (unit.spec!.request as unknown as { params: { firstHour: number; lastHour: number; rankFrom?: number } }).params;
+          const asked = (unit.spec!.request as unknown as { params: { firstHour: number; lastHour: number; rankFrom?: unknown } }).params;
           const width = asked.lastHour - asked.firstHour + 1;
           widest = Math.max(widest, width);
           if (unit.name === 'now') {
             widestNow = Math.max(widestNow, width);
-            assert.equal(asked.rankFrom, 0, 'today is ranked over the days before it');
+            assert.equal(asked.rankFrom, undefined, 'today is ranked at its own hour');
           } else tileAsks++;
         }
         keys.set(unit.name, unit.key);
@@ -143,4 +143,13 @@ test('history comes from the tiles, laid out once, and the rows and readout from
   assert.equal(deriveLanesTooltip(model, 0, 55)!.hour, 60);
   at(61);
   assert.equal(reads, 1);
+});
+
+test('an hour whose day is not recorded lists no automatic region and says why, never "no activity"', () => {
+  const data = { ...reply(60), regions: [], unranked: 'The day was not recorded' };
+  const timeline = projectSupremacyTimeline(view(60, data), { viewer: null, surface: SURFACE, tiles: 0 });
+  assert.equal(timeline.empty, 'The day was not recorded');
+  assert.equal(timeline.emptyKind, 'unavailable');
+  const shares = projectSupremacyShares(view(60, data), { viewer: null, surface: SURFACE, tiles: 0 });
+  assert.equal(shares.empty, 'The day was not recorded');
 });

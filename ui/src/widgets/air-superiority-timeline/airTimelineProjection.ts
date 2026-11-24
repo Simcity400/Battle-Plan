@@ -3,7 +3,7 @@ import { airChoiceKey } from '../../dashboard/airOptions.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
-import { dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
+import { dayHistoryNames, dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
 import {
   spanIndexAt,
@@ -276,7 +276,7 @@ function datedSignature(look: Look, first: number, last: number): string {
   const out: string[] = [];
   for (let at = first; at <= last;) {
     const dated = look.viewer(at);
-    out.push(dated.colour);
+    out.push(`${at}:${dated.colour}`);
     if (dated.through >= last) break;
     at = dated.through + 1;
   }
@@ -285,13 +285,13 @@ function datedSignature(look: Look, first: number, last: number): string {
 
 export function projectAirTimeline(readView: BoundedReadView, options: AirTimelineProjectionOptions): HeatLanesModel {
   const hour: number = readView.hour;
-  const refused = readView.refused('now') ?? Array.from({ length: options.tiles }, (_, k) => readView.refused(`tile:${k}`)).find(Boolean);
+  const refused = readView.refused('now') ?? dayHistoryNames(options.tiles).map(name => readView.refused(name)).find(Boolean);
   if (refused) return emptyModel(hour, { refused });
   const now = readView.panel<AirTimelineReply>('now');
   if (!now || !options.surface || now.lastHour > hour) return emptyModel(hour, {});
   const tiles: AirTimelineReply[] = [];
-  for (let k = 0; k < options.tiles; k++) {
-    const tile = readView.panel<AirTimelineReply>(`tile:${k}`);
+  for (const name of dayHistoryNames(options.tiles)) {
+    const tile = readView.panel<AirTimelineReply>(name);
     if (tile && tile.lastHour < now.firstHour) tiles.push(tile);
   }
   const through = now.lastHour;

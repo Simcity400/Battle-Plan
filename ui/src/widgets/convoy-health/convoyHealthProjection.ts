@@ -1,7 +1,7 @@
 import { CHART_MEASURE_COLOURS, CONVOY_EFFICIENCY_STOPS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
-import { dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
+import { dayHistoryNames, dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
 import {
   spanIndexAt,
@@ -323,13 +323,13 @@ function emptyModel(hour: number, extra: Partial<HeatLanesModel>): HeatLanesMode
 
 export function projectConvoyHealth(readView: BoundedReadView, options: ConvoyProjectionOptions): HeatLanesModel {
   const hour: number = readView.hour;
-  const refused = readView.refused('now') ?? Array.from({ length: options.tiles }, (_, k) => readView.refused(`tile:${k}`)).find(Boolean);
+  const refused = readView.refused('now') ?? dayHistoryNames(options.tiles).map(name => readView.refused(name)).find(Boolean);
   if (refused) return emptyModel(hour, { refused });
   const now = readView.panel<ConvoyHealthReply>('now');
   if (!now || !options.surface || now.lastHour > hour || now.view !== options.view) return emptyModel(hour, {});
   const tiles: ConvoyHealthReply[] = [];
-  for (let k = 0; k < options.tiles; k++) {
-    const tile = readView.panel<ConvoyHealthReply>(`tile:${k}`);
+  for (const name of dayHistoryNames(options.tiles)) {
+    const tile = readView.panel<ConvoyHealthReply>(name);
     if (tile && tile.view === now.view && tile.lastHour < now.firstHour) tiles.push(tile);
   }
   const through = Math.min(hour, now.validThrough);
@@ -348,8 +348,8 @@ export function projectConvoyHealth(readView: BoundedReadView, options: ConvoyPr
     rows,
     ...(now.view === 'regions' ? { regions: regionLanes(subject) } : {}),
     inspect: (rowIndex, at) => built[rowIndex]?.inspect(at) ?? null,
-    ...(rows.length ? {} : { empty: `${now.view === 'regions' ? 'No convoys' : 'No convoyed trade'} for ${subject ?? 'this country'} at this date.` }),
-    warnings: [...new Set([...tiles, now].flatMap(reply => reply.warnings))],
+    ...(rows.length ? {} : now.unranked ? { empty: now.unranked, emptyKind: 'unavailable' as const } : { empty: `${now.view === 'regions' ? 'No convoys' : 'No convoyed trade'} for ${subject ?? 'this country'} at this date.` }),
+    warnings: [...new Set([...tiles, now].flatMap(reply => reply.warnings).concat(rows.length && now.unranked ? [now.unranked] : []))],
   };
 }
 
@@ -389,7 +389,7 @@ export const convoyHealthDeclaration: HeatLanesWidgetDeclaration<ConvoyProjectio
         now: {
           params: shown,
           coverage: view === 'regions' ? { mode: 'population', form: 'top', limit: top } : { mode: 'population', form: 'all' },
-          span: (base, first, last, rankFrom) => ({ ...base, from: first, to: last, rankFrom }),
+          span: (base, first, last, spanFirst) => ({ ...base, from: first, to: last, ...(view === 'trade' ? { listFrom: spanFirst } : {}) }),
           validThrough: data => (data as ConvoyHealthReply | undefined)?.validThrough ?? null,
         },
         tile: {

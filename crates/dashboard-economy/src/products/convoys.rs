@@ -134,10 +134,10 @@ pub struct ConvoyHealthParams {
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<usize>,
-    #[doc = " Ranks the regions by their convoy losses over the hours from this one to the day before `from`, kept per source and extended by the days added since; in the trade view, lists every deal and lease of those hours."]
+    #[doc = " In the trade view, also lists every deal and lease seen from this hour to the day before `from`, from a per-source index extended by the days added since."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub rank_from: Option<i32>,
+    pub list_from: Option<i32>,
     #[doc = " Every region with a convoy efficiency in the hours, unranked, and `absent`: the cells of a region without one."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
@@ -258,6 +258,9 @@ pub struct ConvoyHealthReply {
     pub unheld: Vec<HourSpan>,
     pub gaps: Vec<HourSpan>,
     pub regions: Vec<ConvoyRegion>,
+    #[doc = " Why the automatic regions could not be ranked at the asked hour: the regions' convoy state there is not recorded. No automatic region is listed then."]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub unranked: Option<String>,
     #[doc = " With `every`: the cells of a region without a convoy efficiency."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub absent: Option<Vec<ConvoyCellRun>>,
@@ -959,75 +962,46 @@ fn window<'q>(source: &Source, query: &'q Query<'_>, params: &ConvoyHealthParams
     Ok(Window { gathered, known, unheld, gaps })
 }
 
-fn score(cells: &[ConvoyCellRun]) -> (i128, u64) {
-    let mut deficit: i128 = 0;
-    let mut active: u64 = 0;
-    for run in cells {
-        if let ConvoyCellState::Efficiency { value } = run.state {
-            let span = (i64::from(run.last_hour) - i64::from(run.first_hour) + 1).max(0) as u64;
-            active += span;
-            deficit += i128::from((i64::from(SCALE) - value).max(0)) * i128::from(span);
-        }
-    }
-    (deficit, active)
-}
-
 fn has_efficiency(cells: &[ConvoyCellRun]) -> bool {
     cells.iter().any(|run| matches!(run.state, ConvoyCellState::Efficiency { .. }))
 }
 
 #[derive(Clone, Default)]
-struct Completed {
+struct Listed {
     through: i32,
-    regions: HashMap<u32, (i128, u64)>,
     deals: BTreeSet<u128>,
     leases: BTreeSet<u128>,
 }
 
 #[derive(Default)]
-struct HeldCompleted(HashMap<String, Completed>);
+struct HeldListed(HashMap<String, Listed>);
 
-const HELD_COMPLETED: usize = 32;
+const HELD_LISTED: usize = 32;
 
-fn completed(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, from: i32, through: i32, cancelled: &AtomicBool) -> io::Result<Completed> {
-    let key = format!("{}|{:?}|{:?}|{from}", params.branch_id, params.view, params.country);
-    let state = source.state::<HeldCompleted>();
+fn listed_since(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, from: i32, through: i32, cancelled: &AtomicBool) -> io::Result<Listed> {
+    let key = format!("{}|{:?}|{from}", params.branch_id, params.country);
+    let state = source.state::<HeldListed>();
     let held = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.get(&key).filter(|held| held.through <= through).cloned();
-    let (start, mut done) = held.map_or_else(|| (from, Completed::default()), |held| (held.through + 1, held));
+    let (start, mut listed) = held.map_or_else(|| (from, Listed::default()), |held| (held.through + 1, held));
     if start > through {
-        return Ok(done);
+        return Ok(listed);
     }
-    match params.view {
-        ConvoyView::Regions => {
-            let added = window(source, query, params, start, through, cancelled)?;
-            for (&region, efficiency) in &added.gathered.regions {
-                let (deficit, active) = score(&added.cells(region, efficiency, start, through));
-                if deficit > 0 || active > 0 {
-                    let total = done.regions.entry(region).or_default();
-                    total.0 += deficit;
-                    total.1 += active;
-                }
-            }
-        }
-        ConvoyView::Trade => {
-            for stretch in query.timeline.within(start, through) {
-                dashboard_text::metadata::check_cancel(cancelled)?;
-                let index = cached_convoys(source, stretch.run)?;
-                for holder in query.holders.within(&params.country, stretch.first, stretch.last) {
-                    let Holder::Found { id, .. } = holder.holder else { continue };
-                    done.deals.extend(rows_of(&index.deals, id, holder.first, holder.last).into_keys());
-                    done.leases.extend(rows_of(&index.leases, id, holder.first, holder.last).into_keys());
-                }
-            }
+    for stretch in query.timeline.within(start, through) {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let index = cached_convoys(source, stretch.run)?;
+        for holder in query.holders.within(&params.country, stretch.first, stretch.last) {
+            let Holder::Found { id, .. } = holder.holder else { continue };
+            listed.deals.extend(rows_of(&index.deals, id, holder.first, holder.last).into_keys());
+            listed.leases.extend(rows_of(&index.leases, id, holder.first, holder.last).into_keys());
         }
     }
-    done.through = through;
+    listed.through = through;
     let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if state.0.len() >= HELD_COMPLETED && !state.0.contains_key(&key) {
+    if state.0.len() >= HELD_LISTED && !state.0.contains_key(&key) {
         state.0.clear();
     }
-    state.0.insert(key, done.clone());
-    Ok(done)
+    state.0.insert(key, listed.clone());
+    Ok(listed)
 }
 
 fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<ConvoyHealthReply> {
@@ -1044,17 +1018,13 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
     for spans in held.known.iter().chain([&held.unheld, &gap_spans]) {
         valid = valid.min(unchanged_through(spans, to));
     }
-    let rank_from = params.rank_from.filter(|&rank_from| !every && params.regions.is_none() && rank_from < from);
-    let done = rank_from.map(|rank_from| completed(source, &query, params, rank_from, from - 1, cancelled)).transpose()?;
+    let done = params.list_from.filter(|&list_from| params.view == ConvoyView::Trade && list_from < from).map(|list_from| listed_since(source, &query, params, list_from, from - 1, cancelled)).transpose()?;
 
     let mut region_ids: BTreeSet<u32> = BTreeSet::new();
     if params.view == ConvoyView::Regions {
         region_ids.extend(held.gathered.regions.keys().copied());
         region_ids.extend(params.regions.iter().flatten().copied());
         region_ids.extend(params.pinned_regions.iter().flatten().copied());
-        if let Some(done) = &done {
-            region_ids.extend(done.regions.keys().copied());
-        }
     }
     let named = region_names(source, context, &region_ids, &mut warnings);
     let absent = (params.view == ConvoyView::Regions).then(|| {
@@ -1063,6 +1033,7 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         cut(&mut cells, to);
         cells
     });
+    let mut unranked = None;
     let mut all_regions: BTreeMap<u32, ConvoyRegion> = BTreeMap::new();
     for region in region_ids {
         let mut efficiency = held.gathered.regions.remove(&region).unwrap_or_default();
@@ -1091,25 +1062,21 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         let mut seen = HashSet::new();
         let pinned_list: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
         let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
-        let open = all_regions.iter().filter(|(id, _)| !seen.contains(id) && !hidden.contains(id));
-        let mut auto: Vec<(u32, i128, u64)> = match &done {
-            Some(done) => open
-                .filter_map(|(&id, entry)| {
-                    let (deficit, active) = done.regions.get(&id).copied().unwrap_or_default();
-                    (deficit > 0 || active > 0 || has_efficiency(&entry.cells)).then_some((id, deficit, active))
-                })
-                .collect(),
-            None => {
-                valid = to;
-                open.map(|(&id, entry)| {
-                    let (deficit, active) = score(&entry.cells);
-                    (id, deficit, active)
-                })
-                .filter(|&(_, deficit, active)| deficit > 0 || active > 0)
-                .collect()
+        let mut auto: Vec<(u32, i64)> = Vec::new();
+        match absent.as_ref().and_then(|cells| cells.last()).map(|run| &run.state) {
+            Some(ConvoyCellState::NotRecorded { reason }) => unranked = Some(reason.clone()),
+            _ => {
+                auto = all_regions
+                    .iter()
+                    .filter(|(id, _)| !seen.contains(id) && !hidden.contains(id))
+                    .filter_map(|(&id, entry)| match entry.cells.last().map(|run| &run.state) {
+                        Some(ConvoyCellState::Efficiency { value }) => Some((id, i64::from(SCALE) - value)),
+                        _ => None,
+                    })
+                    .collect();
             }
-        };
-        auto.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
+        }
+        auto.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         if let Some(limit) = params.top {
             auto.truncate(limit);
         }
@@ -1120,7 +1087,7 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
                 ordered.push(entry);
             }
         }
-        for (id, _, _) in auto {
+        for (id, _) in auto {
             if let Some(entry) = all_regions.remove(&id) {
                 ordered.push(entry);
             }
@@ -1130,7 +1097,7 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         all_regions.into_values().filter(|entry| has_efficiency(&entry.cells)).collect()
     };
 
-    let listed = |key: &u128, set: fn(&Completed) -> &BTreeSet<u128>| done.as_ref().is_some_and(|done| set(done).contains(key));
+    let listed = |key: &u128, set: fn(&Listed) -> &BTreeSet<u128>| done.as_ref().is_some_and(|done| set(done).contains(key));
     let mut deals: BTreeMap<u128, ConvoyDeal> = std::mem::take(&mut held.gathered.deals);
     let mut leases: BTreeMap<u128, ConvoyLease> = std::mem::take(&mut held.gathered.leases);
     if let Some(done) = &done {
@@ -1197,6 +1164,7 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         unheld,
         gaps,
         regions,
+        unranked,
         absent: every.then_some(absent).flatten(),
         deals,
         leases,
@@ -1209,7 +1177,7 @@ impl Product for ConvoyHealth {
     const KEY: &'static str = KEY;
     const CONTENT_DEPENDENT: bool = true;
     type Params = ConvoyHealthParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, view, country, from: Start, to: End, regions, pinnedRegions, hiddenRegions, top, rankFrom: Start, every, "regions[]", "pinnedRegions[]", "hiddenRegions[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, view, country, from: Start, to: End, regions, pinnedRegions, hiddenRegions, top, listFrom: Start, every, "regions[]", "pinnedRegions[]", "hiddenRegions[]"];
     type Reply = ConvoyHealthReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

@@ -64,10 +64,6 @@ pub struct NavalSupremacyParams {
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<usize>,
-    #[doc = " Ranks the regions by their activity over the days from this hour to the day before `firstHour`, kept per source and extended by the days added since."]
-    #[serde(default)]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub rank_from: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -164,6 +160,9 @@ pub struct NavalSupremacyReply {
     pub viewer_color_missing: Option<String>,
     pub legend: Vec<SupremacyLegendItem>,
     pub regions: Vec<SupremacyRegion>,
+    #[doc = " Why the automatic regions could not be ranked at the asked hour: its day's naval control is not recorded. No automatic region is listed then."]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub unranked: Option<String>,
     pub scale: i32,
     pub warnings: Vec<String>,
 }
@@ -487,75 +486,25 @@ fn control(query: &Query<'_>, sea: &SeaContent, country: &Country, (first, last)
     Ok(Control { runs: runs(pieces), unknown, hours })
 }
 
-fn ranked(today: impl Iterator<Item = (u32, i128)>, completed: Option<HashMap<u32, i128>>, top: Option<usize>) -> Vec<u32> {
-    let mut scored: BTreeMap<u32, i128> = BTreeMap::new();
-    match completed {
-        Some(done) => {
-            scored.extend(done.into_iter().filter(|&(_, score)| score > 0));
-            for (id, score) in today {
-                if score > 0 {
-                    scored.entry(id).or_insert(0);
-                }
-            }
-        }
-        None => scored.extend(today.filter(|&(_, score)| score > 0)),
-    }
-    let mut order: Vec<(u32, i128)> = scored.into_iter().collect();
+fn ranked(at_hour: impl Iterator<Item = (u32, i128)>, top: Option<usize>) -> Vec<u32> {
+    let mut order: Vec<(u32, i128)> = at_hour.filter(|&(_, score)| score > 0).collect();
     order.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     order.truncate(top.unwrap_or(usize::MAX));
     order.into_iter().map(|(id, _)| id).collect()
 }
 
-fn activity(runs: &[SupremacyRun]) -> i128 {
-    runs.iter()
-        .map(|run| {
-            let days = i128::from(run.last_day - run.first_day + 1);
-            let friendly = run.friendly.as_deref().and_then(|s| s.parse::<i128>().ok()).unwrap_or(0).max(0);
-            let enemy = run.enemy.as_deref().and_then(|s| s.parse::<i128>().ok()).unwrap_or(0).max(0);
-            (friendly + enemy) * days
-        })
-        .sum()
-}
-
-#[derive(Clone)]
-struct Scores {
-    through: i32,
-    scores: HashMap<u32, i128>,
-}
-
-#[derive(Default)]
-struct HeldScores(HashMap<String, Scores>);
-
-const HELD_SCORES: usize = 32;
-
-fn completed_scores(source: &Source, query: &Query<'_>, sea: &SeaContent, params: &NavalSupremacyParams, from: i32, through: i32, cancelled: &AtomicBool) -> io::Result<HashMap<u32, i128>> {
-    let key = format!("{}|{:?}|{from}", params.branch_id, params.country);
-    let state = source.state::<HeldScores>();
-    let held = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.get(&key).filter(|held| held.through <= through).cloned();
-    let (start, mut scores) = held.map_or_else(|| (from, HashMap::new()), |held| (held.through + 1, held.scores));
-    if start <= through {
-        let count = (through.div_euclid(DAY) - start.div_euclid(DAY) + 1) as u32;
-        let added = control(query, sea, &params.country, (start, through), count, &mut Refusals::default(), cancelled)?;
-        for (region, runs) in &added.runs {
-            let score = activity(runs);
-            if score > 0 {
-                *scores.entry(*region).or_default() += score;
-            }
-        }
-        let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.0.len() >= HELD_SCORES && !state.0.contains_key(&key) {
-            state.0.clear();
-        }
-        state.0.insert(key, Scores { through, scores: scores.clone() });
-    }
-    Ok(scores)
+fn activity_on(runs: &[SupremacyRun], day: u32) -> i128 {
+    runs.iter().find(|run| run.first_day <= day && day <= run.last_day).map_or(0, |run| {
+        let score = |value: &Option<String>| value.as_deref().and_then(|s| s.parse::<i128>().ok()).unwrap_or(0).max(0);
+        score(&run.friendly) + score(&run.enemy)
+    })
 }
 
 impl Product for NavalSupremacy {
     const KEY: &'static str = "naval-supremacy";
     const CONTENT_DEPENDENT: bool = true;
     type Params = NavalSupremacyParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, window, firstHour: Start, lastHour: End, regions, pinnedRegions, hiddenRegions, top, rankFrom: Start, "regions[]", "pinnedRegions[]", "hiddenRegions[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, window, firstHour: Start, lastHour: End, regions, pinnedRegions, hiddenRegions, top, "regions[]", "pinnedRegions[]", "hiddenRegions[]"];
     type Reply = NavalSupremacyReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -617,7 +566,6 @@ impl Product for NavalSupremacy {
         let count = if outside { 0 } else { (last.div_euclid(DAY) - first_day + 1) as u32 };
         let mut notes = Refusals::default();
         let Control { mut runs, unknown, hours } = control(&query, &sea, &params.country, (first, last), count, &mut notes, cancelled)?;
-        let completed = params.rank_from.filter(|&rank_from| !outside && params.regions.is_none() && rank_from < first).map(|rank_from| completed_scores(source, &query, &sea, params, rank_from, first - 1, cancelled)).transpose()?;
         let mut warnings = sea.notes.clone();
         warnings.extend(places.warnings());
         let mut looks = LookResolver::new(source, &query.timeline, load, &mut warnings)?;
@@ -685,14 +633,21 @@ impl Product for NavalSupremacy {
                 runs: runs_vec,
             }
         };
+        let mut unranked = None;
         let selected_regions: Vec<SupremacyRegion> = if let Some(explicit) = &params.regions {
             explicit.iter().map(|&id| make_region(id, true, runs.remove(&id).unwrap_or_default())).collect()
         } else if params.top.is_some() || params.pinned_regions.is_some() || params.hidden_regions.is_some() {
             let mut seen = HashSet::new();
             let pinned_list: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
             let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
-            let today = runs.iter().filter(|(id, _)| !seen.contains(id) && !hidden.contains(id)).map(|(&id, region_runs)| (id, activity(region_runs)));
-            let scored = ranked(today, completed.as_ref().map(|done| done.iter().filter(|(id, _)| !seen.contains(id) && !hidden.contains(id)).map(|(&id, &score)| (id, score)).collect()), params.top);
+            let scored = match (&last_day_unknown, last_day_index) {
+                (Some(reason), _) => {
+                    unranked = Some(reason.clone());
+                    Vec::new()
+                }
+                (None, Some(day)) => ranked(runs.iter().filter(|(id, _)| !seen.contains(id) && !hidden.contains(id)).map(|(&id, region_runs)| (id, activity_on(region_runs, day))), params.top),
+                (None, None) => Vec::new(),
+            };
             let mut out = Vec::with_capacity(pinned_list.len() + scored.len());
             for id in pinned_list {
                 out.push(make_region(id, true, runs.remove(&id).unwrap_or_default()));
@@ -738,6 +693,7 @@ impl Product for NavalSupremacy {
             viewer_color_missing: viewer_look.color_missing,
             legend,
             regions: selected_regions,
+            unranked,
             scale: SCALE,
             warnings,
         };

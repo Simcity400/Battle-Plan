@@ -208,3 +208,26 @@ test('a thousand cells of five values ask for five colours, once across frames',
   }
   assert.equal(asked, 5, 'each side colour is solved once, for every cell, row and frame');
 });
+
+test('a correction that moves a viewer colour change by a day redraws the tile at the new boundary', () => {
+  const colourAt = (change: number) => ({
+    resolve: (kind: string, key: string, atHour: number) => ({
+      kind, key, atHour,
+      holder: { status: 'ready', value: key },
+      name: { status: 'ready', value: 'German Reich' },
+      colour: { status: 'ready', value: atHour < change ? '#3060c0' : '#c03030' },
+      validInterval: atHour < change ? [0, change - 1] : [change, Infinity],
+      nextChangeAt: atHour < change ? change : Infinity,
+    }),
+  });
+  const view = (share: number) => ({ kind: 'view' as const, side: null, leader: null, friendly: '80', enemy: '20', share_bp: share });
+  const tile: AirTimelineReply = { ...reply(0), firstHour: 0, lastHour: 95, days: [23, 47, 71, 95], viewpoint: null,
+    rows: [{ region: 5, name: 'Southern England', nameMissing: null, pinned: false, cells: [[4, view(8000)]] }], absent: [[4, null]] };
+  const project = (change: number) => {
+    const now = { ...reply(100), firstHour: 96, lastHour: 100, days: [100], rows: [{ ...reply(100).rows[0]!, cells: [[1, view(8000)]] as AirTimelineReply['rows'][number]['cells'] }] };
+    const readView = createBoundedReadView({ hour: 100, panels: new Map<string, unknown>([['now', now], ['tile:0', tile]]), identity: colourAt(change) as never });
+    return projectAirTimeline(readView, { viewpointCountry: 'GER', tiles: 1, surface: SURFACE }).rows[0]!.runs.map(run => run.firstHour);
+  };
+  assert.deepEqual(project(48), [0, 48, 96]);
+  assert.deepEqual(project(72), [0, 72, 96], 'the old boundary is not kept');
+});
