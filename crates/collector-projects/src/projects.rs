@@ -39,6 +39,33 @@ static PROGRAM_FACILITY_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static PROGRAM_ASSIGNMENT_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static PROJECT_VARIABLE_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static PROJECT_REWARD_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static RAID_END_DATE_WITHHELD_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static RAID_END_DATE_MISMATCH_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static RAID_END_DATE_PRESENCE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static RAID_COMPLETION_COUNTRY_NEGATIVE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static RAID_COMPLETION_COUNTRY_UNLINKED_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static RAID_COMPLETION_COUNTRY_RANGE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+
+pub fn raid_completion_data() -> impl serde::Serialize {
+    let end_withheld = RAID_END_DATE_WITHHELD_REFUSALS.load(Relaxed);
+    let end_mismatch = RAID_END_DATE_MISMATCH_REFUSALS.load(Relaxed);
+    let end_presence = RAID_END_DATE_PRESENCE_REFUSALS.load(Relaxed);
+    let country_neg = RAID_COMPLETION_COUNTRY_NEGATIVE_REFUSALS.load(Relaxed);
+    let country_unlinked = RAID_COMPLETION_COUNTRY_UNLINKED_REFUSALS.load(Relaxed);
+    let country_range = RAID_COMPLETION_COUNTRY_RANGE_REFUSALS.load(Relaxed);
+    crate::status::status!({
+        "refused": end_withheld + end_mismatch + end_presence + country_neg + country_unlinked + country_range,
+        "refusals": crate::status::map([
+            (craid_instance::END_DATE_VTABLE_WITHHELD, end_withheld),
+            (craid_instance::END_DATE_VTABLE_MISMATCH, end_mismatch),
+            (craid_instance::END_DATE_PRESENCE_INVALID, end_presence),
+            (craid_instance::COMPLETION_COUNTRY_NEGATIVE, country_neg),
+            (craid_instance::COMPLETION_COUNTRY_UNLINKED, country_unlinked),
+            (craid_instance::COMPLETION_COUNTRY_OUT_OF_RANGE, country_range),
+        ].into_iter().filter(|(_, count)| *count != 0)),
+        "scope": "cumulative withheld raid completion date or completion country fields; other raid fields remain recorded",
+    })
+}
 
 pub fn scientist_active_data() -> impl serde::Serialize {
     let refused = SCIENTIST_ACTIVE_REFUSALS.load(Relaxed);
@@ -1074,6 +1101,32 @@ impl Captured {
         if rows.iter().any(|r| list(r).is_none()) {
             return unavailable("raid show-for handles outside captured arena");
         }
+        for r in rows {
+            match r.end_hour_refusal {
+                Some(craid_instance::END_DATE_VTABLE_WITHHELD) => {
+                    RAID_END_DATE_WITHHELD_REFUSALS.fetch_add(1, Relaxed);
+                }
+                Some(craid_instance::END_DATE_VTABLE_MISMATCH) => {
+                    RAID_END_DATE_MISMATCH_REFUSALS.fetch_add(1, Relaxed);
+                }
+                Some(craid_instance::END_DATE_PRESENCE_INVALID) => {
+                    RAID_END_DATE_PRESENCE_REFUSALS.fetch_add(1, Relaxed);
+                }
+                _ => {}
+            }
+            match r.completion_country_refusal {
+                Some(craid_instance::COMPLETION_COUNTRY_NEGATIVE) => {
+                    RAID_COMPLETION_COUNTRY_NEGATIVE_REFUSALS.fetch_add(1, Relaxed);
+                }
+                Some(craid_instance::COMPLETION_COUNTRY_UNLINKED) => {
+                    RAID_COMPLETION_COUNTRY_UNLINKED_REFUSALS.fetch_add(1, Relaxed);
+                }
+                Some(craid_instance::COMPLETION_COUNTRY_OUT_OF_RANGE) => {
+                    RAID_COMPLETION_COUNTRY_RANGE_REFUSALS.fetch_add(1, Relaxed);
+                }
+                _ => {}
+            }
+        }
         table::<tables::Raids, _>(outcome, &self.raids.rows, |r| rows::RaidRow {
             reference_type: r.reference_type,
             id: r.id,
@@ -1097,6 +1150,11 @@ impl Captured {
             air_wing: r.air_wing,
             travelled: Some(r.travelled),
             preparation_hours: r.preparation_hours,
+            end_hour: r.end_hour.flatten(),
+            completion_country: r.completion_country.flatten(),
+            completion_recorded: (u8::from(r.end_hour.is_some()) * rows::RaidRow::END_HOUR_RECORDED)
+                | (u8::from(r.completion_country.is_some())
+                    * rows::RaidRow::COMPLETION_COUNTRY_RECORDED),
         })
     }
 

@@ -659,3 +659,69 @@ fn a_first_hour_past_the_default_type_token_arena_grows_to_its_demand() {
     assert_eq!(sized.required_type_tokens, demand);
 }
 
+#[test]
+fn raid_completion_fields_record_presence_and_withhold_independently_on_failure() {
+    use engine_native_memory::cgame_date;
+    let mut bytes = fixture();
+    let mut parents = vec![ccountry_raid_status::Row::default(); 2];
+    let mut children = vec![craid_instance::Row::default(); 1];
+    let (po, io) = read_fixture(&bytes, &mut parents, &mut children);
+    assert_eq!((po, io), (Outcome::Rows { len: 2 }, Outcome::Rows { len: 1 }));
+    assert_eq!(children[0].end_hour, Some(None));
+    assert_eq!(children[0].end_hour_refusal, None);
+    assert_eq!(children[0].completion_country, Some(None));
+    assert_eq!(children[0].completion_country_refusal, None);
+
+    put(&mut bytes, INSTANCE + craid_instance::PHASE, &craid_instance::PHASE_ENDED.to_le_bytes());
+    put(&mut bytes, INSTANCE + craid_instance::OUTCOME, &craid_instance::OUTCOME_SUCCESS.to_le_bytes());
+    put(&mut bytes, INSTANCE + craid_instance::END_DATE, &(cgame_date::VTABLE_RVA.0 as u64).to_le_bytes());
+    put(&mut bytes, INSTANCE + craid_instance::END_HOUR, &42_000_i32.to_le_bytes());
+    put(&mut bytes, INSTANCE + craid_instance::END_PERSISTENT_VTABLE, &(cgame_date::PERSISTENT_VTABLE_RVA.0 as u64).to_le_bytes());
+    put(&mut bytes, INSTANCE + craid_instance::END_PRESENT, &[1]);
+    put(&mut bytes, INSTANCE + craid_instance::COMPLETION_COUNTRY, &3_i32.to_le_bytes());
+    let (po, io) = read_fixture(&bytes, &mut parents, &mut children);
+    assert_eq!((po, io), (Outcome::Rows { len: 2 }, Outcome::Rows { len: 1 }));
+    assert_eq!(children[0].end_hour, Some(Some(42_000)));
+    assert_eq!(children[0].end_hour_refusal, None);
+    assert_eq!(children[0].completion_country, Some(Some(3)));
+    assert_eq!(children[0].completion_country_refusal, None);
+
+    let mut bad_presence = bytes.clone();
+    put(&mut bad_presence, INSTANCE + craid_instance::END_PRESENT, &[2]);
+    let (_, io) = read_fixture(&bad_presence, &mut parents, &mut children);
+    assert_eq!(io, Outcome::Rows { len: 1 });
+    assert_eq!(children[0].end_hour, None);
+    assert_eq!(children[0].end_hour_refusal, Some(craid_instance::END_DATE_PRESENCE_INVALID));
+    assert_eq!(children[0].completion_country, Some(Some(3)));
+
+    let mut bad_vtable = bytes.clone();
+    put(&mut bad_vtable, INSTANCE + craid_instance::END_DATE, &0xdead_u64.to_le_bytes());
+    let (_, io) = read_fixture(&bad_vtable, &mut parents, &mut children);
+    assert_eq!(io, Outcome::Rows { len: 1 });
+    assert_eq!(children[0].end_hour, None);
+    assert_eq!(children[0].end_hour_refusal, Some(craid_instance::END_DATE_VTABLE_MISMATCH));
+    assert_eq!(children[0].completion_country, Some(Some(3)));
+
+    let withheld = engine_sites::with_synthetic_withheld(cgame_date::VTABLE_RVA, || {
+        read_fixture(&bytes, &mut parents, &mut children)
+    });
+    assert_eq!(withheld.1, Outcome::Rows { len: 1 });
+    assert_eq!(children[0].end_hour, None);
+    assert_eq!(children[0].end_hour_refusal, Some(craid_instance::END_DATE_VTABLE_WITHHELD));
+    assert_eq!(children[0].completion_country, Some(Some(3)));
+
+    for (raw, expected) in [
+        (-1_i32, craid_instance::COMPLETION_COUNTRY_NEGATIVE),
+        (2_i32, craid_instance::COMPLETION_COUNTRY_UNLINKED),
+        (99_i32, craid_instance::COMPLETION_COUNTRY_OUT_OF_RANGE),
+    ] {
+        let mut bad_country = bytes.clone();
+        put(&mut bad_country, INSTANCE + craid_instance::COMPLETION_COUNTRY, &raw.to_le_bytes());
+        let (_, io) = read_fixture(&bad_country, &mut parents, &mut children);
+        assert_eq!(io, Outcome::Rows { len: 1 });
+        assert_eq!(children[0].end_hour, Some(Some(42_000)));
+        assert_eq!(children[0].completion_country, None);
+        assert_eq!(children[0].completion_country_refusal, Some(expected));
+    }
+}
+
