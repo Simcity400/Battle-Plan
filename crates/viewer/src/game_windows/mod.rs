@@ -1245,7 +1245,7 @@ pub fn layout_window(
     instance.set_size_cornered_buttons(true);
     instance
         .gui_show(root, root)
-        .map_err(|refusal| GameWindowError::failed(refusal.to_string()))?;
+        .map_err(GameWindowError::failed)?;
     configure(&mut instance);
     instance
         .tick(root, resources, SETTLE_TICK)
@@ -1316,8 +1316,25 @@ impl Drop for CancelRegistration {
     }
 }
 
-#[derive(Default)]
-pub struct Service {
+pub struct RenderParams<'a> {
+    pub window_name: &'a str,
+    pub scale: f32,
+    pub read_hour: Option<i32>,
+    pub art_from_current_install: bool,
+    pub close_paths: &'a [&'a str],
+    pub tooltip_overrides: &'a BTreeMap<String, GameWindowTooltip>,
+    pub extra_warnings: Vec<String>,
+    pub admitted_gen: Option<(u64, u64)>,
+}
+
+struct WindowLoadRequest<'a> {
+    key: &'a WindowCacheKey,
+    layers: &'a ResolvedLayers,
+    shared: &'a SharedInterface,
+    window_name: &'a str,
+    extra_assets: &'a Assets,
+    expected_gen: (u64, u64),
+}
     cache: Mutex<CacheState>,
     gpu: Mutex<Option<GpuContext>>,
 }
@@ -1408,16 +1425,11 @@ impl Service {
 
     fn load_and_cache_window(
         &self,
-        key: &WindowCacheKey,
-        layers: &ResolvedLayers,
-        shared: &SharedInterface,
-        window_name: &str,
-        extra_assets: &Assets,
-        expected_gen: (u64, u64),
+        req: &WindowLoadRequest<'_>,
         cancel: &AtomicBool,
     ) -> Result<Arc<Mutex<CachedWindow>>, GameWindowError> {
         let decode = Decode {
-            force_pow2_textures: key.force_pow2_textures,
+            force_pow2_textures: req.key.force_pow2_textures,
         };
         let loaded = {
             let mut gpu_guard = self.gpu.lock().unwrap_or_else(|e| e.into_inner());
@@ -1425,7 +1437,14 @@ impl Service {
                 *gpu_guard = Some(GpuContext::initialize()?);
             }
             let gpu = gpu_guard.as_ref().expect("gpu initialized");
-            CachedWindow::load(gpu, layers, shared, window_name, extra_assets, decode)?
+            CachedWindow::load(
+                gpu,
+                req.layers,
+                req.shared,
+                req.window_name,
+                req.extra_assets,
+                decode,
+            )?
         };
         if cancel.load(Ordering::SeqCst) {
             return Err(GameWindowError::Cancelled);
@@ -1436,13 +1455,13 @@ impl Service {
             let current_gen = (
                 cache
                     .source_generations
-                    .get(&key.source_id)
+                    .get(&req.key.source_id)
                     .copied()
                     .unwrap_or(0),
                 cache.global_generation,
             );
-            if current_gen == expected_gen {
-                cache.windows.insert(key.clone(), Arc::clone(&wrapped))
+            if current_gen == req.expected_gen {
+                cache.windows.insert(req.key.clone(), Arc::clone(&wrapped))
             } else {
                 return Err(GameWindowError::Cancelled);
             }
@@ -1468,22 +1487,12 @@ impl Service {
         drop(removed);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the window cache key, layers, and per-render configuration are independent inputs"
-    )]
     pub fn render_window_from_layers(
         &self,
         key: WindowCacheKey,
         layers: &ResolvedLayers,
-        window_name: &str,
         extra_assets: &Assets,
-        scale: f32,
-        read_hour: Option<i32>,
-        art_from_current_install: bool,
-        close_paths: &[&str],
-        tooltip_overrides: &BTreeMap<String, GameWindowTooltip>,
-        extra_warnings: Vec<String>,
+        params: RenderParams<'_>,
         cancel: &AtomicBool,
         configure: impl FnOnce(&Element, &Localisation, &mut Instance),
     ) -> Result<GameWindowRender, GameWindowError> {
@@ -1491,13 +1500,7 @@ impl Service {
         self.render_composed_from_layers(
             key,
             layers,
-            window_name,
-            scale,
-            read_hour,
-            art_from_current_install,
-            close_paths,
-            tooltip_overrides,
-            extra_warnings,
+            params,
             cancel,
             move |_| Ok((extra, ())),
             move |root, _, _, localisation, instance, _, _| configure(root, localisation, instance),
@@ -1505,75 +1508,11 @@ impl Service {
         )
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the window cache key, layers, and per-render callbacks are independent inputs"
-    )]
     pub fn render_composed_from_layers<S>(
         &self,
         key: WindowCacheKey,
         layers: &ResolvedLayers,
-        window_name: &str,
-        scale: f32,
-        read_hour: Option<i32>,
-        art_from_current_install: bool,
-        close_paths: &[&str],
-        tooltip_overrides: &BTreeMap<String, GameWindowTooltip>,
-        extra_warnings: Vec<String>,
-        cancel: &AtomicBool,
-        prepare_assets: impl FnOnce(&SharedInterface) -> Result<(Assets, S), GameWindowError>,
-        configure_main: impl FnOnce(
-            &Element,
-            &native::Guis,
-            &dyn Resources,
-            &Localisation,
-            &mut Instance,
-            &mut BTreeMap<String, GameWindowTooltip>,
-            &S,
-        ),
-        compose: impl FnOnce(
-            &Layout,
-            &Element,
-            &native::Guis,
-            &dyn Resources,
-            &Localisation,
-            &S,
-        ) -> Result<ComposedPlan, GameWindowError>,
-    ) -> Result<GameWindowRender, GameWindowError> {
-        self.render_composed_from_layers_at(
-            key,
-            layers,
-            window_name,
-            scale,
-            read_hour,
-            art_from_current_install,
-            close_paths,
-            tooltip_overrides,
-            extra_warnings,
-            None,
-            cancel,
-            prepare_assets,
-            configure_main,
-            compose,
-        )
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the window cache key, layers, admission generation, and per-render callbacks are independent inputs"
-    )]
-    pub fn render_composed_from_layers_at<S>(
-        &self,
-        key: WindowCacheKey,
-        layers: &ResolvedLayers,
-        window_name: &str,
-        scale: f32,
-        read_hour: Option<i32>,
-        art_from_current_install: bool,
-        close_paths: &[&str],
-        tooltip_overrides: &BTreeMap<String, GameWindowTooltip>,
-        extra_warnings: Vec<String>,
-        admitted_gen: Option<(u64, u64)>,
+        params: RenderParams<'_>,
         cancel: &AtomicBool,
         prepare_assets: impl FnOnce(&SharedInterface) -> Result<(Assets, S), GameWindowError>,
         configure_main: impl FnOnce(
@@ -1597,6 +1536,16 @@ impl Service {
         if cancel.load(Ordering::SeqCst) {
             return Err(GameWindowError::Cancelled);
         }
+        let RenderParams {
+            window_name,
+            scale,
+            read_hour,
+            art_from_current_install,
+            close_paths,
+            tooltip_overrides,
+            extra_warnings,
+            admitted_gen,
+        } = params;
         let interface_key = key.interface_key();
         let (expected_gen, cached_interface, cached_window) = {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -1657,17 +1606,17 @@ impl Service {
             return Err(GameWindowError::Cancelled);
         }
 
+        let load_req = WindowLoadRequest {
+            key: &key,
+            layers,
+            shared: &shared,
+            window_name,
+            extra_assets: &extra_assets,
+            expected_gen,
+        };
         let window_entry = match cached_window {
             Some(existing) => existing,
-            None => self.load_and_cache_window(
-                &key,
-                layers,
-                &shared,
-                window_name,
-                &extra_assets,
-                expected_gen,
-                cancel,
-            )?,
+            None => self.load_and_cache_window(&load_req, cancel)?,
         };
 
         let scale = normalize_scale(scale);
@@ -1683,15 +1632,7 @@ impl Service {
                 Err(poisoned) => {
                     drop(poisoned);
                     self.discard_poisoned_window(&key, &window_entry);
-                    reloaded_entry = Some(self.load_and_cache_window(
-                        &key,
-                        layers,
-                        &shared,
-                        window_name,
-                        &extra_assets,
-                        expected_gen,
-                        cancel,
-                    )?);
+                    reloaded_entry = Some(self.load_and_cache_window(&load_req, cancel)?);
                     reloaded_entry
                         .as_ref()
                         .expect("reloaded window entry")
@@ -1731,7 +1672,7 @@ impl Service {
             instance.set_size_cornered_buttons(true);
             instance
                 .gui_show(root, root)
-                .map_err(|refusal| GameWindowError::failed(refusal.to_string()))?;
+                .map_err(GameWindowError::failed)?;
             let mut main_tooltips = tooltip_overrides.clone();
             configure_main(
                 root,
@@ -1949,15 +1890,17 @@ impl Service {
         match request.kind.as_str() {
             "equipmentDesigner" => equipment_designer::render(
                 self,
-                source,
-                &content,
-                &layers,
-                &resolve,
-                &visual_revision,
-                &language,
-                decode,
-                admitted_gen,
-                visual_warnings,
+                equipment_designer::RenderContext {
+                    source,
+                    content: &content,
+                    layers: &layers,
+                    resolve: &resolve,
+                    visual_revision: &visual_revision,
+                    language: &language,
+                    decode,
+                    admitted_gen,
+                    extra_warnings: visual_warnings,
+                },
                 request,
                 cancel,
             ),

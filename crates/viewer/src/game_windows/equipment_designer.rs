@@ -1,6 +1,6 @@
 use super::{
     ComposedPlan, ComposedSubWindow, DEFAULT_VIEWPORT, GameWindowError, GameWindowRender,
-    GameWindowRequest, GameWindowTooltip, Service, WindowCacheKey, container_holder,
+    GameWindowRequest, GameWindowTooltip, RenderParams, Service, WindowCacheKey, container_holder,
     layout_window, strip_markup,
 };
 use content_reader_gui::gui::native::{self, Element, Fields, Kind};
@@ -208,6 +208,7 @@ pub struct StatColumns {
 struct ResolvedMio {
     name: String,
     sprite: Option<String>,
+    trait_count: Option<i32>,
 }
 
 #[derive(Clone, Debug)]
@@ -721,24 +722,35 @@ pub fn compute_read_hour(request_hour: i32, samples: &[(TableId, i32)]) -> (i32,
     (min_hour, warning)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "rendering resolves recorded tables, content layers, decode settings, generation, language, warnings, and cancellation independently"
-)]
+pub struct RenderContext<'a> {
+    pub source: &'a Source,
+    pub content: &'a Arc<ResolvedContent>,
+    pub layers: &'a ResolvedLayers,
+    pub resolve: &'a ResolveOptions,
+    pub visual_revision: &'a str,
+    pub language: &'a str,
+    pub decode: Decode,
+    pub admitted_gen: (u64, u64),
+    pub extra_warnings: Vec<String>,
+}
+
 pub fn render(
     service: &Service,
-    source: &Source,
-    content: &Arc<ResolvedContent>,
-    layers: &ResolvedLayers,
-    resolve: &ResolveOptions,
-    visual_revision: &str,
-    language: &str,
-    decode: Decode,
-    admitted_gen: (u64, u64),
-    mut extra_warnings: Vec<String>,
+    ctx: RenderContext<'_>,
     request: GameWindowRequest,
     cancel: &AtomicBool,
 ) -> Result<GameWindowRender, GameWindowError> {
+    let RenderContext {
+        source,
+        content,
+        layers,
+        resolve,
+        visual_revision,
+        language,
+        decode,
+        admitted_gen,
+        mut extra_warnings,
+    } = ctx;
     let target: Target = serde_json::from_value(request.target.clone())
         .map_err(|error| GameWindowError::refused(format!("Invalid equipment designer target: {error}")))?;
     let variant_id: u64 = target
@@ -869,23 +881,23 @@ pub fn render(
     };
     let organisations_table = frame.complete::<tables::IndustrialOrganisations>();
 
-    let mut data = extract_design_data(
+    let mut data = extract_design_data(ExtractInputs {
         kind,
-        &tag,
-        &equipment_key,
-        &archetype_key,
+        tag: &tag,
+        equipment_key: &equipment_key,
+        archetype_key: &archetype_key,
         equipment,
-        &equipment_db,
+        equipment_db: &equipment_db,
         definition,
         design_state,
         design_state_reason,
         stats_row,
-        recorded_stats,
+        stats: recorded_stats,
         module_rows,
         upgrade_rows,
         lexical,
-        organisations_table.as_ref().ok().copied(),
-    );
+        organisations: organisations_table.as_ref().ok().copied(),
+    });
     if let Some(group_key) = data.naming_group.as_deref()
         && let Some(loc_key) = resolve_ship_naming_group_loc_key(layers, group_key)
     {
@@ -967,17 +979,19 @@ pub fn render(
     let empty_tooltips = BTreeMap::new();
     let recorded_language = language.to_owned();
 
-    service.render_composed_from_layers_at(
+    service.render_composed_from_layers(
         cache_key,
         layers,
-        window_name,
-        request.scale,
-        Some(read_hour),
-        true,
-        &["close_button"],
-        &empty_tooltips,
-        extra_warnings,
-        Some(admitted_gen),
+        RenderParams {
+            window_name,
+            scale: request.scale,
+            read_hour: Some(read_hour),
+            art_from_current_install: true,
+            close_paths: &["close_button"],
+            tooltip_overrides: &empty_tooltips,
+            extra_warnings,
+            admitted_gen: Some(admitted_gen),
+        },
         cancel,
         |shared| {
             let guis = shared.guis.as_ref();
@@ -1139,10 +1153,12 @@ pub fn render(
                 resources,
                 localisation,
                 instance,
-                &data,
-                &resource_db,
-                visuals.equipment_icon.as_ref(),
-                visuals.mio_sprite.as_deref(),
+                MainWindowContext {
+                    data: &data,
+                    resource_db: &resource_db,
+                    equipment_icon: visuals.equipment_icon.as_ref(),
+                    mio_sprite: visuals.mio_sprite.as_deref(),
+                },
                 tooltips,
             );
         },
@@ -1153,11 +1169,13 @@ pub fn render(
                 guis,
                 resources,
                 localisation,
-                &data,
-                &equipment_db,
-                &resource_db,
-                visuals.blueprint_name.as_deref(),
-                visuals.equipment_icon.as_ref(),
+                SubWindowContext {
+                    data: &data,
+                    equipment_db: &equipment_db,
+                    resource_db: &resource_db,
+                    blueprint_name: visuals.blueprint_name.as_deref(),
+                    equipment_icon: visuals.equipment_icon.as_ref(),
+                },
             )?;
             plan.warnings.extend(visuals.prep_warnings.iter().cloned());
             Ok(plan)
@@ -1216,27 +1234,42 @@ fn resolve_variant_tag(
     fallback.to_owned()
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "assembling the view model gathers independent replay tables and content rows"
-)]
-fn extract_design_data(
+struct ExtractInputs<'a> {
     kind: DesignerKind,
-    tag: &str,
-    equipment_key: &str,
-    archetype_key: &str,
-    equipment: &Equipment,
-    equipment_db: &Database,
-    definition: &VariantDefinitionRow,
-    design_state: Option<&VariantDesignState>,
+    tag: &'a str,
+    equipment_key: &'a str,
+    archetype_key: &'a str,
+    equipment: &'a Equipment,
+    equipment_db: &'a Database,
+    definition: &'a VariantDefinitionRow,
+    design_state: Option<&'a VariantDesignState>,
     design_state_reason: Option<String>,
-    stats_row: Option<&VariantStatsRow>,
+    stats_row: Option<&'a VariantStatsRow>,
     stats: RecordedStats,
-    module_rows: Result<&[VariantModuleRow], String>,
-    upgrade_rows: Result<&[VariantUpgradeRow], String>,
-    lexical: &[LexicalTokenRow],
-    organisations: Option<&[IndustrialOrganisationRow]>,
-) -> EquipmentDesignData {
+    module_rows: Result<&'a [VariantModuleRow], String>,
+    upgrade_rows: Result<&'a [VariantUpgradeRow], String>,
+    lexical: &'a [LexicalTokenRow],
+    organisations: Option<&'a [IndustrialOrganisationRow]>,
+}
+
+fn extract_design_data(inputs: ExtractInputs<'_>) -> EquipmentDesignData {
+    let ExtractInputs {
+        kind,
+        tag,
+        equipment_key,
+        archetype_key,
+        equipment,
+        equipment_db,
+        definition,
+        design_state,
+        design_state_reason,
+        stats_row,
+        stats,
+        module_rows,
+        upgrade_rows,
+        lexical,
+        organisations,
+    } = inputs;
     let base_name = std::str::from_utf8(c_string(&definition.display_name))
         .ok()
         .filter(|text| !text.is_empty())
@@ -1258,6 +1291,14 @@ fn extract_design_data(
         .map(|state| state.design_team)
         .filter(|&id| id != 0)
         .or_else(|| stats_row.map(|row| row.organisation).filter(|&id| id != 0));
+    let mio_trait_count = stats_row
+        .map(|row| row.organisation_trait_count)
+        .filter(|&count| count > 0)
+        .or_else(|| {
+            design_state
+                .map(|state| state.design_team_traits)
+                .filter(|&count| count > 0)
+        });
     let mio = mio_id.and_then(|id| {
         let rows = organisations?;
         let row = rows
@@ -1278,6 +1319,7 @@ fn extract_design_data(
         Some(ResolvedMio {
             name: raw_name,
             sprite: icon,
+            trait_count: mio_trait_count,
         })
     });
 
@@ -1861,21 +1903,27 @@ fn set_text_by_name(instance: &mut Instance, root: &Element, name: &str, text: S
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "main window configuration binds independent design fields, resources, and resolved sprites"
-)]
+struct MainWindowContext<'a> {
+    data: &'a EquipmentDesignData,
+    resource_db: &'a ResourceDatabase,
+    equipment_icon: Option<&'a Icon>,
+    mio_sprite: Option<&'a str>,
+}
+
 fn configure_main_window(
     root: &Element,
     resources: &dyn Resources,
     localisation: &Localisation,
     instance: &mut Instance,
-    data: &EquipmentDesignData,
-    resource_db: &ResourceDatabase,
-    equipment_icon: Option<&Icon>,
-    mio_sprite: Option<&str>,
+    ctx: MainWindowContext<'_>,
     tooltips: &mut BTreeMap<String, GameWindowTooltip>,
 ) {
+    let MainWindowContext {
+        data,
+        resource_db,
+        equipment_icon,
+        mio_sprite,
+    } = ctx;
     let display_name = resolve_display_name(data, localisation);
     let version_suffix = if data.version_suffix.is_empty() {
         String::new()
@@ -2034,10 +2082,13 @@ fn configure_main_window(
 
         let has_mio = if let Some(mio) = &data.mio {
             let body = if mio_sprite.is_some() {
-                mio_role_body.clone()
+                mio_role_body
             } else {
                 format!("{mio_role_body} (emblem art missing in loaded interface registry)")
             };
+            let detail = mio
+                .trait_count
+                .map(|count| format!("{count} applied MIO traits"));
             if let Some(team_button) = find_direct(root, "design_team_button") {
                 if let Some(sprite) = mio_sprite
                     && let Ok(bound) = instance.control(root, team_button)
@@ -2049,7 +2100,7 @@ fn configure_main_window(
                     GameWindowTooltip {
                         title: loc_or(localisation, &mio.name),
                         body: Some(body),
-                        detail: None,
+                        detail,
                     },
                 );
                 hide_by_name(instance, root, "design_company_icon");
@@ -2064,7 +2115,7 @@ fn configure_main_window(
                     GameWindowTooltip {
                         title: loc_or(localisation, &mio.name),
                         body: Some(body),
-                        detail: None,
+                        detail,
                     },
                 );
             }
@@ -2165,7 +2216,26 @@ fn configure_main_window(
                 }
                 disable_by_name(instance, root, "dropdown_tank_roles/expand_button");
 
-                for slot_idx in 0..2 {
+                let mut upgrade_slots: Vec<usize> = find_direct(root, "equipment_modules")
+                    .map(|modules| {
+                        modules
+                            .children
+                            .iter()
+                            .filter_map(|child| {
+                                element_name(child)
+                                    .strip_prefix("equipment_upgrade_")
+                                    .and_then(|suffix| suffix.parse::<usize>().ok())
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                upgrade_slots.sort_unstable();
+                upgrade_slots.dedup();
+                if upgrade_slots.is_empty() {
+                    upgrade_slots.extend([0, 1]);
+                }
+
+                for slot_idx in upgrade_slots {
                     let container_name = format!("equipment_modules/equipment_upgrade_{slot_idx}");
                     match &data.upgrades {
                         RecordedUpgrades::Available(list) => {
@@ -2375,22 +2445,38 @@ fn configure_main_window(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "sub-window composition places blueprint, module slots, upgrade panel, and stat ledgers"
-)]
+struct SubWindowContext<'a> {
+    data: &'a EquipmentDesignData,
+    equipment_db: &'a Database,
+    resource_db: &'a ResourceDatabase,
+    blueprint_name: Option<&'a str>,
+    equipment_icon: Option<&'a Icon>,
+}
+
+struct StatGridSpec<'a> {
+    stat_window_name: &'a str,
+    value_child: &'a str,
+    lines: &'a [StatLine],
+    columns: usize,
+    slot_width: i32,
+    slot_height: i32,
+}
+
 fn compose_sub_windows(
     main_layout: &Layout,
     root: &Element,
     guis: &native::Guis,
     resources: &dyn Resources,
     localisation: &Localisation,
-    data: &EquipmentDesignData,
-    equipment_db: &Database,
-    resource_db: &ResourceDatabase,
-    blueprint_name: Option<&str>,
-    equipment_icon: Option<&Icon>,
+    ctx: SubWindowContext<'_>,
 ) -> Result<ComposedPlan, GameWindowError> {
+    let SubWindowContext {
+        data,
+        equipment_db,
+        resource_db,
+        blueprint_name,
+        equipment_icon,
+    } = ctx;
     let mut plan = ComposedPlan::default();
 
     if data.kind.is_modular() {
@@ -2434,8 +2520,7 @@ fn compose_sub_windows(
             slot_root,
             resources,
             localisation,
-            data,
-            equipment_db,
+            (data, equipment_db),
             &mut plan,
         )?;
 
@@ -2465,12 +2550,14 @@ fn compose_sub_windows(
                 main_layout,
                 grid_el,
                 stat_root,
-                "stat_entry",
-                "value",
-                lines,
-                1,
-                155,
-                20,
+                StatGridSpec {
+                    stat_window_name: "stat_entry",
+                    value_child: "value",
+                    lines,
+                    columns: 1,
+                    slot_width: 155,
+                    slot_height: 20,
+                },
                 resources,
                 localisation,
                 &mut plan,
@@ -2540,12 +2627,14 @@ fn compose_sub_windows(
             main_layout,
             grid_el,
             stat_root,
-            "equipment_designer_stat_entry",
-            "count",
-            &columns.base,
-            2,
-            258,
-            21,
+            StatGridSpec {
+                stat_window_name: "equipment_designer_stat_entry",
+                value_child: "count",
+                lines: &columns.base,
+                columns: 2,
+                slot_width: 258,
+                slot_height: 21,
+            },
             resources,
             localisation,
             &mut plan,
@@ -2621,18 +2710,13 @@ fn configure_blueprint(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "module slot placement maps recorded slots onto authored marker positions"
-)]
 fn compose_module_slots(
     main_layout: &Layout,
     root: &Element,
     slot_root: &Element,
     resources: &dyn Resources,
     localisation: &Localisation,
-    data: &EquipmentDesignData,
-    equipment_db: &Database,
+    (data, equipment_db): (&EquipmentDesignData, &Database),
     plan: &mut ComposedPlan,
 ) -> Result<(), GameWindowError> {
     let modules_container = find_direct(root, "equipment_modules").ok_or_else(|| {
@@ -2970,24 +3054,23 @@ fn configure_upgrade_view(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "stat grid placement binds a template across grid geometry, values, and tooltips"
-)]
 fn compose_stat_grid(
     main_layout: &Layout,
     grid_el: &Element,
     stat_root: &Element,
-    stat_window_name: &str,
-    value_child: &str,
-    lines: &[StatLine],
-    columns: usize,
-    slot_width: i32,
-    slot_height: i32,
+    spec: StatGridSpec<'_>,
     resources: &dyn Resources,
     localisation: &Localisation,
     plan: &mut ComposedPlan,
 ) -> Result<(), GameWindowError> {
+    let StatGridSpec {
+        stat_window_name,
+        value_child,
+        lines,
+        columns,
+        slot_width,
+        slot_height,
+    } = spec;
     let Some(holder) = main_layout
         .holders
         .iter()

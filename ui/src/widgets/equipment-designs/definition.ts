@@ -1,7 +1,6 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
-import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 
 export const SHEET = { id: 'design', label: 'Design' };
 export const SORT_COLUMNS = [{ key: 'firstSeen', label: 'First seen' }, { key: 'design', label: 'Design' }, { key: 'seenObsolete', label: 'Seen obsolete' }] as const;
@@ -9,7 +8,7 @@ export const DEFAULT_SORT = { column: 'firstSeen', direction: 'descending' } as 
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'included', section: 'options', label: 'Included types', kind: 'content-set', automatic: 'All types', default: '' },
-  ...tableSortOptions(SORT_COLUMNS, DEFAULT_SORT), ...TABLE_OPTIONS.filter(field => field.key !== 'cellBars' && field.key !== 'rankMarkers'), DRILL_OPTION,
+  ...tableSortOptions(SORT_COLUMNS, DEFAULT_SORT), ...TABLE_OPTIONS.filter(field => field.key !== 'cellBars' && field.key !== 'rankMarkers'),
 ];
 
 export const definition = {

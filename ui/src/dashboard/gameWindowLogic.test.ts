@@ -3,6 +3,7 @@ import test from 'node:test';
 import type { GameWindowRegion, GameWindowRequest } from './client.ts';
 import {
   accessibleRegions,
+  fitGameWindowSize,
   gameWindowRequestKey,
   hitTestRegion,
   isActivatableClose,
@@ -10,6 +11,11 @@ import {
   normalizeScale,
   regionTooltipContent,
 } from './gameWindowLogic.ts';
+import {
+  claimGameWindowSlot,
+  releaseGameWindowSlot,
+  updateGameWindowSlotPosition,
+} from './gameWindows.ts';
 
 function baseRequest(overrides: Partial<GameWindowRequest> = {}): GameWindowRequest {
   return {
@@ -133,4 +139,48 @@ test('hit-testing respects alpha masks so transparent pixels pass through to reg
   assert.equal(hitTestRegion(regions, 3.5, 2.5)?.path, 'win/alpha_front');
   assert.equal(hitTestRegion(regions, 2.5, 3.5)?.path, 'win/alpha_front');
   assert.equal(hitTestRegion(regions, 3.5, 3.5)?.path, 'win/behind');
+});
+
+test('fitGameWindowSize keeps 1:1 when it fits and scales down proportionally without cropping', () => {
+  assert.deepEqual(
+    fitGameWindowSize([1091, 546], { width: 1440, height: 900 }),
+    [1091, 546],
+  );
+  assert.deepEqual(
+    fitGameWindowSize([1091, 546], { width: 1000, height: 600 }),
+    [952, 476],
+  );
+  assert.deepEqual(
+    fitGameWindowSize([1091, 546], { width: 1440, height: 500 }),
+    [767, 384],
+  );
+  assert.deepEqual(fitGameWindowSize([0, 100], { width: 1440, height: 900 }), [0, 0]);
+});
+
+test('claimGameWindowSlot enforces one pop-up per kind and preserves position across owners', () => {
+  let closedA = 0;
+  let closedB = 0;
+  assert.equal(claimGameWindowSlot('equipmentDesigner', 'widget-a', () => { closedA++; }), null);
+  updateGameWindowSlotPosition('equipmentDesigner', 'widget-a', { x: 240, y: 120 });
+  assert.deepEqual(
+    claimGameWindowSlot('equipmentDesigner', 'widget-a', () => { closedA++; }),
+    { x: 240, y: 120 },
+  );
+  assert.equal(closedA, 0);
+
+  assert.deepEqual(
+    claimGameWindowSlot('equipmentDesigner', 'widget-b', () => { closedB++; }),
+    { x: 240, y: 120 },
+  );
+  assert.equal(closedA, 1);
+  assert.equal(closedB, 0);
+
+  releaseGameWindowSlot('equipmentDesigner', 'widget-a');
+  assert.deepEqual(
+    claimGameWindowSlot('equipmentDesigner', 'widget-b', () => { closedB++; }),
+    { x: 240, y: 120 },
+  );
+  releaseGameWindowSlot('equipmentDesigner', 'widget-b');
+  assert.equal(claimGameWindowSlot('equipmentDesigner', 'widget-a', () => { closedA++; }), null);
+  releaseGameWindowSlot('equipmentDesigner', 'widget-a');
 });

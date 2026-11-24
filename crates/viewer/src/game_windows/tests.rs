@@ -543,18 +543,22 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
     assert!(shared.guis.template(b"mod_only_panel").is_some());
     assert!(shared.guis.template(b"unit_counter_navy").is_none());
 
+    let empty_tips = BTreeMap::new();
     let missing_err = service
         .render_window_from_layers(
             fixture.key("custom_mod_missing_window"),
             &fixture.layers,
-            "custom_mod_missing_window",
             &Assets::default(),
-            1.0,
-            Some(0),
-            true,
-            &[],
-            &BTreeMap::new(),
-            Vec::new(),
+            RenderParams {
+                window_name: "custom_mod_missing_window",
+                scale: 1.0,
+                read_hour: Some(0),
+                art_from_current_install: true,
+                close_paths: &[],
+                tooltip_overrides: &empty_tips,
+                extra_warnings: Vec::new(),
+                admitted_gen: None,
+            },
             &cancel,
             |_, _, _| {},
         )
@@ -567,14 +571,17 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
         .render_window_from_layers(
             fixture.key("mod_blank_panel"),
             &fixture.layers,
-            "mod_blank_panel",
             &Assets::default(),
-            1.0,
-            Some(0),
-            true,
-            &[],
-            &BTreeMap::new(),
-            Vec::new(),
+            RenderParams {
+                window_name: "mod_blank_panel",
+                scale: 1.0,
+                read_hour: Some(0),
+                art_from_current_install: true,
+                close_paths: &[],
+                tooltip_overrides: &empty_tips,
+                extra_warnings: Vec::new(),
+                admitted_gen: None,
+            },
             &cancel,
             |_, _, _| {},
         )
@@ -587,14 +594,17 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
         .render_window_from_layers(
             fixture.key("mod_only_panel"),
             &fixture.layers,
-            "mod_only_panel",
             &Assets::default(),
-            1.0,
-            Some(0),
-            true,
-            &[],
-            &BTreeMap::new(),
-            Vec::new(),
+            RenderParams {
+                window_name: "mod_only_panel",
+                scale: 1.0,
+                read_hour: Some(0),
+                art_from_current_install: true,
+                close_paths: &[],
+                tooltip_overrides: &empty_tips,
+                extra_warnings: Vec::new(),
+                admitted_gen: None,
+            },
             &cancelled,
             |_, _, _| {},
         )
@@ -858,18 +868,21 @@ fn stale_generation_cancels_without_evicting_newer_cache_entry() {
     }
 
     let cancel = AtomicBool::new(false);
+    let empty_tips = BTreeMap::new();
     let err = service
-        .render_composed_from_layers_at(
+        .render_composed_from_layers(
             key.clone(),
             &fixture.layers,
-            "mod_only_panel",
-            1.0,
-            Some(0),
-            true,
-            &["close_button"],
-            &BTreeMap::new(),
-            Vec::new(),
-            Some(stale_gen),
+            RenderParams {
+                window_name: "mod_only_panel",
+                scale: 1.0,
+                read_hour: Some(0),
+                art_from_current_install: true,
+                close_paths: &["close_button"],
+                tooltip_overrides: &empty_tips,
+                extra_warnings: Vec::new(),
+                admitted_gen: Some(stale_gen),
+            },
             &cancel,
             |_| Ok((Assets::default(), ())),
             |_, _, _, _, _, _, _| {},

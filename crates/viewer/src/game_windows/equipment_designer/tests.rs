@@ -314,6 +314,7 @@ fn extract_design_data_preserves_missing_tables_and_withheld_cost() {
         variant: 42,
         organisation: 0,
         values: stats_values,
+        ..VariantStatsRow::default()
     };
     let design_state_with_cost = VariantDesignState {
         build_cost: 900_000,
@@ -323,23 +324,23 @@ fn extract_design_data_preserves_missing_tables_and_withheld_cost() {
         ..VariantDesignState::default()
     };
 
-    let withheld_cost = extract_design_data(
-        DesignerKind::Ship,
-        "GER",
-        "ship_hull_light_2",
-        "ship_hull_light",
-        ship,
-        &db,
-        &definition,
-        Some(&design_state_with_cost),
-        None,
-        Some(&stats_row),
-        RecordedStats::Available(stats_values),
-        Err("VariantModules unavailable".to_owned()),
-        Err("VariantUpgrades unavailable".to_owned()),
-        &[],
-        None,
-    );
+    let withheld_cost = extract_design_data(ExtractInputs {
+        kind: DesignerKind::Ship,
+        tag: "GER",
+        equipment_key: "ship_hull_light_2",
+        archetype_key: "ship_hull_light",
+        equipment: ship,
+        equipment_db: &db,
+        definition: &definition,
+        design_state: Some(&design_state_with_cost),
+        design_state_reason: None,
+        stats_row: Some(&stats_row),
+        stats: RecordedStats::Available(stats_values),
+        module_rows: Err("VariantModules unavailable".to_owned()),
+        upgrade_rows: Err("VariantUpgrades unavailable".to_owned()),
+        lexical: &[],
+        organisations: None,
+    });
     assert_eq!(withheld_cost.build_cost, None);
     assert!(matches!(
         withheld_cost.fitted_modules,
@@ -362,23 +363,23 @@ fn extract_design_data_preserves_missing_tables_and_withheld_cost() {
         SlotIcon::Unknown { ref sprite, .. } if sprite == "GFX_EMI_unknown"
     ));
 
-    let missing_design = extract_design_data(
-        DesignerKind::Ship,
-        "GER",
-        "ship_hull_light_2",
-        "ship_hull_light",
-        ship,
-        &db,
-        &definition,
-        None,
-        Some("Not recorded".to_owned()),
-        None,
-        RecordedStats::MissingRow,
-        Ok(&[]),
-        Ok(&[]),
-        &[],
-        None,
-    );
+    let missing_design = extract_design_data(ExtractInputs {
+        kind: DesignerKind::Ship,
+        tag: "GER",
+        equipment_key: "ship_hull_light_2",
+        archetype_key: "ship_hull_light",
+        equipment: ship,
+        equipment_db: &db,
+        definition: &definition,
+        design_state: None,
+        design_state_reason: Some("Not recorded".to_owned()),
+        stats_row: None,
+        stats: RecordedStats::MissingRow,
+        module_rows: Ok(&[]),
+        upgrade_rows: Ok(&[]),
+        lexical: &[],
+        organisations: None,
+    });
     assert_eq!(missing_design.auto_upgraded, None);
     assert_eq!(missing_design.build_resources, None);
     assert_eq!(missing_design.niche_frame, None);
@@ -414,23 +415,23 @@ fn compose_module_slots_refuses_when_mod_slots_exceed_window_markers() {
         .unwrap();
     let resources = viewer_native_gui::test_support::gui::fixture();
     let layout = layout_window(root, &resources, [400, 300], |_| {}).unwrap();
-    let data = extract_design_data(
-        DesignerKind::Ship,
-        "GER",
-        "ship_hull_light_2",
-        "ship_hull_light",
-        ship,
-        &db,
-        &VariantDefinitionRow::default(),
-        None,
-        None,
-        None,
-        RecordedStats::MissingRow,
-        Ok(&[]),
-        Ok(&[]),
-        &[],
-        None,
-    );
+    let data = extract_design_data(ExtractInputs {
+        kind: DesignerKind::Ship,
+        tag: "GER",
+        equipment_key: "ship_hull_light_2",
+        archetype_key: "ship_hull_light",
+        equipment: ship,
+        equipment_db: &db,
+        definition: &VariantDefinitionRow::default(),
+        design_state: None,
+        design_state_reason: None,
+        stats_row: None,
+        stats: RecordedStats::MissingRow,
+        module_rows: Ok(&[]),
+        upgrade_rows: Ok(&[]),
+        lexical: &[],
+        organisations: None,
+    });
     let mut plan = ComposedPlan::default();
     let err = compose_module_slots(
         &layout,
@@ -438,8 +439,7 @@ fn compose_module_slots_refuses_when_mod_slots_exceed_window_markers() {
         slot_root,
         &resources,
         &Localisation::default(),
-        &data,
-        &db,
+        (&data, &db),
         &mut plan,
     )
     .unwrap_err();

@@ -15,6 +15,15 @@
 .drill-body { display: flex; flex: 1; flex-direction: column; gap: var(--space-4); min-height: 0; padding: var(--space-3); overflow: auto; }
 .drill-popout { width: min(440px, calc(100vw - 24px)); max-height: min(560px, calc(100vh - 24px)); padding: 0; display: flex; flex-direction: column; }
 .drill-popout .drill-body { min-height: 200px; }
+.drill-window { width: fit-content; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow: hidden; }
+.drill-window:focus { outline: none; }
+.drill-window:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; }
+.drill-window.is-dragging { transition: none; user-select: none; }
+.drill-window-bar { cursor: grab; touch-action: none; flex-wrap: nowrap; }
+.drill-window.is-dragging .drill-window-bar { cursor: grabbing; }
+.drill-window-grip { flex: none; width: 8px; height: 14px; opacity: .45;
+  background: radial-gradient(circle, var(--muted) 1px, transparent 1.4px) 0 0 / 4px 4px; }
+.drill-window .drill-body { min-height: 0; padding: var(--space-2); overflow: hidden; align-items: center; justify-content: center; }
 
 .drill-parts { display: grid; grid-template-columns: minmax(0, max-content) minmax(60px, 1fr) auto auto; align-items: center; gap: var(--space-2) var(--space-3); margin: 0; padding: 0; list-style: none; font-size: var(--type-sm); }
 .drill-parts li { display: contents; }

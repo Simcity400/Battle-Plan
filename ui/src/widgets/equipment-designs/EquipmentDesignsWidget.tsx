@@ -1,6 +1,6 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createPortal } from 'react-dom';
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
@@ -25,8 +25,16 @@ import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboar
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { gameWindow, subscribeGameWindows, windowDayLabel, withWindowDiagnostics } from '../../dashboard/gameWindows';
-import type { ShownWindow } from '../../dashboard/gameWindows';
+import {
+  claimGameWindowSlot,
+  gameWindow,
+  releaseGameWindowSlot,
+  subscribeGameWindows,
+  updateGameWindowSlotPosition,
+  windowDayLabel,
+  withWindowDiagnostics,
+} from '../../dashboard/gameWindows';
+import type { ShownWindow, WindowPosition } from '../../dashboard/gameWindows';
 import { DEFAULT_SORT, OPTIONS, SHEET } from './definition';
 import { designRevision, designTypes, designsAt, designsKnown, designsSince, seenNote, seenText, validateDesigns } from './designsData';
 import type { DesignRow } from './designsData';
@@ -85,6 +93,9 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   const included = useMemo(() => { const keys = contentSet(includedText).map(contentKey); return keys.length ? new Set(keys) : null; }, [includedText]);
   const rows = useMemo(() => data && hour !== null ? designsAt(data, hour, included) : NO_ROWS, [data, hour, included]);
   const names = useCountryNamesAt(runtime.client, track, useMemo(() => tag && hour !== null ? [{ hour, tag }] : [], [tag, hour]), active);
+  const slotOwnerId = useId();
+  const [inheritedPos, setInheritedPos] = useState<WindowPosition | null>(null);
+  const [focusTrigger, setFocusTrigger] = useState(0);
   const anchor = useRef<HTMLDivElement>(null);
   const drillControl = useDrill(runtime, useRegion(widget));
   const drill = drillControl.state;
@@ -93,7 +104,18 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   const owner = useMemo(() => ({ client: runtime.client, scope }), [runtime.client, scope]);
   const [stored, setPicked] = useState<{ owner: object; row: DesignRow } | null>(null);
   const picked = stored?.owner === owner ? rows.find(row => row.key === stored.row.key) ?? stored.row : null;
-  useEffect(() => dispatch({ type: 'close' }), [owner]);
+  const closeForHandover = useCallback(() => {
+    dispatch({ type: 'close' });
+    setWindowLines(NO_WARNINGS);
+    setWindowShown(null);
+    setInheritedPos(null);
+  }, [dispatch]);
+  const closeDrill = useCallback(() => {
+    releaseGameWindowSlot('equipmentDesigner', slotOwnerId);
+    closeForHandover();
+  }, [slotOwnerId, closeForHandover]);
+  useEffect(() => closeDrill(), [owner, closeDrill]);
+  useEffect(() => () => releaseGameWindowSlot('equipmentDesigner', slotOwnerId), [slotOwnerId]);
   const current = useMemo(() => rows.filter(row => !row.obsolete), [rows]);
   const obsolete = useMemo(() => rows.filter(row => row.obsolete), [rows]);
   const columns = useCallback((withObsolete: boolean): readonly TableColumn<DesignRow>[] => [
@@ -121,14 +143,15 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
     const liveWindow = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
     const openHour = liveWindow ? Math.floor(liveWindow.lastHour) : hour;
     if (openHour === null) return;
+    const inherited = claimGameWindowSlot('equipmentDesigner', slotOwnerId, closeForHandover);
+    setInheritedPos(inherited);
     setPicked({ owner, row });
+    setFocusTrigger(count => count + 1);
     dispatch({ type: 'open', breakdown: SHEET.id, hour: openHour, follow: drillControl.followsAt(openHour) });
   };
-  const closeDrill = useCallback(() => {
-    dispatch({ type: 'close' });
-    setWindowLines(NO_WARNINGS);
-    setWindowShown(null);
-  }, [dispatch]);
+  const onPositionChange = useCallback((pos: WindowPosition) => {
+    updateGameWindowSlotPosition('equipmentDesigner', slotOwnerId, pos);
+  }, [slotOwnerId]);
   const drillRegion = drillControl.region;
   const at = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
 
@@ -156,7 +179,9 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
     </div>;
   return <div ref={anchor} data-detail={failureDetails([...names.values()].map(nameReadFailure))} className="equipment-designs">
     {header}
-    <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null && !!picked} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
+    <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null && !!picked} mode="window" anchor={anchor}
+      returnFocus={picked && typeof CSS !== 'undefined' ? `tr[data-table-row="${CSS.escape(picked.key)}"]` : undefined}
+      windowPosition={inheritedPos} windowSettled={windowShown !== null} focusTrigger={focusTrigger} onPositionChange={onPositionChange}
       title={picked ? picked.name ?? UNNAMED : SHEET.label} day={windowShown ? windowDayLabel(windowShown) : at === null ? '' : dayLabel(at)} canFollow
       onClose={closeDrill} main={main}>
       {picked && Designer && at === null && <WidgetState kind="outside" />}

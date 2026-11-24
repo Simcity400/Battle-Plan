@@ -12,16 +12,25 @@ test('actual queued drill close restores its own focus and preserves a later wid
   class SurfaceElement {
     isConnected = true;
     readonly popout: SurfaceElement | null;
+    offsetWidth = 600;
+    offsetHeight = 400;
+    style: Record<string, string> = {};
+    shown = false;
+    focusCalls = 0;
     constructor(popout: SurfaceElement | null = null) { this.popout = popout; }
     closest(selector: string) { return selector === '[popover]' || selector === '.drill-popout' ? this.popout : null; }
     contains(_target: unknown) { return false; }
+    matches(selector: string) { return selector === ':popover-open' && this.shown; }
+    showPopover() { this.shown = true; }
+    hidePopover() { this.shown = false; }
+    focus() { this.focusCalls++; }
   }
   const body = new SurfaceElement(), panel = new SurfaceElement(), otherPanel = new SurfaceElement();
   const ownControl = new SurfaceElement(panel), otherControl = new SurfaceElement(otherPanel), button = new SurfaceElement();
   const anchorControl = new SurfaceElement(), disconnected = new SurfaceElement(); disconnected.isConnected = false;
-  panel.contains = target => target === ownControl;
+  panel.contains = target => target === panel || target === ownControl;
   const handlers = new Map<string, (event: unknown) => void>(), queued: FrameRequestCallback[] = [];
-  const browser = { body, activeElement: ownControl as SurfaceElement | null,
+  const browser = { body, activeElement: ownControl as SurfaceElement | null, innerWidth: 1440, innerHeight: 900,
     addEventListener: (name: string, callback: (event: unknown) => void) => handlers.set(name, callback),
     removeEventListener: (name: string) => handlers.delete(name) };
   const state = { effects: [] as (() => unknown)[], close: undefined as (() => void) | undefined,
@@ -104,6 +113,38 @@ test('actual queued drill close restores its own focus and preserves a later wid
         assert.deepEqual(selected, scenario.restore ? ['.country-race-chart canvas'] : []);
       } finally { for (const cleanup of cleanups.reverse()) cleanup(); }
     }
+    let windowCloses = 0, windowFocuses = 0;
+    const windowCleanups: (() => void)[] = [];
+    const windowTarget = { isConnected: true, contains: (focused: unknown) => focused === anchorControl,
+      querySelector: () => ({ focus: (options: FocusOptions) => { assert.equal(options.preventScroll, true); windowFocuses++; } }) } as unknown as HTMLElement;
+    const windowAnchor = { current: windowTarget as HTMLElement | null };
+    state.effects = []; state.menu.popup.current = panel; panel.shown = false; panel.focusCalls = 0;
+    const windowHtml = renderToStaticMarkup(createElement(DrillHost, {
+      mode: 'window', drill: drillOf(true), runtime: RUNTIME, title: 'Admiral Hipper', day: '1936-01-01',
+      canFollow: true, anchor: windowAnchor, returnFocus: 'tr[data-table-row="hipper"]',
+      main: createElement('div', { className: 'widget-underneath' }, 'Table'), children: null,
+      onClose() { windowCloses++; state.menu.popup.current = null; },
+    }));
+    assert.match(windowHtml, /Close Admiral Hipper/);
+    assert.match(windowHtml, /drill-window-grip/);
+    assert.match(windowHtml, /widget-underneath/);
+    assert.doesNotMatch(windowHtml, />Back</);
+    try {
+      for (const effect of state.effects) { const cleanup = effect(); if (typeof cleanup === 'function') windowCleanups.push(cleanup as () => void); }
+      assert.equal(panel.shown, true, 'window mode opens the manual popover');
+      assert.equal(panel.style.left, '420px', 'window mode centers horizontally on first open');
+      assert.equal(panel.style.top, '250px', 'window mode centers vertically on first open');
+      assert.equal(panel.focusCalls, 1, 'window mode moves focus into the pop-up on open');
+      browser.activeElement = anchorControl;
+      handlers.get('keydown')!({ key: 'Escape' });
+      assert.equal(windowCloses, 0, 'window mode ignores Escape when focus is outside the pop-up');
+      browser.activeElement = ownControl;
+      handlers.get('keydown')!({ key: 'Escape' });
+      assert.equal(windowCloses, 1, 'window mode closes on Escape when the pop-up has focus');
+      browser.activeElement = body;
+      queued.shift()!(0);
+      assert.equal(windowFocuses, 1, 'window mode restores focus to the opening row on close');
+    } finally { for (const cleanup of windowCleanups.reverse()) cleanup(); }
   } finally {
     globalThis.document = before.document; globalThis.window = before.window; globalThis.Element = before.Element;
     globalThis.requestAnimationFrame = before.requestAnimationFrame;

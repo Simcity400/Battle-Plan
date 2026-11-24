@@ -60,6 +60,21 @@
   outline-offset: -1px;
 }
 
+.drill-window .game-window-host {
+  width: auto;
+  height: auto;
+  padding: 0;
+  overflow: visible;
+}
+
+.game-window-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 360px;
+  min-height: 220px;
+}
+
 .game-window-art-note {
   font-size: var(--font-size-small);
   color: var(--color-text-muted);

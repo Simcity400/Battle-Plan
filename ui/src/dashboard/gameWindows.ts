@@ -48,7 +48,60 @@ export interface GameWindowProps<S extends GameWindowSelection = GameWindowSelec
   onClose?: () => void;
 }
 
-export interface ShownWindow { hour: number; readHour: number | null }
+export interface ShownWindow {
+  hour: number;
+  readHour: number | null;
+  logicalSize?: readonly [number, number];
+}
+
+export interface WindowPosition { x: number; y: number }
+
+interface ActiveWindowSlot {
+  ownerId: string;
+  position: WindowPosition | null;
+  close: () => void;
+}
+
+const activeSlots = new Map<GameWindowSelection['kind'], ActiveWindowSlot>();
+
+export function claimGameWindowSlot(
+  kind: GameWindowSelection['kind'],
+  ownerId: string,
+  close: () => void,
+): WindowPosition | null {
+  const existing = activeSlots.get(kind);
+  let inherited: WindowPosition | null = null;
+  if (existing && existing.ownerId !== ownerId) {
+    inherited = existing.position;
+    activeSlots.delete(kind);
+    existing.close();
+  } else if (existing) {
+    inherited = existing.position;
+  }
+  activeSlots.set(kind, { ownerId, position: inherited, close });
+  return inherited;
+}
+
+export function updateGameWindowSlotPosition(
+  kind: GameWindowSelection['kind'],
+  ownerId: string,
+  position: WindowPosition,
+): void {
+  const existing = activeSlots.get(kind);
+  if (existing && existing.ownerId === ownerId) {
+    existing.position = position;
+  }
+}
+
+export function releaseGameWindowSlot(
+  kind: GameWindowSelection['kind'],
+  ownerId: string,
+): void {
+  const existing = activeSlots.get(kind);
+  if (existing && existing.ownerId === ownerId) {
+    activeSlots.delete(kind);
+  }
+}
 
 export const openedOn = (track: Pick<BoundTrack, 'source' | 'branch'>, tag: string) => JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag]);
 

@@ -6,6 +6,7 @@ import type { DashboardClient, GameWindowRegion, GameWindowRender, GameWindowReq
 import { useContentRevision } from './contentRevision';
 import {
   accessibleRegions,
+  fitGameWindowSize,
   gameWindowRequestKey,
   hitTestRegion,
   isActivatableClose,
@@ -15,6 +16,26 @@ import {
 } from './gameWindowLogic';
 import type { ShownWindow } from './gameWindows';
 import './gameWindow.css';
+
+function useViewportSize(): { width: number; height: number } {
+  const [size, setSize] = useState(() => ({
+    width: typeof window === 'undefined' ? 1440 : window.innerWidth,
+    height: typeof window === 'undefined' ? 900 : window.innerHeight,
+  }));
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onResize = () => {
+      setSize(prev => (
+        prev.width === window.innerWidth && prev.height === window.innerHeight
+          ? prev
+          : { width: window.innerWidth, height: window.innerHeight }
+      ));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return size;
+}
 
 function useDevicePixelRatio(): number {
   const [dpr, setDpr] = useState(() => normalizeScale(typeof window === 'undefined' ? 1 : window.devicePixelRatio));
@@ -81,6 +102,7 @@ export default function GameWindowView({
 }: GameWindowViewProps) {
   const ownerId = `game-window:${useId()}`;
   const dpr = useDevicePixelRatio();
+  const viewport = useViewportSize();
   const contentRev = useContentRevision(client, active);
   const [completed, setCompleted] = useState<CompletedRender | null>(null);
   const [failed, setFailed] = useState<FailedRender | null>(null);
@@ -128,7 +150,11 @@ export default function GameWindowView({
       setFailed(null);
       setLoading(false);
       onDiagnosticsRef.current?.([...existing.render.warnings]);
-      onShownRef.current?.({ hour: existing.hour, readHour: existing.render.readHour });
+      onShownRef.current?.({
+        hour: existing.hour,
+        readHour: existing.render.readHour,
+        logicalSize: existing.render.logicalSize,
+      });
       return;
     }
     const controller = new AbortController();
@@ -145,7 +171,11 @@ export default function GameWindowView({
         setFailed(null);
         setLoading(false);
         onDiagnosticsRef.current?.([...result.warnings]);
-        onShownRef.current?.({ hour: stableRequest.hour, readHour: result.readHour });
+        onShownRef.current?.({
+          hour: stableRequest.hour,
+          readHour: result.readHour,
+          logicalSize: result.logicalSize,
+        });
       })
       .catch(caught => {
         if (controller.signal.aborted) return;
@@ -163,6 +193,8 @@ export default function GameWindowView({
 
   const render = completed && completed.key === requestKey ? completed.render : null;
   const error = failed && failed.key === requestKey ? failed.error : null;
+  const previousLogicalSize = completed?.render.logicalSize ?? null;
+  const previousHasArtLabel = Boolean(completed?.render.artLabel);
 
   const logicalPoint = useCallback((clientX: number, clientY: number): [number, number] | null => {
     const img = imgRef.current;
@@ -241,10 +273,23 @@ export default function GameWindowView({
     return <WidgetState kind="error" failure={error} />;
   }
   if (!render) {
-    return <WidgetState kind="loading" label={loading ? `Loading ${label}…` : `Preparing ${label}…`} />;
+    const heldSize = previousLogicalSize
+      ? fitGameWindowSize(previousLogicalSize, viewport, { width: 48, height: previousHasArtLabel ? 116 : 88 })
+      : null;
+    return <div
+      className="game-window-loading"
+      style={heldSize ? { width: `${heldSize[0]}px`, height: `${heldSize[1]}px` } : undefined}
+    >
+      <WidgetState kind="loading" label={loading ? `Loading ${label}…` : `Preparing ${label}…`} />
+    </div>;
   }
 
   const [logicalWidth, logicalHeight] = render.logicalSize;
+  const [displayWidth, displayHeight] = fitGameWindowSize(
+    render.logicalSize,
+    viewport,
+    { width: 48, height: render.artLabel ? 116 : 88 },
+  );
   return <div ref={hostRef} className="game-window-host" tabIndex={-1} onKeyDown={handleKeyDown}>
     <div className="game-window-stage">
       <div
@@ -260,7 +305,11 @@ export default function GameWindowView({
           className="game-window-image"
           src={`data:image/png;base64,${render.pngBase64}`}
           alt={label}
-          style={{ width: `${logicalWidth}px`, aspectRatio: `${logicalWidth} / ${logicalHeight}` }}
+          style={{
+            width: `${displayWidth}px`,
+            height: `${displayHeight}px`,
+            aspectRatio: `${logicalWidth} / ${logicalHeight}`,
+          }}
           draggable={false}
         />
         <div className="game-window-regions" aria-label={`${label} controls`}>

@@ -7,6 +7,19 @@ export function normalizeScale(dpr: number): number {
   return Math.round(clamped * 100) / 100;
 }
 
+export function fitGameWindowSize(
+  logicalSize: readonly [number, number],
+  viewport: { width: number; height: number },
+  chrome: { width: number; height: number } = { width: 48, height: 116 },
+): readonly [number, number] {
+  const [width, height] = logicalSize;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return [0, 0];
+  const availWidth = Math.max(120, viewport.width - chrome.width);
+  const availHeight = Math.max(120, viewport.height - chrome.height);
+  const scale = Math.min(1, availWidth / width, availHeight / height);
+  return [Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale))];
+}
+
 function stableValue(value: unknown): unknown {
   if (value === null || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map(stableValue);
