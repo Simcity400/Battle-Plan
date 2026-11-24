@@ -6,9 +6,9 @@ import { reserveHistoryProof, segmentParts, sourceTagAt, validateOccupationReser
 const country = (id: number, tag: string | null = `T${id}`) => ({ id, tag });
 const reply: OccupationReserveReply = {
   holders: [
-    { country: country(3), admitted: false, total: 700, entries: [{ ordinal: 0, source: country(9, null), amount: 700 }] },
-    { country: country(2), admitted: true, total: 500, entries: [{ ordinal: 0, source: country(8), amount: -50 }, { ordinal: 1, source: country(9), amount: 300 }, { ordinal: 2, source: country(9), amount: 200 }] },
-    { country: country(1), admitted: true, total: 0, entries: [] },
+    { country: country(3), slot: null, admitted: false, total: 700, entries: [{ ordinal: 0, source: country(9, null), amount: 700 }] },
+    { country: country(2), slot: null, admitted: true, total: 500, entries: [{ ordinal: 0, source: country(8), amount: -50 }, { ordinal: 1, source: country(9), amount: 300 }, { ordinal: 2, source: country(9), amount: 200 }] },
+    { country: country(1), slot: null, admitted: true, total: 0, entries: [] },
   ],
   readHour: 100,
   unnamed: 1,
@@ -19,7 +19,7 @@ const reply: OccupationReserveReply = {
 test('validateOccupationReserve accepts a ranked reply with totals and amounts and rejects malformed shapes', () => {
   assert.deepEqual(validateOccupationReserve(reply), reply);
   assert.throws(() => validateOccupationReserve({ ...reply, unnamed: -1 }));
-  assert.throws(() => validateOccupationReserve({ ...reply, holders: [{ country: country(1), admitted: true, entries: [] }] }));
+  assert.throws(() => validateOccupationReserve({ ...reply, holders: [{ country: country(1), slot: null, admitted: true, entries: [] }] }));
 });
 
 const history: ReserveHistoryReply = {

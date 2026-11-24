@@ -10,7 +10,7 @@ use dashboard_text::{
     metadata::link_slot,
     variant_names::{Texts, localise_for},
 };
-use replay_data::rows::{CountryLinkRow, LendLeaseAgreementRow, LexicalTokenRow, MarketPool, MarketPriceLevel, MarketSubsidy, TableId, tables};
+use replay_data::rows::{CountryLinkRow, LendLeaseAgreementRow, LexicalTokenRow, MarketContractTermsRow, MarketPool, MarketPriceLevel, MarketSubsidy, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -45,6 +45,11 @@ pub struct MarketLendLeaseParams {
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub lease_side: Option<LeaseSide>,
+    #[doc = " The one row read, by its recorded key in the `only` section: an offer's seller raw id, a"]
+    #[doc = " contract's `key`. With it, `countries` is empty."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub row: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -162,18 +167,18 @@ pub struct MarketLendLeaseReply {
 dashboard_base::reply_warnings!(MarketLendLeaseReply);
 
 pub(crate) struct Parties<'a> {
-    links: &'a [CountryLinkRow],
+    links: Option<&'a [CountryLinkRow]>,
     holders: &'a Holders,
     hour: i32,
 }
 
 impl<'a> Parties<'a> {
-    pub(crate) fn new(links: &'a [CountryLinkRow], holders: &'a Holders, hour: i32) -> Self {
+    pub(crate) fn new(links: Option<&'a [CountryLinkRow]>, holders: &'a Holders, hour: i32) -> Self {
         Self { links, holders, hour }
     }
 
     fn slot(&self, raw: u32) -> Option<u32> {
-        link_slot(self.links, raw)
+        link_slot(self.links?, raw)
     }
 
     pub(crate) fn tag(&self, raw: u32) -> Option<String> {
@@ -235,8 +240,23 @@ pub(crate) fn lease_terms(row: &LendLeaseAgreementRow, tag: impl Fn(u32) -> Opti
     }
 }
 
+fn terms_key(row: &MarketContractTermsRow) -> u128 {
+    u128::from(row.country) << 72 | u128::from(row.id) << 8 | u128::from(row.kind)
+}
+
 pub(crate) fn lease_key(row: &LendLeaseAgreementRow) -> u128 {
     u128::from(row.country) << 64 | u128::from(row.id)
+}
+
+fn row_key(params: &MarketLendLeaseParams) -> Option<u128> {
+    params.row.as_deref().and_then(|row| row.parse().ok())
+}
+
+fn read_section(params: &MarketLendLeaseParams, table: TableId) -> Read {
+    match row_key(params) {
+        Some(key) => Read::these(table, [key]),
+        None => Read::all(table),
+    }
 }
 
 fn sections(params: &MarketLendLeaseParams) -> [bool; 3] {
@@ -279,12 +299,18 @@ impl AtHour for MarketLendLease {
     const CONTENT_DEPENDENT: bool = true;
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = MarketLendLeaseParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, only, leaseSide, "countries[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, only, leaseSide, row, "countries[]"];
     type Reply = MarketLendLeaseReply;
     type Context = names::Context;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
+        if let Some(row) = &params.row {
+            row.parse::<u128>().map_err(|_| "Invalid market row")?;
+            if !params.countries.is_empty() || !matches!(params.only, Some(MarketSection::Offers | MarketSection::Contracts)) {
+                return Err("A market row is read alone, from the offers or the contracts");
+            }
+        }
         params.countries.iter().try_for_each(dashboard_base::products::validate_country)
     }
 
@@ -319,8 +345,8 @@ impl AtHour for MarketLendLease {
         match step {
             0 => {
                 let mut reads: Vec<Read> = names::WHOLE.iter().map(|&table| Read::all(table)).collect();
-                reads.extend(offers.then(|| Read::all(TableId::CountryMarket)));
-                reads.extend(contracts.then(|| Read::all(TableId::MarketContractTerms)));
+                reads.extend(offers.then(|| read_section(params, TableId::CountryMarket)));
+                reads.extend(contracts.then(|| read_section(params, TableId::MarketContractTerms)));
                 reads.extend(agreements.then(|| Read::all(TableId::LendLeaseAgreements)));
                 reads
             }
@@ -399,13 +425,10 @@ pub(crate) fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, ho
         icons: Vec::new(),
         warnings: Vec::new(),
     };
-    let links = match frame.complete::<tables::CountryLinks>() {
-        Ok(links) => links,
-        Err(error) => {
-            reply.warnings.push(format!("Countries are not recorded at this hour, so no market row can be named or chosen: {error}"));
-            return Ok(reply);
-        }
-    };
+    let links = frame
+        .complete::<tables::CountryLinks>()
+        .map_err(|error| reply.warnings.push(format!("Countries are not recorded at this hour, so no market row can be named or matched to a chosen country: {error}")))
+        .ok();
     let parties = Parties::new(links, holders, hour);
     let wanted = chosen(holders, &params.countries, hour, &mut reply.warnings);
     let mut unattributed = 0_u32;
@@ -423,8 +446,9 @@ pub(crate) fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, ho
     let offers = section(show_offers, frame.complete::<tables::CountryMarket>(), "Market offers", &mut reply.warnings);
     let terms = section(show_contracts, frame.complete::<tables::MarketContractTerms>(), "Market requests and contracts", &mut reply.warnings);
     let leases = section(show_agreements, frame.complete::<tables::LendLeaseAgreements>(), "Lend-lease agreements", &mut reply.warnings);
-    let offers: Option<Vec<_>> = offers.map(|rows| rows.iter().filter(|row| keep(&[row.country])).collect());
-    let terms: Option<Vec<_>> = terms.map(|rows| rows.iter().filter(|row| keep(&[row.country, row.buyer])).collect());
+    let clicked = row_key(params);
+    let offers: Option<Vec<_>> = offers.map(|rows| rows.iter().filter(|row| clicked.is_none_or(|key| key == u128::from(row.country)) && keep(&[row.country])).collect());
+    let terms: Option<Vec<_>> = terms.map(|rows| rows.iter().filter(|row| clicked.is_none_or(|key| key == terms_key(row)) && keep(&[row.country, row.buyer])).collect());
     let leases: Option<Vec<_>> = leases.map(|rows| {
         rows.iter()
             .filter(|row| match params.lease_side {
@@ -480,7 +504,7 @@ pub(crate) fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, ho
         let progress = [("assigned", column("convoys_assigned")?), ("convoys", column("convoys_total")?), ("collected", column("collected_raw")?), ("deliveries", column("completed_deliveries")?)];
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
-            let key = (u128::from(row.country) << 72 | u128::from(row.id) << 8 | u128::from(row.kind)).to_string();
+            let key = terms_key(row).to_string();
             let purchase = row.kind == 1 && purchases.get(&row.id) == Some(&(row.country, row.buyer));
             if purchase {
                 for (name, column) in progress {

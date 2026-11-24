@@ -37,6 +37,7 @@ export interface MilitaryAirAtOptions {
   readonly family: MilitaryAirFamily;
   readonly scale: number;
   readonly digits: number;
+  readonly shownDecimals: number;
   readonly leftHeader: string;
   readonly rightHeader: string;
   readonly unit: string;
@@ -96,12 +97,12 @@ export interface MilitaryAirRowMeta {
   readonly filters: MilitaryAirFilters;
 }
 
-export const AIR_LOSSES_AT = { scale: 100_000, digits: 5 } as const;
+export const AIR_LOSSES_AT = { scale: 100_000, digits: 5, shownDecimals: 0 } as const;
 
-export function militaryAirAmount(raw: string, partial: string | null, options: Pick<MilitaryAirAtOptions, 'digits'>): BarsValueField {
+export function militaryAirAmount(raw: string, partial: string | null, options: Pick<MilitaryAirAtOptions, 'digits' | 'shownDecimals'>): BarsValueField {
   const big = BigInt(raw);
   const value = partial !== null ? partialValue(big, partial) : big === 0n ? zeroValue(0n) : knownValue(big);
-  return { value, format: { decimals: options.digits } };
+  return { value, format: { decimals: options.digits, maxDecimals: options.shownDecimals } };
 }
 
 function magnitude(raw: string, options: Pick<MilitaryAirAtOptions, 'scale'>): number {
@@ -112,8 +113,8 @@ export function causeLabel(cause: MilitaryAirCauseName): string {
   return cause.name ?? `Cause ${cause.cause}`;
 }
 
-function compact(raw: string, options: Pick<MilitaryAirAtOptions, 'digits'>): string {
-  return formatCompactScalar(BigInt(raw), { decimals: options.digits }).text;
+function compact(raw: string, options: Pick<MilitaryAirAtOptions, 'digits' | 'shownDecimals'>): string {
+  return formatCompactScalar(BigInt(raw), { decimals: options.digits, maxDecimals: options.shownDecimals }).text;
 }
 
 function ratioText(row: MilitaryAirAtRow): string | null {

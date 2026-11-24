@@ -340,7 +340,6 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
           family,
           tags,
           ...(within ? { within } : {}),
-          marks: false,
           headQuery: tags.length
             ? { product: 'series-state', params: { branchId: ctx.branch.id, family, reads: countries.map(country => ({ country })) } }
             : null,
@@ -361,7 +360,6 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
           family,
           tags,
           ...(within ? { within } : {}),
-          marks: false,
           headQuery: tags.length
             ? { product: 'series-state', params: { branchId: ctx.branch.id, family, reads: countries.map(country => ({ country })) } }
             : null,

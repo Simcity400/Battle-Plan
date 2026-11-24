@@ -1,5 +1,5 @@
 
-use dashboard_base::products::{Country, validate_country};
+use dashboard_base::products::{Country, regions::{ActiveRegions, NoRegions, automatic, no_regions}, validate_country};
 use dashboard_base::{products::{LoadContext, Product}, queries::country_ids::{Names, RunLinks}};
 use dashboard_base::{Source, catalogue, span::HourSpan};
 use dashboard_base::products::resources::ResourceNaming;
@@ -260,6 +260,9 @@ pub struct ConvoyHealthReply {
     pub regions: Vec<ConvoyRegion>,
     #[doc = " Why the most strained regions are not a proven rank at the asked hour: the regions' convoy state there is not recorded. A top then lists only the pinned regions."]
     pub rank_missing: Option<String>,
+    #[doc = " Why no region is listed in the ranked regions view; set only when `regions` is empty."]
+    pub empty: Option<NoRegions>,
+    pub active_unlisted: ActiveRegions,
     #[doc = " With `every`: the cells of a region without a convoy efficiency."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub absent: Option<Vec<ConvoyCellRun>>,
@@ -1029,6 +1032,9 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         cells
     });
     let mut rank_missing = None;
+    let mut ranked_view = false;
+    let mut hidden_active = 0u32;
+    let mut active_unlisted = ActiveRegions::default();
     let mut all_regions: BTreeMap<u32, ConvoyRegion> = BTreeMap::new();
     for region in region_ids {
         let mut efficiency = held.gathered.regions.remove(&region).unwrap_or_default();
@@ -1057,13 +1063,14 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         let mut seen = HashSet::new();
         let pinned_list: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
         let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
+        ranked_view = true;
         let mut auto: Vec<(u32, i64)> = Vec::new();
         match absent.as_ref().and_then(|cells| cells.last()).map(|run| &run.state) {
             Some(ConvoyCellState::NotRecorded { reason }) => rank_missing = Some(reason.clone()),
             _ => {
                 auto = all_regions
                     .iter()
-                    .filter(|(id, _)| !seen.contains(id) && !hidden.contains(id))
+                    .filter(|(id, _)| !seen.contains(id))
                     .filter_map(|(&id, entry)| match entry.cells.last().map(|run| &run.state) {
                         Some(ConvoyCellState::Efficiency { value }) => Some((id, i64::from(SCALE) - value)),
                         _ => None,
@@ -1072,17 +1079,18 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
             }
         }
         auto.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        if let Some(limit) = params.top {
-            auto.truncate(limit);
-        }
-        let mut ordered = Vec::with_capacity(pinned_list.len() + auto.len());
+        let chosen = automatic(auto.into_iter().map(|(id, _)| id), &hidden, params.top.unwrap_or(usize::MAX), rank_missing.clone());
+        hidden_active = chosen.hidden;
+        active_unlisted = chosen.active_unlisted;
+        let listed = chosen.listed;
+        let mut ordered = Vec::with_capacity(pinned_list.len() + listed.len());
         for id in pinned_list {
             if let Some(mut entry) = all_regions.remove(&id) {
                 entry.pinned = true;
                 ordered.push(entry);
             }
         }
-        for (id, _) in auto {
+        for id in listed {
             if let Some(entry) = all_regions.remove(&id) {
                 ordered.push(entry);
             }
@@ -1158,8 +1166,10 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
         known,
         unheld,
         gaps,
+        empty: no_regions(!ranked_view || !regions.is_empty(), rank_missing.as_deref(), hidden_active, 0),
         regions,
         rank_missing,
+        active_unlisted,
         absent: every.then_some(absent).flatten(),
         deals,
         leases,
@@ -1198,6 +1208,8 @@ impl Product for ConvoyHealth {
             ConvoyDeal::decl(),
             ConvoyLease::decl(),
             ConvoyResource::decl(),
+            NoRegions::decl(),
+            ActiveRegions::decl(),
             HourSpan::decl(),
         ]
     }

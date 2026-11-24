@@ -34,6 +34,7 @@ const REPLY: MinefieldsReply = {
   ],
   unknown: [],
   empty: null,
+  activeUnlisted: { ids: [], missing: null },
   scale: 100000,
   warnings: [],
 };
