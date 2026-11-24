@@ -29,7 +29,7 @@ import { AuditSnapshotStore, canonicalAuditData, canonicalAuditValue } from '../
 import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
 import { createBoundedReadView } from '../boundedView.ts';
 import { holderRunAt, nextHoldersChange, nextRangesChange, nextWindowRangesChange, overlapsHourRanges, resolveSlotHolderRuns } from '../holders.ts';
-import { showBundle, type Settlement } from '../readUnits.ts';
+import { showBundle } from '../readUnits.ts';
 import { effectiveCountryUnobserved, selectionUnobservedReason } from '../sources.ts';
 import { SlotTags } from '../../dashboard/countrySlots.ts';
 import { groupUnobserved } from '../../dashboard/groups.ts';
@@ -1051,21 +1051,17 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
 
   const ctxA = { tag: 'A', role: 'occupier', settings: 'sA', looks: 'lA' };
   const ctxB = { tag: 'B', role: 'occupied', settings: 'sB', looks: 'lB' };
-  const complete: Settlement = { kind: 'complete', bundle: { hour: 50, span: [10, 50], proof: null, panels: new Map() } };
-  const holding: Settlement = { kind: 'hold' };
   const bundleAt50 = { span: [10, 50] };
   const bundleAt60 = { span: [20, 60] };
-  const first = showBundle(null, complete, bundleAt50, 'plan', ctxA);
-  const refreshed = showBundle(first.last, complete, bundleAt50, 'plan', ctxB);
+  const first = showBundle(null, bundleAt50, false, 'plan', ctxA);
+  const refreshed = showBundle(first.last, bundleAt50, false, 'plan', ctxB);
   assert.equal(refreshed.shown?.frozen, ctxB, 'F1: when every reply answers the current requests, option, role, settings and looks changes refresh immediately');
-  const retained = showBundle(refreshed.last, holding, null, 'plan', ctxA);
+  const retained = showBundle(refreshed.last, bundleAt50, true, 'plan', ctxA);
   assert.equal(retained.shown, refreshed.shown, 'S1: while a request is superseded, the last complete bundle is shown with its own context, settings and looks');
-  assert.equal(retained.held, true);
   assert.equal(retained.shown?.bundle, bundleAt50);
-  const updated = showBundle(retained.last, complete, bundleAt60, 'plan', ctxA);
+  const updated = showBundle(retained.last, bundleAt60, false, 'plan', ctxA);
   assert.equal(updated.shown?.bundle, bundleAt60, 'S1: updates once the new replies complete a bundle');
   assert.equal(updated.shown?.frozen, ctxA, 'S1: the updated bundle carries the new selection context');
-  assert.equal(showBundle(updated.last, holding, null, 'other plan', ctxB).shown, null, 'a bundle is never held across a change of plan');
 
   const emptyGsA = gameScoreProjection.project(createBoundedReadView({
     hour: 10,

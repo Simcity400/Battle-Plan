@@ -131,7 +131,7 @@ test('a hundred played hours ask each completed tile once, the current tile once
   let nowAsks = 0;
   let widest = 0;
   for (let hour = start; hour < start + 100; hour++) {
-    const units = askUnits(plan.entries, { following: true, trackOffset: 0, content: 0, askedAt: () => hour, playback: { branch, effectiveEndHour: end, gate } });
+    const units = askUnits(plan.entries, { following: true, trackOffset: 0, content: 0, hour, playback: () => ({ branch, effectiveEndHour: end, gate }) });
     for (const unit of units) {
       if (unit.key !== null && unit.key !== keys.get(unit.name)) {
         if (unit.name === 'now') {

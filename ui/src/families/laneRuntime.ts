@@ -21,6 +21,7 @@ export interface LaneBinding<TOptions = unknown> extends TiledSources {
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
+  readonly staticShifts?: Readonly<Record<string, number>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly scrollTop: number;
   readonly scrollLeft?: number;
