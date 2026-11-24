@@ -148,9 +148,13 @@ export function resolveCountryFromReadView(
   const who = readView.who('country', tag, atHour);
   let value: Value<string>;
   let name = tag;
-  if (who.name.status === 'ready' && who.name.value.trim()) {
-    value = knownValue(who.name.value);
-    name = who.name.value;
+  if (who.name.status === 'ready') {
+    if (who.name.value.trim()) {
+      value = knownValue(who.name.value);
+      name = who.name.value;
+    } else {
+      value = notRecorded('Country name unavailable');
+    }
   } else if (who.name.status === 'pending') {
     value = knownValue(tag);
   } else {
@@ -939,9 +943,13 @@ export function deriveRowTooltip(
   const { row } = found;
   const rows: TooltipRow[] = [];
   const firstCol = allColumns[0];
+  const firstCell = firstCol ? row.cells[firstCol.key] : undefined;
+  const firstResolved = firstCell ? resolveCellAtHour(firstCell, hour) : null;
+  const firstText = firstResolved && hasMeasuredValue(firstResolved.value) ? String(firstResolved.value.value) : undefined;
+  const title = row.tooltipTitle ?? firstText ?? found.name;
   for (let i = 0; i < allColumns.length; i++) {
     const col = allColumns[i]!;
-    if (i === 0 && !hiddenKeys.has(col.key) && !row.tooltipExtra) continue;
+    if (i === 0 && !hiddenKeys.has(col.key) && !row.tooltipExtra && (firstText === undefined || firstText === title)) continue;
     const cell = row.cells[col.key];
     if (!cell) continue;
     const resolved = resolveCellAtHour(cell, hour);
@@ -960,9 +968,6 @@ export function deriveRowTooltip(
       }));
     }
   }
-  const firstCell = firstCol ? row.cells[firstCol.key] : undefined;
-  const firstResolved = firstCell ? resolveCellAtHour(firstCell, hour) : null;
-  const title = row.tooltipTitle ?? (firstResolved && hasMeasuredValue(firstResolved.value) ? String(firstResolved.value.value) : found.name);
   const noteParts = [row.tooltipNote, row.tooltipAction].filter((part): part is string => Boolean(part));
   return {
     title,

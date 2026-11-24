@@ -80,7 +80,6 @@ test('unread template settings separate unknown obsolete status from current cou
     createBoundedReadView({ hour: 50, panels: new Map([['main', rep]]) }),
     { countryName: 'Germany', cellBars: false, canOpenDesigner: true },
   );
-  assert.equal(model.summaryPill, '1 current \u00b7 1 status not recorded');
   assert.deepEqual(model.rows.map(r => r.key), ['1', 'status-unknown']);
   assert.deepEqual(model.rows[0]!.cells.battalions!.value, { kind: 'notRecorded', reason: 'Unit type not localized' });
   const unknownChild = model.rows[1]!.children![0]!;

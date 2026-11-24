@@ -35,7 +35,7 @@ const AI_NEED_MISSING = 'Need is not computed for AI countries';
 
 export const STOCKPILE_BASE: TableBase = {
   density: 'normal',
-  bars: 'all',
+  barsBehind: 'all',
   overflow: 'scroll',
   showRank: false,
   sort: { column: 'balance', direction: 'ascending' },
@@ -43,7 +43,7 @@ export const STOCKPILE_BASE: TableBase = {
 
 function readLiveBigInt(live: ReturnType<BoundedReadView['live']>, row: string, col: string): bigint | null {
   if (!live) return null;
-  const raw = live.raw(liveKey(row, col));
+  const raw = live.raw?.(liveKey(row, col));
   if (raw !== undefined) return raw;
   const num = live.get(liveKey(row, col));
   return typeof num === 'number' && Number.isFinite(num) ? BigInt(Math.round(num)) : null;

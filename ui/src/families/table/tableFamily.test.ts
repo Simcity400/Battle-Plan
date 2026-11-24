@@ -130,6 +130,7 @@ function instrumentedContext() {
     arc() {},
     drawImage() {},
     setLineDash() {},
+    createLinearGradient() { return { addColorStop() {} }; },
     measureText(text: string) {
       measureCalls++;
       return { width: text.length * 7 };

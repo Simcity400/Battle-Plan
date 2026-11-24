@@ -307,6 +307,51 @@
   flex-direction: column;
 }
 
+.tf-edges {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--tf-view-w, 0);
+  height: var(--tf-view-h, 0);
+  pointer-events: none;
+  z-index: 4;
+}
+
+.tf-edges > i {
+  position: absolute;
+  display: none;
+}
+
+.tf-edge-right {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 44px;
+  background: linear-gradient(90deg, transparent, var(--surface));
+}
+
+.tf-edge-bottom {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 20px;
+  background: linear-gradient(180deg, transparent, var(--surface));
+}
+
+.tf-edge-pinned {
+  top: 0;
+  bottom: 0;
+  left: var(--tf-pinned-width, 0);
+  width: 12px;
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.35), transparent);
+}
+
+.tf-edges[data-right] > .tf-edge-right,
+.tf-edges[data-bottom] > .tf-edge-bottom,
+.tf-edges[data-pinned] > .tf-edge-pinned {
+  display: block;
+}
+
 .tf-resize-guide {
   position: absolute;
   top: 0;

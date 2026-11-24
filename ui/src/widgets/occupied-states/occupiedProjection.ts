@@ -38,7 +38,6 @@ export interface OccupiedProjectionOptions {
 }
 
 const PERCENT_SCALE = 10_000_000;
-const STATUS_MAP: Readonly<Record<string, 'dot' | 'outline' | 'fill'>> = { dot: 'dot', outline: 'outline', filled: 'fill' };
 const PRIORITIES: Readonly<Record<string, number>> = { state: 0, resistance: 1, occupier: 2, compliance: 3, garrison: 4, law: 5, owner: 6 };
 
 const within = (ranges: HourRanges | undefined, hour: number) => !!ranges?.some(([first, last]) => first <= hour && hour <= last);

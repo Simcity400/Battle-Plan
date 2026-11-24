@@ -12,7 +12,7 @@ export const SORTS = {
   inventory: { column: 'amount', direction: 'descending' },
 } as const;
 
-const MARKET_TABLE_BASE: TableBase = { density: 'normal', bars: 'all', overflow: 'scroll', showRank: false, sort: SORTS.contracts };
+const MARKET_TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: SORTS.contracts };
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'contracts', choices: [...VIEWS] },

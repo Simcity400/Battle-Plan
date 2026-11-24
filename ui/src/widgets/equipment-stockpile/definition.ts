@@ -7,7 +7,7 @@ import { tableFamilyOptions, type TableBase } from '../../families/table/setting
 export const BREAKDOWN = { id: 'stockpile', label: 'Stockpile breakdown' };
 
 const overTime = (options: Readonly<Record<string, OptionValue>>) => options.view === 'time';
-const STOCKPILE_TABLE_BASE: TableBase = { density: 'normal', bars: 'all', overflow: 'scroll', showRank: false, sort: { column: 'balance', direction: 'ascending' } };
+const STOCKPILE_TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: { column: 'balance', direction: 'ascending' } };
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'stockpileCountry', section: 'options', label: 'Selected country', kind: 'content-choice', automatic: 'Selected country', default: '', visibleWhen: () => false },

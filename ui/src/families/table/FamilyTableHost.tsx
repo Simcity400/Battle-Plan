@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
 import { useViewportHeight } from '../../charts/useChartTokens';
@@ -37,6 +37,7 @@ import {
 } from '../host/index.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import type { FamilyTableBinding } from './laneView.ts';
+import { syncTableEdges } from './edges.ts';
 import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
 import { deriveTableAudit, resolveTableRows, type CountryColorSource, type TableColumnSpec, type TableProjection } from './model.ts';
 import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, updateTableSettings, type TableSettings } from './settings.ts';
@@ -257,6 +258,7 @@ export default function FamilyTableHost<TOptions>({
   contextMenuRef.current = contextMenu;
   const frameRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const edgesRef = useRef<HTMLDivElement>(null);
   const accessibleRef = useRef<HTMLTableElement>(null);
   const mirrorBodyRef = useRef<HTMLTableSectionElement>(null);
 
@@ -784,6 +786,7 @@ export default function FamilyTableHost<TOptions>({
         if (lastExtentRef.current.height !== extHeight) {
           lastExtentRef.current.height = extHeight;
           mounted.extent.style.height = `${extHeight}px`;
+          syncTableEdges(edgesRef.current, viewportRef.current, extHeight);
         }
         if (focusInsideRef.current && focusedKeyRef.current) {
           const entry = navRef.current.find(item => item[0] === focusedKeyRef.current);
@@ -890,6 +893,7 @@ export default function FamilyTableHost<TOptions>({
       viewportRef.current.scrollLeft = sl;
       viewportRef.current.scrollTop = st;
       if (sl !== prevSl) setScrollLeft(sl);
+      syncTableEdges(edgesRef.current, viewportRef.current, lastExtentRef.current.height);
       syncViewWindow();
       bindRef.current();
     };
@@ -902,6 +906,7 @@ export default function FamilyTableHost<TOptions>({
       if (w === viewportRef.current.width && h === viewportRef.current.height) return;
       viewportRef.current.width = w;
       viewportRef.current.height = h;
+      syncTableEdges(edgesRef.current, viewportRef.current, lastExtentRef.current.height);
       syncViewWindow();
       setViewportWidth(w);
       latestRef.current.onViewportSize?.(w, h);
@@ -1106,6 +1111,18 @@ export default function FamilyTableHost<TOptions>({
     </div>}
     <div className="tf-body-wrap">
       {resizing?.guideX != null && <div className="tf-resize-guide" style={{ left: resizing.guideX }} aria-hidden="true" />}
+      <div
+        ref={edgesRef}
+        className="tf-edges"
+        data-right={canScrollRight ? 'true' : undefined}
+        data-pinned={layout.scrollable && scrollLeft > 0 && layout.pinnedWidth > 0 ? 'true' : undefined}
+        style={{ '--tf-pinned-width': `${layout.pinnedWidth}px` } as CSSProperties}
+        aria-hidden="true"
+      >
+        <i className="tf-edge-right" />
+        <i className="tf-edge-bottom" />
+        <i className="tf-edge-pinned" />
+      </div>
       <div
         ref={bodyRef}
         className="tf-body"

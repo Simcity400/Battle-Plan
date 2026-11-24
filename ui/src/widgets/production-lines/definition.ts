@@ -9,7 +9,7 @@ const tableOptionsVisible = (options: Readonly<Record<string, OptionValue>>, _co
   mainView(options) && (mode === 'follow' || mode === 'pin');
 const endedLinesVisible = (options: Readonly<Record<string, OptionValue>>, _countries?: CountrySelection, mode?: WidgetTime['mode']) =>
   mainView(options) && (mode === 'campaign' || mode === 'range');
-const PROD_TABLE_BASE: TableBase = { density: 'normal', bars: 'all', overflow: 'scroll', showRank: false, sort: { column: 'priority', direction: 'ascending' } };
+const PROD_TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: { column: 'priority', direction: 'ascending' } };
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'productionCountry', section: 'options', label: 'Selected country', kind: 'content-choice', automatic: 'Selected country', default: '', visibleWhen: () => false },

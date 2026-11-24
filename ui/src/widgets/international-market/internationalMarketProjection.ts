@@ -216,7 +216,7 @@ export function marketColumns(view: MarketTab): TableColumnSpec[] {
 export function marketTableBase(view: MarketTab): TableBase {
   return {
     density: 'normal',
-    bars: 'all',
+    barsBehind: 'all',
     overflow: 'scroll',
     showRank: false,
     sort: SORTS[view],

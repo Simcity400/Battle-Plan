@@ -11,7 +11,7 @@ import {
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { OFFERED } from '../../families/table/settings.ts';
-import { knownValue, notRecorded, partialValue, valueFromNullable, type Value } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, valueFromNullable, type Value } from '../../families/value.ts';
 import type { DivisionTemplatesReply, TemplateEntry } from '../../generated/dashboard';
 import { gameWindow } from '../../dashboard/gameWindows.ts';
 import { DEFAULT_SORT, OPTIONS } from './definition.ts';
@@ -149,7 +149,7 @@ const TEMPLATE_COLUMNS: readonly DeclarativeColumnSpec<TemplateRow, DivisionTemp
     hideable: false,
     value: (row, _live, _hour, options) => (row.kind === 'template' && options.canOpenDesigner && row.entry.designer !== null
       ? knownValue('View')
-      : notRecorded('')),
+      : notApplicable('This row has no designer window')),
   },
 ];
 

@@ -7,7 +7,6 @@ import {
   drawRowHairline,
   drawRowHover,
   drawRowSelected,
-  drawScrollFade,
   type ClockSummaryData,
 } from '../../draw/kit.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
@@ -43,6 +42,7 @@ export const FAST_GLIDE_MS = 120;
 export const TOP_RANK_HOLD_MS = 1500;
 export const WATCHING_RANK_HOLD_MS = 2500;
 const GROUP_HEADER_HEIGHT = 30;
+const HAIRLINE_INSET = 10;
 
 export function glideDurationForSpeed(speed: number, reducedMotion = false): number {
   if (reducedMotion || speed > FAST_SPEED) return 0;
@@ -210,7 +210,7 @@ function paintRowBackground(
     drawRowFocusRing(ctx, plateX, y + 1, plateW, Math.max(1, rowH - 2), theme);
   }
   if (!selected && !inspected) {
-    drawRowHairline(ctx, 10, Math.max(0, rowWidth - 20), y + rowH - 1, theme, strongDivider);
+    drawRowHairline(ctx, HAIRLINE_INSET, rowWidth - HAIRLINE_INSET, y + rowH - 1, theme, strongDivider ? 'strong' : 'normal');
   }
 }
 
@@ -228,11 +228,7 @@ function paintCellSliceGround(
   ctx.fillStyle = theme.surface;
   ctx.fillRect(x, y, cellWidth, rowH);
   if (isChild) drawChildRowTint(ctx, x, y, cellWidth, rowH, theme);
-  const lineStart = Math.max(x, 10);
-  const lineEnd = Math.min(x + cellWidth, rowWidth - 10);
-  if (lineEnd > lineStart) {
-    drawRowHairline(ctx, lineStart, lineEnd - lineStart, y + rowH - 1, theme, strongDivider);
-  }
+  drawRowHairline(ctx, Math.max(x, HAIRLINE_INSET), Math.min(x + cellWidth, rowWidth - HAIRLINE_INSET), y + rowH - 1, theme, strongDivider ? 'strong' : 'normal');
 }
 
 function isLastChildRow(rows: readonly FlatTableRow[], index: number): boolean {
@@ -289,7 +285,6 @@ export function drawFamilyTable(
 
   const uniformRowHeight = rowHeightMode === 'media' ? MEDIA_ROW_HEIGHT[settings.density] : ROW_HEIGHT[settings.density];
   const variableHeights = rowGeom !== null;
-  const totalHeight = variableHeights ? rowGeom.totalHeight : rows.length * uniformRowHeight;
   const bounds = scrollBounds(layout, width, scrollLeft);
   const rank = rankShown ? rankWidth : 0;
   const rowWidth = Math.max(width, layout.totalWidth);
@@ -485,7 +480,7 @@ export function drawFamilyTable(
   const drawGroupHeaderRow = (item: Extract<FlatTableRow, { kind: 'group-header' }>, y: number, rowH: number) => {
     ctx.fillStyle = theme.surface;
     ctx.fillRect(0, y, rowWidth, rowH);
-    drawRowHairline(ctx, 10, Math.max(0, rowWidth - 20), y + rowH - 1, theme, false);
+    drawRowHairline(ctx, HAIRLINE_INSET, rowWidth - HAIRLINE_INSET, y + rowH - 1, theme, 'normal');
     const smallFont = fontOf(theme, 12, VALUE_WEIGHT);
     ctx.font = smallFont;
     ctx.fillStyle = theme.muted;
@@ -534,13 +529,6 @@ export function drawFamilyTable(
       px += col.width;
     }
     ctx.restore();
-    if (bounds.left > 0) {
-      const shadow = ctx.createLinearGradient(layout.pinnedWidth, 0, layout.pinnedWidth + 12, 0);
-      shadow.addColorStop(0, 'rgba(0, 0, 0, 0.35)');
-      shadow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-      ctx.fillStyle = shadow;
-      ctx.fillRect(layout.pinnedWidth, y, 12, rowH);
-    }
   };
 
   if (picture && frameKey !== null && picture.frame === frameKey) {
@@ -693,31 +681,11 @@ export function drawFamilyTable(
       }
     }
 
-    if (dirtyRows.size > 0) {
-      if (layout.scrollable && layout.pinnedWidth > 0) {
-        for (const index of dirtyRows) {
-          const item = rows[index]!;
-          if (item.kind !== 'data') continue;
-          paintPinnedOverlayForRow(item, index, index * uniformRowHeight - scrollTop, uniformRowHeight);
-        }
-      }
-      if (layout.scrollable && bounds.left < bounds.max) {
-        const fadeX = Math.max(layout.pinnedWidth, width - 44);
-        const fadeW = Math.min(44, width);
-        for (const index of dirtyRows) {
-          const y = index * uniformRowHeight - scrollTop;
-          drawScrollFade(ctx, fadeX, y, fadeW, uniformRowHeight, theme, 'right');
-        }
-      }
-      if (scrollTop + height < totalHeight - 1) {
-        const bottomStart = Math.max(0, height - 20);
-        for (const index of dirtyRows) {
-          const y = index * uniformRowHeight - scrollTop;
-          if (y + uniformRowHeight > bottomStart) {
-            drawScrollFade(ctx, 0, bottomStart, width, Math.min(20, height), theme, 'bottom');
-            break;
-          }
-        }
+    if (dirtyRows.size > 0 && layout.scrollable && layout.pinnedWidth > 0) {
+      for (const index of dirtyRows) {
+        const item = rows[index]!;
+        if (item.kind !== 'data') continue;
+        paintPinnedOverlayForRow(item, index, index * uniformRowHeight - scrollTop, uniformRowHeight);
       }
     }
 
@@ -860,20 +828,6 @@ export function drawFamilyTable(
     ctx.clip();
     paintPass(true);
     ctx.restore();
-    if (bounds.left > 0) {
-      const shadow = ctx.createLinearGradient(layout.pinnedWidth, 0, layout.pinnedWidth + 12, 0);
-      shadow.addColorStop(0, 'rgba(0, 0, 0, 0.35)');
-      shadow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-      ctx.fillStyle = shadow;
-      ctx.fillRect(layout.pinnedWidth, 0, 12, height);
-    }
-  }
-
-  if (layout.scrollable && bounds.left < bounds.max) {
-    drawScrollFade(ctx, Math.max(layout.pinnedWidth, width - 44), 0, Math.min(44, width), height, theme, 'right');
-  }
-  if (scrollTop + height < totalHeight - 1) {
-    drawScrollFade(ctx, 0, Math.max(0, height - 20), width, Math.min(20, height), theme, 'bottom');
   }
 
   ctx.restore();

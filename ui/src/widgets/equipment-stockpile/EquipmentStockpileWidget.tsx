@@ -82,6 +82,7 @@ function EquipmentStockpileTableCountry(props: ComparisonProps) {
     setOption={props.setOption}
     onDiagnostics={props.onDiagnostics}
     headerSlot={props.headerSlot}
+    mapOptions={props.mapOptions}
   />;
 }
 

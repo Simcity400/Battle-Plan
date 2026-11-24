@@ -1,5 +1,4 @@
-import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
-import { ellipsise } from '../../charts/labels.ts';
+import { LABEL_WEIGHT } from '../../charts/draw.ts';
 import {
   drawActionButton,
   drawArtSlot,
@@ -143,7 +142,7 @@ function trackFillOf(column: FamilyColumnLayout, theme: TableTheme): string {
 
 export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): void {
   const { ctx, theme, density, measure, fit } = rc;
-  const { item, column, colIndex, x, y, rowHeight, paintModel, formatted, fraction, fill, rowHovered, rowFocused, stockpileMaxAbs } = args;
+  const { item, column, colIndex, x, y, rowHeight, paintModel, formatted, fraction, rowHovered, rowFocused, stockpileMaxAbs } = args;
   const cell = item.row.cells[column.key];
   const tokens = resolveKitTokens(theme);
   const leftBase = x + CELL_INSET;
@@ -366,7 +365,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       const barFill = paintModel.countryColor ?? (tokens.dark ? '#cfcfcf' : '#64748b');
       drawBarBehindFigure(ctx, right, middle, fraction, barFill, { density, sorted: isSorted, theme });
     }
-    const font = fontOf(theme, density === 'compact' ? 13 : 13.5, isSorted ? 600 : 500);
+    const font = fontOf(theme, 13, 500);
     ctx.save();
     ctx.font = font;
     ctx.textAlign = 'right';

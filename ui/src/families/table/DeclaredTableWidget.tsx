@@ -38,7 +38,7 @@ function resolveTableSettings<TProjectionOptions, TAux>(
   if (sp.kind === 'table') return tableSettingsOf(options[sp.key ?? TABLE_SETTINGS_KEY], columns, sp.base);
   if (sp.kind === 'options') {
     const sort = tableSortOf(options.tableSort as string | undefined, sp.defaultSort);
-    const overflow = narrowTableOf(options as never) === 'tooltip' ? 'tooltip' as const : 'scroll' as const;
+    const overflow = narrowTableOf(options as never) === 'scroll' ? 'scroll' as const : 'tooltip' as const;
     const density = rowHeightOf(options.rowHeight ?? options.density, 'normal');
     const barsBehind = barsBehindOf(options.barsBehind, 'all');
     return tableSettingsOf(undefined, columns, { density, barsBehind, overflow, sort });

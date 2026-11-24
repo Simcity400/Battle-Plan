@@ -29,11 +29,11 @@ import {
 } from './generalsData.ts';
 
 const SKILL_SPRITES: readonly SpriteFrame[] = [
-  { sprite: 'GFX_land_battle_leader_skill_bg' },
-  { sprite: 'GFX_trait_attack' },
-  { sprite: 'GFX_trait_defense' },
-  { sprite: 'GFX_trait_planning' },
-  { sprite: 'GFX_trait_logistics' },
+  { key: 'GFX_land_battle_leader_skill_bg', frame: 0 },
+  { key: 'GFX_trait_attack', frame: 0 },
+  { key: 'GFX_trait_defense', frame: 0 },
+  { key: 'GFX_trait_planning', frame: 0 },
+  { key: 'GFX_trait_logistics', frame: 0 },
 ];
 
 export interface LeaderSkillIcons {
@@ -54,7 +54,7 @@ export interface GeneralsProjectionOptions {
 
 export const GENERALS_BASE: TableBase = {
   density: 'normal',
-  bars: 'all',
+  barsBehind: 'all',
   overflow: 'scroll',
   showRank: false,
   sort: DEFAULT_SORT,
@@ -62,7 +62,7 @@ export const GENERALS_BASE: TableBase = {
 
 function parseSkillIcons(raw: unknown): LeaderSkillIcons {
   const icons = spriteIcons(raw, SKILL_SPRITES);
-  const get = (sprite: string) => icons.get(spriteId({ sprite })) ?? undefined;
+  const get = (sprite: string) => icons.get(spriteId({ key: sprite, frame: 0 })) ?? undefined;
   return {
     level: get('GFX_land_battle_leader_skill_bg'),
     attack: get('GFX_trait_attack'),

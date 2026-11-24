@@ -25,14 +25,14 @@ const FIXED: readonly TableColumnDefaults[] = [
   { key: 'compliance', label: 'Compliance', as: 'track', tone: 'grey', offered: NUMBERS },
   { key: 'law', label: 'Law', as: 'text', offered: ['dot', 'text', 'icon'] },
 ];
-const BASE: TableBase = { density: 'normal', bars: 'all', overflow: 'scroll', showRank: false, sort: { column: 'resistance', direction: 'descending' } };
+const BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: { column: 'resistance', direction: 'descending' } };
 const DEFAULTS = tableDefaults(FIXED, BASE);
 const of = (value: unknown) => tableSettingsOf(value, FIXED, BASE);
 
 test('table settings keep density, bars, rank, overflow, widths and sort per placement', () => {
   const changed = updateTableSettings(DEFAULTS, next => {
     next.density = 'compact';
-    next.bars = 'sorted';
+    next.barsBehind = 'sorted';
     next.showRank = true;
     next.overflow = 'scroll';
     next.columns.owner!.show = false;
@@ -42,7 +42,7 @@ test('table settings keep density, bars, rank, overflow, widths and sort per pla
   });
   const restored = of(encodeTableSettings(changed));
   assert.equal(restored.density, 'compact');
-  assert.equal(restored.bars, 'sorted');
+  assert.equal(restored.barsBehind, 'sorted');
   assert.equal(restored.showRank, true);
   assert.equal(restored.overflow, 'scroll');
   assert.equal(restored.columns.owner!.show, false);
@@ -84,7 +84,7 @@ test('a column set known only at run time takes each column’s defaults from it
     { key: 'country', label: 'Country', as: 'flagName', offered: COUNTRY, showNamesDefault: true },
     ...keys.map(key => ({ key, label: key, as: 'plain' as const, offered: NUMBERS })),
   ];
-  const base: TableBase = { density: 'normal', bars: 'all', overflow: 'scroll', sort: { column: 'country', direction: 'ascending' } };
+  const base: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', sort: { column: 'country', direction: 'ascending' } };
   const first = tableSettingsOf('', measures('factories', 'stability'), base);
   assert.deepEqual(first.order, ['country', 'factories', 'stability']);
   assert.deepEqual(first.columns.stability, { show: true, as: 'plain', width: null });

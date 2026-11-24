@@ -6,7 +6,7 @@ import { declareTableProjection, type DeclarativeColumnSpec, type TableProjectio
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { OFFERED, type TableBase } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, valueFromNullable, wireFloat, wireWhole, type Value } from '../../families/value.ts';
-import { formatDate, formatValueState } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatValueState } from '../../families/valueFormat.ts';
 import { CLOCK_NOTE, OVERLAP_REASON, OVERLAP_WARNING, UNCLASSIFIED, clockWarnings, validateClock } from './clockData.ts';
 
 interface ClockRow { readonly id: string; readonly label: string; readonly value: Value; readonly note: string }
@@ -20,7 +20,7 @@ export const CLOCK_COLUMNS: readonly DeclarativeColumnSpec<ClockRow, CampaignClo
   { key: 'time', label: 'Real time (h:mm:ss)', as: 'plain', offered: ['plain'], priority: 1, numeric: true, format: 'clockSeconds', sortable: false, hideable: false, widest: ['99:59:59', 'Gaps excluded'], value: row => row.value },
 ];
 
-export const CLOCK_TABLE_BASE: TableBase = { density: 'normal', bars: 'off', overflow: 'scroll', showRank: false, sort: { column: 'clock', direction: 'ascending' } };
+export const CLOCK_TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'off', overflow: 'scroll', showRank: false, sort: { column: 'clock', direction: 'ascending' } };
 
 const refusedClock = (reason: string, warnings: readonly string[] = []): ParsedClock => {
   const missing = notRecorded(reason);
@@ -69,7 +69,7 @@ function buildClockSummary(parsed: ParsedClock, hour: number, firstHour?: number
   const playingFraction = totalSplit > 0 ? playSec! / totalSplit : null;
   const pausedFraction = totalSplit > 0 ? pauseSec! / totalSplit : null;
   const spanText = firstHour !== undefined && Number.isFinite(firstHour) && Number.isFinite(hour)
-    ? `${formatDate(firstHour)} \u2013 ${formatDate(hour)}`
+    ? `${formatDateOnly(firstHour)} \u2013 ${formatDateOnly(hour)}`
     : null;
   return {
     totalText: clockText(parsed.recorded),

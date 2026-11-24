@@ -138,7 +138,7 @@ export const PRODUCTION_LINES_COLUMNS: readonly TableColumnSpec[] = [
 
 export const PRODUCTION_LINES_BASE: TableBase = {
   density: 'normal',
-  bars: 'all',
+  barsBehind: 'all',
   overflow: 'scroll',
   showRank: false,
   sort: { column: 'priority', direction: 'ascending' },
@@ -152,7 +152,7 @@ function readLiveNum(live: ReturnType<BoundedReadView['live']>, handle: string, 
 
 function readLiveBig(live: ReturnType<BoundedReadView['live']>, handle: string, field: string): bigint | null {
   if (!live) return null;
-  const raw = live.raw(liveKey(handle, field));
+  const raw = live.raw?.(liveKey(handle, field));
   if (raw !== undefined) return raw;
   const num = live.get(liveKey(handle, field));
   return typeof num === 'number' && Number.isFinite(num) ? BigInt(Math.round(num)) : null;

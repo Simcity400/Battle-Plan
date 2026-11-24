@@ -5,7 +5,7 @@ import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 import { GROW_WITH_PLAYBACK_OPTION } from '../general-career/definition.ts';
 
 export const DEFAULT_SORT = { column: 'skill', direction: 'descending' } as const;
-const GENERALS_TABLE_BASE: TableBase = { density: 'normal', bars: 'all', overflow: 'scroll', showRank: false, sort: DEFAULT_SORT };
+const GENERALS_TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: DEFAULT_SORT };
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'leaders', section: 'options', label: 'Leaders', kind: 'choice', default: 'land', choices: [
