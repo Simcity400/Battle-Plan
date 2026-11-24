@@ -46,6 +46,12 @@ test('a chosen slot counts its country under every tag it held, and never anothe
   assert.deepEqual([at(tally, slot, 100), at(tally, 'ENG', 100)], [[2, 2], [1, 0]]);
 });
 
+test('a merged raid credits each tally event to the raider tag held at that event hour', () => {
+  const renamed = syntheticEpisode('7', 10, 'GER', 20, 30, true, { launchedRaider: 'DDR', endedRaider: 'DDR' });
+  const tally = raidTally([renamed], SPAN, [], ['GER', 'DDR'], null);
+  assert.deepEqual([at(tally, 'GER', 100), at(tally, 'DDR', 100)], [[0, 0], [1, 1]]);
+});
+
 test('a top keeps each country for the spans it is among the leaders, ties in tag order', () => {
   const tally = raidTally([...episodes, syntheticEpisode('6', 65, 'PRC', 70, null, false)], SPAN, [], [], { count: 1, metric: 'launched' });
   const membership = new Map(tally.series.map(item => [item.tag, item.membership]));
@@ -84,4 +90,26 @@ test('a raid whose victim is neither named nor said missing, won without ending,
   assert.throws(() => validateRaidLog({ ...reply, episodes: [{ ...episodes[0], victim: null }] }));
   assert.throws(() => validateRaidLog({ ...reply, episodes: [{ ...episodes[2], succeeded: true }] }));
   assert.throws(() => validateRaidLog({ ...reply, episodes: [{ ...episodes[0], runs: [...episodes[0].runs].reverse() }] }));
+});
+
+test('vanished raids report unrecorded outcomes rather than canceled, and unsupported codes keep raw values', () => {
+  const vanished = syntheticEpisode('10', 10, 'ENG', 20, null, false, {
+    lastHour: 29,
+    runs: [phaseRun(10, 19, 2), phaseRun(20, 29, 4)],
+    disappearedHour: 30,
+    disappearedExact: true,
+    outcomeMissing: 'raid outcome was not recorded',
+  });
+  const unsupported = syntheticEpisode('11', 10, 'ENG', 20, 30, false, {
+    runs: [phaseRun(10, 19, 2), phaseRun(20, 29, 4), { ...phaseRun(30, 40, 5, 99), outcomeName: 'Unsupported outcome (99)' }],
+    outcome: 99,
+    outcomeName: 'Unsupported outcome (99)',
+    outcomeMissing: 'Unsupported raid outcome (99)',
+  });
+  const data = syntheticRaidLog([vanished, unsupported]);
+  const vanishedAt = raidAt(vanished, 35)!;
+  assert.equal(vanishedAt.since, 30);
+  assert.equal(vanishedAt.sinceExact, true);
+  assert.equal(raidStatus(data, vanishedAt), 'Last known: Phase 4 · raid outcome was not recorded');
+  assert.equal(raidStatus(data, raidAt(unsupported, 35)!), 'Phase 5 · Unsupported outcome (99)');
 });
