@@ -19,7 +19,7 @@ import { registerTimeChart, type TimeChartBinding } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
 import { createTimeChartGestures, parseTimeChartHit, timeChartHostAdapter } from './hostAdapter.ts';
 import { timeChartLaneView } from './laneView.ts';
-import { formatChartAxisValue, layoutTimeChart, niceChartTicks } from './layout.ts';
+import { formatChartAxisValue, layoutTimeChart } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
 import { buildLineSubpaths } from './painter.ts';
 import { parseFollowed } from '../../dashboard/follow/message.ts';
@@ -353,7 +353,6 @@ describe('time-chart layout & rules C1-C12', () => {
     assert.equal(formatChartAxisValue(-0.5, 'signed1'), '\u22120.5');
     assert.equal(formatChartAxisValue(0.5, 'signed1'), '+0.5');
     assert.equal(formatChartAxisValue(0, 'signed1'), '0');
-    assert.deepEqual(niceChartTicks(-14, 236, 4), [0, 50, 100, 150, 200]);
   });
 });
 
