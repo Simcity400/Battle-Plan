@@ -141,6 +141,14 @@ impl Fixture for EventFeedHistoryRow {
             script_refusals: 0,
             script_tokens: Vec::new(),
             script_scopes: Vec::new(),
+            windows: crate::rows::Recorded::Value(crate::event_feed_rows::EventWindows {
+                verdicts: Ok(Vec::new()),
+                presentations: if unavailable {
+                    Err(b"synthetic presentation loss".to_vec())
+                } else {
+                    Ok(Vec::new())
+                },
+            }),
             read_hour,
             coverage: match tick % 3 {
                 0 => EventFeedCoverage::Complete,

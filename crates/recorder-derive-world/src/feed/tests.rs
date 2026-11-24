@@ -2,7 +2,10 @@ use super::*;
 use recorder_derive_framework::{framework::Writers, testing};
 use replay_columnar::{manifest::Status, store::Store, unit::Discard};
 use replay_data::{
-    event_feed_rows::{EventFeedCause, EventFeedCountry, EventFeedCounts, EventFeedEventIdentity, EventFeedRoute, EventFeedScope, EventFeedScript, EventFeedScriptChange},
+    event_feed_rows::{
+        EventFeedCause, EventFeedCountry, EventFeedCounts, EventFeedEventIdentity, EventFeedRoute, EventFeedScope, EventFeedScript, EventFeedScriptChange, EventPresentation, EventWindows,
+        OfferedOption, VerdictEntry, WindowKind, WindowVerdict,
+    },
     format::FormatVersion,
     rows::{CountryCounterInputRow, CountryLinkRow, CountryPowerChangeRow, CountryRow, PoliticsCaptureCoverageRow, PowerAction, PowerCause, PowerCurrency, PowerIdentity, RelationTupleRow},
 };
@@ -58,6 +61,7 @@ fn pack(generation: u64, read_hour: i32, coverage: EventFeedCoverage, events: Ve
         events,
         script_tokens: tokens.to_vec(),
         script_scopes: scopes,
+        windows: Recorded::Value(EventWindows { verdicts: Ok(vec![VerdictEntry { sequence: 2, verdict: WindowVerdict::Requested }]), presentations: Ok(Vec::new()) }),
     }
 }
 
@@ -422,4 +426,57 @@ fn a_backlog_read_is_told_apart_from_the_hours_events_and_still_opens_its_cards(
     assert_eq!((cell(1, backlog), cell(2, backlog)), (Some(1), Some(1)), "the list as the run began is no event of its read");
     assert_eq!(cell(3, backlog), Some(0));
     assert_eq!(cell(3, opener), Some(2), "a choice continues a dispatch listed when the run began");
+}
+
+fn window(read_hour: i32, presentations: Result<Vec<EventPresentation>, Vec<u8>>) -> EventFeedHistoryRow {
+    let mut sent = dispatched(occurrence(9, 2, read_hour, Source::ScriptEvent, country(0), country(2)), None);
+    sent.script = sent.script.map(|script| EventFeedScript { scope_len: 0, ..script });
+    let mut row = pack(9, read_hour, EventFeedCoverage::Complete, vec![sent], b"", Vec::new());
+    row.windows = Recorded::Value(EventWindows { verdicts: Ok(Vec::new()), presentations });
+    row
+}
+
+#[test]
+fn a_firing_carries_its_window_decision_and_each_built_window_is_a_row_with_what_it_showed() {
+    let seen = story();
+    assert_eq!(seen[0][1].window, Recorded::Value(Some(u32::from(WindowVerdict::Requested.code()))), "the dispatch carries its decision");
+    assert_eq!(seen[0][0].window, Recorded::Value(None), "a declaration has no window to decide");
+    let presented = EventPresentation {
+        native_hour: Some(0),
+        instance: 5,
+        event_kind: 3,
+        event_id: 44,
+        actor: 2,
+        kind: WindowKind::Normal,
+        shown: Some(true),
+        option_count: 2,
+        token: Recorded::Value(b"news.44".to_vec()),
+        title: Recorded::Value(b"Resolved title".to_vec()),
+        description: Recorded::NotRecorded,
+        picture: Recorded::Value(None),
+        options: Recorded::Value(vec![OfferedOption { ordinal: Some(1), label: b"Second".to_vec() }]),
+        ..EventPresentation::default()
+    };
+    for (presentations, expected) in [(Ok(vec![presented.clone()]), 1), (Err(b"lost".to_vec()), 0)] {
+        let (mut store, mut writers) = (testing::store(), writers());
+        let lost = presentations.is_err();
+        run(&mut store, &mut writers, 0, |store| {
+            world(store, 0);
+            testing::put(store, TableId::EventFeedHistory, &window(0, presentations), TEXTS).unwrap();
+        });
+        let rows = feed(&store);
+        let firing = rows.iter().find(|row| row.kind == Source::ScriptEvent as u8).unwrap();
+        assert_eq!(firing.window, Recorded::NotRecorded, "an armed hour without the firing's decision does not guess one");
+        let shown: Vec<_> = rows.iter().filter(|row| row.kind == FeedEventRow::WINDOW_PRESENTED).collect();
+        assert_eq!(shown.len(), expected);
+        if let Some(row) = shown.first() {
+            assert_eq!((row.instance, row.native_event_id, row.actor_reference, row.token.clone()), (Some(5), Some(44), 2, Recorded::Value(b"news.44".to_vec())));
+            assert_eq!(row.presentation, Recorded::Value(Some(presented.clone())));
+        }
+        let unrecorded: Vec<_> = rows.iter().filter(|row| row.kind == FeedEventRow::WINDOWS_UNRECORDED).collect();
+        assert_eq!(unrecorded.len(), usize::from(lost));
+        if let Some(row) = unrecorded.first() {
+            assert_eq!((row.incomplete, row.failure.clone()), (Some(FeedEventRow::PRESENTATIONS_UNRECORDED), b"lost".to_vec()));
+        }
+    }
 }

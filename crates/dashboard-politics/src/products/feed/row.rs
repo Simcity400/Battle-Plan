@@ -2,7 +2,7 @@
 use dashboard_query::log::{Cell, Row};
 use replay_data::{
     codec::Decoder,
-    event_feed_rows::EventFeedScope,
+    event_feed_rows::{EventFeedScope, EventPresentation},
     rows::{FeedEventRow, TableId, TagHolderRow},
     value::Value,
 };
@@ -59,6 +59,9 @@ pub(crate) struct FeedEvent {
     pub outstanding: Option<u64>,
     pub refusals: Option<u32>,
     pub failure: Vec<u8>,
+    pub incomplete: Option<u32>,
+    pub window: Option<Option<u32>>,
+    pub presentation: Option<EventPresentation>,
 }
 
 impl FeedEvent {
@@ -83,7 +86,7 @@ pub(crate) struct Columns {
     at: [usize; NAMES.len()],
 }
 
-const NAMES: [&str; 41] = [
+const NAMES: [&str; 44] = [
     "hour",
     "read_hour",
     "kind",
@@ -125,6 +128,9 @@ const NAMES: [&str; 41] = [
     "refusals",
     "failure",
     "backlog",
+    "incomplete",
+    "window",
+    "presentation",
 ];
 
 enum Held<'a> {
@@ -240,8 +246,21 @@ impl Columns {
             outstanding: some(37).map(|value| value as u64),
             refusals: some(38).map(|value| value as u32),
             failure: self.bytes(row, 39).unwrap_or_default(),
+            incomplete: some(41).map(|value| value as u32),
+            window: self.optional(row, 42).map(|code| code.map(|code| code as u32)),
+            presentation: match self.cell(row, 43) {
+                Held::Value(Cell::List(bytes)) => presentation(bytes)?,
+                _ => None,
+            },
         })
     }
+}
+
+fn presentation(bytes: &[u8]) -> io::Result<Option<EventPresentation>> {
+    let mut decoder = Decoder::new(bytes);
+    let presentation = <Option<EventPresentation> as Value>::decode(&mut decoder)?;
+    decoder.finish()?;
+    Ok(presentation)
 }
 
 pub(crate) fn scopes(bytes: &[u8]) -> io::Result<Vec<EventFeedScope>> {

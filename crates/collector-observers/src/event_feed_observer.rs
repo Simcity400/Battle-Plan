@@ -976,6 +976,16 @@ pub fn script_instance(frame: usize, instance: u32) {
     }
 }
 
+pub fn script_window(frame: usize, verdict: Option<replay_data::event_feed_rows::WindowVerdict>) {
+    if let Some(owner) = unsafe { SHARED.load(Ordering::SeqCst).as_ref() } {
+        let _ = owner.observe(Role::ScriptInstance, |store| {
+            if let Some(generation) = observed(owner, store) {
+                store.script_window(generation, frame, verdict);
+            }
+        });
+    }
+}
+
 pub fn registered_script_instance(state: usize, event: usize, scope: usize, instance: u32) {
     if let Some(owner) = unsafe { SHARED.load(Ordering::SeqCst).as_ref() } {
         let _ = owner.observe(Role::PendingRegistration, |store| {
@@ -1537,6 +1547,9 @@ pub unsafe fn accepted(pack: &crate::event_feed_history::Prepared) -> std::io::R
 /// Caller must be the originating spool or capture recovery path discarding an uncommitted
 /// publication receipt for this session.
 pub unsafe fn discarded(publication: u64) {
+    if publication != 0 {
+        crate::event_window_observer::discarded();
+    }
     resolve(publication, false);
 }
 

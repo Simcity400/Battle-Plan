@@ -230,6 +230,7 @@ function actionSentence(at: FeedEvent, stateName: StateName): SentencePart[] {
   switch (event.kind) {
     case 'scriptEventFired': return [country, { text: ` triggered ${named} for ` }, other];
     case 'newsEventFired': return [country, { text: ` triggered news ${named} for ` }, other];
+    case 'eventWindowPresented': return single(` was shown the event window ${named}`);
     case 'eventOptionSelected': return single(` selected an option in ${named}`);
     case 'decisionSelected': return single(` selected decision ${named}`);
     case 'decisionRemoved': return single(event.decisionState?.kind === 'failed' ? ` failed mission ${named} (ended)`

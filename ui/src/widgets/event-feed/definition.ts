@@ -15,7 +15,7 @@ export const EVENT_ICONS: Record<EventFeedKind, IconName> = {
   decisionSelected: 'ballot', decisionRemoved: 'ballot', decisionCancelled: 'ballot',
   decisionTimedOut: 'clock', decisionActivated: 'target', decisionCompleted: 'target', decisionReenabled: 'target',
   decisionRemovalEffect: 'ballot', decisionCancellationEffect: 'ballot', decisionCompletionEffect: 'target',
-  decisionTimeoutEffect: 'clock', decisionDurationChanged: 'clock',
+  decisionTimeoutEffect: 'clock', decisionDurationChanged: 'clock', eventWindowPresented: 'flag',
 };
 
 export const CATEGORIES = [
