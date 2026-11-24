@@ -3,12 +3,14 @@ import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
+import type { LegendStripEntry } from '../../draw/kit.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { inHourSpans, nextBoundaryAfter, timelineModel, wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineModel, type TimelineProjection, type TimelineSpan } from '../../families/timeline/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { HourSpan, ResearchEntry, ResearchSlotNow, ResearchSlotsReply } from '../../generated/dashboard';
+import { mix } from '../../shell/appearance/color.ts';
 import {
   completedBy,
   historyTokens,
@@ -49,6 +51,7 @@ interface ResearchSpanMeta {
 interface ResearchLaneMeta {
   readonly slotIndex: number;
   readonly openedHour: number;
+  readonly openedRecorded: boolean;
   readonly closedHour: number | null;
 }
 
@@ -286,22 +289,32 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
       }
 
       const label = `Slot ${slot.index + 1}`;
-      const laneMeta: ResearchLaneMeta = { slotIndex: slot.index, openedHour, closedHour };
+      const openingSpan = coverage.find(span => span.firstHour <= openedHour && openedHour <= span.lastHour);
+      const openedRecorded = !!openingSpan && openedHour > openingSpan.firstHour;
+      const laneMeta: ResearchLaneMeta = { slotIndex: slot.index, openedHour, openedRecorded, closedHour };
       return {
         key: `slot:${slot.index}`,
         kind: 'item',
         label,
         spans,
+        ...(openedRecorded ? { openedMarker: { hour: openedHour, label: 'opened' } } : {}),
         auditValue: `${label}|${spans.length}`,
         meta: laneMeta,
       };
     });
 
+    const legend: LegendStripEntry[] = [
+      { label: 'Completed', color: mix(CHART_MEASURE_COLOURS.intelCoverage, opt.surface, 0.5) },
+      { label: 'In progress', color: CHART_MEASURE_COLOURS.intelCoverage },
+      { label: 'Idle', outlined: true },
+      ...(unobserved.length ? [{ label: 'Not recorded', hatch: true } satisfies LegendStripEntry] : []),
+    ];
     const headNote = headNoteOf(slotsNow, live, cache.artwork, hour, slots.length);
     return timelineModel({
       ...base,
       lanes,
       unobserved,
+      legend,
       summaryText: `${formatScalar(completedCount, 'integer')} completed`,
       notes: headNote ? [headNote] : undefined,
       warnings,
@@ -333,7 +346,7 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
           hour: at,
           items: [
             { label: 'Status', value: 'Not yet opened', tone: 'muted' },
-            { label: 'Opened', value: formatDateOnly(laneMeta.openedHour) },
+            { label: laneMeta.openedRecorded ? 'Opened' : 'Opened by', value: formatDateOnly(laneMeta.openedHour) },
           ],
         };
       }
