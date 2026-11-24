@@ -47,6 +47,7 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_land::registrations::DIVISIONS_TEMPLATES_DIVISIONTEMPLATES,
     dashboard_land::registrations::DIVISIONS_CAREERS_DIVISIONCAREERS,
     dashboard_land::registrations::DIVISIONS_CAREERS_DIVISIONRECORD,
+    dashboard_land::registrations::DIVISIONS_CAREERS_DECORATEDDIVISIONS,
     dashboard_land::registrations::DIVISIONS_EQUIPMENT_DIVISIONEQUIPMENT,
     dashboard_research::registrations::RESEARCH_SLOTS_RESEARCHSLOTS,
     dashboard_air::registrations::AIR_MISSIONS_AIRMISSIONSAT,
