@@ -144,33 +144,34 @@ type Sums = Vec<Option<i128>>;
 struct Grouped {
     sums: Sums,
     present: Vec<bool>,
+    known: i128,
 }
 
 impl Grouped {
     fn new(parts: usize) -> Self {
-        Self { sums: vec![Some(0); parts], present: vec![false; parts] }
+        Self { sums: vec![Some(0); parts], present: vec![false; parts], known: 0 }
     }
 
     fn add(&mut self, part: u32, amount: Option<i128>) {
         let slot = &mut self.sums[part as usize];
         *slot = slot.zip(amount).map(|(a, b)| a + b);
         self.present[part as usize] = true;
+        self.known += amount.unwrap_or(0);
     }
 
     fn total(&self) -> Option<i128> {
         self.sums.iter().zip(&self.present).filter(|(_, here)| **here).try_fold(0i128, |held, (sum, _)| sum.map(|sum| held + sum))
     }
 
-    fn known(&self) -> i128 {
-        self.sums.iter().zip(&self.present).filter(|(_, here)| **here).filter_map(|(sum, _)| *sum).sum()
-    }
-
     fn absorb(&mut self, other: &Grouped) {
         for (part, here) in other.present.iter().enumerate() {
             if *here {
-                self.add(part as u32, other.sums[part]);
+                let slot = &mut self.sums[part];
+                *slot = slot.zip(other.sums[part]).map(|(a, b)| a + b);
+                self.present[part] = true;
             }
         }
+        self.known += other.known;
     }
 }
 
@@ -245,7 +246,7 @@ fn rank(by: BTreeMap<Key, Grouped>, parts: usize, shape: &FlowShape<'_>, missing
     let total = whole.total();
     let missing = missing.or(total.is_none().then_some(shape.not_recorded));
     let total = if missing.is_some() { None } else { total.map(|sum| sum.to_string()) };
-    Ranked { side: FlowSide { links, total, missing: missing.map(str::to_owned) }, kept, known: whole.known() }
+    Ranked { side: FlowSide { links, total, missing: missing.map(str::to_owned) }, kept, known: whole.known }
 }
 
 enum Belongs {
@@ -345,7 +346,7 @@ pub fn build_flows(edges: &[FlowEdge], parts: Vec<FlowPart>, decimals: u8, shape
             sent.entry(edge.from).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount);
             received.entry(edge.to).or_insert_with(|| Grouped::new(count)).add(edge.part, edge.amount);
         }
-        let largest = sent.values().chain(received.values()).map(Grouped::known).max().unwrap_or(0);
+        let largest = sent.values().chain(received.values()).map(|grouped| grouped.known).max().unwrap_or(0);
         let missing = shape.incomplete.or(maybe.then_some(shape.unlinked));
         let senders = rank(sent, count, shape, missing, &mut names, |node| (node, None));
         let receivers = rank(received, count, shape, missing, &mut names, |node| (None, node));

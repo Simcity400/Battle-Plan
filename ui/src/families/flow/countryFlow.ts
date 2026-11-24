@@ -25,7 +25,7 @@ export function scaledAmount(amount: string, decimals: number): number {
   return decimals > 0 ? Number(BigInt(amount)) / 10 ** decimals : Number(BigInt(amount));
 }
 
-export interface FlowEndpointPresentation {
+interface FlowEndpointPresentation {
   readonly key: string;
   readonly label: string;
   readonly labelMissing: boolean;
