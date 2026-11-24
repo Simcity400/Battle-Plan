@@ -742,7 +742,7 @@ export function familyTableLaneView(
         held.cachedMaximaCols = '';
         held.rowAuditCache = new WeakMap();
         const widthsPayload = {
-          widths: Object.fromEntries(allLayouts.filter(col => col.shown).map(col => [col.key, col.width])),
+          widths: Object.fromEntries([...allLayouts.filter(col => col.shown), ...layout.columns].map(col => [col.key, col.width])),
           visible: layout.columns.map(col => col.key),
           hidden: layout.hidden,
           totalWidth: layout.totalWidth,

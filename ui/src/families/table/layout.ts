@@ -25,6 +25,7 @@ export interface FamilyColumnLayout extends TableColumnLayout {
   readonly headerGroup?: TableHeaderGroup;
   readonly minWidth?: number;
   readonly maxWidth?: number;
+  readonly grow?: number;
 }
 
 export interface FamilyTableLayout extends Omit<TableLayout, 'columns'> {
@@ -78,6 +79,7 @@ export function buildColumnLayouts(
       headerGroup: spec.headerGroup,
       minWidth: spec.minWidth,
       maxWidth: spec.maxWidth,
+      grow: own?.width != null ? 0 : spec.grow,
     });
   };
   for (const key of settings.order) {
@@ -131,13 +133,13 @@ export function measureFixedColumnWidths(
       out[column.key] = Math.max(column.minWidth ?? 64, Math.ceil(hw));
       continue;
     }
-    if (column.display === 'flag') {
-      out[column.key] = column.minWidth ?? 48;
-      continue;
-    }
     const labelW = measure(column.label, headFont) + (column.notRecordedReason ? 15 : 0);
     const unitW = column.unit ? measure(column.unit, unitFont) : 0;
-    const headerWidth = Math.max(labelW, unitW) + SORT_ARROW_WIDTH + CELL_INSET * 2;
+    const headerWidth = Math.max(labelW, unitW) + (column.sortable === false ? 0 : SORT_ARROW_WIDTH) + CELL_INSET * 2;
+    if (column.display === 'flag') {
+      out[column.key] = Math.ceil(Math.max(column.minWidth ?? 48, headerWidth));
+      continue;
+    }
     const samples = column.widest?.length
       ? column.widest
       : column.numeric
@@ -156,6 +158,36 @@ export function measureFixedColumnWidths(
       computed = Math.max(DEFAULT_TEXT_MIN_WIDTH, Math.min(DEFAULT_TEXT_MAX_WIDTH, computed));
     }
     out[column.key] = computed;
+  }
+  return out;
+}
+
+export function growWeight(column: FamilyColumnLayout): number {
+  if (column.grow !== undefined) return Math.max(0, column.grow);
+  if (column.display === 'flag' || column.cellKind === 'action' || column.cellKind === 'track' || column.cellKind === 'skill') return 0;
+  return column.width;
+}
+
+function growColumns(shown: readonly FamilyColumnLayout[], spare: number): FamilyColumnLayout[] {
+  let total = 0;
+  for (const col of shown) total += growWeight(col);
+  if (total <= 0) {
+    const last = shown.length - 1;
+    return shown.map((col, idx) => (idx === last ? { ...col, width: col.width + spare } : col));
+  }
+  let given = 0;
+  let lastGrowing = -1;
+  const out = shown.map((col, idx) => {
+    const weight = growWeight(col);
+    if (weight <= 0) return col;
+    lastGrowing = idx;
+    const add = Math.floor((spare * weight) / total);
+    given += add;
+    return { ...col, width: col.width + add };
+  });
+  if (lastGrowing >= 0 && given < spare) {
+    const col = out[lastGrowing]!;
+    out[lastGrowing] = { ...col, width: col.width + spare - given };
   }
   return out;
 }
@@ -182,10 +214,7 @@ export function layoutFamilyTable(
   const totalOf = (list: readonly FamilyColumnLayout[]) => rank + list.reduce((sum, col) => sum + col.width, 0);
   const rawTotal = totalOf(shown);
   if (rawTotal < available && shown.length > 0) {
-    const spare = available - rawTotal;
-    const flexIndex = shown.findIndex(col => !col.numeric && col.display !== 'flag' && col.cellKind !== 'action' && col.cellKind !== 'skill');
-    const targetIndex = flexIndex >= 0 ? flexIndex : 0;
-    const expanded = shown.map((col, idx) => (idx === targetIndex ? { ...col, width: col.width + spare } : col));
+    const expanded = growColumns(shown, available - rawTotal);
     const nextPinnedWidth = rank + expanded.slice(0, pinnedCount).reduce((sum, col) => sum + col.width, 0);
     return {
       columns: expanded,

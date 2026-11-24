@@ -92,6 +92,7 @@ export interface TableColumnSpec extends TableColumnDefaults {
   readonly headerGroup?: TableHeaderGroup;
   readonly minWidth?: number;
   readonly maxWidth?: number;
+  readonly grow?: number;
 }
 
 export interface TableCellBar {

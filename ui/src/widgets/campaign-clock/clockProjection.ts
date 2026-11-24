@@ -69,7 +69,7 @@ function buildClockSummary(parsed: ParsedClock, hour: number, firstHour?: number
   const playingFraction = totalSplit > 0 ? playSec! / totalSplit : null;
   const pausedFraction = totalSplit > 0 ? pauseSec! / totalSplit : null;
   const spanText = firstHour !== undefined && Number.isFinite(firstHour) && Number.isFinite(hour)
-    ? `${formatDateOnly(firstHour)} \u2013 ${formatDateOnly(hour)}`
+    ? `${formatDateOnly(firstHour)} \u2013 ${formatDateOnly(hour)} in game`
     : null;
   return {
     totalText: clockText(parsed.recorded),
@@ -80,7 +80,7 @@ function buildClockSummary(parsed: ParsedClock, hour: number, firstHour?: number
     playingPct: playingFraction !== null ? `${Math.round(playingFraction * 100)}%` : null,
     pausedPct: pausedFraction !== null ? `${Math.round(pausedFraction * 100)}%` : null,
     complete: parsed.complete,
-    coverageLabel: parsed.complete ? 'Complete' : 'Gaps excluded',
+    coverageLabel: parsed.complete ? 'Every hour recorded' : 'Gaps excluded',
     spanText,
   };
 }

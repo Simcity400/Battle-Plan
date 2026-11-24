@@ -1349,28 +1349,36 @@ export function drawClockSummary(
   theme: FamilyTheme,
 ): void {
   const tokens = resolveKitTokens(theme);
-  const padX = 16;
+  const padX = 22;
   const innerW = Math.max(1, width - padX * 2);
   ctx.save();
   ctx.fillStyle = theme.surface;
   ctx.fillRect(0, 0, width, height);
-
-  let y = 18;
-  ctx.font = `700 34px ${theme.font}`;
-  ctx.fillStyle = theme.text;
   ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  ctx.fillText(ellipsise(summary.totalText, innerW, s => textWidth(ctx, s)), padX, y);
-  y += 40;
 
-  ctx.font = `400 12.5px ${theme.font}`;
+  const figureFont = `600 36px ${theme.font}`;
+  const captionFont = `400 13px ${theme.font}`;
+  const labelFont = `400 13px ${theme.font}`;
+  const timeFont = `600 13px ${theme.font}`;
+  const secondary = tokens.dark ? '#d4d4d4' : theme.text;
+
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = figureFont;
+  ctx.fillStyle = theme.text;
+  const figure = ellipsise(summary.totalText, innerW, s => textWidth(ctx, s));
+  ctx.fillText(figure, padX, 57);
+  const figureW = textWidth(ctx, figure);
+  ctx.font = captionFont;
   ctx.fillStyle = theme.muted;
-  ctx.fillText('Recorded, in real time', padX, y);
-  y += 28;
+  const captionX = padX + figureW + 12;
+  if (captionX < padX + innerW) {
+    ctx.fillText(ellipsise('Recorded, in real time', padX + innerW - captionX, s => textWidth(ctx, s)), captionX, 57);
+  }
 
+  const barY = 83;
   const barH = 8;
-  const playColor = tokens.dark ? '#c4c4c4' : '#475569';
-  const pauseColor = tokens.dark ? 'rgba(245, 245, 245, 0.18)' : 'rgba(15, 23, 42, 0.14)';
+  const playColor = tokens.dark ? '#c8c8c8' : '#475569';
+  const pauseColor = tokens.dark ? 'rgba(245, 245, 245, 0.16)' : 'rgba(15, 23, 42, 0.14)';
   if (summary.playingFraction !== null && summary.pausedFraction !== null) {
     const gap = summary.playingFraction > 0 && summary.pausedFraction > 0 ? 2 : 0;
     const usable = Math.max(0, innerW - gap);
@@ -1379,80 +1387,59 @@ export function drawClockSummary(
     if (playW > 0) {
       ctx.fillStyle = playColor;
       ctx.beginPath();
-      ctx.roundRect(padX, y, playW, barH, [4, gap ? 0 : 4, gap ? 0 : 4, 4]);
+      ctx.roundRect(padX, barY, playW, barH, [4, gap ? 0 : 4, gap ? 0 : 4, 4]);
       ctx.fill();
     }
     if (pauseW > 0) {
       ctx.fillStyle = pauseColor;
       ctx.beginPath();
-      ctx.roundRect(padX + playW + gap, y, pauseW, barH, [gap ? 0 : 4, 4, 4, gap ? 0 : 4]);
+      ctx.roundRect(padX + playW + gap, barY, pauseW, barH, [gap ? 0 : 4, 4, 4, gap ? 0 : 4]);
       ctx.fill();
     }
   } else {
-    drawHatchRect(ctx, padX, y, innerW, barH, 4, theme);
+    drawHatchRect(ctx, padX, barY, innerW, barH, 4, theme);
   }
-  y += barH + 12;
 
-  const drawStat = (sx: number, color: string, label: string, time: string, pct: string | null, alignRight: boolean) => {
-    ctx.save();
-    ctx.textBaseline = 'middle';
-    const cy = y + 9;
-    const pctPart = pct ? `  ${pct}` : '';
-    const labelFont = `400 12.5px ${theme.font}`;
-    const timeFont = `600 13px ${theme.font}`;
+  ctx.textBaseline = 'middle';
+  const statWidth = (label: string, time: string) => {
     ctx.font = labelFont;
     const lw = textWidth(ctx, label);
     ctx.font = timeFont;
-    const tw = textWidth(ctx, time);
+    return { lw, total: lw + 8 + textWidth(ctx, time) };
+  };
+  const drawStat = (x: number, cy: number, label: string, time: string) => {
+    const { lw } = statWidth(label, time);
     ctx.font = labelFont;
-    const pw = pctPart ? textWidth(ctx, pctPart) : 0;
-    const totalW = 9 + 6 + lw + 6 + tw + pw;
-    let cur = alignRight ? sx - totalW : sx;
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.roundRect(cur, cy - 4.5, 9, 9, 2);
-    ctx.fill();
-    cur += 15;
-    ctx.font = labelFont;
-    ctx.fillStyle = theme.muted;
-    ctx.textAlign = 'left';
-    ctx.fillText(label, cur, cy);
-    cur += lw + 6;
+    ctx.fillStyle = secondary;
+    ctx.fillText(label, x, cy);
     ctx.font = timeFont;
     ctx.fillStyle = theme.text;
-    ctx.fillText(time, cur, cy);
-    cur += tw;
-    if (pctPart) {
-      ctx.font = labelFont;
-      ctx.fillStyle = theme.muted;
-      ctx.fillText(pctPart, cur, cy);
-    }
-    ctx.restore();
+    ctx.fillText(time, x + lw + 8, cy);
   };
-  drawStat(padX, playColor, 'Playing', summary.playingText, summary.playingPct, false);
-  if (innerW >= 290) {
-    drawStat(padX + innerW, pauseColor, 'Paused', summary.pausedText, summary.pausedPct, true);
-    y += 32;
+  const playing = statWidth('Playing', summary.playingText);
+  const paused = statWidth('Paused', summary.pausedText);
+  let coverageY = 152;
+  drawStat(padX, 117, 'Playing', summary.playingText);
+  if (playing.total + 24 + paused.total <= innerW) {
+    drawStat(padX + innerW - paused.total, 117, 'Paused', summary.pausedText);
   } else {
-    y += 24;
-    drawStat(padX, pauseColor, 'Paused', summary.pausedText, summary.pausedPct, false);
-    y += 28;
+    drawStat(padX, 141, 'Paused', summary.pausedText);
+    coverageY = 176;
   }
 
-  drawRowHairline(ctx, padX, padX + innerW, y, theme, 'normal');
-  y += 14;
-  ctx.fillStyle = summary.complete ? '#4fbf7a' : theme.amber;
+  ctx.fillStyle = summary.complete ? theme.muted : theme.amber;
   ctx.beginPath();
-  ctx.arc(padX + 3.5, y + 7, 3.5, 0, Math.PI * 2);
+  ctx.arc(padX + 3.5, coverageY, 3.5, 0, Math.PI * 2);
   ctx.fill();
-  ctx.font = `500 12px ${theme.font}`;
-  ctx.fillStyle = theme.muted;
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(summary.coverageLabel, padX + 13, y + 7);
+  ctx.font = labelFont;
+  ctx.fillStyle = secondary;
+  ctx.fillText(summary.coverageLabel, padX + 15, coverageY);
   if (summary.spanText) {
-    ctx.textAlign = 'right';
-    ctx.fillText(summary.spanText, padX + innerW, y + 7);
+    const spanX = padX + 15 + textWidth(ctx, summary.coverageLabel) + 22;
+    if (spanX < padX + innerW) {
+      ctx.fillStyle = theme.muted;
+      ctx.fillText(ellipsise(summary.spanText, padX + innerW - spanX, s => textWidth(ctx, s)), spanX, coverageY);
+    }
   }
   ctx.restore();
 }

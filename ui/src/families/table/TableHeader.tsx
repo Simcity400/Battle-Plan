@@ -203,9 +203,8 @@ export function FamilyTableHeader({
                 : { column: item.key, direction: item.text ? 'ascending' : 'descending' };
             })}
           >
-            {canDrag && !end && GRIP_DOTS}
+            {canDrag && GRIP_DOTS}
             {renderLabel(item, active, end)}
-            {canDrag && end && GRIP_DOTS}
           </button> : <span className="tf-th-static" title={title}>{renderLabel(item, false, end)}</span>}
           {editableColumns && <span
             className="tf-resize"
