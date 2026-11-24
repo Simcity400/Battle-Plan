@@ -1,11 +1,10 @@
 import { useCallback, useRef, useState } from 'react';
-import type { WidgetProps, WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/definitions';
 import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import EventDetailWindow, { type EventDetailSubject } from './EventDetailWindow.tsx';
-import { eventChoicesDeclaration } from './eventChoicesProjection.ts';
 
-function EventChoicesView(props: WidgetProps) {
+function EventChoicesView(props: FamilyViewProps) {
   const anchor = useRef<HTMLDivElement>(null);
   const track = props.runtime.tracks.find(item => item.id === props.widget.trackIds[0]);
   const scope = track ? `${track.source.id}:${track.source.revision}:${track.branch.id}` : '';
@@ -20,16 +19,15 @@ function EventChoicesView(props: WidgetProps) {
 
   return (
     <div ref={anchor} className="fh-detail-anchor">
-      <FamilyWidget
+      {props.manifestDeclaration ? <FamilyWidget
         {...props}
-        family="table"
-        declaration={eventChoicesDeclaration}
+        family={props.manifestDeclaration.family} declaration={props.manifestDeclaration}
         selectedKey={shown?.key ?? null}
         onActivate={onActivate}
-      />
+      /> : null}
       <EventDetailWindow subject={shown} anchor={anchor} onClose={() => setOpened(null)} />
     </div>
   );
 }
 
-export default { render: EventChoicesView } satisfies WidgetRenderer;
+export default { render: EventChoicesView } satisfies FamilyViewRenderer;

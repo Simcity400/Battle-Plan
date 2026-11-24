@@ -5,7 +5,7 @@ import { useDrill } from '../../charts/drill/useDrill';
 import GateState from '../../dashboard/GateState';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost';
 import { formatDateTime } from '../../dashboard/calendar';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import { TimeRegion, useRegion, useRegionCoverage, useRegionHour } from '../../dashboard/widgetTime.ts';
 import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry';
@@ -17,14 +17,13 @@ import {
   updateGameWindowSlotPosition,
 } from '../../dashboard/gameWindows';
 import type { WindowPosition } from '../../dashboard/gameWindows';
-import { divisionTemplateDeclaration } from './divisionTemplateProjection';
 import './divisionTemplate.css';
 
 const NO_LINES: readonly string[] = [];
 const divisionDesignerWindow = () => gameWindow('divisionDesigner');
 
-export default function DivisionTemplateWidget(props: WidgetProps) {
-  const { widget, runtime, active } = props;
+export default function DivisionTemplateWidget(props: FamilyViewProps) {
+  const { widget, runtime, active, options, manifestDeclaration } = props;
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const drillControl = useDrill(runtime, useRegion(widget));
   const drill = drillControl.state;
@@ -52,7 +51,7 @@ export default function DivisionTemplateWidget(props: WidgetProps) {
     closeForHandover();
   }, [slotOwnerId, closeForHandover]);
 
-  useEffect(() => closeDrill(), [track?.source.id, track?.source.revision, track?.branch.id, widget.options?.country, closeDrill]);
+  useEffect(() => closeDrill(), [track?.source.id, track?.source.revision, track?.branch.id, options.country, closeDrill]);
   useEffect(() => () => releaseGameWindowSlot('divisionDesigner', slotOwnerId), [slotOwnerId]);
 
   const handleActivate = useCallback((action: InstalledAction) => {
@@ -70,7 +69,7 @@ export default function DivisionTemplateWidget(props: WidgetProps) {
   const main = <FamilyWidget
     {...props}
     family="table"
-    declaration={divisionTemplateDeclaration}
+    declaration={manifestDeclaration}
     selectedKey={opened?.template ?? null}
     onActivate={Designer ? handleActivate : undefined}
     extraWarnings={windowLines}

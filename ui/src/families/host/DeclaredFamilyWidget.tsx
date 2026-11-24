@@ -4,7 +4,7 @@ import type { MenuItem } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
 import { DEFAULT_DARK_SURFACE } from '../../charts/palette.ts';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { perfLog } from '../../shell/perf.ts';
@@ -75,7 +75,7 @@ export interface DeclaredFamilyWidgetProps<
   TBinding = unknown,
   TAux = unknown,
   TSettings = unknown,
-> extends WidgetProps {
+> extends FamilyViewProps {
   readonly adapter: FamilyHostAdapter<TModel, TProjectionOptions, TBinding, TSettings>;
   readonly chrome?: ComponentType<FamilyChromeProps<TSettings>>;
   readonly declaration: DeclaredFamilyWidgetDeclaration<TModel, TProjectionOptions, TAux>;
@@ -102,6 +102,7 @@ export default function DeclaredFamilyWidget<
   declaration,
   view = DEFAULT_VIEW,
   widget,
+  options,
   runtime,
   active,
   onDiagnostics,
@@ -139,7 +140,7 @@ export default function DeclaredFamilyWidget<
     subject: declaration.subject,
     emptyCampaign: declaration.emptyCampaign,
     icon: declaration.icon,
-    optionFields,
+    options,
     countries: declaration.countries,
     aux: declaration.aux,
     sources: declaration.sources,

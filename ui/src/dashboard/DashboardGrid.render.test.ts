@@ -398,10 +398,11 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
     assert.doesNotMatch(fallbackHtml, /dash-empty|role="status"/);
 
     const { default: ActiveResearch } = await realVite.ssrLoadModule('/ui/src/widgets/active-research/ActiveResearchView.tsx');
+    const { activeResearchDeclaration } = await realVite.ssrLoadModule('/ui/src/widgets/active-research/activeResearchProjection.ts');
     const emptyRuntime = { tracks: [], campaignTracks: [], defaultRoleId: null, maps: {}, client: { available: true },
       clock: { getHour: () => 0, getSnapshot: () => ({ playing: false, hoursPerSecond: 1 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } } as unknown as WidgetRuntime;
     const baseWidget = { id: 'r', kind: 'active-research', configVersion: 1, title: 'Active research', campaign: 'default', trackIds: [], time: { mode: 'follow' }, countries: { kind: 'all' }, options: {} } as WidgetSpec;
-    const html = renderToStaticMarkup(createElement(ActiveResearch as never, { widget: baseWidget, runtime: emptyRuntime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} } as never));
+    const html = renderToStaticMarkup(createElement(ActiveResearch as never, { widget: baseWidget, options: {}, manifestDeclaration: activeResearchDeclaration, runtime: emptyRuntime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} } as never));
     assert.match(html, /data-state="empty"/, 'active-research routes empty state through WidgetState');
     assert.doesNotMatch(html, /dash-empty/, 'active-research does not render raw dash-empty');
 
@@ -454,8 +455,11 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
     const { default: DeclaredFamilyWidget } = await scoreboardVite.ssrLoadModule('/ui/src/families/host/DeclaredFamilyWidget.tsx');
     const { tableHostAdapter } = await scoreboardVite.ssrLoadModule('/ui/src/families/table/hostAdapter.ts');
     const { scoreboardDeclaration } = await scoreboardVite.ssrLoadModule('/ui/src/widgets/scoreboard/scoreboardProjection.ts');
+    await scoreboardVite.ssrLoadModule('/ui/src/widgets/definitions.ts');
+    const { widgetViewOptions } = await scoreboardVite.ssrLoadModule('/ui/src/widgets/manifest.ts');
     const sbProps = {
       declaration: scoreboardDeclaration,
+      options: widgetViewOptions('scoreboard', {}),
       adapter: tableHostAdapter,
       widget: { id: 'sb', kind: 'scoreboard', configVersion: 1, title: 'Scoreboard', campaign: 'default', trackIds: ['t1'], time: { mode: 'follow' }, countries: { kind: 'tags', tags: ['GER'] }, options: {} },
       runtime: {

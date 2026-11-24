@@ -1,4 +1,4 @@
-import type { WidgetMeta, WidgetRenderer, WidgetViewSwitch } from '../dashboard/definitions';
+import type { FamilyViewRenderer, WidgetMeta, WidgetRenderer, WidgetViewSwitch } from '../dashboard/definitions';
 import { scopedOptionKey, type OptionField, type WidgetOptions } from '../dashboard/options.ts';
 import type { LaneView } from '../draw/lane.ts';
 import type { FamilyProjection } from './contract.ts';
@@ -56,7 +56,7 @@ export interface LegacyWidgetEntry {
   readonly label?: string;
   readonly playsBackDated?: boolean;
   readonly slots?: readonly ('render' | 'countryChip' | 'subjectMenu')[];
-  readonly load: () => Promise<{ default: WidgetRenderer }>;
+  readonly load: () => Promise<{ default: WidgetRenderer | FamilyViewRenderer }>;
 }
 
 export interface ViewOptionChoice {

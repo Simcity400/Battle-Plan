@@ -1,9 +1,8 @@
 import { useCallback, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import { MARKET, partyTags, validateMarketReply } from '../../dashboard/market.ts';
-import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
@@ -13,8 +12,7 @@ import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
 import { FamilyWidget } from '../../families/host/registry';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { MarketLendLeaseReply } from '../../generated/dashboard';
-import { DETAILS, OPTIONS } from './definition';
-import { MARKET_DECLARATIONS } from './internationalMarketProjection.ts';
+import { DETAILS } from './definition';
 import { marketDetail, type MarketDetailLine } from './marketData.ts';
 import '../../families/table/gameWindowTable.css';
 import './marketDetail.css';
@@ -40,7 +38,7 @@ function Lines({ lines }: { readonly lines: readonly MarketDetailLine[] }) {
 }
 
 function MarketRowDetail({ runtime, trackId, opened, active }: {
-  readonly runtime: WidgetProps['runtime'];
+  readonly runtime: FamilyViewProps['runtime'];
   readonly trackId: string | undefined;
   readonly opened: Opened;
   readonly active: boolean;
@@ -71,10 +69,8 @@ function MarketRowDetail({ runtime, trackId, opened, active }: {
   );
 }
 
-export default function InternationalMarketWidget(props: WidgetProps) {
-  const { widget, runtime, active } = props;
-  const view = resolveOptions(OPTIONS, widget.options).view;
-  const tab = view === 'requests' || view === 'inventory' ? view : 'contracts';
+export default function InternationalMarketWidget(props: FamilyViewProps) {
+  const { widget, runtime, active, manifestDeclaration } = props;
   const anchor = useRef<HTMLDivElement>(null);
   const gate = useGate(runtime, widget, SPEC, active);
   const [opened, setOpened] = useState<Opened | null>(null);
@@ -89,7 +85,7 @@ export default function InternationalMarketWidget(props: WidgetProps) {
 
   return (
     <div ref={anchor} className="game-window-table">
-      <FamilyWidget family="table" view={tab} declaration={MARKET_DECLARATIONS[tab]} {...props} onActivate={onActivate} />
+      {manifestDeclaration ? <FamilyWidget {...props} family="table" declaration={manifestDeclaration} onActivate={onActivate} /> : null}
       <DetailWindowHost
         open={opened !== null}
         subject={opened?.selected ?? null}

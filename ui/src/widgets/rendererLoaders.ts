@@ -1,5 +1,5 @@
 import { registerWidgets } from '../dashboard/definitions.ts';
-import type { WidgetRenderer } from '../dashboard/definitions.ts';
+import type { FamilyViewRenderer, WidgetRenderer } from '../dashboard/definitions.ts';
 import { widgetMetas } from './definitions.ts';
 import { normalizeView, viewKey, type FamilyViewEntry, type LegacyWidgetEntry } from '../families/manifest.ts';
 import { FAMILY_VIEWS, FAMILY_VIEW_UI, LEGACY_WIDGETS } from './manifest.ts';
@@ -15,12 +15,12 @@ export interface RendererLoaderEntry {
 export function buildRendererLoaders(
   legacy: readonly LegacyWidgetEntry[],
   family: readonly FamilyViewEntry[],
-  ui: Readonly<Record<string, { readonly load: RendererLoader }>>,
+  ui: Readonly<Record<string, { readonly load: () => Promise<{ default: FamilyViewRenderer }> }>>,
 ): ReadonlyMap<string, RendererLoaderEntry> {
   const map = new Map<string, RendererLoaderEntry>();
   for (const entry of legacy) {
     const key = viewKey(entry.kind, entry.view);
-    if (!map.has(key)) map.set(key, { kind: entry.kind, view: normalizeView(entry.view), load: entry.load });
+    if (!map.has(key)) map.set(key, { kind: entry.kind, view: normalizeView(entry.view), load: entry.load as RendererLoader });
   }
   for (const entry of family) {
     const key = viewKey(entry.kind, entry.view);
@@ -31,7 +31,7 @@ export function buildRendererLoaders(
       view: normalizeView(entry.view),
       load: override
         ? () => Promise.all([override.load(), entry.loadSpec()])
-          .then(([module, spec]) => ({ default: { ...module.default, declaration: spec.declaration } as WidgetRenderer }))
+          .then(([module, spec]) => ({ default: { ...module.default, declaration: spec.declaration } as unknown as WidgetRenderer }))
         : () => entry.loadSpec().then(spec => ({ default: { declaration: spec.declaration } as WidgetRenderer })),
     });
   }

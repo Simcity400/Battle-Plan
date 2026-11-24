@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { WidgetRuntime } from './definitions';
-import type { BoundTrack, CountrySelection, WidgetSpec } from './model';
+import type { BoundTrack, CountrySelection, WidgetBase } from './model';
 import type { Failure } from './queryError';
 import type { Span } from '../charts/series';
 import type { CountryIdentityHistory } from '../generated/dashboard';
@@ -333,7 +333,7 @@ export function gateStage(track: BoundTrack | undefined, outside: Outside | null
   return { stage: 'open' };
 }
 
-export function pinNow(widget: WidgetSpec, tracks: readonly BoundTrack[], axis: AxisHour): TimeRefusal {
+export function pinNow(widget: WidgetBase, tracks: readonly BoundTrack[], axis: AxisHour): TimeRefusal {
   const windows: Record<string, { firstOffset: number; lastOffset: number }> = {};
   for (const id of widget.trackIds) {
     const track = tracks.find(item => item.id === id);
@@ -344,7 +344,7 @@ export function pinNow(widget: WidgetSpec, tracks: readonly BoundTrack[], axis: 
   return checkedTime({ mode: 'pin', windows } satisfies PinTime, tracks);
 }
 
-export function useCampaignGate(runtime: Runtime, widget: WidgetSpec, active = true): Gate {
+export function useCampaignGate(runtime: Runtime, widget: WidgetBase, active = true): Gate {
   const campaign = useMemo(() => ({ ...widget, time: { mode: 'campaign' as const } }), [widget]);
   return useRegionGate(runtime, useRegion(campaign), active);
 }
