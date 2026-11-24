@@ -259,24 +259,29 @@ impl BattleIndex {
             }
             let cap = stretch.last.min(requested_hour);
             let run = stretch.run;
-            let lives = dashboard_base::queries::lifetimes(source, run, TableId::NavalBattles)?;
+            let (from, to) = (i64::from(stretch.first), i64::from(cap));
+            let held: BTreeSet<u128> = dashboard_base::queries::lifetimes(source, run, TableId::NavalBattles)?
+                .iter()
+                .filter(|&&(key, born, gone)| born <= to && gone >= from && combats.contains(&(key as u64)))
+                .map(|&(key, ..)| key)
+                .collect();
+            let (Some(&low), Some(&high)) = (held.first(), held.last()) else { continue };
+            let presences = dashboard_query::cost::presences(recording, run, TableId::NavalBattles, (low, high), from, to)?;
             let mut asks: Vec<(i32, u128)> = Vec::new();
             let mut spans: HashMap<(u64, i32), i32> = HashMap::new();
             let mut needs_deletion_check = false;
-            for &(key, born, gone) in lives.iter() {
-                if born > i64::from(cap) || gone < i64::from(stretch.first) {
-                    continue;
+            for (key, lived) in presences.iter().filter(|(key, _)| held.contains(key)) {
+                for &(born, gone) in lived {
+                    if born > to || gone < from {
+                        continue;
+                    }
+                    let end = (gone.min(to) as i32).max(stretch.first);
+                    if gone < to {
+                        needs_deletion_check = true;
+                    }
+                    asks.push((end, *key));
+                    spans.insert((*key as u64, end), gone as i32);
                 }
-                let combat = key as u64;
-                if !combats.contains(&combat) {
-                    continue;
-                }
-                let end = (gone.min(i64::from(cap)) as i32).max(stretch.first);
-                if gone < i64::from(cap) {
-                    needs_deletion_check = true;
-                }
-                asks.push((end, key));
-                spans.insert((combat, end), gone as i32);
             }
             if asks.is_empty() {
                 continue;
