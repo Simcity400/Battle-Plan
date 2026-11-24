@@ -32,6 +32,7 @@ import { sampleSeriesValueAt } from './hitTest.ts';
 import { politicalPowerDeclaration, politicalPowerProjection } from '../../widgets/political-power/politicalPowerProjection.ts';
 import { navyLinesProjection } from '../../widgets/navy-size/navyLinesProjection.ts';
 import { armyLinesProjection } from '../../widgets/army-size/armyLinesProjection.ts';
+import { occupationLinesDeclaration } from '../../widgets/occupation-trend/occupationLinesProjection.ts';
 import { supplyHealthProjection } from '../../widgets/supply-health/supplyHealthProjection.ts';
 import { rulingPartyProjection } from '../../widgets/ruling-party/rulingPartyProjection.ts';
 import { createLaneView } from '../laneRuntime.ts';
@@ -1087,7 +1088,7 @@ describe('several countries, one measure', () => {
   const rank = parseFollowed(message(10, [{ id: 1, answer: { keys: ranked.map((_, at) => BigInt(at + 1)), columns: 1, values: ranked.map(() => 1n), names: ranked } }])).answers[0]!.answer;
   const project = (projection: typeof navyLinesProjection, membership: Readonly<Record<string, readonly (readonly [number, number])[]>> | null) =>
     projection.project(createBoundedReadView({ hour, series: new Map([['main', lines]]), answers: new Map([['rank', rank]]) }),
-      { tags, top: null, membership, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+      { tags, top: null, membership, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
 
   it('orders by the product ranking, colours eight and keeps the rest a grey tail without end labels', () => {
     const model = project(navyLinesProjection, null);
@@ -1115,7 +1116,7 @@ describe('several countries, one measure', () => {
       { country: 'A03', hour: base + 10, run: null, missing: 'Country did not exist' },
     ] } }]]);
     const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named]]), hovers }),
-      { tags: [], top: 3, membership: null, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+      { tags: [], top: 3, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
     assert.deepEqual(model.series.map(s => s.id), ['A07', 'A01', 'A03']);
     assert.equal(model.series.find(s => s.id === 'A07')!.exact, null);
     assert.deepEqual(model.series.find(s => s.id === 'A01')!.exact, { hour: base + 10, value: 1234, raw: 1234n, denominator: 1n });
@@ -1126,7 +1127,7 @@ describe('several countries, one measure', () => {
   it('draws a second measure dashed beside each country in the same colour, keyed apart, with a legend naming both', () => {
     const named = new Map(['A07', 'A01'].map(tag => [tag, lines.get(tag)!]));
     const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named], ['second', named]]) }),
-      { tags: ['A07', 'A01'], top: null, membership: null, decimals: 0, digits: null, endLabels: false, second: { measure: 'other', legend: ['Resistance', 'Compliance'] }, options: {},
+      { tags: ['A07', 'A01'], top: null, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: false, second: { measure: 'other', legend: ['Resistance', 'Compliance'] }, options: {},
         extent: [base, base + 95], gaps: [], surface: '#111111' });
     assert.deepEqual(model.series.map(s => [s.key.replace('\u0000', '|'), s.dash ? 'dashed' : 'solid']), [['A07', 'solid'], ['A07|second', 'dashed'], ['A01', 'solid'], ['A01|second', 'dashed']]);
     assert.equal(model.series[1]!.color, model.series[0]!.color);
@@ -1135,7 +1136,7 @@ describe('several countries, one measure', () => {
   });
 
   it('audits the plotted heads whatever the end labels show, so a wrong drawn value differs from the exact read', () => {
-    const options = { tags: ['A07', 'A01'], top: null, membership: null, decimals: 0, digits: null, endLabels: false, second: null, options: {}, extent: [base, base + 95] as const, gaps: [], surface: '#111111' };
+    const options = { tags: ['A07', 'A01'], top: null, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: false, second: null, options: {}, extent: [base, base + 95] as const, gaps: [], surface: '#111111' };
     const drawn = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', lines]]) }), options);
     const state = (country: string, raw: string) => ({ country, hour, run: { valueRaw: raw }, missing: null });
     const exact = navyLinesProjection.project(createBoundedReadView({ hour, panels: new Map([['main', { decimals: 0, states: [state('A07', '7000'), state('A01', '1500')] }]]) }), options);
@@ -1145,17 +1146,44 @@ describe('several countries, one measure', () => {
     assert.notDeepEqual(rows(drawn), rows(exact), 'the wrong drawn value is caught');
   });
 
+  it('audits a second measure from the exact read whether or not tiles are drawn, keyed or ranked', () => {
+    const second = { measure: 'other', legend: ['Resistance', 'Compliance'] as const };
+    const options = { tags: ['A07', 'A01'], top: null, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: true, second, options: {}, extent: [base, base + 95] as const, gaps: [], surface: '#111111' };
+    const named = new Map(['A07', 'A01'].map(tag => [tag, lines.get(tag)!]));
+    const rows = (model: TimeChartModel) => model.auditRows?.map(row => `${row.row.replace('\u0000', '|')}=${row.value}`);
+    const drawn = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named], ['second', named]]) }), options);
+    const state = (country: string, raw: string) => ({ country, hour, run: { valueRaw: raw }, missing: null });
+    const exact = navyLinesProjection.project(createBoundedReadView({ hour, panels: new Map([
+      ['main', { decimals: 0, states: [state('A07', '7000'), state('A01', '1000')] }],
+      ['second', { decimals: 0, states: [state('A07', '7000'), state('A01', '1000')] }],
+    ]) }), options);
+    assert.deepEqual(rows(exact), rows(drawn), 'a correct two-measure picture passes its exact audit');
+    assert.ok(rows(exact)?.includes('A07|second=7,000'));
+
+    const reading = (raw: string) => ({ hour, run: { valueRaw: raw }, missing: null });
+    const ranked = { hour, measures: [{ name: 'm', decimals: 0 }, { name: 'other', decimals: 0 }], rows: [{ country: 'A09', readings: [reading('9000'), reading('900')] }], refused: null, from: hour, until: hour };
+    const top = navyLinesProjection.project(createBoundedReadView({ hour, panels: new Map([['main', ranked]]) }), { ...options, tags: [], top: 1 });
+    assert.deepEqual(rows(top), ['A09=9,000', 'A09|second=900'], 'a ranked exact read carries the second measure of the displayed countries');
+
+    const ctx = {
+      track: { source: { id: 's', revision: '1' }, axisOffset: 0 }, branch: { id: '1' }, following: false,
+      countries: { tags: [], membership: null, top: 3, all: false, every: [] }, options: { measure: 'both' }, aux: undefined,
+    } as unknown as Parameters<typeof occupationLinesDeclaration.sources>[0];
+    const main = occupationLinesDeclaration.sources(ctx, { width: 800, height: 300 } as Parameters<typeof occupationLinesDeclaration.sources>[1]).entries.find(entry => entry.name === 'main')!;
+    assert.ok(((main.read as { params?: { measures?: readonly string[] } }).params?.measures ?? []).length === 1, 'the ranked exact read asks the second measure too');
+  });
+
   it('audits a ranked chart from the product’s exact ranked reply and hovers only members at the hovered hour', () => {
     const reading = (raw: string) => ({ hour, run: { valueRaw: raw }, missing: null });
     const ranked = { hour, measures: [{ name: 'm', decimals: 0 }], rows: [{ country: 'A09', readings: [reading('9000')] }, { country: 'A02', readings: [reading('2000')] }], refused: null, from: hour, until: hour };
     const exact = navyLinesProjection.project(createBoundedReadView({ hour, panels: new Map([['main', ranked]]) }),
-      { tags: [], top: 2, membership: null, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+      { tags: [], top: 2, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
     assert.deepEqual(exact.auditRows?.map(row => `${row.row}=${row.value}`), ['A09=9,000', 'A02=2,000']);
 
     const hovers = new Map([['hover', { hour: base + 30, data: { states: [{ country: 'A10', hour: base + 30, run: { valueRaw: '5' }, missing: null }] } }]]);
     const membership = Object.fromEntries(tags.map(tag => [tag, tag === 'A10' ? [[base, base + 20] as const, [base + 40, base + 95] as const] : [[base, base + 95] as const]]));
     const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', lines]]), hovers }),
-      { tags, top: null, membership, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+      { tags, top: null, membership, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
     assert.equal(model.series.find(s => s.id === 'A10')!.exact, null, 'not a member at the hovered hour: no reading shown');
   });
 
@@ -1175,7 +1203,7 @@ describe('several countries, one measure', () => {
     });
     const named = new Map(['A07', 'A01'].map(tag => [tag, lines.get(tag)!]));
     const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named]]), identity: createSnapshotIdentityProvider(index) }),
-      { tags: ['A07', 'A01'], top: null, membership: null, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+      { tags: ['A07', 'A01'], top: null, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
     const layout = layoutTimeChart(model, 600, 220, FONT, measure);
     const item = (at: number) => deriveTimeChartTooltip(model, layout, `plot:${at}`)?.payload?.items?.find(entry => entry.value === '7,000');
     const early = item(base + 10)!;
@@ -1608,7 +1636,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
         hour: hoverAt,
         data: { decimals: 5, states: [{ country: 'GER', hour: hoverAt, run: { valueRaw: '999999999999999999' }, missing: null }] },
       }]]),
-    }), { tags: ['GER'], top: null, decimals: 5, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+    }), { tags: ['GER'], top: null, decimals: 5, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
     assert.equal(armyModel.series[0]!.endLabel?.value, '9.99T');
     assert.equal(armyModel.auditRows?.find(r => r.row === 'GER')?.value, '9.99T');
     const armyHover = deriveTimeChartTooltip(armyModel, layoutTimeChart(armyModel, 600, 260, FONT, measure), `plot:${hoverAt}`);
