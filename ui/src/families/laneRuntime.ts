@@ -48,6 +48,7 @@ export interface LaneFrame<TBinding extends LaneBinding, TModel, TLayout> {
   readonly now: number;
   readonly speed: number;
   readonly art: LaneArtCache;
+  readonly artProvider: ArtProvider;
   readonly index: IdentityIndex | null;
   readonly projection: FamilyProjection<TModel, unknown>;
   readonly projected: BoundedReadView;
@@ -360,6 +361,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         now: input.now,
         speed: input.speed,
         art: keep.art,
+        artProvider: keep.artProvider,
         index: keep.index,
         projection,
         projected: projected.view,
