@@ -204,6 +204,7 @@ export interface TableModel {
   readonly emptyDetail?: string;
   readonly emptyKind?: 'empty' | 'unavailable';
   readonly unsorted?: boolean;
+  readonly populationPartial?: string;
   readonly dateGrouped?: boolean;
   readonly gaps?: readonly MissingSpan[];
   readonly rank?: boolean;
@@ -485,6 +486,10 @@ export function annotateLogBoundaries(
   return out;
 }
 
+export function keepsProductOrder(model: Pick<TableModel, 'unsorted' | 'populationPartial'>): boolean {
+  return model.unsorted === true || model.populationPartial !== undefined;
+}
+
 export function resolveTableRows(
   model: TableModel,
   settings: TableSettings,
@@ -493,7 +498,7 @@ export function resolveTableRows(
   const hour = model.hour;
   const firstColumnKey = model.columns[0]?.key;
   const dateColumnKey = model.columns.find(col => col.cellKind === 'date')?.key;
-  const unsorted = model.unsorted === true;
+  const unsorted = keepsProductOrder(model);
   const sortColumn = settings.sort.column;
   const direction = settings.sort.direction;
   const isChronological = unsorted || (dateColumnKey !== undefined && sortColumn === dateColumnKey);
@@ -665,7 +670,7 @@ export function resolveTableRowsIncremental(
 
   const hour = model.hour;
   const firstColumnKey = model.columns[0]?.key;
-  const unsorted = model.unsorted === true;
+  const unsorted = keepsProductOrder(model);
   const sortColumn = settings.sort.column;
   const direction = settings.sort.direction;
 
@@ -925,15 +930,15 @@ export function barFractionOf(
     return { fraction: Math.max(0, Math.min(1, raw)), alert: cell.bar.alert === true };
   }
   if (value.kind === 'zero') return { fraction: null, alert: false };
-  const raw = valueNumber(value);
-  const num = raw !== undefined && magnitude ? Math.abs(raw) : raw;
+  const read = valueNumber(value);
+  const num = read !== undefined && magnitude ? Math.abs(read) : read;
   if (num === undefined || top === undefined || top <= 0 || num <= 0) return { fraction: null, alert: false };
   return { fraction: Math.max(0, Math.min(1, num / top)), alert: false };
 }
 
 export function resolveCellPaintModel(
   cell: TableCell | undefined,
-  column: Pick<FamilyColumnLayout, 'key' | 'display' | 'tone' | 'numeric' | 'valueFormat'> & { readonly cellKind?: TableCellKind },
+  column: Pick<FamilyColumnLayout, 'key' | 'display' | 'tone' | 'numeric' | 'valueFormat' | 'cellKind'>,
   hour: number,
   maxima: ReadonlyMap<string, number>,
   countryColors?: CountryColorSource,

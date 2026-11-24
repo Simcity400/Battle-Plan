@@ -1398,7 +1398,6 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
 
     const tableView = familyTableLaneView(() => {}, {
       artMaxEntries: 40,
-      artMaxConcurrent: 20,
       fetchBitmap: (url, signal) => new Promise<ImageBitmap>((resolve, reject) => {
         requestedArt.push(url);
         signal.addEventListener('abort', () => {
@@ -1875,7 +1874,7 @@ test('cell kinds for converted tables: an item column takes the spare width, two
   const kinds: TableColumnSpec[] = [
     { key: 'pic', label: '', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'kind', sortable: false },
     { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
-    { key: 'net', label: 'Net', as: 'plain', offered: ['plain'], priority: 1, numeric: true, cellKind: 'twoWay' },
+    { key: 'net', label: 'Net', as: 'plain', offered: ['plain'], priority: 1, numeric: true, cellKind: 'twoWay', widest: ['+99'] },
   ];
   const kindSettings = tableSettingsOf(undefined, kinds, { density: 'normal', sort: { column: 'net', direction: 'descending' } });
   const grown = layoutFamilyTable(buildColumnLayouts(kinds, kindSettings, { pic: 52, name: 128, net: 140 }), 600);
@@ -1886,6 +1885,17 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     { key: 'B', name: 'B', cells: { name: { value: knownValue('B') }, net: { value: knownValue(10) } } },
   ] }, kindSettings);
   assert.equal(computeColumnMaxima(signedRows, grown.columns, 1).get('net'), 30, 'a two-way column scales by the largest magnitude');
+  const netColumn = grown.columns.find(col => col.key === 'net')!;
+  const loss = signedRows.find(item => item.kind === 'data' && item.key === 'A');
+  assert.equal(loss?.kind === 'data' ? resolveCellPaintModel(loss.row.cells.net, netColumn, 1, new Map([['net', 30]])).bar.fraction : null, 1, 'a loss draws its bar at its magnitude');
+  const measuredNet = measureFixedColumnWidths(buildColumnLayouts([kinds[2]!], kindSettings), kindSettings, TEST_THEME, text => text.length * 7).net!;
+  assert.ok(measuredNet - 2 * 10 >= 72 + 8 + 7 * 3, `a two-way column leaves room for its 72 px slot beside the figure (${measuredNet})`);
+
+  const partialModel = { hour: 1, rank: true, columns: kinds, populationPartial: 'Some countries were not read at this hour', rows: [
+    { key: 'small', name: 'small', cells: { name: { value: knownValue('small') }, net: { value: knownValue(1) } } },
+    { key: 'large', name: 'large', cells: { name: { value: knownValue('large') }, net: { value: knownValue(9) } } },
+  ] };
+  assert.deepEqual(resolveTableRows(partialModel, kindSettings).map(item => item.key), ['small', 'large'], 'a partly answered population keeps the product’s order, never re-ranked in the client');
 
   const shadedColumns: TableColumnSpec[] = [kinds[1]!, { key: 'oil', label: 'Oil', as: 'plain', offered: ['plain'], priority: 1, numeric: true, cellKind: 'shaded' }];
   const shadedSettings = tableSettingsOf(undefined, shadedColumns, { density: 'compact', sort: { column: 'oil', direction: 'descending' } });
