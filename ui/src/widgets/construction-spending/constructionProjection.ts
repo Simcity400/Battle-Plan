@@ -4,6 +4,7 @@ import { breakdownAtHourModel, breakdownAtHourSource, validateBreakdownAtHour } 
 import type { BreakdownWidgetSpec } from '../../families/breakdown/declaration.ts';
 import type { BreakdownModel, BreakdownProjection } from '../../families/breakdown/model.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { ConstructionBreakdownReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition.ts';
 
@@ -13,7 +14,7 @@ export interface ConstructionSpendingOptions {
 
 const validate = validateBreakdownAtHour<ConstructionBreakdownReply>('construction spending breakdown');
 
-const plural = (count: number, one: string) => `${count.toLocaleString('en-US')} ${one}${count === 1 ? '' : 's'}`;
+const plural = (count: number, one: string) => `${formatScalar(count, 'integer')} ${one}${count === 1 ? '' : 's'}`;
 
 export const constructionProjection: BreakdownProjection<ConstructionSpendingOptions> = {
   family: 'breakdown',

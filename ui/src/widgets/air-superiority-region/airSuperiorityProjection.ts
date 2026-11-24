@@ -10,6 +10,7 @@ import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/sha
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { AirRegion, AirSide, AirSuperiorityReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition.ts';
 
@@ -85,7 +86,7 @@ function wingsText(region: AirRegion, live: ReturnType<BoundedReadView['live']>)
   const raw = live?.get(liveKey(String(region.id), 'wings'));
   if (raw === undefined) return { text: 'Wings not recorded', count: null };
   const count = Math.trunc(Number(raw));
-  return { text: `${count.toLocaleString('en-US')} air ${count === 1 ? 'wing' : 'wings'}`, count };
+  return { text: `${formatScalar(count, 'integer')} air ${count === 1 ? 'wing' : 'wings'}`, count };
 }
 
 function superiorityState(friendly: number, total: number, scale: number, badBelow: number, goodAbove: number): string {
