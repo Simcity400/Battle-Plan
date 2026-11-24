@@ -6489,7 +6489,6 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "special-project-details": { "hour": "read" },
   "special-project-effects": { "hour": "read" },
   "special-project-iteration": { "read": "read", "hour": "read" },
-  "special-project-rewards": { "hour": "read" },
   "special-projects": { "hour": "read" },
   "special-projects-history": { "hour": "read" },
   "sprite-artwork": {},
@@ -6674,7 +6673,6 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "special-project-details": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "special-project-effects": { "branchId": "leaf", "country": "any", "hour": "leaf", "owner": "leaf", "project": "leaf" },
   "special-project-iteration": { "branchId": "leaf", "country": "any", "hour": "leaf", "ordinal": "leaf", "owner": "leaf", "project": "leaf", "read": "leaf" },
-  "special-project-rewards": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "special-projects": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "special-projects-history": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "sprite-artwork": { "sprites": "node", "sprites[]": "node", "sprites[].frame": "leaf", "sprites[].key": "leaf", "sprites[].recorded": "leaf", "sprites[].text": "leaf", "textures": "node", "textures[]": "node", "textures[].frame": "leaf", "textures[].frames": "leaf", "textures[].path": "leaf" },
@@ -6859,7 +6857,6 @@ export type RequestParams<E, B> = {
   "special-project-details": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "special-project-effects": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "special-project-iteration": { readonly [key: string]: unknown; readonly "hour"?: E | null; readonly "read"?: E | null };
-  "special-project-rewards": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "special-projects": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "special-projects-history": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "sprite-artwork": {};
