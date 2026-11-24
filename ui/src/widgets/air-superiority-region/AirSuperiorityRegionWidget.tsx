@@ -2,7 +2,8 @@ import { useMemo } from 'react';
 import { useChartTokens } from '../../charts/useChartTokens';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useFactionColours } from '../../dashboard/FactionColours';
-import DeclaredBarsWidget from '../../families/bars/DeclaredBarsWidget.tsx';
+import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
+import { DeclaredFamilyWidget } from '../../families/host/index.ts';
 import { airSuperiorityRegionDeclaration } from './airSuperiorityProjection.ts';
 
 export default function AirSuperiorityRegionWidget(props: WidgetProps) {
@@ -30,8 +31,9 @@ export default function AirSuperiorityRegionWidget(props: WidgetProps) {
   }), [factionColours, factionNames, tokens.error, tokens.muted]);
 
   return (
-    <DeclaredBarsWidget
+    <DeclaredFamilyWidget
       {...props}
+      adapter={barsHostAdapter}
       declaration={declaration}
       extraWarnings={extraWarnings}
     />

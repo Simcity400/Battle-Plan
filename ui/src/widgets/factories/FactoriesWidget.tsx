@@ -11,8 +11,9 @@ import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
-import DeclaredBarsWidget from '../../families/bars/DeclaredBarsWidget.tsx';
-import { DetailWindowHost } from '../../families/host/index.ts';
+import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
+import { DeclaredFamilyWidget, DetailWindowHost } from '../../families/host/index.ts';
+import type { InstalledAction } from '../../families/plan.ts';
 import type { FactoryPartsReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import { COUNT_MODES, countMode, factoryMeasure, factoryParts, partRows, validateFactoryGroups, validateFactoryParts } from './factoriesData.ts';
@@ -72,19 +73,19 @@ export default function FactoriesWidget(props: WidgetProps) {
     onDiagnostics(all.length ? all : NO_WARNINGS);
   }, [onDiagnostics, named.data]);
 
-  const onActivate = useCallback((key: string, meta?: unknown, hour?: number) => {
-    if (hour === undefined || !Number.isFinite(hour)) return;
-    const gated = gate.recorded(Math.floor(hour));
+  const onActivate = useCallback((action: InstalledAction) => {
+    const gated = gate.recorded(Math.floor(action.hour));
     if (gated === null) return;
-    const rowMeta = meta as FactoriesRowMeta | null | undefined;
-    setDetail({ tag: rowMeta?.tag ?? key, key: rowMeta?.key ?? key, hour: gated });
+    const rowMeta = action.meta as FactoriesRowMeta | null | undefined;
+    setDetail({ tag: rowMeta?.tag ?? action.subject, key: rowMeta?.key ?? action.subject, hour: gated });
   }, [gate]);
 
   if (isBarsRace) {
     return (
-      <div ref={anchorRef} className="bars-family">
-        <DeclaredBarsWidget
+      <div ref={anchorRef} className="fh-frame">
+        <DeclaredFamilyWidget
           {...props}
+          adapter={barsHostAdapter}
           declaration={factoriesDeclaration}
           selectedKey={detail?.key ?? null}
           onActivate={onActivate}
@@ -95,7 +96,7 @@ export default function FactoriesWidget(props: WidgetProps) {
           hour={detail?.hour ?? null}
           title={detail ? `${detail.tag} factories` : 'Factories'}
           anchor={anchorRef}
-          returnFocus=".bars-family-viewport"
+          returnFocus=".fh-body"
           onClose={() => setDetail(null)}
         >
           {detail ? (

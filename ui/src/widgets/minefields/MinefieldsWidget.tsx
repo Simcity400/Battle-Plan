@@ -19,8 +19,9 @@ import { useGate } from '../../dashboard/regionGate';
 import { SPEC } from '../../dashboard/regionTime.ts';
 import { productRequest } from '../../dashboard/request.ts';
 import type { ReadCoverage } from '../../dashboard/widgetTime';
-import DeclaredBarsWidget from '../../families/bars/DeclaredBarsWidget.tsx';
-import { DetailWindowHost } from '../../families/host/index.ts';
+import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
+import { DeclaredFamilyWidget, DetailWindowHost } from '../../families/host/index.ts';
+import type { InstalledAction } from '../../families/plan.ts';
 import type { MineReport, MinefieldReportsReply } from '../../generated/dashboard';
 import { historyRuns, validateHistory, validateReports, type RegionRow } from './minefieldsData.ts';
 import { minefieldsDeclaration } from './minefieldsProjection.ts';
@@ -38,16 +39,17 @@ export default function MinefieldsWidget(props: WidgetProps) {
     setPicked(null);
   }, [track?.source.id, track?.branch.id]);
 
-  const onActivate = useCallback((key: string, meta?: unknown, hour?: number) => {
-    const row = meta as RegionRow | null | undefined;
-    const regionRow: RegionRow = row ?? { region: key, name: `Region ${key}`, owners: [], unknownOwners: 0 };
-    setPicked({ row: regionRow, hour: Math.floor(hour ?? track?.branch.lastHour ?? 0) });
-  }, [track?.branch.lastHour]);
+  const onActivate = useCallback((action: InstalledAction) => {
+    const row = action.meta as RegionRow | null | undefined;
+    const regionRow: RegionRow = row ?? { region: action.subject, name: `Region ${action.subject}`, owners: [], unknownOwners: 0 };
+    setPicked({ row: regionRow, hour: Math.floor(action.hour) });
+  }, []);
 
   return (
-    <div ref={anchorRef} className="bars-family">
-      <DeclaredBarsWidget
+    <div ref={anchorRef} className="fh-frame">
+      <DeclaredFamilyWidget
         {...props}
+        adapter={barsHostAdapter}
         headerSlot={null}
         declaration={minefieldsDeclaration}
         selectedKey={picked?.row.region ?? null}
@@ -59,7 +61,7 @@ export default function MinefieldsWidget(props: WidgetProps) {
         hour={picked?.hour ?? null}
         title={picked?.row.name ?? 'Region'}
         anchor={anchorRef}
-        returnFocus=".bars-family-viewport"
+        returnFocus=".fh-body"
         onClose={() => setPicked(null)}
       >
         {picked && track ? (
