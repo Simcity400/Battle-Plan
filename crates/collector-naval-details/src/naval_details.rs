@@ -6,7 +6,7 @@ use crate::{
 use engine_allocation::{collect_vec, copy_vec, filled, owned_vec, resize_default};
 use engine_native_naval::naval_air_efficiency_inputs;
 use engine_native_memory::{Memory, walk::Outcome};
-use engine_native::{cfex_air, cfex_damage_entry, cfex_member, cnaval_combat};
+use engine_native::cfex_damage_entry;
 use engine_native_naval::{
     naval_combat_air_hit,
     naval_combat_hit,
@@ -612,11 +612,26 @@ impl Captured {
         ]
     }
     pub fn tables(&self) -> [TableView; N] {
+        self.table_inputs(None).map(|input| match input {
+            replay_frame::frame::TableInput::Sampled(view) => view,
+            _ => unreachable!("unprojected naval details must emit sampled views"),
+        })
+    }
+
+    pub fn table_inputs(
+        &self,
+        projection: Option<&mut collector_projection::projection::Projection<'_>>,
+    ) -> [replay_frame::frame::TableInput; N] {
+        use replay_data::rows::RowCodec;
+        use replay_frame::frame::TableInput;
         let out = self.outcomes();
         let [trees, samples] = self.trees.tables();
         [
-            table::<tables::NavalCombatDetails, _>(out[0], &self.details.rows, |r| {
-                rows::NavalCombatDetailsRow {
+            TableInput::Sampled(table::<tables::NavalCombatDetails, _>(
+                out[0],
+                &self.details.rows,
+                |r| {
+                    rows::NavalCombatDetailsRow {
                     combat: r.combat,
                     province: r.province,
                     day: r.day,
@@ -741,9 +756,24 @@ impl Captured {
                         )),
                     }),
                 }
-            }),
-            table::<tables::NavalCombatShips, _>(out[1], &self.ships.rows, |r| self.ship(r)),
-            table::<tables::NavalCombatAirBaseWingHandles, _>(
+            })),
+            collector_projection::projection::project_table::<tables::NavalCombatShips, _>(
+                projection,
+                out[1],
+                &self.ships.rows,
+                |r| {
+                    RowCodec::key(&rows::NavalCombatShipRow {
+                        combat: r.member.combat,
+                        side: r.member.side,
+                        battle_slot: r.member.battle_slot,
+                        ship: r.member.ship,
+                        ..Default::default()
+                    })
+                },
+                |r, prev| self.ship_equal(r, prev),
+                |r| self.ship(r),
+            ),
+            TableInput::Sampled(table::<tables::NavalCombatAirBaseWingHandles, _>(
                 out[2],
                 &self.dense_bases.rows,
                 |r| rows::NavalCombatAirBaseWingHandlesRow {
@@ -753,11 +783,122 @@ impl Captured {
                         [r.wings_start, r.wings_len],
                     ))),
                 },
-            ),
-            trees,
-            samples,
+            )),
+            TableInput::Sampled(trees),
+            TableInput::Sampled(samples),
         ]
     }
+
+    fn ship_equal(&self, r: &engine_native_naval::naval_member_details::DetailsRow, prev: &rows::NavalCombatShipRow) -> bool {
+        if prev.combat != r.member.combat
+            || prev.side != r.member.side
+            || prev.battle_slot != r.member.battle_slot
+            || prev.ship != r.member.ship
+            || prev.owner != r.member.owner
+            || prev.state != r.member.state
+            || prev.convoy != r.convoy
+            || prev.subunit_index != r.subunit_index
+            || prev.formation_type != r.formation_type
+            || prev.build_cost_ic != r.build_cost_ic
+            || prev.cached_strength_ratio != r.cached_strength_ratio
+            || prev.pride != r.pride
+            || prev.is_convoy != r.is_convoy
+            || prev.variant != r.variant
+            || prev.arrival_hours != r.arrival_hours
+            || prev.received_criticals != r.received_criticals
+            || prev.evacuation_state != r.evacuation_state
+            || prev.detection_state != r.detection_state
+            || prev.escape_progress != r.escape_progress
+            || prev.escape_speed_base != r.escape_speed_base
+            || prev.received_damage != r.received_damage
+            || prev.live_ship != r.live_ship
+            || prev.strength != r.strength
+            || prev.organisation != r.organisation
+            || prev.base_organisation != r.base_organisation
+            || prev.maximum_hit_points != r.maximum_hit_points
+            || prev.formation_flags != r.formation_flags
+            || prev.member_source != r.member_source
+            || prev.group_index != r.group_index
+            || prev.member_index != r.member_index
+            || prev.live_convoy != r.live_convoy
+            || prev.last_target.present != r.last_target.present
+            || prev.last_target.is_convoy != r.last_target.is_convoy
+            || prev.last_target.target_group_member_count != r.last_target.target_group_member_count
+            || prev.name.as_slice() != r.name.as_bytes()
+            || prev.type_name.as_slice() != r.type_name.as_bytes()
+            || prev.sprite.as_slice() != r.sprite.as_bytes()
+            || prev.sunk_by.as_slice() != r.sunk_by.as_bytes()
+        {
+            return false;
+        }
+        let wc = &r.weapon_context;
+        let pwc = &prev.weapon_context;
+        if pwc.task_force != wc.task_force
+            || pwc.country != wc.country
+            || pwc.commander != wc.commander
+            || pwc.ship_class != wc.ship_class
+            || pwc.subunit != wc.subunit
+            || pwc.weapon_bases != wc.weapon_bases
+            || pwc.detection_base != wc.detection_base
+            || pwc.air_base != wc.air_base
+            || pwc.air_base_maximum != wc.air_base_maximum
+            || pwc.air_detection_base != wc.air_detection_base
+            || pwc.weather_factor != wc.weather_factor
+            || pwc.fuel != wc.fuel
+            || pwc.night != wc.night
+            || pwc.formation_flags != wc.formation_flags
+            || pwc.terrain_name.as_slice() != wc.terrain_name.as_bytes()
+        {
+            return false;
+        }
+        let sources = range(&self.weapon_sources.first, wc.sources);
+        if pwc.sources.len() != sources.len()
+            || !pwc.sources.iter().zip(sources).all(|(ps, s)| {
+                let terms = range(&self.weapon_terms.first, s.terms);
+                ps.scope == s.scope
+                    && ps.index == s.index
+                    && ps.selector == s.selector
+                    && ps.reference == s.reference
+                    && ps.dynamic_keys == s.dynamic_keys
+                    && ps.weights == s.weights
+                    && ps.movement == s.movement
+                    && ps.terms.len() == terms.len()
+                    && ps.terms.iter().zip(terms).all(|(pt, t)| {
+                        pt.key == t.key
+                            && pt.raw == t.raw
+                            && pt.metadata_flags == t.metadata_flags
+                            && pt.feature_selector == t.feature_selector
+                    })
+            })
+        {
+            return false;
+        }
+        let damage = range(&self.damage.first, r.damage_entries);
+        if prev.damage_entries.len() != damage.len()
+            || !prev
+                .damage_entries
+                .iter()
+                .zip(damage)
+                .all(|(p, v)| p.source == v.source && p.country == v.country && p.damage == v.damage)
+        {
+            return false;
+        }
+        if !r.air_hits.iter().zip(&prev.air_hits).all(|(&span, prev_air)| {
+            let cur = range(&self.air.first, span);
+            prev_air.len() == cur.len()
+                && prev_air.iter().zip(cur).all(|(p, v)| *p == air_hit(v))
+        }) {
+            return false;
+        }
+        let hits = range(&self.hits.first, r.naval_hits);
+        prev.naval_hits.len() == hits.len()
+            && prev
+                .naval_hits
+                .iter()
+                .zip(hits)
+                .all(|(p, v)| *p == naval_hit(v))
+    }
+
     fn ship(&self, r: &engine_native_naval::naval_member_details::DetailsRow) -> rows::NavalCombatShipRow {
         rows::NavalCombatShipRow {
             combat: r.member.combat,

@@ -44,7 +44,10 @@ impl Capacities {
         let acquired = engine_native_politics::character_portraits::count_portraits(memory, base, state, Default::default());
         let count = collector_extended_support::demand::rows(acquired.outcome)?;
         collector_primitives::table_capture::grow_capacity(&mut self.rows, count.div_ceil(PARTS));
-        collector_primitives::table_capture::grow_capacity(&mut self.arena, acquired.required);
+        collector_primitives::table_capture::grow_capacity(
+            &mut self.arena,
+            acquired.required.div_ceil(PARTS),
+        );
         Ok(())
     }
 }
@@ -283,10 +286,9 @@ pub struct Captured {
     terminal_failure: Option<&'static str>,
 }
 impl Captured {
-    #[cfg(test)]
-    fn vacant() -> Self {
+    pub fn vacant() -> Self {
         Self {
-            parts: owned_vec(collect_vec((0..PARTS).map(|_| Part::vacant()))),
+            parts: Vec::new(),
             ordering: RefCell::default(),
             terminal_failure: None,
         }

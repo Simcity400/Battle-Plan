@@ -33,6 +33,22 @@ impl Order {
     pub fn allocated_bytes(&self) -> usize {
         self.entries.capacity() * std::mem::size_of::<(u64, usize)>()
     }
+    pub(crate) fn guess(&mut self, baseline: Option<u64>, index: usize) -> Option<usize> {
+        if self.baseline != baseline {
+            self.clear();
+            self.baseline = baseline;
+            return None;
+        }
+        baseline?;
+        index.checked_add_signed(self.shift)
+    }
+    pub(crate) fn set_shift(&mut self, baseline: Option<u64>, shift: isize) {
+        if self.baseline != baseline {
+            self.clear();
+            self.baseline = baseline;
+        }
+        self.shift = shift;
+    }
     pub(crate) fn position(
         &mut self,
         baseline: Option<u64>,
@@ -96,7 +112,10 @@ pub struct Store<T = i64> {
     held: Vec<Held<T>>,
     baseline: Option<u64>,
     next: Vec<Held<T>>,
-    order: Vec<(u64, usize)>,
+    sorted: Vec<(u64, usize)>,
+    sorted_ready: bool,
+    held_sorted: bool,
+    unique: bool,
     shift: isize,
     daily: bool,
 }
@@ -118,7 +137,6 @@ impl<T: Clone> Store<T> {
     }
     pub fn begin(&mut self, count: usize) -> Result<(), &'static str> {
         self.next.clear();
-        self.order.clear();
         self.shift = 0;
         engine_allocation::reserve(&mut self.next, count)
             .map_err(|_| "division experience cache allocation failed")
@@ -127,11 +145,14 @@ impl<T: Clone> Store<T> {
         self.held.clear();
         self.baseline = None;
         self.next.clear();
-        self.order.clear();
+        self.sorted.clear();
+        self.sorted_ready = false;
+        self.held_sorted = false;
+        self.unique = false;
     }
     pub fn allocated_bytes(&self) -> usize {
         (self.held.capacity() + self.next.capacity()) * std::mem::size_of::<Held<T>>()
-            + self.order.capacity() * std::mem::size_of::<(u64, usize)>()
+            + self.sorted.capacity() * std::mem::size_of::<(u64, usize)>()
     }
     pub fn observe_with(
         &mut self,
@@ -163,22 +184,31 @@ impl<T: Clone> Store<T> {
                 .is_some_and(|held| held.division == division)
         }) {
             guess
+        } else if self.held.is_empty() {
+            None
+        } else if self.held_sorted {
+            self.held
+                .binary_search_by_key(&division, |held| held.division)
+                .ok()
         } else {
-            if self.order.is_empty() && !self.held.is_empty() {
-                engine_allocation::reserve(&mut self.order, self.held.len())
+            if !self.sorted_ready {
+                self.sorted.clear();
+                engine_allocation::reserve(&mut self.sorted, self.held.len())
                     .map_err(|_| "division experience index allocation failed")?;
-                self.order.extend(
+                self.sorted.extend(
                     self.held
                         .iter()
                         .enumerate()
                         .map(|(at, held)| (held.division, at)),
                 );
-                self.order.sort_unstable_by_key(|entry| entry.0);
+                self.sorted.sort_unstable_by_key(|entry| entry.0);
+                self.unique = self.sorted.windows(2).all(|pair| pair[0].0 != pair[1].0);
+                self.sorted_ready = true;
             }
-            self.order
+            self.sorted
                 .binary_search_by_key(&division, |entry| entry.0)
                 .ok()
-                .map(|at| self.order[at].1)
+                .map(|at| self.sorted[at].1)
         };
         if let Some(at) = at {
             self.shift = at as isize - self.next.len() as isize;
@@ -211,7 +241,6 @@ impl<T: Clone> Store<T> {
         seed: &DivisionSeed,
         receiver: usize,
         taken: &crate::observations::Taken,
-        kind: usize,
     ) -> Option<(usize, (u64, u64))> {
         let at = self.locate(seed.division).ok()??;
         let held = &self.held[at];
@@ -221,9 +250,6 @@ impl<T: Clone> Store<T> {
             taken.quiet(receiver, held.certificate.0)
         };
         let quiet = held.army == seed.pointer && quiet;
-        if quiet {
-            crate::observations::quiet(kind);
-        }
         quiet.then_some((at, held.certificate))
     }
 
@@ -264,11 +290,10 @@ impl<T: Clone> Store<T> {
         }
     }
 
-    fn prefetch_held(
+    fn prefetch_held_at(
         &self,
         index: usize,
-        seed: &DivisionSeed,
-        certificate: (u64, u64),
+        division: u64,
         order: &mut Order,
     ) -> Option<&Held<T>> {
         #[cfg(test)]
@@ -279,25 +304,46 @@ impl<T: Clone> Store<T> {
             order.clear();
             order.baseline = self.baseline;
         }
-        let guess = (self.baseline.is_some() && order.unique)
+        let unique = self.unique || order.unique;
+        let guess = (self.baseline.is_some() && unique)
             .then(|| index.checked_add_signed(order.shift))
             .flatten();
         let at = if self
             .held
             .get(index)
-            .is_some_and(|held| held.division == seed.division)
+            .is_some_and(|held| held.division == division)
         {
             Some(index)
         } else if guess.is_some_and(|at| {
             self.held
                 .get(at)
-                .is_some_and(|held| held.division == seed.division)
+                .is_some_and(|held| held.division == division)
         }) {
             guess
+        } else if self.held.is_empty() {
+            return None;
+        } else if self.held_sorted {
+            self.held
+                .binary_search_by_key(&division, |held| {
+                    #[cfg(test)]
+                    {
+                        order.probes += 1;
+                    }
+                    held.division
+                })
+                .ok()
+        } else if self.sorted_ready {
+            self.sorted
+                .binary_search_by_key(&division, |entry| {
+                    #[cfg(test)]
+                    {
+                        order.probes += 1;
+                    }
+                    entry.0
+                })
+                .ok()
+                .map(|at| self.sorted[at].1)
         } else {
-            if self.held.is_empty() {
-                return None;
-            }
             if self.baseline.is_none() || order.entries.is_empty() {
                 order.entries.clear();
                 if engine_allocation::advisory(|| {
@@ -324,15 +370,13 @@ impl<T: Clone> Store<T> {
                         {
                             order.probes += 1;
                         }
-                        held.division == seed.division
-                            && held.army == seed.pointer
-                            && self.matches(held, certificate)
+                        held.division == division
                     });
                 }
             }
             order
                 .entries
-                .binary_search_by_key(&seed.division, |entry| {
+                .binary_search_by_key(&division, |entry| {
                     #[cfg(test)]
                     {
                         order.probes += 1;
@@ -346,7 +390,17 @@ impl<T: Clone> Store<T> {
             order.shift = at as isize - index as isize;
         }
         at.and_then(|at| self.held.get(at))
-            .filter(|held| held.division == seed.division)
+            .filter(|held| held.division == division)
+    }
+
+    fn prefetch_held(
+        &self,
+        index: usize,
+        seed: &DivisionSeed,
+        certificate: (u64, u64),
+        order: &mut Order,
+    ) -> Option<&Held<T>> {
+        self.prefetch_held_at(index, seed.division, order)
             .filter(|held| held.army == seed.pointer && self.matches(held, certificate))
     }
 
@@ -370,19 +424,8 @@ impl<T: Clone> Store<T> {
         seed: &DivisionSeed,
         order: &mut Order,
     ) -> Option<&Held<T>> {
-        let held = self.held.get(index).filter(|held| held.division == seed.division);
-        if held.is_some() {
-            return held.filter(|held| held.army == seed.pointer);
-        }
-        let at = order
-            .position(
-                self.baseline,
-                self.held.iter().map(|held| held.division),
-                seed.division,
-            )
-            .unwrap_or_else(|| self.held.iter().position(|held| held.division == seed.division));
-        at.and_then(|at| self.held.get(at))
-            .filter(|held| held.division == seed.division && held.army == seed.pointer)
+        self.prefetch_held_at(index, seed.division, order)
+            .filter(|held| held.army == seed.pointer)
     }
 
     pub(super) fn prefetch_value(
@@ -417,6 +460,32 @@ impl<T: Clone> Store<T> {
         std::mem::swap(&mut self.held, &mut self.next);
         self.baseline = next_baseline();
         self.next.clear();
+        self.sorted.clear();
+        self.held_sorted = self
+            .held
+            .windows(2)
+            .all(|pair| pair[0].division < pair[1].division);
+        if self.held_sorted {
+            self.sorted_ready = true;
+            self.unique = true;
+        } else if engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut self.sorted, self.held.len())
+        })
+        .is_ok()
+        {
+            self.sorted.extend(
+                self.held
+                    .iter()
+                    .enumerate()
+                    .map(|(at, held)| (held.division, at)),
+            );
+            self.sorted.sort_unstable_by_key(|entry| entry.0);
+            self.unique = self.sorted.windows(2).all(|pair| pair[0].0 != pair[1].0);
+            self.sorted_ready = true;
+        } else {
+            self.sorted_ready = false;
+            self.unique = false;
+        }
     }
 }
 
@@ -630,7 +699,7 @@ mod tests {
         }
         assert_eq!(order.rebuilds, 0);
         assert_eq!(order.probes, COUNT);
-        check(&store, &mut order, 1, 1);
+        check(&store, &mut order, 1, 0);
         let bytes = order.allocated_bytes();
         check(&store, &mut order, 1, 0);
         assert_eq!(order.allocated_bytes(), bytes);
@@ -645,7 +714,7 @@ mod tests {
                 .unwrap();
         }
         store.finish(true);
-        check(&store, &mut order, 1, 1);
+        check(&store, &mut order, 1, 0);
 
         store.forget();
         let before = (order.rebuilds, order.probes);
@@ -672,7 +741,7 @@ mod tests {
                 .unwrap();
         }
         store.finish(true);
-        check(&store, &mut order, COUNT + 1, 1);
+        check(&store, &mut order, COUNT + 1, 0);
         let before = (order.rebuilds, order.probes);
         for id in 2 * COUNT + 1..=3 * COUNT {
             assert_eq!(

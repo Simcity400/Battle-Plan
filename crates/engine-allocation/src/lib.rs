@@ -222,6 +222,23 @@ pub fn boxed<T>(value: T) -> io::Result<Box<T>> {
     }
 }
 
+pub fn boxed_uninit<T>() -> io::Result<Box<std::mem::MaybeUninit<T>>> {
+    let layout = Layout::new::<std::mem::MaybeUninit<T>>();
+    let pointer = if layout.size() == 0 {
+        NonNull::<std::mem::MaybeUninit<T>>::dangling().as_ptr()
+    } else {
+        allocation_attempt()?;
+        // SAFETY: layout has non-zero size matching MaybeUninit<T>.
+        unsafe { alloc(layout).cast::<std::mem::MaybeUninit<T>>() }
+    };
+    if pointer.is_null() {
+        return Err(oom());
+    }
+    // SAFETY: storage matches the global allocator layout for MaybeUninit<T>
+    // (or is dangling for a ZST), and uninitialized bytes are valid MaybeUninit<T>.
+    Ok(unsafe { Box::from_raw(pointer) })
+}
+
 pub fn reserve<T>(values: &mut Vec<T>, additional: usize) -> io::Result<()> {
     if additional > values.capacity() - values.len() {
         allocation_attempt()?;

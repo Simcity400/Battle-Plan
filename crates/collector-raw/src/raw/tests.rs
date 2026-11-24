@@ -138,7 +138,7 @@ fn immutable_view_positions(reader: &Recorded<'_>) -> (Vec<usize>, usize, usize)
             .index
             .slots
             .iter()
-            .map(std::cell::Cell::get)
+            .map(|slot| slot.get() as usize)
             .collect(),
         reader.next_exact.get(),
         reader.last_bulk.get(),
@@ -1782,13 +1782,13 @@ fn compact_map_preserves_reset_roots_and_terminal_duplicate_faults() {
         assert_eq!(
             recorded.index.repeated,
             [
-                (recorded.index.slot(&log.spans, 0x2000, 4).unwrap(), 1),
-                (recorded.index.slot(&log.spans, 0x3000, 8).unwrap(), 2),
+                (recorded.index.slot(&log.spans, 0x2000, 4).unwrap() as u32, 1),
+                (recorded.index.slot(&log.spans, 0x3000, 8).unwrap() as u32, 2),
             ]
         );
         assert_eq!(
             recorded.index.next,
-            [usize::MAX, 3, 5, 6, usize::MAX, 7, 6, 7]
+            [u32::MAX, 3, 5, 6, u32::MAX, 7, 6, 7]
         );
         assert_eq!(
             recorded.index.cursor(&log.spans, 0x2000, 4).unwrap().get(),
@@ -1849,7 +1849,7 @@ fn unique_exact_hint_matches_linear_reads_in_sequential_and_arbitrary_order() {
     let mut log = RawLog::<1>::default();
     set_index_fixture(&mut log, &reads);
     let recorded = Recorded::build(&log).unwrap();
-    assert!(recorded.index.next.iter().all(|&next| next == usize::MAX));
+    assert!(recorded.index.next.iter().all(|&next| next == u32::MAX));
     let mut observations = std::collections::BTreeMap::new();
     for (index, &(address, len, _, _)) in reads.iter().enumerate() {
         assert_recorded_query(&log, &recorded, &mut observations, (address, len));
@@ -1883,7 +1883,7 @@ fn unique_exact_hint_never_skips_an_earlier_duplicate_observation() {
     let recorded = Recorded::build(&log).unwrap();
     assert_eq!(
         recorded.index.next,
-        [2, usize::MAX, 4, usize::MAX, 4, usize::MAX]
+        [2, u32::MAX, 4, u32::MAX, 4, u32::MAX]
     );
     let mut observations = std::collections::BTreeMap::new();
     for query in [
@@ -1987,7 +1987,7 @@ fn unique_exact_hint_uses_current_bytes_and_offsets_after_shape_reuse() {
         assert_index_fixture(&log);
         let cached = log.index.borrow();
         let next = &cached.as_ref().unwrap().next;
-        assert_eq!(next[0] == usize::MAX, tail.is_none());
+        assert_eq!(next[0] == u32::MAX, tail.is_none());
         if tail.is_some() {
             assert_eq!(next[4], 4);
         }
@@ -2152,7 +2152,10 @@ fn compact_index_resolves_early_duplicate_roots_after_all_rehashes() {
         let first_slot = recorded.index.slot(&log.spans, first, 4).unwrap();
         let second_slot = recorded.index.slot(&log.spans, second, 4).unwrap();
         assert_ne!(first_slot, RecordedIndex::hash(first, 4) & 7);
-        assert_eq!(recorded.index.repeated, [(first_slot, 0), (second_slot, 1)]);
+        assert_eq!(
+            recorded.index.repeated,
+            [(first_slot as u32, 0), (second_slot as u32, 1)]
+        );
         assert_eq!(recorded.index.slots[first_slot].get(), 0);
         assert_eq!(recorded.index.slots[second_slot].get(), 1);
     }
@@ -2243,7 +2246,7 @@ fn compact_index_shrink_clears_exhausted_cursors_before_using_new_spans() {
                 .index
                 .slots
                 .iter()
-                .all(|slot| slot.get() == usize::MAX)
+                .all(|slot| slot.get() == u32::MAX)
         );
         assert!(recorded.index.repeated.is_empty());
         assert!(!recorded.copy(0x1000, &mut [0; 4]));
@@ -2770,7 +2773,7 @@ fn bulk_cache_keeps_nested_winners_parent_fallback_and_exact_faults() {
                     .iter()
                     .rev()
                     .find(|span| span.0 <= address && address + len <= span.1)
-                    .map(|span| log.bytes[log.spans[span.2].start as usize])
+                    .map(|span| log.bytes[log.spans[span.2 as usize].start as usize])
             };
             let mut bytes = vec![0xa5; len];
             assert_eq!(
@@ -2888,4 +2891,42 @@ fn a_refused_index_allocation_is_named_not_an_empty_log() {
     let mut word = [0; 8];
     assert!(Recorded::build(&log).unwrap().copy(0x1000, &mut word));
     assert_eq!(word, [7; 8]);
+}
+
+#[test]
+fn trim_if_quiet_shrinks_idle_buffers_and_keeps_active_compiled_plans() {
+    let bytes = [0x42_u8; 64];
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let mut log = RawLog::<1>::new(100_000, 2 * 1024 * 1024);
+    log.initialize_read_plan(65_536, 16_384, 512 * 1024);
+    for _ in 0..3 {
+        assert!(log.trim_if_quiet());
+    }
+    assert!(log.bytes.capacity() >= 2 * 1024 * 1024);
+    assert!(log.trim_if_quiet());
+    assert!(log.spans.capacity() <= 32_768);
+    assert!(log.bytes.capacity() <= 512 * 1024);
+    assert_eq!(log.plan.requests.capacity(), 0);
+    assert_eq!(
+        log.bytes.observations.as_ref().unwrap().borrow().capacity_bytes(),
+        0
+    );
+
+    let mut active = RawLog::<1>::new(64, 1024);
+    active.initialize_read_plan(64, 64, 1024);
+    assert!(!active.begin_planned_capture(&memory, [1, 2, 3, 4]));
+    assert!(active.take(&memory, 0x1000, 8, 1).is_some());
+    active.finish_planned_capture();
+    active.prepare_read_plan();
+    assert!(active.plan.compiled.is_some());
+    for _ in 0..4 {
+        active.clear();
+        assert!(active.begin_planned_capture(&memory, [1, 2, 3, 4]));
+        assert!(!active.trim_if_quiet());
+    }
+    assert!(active.plan.compiled.is_some());
+    assert!(active.plan.requests.capacity() > 0);
 }

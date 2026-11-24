@@ -2966,7 +2966,7 @@ mod tests {
         });
         // SAFETY: This test holds exclusive fixture control of the land observer.
         unsafe { install_offered() };
-        assert_eq!(LIVE.log_capacity.load(Ordering::SeqCst), 4096);
+        assert_eq!(LIVE.log_capacity.load(Ordering::SeqCst), 5120);
         let next = drain(&mut out, 12, false);
         assert!(next.complete);
         assert_eq!(next.words, 0);

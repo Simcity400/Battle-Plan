@@ -1877,3 +1877,42 @@ fn pooled_frames_carry_and_witness_the_previous_hours_templates_from_their_share
     assert_ne!(frames[0].witness, witnesses[3]);
     assert_eq!(frames[0].tables(), tables[3]);
 }
+
+#[test]
+fn clean_whole_table_fast_path_matches_full_walk_and_invalidates_on_change() {
+    const A: usize = 0x5000;
+    let changes = CoreChanges::new();
+    let mut source = gridded_fixture();
+    let mut fast = Captured::with_capacities(&capacity());
+    let mut reference = Captured::with_capacities(&capacity());
+    for hour in 0..3 {
+        let recording = Recording::new(&source);
+        // SAFETY: Isolated unit test fixture owns both captures and mock memories.
+        unsafe {
+            fast.capture_original(&recording, 0, 0x1000, hour, hour == 0, &changes);
+            reference.capture_original(&source, 0, 0x1000, hour, true, &changes);
+        }
+        assert_eq!(fast.tables(), reference.tables(), "hour {hour}");
+        assert_eq!(fast.country_state(), reference.country_state(), "hour {hour}");
+        assert_eq!(fast.outcomes(), reference.outcomes(), "hour {hour}");
+        assert_eq!(fast.model_failures(), reference.model_failures(), "hour {hour}");
+        if hour == 2 {
+            assert!(fast.fast_clean.is_some());
+            assert_eq!(recording.template(A), 0);
+            assert_eq!(recording.shared(), 0);
+        }
+    }
+    source.bytes[A + native::FORMATION_DIVISION_COUNT..][..4]
+        .copy_from_slice(&9_i32.to_le_bytes());
+    drop(changes.templates.notify(A, site("rebuild_template_caches")));
+    let recording = Recording::new(&source);
+    // SAFETY: Isolated unit test fixture owns both captures and mock memories.
+    unsafe {
+        fast.capture_original(&recording, 0, 0x1000, 3, false, &changes);
+        reference.capture_original(&source, 0, 0x1000, 3, true, &changes);
+    }
+    assert!(fast.fast_clean.is_none());
+    assert!(recording.template(A) > 0);
+    assert_eq!(fast.tables(), reference.tables());
+    assert_eq!(fast.country_state(), reference.country_state());
+}

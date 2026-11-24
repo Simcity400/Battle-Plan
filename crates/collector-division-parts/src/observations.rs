@@ -1,14 +1,5 @@
 use crate::army_stat_changes::Changes;
 use collector_observers::unit_history_changes;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-
-static QUIET: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-static REFUSED: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-
-pub(crate) fn quiet(kind: usize) {
-    QUIET[kind].fetch_add(1, Relaxed);
-}
-
 
 #[derive(Default)]
 pub struct Taken {
@@ -38,22 +29,27 @@ impl Taken {
         self.touched.clear();
     }
 
+    #[inline]
     pub fn epoch(&self) -> Option<u64> {
         self.epoch
     }
 
+    #[inline]
     pub fn touched_receivers(&self) -> &[usize] {
         &self.touched
     }
 
+    #[inline]
     pub fn touched_len(&self) -> usize {
         self.touched.len()
     }
 
+    #[inline]
     pub fn touched(&self, receiver: usize) -> bool {
-        self.touched.binary_search(&receiver).is_ok()
+        !self.touched.is_empty() && self.touched.binary_search(&receiver).is_ok()
     }
 
+    #[inline]
     pub fn quiet(&self, receiver: usize, epoch: u64) -> bool {
         self.epoch == Some(epoch) && !self.touched(receiver)
     }
@@ -86,17 +82,6 @@ impl HourObservations {
         self.history.take(|visit| unit_history_changes::take(visit));
         self.edits
             .take(|visit| unit_history_changes::take_edits(visit));
-        for (refused, taken) in REFUSED.iter().zip([
-            &self.armies,
-            &self.experience,
-            &self.progression,
-            &self.history,
-            &self.edits,
-        ]) {
-            if taken.epoch.is_none() {
-                refused.fetch_add(1, Relaxed);
-            }
-        }
     }
 
     pub fn is_taken(&self) -> bool {

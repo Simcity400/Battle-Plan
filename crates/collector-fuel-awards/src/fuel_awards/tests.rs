@@ -1191,3 +1191,98 @@ fn a_root_from_before_an_hourly_boundary_is_never_taken() {
     pending.stamp.0 = pending.stamp.0.wrapping_add(1);
     assert_eq!(held(&pending), None);
 }
+
+#[test]
+fn partial_drain_reclaims_only_consumed_root_slots_under_out_of_order_reservation() {
+    let log = Log::new(4);
+    let spill = Spill::new();
+    let buffer = Buffer::new(4, 32, Default::default()).unwrap();
+    assert_eq!(buffer.roots.len(), 4);
+    let memory = Memory(Vec::new());
+    let mapping = [(0_u64, 1_usize, 101_i64), (1, 0, 202), (2, 2, 303), (3, 3, 404)];
+    log.cursor.store(4, Ordering::SeqCst);
+    buffer.cursor.store(4, Ordering::Release);
+    for (entry_index, root_pos, amount) in mapping {
+        buffer.roots[root_pos]
+            .owner
+            .store(entry_index + 1, Ordering::Release);
+        // SAFETY: Test owns this local `Buffer` exclusively.
+        unsafe {
+            *buffer.roots[root_pos].data.get() = RootData {
+                amount,
+                ..Default::default()
+            };
+            *buffer.entries[entry_index as usize].entry.get() = CompactEntry {
+                root: entry_index + 10,
+                payload: CompactPayload::Root {
+                    country: (entry_index + 1) as u32,
+                    index: root_pos as u32,
+                },
+            };
+            *buffer.entries[entry_index as usize].name_required.get() = 0;
+        }
+        buffer.entries[entry_index as usize]
+            .published
+            .store(entry_index + 1, Ordering::Release);
+    }
+
+    let mut one = [Entry::default(); 1];
+    let mut names = [0_u8; 32];
+    let (drained, _, _) = handover_buffers(
+        &log,
+        &spill,
+        &buffer,
+        None,
+        engine_native_memory::walk::Buffer::Exact(&mut one),
+        engine_native_memory::walk::Buffer::Exact(&mut names),
+        None,
+    )
+    .unwrap();
+    assert_eq!((drained.copied, drained.pending), (1, 4));
+    assert_eq!(one[0].amount, 101);
+    assert_eq!(buffer.roots[1].owner.load(Ordering::Acquire), 0);
+    assert_eq!(buffer.roots[0].owner.load(Ordering::Acquire), 2);
+
+    assert!(append_buffer(
+        &log,
+        &spill,
+        &buffer,
+        Entry {
+            root: 14,
+            country: 5,
+            amount: 505,
+            ..Default::default()
+        },
+        None,
+        &memory,
+    ));
+    assert_eq!(buffer.roots[1].owner.load(Ordering::Acquire), 5);
+    assert_eq!(buffer.roots[0].owner.load(Ordering::Acquire), 2);
+
+    let mut compact_out = [CompactEntry::default(); 4];
+    let mut compact_roots = Vec::new();
+    let (drained, _, _) = handover_compact(
+        &log,
+        &spill,
+        &buffer,
+        None,
+        engine_native_memory::walk::Buffer::Exact(&mut compact_out),
+        &mut compact_roots,
+        engine_native_memory::walk::Buffer::Exact(&mut names),
+        None,
+    )
+    .unwrap();
+    assert_eq!((drained.copied, drained.pending), (4, 4));
+    let amounts: Vec<i64> = compact_out
+        .iter()
+        .map(|entry| match entry.payload {
+            CompactPayload::Root { index, .. } => compact_roots[index as usize].amount,
+            other => panic!("expected root payload, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(amounts, [202, 303, 404, 505]);
+    assert!(buffer
+        .roots
+        .iter()
+        .all(|slot| slot.owner.load(Ordering::Acquire) == 0));
+}

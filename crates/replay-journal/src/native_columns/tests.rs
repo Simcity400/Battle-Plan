@@ -483,3 +483,93 @@ fn an_hour_written_again_after_a_refusal_writes_what_it_would_have() {
         }
     }
 }
+
+#[test]
+fn paired_and_aligned_sparse_staging_matches_row_staging() {
+    let mut ships = Both::<ShipRow>::new();
+    let h1 = [
+        ship(7, 100_000, Recorded::NotRecorded, Some(b"Ark".as_slice())),
+        ship(8, 0, Some(4).into(), None),
+        ship(10, 50, Some(9).into(), Some(b"Hood".as_slice())),
+    ];
+    ships.hour(|| snapshot(&h1)).unwrap();
+
+    let h2 = [
+        ship(7, 100_000, Recorded::NotRecorded, Some(b"Ark".as_slice())),
+        ship(8, 77, Some(4).into(), None),
+        ship(10, 50, Recorded::NotRecorded, Some(b"Hood".as_slice())),
+    ];
+    ships
+        .hour(|| TableInput::Aligned {
+            rows: &h2,
+            previous: &h1,
+            read: true,
+            sample: READ,
+        })
+        .unwrap();
+    ships.columns.holds(&h2);
+
+    assert!(
+        ships
+            .hour(|| TableInput::Aligned {
+                rows: &h2,
+                previous: &h2,
+                read: true,
+                sample: READ,
+            })
+            .is_none()
+    );
+
+    let h3 = [
+        ship(7, 100_000, Some(12).into(), Some(b"Ark Royal".as_slice())),
+        ship(8, 77, Some(4).into(), None),
+        ship(11, 9, Recorded::NotRecorded, Some(b"New".as_slice())),
+    ];
+    let pairs = [Pair::new(0u32, Some(0u32)), Pair::new(2u32, None)];
+    let removed = [RowCodec::key(&h2[2])];
+    ships
+        .hour(|| TableInput::Paired {
+            rows: &h3,
+            previous: &h2,
+            pairs: &pairs,
+            removed: &removed,
+            uniform_optional_i32: None,
+            read: true,
+            sample: READ,
+        })
+        .unwrap();
+    ships.columns.holds(&h3);
+
+    let mut histories = Both::<SharedDivisionHistoryRow>::new();
+    let row = |division: u64, amount: i32, name: &[u8], provinces: &[u32]| {
+        Arc::new(DivisionHistoryRow {
+            division,
+            amount,
+            name: name.to_vec(),
+            reason: b"order".to_vec(),
+            provinces: provinces.to_vec(),
+            medal_token: Some(-2),
+            ..Default::default()
+        })
+    };
+    let a = [row(1, 1, b"First", &[3, 1]), row(2, 2, b"Second", &[])];
+    histories.hour(|| snapshot(&a)).unwrap();
+    let b = [
+        row(1, 5, b"First", &[3, 1, 9]),
+        a[1].clone(),
+        row(3, 7, b"Third", &[4]),
+    ];
+    let pairs = [Pair::new(0u32, Some(0u32)), Pair::new(2u32, None)];
+    histories
+        .hour(|| TableInput::Paired {
+            rows: &b,
+            previous: &a,
+            pairs: &pairs,
+            removed: &[],
+            uniform_optional_i32: None,
+            read: true,
+            sample: READ,
+        })
+        .unwrap();
+    histories.columns.holds(&b);
+}

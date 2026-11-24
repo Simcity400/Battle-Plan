@@ -360,7 +360,7 @@ impl Domain {
         Self {
             sharing: WatchRegistry::retaining(),
             accumulator: WatchRegistry::retaining(),
-            names: WatchRegistry::new(),
+            names: WatchRegistry::new().with_synchronous(),
             sets: [const { DirtySet::new() }; SETS],
             calls: [const { AtomicU64::new(0) }; SITES],
             forwarded: [const { AtomicU64::new(0) }; Forward::ALL.len()],
@@ -866,6 +866,7 @@ fn raid_forward(site: usize) -> Option<Forward> {
     }
 }
 
+#[inline(always)]
 pub fn forwarded_raid(site: usize, first: usize, second: usize) -> Marks<'static> {
     match raid_forward(site) {
         Some(forward) => forwarded(forward, first, second),

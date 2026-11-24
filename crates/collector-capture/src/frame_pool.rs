@@ -9,31 +9,43 @@ use std::{
     ptr,
     sync::{
         Mutex, PoisonError,
-        atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+        atomic::{
+            AtomicBool, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+        },
     },
 };
 
 pub const STEADY: usize = BUFFERS;
 
-pub const AHEAD: usize = 2;
+pub const AHEAD: usize = 1;
+
+pub const MAX_LIVE_FRAMES: usize = 5;
+
+pub const MAX_LIVE_BYTES: u64 = 384 * 1024 * 1024;
+
+const SURPLUS_CAP: usize = STEADY + 2;
+
+const SURPLUS_STREAK: u32 = 48;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HourFrame {
     Free(usize),
     Grow,
-    Drop,
+    DropStalled,
+    DropLimit,
 }
 
-pub(crate) fn hour_frame(free: Option<usize>, spool_stalled: bool) -> HourFrame {
+pub(crate) fn hour_frame(free: Option<usize>, spool_stalled: bool, at_limit: bool) -> HourFrame {
     match free {
         Some(index) => HourFrame::Free(index),
-        None if spool_stalled => HourFrame::Drop,
+        None if spool_stalled => HourFrame::DropStalled,
+        None if at_limit => HourFrame::DropLimit,
         None => HourFrame::Grow,
     }
 }
 
-pub(crate) fn builds_ahead(free: usize, spool_stalled: bool) -> bool {
-    free < AHEAD && !spool_stalled
+pub(crate) fn builds_ahead(free: usize, paused: bool) -> bool {
+    free < AHEAD && !paused
 }
 
 const SEGMENTS: usize = 48;
@@ -136,6 +148,8 @@ pub struct FramePool {
     segments: [AtomicPtr<Slot>; SEGMENTS],
     made: AtomicUsize,
     live: AtomicUsize,
+    claims: AtomicUsize,
+    live_bytes: AtomicU64,
     free: AtomicUsize,
     returns: AtomicU64,
     grown: AtomicU64,
@@ -144,10 +158,22 @@ pub struct FramePool {
     built_ahead: AtomicU64,
     ahead_taken: AtomicU64,
     freed: AtomicU64,
+    surplus_streak: AtomicU32,
     spool_stalled: AtomicBool,
     dropped_stalled: AtomicU64,
+    dropped_limit: AtomicU64,
     decode: Fifo,
     ready: Fifo,
+}
+
+pub(crate) struct GrowthClaim<'a> {
+    pool: &'a FramePool,
+}
+
+impl Drop for GrowthClaim<'_> {
+    fn drop(&mut self) {
+        self.pool.claims.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 fn locate(index: usize) -> (usize, usize) {
@@ -171,6 +197,7 @@ pub struct Gauge {
     pub ahead_taken: u64,
     pub freed: u64,
     pub dropped_stalled: u64,
+    pub dropped_limit: u64,
 }
 
 impl FramePool {
@@ -179,6 +206,8 @@ impl FramePool {
             segments: [const { AtomicPtr::new(ptr::null_mut()) }; SEGMENTS],
             made: AtomicUsize::new(0),
             live: AtomicUsize::new(0),
+            claims: AtomicUsize::new(0),
+            live_bytes: AtomicU64::new(0),
             free: AtomicUsize::new(0),
             returns: AtomicU64::new(0),
             grown: AtomicU64::new(0),
@@ -187,8 +216,10 @@ impl FramePool {
             built_ahead: AtomicU64::new(0),
             ahead_taken: AtomicU64::new(0),
             freed: AtomicU64::new(0),
+            surplus_streak: AtomicU32::new(0),
             spool_stalled: AtomicBool::new(false),
             dropped_stalled: AtomicU64::new(0),
+            dropped_limit: AtomicU64::new(0),
             decode: Fifo::new(DECODE),
             ready: Fifo::new(READY),
         }
@@ -226,6 +257,55 @@ impl FramePool {
         self.live.load(Ordering::Acquire)
     }
 
+    pub fn live_bytes(&self) -> u64 {
+        self.live_bytes.load(Ordering::Acquire)
+    }
+
+    pub fn at_limit(&self) -> bool {
+        self.at_limit_with(MAX_LIVE_FRAMES, MAX_LIVE_BYTES)
+    }
+
+    pub(crate) fn at_limit_with(&self, max_frames: usize, max_bytes: u64) -> bool {
+        let claims = self.claims.load(Ordering::Acquire);
+        if claims >= max_frames {
+            return true;
+        }
+        claims >= STEADY && self.live_bytes() >= max_bytes
+    }
+
+    pub(crate) fn try_claim_growth(
+        &self,
+        max_frames: usize,
+        max_bytes: u64,
+    ) -> Option<GrowthClaim<'_>> {
+        self.claims
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |claims| {
+                let bytes_ok = claims < STEADY || self.live_bytes() < max_bytes;
+                (claims < max_frames && bytes_ok).then(|| claims + 1)
+            })
+            .ok()?;
+        Some(GrowthClaim { pool: self })
+    }
+
+    pub(crate) fn adjust_live_bytes(&self, before: u64, after: u64) {
+        if after != before {
+            self.live_bytes
+                .fetch_add(after.wrapping_sub(before), Ordering::Release);
+        }
+    }
+
+    pub(crate) fn set_slot_bytes(&self, index: usize, bytes: u64) {
+        self.transfer_slot_bytes(index, bytes, 0);
+    }
+
+    pub(crate) fn transfer_slot_bytes(&self, index: usize, slot_after: u64, other_delta: u64) {
+        let previous = self.slot(index).bytes.swap(slot_after, Ordering::Relaxed);
+        let delta = slot_after.wrapping_sub(previous).wrapping_add(other_delta);
+        if delta != 0 {
+            self.live_bytes.fetch_add(delta, Ordering::Release);
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.free.load(Ordering::Acquire)
     }
@@ -234,11 +314,15 @@ impl FramePool {
     /// Claim a slot only as this frame pool's admitted capture or sizing owner. Finish or return
     /// the installed slot before any other owner can use it.
     pub unsafe fn pop(&self) -> Option<usize> {
-        self.free
+        let previous = self
+            .free
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |free| {
                 free.checked_sub(1)
             })
             .ok()?;
+        if previous <= AHEAD {
+            self.surplus_streak.store(0, Ordering::Relaxed);
+        }
         loop {
             let newest = (0..self.made())
                 .filter(|&index| self.slot(index).state.load(Ordering::Acquire) == FREE)
@@ -346,10 +430,39 @@ impl FramePool {
     }
 
     pub(crate) fn install(&self, index: usize, frame: Box<Captured>) {
+        self.claims.fetch_add(1, Ordering::AcqRel);
+        self.install_slot(index, frame, 0);
+    }
+
+    pub(crate) fn install_claimed(
+        &self,
+        index: usize,
+        frame: Box<Captured>,
+        claim: GrowthClaim<'_>,
+    ) {
+        self.install_claimed_with_credit(index, frame, claim, 0);
+    }
+
+    pub(crate) fn install_claimed_with_credit(
+        &self,
+        index: usize,
+        frame: Box<Captured>,
+        claim: GrowthClaim<'_>,
+        credited_bytes: u64,
+    ) {
+        std::mem::forget(claim);
+        self.install_slot(index, frame, credited_bytes);
+    }
+
+    fn install_slot(&self, index: usize, frame: Box<Captured>, credited_bytes: u64) {
         let slot = self.slot(index);
         debug_assert!(slot.frame.load(Ordering::Relaxed).is_null());
-        slot.bytes
-            .store(frame.allocated_bytes() as u64, Ordering::Relaxed);
+        let bytes = frame.allocated_bytes() as u64;
+        slot.bytes.store(bytes, Ordering::Relaxed);
+        let delta = bytes.wrapping_sub(credited_bytes);
+        if delta != 0 {
+            self.live_bytes.fetch_add(delta, Ordering::Release);
+        }
         slot.generation.fetch_add(1, Ordering::Relaxed);
         slot.frame.store(Box::into_raw(frame), Ordering::Release);
         self.live.fetch_add(1, Ordering::AcqRel);
@@ -369,6 +482,14 @@ impl FramePool {
 
     pub fn stalled_drops(&self) -> u64 {
         self.dropped_stalled.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn drop_limit(&self) {
+        self.dropped_limit.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn limit_drops(&self) -> u64 {
+        self.dropped_limit.load(Ordering::Relaxed)
     }
 
     pub fn grew(&self, ns: u64) {
@@ -395,7 +516,26 @@ impl FramePool {
     }
 
     pub fn surplus(&self) -> bool {
-        self.live() > STEADY && self.len() > AHEAD
+        self.surplus_after(SURPLUS_STREAK)
+    }
+
+    fn surplus_after(&self, threshold: u32) -> bool {
+        let live = self.live();
+        if live <= STEADY || self.len() < AHEAD {
+            self.surplus_streak.store(0, Ordering::Relaxed);
+            return false;
+        }
+        if self.len() >= STEADY || live > SURPLUS_CAP || self.live_bytes() > MAX_LIVE_BYTES {
+            self.surplus_streak.store(0, Ordering::Relaxed);
+            return true;
+        }
+        let streak = self.surplus_streak.fetch_add(1, Ordering::Relaxed) + 1;
+        if streak >= threshold {
+            self.surplus_streak.store(0, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
     }
 
     /// # Safety
@@ -405,9 +545,11 @@ impl FramePool {
         let slot = self.slot(index);
         let frame = slot.frame.swap(ptr::null_mut(), Ordering::AcqRel);
         assert!(!frame.is_null(), "a vacated slot held a frame");
-        slot.bytes.store(0, Ordering::Relaxed);
+        let previous = slot.bytes.swap(0, Ordering::Relaxed);
+        self.live_bytes.fetch_sub(previous, Ordering::Release);
         slot.ahead.store(false, Ordering::Relaxed);
         self.live.fetch_sub(1, Ordering::AcqRel);
+        self.claims.fetch_sub(1, Ordering::AcqRel);
         self.freed.fetch_add(1, Ordering::Relaxed);
         slot.state.store(VACANT, Ordering::Release);
         // SAFETY: the frame was installed from a Box and its holder gives it up here.
@@ -425,6 +567,7 @@ impl FramePool {
             ahead_taken: self.ahead_taken.load(Ordering::Relaxed),
             freed: self.freed.load(Ordering::Relaxed),
             dropped_stalled: self.stalled_drops(),
+            dropped_limit: self.limit_drops(),
             ..Gauge::default()
         };
         for slot in self.slots() {

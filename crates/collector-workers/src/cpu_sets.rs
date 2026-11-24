@@ -7,11 +7,17 @@ use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadSelectedC
 
 const GROUP_PROCESSORS: usize = 64;
 
+const BACKGROUND_CORES_MIN_PHYSICAL: usize = 6;
+const BACKGROUND_CORES_COUNT: usize = 1;
+
 struct Cores {
     sets: [(u8, u8, u32); GROUP_PROCESSORS],
     len: usize,
+    physical_cores: usize,
     others: [[u32; GROUP_PROCESSORS]; GROUP_PROCESSORS],
     others_len: [usize; GROUP_PROCESSORS],
+    background: [[u32; GROUP_PROCESSORS]; GROUP_PROCESSORS],
+    background_len: [usize; GROUP_PROCESSORS],
 }
 impl Cores {
     fn read() -> Option<Self> {
@@ -58,21 +64,53 @@ impl Cores {
         let mut cores = Self {
             sets: [(0, 0, 0); GROUP_PROCESSORS],
             len: 0,
+            physical_cores: 0,
             others: [[0; GROUP_PROCESSORS]; GROUP_PROCESSORS],
             others_len: [0; GROUP_PROCESSORS],
+            background: [[0; GROUP_PROCESSORS]; GROUP_PROCESSORS],
+            background_len: [0; GROUP_PROCESSORS],
         };
+        let mut seen = [false; GROUP_PROCESSORS];
+        let mut unique = [0usize; GROUP_PROCESSORS];
         let placed = entries
             .iter()
             .filter(|&&(_, core, _)| usize::from(core) < GROUP_PROCESSORS);
         for &entry in placed.take(GROUP_PROCESSORS) {
+            let core = usize::from(entry.1);
+            if !seen[core] {
+                seen[core] = true;
+                unique[cores.physical_cores] = core;
+                cores.physical_cores += 1;
+            }
             cores.sets[cores.len] = entry;
             cores.len += 1;
         }
+        let unique = &mut unique[..cores.physical_cores];
+        unique.sort_unstable_by(|a, b| b.cmp(a));
         for core in 0..GROUP_PROCESSORS {
+            let mut chosen = [false; GROUP_PROCESSORS];
+            let mut picked = 0;
+            if cores.physical_cores >= BACKGROUND_CORES_MIN_PHYSICAL {
+                let limit = BACKGROUND_CORES_COUNT;
+                for &candidate in unique.iter() {
+                    if candidate != core {
+                        chosen[candidate] = true;
+                        picked += 1;
+                        if picked == limit {
+                            break;
+                        }
+                    }
+                }
+            }
             for &(_, other, id) in &cores.sets[..cores.len] {
-                if usize::from(other) != core {
+                let other = usize::from(other);
+                if other != core {
                     cores.others[core][cores.others_len[core]] = id;
                     cores.others_len[core] += 1;
+                    if picked == 0 || chosen[other] {
+                        cores.background[core][cores.background_len[core]] = id;
+                        cores.background_len[core] += 1;
+                    }
                 }
             }
         }
@@ -86,6 +124,14 @@ impl Cores {
         let core = usize::from(core);
         Some(&self.others[core][..self.others_len[core]]).filter(|ids| !ids.is_empty())
     }
+
+    fn background_away_from(&self, processor: u32) -> Option<&[u32]> {
+        let &(_, core, _) = self.sets[..self.len]
+            .iter()
+            .find(|&&(logical, _, _)| u32::from(logical) == processor)?;
+        let core = usize::from(core);
+        Some(&self.background[core][..self.background_len[core]]).filter(|ids| !ids.is_empty())
+    }
 }
 
 static CORES: OnceLock<Option<Cores>> = OnceLock::new();
@@ -93,6 +139,10 @@ static AWAY_FAILURES: AtomicU64 = AtomicU64::new(0);
 
 fn away_sets(cores: Option<&Cores>, processor: Option<u32>) -> Option<&[u32]> {
     cores?.away_from(processor?)
+}
+
+fn background_sets(cores: Option<&Cores>, processor: Option<u32>) -> Option<&[u32]> {
+    cores?.background_away_from(processor?)
 }
 
 fn cores() -> Option<&'static Cores> {
@@ -106,6 +156,11 @@ pub fn prepare() {
 pub(crate) fn away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
     let processor = processor?;
     away_sets(cores(), Some(processor))
+}
+
+pub(crate) fn background_away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
+    let processor = processor?;
+    background_sets(cores(), Some(processor))
 }
 
 /// # Safety
@@ -169,6 +224,7 @@ impl AwayFromGame {
 #[test]
 fn a_thread_keeps_off_the_whole_physical_core_of_the_game_processor() {
     let cores = Cores::from_sets(&[(0, 0, 256), (1, 0, 257), (2, 1, 258), (3, 1, 259)]).unwrap();
+    assert_eq!(cores.physical_cores, 2);
     assert_eq!(away_sets(Some(&cores), Some(0)), Some(&[258, 259][..]));
     assert_eq!(away_sets(Some(&cores), Some(1)), Some(&[258, 259][..]));
     assert_eq!(away_sets(Some(&cores), Some(3)), Some(&[256, 257][..]));
@@ -176,6 +232,59 @@ fn a_thread_keeps_off_the_whole_physical_core_of_the_game_processor() {
     assert_eq!(away_sets(Some(&cores), None), None);
     assert_eq!(away_sets(None, Some(0)), None);
     let single = Cores::from_sets(&[(0, 0, 256), (1, 0, 257)]).unwrap();
+    assert_eq!(single.physical_cores, 1);
     assert_eq!(away_sets(Some(&single), Some(1)), None);
     assert!(Cores::from_sets(&[]).is_none());
+    let six = Cores::from_sets(&[
+        (0, 0, 256),
+        (1, 0, 257),
+        (2, 1, 258),
+        (3, 1, 259),
+        (4, 2, 260),
+        (5, 2, 261),
+        (6, 3, 262),
+        (7, 3, 263),
+        (8, 4, 264),
+        (9, 4, 265),
+        (10, 5, 266),
+        (11, 5, 267),
+    ])
+    .unwrap();
+    assert_eq!(six.physical_cores, 6);
+    assert_eq!(
+        background_sets(Some(&six), Some(0)),
+        Some(&[266, 267][..])
+    );
+    assert_eq!(
+        background_sets(Some(&six), Some(10)),
+        Some(&[264, 265][..])
+    );
+    assert_eq!(
+        background_sets(Some(&cores), Some(0)),
+        Some(&[258, 259][..])
+    );
+    let eight = Cores::from_sets(&[
+        (0, 0, 256),
+        (1, 0, 257),
+        (2, 1, 258),
+        (3, 1, 259),
+        (4, 2, 260),
+        (5, 2, 261),
+        (6, 3, 262),
+        (7, 3, 263),
+        (8, 4, 264),
+        (9, 4, 265),
+        (10, 5, 266),
+        (11, 5, 267),
+        (12, 6, 268),
+        (13, 6, 269),
+        (14, 7, 270),
+        (15, 7, 271),
+    ])
+    .unwrap();
+    assert_eq!(eight.physical_cores, 8);
+    assert_eq!(
+        background_sets(Some(&eight), Some(0)),
+        Some(&[270, 271][..])
+    );
 }

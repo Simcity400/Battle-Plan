@@ -33,6 +33,8 @@ impl Capacities {
 
 pub struct Captured {
     rows: CaptureRows<native::Row>,
+    daily_released: bool,
+    last_capacity: Capacities,
 }
 
 impl Captured {
@@ -46,6 +48,8 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),
+            daily_released: false,
+            last_capacity: *capacity,
         }
     }
     pub fn reset(&mut self) {
@@ -54,8 +58,18 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
     }
+    pub fn release_daily(&mut self) {
+        self.last_capacity.rows = self.last_capacity.rows.max(self.rows.rows.len());
+        self.rows.release();
+        self.daily_released = true;
+    }
     pub fn grow(&mut self, capacity: &mut Capacities) {
-        self.rows.grow(&mut capacity.rows);
+        if self.daily_released {
+            self.rows.record_demand(&mut capacity.rows);
+        } else {
+            self.rows.grow(&mut capacity.rows);
+        }
+        self.last_capacity = *capacity;
     }
     pub fn capture(
         &mut self,
@@ -71,6 +85,10 @@ impl Captured {
                 reason: SKIPPED_REASON,
             };
             return [0];
+        }
+        if self.daily_released {
+            self.daily_released = false;
+            crate::table_capture::grow_vec(&mut self.rows.rows, self.last_capacity.rows);
         }
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();

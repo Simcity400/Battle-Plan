@@ -13,38 +13,98 @@ pub use preparation::{AttackPart, PreparationPart, PreparedDivision};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Scalars {
-    panel: [Option<i64>; 23],
-    suppression: Option<i64>,
+    panel: [i64; 23],
+    panel_mask: u32,
+    flags: u8,
+    suppression: i64,
     river: [i64; 2],
     fort: [i64; 2],
     snow: i64,
     night: i64,
-    movement: Option<[i64; 3]>,
+    movement: [i64; 3],
     fuel_rate: i64,
     air_defense: i64,
 }
 
 impl Scalars {
     fn of(stats: &stats::AttackStats) -> Self {
+        let mut panel = [0_i64; 23];
+        let mut panel_mask = 0_u32;
+        for (index, slot) in stats.panel.iter().enumerate() {
+            if let Some(value) = slot {
+                panel[index] = *value;
+                panel_mask |= 1_u32 << index;
+            }
+        }
+        let mut flags = 0_u8;
+        let suppression = match stats.suppression {
+            Some(value) => {
+                flags |= 1;
+                value
+            }
+            None => 0,
+        };
+        let movement = match stats.movement {
+            Some(value) => {
+                flags |= 2;
+                value
+            }
+            None => [0; 3],
+        };
         Self {
-            panel: stats.panel,
-            suppression: stats.suppression,
+            panel,
+            panel_mask,
+            flags,
+            suppression,
             river: stats.river,
             fort: stats.fort,
             snow: stats.snow,
             night: stats.night,
-            movement: stats.movement,
+            movement,
             fuel_rate: stats.fuel_rate,
             air_defense: stats.air_defense,
         }
     }
+
+    fn panel_at(&self, index: usize) -> Option<i64> {
+        ((self.panel_mask & (1_u32 << index)) != 0).then_some(self.panel[index])
+    }
+
+    fn suppression(&self) -> Option<i64> {
+        ((self.flags & 1) != 0).then_some(self.suppression)
+    }
+
+    fn movement(&self) -> Option<[i64; 3]> {
+        ((self.flags & 2) != 0).then_some(self.movement)
+    }
+}
+
+static NEXT_STAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_stamp() -> u64 {
+    let stamp = NEXT_STAMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if stamp == 0 || stamp > i64::MAX as u64 {
+        0
+    } else {
+        stamp
+    }
+}
+
+const COMPACT_SLABS: usize = 16;
+
+#[derive(Default)]
+struct TerrainSlab {
+    terrain: Vec<i64>,
+    movement: Vec<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Row {
     division: u64,
+    slab: u16,
     start: usize,
     len: usize,
+    stamp: u64,
     scalars: Option<Scalars>,
     experience: Option<i64>,
     officer_experience: Option<i64>,
@@ -57,10 +117,24 @@ struct Held {
     division: u64,
     army: usize,
     stat_block: usize,
+    slab: u16,
     start: usize,
     len: usize,
+    stamp: u64,
     scalars: Scalars,
     maxima: Option<DivisionMaxima>,
+}
+
+static NEXT_NAME_STAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_name_stamp() -> u64 {
+    NEXT_NAME_STAMP
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |next| next.checked_add(1),
+        )
+        .unwrap_or(0)
 }
 
 #[derive(Clone, Copy)]
@@ -69,6 +143,7 @@ pub struct HeldName {
     pub member: usize,
     pub span: [u8; engine_native::cname_group_member::INPUT_SPAN],
     text: (usize, usize),
+    pub stamp: u64,
 }
 
 #[derive(Default)]
@@ -149,8 +224,7 @@ pub struct ArmyStatStore {
     held: Vec<Held>,
     divisions: Vec<u64>,
     locator: Locator,
-    terrain: Vec<i64>,
-    movement: Vec<i64>,
+    slabs: Vec<std::sync::Arc<TerrainSlab>>,
     next: Vec<Held>,
     next_terrain: Vec<i64>,
     next_movement: Vec<i64>,
@@ -244,8 +318,7 @@ impl ArmyStatStore {
             held: Vec::new(),
             divisions: Vec::new(),
             locator: Locator::default(),
-            terrain: Vec::new(),
-            movement: Vec::new(),
+            slabs: Vec::new(),
             next: Vec::new(),
             next_terrain: Vec::new(),
             next_movement: Vec::new(),
@@ -275,8 +348,7 @@ impl ArmyStatStore {
         self.locator.clear();
         self.name_locator.clear();
         self.held.clear();
-        self.terrain.clear();
-        self.movement.clear();
+        self.slabs.clear();
         self.next.clear();
         self.next_terrain.clear();
         self.next_movement.clear();
@@ -287,6 +359,11 @@ impl ArmyStatStore {
     }
 
     pub fn allocated_bytes(&self) -> usize {
+        let slab_bytes: usize = self
+            .slabs
+            .iter()
+            .map(|slab| (slab.terrain.capacity() + slab.movement.capacity()) * 8)
+            .sum();
         self.experience.allocated_bytes()
             + self.supply.allocated_bytes()
             + self.progression.allocated_bytes()
@@ -298,8 +375,9 @@ impl ArmyStatStore {
             + (self.held.capacity() + self.next.capacity()) * std::mem::size_of::<Held>()
             + (self.divisions.capacity() + self.name_divisions.capacity()) * 8
             + (self.locator.order.capacity() + self.name_locator.order.capacity()) * 16
-            + (self.terrain.capacity() + self.next_terrain.capacity()) * 8
-            + (self.movement.capacity() + self.next_movement.capacity()) * 8
+            + self.slabs.capacity() * std::mem::size_of::<std::sync::Arc<TerrainSlab>>()
+            + slab_bytes
+            + (self.next_terrain.capacity() + self.next_movement.capacity()) * 8
             + (self.names.capacity() + self.next_names.capacity()) * std::mem::size_of::<HeldName>()
             + self.name_bytes.capacity()
             + self.next_name_bytes.capacity()
@@ -343,6 +421,7 @@ impl ArmyStatStore {
         member: usize,
         span: &[u8; engine_native::cname_group_member::INPUT_SPAN],
         text: &[u8],
+        stamp: u64,
     ) {
         let start = self.next_name_bytes.len();
         self.next_name_bytes.extend_from_slice(text);
@@ -351,6 +430,7 @@ impl ArmyStatStore {
             member,
             span: *span,
             text: (start, text.len()),
+            stamp: if stamp != 0 { stamp } else { next_name_stamp() },
         });
     }
 
@@ -358,18 +438,70 @@ impl ArmyStatStore {
         self.locator.locate(&self.divisions, index, division)
     }
 
+    #[cfg(test)]
     fn terrain(&self, held: &Held) -> &[i64] {
-        &self.terrain[held.start..held.start + held.len]
+        &self.slabs[usize::from(held.slab - 1)].terrain[held.start..held.start + held.len]
     }
 
-    fn movement(&self, held: &Held) -> &[i64] {
-        &self.movement[held.start..held.start + held.len]
+    fn flush_next_slab(&mut self) {
+        if self.next_terrain.is_empty() && self.next_movement.is_empty() {
+            return;
+        }
+        let slab_id = (self.slabs.len() + 1) as u16;
+        let terrain = std::mem::take(&mut self.next_terrain);
+        let movement = std::mem::take(&mut self.next_movement);
+        self.slabs
+            .push(std::sync::Arc::new(TerrainSlab { terrain, movement }));
+        for held in &mut self.next {
+            if held.slab == 0 {
+                held.slab = slab_id;
+            }
+        }
+    }
+
+    fn compact_slabs(&mut self) {
+        let live_words: usize = self.held.iter().map(|held| held.len).sum();
+        if live_words == 0 {
+            self.slabs.clear();
+            return;
+        }
+        let stored_words: usize = self.slabs.iter().map(|slab| slab.terrain.len()).sum();
+        if self.slabs.len() < COMPACT_SLABS
+            && stored_words <= live_words.saturating_mul(2).saturating_add(8192)
+        {
+            return;
+        }
+        let mut terrain = Vec::new();
+        let mut movement = Vec::new();
+        let reserved = engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut terrain, live_words)?;
+            engine_allocation::reserve(&mut movement, live_words)
+        });
+        if reserved.is_err() {
+            if self.slabs.len() >= usize::from(u16::MAX - 1) {
+                self.forget();
+            }
+            return;
+        }
+        for held in &mut self.held {
+            let slab = &self.slabs[usize::from(held.slab - 1)];
+            let start = terrain.len();
+            let span = held.start..held.start + held.len;
+            terrain.extend_from_slice(&slab.terrain[span.clone()]);
+            if !slab.movement.is_empty() {
+                movement.extend_from_slice(&slab.movement[span]);
+            }
+            held.slab = 1;
+            held.start = start;
+        }
+        self.slabs.clear();
+        self.slabs
+            .push(std::sync::Arc::new(TerrainSlab { terrain, movement }));
     }
 
     pub fn hold(&mut self, epoch: Option<u64>) {
+        self.flush_next_slab();
         std::mem::swap(&mut self.held, &mut self.next);
-        std::mem::swap(&mut self.terrain, &mut self.next_terrain);
-        std::mem::swap(&mut self.movement, &mut self.next_movement);
         std::mem::swap(&mut self.names, &mut self.next_names);
         std::mem::swap(&mut self.name_bytes, &mut self.next_name_bytes);
         self.next.clear();
@@ -395,6 +527,7 @@ impl ArmyStatStore {
             .extend(self.names.iter().map(|held| held.division));
         self.locator.index(&self.divisions);
         self.name_locator.index(&self.name_divisions);
+        self.compact_slabs();
         self.epoch = epoch;
     }
 
@@ -429,6 +562,7 @@ pub struct Captured {
         Option<Result<std::sync::Arc<crate::division_history::HistorySnapshot>, &'static str>>,
     rows: Vec<Row>,
     order: Vec<(u64, u32)>,
+    slabs: Vec<std::sync::Arc<TerrainSlab>>,
     terrain: Vec<i64>,
     movement: Vec<i64>,
     scratch: Vec<i64>,
@@ -453,9 +587,34 @@ impl Captured {
     pub fn reset(&mut self) {
         self.rows.clear();
         self.order.clear();
+        self.slabs.clear();
         self.terrain.clear();
         self.movement.clear();
         self.witness.clear();
+    }
+
+    fn terrain_slice(&self, row: &Row) -> Option<&[i64]> {
+        let span = row.start..row.start.saturating_add(row.len);
+        if row.slab == 0 {
+            self.terrain.get(span)
+        } else {
+            self.slabs
+                .get(usize::from(row.slab - 1))?
+                .terrain
+                .get(span)
+        }
+    }
+
+    fn movement_slice(&self, row: &Row) -> Option<&[i64]> {
+        let span = row.start..row.start.saturating_add(row.len);
+        if row.slab == 0 {
+            self.movement.get(span)
+        } else {
+            self.slabs
+                .get(usize::from(row.slab - 1))?
+                .movement
+                .get(span)
+        }
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -468,6 +627,7 @@ impl Captured {
             + self.career.capacity() * std::mem::size_of::<Option<i32>>()
             + self.rows.capacity() * std::mem::size_of::<Row>()
             + self.order.capacity() * std::mem::size_of::<(u64, u32)>()
+            + self.slabs.capacity() * std::mem::size_of::<std::sync::Arc<TerrainSlab>>()
             + (self.terrain.capacity() + self.scratch.capacity()) * 8
             + (self.movement.capacity() + self.movement_scratch.capacity()) * 8
             + self.held_index.capacity() * 8
@@ -631,7 +791,7 @@ impl Captured {
                     .pointer
                     .checked_add(engine_native_land::unit_history::OFFICER);
                 let quiet = receiver.filter(|_| prepared.is_none_or(|p| !p.acquired[2])).and_then(
-                    |receiver| store.officer.quiet(seed, receiver, &observations.history, 2),
+                    |receiver| store.officer.quiet(seed, receiver, &observations.history),
                 );
                 let value = match quiet {
                     Some((at, _)) => store.officer.keep(
@@ -669,7 +829,7 @@ impl Captured {
             .then(|| {
                 store
                     .experience
-                    .quiet(seed, seed.pointer, &observations.experience, 0)
+                    .quiet(seed, seed.pointer, &observations.experience)
             })
             .flatten();
             let experience_certificate = (career_ready || experience_ready)
@@ -682,7 +842,7 @@ impl Captured {
             if career_ready {
                 let quiet = experience_certificate
                     .filter(|_| prepared.is_none_or(|p| !p.acquired[3]))
-                    .and_then(|_| store.career.quiet(seed, seed.pointer, &observations.history, 3));
+                    .and_then(|_| store.career.quiet(seed, seed.pointer, &observations.history));
                 let value = match quiet {
                     Some((at, _)) => store.career.keep(base, seed, at, false),
                     None => {
@@ -712,7 +872,7 @@ impl Captured {
                     .then(|| {
                         store
                             .progression
-                            .quiet(seed, seed.pointer, &observations.progression, 1)
+                            .quiet(seed, seed.pointer, &observations.progression)
                     })
                     .flatten();
                 let value = match quiet {
@@ -1041,27 +1201,19 @@ impl Captured {
                 && !witnessed(hour, id)
             {
                 counts.reused += 1;
-                let start = self.terrain.len();
-                self.terrain.extend_from_slice(store.terrain(&held));
-                self.movement.extend_from_slice(store.movement(&held));
                 self.rows.push(Row {
                     division: seed.division,
-                    start,
+                    slab: held.slab,
+                    start: held.start,
                     len: held.len,
+                    stamp: held.stamp,
                     scalars: Some(held.scalars),
                     experience,
                     officer_experience,
                     career_counter,
                     pending_template,
                 });
-                let next = store.next_terrain.len();
-                let span = held.start..held.start + held.len;
-                store
-                    .next_terrain
-                    .extend_from_slice(&store.terrain[span.clone()]);
-                store.next_movement.extend_from_slice(&store.movement[span]);
                 store.next.push(Held {
-                    start: next,
                     maxima: maxima(index),
                     ..held
                 });
@@ -1092,42 +1244,66 @@ impl Captured {
                     if fresh.panel.iter().any(Option::is_none) || fresh.suppression.is_none() {
                         counts.refused += 1;
                     }
-                    let start = self.terrain.len();
-                    self.terrain.extend_from_slice(&fresh.terrain);
-                    self.movement.extend_from_slice(&fresh.movement_terrain);
                     let scalars = Scalars::of(fresh);
-                    self.rows.push(Row {
-                        division: seed.division,
-                        start,
-                        len: fresh.terrain.len(),
-                        scalars: Some(scalars),
-                        experience,
-                        officer_experience,
-                        career_counter,
-                        pending_template,
-                    });
-                    if witnessed(hour, id) && !self.terrains.is_empty() {
-                        counts.witnessed += 1;
-                        self.witness
-                            .push((seed.division, witness(fresh, &self.terrains)));
-                    }
+                    let stamp = if store.is_some() && registered {
+                        next_stamp()
+                    } else {
+                        0
+                    };
                     if let Some(store) = store.as_deref_mut()
                         && registered
+                        && store.slabs.len() < usize::from(u16::MAX - 1)
                     {
-                        let next = store.next_terrain.len();
+                        let slab = (store.slabs.len() + 1) as u16;
+                        let start = store.next_terrain.len();
                         store.next_terrain.extend_from_slice(&fresh.terrain);
                         store
                             .next_movement
                             .extend_from_slice(&fresh.movement_terrain);
+                        self.rows.push(Row {
+                            division: seed.division,
+                            slab,
+                            start,
+                            len: fresh.terrain.len(),
+                            stamp,
+                            scalars: Some(scalars),
+                            experience,
+                            officer_experience,
+                            career_counter,
+                            pending_template,
+                        });
                         store.next.push(Held {
                             division: seed.division,
                             army: seed.pointer,
                             stat_block,
-                            start: next,
+                            slab,
+                            start,
                             len: fresh.terrain.len(),
+                            stamp,
                             scalars,
                             maxima: maxima(index),
                         });
+                    } else {
+                        let start = self.terrain.len();
+                        self.terrain.extend_from_slice(&fresh.terrain);
+                        self.movement.extend_from_slice(&fresh.movement_terrain);
+                        self.rows.push(Row {
+                            division: seed.division,
+                            slab: 0,
+                            start,
+                            len: fresh.terrain.len(),
+                            stamp: 0,
+                            scalars: Some(scalars),
+                            experience,
+                            officer_experience,
+                            career_counter,
+                            pending_template,
+                        });
+                    }
+                    if witnessed(hour, id) && !self.terrains.is_empty() {
+                        counts.witnessed += 1;
+                        self.witness
+                            .push((seed.division, witness(fresh, &self.terrains)));
                     }
                     if staged.is_none()
                         && let Some(Ok(fresh)) = acquired
@@ -1159,6 +1335,8 @@ impl Captured {
         self.witness.sort_unstable_by_key(|(division, _)| *division);
         let complete = matches!(outcome, Outcome::Rows { .. });
         if let Some(store) = store {
+            store.flush_next_slab();
+            self.slabs.extend(store.slabs.iter().cloned());
             if complete {
                 store.hold(self.epoch);
             } else {
@@ -1289,9 +1467,22 @@ impl Captured {
         self.view(division).same_movement(previous)
     }
     pub fn has_witness(&self, division: u64) -> bool {
-        self.witness
-            .binary_search_by_key(&division, |(division, _)| *division)
-            .is_ok()
+        !self.witness.is_empty()
+            && self
+                .witness
+                .binary_search_by_key(&division, |(division, _)| *division)
+                .is_ok()
+    }
+
+    pub fn has_unique_divisions(&self, rows: &[engine_native::carmy::StatusRow]) -> bool {
+        self.order.len() == rows.len()
+            && self.rows.len() == rows.len()
+            && self
+                .rows
+                .iter()
+                .zip(rows)
+                .all(|(a, r)| a.division == r.division)
+            && self.order.windows(2).all(|pair| pair[0].0 < pair[1].0)
     }
 
     pub fn witness(&self, division: u64, factor: Option<i64>) -> Option<DivisionAttackInputs> {
@@ -1336,10 +1527,25 @@ impl RowView<'_> {
             .and_then(|row| row.scalars)
             .map_or([None; 23], |scalars| {
                 std::array::from_fn(|index| match index {
-                    22 => scalars.suppression,
-                    _ => scalars.panel[index + usize::from(index >= 11)],
+                    22 => scalars.suppression(),
+                    _ => scalars.panel_at(index + usize::from(index >= 11)),
                 })
             })
+    }
+    pub fn panel_stamp(&self) -> Option<u64> {
+        match self.row.and_then(|row| row.scalars.map(|_| row.stamp)) {
+            None => Some(u64::MAX),
+            Some(0) => None,
+            Some(stamp) => Some(stamp),
+        }
+    }
+    pub fn panel_stat(&self, index: usize) -> Option<i64> {
+        let scalars = self.row?.scalars?;
+        match index {
+            22 => scalars.suppression(),
+            index if index < 22 => scalars.panel_at(index + usize::from(index >= 11)),
+            _ => None,
+        }
     }
     pub fn witness(&self, factor: Option<i64>) -> Option<DivisionAttackInputs> {
         self.captured.witness(self.division, factor)
@@ -1349,7 +1555,7 @@ impl RowView<'_> {
         let scalars = row.scalars?;
         Some(DivisionAttackStats {
             terrain: engine_allocation::owned_vec(engine_allocation::copy_vec(
-                self.captured.terrain.get(row.start..row.start + row.len)?,
+                self.captured.terrain_slice(row)?,
             )),
             river: scalars.river,
             fort: scalars.fort,
@@ -1363,9 +1569,9 @@ impl RowView<'_> {
         let scalars = row.scalars?;
         Some(DivisionMovementStats {
             terrain: engine_allocation::owned_vec(engine_allocation::copy_vec(
-                self.captured.movement.get(row.start..row.start + row.len)?,
+                self.captured.movement_slice(row)?,
             )),
-            scalars: scalars.movement,
+            scalars: scalars.movement(),
             fuel_rate: scalars.fuel_rate,
             air_defense: scalars.air_defense,
         })
@@ -1373,10 +1579,15 @@ impl RowView<'_> {
 
     pub fn record(&self, record: &mut collector_projection::projection::Record<'_>) {
         let Some((row, scalars)) = self.row.and_then(|row| Some((row, row.scalars?))) else {
-            record.words(None);
+            record.word(-1);
             return;
         };
-        let movement = scalars.movement.unwrap_or_default();
+        if row.stamp != 0 {
+            record.word(row.stamp as i64);
+            return;
+        }
+        record.word(0);
+        let movement = scalars.movement().unwrap_or_default();
         let words = [
             scalars.river[0],
             scalars.river[1],
@@ -1384,7 +1595,7 @@ impl RowView<'_> {
             scalars.fort[1],
             scalars.snow,
             scalars.night,
-            i64::from(scalars.movement.is_some()),
+            i64::from(scalars.movement().is_some()),
             movement[0],
             movement[1],
             movement[2],
@@ -1392,9 +1603,8 @@ impl RowView<'_> {
             scalars.air_defense,
         ];
         record.words(Some(words.as_slice()));
-        let span = row.start..row.start.saturating_add(row.len);
-        record.words(self.captured.terrain.get(span.clone()));
-        record.words(self.captured.movement.get(span));
+        record.words(self.captured.terrain_slice(row));
+        record.words(self.captured.movement_slice(row));
     }
 
     pub fn same_movement(
@@ -1405,16 +1615,13 @@ impl RowView<'_> {
             return false;
         };
         let current = self.row.and_then(|row| {
-            Some((
-                row.scalars?,
-                self.captured.movement.get(row.start..row.start + row.len)?,
-            ))
+            Some((row.scalars?, self.captured.movement_slice(row)?))
         });
         match (current, previous) {
             (None, None) => true,
             (Some((scalars, terrain)), Some(previous)) => {
                 terrain == previous.terrain.as_slice()
-                    && scalars.movement == previous.scalars
+                    && scalars.movement() == previous.scalars
                     && scalars.fuel_rate == previous.fuel_rate
                     && scalars.air_defense == previous.air_defense
             }
@@ -1430,10 +1637,7 @@ impl RowView<'_> {
             return false;
         };
         let current = self.row.and_then(|row| {
-            Some((
-                row.scalars?,
-                self.captured.terrain.get(row.start..row.start + row.len)?,
-            ))
+            Some((row.scalars?, self.captured.terrain_slice(row)?))
         });
         match (current, previous) {
             (None, None) => true,
@@ -1493,8 +1697,10 @@ mod tests {
                 division,
                 army: 0x1000,
                 stat_block: 0x2000,
+                slab: 0,
                 start: 0,
                 len: terrain.len(),
+                stamp: 0,
                 scalars: Scalars::default(),
                 maxima: None,
             },
@@ -1543,11 +1749,11 @@ mod tests {
         let mut captured = Captured::default();
         captured.rows = vec![Row {
             division: 3,
-            scalars: Some(Scalars {
+            scalars: Some(Scalars::of(&stats::AttackStats {
                 panel,
                 suppression: Some(-7),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         }];
         let stored = captured.panel(3);
@@ -1572,7 +1778,7 @@ mod tests {
                 len: 2,
                 experience: None,
                 pending_template: None,
-                scalars: Some(Scalars {
+                scalars: Some(Scalars::of(&stats::AttackStats {
                     river: [1, 2],
                     fort: [3, 4],
                     snow: 5,
@@ -1581,7 +1787,7 @@ mod tests {
                     fuel_rate: 40,
                     air_defense: 50,
                     ..Default::default()
-                }),
+                })),
                 ..Default::default()
             },
             Row {

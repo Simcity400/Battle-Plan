@@ -972,6 +972,166 @@ fn visit_templates(
     Ok(())
 }
 
+const COUNTRY_CLEAN_RECORD: usize = 32;
+const COUNTRY_CLEAN_FIELDS: [RecordField; 3] = [
+    record_field(ccountry::DIVISION_TEMPLATES, 0, 16),
+    record_field(ccountry::DEPLOYMENT_MANAGER, 16, 8),
+    record_field(ccountry::OCCUPATION_STATUS, 24, 8),
+];
+const COUNTRY_CLEAN_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&COUNTRY_CLEAN_FIELDS, COUNTRY_CLEAN_RECORD)
+        .expect("valid template clean country layout");
+
+pub const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+#[inline]
+pub const fn fnv_step(hash: u64, word: u64) -> u64 {
+    (hash ^ word).wrapping_mul(0x0100_0000_01b3)
+}
+
+#[inline]
+pub const fn hash_country(
+    hash: u64,
+    id: u32,
+    pointer: usize,
+    deployment: usize,
+    occupation: Option<usize>,
+) -> u64 {
+    let hash = fnv_step(hash, id as u64);
+    let hash = fnv_step(hash, pointer as u64);
+    let hash = fnv_step(hash, deployment as u64);
+    fnv_step(
+        hash,
+        match occupation {
+            Some(at) => at as u64,
+            None => 0,
+        },
+    )
+}
+
+#[inline]
+pub const fn hash_template(
+    hash: u64,
+    template: u64,
+    pointer: usize,
+    owner: u32,
+    ordinal: u32,
+) -> u64 {
+    let hash = fnv_step(hash, template);
+    let hash = fnv_step(hash, pointer as u64);
+    let hash = fnv_step(hash, owner as u64);
+    fnv_step(hash, ordinal as u64)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RosterDigest {
+    pub roster: u64,
+    pub countries: u64,
+    pub icon_count: usize,
+    pub country_count: usize,
+}
+
+pub fn clean_roster_digest(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+) -> Result<RosterDigest, &'static str> {
+    let countries = ccountry::Reader::new(memory, base, state)?;
+    let vtable = engine_sites::at(base, VTABLE_RVA)
+        .ok_or("division template module address overflow")? as u64;
+    let mut country_hash = FNV_OFFSET;
+    let mut roster_hash = FNV_OFFSET;
+    let mut country_count = 0usize;
+    let mut icon_count = 0usize;
+    let mut country_ids = [0u32; BATCH];
+    let mut country_ptrs = [0usize; BATCH];
+    let mut country_buf = [0u8; BATCH * COUNTRY_CLEAN_RECORD];
+    let mut templates = [0usize; BATCH];
+    let mut identities = [0u8; BATCH * IDENTITY];
+    let total_slots = countries.count();
+    let mut slot = 1u32;
+    while slot < total_slots {
+        let mut count = 0usize;
+        while slot < total_slots && count < BATCH {
+            if let Some(country) = countries.at(slot)? {
+                country_ids[count] = country.id;
+                country_ptrs[count] = country.pointer;
+                count += 1;
+            }
+            slot += 1;
+        }
+        if count == 0 {
+            break;
+        }
+        let ptrs = &country_ptrs[..count];
+        for &at in ptrs {
+            memory.prefetch(at.wrapping_add(ccountry::DIVISION_TEMPLATES), 16);
+            memory.prefetch(at.wrapping_add(ccountry::DEPLOYMENT_MANAGER), 8);
+            memory.prefetch(at.wrapping_add(ccountry::OCCUPATION_STATUS), 8);
+        }
+        if memory.copy_records(
+            RecordSources::Pointers(ptrs),
+            &COUNTRY_CLEAN_LAYOUT,
+            &mut country_buf[..count * COUNTRY_CLEAN_RECORD],
+        ) < count * COUNTRY_CLEAN_LAYOUT.field_count()
+        {
+            return Err("template clean country fields unreadable");
+        }
+        for i in 0..count {
+            let rec = &country_buf[i * COUNTRY_CLEAN_RECORD..(i + 1) * COUNTRY_CLEAN_RECORD];
+            let roster = Array::from_header(rec[0..16].try_into().unwrap(), 8)
+                .ok_or("template roster invalid")?;
+            let deployment = usize::try_from(word(rec, 16))
+                .map_err(|_| "deployment status pointer unreadable or null")?;
+            let occupation = usize::try_from(word(rec, 24)).ok().filter(|&at| at != 0);
+            country_hash = hash_country(
+                country_hash,
+                country_ids[i],
+                country_ptrs[i],
+                deployment,
+                occupation,
+            );
+            country_count += 1;
+            let owner = country_ids[i];
+            for first in (0..roster.count).step_by(BATCH) {
+                let batch = ((roster.count - first) as usize).min(BATCH);
+                pointers(memory, roster, first, &mut templates[..batch])?;
+                let batch_ptrs = &templates[..batch];
+                for &at in batch_ptrs {
+                    memory.prefetch(at, IDENTITY);
+                }
+                if memory.copy_records(
+                    RecordSources::Pointers(batch_ptrs),
+                    &IDENTITY_LAYOUT,
+                    &mut identities[..batch * IDENTITY],
+                ) < batch
+                {
+                    return Err("template fields unreadable");
+                }
+                for (index, (&at, identity)) in batch_ptrs
+                    .iter()
+                    .zip(identities[..batch * IDENTITY].chunks_exact(IDENTITY))
+                    .enumerate()
+                {
+                    authentic(identity, vtable)?;
+                    roster_hash =
+                        hash_template(roster_hash, word(identity, 8), at, owner, first + index as u32);
+                    icon_count += 1;
+                }
+            }
+        }
+    }
+    if country_count == 0 {
+        return Err("template census contains no countries");
+    }
+    Ok(RosterDigest {
+        roster: roster_hash,
+        countries: country_hash,
+        icon_count,
+        country_count,
+    })
+}
+
 pub fn roster_lengths(
     memory: &impl Memory,
     base: usize,

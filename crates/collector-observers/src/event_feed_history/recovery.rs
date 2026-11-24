@@ -277,6 +277,10 @@ impl Store {
                 &plan.source,
                 plan.completed(OwnerRegistry::Decisions as usize),
             ));
+            self.decisions.owner_demand = self
+                .decisions
+                .owner_demand
+                .max(self.decisions.owner_demand_for(plan.country.pointer));
         }
         if plan.work[OwnerRegistry::Delayed as usize] {
             self.delayed.demand = self.delayed.demand.max(self.prepared_delayed_demand(
@@ -322,8 +326,14 @@ impl Store {
             &plan.source,
             plan.completed(OwnerRegistry::Decisions as usize),
         );
-        if decisions > self.decisions.capacity() {
-            let _ = self.prepare_decisions(decisions);
+        let decision_owners = self.decisions.owner_demand_for(plan.country.pointer);
+        if decisions > self.decisions.capacity()
+            || decision_owners > self.decisions.owner_capacity()
+        {
+            let _ = self.prepare_decisions_sized(
+                decisions.max(self.decisions.capacity()),
+                decision_owners.max(self.decisions.owner_capacity()),
+            );
         }
         let space = demand[0] <= self.capacity()
             && demand[1] <= self.script_tokens.len()
@@ -333,7 +343,9 @@ impl Store {
         }
         let fits = [
             space && delayed <= self.delayed.capacity(),
-            space && decisions <= self.decisions.capacity(),
+            space
+                && decisions <= self.decisions.capacity()
+                && decision_owners <= self.decisions.owner_capacity(),
         ];
         let mut publish = [false; 2];
         for registry in 0..2 {

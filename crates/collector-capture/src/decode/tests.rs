@@ -327,6 +327,11 @@ fn advisor_payload_storage_survives_pool_preparation_and_recycling() {
         );
         release_characters_job(job);
     }
+    let mut vacant = CharactersJob::vacant(2);
+    vacant.log = collector_raw::raw::RawLog::new(4, 64);
+    assert!(!vacant.has_storage());
+    release_characters_job(vacant);
+    assert_eq!(CHARACTERS_JOB_POOL.lock().unwrap()[2].len(), 1);
     CHARACTERS_JOB_POOL.lock().unwrap()[2] = saved;
 }
 
@@ -1147,8 +1152,8 @@ fn fifo_hands_off_every_frame_in_production_order_without_reorder() {
     let mut indices = Vec::new();
     for _ in 0..4 {
         indices.push(
-            // SAFETY: This consumer owns the queue removal for the named pool.
-            unsafe { shared.frames.pop() }.expect("pooled buffer"),
+            // SAFETY: This test owns the fixture pool and claims four distinct slots without a live hook.
+            unsafe { shared.take_frame(&mut 0) }.expect("pooled buffer"),
         );
     }
     for (order, index) in indices.iter().enumerate() {
@@ -1424,7 +1429,7 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
     *frame.extended.characters_pilot() =
         collector_characters::extended::characters::Captured::with_capacities(&initial);
     let family_bytes_before = frame.extended.characters_pilot().allocated_bytes();
-    shared.measure_frame(index);
+    shared.set_frame_bytes(index, frame.allocated_bytes() as u64);
     let pool_bytes_before = shared.pool_owned();
     let ctx = CharactersCopyContext {
         force_full: false,
@@ -1512,7 +1517,7 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
     let grown = frame.extended.characters_pilot().allocated_bytes() - family_bytes_before;
     assert!(grown > 0);
     assert_eq!(shared.pool_owned(), pool_bytes_before);
-    shared.measure_frame(index);
+    shared.set_frame_bytes(index, frame.allocated_bytes() as u64);
     assert_eq!(shared.pool_owned(), pool_bytes_before + grown as u64);
     assert!(
         !frame
@@ -2024,7 +2029,7 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     frame.extended.test_division_detail().groups.rows = Vec::new();
     let before_bytes = frame.allocated_bytes();
-    shared.measure_frame(index);
+    shared.set_frame_bytes(index, before_bytes as u64);
     let pool_before = shared.pool_owned();
     shared
         .frames
@@ -2092,10 +2097,11 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
         47
     );
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    shared.measure_frame(index);
+    let after_bytes = frame.allocated_bytes();
+    shared.set_frame_bytes(index, after_bytes as u64);
     assert_eq!(
         shared.pool_owned(),
-        pool_before + (frame.allocated_bytes() - before_bytes) as u64
+        pool_before + (after_bytes - before_bytes) as u64
     );
     assert_eq!(frame.divisions_result, direct.divisions_outcome);
     assert_eq!(

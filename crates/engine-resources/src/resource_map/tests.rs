@@ -610,8 +610,10 @@ fn scalar_batches_follow_client_handle_and_origin_route_authentication() {
             countries: &countries,
             threshold: THRESHOLD,
             local_resources: Default::default(),
+            links: Ok(None),
         };
         memory.spans.borrow_mut().clear();
+        memory.batches.set(0);
         assert!(
             walk.client(
                 0x52000,
@@ -636,6 +638,7 @@ fn scalar_batches_follow_client_handle_and_origin_route_authentication() {
     let mut memory = Copies::new(None);
     memory.image.u64(0x20000 + ORIGIN_ROUTE, 0);
     let countries = ccountry::Reader::new(&memory, 0, GAME_STATE).unwrap();
+    memory.batches.set(0);
     let walk = Walk {
         memory: &memory,
         base: 0,
@@ -643,6 +646,7 @@ fn scalar_batches_follow_client_handle_and_origin_route_authentication() {
         countries: &countries,
         threshold: THRESHOLD,
         local_resources: Default::default(),
+        links: Ok(None),
     };
     let country = engine_native_memory::country_identity::Country {
         pointer: 0x2000,

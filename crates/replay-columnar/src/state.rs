@@ -64,6 +64,16 @@ impl Bits {
             .sum()
     }
 
+    pub(crate) fn all_set(&self, len: usize) -> bool {
+        let full = len / 64;
+        let rem = len % 64;
+        if self.words.len() < full + usize::from(rem != 0) {
+            return false;
+        }
+        self.words[..full].iter().all(|&word| word == u64::MAX)
+            && (rem == 0 || (self.words[full] & ((1u64 << rem) - 1)) == ((1u64 << rem) - 1))
+    }
+
     pub fn ones(&self) -> impl Iterator<Item = u32> + '_ {
         self.words.iter().enumerate().flat_map(|(index, &word)| {
             let mut rest = word;
@@ -222,12 +232,13 @@ fn same_length(slots: &[u32], values: usize) -> io::Result<()> {
     Ok(())
 }
 
-fn set_plain<T: Copy>(column: &mut Paged<T>, slots: &[u32], values: &[T]) -> io::Result<()> {
+fn set_plain<T: Copy + PartialEq>(
+    column: &mut Paged<T>,
+    slots: &[u32],
+    values: &[T],
+) -> io::Result<()> {
     same_length(slots, values.len())?;
-    column.each_mut(slots, past, |index, cell| {
-        *cell = values[index];
-        Ok(())
-    })
+    column.write_each(slots, past, |index| Ok(values[index]))
 }
 
 fn bool_of(value: u8) -> io::Result<bool> {
@@ -250,7 +261,7 @@ fn presence(present: &[u64], index: usize) -> io::Result<bool> {
         .ok_or_else(|| invalid("Optional run's presence bits end before its slots"))
 }
 
-fn set_optional<T: Copy>(
+fn set_optional<T: Copy + PartialEq>(
     column: &mut Paged<T>,
     bits: &mut PagedBits,
     slots: &[u32],
@@ -258,14 +269,16 @@ fn set_optional<T: Copy>(
     values: &[T],
 ) -> io::Result<()> {
     let mut next = 0;
-    column.each_mut(slots, past, |index, cell| {
+    column.write_each_optional(slots, past, |index| {
         if presence(present, index)? {
-            *cell = *values
+            let value = *values
                 .get(next)
                 .ok_or_else(|| invalid("Optional run has fewer values than present slots"))?;
             next += 1;
+            Ok(Some(value))
+        } else {
+            Ok(None)
         }
-        Ok(())
     })?;
     if next != values.len() {
         return Err(invalid("Optional run has more values than present slots"));
@@ -352,14 +365,15 @@ fn one<T: Copy>(values: &[T]) -> io::Result<T> {
     }
 }
 
-fn fill_plain<T: Copy>(column: &mut Paged<T>, slots: &[u32], value: T) -> io::Result<()> {
-    column.each_mut(slots, past, |_, cell| {
-        *cell = value;
-        Ok(())
-    })
+fn fill_plain<T: Copy + PartialEq>(
+    column: &mut Paged<T>,
+    slots: &[u32],
+    value: T,
+) -> io::Result<()> {
+    column.write_each(slots, past, |_| Ok(value))
 }
 
-fn fill_optional<T: Copy>(
+fn fill_optional<T: Copy + PartialEq>(
     column: &mut Paged<T>,
     bits: &mut PagedBits,
     slots: &[u32],
@@ -1015,8 +1029,7 @@ fn mismatch(column: Kind, values: Kind) -> io::Error {
     invalid(format!("{values:?} values for a {column:?} column"))
 }
 
-const EMPTY: u64 = u64::MAX;
-const GONE: u64 = u64::MAX - 1;
+const EMPTY: u32 = u32::MAX;
 
 fn tag(key: u128) -> u32 {
     let mut x = (key as u64) ^ ((key >> 64) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
@@ -1029,10 +1042,147 @@ fn tag(key: u128) -> u32 {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) enum Keys {
+    U64(Paged<u64>),
+    U128(Paged<u128>),
+}
+
+impl Default for Keys {
+    fn default() -> Self {
+        Self::U64(Paged::default())
+    }
+}
+
+#[derive(Debug)]
+enum WeakKeys {
+    U64(WeakPaged<u64>),
+    U128(WeakPaged<u128>),
+}
+
+impl WeakKeys {
+    fn upgrade(&self) -> io::Result<Option<Keys>> {
+        Ok(match self {
+            Self::U64(keys) => keys.upgrade()?.map(Keys::U64),
+            Self::U128(keys) => keys.upgrade()?.map(Keys::U128),
+        })
+    }
+
+    fn alive(&self) -> bool {
+        match self {
+            Self::U64(keys) => keys.alive(),
+            Self::U128(keys) => keys.alive(),
+        }
+    }
+}
+
+impl Keys {
+    #[inline]
+    fn get(&self, at: usize) -> Option<u128> {
+        match self {
+            Self::U64(keys) => keys.get(at).map(|&key| u128::from(key)),
+            Self::U128(keys) => keys.get(at).copied(),
+        }
+    }
+
+    #[inline]
+    fn at(&self, index: usize) -> u128 {
+        match self {
+            Self::U64(keys) => u128::from(keys[index]),
+            Self::U128(keys) => keys[index],
+        }
+    }
+
+    fn resize(&mut self, slots: usize) -> io::Result<()> {
+        match self {
+            Self::U64(keys) => keys.resize(slots),
+            Self::U128(keys) => keys.resize(slots),
+        }
+    }
+
+    fn write_slots(&mut self, slots: &[u32], values: &[u128]) -> io::Result<()> {
+        if let Self::U64(narrow) = self
+            && values.iter().any(|&key| key > u128::from(u64::MAX))
+        {
+            let widened = engine_allocation::collect_vec(narrow.iter().map(|&key| u128::from(key)))?;
+            *self = Self::U128(Paged::from_slice(&widened, 0)?);
+        }
+        match self {
+            Self::U64(keys) => keys.each_mut(slots, past, |index, held| {
+                *held = values[index] as u64;
+                Ok(())
+            }),
+            Self::U128(keys) => keys.each_mut(slots, past, |index, held| {
+                *held = values[index];
+                Ok(())
+            }),
+        }
+    }
+
+    fn matches_prefix(&self, prefix: &[u128]) -> bool {
+        match self {
+            Self::U64(keys) => {
+                if prefix.len() > keys.len() {
+                    return false;
+                }
+                keys.iter()
+                    .take(prefix.len())
+                    .zip(prefix)
+                    .all(|(&held, &want)| u128::from(held) == want)
+            }
+            Self::U128(keys) => keys.matches_prefix(prefix),
+        }
+    }
+
+    fn share(&self) -> io::Result<Self> {
+        Ok(match self {
+            Self::U64(keys) => Self::U64(keys.share()?),
+            Self::U128(keys) => Self::U128(keys.share()?),
+        })
+    }
+
+    fn downgrade(&self) -> io::Result<WeakKeys> {
+        Ok(match self {
+            Self::U64(keys) => WeakKeys::U64(keys.downgrade()?),
+            Self::U128(keys) => WeakKeys::U128(keys.downgrade()?),
+        })
+    }
+
+    fn held_bytes(&self) -> usize {
+        match self {
+            Self::U64(keys) => keys.held_bytes(),
+            Self::U128(keys) => keys.held_bytes(),
+        }
+    }
+
+    fn owned_bytes(&self) -> usize {
+        match self {
+            Self::U64(keys) => keys.owned_bytes(),
+            Self::U128(keys) => keys.owned_bytes(),
+        }
+    }
+
+    fn shared_bytes(&self, other: &Self) -> usize {
+        match (self, other) {
+            (Self::U64(mine), Self::U64(theirs)) => mine.shared_bytes(theirs),
+            (Self::U128(mine), Self::U128(theirs)) => mine.shared_bytes(theirs),
+            _ => 0,
+        }
+    }
+
+    fn common_bytes(&self, other: &Self) -> usize {
+        match (self, other) {
+            (Self::U64(mine), Self::U64(theirs)) => mine.common_bytes(theirs),
+            (Self::U128(mine), Self::U128(theirs)) => mine.common_bytes(theirs),
+            _ => 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct Slots {
-    buckets: Paged<u64>,
+    buckets: Paged<u32>,
     len: usize,
-    gone: usize,
+    max_slot: bool,
 }
 
 impl Default for Slots {
@@ -1040,7 +1190,7 @@ impl Default for Slots {
         Self {
             buckets: Paged::filled(0, EMPTY).expect("an empty index allocates nothing"),
             len: 0,
-            gone: 0,
+            max_slot: false,
         }
     }
 }
@@ -1066,11 +1216,11 @@ impl Slots {
         Ok(Self {
             buckets: self.buckets.share()?,
             len: self.len,
-            gone: self.gone,
+            max_slot: self.max_slot,
         })
     }
 
-    fn put(&mut self, at: usize, bucket: u64) -> io::Result<()> {
+    fn put(&mut self, at: usize, bucket: u32) -> io::Result<()> {
         *self
             .buckets
             .get_mut(at)?
@@ -1078,40 +1228,35 @@ impl Slots {
         Ok(())
     }
 
-    pub(crate) fn get(&self, keys: &Paged<u128>, key: u128) -> Option<u32> {
+    pub(crate) fn get(&self, keys: &Keys, key: u128) -> Option<u32> {
+        if self.max_slot && keys.get(EMPTY as usize) == Some(key) {
+            return Some(EMPTY);
+        }
         if self.buckets.is_empty() {
             return None;
         }
-        let (tag, mask) = (tag(key), self.buckets.len() - 1);
-        let mut at = tag as usize & mask;
+        let mask = self.buckets.len() - 1;
+        let mut at = tag(key) as usize & mask;
         loop {
-            let bucket = self.buckets[at];
-            if bucket == EMPTY {
+            let slot = self.buckets[at];
+            if slot == EMPTY {
                 return None;
             }
-            if bucket != GONE && (bucket >> 32) as u32 == tag {
-                let slot = bucket as u32;
-                if keys.get(slot as usize) == Some(&key) {
-                    return Some(slot);
-                }
+            if keys.get(slot as usize) == Some(key) {
+                return Some(slot);
             }
             at = (at + 1) & mask;
         }
     }
 
-    pub(crate) fn reserve(&mut self, additional: usize) -> io::Result<()> {
-        let used = self
-            .len
-            .checked_add(self.gone)
-            .and_then(|used| used.checked_add(additional))
-            .ok_or_else(engine_allocation::oom)?;
-        if used.saturating_mul(4) <= self.buckets.len().saturating_mul(3) {
-            return Ok(());
-        }
+    pub(crate) fn reserve(&mut self, keys: &Keys, additional: usize) -> io::Result<()> {
         let live = self
             .len
             .checked_add(additional)
             .ok_or_else(engine_allocation::oom)?;
+        if live.saturating_mul(4) <= self.buckets.len().saturating_mul(3) {
+            return Ok(());
+        }
         let mut buckets = 8_usize;
         while buckets.saturating_mul(5) < live.saturating_mul(8) {
             buckets = buckets
@@ -1121,83 +1266,78 @@ impl Slots {
         }
         let mut rebuilt = engine_allocation::filled(buckets, EMPTY)?;
         let mask = buckets - 1;
-        for &bucket in self.buckets.iter() {
-            if bucket >= GONE {
+        for &slot in self.buckets.iter() {
+            if slot == EMPTY {
                 continue;
             }
-            let mut at = (bucket >> 32) as usize & mask;
+            let mut at = tag(keys.at(slot as usize)) as usize & mask;
             while rebuilt[at] != EMPTY {
                 at = (at + 1) & mask;
             }
-            rebuilt[at] = bucket;
+            rebuilt[at] = slot;
         }
         self.buckets = Paged::filled(0, EMPTY)?;
         self.buckets = Paged::from_slice(&rebuilt, EMPTY)?;
-        self.gone = 0;
         Ok(())
     }
 
-    pub(crate) fn insert(&mut self, keys: &Paged<u128>, key: u128, slot: u32) -> io::Result<()> {
-        self.reserve(1)?;
-        let (tag, mask) = (tag(key), self.buckets.len() - 1);
-        let entry = u64::from(tag) << 32 | u64::from(slot);
-        let mut at = tag as usize & mask;
-        let mut free = None;
+    pub(crate) fn insert(&mut self, keys: &Keys, key: u128, slot: u32) -> io::Result<()> {
+        if slot == EMPTY {
+            self.max_slot = true;
+            return Ok(());
+        }
+        self.reserve(keys, 1)?;
+        let mask = self.buckets.len() - 1;
+        let mut at = tag(key) as usize & mask;
         loop {
-            let bucket = self.buckets[at];
-            if bucket == EMPTY {
-                break;
+            let held = self.buckets[at];
+            if held == EMPTY {
+                self.put(at, slot)?;
+                self.len += 1;
+                return Ok(());
             }
-            if bucket == GONE {
-                free.get_or_insert(at);
-            } else if (bucket >> 32) as u32 == tag && keys.get(bucket as u32 as usize) == Some(&key)
-            {
-                return self.put(at, entry);
+            if keys.get(held as usize) == Some(key) {
+                return self.put(at, slot);
             }
             at = (at + 1) & mask;
         }
-        match free {
-            Some(free) => {
-                self.put(free, entry)?;
-                self.gone -= 1;
-            }
-            None => self.put(at, entry)?,
-        }
-        self.len += 1;
-        Ok(())
     }
 
-    pub(crate) fn remove(&mut self, key: u128, slot: u32) -> io::Result<()> {
+    pub(crate) fn remove(&mut self, keys: &Keys, key: u128, slot: u32) -> io::Result<()> {
+        if slot == EMPTY {
+            self.max_slot = false;
+            return Ok(());
+        }
         if self.buckets.is_empty() {
             return Ok(());
         }
-        let (tag, mask) = (tag(key), self.buckets.len() - 1);
-        let entry = u64::from(tag) << 32 | u64::from(slot);
-        let mut at = tag as usize & mask;
+        let mask = self.buckets.len() - 1;
+        let mut hole = tag(key) as usize & mask;
         loop {
-            let bucket = self.buckets[at];
-            if bucket == EMPTY {
+            let held = self.buckets[hole];
+            if held == EMPTY {
                 return Ok(());
             }
-            if bucket == entry {
+            if held == slot {
                 break;
             }
-            at = (at + 1) & mask;
+            hole = (hole + 1) & mask;
         }
         self.len -= 1;
-        if self.buckets[(at + 1) & mask] != EMPTY {
-            self.put(at, GONE)?;
-            self.gone += 1;
-            return Ok(());
+        let mut cursor = (hole + 1) & mask;
+        loop {
+            let held = self.buckets[cursor];
+            if held == EMPTY {
+                self.put(hole, EMPTY)?;
+                return Ok(());
+            }
+            let home = tag(keys.at(held as usize)) as usize & mask;
+            if (hole.wrapping_sub(home) & mask) < (cursor.wrapping_sub(home) & mask) {
+                self.put(hole, held)?;
+                hole = cursor;
+            }
+            cursor = (cursor + 1) & mask;
         }
-        self.put(at, EMPTY)?;
-        let mut back = at.wrapping_sub(1) & mask;
-        while self.buckets[back] == GONE {
-            self.put(back, EMPTY)?;
-            self.gone -= 1;
-            back = back.wrapping_sub(1) & mask;
-        }
-        Ok(())
     }
 }
 
@@ -1210,7 +1350,7 @@ fn ascending(slots: &[u32]) -> io::Result<()> {
 
 #[derive(Clone, Debug)]
 pub struct Table {
-    pub(crate) keys: Paged<u128>,
+    pub(crate) keys: Keys,
     pub(crate) live: Bits,
     pub(crate) columns: Vec<Column>,
     pub(crate) unrecorded: Vec<Bits>,
@@ -1220,12 +1360,12 @@ pub struct Table {
 
 #[derive(Debug)]
 pub struct WeakTable {
-    keys: WeakPaged<u128>,
+    keys: WeakKeys,
     live: Bits,
     columns: Vec<WeakColumn>,
     unrecorded: Vec<Bits>,
     slots: usize,
-    by_key: (WeakPaged<u64>, usize, usize),
+    by_key: (WeakPaged<u32>, usize, bool),
 }
 
 impl WeakTable {
@@ -1256,7 +1396,7 @@ impl WeakTable {
             by_key: Slots {
                 buckets,
                 len: self.by_key.1,
-                gone: self.by_key.2,
+                max_slot: self.by_key.2,
             },
         }))
     }
@@ -1276,7 +1416,7 @@ impl PartialEq for Table {
             && self.kinds().eq(other.kinds())
             && self.live.ones().eq(other.live.ones())
             && self.live.ones().all(|slot| {
-                self.keys[slot as usize] == other.keys[slot as usize]
+                self.keys.at(slot as usize) == other.keys.at(slot as usize)
                     && self
                         .columns
                         .iter()
@@ -1293,7 +1433,7 @@ impl Eq for Table {}
 impl Table {
     pub fn new(kinds: &[Kind]) -> io::Result<Self> {
         Ok(Self {
-            keys: Paged::default(),
+            keys: Keys::default(),
             live: Bits::default(),
             columns: engine_allocation::collect_vec(kinds.iter().map(|&kind| Column::new(kind)))?,
             unrecorded: engine_allocation::collect_vec(kinds.iter().map(|_| Bits::default()))?,
@@ -1338,10 +1478,7 @@ impl Table {
         table.resize(slots)?;
         table.index(keys.len())?;
         let live_slots = engine_allocation::collect_vec(live.ones())?;
-        table.keys.each_mut(&live_slots, past, |index, held| {
-            *held = keys[index];
-            Ok(())
-        })?;
+        table.keys.write_slots(&live_slots, keys)?;
         for (&slot, &key) in live_slots.iter().zip(keys) {
             table.key_slot(key, slot)?;
         }
@@ -1386,7 +1523,7 @@ impl Table {
             by_key: (
                 self.by_key.buckets.downgrade()?,
                 self.by_key.len,
-                self.by_key.gone,
+                self.by_key.max_slot,
             ),
         })
     }
@@ -1449,7 +1586,14 @@ impl Table {
     }
 
     pub fn key(&self, slot: u32) -> Option<u128> {
-        self.live.get(slot).then(|| self.keys[slot as usize])
+        self.live.get(slot).then(|| self.keys.at(slot as usize))
+    }
+
+    pub(crate) fn keys_match_prefix(&self, keys: &[u128]) -> bool {
+        if keys.len() > self.slots || !self.live.all_set(keys.len()) {
+            return false;
+        }
+        self.keys.matches_prefix(keys)
     }
 
     pub fn slot(&self, key: u128) -> Option<u32> {
@@ -1457,7 +1601,7 @@ impl Table {
     }
 
     fn index(&mut self, additional: usize) -> io::Result<()> {
-        self.by_key.reserve(additional)
+        self.by_key.reserve(&self.keys, additional)
     }
 
     fn key_slot(&mut self, key: u128, slot: u32) -> io::Result<()> {
@@ -1584,10 +1728,7 @@ impl Table {
             self.resize(last as usize + 1)?;
         }
         self.index(slots.len())?;
-        self.keys.each_mut(slots, past, |index, held| {
-            *held = keys[index];
-            Ok(())
-        })?;
+        self.keys.write_slots(slots, keys)?;
         for (&slot, &key) in slots.iter().zip(keys) {
             self.key_slot(key, slot)?;
             self.live.set(slot)?;
@@ -1599,7 +1740,8 @@ impl Table {
         self.live_slots(slots)?;
         for &slot in slots {
             self.live.clear(slot);
-            self.by_key.remove(self.keys[slot as usize], slot)?;
+            self.by_key
+                .remove(&self.keys, self.keys.at(slot as usize), slot)?;
             for bits in &mut self.unrecorded {
                 bits.clear(slot);
             }

@@ -563,25 +563,30 @@ impl Captured {
         let wings = |r: &cair_base::RegistrationRow| {
             &self.wings.first[r.wings_start..r.wings_start + r.wings_len]
         };
+        let equal_cursor = self.carrier.cursor();
+        let convert_cursor = self.carrier.cursor();
         collector_projection::projection::project_table::<tables::AirBaseRegistrations, _>(
             projection,
             outcome,
             &self.registrations.rows,
             ArenaRow::key,
             |r, old| {
-                let inputs = self.carrier.registration(r);
+                if r.base != old.base
+                    || r.slot != old.slot
+                    || r.capacity_raw != old.capacity_raw
+                    || old.transport_planes != rows::Recorded::Value(rows::Retired)
+                    || wings(r) != old.wings
+                {
+                    return false;
+                }
+                let inputs = equal_cursor.registration(r);
                 let fuel = inputs.state_fuel();
-                r.base == old.base
-                    && r.slot == old.slot
-                    && r.capacity_raw == old.capacity_raw
-                    && wings(r) == old.wings
-                    && inputs.equal(&old.carrier)
-                    && old.fuel_demand_raw == rows::Recorded::Value(fuel[0])
+                old.fuel_demand_raw == rows::Recorded::Value(fuel[0])
                     && old.fuel_allocated_raw == rows::Recorded::Value(fuel[1])
-                    && old.transport_planes == rows::Recorded::Value(rows::Retired)
+                    && inputs.equal(&old.carrier)
             },
             |r| {
-                let inputs = self.carrier.registration(r);
+                let inputs = convert_cursor.registration(r);
                 let fuel = inputs.state_fuel();
                 rows::AirBaseRegistrationRow {
                     base: r.base,
@@ -687,7 +692,27 @@ impl Captured {
             self.fail_registrations_capture(reason);
             return Err(reason);
         }
-        let log = match Recorded::build(&job.log) {
+        let has_carried = job.segments.iter().any(|s| s.carried_raw.is_some());
+        let all_carried_trusted = !has_carried
+            || reuse.as_deref().is_some_and(|reuse| {
+                job.segments.iter().all(|s| {
+                    s.carried_raw.is_none() || reuse.trusted_carried(s.handle, s.pointer)
+                })
+            });
+        let merged_log = if all_carried_trusted {
+            None
+        } else {
+            match merge_carried_log(job) {
+                Ok(merged) => Some(merged),
+                Err(reason) => {
+                    carrier_bases.reset();
+                    self.fail_registrations_capture(reason);
+                    return Err(reason);
+                }
+            }
+        };
+        let active_log = merged_log.as_ref().unwrap_or(&job.log);
+        let log = match Recorded::build(active_log) {
             Ok(log) => log,
             Err(reason) => {
                 carrier_bases.reset();
@@ -704,86 +729,153 @@ impl Captured {
         let carrier_log = job.carrier.log.borrow();
         let optional = Recorded::build(&carrier_log);
         let started = qpc();
-        carrier_bases.reset();
-        self.carrier.reset();
-        let optional_countries = job
-            .carrier
-            .seed
-            .and_then(|()| optional.as_ref().map_err(|reason| *reason))
-            .and_then(|optional| {
-                ccountry::Reader::new(optional, base, job.game_state)
-                    .map(|countries| (optional, countries))
-            });
-        let refusal = optional_countries.as_ref().err().copied();
         let slots = cair_base::SlotMode {
             dense: job.slot_run.dense,
         };
-        let original_buffers = cair_base::RegistrationBuffers {
-            registrations: &mut self.registrations.rows,
-            wings: &mut self.wings.first,
-            resolved: &mut self.resolved,
-        };
-        let first = if let Ok((optional, countries)) = optional_countries {
-            let (first, lengths, demand) = {
-                let buffers = super::air::carrier::buffers(
-                    carrier_bases,
-                    &mut self.carrier,
-                    &mut self.carrier_scratch,
-                );
-                let mut carrier = cair_base::CarrierCapture::new(
-                    optional,
-                    base,
-                    job.game_state,
-                    &countries,
-                    buffers,
-                );
-                let first = cair_base::walk_registrations_with_carrier_planned(
-                    &recorded,
+        let run_walk = |recorded: &crate::extended::roster_replay::RosterReplay<'_, _>,
+                        registrations: &mut CaptureRows<cair_base::RegistrationRow>,
+                        wings: &mut Arena<u64>,
+                        resolved: &mut [cair_base::ResolvedLink],
+                        carrier: &mut super::air::carrier::Registrations,
+                        carrier_scratch: &mut super::air::carrier::Scratch,
+                        carrier_bases: &mut super::air::carrier::Bases,
+                        reuse: Option<&mut (dyn cair_base::RegistrationReuse + '_)>| {
+            carrier_bases.reset();
+            carrier.reset();
+            let optional_countries = job
+                .carrier
+                .seed
+                .and_then(|()| optional.as_ref().map_err(|reason| *reason))
+                .and_then(|optional| {
+                    ccountry::Reader::new(optional, base, job.game_state)
+                        .map(|countries| (optional, countries))
+                });
+            let refusal = optional_countries.as_ref().err().copied();
+            let original_buffers = cair_base::RegistrationBuffers {
+                registrations: &mut registrations.rows,
+                wings: &mut wings.first,
+                resolved,
+            };
+            if let Ok((optional, countries)) = optional_countries {
+                let (first, lengths, demand) = {
+                    let buffers = super::air::carrier::buffers(
+                        carrier_bases,
+                        carrier,
+                        carrier_scratch,
+                    );
+                    let mut carrier_capture = cair_base::CarrierCapture::new(
+                        optional,
+                        base,
+                        job.game_state,
+                        &countries,
+                        buffers,
+                    );
+                    let first = cair_base::walk_registrations_with_carrier_planned(
+                        recorded,
+                        base,
+                        job.game_state,
+                        original_buffers,
+                        base_rows,
+                        &mut carrier_capture,
+                        slots,
+                        reuse,
+                    );
+                    let visited_hosts = carrier_capture.demand().bases;
+                    for source in base_rows
+                        .iter()
+                        .copied()
+                        .filter(|source| source.state.is_none())
+                        .skip(visited_hosts)
+                    {
+                        carrier_capture.begin_base(0, source.id, true);
+                        carrier_capture.authenticated_base(source);
+                        carrier_capture.finish_base(false);
+                    }
+                    (first, carrier_capture.lengths(), carrier_capture.demand())
+                };
+                carrier_bases.install(lengths, demand);
+                carrier.install(lengths, demand);
+                carrier_bases.index_rows();
+                carrier.index_rows();
+                first
+            } else {
+                let demand = cair_base::CarrierDemand {
+                    failure: refusal,
+                    ..Default::default()
+                };
+                carrier_bases.install(cair_base::CarrierLengths::default(), demand);
+                carrier.install(cair_base::CarrierLengths::default(), demand);
+                cair_base::walk_registrations_planned(
+                    recorded,
                     base,
                     job.game_state,
                     original_buffers,
-                    base_rows,
-                    &mut carrier,
                     slots,
-                    reuse.as_deref_mut(),
-                );
-                let visited_hosts = carrier.demand().bases;
-                for source in base_rows
-                    .iter()
-                    .copied()
-                    .filter(|source| source.state.is_none())
-                    .skip(visited_hosts)
-                {
-                    carrier.begin_base(0, source.id, true);
-                    carrier.authenticated_base(source);
-                    carrier.finish_base(false);
+                    reuse,
+                )
+            }
+        };
+        let mut first = run_walk(
+            &recorded,
+            &mut self.registrations,
+            &mut self.wings,
+            &mut self.resolved,
+            &mut self.carrier,
+            &mut self.carrier_scratch,
+            carrier_bases,
+            reuse.as_deref_mut(),
+        );
+        if has_carried && all_carried_trusted && !matches!(first.outcome, Outcome::Rows { .. }) {
+            let fallback = match merge_carried_log(job) {
+                Ok(merged) => merged,
+                Err(reason) => {
+                    carrier_bases.reset();
+                    self.fail_registrations_capture(reason);
+                    return Err(reason);
                 }
-                (first, carrier.lengths(), carrier.demand())
             };
-            carrier_bases.install(lengths, demand);
-            self.carrier.install(lengths, demand);
-            carrier_bases.index_rows();
-            self.carrier.index_rows();
-            first
-        } else {
-            let demand = cair_base::CarrierDemand {
-                failure: refusal,
-                ..Default::default()
+            let fallback_log = match Recorded::build(&fallback) {
+                Ok(log) => log,
+                Err(reason) => {
+                    carrier_bases.reset();
+                    self.fail_registrations_capture(reason);
+                    return Err(reason);
+                }
             };
-            carrier_bases.install(cair_base::CarrierLengths::default(), demand);
-            self.carrier
-                .install(cair_base::CarrierLengths::default(), demand);
-            cair_base::walk_registrations_planned(
-                &recorded,
+            let fallback_recorded = crate::extended::roster_replay::RosterReplay::new(
+                &fallback_log,
+                &job.roster,
                 base,
                 job.game_state,
-                original_buffers,
-                slots,
+            );
+            first = run_walk(
+                &fallback_recorded,
+                &mut self.registrations,
+                &mut self.wings,
+                &mut self.resolved,
+                &mut self.carrier,
+                &mut self.carrier_scratch,
+                carrier_bases,
                 reuse,
-            )
-        };
-        if let Err(reason) = carrier_bases.decode_states(job, base, base_rows, &mut self.resolved)
-        {
+            );
+            if let Err(reason) = carrier_bases.decode_states_with_recorded(
+                job,
+                base,
+                base_rows,
+                &mut self.resolved,
+                &fallback_recorded,
+            ) {
+                carrier_bases.reset();
+                self.fail_registrations_capture(reason);
+                return Err(reason);
+            }
+        } else if let Err(reason) = carrier_bases.decode_states_with_recorded(
+            job,
+            base,
+            base_rows,
+            &mut self.resolved,
+            &recorded,
+        ) {
             carrier_bases.reset();
             self.fail_registrations_capture(reason);
             return Err(reason);
@@ -804,6 +896,35 @@ impl Captured {
         decode_ticks[1] += elapsed(started);
         Ok(())
     }
+}
+
+fn merge_carried_log(
+    job: &super::air::AirBasesJob,
+) -> Result<collector_raw::raw::RawLog<{ super::air::AIR_BASES_N }>, &'static str> {
+    let mut extra_spans = 0usize;
+    let mut extra_bytes = 0usize;
+    for segment in &job.segments {
+        if let Some(raw) = segment.carried_raw.as_deref() {
+            extra_spans = extra_spans
+                .checked_add(raw.spans.len())
+                .ok_or("air registration carried log span count overflow")?;
+            extra_bytes = extra_bytes
+                .checked_add(raw.bytes.len())
+                .ok_or("air registration carried log byte count overflow")?;
+        }
+    }
+    let mut merged = job
+        .log
+        .clone_with_extra(extra_spans, extra_bytes)
+        .ok_or("air registration carried log allocation failed")?;
+    for segment in &job.segments {
+        if let Some(raw) = segment.carried_raw.as_deref()
+            && !merged.splice(&raw.spans, &raw.bytes)
+        {
+            return Err("air registration carried log allocation failed");
+        }
+    }
+    Ok(merged)
 }
 
 #[derive(Debug, Default)]

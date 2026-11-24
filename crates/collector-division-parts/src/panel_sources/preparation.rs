@@ -20,6 +20,9 @@ pub(super) struct NativeReads {
     variants_used: usize,
     variant_refresh: Option<bool>,
     dirty_read: bool,
+    last_country_root: Option<u64>,
+    last_commander_root: Option<(u8, u64)>,
+    last_state: Option<(u32, u32)>,
 }
 #[derive(Default)]
 struct RootObservation {
@@ -145,21 +148,60 @@ impl NativeReads {
             + self.variants_used
             + self.states.values().filter(|state| state.read.is_some()).count()
     }
+    #[cfg(test)]
     pub fn begin(&mut self, divisions: usize) -> std::io::Result<()> {
+        self.begin_part(divisions, true)
+    }
+    pub fn begin_part(&mut self, divisions: usize, read_dirty: bool) -> std::io::Result<()> {
         self.complete = true;
         self.membership_observation = None;
-        self.root_indices.clear();
+        self.last_country_root = None;
+        self.last_commander_root = None;
+        self.last_state = None;
+        if !self.root_indices.is_empty() {
+            self.root_indices.clear();
+        }
         self.roots_used = 0;
         self.variants_used = 0;
         self.variant_refresh = None;
-        self.dirty_read = false;
-        self.membership_indices.clear();
-        self.states.clear();
-        self.variant_indices.clear();
-        engine_allocation::reserve_map(&mut self.root_indices, divisions.saturating_mul(2))?;
-        engine_allocation::reserve_map(&mut self.membership_indices, divisions)?;
-        engine_allocation::reserve_map(&mut self.states, divisions.saturating_mul(2))?;
-        engine_allocation::reserve_map(&mut self.variant_indices, divisions)
+        self.dirty_read = !read_dirty;
+        if !self.membership_indices.is_empty() {
+            self.membership_indices.clear();
+        }
+        if !self.states.is_empty() {
+            self.states.clear();
+        }
+        if !self.variant_indices.is_empty() {
+            self.variant_indices.clear();
+        }
+        engine_allocation::reserve_map(&mut self.root_indices, divisions.min(16))?;
+        engine_allocation::reserve_map(&mut self.states, divisions.min(32))
+    }
+    pub fn capture_dirty(&mut self, memory: &impl Memory, base: usize, store: &Store) {
+        if self.dirty_read {
+            return;
+        }
+        let Some(store) = store.admitted() else {
+            self.incomplete();
+            return;
+        };
+        if store.variant_epoch != store.boundary.variant_epoch {
+            return;
+        }
+        if *self.variant_refresh.get_or_insert_with(|| {
+            let stamp = operands::observed_variant_stamp();
+            stamp.is_some() && store.variant_observation != stamp
+        }) {
+            self.dirty_read = true;
+            for &pointer in &store.boundary.dirty {
+                if store.boundary.retired.binary_search(&pointer).is_ok() {
+                    continue;
+                }
+                if let Some(&handle) = store.variant_handles.get(&pointer) {
+                    self.capture_variant(memory, base, store, handle, pointer, false);
+                }
+            }
+        }
     }
     pub fn allocated_bytes(&self) -> usize {
         self.roots.capacity() * std::mem::size_of::<RootRead>()
@@ -186,7 +228,7 @@ impl NativeReads {
             + self.variant_indices.capacity()
                 * std::mem::size_of::<((u64, usize), VariantObservation)>()
     }
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "internal preparation staging")]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -196,6 +238,7 @@ impl NativeReads {
         seed: &DivisionSeed,
         selection: Selection,
         block: Option<(usize, bool)>,
+        province_context: Option<(u32, usize)>,
     ) {
         self.membership_observation = None;
         if !store.can_settle_owned() {
@@ -231,8 +274,16 @@ impl NativeReads {
             }
         }
         let pool = store.pools.get(&seed.division);
-        self.capture_membership(memory, base, pool, seed, &store.boundary.operands);
-        if let Some(&index) = self.membership_indices.get(&seed.division)
+        self.capture_membership(
+            memory,
+            base,
+            pool,
+            seed,
+            &store.boundary.operands,
+            &store.boundary.retired,
+        );
+        if !self.membership_indices.is_empty()
+            && let Some(&index) = self.membership_indices.get(&seed.division)
             && self.memberships[index].ready
             && self.memberships[index].result.is_ok()
         {
@@ -252,25 +303,18 @@ impl NativeReads {
                 }
             } else if !std::mem::replace(&mut self.dirty_read, true) {
                 for &pointer in &store.boundary.dirty {
+                    if store.boundary.retired.binary_search(&pointer).is_ok() {
+                        continue;
+                    }
                     if let Some(&handle) = store.variant_handles.get(&pointer) {
                         self.capture_variant(memory, base, store, handle, pointer, false);
                     }
                 }
             }
         }
-        if let Ok(province) = selection.province {
-            let context = store
-                .provinces
-                .get(&province)
-                .copied()
-                .map(Ok)
-                .or(selection.context)
-                .and_then(Result::ok)
-                .flatten();
-            if let Some((id, pointer)) = context {
-                for country in state_countries(seed) {
-                    self.capture_state(memory, base, state, store, id, pointer, country);
-                }
+        if let Some((id, pointer)) = province_context {
+            for country in state_countries(seed) {
+                self.capture_state(memory, base, state, store, id, pointer, country);
             }
         }
     }
@@ -283,13 +327,36 @@ impl NativeReads {
         receiver: usize,
         accumulator: usize,
     ) {
-        let identity = (kind, owner);
-        let index_slot = match self.root_indices.entry(identity) {
-            std::collections::hash_map::Entry::Occupied(_) => return,
-            std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert(RootObservation::default())
+        if kind == 0 {
+            if self.last_country_root == Some(owner) {
+                return;
             }
-        };
+        } else if self.last_commander_root == Some((kind, owner)) {
+            return;
+        }
+        let identity = (kind, owner);
+        if self.root_indices.contains_key(&identity) {
+            if kind == 0 {
+                self.last_country_root = Some(owner);
+            } else {
+                self.last_commander_root = Some((kind, owner));
+            }
+            return;
+        }
+        if engine_allocation::advisory(|| {
+            engine_allocation::reserve_map(&mut self.root_indices, 1)
+        })
+        .is_err()
+        {
+            self.incomplete();
+            return;
+        }
+        if kind == 0 {
+            self.last_country_root = Some(owner);
+        } else {
+            self.last_commander_root = Some((kind, owner));
+        }
+        let index_slot = self.root_indices.entry(identity).or_default();
         let held = store.roots.get(&identity);
         let hint = held.map_or(usize::MAX, |held| held.slot);
         let acquired = changes::register_at(receiver, hint);
@@ -370,8 +437,11 @@ impl NativeReads {
         held: Option<&Pool>,
         seed: &DivisionSeed,
         quiet: &crate::observations::Taken,
+        retired: &[usize],
     ) {
-        if self.membership_indices.contains_key(&seed.division) {
+        if !self.membership_indices.is_empty()
+            && self.membership_indices.contains_key(&seed.division)
+        {
             self.incomplete();
             return;
         }
@@ -382,7 +452,15 @@ impl NativeReads {
             self.complete = false;
             return;
         };
-        if let Some(held) = held.filter(|held| held.army == seed.pointer)
+        let retired_pool = held.is_some_and(|held| {
+            !retired.is_empty()
+                && held
+                    .variants
+                    .iter()
+                    .any(|&(_, _, pointer)| retired.binary_search(&pointer).is_ok())
+        });
+        if !retired_pool
+            && let Some(held) = held.filter(|held| held.army == seed.pointer)
             && let Some(certificate) = held.certificate
             && quiet.quiet(pool, certificate.0)
         {
@@ -397,7 +475,9 @@ impl NativeReads {
         };
         self.membership_observation = Some((certificate, slot));
         let certificate = Some(certificate);
-        if held.is_some_and(|held| held.army == seed.pointer && held.certificate == certificate) {
+        if !retired_pool
+            && held.is_some_and(|held| held.army == seed.pointer && held.certificate == certificate)
+        {
             return;
         }
         let index = self.membership_indices.len();
@@ -432,6 +512,14 @@ impl NativeReads {
             })
             .map(|count| count + 1);
         self.complete &= read.ready;
+        if engine_allocation::advisory(|| {
+            engine_allocation::reserve_map(&mut self.membership_indices, 1)
+        })
+        .is_err()
+        {
+            self.complete = false;
+            return;
+        }
         self.membership_indices.insert(seed.division, index);
     }
     pub fn membership(
@@ -448,7 +536,7 @@ impl NativeReads {
             && read.army == seed.pointer)
             .then_some(read)
     }
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "internal state preparation staging")]
     fn capture_state(
         &mut self,
         memory: &impl Memory,
@@ -459,12 +547,21 @@ impl NativeReads {
         pointer: usize,
         country: u32,
     ) {
-        let state_slot = match self.states.entry((id, country)) {
-            std::collections::hash_map::Entry::Occupied(_) => return,
-            std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert(StateObservation::default())
-            }
-        };
+        if self.last_state == Some((id, country)) {
+            return;
+        }
+        if self.states.contains_key(&(id, country)) {
+            self.last_state = Some((id, country));
+            return;
+        }
+        if engine_allocation::advisory(|| engine_allocation::reserve_map(&mut self.states, 1))
+            .is_err()
+        {
+            self.incomplete();
+            return;
+        }
+        self.last_state = Some((id, country));
+        let state_slot = self.states.entry((id, country)).or_default();
         let held = store.states.get(&(id, country));
         let hint = held.map_or(usize::MAX, |held| held.slot);
         let acquired = operands::state_register_at(id, hint);

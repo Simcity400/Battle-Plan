@@ -2504,6 +2504,7 @@ impl StatusPacket {
             experience,
             prepared,
             false,
+            true,
         )
     }
 
@@ -2708,6 +2709,7 @@ impl StatusPacket {
         experience: &[Option<i64>],
         prepared: Result<(usize, ccountry::Reader<'_, M>), &'static str>,
         defer_children: bool,
+        build_border_index: bool,
     ) -> Outcome {
         let mut entries = self.acclimatization.take();
         let result = prepared.and_then(|(count, countries)| {
@@ -2810,21 +2812,23 @@ impl StatusPacket {
         if defer_children {
             return self.outcome;
         }
-        if self.units.len() > self.border_index.capacity() {
-            if matches!(self.outcome, Outcome::Rows { .. }) {
-                self.outcome = Outcome::Unavailable {
-                    reason: "border division index packet capacity exceeded",
-                };
+        if build_border_index {
+            if self.units.len() > self.border_index.capacity() {
+                if matches!(self.outcome, Outcome::Rows { .. }) {
+                    self.outcome = Outcome::Unavailable {
+                        reason: "border division index packet capacity exceeded",
+                    };
+                }
+                return self.outcome;
             }
-            return self.outcome;
+            self.border_index.extend(
+                self.units
+                    .iter()
+                    .enumerate()
+                    .map(|(index, unit)| (unit.division, index)),
+            );
+            self.border_index.sort_unstable_by_key(|entry| entry.0);
         }
-        self.border_index.extend(
-            self.units
-                .iter()
-                .enumerate()
-                .map(|(index, unit)| (unit.division, index)),
-        );
-        self.border_index.sort_unstable_by_key(|entry| entry.0);
         self.capture_status_children(memory, seeds);
         self.outcome
     }

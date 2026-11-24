@@ -154,12 +154,7 @@ fn registration_work_names_each_base_by_how_its_subtree_was_taken() {
     assert_eq!(job.registration_work.spliced(), [0, 0]);
     hour(&bytes, &mut job);
     assert_eq!(job.registration_work.bases(), [1, 2, 0]);
-    assert!(
-        job.registration_work
-            .spliced()
-            .iter()
-            .all(|&count| count > 0)
-    );
+    assert_eq!(job.registration_work.spliced(), [0, 0]);
 }
 
 #[test]

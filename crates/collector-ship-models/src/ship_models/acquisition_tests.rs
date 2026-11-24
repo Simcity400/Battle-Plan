@@ -328,7 +328,12 @@ fn an_empty_modifier_arena_grows_in_the_pass_and_keeps_current_values() {
         capture.allocated_bytes(),
         capture.rows.allocated_bytes()
             + capture.seeds.capacity() * std::mem::size_of::<Seed>()
+            + capture.row_versions.capacity() * std::mem::size_of::<u64>()
             + capture.modifiers.borrow().allocated_bytes()
+            + capture.model.allocated_bytes()
+            + capture.store.allocated_bytes()
+            + capture.air_capacity.allocated_bytes()
+            + capture.naval_power.allocated_bytes()
             + capture
                 .extra
                 .iter()
@@ -1155,12 +1160,14 @@ fn held_fleet_terms_follow_the_leader_binding_and_tree_certificates() {
     let world = Fleet::new();
     let task = cship::TaskForceFields {
         pointer: TASK,
+        vtable: 0,
         handle: 7,
         roster_owner: 1,
         location: 0,
         fleet: FLEET,
         mine_exposure: 0,
         modifiers: TASK + 0x668,
+        influences_count: Some(0),
     };
     let certificate = || {
         (
@@ -1199,6 +1206,7 @@ fn held_fleet_terms_follow_the_leader_binding_and_tree_certificates() {
             terms: None,
             terms_identity: 0,
             quiet: None,
+            variant_quiet: None,
             guard_fallback: false,
             revalidated: false,
         };
@@ -3349,7 +3357,7 @@ mod carry_cost_bench {
             assert!(store.next_hot.is_empty());
             assert!(store.next_tasks.is_empty());
             assert!(store.next_variants.is_empty());
-            assert!(store.next_variant_index.is_empty());
+            assert!(store.next_variant_head.is_empty());
             assert_eq!(store.quiet, None);
             assert_eq!(store.generation, 0);
             assert_eq!(store.rows, None);

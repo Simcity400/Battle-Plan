@@ -102,6 +102,7 @@ impl Watches {
         }
     }
 
+    #[inline]
     pub fn notify(&self, site: usize, target: Target) -> Option<Dirty<'_>> {
         if site == ORIGIN_ROUTE_SITE {
             self.origin_calls.fetch_add(1, Ordering::Relaxed);
@@ -267,6 +268,7 @@ impl Changes for Observer {
     }
 }
 
+#[inline(always)]
 fn target(receiver: Receiver, first: usize, second: usize, third: usize) -> Target {
     let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     match receiver {
@@ -311,6 +313,7 @@ fn target(receiver: Receiver, first: usize, second: usize, third: usize) -> Targ
     }
 }
 
+#[inline(always)]
 fn note_air_clear(site: usize) {
     if site == 21 || site == 22 {
         AIR_CLEARS.fetch_add(1, Ordering::SeqCst);
@@ -561,11 +564,9 @@ macro_rules! callback {
         ) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::RaidChanges);
             let _occupation = matches!($site, 0 | 5).then(|| {
-                (
-                    crate::occupation_changes::changed(first),
-                    crate::occupation_changes::changed(
-                        first.wrapping_add(engine_native::cstate::COUNTRY_MODIFIERS),
-                    ),
+                crate::occupation_changes::changed_pair(
+                    first,
+                    first.wrapping_add(engine_native::cstate::COUNTRY_MODIFIERS),
                 )
             });
             let target = target(MUTATIONS[$site].1, first, second, third);

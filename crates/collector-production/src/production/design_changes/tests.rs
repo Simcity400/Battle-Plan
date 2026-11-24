@@ -621,6 +621,11 @@ fn variant_frame_reset_withdraws_old_observations_and_keeps_reusable_storage() {
             TableInput::Sampled(TableView::Unavailable { .. })
         ));
     }
+    captured.release_transient();
+    assert_eq!(captured.rows.capacity(), 0);
+    assert!(captured.dictionary.is_none());
+    assert!(captured.context.is_none());
+    assert!(captured.templates.is_none());
 }
 
 #[test]
@@ -1565,7 +1570,7 @@ fn stat_timing_quiet_refuses_when_design_hooks_are_disabled() {
         return;
     }
     ENABLED.store(false, Ordering::Release);
-    ACTIVE.store(0, Ordering::Release);
+    assert_eq!(active(), 0);
     assert_eq!(
         stat_timing_quiet(),
         Err("variant stat writer hooks disabled")
@@ -1593,7 +1598,7 @@ fn stat_timing_quiet_detects_design_mio_read_between_and_during_reads() {
         0
     }
     ENABLED.store(true, Ordering::Release);
-    ACTIVE.store(0, Ordering::Release);
+    assert_eq!(active(), 0);
     collector_observers::world_input_changes::set_design_watch_enabled_for_test(true);
     let callback = collector_observers::world_input_changes::design_mio_read_for_test(original);
     let before = stat_timing_quiet().expect("quiet before design_mio_read");

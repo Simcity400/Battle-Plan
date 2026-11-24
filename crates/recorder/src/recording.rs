@@ -361,6 +361,7 @@ type AheadResult = (replay_io::Live, Option<Localisation>, Duration);
 struct FinalizingAhead {
     packing: Option<Arc<replay_settings::packing::Packing>>,
     stop: Arc<AtomicBool>,
+    promoted: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<AheadResult>>,
     asked: Arc<AtomicBool>,
     names: Arc<Mutex<BTreeMap<String, String>>>,
@@ -407,6 +408,7 @@ impl FinalizingAhead {
         let names = Arc::<Mutex<BTreeMap<String, String>>>::default();
         let (published, asked) = (Arc::clone(&names), Arc::new(AtomicBool::new(false)));
         let asking = Arc::clone(&asked);
+        let promoted = Arc::new(AtomicBool::new(false));
         let packing = replay_settings::packing::Packing::new()
             .map(Arc::new)
             .inspect_err(|error| {
@@ -414,8 +416,47 @@ impl FinalizingAhead {
             })
             .ok();
         if let (Some(packing), Some(idle)) = (&packing, idle) {
+            let gate_stop = Arc::clone(&stop);
+            let gate_promoted = Arc::clone(&promoted);
+            let gate_asked = Arc::clone(&asked);
+            let origin = std::time::Instant::now();
+            let idle_since_ms = std::sync::atomic::AtomicU64::new(0);
             packing.set_gate(move || {
-                let _ = idle.handle.wait(200);
+                const IDLE_QUIET_MS: u64 = 1000;
+                const POLL_MS: u64 = 11;
+                loop {
+                    if gate_stop.load(Ordering::Acquire)
+                        || gate_promoted.load(Ordering::Acquire)
+                        || gate_asked.load(Ordering::Acquire)
+                    {
+                        return;
+                    }
+                    if idle.handle.signaled().unwrap_or(true) {
+                        let now_ms =
+                            origin.elapsed().as_millis().min(u64::MAX as u128 - 1) as u64 + 1;
+                        let since = idle_since_ms.load(Ordering::Acquire);
+                        if since == 0 {
+                            let _ = idle_since_ms.compare_exchange(
+                                0,
+                                now_ms,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            );
+                        } else if now_ms.saturating_sub(since) >= IDLE_QUIET_MS {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(POLL_MS));
+                    } else {
+                        idle_since_ms.store(0, Ordering::Release);
+                        let _ = idle.handle.wait(50);
+                        if idle.handle.signaled().unwrap_or(false) {
+                            let now_ms =
+                                origin.elapsed().as_millis().min(u64::MAX as u128 - 1) as u64 + 1;
+                            idle_since_ms.store(now_ms, Ordering::Release);
+                            std::thread::sleep(Duration::from_millis(POLL_MS));
+                        }
+                    }
+                }
             });
         }
         let carried = replay_settings::exit::Carry::current();
@@ -424,6 +465,7 @@ impl FinalizingAhead {
             .spawn(move || carried.run(|| {
                 let _pass_progress = progress_io::passes(&session);
                 packing.run(|| {
+                packing.wait_for_game();
                 let localisation = content_reader_localisation::localisation::read(&layers, &language)
                     .inspect_err(|error| {
                         eprintln!("Countries are named by tag: the localisation could not be read: {error}");
@@ -487,6 +529,7 @@ impl FinalizingAhead {
         Self {
             packing,
             stop,
+            promoted,
             thread,
             asked,
             names,
@@ -494,6 +537,7 @@ impl FinalizingAhead {
     }
 
     fn promote(&self) {
+        self.promoted.store(true, Ordering::Release);
         if let Some(packing) = &self.packing {
             packing.promote();
         }
@@ -1069,7 +1113,16 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
     fs::create_dir_all(&options.output).map_err(|e| e.to_string())?;
     options.output = options.output.canonicalize().map_err(|e| e.to_string())?;
     match command.as_str() {
-        "record" => record(options),
+        "record" => {
+            // SAFETY: lowers only this recorder process's priority class during live capture.
+            unsafe {
+                use windows_sys::Win32::System::Threading::{
+                    BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, SetPriorityClass,
+                };
+                SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
+            }
+            record(options)
+        }
         "detach" => request_detach(&options.output),
         "refresh" => request_refresh(&options.output),
         "finalize" => {
@@ -6153,6 +6206,7 @@ mod tests {
         let unstarted = FinalizingAhead {
             packing: None,
             stop: Arc::default(),
+            promoted: Arc::default(),
             thread: None,
             asked: Arc::default(),
             names: Arc::default(),

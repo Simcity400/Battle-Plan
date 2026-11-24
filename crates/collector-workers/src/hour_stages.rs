@@ -64,12 +64,24 @@ impl Log {
     }
 }
 
+const TOTAL_STAGES: usize = crate::roles::ROLE_COUNT + PARTS.len();
+static STAGE_CALLS: [AtomicU64; TOTAL_STAGES] = [const { AtomicU64::new(0) }; TOTAL_STAGES];
+static STAGE_TICKS: [AtomicU64; TOTAL_STAGES] = [const { AtomicU64::new(0) }; TOTAL_STAGES];
+
+fn accumulate(index: usize, started: i64, ended: i64) {
+    if let (Some(calls), Some(ticks)) = (STAGE_CALLS.get(index), STAGE_TICKS.get(index)) {
+        calls.fetch_add(1, Ordering::Relaxed);
+        ticks.fetch_add(ended.saturating_sub(started).max(0) as u64, Ordering::Relaxed);
+    }
+}
+
 pub fn begin(now: i64) {
     LOG.begin(now);
 }
 
 pub fn record(role: usize, started: i64, ended: i64) {
     LOG.record(role, started, ended);
+    accumulate(role, started, ended);
 }
 
 #[derive(Clone, Copy)]
@@ -93,9 +105,14 @@ pub enum Part {
     VariantsSnapshot,
     VariantsContext,
     VariantsSetup,
+    ScoresRailsWait,
+    RaidStateWait,
+    IntelResidualWait,
+    OrdinaryNaviesWait,
+    PresentationSpeedTermsWait,
 }
 
-const PARTS: [&str; 19] = [
+const PARTS: [&str; 24] = [
     "settle_sources",
     "settle_certify",
     "settle_daily",
@@ -115,10 +132,17 @@ const PARTS: [&str; 19] = [
     "variants_snapshot",
     "variants_context",
     "variants_setup",
+    "scores_rails_wait",
+    "raid_state_wait",
+    "intel_residual_wait",
+    "ordinary_navies_wait",
+    "presentation_speed_terms_wait",
 ];
 
 pub fn record_part(part: Part, started: i64, ended: i64) {
-    LOG.record(crate::roles::ROLE_COUNT + part as usize, started, ended);
+    let index = crate::roles::ROLE_COUNT + part as usize;
+    LOG.record(index, started, ended);
+    accumulate(index, started, ended);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -256,17 +280,35 @@ pub fn keep(hour: Option<i32>, held_ns: u64, forced: bool, ns: &dyn Fn(i64) -> u
     }
 }
 
-pub fn status() -> impl serde::Serialize {
+pub fn status(ns: &dyn Fn(i64) -> u64) -> impl serde::Serialize + use<> {
     let (forced, slowest) = {
         let kept = KEPT
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         (kept.forced, kept.slowest)
     };
+    let totals: [(u64, u64); TOTAL_STAGES] = std::array::from_fn(|index| {
+        let calls = STAGE_CALLS[index].load(Ordering::Relaxed);
+        let ticks = STAGE_TICKS[index].load(Ordering::Relaxed);
+        (calls, ns(ticks.min(i64::MAX as u64) as i64))
+    });
     collector_status::status::status!({
-        "scope": "every acquisition job of the latest forced hour and of the slowest other hour since attach, by begin: its stage, the pool worker that ran it (null: the game thread), its begin after the hold began and its wall, both ns; settle_*, template_* and variants_* stages are serial parts inside the presentation_settle, templates and variants jobs, governance_buildings_wait and projects_rest_wait the governance and gated_projects parents' waits for the work they gave a worker beside their own; template_fallback: why the hour's template walk ran serially (null: split or never offered ranges); dropped: jobs past the log's capacity; missed: hours not kept while status read them",
+        "scope": "every acquisition job of the latest forced hour and of the slowest other hour since attach, by begin: its stage, the pool worker that ran it (null: the game thread), its begin after the hold began and its wall, both ns; totals: cumulative calls and wall_ns per stage since attach; settle_*, template_* and variants_* stages are serial parts inside the presentation_settle, templates and variants jobs, governance_buildings_wait and projects_rest_wait the governance and gated_projects parents' waits for the work they gave a worker beside their own; template_fallback: why the hour's template walk ran serially (null: split or never offered ranges); dropped: jobs past the log's capacity; missed: hours not kept while status read them",
         "forced": forced.status(),
         "slowest": slowest.status(),
+        "totals": collector_status::status::sequence(
+            totals
+                .into_iter()
+                .enumerate()
+                .filter(|&(_, (calls, _))| calls != 0)
+                .map(|(index, (calls, wall_ns))| {
+                    collector_status::status::status!({
+                        "stage": stage(index),
+                        "calls": calls,
+                        "wall_ns": wall_ns,
+                    })
+                }),
+        ),
         "missed": MISSED.load(Ordering::Relaxed),
     })
 }
@@ -302,7 +344,7 @@ mod tests {
         assert_eq!(stages[2]["worker"], 3);
         assert_eq!(stages[2]["begin_ns"], 3_000);
         assert_eq!(stages[2]["wall_ns"], 1_000);
-        assert_eq!(PARTS.len(), Part::VariantsSetup as usize + 1);
+        assert_eq!(PARTS.len(), Part::PresentationSpeedTermsWait as usize + 1);
         assert_eq!(status["template_fallback"], serde_json::Value::Null);
         assert_eq!(FALLBACKS.len(), TemplateFallback::Redecided as usize + 1);
         log.template_fallback

@@ -1,5 +1,8 @@
 use crate::opinion_changes::Padded;
-use collector_primitives::spill_stack::SpillStack;
+use collector_primitives::{
+    asymmetric::{FlightGate, FlightGuard},
+    spill_stack::SpillStack,
+};
 use std::sync::{
     Mutex, MutexGuard, PoisonError,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -16,6 +19,7 @@ pub struct Log {
     pub epoch: AtomicU64,
     pub enabled: AtomicBool,
     pub active: Padded<AtomicUsize>,
+    gate: FlightGate,
     pub consumed: AtomicU64,
     pub required: AtomicUsize,
     lost: AtomicU64,
@@ -83,11 +87,8 @@ pub fn raise(value: &AtomicUsize, minimum: usize, order: Ordering) {
     }
 }
 
-pub struct Call<'a>(&'a Log);
-impl Drop for Call<'_> {
-    fn drop(&mut self) {
-        self.0.active.fetch_sub(1, Ordering::SeqCst);
-    }
+pub struct Call<'a> {
+    _guard: FlightGuard<'a>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -125,6 +126,7 @@ impl Log {
             epoch: AtomicU64::new(1),
             enabled: AtomicBool::new(false),
             active: Padded(AtomicUsize::new(0)),
+            gate: FlightGate::new(0),
             consumed: AtomicU64::new(0),
             required: AtomicUsize::new(0),
             lost: AtomicU64::new(u64::MAX),
@@ -133,9 +135,16 @@ impl Log {
     pub fn invalidate(&self) {
         self.epoch.fetch_add(1, Ordering::SeqCst);
     }
+    #[inline(always)]
     pub fn enter(&self) -> Call<'_> {
-        self.active.fetch_add(1, Ordering::SeqCst);
-        Call(self)
+        Call {
+            _guard: self.gate.enter(false),
+        }
+    }
+    pub fn active(&self) -> usize {
+        self.active
+            .load(Ordering::SeqCst)
+            .saturating_add(self.gate.active())
     }
     pub fn reserve(&self) -> (u64, Reserved) {
         let consumed = self.consumed.load(Ordering::Acquire);
@@ -220,7 +229,7 @@ impl Log {
         if self.lost.load(Ordering::Acquire) < cursor {
             return lost();
         }
-        if self.active.load(Ordering::SeqCst) != 0 {
+        if self.active.load(Ordering::SeqCst) != 0 || self.gate.any_active() {
             return Ok(Drained {
                 epoch,
                 first,

@@ -206,24 +206,69 @@ fn candidate_owner(memory: &impl Memory, header: usize) -> Result<(usize, u8), &
     Err("decision candidate append owner differs")
 }
 fn appended_candidates(header: usize, before: Result<u32, &'static str>) {
+    appended_candidates_for(header, before, None);
+}
+fn appended_candidates_for(
+    header: usize,
+    before: Result<u32, &'static str>,
+    owner: Option<(usize, u8)>,
+) {
     let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let result = (|| {
         let before = before?;
-        let (status, kind) = candidate_owner(&memory, header)?;
         let array =
             engine_native_memory::cpdx_array::Array::read(&memory, header, runtime::CANDIDATE_STRIDE)
                 .ok_or("decision candidate result header unreadable")?;
         if before > array.count {
             return Err("decision candidate append shrank its destination");
         }
-        for ordinal in before..array.count {
-            let at = array
-                .element(ordinal, runtime::CANDIDATE_STRIDE)
-                .ok_or("decision candidate result ordinal differs")?;
-            let definition = field::<u64>(&memory, at, runtime::CANDIDATE_DEFINITION)? as usize;
-            let target = field::<u32>(&memory, at, 0)?;
-            let root = field::<u32>(&memory, at, runtime::CANDIDATE_ROOT)?;
-            feed::decisions::candidate(status, kind, definition, target, root);
+        if before == array.count {
+            return Ok(());
+        }
+        let (status, kind) = match owner {
+            Some(known) => known,
+            None => candidate_owner(&memory, header)?,
+        };
+        const BATCH: usize = 32;
+        let mut raw = [0_u8; BATCH * runtime::CANDIDATE_STRIDE];
+        let mut items = [(0_usize, 0_u32, 0_u32); BATCH];
+        let mut first = before;
+        while first < array.count {
+            let count = ((array.count - first) as usize).min(BATCH);
+            let span = array
+                .slice(first, count as u32, runtime::CANDIDATE_STRIDE)
+                .map_err(|_| "decision candidate result ordinal differs")?;
+            if engine_native_memory::read_slice(&memory, span.data, &mut raw[..count * runtime::CANDIDATE_STRIDE]) {
+                for (index, rec) in raw[..count * runtime::CANDIDATE_STRIDE]
+                    .chunks_exact(runtime::CANDIDATE_STRIDE)
+                    .enumerate()
+                {
+                    let target = u32::from_le_bytes(rec[0..4].try_into().unwrap());
+                    let root = u32::from_le_bytes(
+                        rec[runtime::CANDIDATE_ROOT..runtime::CANDIDATE_ROOT + 4]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    let definition = u64::from_le_bytes(
+                        rec[runtime::CANDIDATE_DEFINITION..runtime::CANDIDATE_DEFINITION + 8]
+                            .try_into()
+                            .unwrap(),
+                    ) as usize;
+                    items[index] = (definition, target, root);
+                }
+            } else {
+                for index in 0..count {
+                    let at = array
+                        .element(first + index as u32, runtime::CANDIDATE_STRIDE)
+                        .ok_or("decision candidate result ordinal differs")?;
+                    let definition = field::<u64>(&memory, at, runtime::CANDIDATE_DEFINITION)? as usize;
+                    let target = field::<u32>(&memory, at, 0)?;
+                    let root = field::<u32>(&memory, at, runtime::CANDIDATE_ROOT)?;
+                    items[index] = (definition, target, root);
+                }
+            }
+            feed::decisions::candidates(status, kind, &items[..count]);
+            first += count as u32;
         }
         Ok::<_, &'static str>(())
     })();
@@ -326,8 +371,8 @@ unsafe extern "system-unwind" fn filter(status: usize) -> usize {
     type Original = unsafe extern "system-unwind" fn(usize) -> usize;
     let original: Original = unsafe { std::mem::transmute(ORIGINAL[15].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(status) });
-    for (header, before) in headers.into_iter().zip(before) {
-        appended_candidates(header, before);
+    for ((header, kind), before) in headers.into_iter().zip([2u8, 3u8]).zip(before) {
+        appended_candidates_for(header, before, Some((status, kind)));
     }
     flight.returned();
     result

@@ -84,7 +84,7 @@ fn opinion(status: usize) -> i32 {
 }
 
 #[doc = " The owning diplomacy of a live status the native writer is writing. Only"]
-#[doc = " the status constructor writes it (`engine_native::crelation_status::DIPLOMACY_STATUS`)."]
+#[doc = " the status constructor writes it (`engine_native::crelation::status::DIPLOMACY_STATUS`)."]
 fn diplomacy(status: usize) -> usize {
     let address = status.wrapping_add(engine_native::crelation::status::DIPLOMACY_STATUS);
     unsafe { std::ptr::read_volatile(address as *const usize) }

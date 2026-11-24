@@ -172,20 +172,74 @@ pub fn family_of(table: TableId) -> Option<usize> {
         .position(|family| family.tables.contains(&table))
 }
 
-fn insert_owner(owners: &mut Vec<u32>, owner: u32) -> bool {
-    let index = match owners.last() {
-        Some(&last) if last < owner => owners.len(),
-        None => 0,
-        Some(_) => match owners.binary_search(&owner) {
-            Ok(_) => return true,
-            Err(index) => index,
-        },
-    };
-    if engine_allocation::reserve_push_batch(owners, 1).is_err() {
-        return false;
+const BITSET_WORDS: usize = 32;
+const BITSET_BITS: usize = BITSET_WORDS * 64;
+
+struct OwnerSet {
+    owners: Vec<u32>,
+    bits: [u64; BITSET_WORDS],
+}
+
+impl OwnerSet {
+    const fn new() -> Self {
+        Self {
+            owners: Vec::new(),
+            bits: [0; BITSET_WORDS],
+        }
     }
-    owners.insert(index, owner);
-    true
+
+    fn clear(&mut self) {
+        if !self.owners.is_empty() {
+            self.owners.clear();
+            self.bits = [0; BITSET_WORDS];
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.owners.is_empty()
+    }
+
+    fn as_slice(&self) -> &[u32] {
+        &self.owners
+    }
+
+    #[cfg(test)]
+    fn capacity(&self) -> usize {
+        self.owners.capacity()
+    }
+
+    #[inline]
+    fn contains(&self, owner: u32) -> bool {
+        let index = owner as usize;
+        if index < BITSET_BITS {
+            (self.bits[index / 64] >> (index % 64)) & 1 != 0
+        } else {
+            self.owners.binary_search(&owner).is_ok()
+        }
+    }
+
+    fn insert(&mut self, owner: u32) -> bool {
+        let index = owner as usize;
+        if index < BITSET_BITS && (self.bits[index / 64] >> (index % 64)) & 1 != 0 {
+            return true;
+        }
+        let pos = match self.owners.last() {
+            Some(&last) if last < owner => self.owners.len(),
+            None => 0,
+            Some(_) => match self.owners.binary_search(&owner) {
+                Ok(_) => return true,
+                Err(pos) => pos,
+            },
+        };
+        if engine_allocation::reserve_push_batch(&mut self.owners, 1).is_err() {
+            return false;
+        }
+        self.owners.insert(pos, owner);
+        if index < BITSET_BITS {
+            self.bits[index / 64] |= 1_u64 << (index % 64);
+        }
+        true
+    }
 }
 
 pub struct SliceSelection {
@@ -193,14 +247,14 @@ pub struct SliceSelection {
     pub force_full: bool,
     daily: bool,
     boundary: bool,
-    settled: Vec<u32>,
-    early: Vec<u32>,
+    settled: OwnerSet,
+    early: OwnerSet,
     pub early_count: u32,
-    seen: Vec<u32>,
+    seen: OwnerSet,
     census: bool,
-    walked: Vec<u32>,
+    walked: OwnerSet,
     tracked: bool,
-    marked: Vec<u32>,
+    marked: OwnerSet,
     pub marked_count: u32,
     pub scanned: u32,
     pub out_of_range: u32,
@@ -220,14 +274,14 @@ impl SliceSelection {
             force_full: true,
             daily: false,
             boundary: false,
-            settled: Vec::new(),
-            early: Vec::new(),
+            settled: OwnerSet::new(),
+            early: OwnerSet::new(),
             early_count: 0,
-            seen: Vec::new(),
+            seen: OwnerSet::new(),
             census: false,
-            walked: Vec::new(),
+            walked: OwnerSet::new(),
             tracked: false,
-            marked: Vec::new(),
+            marked: OwnerSet::new(),
             marked_count: 0,
             scanned: 0,
             out_of_range: 0,
@@ -268,11 +322,12 @@ impl SliceSelection {
     pub fn reads_any(&self) -> bool {
         self.force_full
             || !self.early.is_empty()
-            || self.seen.iter().any(|&owner| self.contains(owner))
+            || self.seen.as_slice().iter().any(|&owner| self.contains(owner))
     }
 
     pub fn carried(&self) -> usize {
         self.seen
+            .as_slice()
             .iter()
             .filter(|&&owner| !self.contains(owner))
             .count()
@@ -290,7 +345,7 @@ impl SliceSelection {
             return;
         }
         self.scanned += 1;
-        if !insert_owner(&mut self.seen, owner) {
+        if !self.seen.insert(owner) {
             self.out_of_range += 1;
             self.force_full = true;
         }
@@ -303,7 +358,7 @@ impl SliceSelection {
         fingerprint: Option<u64>,
         drifts: bool,
     ) {
-        if !drifts && !insert_owner(&mut self.settled, owner) {
+        if !drifts && !self.settled.insert(owner) {
             self.out_of_range += 1;
             self.force_full = true;
             return;
@@ -318,13 +373,13 @@ impl SliceSelection {
         fingerprint: Option<u64>,
     ) {
         self.scanned += 1;
-        if !insert_owner(&mut self.seen, owner) {
+        if !self.seen.insert(owner) {
             self.out_of_range += 1;
             self.force_full = true;
             return;
         }
         if fingerprints.observe(owner, fingerprint) && !self.contains(owner) {
-            if insert_owner(&mut self.early, owner) {
+            if self.early.insert(owner) {
                 self.early_count += 1;
             } else {
                 self.out_of_range += 1;
@@ -340,7 +395,7 @@ impl SliceSelection {
         fingerprint: Option<u64>,
     ) {
         self.scanned += 1;
-        if !insert_owner(&mut self.seen, owner) {
+        if !self.seen.insert(owner) {
             self.out_of_range += 1;
             self.force_full = true;
             return;
@@ -352,7 +407,7 @@ impl SliceSelection {
 
     pub fn select(&mut self, owner: u32) -> bool {
         if !self.contains(owner) {
-            if !insert_owner(&mut self.early, owner) {
+            if !self.early.insert(owner) {
                 self.out_of_range += 1;
                 self.force_full = true;
                 return false;
@@ -368,7 +423,7 @@ impl SliceSelection {
             return;
         }
         self.census = true;
-        fingerprints.keep_only(&self.seen);
+        fingerprints.keep_only(self.seen.as_slice());
     }
 
     pub fn finish_pass(&mut self, fingerprints: &mut SliceFingerprints, complete: bool) {
@@ -379,14 +434,16 @@ impl SliceSelection {
         }
     }
 
+    #[inline]
     pub fn live(&self, owner: u32) -> bool {
-        !self.census || self.seen.binary_search(&owner).is_ok()
+        !self.census || self.seen.contains(owner)
     }
 
+    #[inline]
     pub fn contains(&self, owner: u32) -> bool {
         self.force_full
-            || (self.in_slice(owner, false) && self.settled.binary_search(&owner).is_err())
-            || self.early.binary_search(&owner).is_ok()
+            || (self.in_slice(owner, false) && !self.settled.contains(owner))
+            || self.early.contains(owner)
     }
 
     fn in_slice(&self, owner: u32, force_full: bool) -> bool {
@@ -399,8 +456,8 @@ impl SliceSelection {
     }
 
     pub fn mark(&mut self, owner: u32) {
-        let new = self.marked.binary_search(&owner).is_err();
-        if !insert_owner(&mut self.marked, owner) {
+        let new = !self.marked.contains(owner);
+        if !self.marked.insert(owner) {
             self.out_of_range += 1;
             self.force_full = true;
             return;
@@ -420,6 +477,7 @@ impl SliceSelection {
 
     pub fn marked_early(&self) -> u32 {
         self.marked
+            .as_slice()
             .iter()
             .filter(|&&owner| !self.in_slice(owner, false))
             .count() as u32
@@ -431,7 +489,7 @@ impl SliceSelection {
     }
 
     pub fn mark_read(&mut self, owner: u32) {
-        if !insert_owner(&mut self.walked, owner) {
+        if !self.walked.insert(owner) {
             self.out_of_range += 1;
             self.force_full = true;
         }
@@ -439,14 +497,15 @@ impl SliceSelection {
 
     pub fn read_owners(&self) -> impl Iterator<Item = u32> + '_ {
         self.seen
+            .as_slice()
             .iter()
             .copied()
             .filter(|&owner| self.contains(owner))
-            .filter(|&owner| !self.tracked || self.walked.binary_search(&owner).is_ok())
+            .filter(|&owner| !self.tracked || self.walked.contains(owner))
     }
 
     pub fn invalidate(&self, fingerprints: &mut SliceFingerprints) {
-        for &owner in &self.early {
+        for &owner in self.early.as_slice() {
             fingerprints.invalidate(owner);
         }
         fingerprints.stale_slices |= if self.force_full || (self.daily && self.boundary) {
@@ -464,7 +523,7 @@ impl SliceSelection {
         let mut selection = Self::new();
         selection.reset(hour, force_full);
         for &owner in early {
-            assert!(insert_owner(&mut selection.early, owner));
+            assert!(selection.early.insert(owner));
             selection.early_count += 1;
         }
         selection
@@ -473,7 +532,7 @@ impl SliceSelection {
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_census(mut self, seen: &[u32]) -> Self {
         for &owner in seen {
-            assert!(insert_owner(&mut self.seen, owner));
+            assert!(self.seen.insert(owner));
         }
         self.census = true;
         self
@@ -706,7 +765,7 @@ mod tests {
                 selection.scan_marking(store, owner, Some(print));
             }
             selection.finish_census(store);
-            selection.marked.clone()
+            selection.marked.as_slice().to_vec()
         };
         assert_eq!(hour(&mut store, [1, 1, 1]), [1, 2, 3]);
         assert_eq!(hour(&mut store, [1, 2, 1]), [2]);

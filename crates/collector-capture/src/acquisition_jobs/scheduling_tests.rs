@@ -62,7 +62,12 @@ fn gated(hour: i32, full: bool, raw: bool, mode: replay_data::scope::CaptureMode
         hour,
         full,
         Box::new(collector_certificates::slicing::SliceFingerprints::new()),
-        None,
+        Some(
+            engine_allocation::shared(
+                engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
+            )
+            .unwrap(),
+        ),
     )
 }
 fn old_gated(request: &mut GatedRequest, marks: &Marks) {
@@ -118,6 +123,8 @@ fn split_gated_matches_serial_tables_raw_admission_and_single_mark_consumption()
                 let mut split = gated(hour, full, raw, mode);
                 let marks = Marks::default();
                 let mut projects = split.take_projects();
+                assert!(split.countries.is_some());
+                assert!(projects.countries.is_some());
                 projects.capture(&Unreadable, &Unreadable, &marks);
                 split
                     .packs

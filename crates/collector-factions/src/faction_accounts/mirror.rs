@@ -2,12 +2,16 @@ use super::Account;
 use engine_allocation as allocation;
 use std::{
     ptr,
-    sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU64, Ordering},
 };
+#[repr(align(64))]
+struct Hot(AtomicU64);
+const ACTIVE_BITS: u32 = 20;
+const ACTIVE_MASK: u64 = (1 << ACTIVE_BITS) - 1;
+const VERSION_STEP: u64 = 1 << ACTIVE_BITS;
 static POINTER: AtomicPtr<Storage> = AtomicPtr::new(ptr::null_mut());
 static CLOSED: AtomicBool = AtomicBool::new(false);
-static ACTIVE: AtomicUsize = AtomicUsize::new(0);
-static VERSION: AtomicU64 = AtomicU64::new(0);
+static STATE: Hot = Hot(AtomicU64::new(0));
 static MISSED: AtomicBool = AtomicBool::new(false);
 pub const INITIATIVE: usize = 0;
 pub const CONTRIBUTION: usize = 1;
@@ -26,29 +30,30 @@ pub enum Operation {
 }
 pub struct Flight;
 impl Flight {
+    #[inline]
     pub fn new() -> Self {
-        ACTIVE.fetch_add(1, Ordering::SeqCst);
-        VERSION.fetch_add(1, Ordering::SeqCst);
+        STATE.0.fetch_add(VERSION_STEP + 1, Ordering::SeqCst);
         Self
     }
 }
 impl Drop for Flight {
+    #[inline]
     fn drop(&mut self) {
-        VERSION.fetch_add(1, Ordering::SeqCst);
-        ACTIVE.fetch_sub(1, Ordering::SeqCst);
+        STATE
+            .0
+            .fetch_add(VERSION_STEP.wrapping_sub(1), Ordering::SeqCst);
     }
 }
 pub fn active() -> usize {
-    ACTIVE.load(Ordering::SeqCst)
+    (STATE.0.load(Ordering::SeqCst) & ACTIVE_MASK) as usize
 }
 pub fn baseline_stamp() -> Option<u64> {
-    let version = VERSION.load(Ordering::SeqCst);
-    (active() == 0 && version == VERSION.load(Ordering::SeqCst)).then_some(version)
+    let state = STATE.0.load(Ordering::SeqCst);
+    (state & ACTIVE_MASK == 0).then_some(state >> ACTIVE_BITS)
 }
 pub fn quiet() -> Option<u64> {
-    let version = VERSION.load(Ordering::SeqCst);
-    (active() == 0 && !MISSED.load(Ordering::SeqCst) && version == VERSION.load(Ordering::SeqCst))
-        .then_some(version)
+    let state = STATE.0.load(Ordering::SeqCst);
+    (state & ACTIVE_MASK == 0 && !MISSED.load(Ordering::SeqCst)).then_some(state >> ACTIVE_BITS)
 }
 struct Slot {
     address: usize,
@@ -141,6 +146,14 @@ impl Storage {
         })
         .map_err(|_| "faction operand storage allocation failed")
     }
+    #[inline]
+    fn mark_dirty(&self, index: usize) {
+        let word = &self.dirty[index / 64];
+        let bit = 1u64 << (index % 64);
+        if word.load(Ordering::SeqCst) & bit == 0 {
+            word.fetch_or(bit, Ordering::SeqCst);
+        }
+    }
     fn index(&self, address: usize) -> Option<usize> {
         let offset = address.checked_sub(self.data)?;
         if offset % self.stride != 0 {
@@ -196,7 +209,7 @@ impl Storage {
                 target.fetch_sub(value, Ordering::Relaxed);
             }
         }
-        self.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
+        self.mark_dirty(index);
     }
     fn projection_sources(&self, index: usize, term: usize, source: &[i64; 7]) {
         let indices: &[usize] = match term {
@@ -215,7 +228,7 @@ impl Storage {
         self.slots[index]
             .projection_derived
             .fetch_or(1 << term, Ordering::Relaxed);
-        self.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
+        self.mark_dirty(index);
     }
     fn refresh(&self, address: usize, projection: bool, numerator: i64, denominator: i64) {
         let Some(index) = self.index(address) else {
@@ -243,7 +256,7 @@ impl Storage {
             replay_data::rows::FactionAccountRow::normalized(numerator, denominator),
             Ordering::Relaxed,
         );
-        self.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
+        self.mark_dirty(index);
     }
     fn rank_input(&self, address: usize, numerator: i64, order: u32) {
         let Some(index) = self.index(address) else {
@@ -269,7 +282,7 @@ impl Storage {
             target.store(source.load(Ordering::Relaxed), Ordering::Relaxed);
         }
         slot.values[PROJECTION_RANK].store(native as i64, Ordering::Relaxed);
-        self.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
+        self.mark_dirty(index);
     }
     fn passive(&self, address: usize, product: i64) {
         let Some(index) = self.index(address) else {
@@ -288,7 +301,7 @@ impl Storage {
             current.wrapping_add(product / 100_000).max(0),
             Ordering::Relaxed,
         );
-        self.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
+        self.mark_dirty(index);
     }
     pub fn allocated_bytes(&self) -> usize {
         size_of::<Self>()

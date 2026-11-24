@@ -92,10 +92,20 @@ pub struct Captured {
     province_modifiers: ProvinceModifiers,
     province_statics: Option<engine_allocation::SharedBox<ProvinceStatics>>,
     custom_sea: entries::CustomSea,
+    province_window: Option<(u32, u32)>,
+    display_snow: Vec<u8>,
+    display_mud: Vec<u8>,
     pub raw_mode: bool,
 }
 
 impl Captured {
+    pub fn vacant() -> Self {
+        Self::with_capacities(&Capacities {
+            rows: [0; N],
+            display_bytes: 0,
+        })
+    }
+
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             regions: CaptureRows::new(capacity.rows[0]),
@@ -112,6 +122,9 @@ impl Captured {
             province_modifiers: ProvinceModifiers::default(),
             province_statics: None,
             custom_sea: Default::default(),
+            province_window: None,
+            display_snow: Vec::new(),
+            display_mud: Vec::new(),
             raw_mode: false,
         }
     }
@@ -129,6 +142,9 @@ impl Captured {
         self.province_modifiers.clear();
         self.province_statics = None;
         self.custom_sea.clear();
+        self.province_window = None;
+        self.display_snow.clear();
+        self.display_mud.clear();
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -140,6 +156,8 @@ impl Captured {
             + air_efficiency::allocated_bytes(&self.air_efficiency)
             + self.province_modifiers.allocated_bytes()
             + self.custom_sea.allocated_bytes()
+            + self.display_snow.capacity()
+            + self.display_mud.capacity()
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -250,45 +268,197 @@ impl Captured {
     ) -> [replay_frame::frame::TableInput; N] {
         [
             self.region_table().into(),
-            collector_projection::projection::ledger_table::<tables::WeatherProvinces, _, _>(
-                projection,
+            self.province_table_input(projection),
+        ]
+    }
+
+    fn province_table_input(
+        &self,
+        projection: Option<&mut collector_projection::projection::Projection<'_>>,
+    ) -> replay_frame::frame::TableInput {
+        use replay_data::rows::RowCodec;
+        let Some(projection) = projection else {
+            return table::<tables::WeatherProvinces, _>(
                 self.provinces.outcome,
                 &self.provinces.rows,
-                |row| u128::from(row.id),
-                |_, row, record| {
-                    if row.id == 0 {
-                        return None;
-                    }
-                    match self.province_modifiers.get(row.id as usize) {
-                        Some(entries) => {
-                            record.word(entries.len() as i64);
-                            for &(key, value) in entries {
-                                record.word(i64::from(key));
-                                record.word(value);
-                            }
-                        }
-                        None => record.word(-1),
-                    }
-                    match self.province_statics(row.id) {
-                        Some(list) => {
-                            record.word(entries::statics(list).count() as i64);
-                            for (name, days) in entries::statics(list) {
-                                record.bytes(Some(name));
-                                record.word(i64::from(days));
-                            }
-                        }
-                        None => record.word(-1),
-                    }
-                    Some((
-                        [row.snow, row.permanent_snow],
-                        [row.display_snow, row.display_mud, row.raw_mud],
-                        self.province_temperature(row),
-                        self.province_clock(row),
-                    ))
-                },
                 |row| self.province_row(row),
-            ),
-        ]
+            )
+            .into();
+        };
+        let mut held = projection.take_custom::<ProvinceFastState>(TableId::WeatherProvinces);
+        if matches!(self.provinces.outcome, Outcome::Rows { len } if len > 0)
+            && !replay_data::cadence::is_staggered(TableId::WeatherProvinces)
+            && let Some(rows) = self.provinces.rows.get(..self.provinces.outcome.len())
+            && self.display_snow.len() == rows.len()
+            && self.display_mud.len() == rows.len()
+            && let Some((first, visits)) = self.province_window
+            && self.clocks_updated
+            && self.temperature_pass.is_some()
+            && let (Some(curr_anchor), Some(curr_statics)) =
+                (&self.temperature_anchor, &self.province_statics)
+            && curr_anchor.len() >= rows.len()
+            && let Some((token, previous)) =
+                projection.slice_baseline_rows::<tables::WeatherProvinces>()
+            && previous.len() == rows.len()
+            && let Some(state) = held.as_mut()
+            && state.stamp == token.baseline()
+            && state.clocks_updated
+            && state.sequential
+            && state.display_snow.len() == rows.len()
+            && state.display_mud.len() == rows.len()
+            && state
+                .temperature_anchor
+                .as_ref()
+                .is_some_and(|prev| engine_allocation::SharedBox::ptr_eq(prev, curr_anchor))
+            && state
+                .province_statics
+                .as_ref()
+                .is_some_and(|prev| engine_allocation::SharedBox::ptr_eq(prev, curr_statics))
+            && rows[0].id == 0
+            && rows[rows.len() - 1].id as usize == rows.len() - 1
+        {
+            let input = projection.timed(TableId::WeatherProvinces, || {
+                let len = rows.len();
+                let candidates = &mut state.candidates;
+                candidates.clear();
+                let push_candidate = |list: &mut Vec<usize>, index: usize| -> std::io::Result<()> {
+                    if list.len() == list.capacity() {
+                        engine_allocation::reserve(list, 1)?;
+                    }
+                    list.push(index);
+                    Ok(())
+                };
+                if push_candidate(candidates, 0).is_err() {
+                    return crate::table_conversion::unavailable("collector allocation failed")
+                        .into();
+                }
+                for offset in 0..visits as usize {
+                    if push_candidate(candidates, (first as usize + offset) % len).is_err() {
+                        return crate::table_conversion::unavailable("collector allocation failed")
+                            .into();
+                    }
+                }
+                if push_display_diffs(
+                    &self.display_snow,
+                    &state.display_snow,
+                    &self.display_mud,
+                    &state.display_mud,
+                    candidates,
+                )
+                .is_err()
+                {
+                    return crate::table_conversion::unavailable("collector allocation failed")
+                        .into();
+                }
+                candidates.sort_unstable();
+                candidates.dedup();
+                let mut keys = Vec::new();
+                let mut changed = Vec::new();
+                for &idx in candidates.iter() {
+                    let row = &rows[idx];
+                    let prev = &previous[idx];
+                    if row.id != prev.id || !self.province_equal(row, prev) {
+                        if keys.len() == keys.capacity()
+                            && engine_allocation::reserve(&mut keys, 1).is_err()
+                        {
+                            return crate::table_conversion::unavailable(
+                                "collector allocation failed",
+                            )
+                            .into();
+                        }
+                        if changed.len() == changed.capacity()
+                            && engine_allocation::reserve(&mut changed, 1).is_err()
+                        {
+                            return crate::table_conversion::unavailable(
+                                "collector allocation failed",
+                            )
+                            .into();
+                        }
+                        keys.push(u128::from(row.id));
+                        let mut converted = self.province_row(row);
+                        converted.round_to_display();
+                        changed.push(converted);
+                    }
+                }
+                state.stamp = projection.current_stamp();
+                state.display_snow.copy_from_slice(&self.display_snow);
+                state.display_mud.copy_from_slice(&self.display_mud);
+                if keys.is_empty() {
+                    projection.note_compared(TableId::WeatherProvinces, None);
+                    replay_frame::frame::TableInput::ComparedEqual(token)
+                } else {
+                    projection.note_compared(TableId::WeatherProvinces, Some(changed.len()));
+                    replay_frame::frame::TableInput::SliceUpdate {
+                        token,
+                        update: std::sync::Arc::new(replay_data::sliced::SliceUpdate::keyed(
+                            keys,
+                            rows::TableRows::WeatherProvinces(changed),
+                        )),
+                    }
+                }
+            });
+            if matches!(
+                input,
+                replay_frame::frame::TableInput::ComparedEqual(_)
+                    | replay_frame::frame::TableInput::SliceUpdate { .. }
+            ) {
+                projection.put_custom(TableId::WeatherProvinces, held.unwrap());
+            }
+            return input;
+        }
+        let input = collector_projection::projection::project_table::<tables::WeatherProvinces, _>(
+            Some(projection),
+            self.provinces.outcome,
+            &self.provinces.rows,
+            |row| u128::from(row.id),
+            |row, previous| self.province_equal(row, previous),
+            |row| self.province_row(row),
+        );
+        if matches!(
+            input,
+            replay_frame::frame::TableInput::ComparedEqual(_)
+                | replay_frame::frame::TableInput::SliceUpdate { .. }
+                | replay_frame::frame::TableInput::SharedComplete(_)
+        ) && matches!(self.provinces.outcome, Outcome::Rows { len } if len > 0)
+            && let Some(rows) = self.provinces.rows.get(..self.provinces.outcome.len())
+            && self.display_snow.len() == rows.len()
+            && self.display_mud.len() == rows.len()
+        {
+            let sequential = rows
+                .iter()
+                .enumerate()
+                .all(|(index, row)| row.id as usize == index);
+            if sequential {
+                let mut state = match held {
+                    Some(state) => state,
+                    None => match engine_allocation::boxed(ProvinceFastState::default()) {
+                        Ok(state) => state,
+                        Err(_) => return input,
+                    },
+                };
+                state.display_snow.clear();
+                state.display_mud.clear();
+                if engine_allocation::reserve(&mut state.display_snow, self.display_snow.len())
+                    .is_ok()
+                    && engine_allocation::reserve(&mut state.display_mud, self.display_mud.len())
+                        .is_ok()
+                {
+                    state.display_snow.extend_from_slice(&self.display_snow);
+                    state.display_mud.extend_from_slice(&self.display_mud);
+                    state.stamp = projection.current_stamp();
+                    state.clocks_updated = self.clocks_updated;
+                    state.sequential = true;
+                    state.temperature_anchor = self
+                        .temperature_pass
+                        .is_some()
+                        .then(|| self.temperature_anchor.clone())
+                        .flatten();
+                    state.province_statics = self.province_statics.clone();
+                    projection.put_custom(TableId::WeatherProvinces, state);
+                }
+            }
+        }
+        input
     }
 
     fn region_table(&self) -> TableView {
@@ -444,7 +614,6 @@ impl Captured {
         }
     }
 
-    #[cfg(test)]
     fn province_equal(
         &self,
         row: &sweather_per_province::Row,
@@ -538,6 +707,89 @@ impl Captured {
     }
 }
 
+#[derive(Default)]
+struct ProvinceFastState {
+    stamp: (u64, replay_data::BranchId, replay_data::Hour),
+    clocks_updated: bool,
+    sequential: bool,
+    temperature_anchor: Option<engine_allocation::SharedBox<Vec<replay_data::temperature::State>>>,
+    province_statics: Option<engine_allocation::SharedBox<ProvinceStatics>>,
+    display_snow: Vec<u8>,
+    display_mud: Vec<u8>,
+    candidates: Vec<usize>,
+}
+
+fn push_display_diffs(
+    snow: &[u8],
+    prev_snow: &[u8],
+    mud: &[u8],
+    prev_mud: &[u8],
+    out: &mut Vec<usize>,
+) -> std::io::Result<()> {
+    let chunks = snow.len() / 8;
+    for chunk in 0..chunks {
+        let base = chunk * 8;
+        let a_s = u64::from_ne_bytes(snow[base..base + 8].try_into().unwrap());
+        let b_s = u64::from_ne_bytes(prev_snow[base..base + 8].try_into().unwrap());
+        let a_m = u64::from_ne_bytes(mud[base..base + 8].try_into().unwrap());
+        let b_m = u64::from_ne_bytes(prev_mud[base..base + 8].try_into().unwrap());
+        if (a_s ^ b_s) | (a_m ^ b_m) != 0 {
+            for offset in 0..8 {
+                let idx = base + offset;
+                if snow[idx] != prev_snow[idx] || mud[idx] != prev_mud[idx] {
+                    if out.len() == out.capacity() {
+                        engine_allocation::reserve(out, 1)?;
+                    }
+                    out.push(idx);
+                }
+            }
+        }
+    }
+    for idx in chunks * 8..snow.len() {
+        if snow[idx] != prev_snow[idx] || mud[idx] != prev_mud[idx] {
+            if out.len() == out.capacity() {
+                engine_allocation::reserve(out, 1)?;
+            }
+            out.push(idx);
+        }
+    }
+    Ok(())
+}
+
+fn fill_display_buffers(
+    memory: &impl Memory,
+    [snow, mud]: [engine_native_memory::cpdx_array::Array; 2],
+    provinces: u32,
+    display_snow: &mut Vec<u8>,
+    display_mud: &mut Vec<u8>,
+    rows: &mut [sweather_per_province::Row],
+) -> Result<(), &'static str> {
+    if snow.count != provinces || mud.count != provinces {
+        return Err("weather display arrays differ from the province array");
+    }
+    let count = provinces as usize;
+    if display_snow.len() < count {
+        resize(display_snow, count, 0).map_err(|_| "weather display buffer allocation failed")?;
+    }
+    display_snow.truncate(count);
+    if display_mud.len() < count {
+        resize(display_mud, count, 0).map_err(|_| "weather display buffer allocation failed")?;
+    }
+    display_mud.truncate(count);
+    if !memory.copy(snow.data, &mut display_snow[..count])
+        || !memory.copy(mud.data, &mut display_mud[..count])
+    {
+        display_snow.clear();
+        display_mud.clear();
+        return Err("weather display bytes unreadable");
+    }
+    for ((row, &s), &m) in rows.iter_mut().zip(&display_snow[..count]).zip(&display_mud[..count]) {
+        row.display_snow = s;
+        row.display_mud = m;
+    }
+    Ok(())
+}
+
 fn words_of(row: &sweather_per_province::Row) -> replay_data::temperature::State {
     replay_data::temperature::State {
         temperature: row.temperature,
@@ -579,6 +831,9 @@ pub struct WeatherJob {
     custom_sea: entries::CustomSea,
     custom_bytes: Vec<u8>,
     custom_values: Vec<i16>,
+    province_window: Option<(u32, u32)>,
+    modifiers_windowed: bool,
+    statics_held: bool,
     pub carry: Option<Box<carry::WeatherCarry>>,
 }
 
@@ -610,6 +865,9 @@ impl WeatherJob {
             custom_sea: Default::default(),
             custom_bytes: Vec::new(),
             custom_values: Vec::new(),
+            province_window: None,
+            modifiers_windowed: false,
+            statics_held: false,
             carry: None,
         };
         job.update_capacity_charge();
@@ -632,6 +890,9 @@ impl WeatherJob {
         self.province_statics = None;
         self.static_vtable = None;
         self.custom_sea.clear();
+        self.province_window = None;
+        self.modifiers_windowed = false;
+        self.statics_held = false;
     }
 
     pub fn grow_for_next(&self) -> bool {
@@ -1173,14 +1434,20 @@ impl Captured {
             sweather_per_province::decode_record,
         );
         self.provinces.outcome = match (outcome, job.provinces.array) {
-            (Outcome::Unavailable { .. }, _) | (_, None) => outcome,
+            (Outcome::Unavailable { .. }, _) | (_, None) => {
+                self.display_snow.clear();
+                self.display_mud.clear();
+                outcome
+            }
             (_, Some(array)) => {
                 let len = outcome.len();
                 match reader.display_arrays().and_then(|arrays| {
-                    sweather_per_province::fill_display(
+                    fill_display_buffers(
                         &recorded,
                         arrays,
                         array.count,
+                        &mut self.display_snow,
+                        &mut self.display_mud,
                         &mut self.provinces.rows[..len],
                     )?;
                     let clocks = reader.province_clocks()?;
@@ -1195,6 +1462,12 @@ impl Captured {
                 }
             }
         };
+        self.province_window = matches!(self.provinces.outcome, Outcome::Rows { .. })
+            .then(|| {
+                job.province_window
+                    .filter(|_| job.modifiers_windowed && job.statics_held)
+            })
+            .flatten();
         self.clocks_updated = reader.suspend_flags() == Ok([0, 0]);
         self.daylight_direction = (!self.clocks_updated)
             .then(|| reader.daylight_direction().ok())

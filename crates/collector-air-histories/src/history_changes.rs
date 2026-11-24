@@ -97,7 +97,7 @@ pub fn boundary(invalidate: bool) {
 }
 
 pub fn presize(slots: usize, regions: usize) {
-    WATCHES.offer(watches_for(slots, regions));
+    WATCHES.offer(watches_for(slots, regions.min(16)));
 }
 
 pub fn observe(receivers: usize) {

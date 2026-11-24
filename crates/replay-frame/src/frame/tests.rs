@@ -2060,13 +2060,10 @@ fn consuming_encoder_moves_vectors_and_decoder_keeps_unchanged_string_allocation
     let first = source(1, 100);
     let input_rows = first.complete::<tables::Countries>().unwrap().as_ptr();
     let initial = encoder.encode(first, false).unwrap();
-    let baseline = encoder.state.tables[TableId::Countries.index()]
-        .as_ref()
-        .unwrap();
     assert_eq!(
-        baseline
-            .1
-            .as_ref()
+        encoder
+            .committed_rows(TableId::Countries)
+            .unwrap()
             .rows::<tables::Countries>()
             .unwrap()
             .as_ptr(),
@@ -2084,13 +2081,10 @@ fn consuming_encoder_moves_vectors_and_decoder_keeps_unchanged_string_allocation
     change_country(&mut next, 2);
     let input_rows = next.complete::<tables::Countries>().unwrap().as_ptr();
     let delta = encoder.encode(next, false).unwrap();
-    let baseline = encoder.state.tables[TableId::Countries.index()]
-        .as_ref()
-        .unwrap();
     assert_eq!(
-        baseline
-            .1
-            .as_ref()
+        encoder
+            .committed_rows(TableId::Countries)
+            .unwrap()
             .rows::<tables::Countries>()
             .unwrap()
             .as_ptr(),
@@ -2111,13 +2105,10 @@ fn consuming_encoder_moves_vectors_and_decoder_keeps_unchanged_string_allocation
         update.tables[TableId::Countries.index()],
         TableUpdate::Unchanged { .. }
     ));
-    let baseline = encoder.state.tables[TableId::Countries.index()]
-        .as_ref()
-        .unwrap();
     assert_eq!(
-        baseline
-            .1
-            .as_ref()
+        encoder
+            .committed_rows(TableId::Countries)
+            .unwrap()
             .rows::<tables::Countries>()
             .unwrap()
             .as_ptr(),
@@ -3758,6 +3749,76 @@ fn a_frame_keeping_some_tables_leaves_the_rest_to_the_native_capture() {
             }
         }
     }
+}
+
+#[test]
+fn prepare_contained_keeping_matches_take_frame_keeping_and_keeps_baselines() {
+    let _details = crate::codec::error_details_scope();
+    let kept = [TableId::Clock, TableId::Countries];
+    let mut full = FrameEncoder::new();
+    let mut pruned = FrameEncoder::new();
+    let mut full_refused = Vec::new();
+    let mut pruned_refused = Vec::new();
+    for hour in 0..4 {
+        let mut frame = FrameInput::from(source(1, hour));
+        if hour == 2 {
+            frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
+                StateRow {
+                    id: 64,
+                    continent: crate::rows::Recorded::NotRecorded,
+                    ..Default::default()
+                },
+            ]))
+            .into();
+        }
+        let mut full_segments = std::array::from_fn(|_| None);
+        let mut pruned_segments = std::array::from_fn(|_| None);
+        let mut prepared_full = full
+            .prepare_contained(frame.clone(), hour == 0, &mut full_segments, |table, error| {
+                let message = error.to_string();
+                full_refused.push((hour, table, message.clone()));
+                Ok(message)
+            })
+            .unwrap();
+        let mut prepared_pruned = pruned
+            .prepare_contained_keeping(
+                frame,
+                hour == 0,
+                &mut pruned_segments,
+                |table| kept.contains(&table),
+                |table, error| {
+                    let message = error.to_string();
+                    pruned_refused.push((hour, table, message.clone()));
+                    Ok(message)
+                },
+            )
+            .unwrap();
+        let expected = prepared_full
+            .take_frame_keeping(|table| kept.contains(&table))
+            .unwrap();
+        let actual_ptr = prepared_pruned.frame().bytes.as_ptr();
+        let actual = prepared_pruned
+            .take_frame_keeping(|table| kept.contains(&table))
+            .unwrap();
+        assert_eq!(actual.bytes.as_ptr(), actual_ptr, "hour {hour}");
+        assert_eq!(actual.bytes, expected.bytes, "hour {hour}");
+        assert_eq!(
+            prepared_pruned.input().tables[TableId::States.index()],
+            prepared_full.input().tables[TableId::States.index()],
+            "hour {hour}"
+        );
+        full.commit(prepared_full).unwrap();
+        pruned.commit(prepared_pruned).unwrap();
+        for table in TableId::ALL {
+            assert_eq!(
+                pruned.committed_rows(table),
+                full.committed_rows(table),
+                "hour {hour} {table:?}"
+            );
+        }
+    }
+    assert_eq!(pruned_refused, full_refused);
+    assert_eq!(pruned_refused.len(), 1);
 }
 
 #[test]

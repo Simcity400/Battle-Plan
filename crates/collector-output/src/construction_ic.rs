@@ -65,9 +65,8 @@ static OBSERVATION: Log = Log::new(0);
 static SPILL: Spill<Entry> = Spill::new();
 static CURSOR: &Padded<AtomicU64> = &OBSERVATION.cursor;
 static ENABLED: &AtomicBool = &OBSERVATION.enabled;
-static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
 pub fn active() -> usize {
-    ACTIVE.load(Ordering::SeqCst)
+    OBSERVATION.active()
 }
 static INSTALLED: [AtomicBool; 7] = [const { AtomicBool::new(false) }; 7];
 static ORIGINAL: [AtomicUsize; 7] = [const { AtomicUsize::new(0) }; 7];
@@ -134,7 +133,7 @@ pub unsafe fn install_offered() {
         return;
     };
     if swap.retired.is_some()
-        || ACTIVE.load(Ordering::SeqCst) != 0
+        || active() != 0
         || CURSOR.load(Ordering::SeqCst) != CONSUMED.load(Ordering::Relaxed)
     {
         return;
@@ -602,7 +601,7 @@ impl Hooks {
 
 impl Drop for Hooks {
     fn drop(&mut self) {
-        if ACTIVE.load(Ordering::SeqCst) != 0 {
+        if active() != 0 {
             return;
         }
         unsafe { ManuallyDrop::drop(&mut self.shared) };
@@ -736,7 +735,7 @@ pub(crate) fn observe_for_test(enabled: bool, base: usize) {
 /// disabled and quiescent (`ACTIVE == 0`).
 #[cfg(any(test, feature = "test-support"))]
 pub unsafe fn reset_log_for_test(capacity: usize) {
-    assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+    assert_eq!(active(), 0);
     let mut current = Storage::new(capacity).unwrap();
     let pointer = &mut *current as *mut Storage;
     *LOG_SWAP.lock().unwrap() = LogSwap {

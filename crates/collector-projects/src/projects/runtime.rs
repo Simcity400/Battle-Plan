@@ -3,16 +3,29 @@ use collector_observers::project_variable_changes;
 use std::collections::HashMap;
 
 #[derive(Default)]
-struct Held {
-    pointer: usize,
-    stamp: Option<(u64, u64)>,
+struct PendingRaw {
     entries: Vec<engine_scripts::cvariables::Row>,
     names: Vec<u8>,
     entries_len: usize,
     seed: Option<u32>,
-    variables_known: bool,
+}
+
+impl PendingRaw {
+    fn allocated_bytes(&self) -> usize {
+        size_of::<Self>()
+            + self.entries.capacity() * size_of::<engine_scripts::cvariables::Row>()
+            + self.names.capacity()
+    }
+}
+
+#[derive(Default)]
+struct Held {
+    pointer: usize,
+    stamp: Option<(u64, u64)>,
+    pending_raw: Option<Box<PendingRaw>>,
     recorded_variables: Option<std::sync::Arc<rows::ProjectVariableStore>>,
-    recorded_bytes: usize,
+    recorded_bytes: u32,
+    variables_known: bool,
     freeze_pending: bool,
     queued: bool,
     pending_known: bool,
@@ -27,14 +40,18 @@ impl Held {
         if !std::mem::take(&mut self.freeze_pending) {
             return;
         }
+        let Some(raw) = self.pending_raw.take() else {
+            self.variables_known = false;
+            return;
+        };
         let value = freeze_project_variables(
-            &self.entries[..self.entries_len],
-            &self.names,
-            self.seed.unwrap(),
+            &raw.entries[..raw.entries_len],
+            &raw.names,
+            raw.seed.unwrap(),
         );
         match value {
             Ok(value) => {
-                self.recorded_bytes = size_of::<rows::ProjectVariableStore>()
+                let bytes = size_of::<rows::ProjectVariableStore>()
                     + 2 * size_of::<usize>()
                     + value.entries.capacity() * size_of::<rows::ProjectVariable>()
                     + value
@@ -42,6 +59,7 @@ impl Held {
                         .iter()
                         .map(|entry| entry.name.capacity())
                         .sum::<usize>();
+                self.recorded_bytes = u32::try_from(bytes).unwrap_or(u32::MAX);
                 self.recorded_variables = Some(value);
             }
             Err(_) => self.variables_known = false,
@@ -49,9 +67,10 @@ impl Held {
     }
 
     fn allocated_bytes(&self) -> usize {
-        self.entries.capacity() * size_of::<engine_scripts::cvariables::Row>()
-            + self.names.capacity()
-            + self.recorded_bytes
+        self.pending_raw
+            .as_ref()
+            .map_or(0, |raw| raw.allocated_bytes())
+            + self.recorded_bytes as usize
     }
 }
 
@@ -143,6 +162,7 @@ impl Runtime {
         selection: Option<&SliceSelection>,
         defer: bool,
     ) {
+        let mut reader = project_variable_changes::stamp_reader();
         for row in rows {
             let key = (row.owner, row.local_id);
             if !self.held.contains_key(&key) {
@@ -170,8 +190,22 @@ impl Runtime {
                     held.freeze_pending = false;
                     return;
                 };
-                let stamp = project_variable_changes::register(store, row.owner, row.local_id);
-                let pending_stamp = project_variable_changes::pending_stamp(store);
+                if reader.is_none() {
+                    reader = project_variable_changes::stamp_reader();
+                }
+                let (stamp, pending_stamp) = match reader
+                    .as_ref()
+                    .and_then(|reader| reader.stamps(store, row.owner, row.local_id))
+                {
+                    Some(stamps) => stamps,
+                    None => {
+                        reader = None;
+                        (
+                            project_variable_changes::register(store, row.owner, row.local_id),
+                            project_variable_changes::pending_stamp(store),
+                        )
+                    }
+                };
                 if pending_stamp.is_none() {
                     held.pending_known = false;
                     PROJECT_REWARD_REFUSALS.fetch_add(1, Relaxed);
@@ -180,6 +214,7 @@ impl Runtime {
                     || pending_stamp != held.pending_stamp
                     || row.state.iterations != held.iterations
                 {
+                    reader = None;
                     let pending = pointer
                         .checked_add(nproject_cproject::PENDING_REWARD)
                         .and_then(|address| engine_native_memory::read::<u64>(memory, address))
@@ -227,22 +262,31 @@ impl Runtime {
                 if !force && held.variables_known && stamp == held.stamp {
                     return;
                 }
+                reader = None;
                 held.variables_known = false;
                 held.freeze_pending = false;
+                if held.pending_raw.is_none() {
+                    let Ok(raw) = engine_allocation::boxed(PendingRaw::default()) else {
+                        PROJECT_VARIABLE_REFUSALS.fetch_add(1, Relaxed);
+                        return;
+                    };
+                    held.pending_raw = Some(raw);
+                }
+                let raw = held.pending_raw.as_mut().unwrap();
                 let read = engine_scripts::cvariables::read_store_carried(
                     memory,
                     base,
                     engine_scripts::cvariables::Scope::Global,
                     store,
-                    engine_native_memory::walk::Buffer::Growing(&mut held.entries),
-                    engine_native_memory::walk::Buffer::Growing(&mut held.names),
+                    engine_native_memory::walk::Buffer::Growing(&mut raw.entries),
+                    engine_native_memory::walk::Buffer::Growing(&mut raw.names),
                     &mut engine_scripts::cvariables::Fresh,
                 );
                 if let Ok((read, seed)) = read
                     && let Outcome::Rows { len } = read.outcome
                 {
-                    held.entries_len = len;
-                    held.seed = seed;
+                    raw.entries_len = len;
+                    raw.seed = seed;
                     held.variables_known = seed.is_some()
                         && stamp.is_some()
                         && stamp
@@ -253,6 +297,7 @@ impl Runtime {
                             if engine_allocation::reserve_push_batch(&mut self.pending, 1).is_err()
                             {
                                 held.variables_known = false;
+                                held.pending_raw = None;
                                 PROJECT_VARIABLE_REFUSALS.fetch_add(1, Relaxed);
                                 return;
                             }
@@ -266,11 +311,13 @@ impl Runtime {
                     }
                 }
                 if !held.variables_known {
+                    held.pending_raw = None;
                     PROJECT_VARIABLE_REFUSALS.fetch_add(1, Relaxed);
                 }
             })();
             self.heap_bytes += held.allocated_bytes();
         }
+        drop(reader);
         if full_census {
             self.finish_census(rows, selection);
         }
@@ -327,14 +374,16 @@ impl Runtime {
     #[cfg(any(test, feature = "test-support"))]
     pub(super) fn allocation_failure_fixture() -> Self {
         let held = Held {
-            entries: vec![engine_scripts::cvariables::Row {
-                name_start: 0,
-                name_len: 1,
-                value_raw: -1,
-            }],
-            names: vec![b'x'],
-            entries_len: 1,
-            seed: Some(7),
+            pending_raw: Some(Box::new(PendingRaw {
+                entries: vec![engine_scripts::cvariables::Row {
+                    name_start: 0,
+                    name_len: 1,
+                    value_raw: -1,
+                }],
+                names: vec![b'x'],
+                entries_len: 1,
+                seed: Some(7),
+            })),
             variables_known: true,
             freeze_pending: true,
             queued: true,
@@ -383,21 +432,23 @@ mod tests {
         };
         let make = || Held {
             pointer: row.source_pointer,
-            entries: vec![
-                engine_scripts::cvariables::Row {
-                    name_start: 0,
-                    name_len: 3,
-                    value_raw: i64::MIN,
-                },
-                engine_scripts::cvariables::Row {
-                    name_start: 3,
-                    name_len: 2,
-                    value_raw: i64::MAX,
-                },
-            ],
-            names: vec![b'a', 0, 255, b'b', b'c'],
-            entries_len: 2,
-            seed: Some(u32::MAX),
+            pending_raw: Some(Box::new(PendingRaw {
+                entries: vec![
+                    engine_scripts::cvariables::Row {
+                        name_start: 0,
+                        name_len: 3,
+                        value_raw: i64::MIN,
+                    },
+                    engine_scripts::cvariables::Row {
+                        name_start: 3,
+                        name_len: 2,
+                        value_raw: i64::MAX,
+                    },
+                ],
+                names: vec![b'a', 0, 255, b'b', b'c'],
+                entries_len: 2,
+                seed: Some(u32::MAX),
+            })),
             variables_known: true,
             freeze_pending: true,
             pending_known: true,
@@ -456,14 +507,16 @@ mod tests {
                 };
                 let held = Held {
                     pointer: row.source_pointer,
-                    entries: vec![engine_scripts::cvariables::Row {
-                        name_start: 0,
-                        name_len: 3,
-                        value_raw: -9,
-                    }],
-                    names: b"new".to_vec(),
-                    entries_len: 1,
-                    seed: Some(9),
+                    pending_raw: Some(Box::new(PendingRaw {
+                        entries: vec![engine_scripts::cvariables::Row {
+                            name_start: 0,
+                            name_len: 3,
+                            value_raw: -9,
+                        }],
+                        names: b"new".to_vec(),
+                        entries_len: 1,
+                        seed: Some(9),
+                    })),
                     variables_known: true,
                     freeze_pending: true,
                     pending_known: true,
@@ -783,9 +836,9 @@ mod tests {
             .into(),
         );
         let held = runtime.held.get_mut(&(row.owner, row.local_id)).unwrap();
-        runtime.heap_bytes -= held.recorded_bytes;
+        runtime.heap_bytes -= held.recorded_bytes as usize;
         let value = held.recorded_variables.as_ref().unwrap();
-        held.recorded_bytes = size_of::<rows::ProjectVariableStore>()
+        let bytes = size_of::<rows::ProjectVariableStore>()
             + 2 * size_of::<usize>()
             + value.entries.capacity() * size_of::<rows::ProjectVariable>()
             + value
@@ -793,7 +846,8 @@ mod tests {
                 .iter()
                 .map(|entry| entry.name.capacity())
                 .sum::<usize>();
-        runtime.heap_bytes += held.recorded_bytes;
+        held.recorded_bytes = u32::try_from(bytes).unwrap_or(u32::MAX);
+        runtime.heap_bytes += held.recorded_bytes as usize;
         let growths = engine_allocation::growths();
         let (first, second) = collector_test_support::with_allocations_denied(|| {
             (runtime.value(&row), runtime.value(&row))
@@ -917,14 +971,17 @@ mod cold_join_tests {
             23,
         )
         .unwrap();
-        let recorded_bytes = size_of::<rows::ProjectVariableStore>()
-            + 2 * size_of::<usize>()
-            + variables.entries.capacity() * size_of::<rows::ProjectVariable>()
-            + variables
-                .entries
-                .iter()
-                .map(|entry| entry.name.capacity())
-                .sum::<usize>();
+        let recorded_bytes = u32::try_from(
+            size_of::<rows::ProjectVariableStore>()
+                + 2 * size_of::<usize>()
+                + variables.entries.capacity() * size_of::<rows::ProjectVariable>()
+                + variables
+                    .entries
+                    .iter()
+                    .map(|entry| entry.name.capacity())
+                    .sum::<usize>(),
+        )
+        .unwrap_or(u32::MAX);
         let mut parts = Vec::new();
         let mut expected = Vec::new();
         let mut first = 1u32;

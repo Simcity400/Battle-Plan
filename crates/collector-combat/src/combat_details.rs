@@ -4,6 +4,7 @@ use crate::{
     table_conversion::{table, table_iter, unavailable},
 };
 use collector_observers::naval_tree_changes;
+use collector_projection::projection::{Projection, project_table, scalar_table};
 use engine_allocation as allocation;
 use engine_native_land::land_tactic_inputs;
 use engine_native_memory::{Memory, walk::Outcome};
@@ -15,14 +16,14 @@ use engine_native_land::{
 use replay_data::{
     rows::CombatModifierValue, rows::LandCombatCommanderTimedTrait, rows::LandCombatCommanderTrait,
     rows::LandCombatDetailsRow, rows::LandCombatDivisionModifierRow, rows::LandCombatDivisionRow,
-    rows::LandCombatExileInputs, rows::LandCombatMemberValues, rows::NameOperands, rows::LandCombatLearningProgress, rows::LandCombatModifierRow,
-    rows::LandCombatSideDetails, rows::LandCombatSideInputs, rows::LandCombatSideRow,
-    rows::LandDivisionContext, rows::LandDivisionModifier, rows::LandDivisionWidthTerm,
-    rows::Recorded, rows::ReserveModifierTreeRow, rows::Retired, rows::RetiredKept,
-    rows::RetiredNested, rows::TableId, rows::tables,
+    rows::LandCombatExileInputs, rows::LandCombatLearningProgress, rows::LandCombatMemberValues,
+    rows::LandCombatModifierRow, rows::LandCombatSideDetails, rows::LandCombatSideInputs,
+    rows::LandCombatSideRow, rows::LandDivisionContext, rows::LandDivisionModifier,
+    rows::LandDivisionWidthTerm, rows::NameOperands, rows::Recorded, rows::ReserveModifierTreeRow,
+    rows::Retired, rows::RetiredKept, rows::RetiredNested, rows::TableId, rows::tables,
 };
 use replay_data::{rows::LandCombatTacticCountryWeight, rows::LandCombatTacticInputs};
-use replay_frame::frame::TableView;
+use replay_frame::frame::{TableInput, TableView};
 use std::mem::size_of;
 use std::sync::{
     OnceLock,
@@ -1657,6 +1658,12 @@ impl Captured {
         }
     }
     pub fn tables(&self) -> [TableView; N] {
+        self.table_inputs(None).map(|input| match input {
+            TableInput::Sampled(view) => view,
+            _ => unreachable!("unprojected combat detail conversion returns sampled views"),
+        })
+    }
+    pub fn table_inputs(&self, mut projection: Option<&mut Projection<'_>>) -> [TableInput; N] {
         let outcomes = self.outcomes();
         let member_key = |row: &Division| (row.combat, row.side, row.ordinal);
         let members = match outcomes[1] {
@@ -1681,18 +1688,16 @@ impl Captured {
                         replay_data::rows::LandBorderWarInputs {
                             transfer_state: border.transfer_state,
                             combat_width: Recorded::Value(border.combat_width),
-                            sides: border
-                                .sides
-                                .map(|side| replay_data::rows::LandBorderWarSide {
-                                    country: side.country,
-                                    state: side.state,
-                                    win_event: allocation::owned_vec(allocation::copy_vec(
-                                        &self.detail_text.first[side.win_event.range()],
-                                    )),
-                                    lose_event: allocation::owned_vec(allocation::copy_vec(
-                                        &self.detail_text.first[side.lose_event.range()],
-                                    )),
-                                }),
+                            sides: border.sides.map(|side| replay_data::rows::LandBorderWarSide {
+                                country: side.country,
+                                state: side.state,
+                                win_event: allocation::owned_vec(allocation::copy_vec(
+                                    &self.detail_text.first[side.win_event.range()],
+                                )),
+                                lose_event: allocation::owned_vec(allocation::copy_vec(
+                                    &self.detail_text.first[side.lose_event.range()],
+                                )),
+                            }),
                         }
                     })),
                     combat: r.id,
@@ -1768,120 +1773,241 @@ impl Captured {
                         }
                     }),
                 }
-            }),
-            table::<tables::LandCombatDivisions, _>(outcomes[1], &self.divisions.rows, |r| {
-                let s = r.stats;
-                let naming = s.naming.unwrap_or_default();
-                let name = |(start, len): (usize, usize)| {
-                    allocation::owned_vec(allocation::copy_vec(
-                        &self.division_names.first[start..start + len],
-                    ))
-                };
-                LandCombatDivisionRow {
-                    combat: r.combat,
-                    side: r.side,
-                    ordinal: r.ordinal,
-                    division: s.division,
-                    role: r.role,
-                    province: r.province,
-                    own: (!r.joined).then(|| LandCombatMemberValues {
-                        naming: NameOperands {
-                            kind: naming.kind,
-                            order: naming.order,
-                            ordered: naming.ordered,
-                            programmatic: naming.programmatic,
-                            custom: name(naming.custom),
-                            group: name(naming.group),
-                        },
-                        strength_combat_factor: s.strength_combat_factor,
-                        fuel_inputs: s.fuel_inputs,
-                        stat_values: s.stat_values,
-                        armour: s.armour,
-                        piercing: s.piercing,
-                        air_attack: s.air_attack,
-                        reconnaissance: s.reconnaissance,
-                        initiative: s.initiative,
-                        base_speed: r.context.base_speed,
-                    }),
-                    commander: s.commander,
-                    direction_group: s.direction_group,
-                    categories: s.categories,
-                    exile: r.exile.map(|exile| {
-                        let tags = |(start, len): (usize, usize)| {
-                            allocation::owned_vec(allocation::copy_vec(
-                                &self.exile_tags.first[start..start + len],
-                            ))
-                        };
-                        LandCombatExileInputs {
-                            origin_type: exile.origin_type,
-                            country: exile.country,
-                            country_fallback: exile.country_fallback,
-                            location_cores: tags(exile.cores),
-                            occupiers: tags(exile.occupiers),
-                        }
-                    }),
-                    scales: s.scales,
-                    reinforcement_speed: r.reserve_speed.and_then(Result::ok),
-                    context: LandDivisionContext {
-                        template: r.context.template,
-                        country_modifiers: r.context.country_modifiers.map(|m| {
-                            LandDivisionModifier {
-                                raw: m.raw,
-                                present: m.present,
-                            }
-                        }),
-                        leader_modifiers: r.context.leader_modifiers.map(|m| {
-                            LandDivisionModifier {
-                                raw: m.raw,
-                                present: m.present,
-                            }
-                        }),
-                        modifier_metadata: r.context.modifier_metadata,
-                        leader_modifier_kind: r.context.leader_modifier_kind,
-                        feature_flags: r.context.feature_flags,
-                        eligibility_callback: r.context.eligibility_callback,
-                    },
-                    width_terms: allocation::owned_vec(allocation::collect_vec(
-                        self.width_terms.first
-                            [r.width_start..r.width_start + r.context.width_term_count]
+            })
+            .into(),
+            project_table::<tables::LandCombatDivisions, _>(
+                projection.as_deref_mut(),
+                outcomes[1],
+                &self.divisions.rows,
+                |r| {
+                    ((r.combat as u128) << 33)
+                        | ((r.side as u128) << 32)
+                        | u128::from(r.ordinal)
+                },
+                |r, previous| {
+                    let s = &r.stats;
+                    if s.division != previous.division
+                        || r.role != previous.role
+                        || r.province != previous.province
+                        || s.commander != previous.commander
+                        || s.direction_group != previous.direction_group
+                        || s.categories != previous.categories
+                        || s.scales != previous.scales
+                        || r.reserve_speed.and_then(Result::ok) != previous.reinforcement_speed
+                        || r.context.template != previous.context.template
+                        || r.context.modifier_metadata != previous.context.modifier_metadata
+                        || r.context.leader_modifier_kind != previous.context.leader_modifier_kind
+                        || r.context.feature_flags != previous.context.feature_flags
+                        || r.context.eligibility_callback != previous.context.eligibility_callback
+                        || !r
+                            .context
+                            .country_modifiers
                             .iter()
-                            .map(|t| LandDivisionWidthTerm {
-                                subunit: t.subunit,
-                                count: t.count,
-                                width: t.width,
+                            .zip(&previous.context.country_modifiers)
+                            .all(|(a, b)| a.raw == b.raw && a.present == b.present)
+                        || !r
+                            .context
+                            .leader_modifiers
+                            .iter()
+                            .zip(&previous.context.leader_modifiers)
+                            .all(|(a, b)| a.raw == b.raw && a.present == b.present)
+                    {
+                        return false;
+                    }
+                    let own_eq = match (!r.joined, &previous.own) {
+                        (false, None) => true,
+                        (true, Some(prev)) => {
+                            let naming = s.naming.unwrap_or_default();
+                            naming.kind == prev.naming.kind
+                                && naming.order == prev.naming.order
+                                && naming.ordered == prev.naming.ordered
+                                && naming.programmatic == prev.naming.programmatic
+                                && &self.division_names.first
+                                    [naming.custom.0..naming.custom.0 + naming.custom.1]
+                                    == prev.naming.custom.as_slice()
+                                && &self.division_names.first
+                                    [naming.group.0..naming.group.0 + naming.group.1]
+                                    == prev.naming.group.as_slice()
+                                && s.strength_combat_factor == prev.strength_combat_factor
+                                && s.fuel_inputs == prev.fuel_inputs
+                                && s.stat_values == prev.stat_values
+                                && s.armour == prev.armour
+                                && s.piercing == prev.piercing
+                                && s.air_attack == prev.air_attack
+                                && s.reconnaissance == prev.reconnaissance
+                                && s.initiative == prev.initiative
+                                && r.context.base_speed == prev.base_speed
+                        }
+                        _ => false,
+                    };
+                    if !own_eq {
+                        return false;
+                    }
+                    let exile_eq = match (r.exile, &previous.exile) {
+                        (None, None) => true,
+                        (Some(exile), Some(prev)) => {
+                            exile.origin_type == prev.origin_type
+                                && exile.country == prev.country
+                                && exile.country_fallback == prev.country_fallback
+                                && &self.exile_tags.first
+                                    [exile.cores.0..exile.cores.0 + exile.cores.1]
+                                    == prev.location_cores.as_slice()
+                                && &self.exile_tags.first
+                                    [exile.occupiers.0..exile.occupiers.0 + exile.occupiers.1]
+                                    == prev.occupiers.as_slice()
+                        }
+                        _ => false,
+                    };
+                    if !exile_eq {
+                        return false;
+                    }
+                    let widths =
+                        &self.width_terms.first[r.width_start..r.width_start + r.context.width_term_count];
+                    widths.len() == previous.width_terms.len()
+                        && widths.iter().zip(&previous.width_terms).all(|(a, b)| {
+                            a.subunit == b.subunit && a.count == b.count && a.width == b.width
+                        })
+                },
+                |r| {
+                    let s = r.stats;
+                    let naming = s.naming.unwrap_or_default();
+                    let name = |(start, len): (usize, usize)| {
+                        allocation::owned_vec(allocation::copy_vec(
+                            &self.division_names.first[start..start + len],
+                        ))
+                    };
+                    LandCombatDivisionRow {
+                        combat: r.combat,
+                        side: r.side,
+                        ordinal: r.ordinal,
+                        division: s.division,
+                        role: r.role,
+                        province: r.province,
+                        own: (!r.joined).then(|| LandCombatMemberValues {
+                            naming: NameOperands {
+                                kind: naming.kind,
+                                order: naming.order,
+                                ordered: naming.ordered,
+                                programmatic: naming.programmatic,
+                                custom: name(naming.custom),
+                                group: name(naming.group),
+                            },
+                            strength_combat_factor: s.strength_combat_factor,
+                            fuel_inputs: s.fuel_inputs,
+                            stat_values: s.stat_values,
+                            armour: s.armour,
+                            piercing: s.piercing,
+                            air_attack: s.air_attack,
+                            reconnaissance: s.reconnaissance,
+                            initiative: s.initiative,
+                            base_speed: r.context.base_speed,
+                        }),
+                        commander: s.commander,
+                        direction_group: s.direction_group,
+                        categories: s.categories,
+                        exile: r.exile.map(|exile| {
+                            let tags = |(start, len): (usize, usize)| {
+                                allocation::owned_vec(allocation::copy_vec(
+                                    &self.exile_tags.first[start..start + len],
+                                ))
+                            };
+                            LandCombatExileInputs {
+                                origin_type: exile.origin_type,
+                                country: exile.country,
+                                country_fallback: exile.country_fallback,
+                                location_cores: tags(exile.cores),
+                                occupiers: tags(exile.occupiers),
+                            }
+                        }),
+                        scales: s.scales,
+                        reinforcement_speed: r.reserve_speed.and_then(Result::ok),
+                        context: LandDivisionContext {
+                            template: r.context.template,
+                            country_modifiers: r.context.country_modifiers.map(|m| {
+                                LandDivisionModifier {
+                                    raw: m.raw,
+                                    present: m.present,
+                                }
                             }),
-                    )),
-                }
-            }),
-            table::<tables::LandCombatModifiers, _>(outcomes[2], &self.sides.rows, |r| {
-                LandCombatModifierRow {
+                            leader_modifiers: r.context.leader_modifiers.map(|m| {
+                                LandDivisionModifier {
+                                    raw: m.raw,
+                                    present: m.present,
+                                }
+                            }),
+                            modifier_metadata: r.context.modifier_metadata,
+                            leader_modifier_kind: r.context.leader_modifier_kind,
+                            feature_flags: r.context.feature_flags,
+                            eligibility_callback: r.context.eligibility_callback,
+                        },
+                        width_terms: allocation::owned_vec(allocation::collect_vec(
+                            self.width_terms.first
+                                [r.width_start..r.width_start + r.context.width_term_count]
+                                .iter()
+                                .map(|t| LandDivisionWidthTerm {
+                                    subunit: t.subunit,
+                                    count: t.count,
+                                    width: t.width,
+                                }),
+                        )),
+                    }
+                },
+            ),
+            scalar_table::<tables::LandCombatModifiers, _>(
+                projection.as_deref_mut(),
+                outcomes[2],
+                &self.sides.rows,
+                |r| ((r.combat as u128) << 1) | u128::from(r.side),
+                |r| LandCombatModifierRow {
                     combat: r.combat,
                     side: r.side,
                     border_values: r.border_values,
                     divisions: Retired,
-                }
-            }),
-            table::<tables::LandCombatSides, _>(outcomes[3], &self.combat_sides.rows, |r| {
-                let mut start = r.sets.start;
-                let mut set = |index: usize| {
-                    let tags = allocation::owned_vec(allocation::copy_vec(
-                        &self.country_tags.first[start..start + r.sets.lens[index]],
-                    ));
-                    start += r.sets.lens[index];
-                    tags
-                };
-                LandCombatSideRow {
-                    combat: r.sets.combat,
-                    indicator: r.sets.indicator,
-                    flags: r.sets.flags,
-                    attacker_primary: set(0),
-                    attacker_secondary: set(1),
-                    defender_primary: set(2),
-                    defender_secondary: set(3),
-                }
-            }),
+                },
+            ),
+            project_table::<tables::LandCombatSides, _>(
+                projection.as_deref_mut(),
+                outcomes[3],
+                &self.combat_sides.rows,
+                |r| u128::from(r.sets.combat),
+                |r, previous| {
+                    if r.sets.indicator != previous.indicator || r.sets.flags != previous.flags {
+                        return false;
+                    }
+                    let mut start = r.sets.start;
+                    let mut eq = |index: usize, prev: &[u32]| {
+                        let len = r.sets.lens[index];
+                        let ok = &self.country_tags.first[start..start + len] == prev;
+                        start += len;
+                        ok
+                    };
+                    eq(0, &previous.attacker_primary)
+                        && eq(1, &previous.attacker_secondary)
+                        && eq(2, &previous.defender_primary)
+                        && eq(3, &previous.defender_secondary)
+                },
+                |r| {
+                    let mut start = r.sets.start;
+                    let mut set = |index: usize| {
+                        let tags = allocation::owned_vec(allocation::copy_vec(
+                            &self.country_tags.first[start..start + r.sets.lens[index]],
+                        ));
+                        start += r.sets.lens[index];
+                        tags
+                    };
+                    LandCombatSideRow {
+                        combat: r.sets.combat,
+                        indicator: r.sets.indicator,
+                        flags: r.sets.flags,
+                        attacker_primary: set(0),
+                        attacker_secondary: set(1),
+                        defender_primary: set(2),
+                        defender_secondary: set(3),
+                    }
+                },
+            ),
             match (outcomes[4], self.read_sides()) {
-                (Outcome::Unavailable { reason }, _) => unavailable(reason),
+                (Outcome::Unavailable { reason }, _) => unavailable(reason).into(),
                 (outcome, Some(sides)) => table_iter::<tables::LandCombatDivisionModifiers, _>(
                     outcome,
                     sides.iter().flat_map(|side| {
@@ -1893,8 +2019,13 @@ impl Captured {
                         combat: side.combat,
                         side: side.side,
                         ordinal: member.ordinal,
-                        division: (!published(side.combat, side.side, member.ordinal, member.division))
-                            .then_some(member.division),
+                        division: (!published(
+                            side.combat,
+                            side.side,
+                            member.ordinal,
+                            member.division,
+                        ))
+                        .then_some(member.division),
                         entries: allocation::owned_vec(allocation::collect_vec(
                             self.modifiers.first[member.start..member.start + member.len]
                                 .iter()
@@ -1905,19 +2036,25 @@ impl Captured {
                                 }),
                         )),
                     },
-                ),
-                (_, None) => unavailable("walker row count exceeds allocated buffer"),
+                )
+                .into(),
+                (_, None) => unavailable("walker row count exceeds allocated buffer").into(),
             },
-            table::<tables::ReserveModifierTrees, _>(outcomes[5], &self.reserve_trees, |row| {
-                ReserveModifierTreeRow {
+            project_table::<tables::ReserveModifierTrees, _>(
+                projection,
+                outcomes[5],
+                &self.reserve_trees,
+                |row| ((row.kind as u128) << 64) | u128::from(row.owner),
+                |row, previous| row.name == previous.name && row.nodes == previous.nodes,
+                |row| ReserveModifierTreeRow {
                     kind: row.kind,
                     owner: row.owner,
                     name: allocation::owned_vec(allocation::copy_vec(&row.name)),
                     nodes: row.nodes.as_ref().map(|nodes| {
                         allocation::owned_vec(allocation::collect_vec(nodes.iter().cloned()))
                     }),
-                }
-            }),
+                },
+            ),
         ]
     }
 }

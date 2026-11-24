@@ -10,6 +10,7 @@ use replay_frame::{frame::TableInput, frame::TableView};
 use std::{
     collections::{HashMap, HashSet},
     io,
+    sync::Arc,
 };
 
 pub const N: usize = 5;
@@ -142,6 +143,7 @@ fn unavailable(reason: &str) -> TableView {
 fn input(rows: TableRows) -> TableInput {
     TableInput::Sampled(TableView::Complete(rows))
 }
+#[cfg(test)]
 fn rows(input: &TableInput) -> Option<&TableRows> {
     match input {
         TableInput::Sampled(TableView::Complete(rows)) => Some(rows),
@@ -166,11 +168,19 @@ pub struct Ledger {
     next: u64,
     hour: Option<i32>,
     balances: HashMap<u32, BalanceSnapshot>,
+    next_balances: HashMap<u32, BalanceSnapshot>,
     daily: HashMap<u32, CountryPowerDailyRow>,
     costs: HashMap<u32, Vec<CountryPowerDailyCostRow>>,
-    lexical: HashMap<Vec<u8>, u32>,
+    cost_countries: HashSet<u32>,
+    cached_daily: Option<Arc<TableRows>>,
+    cached_costs: Option<Arc<TableRows>>,
+    lexical_index: Vec<u32>,
+    lexical_source: Option<Arc<TableRows>>,
     pending_daily: HashMap<u32, DailyEvents>,
     invalid_daily: HashSet<u32>,
+    deltas: HashMap<(u32, u8), i128>,
+    party_ends: HashMap<u32, Option<u32>>,
+    updated_daily: HashSet<u32>,
     scratch: Option<Box<Captured>>,
 }
 impl Ledger {
@@ -253,6 +263,12 @@ impl Ledger {
             },
         };
         self.assemble_checked(branch, hour, &scratch, tables)?;
+        if scratch.events.capacity() > 512 {
+            scratch.events = Vec::new();
+        }
+        if scratch.bytes.capacity() > 32 * 1024 {
+            scratch.bytes = Vec::new();
+        }
         self.scratch = Some(scratch);
         Ok(())
     }
@@ -290,37 +306,60 @@ impl Ledger {
                 ..Default::default()
             };
         }
-        if let Some(TableRows::LexicalTokens(tokens)) =
-            rows(&tables[TableId::LexicalTokens.index()])
-        {
-            let mut lexical = HashMap::new();
-            allocation::reserve_map(&mut lexical, tokens.len())?;
-            for row in tokens {
-                lexical.insert(allocation::copy_vec(&row.literal)?, row.token);
+        match &tables[TableId::LexicalTokens.index()] {
+            TableInput::SharedComplete(shared) => {
+                if !self
+                    .lexical_source
+                    .as_ref()
+                    .is_some_and(|prev| Arc::ptr_eq(prev, shared))
+                    && let TableRows::LexicalTokens(tokens) = &**shared
+                {
+                    self.lexical_index = build_lexical_index(tokens)?;
+                    self.lexical_source = Some(Arc::clone(shared));
+                }
             }
-            self.lexical = lexical;
+            TableInput::Sampled(TableView::Complete(TableRows::LexicalTokens(tokens))) => {
+                let mut copied = allocation::vec(tokens.len())?;
+                for row in tokens {
+                    copied.push(replay_data::rows::LexicalTokenRow {
+                        token: row.token,
+                        literal: allocation::copy_vec(&row.literal)?,
+                    });
+                }
+                self.lexical_index = build_lexical_index(&copied)?;
+                self.lexical_source = Some(Arc::new(TableRows::LexicalTokens(copied)));
+            }
+            _ => {}
         }
         let drain = captured.drained.and_then(Result::ok);
         let epoch = drain.map_or(self.epoch, |d| d.epoch);
         let continuous = drain.is_some_and(|d| {
             d.epoch == self.epoch && d.first <= self.cursor && d.first + d.copied as u64 >= d.cursor
         }) && self.hour.and_then(|h| h.checked_add(1)) == Some(hour);
+        let mut daily_changed = self.cached_daily.is_none() || self.cached_costs.is_none();
         if epoch != self.epoch {
             self.cursor = 0;
             self.next = 0;
             self.daily.clear();
             self.costs.clear();
+            self.cost_countries.clear();
             self.pending_daily.clear();
             self.invalid_daily.clear();
+            self.cached_daily = None;
+            self.cached_costs = None;
+            daily_changed = true;
         }
         if drain.is_some_and(|d| d.copied < d.pending) {
             hooks::short_handoff();
         }
         let mut changes = Vec::new();
         let mut governments = Vec::new();
-        let mut deltas: HashMap<(u32, u8), i128> = HashMap::new();
-        let mut party_ends: HashMap<u32, Option<u32>> = HashMap::new();
-        let mut updated_daily = HashSet::new();
+        let mut deltas = std::mem::take(&mut self.deltas);
+        let mut party_ends = std::mem::take(&mut self.party_ends);
+        let mut updated_daily = std::mem::take(&mut self.updated_daily);
+        deltas.clear();
+        party_ends.clear();
+        updated_daily.clear();
         if let Some(drain) = drain {
             for event in &captured.events[..drain.copied] {
                 if event.epoch != epoch || event.sequence <= self.next {
@@ -413,9 +452,7 @@ impl Ledger {
                             party_ends.insert(key, event.parties[1]);
                         }
                         let key = |index| {
-                            self.lexical
-                                .get(key_bytes(event, &captured.bytes, index))
-                                .copied()
+                            self.lexical_token(key_bytes(event, &captured.bytes, index))
                         };
                         allocation::reserve_push_batch(&mut governments, 1)?;
                         governments.push(GovernmentChangeRow {
@@ -439,12 +476,17 @@ impl Ledger {
                 }
             }
         }
-        for country in updated_daily {
-            self.publish_daily(country, epoch)?;
+        if !updated_daily.is_empty() {
+            daily_changed = true;
+            for &country in &updated_daily {
+                self.publish_daily(country, epoch)?;
+            }
         }
+        self.updated_daily = updated_daily;
         let mut coverage = Vec::new();
         if let Outcome::Rows { len } = captured.census {
-            let mut current = HashMap::new();
+            let mut current = std::mem::take(&mut self.next_balances);
+            current.clear();
             for now in &captured.balances[..len] {
                 let previous = self.balances.get(&now.country);
                 let mut streams = 0;
@@ -484,7 +526,7 @@ impl Ledger {
                         streams &= !PoliticsCaptureCoverageRow::GOVERNMENT;
                         hooks::government_mismatch();
                     }
-                    if self.costs.contains_key(&now.country)
+                    if self.cost_countries.contains(&now.country)
                         && !self.invalid_daily.contains(&now.country)
                     {
                         streams |= PoliticsCaptureCoverageRow::PP_DAILY_COSTS;
@@ -506,29 +548,77 @@ impl Ledger {
                 allocation::reserve_map(&mut current, additional)?;
                 current.insert(now.country, *now);
             }
+            let daily_before = self.daily.len();
+            let costs_before = self.cost_countries.len();
             self.daily
                 .retain(|country, _| current.contains_key(country));
+            self.cost_countries
+                .retain(|country| self.daily.contains_key(country));
             self.costs
                 .retain(|country, _| self.daily.contains_key(country));
-            self.pending_daily
-                .retain(|country, _| current.contains_key(country));
+            daily_changed |=
+                self.daily.len() != daily_before || self.cost_countries.len() != costs_before;
+            self.pending_daily.retain(|country, batch| {
+                current.contains_key(country)
+                    && (batch.hour == hour || batch.hour.checked_add(1) == Some(hour))
+            });
             self.invalid_daily
                 .retain(|country| current.contains_key(country));
-            self.balances = current;
+            self.next_balances = std::mem::replace(&mut self.balances, current);
         } else {
             self.balances.clear();
         }
-        let mut daily = allocation::collect_vec(self.daily.values().cloned())?;
-        daily.sort_unstable_by_key(RowCodec::key);
-        let cost_count = self
-            .costs
-            .values()
-            .try_fold(0, |count, rows| allocation::add(count, rows.len()))?;
-        let mut costs = allocation::vec(cost_count)?;
-        for row in self.costs.values().flatten() {
-            costs.push(copy_cost(row)?);
+        self.deltas = deltas;
+        self.party_ends = party_ends;
+        if daily_changed {
+            let mut daily = allocation::collect_vec(self.daily.values().cloned())?;
+            daily.sort_unstable_by_key(RowCodec::key);
+            let added_count = self
+                .costs
+                .values()
+                .try_fold(0, |count, rows| allocation::add(count, rows.len()))?;
+            let keep_cached = |row: &CountryPowerDailyCostRow| {
+                self.cost_countries.contains(&row.country)
+                    && !self.updated_daily.contains(&row.country)
+                    && !self.costs.contains_key(&row.country)
+            };
+            let mut costs = match self.cached_costs.take() {
+                Some(previous) => match Arc::try_unwrap(previous) {
+                    Ok(TableRows::CountryPowerDailyCosts(mut existing)) => {
+                        existing.retain(keep_cached);
+                        allocation::reserve(&mut existing, added_count)?;
+                        existing
+                    }
+                    Ok(_) => allocation::vec(added_count)?,
+                    Err(shared) => {
+                        let retained = if let TableRows::CountryPowerDailyCosts(rows) = &*shared {
+                            rows.iter().filter(|row| keep_cached(row)).count()
+                        } else {
+                            0
+                        };
+                        let mut copied = allocation::vec(allocation::add(retained, added_count)?)?;
+                        if let TableRows::CountryPowerDailyCosts(rows) = &*shared {
+                            for row in rows {
+                                if keep_cached(row) {
+                                    copied.push(copy_cost(row)?);
+                                }
+                            }
+                        }
+                        copied
+                    }
+                },
+                None => allocation::vec(added_count)?,
+            };
+            for (_, rows) in self.costs.drain() {
+                costs.extend(rows);
+            }
+            costs.sort_unstable_by_key(RowCodec::key);
+            if allocation::capture_stopped() {
+                return Err(io::ErrorKind::OutOfMemory.into());
+            }
+            self.cached_daily = Some(Arc::new(TableRows::CountryPowerDaily(daily)));
+            self.cached_costs = Some(Arc::new(TableRows::CountryPowerDailyCosts(costs)));
         }
-        costs.sort_unstable_by_key(RowCodec::key);
         if allocation::capture_stopped() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
@@ -548,6 +638,12 @@ impl Ledger {
                 |reason| TableInput::Sampled(unavailable(reason)),
             )
         };
+        let publish_shared = |rows: &Option<Arc<TableRows>>| {
+            failed.map_or_else(
+                || TableInput::SharedComplete(Arc::clone(rows.as_ref().expect("cached daily"))),
+                |reason| TableInput::Sampled(unavailable(reason)),
+            )
+        };
         tables[TableId::CountryPowerChanges.index()] =
             publish(TableRows::CountryPowerChanges(changes));
         tables[TableId::GovernmentChanges.index()] =
@@ -558,9 +654,8 @@ impl Ledger {
             } else {
                 TableInput::Sampled(unavailable("politics balance census incomplete"))
             };
-        tables[TableId::CountryPowerDaily.index()] = publish(TableRows::CountryPowerDaily(daily));
-        tables[TableId::CountryPowerDailyCosts.index()] =
-            publish(TableRows::CountryPowerDailyCosts(costs));
+        tables[TableId::CountryPowerDaily.index()] = publish_shared(&self.cached_daily);
+        tables[TableId::CountryPowerDailyCosts.index()] = publish_shared(&self.cached_costs);
         Ok(())
     }
     fn stage_daily(&mut self, event: &Event, bytes: &[u8]) -> io::Result<bool> {
@@ -612,6 +707,7 @@ impl Ledger {
         };
         self.invalid_daily.remove(&country);
         self.costs.remove(&country);
+        self.cost_countries.remove(&country);
         if let (Some(rate), Some(pp)) = (batch.rate, batch.pp) {
             if pp.requested == Some(rate.net) {
                 daily.pp_gross_gain_raw = Some(rate.gross);
@@ -641,7 +737,9 @@ impl Ledger {
                         });
                     }
                     allocation::reserve_map(&mut self.costs, 1)?;
+                    allocation::reserve_set(&mut self.cost_countries, 1)?;
                     self.costs.insert(country, costs);
+                    self.cost_countries.insert(country);
                 } else {
                     let additional = usize::from(!self.invalid_daily.contains(&country));
                     allocation::reserve_set(&mut self.invalid_daily, additional)?;
@@ -669,6 +767,27 @@ impl Ledger {
         self.daily.insert(country, daily);
         Ok(())
     }
+    fn lexical_token(&self, literal: &[u8]) -> Option<u32> {
+        let Some(TableRows::LexicalTokens(tokens)) = self.lexical_source.as_deref() else {
+            return None;
+        };
+        if self.lexical_index.is_empty() {
+            return None;
+        }
+        let mask = self.lexical_index.len() - 1;
+        let mut slot = hash_lexical(literal) as usize & mask;
+        loop {
+            let entry = self.lexical_index[slot];
+            if entry == u32::MAX {
+                return None;
+            }
+            let row = &tokens[entry as usize];
+            if row.literal.as_slice() == literal {
+                return Some(row.token);
+            }
+            slot = (slot + 1) & mask;
+        }
+    }
     fn identity(&self, event: &Event, bytes: &[u8]) -> io::Result<PowerIdentity> {
         let value = event.identity;
         let item_key = allocation::copy_vec(key_bytes(event, bytes, 0))?;
@@ -676,7 +795,7 @@ impl Ledger {
             action: value.action,
             item_token: value
                 .value(0)
-                .or_else(|| self.lexical.get(&item_key).copied()),
+                .or_else(|| self.lexical_token(&item_key)),
             item_key,
             slot_key: allocation::copy_vec(key_bytes(event, bytes, 1))?,
             character: value.value(1),
@@ -690,6 +809,40 @@ impl Ledger {
             origin_key: allocation::copy_vec(key_bytes(event, bytes, 2))?,
         })
     }
+}
+fn hash_lexical(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash ^ (hash >> 32)
+}
+fn build_lexical_index(tokens: &[replay_data::rows::LexicalTokenRow]) -> io::Result<Vec<u32>> {
+    if tokens.is_empty() {
+        return Ok(Vec::new());
+    }
+    let slots = tokens
+        .len()
+        .checked_mul(2)
+        .and_then(usize::checked_next_power_of_two)
+        .ok_or_else(allocation::oom)?
+        .max(16);
+    let mut table = allocation::filled(slots, u32::MAX)?;
+    let mask = slots - 1;
+    for (index, row) in tokens.iter().enumerate() {
+        let index = u32::try_from(index).map_err(|_| allocation::oom())?;
+        let mut slot = hash_lexical(&row.literal) as usize & mask;
+        loop {
+            let existing = table[slot];
+            if existing == u32::MAX || tokens[existing as usize].literal == row.literal {
+                table[slot] = index;
+                break;
+            }
+            slot = (slot + 1) & mask;
+        }
+    }
+    Ok(table)
 }
 fn copy_identity(value: &PowerIdentity) -> io::Result<PowerIdentity> {
     Ok(PowerIdentity {
@@ -1569,6 +1722,170 @@ mod tests {
                 | PoliticsCaptureCoverageRow::CP
                 | PoliticsCaptureCoverageRow::GOVERNMENT
         );
+    }
+    #[test]
+    fn cached_costs_merges_updates_and_prunes_stale_pending_daily() {
+        let mut ledger = Ledger::default();
+        let mut tables = tables();
+        ledger.assemble(
+            1,
+            0,
+            &captured(1, 0, &[], &[balance(5001), balance(5002)]),
+            &mut tables,
+        );
+        let first_day = [
+            Event {
+                kind: Kind::Cost,
+                country: 5001,
+                instance: 1,
+                epoch: 1,
+                sequence: 1,
+                hour: 0,
+                cost: 5,
+                ..Default::default()
+            },
+            Event {
+                kind: Kind::Daily,
+                country: 5001,
+                instance: 1,
+                epoch: 1,
+                sequence: 2,
+                hour: 0,
+                gross: 10,
+                cost: 5,
+                net: 5,
+                ..Default::default()
+            },
+            Event {
+                kind: Kind::Power,
+                country: 5001,
+                instance: 1,
+                epoch: 1,
+                sequence: 3,
+                hour: 0,
+                currency: PowerCurrency::Political,
+                cause: PowerCause::DailyGain,
+                before: 100,
+                after: 105,
+                requested: Some(5),
+                ..Default::default()
+            },
+            Event {
+                kind: Kind::Cost,
+                country: 5002,
+                instance: 1,
+                epoch: 1,
+                sequence: 4,
+                hour: 0,
+                cost: 9,
+                ..Default::default()
+            },
+            Event {
+                kind: Kind::Daily,
+                country: 5002,
+                instance: 1,
+                epoch: 1,
+                sequence: 5,
+                hour: 0,
+                gross: 12,
+                cost: 9,
+                net: 3,
+                ..Default::default()
+            },
+            Event {
+                kind: Kind::Power,
+                country: 5002,
+                instance: 1,
+                epoch: 1,
+                sequence: 6,
+                hour: 0,
+                currency: PowerCurrency::Political,
+                cause: PowerCause::DailyGain,
+                before: 200,
+                after: 203,
+                requested: Some(3),
+                ..Default::default()
+            },
+            Event {
+                kind: Kind::Cost,
+                country: 5099,
+                instance: 1,
+                epoch: 1,
+                sequence: 7,
+                hour: 0,
+                cost: 1,
+                ..Default::default()
+            },
+        ];
+        ledger.assemble(
+            1,
+            1,
+            &captured(
+                1,
+                0,
+                &first_day,
+                &[balance(5001), balance(5002), balance(5099)],
+            ),
+            &mut tables,
+        );
+        let Some(TableRows::CountryPowerDailyCosts(costs)) =
+            rows(&tables[TableId::CountryPowerDailyCosts.index()])
+        else {
+            panic!()
+        };
+        assert_eq!(costs.len(), 2);
+        assert_eq!(costs[0].country, 5001);
+        assert_eq!(costs[1].country, 5002);
+        assert!(ledger.costs.is_empty());
+        assert!(ledger.pending_daily.contains_key(&5099));
+
+        let second_day = [
+            Event {
+                kind: Kind::Daily,
+                country: 5001,
+                instance: 1,
+                epoch: 1,
+                sequence: 8,
+                hour: 24,
+                gross: 10,
+                cost: 0,
+                net: 10,
+                ..Default::default()
+            },
+            Event {
+                kind: Kind::Power,
+                country: 5001,
+                instance: 1,
+                epoch: 1,
+                sequence: 9,
+                hour: 24,
+                currency: PowerCurrency::Political,
+                cause: PowerCause::DailyGain,
+                before: 105,
+                after: 115,
+                requested: Some(10),
+                ..Default::default()
+            },
+        ];
+        ledger.assemble(
+            1,
+            24,
+            &captured(
+                1,
+                0,
+                &second_day,
+                &[balance(5001), balance(5002), balance(5099)],
+            ),
+            &mut tables,
+        );
+        let Some(TableRows::CountryPowerDailyCosts(costs)) =
+            rows(&tables[TableId::CountryPowerDailyCosts.index()])
+        else {
+            panic!()
+        };
+        assert_eq!(costs.len(), 1);
+        assert_eq!(costs[0].country, 5002);
+        assert!(!ledger.pending_daily.contains_key(&5099));
     }
 }
 

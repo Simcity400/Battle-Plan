@@ -2,7 +2,7 @@ use collector_primitives::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
-use collector_projection::table_conversion::table;
+use collector_projection::projection::{Projection, project_table, scalar_table};
 use engine_allocation::{copy_vec, owned_vec};
 use engine_land_inputs::{cfront, cfront_section};
 use engine_native_memory::{Memory, walk::Outcome};
@@ -11,9 +11,11 @@ use engine_native_parts::modifier_definition::DefinitionMemo;
 use engine_native_land::{invasion_preparations, order_execution};
 use replay_data::{
     rows::ArmyOrderPlanRow, rows::FrontRow, rows::InvasionPreparationRow, rows::OrderChildFront,
-    rows::OrderChildFrontInputs, rows::OrdersGroupPlanRow, rows::Recorded, rows::TableId,
-    rows::tables,
+    rows::OrderChildFrontInputs, rows::OrdersGroupPlanRow, rows::Recorded, rows::RowCodec,
+    rows::TableId, rows::tables,
 };
+use replay_frame::frame::TableInput;
+#[cfg(test)]
 use replay_frame::frame::TableView;
 use std::mem::size_of;
 
@@ -843,11 +845,99 @@ impl Captured {
             self.invasions.outcome,
         ]
     }
-    pub fn tables(&self) -> [TableView; N] {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn tables(&self) -> [replay_frame::frame::TableView; N] {
+        self.table_inputs(None).map(|input| match input {
+            TableInput::Sampled(view) => view,
+            _ => unreachable!("unprojected plan conversion returns sampled views"),
+        })
+    }
+    pub fn table_inputs(
+        &self,
+        mut projection: Option<&mut Projection<'_>>,
+    ) -> [TableInput; N] {
         let outcomes = self.outcomes();
+        let name_slice = |(start, len): (usize, usize)| &self.names.first[start..start + len];
+        let same_child_fronts = |inputs: Option<corder_instance::child_fronts::Inputs>,
+                                 previous: &Recorded<Option<OrderChildFrontInputs>>| {
+            let Recorded::Value(previous) = previous else {
+                return false;
+            };
+            match (inputs, previous) {
+                (None, None) => true,
+                (Some(inputs), Some(previous)) => {
+                    inputs.area_province_count == previous.area_province_count
+                        && inputs.count == previous.count
+                        && inputs.group_child_count == previous.group_child_count
+                        && match (inputs.sections, &previous.sections) {
+                            (None, None) => true,
+                            (Some((start, len)), Some(prev_sections)) => {
+                                let source = &self.child_sections.first[start..start + len];
+                                source.len() == prev_sections.len()
+                                    && source.iter().zip(prev_sections).all(|(a, b)| {
+                                        a.group == b.group
+                                            && a.segment_start == b.segment_start
+                                            && a.segment_end == b.segment_end
+                                    })
+                            }
+                            _ => false,
+                        }
+                }
+                _ => false,
+            }
+        };
+        let invasion = |r: &invasion_preparations::Row| InvasionPreparationRow {
+            owner_group: r.owner_group,
+            instance: r.instance,
+            progress: r.progress,
+            target: r.target,
+            country_term: r.country_term,
+            relation_term: r.relation_term,
+            relation_bonus: r.relation_bonus,
+            leader_term: r.leader_term,
+            leader_applies: r.leader_applies,
+            days_term: r.days_term,
+            unit_owner: r.unit_owner,
+            ..Default::default()
+        };
         [
-            table::<tables::ArmyOrderPlans, _>(outcomes[0], &self.plans.rows, |r| {
-                ArmyOrderPlanRow {
+            project_table::<tables::ArmyOrderPlans, _>(
+                projection.as_deref_mut(),
+                outcomes[0],
+                &self.plans.rows,
+                |r| ((r.owner_group as u128) << 32) | u128::from(r.instance),
+                |r, previous| {
+                    r.front == previous.front
+                        && r.front_valid == previous.front_valid
+                        && r.section == previous.section
+                        && r.segment_start == previous.segment_start
+                        && r.segment_end == previous.segment_end
+                        && r.blitz == previous.blitz
+                        && r.withdraw == previous.withdraw
+                        && r.fallback == previous.fallback
+                        && r.virtual_order == previous.virtual_order
+                        && r.has_child == previous.has_child
+                        && r.owner_override == previous.owner_override
+                        && previous.invasion_transports == r.invasion_transports.into()
+                        && &self.links.first
+                            [r.predecessors_start..r.predecessors_start + r.predecessors_len]
+                            == previous.predecessors.as_slice()
+                        && &self.links.first
+                            [r.successors_start..r.successors_start + r.successors_len]
+                            == previous.successors.as_slice()
+                        && &self.assigned.first[r.assigned_start..r.assigned_start + r.assigned_len]
+                            == previous.assigned_divisions.as_slice()
+                        && name_slice(r.names[0]) == previous.name_prefix.as_slice()
+                        && name_slice(r.names[1]) == previous.name.as_slice()
+                        && name_slice(r.names[2]) == previous.name_first.as_slice()
+                        && name_slice(r.names[3]) == previous.name_second.as_slice()
+                        && name_slice(r.names[4]) == previous.name_unique.as_slice()
+                        && name_slice(r.names[5]) == previous.name_postfix.as_slice()
+                        && same_child_fronts(r.child_fronts, &previous.child_fronts)
+                        && previous.execution
+                            == Recorded::Value(r.execution.map(project_execution))
+                },
+                |r| ArmyOrderPlanRow {
                     owner_group: r.owner_group,
                     instance: r.instance,
                     front: r.front,
@@ -881,10 +971,27 @@ impl Captured {
                     invasion_transports: r.invasion_transports.into(),
                     child_fronts: Recorded::Value(self.child_fronts(r.child_fronts)),
                     execution: Recorded::Value(r.execution.map(project_execution)),
-                }
-            }),
-            table::<tables::OrdersGroupPlans, _>(outcomes[1], &self.colors.rows, |r| {
-                OrdersGroupPlanRow {
+                },
+            ),
+            project_table::<tables::OrdersGroupPlans, _>(
+                projection.as_deref_mut(),
+                outcomes[1],
+                &self.colors.rows,
+                |r| u128::from(r.group),
+                |r, previous| {
+                    r.red == previous.red
+                        && r.green == previous.green
+                        && r.blue == previous.blue
+                        && r.alpha == previous.alpha
+                        && &self.root_orders.first[r.primary_start..r.primary_start + r.primary_len]
+                            == previous.primary_orders.as_slice()
+                        && &self.root_orders.first
+                            [r.fallback_start..r.fallback_start + r.fallback_len]
+                            == previous.fallback_orders.as_slice()
+                        && &self.group_names.first[r.name_start..r.name_start + r.name_len]
+                            == previous.name.as_slice()
+                },
+                |r| OrdersGroupPlanRow {
                     group: r.group,
                     red: r.red,
                     green: r.green,
@@ -900,54 +1007,84 @@ impl Captured {
                     name: owned_vec(copy_vec(
                         &self.group_names.first[r.name_start..r.name_start + r.name_len],
                     )),
-                }
-            }),
-            table::<tables::Fronts, _>(outcomes[2], &self.fronts.rows.rows, |r| {
-                let mut row = FrontRow {
-                    front: r.front,
-                    ..Default::default()
-                };
-                let sections =
-                    &self.fronts.sections.first[r.section_start..r.section_start + r.section_len];
-                let pairs = sections
-                    .iter()
-                    .try_fold(0_usize, |count, section| {
-                        count.checked_add(section.pair_len)
-                    })
-                    .unwrap_or(usize::MAX);
-                if engine_allocation::reserve_exact(&mut row.section_ids, sections.len()).is_err()
-                    || engine_allocation::reserve_exact(&mut row.section_ends, sections.len())
+                },
+            ),
+            project_table::<tables::Fronts, _>(
+                projection.as_deref_mut(),
+                outcomes[2],
+                &self.fronts.rows.rows,
+                |r| u128::from(r.front),
+                |r, previous| {
+                    let sections = &self.fronts.sections.first
+                        [r.section_start..r.section_start + r.section_len];
+                    if sections.len() != previous.section_ids.len()
+                        || sections.len() != previous.section_ends.len()
+                    {
+                        return false;
+                    }
+                    let mut offset = 0usize;
+                    for (index, section) in sections.iter().enumerate() {
+                        if section.id != previous.section_ids[index] {
+                            return false;
+                        }
+                        let Some(end) = offset.checked_add(section.pair_len) else {
+                            return false;
+                        };
+                        if end as u32 != previous.section_ends[index] {
+                            return false;
+                        }
+                        let Some(prev_pairs) = previous.province_pairs.get(offset..end) else {
+                            return false;
+                        };
+                        if &self.fronts.pairs.first
+                            [section.pair_start..section.pair_start + section.pair_len]
+                            != prev_pairs
+                        {
+                            return false;
+                        }
+                        offset = end;
+                    }
+                    offset == previous.province_pairs.len()
+                },
+                |r| {
+                    let mut row = FrontRow {
+                        front: r.front,
+                        ..Default::default()
+                    };
+                    let sections = &self.fronts.sections.first
+                        [r.section_start..r.section_start + r.section_len];
+                    let pairs = sections
+                        .iter()
+                        .try_fold(0_usize, |count, section| {
+                            count.checked_add(section.pair_len)
+                        })
+                        .unwrap_or(usize::MAX);
+                    if engine_allocation::reserve_exact(&mut row.section_ids, sections.len())
                         .is_err()
-                    || engine_allocation::reserve_exact(&mut row.province_pairs, pairs).is_err()
-                {
-                    return row;
-                }
-                for section in sections {
-                    row.section_ids.push(section.id);
-                    row.province_pairs.extend_from_slice(
-                        &self.fronts.pairs.first
-                            [section.pair_start..section.pair_start + section.pair_len],
-                    );
-                    row.section_ends.push(row.province_pairs.len() as u32);
-                }
-                row
-            }),
-            table::<tables::InvasionPreparations, _>(outcomes[3], &self.invasions.rows, |r| {
-                InvasionPreparationRow {
-                    owner_group: r.owner_group,
-                    instance: r.instance,
-                    progress: r.progress,
-                    target: r.target,
-                    country_term: r.country_term,
-                    relation_term: r.relation_term,
-                    relation_bonus: r.relation_bonus,
-                    leader_term: r.leader_term,
-                    leader_applies: r.leader_applies,
-                    days_term: r.days_term,
-                    unit_owner: r.unit_owner,
-                    ..Default::default()
-                }
-            }),
+                        || engine_allocation::reserve_exact(&mut row.section_ends, sections.len())
+                            .is_err()
+                        || engine_allocation::reserve_exact(&mut row.province_pairs, pairs).is_err()
+                    {
+                        return row;
+                    }
+                    for section in sections {
+                        row.section_ids.push(section.id);
+                        row.province_pairs.extend_from_slice(
+                            &self.fronts.pairs.first
+                                [section.pair_start..section.pair_start + section.pair_len],
+                        );
+                        row.section_ends.push(row.province_pairs.len() as u32);
+                    }
+                    row
+                },
+            ),
+            scalar_table::<tables::InvasionPreparations, _>(
+                projection,
+                outcomes[3],
+                &self.invasions.rows,
+                |r| RowCodec::key(&invasion(r)),
+                invasion,
+            ),
         ]
     }
 }
@@ -1048,13 +1185,15 @@ pub mod tests {
                 }
             });
         let TableView::Complete(replay_data::rows::TableRows::InvasionPreparations(published)) =
-            table::<tables::InvasionPreparations, _>(Outcome::Rows { len: 3 }, &walked, |r| {
-                InvasionPreparationRow {
+            collector_projection::table_conversion::table::<tables::InvasionPreparations, _>(
+                Outcome::Rows { len: 3 },
+                &walked,
+                |r| InvasionPreparationRow {
                     owner_group: r.owner_group,
                     instance: r.instance,
                     ..Default::default()
-                }
-            })
+                },
+            )
         else {
             panic!("a complete table");
         };

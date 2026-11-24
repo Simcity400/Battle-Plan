@@ -54,7 +54,9 @@ pub use self::{
     decoder::{FrameAdvance, FrameDecoder, Spare, Spares},
 };
 #[cfg(any(test, feature = "capture", feature = "test-support"))]
-pub use encoder::{FrameContext, FrameEncoder, PreparedFrame, Retired, TableSegment};
+pub use encoder::{
+    BaselineRetention, FrameContext, FrameEncoder, PreparedFrame, Retired, TableSegment,
+};
 use engine_allocation as allocation;
 
 #[cfg(test)]
@@ -695,6 +697,12 @@ pub enum TableInput {
         token: BaselineToken,
         update: Arc<crate::sliced::SliceUpdate>,
     },
+    UniformOptionalI32 {
+        token: BaselineToken,
+        column: usize,
+        value: Option<i32>,
+        update: Arc<crate::sliced::SliceUpdate>,
+    },
 }
 
 impl From<TableView> for TableInput {
@@ -715,7 +723,8 @@ impl TableInput {
             }
             Self::Sampled(TableView::Unavailable { .. } | TableView::NotRecorded { .. })
             | Self::ComparedEqual(_)
-            | Self::SliceUpdate { .. } => {}
+            | Self::SliceUpdate { .. }
+            | Self::UniformOptionalI32 { .. } => {}
         }
     }
 }
@@ -729,6 +738,7 @@ pub struct BaselineToken {
     hour: Hour,
     baseline: Hour,
     row_updates: bool,
+    untracked: bool,
 }
 
 impl BaselineToken {

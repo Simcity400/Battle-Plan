@@ -1487,14 +1487,20 @@ fn unpublished_raid_slices_are_read_again_at_the_next_hour() {
         let mut launch_request =
             captured.take_raid_launch_request(&countries, 11, 0x1000, hour, force_full, launch);
         if completed {
-            state_request.packs.capture(
-                &memory,
-                11,
-                0x1000,
-                hour,
-                force_full,
-                &mut state_request.stores,
-            );
+            let mut stores = RaidStateStores {
+                states: state_request.states_store.take().unwrap(),
+                buildings: state_request.buildings_store.take().unwrap(),
+                routes: std::mem::replace(
+                    &mut state_request.routes_store,
+                    Box::new(collector_certificates::slicing::SliceFingerprints::new()),
+                ),
+            };
+            state_request
+                .packs
+                .capture(&memory, 11, 0x1000, hour, force_full, &mut stores);
+            state_request.states_store = Some(stores.states);
+            state_request.buildings_store = Some(stores.buildings);
+            state_request.routes_store = stores.routes;
             launch_request.packs.capture(
                 &memory,
                 11,

@@ -169,7 +169,7 @@ pub(super) fn snapshot(
     hour: i32,
     pointer: usize,
     removed: &[usize],
-    walk: Option<(Box<RawWalk>, Box<snapshots::Decoded>)>,
+    walk: Option<(snapshots::speculative::WalkSummary, Box<snapshots::Decoded>)>,
 ) -> Result<snapshots::Decoded, &'static str> {
     let surviving = Surviving {
         source: memory,
@@ -178,7 +178,16 @@ pub(super) fn snapshot(
         consumed: std::cell::Cell::new(false),
     };
     let result = match walk {
-        Some((walk, decoded)) => super::complete_decoded(&surviving, base, true, &walk, *decoded),
+        Some((summary, decoded)) => super::complete_decoded_parts(
+            &surviving,
+            base,
+            true,
+            summary.details,
+            summary.stats_len,
+            &summary.modules,
+            summary.first_upgrade.as_ref(),
+            *decoded,
+        ),
         None => super::decode_snapshot(&surviving, base, hour, pointer, true),
     };
     if surviving.consumed.get() {

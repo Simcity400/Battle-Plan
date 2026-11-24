@@ -44,6 +44,14 @@ pub trait RowCodec: Default + Clone + Eq {
         &self,
         visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
     ) -> io::Result<()>;
+    fn visit_wire_masked(
+        &self,
+        mask: u64,
+        visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let _ = mask;
+        self.visit_wire(visit)
+    }
     fn from_wire<'a>(
         key: u128,
         wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
@@ -1309,6 +1317,16 @@ macro_rules! typed_codec {
                 visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
             ) -> io::Result<()> {
                 $(visit_wire_field(&self.$($field)+, $index, $crate::display_step!($($step)?), visit).map_err($crate::rows::column_error(self.key(), stringify!($($field)+)))?;)+
+                Ok(())
+            }
+            fn visit_wire_masked(
+                &self,
+                mask: u64,
+                visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
+            ) -> io::Result<()> {
+                $(if $index >= 64 || (mask >> ($index & 63)) & 1 != 0 {
+                    visit_wire_field(&self.$($field)+, $index, $crate::display_step!($($step)?), visit).map_err($crate::rows::column_error(self.key(), stringify!($($field)+)))?;
+                })+
                 Ok(())
             }
             fn not_recorded_fields(&self) -> u64 {

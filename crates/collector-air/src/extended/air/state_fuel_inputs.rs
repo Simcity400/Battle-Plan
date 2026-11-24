@@ -132,14 +132,27 @@ impl Store {
                 .get(&segment.handle)
                 .is_none_or(|base| base.segment != segment.id);
             if changed {
-                let containers = read_membership(
-                    &recorded,
-                    &metadata,
-                    image,
-                    segment,
-                    countries.as_ref().expect("changed base demands countries"),
-                    &mut self.resolved,
-                );
+                let containers = match segment.carried_raw.as_deref() {
+                    Some(raw) => {
+                        let carried_recorded = raw.memory(&recorded);
+                        read_membership(
+                            &carried_recorded,
+                            &metadata,
+                            image,
+                            segment,
+                            countries.as_ref().expect("changed base demands countries"),
+                            &mut self.resolved,
+                        )
+                    }
+                    None => read_membership(
+                        &recorded,
+                        &metadata,
+                        image,
+                        segment,
+                        countries.as_ref().expect("changed base demands countries"),
+                        &mut self.resolved,
+                    ),
+                };
                 engine_allocation::reserve_map(&mut self.bases, 1)
                     .map_err(|_| "state air-base metadata storage unavailable")?;
                 self.bases.insert(
@@ -860,6 +873,7 @@ mod tests {
             handle: 7,
             pointer: 0x1000,
             id: 1,
+            carried_raw: None,
         };
         let pools = vec![CarrierPool {
             type_index: -4,
@@ -897,7 +911,7 @@ mod tests {
             memory.demand.set(Some(demand));
             memory.allocation.set(Some(allocation));
             store
-                .capture(&memory, 0, 0, &log, &[segment], &mut packet)
+                .capture(&memory, 0, 0, &log, std::slice::from_ref(&segment), &mut packet)
                 .unwrap();
             assert_eq!(packet.rows.len(), 2);
             assert_eq!(packet.rows[0].fuel.demand, Ok(demand));
