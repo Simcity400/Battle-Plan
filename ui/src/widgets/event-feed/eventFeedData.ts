@@ -1,9 +1,7 @@
-import type { LogRow } from '../../charts/log/logData';
-import type { BoundFacetFilter } from '../../charts/log/logSource';
 import { drawableIcon } from '../../dashboard/artwork.ts';
 import type { ProductRequest } from '../../dashboard/client';
 import { int, object, opaqueTag } from '../../dashboard/validation.ts';
-import type { EventFeedItem, EventFeedRow, EventFeedSpanReply, EventFeedUnavailable, FeedKindCode } from '../../generated/dashboard';
+import type { EventFeedItem, EventFeedKindInfo, EventFeedRow } from '../../generated/dashboard';
 import { productRequest } from '../../dashboard/request.ts';
 
 const SCRIPT_KINDS = new Set(['scriptEventFired', 'newsEventFired', 'eventOptionSelected', 'decisionSelected', 'decisionRemoved', 'decisionCancelled',
@@ -71,40 +69,17 @@ export function validateFeedRow(value: unknown): EventFeedRow {
   return row.item && icon !== row.item.icon ? { ...row, item: { ...row.item, icon } } : row;
 }
 
-export interface FeedEvent { event: EventFeedRow; item: EventFeedItem | null }
-
-const feedLogRow = (event: EventFeedRow, key: string): LogRow<FeedEvent> =>
-  ({ key, id: event.id, hour: event.hour, revealedHour: event.readHour, by: false, item: { event, item: event.item } });
-
 export function kindsRequest(track: { source: { id: string; revision: string }; branch: { id: string } }): ProductRequest {
-  return productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'event-feed-span',
-    params: { branchId: track.branch.id, categories: [], kindsOnly: true } });
+  return productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'event-feed-kinds', params: { branchId: track.branch.id } });
 }
 
-export function validateSpan(value: unknown): EventFeedSpanReply {
-  if (!object(value) || typeof value.branchId !== 'string' || !int(value.firstHour) || !int(value.lastHour) || !Array.isArray(value.kinds)
-    || !value.kinds.every(kind => object(kind) && typeof kind.kind === 'string' && KINDS.has(kind.kind) && int(kind.code) && typeof kind.category === 'string'
-      && CATEGORY_NAMES.has(kind.category)) || !Array.isArray(value.rows) || !Array.isArray(value.unavailable)
-    || !value.unavailable.every(note => object(note) && typeof note.kind === 'string' && typeof note.label === 'string' && typeof note.reason === 'string'
-      && (note.count === null || (int(note.count) && note.count >= 0)))
-    || !Array.isArray(value.warnings) || !value.warnings.every(warning => typeof warning === 'string')) {
-    throw new Error('The event feed span reply is malformed.');
+export function validateKinds(value: unknown): readonly EventFeedKindInfo[] {
+  if (!object(value) || !Array.isArray(value.kinds)
+    || !value.kinds.every(kind => object(kind) && typeof kind.kind === 'string' && KINDS.has(kind.kind) && typeof kind.category === 'string' && CATEGORY_NAMES.has(kind.category))) {
+    throw new Error('The event feed kinds reply is malformed.');
   }
-  const rows = value.rows.map(validateFeedRow);
-  if (rows.some((row, at) => at > 0 && row.hour < rows[at - 1].hour)) throw new Error('The event feed span reply is malformed.');
-  return { ...(value as unknown as EventFeedSpanReply), rows };
+  return value.kinds as unknown as EventFeedKindInfo[];
 }
-
-export type Facet = BoundFacetFilter;
-
-export const EVENT_FEED_NOISE_KINDS: ReadonlySet<string> = new Set([
-  'decisionRemovalEffect',
-  'decisionCancellationEffect',
-  'decisionCompletionEffect',
-  'decisionTimeoutEffect',
-  'decisionDurationChanged',
-  'decisionReenabled',
-]);
 
 const KIND_LABELS: Readonly<Record<string, string>> = {
   warStarted: 'War started',
@@ -146,37 +121,4 @@ export function feedKindLabel(kind: string): string {
   if (known) return known;
   const spaced = kind.replace(/([A-Z])/g, ' $1').trim();
   return spaced ? spaced[0]!.toUpperCase() + spaced.slice(1).toLowerCase() : kind;
-}
-
-export function feedFacets(
-  kinds: readonly FeedKindCode[],
-  categories: ReadonlySet<string>,
-  excludedKinds?: ReadonlySet<string>,
-): Facet[] | null {
-  const values = kinds
-    .filter(kind => categories.has(kind.category) && !EVENT_FEED_NOISE_KINDS.has(kind.kind) && !excludedKinds?.has(kind.kind))
-    .map(kind => kind.code);
-  return values.length ? [{ name: 'kind', values, countries: [] }] : null;
-}
-
-export const eventCountryHour = (event: EventFeedRow): number =>
-  event.kind === 'ceasedToExist' || event.kind === 'factionLeft' ? event.nameHour : event.hour;
-
-const eventTags = (event: EventFeedRow): string[] => event.cause?.ally ? [...event.tags, event.cause.ally] : event.tags;
-
-export const rowMatches = (event: EventFeedRow, country: (tag: string, hour: number) => boolean): boolean =>
-  eventTags(event).some(tag => country(tag, eventCountryHour(event)));
-
-export function familyRows(span: EventFeedSpanReply, categories: ReadonlySet<string>, firstHour: number | null,
-  country: ((tag: string, hour: number) => boolean) | null): LogRow<FeedEvent>[] {
-  return span.rows.filter(row => categories.has(row.category) && (firstHour === null || row.hour >= firstHour) && (!country || rowMatches(row, country)))
-    .map(row => feedLogRow(row, `family:${row.id}`));
-}
-
-export function spanNotes(span: EventFeedSpanReply): string[] {
-  return [...span.warnings, ...notRecorded(span.unavailable)];
-}
-
-function notRecorded(unavailable: readonly EventFeedUnavailable[]): string[] {
-  return unavailable.map(item => `${item.label}: Not recorded — ${item.reason}${item.count === null ? '' : ` (${item.count.toLocaleString()} counted)`}`);
 }

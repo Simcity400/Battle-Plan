@@ -23,10 +23,9 @@ import type {
 import { formatRecordedPercent, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { StabilityBreakdownReply, StabilityMarker, StabilityMarkersReply } from '../../generated/dashboard';
 import {
-  assignCountrySeriesColours,
   branchGapsOf,
   cardItems,
-  countrySeriesIdentity,
+  countrySeriesLooks,
   memberAt,
   missingSpansOf,
   rankEntry,
@@ -162,9 +161,14 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
     const presentSet = new Set(present);
     const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
 
-    const colourMap = single
-      ? new Map<string, string>()
-      : assignCountrySeriesColours(ordered, options.holders, readView, hour, options.surface, undefined, tag => rowOf.get(tag) ?? 0);
+    const looks = countrySeriesLooks(ordered, readView, {
+      holders: options.holders,
+      from: options.extent[0],
+      surface: options.surface,
+      withFlag: !single,
+      recordedOrdinal: tag => rowOf.get(tag) ?? 0,
+      singleColor: CHART_MEASURE_COLOURS.stability,
+    });
 
     const stabIcon: ChartArtSlot | undefined = single && options.showStability
       ? { art: readView.art(measureArtHandle('stability')), label: 'Stability' }
@@ -177,8 +181,8 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
     for (let rank = 0; rank < ordered.length; rank++) {
       const tag = ordered[rank]!;
       const isTail = !single && rank >= 8;
-      const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, !single);
-      const countryColor = isTail ? CHART_MEASURE_COLOURS.tailLine : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.stability);
+      const { name, flag, color: countryColor, identities } = looks.get(tag)!;
+      const named = (suffix: string) => (single ? {} : { identities: identities.map(run => ({ ...run, name: `${run.name} · ${suffix}` })) });
 
       if (options.showStability) {
         const bounded = stabMap?.get(tag) ?? null;
@@ -196,6 +200,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
           headValue,
           headHour: hour,
           flag,
+          ...named('Stability'),
           icon: single ? stabIcon : undefined,
           missingSpans: missingSpansOf(bounded),
           rank,
@@ -227,6 +232,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
           headValue,
           headHour: hour,
           flag,
+          ...named('War support'),
           icon: single ? warIcon : undefined,
           missingSpans: missingSpansOf(bounded),
           rank,

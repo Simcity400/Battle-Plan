@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CELL, parseFollowed, type FollowedRows } from '../../dashboard/follow/message.ts';
-import { message } from '../../dashboard/follow/messages.fixture.ts';
-import { assertBarsModelValid, deriveBarsAudit, formatBarsValueField, type BarsDataRow } from '../../families/bars/model.ts';
+import { assertBarsModelValid, formatBarsValueField, type BarsDataRow } from '../../families/bars/model.ts';
 import { createBoundedReadView, displayedHour, FutureDataError } from '../../families/boundedView.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
 import { occupationTrendRaceProjection, type OccupationTrendRaceOptions } from './occupationTrendRaceProjection.ts';
@@ -27,35 +25,20 @@ function fakeIdentity(names: Record<string, { name: string; color: string }>): I
   };
 }
 
-function makeFollowed(rows: readonly (readonly [string, number | null])[]): FollowedRows {
-  const keys = rows.map((_, idx) => BigInt(idx + 1));
-  const names = rows.map(([tag]) => tag);
-  const values = rows.map(([, val]) => BigInt(val ?? 0));
-  const states = rows.map(([, val]) => (val === null ? CELL.missing : CELL.value));
-  const reasons = rows.map(([, val]) => (val === null ? 'Not recorded at this hour' : null));
-  const parsed = parseFollowed(message(500, [{ id: 1, answer: { keys, columns: 1, values, states, reasons, names } }]));
-  return parsed.answers[0]!.answer as FollowedRows;
-}
-
 const BASE_OPTS: OccupationTrendRaceOptions = {
   rank: 'resistance',
   digits: 2,
-  candidates: ['GER', 'ITA'],
   top: 10,
   all: false,
+  group: false,
 };
 
-test('occupation-trend race preserves Rust top order, formats average percent, and matches exact audit', () => {
+test('occupation-trend race preserves Rust top order and formats average percent', () => {
   const identity = fakeIdentity({
     GER: { name: 'German Reich', color: '#6b7280' },
     ITA: { name: 'Italy', color: '#4d7c0f' },
   });
 
-  const followedView = createBoundedReadView({
-    hour: displayedHour(500),
-    answers: new Map([['main', makeFollowed([['GER', 2450000], ['ITA', 1200000]])]]),
-    identity,
-  });
   const exactView = createBoundedReadView({
     hour: displayedHour(500),
     panels: new Map([['main', {
@@ -73,19 +56,16 @@ test('occupation-trend race preserves Rust top order, formats average percent, a
     identity,
   });
 
-  const followedModel = occupationTrendRaceProjection.project(followedView, BASE_OPTS);
   const exactModel = occupationTrendRaceProjection.project(exactView, BASE_OPTS);
-  assertBarsModelValid(followedModel, 500);
   assertBarsModelValid(exactModel, 500);
 
-  const rows = followedModel.rows.filter((r): r is BarsDataRow => r.kind === 'data');
+  const rows = exactModel.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(rows.map(r => [r.key, r.numeric, formatBarsValueField(r.value!).text]), [
     ['GER', 24.5, '24.5%'],
     ['ITA', 12, '12%'],
   ]);
-  assert.equal(followedModel.scaleUnit, 'Average resistance');
-  assert.deepEqual(deriveBarsAudit(followedModel), deriveBarsAudit(exactModel));
-  assert.throws(() => followedView.who('country', 'GER', displayedHour(501)), FutureDataError);
+  assert.equal(exactModel.scaleUnit, 'Average resistance');
+  assert.throws(() => exactView.who('country', 'GER', displayedHour(501)), FutureDataError);
 });
 
 test('occupation-trend race switches label to compliance and keeps missing as notRecorded', () => {
@@ -106,7 +86,7 @@ test('occupation-trend race switches label to compliance and keeps missing as no
     identity,
   });
 
-  const model = occupationTrendRaceProjection.project(view, { ...BASE_OPTS, rank: 'compliance', top: null, candidates: ['GER'] });
+  const model = occupationTrendRaceProjection.project(view, { ...BASE_OPTS, rank: 'compliance', top: null });
   assertBarsModelValid(model, 300);
   assert.equal(model.scaleUnit, 'Average compliance');
   const row = model.rows[0] as BarsDataRow;

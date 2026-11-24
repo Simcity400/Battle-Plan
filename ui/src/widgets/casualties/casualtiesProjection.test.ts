@@ -30,6 +30,7 @@ const reply = (measures: readonly string[], rows: readonly Row[], refused: strin
   measures: measures.map(name => ({ name, decimals: 0 })),
   rows: rows.map(([country, ...values]) => ({
     country,
+    slot: null,
     readings: values.map(value => ({ country, hour: 500, run: value === null ? null : run(value), drop: null, missing: value === null ? 'Casualties were not read' : null })),
   })),
 });

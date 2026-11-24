@@ -19,7 +19,6 @@ export interface FlowNode {
   readonly labelMissing?: boolean;
   readonly tag?: string;
   readonly flag?: ArtResult;
-  readonly color?: string;
   readonly numeric: number | null;
   readonly figure: string;
   readonly others?: number;
@@ -53,7 +52,6 @@ export interface FlowModel {
   readonly centre?: FlowNode;
   readonly ribbons: readonly FlowRibbon[];
   readonly parts: readonly FlowPartKey[];
-  readonly scaleMax: number;
   readonly leftHeader?: string;
   readonly rightHeader?: string;
   readonly unitNote?: string;

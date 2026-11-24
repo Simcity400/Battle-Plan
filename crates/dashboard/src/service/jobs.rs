@@ -771,7 +771,7 @@ fn read_feed_scope_ahead(source: &Arc<Source>) {
     let _ = std::thread::Builder::new().name("feed scope ahead".into()).spawn_carried(move || {
         job_priority::confined(|| {
             let Some(source) = source.upgrade() else { return };
-            let _ = source.in_scope(|| dashboard_politics::products::feed::scope::warm(&source, branch));
+            let _ = source.in_scope(|| dashboard_politics::products::feed::index::warm(&source, branch));
         })
     });
 }
@@ -891,14 +891,14 @@ mod lane_tests {
     #[test]
     fn pages_that_replay_hours_wait_apart_from_every_reply() {
         let params = serde_json::json!({});
-        for key in ["event-feed", "event-choices", "decisions"] {
+        for key in ["event-feed-tail", "event-choices-tail", "decisions-tail"] {
             assert!(products::find(key).is_some_and(|product| product.replays), "{key} is not marked as replaying");
             assert_eq!(product_lane(key, &params), Lane::Replays, "{key}");
         }
         for product in products::PRODUCTS.iter().filter(|product| !product.replays) {
             assert_ne!(product_lane(product.key, &params), Lane::Replays, "{}", product.key);
         }
-        for key in ["event-feed-span", "idea-history", "civil-wars", "country-flags", "log-page", "log-counts", "division-log"] {
+        for key in ["idea-history", "civil-wars", "country-flags", "log-page", "log-counts", "division-log"] {
             assert_ne!(product_lane(key, &params), Lane::Replays, "{key} waits behind pages");
         }
     }

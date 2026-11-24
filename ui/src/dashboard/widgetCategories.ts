@@ -1,8 +1,7 @@
 import type { IconName } from '../components/Icons';
 import { PAGES } from './pages.ts';
 import type { Page } from './pages.ts';
-import { resolveOptions } from './options.ts';
-import type { OptionField, WidgetOptions } from './options';
+import type { OptionField, OptionValue } from './options';
 
 interface Categorised { kind: string; title: string; description?: string; category?: string }
 export interface WidgetGroup<T> { label: string; page?: string; icon?: IconName; items: T[] }
@@ -50,11 +49,8 @@ export function catalogueEntries<T extends Catalogued>(groups: readonly WidgetGr
   }));
 }
 
-export function placedCount(entry: { definition: { kind: string; options?: readonly OptionField[] }; match: Options },
-  placed: readonly { kind: string; options?: Options }[]): number {
-  return placed.filter(widget => {
-    if (widget.kind !== entry.definition.kind) return false;
-    const resolved = resolveOptions(entry.definition.options, widget.options as WidgetOptions | undefined);
-    return Object.entries(entry.match).every(([key, value]) => (Object.hasOwn(resolved, key) ? resolved[key] : widget.options?.[key]) === value);
-  }).length;
+export function placedCount(entry: { definition: { kind: string }; match: Options },
+  placed: readonly { kind: string; options: Readonly<Record<string, OptionValue>> }[]): number {
+  return placed.filter(widget => widget.kind === entry.definition.kind
+    && Object.entries(entry.match).every(([key, value]) => widget.options[key] === value)).length;
 }
