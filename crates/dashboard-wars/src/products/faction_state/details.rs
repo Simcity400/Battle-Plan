@@ -147,6 +147,14 @@ pub(super) fn faction_reads(faction: u64) -> Vec<Read> {
     reads
 }
 
+pub(super) fn goal_reads(faction: u64) -> Vec<Read> {
+    let goals = u128::from(faction) << 40;
+    let mut reads: Vec<Read> = WHOLE.into_iter().map(Read::all).collect();
+    reads.push(Read::these(TableId::FactionGoalStatus, [u128::from(faction)]));
+    reads.push(Read { table: TableId::FactionGoalEntries, keys: Keys::Range(goals, goals | ((1u128 << 40) - 1)) });
+    reads
+}
+
 impl AtHour for FactionDetails {
     const KEY: &'static str = "faction-details";
     const TITLE: &'static str = "Faction details";
@@ -197,7 +205,7 @@ impl AtHour for FactionDetails {
             return Self::reads(params, owner, step, held);
         }
         let (Ok(faction), Ok(cat)) = (super::faction_id(&params.faction), at.context.catalogue()) else { return Vec::new() };
-        text_reads(held, faction, cat)
+        text_reads(held, faction, cat, &faction_reads(faction))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -222,11 +230,11 @@ impl AtHour for FactionDetails {
     }
 }
 
-pub(super) fn text_reads(held: &DecodedFrame, faction: u64, cat: &Catalogue) -> Vec<Read> {
+pub(super) fn text_reads(held: &DecodedFrame, faction: u64, cat: &Catalogue, made: &[Read]) -> Vec<Read> {
     if !goals::scripted(held, faction, cat) {
         return Vec::new();
     }
-    let read: Vec<TableId> = faction_reads(faction).into_iter().map(|read| read.table).collect();
+    let read: Vec<TableId> = made.iter().map(|read| read.table).collect();
     goals::text_tables().filter(|table| !read.contains(table)).map(Read::all).collect()
 }
 
@@ -234,6 +242,18 @@ impl DetailContent {
     pub(super) fn catalogue(&self) -> Result<&Catalogue, &String> {
         self.catalogue.as_deref()
     }
+}
+
+pub(super) fn goals_only(frame: &DecodedFrame, params: &FactionDetailParams, faction: u64, at: &At<'_, DetailContent>) -> io::Result<FactionDetailReply> {
+    let mut reply = blank(params);
+    let cat = at.context.catalogue.as_ref().map(Arc::as_ref);
+    let texts = cat.ok().map(|cat| Texts::new(frame, faction, cat, &at.context.art, params.viewpoint.as_ref()));
+    goal_lists(frame, faction, texts.as_ref(), cat.err().map(String::as_str), &mut reply, at.live)?;
+    if let Some(texts) = &texts {
+        reply.warnings.extend(texts.warnings());
+    }
+    reply.warnings.extend(goals::counted(&reply.definitions));
+    Ok(reply)
 }
 
 pub(super) fn reply(frame: &DecodedFrame, params: &FactionDetailParams, faction: u64, at: &At<'_, DetailContent>) -> io::Result<FactionDetailReply> {

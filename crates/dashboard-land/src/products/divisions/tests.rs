@@ -33,41 +33,30 @@ fn divisions_short_is_not_known_when_no_division_was_compared() {
 }
 
 #[test]
-fn division_equipment_overview_reads_division_templates_for_template_names() {
-    use super::equipment::{DivisionEquipment, DivisionEquipmentParams};
+fn each_division_equipment_view_reads_only_its_own_operands_and_a_type_is_keyed_by_its_recorded_token() {
+    use super::equipment::{DivisionEquipment, DivisionEquipmentParams, DivisionEquipmentView, type_key};
     use crate::products::army::ArmyAttribution;
     use dashboard_base::products::at_hour::{AtHour, Keys, Owner};
     use dashboard_base::test_fixtures::source;
     use replay_data::rows::{DivisionEquipmentTemplateRow, TableId, TableRows};
     use replay_frame::frame::TableView;
-    let params = DivisionEquipmentParams {
-        branch_id: "1".into(),
-        country: "GER".into(),
-        count_for: ArmyAttribution::Owner,
-    };
-    assert!(
-        DivisionEquipment::tables(&params).contains(&TableId::DivisionTemplates),
-        "overview must declare DivisionTemplates so template names resolve"
-    );
+    let params = |view| DivisionEquipmentParams { branch_id: "1".into(), country: "GER".into(), count_for: ArmyAttribution::Owner, view };
+    let templates = DivisionEquipment::tables(&params(DivisionEquipmentView::Templates));
+    let types = DivisionEquipment::tables(&params(DivisionEquipmentView::Types));
+    assert!(templates.contains(&TableId::DivisionTemplates) && templates.contains(&TableId::DivisionEquipmentByTemplate));
+    assert!(!templates.contains(&TableId::DivisionEquipmentByDesign) && !templates.contains(&TableId::VariantDefinitions), "the template view neither reads nor waits on the design tables");
+    assert!(types.contains(&TableId::DivisionEquipmentByDesign) && !types.contains(&TableId::DivisionEquipmentByTemplate) && !types.contains(&TableId::DivisionTemplates));
     let mut held = source(1, 100, Some(1_000));
     held.tables[TableId::DivisionEquipmentByTemplate.index()] = TableView::Complete(
-        TableRows::DivisionEquipmentByTemplate(vec![DivisionEquipmentTemplateRow {
-            slot: 7,
-            side: 0,
-            template: 42,
-            ..Default::default()
-        }]),
+        TableRows::DivisionEquipmentByTemplate(vec![DivisionEquipmentTemplateRow { slot: 7, side: 0, template: 42, ..Default::default() }]),
     )
     .into();
-    let reads = DivisionEquipment::reads(&params, Some(Owner { slot: 7, id: 9001 }), 1, &held);
-    let template_read = reads
-        .iter()
-        .find(|read| read.table == TableId::DivisionTemplates)
-        .expect("step 1 must read DivisionTemplates for overview template names");
-    match &template_read.keys {
-        Keys::These(keys) => assert_eq!(keys, &[42u128]),
-        other => panic!("expected Keys::These([42]), got {other:?}"),
-    }
+    let owner = Some(Owner { slot: 7, id: 9001 });
+    let reads = DivisionEquipment::reads(&params(DivisionEquipmentView::Templates), owner, 1, &held);
+    let template_read = reads.iter().find(|read| read.table == TableId::DivisionTemplates).expect("the template view names its templates");
+    assert!(matches!(&template_read.keys, Keys::These(keys) if keys == &[42u128]));
+    assert!(DivisionEquipment::reads(&params(DivisionEquipmentView::Types), owner, 1, &held).iter().all(|read| read.table != TableId::DivisionTemplates));
+    assert_eq!([type_key(Some(17)), type_key(Some(18)), type_key(None)], ["17", "18", "unclassified"], "two types whose spelling was not read keep their own rows");
 }
 
 #[test]
@@ -118,5 +107,6 @@ fn decorated_divisions_hold_until_the_country_filter_next_changes() {
     assert_eq!(filter_valid_through(Some(&spans), 50), 99, "a country joins at 100");
     assert_eq!(filter_valid_through(Some(&spans), 150), 199, "and leaves after 199");
     assert_eq!(filter_valid_through(Some(&spans), 250), 299);
-    assert_eq!(filter_valid_through(Some(&spans), 399), i32::MAX);
+    assert_eq!(filter_valid_through(Some(&spans), 399), 399, "and leaves again after 399");
+    assert_eq!(filter_valid_through(Some(&spans), 400), i32::MAX);
 }
