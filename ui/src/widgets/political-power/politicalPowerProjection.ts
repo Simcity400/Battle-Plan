@@ -1,6 +1,5 @@
 import { CHART_MEASURE_COLOURS, colour, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
 import { failedArt, missingArt, PENDING_ART } from '../../families/art/types.ts';
 import type { ArtHandle, BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
@@ -11,6 +10,7 @@ import {
   type TimeChartWidgetDeclaration,
 } from '../../families/time-chart/declaration.ts';
 import { formatChartAxisValue } from '../../families/time-chart/layout.ts';
+import { exactHoverReadings, seriesHeadValue } from '../../families/time-chart/seriesHelpers.ts';
 import type {
   ChartArtSlot,
   ChartGap,
@@ -52,27 +52,10 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
     const headByTag = new Map<string, number | null>();
     for (let i = 0; i < tags.length; i++) {
       const tag = tags[i]!;
-      const bounded = seriesMap?.get(tag);
-      const decimals = bounded?.decimals ?? 5;
-      const liveVal = answer ? rowAmount(answer, i, decimals) : undefined;
-      if (liveVal !== undefined && liveVal !== null && Number.isFinite(liveVal)) {
-        headByTag.set(tag, liveVal);
-      } else if (bounded?.headValue && (bounded.headValue.kind === 'known' || bounded.headValue.kind === 'zero' || bounded.headValue.kind === 'partial')) {
-        headByTag.set(tag, Number(bounded.headValue.value));
-      } else if (bounded && bounded.buckets.length > 0) {
-        let lastVal: number | null = null;
-        for (let b = bounded.buckets.length - 1; b >= 0; b--) {
-          const bucket = bounded.buckets.at(b);
-          if (bucket && Number.isFinite(bucket.lastValue)) {
-            lastVal = bucket.lastValue;
-            break;
-          }
-        }
-        headByTag.set(tag, lastVal);
-      } else {
-        headByTag.set(tag, null);
-      }
+      headByTag.set(tag, seriesHeadValue(seriesMap?.get(tag), answer, i, 5));
     }
+    const exact = exactHoverReadings(readView, 'hover', seriesMap?.get(tags[0] ?? '')?.decimals ?? 5);
+    const rowOf = new Map(tags.map((tag, row) => [tag, row]));
 
     const ordered = [...tags].sort((a, b) => (headByTag.get(b) ?? -Infinity) - (headByTag.get(a) ?? -Infinity));
     const topTags = ordered.slice(0, 8);
@@ -142,6 +125,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
         bounded,
         headValue,
         headHour: hour,
+        exact: exact?.[rowOf.get(tag) ?? -1] ?? null,
         flag,
         icon: single ? measureIcon : undefined,
         missingSpans,

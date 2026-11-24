@@ -3,7 +3,7 @@ import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { flagArtHandle } from '../art/provider.ts';
 import { failedArt, missingArt, PENDING_ART } from '../art/types.ts';
-import type { BoundedReadView, BoundedSeries } from '../contract.ts';
+import { FutureDataError, type BoundedReadView, type BoundedSeries } from '../contract.ts';
 import { holderTagAt, type HolderRun } from '../holders.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import type { ChartArtSlot, ChartGap, ChartMarker, ChartMissingSpan } from './model.ts';
@@ -16,25 +16,74 @@ export function seriesHeadValue(
   scale = 1,
 ): number | null {
   const decimals = bounded?.decimals ?? defaultDecimals;
-  const liveVal = answer ? rowAmount(answer, rowIdx, decimals) : undefined;
-  if (liveVal !== undefined && liveVal !== null && Number.isFinite(liveVal)) {
-    return liveVal * scale;
+  if (answer) {
+    const live = rowAmount(answer, rowIdx, decimals);
+    if (live === null) return null;
+    if (live !== undefined && Number.isFinite(live)) return live * scale;
   }
-  if (bounded?.headValue && (bounded.headValue.kind === 'known' || bounded.headValue.kind === 'zero' || bounded.headValue.kind === 'partial')) {
-    const num = Number(bounded.headValue.value);
-    if (Number.isFinite(num)) return num * scale;
+  const head = bounded?.headValue;
+  if (head) {
+    if (head.kind === 'notRecorded' || head.kind === 'notApplicable') return null;
+    const num = Number(head.value);
+    return Number.isFinite(num) ? num * scale : null;
   }
-  if (bounded?.runs && bounded.runs.length > 0) {
+  if (!bounded) return null;
+  let lastHour = -Infinity;
+  let lastValue: number | null = null;
+  if (bounded.runs && bounded.runs.length > 0) {
     const last = bounded.runs.at(bounded.runs.length - 1);
-    if (last && Number.isFinite(last.value)) return last.value * scale;
-  }
-  if (bounded && bounded.buckets.length > 0) {
+    if (last && Number.isFinite(last.value)) {
+      lastHour = last.lastHour;
+      lastValue = last.value;
+    }
+  } else {
     for (let b = bounded.buckets.length - 1; b >= 0; b--) {
       const bucket = bounded.buckets.at(b);
-      if (bucket && Number.isFinite(bucket.lastValue)) return bucket.lastValue * scale;
+      if (bucket && Number.isFinite(bucket.lastValue)) {
+        lastHour = bucket.lastHour;
+        lastValue = bucket.lastValue;
+        break;
+      }
     }
   }
-  return null;
+  if (lastValue === null) return null;
+  const lastMissing = bounded.missing.length > 0 ? bounded.missing.at(bounded.missing.length - 1) : undefined;
+  if (lastMissing && lastMissing.lastHour > lastHour) return null;
+  return lastValue * scale;
+}
+
+export interface ExactReading {
+  readonly hour: number;
+  readonly value: number | null;
+  readonly reason?: string;
+}
+
+interface ExactState {
+  readonly hour: number;
+  readonly run: { readonly valueRaw: string } | null;
+  readonly missing: string | null;
+}
+
+export function exactHoverReadings(
+  readView: BoundedReadView,
+  name: string,
+  decimals: number,
+  scale = 1,
+): readonly (ExactReading | undefined)[] | null {
+  let hover;
+  try {
+    hover = readView.hover<readonly ExactState[]>(name);
+  } catch (error) {
+    if (error instanceof FutureDataError) return null;
+    throw error;
+  }
+  if (!hover || !Array.isArray(hover.data)) return null;
+  const divisor = 10 ** decimals;
+  return hover.data.map(state => {
+    if (!state) return undefined;
+    if (!state.run) return { hour: hover.hour, value: null, reason: state.missing ?? 'Not recorded' };
+    return { hour: hover.hour, value: (Number(state.run.valueRaw) / divisor) * scale };
+  });
 }
 
 export function assignCountrySeriesColours(

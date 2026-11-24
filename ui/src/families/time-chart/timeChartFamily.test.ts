@@ -9,7 +9,7 @@ import { readyArt } from '../art/types.ts';
 import { boundTiledSeries, createBoundedReadView, displayedHour } from '../boundedView.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
-import { knownValue } from '../value.ts';
+import { knownValue, notRecorded } from '../value.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import { commandPowerProjection } from '../../widgets/command-power/commandPowerProjection.ts';
 import { stabilityProjection } from '../../widgets/stability/stabilityProjection.ts';
@@ -20,6 +20,9 @@ import { timeChartLaneView } from './laneView.ts';
 import { formatChartAxisValue, layoutTimeChart, niceChartTicks } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
 import { buildLineSubpaths } from './painter.ts';
+import { seriesHeadValue } from './seriesHelpers.ts';
+import { sampleSeriesValueAt } from './hitTest.ts';
+import { politicalPowerProjection } from '../../widgets/political-power/politicalPowerProjection.ts';
 
 const measure: MeasureText = (text: string) => text.length * 6.5;
 const FONT = 'Segoe UI, sans-serif';
@@ -663,5 +666,43 @@ describe('time-chart picture authority', () => {
     assert.equal(layout.endLabels.length, 0, 'no end label when the playhead is outside the window');
     const { subpaths } = buildLineSubpaths(model.series[0]!, layout, hour);
     assert.ok(subpaths.flat().every(([, y]) => y >= layout.top - 1), 'no point drawn at the head value');
+  });
+  it('never turns a missing head or an unwitnessed hour into an exact reading', () => {
+    const base = Math.floor(H1936 / 96) * 96;
+    const hour = base + 40;
+    const line = makeTiledLine('GER', [makeBucket(base, base + 30, 10, 10, 30, 10, base + 30)]);
+    const missingHead = boundTiledSeries(line, displayedHour(hour), { headValue: notRecorded('Countries not read at this hour') });
+    assert.equal(seriesHeadValue(missingHead, undefined, 0, 0), null, 'an explicitly missing head stays missing');
+    const model = politicalPowerProjection.project(createBoundedReadView({
+      hour,
+      series: new Map([['main', new Map([['GER', missingHead]])]]),
+    }), { tags: ['GER'], extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.equal(model.series[0]!.endLabel, null);
+    assert.deepEqual(model.auditRows, []);
+
+    const gapAfter = boundTiledSeries({ ...line, missing: [{ firstHour: base + 31, lastHour: hour, reason: 'Recording gap' }] }, displayedHour(hour), {});
+    assert.equal(seriesHeadValue(gapAfter, undefined, 0, 0), null, 'a gap after the last reading leaves the head unknown');
+
+    const withHead = { id: 'pp', key: 'pp', name: 'PP', color: '#e3a83b', role: 'primary' as const,
+      bounded: boundTiledSeries(line, displayedHour(base + 30), { headPoint: { hour: base + 30, value: 35 }, headValue: knownValue(35) }), headValue: 35, headHour: base + 30 };
+    const inside = sampleSeriesValueAt(withHead, base + 25, base + 30);
+    assert.notEqual(inside?.value, 35, 'an hour inside the bin is not the head');
+  });
+
+  it('shows the declared exact hover reading, or its missing reason', () => {
+    const base = Math.floor(H1936 / 96) * 96;
+    const hour = base + 90;
+    const hoverAt = base + 50;
+    const line = { ...makeTiledLine('GER', [makeBucket(base, base + 95, 10, 10, 30, 20, base + 89)]), decimals: 5 };
+    const project = (state: unknown) => {
+      const model = politicalPowerProjection.project(createBoundedReadView({
+        hour,
+        series: new Map([['main', new Map([['GER', boundTiledSeries(line, displayedHour(hour), { headValue: knownValue(20) })]])]]),
+        hovers: new Map([['hover', { hour: hoverAt, data: [state] }]]),
+      }), { tags: ['GER'], extent: [base, base + 95], gaps: [], surface: '#111111' });
+      return deriveTimeChartTooltip(model, layoutTimeChart(model, 600, 260, FONT, measure), `plot:${hoverAt}`)?.payload?.items?.[0];
+    };
+    assert.equal(project({ hour: hoverAt, run: { valueRaw: '1234500000' }, missing: null })?.value, '12,345');
+    assert.equal(project({ hour: hoverAt, run: null, missing: 'Countries not read at this hour' })?.missingReason, 'Countries not read at this hour');
   });
 });

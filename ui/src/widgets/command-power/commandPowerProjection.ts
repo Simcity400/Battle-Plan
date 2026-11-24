@@ -13,6 +13,7 @@ import {
   assignCountrySeriesColours,
   branchGapsOf,
   countrySeriesIdentity,
+  exactHoverReadings,
   missingSpansOf,
   seriesHeadValue,
   spendMarkersOf,
@@ -63,6 +64,8 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       }
     }
 
+    const exact = exactHoverReadings(readView, 'hover', mainMap?.get(tags[0] ?? '')?.decimals ?? 5);
+    const rowOf = new Map(tags.map((tag, row) => [tag, row]));
     const ordered = [...tags].sort((a, b) => (headByTag.get(b) ?? -Infinity) - (headByTag.get(a) ?? -Infinity));
     const colourMap = assignCountrySeriesColours(
       ordered,
@@ -99,6 +102,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
         bounded,
         headValue,
         headHour: hour,
+        exact: exact?.[rowOf.get(tag) ?? -1] ?? null,
         flag,
         icon: single ? measureIcon : undefined,
         missingSpans: missingSpansOf(bounded),

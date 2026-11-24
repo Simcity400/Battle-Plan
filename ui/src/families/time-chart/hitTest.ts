@@ -89,7 +89,7 @@ export function sampleSeriesValueAt(
   if (series.bounded) {
     const sampled = sampleBoundedAt(series.bounded, hour, series.valueScale ?? 1);
     if (sampled) return sampled;
-    if (series.headValue != null && Number.isFinite(series.headValue) && Math.abs(hour - until) <= series.bounded.binHours) {
+    if (series.headValue != null && Number.isFinite(series.headValue) && hour === (series.headHour ?? until)) {
       return { value: series.headValue, min: series.headValue, max: series.headValue, exact: true };
     }
   }
@@ -232,6 +232,34 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
     for (const s of model.series) {
       const flagUrl = artUrlOf(s.flag);
       const iconUrl = artUrlOf(s.icon);
+      if (s.exact && s.exact.hour === hour) {
+        if (s.exact.value === null) {
+          entries.push({
+            sortVal: -Infinity,
+            item: {
+              label: s.name,
+              missingReason: s.exact.reason ?? notRecordedLabel(),
+              swatch: s.color,
+              tone: 'muted',
+              ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
+            },
+          });
+        } else {
+          const negative = s.negRed && s.exact.value < 0;
+          entries.push({
+            sortVal: s.exact.value,
+            item: {
+              label: s.name,
+              value: formatExactFigure(s.exact.value, model),
+              swatch: negative ? '#ff6b6f' : s.color,
+              tone: negative ? 'negative' : undefined,
+              ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
+              ...(iconUrl ? { icon: iconUrl } : {}),
+            },
+          });
+        }
+        continue;
+      }
       const missingSpan = s.missingSpans?.find(sp => hour >= sp.firstHour && hour <= sp.lastHour);
       if (missingSpan) {
         entries.push({
