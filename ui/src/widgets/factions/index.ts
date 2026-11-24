@@ -1,4 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import FactionsWidget from './FactionsWidget';
+import FactionsView from './FactionsView';
 
-export default { render: FactionsWidget } satisfies WidgetRenderer;
+export default { render: FactionsView } satisfies WidgetRenderer;

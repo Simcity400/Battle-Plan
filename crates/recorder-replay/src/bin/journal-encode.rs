@@ -138,6 +138,7 @@ fn main() -> io::Result<()> {
             }
             Progress::Paused => continue,
             Progress::Undecided(_) => return Err(io::Error::other("A branch waits to be admitted")),
+            Progress::AwaitsFacts => return Err(io::Error::other("The session's game facts are still being packed")),
         }
     }
     if memory && engine_allocation::labels::ENABLED {

@@ -247,11 +247,11 @@ impl Product for AirForceSize {
         let query = dashboard_base::queries::query(source, branch)?;
         let race = air_race(params.measure, params.ownership);
         let asked = Asked { branch_id: &params.branch_id, tags: &params.countries, top: params.top, window: params.window };
-        window_reply(source, &query, race, asked, cancelled, |recording, run, hour, parts, warnings| {
+        window_reply(source, &query, race, asked, cancelled, |recording, parts, warnings| {
             let content = Content::read(source, context, "Air equipment type names", warnings);
             match params.measure {
-                AirForceMeasure::Planes => air_planes(recording, run, hour, &parts.keys().copied().collect(), &content, warnings),
-                AirForceMeasure::Wings => air_wings(recording, run, hour, parts, &content, warnings),
+                AirForceMeasure::Planes => air_planes(recording, parts, &content, warnings),
+                AirForceMeasure::Wings => air_wings(recording, parts, &content, warnings),
             }
         })
     }
@@ -278,9 +278,9 @@ impl Product for NavySize {
         let query = dashboard_base::queries::query(source, branch)?;
         let race = navy_race(params.measure, params.ownership);
         let asked = Asked { branch_id: &params.branch_id, tags: &params.countries, top: params.top, window: params.window };
-        let mut reply = window_reply(source, &query, race, asked, cancelled, |recording, run, hour, parts, warnings| {
+        let mut reply = window_reply(source, &query, race, asked, cancelled, |recording, parts, warnings| {
             let content = Content::read(source, context, "Ship class names", warnings);
-            navy_classes(recording, run, hour, &parts.keys().copied().collect(), &content, params.grouping, warnings)
+            navy_classes(recording, parts, &content, params.grouping, warnings)
         })?;
         if params.measure == NavyMeasure::Ships {
             for run in reply.series.iter_mut().flat_map(|series| series.runs.iter_mut()) {
@@ -393,7 +393,7 @@ fn window_reply(
     race: Race,
     asked: Asked<'_>,
     cancelled: &AtomicBool,
-    name: impl FnOnce(&Recording, u32, i32, &BTreeMap<u128, i32>, &mut Vec<String>) -> io::Result<Named>,
+    name: impl FnOnce(&Recording, &BTreeMap<u128, (u32, i32)>, &mut Vec<String>) -> io::Result<Named>,
 ) -> io::Result<ForceSizeReply> {
     let windows = dashboard_world::products::army_windows::windows(query)?;
     let interval = asked.window.map(|index| windows.get(index).cloned().ok_or_else(|| invalid("Unknown history window"))).transpose()?;
@@ -408,7 +408,6 @@ fn window_reply(
     };
     let Some(range) = interval else { return Ok(reply) };
     let (first, last) = (range.first_hour, range.last_hour);
-    let run = query.timeline.at(first).ok_or_else(|| invalid("The window's hours are not recorded"))?.run;
     let totals = declared(race.totals)?;
     let line = Line::new(query, totals, measure(totals, race.total)?)?;
     let membership: Option<BTreeMap<Country, Vec<(i32, i32)>>> = match asked.top {
@@ -428,49 +427,80 @@ fn window_reply(
     let mut held: BTreeMap<Country, Vec<Part>> = BTreeMap::new();
     for tag in &tags {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let parts: Vec<Part> = line.parts(tag, first, last).into_iter().filter(|part| part.run == run).collect();
+        let parts: Vec<Part> = line.parts(tag, first, last);
         if !parts.is_empty() || asked.top.is_none() {
             held.insert(tag.clone(), parts);
         }
     }
-    let mut owners: Vec<u128> = held.values().flatten().map(|part| part.key).collect();
-    owners.sort_unstable();
-    owners.dedup();
+    let mut owners_by_run: BTreeMap<u32, (i32, i32, Vec<u128>)> = BTreeMap::new();
+    for part in held.values().flatten() {
+        let entry = owners_by_run.entry(part.run).or_insert_with(|| (part.first, part.last, Vec::new()));
+        entry.0 = entry.0.min(part.first);
+        entry.1 = entry.1.max(part.last);
+        entry.2.push(part.key);
+    }
     let recording = query.replay.recording();
-    let total_runs = if owners.is_empty() { HashMap::new() } else { read::runs(recording, run, totals.table, line.source(), Some(&owners), first, last)? };
-    let reference_runs = match race.reference {
-        Some(name) if !owners.is_empty() => read::runs(recording, run, totals.table, dashboard_declare::source(totals.table, measure(totals, name)?)?, Some(&owners), first, last)?,
-        _ => HashMap::new(),
+    let reference_source = match race.reference {
+        Some(name) => Some(dashboard_declare::source(totals.table, measure(totals, name)?)?),
+        None => None,
     };
     let parts_series = declared(race.parts)?;
     let spec = parts_series.parts.ok_or_else(|| invalid(format!("{} has no parts", parts_series.kind)))?;
-    let lives = dashboard_base::queries::lifetimes(source, run, parts_series.table)?;
-    let mut keys = Vec::new();
-    for &owner in &owners {
-        let (lo, hi) = spec.range(owner);
-        let start = lives.partition_point(|&(key, ..)| key < lo);
-        keys.extend(
-            lives[start..]
-                .iter()
-                .take_while(|&&(key, ..)| key <= hi)
-                .filter(|&&(key, born, gone)| born <= i64::from(last) && gone >= i64::from(first) && (spec.part(key) >> race.ownership_shift) & 0xff == race.ownership)
-                .map(|&(key, _, gone)| (key, gone.min(i64::from(last)) as i32)),
-        );
-    }
-    let mut met: BTreeMap<u128, i32> = BTreeMap::new();
-    for &(key, at) in &keys {
-        let held = met.entry(spec.part(key)).or_insert(at);
-        *held = (*held).max(at);
-    }
-    let keys: Vec<u128> = keys.into_iter().map(|(key, _)| key).collect();
     let part_source = dashboard_declare::source(parts_series.table, measure(parts_series, race.part)?)?;
-    let parts_read = if keys.is_empty() { HashMap::new() } else { read::runs(recording, run, parts_series.table, part_source, Some(&keys), first, last)? };
-    let named = name(recording, run, last, &met, &mut reply.warnings)?;
+    let mut total_runs: HashMap<(u32, u128), read::Runs> = HashMap::new();
+    let mut reference_runs: HashMap<(u32, u128), read::Runs> = HashMap::new();
+    let mut parts_read: HashMap<(u32, u128), read::Runs> = HashMap::new();
+    let mut met: BTreeMap<u128, (u32, i32)> = BTreeMap::new();
+    for (run, (run_first, run_last, mut owners)) in owners_by_run {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        owners.sort_unstable();
+        owners.dedup();
+        if owners.is_empty() {
+            continue;
+        }
+        for (key, runs) in read::runs(recording, run, totals.table, line.source(), Some(&owners), run_first, run_last)? {
+            total_runs.insert((run, key), runs);
+        }
+        if let Some(ref_src) = reference_source {
+            for (key, runs) in read::runs(recording, run, totals.table, ref_src, Some(&owners), run_first, run_last)? {
+                reference_runs.insert((run, key), runs);
+            }
+        }
+        let lives = dashboard_base::queries::lifetimes(source, run, parts_series.table)?;
+        let mut keys = Vec::new();
+        for &owner in &owners {
+            let (lo, hi) = spec.range(owner);
+            let start = lives.partition_point(|&(key, ..)| key < lo);
+            keys.extend(
+                lives[start..]
+                    .iter()
+                    .take_while(|&&(key, ..)| key <= hi)
+                    .filter(|&&(key, born, gone)| born <= i64::from(run_last) && gone >= i64::from(run_first) && (spec.part(key) >> race.ownership_shift) & 0xff == race.ownership)
+                    .map(|&(key, _, gone)| (key, gone.min(i64::from(run_last)) as i32)),
+            );
+        }
+        for &(key, at) in &keys {
+            met.entry(spec.part(key))
+                .and_modify(|prev| {
+                    if at >= prev.1 {
+                        *prev = (run, at);
+                    }
+                })
+                .or_insert((run, at));
+        }
+        let keys: Vec<u128> = keys.into_iter().map(|(key, _)| key).collect();
+        if !keys.is_empty() {
+            for (key, runs) in read::runs(recording, run, parts_series.table, part_source, Some(&keys), run_first, run_last)? {
+                parts_read.insert((run, key), runs);
+            }
+        }
+    }
+    let named = name(recording, &met, &mut reply.warnings)?;
     let groups = named.parts.len();
-    let mut by_owner: HashMap<u128, Owned<'_>> = HashMap::new();
-    for (key, runs) in &parts_read {
+    let mut by_owner: HashMap<(u32, u128), Owned<'_>> = HashMap::new();
+    for ((run, key), runs) in &parts_read {
         if let Some(&group) = named.of.get(&spec.part(*key)) {
-            by_owner.entry(spec.owner(*key)).or_default().push((group, runs.as_slice()));
+            by_owner.entry((*run, spec.owner(*key))).or_default().push((group, runs.as_slice()));
         }
     }
     for (tag, parts) in &held {
@@ -482,10 +512,10 @@ fn window_reply(
         };
         let mut runs = Vec::new();
         for part in parts {
-            let totals = total_runs.get(&part.key).map_or(&[][..], Vec::as_slice);
-            let reference = race.reference.map(|_| reference_runs.get(&part.key).map_or(&[][..], Vec::as_slice));
+            let totals = total_runs.get(&(part.run, part.key)).map_or(&[][..], Vec::as_slice);
+            let reference = race.reference.map(|_| reference_runs.get(&(part.run, part.key)).map_or(&[][..], Vec::as_slice));
             let empty = Owned::new();
-            let owned = by_owner.get(&part.key).unwrap_or(&empty);
+            let owned = by_owner.get(&(part.run, part.key)).unwrap_or(&empty);
             for &(span_first, span_last) in &spans {
                 let (lo, hi) = (span_first.max(part.first), span_last.min(part.last));
                 if lo <= hi {
@@ -613,14 +643,27 @@ fn equipment(content: &Content, warnings: &mut Vec<String>) -> Option<Arc<conten
     }
 }
 
-fn air_planes(recording: &Recording, run: u32, hour: i32, parts: &BTreeSet<u128>, content: &Content, warnings: &mut Vec<String>) -> io::Result<Named> {
+fn air_planes(recording: &Recording, met: &BTreeMap<u128, (u32, i32)>, content: &Content, warnings: &mut Vec<String>) -> io::Result<Named> {
     let variant_of = |part: u128| ((part >> 64) & 1 == 1).then_some(part as u64);
-    let variants: BTreeSet<u64> = parts.iter().filter_map(|&part| variant_of(part)).collect();
-    let tokens = variant_tokens(recording, run, hour, &variants)?;
+    let mut by_run: BTreeMap<u32, (i32, BTreeSet<u64>)> = BTreeMap::new();
+    for (&part, &(run, at)) in met {
+        if let Some(variant) = variant_of(part) {
+            let entry = by_run.entry(run).or_insert_with(|| (at, BTreeSet::new()));
+            entry.0 = entry.0.max(at);
+            entry.1.insert(variant);
+        }
+    }
+    let mut tokens: HashMap<u64, String> = HashMap::new();
+    for (run, (at, variants)) in by_run {
+        let missing: BTreeSet<u64> = variants.into_iter().filter(|variant| !tokens.contains_key(variant)).collect();
+        if !missing.is_empty() {
+            tokens.extend(variant_tokens(recording, run, at, &missing)?);
+        }
+    }
     let units = equipment(content, warnings);
     let mut notes = BTreeSet::new();
-    let resolved = parts
-        .iter()
+    let resolved = met
+        .keys()
         .map(|&part| {
             let named = match variant_of(part) {
                 Some(variant) => variant_part(variant, tokens.get(&variant).map(String::as_str), units.as_deref(), content, &mut notes),
@@ -633,16 +676,16 @@ fn air_planes(recording: &Recording, run: u32, hour: i32, parts: &BTreeSet<u128>
     Ok(Named::group(resolved))
 }
 
-fn air_wings(recording: &Recording, run: u32, hour: i32, met: &BTreeMap<u128, i32>, content: &Content, warnings: &mut Vec<String>) -> io::Result<Named> {
+fn air_wings(recording: &Recording, met: &BTreeMap<u128, (u32, i32)>, content: &Content, warnings: &mut Vec<String>) -> io::Result<Named> {
     let parts: BTreeSet<u128> = met.keys().copied().collect();
-    let mut by_hour: BTreeMap<i32, Vec<u128>> = BTreeMap::new();
-    for (&part, &at) in met {
-        by_hour.entry(at).or_default().push(u128::from(part as u32));
+    let mut by_run_hour: BTreeMap<(u32, i32), Vec<u128>> = BTreeMap::new();
+    for (&part, &(run, at)) in met {
+        by_run_hour.entry((run, at)).or_default().push(u128::from(part as u32));
     }
-    let mut signatures: HashMap<u32, Vec<u64>> = HashMap::new();
-    if !by_hour.is_empty() {
+    let mut signatures: HashMap<u32, (u32, i32, Vec<u64>)> = HashMap::new();
+    if !by_run_hour.is_empty() {
         let column = dashboard_declare::field(TableId::AirForceWingSignatures, "variants")?;
-        for (at, mut keys) in by_hour {
+        for ((run, at), mut keys) in by_run_hour {
             keys.sort_unstable();
             keys.dedup();
             let held = read::at(recording, run, &[read::Read { table: TableId::AirForceWingSignatures, columns: Some(&[column]), keys: read::Keys::These(&keys) }], at)?;
@@ -652,24 +695,34 @@ fn air_wings(recording: &Recording, run: u32, hour: i32, met: &BTreeMap<u128, i3
                 let Some(bytes) = bytes else { continue };
                 match (AirForceWingSignatureRow { number: key as u32, variants: bytes.to_vec() }).variants() {
                     Ok(variants) => {
-                        signatures.insert(key as u32, variants);
+                        signatures.insert(key as u32, (run, at, variants));
                     }
                     Err(error) => warnings.push(format!("Wing composition {key}: {error}")),
                 }
             }
         }
     }
-    let parts = &parts;
-    let variants: BTreeSet<u64> = signatures.values().flatten().copied().collect();
-    let tokens = variant_tokens(recording, run, hour, &variants)?;
+    let mut by_run: BTreeMap<u32, (i32, BTreeSet<u64>)> = BTreeMap::new();
+    for (run, at, variants) in signatures.values() {
+        let entry = by_run.entry(*run).or_insert_with(|| (*at, BTreeSet::new()));
+        entry.0 = entry.0.max(*at);
+        entry.1.extend(variants.iter().copied());
+    }
+    let mut tokens: HashMap<u64, String> = HashMap::new();
+    for (run, (at, variants)) in by_run {
+        let missing: BTreeSet<u64> = variants.into_iter().filter(|variant| !tokens.contains_key(variant)).collect();
+        if !missing.is_empty() {
+            tokens.extend(variant_tokens(recording, run, at, &missing)?);
+        }
+    }
     let units = equipment(content, warnings);
     let mut notes = BTreeSet::new();
     let mut resolved = BTreeMap::new();
-    for &part in parts {
+    for &part in &parts {
         let named = match signatures.get(&(part as u32)) {
             None => ForcePart { key: format!("{UNRESOLVED}composition/{}", part as u32), name: Some(format!("Wing composition {}", part as u32)), unresolved: true },
-            Some(variants) if variants.is_empty() => unidentified(),
-            Some(variants) => {
+            Some((_, _, variants)) if variants.is_empty() => unidentified(),
+            Some((_, _, variants)) => {
                 let mut kinds: BTreeMap<String, ForcePart> = BTreeMap::new();
                 for &variant in variants {
                     let named = variant_part(variant, tokens.get(&variant).map(String::as_str), units.as_deref(), content, &mut notes);
@@ -693,9 +746,20 @@ fn air_wings(recording: &Recording, run: u32, hour: i32, met: &BTreeMap<u128, i3
     Ok(Named::group(resolved))
 }
 
-fn navy_classes(recording: &Recording, run: u32, hour: i32, parts: &BTreeSet<u128>, content: &Content, grouping: NavyGrouping, warnings: &mut Vec<String>) -> io::Result<Named> {
-    let tokens: BTreeSet<u32> = parts.iter().map(|&part| part as u32).collect();
-    let spelled = literals(recording, run, hour, &tokens)?;
+fn navy_classes(recording: &Recording, met: &BTreeMap<u128, (u32, i32)>, content: &Content, grouping: NavyGrouping, warnings: &mut Vec<String>) -> io::Result<Named> {
+    let mut by_run: BTreeMap<u32, (i32, BTreeSet<u32>)> = BTreeMap::new();
+    for (&part, &(run, at)) in met {
+        let entry = by_run.entry(run).or_insert_with(|| (at, BTreeSet::new()));
+        entry.0 = entry.0.max(at);
+        entry.1.insert(part as u32);
+    }
+    let mut spelled: HashMap<u32, String> = HashMap::new();
+    for (run, (at, tokens)) in by_run {
+        let missing: BTreeSet<u32> = tokens.into_iter().filter(|token| !spelled.contains_key(token)).collect();
+        if !missing.is_empty() {
+            spelled.extend(literals(recording, run, at, &missing)?);
+        }
+    }
     let units: Option<Arc<SubUnits>> = content.catalogue.as_ref().and_then(|catalogue| {
         match catalogue.content.layers.derived::<catalogue::CachedResult<SubUnits>>().get_or_init(|| content_reader_key_names::unit_leader::sub_units(&catalogue.content.layers)) {
             Ok(units) => {
@@ -709,7 +773,7 @@ fn navy_classes(recording: &Recording, run: u32, hour: i32, parts: &BTreeSet<u12
         }
     });
     let mut resolved = BTreeMap::new();
-    for &part in parts {
+    for &part in met.keys() {
         let token = part as u32;
         let spelling = spelled.get(&token);
         let mut refusal = None;

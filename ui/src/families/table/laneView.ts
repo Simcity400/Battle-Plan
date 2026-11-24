@@ -99,6 +99,8 @@ interface HeldFamilyTable {
   demandedArtUrls: string[];
   identityDemandsField: FieldEntry | null;
   widthConfigKey: string;
+  sampleSig: string;
+  layoutSampleSig: string;
   fixedWidths: Record<string, number>;
   priorRows: readonly FlatTableRow[];
   priorHour: number;
@@ -171,6 +173,7 @@ interface HeldFamilyTable {
 
 const MIRROR_CADENCE_MS = 1000;
 const TOOLTIP_CADENCE_MS = 250;
+const TEXT_SAMPLE_ROWS = 40;
 
 export const liveAdapter = (map: LiveMap | null): LiveValues<number | bigint | string> | null => map && {
   get: (key: string) => {
@@ -357,9 +360,28 @@ function widthConfigOf(columns: readonly TableColumnSpec[], settings: TableSetti
   ]);
 }
 
+function textSampleSignature(columns: readonly TableColumnSpec[], rows: readonly FlatTableRow[]): string {
+  const limit = Math.min(rows.length, TEXT_SAMPLE_ROWS);
+  let sig = '';
+  for (const column of columns) {
+    if (column.numeric || column.widest?.length) continue;
+    let longest = 0;
+    for (let i = 0; i < limit; i++) {
+      const item = rows[i]!;
+      if (item.kind !== 'data') continue;
+      const cell = item.row.cells[column.key];
+      if (!cell) continue;
+      const val = cell.looks ? item.name : cell.value.kind === 'known' ? String(cell.value.value) : '';
+      if (val.length > longest) longest = val.length;
+    }
+    sig += `${column.key}:${longest}|`;
+  }
+  return sig;
+}
+
 function initialTextSamples(columns: readonly FamilyColumnLayout[], rows: readonly FlatTableRow[]): Record<string, string[]> {
   const samples: Record<string, string[]> = {};
-  const limit = Math.min(rows.length, 40);
+  const limit = Math.min(rows.length, TEXT_SAMPLE_ROWS);
   for (const column of columns) {
     if (column.numeric || column.widest?.length) continue;
     const list: string[] = [];
@@ -381,7 +403,8 @@ function metaSignature(model: TableModel, hasTree: boolean, rankShown: boolean, 
     model.empty ?? null,
     model.emptyDetail ?? null,
     model.emptyKind ?? 'empty',
-    model.titleSummary ?? model.summaryPill ?? null,
+    model.titleSummary ?? null,
+    model.titleSummaryPartial ?? null,
     model.hideHeader === true,
     model.rowHeightMode ?? 'standard',
     model.notes ?? [],
@@ -489,6 +512,8 @@ export function familyTableLaneView(
           demandedArtUrls: [],
           identityDemandsField: null,
           widthConfigKey: '',
+          sampleSig: '',
+          layoutSampleSig: '',
           fixedWidths: {},
           priorRows: [],
           priorHour: -Infinity,
@@ -689,6 +714,7 @@ export function familyTableLaneView(
         return { mode: 'refused', reason: model.refused, surfaces: [], fields: {}, motion: false };
       }
 
+      if (modelChanged) held.sampleSig = textSampleSignature(model.columns, flatRows);
       const rankShown = model.rank === true && (bound.settings.showRank === true || model.defaultRankShown === true);
       const rankMarkersOn = rankShown && model.rankMarkers === true;
       const rankWidth = rankShown ? (bound.rankWidth ?? (rankMarkersOn ? 64 : 36)) : 0;
@@ -698,7 +724,8 @@ export function familyTableLaneView(
         && held.layoutWidth === bound.width
         && held.layoutRankShown === rankShown
         && held.layoutRankWidth === rankWidth
-        && held.layoutTheme === bound.theme;
+        && held.layoutTheme === bound.theme
+        && held.layoutSampleSig === held.sampleSig;
 
       let allLayouts: FamilyColumnLayout[];
       let layout: FamilyTableLayout;
@@ -707,7 +734,7 @@ export function familyTableLaneView(
         allLayouts = held.cachedAllLayouts;
         layout = held.cachedLayout!;
       } else {
-        const configKey = widthConfigOf(model.columns, bound.settings, bound.theme);
+        const configKey = `${widthConfigOf(model.columns, bound.settings, bound.theme)}${held.sampleSig}`;
         if (bound.theme && held.widthConfigKey !== configKey) {
           const baseCols = buildColumnLayouts(model.columns, bound.settings);
           const measure = (text: string, font: string) => {
@@ -737,6 +764,7 @@ export function familyTableLaneView(
         held.layoutRankShown = rankShown;
         held.layoutRankWidth = rankWidth;
         held.layoutTheme = bound.theme;
+        held.layoutSampleSig = held.sampleSig;
         held.cachedAllLayouts = allLayouts;
         held.cachedLayout = layout;
         held.cachedMaxima = null;
@@ -772,7 +800,9 @@ export function familyTableLaneView(
       }
       const totalHeight = rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
       if (modelChanged) {
-        if (held.priorRows.length && glideMs > 0) {
+        const forwardStep = input.speed > 0 && Number.isFinite(held.priorHour) && model.hour > held.priorHour;
+        const jumped = !Number.isFinite(held.priorHour) || model.hour < held.priorHour || (model.hour !== held.priorHour && !forwardStep);
+        if (held.priorRows.length && glideMs > 0 && !jumped) {
           const oldIndex = new Map<string, number>();
           held.priorRows.forEach((item, index) => { if (item.kind === 'data') oldIndex.set(item.key, index); });
           const nextGlide = new Map<string, GlideOffset>();
@@ -794,7 +824,7 @@ export function familyTableLaneView(
         if (rankMarkersOn) {
           const dataKeys = flatRows.filter(item => item.kind === 'data').map(item => item.key);
           const holdMs = rankHoldForSpeed(input.speed);
-          held.markers = held.order?.sort === sortSig ? rankMarkers(held.order.keys, dataKeys, now, held.markers, holdMs) : new Map();
+          held.markers = forwardStep && held.order?.sort === sortSig ? rankMarkers(held.order.keys, dataKeys, now, held.markers, holdMs) : new Map();
           held.order = { sort: sortSig, keys: dataKeys };
         } else {
           held.markers = new Map();
@@ -883,6 +913,7 @@ export function familyTableLaneView(
           hasGroupHeaders: held.cachedHasGroupHeaders,
           precomputedMaxima: maxima,
           staticRowLooks: model.rowTimeBoundaries === false,
+          rowIndex: held.cachedRowIndex,
           rowHeightMode,
           rowGeom,
           clockSummary: model.clockSummary,
@@ -931,7 +962,7 @@ export function familyTableLaneView(
               emptyDetail: model.emptyDetail ?? null,
               emptyKind: model.emptyKind ?? 'empty',
               titleSummary: model.titleSummary ?? null,
-              summaryPill: model.summaryPill ?? null,
+              titleSummaryPartial: model.titleSummaryPartial ?? null,
               hideHeader: model.hideHeader === true,
               rowHeightMode,
               notes: model.notes ?? [],
@@ -948,7 +979,7 @@ export function familyTableLaneView(
       }
       fields.meta = held.metaField!;
 
-      const navUrgent = !held.navField || input.speed === 0 || focusedKey !== null || hasTree || (held.navItems !== null && held.navItems.length !== flatRows.length && !held.cachedHasGroupHeaders);
+      const navUrgent = !held.navField || input.speed === 0 || focusedKey !== null || hasTree || (modelChanged && !incrementalUsed) || (held.navItems !== null && held.navItems.length !== flatRows.length && !held.cachedHasGroupHeaders);
       if (modelChanged) held.navGate.invalidate();
       if (navUrgent || held.navGate.due(now, input.speed, `${flatRows.length}:${focusedKey ?? ''}`)) {
         if (!held.navField || !sameNavItems(held.navItems, flatRows)) {
@@ -1074,7 +1105,7 @@ export function familyTableLaneView(
       const glideSnapshot = moving ? new Map(held.glide) : undefined;
       const hit = (point: readonly [number, number]) => {
         if (model.clockSummary) return null;
-        const at = hitFamilyTable(layout, flatRows, { x: point[0], y: point[1] }, rowHeight, bound.scrollLeft, bound.scrollTop, rankShown, rankWidth, glideSnapshot, now, glideMs, rowGeom);
+        const at = hitFamilyTable(layout, flatRows, { x: point[0], y: point[1] }, rowHeight, bound.scrollLeft, bound.scrollTop, rankShown, rankWidth, glideSnapshot, now, glideMs, rowGeom, held!.cachedRowIndex, bound.height);
         if (at.kind !== 'row' || !at.rowKey) return null;
         return at.toggle ? `toggle:${at.rowKey}` : `row:${at.rowKey}`;
       };

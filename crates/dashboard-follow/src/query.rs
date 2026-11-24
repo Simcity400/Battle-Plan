@@ -32,6 +32,7 @@ pub enum SeriesMode {
     Keyed(CoverageScope),
     Top { n: usize, least: bool },
     Parts { top: Option<usize> },
+    NavalLosses { attribution: u8, kinds: &'static [u8], top: Option<usize> },
 }
 
 #[derive(Clone)]
@@ -72,17 +73,23 @@ impl Query {
                 Ok(())
             }
             Self::Series { series, measure, mode, .. } => {
-                if matches!(mode, SeriesMode::Top { n: 0, .. } | SeriesMode::Parts { top: Some(0) }) {
+                if matches!(mode, SeriesMode::Top { n: 0, .. } | SeriesMode::Parts { top: Some(0) } | SeriesMode::NavalLosses { top: Some(0), .. }) {
                     return Err(invalid("A top of no rows"));
                 }
                 if !series.measures.iter().any(|held| std::ptr::eq(held, *measure)) {
                     return Err(invalid(format!("{} has no measure {}", series.kind, measure.name)));
                 }
-                let parts = matches!(mode, SeriesMode::Parts { .. });
-                match (series.parts.is_some(), parts) {
-                    (true, false) => return Err(invalid(format!("{} is followed by its owners' parts", series.kind))),
-                    (false, true) => return Err(invalid(format!("{} has no parts", series.kind))),
-                    _ => {}
+                if matches!(mode, SeriesMode::NavalLosses { .. }) {
+                    if series.table != TableId::NavalLossTotals {
+                        return Err(invalid(format!("{} is not naval losses", series.kind)));
+                    }
+                } else {
+                    let parts = matches!(mode, SeriesMode::Parts { .. });
+                    match (series.parts.is_some(), parts) {
+                        (true, false) => return Err(invalid(format!("{} is followed by its owners' parts", series.kind))),
+                        (false, true) => return Err(invalid(format!("{} has no parts", series.kind))),
+                        _ => {}
+                    }
                 }
                 dashboard_declare::source(series.table, measure).map(drop)
             }
@@ -125,6 +132,9 @@ impl Query {
         let mut columns = self.shown();
         if let Self::Cells { rows: Rows::Top { column, .. }, .. } = self {
             columns.push(*column);
+        }
+        if let Self::Series { mode: SeriesMode::NavalLosses { .. }, .. } = self {
+            columns.extend([2, 3]);
         }
         columns.sort_unstable();
         columns.dedup();

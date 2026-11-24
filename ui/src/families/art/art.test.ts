@@ -9,6 +9,7 @@ import { flagEntryToArt, flagImageToArt, spriteImageToArt } from './adapters.ts'
 import { artUrlForHandle, createDomArtProvider, createLaneArtProvider, flagArtHandle } from './provider.ts';
 import { spriteResolutions } from '../../dashboard/spriteArtwork.ts';
 import {
+  artHandleKey,
   CURRENT_INSTALL_PROVENANCE,
   NO_ART,
   PENDING_ART,
@@ -164,7 +165,7 @@ test('DomArtCache distinguishes pending, ready, and failed, wakes listeners, ret
 test('ArtProvider plugs LaneArtCache and DomArtCache behind BoundedReadView.art() for flags and URLs', async () => {
   const index = new IdentityIndex({ sourceId: 's1', revision: 'r1', branchId: '1', content: 1 });
   const choice = { keys: ['GER_a', null, null] as [string | null, string | null, string | null], reasons: [null, null, null] as [string | null, string | null, string | null] };
-  index.setDrawnFlag(choice, { url: 'art://ger-flag' });
+  index.setDrawnFlag('panel', choice, { url: 'art://ger-flag' });
   const handle = flagArtHandle(flagChoiceKey(choice), 'panel');
 
   let wakes = 0;
@@ -255,8 +256,8 @@ test('Rust ArtResolution on CountryFlagImage and SpriteImage passes straight thr
     },
     [{ key: 'GFX_md_spirit_ok', frame: 0 }, { key: 'GFX_md_spirit_none', frame: 0 }],
   );
-  const okKey = JSON.stringify([0, 'GFX_md_spirit_ok', null, false]);
-  const missingKey = JSON.stringify([0, 'GFX_md_spirit_none', null, false]);
+  const okKey = artHandleKey({ kind: 'sprite', key: 'GFX_md_spirit_ok', frame: 0 });
+  const missingKey = artHandleKey({ kind: 'sprite', key: 'GFX_md_spirit_none', frame: 0 });
   assert.deepEqual(parsed.get(okKey), readyModRes);
   assert.deepEqual(parsed.get(missingKey), missingSpiritRes);
 });

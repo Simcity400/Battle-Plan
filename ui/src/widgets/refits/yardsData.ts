@@ -1,11 +1,8 @@
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
+import { knownValue, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
+import type { TooltipExtraRow } from '../../families/table/model.ts';
 import type { NavalRefitsReply, NavalRepairsReply, RefitLine, RepairPort, YardShip } from '../../generated/dashboard';
-
-export type RefitsReply = NavalRefitsReply & { missing: string | null };
-
-export const refitsMissing = (reply: RefitsReply): { message: string; reason: string } | null =>
-  reply.missing === null ? null : { message: 'Refits were not recorded at this date.', reason: reply.missing };
 
 export const FIXED = 100000n;
 
@@ -31,8 +28,8 @@ export function validateRepairs(value: unknown): NavalRepairsReply {
   return reply;
 }
 
-export function validateRefits(value: unknown): RefitsReply {
-  const reply = value as RefitsReply;
+export function validateRefits(value: unknown): NavalRefitsReply {
+  const reply = value as NavalRefitsReply;
   if (!reply || typeof reply !== 'object' || typeof reply.censusComplete !== 'boolean' || !strings(reply.warnings) || !optional(reply.missing)
     || !optionalInteger(reply.ships) || !optionalInteger(reply.dockyards) || !optionalInteger(reply.costRead)
     || !Array.isArray(reply.lines) || !reply.lines.every((line: RefitLine) => !!line && decimal(line.handle) && optional(line.target) && decimal(line.progress)
@@ -43,68 +40,63 @@ export function validateRefits(value: unknown): RefitsReply {
 
 export type ShipNameSource = 'recorded' | 'rebuilt' | 'design';
 
-export function shipLabel(item: YardShip | undefined): { name: string; source: ShipNameSource } {
-  if (!item) return { name: 'Ship name unavailable', source: 'design' };
+export function shipLabel(item: YardShip): { name: string; source: ShipNameSource } {
   if (item.name) return { name: item.name, source: 'recorded' };
   if (item.nameRebuilt) return { name: item.nameRebuilt, source: 'rebuilt' };
   return { name: item.design ?? item.class ?? 'Ship name unavailable', source: 'design' };
 }
 
-export const shipNameRow = (source: ShipNameSource) => ({ label: 'Name', value: source === 'recorded' ? 'As the game held it; not checked against a save'
-  : source === 'rebuilt' ? 'Rebuilt from the recorded naming; not checked against a save' : 'Not recorded; design shown' });
-
-const liveHull = (item: YardShip, values: LiveValues<number>): YardShip => {
-  const hull = values.get(liveKey(item.handle, 'hull'));
-  return hull === undefined ? item : { ...item, hull: String(Math.trunc(hull)) };
+const NAME_SOURCE: Readonly<Record<ShipNameSource, string>> = {
+  recorded: 'As the game held it',
+  rebuilt: 'Rebuilt from the recorded naming',
+  design: 'Not recorded; design shown',
 };
 
-export function hullShare(item: YardShip | undefined): number | null {
-  if (!item?.hull || !item.maximum) return null;
-  const maximum = BigInt(item.maximum);
-  if (maximum <= 0n) return null;
-  return Number(BigInt(item.hull) * 10000n / maximum) / 10000;
-}
-
-export function fixedText(value: string | null | undefined): string {
-  if (value === null || value === undefined) return '—';
+export function fixedText(value: string | bigint | null | undefined): string {
+  if (value === null || value === undefined) return 'Not recorded';
   const raw = BigInt(value), negative = raw < 0n, magnitude = negative ? -raw : raw;
   const fraction = (magnitude % FIXED).toString().padStart(5, '0').slice(0, 2).replace(/0+$/u, '');
   return `${negative ? '−' : ''}${(magnitude / FIXED).toLocaleString('en-US')}${fraction ? `.${fraction}` : ''}`;
 }
 
-export const countText = (value: number | null | undefined) => value === null || value === undefined ? '—' : value.toLocaleString('en-US');
-export const percentText = (share: number | null) => share === null ? '—' : `${(share * 100).toLocaleString('en-US', { maximumFractionDigits: 1 })}%`;
-export const icText = (value: string | null) => value === null ? 'Not recorded' : `${fixedText(value)} IC`;
-
-export function refitShare(reply: NavalRefitsReply, line: RefitLine): number | null {
-  if (line.cost === null || reply.costRead === null) return null;
-  const cost = BigInt(line.cost);
-  if (cost <= 0n || cost >= 9223372036854775807n) return null;
-  return Number(BigInt(line.progress) * 1000000n / cost) / 1000000;
+function shareValue(part: bigint, whole: bigint): Value<number> {
+  if (part <= 0n) return zeroValue(0);
+  return knownValue(Number((part > whole ? whole : part) * 1_000_000n / whole) / 10_000);
 }
 
-const named = (item: YardShip) => [item.handle, item.name, item.nameRebuilt, item.design, item.class, item.taskForce, item.policy, item.maximum];
-
-export function repairsStructure(reply: NavalRepairsReply): string {
-  return JSON.stringify([reply.ports.map(port => [port.province, port.name, port.priority, port.policy, port.dockyards, port.queue.map(named)]),
-    reply.usedDockyards, reply.repairLimit, reply.queuedShips, reply.censusComplete]);
+function liveRaw(live: LiveValues<number | bigint | string> | null, row: string, column: string, held: string | null, reason: string): bigint | Value<never> {
+  const value = valueFromLive(live, liveKey(row, column));
+  if (value.kind === 'known' || value.kind === 'zero') return typeof value.value === 'bigint' ? value.value : BigInt(Math.trunc(value.value));
+  if (held !== null) return BigInt(held);
+  return notRecorded(value.kind === 'notRecorded' ? value.reason : reason);
 }
 
-export function repairsTexts(reply: NavalRepairsReply, values: LiveValues<number>): Map<string, string> {
-  return new Map(reply.ports.flatMap(port => port.queue.map((item, index) => [`hull|${port.province}|${index}`, percentText(hullShare(liveHull(item, values)))] as const)));
+export function shipStrength(item: YardShip, live: LiveValues<number | bigint | string> | null): Value<number> {
+  const maximum = item.maximum === null ? 0n : BigInt(item.maximum);
+  if (maximum <= 0n) return notRecorded('Maximum ship strength not recorded');
+  const hull = liveRaw(live, item.handle, 'hull', item.hull, 'Ship strength not recorded');
+  return typeof hull === 'bigint' ? shareValue(hull, maximum) : hull;
 }
 
-export function refitsStructure(reply: RefitsReply): string {
-  return JSON.stringify([reply.lines.map(line => [line.handle, line.target, line.cost, line.dockyards, line.ships.map(named)]),
-    reply.ships, reply.dockyards, reply.censusComplete, reply.costRead, reply.missing]);
+export function refitProgress(reply: NavalRefitsReply, line: RefitLine, live: LiveValues<number | bigint | string> | null): Value<number> {
+  const cost = line.cost === null || reply.costRead === null ? 0n : BigInt(line.cost);
+  if (cost <= 0n || cost >= 9223372036854775807n) return notRecorded('Refit cost not recorded');
+  const progress = liveRaw(live, line.handle, 'progress', line.progress, 'Refit progress not recorded');
+  return typeof progress === 'bigint' ? shareValue(progress, cost) : progress;
 }
 
-const liveLine = (line: RefitLine, values: LiveValues<number>): RefitLine => {
-  const progress = values.get(liveKey(line.handle, 'progress'));
-  return progress === undefined ? line : { ...line, progress: String(Math.trunc(progress)) };
-};
+export const fraction = (value: Value<number>): Value<number> =>
+  value.kind === 'known' ? knownValue(value.value / 100) : value;
 
-export function refitsTexts(reply: NavalRefitsReply, values: LiveValues<number>): Map<string, string> {
-  return new Map(reply.lines.flatMap(line => [[`progress|${line.handle}`, percentText(refitShare(reply, liveLine(line, values)))] as const,
-    ...line.ships.map(item => [`hull|${line.handle}|${item.handle}`, percentText(hullShare(liveHull(item, values)))] as const)]));
+export function shipTooltip(item: YardShip): TooltipExtraRow[] {
+  const label = shipLabel(item);
+  const named = (value: string | null, reason: string): Value<string> => value ? knownValue(value) : notRecorded(reason);
+  return [
+    { label: 'Name', value: knownValue(NAME_SOURCE[label.source]), divider: true },
+    { label: 'Strength', value: item.hull === null || item.maximum === null ? notRecorded('Ship strength not recorded') : knownValue(`${fixedText(item.hull)} of ${fixedText(item.maximum)}`) },
+    { label: 'Design', value: named(item.design, 'Design name unavailable') },
+    { label: 'Class', value: named(item.class, 'Ship class not recorded') },
+    { label: 'Task force', value: named(item.taskForce, 'Task force not recorded') },
+    { label: 'Repair policy', value: named(item.policy, 'Repair policy not recorded') },
+  ];
 }

@@ -22,12 +22,19 @@ export interface FamilyViewUiLoader {
 }
 
 export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
+  'active-research': { load: () => import('./active-research') },
+  'agency-comparison': { load: () => import('./agency-comparison') },
   'air-superiority-region': { load: () => import('./air-superiority-region') },
   'apm-table': { load: () => import('./apm-table') },
   'command-power': { load: () => import('./command-power'), slots: ['render', 'countryChip'] },
   'division-template': { load: () => import('./division-template') },
+  'doctrine-mastery': { load: () => import('./doctrine-mastery') },
+  'equipment-designs': { load: () => import('./equipment-designs') },
+  'factions': { load: () => import('./factions') },
   'factories': { load: () => import('./factories'), slots: ['render', 'countryChip'] },
   'game-score': { load: () => import('./game-score') },
+  'idea-timeline': { load: () => import('./idea-timeline') },
+  'industrial-organisations': { load: () => import('./industrial-organisations') },
   'minefields': { load: () => import('./minefields') },
   'occupied-states': { load: () => import('./occupied-states') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },

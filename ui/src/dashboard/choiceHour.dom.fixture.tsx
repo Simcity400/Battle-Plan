@@ -3,14 +3,10 @@ import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { useChoiceHour } from './atHead';
 import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt } from './groups';
-import { validateMarketReply } from './market';
-import type { MarketAt } from './market';
-import type { CountryGroupReply, LeaseTerms } from '../generated/dashboard';
-import { exilesAt } from '../widgets/governments-in-exile/governmentsInExileData';
+import type { CountryGroupReply } from '../generated/dashboard';
 import { balanceRows } from '../widgets/balance-of-power/balanceOfPowerData';
 import { occupiedRows } from '../widgets/occupied-states/occupiedStatesData';
 import type { OccupiedStatesReply } from '../widgets/occupied-states/occupiedStatesData';
-import { agreementRows } from '../widgets/lend-lease-agreements/agreementsData';
 
 const native = window.requestAnimationFrame.bind(window);
 const frame = () => new Promise<void>(resolve => native(() => resolve()));
@@ -33,14 +29,8 @@ const groups: CountryGroupReply = { branchId: '1', warnings: [], humans: ['POL',
   factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
   countryIdentities: tags.map((tag, slot) => ({ tag, identities: [{ firstHour: 0, lastHour: 200, slot, countryId: slot + 1 }] })),
   unobserved: { humans: [{ firstHour: 110, lastHour: 120 }], factions: [], wars: [] } };
-const exiles = { exiles: [{ id: '7', tag: 'POL', host: null }], hour: PUSHED } as never;
 const balances = { balances: [{ ordinal: 0, token: 'guild', name: null, range: null, trending: null, members: [{ tag: 'MOD' }] }], hour: PUSHED } as never;
 const occupied = { states: [{ state: 1, occupier: 'GER', occupied: 'ENG' }] } as unknown as OccupiedStatesReply;
-const lease = (key: string, giver: string, receiver: string): LeaseTerms => ({ key, id: key.padStart(16, '0'), giver, receiver, revision: '0', activeSince: 10,
-  lastDelivery: 0, monthly: [{ variant: '6', name: null, amountRaw: '500000' }], percentage: [], once: [], delivered: [], sunk: [], fuelDailyRaw: '0', fuelPercentageRaw: '0', lastFuelDeliveredRaw: '0' });
-const market: MarketAt = { ...validateMarketReply({ branchId: '1', offers: null, contracts: null, purchasesMissing: null, unattributed: 0, warnings: [], icons: [],
-  variants: [{ id: '6', hour: 50, known: true, token: 'tank', name: 'Tank', typeName: null, nameUnknown: null, icon: null, iconUnknown: null }],
-  agreements: [lease('1', 'GER', 'ENG')] }), hour: PUSHED };
 
 let clock = new Clock();
 const entry = { hour: PUSHED, through: PUSHED };
@@ -56,11 +46,9 @@ function Panels() {
   const unrecorded = (hour: number) => membershipUnrecordedAt(humans, groups, hour);
   const shown = (view: { rows: readonly { key: string }[]; membership: string | null }) =>
     view.rows.length ? view.rows.map(row => row.key).join(',') : view.membership ?? 'none';
-  const exile = shown(exilesAt({ ...(exiles as { exiles: [] }), hour: at } as never, match.matches, unrecorded));
   const balance = shown(balanceRows({ ...(balances as { balances: [] }), hour: at } as never, match.matches, unrecorded));
   const state = shown(occupiedRows(occupied, tag => match.matches(tag, at), 'occupier', unrecorded(at)));
-  const agreement = shown(agreementRows({ ...market, hour: at }, undefined, 'sent', match.matches, false, unrecorded));
-  return <output data-at={at}>{JSON.stringify({ exile, balance, state, agreement })}</output>;
+  return <output data-at={at}>{JSON.stringify({ balance, state })}</output>;
 }
 
 let root: Root | null = null;

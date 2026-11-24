@@ -24,6 +24,7 @@ export interface HeatMatrixLayout {
   readonly cellSize: number;
   readonly gridLeft: number;
   readonly gridTop: number;
+  readonly trailingWidth: number;
   readonly totalWidth: number;
   readonly totalHeight: number;
   readonly firstRow: number;
@@ -43,7 +44,10 @@ export interface LayoutHeatMatrixInput {
   readonly columns: readonly MatrixAxisEntity[];
   readonly legend?: MatrixLegend;
   readonly widestRowName?: number;
+  readonly widestTrailing?: number;
 }
+
+export const MATRIX_TRAILING_GAP = 16;
 
 export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout {
   const width = Math.max(1, Math.floor(input.width));
@@ -72,13 +76,14 @@ export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout
   const gridLeft = gutterWidth;
   const gridTop = legendHeight + headerHeight;
 
-  const availW = Math.max(MATRIX_MIN_CELL, width - gridLeft);
+  const trailingWidth = input.widestTrailing ? Math.ceil(input.widestTrailing) + MATRIX_TRAILING_GAP + MATRIX_PAD : 0;
+  const availW = Math.max(MATRIX_MIN_CELL, width - gridLeft - trailingWidth);
   const availH = Math.max(MATRIX_MIN_CELL, height - gridTop);
   const fitW = input.columns.length > 0 ? Math.floor(availW / input.columns.length) : MATRIX_MAX_CELL;
   const fitH = input.rows.length > 0 ? Math.floor(availH / input.rows.length) : MATRIX_MAX_CELL;
   const cellSize = Math.max(MATRIX_MIN_CELL, Math.min(MATRIX_MAX_CELL, Math.min(fitW, fitH)));
 
-  const totalWidth = Math.max(width, gridLeft + input.columns.length * cellSize);
+  const totalWidth = Math.max(width, gridLeft + input.columns.length * cellSize + trailingWidth);
   const totalHeight = Math.max(height, gridTop + input.rows.length * cellSize);
 
   const scrollLeft = Math.max(0, input.scrollLeft);
@@ -104,6 +109,7 @@ export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout
     cellSize,
     gridLeft,
     gridTop,
+    trailingWidth,
     totalWidth,
     totalHeight,
     firstRow,
