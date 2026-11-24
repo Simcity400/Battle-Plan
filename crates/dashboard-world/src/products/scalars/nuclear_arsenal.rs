@@ -1,7 +1,7 @@
 
 use super::{Named, rows};
 use crate::products::group_members::GroupsAt;
-use dashboard_base::{Source, products::{Country, LoadContext, at_hour::{At, AtHour, Read}, validate_country}};
+use dashboard_base::{Source, products::{Country, LoadContext, at_hour::{At, AtHour, Owner, Read, ReadsAt}, validate_country}};
 use dashboard_query::{identity::{Holder, Holders}, series::ranked::GroupSelection};
 use engine_native_air::raid_tooltip_operands::{
     NUCLEAR_BOMB_TOKEN,
@@ -145,6 +145,18 @@ pub(super) fn held_at(holders: &Holders, hour: i32) -> Vec<(u32, u32, String)> {
     held
 }
 
+fn chosen_ids(params: &NuclearArsenalParams, groups: &GroupsAt, holders: &Holders, hour: i32) -> Option<Vec<u32>> {
+    let Ok(Ok(Some(slots))) = groups.chosen_slots(params.group.as_ref(), &params.countries, holders, hour) else { return None };
+    let mut ids: Vec<u32> = held_at(holders, hour).into_iter().filter(|(slot, ..)| slots.contains(slot)).map(|(_, id, _)| id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    Some(ids)
+}
+
+fn id_ranges(ids: &[u32]) -> Keys {
+    Keys::Ranges(ids.iter().map(|&id| (u128::from(id) << 32, (u128::from(id) << 32) | u128::from(u32::MAX))).collect())
+}
+
 pub(super) fn chosen_countries(all: Vec<NukeCountry>, chosen: &[(u32, u32, String)]) -> Vec<NukeCountry> {
     let mut by_id: BTreeMap<u32, NukeCountry> = all.into_iter().map(|country| (country.country_id, country)).collect();
     let mut out: Vec<NukeCountry> = chosen
@@ -237,10 +249,17 @@ impl AtHour for NuclearArsenal {
         vec![TableId::Nukes, TableId::LexicalTokens]
     }
 
-    fn reads(_params: &Self::Params, _owner: Option<dashboard_base::products::at_hour::Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
+    fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
         match step {
             0 => vec![Read::all(TableId::Nukes), Read::these(TableId::LexicalTokens, [NUCLEAR_BOMB_TOKEN, THERMONUCLEAR_BOMB_TOKEN].map(u128::from))],
             _ => Vec::new(),
+        }
+    }
+
+    fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        match (step, chosen_ids(params, &at.context.groups, at.holders, at.hour)) {
+            (0, Some(ids)) => vec![Read { table: TableId::Nukes, keys: id_ranges(&ids) }, Read::these(TableId::LexicalTokens, [NUCLEAR_BOMB_TOKEN, THERMONUCLEAR_BOMB_TOKEN].map(u128::from))],
+            _ => Self::reads(params, owner, step, held),
         }
     }
 
@@ -260,7 +279,8 @@ impl AtHour for NuclearArsenal {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let mut reply = NuclearArsenalReply { types: Vec::new(), countries: Vec::new(), missing: None, warnings: Vec::new() };
-        let nukes = match dashboard_query::coverage::population::<tables::Nukes>(frame, &Keys::All) {
+        let asked = chosen_ids(params, &at.context.groups, at.holders, frame.hour).map_or(Keys::All, |ids| id_ranges(&ids));
+        let nukes = match dashboard_query::coverage::population::<tables::Nukes>(frame, &asked) {
             Ok(nukes) => nukes,
             Err(reason) => {
                 reply.missing = Some(format!("Nuclear stockpiles are not known at this hour: {reason}"));

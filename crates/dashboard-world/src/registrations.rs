@@ -6,6 +6,8 @@ dashboard_base::register_products! {
     STYLES_COUNTRYSTYLES => crate::products::styles::CountryStyles,
     GROUPS_COUNTRYGROUPS => crate::products::groups::CountryGroups,
     GROUP_COUNTS_GROUPCOUNTS => crate::products::group_counts::GroupCounts,
+    HISTORY_AT_COUNTRYGROUPSAT => crate::products::history_at::CountryGroupsAt,
+    HISTORY_AT_SUBJECTSAT => crate::products::history_at::SubjectsAt,
     LAND_OWNERS_LANDOWNERSPRODUCT => crate::products::land_owners::LandOwnersProduct,
     SCALARS_WORLDTENSIONSTACK => crate::products::scalars::WorldTensionStack,
     SCALARS_FACTORYGROUPS => crate::products::scalars::FactoryGroups,

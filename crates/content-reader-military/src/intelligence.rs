@@ -505,10 +505,12 @@ pub struct AgencyUpgrade {
     pub name: String,
     pub branch: String,
     pub sprite: String,
+    pub levels: usize,
 }
 
 #[derive(Default)]
 pub struct AgencyUpgrades {
+    pub branches: Vec<(String, Vec<String>)>,
     pub definitions: BTreeMap<String, AgencyUpgrade>,
     pub branch_definitions: BTreeMap<(String, String), AgencyUpgrade>,
     pub refusals: Vec<String>,
@@ -636,6 +638,8 @@ fn parse_agency_upgrades(
             for member in field.value.items().unwrap_or_default() {
                 if member.keyword_is("picture") {
                     upgrade.sprite = string(member)?;
+                } else if member.keyword_is("level") {
+                    upgrade.levels += 1;
                 }
             }
             upgrades.push(upgrade);
@@ -663,8 +667,18 @@ pub fn read_agency_upgrades(layers: &ResolvedLayers) -> io::Result<AgencyUpgrade
                     .extend(warnings.into_iter().map(|why| format!("{path}: {why}")));
                 for (branch, upgrades) in branches {
                     let branch = branch.to_ascii_lowercase();
+                    let at = match result.branches.iter().position(|(kept, _)| kept == &branch) {
+                        Some(at) => at,
+                        None => {
+                            result.branches.push((branch.clone(), Vec::new()));
+                            result.branches.len() - 1
+                        }
+                    };
                     for upgrade in upgrades {
                         let key = upgrade.token.to_ascii_lowercase();
+                        if !result.branches[at].1.contains(&key) {
+                            result.branches[at].1.push(key.clone());
+                        }
                         let owner = owners.entry(key.clone()).or_insert_with(|| branch.clone());
                         result
                             .branch_definitions
@@ -818,12 +832,14 @@ mod tests {
                         name: "custom".into(),
                         branch: "branch".into(),
                         sprite: "custom_art".into(),
+                        levels: 1,
                     },
                     AgencyUpgrade {
                         token: "CUSTOM".into(),
                         name: "CUSTOM".into(),
                         branch: "branch".into(),
                         sprite: "other".into(),
+                        levels: 0,
                     }
                 ]
             )]
@@ -880,14 +896,16 @@ mod tests {
                 .name,
             "BASE"
         );
+        let stacked = read_agency_upgrades(&stack).unwrap();
+        assert_eq!(stacked.upgrade("CUSTOM").unwrap().unwrap().name, "Custom");
         assert_eq!(
-            read_agency_upgrades(&stack)
-                .unwrap()
-                .upgrade("CUSTOM")
-                .unwrap()
-                .unwrap()
-                .name,
-            "Custom"
+            stacked.branches,
+            [
+                ("branch".to_owned(), vec!["custom".to_owned()]),
+                ("discarded".to_owned(), vec!["removed".to_owned()]),
+                ("other".to_owned(), vec!["custom".to_owned()]),
+            ],
+            "branches keep their first appearance in load order, each upgrade once"
         );
         let replaced = ResolvedLayers::from_test_common_folders(&[
             (&base, &[]),

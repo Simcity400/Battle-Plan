@@ -24,14 +24,14 @@ export interface EquipmentDesignerSelection extends RowSource {
   variant: string;
 }
 
-export interface AgencyUpgradesSelection extends RowSource {
-  kind: 'agencyUpgrades';
-  tag: string;
+export interface IntelligenceAgencySelection extends RowSource {
+  kind: 'intelligenceAgency';
+  country: number;
 }
 
 export type GameWindowSelection =
   | IndustrialOrganisationSelection
-  | AgencyUpgradesSelection
+  | IntelligenceAgencySelection
   | DivisionDesignerSelection
   | EquipmentDesignerSelection;
 
