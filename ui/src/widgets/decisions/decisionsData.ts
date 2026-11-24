@@ -66,8 +66,6 @@ export function decisionAt(row: LogRow<DecisionCard | null>, hour: number, break
   const hasLifecycle = (state: ScriptEdge['row']['decisionState']) => state !== undefined && state.kind !== 'notApplicable';
   const latestState = edges.filter(edge => hasLifecycle(edge.row.decisionState)).at(-1)?.row.decisionState ?? null;
   const state = (end && hasLifecycle(end.row.decisionState) ? end.row.decisionState : null) ?? latestState;
-  const selected = edges.some(edge => edge.row.kind === 'decisionSelected');
-  if (!end && !timer && !selected && state?.kind === 'available') return null;
   let failedAt: number | null = null;
   let unsupportedState: number | null = null;
   let failureMissing: string | null = null;

@@ -3,6 +3,9 @@ use content_reader_image::{dds, native::Decode};
 use content_reader_layers::ResolvedLayers;
 use content_reader_localisation::localisation::{self, Localisation, Piece, pieces};
 use dashboard_base::Source;
+use replay::campaign::SeekResult;
+use replay_data::rows::TableId;
+use replay_frame::frame::DecodedFrame;
 use dashboard_core::config::Config;
 use eframe::wgpu;
 use serde::{Deserialize, Serialize};
@@ -51,6 +54,7 @@ pub const DEFAULT_VIEWPORT: [u32; 2] = [2752, 1152];
 const MAX_CACHED_WINDOWS: usize = 8;
 const MAX_DYNAMIC_WINDOW_IMAGES: usize = 64;
 const MAX_CACHED_RENDERS: usize = 16;
+const MAX_DECODED_FRAMES: usize = 4;
 const MAX_SURFACE_DIM: u32 = 4096;
 const NO_COUNTRIES: &str =
     "a flag's country is unknown: the hour's countries (CountryAppearance) are not recorded";
@@ -1724,10 +1728,58 @@ impl RenderFrameCache {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DecodedFrameKey {
+    source_id: String,
+    revision: String,
+    branch: u64,
+    hour: i32,
+    tables: Vec<TableId>,
+}
+
+struct DecodedFrames<T> {
+    capacity: usize,
+    entries: VecDeque<(DecodedFrameKey, Arc<T>)>,
+}
+
+impl<T> DecodedFrames<T> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            entries: VecDeque::new(),
+        }
+    }
+
+    fn get(&mut self, key: &DecodedFrameKey) -> Option<Arc<T>> {
+        let at = self.entries.iter().position(|(held, _)| held == key)?;
+        let entry = self.entries.remove(at)?;
+        let frame = Arc::clone(&entry.1);
+        self.entries.push_back(entry);
+        Some(frame)
+    }
+
+    fn insert(&mut self, key: DecodedFrameKey, frame: Arc<T>) {
+        self.entries.retain(|(held, _)| *held != key);
+        self.entries.push_back((key, frame));
+        while self.entries.len() > self.capacity {
+            self.entries.pop_front();
+        }
+    }
+
+    fn evict_source(&mut self, source_id: &str) {
+        self.entries.retain(|(held, _)| held.source_id != source_id);
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
 struct CacheState {
     interfaces: HashMap<InterfaceCacheKey, Arc<SharedInterface>>,
     windows: WindowCache<Arc<Mutex<CachedWindow>>>,
     renders: RenderFrameCache,
+    frames: DecodedFrames<DecodedFrame>,
     source_generations: HashMap<String, u64>,
     global_generation: u64,
     cancels: HashMap<String, Arc<AtomicBool>>,
@@ -1739,6 +1791,7 @@ impl Default for CacheState {
             interfaces: HashMap::new(),
             windows: WindowCache::new(MAX_CACHED_WINDOWS),
             renders: RenderFrameCache::new(MAX_CACHED_RENDERS),
+            frames: DecodedFrames::new(MAX_DECODED_FRAMES),
             source_generations: HashMap::new(),
             global_generation: 0,
             cancels: HashMap::new(),
@@ -1834,6 +1887,7 @@ impl Service {
                 .collect();
             let windows = cache.windows.evict_source(source_id);
             cache.renders.evict_source(source_id);
+            cache.frames.evict_source(source_id);
             (interfaces, windows)
         };
         drop(dropped_windows);
@@ -1848,6 +1902,7 @@ impl Service {
                 cache.interfaces.drain().map(|(_, value)| value).collect();
             let windows = cache.windows.clear();
             cache.renders.clear();
+            cache.frames.clear();
             (interfaces, windows)
         };
         drop(dropped_windows);
@@ -1924,6 +1979,56 @@ impl Service {
         if current == expected_gen {
             cache.renders.insert(key, render.clone());
         }
+    }
+
+    pub fn frame_at(
+        &self,
+        source: &Source,
+        request: &GameWindowRequest,
+        admitted_gen: (u64, u64),
+        branch: u64,
+        tables: &[TableId],
+    ) -> Result<Arc<DecodedFrame>, GameWindowError> {
+        let key = DecodedFrameKey {
+            source_id: request.source_id.clone(),
+            revision: request.revision.clone(),
+            branch,
+            hour: request.hour,
+            tables: tables.to_vec(),
+        };
+        if let Some(frame) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).frames.get(&key) {
+            return Ok(frame);
+        }
+        let frame: Arc<DecodedFrame> = match source
+            .replay_ref()
+            .seek_selected(branch, request.hour, Some(tables))
+            .map_err(|error| {
+                GameWindowError::failed(format!(
+                    "Could not seek recording to hour {}: {error}",
+                    request.hour
+                ))
+            })? {
+            SeekResult::Frame(frame) => Arc::from(frame),
+            SeekResult::Gap { reason, .. } => {
+                return Err(GameWindowError::refused(format!(
+                    "Hour {} is not recorded on this branch: {reason}",
+                    request.hour
+                )));
+            }
+        };
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let current = (
+            cache
+                .source_generations
+                .get(&request.source_id)
+                .copied()
+                .unwrap_or(0),
+            cache.global_generation,
+        );
+        if current == admitted_gen {
+            cache.frames.insert(key, Arc::clone(&frame));
+        }
+        Ok(frame)
     }
 
     fn generations(&self, source_id: &str) -> (u64, u64) {

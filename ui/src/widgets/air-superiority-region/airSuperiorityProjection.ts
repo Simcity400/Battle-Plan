@@ -419,13 +419,19 @@ export const airSuperiorityRegionProjection: BarsProjection<AirSuperiorityProjec
       picked,
       automatic,
       pickedHeading: PICKED_REGIONS_HEADING,
-      automaticHeading: mostActiveHeading(subject),
+      automaticHeading: airAutomaticHeading(subject, options.order),
       addRegionLabel: ADD_REGION_LABEL,
       ...(empty ?? {}),
       warnings: reply.warnings,
     });
   },
 });
+
+function airAutomaticHeading(subject: string | null, order: AirRegionOrderOption): string {
+  if (order === 'active') return mostActiveHeading(subject);
+  const lead = order === 'contested' ? 'Most contested' : 'Active';
+  return subject ? `${lead} for ${subject}` : order === 'contested' ? lead : 'Active regions';
+}
 
 export interface AirSuperiorityAux {
   readonly enemyColor: string;
