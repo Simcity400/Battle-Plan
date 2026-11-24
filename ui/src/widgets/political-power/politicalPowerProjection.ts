@@ -31,7 +31,6 @@ export interface PoliticalPowerOptions {
 }
 
 function formatEndAmount(value: number): string {
-  if (!Number.isFinite(value)) return '';
   return Math.abs(value) >= 1e4 ? formatCompactScalar(Math.trunc(value), 'integer').text : formatScalar(value, 'integer');
 }
 

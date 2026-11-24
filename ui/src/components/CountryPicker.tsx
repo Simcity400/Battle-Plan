@@ -40,7 +40,7 @@ function nameReadFromIdentity(result: CountryIdentityResult | null | undefined):
   return { kind: 'failed', failure: result.name.failure };
 }
 
-export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false, inline = false, flagAt = null, addLabel, chosen, allowedTags, choiceReads, onShownTags, disabled = false }: {
+export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false, inline = false, flagAt = null, addLabel, chosen, allowedTags, choiceReads, onShownTags, datedHour, disabled = false }: {
   countries: CountryMetadata[]; selectedTag: string | null; playerCountryId: string | null;
   onChange: (tag: string | null, slot: number | null) => void; source: DashboardSource | null | undefined; client: DashboardClient;
   onCountries?: (sourceId: string, revision: string, countries: CountryMetadata[]) => void;
@@ -51,6 +51,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   allowedTags?: readonly string[];
   choiceReads?: ReadonlyMap<string, CountryPickerRead | null>;
   onShownTags?: (tags: readonly string[]) => void;
+  datedHour?: (tags: readonly string[]) => number | null;
 }) {
   const id = useId();
   const listId = `${id}-countries`;
@@ -74,7 +75,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     return source && branch ? { source, branch } : undefined;
   }, [source, flagAt?.branchId]);
   const choiceRead = (tag: string): CountryPickerRead | null => {
-    const read = choiceReads === undefined ? (flagAt ? { tag, ...flagAt } : null) : choiceReads.get(tag);
+    const read = choiceReads === undefined ? (datedAt ? { tag, ...datedAt } : null) : choiceReads.get(tag);
     return read && choiceTrack && read.branchId === choiceTrack.branch.id && Number.isSafeInteger(read.hour)
       && read.hour >= choiceTrack.branch.firstHour && read.hour <= choiceTrack.branch.lastHour ? read : null;
   };
@@ -92,6 +93,13 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const unfiltered = visibleRange(choices.length, view.scrollTop, view.height);
   const named = !open ? [] : searching ? choices : choices.slice(unfiltered.start, unfiltered.end);
   const displayHeaderTag = addLabel ? null : selected?.tag ?? selectedTag;
+  const datingText = named.map(({ country }) => country.tag).join('\u0001');
+  const datingTags = useMemo(() => (datingText ? datingText.split('\u0001') : []), [datingText]);
+  const heldHour = flagAt && datedHour ? datedHour(datingTags) : null;
+  const datedAt = useMemo(
+    () => (flagAt ? { branchId: flagAt.branchId, hour: heldHour ?? flagAt.hour } : null),
+    [flagAt?.branchId, flagAt?.hour, heldHour],
+  );
 
   const choiceScope = useIdentityScope(client, source, choiceTrack?.branch.id ?? null, datedMode && !!choiceTrack);
   const choiceBounds = useMemo(
@@ -113,7 +121,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
       out.push({ key: countryTagKey(read.tag), hour: read.hour });
     }
     return out;
-  }, [datedMode, choiceTrack, named, displayHeaderTag, choiceReads, flagAt?.branchId, flagAt?.hour]);
+  }, [datedMode, choiceTrack, named, displayHeaderTag, choiceReads, datedAt]);
 
   const datedIdentities = useIdentities(client, source, datedMode ? choiceScope : null, datedAsks, {
     active: datedMode && !!choiceScope && datedAsks.length > 0,
@@ -132,8 +140,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const filtered = filterChoices(choices, query, choice => countryName(choice.country));
   const range = visibleRange(filtered.length, view.scrollTop, view.height);
   const visible = open ? filtered.slice(range.start, range.end) : [];
-  const shownText = visible.map(({ country }) => country.tag).join('\u0001');
-  useEffect(() => { onShownTags?.(shownText ? shownText.split('\u0001') : []); }, [onShownTags, shownText]);
+  useEffect(() => { onShownTags?.(datingTags); }, [onShownTags, datingTags]);
   const sole = searching && filtered.length === 1 ? 0 : -1;
   const shownActive = active >= 0 ? active : sole;
 
