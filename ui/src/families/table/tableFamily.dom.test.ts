@@ -29,7 +29,7 @@ test('table family plays live with zero React commits, zero layout reads on inst
     t.diagnostic(`live playback: ${played.commits} commits, ${played.totalInstallReads} play reads, ${played.pauseInstallReads} pause reads, ${played.installs} installs, beforePauseTop=${played.beforePauseTop}, pendingBefore=${played.pendingTimersBeforePause}, pendingAfter=${played.pendingTimersAfterPause}, timerFired=${played.timerFiredBeforePause}/${played.timerFiredAfterPause}, flushedOnPause=${played.flushedOnPause}`);
     assert.equal(played.playingDuringAdvance, true, 'clock.playing was true during frame advance');
     assert.equal(played.playingBeforePause, true, 'clock.playing stayed true until pause');
-    assert.equal(played.beforePauseTop, 'GER', 'S8: mirror was still throttled on GER before pause with controlled clock');
+    assert.equal(played.beforePauseTop, null, 'S8: before pause the throttled mirror is withheld, never the stale GER order');
     assert.ok(played.pendingTimersBeforePause > 0, 'S8: trailing flush timer was armed and held before pause');
     assert.equal(played.timerFiredBeforePause, 0, 'S8: trailing timer did not fire before pause');
     assert.equal(played.timerFiredAfterPause, 0, 'S8: pause flushed the mirror without the trailing timer firing');
@@ -44,6 +44,13 @@ test('table family plays live with zero React commits, zero layout reads on inst
     assert.equal(settled.mutations, 0, `100 frames that change neither rows, text, selection nor focus touch the mirror zero times: ${settled.mutations}`);
     assert.equal(played.mirrorRows.at(-1)?.key, 'ENG', 'notRecorded row stays last');
     assert.ok(played.mirrorRows.at(-1)?.cells.some(c => c?.includes('Not recorded: ENG factories not recorded')), 'mirror speaks missing reason');
+
+    const parked = await act<{ key: string; withheld: boolean; parked: boolean; returned: boolean; restored: string | null; afterDown: string | null }>('focusAcrossWithheldMirror()');
+    assert.equal(parked.withheld, true, 'R4-S2: playback with a held cadence withholds the mirror and clears its rows');
+    assert.equal(parked.parked, true, 'R4-S2: clearing the mirror under a focused row parks focus on the table, not the document');
+    assert.equal(parked.returned, true, 'R4-S2: pausing brings the mirror rows back');
+    assert.equal(parked.restored, parked.key, `R4-S2: the table still owns focus, so the focused row ${parked.key} gets it back`);
+    assert.ok(parked.afterDown !== null && parked.afterDown !== parked.key, `R4-S2: ArrowDown still reaches the table (${parked.afterDown})`);
 
     const heldCheck = await act<{ pixelsChanged: boolean; dim: boolean; held: boolean; recovered: boolean; through: number | null; expectedThrough: number }>('verifyRepaintAndHeld()');
     assert.equal(heldCheck.pixelsChanged, true, 'same-layout value change repaints canvas pixels');
