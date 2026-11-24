@@ -6,11 +6,13 @@ import type { Canvas2D, MeasureText } from '../../charts/textWidth.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { readyArt } from '../art/types.ts';
-import { boundTiledSeries, displayedHour } from '../boundedView.ts';
+import { boundTiledSeries, createBoundedReadView, displayedHour } from '../boundedView.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import { knownValue } from '../value.ts';
 import { formatDateOnly } from '../valueFormat.ts';
+import { commandPowerProjection } from '../../widgets/command-power/commandPowerProjection.ts';
+import { stabilityProjection } from '../../widgets/stability/stabilityProjection.ts';
 import { registerTimeChart, type TimeChartBinding } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
 import { timeChartLaneView } from './laneView.ts';
@@ -419,5 +421,90 @@ describe('time-chart laneView integration', () => {
 
     view.unmount?.(1, state);
     assert.equal(state.has('time-chart'), false);
+  });
+
+  it('projects command-power with joined balance, stepped dashed ceiling, muted Maximum label, and spend ticks', () => {
+    const until = H1936 + 200;
+    const mainLine = makeTiledLine('GER', [makeBucket(H1936, H1936 + 96, 10, 10, 23, 23, H1936 + 72), makeBucket(H1936 + 96, until, 23, 23, 23, 23, until)]);
+    const capLine = makeTiledLine('GER', [makeBucket(H1936, until, 150, 150, 150, 150, until)]);
+    const readView = createBoundedReadView({
+      hour: until,
+      series: new Map([
+        ['main', new Map([['GER', boundTiledSeries(mainLine, until, { headValue: knownValue(23) })]])],
+        ['ceiling', new Map([['GER', boundTiledSeries(capLine, until, { headValue: knownValue(150) })]])],
+      ]),
+    });
+    const model = commandPowerProjection.project(readView, {
+      tags: ['GER'],
+      extent: [H1936, until],
+      gaps: [],
+      surface: '#111111',
+      showCeiling: true,
+      showSpendTicks: true,
+    });
+    assert.equal(model.series.length, 2);
+    assert.equal(model.series[0]!.step, false);
+    assert.equal(model.series[0]!.area, true);
+    assert.equal(model.series[0]!.endLabel?.name, 'Command power');
+    assert.equal(model.series[0]!.endLabel?.value, '23');
+    assert.equal(model.series[1]!.role, 'ceiling');
+    assert.equal(model.series[1]!.step, true);
+    assert.equal(model.series[1]!.endLabel?.name, 'Maximum');
+    assert.equal(model.series[1]!.endLabel?.valueMuted, true);
+
+    const minLayout = layoutTimeChart(model, 476, 186, FONT, measure);
+    const cpLabel = minLayout.endLabels.find(l => l.seriesId === 'GER');
+    const maxLabel = minLayout.endLabels.find(l => l.seriesId === 'GER:ceiling');
+    assert.equal(cpLabel?.name, null, 'at min size icon-bearing line hides its name');
+    assert.equal(maxLabel?.name, 'Maximum', 'at min size ceiling keeps Maximum word');
+  });
+
+  it('projects stability with valueScale 100 step lines, 0-100% axis, and future-clamped markers', () => {
+    const until = H1936 + 240;
+    const stabLine = makeTiledLine('GER', [makeBucket(H1936, until, 0.8, 0.75, 1.0, 1.0, until)]);
+    const warLine = makeTiledLine('GER', [makeBucket(H1936, until, 0.35, 0.35, 0.9, 0.9, until)]);
+    const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: 'b', content: 0 }, [H1936, until + 500]);
+    index.setFacts({
+      branchId: 'b',
+      known: [[H1936, until + 500]],
+      names: ['Poland'],
+      reasons: [],
+      flags: [],
+      countries: [{ tag: 'POL', runs: [[H1936, 0, 0xaa4455, -1, -1]] }],
+      warnings: [],
+    });
+    const readView = createBoundedReadView({
+      hour: until,
+      series: new Map([
+        ['stability', new Map([['GER', boundTiledSeries(stabLine, until, { headValue: knownValue(1.0) })]])],
+        ['warSupport', new Map([['GER', boundTiledSeries(warLine, until, { headValue: knownValue(0.9) })]])],
+      ]),
+      identity: createSnapshotIdentityProvider(index),
+    });
+    const model = stabilityProjection.project(readView, {
+      tags: ['GER'],
+      extent: [H1936, until],
+      gaps: [],
+      surface: '#111111',
+      showStability: true,
+      showWarSupport: true,
+      zoom: false,
+      rawMarkers: [
+        { id: 'w1', hour: H1936 + 100, kind: 'war', title: 'War', otherTag: 'POL', warVerb: 'began', warAlert: true },
+        { id: 'future', hour: until + 48, kind: 'focus', title: 'Future focus' },
+      ],
+    });
+    assert.equal(model.series.length, 2);
+    assert.equal(model.series[0]!.step, true);
+    assert.equal(model.series[0]!.valueScale, 100);
+    assert.equal(model.series[0]!.endLabel?.value, '100%');
+    assert.equal(model.series[1]!.endLabel?.value, '90%');
+    assert.equal(model.markers?.length, 1, 'future marker must be clamped');
+    assert.equal(model.markers![0]!.title, 'War with Poland began');
+
+    const fullLayout = layoutTimeChart(model, 960, 276, FONT, measure);
+    assert.deepEqual(fullLayout.yTicks, [0, 25, 50, 75, 100]);
+    const minLayout = layoutTimeChart(model, 476, 186, FONT, measure);
+    assert.deepEqual(minLayout.yTicks, [0, 50, 100]);
   });
 });

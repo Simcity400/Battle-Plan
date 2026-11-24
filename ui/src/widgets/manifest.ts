@@ -23,11 +23,13 @@ export interface FamilyViewUiLoader {
 
 export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'apm-table': { load: () => import('./apm-table') },
+  'command-power': { load: () => import('./command-power'), slots: ['render', 'countryChip'] },
   'division-template': { load: () => import('./division-template') },
   'game-score': { load: () => import('./game-score') },
   'occupied-states': { load: () => import('./occupied-states') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'scoreboard': { load: () => import('./scoreboard') },
+  'stability': { load: () => import('./stability'), slots: ['render', 'countryChip'] },
 };
 
 const familyByKind = new Map<string, FamilyViewEntry[]>();

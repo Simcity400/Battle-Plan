@@ -113,6 +113,28 @@ export const FAMILY_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.politicalPowerProjection, declaration: mod.politicalPowerDeclaration }),
     ),
   },
+  {
+    kind: 'command-power',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'command-power',
+      DEFAULT_VIEW,
+      () => import('./command-power/commandPowerProjection.ts'),
+      mod => ({ projection: mod.commandPowerProjection, declaration: mod.commandPowerDeclaration }),
+    ),
+  },
+  {
+    kind: 'stability',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'stability',
+      DEFAULT_VIEW,
+      () => import('./stability/stabilityProjection.ts'),
+      mod => ({ projection: mod.stabilityProjection, declaration: mod.stabilityDeclaration }),
+    ),
+  },
 ];
 
 bindFamilyManifest(FAMILY_VIEWS);
