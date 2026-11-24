@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readableColour } from '../../charts/palette.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { PaintInput } from '../../draw/lane.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
@@ -559,7 +560,7 @@ test('a known 40 percent share beside an unavailable part fills 40 percent and m
   const layout = layoutFamilyBars(model, 640, 200);
   const { ctx, ops } = makeFakeCtx();
   drawFamilyBars(ctx, { model, layout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
-  const known = ops.filter(op => op.op === 'fillRect' && op.fillStyle === '#aa3344');
+  const known = ops.filter(op => op.op === 'fillRect' && op.fillStyle === readableColour('#aa3344', THEME.surface));
   assert.equal(known.length, 1);
   assert.ok(Math.abs((known[0]!.args[2] as number) - layout.plotWidth * 0.4) < 2, 'the known part is drawn at its own fraction');
 });
@@ -601,4 +602,16 @@ test('a hover over 1,500 rows reuses navigation, meta and row bounds, and the mi
   } finally {
     (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = origOffscreen;
   }
+});
+
+test('bar fills are the identity colour raised to 3:1 against the surface, at full opacity', () => {
+  const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
+  const dark = '#2a2a2a';
+  const model: BarsModel = { form: 'ordered', hour: h, rows: [{ kind: 'data', key: 'GER', label: 'German Reich', color: dark, value: { value: knownValue(5) }, numeric: 5 }] };
+  const layout = layoutFamilyBars(model, 480, 200);
+  const { ctx, ops } = makeFakeCtx();
+  drawFamilyBars(ctx, { model, layout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
+  const fills = ops.filter(op => op.op === 'fill').map(op => op.fillStyle);
+  assert.ok(fills.includes(readableColour(dark, THEME.surface)));
+  assert.ok(!fills.includes(dark), 'a near-invisible map colour is never drawn raw');
 });
