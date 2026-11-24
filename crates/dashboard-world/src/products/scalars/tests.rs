@@ -576,3 +576,42 @@ fn world_tension_stack_applies_dated_group_membership_and_top_limit() {
     assert_eq!(top_out.bands.len(), 2);
     assert!(top_out.other.is_none(), "Top-N selection omits Other band");
 }
+
+#[test]
+fn factory_mix_computes_rust_shares_keeps_witnessed_parts_and_refuses_unreconciled_shares() {
+    use super::factory_mix::row_mix;
+    use replay_data::rows::CountryFactoriesRow;
+
+    let base = CountryFactoriesRow {
+        country: 1,
+        military_total_raw: 40 * 100_000,
+        military_damaged_raw: 10 * 100_000,
+        naval_total_raw: 20 * 100_000,
+        civilian_total_raw: 40 * 100_000,
+        ..Default::default()
+    };
+    let (total, values, shares, total_missing, parts_missing) = row_mix(&base, "built", &[0, 1, 2]);
+    assert_eq!(total, Some(100));
+    assert_eq!(values, vec![Some(30), Some(20), Some(40), Some(10), Some(0), Some(0)]);
+    assert_eq!(shares, vec![Some(0.3), Some(0.2), Some(0.4), Some(0.1), Some(0.0), Some(0.0)]);
+    assert!(total_missing.is_none());
+    assert!(parts_missing.is_none());
+
+    let mut partial = base.clone();
+    partial.military_damaged_raw = 50 * 100_000;
+    let (total_p, values_p, shares_p, total_missing_p, parts_missing_p) = row_mix(&partial, "built", &[0, 1, 2]);
+    assert_eq!(total_p, Some(100));
+    assert_eq!(values_p, vec![None, Some(20), Some(40), None, Some(0), Some(0)], "witnessed naval and civilian counts stay");
+    assert_eq!(shares_p, vec![None, Some(0.2), Some(0.4), None, Some(0.0), Some(0.0)], "witnessed shares stay beside unreconciled military");
+    assert!(total_missing_p.is_none());
+    assert!(parts_missing_p.is_some());
+
+    let mut neg_free = base;
+    neg_free.consumer_goods = 50;
+    let (total_n, values_n, shares_n, total_missing_n, parts_missing_n) = row_mix(&neg_free, "free", &[0, 1, 2]);
+    assert_eq!(total_n, Some(40));
+    assert_eq!(values_n, vec![Some(30), Some(20), Some(-10)], "witnessed counts stay even when civilian free is negative");
+    assert_eq!(shares_n, vec![None, None, None], "shares refused when a part is negative");
+    assert!(total_missing_n.is_none());
+    assert!(parts_missing_n.is_some());
+}
