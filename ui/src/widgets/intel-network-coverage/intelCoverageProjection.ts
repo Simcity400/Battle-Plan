@@ -3,7 +3,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
-import { resolveEntityFromReadView, sequentialRampColour } from '../../families/heat/scale.ts';
+import { labelsAtReadings, resolveEntityFromReadView, sequentialRampColour } from '../../families/heat/scale.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { IntelCoverageBasis, IntelCoverageCell, IntelCoverageMeasure, IntelCoverageReply } from '../../generated/dashboard';
 import { surfaceMix } from '../../shell/appearance/color.ts';
@@ -47,9 +47,14 @@ export function projectIntelCoverage(readView: BoundedReadView, options: IntelCo
   }
   const grey = surfaceMix(options.surface, 0.08);
   const accent = readableColour(CHART_MEASURE_COLOURS.intelCoverage, options.surface);
-  const entities: MatrixAxisEntity[] = displayed.map(country => {
+  const readHour = reply.readHour ?? hour;
+  const shown = displayed.map(country => {
     const tag = country.tag ?? null;
-    const resolved = tag ? resolveEntityFromReadView(readView, 'country', tag, hour, tag, null, options.surface) : { label: 'Country not recorded' };
+    return { tag, resolved: tag ? resolveEntityFromReadView(readView, 'country', tag, hour, tag, null, options.surface) : { label: 'Country not recorded', validFrom: -Infinity } };
+  });
+  const labelAt = labelsAtReadings(readView, shown.map(({ tag, resolved }) => ({ tag, label: resolved.label, validFrom: resolved.validFrom })), [readHour]);
+  const entities: MatrixAxisEntity[] = displayed.map((country, index) => {
+    const { tag, resolved } = shown[index]!;
     return {
       id: tag ?? `#${country.id}`,
       label: resolved.label,
@@ -84,10 +89,9 @@ export function projectIntelCoverage(readView: BoundedReadView, options: IntelCo
         ...(hasMissing ? [{ id: 'missing', label: 'Not recorded', color: grey, hatched: true }] : []),
       ],
     },
-    tooltip: (row, column, item, rowIndex, columnIndex) => {
+    tooltip: (_row, _column, item, rowIndex, columnIndex) => {
       if (item.kind === 'diagonal') return null;
-      const title = `${row.label}’s network in ${column.label}`;
-      const readHour = reply.readHour ?? hour;
+      const title = `${labelAt(rowIndex, readHour)}’s network in ${labelAt(columnIndex, readHour)}`;
       if (item.kind === 'missing') return { title, hour: readHour, missingReason: item.reason };
       if (item.kind === 'empty') return { title, hour: readHour, items: [{ label: 'No intel network' }] };
       const raw = presentCell(cells[rowIndex * n + columnIndex]);
