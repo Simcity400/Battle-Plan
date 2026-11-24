@@ -4,7 +4,7 @@ usage: python tools/ci.py check [--base REF]
        python tools/ci.py changes --tier TIER --base REF [--exact-base] [--everything] [--github-output FILE]
        python tools/ci.py job --tier TIER --group GROUP --jobs NAMES --base REF [--exact-base] [--everything] [--shard AT/COUNT]
        python tools/ci.py times --target DIR
-       python tools/ci.py warm --job NAME --target DIR
+       python tools/ci.py warm --cache NAME --target DIR
        python tools/ci.py weights --timings HTML --junit XML [--out FILE]
 
 GitHub's hosted CI (.github/workflows/ci.yml) is the only test runner and the only gate. Its
@@ -52,6 +52,7 @@ UNIFIED = "cfg(all())"
 UNIFY = "test-unify"
 WEIGHTS = ROOT / "tools" / "ci-weights.json"
 LEG_SLACK = 240
+GROUP_CACHE = "group-"
 SHADER_COMPILER = ("dxcompiler.dll", "dxil.dll")
 
 
@@ -115,6 +116,7 @@ class Job:
     warm: tuple
     dependents: bool
     manifest: str
+    package: str
     definition: str
 
 
@@ -145,7 +147,7 @@ def load_pipeline(text):
             report=table.get("report", ""),
             not_run=tuple((reason, rule.get("panic", ""), tuple(rule.get("crates", ()))) for reason, rule in table.get("not-run", {}).items()),
             shards=table.get("shards", 0), warm=tuple(table.get("warm", ())), dependents=table.get("dependents", True),
-            manifest=table.get("manifest", ""),
+            manifest=table.get("manifest", ""), package=table.get("package", ""),
             definition=json.dumps([table, data["toolchain"].get(table["toolchain"]), groups.get(table.get("group"))], sort_keys=True))
         problems = [f"tier {job.tier!r}"] if job.tier not in tiers else []
         problems += [f"kind {job.kind!r}"] if job.kind not in KINDS else []
@@ -159,6 +161,8 @@ def load_pipeline(text):
             job.kind != "crates" or not isinstance(job.shards, int) or job.shards < 1) else []
         problems += ["warm, a command for a crates job with shards or a command job"] if job.warm and (
             job.kind == "files" or job.kind == "crates" and not job.shards) else []
+        problems += ["manifest or package, one of them and for a command job"] if (job.manifest or job.package) and (
+            job.kind != "command" or job.manifest and job.package) else []
         if problems:
             raise SystemExit(f"tools/ci.toml: job {job.name}: unknown or missing {', '.join(problems)}")
         jobs.append(job)
@@ -261,14 +265,28 @@ def manifest_reach(root, manifest, crates):
     kinds = ("dependencies", "dev-dependencies", "build-dependencies")
     sections = [data.get(kind, {}) for kind in kinds] + [target.get(kind, {}) for target in data.get("target", {}).values() for kind in kinds]
     here = (root / manifest).parent
-    reach = {folders.get(key(here / spec["path"])) for section in sections for spec in section.values()
-             if isinstance(spec, dict) and "path" in spec} - {None}
-    pending = list(reach)
+    return library_reach(crates, {folders.get(key(here / spec["path"])) for section in sections for spec in section.values()
+                                  if isinstance(spec, dict) and "path" in spec} - {None})
+
+
+def library_reach(crates, names):
+    """`names` and every workspace crate their libraries build on, at any depth."""
+    reach, pending = set(names), list(names)
     while pending:
         for dep in crates[pending.pop()].libraries - reach:
             reach.add(dep)
             pending.append(dep)
     return reach
+
+
+def job_reach(root, job, crates):
+    """The workspace crates a job's `manifest` or `package` builds; None when the manifest cannot
+    be read. A package the workspace lacks is refused by name."""
+    if job.manifest:
+        return manifest_reach(root, job.manifest, crates)
+    if job.package not in crates:
+        raise SystemExit(f"tools/ci.toml: job {job.name}: package {job.package!r} is not a workspace crate")
+    return library_reach(crates, {job.package})
 
 
 def crate_owner(crates):
@@ -368,8 +386,9 @@ class Context:
     whether the run takes every job across everything it covers, whatever changed (main's nightly,
     or a push to main with no green main commit to compare with), whether a crates job takes
     every crate above a changed one rather than its direct dependents (a push to main), and the
-    workspace crates each job's `manifest` builds (None when it could not be read). `frame` is
-    the base pipeline's settings outside its jobs (None when unreadable)."""
+    workspace crates each job naming a `manifest` or a `package` builds, by job (None when they
+    could not be read). `frame` is the base pipeline's settings outside its jobs (None when
+    unreadable)."""
     tree: set
     changed: set
     crates: dict | None
@@ -378,7 +397,7 @@ class Context:
     frame: str | None = None
     everything: bool = False
     transitive: bool = False
-    manifests: dict = field(default_factory=dict)
+    reach: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -420,8 +439,8 @@ def decide_inputs(job, ctx):
     if job.kind == "crates":
         return decide_crates(job, ctx)
     patterns = job.inputs
-    if job.manifest:
-        reach = ctx.manifests.get(job.manifest) if ctx.crates else None
+    if job.manifest or job.package:
+        reach = ctx.reach.get(job.name) if ctx.crates else None
         patterns += ("crates/**",) if reach is None else tuple(f"{ctx.crates[name].folder}/**" for name in sorted(reach))
     inputs = matcher(patterns)
     wide = ctx.everything or widened(ctx, job)
@@ -780,14 +799,14 @@ def plan(tier, base_ref, exact=False, everything=False):
         sys.exit(f"No base at {base_ref}: fetch it, or pass --base.")
     values = {"python": sys.executable, "node": shutil.which("node") or "node",
               "npm": shutil.which("npm.cmd") or shutil.which("npm") or "npm", "base": ratchet_base(base) or base}
-    needs_crates = any(job.kind == "crates" for job in pipeline.jobs)
-    crates = crates_from_manifests(ROOT) if needs_crates or any(job.manifest for job in pipeline.jobs) else {}
-    manifests = {job.manifest: manifest_reach(ROOT, job.manifest, crates) for job in pipeline.jobs if job.manifest and crates}
+    reaching = [job for job in pipeline.jobs if job.manifest or job.package]
+    crates = crates_from_manifests(ROOT) if reaching or any(job.kind == "crates" for job in pipeline.jobs) else {}
+    reach = {job.name: job_reach(ROOT, job, crates) for job in reaching if crates}
     at_base = pipeline_at(base)
     ctx = Context(read_tree(), changed_since(base), crates, pipeline,
                   None if at_base is None else {job.name: job.definition for job in at_base.jobs},
                   None if at_base is None else at_base.frame, everything=everything,
-                  transitive=tier != pipeline.tiers[0], manifests=manifests)
+                  transitive=tier != pipeline.tiers[0], reach=reach)
     decisions = [decide(job, ctx, tier) for job in pipeline.jobs]
     if not ratchet_base(base):
         decisions = [Decision(d.job, "not run", f"no commit to ratchet against: {base} is not one and HEAD has no parent")
@@ -827,6 +846,17 @@ def shards(decision, crates, table):
     return [shard or None for shard in split_crates(crates, decision.crates, weights, decision.dirty, decision.job.shards)]
 
 
+def leg_cache(job):
+    """The name of the target folder cache the job's leg restores: a sharded job's own, or its
+    group's, which the group's unsharded jobs share as they share its leg."""
+    return job.name if job.shards else GROUP_CACHE + job.group
+
+
+def caches(pipeline):
+    """The caches the cache workflow fills: each one a job with a `warm` command restores."""
+    return sorted({leg_cache(job) for job in pipeline.jobs if job.warm})
+
+
 def matrix_legs(pipeline, decisions, crates, table):
     """The workflow's matrix: one leg per group for its unsharded jobs, and one per runner of each
     sharded job, numbered within the job's shards."""
@@ -842,8 +872,8 @@ def matrix_legs(pipeline, decisions, crates, table):
         for at, shard in enumerate(split, 1):
             if shard:
                 legs.append(dict(group=decision.job.group, name=f"{decision.job.name} {at}/{len(split)}", jobs=decision.job.name,
-                                 shard=f"{at}/{len(split)}/{split_digest(split)}", **needs(decision.job.group)))
-    return [dict(group=group, name=group, jobs=" ".join(names), shard="", **needs(group))
+                                 shard=f"{at}/{len(split)}/{split_digest(split)}", cache=leg_cache(decision.job), **needs(decision.job.group)))
+    return [dict(group=group, name=group, jobs=" ".join(names), shard="", cache=GROUP_CACHE + group, **needs(group))
             for group, names in groups.items()] + legs
 
 
@@ -1020,32 +1050,38 @@ def prune(profile, live):
     return removed
 
 
-def rust_unchanged(source, pipeline, job):
+def rust_unchanged(source, pipeline, jobs):
     """Whether nothing a Rust build reads changed between `source` and HEAD: no crate, vendored
-    crate, Rust toolchain file or input of the job."""
-    rust = matcher(("crates/**", *pipeline.toolchains["rust"], *job.inputs))
+    crate, Rust toolchain file or input of the jobs."""
+    rust = matcher(("crates/**", *pipeline.toolchains["rust"], *(path for job in jobs for path in job.inputs)))
     return not any(rust(path) for path in z(git("diff", "--name-only", "--no-renames", "-z", source, "HEAD")))
 
 
 def warm(name, target, github_output=None):
-    """Fills a target folder for a job's cache: runs the job's `warm` command, which builds every
-    unit its runners may reuse, and, when it succeeds, prunes the units it did not use and names
-    HEAD as the commit the folder was built from. A failed build saves nothing: its folder mixes
-    units rebuilt at HEAD with the commit it named before. A folder that neither a Rust input nor
-    the job's definition changed since is not built or saved again."""
+    """Fills a target folder for the cache `name`: runs the `warm` command of each job that
+    restores it, one after another, which together build every unit its legs may reuse, and, when
+    all succeed, prunes the units none of them used and names HEAD as the commit the folder was
+    built from. A failed build saves nothing: its folder mixes units rebuilt at HEAD with the
+    commit it named before. A folder that neither a Rust input nor a definition of those jobs
+    changed since is not built or saved again."""
     pipeline = load_pipeline(PIPELINE.read_text(encoding="utf-8"))
-    job = next((job for job in pipeline.jobs if job.name == name), None)
-    if job is None or not job.warm:
-        sys.exit(f"tools/ci.toml has no job {name!r} with a warm command")
+    jobs = [job for job in pipeline.jobs if job.warm and leg_cache(job) == name]
+    if not jobs:
+        sys.exit(f"tools/ci.toml has no job with a warm command that restores the cache {name!r}")
     source = built_from(target)
-    save = not (source and rust_unchanged(source, pipeline, job) and (definitions_at(source) or {}).get(name) == job.definition)
+    built = definitions_at(source) or {} if source else {}
+    save = not (source and rust_unchanged(source, pipeline, jobs) and all(built.get(job.name) == job.definition for job in jobs))
     if save:
         started = time.monotonic()
-        with tempfile.TemporaryFile() as messages:
-            code = subprocess.run([*job.warm, "--message-format=json-render-diagnostics"], cwd=ROOT, stdout=messages,
-                                  stdin=subprocess.DEVNULL).returncode
-            messages.seek(0)
-            live = live_units(messages.read().decode("utf-8", errors="replace"))
+        live, code = set(), 0
+        for job in jobs:
+            with tempfile.TemporaryFile() as messages:
+                code = subprocess.run([*job.warm, "--message-format=json-render-diagnostics"], cwd=ROOT, stdout=messages,
+                                      stdin=subprocess.DEVNULL).returncode
+                messages.seek(0)
+                live |= live_units(messages.read().decode("utf-8", errors="replace"))
+            if code:
+                break
         print(f"warmed {name} in {time.monotonic() - started:.0f}s, exit {code}, {len(live)} units", flush=True)
         if code == 0:
             profiles = [folder for folder in Path(target).iterdir() if (folder / ".fingerprint").is_dir()]
@@ -1126,8 +1162,8 @@ def main(argv=None):
     grouped.add_argument("--shard", default="", metavar="AT/COUNT", help="run this runner's share of the one sharded job planned")
     timing = commands.add_parser("times", help="set file times for a target folder restored from a cache")
     timing.add_argument("--target", required=True)
-    warming = commands.add_parser("warm", help="build what a job's target folder cache keeps, and name HEAD in it")
-    warming.add_argument("--job", required=True)
+    warming = commands.add_parser("warm", help="build what a target folder cache keeps, and name HEAD in it")
+    warming.add_argument("--cache", required=True, help="a sharded job's name, or group-NAME for a group's unsharded jobs")
     warming.add_argument("--target", required=True)
     warming.add_argument("--github-output", metavar="FILE")
     weighing = commands.add_parser("weights", help="write the measured crate costs the legs are balanced by")
@@ -1145,7 +1181,7 @@ def main(argv=None):
         return set_times(args.target)
     if args.command == "weights":
         return write_weights(args.timings, args.junit, args.out)
-    return warm(args.job, args.target, args.github_output)
+    return warm(args.cache, args.target, args.github_output)
 
 
 if __name__ == "__main__":

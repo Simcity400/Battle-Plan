@@ -1,0 +1,191 @@
+import type { TiledLine } from '../../dashboard/tiles/view';
+import type { FamilyGestureContext, FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
+import type { SerializedTiledLine, TimeChartBinding } from './declaration.ts';
+import { parseChartInspect } from './hitTest.ts';
+import type { TimeChartModel } from './model.ts';
+
+const MIN_ZOOM_SPAN_HOURS = 24;
+let nextTiledRev = 1;
+const tiledRevCache = new WeakMap<TiledLine, { readonly rev: number; readonly serialized: SerializedTiledLine }>();
+
+function serializeTiledLine(source: string, line: TiledLine): { readonly rev: number; readonly serialized: SerializedTiledLine } {
+  const cached = tiledRevCache.get(line);
+  if (cached && cached.serialized.source === source) return cached;
+  const rev = nextTiledRev++;
+  const serialized: SerializedTiledLine = {
+    rev,
+    source,
+    tag: line.tag,
+    head: line.head,
+    decimals: line.decimals,
+    binHours: line.summary.tiles?.binHours ?? 1,
+    from: line.summary.from,
+    to: line.summary.to,
+    width: line.summary.width,
+    buckets: line.summary.buckets,
+    ...(line.summary.runs ? { runs: line.summary.runs } : {}),
+    missing: line.missing,
+    parts: line.parts,
+    marks: line.marks,
+  };
+  const entry = { rev, serialized };
+  tiledRevCache.set(line, entry);
+  return entry;
+}
+
+export function parseTimeChartHit(hitKey: string | null): ParsedFamilyHit | null {
+  if (!hitKey) return null;
+  const parsed = parseChartInspect(hitKey);
+  if (!parsed) return null;
+  const hour = 'hour' in parsed ? parsed.hour : undefined;
+  const subject = 'seriesId' in parsed ? parsed.seriesId : hitKey;
+  return {
+    key: hitKey,
+    subject,
+    ...(hour !== undefined ? { hour } : {}),
+    kind: parsed.kind,
+    toggle: false,
+    inspectToken: hitKey,
+  };
+}
+
+interface PlotRect {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+function plotRectOf(fields: Readonly<Record<string, unknown>>): PlotRect | null {
+  const meta = fields.meta as { readonly plotRect?: PlotRect } | undefined;
+  return meta?.plotRect && meta.plotRect.width > 0 ? meta.plotRect : null;
+}
+
+function insidePlot(point: readonly [number, number], plot: PlotRect): boolean {
+  return point[0] >= plot.left && point[0] <= plot.left + plot.width && point[1] >= plot.top && point[1] <= plot.top + plot.height;
+}
+
+function clampWindow(
+  from: number,
+  to: number,
+  extent: readonly [number, number],
+): readonly [number, number] | null {
+  const fullSpan = Math.max(1, extent[1] - extent[0]);
+  const span = Math.max(MIN_ZOOM_SPAN_HOURS, Math.min(fullSpan, to - from));
+  if (span >= fullSpan - 0.5) return null;
+  let lo = Math.max(extent[0], from);
+  let hi = lo + span;
+  if (hi > extent[1]) {
+    hi = extent[1];
+    lo = Math.max(extent[0], hi - span);
+  }
+  return [lo, hi];
+}
+
+function createTimeChartGestures() {
+  let dragStartWindow: readonly [number, number] | null = null;
+  let dragPlotWidth = 0;
+
+  return {
+    onWheel(event: WheelEvent, point: readonly [number, number], ctx: FamilyGestureContext) {
+      if (!ctx.extent) return false;
+      const plot = plotRectOf(ctx.fields);
+      if (!plot || !insidePlot(point, plot)) return false;
+      const [extFrom, extTo] = ctx.extent;
+      const fullSpan = extTo - extFrom;
+      if (fullSpan <= MIN_ZOOM_SPAN_HOURS) return false;
+      const [curFrom, curTo] = ctx.viewport.zoomWindow ?? ctx.extent;
+      const frac = Math.max(0, Math.min(1, (point[0] - plot.left) / plot.width));
+      const anchor = curFrom + frac * (curTo - curFrom);
+      const factor = event.deltaY > 0 ? 1.25 : 0.8;
+      const nextSpan = Math.max(MIN_ZOOM_SPAN_HOURS, Math.min(fullSpan, (curTo - curFrom) * factor));
+      const next = clampWindow(anchor - frac * nextSpan, anchor + (1 - frac) * nextSpan, ctx.extent);
+      ctx.setZoomWindow(next);
+      return true;
+    },
+    onDragStart(point: readonly [number, number], ctx: FamilyGestureContext) {
+      const plot = plotRectOf(ctx.fields);
+      const inside = !!plot && insidePlot(point, plot);
+      dragPlotWidth = inside ? plot.width : 0;
+      dragStartWindow = inside ? ctx.viewport.zoomWindow : null;
+    },
+    onDragMove(_point: readonly [number, number], delta: readonly [number, number], ctx: FamilyGestureContext) {
+      if (!dragStartWindow || !ctx.extent || dragPlotWidth <= 0) return;
+      const span = dragStartWindow[1] - dragStartWindow[0];
+      const shiftHours = -(delta[0] / dragPlotWidth) * span;
+      const next = clampWindow(dragStartWindow[0] + shiftHours, dragStartWindow[1] + shiftHours, ctx.extent);
+      ctx.setZoomWindow(next);
+    },
+    onDragEnd() {
+      dragStartWindow = null;
+      dragPlotWidth = 0;
+    },
+    onDoubleClick(point: readonly [number, number], ctx: FamilyGestureContext) {
+      const plot = plotRectOf(ctx.fields);
+      if (!ctx.viewport.zoomWindow || !plot || !insidePlot(point, plot)) return false;
+      ctx.setZoomWindow(null);
+      return true;
+    },
+  };
+}
+
+export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, TimeChartBinding> = {
+  family: 'time-chart',
+  pointerMode: 'continuous',
+  navigation: 'points',
+  parseHit: parseTimeChartHit,
+  inspectToken: key => key,
+  gestures: createTimeChartGestures(),
+  buildBinding: ctx => {
+    if (!ctx.extent) return null;
+    const tiledLines: SerializedTiledLine[] = [];
+    const keepTiled: number[] = [];
+    const tiledBySource: Record<string, Record<string, number>> = {};
+
+    if (ctx.tiledSeries) {
+      for (const [sourceName, lines] of Object.entries(ctx.tiledSeries)) {
+        const byTag: Record<string, number> = {};
+        for (const [tag, line] of lines) {
+          const entry = serializeTiledLine(sourceName, line);
+          keepTiled.push(entry.rev);
+          byTag[tag] = entry.rev;
+          tiledLines.push(entry.serialized);
+        }
+        tiledBySource[sourceName] = byTag;
+      }
+    }
+
+    let headSourceBySeries: Record<string, { readonly answerName: string; readonly tags: readonly string[] }> | undefined;
+    if (ctx.plan) {
+      const map: Record<string, { readonly answerName: string; readonly tags: readonly string[] }> = {};
+      for (const entry of ctx.plan.entries) {
+        if (entry.read.shape === 'pixel-binned' && entry.read.headQuery) {
+          map[entry.name] = { answerName: entry.name, tags: entry.read.tags };
+        }
+      }
+      if (Object.keys(map).length) headSourceBySeries = map;
+    }
+
+    return {
+      family: 'time-chart',
+      kind: ctx.kind,
+      options: ctx.options,
+      sources: ctx.sources,
+      extent: ctx.extent,
+      width: ctx.viewport.width,
+      height: ctx.viewport.height,
+      theme: ctx.theme,
+      identitySnapshot: ctx.identitySnapshot,
+      ...(ctx.spriteResolutions ? { spriteResolutions: ctx.spriteResolutions } : {}),
+      ...(ctx.viewport.zoomWindow ? { view: { x: ctx.viewport.zoomWindow } } : {}),
+      ...(tiledLines.length ? { tiledLines } : {}),
+      keepTiled,
+      tiledBySource,
+      ...(headSourceBySeries ? { headSourceBySeries } : {}),
+      ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
+      ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
+      ...(ctx.hovers && Object.keys(ctx.hovers).length ? { hovers: ctx.hovers } : {}),
+      ...(ctx.audit ? { audit: true, auditId: ctx.auditId } : {}),
+    };
+  },
+};
