@@ -441,11 +441,12 @@ describe('time-chart laneView integration', () => {
       auditId: 7,
     };
 
+    const transport = new LaneTransport();
     const painted = view.paint({
       widget: 1,
       subs: [],
       pictures: [],
-      model: binding,
+      model: transport.carry(binding),
       hour: H1936 + 100 * 24,
       seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
@@ -469,7 +470,7 @@ describe('time-chart laneView integration', () => {
       widget: 1,
       subs: [],
       pictures: [],
-      model: { ...binding, focusedKey: `plot:${H1936 + 100 * 24}` },
+      model: transport.carry({ ...binding, focusedKey: `plot:${H1936 + 100 * 24}` }),
       hour: H1936 + 100 * 24,
       seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
@@ -484,7 +485,7 @@ describe('time-chart laneView integration', () => {
       widget: 1,
       subs: [],
       pictures: [],
-      model: binding,
+      model: transport.carry(binding),
       hour: H1936 + 100 * 24,
       seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
@@ -500,7 +501,7 @@ describe('time-chart laneView integration', () => {
       widget: 1,
       subs: [],
       pictures: [],
-      model: { ...binding, zoom: { x: zoomWindow } },
+      model: transport.carry({ ...binding, zoom: { x: zoomWindow } }),
       hour: H1936 + 100 * 24,
       seek: 0, speed: 0,
       binding: { generation: 2, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },

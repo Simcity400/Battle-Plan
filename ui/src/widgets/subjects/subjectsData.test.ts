@@ -70,7 +70,7 @@ test('end membership keeps the human subject’s overlord visible before its cha
     { overlord: 'OVR', subject: 'AAA', startHour: 0, firstHour: 0, lastHour: 9, steps: [step(0, 9, null)] },
     { overlord: 'OVR', subject: 'BBB', startHour: 0, firstHour: 10, lastHour: 20, steps: [step(10, 20, null)] },
   ] }, new Lineage(groups.identityChanges), countryIdentityIndex(groups.countryIdentities));
-  const filter = worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [], groups, 5, 20);
+  const filter = worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [], groups, 5);
   const lanes = subjectLanes(views, byToken, new Map(), 5, { ...options, countries: filter.tags, countryIds: filter.countryIds }, text, []).lanes;
   assert.deepEqual(lanes.map(lane => lane.identity?.label), ['OVR', 'AAA']);
 });

@@ -13,7 +13,7 @@ export function useCountriesSelectionAt(widget: WidgetSpec, runtime: WidgetRunti
   const members = gate.members!;
   const ranked = widget.countries.kind === 'all' || widget.countries.kind === 'group' && widget.countries.group.type === 'top';
   const track = gate.track, groups = gate.groups.data;
-  const query = useMemo(() => !ranked && groups && track ? worldFilterQuery(widget.countries, [defaultCountryKey(track)].flatMap(tag => tag ? [tag] : []), groups, track.branch.lastHour) : null,
+  const query = useMemo(() => !ranked && groups && track ? worldFilterQuery(widget.countries, [defaultCountryKey(track)].flatMap(tag => tag ? [tag] : []), groups) : null,
     [ranked, groups, track, widget.countries]);
   const countriesAt = useCallback((hour: number): { countries: ReadonlySet<string> | null | undefined; reason: string | null } => {
     if (ranked) return { countries: null, reason: null };
