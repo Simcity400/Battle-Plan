@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { DetailWindowHost } from '../../families/host/index.ts';
@@ -8,7 +8,7 @@ import type { InstalledAction } from '../../families/plan.ts';
 import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
 import NavyManagement from './NavyManagement';
 
-export default function NavySizeWidget(props: WidgetProps) {
+export default function NavySizeWidget(props: FamilyViewProps) {
   const { widget, runtime, active, view, manifestDeclaration } = props;
   const isLines = manifestDeclaration?.family === 'time-chart';
   const anchorRef = useRef<HTMLDivElement>(null);

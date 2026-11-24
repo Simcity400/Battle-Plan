@@ -128,6 +128,21 @@ test('a temperature column shows the mean of its days and a missing reading name
   const smallModel = projectWeather(view(48, smallNeg), { show: 'temperature', modifier: null, surface: SURFACE });
   assert.equal(deriveLanesTooltip(smallModel, 0, 0)!.items![0]!.value, '−<0.1 °C');
   assert.equal(smallModel.rows[0]!.readout?.kind === 'value' ? smallModel.rows[0]!.readout.primary : '', '2.5 °C');
+
+  const meanOfTwo = reply(48, {
+    columns: {
+      days: 2,
+      columns: [{ firstHour: 0, lastHour: 47, sampledHour: 47, readHour: 47, recorded: 2 }],
+      regions: [{
+        id: '5', pinned: false,
+        measures: [{ id: 'temp', days: [2], values: [['-1', '-1', '0']] }],
+        readout: { kind: 'value', value: '0', as_of_hour: 47 },
+      }],
+    },
+    extrema: ['-1', '0'],
+  });
+  const meanModel = projectWeather(view(48, meanOfTwo), { show: 'temperature', modifier: null, surface: SURFACE });
+  assert.equal(deriveLanesTooltip(meanModel, 0, 0)!.items![0]!.value, '−<0.1 °C (−<0.1 °C to 0.0 °C)', 'R2-K5: the mean is cut after dividing, not divided after cutting');
 });
 
 test('a folded column with unrecorded days keeps them unknown instead of spreading the known days over the column', () => {

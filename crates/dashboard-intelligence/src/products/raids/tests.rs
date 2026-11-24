@@ -1,5 +1,5 @@
 use super::{
-    RaidEpisode, episode_at, pieces, prepare,
+    RaidEpisode, RaidLogReply, episode_at, episode_from, episode_warnings, pieces, prepare,
     RaidEndedSource, RaidLog, RaidLogParams, RaidPreparationRun, RaidVictimSource,
     StretchRun, coalesce_spans, date_bounds, disappearance, exact_at, outcome_label,
     outcome_missing, phase_label, province_of, scope_of, victim_source,
@@ -22,6 +22,8 @@ use replay_frame::{
     frame::{DecodedFrame, TableView},
 };
 use replay_lanes::lanes::{Cell, Step};
+use dashboard_query::series::MissingSpan;
+use std::collections::BTreeSet;
 use std::sync::{Arc, atomic::AtomicBool};
 
 fn step(hour: i32, phase: i32, outcome: i32, travelled: Option<i64>, preparation: i64) -> Step {
@@ -388,11 +390,13 @@ struct At {
     spelled: bool,
     targeted: bool,
     provinces_part: bool,
+    provinces_unread: bool,
+    building: Option<bool>,
     slot1: &'static [u8],
 }
 
 fn at(hour: i32, raids: Raids, controller: u32) -> At {
-    At { hour, raids, controller, spelled: true, targeted: true, provinces_part: false, slot1: b"ENG" }
+    At { hour, raids, controller, spelled: true, targeted: true, provinces_part: false, provinces_unread: false, building: None, slot1: b"ENG" }
 }
 
 fn raid(id: u32, slot: u32, phase: i32, outcome: i32) -> RaidRow {
@@ -406,8 +410,20 @@ fn frame_at(branch: u64, at: &At) -> DecodedFrame {
         Raids::Part(rows) => (TableView::Truncated { rows: TableRows::Raids(rows.clone()), missing: 1 }, rows),
         Raids::Unread(rows) => (TableView::Unavailable { reason: "not read this hour".into() }, rows),
     };
-    let targets = if at.targeted { rows.iter().map(|row| target_row(row.id, RaidScope { province: 10, ..Default::default() }, 40)).collect() } else { Vec::new() };
+    let scope = match at.building {
+        None => RaidScope { province: 10, ..Default::default() },
+        Some(_) => RaidScope { province: 10, building_type: 42, building_location: 10, building_flags: 1, ..Default::default() },
+    };
+    let targets = if at.targeted { rows.iter().map(|row| target_row(row.id, scope.clone(), 40)).collect() } else { Vec::new() };
     let mut frame = make_frame(branch, at.hour, countries, at.controller, view, targets);
+    if at.building == Some(true)
+        && let TableView::Complete(TableRows::LexicalTokens(tokens)) = &mut *frame.tables[TableId::LexicalTokens.index()]
+    {
+        tokens.push(LexicalTokenRow { token: 42, literal: b"dam".to_vec() });
+    }
+    if at.provinces_unread {
+        *frame.tables[TableId::Provinces.index()] = TableView::Unavailable { reason: "not read this hour".into() };
+    }
     if !at.spelled {
         *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 41, literal: b"dam_raid".to_vec() }]));
     }
@@ -441,6 +457,7 @@ struct Seen {
     slot: Option<u32>,
     victims: Vec<Victim>,
     type_hour: Option<i32>,
+    state: Option<u32>,
     launched: Option<i32>,
     ends: Vec<EndSeen>,
     succeeded: Option<i32>,
@@ -455,6 +472,7 @@ fn seen(episode: &RaidEpisode) -> Seen {
         slot: episode.raider_slot,
         victims: episode.victims.iter().map(|v| (v.hour, v.tag.clone(), v.source)).collect(),
         type_hour: episode.raid_type_hour,
+        state: episode.state,
         launched: episode.launched_hour,
         ends: episode.ends.iter().map(|end| (end.hour, end.ended_hour, end.source == RaidEndedSource::NativeEndDate, end.raider.clone())).collect(),
         succeeded: episode.succeeded_hour,
@@ -471,6 +489,7 @@ fn ep(raid: u32, nth: u32, slot: u32, victims: &[(i32, &str, RaidVictimSource)])
         slot: Some(slot),
         victims: victims.iter().map(|&(hour, tag, source)| (hour, Some(tag.to_owned()), Some(source))).collect(),
         type_hour: Some(victims[0].0),
+        state: Some(5),
         launched: None,
         ends: Vec::new(),
         succeeded: None,
@@ -509,6 +528,7 @@ impl Seen {
     fn untargeted(mut self) -> Self {
         let hour = self.first;
         self.victims = vec![(hour, None, None)];
+        self.state = None;
         self
     }
 
@@ -523,6 +543,55 @@ impl Seen {
     }
 }
 
+fn differences(got: &RaidLogReply, want: &RaidLogReply) -> String {
+    let mut out = Vec::new();
+    macro_rules! compare {
+        ($($field:ident),*) => {$(
+            if got.$field != want.$field {
+                out.push(format!("{}: got {:?}\n      want {:?}", stringify!($field), got.$field, want.$field));
+            }
+        )*};
+    }
+    compare!(available, unavailable, types, artwork, episodes, missing, warnings);
+    out.join("\n    ")
+}
+
+fn malformed(reply: &super::RaidLogReply) -> Vec<String> {
+    let mut out = Vec::new();
+    for e in &reply.episodes {
+        let mut bad = |rule: &str| out.push(format!("{}: {rule}", e.id));
+        let increasing = |hours: Vec<i32>| hours.windows(2).all(|pair| pair[0] < pair[1]);
+        if e.first_hour > e.last_hour {
+            bad("first hour after the last");
+        }
+        if e.victim.is_none() == e.victim_missing.is_none() || (e.victim.is_none() && e.victim_source.is_some()) {
+            bad("victim");
+        }
+        if e.victims.is_empty() || !increasing(e.victims.iter().map(|v| v.hour).collect()) || e.victims.iter().any(|v| v.tag.is_none() == v.missing.is_none() || (v.tag.is_none() && v.source.is_some())) {
+            bad("victim witnesses");
+        }
+        if !increasing(e.ends.iter().map(|end| end.hour).collect()) {
+            bad("end witnesses not strictly increasing");
+        }
+        if e.runs.iter().any(|run| run.first_hour > run.last_hour) || e.runs.windows(2).any(|pair| pair[0].last_hour >= pair[1].first_hour) {
+            bad("runs");
+        }
+        if e.preparation.iter().any(|run| run.0 > run.1) || e.preparation.windows(2).any(|pair| pair[0].1 >= pair[1].0) {
+            bad("preparation");
+        }
+        if (e.launched_hour.is_some() && !e.launched) || (e.launched_exact && e.launched_hour.is_none()) {
+            bad("launch");
+        }
+        if e.disappeared_exact && e.disappeared_hour.is_none() {
+            bad("disappearance");
+        }
+        if e.succeeded_hour.is_some() && e.ends.is_empty() {
+            bad("a success without an end");
+        }
+    }
+    out
+}
+
 #[test]
 fn every_raid_episode_case_gives_the_full_reply_cut_at_each_hour_as_the_reply_through_that_hour() {
     use RaidVictimSource::{CompletionCountry as DONE, ControllerAtFirstEndedRead as ENDED, ControllerAtObservedRead as SEEN};
@@ -535,6 +604,13 @@ fn every_raid_episode_case_gives_the_full_reply_cut_at_each_hour_as_the_reply_th
         let mut row = won(id, 1);
         row.end_hour = Some(end_hour);
         row.completion_recorded = RaidRow::END_HOUR_RECORDED;
+        row
+    };
+    let finished = |slot: u32, raw: u32, end_hour: Option<i32>| {
+        let mut row = won(5, slot);
+        row.completion_country = Some(raw);
+        row.end_hour = end_hour;
+        row.completion_recorded = RaidRow::COMPLETION_COUNTRY_RECORDED | if end_hour.is_some() { RaidRow::END_HOUR_RECORDED } else { 0 };
         row
     };
     let mut completed = raid(5, 1, END, LOST);
@@ -651,29 +727,89 @@ fn every_raid_episode_case_gives_the_full_reply_cut_at_each_hour_as_the_reply_th
             vec![vec![at(10, whole(vec![prep(7, 1)]), ger), at(11, Raids::Unread(vec![]), ger), at(12, whole(vec![]), ger)]],
             vec![ep(7, 1, 1, &[(10, "GER", SEEN)]).gone(12, false)],
         ),
+        (
+            "R5-S6: a building's icon is known from the hour its building is spelled, not from the type's",
+            vec![vec![
+                At { building: Some(false), ..at(10, whole(vec![prep(5, 1)]), ger) },
+                At { building: Some(false), ..at(11, whole(vec![prep(5, 1)]), ger) },
+                At { building: Some(true), ..at(12, whole(vec![prep(5, 1)]), ger) },
+            ]],
+            vec![ep(5, 1, 1, &[(10, "GER", SEEN)])],
+        ),
+        (
+            "R5-S7: a province known at 10 whose state is first readable at 11 has that state from 11",
+            vec![vec![At { provinces_unread: true, ..at(10, whole(vec![prep(5, 1)]), ger) }, at(11, whole(vec![prep(5, 1)]), ger)]],
+            vec![Seen { victims: vec![(10, None, None), (11, Some("GER".into()), Some(SEEN))], ..ep(5, 1, 1, &[(10, "GER", SEEN)]) }],
+        ),
+        (
+            "R5-S9: the completion country is named at the native end date once that is read",
+            vec![(4..=20).map(|h| At { slot1: if h < 10 { b"ITA" } else { b"RSI" }, ..at(h, whole(match h { 4..=9 => vec![], 10..=19 => vec![finished(2, 10, None)], _ => vec![finished(2, 10, Some(5))] }), fra) }).collect()],
+            vec![ep(5, 1, 2, &[(10, "RSI", DONE), (20, "ITA", DONE)]).done(10, "GER").native(20, 5, "GER").won(10)],
+        ),
+        (
+            "R5-S9: across a load the completion country is named with the links of the run that holds the end",
+            vec![
+                (4..=9).map(|h| At { slot1: b"ITA", ..at(h, whole(vec![]), fra) }).collect(),
+                (10..=20).map(|h| At { slot1: b"RSI", ..at(h, whole(vec![finished(2, 10, (h == 20).then_some(5))]), fra) }).collect(),
+            ],
+            vec![ep(5, 1, 2, &[(10, "RSI", DONE), (20, "ITA", DONE)]).done(10, "GER").native(20, 5, "GER").won(10)],
+        ),
+        (
+            "R5-S9: a completion country that names no tag never replaces the controller witnessed at the end",
+            vec![(10..=20).map(|h| at(h, whole(vec![if h < 20 { won(5, 1) } else { finished(1, 99, None) }]), fra)).collect()],
+            vec![ep(5, 1, 1, &[(10, "FRA", ENDED)]).done(10, "ENG").won(10)],
+        ),
     ];
+    let filtered: Vec<(&str, Vec<Country>, Vec<Vec<At>>, Vec<Seen>)> = vec![(
+        "R5-S12: a raid is among a country's raids from the hour a read names that country",
+        vec![Country::Tag("GER".into())],
+        vec![vec![at(10, whole(vec![prep(7, 1)]), fra), at(11, whole(vec![prep(7, 1)]), fra), at(12, whole(vec![prep(7, 1)]), ger)]],
+        vec![ep(7, 1, 1, &[(10, "FRA", SEEN), (12, "GER", SEEN)])],
+    )];
     let mut failed = Vec::new();
-    for (name, stretches, want) in cases {
+    for (name, countries, stretches, want) in cases.into_iter().map(|(name, stretches, want)| (name, Vec::new(), stretches, want)).chain(filtered) {
         let segments = recording(&stretches);
-        let full = load_product(&segments, "1", None, None);
+        let ask = |from: Option<i32>, to: Option<i32>, catalogue: bool| load_with(&segments, RaidLogParams { branch_id: "1".into(), from, to, countries: countries.clone(), catalogue });
+        let full = ask(None, None, false);
         let shown: Vec<Seen> = full.episodes.iter().map(seen).collect();
         if shown != want {
             failed.push(format!("{name}: full reply\n  got  {shown:?}\n  want {want:?}"));
         }
+        let content = ask(None, None, true).warnings;
+        let first_recorded = stretches.iter().flatten().find(|at| matches!(&at.raids, Raids::Whole(rows) | Raids::Part(rows) if !rows.is_empty())).map(|at| at.hour);
         let hours: Vec<i32> = stretches.iter().flatten().map(|at| at.hour).collect();
         for &to in &hours {
-            let actual = load_product(&segments, "1", None, Some(to)).episodes;
-            let expected: Vec<RaidEpisode> = full.episodes.iter().filter_map(|episode| episode_at(episode, to)).collect();
-            if actual != expected {
-                failed.push(format!("{name}: the reply through {to} is not the full reply at {to}\n  got  {actual:?}\n  want {expected:?}"));
+            let through = ask(None, Some(to), false);
+            failed.extend(malformed(&through).into_iter().map(|fault| format!("{name}: the reply through {to} is malformed: {fault}")));
+            let episodes: Vec<RaidEpisode> = full.episodes.iter().filter_map(|episode| episode_at(episode, to)).collect();
+            let expected = RaidLogReply {
+                available: first_recorded.is_some_and(|first| first <= to).then_some(true),
+                artwork: full.artwork.iter().filter(|art| episodes.iter().any(|episode| episode.icon.as_ref() == Some(&art.key))).cloned().collect(),
+                missing: full.missing.iter().filter(|span| span.first_hour <= to).map(|span| MissingSpan { last_hour: span.last_hour.min(to), ..span.clone() }).collect(),
+                warnings: content.iter().cloned().chain(episode_warnings(&episodes)).collect::<BTreeSet<_>>().into_iter().collect(),
+                episodes,
+                ..full.clone()
+            };
+            if through != expected {
+                failed.push(format!("{name}: the reply through {to} is not the full reply at {to}\n    {}", differences(&through, &expected)));
             }
         }
-        let clip = |e: &RaidEpisode| (e.id.clone(), e.raider_slot, e.succeeded_hour, e.ends.last().and_then(|end| end.raider.clone()), e.victims.last().and_then(|v| v.tag.clone()));
         for &from in &hours {
-            let got: Vec<_> = load_product(&segments, "1", Some(from), None).episodes.iter().map(clip).collect();
-            let expected: Vec<_> = full.episodes.iter().filter(|e| e.last_hour >= from).map(clip).collect();
-            if got != expected {
-                failed.push(format!("{name}: the reply from {from} is not the full reply clipped there\n  got  {got:?}\n  want {expected:?}"));
+            let ranged = ask(Some(from), None, false);
+            failed.extend(malformed(&ranged).into_iter().map(|fault| format!("{name}: the reply from {from} is malformed: {fault}")));
+            if !countries.is_empty() {
+                continue;
+            }
+            let episodes: Vec<RaidEpisode> = full.episodes.iter().filter_map(|episode| episode_from(episode, from)).collect();
+            let expected = RaidLogReply {
+                artwork: full.artwork.iter().filter(|art| episodes.iter().any(|episode| episode.icon.as_ref() == Some(&art.key))).cloned().collect(),
+                missing: full.missing.iter().filter(|span| span.last_hour >= from).map(|span| MissingSpan { first_hour: span.first_hour.max(from), ..span.clone() }).collect(),
+                warnings: content.iter().cloned().chain(episode_warnings(&episodes)).collect::<BTreeSet<_>>().into_iter().collect(),
+                episodes,
+                ..full.clone()
+            };
+            if ranged != expected {
+                failed.push(format!("{name}: the reply from {from} is not the full reply clipped there\n    {}", differences(&ranged, &expected)));
             }
         }
     }

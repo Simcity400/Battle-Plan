@@ -19,9 +19,10 @@ import { deriveLanesAudit, deriveLanesMirror, deriveLanesTooltip, findRunAtHour,
 import { hitHeatLanes, layoutHeatLanes, projectLaneRunsToPixels } from './lanesLayout.ts';
 import { drawHeatLanes } from './lanesPainter.ts';
 import { assertFreshPaint, assertQuietFrames, assertScrollKeepsStructure } from '../laneRuntime.fixture.ts';
+import { createLaneView } from '../laneRuntime.ts';
 import { registerFamilyProjection } from '../registry.ts';
-import { familyHeatLanesLaneView } from './lanesLaneView.ts';
-import { familyHeatMatrixLaneView } from './matrixLaneView.ts';
+import { heatLanesLane } from './lanesLaneView.ts';
+import { heatMatrixLane } from './matrixLaneView.ts';
 
 function gridCells(grid: readonly (readonly MatrixCell[])[], width: number) {
   return { present: new Map(grid.flatMap((row, r) => row.map((cell, c) => [r * width + c, cell] as const))), absent: { kind: 'empty' } as MatrixCell };
@@ -194,15 +195,15 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
   const surface = { width: 520, height: 300, dpr: 1 };
   const renamed: HeatMatrixModel = { ...model, rows: model.rows.map((row, index) => (index === 0 ? { ...row, label: `${row.label} (renamed)` } : row)) };
   const reordered: HeatMatrixModel = { ...renamed, columns: [...renamed.columns].reverse() };
-  assertQuietFrames(() => familyHeatMatrixLaneView(() => {}), { label: 'matrix', binding: lane(model), hour: model.hour }, 24, surface);
-  assertFreshPaint(() => familyHeatMatrixLaneView(() => {}), [
+  assertQuietFrames(() => createLaneView(heatMatrixLane, () => {}), { label: 'matrix', binding: lane(model), hour: model.hour }, 24, surface);
+  assertFreshPaint(() => createLaneView(heatMatrixLane, () => {}), [
     { label: 'held', binding: lane(model), hour: model.hour, check: true },
     { label: 'correction', binding: lane(renamed), hour: model.hour, check: true },
     { label: 'reorder', binding: lane(reordered), hour: model.hour, check: true },
     { label: 'scrolled', binding: lane(reordered, 4, 6), hour: model.hour, check: true },
   ], surface);
   const still = lane(model);
-  assertScrollKeepsStructure(() => familyHeatMatrixLaneView(() => {}), { label: 'matrix', binding: still, hour: model.hour },
+  assertScrollKeepsStructure(() => createLaneView(heatMatrixLane, () => {}), { label: 'matrix', binding: still, hour: model.hour },
     { label: 'matrix scrolled', binding: { ...still, scrollLeft: 4, scrollTop: 6 }, hour: model.hour }, surface);
 
   const marked: HeatMatrixModel = {
@@ -398,6 +399,10 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   assert.equal(mirror.total, 2);
   assert.equal(mirror.rows[0]!.name, 'English Channel');
   assert.equal(mirror.rows[0]!.cells[0]!.spoken, 'English Channel');
+  const sectioned = deriveLanesMirror({ ...model, rows: [{ ...model.rows[0]!, pinned: true }, model.rows[1]!], regions: { pickedHeading: 'Your regions', automaticHeading: 'Most active for Germany', addLabel: 'Add region' } }, 0, 10);
+  assert.deepEqual(sectioned.rows.map(row => [row.name, row.cells.find(cell => cell.column === 'Group')?.spoken ?? row.cells[0]!.spoken]),
+    [['English Channel', 'Your regions'], [model.rows[1]!.label, 'Most active for Germany'], ['Add region', 'Add region']], 'the text alternative says which rows are the user’s and offers Add region');
+  assert.equal(sectioned.total, 3);
 
   const ticks = computeTimeAxisTicks(0, 167, layout.plotWidth, 24);
   assert.ok(ticks.length >= 2);
@@ -422,8 +427,8 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   const renamed = { ...model, rows: model.rows.map(row => (row.id === '11' ? { ...row, label: 'Normandy' } : row)) };
   const reordered = { ...renamed, rows: [...renamed.rows].reverse() };
   const surface = { width: 720, height: 220, dpr: 1 };
-  assertQuietFrames(() => familyHeatLanesLaneView(() => {}), { label: 'lanes', binding: held, hour: 119 }, 24, surface);
-  assertFreshPaint(() => familyHeatLanesLaneView(() => {}), [
+  assertQuietFrames(() => createLaneView(heatLanesLane, () => {}), { label: 'lanes', binding: held, hour: 119 }, 24, surface);
+  assertFreshPaint(() => createLaneView(heatLanesLane, () => {}), [
     { label: 'held', binding: held, hour: 119, check: true },
     { label: 'later', binding: held, hour: 140, speed: 24 },
     { label: 'seek back', binding: held, hour: 119, check: true },
@@ -431,7 +436,7 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
     { label: 'reorder', binding: lane(reordered), hour: 119, check: true },
     { label: 'scrolled', binding: lane(reordered, 12), hour: 119, check: true },
   ], surface);
-  assertScrollKeepsStructure(() => familyHeatLanesLaneView(() => {}), { label: 'lanes', binding: held, hour: 119 },
+  assertScrollKeepsStructure(() => createLaneView(heatLanesLane, () => {}), { label: 'lanes', binding: held, hour: 119 },
     { label: 'lanes scrolled', binding: { ...held, scrollTop: 12 }, hour: 119 }, surface);
 
   const regions = { pickedHeading: 'Your regions', automaticHeading: 'Most active for Germany', addLabel: 'Add region' };

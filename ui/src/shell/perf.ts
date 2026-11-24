@@ -97,13 +97,15 @@ export function pictureError(surface: string, rows: readonly ShownRow[], exact: 
   if (!exact || (!rows.length && exact.values.size)) return 'Displayed rows or exact read missing';
   if (exact.ranked && JSON.stringify(rows.map(r => r.row + ':' + r.key)) !== JSON.stringify([...exact.values.keys()])) return 'Ranked row identities differ';
   if (exact.ordered && JSON.stringify(rows.map(r => r.key)) !== JSON.stringify([...exact.values.keys()])) return 'Displayed rows are not in the exact read\'s order';
+  const shown = new Set<string>();
   for (const row of rows) {
     const key = exact.ranked ? row.row + ':' + row.key : row.key;
+    if (shown.has(key)) return key + ' is shown twice';
+    shown.add(key);
     if (row.overflow) return key + ' exceeds its slot by ' + row.overflow.toFixed(1) + ' px';
     if (!exact.ranked && row.row !== key && !key.startsWith(row.row + ':')) return 'Wrong row identity for ' + key;
     if (!exact.values.has(key) || exact.values.get(key) !== row.value) return key + ': displayed ' + row.value + ', expected ' + exact.values.get(key);
   }
-  const shown = new Set(rows.map(row => exact.ranked ? row.row + ':' + row.key : row.key));
   for (const key of exact.values.keys()) if (!shown.has(key)) return key + ': in the exact read, not shown';
   if (surface === 'table' && shown.size !== exact.values.size)
     return 'Displayed ' + rows.length + ' rows of the ' + exact.values.size + ' the exact read holds';

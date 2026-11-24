@@ -4,11 +4,10 @@ import { choiceVariants } from '../../dashboard/options.ts';
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'gantt',
-    choices: [{ value: 'gantt', label: 'Timeline' }, { value: 'countries', label: 'Country by country' }] },
+    choices: [{ value: 'gantt', label: 'Wars' }, { value: 'countries', label: 'Countries' }] },
   { key: 'colour', section: 'options', label: 'Colour', kind: 'choice', default: 'war',
     choices: [{ value: 'war', label: 'By war' }, { value: 'side', label: 'By side' }],
     visibleWhen: options => options.view === 'countries' },
-  { key: 'grow', section: 'axes', label: 'Grow with playback', kind: 'toggle', default: false },
 ];
 
 export const definition = {

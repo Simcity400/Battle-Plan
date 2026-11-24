@@ -93,7 +93,7 @@ export function renderFamilyBodyState(props: FamilyBodyStateProps): ReactNode {
   if (empty) {
     return emptyKind === 'empty'
       ? <WidgetState kind="empty" message={empty} detail={emptyDetail ?? undefined} action={emptyAction} />
-      : <WidgetState kind="unavailable" message={empty} detail={emptyDetail ?? undefined} />;
+      : <WidgetState kind="unavailable" message={empty} detail={emptyDetail ?? undefined} action={emptyAction} />;
   }
   return null;
 }

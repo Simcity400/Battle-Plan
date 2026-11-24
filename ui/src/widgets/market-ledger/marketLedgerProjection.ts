@@ -1,6 +1,5 @@
-import type { BoundFacetFilter } from '../../charts/log/logSource';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { FIXED5, fixedText } from '../../dashboard/market.ts';
+import { FIXED5 } from '../../dashboard/market.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
@@ -11,6 +10,7 @@ import {
   logCountryCell,
   logDateCell,
   logStatusCell,
+  occurrenceSelection,
   pagedTailEntry,
   projectPagedSlots,
   urlArtHandle,
@@ -20,13 +20,12 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
+import { formatFixed5Amount } from '../../families/valueFormat.ts';
 import type { MarketContractEvent, MarketContractItem, MarketContractRow, MarketContractStatus } from '../../generated/dashboard';
 import { MARKET_LEDGER_COLUMNS } from './definition.ts';
 
 export interface MarketLedgerProjectionOptions {
   readonly perspective: string | null;
-  readonly showRequests: boolean;
-  readonly showEnded: boolean;
   readonly selectionEmpty: string | null;
 }
 
@@ -36,17 +35,18 @@ const CONTRACT_STATUS_TEXT: Record<MarketContractStatus, { readonly label: strin
   active: { label: 'Contract started', mark: 'running' },
   requested: { label: 'Request posted', mark: 'waiting' },
   ended: { label: 'Contract ended', mark: 'ended', muted: true },
+  requestEnded: { label: 'Request ended', mark: 'ended', muted: true },
   notRecorded: { label: 'Not recorded', mark: 'ended', muted: true },
 };
 
 function formatUnits(raw: string): string {
   const n = BigInt(raw);
-  return fixedText(n);
+  return formatFixed5Amount(n < 0n ? -n : n);
 }
 
 function formatCic(raw: string, sign: -1 | 0 | 1): string {
   const abs = BigInt(raw);
-  const mag = fixedText(abs < 0n ? -abs : abs);
+  const mag = formatFixed5Amount(abs < 0n ? -abs : abs);
   if (sign < 0) return `\u2212${mag}`;
   if (sign > 0) return `+${mag}`;
   return mag;
@@ -104,7 +104,8 @@ function primaryItemSummary(items: readonly MarketContractItem[]): {
   };
 }
 
-function deliveredCell(items: readonly MarketContractItem[]): TableCell {
+function deliveredCell(items: readonly MarketContractItem[], missing: string | null): TableCell {
+  if (missing !== null) return { value: notRecorded(missing) };
   if (!items.length) return { value: notApplicable('No deliveries yet') };
   let deliveredSum = 0n;
   let contractedSum = 0n;
@@ -117,10 +118,10 @@ function deliveredCell(items: readonly MarketContractItem[]): TableCell {
     if (item.contractedRaw === null) allContracted = false;
     else contractedSum += BigInt(item.contractedRaw);
   }
-  const deliveredText = fixedText(deliveredSum);
+  const deliveredText = formatFixed5Amount(deliveredSum);
   if (allContracted && contractedSum > 0n) {
     return {
-      value: knownValue(`${deliveredText} / ${fixedText(contractedSum)}`),
+      value: knownValue(`${deliveredText} / ${formatFixed5Amount(contractedSum)}`),
       unitSuffix: contractedSum === FIXED5 ? 'unit' : 'units',
     };
   }
@@ -132,7 +133,7 @@ function deliveredCell(items: readonly MarketContractItem[]): TableCell {
 }
 
 function paidCell(contract: MarketContractRow, sign: -1 | 0 | 1): TableCell {
-  if (contract.paidNotRecorded) return { value: notRecorded('Payment amount was not recorded') };
+  if (contract.paidMissing !== null) return { value: notRecorded(contract.paidMissing) };
   if (contract.paidRaw === null) return { value: notApplicable('No payments yet'), blank: true };
   return {
     value: knownValue(formatCic(contract.paidRaw, sign)),
@@ -160,6 +161,7 @@ function buildChildEventRow(event: MarketContractEvent, sign: -1 | 0 | 1): Table
         delivered: qtyCell,
         paid: blank,
         status: logStatusCell(sign < 0 ? 'Bought' : sign > 0 ? 'Sold' : 'Delivered', 'finished'),
+        action: blank,
       },
     };
   }
@@ -178,6 +180,7 @@ function buildChildEventRow(event: MarketContractEvent, sign: -1 | 0 | 1): Table
         delivered: { value: notRecorded(event.reason ?? 'Delivery amount unavailable') },
         paid: blank,
         status: logStatusCell('Unavailable', 'ended', 'muted'),
+        action: blank,
       },
     };
   }
@@ -197,6 +200,7 @@ function buildChildEventRow(event: MarketContractEvent, sign: -1 | 0 | 1): Table
         delivered: blank,
         paid: cicCell,
         status: logStatusCell(sign < 0 ? 'Paid' : sign > 0 ? 'Received' : 'Payment', 'finished'),
+        action: blank,
       },
     };
   }
@@ -219,6 +223,7 @@ function buildChildEventRow(event: MarketContractEvent, sign: -1 | 0 | 1): Table
       delivered: blank,
       paid: blank,
       status: logStatusCell(lifecycleLabel, mark, event.kind === 'contractEnded' ? 'muted' : undefined),
+      action: blank,
     },
   };
 }
@@ -248,7 +253,11 @@ function buildContractRow(
     ];
     if (contract.startedHour !== null) out.push({ label: 'Started', value: knownValue(formatDateTime(contract.startedHour)) });
     if (contract.endedHour !== null) out.push({ label: 'Ended', value: knownValue(formatDateTime(contract.endedHour)) });
-    if (contract.agreedPriceRaw !== null) out.push({ label: 'Agreed price', value: knownValue(`${fixedText(BigInt(contract.agreedPriceRaw))} CIC`) });
+    if (contract.requestedHour !== null) out.push({ label: 'Requested', value: knownValue(formatDateTime(contract.requestedHour)) });
+    for (const quote of contract.quotes) {
+      out.push({ label: `Price (${quote.name ?? `Design ${quote.variant}`})`, value: knownValue(`${formatFixed5Amount(BigInt(quote.priceRaw))} CIC`) });
+    }
+    if (contract.termsMissing !== null) out.push({ label: 'Terms', value: notRecorded(contract.termsMissing) });
     for (const item of contract.items) {
       const itemLabel = item.name ?? `Design ${item.variant}`;
       const progress = item.deliveryUnavailable
@@ -262,7 +271,7 @@ function buildContractRow(
   };
 
   return {
-    key: `contract:${contract.key}`,
+    key: contract.key,
     name: title,
     rowHour: contract.hour,
     muted: statusInfo.muted === true,
@@ -280,9 +289,10 @@ function buildContractRow(
       item: summary.label !== null
         ? { value: knownValue(summary.label), ...(summary.subtext ? { inlineSubtext: summary.subtext } : {}) }
         : { value: notRecorded(summary.missing ?? 'Equipment design not recorded') },
-      delivered: deliveredCell(contract.items),
+      delivered: deliveredCell(contract.items, contract.deliveryMissing),
       paid: paidCell(contract, sign),
       status: logStatusCell(statusInfo.label, statusInfo.mark, statusInfo.muted ? 'muted' : undefined),
+      action: { value: notApplicable('Expand contract'), blank: true },
     },
     ...(children.length > 0 ? { children } : {}),
     tooltipTitle: title,
@@ -323,11 +333,7 @@ export const marketLedgerProjection: TableProjection<MarketLedgerProjectionOptio
       source,
       hour,
       readView.rowWindow,
-      contract => {
-        if (!options.showRequests && contract.status === 'requested') return null;
-        if (!options.showEnded && contract.status === 'ended') return null;
-        return buildContractRow(readView, contract, options.perspective, boundary);
-      },
+      contract => buildContractRow(readView, contract, options.perspective, boundary),
     );
     const rawHead = source.rawHead as { readonly warnings?: readonly string[] } | undefined;
     return {
@@ -367,12 +373,12 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
     const win = !ctx.following ? resolveWindow(ctx.widget, ctx.track, [ctx.track], ctx.branch.lastHour) : null;
     const rawFrom = ctx.widget.time.mode === 'range' && win ? Math.max(Math.floor(win.firstHour), ctx.branch.firstHour) : null;
     const boundFrom = rawFrom !== null ? ctx.gateSpan(rawFrom, ctx.branch.lastHour)?.firstHour ?? null : null;
-    const facets: BoundFacetFilter[] = [];
-    if (tags) {
-      facets.push({ name: 'country|receiver', values: [], countries: tags.map(countryFromKey) });
-    }
+    const statuses: MarketContractStatus[] = ['active', 'notRecorded'];
+    if (ctx.options.showRequests !== false) statuses.push('requested');
+    if (ctx.options.showEnded !== false) statuses.push('ended', 'requestEnded');
+    const selection = occurrenceSelection(ctx);
     return {
-      owner: `${ctx.track.source.id}:${ctx.branch.id}:market-ledger:${tags ? tags.join(',') : 'all'}`,
+      owner: `${ctx.track.source.id}:${ctx.branch.id}:market-ledger:${statuses.join(',')}:${selection ? JSON.stringify(selection) : 'all'}`,
       entries: [
         pagedTailEntry(
           'main',
@@ -382,9 +388,9 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
           {
             product: 'market-ledger-tail',
             branchId: ctx.branch.id,
-            facets,
             from: boundFrom,
             limit: HEAD_LIMIT,
+            ask: { ...(statuses.length === 5 ? {} : { statuses }), ...selection },
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,
@@ -405,8 +411,6 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
       : null;
     return {
       perspective,
-      showRequests: ctx.options.showRequests !== false,
-      showEnded: ctx.options.showEnded !== false,
       selectionEmpty,
     };
   },

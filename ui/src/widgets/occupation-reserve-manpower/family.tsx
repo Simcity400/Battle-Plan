@@ -1,23 +1,22 @@
 import { useCallback, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { WidgetProps, WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/definitions';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
-import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
-import { DeclaredFamilyWidget, DetailWindowHost } from '../../families/host/index.ts';
+import { DetailWindowHost } from '../../families/host/index.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import type { InstalledAction } from '../../families/plan.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { OccupationReserveReply } from '../../generated/dashboard';
 import { persons, validateOccupationReserve } from './occupationReserveData';
-import { occupationReserveRaceDeclaration, type OccupationReserveRowMeta } from './occupationReserveRaceProjection.ts';
+import type { OccupationReserveRowMeta } from './occupationReserveRaceProjection.ts';
 import './occupationReserve.css';
 
 function HolderSourcesDetail({ runtime, trackId, tag, hour, active }: {
-  readonly runtime: WidgetProps['runtime'];
+  readonly runtime: FamilyViewProps['runtime'];
   readonly trackId: string | undefined;
   readonly tag: string;
   readonly hour: GatedHour;
@@ -61,8 +60,8 @@ function HolderSourcesDetail({ runtime, trackId, tag, hour, active }: {
   );
 }
 
-function OccupationReserveFamilyWidget(props: WidgetProps) {
-  const { widget, runtime, active, view, manifestDeclaration } = props;
+function OccupationReserveFamilyWidget(props: FamilyViewProps) {
+  const { widget, runtime, active, manifestDeclaration } = props;
   const isBreakdown = manifestDeclaration?.family === 'time-chart';
   const anchorRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
@@ -75,26 +74,21 @@ function OccupationReserveFamilyWidget(props: WidgetProps) {
     setDetail({ tag: meta?.tag ?? action.subject, key: meta?.key ?? action.subject, hour: gated });
   }, [gate]);
 
-  if (isBreakdown && manifestDeclaration) {
+  if (!manifestDeclaration) return null;
+  if (isBreakdown) {
     return (
       <div className="fh-frame">
-        <FamilyWidget
-          {...props}
-          family={manifestDeclaration.family}
-          view={view}
-          declaration={manifestDeclaration}
-        />
+        <FamilyWidget {...props} family={manifestDeclaration.family} declaration={manifestDeclaration} />
       </div>
     );
   }
 
   return (
     <div ref={anchorRef} className="fh-frame">
-      <DeclaredFamilyWidget
+      <FamilyWidget
         {...props}
-        view="main"
-        adapter={barsHostAdapter}
-        declaration={occupationReserveRaceDeclaration}
+        family={manifestDeclaration.family}
+        declaration={manifestDeclaration}
         selectedKey={detail?.key ?? null}
         onActivate={onActivate}
       />
@@ -121,4 +115,4 @@ function OccupationReserveFamilyWidget(props: WidgetProps) {
   );
 }
 
-export default { render: OccupationReserveFamilyWidget } satisfies WidgetRenderer;
+export default { render: OccupationReserveFamilyWidget } satisfies FamilyViewRenderer;

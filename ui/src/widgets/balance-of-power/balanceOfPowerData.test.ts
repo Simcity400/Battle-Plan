@@ -182,4 +182,23 @@ test('balance-of-power time-chart projection renders pre-first-reading hatched g
   });
   assert.equal(unnamedModel.series[0]!.endLabel?.name, null);
   assert.equal(unnamedModel.series[0]!.endLabel?.value, '0.36');
+
+  const truncHist = history({
+    names: { ita_bop: 'Power Balance' },
+    holderBalances: [
+      holder('1', [[0, 'ITA']], [balance('ita_bop', [run(500, 799, '500'), run(800, 1200, '36500')])], [run(500, 1200, 'ita_bop')]),
+    ],
+  });
+  const truncModel = balanceOfPowerProjection.project(createBoundedReadView({
+    hour: 800,
+    panels: new Map<string, unknown>([['history', truncHist]]),
+    art: { resolve: () => NO_ART },
+  }), { tag: 'ITA', extent: [0, 1000], branchFirstHour: 0, branchGaps: [], gaps: [] });
+  assert.equal(truncModel.series[0]!.endLabel?.value, '0.36', '36,500 fixed5 truncates toward zero to 0.36, never rounds to 0.37');
+  const tinyModel = balanceOfPowerProjection.project(createBoundedReadView({
+    hour: 600,
+    panels: new Map<string, unknown>([['history', truncHist]]),
+    art: { resolve: () => NO_ART },
+  }), { tag: 'ITA', extent: [0, 1000], branchFirstHour: 0, branchGaps: [], gaps: [] });
+  assert.equal(tinyModel.series[0]!.endLabel?.value, '<0.01', 'non-zero 500 fixed5 prints <0.01, never rounds to 0.01');
 });

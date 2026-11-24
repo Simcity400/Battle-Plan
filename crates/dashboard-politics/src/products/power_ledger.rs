@@ -1,5 +1,6 @@
 
 pub mod breakdown;
+pub mod markers;
 mod naming;
 #[cfg(test)]
 mod tests;
@@ -1095,12 +1096,17 @@ fn balance_at(runs: &[SpendBalanceRun], hour: i32) -> (Option<i128>, Option<Stri
     }
 }
 
-pub(super) fn continuity(from: i32, to: i32, held: &[Piece], recorded: impl Fn(i32, i32) -> i64) -> Option<String> {
-    let unheld = |first: i32, last: i32| first <= last && recorded(first, last) > 0;
+pub(super) const HOLDER_UNRESOLVED: &str = "The country's holder was not resolved during this span";
+
+pub(super) fn continuity(from: i32, to: i32, held: &[Piece], nobody: impl Fn(i32, i32) -> i64, unresolved: impl Fn(i32, i32) -> bool) -> Option<String> {
+    let unheld = |first: i32, last: i32| first <= last && nobody(first, last) > 0;
+    let unknown = |first: i32, last: i32| first <= last && unresolved(first, last);
     let Some((first, last)) = held.first().zip(held.last()) else {
-        let hours = if from <= to { recorded(from, to) } else { 0 };
+        let hours = if from <= to { nobody(from, to) } else { 0 };
         return Some(
-            if hours == i64::from(to) - i64::from(from) + 1 {
+            if unknown(from, to) {
+                HOLDER_UNRESOLVED
+            } else if hours == i64::from(to) - i64::from(from) + 1 {
                 "Country was not held during this span"
             } else if hours > 0 {
                 "Country was not held for the entire span"
@@ -1110,8 +1116,15 @@ pub(super) fn continuity(from: i32, to: i32, held: &[Piece], recorded: impl Fn(i
             .to_owned(),
         );
     };
-    if unheld(from, first.first.saturating_sub(1)) || unheld(last.last.saturating_add(1), to) || held.windows(2).any(|pair| unheld(pair[0].last.saturating_add(1), pair[1].first.saturating_sub(1))) {
+    let gaps = || {
+        [(from, first.first.saturating_sub(1)), (last.last.saturating_add(1), to)]
+            .into_iter()
+            .chain(held.windows(2).map(|pair| (pair[0].last.saturating_add(1), pair[1].first.saturating_sub(1))))
+    };
+    if gaps().any(|(a, b)| unheld(a, b)) {
         Some("Country was not held for the entire span".to_owned())
+    } else if gaps().any(|(a, b)| unknown(a, b)) {
+        Some(HOLDER_UNRESOLVED.to_owned())
     } else if first.first > from || last.last < to || held.windows(2).any(|pair| pair[0].run != pair[1].run || pair[1].baseline != pair[1].first.checked_sub(1)) {
         Some("Continuity broke across a load or recording gap during this span".to_owned())
     } else if held.len() > 1 {
@@ -1121,9 +1134,9 @@ pub(super) fn continuity(from: i32, to: i32, held: &[Piece], recorded: impl Fn(i
     }
 }
 
-fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpendingReply, allocations: &AllocationTotals, recorded: impl Fn(i32, i32) -> i64) -> SpendReconciliation {
+fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpendingReply, allocations: &AllocationTotals, nobody: impl Fn(i32, i32) -> i64, unresolved: impl Fn(i32, i32) -> bool) -> SpendReconciliation {
     let (from, to) = (params.from, params.to);
-    let continuity_reason = continuity(from, to, held, recorded);
+    let continuity_reason = continuity(from, to, held, nobody, unresolved);
 
     let spend_coverage_reason = full_coverage_reason(&reply.coverage, from, to, "Spending coverage was not recorded");
     let gain_coverage_reason = full_coverage_reason(&reply.gain_coverage, from, to, "Power changes were not recorded");
@@ -1268,21 +1281,21 @@ struct Items {
     asked: Vec<(u32, PowerItemRow)>,
     index: HashMap<(u32, u32, u32), u32>,
     unrecorded: Vec<UnrecordedItem>,
-    unrecorded_index: HashMap<(u32, u32, u32), u32>,
+    unrecorded_index: HashMap<(u32, u32, u32, String), u32>,
 }
 
 impl Items {
-    fn read(&mut self, query: &Query<'_>, piece: &Piece, asks: &BTreeMap<u32, (i32, bool)>) -> io::Result<HashMap<u32, (u32, bool)>> {
+    fn read(&mut self, query: &Query<'_>, piece: &Piece, asks: &BTreeMap<(u32, i32), bool>) -> io::Result<HashMap<(u32, i32), (u32, bool)>> {
         let mut by_hour: BTreeMap<i32, Vec<u32>> = BTreeMap::new();
-        for (&ordinal, &(read, _)) in asks {
+        for &(ordinal, read) in asks.keys() {
             by_hour.entry(read).or_default().push(ordinal);
         }
         let mut out = HashMap::with_capacity(asks.len());
         for (hour, ordinals) in by_hour {
             let frame = items_at(query, piece.slot, &ordinals, hour)?;
             for ordinal in ordinals {
-                let recurring = asks[&ordinal].1;
-                out.insert(ordinal, self.at(&frame, piece.run, piece.slot, ordinal, hour, recurring));
+                let recurring = asks[&(ordinal, hour)];
+                out.insert((ordinal, hour), self.at(&frame, piece.run, piece.slot, ordinal, hour, recurring));
             }
         }
         Ok(out)
@@ -1303,7 +1316,7 @@ impl Items {
             coverage::Witness::NotRecorded(reason) => reason,
         };
         let unrecorded = &mut self.unrecorded;
-        let at = *self.unrecorded_index.entry((run, slot, ordinal)).or_insert_with(|| {
+        let at = *self.unrecorded_index.entry((run, slot, ordinal, reason.clone())).or_insert_with(|| {
             unrecorded.push(UnrecordedItem { slot, ordinal, read, recurring, reason });
             (unrecorded.len() - 1) as u32
         });
@@ -1366,7 +1379,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     let mut unmatched = 0_u64;
     let has_day_log = query.replay.recording().predates(TableId::PowerSpendDays.index()).is_none();
     let held = pieces(query, &params.country, params.from, params.to)?;
-    reply.tag = query.holders.tag_at(&params.country, params.to.min(query.timeline.last)).map_or_else(|| params.country.key().into_owned(), str::to_owned);
+    reply.tag = query.holders.tag_at(&params.country, params.to).map_or_else(|| params.country.key().into_owned(), str::to_owned);
     for piece in &held {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let coverage_start = reply.coverage.len();
@@ -1375,12 +1388,9 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         instant_gains(query, piece, currency, &mut reply.gain_coverage, &mut gain_buckets, &mut allocations)?;
         let low = u128::from(piece.slot) << 40 | u128::from(currency.code()) << 32;
         let (payments_from, days_from) = (reply.payments.len(), reply.days.len());
-        let mut asks: BTreeMap<u32, (i32, bool)> = BTreeMap::new();
+        let mut asks: BTreeMap<(u32, i32), bool> = BTreeMap::new();
         let mut ask = |ordinal: u32, hour: i32, recurring: bool| {
-            let held = asks.entry(ordinal).or_insert((hour, recurring));
-            if hour < held.0 {
-                *held = (hour, recurring);
-            }
+            asks.entry((ordinal, hour)).or_insert(recurring);
         };
         changes(query, piece, low, low | u128::from(u32::MAX), &mut |change| {
             if change.ordinal == PowerSpendTotalRow::GAINS {
@@ -1412,10 +1422,10 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         let resolved = items.read(query, piece, &asks)?;
         let missing = resolved.values().filter(|(_, known)| !known).count();
         for payment in &mut reply.payments[payments_from..] {
-            payment.item = resolved[&payment.item].0;
+            payment.item = resolved[&(payment.item, payment.read)].0;
         }
         for day in &mut reply.days[days_from..] {
-            day.item = resolved[&day.item].0;
+            day.item = resolved[&(day.item, day.read)].0;
             if day.credits > 0 {
                 *credits.entry(day.item).or_default() += day.credits;
             }
@@ -1445,7 +1455,26 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
             unmatched: bucket.unmatched,
         })
         .collect();
-    reply.reconciliation = reconcile(params, &held, &reply, &allocations, |first, last| query.timeline.within(first, last).map(|stretch| i64::from(stretch.last) - i64::from(stretch.first) + 1).sum());
+    let runs: Vec<&dashboard_query::identity::HolderRun> = match &params.country {
+        Country::Slot(_) => query.holders.tags.values().flatten().collect(),
+        Country::Tag(_) => query.holders.runs(&params.country).iter().collect(),
+    };
+    let mut unknown: Vec<(i32, i32)> = runs.into_iter().filter(|run| run.holder == dashboard_query::identity::Holder::Unresolved).map(|run| (run.first, run.last)).collect();
+    unknown.sort_unstable();
+    unknown.dedup_by(|next, held| {
+        let joined = next.0 <= held.1.saturating_add(1);
+        if joined {
+            held.1 = held.1.max(next.1);
+        }
+        joined
+    });
+    let overlap = |first: i32, last: i32, spans: &mut dyn Iterator<Item = (i32, i32)>| -> i64 {
+        spans.map(|(a, b)| i64::from(b.min(last)) - i64::from(a.max(first)) + 1).filter(|&hours| hours > 0).sum()
+    };
+    let recorded = |first: i32, last: i32| overlap(first, last, &mut query.timeline.within(first, last).map(|stretch| (stretch.first, stretch.last)));
+    let unresolved = |first: i32, last: i32| overlap(first, last, &mut unknown.iter().copied()) > 0;
+    let nobody = |first: i32, last: i32| recorded(first, last) - overlap(first, last, &mut unknown.iter().copied());
+    reply.reconciliation = reconcile(params, &held, &reply, &allocations, nobody, unresolved);
     let asked = &items.asked;
     let rows: Vec<naming::Asked<'_>> = asked.iter().map(|(run, row)| naming::Asked { run: *run, row }).collect();
     let mut icons = BTreeMap::new();

@@ -1,7 +1,7 @@
 
 type LedgerPoint = MilitaryAirPart['points'][number];
 import { countryFromKey, isSlotKey } from './countryKey.ts';
-import { airCauseName } from '../widgets/air-kills-losses/lossCauses.ts';
+import { causeLabel } from '../widgets/bombing-damage/militaryAirAt.ts';
 import { clipToSpans, isOrderedSpans, runAt } from '../charts/series.ts';
 import type { Run, Span } from '../charts/series';
 import { formatAmount, formatFixed, formatRate } from '../charts/valueAxis.ts';
@@ -15,7 +15,7 @@ import type { LabelAt } from '../charts/race/lines';
 import type { TooltipContent } from '../charts/tooltip';
 import type { SunburstText } from '../charts/sunburst/layout';
 
-export type MilitaryAirLedger = Omit<MilitaryAirReply, 'window' | 'notes' | 'countedFrom' | 'openings' | 'unjoined'>
+export type MilitaryAirLedger = Omit<MilitaryAirReply, 'window' | 'notes' | 'countedFrom' | 'openings' | 'unjoined' | 'causes'> & Partial<Pick<MilitaryAirReply, 'causes'>>
   & { countedFrom?: number | null; openings?: MilitaryAirOpening[] };
 
 const signed128 = (value: bigint) => value >= -(1n << 127n) && value < (1n << 127n);
@@ -277,7 +277,7 @@ export function ledgerPinnedIdentity(value: unknown, campaign: string, branch: s
 }
 
 export function ledgerCountries(rows: readonly LedgerRow[], selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
-  hour: number, lastHour: number, metric: 'dealt' | 'taken' | 'total' = 'total', countries: readonly MilitaryAirCountry[] = []): { rows: LedgerRow[]; reason: string | null } {
+  hour: number, metric: 'dealt' | 'taken' | 'total' = 'total', countries: readonly MilitaryAirCountry[] = []): { rows: LedgerRow[]; reason: string | null } {
   const ranked = [...rows].sort((a, b) => {
     const av = metric === 'total' ? a.dealt + a.taken : a[metric], bv = metric === 'total' ? b.dealt + b.taken : b[metric];
     return av === bv ? compareTags(a.tag, b.tag) : av > bv ? -1 : 1;
@@ -290,7 +290,7 @@ export function ledgerCountries(rows: readonly LedgerRow[], selection: CountrySe
     return { rows: ranked.filter(row => identities.has(row.identity)),
       reason: identities.size ? null : 'Selected countries are unavailable in this campaign.' };
   }
-  const filter = worldFilter(selection, fallback, groups, hour, lastHour);
+  const filter = worldFilter(selection, fallback, groups, hour);
   return { rows: ranked.filter(row => filter.tags === null || filter.tags.has(row.tag)), reason: filter.reason };
 }
 
@@ -348,7 +348,7 @@ export function airLossParts(row: LedgerRow, from: number, hour: number) {
   return { causes, operational, unknownOpponent };
 }
 
-export function militaryAirTooltip(row: LedgerRow, from: number, family: MilitaryAirLedger['family'], name: string): TooltipContent {
+export function militaryAirTooltip(row: LedgerRow, from: number, family: MilitaryAirLedger['family'], name: string, reply?: Pick<MilitaryAirLedger, 'causes'>): TooltipContent {
   const air = family === 'airLosses', parts = air ? airLossParts(row, from, row.readHour) : null;
   return { title: name,
     rows: [{ label: air ? 'Own losses' : 'Damage suffered', value: ledgerFormat(row.taken, family) },
@@ -356,7 +356,7 @@ export function militaryAirTooltip(row: LedgerRow, from: number, family: Militar
       { label: 'Ratio', value: !row.complete ? 'Not available' : row.taken === 0n ? '— (zero losses)' : formatRatio(row.dealt, row.taken) },
       ...(parts ? [{ label: 'Operational losses (accidents)', value: ledgerFormat(parts.operational, family) },
         { label: 'Other losses with unknown opponent', value: ledgerFormat(parts.unknownOpponent, family) },
-        ...[...parts.causes].sort(([a], [b]) => a - b).map(([cause, value]) => ({ label: airCauseName(cause),
+        ...[...parts.causes].sort(([a], [b]) => a - b).map(([cause, value]) => ({ label: ledgerCauseName(reply, cause),
           value: ledgerFormat(value.taken, family) + ' lost · ' + ledgerFormat(value.dealt, family) + ' credited' }))] : []),
     ],
     note: [!row.complete ? air ? LEDGER_GAP_NOTE : BOMBING_GAP_NOTE : '', air ? AIR_LEDGER_NOTE : 'Building levels.'].filter(Boolean).join(' ') };
@@ -367,7 +367,7 @@ export function militaryAirLineTooltip(index: LedgerIndex, from: number, hour: n
   const chosen = new Set(tags), label = labelAt(hour);
   const rows = militaryAirAt(index, from, hour).filter(row => chosen.has(row.tag));
   return { title: formatDateTime(hour), subtitle: 'Aircraft losses', rows: rows.length ? rows.flatMap((row, i) => {
-    const named = label(row.tag), detail = militaryAirTooltip(row, from, index.reply.family, named.name);
+    const named = label(row.tag), detail = militaryAirTooltip(row, from, index.reply.family, named.name, index.reply);
     return [{ label: named.name, icon: named.flag, countryFlag: named, swatch: colour(row.tag), strong: true, divider: i > 0 },
       ...detail.rows.map(part => ({ ...part, indent: true }))];
   }) : [{ label: 'Not recorded', tone: 'muted' }],
@@ -385,4 +385,9 @@ function formatRatio(right: bigint, left: bigint): string {
   const hundredths = (numerator * 200n + denominator) / (denominator * 2n);
   const sign = (right < 0n) !== (left < 0n) && hundredths !== 0n ? '-' : '';
   return `${sign}${hundredths / 100n}.${String(hundredths % 100n).padStart(2, '0')} : 1`;
+}
+
+export function ledgerCauseName(reply: Pick<MilitaryAirLedger, 'causes'> | undefined, cause: number): string {
+  const named = reply?.causes?.find(item => item.cause === cause);
+  return named ? causeLabel(named) : `Cause ${cause}`;
 }

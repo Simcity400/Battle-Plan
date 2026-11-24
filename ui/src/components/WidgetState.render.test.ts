@@ -39,6 +39,8 @@ test('technical errors stay generic with Retry and Details, named refusals are n
     const withheld = render({ kind: 'unavailable', message: '2 leaders can’t be shown.', detail: 'Commander: Template missing\nLeader 2: Owner missing' });
     assert.match(withheld, /2 leaders can’t be shown\./);
     assert.match(withheld, /<small class="widget-state-detail">Commander: Template missing\nLeader 2: Owner missing<\/small>/);
+    const unread = render({ kind: 'unavailable', message: 'Some countries’ minefields were not read at this hour.', action: createElement('button', null, 'Add region') });
+    assert.match(unread, /<button>Add region<\/button>/, 'a region chart that is empty because it was read in part keeps Add region');
     assert.doesNotMatch(withheld, /is-error|role="alert"/);
 
     const refused = render({ kind: 'error', failure: queryFailure({ kind: 'refused', text: 'Land owners are not prepared natively yet' }), onRetry: () => {} });
@@ -153,7 +155,7 @@ test('technical errors stay generic with Retry and Details, named refusals are n
     assert.equal(valueStateText({ kind: 'zero', unit: 'divisions' }), '0 divisions');
     assert.equal(valueStateText({ kind: 'missing', reason: 'Gap' }), 'Not recorded: Gap');
     assert.equal(valueStateText({ kind: 'notApplicable', reason: 'No navy' }), 'Not applicable: No navy');
-    assert.equal(valueStateText({ kind: 'partial', text: '12', reason: '2 countries missing', atLeast: true }), '12, partial: 2 countries missing');
+    assert.equal(valueStateText({ kind: 'partial', text: '12', reason: '2 countries missing' }), '12, partial: 2 countries missing');
     assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'missing', reason: 'Gap', narrow: true })), /data-value-state="missing"/);
     assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'missing', reason: 'Gap', narrow: true })), /is-compact/);
     assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'partial', text: '12', reason: '2 countries missing' })), /data-value-state="partial"/);

@@ -578,10 +578,13 @@ test('Class N: a hundred hours at 24 hours a frame cost what the answers changed
 
 type Proven = { readonly lo: number; readonly hi: number; readonly tag: string };
 
-function pairRig() {
+function pairRig(faults: { readonly paint?: (tag: string) => boolean; readonly install?: () => void } = {}) {
+  let paints = 0;
   const drawn: LaneView = {
     paint: input => {
       const main = (input.model as { staticPanels?: { main?: Proven } }).staticPanels?.main;
+      paints++;
+      if (main && faults.paint?.(main.tag)) throw new Error(`a fault painting ${main.tag}`);
       return { surfaces: input.binding.surfaces.map(() => ({ source: { width: 1, height: 1 }, content: main?.tag ?? 'none' })), fields: { main: { value: main ?? null, content: main?.tag ?? 'none' } }, motion: false };
     },
   };
@@ -589,7 +592,7 @@ function pairRig() {
   lane.clock.setPlaying(false);
   const id = lane.pipeline.acquire('widget|0', { offset: 0, pin: null, owner: 'X' });
   lane.pipeline.present(id, 'drawn');
-  lane.pipeline.bind(id, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }] }, {}, { family: 'test', kind: 'test', options: {} });
+  lane.pipeline.bind(id, [faults.install ? { install: faults.install, clear() {} } : surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }] }, {}, { family: 'test', kind: 'test', options: {} });
   const sent = new StaticSupply(change => lane.pipeline.supply(id, change));
   const sources = (bundle: { readonly panels: ReadonlyMap<string, unknown>; readonly proof: readonly [number, number] | null; readonly hour: number }): FamilyStaticSources =>
     ({ stamp: bundle, proof: bundle.proof, panels: Object.fromEntries(bundle.panels), hour: bundle.hour, follows: true });
@@ -610,7 +613,8 @@ function pairRig() {
     const view = lane.pipeline.view(id);
     return view && view.mode === 'picture' && !view.dim ? (view.fields?.main as Proven | null)?.tag ?? null : null;
   };
-  return { lane, id, sent, sources, dated, wake, outsideOwnStamp, current, close: () => lane.close() };
+  const failed = () => lane.pipeline.view(id)?.mode === 'failed';
+  return { lane, id, sent, sources, dated, wake, outsideOwnStamp, current, failed, paints: () => paints, close: () => lane.close() };
 }
 
 function proven(tag: string, lo: number, hi: number) {
@@ -742,6 +746,46 @@ test('class PAIR, re-pin at the target: a configure for new inputs never holds t
   target.dispose();
 });
 
+test('R5-S2, R5-S5: a widget whose paint or installation failed recovers on its newer bundle, whichever reaches the main thread first; the same bundle failing again stays failed', async () => {
+  for (const where of ['paint', 'install'] as const) {
+    for (const order of ['failure first', 'bundle first'] as const) {
+      let installFaults = 0;
+      const rig = pairRig(where === 'paint'
+        ? { paint: tag => tag === 'A' }
+        : { install: () => { if (installFaults > 0) { installFaults--; throw new Error('an installation fault'); } } });
+      try {
+        if (order === 'bundle first') rig.lane.holdBack(message => message.type === (where === 'paint' ? 'widget-failed' : 'presentation'));
+        if (where === 'install') installFaults = 1;
+        const a = rig.sources(proven('A', 100, 200));
+        rig.sent.statics(a, rig.dated(a, null));
+        await rig.wake(100);
+        if (order === 'failure first') assert.equal(rig.failed(), true, `${where}, ${order}: A failed before B is supplied`);
+        const b = rig.sources(proven('B', 100, 200));
+        rig.sent.statics(b, rig.dated(b, null));
+        await rig.wake(100);
+        rig.lane.release();
+        await rig.wake(100);
+        assert.ok(await rig.lane.settle(() => rig.current() === 'B'), `${where}, ${order}: paused on B, the widget draws B (${rig.lane.pipeline.view(rig.id)?.mode})`);
+      } finally { rig.close(); }
+    }
+  }
+  const rig = pairRig({ paint: () => true });
+  try {
+    rig.lane.holdBack(message => message.type === 'widget-failed');
+    const a = rig.sources(proven('A', 100, 200));
+    rig.sent.statics(a, rig.dated(a, null));
+    await rig.wake(100);
+    const b = rig.sources(proven('B', 100, 200));
+    rig.sent.statics(b, rig.dated(b, null));
+    await rig.wake(100);
+    rig.lane.release();
+    await rig.wake(100);
+    await rig.lane.settle(() => false, 20);
+    assert.equal(rig.failed(), true, 'B failing too keeps the failure');
+    assert.ok(rig.paints() <= 2, `B is retried once, not in a loop (${rig.paints()} paints)`);
+  } finally { rig.close(); }
+});
+
 test('sweep-2 P0: a seek back never hands the worker a panel dated after the hour it draws, and a widget that failed recovers on its next bundle', async () => {
   let throwOnce = false;
   const bounded: LaneView = {
@@ -808,4 +852,63 @@ test('sweep-2 P0: a seek back never hands the worker a panel dated after the hou
     target.dispose();
     lane.close();
   }
+});
+
+test('a failed sibling never lets the clock re-ask a unit still pending: requests stay bounded by replies (R4-S5)', async () => {
+  const tile = range('tile', 0, 50);
+  const now = aggregate('now');
+  const time = fakeClock(100);
+  const server = fakeServer();
+  const target = new ReadTarget(time.clock, server.load);
+  target.configure(followConfig([tile, now]));
+  assert.deepEqual(server.calls.map(call => call.unit.name).sort(), ['now', 'tile']);
+  server.refuse('tile');
+  await settled();
+  assert.equal(target.view().failure?.name, 'tile');
+  for (let hour = 101; hour <= 110; hour++) {
+    time.advance(hour);
+    await settled();
+  }
+  assert.equal(server.calls.length, 2, 'ten advancing frames while `now` is unanswered ask nothing more');
+  assert.equal(server.pending.filter(call => call.unit.name === 'now').length, 1, 'and the pending read is not cancelled');
+  server.answer('now', {});
+  await settled();
+  assert.ok(server.calls.length <= 3, `once it answers, at most one new ask for the clock's hour (${server.calls.length})`);
+  time.seekTo(200);
+  await settled();
+  assert.ok(server.calls.some(call => call.unit.name === 'tile' && server.calls.indexOf(call) > 1), 'an explicit seek still asks the failed read again');
+  target.dispose();
+});
+
+test('a pinned unit uses its own branch and coverage gate, so a point at +24 on a longer track is asked there (R4-S7)', () => {
+  const longer = { ...source, id: 'other', branches: [{ id: '2', firstHour: 0, lastHour: 1000 }] } as unknown as DashboardSource;
+  const shifted: SourceEntry = { name: 'shifted', source: longer, branch: '2', offset: 24, read: point('shifted').read };
+  const plain = point('plain');
+  const endsAt = (last: number): FrozenGate => ({ ...gate, recorded: (hour: number | null | undefined) => (typeof hour === 'number' && hour <= last ? hour : null) as never });
+  const short = { branch: { firstHour: 0, lastHour: 100 }, gate: endsAt(100) };
+  const long = { branch: { firstHour: 0, lastHour: 1000 }, gate: endsAt(1000) };
+  const units = askUnits([shifted, plain], {
+    following: false,
+    trackOffset: 0,
+    content: 0,
+    displayHour: 90,
+    pinned: { timeMode: 'pin', branch: short.branch, window: { firstHour: 90, lastHour: 90 }, pinHour: 90, gate: short.gate },
+    track: entry => (entry.branch === '2' ? long : short),
+  });
+  assert.equal(unit(units, 'shifted').anchor, 114, 'the secondary is pinned at its own 114, recorded on its own track');
+  assert.ok(unit(units, 'shifted').spec, 'and is asked, not gated away by the primary track ending at 100');
+  assert.equal(unit(units, 'plain').anchor, 90);
+
+  const aligned: SourceEntry = { ...shifted, name: 'aligned', offset: 0 };
+  const gapAt90 = { branch: long.branch, gate: { ...gate, recorded: (hour: number | null | undefined) => (typeof hour === 'number' && hour !== 90 ? hour : null) as never } };
+  const zero = askUnits([plain, aligned], {
+    following: false,
+    trackOffset: 0,
+    content: 0,
+    displayHour: 90,
+    pinned: { timeMode: 'pin', branch: short.branch, window: { firstHour: 90, lastHour: 90 }, pinHour: 90, gate: short.gate },
+    track: entry => (entry.branch === '2' ? gapAt90 : short),
+  });
+  assert.ok(unit(zero, 'plain').spec, 'the primary is recorded at 90 and asked');
+  assert.equal(unit(zero, 'aligned').spec, null, 'R5-S3: at zero shift the secondary is gated on its own track, which did not record 90');
 });

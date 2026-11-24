@@ -31,12 +31,9 @@ const BASE_OPTS: NavySizeRaceOptions = {
   ownership: 'roster',
   grouping: 'class',
   split: true,
-  candidates: [],
-  holders: null,
-  membership: null,
-  unobserved: [],
   top: 10,
   all: false,
+  group: false,
 };
 
 test('navy-size race scales fixed-5 hull HP, splits by ship class, and includes maximum hull HP in tooltip', () => {
@@ -46,8 +43,8 @@ test('navy-size race scales fixed-5 hull HP, splits by ship class, and includes 
       { key: 'class:destroyer', name: 'Destroyer', unresolved: false },
     ],
     rows: [
-      { country: 'ENG', tag: 'ENG', total: 50_000_000, referenceTotal: 60_000_000, missing: null, values: [30_000_000, 20_000_000], partsMissing: null },
-      { country: 'JAP', tag: 'JAP', total: null, referenceTotal: null, missing: 'Not recorded', values: [null, null], partsMissing: null },
+      { country: 'ENG', slot: null, tag: 'ENG', total: 50_000_000, referenceTotal: 60_000_000, missing: null, values: [30_000_000, 20_000_000], partsMissing: null },
+      { country: 'JAP', slot: null, tag: 'JAP', total: null, referenceTotal: null, missing: 'Not recorded', values: [null, null], partsMissing: null },
     ],
     missing: null,
     warnings: [],
@@ -100,7 +97,6 @@ test('navy-size race under default Top handles unpopulated panel and preserves e
     measure: 'ships',
     split: false,
     top: null,
-    candidates: ['ENG', 'JAP'],
   });
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(rows.map(r => [r.key, r.value?.value.kind]), [['ENG', 'known'], ['JAP', 'notRecorded']]);

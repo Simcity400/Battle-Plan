@@ -23,6 +23,7 @@ use std::{
 };
 use ts_rs::TS;
 
+pub mod occurrence;
 #[cfg(test)]
 mod tests;
 

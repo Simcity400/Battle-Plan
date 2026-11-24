@@ -9,7 +9,7 @@ const state = (tag: string, valueRaw: string | null, missing: string | null = nu
   run: valueRaw === null ? null : { firstHour: 40, lastHour: 60, valueRaw, slot: 1, countryId: 1, startsSegment: false, segmentFirstHour: 0, firstExact: true, lastExact: true } });
 
 const rank = (states: readonly SeriesState[], decimals: number, from = 50, until = 50, refused: string | null = null): SeriesRankReply => ({
-  branchId: '1', hour: 50, from, until, refused, measures: [{ name: 'free7', decimals }], rows: states.map(held => ({ country: held.country, readings: [held] })),
+  branchId: '1', hour: 50, from, until, refused, measures: [{ name: 'free7', decimals }], rows: states.map(held => ({ country: held.country, slot: null, readings: [held] })),
 });
 
 test('a race at an hour keeps the product order, drawing only rows holding a value, never a missing one as zero', () => {

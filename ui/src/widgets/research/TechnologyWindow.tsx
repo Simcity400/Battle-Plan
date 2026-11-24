@@ -7,7 +7,7 @@ import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
-import type { WidgetSpec } from '../../dashboard/model';
+import type { WidgetBase } from '../../dashboard/model';
 import EntityStatsWindow from './EntityStatsWindow';
 import { GameArtFor, GameBlocks, type EntityLink } from './GameText';
 import { technologyEffectsStructure, validateTechnologyEffects } from './technologyEffects';
@@ -15,7 +15,7 @@ import { useTechnologyArtwork } from './useTechnologyArtwork';
 import '../../components/Dossier.css';
 import './gameText.css';
 
-interface Shown { runtime: WidgetRuntime; widget: WidgetSpec; tag: string; active: boolean }
+interface Shown { runtime: WidgetRuntime; widget: WidgetBase; tag: string; active: boolean }
 
 export function LinkWindow({ link, onClose, ...shown }: Shown & { link: EntityLink; onClose: () => void }) {
   return link.kind === 'technology'

@@ -1,7 +1,6 @@
 import { LABEL_WEIGHT } from '../../charts/draw.ts';
 import { textWidth } from '../../charts/textWidth.ts';
-import type { LaneView } from '../../draw/lane.ts';
-import { createLaneView, type LaneBinding, type LaneFamily, type LaneFrame, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneBinding, LaneFamily, LaneFrame } from '../laneRuntime.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
 import { barsAuditWindow, barsScrollHeight, layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
 import { assertBarsModelValid, deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip, type BarsModel } from './model.ts';
@@ -27,14 +26,14 @@ interface Glide {
 }
 
 const STILL: Glide = { duration: 0, offsets: new Map(), moving: false };
-const glides = new WeakMap<BarsLayout, { readonly before: unknown; readonly offsets: ReadonlyMap<string, BarsGlideOffset> }>();
+const glides = new WeakMap<BarsLayout, { readonly continuity: number; readonly offsets: ReadonlyMap<string, BarsGlideOffset> }>();
 
 function glideOf(frame: BarsFrame): Glide {
   const { model, layout, before, binding } = frame;
   const duration = model.animateOrder ? glideDurationForSpeed(frame.speed, binding.reducedMotion) : 0;
   if (duration === 0 || !before || before.hour === frame.hour || frame.now - frame.changedAt >= duration) return { ...STILL, duration };
   let held = glides.get(layout);
-  if (!held || held.before !== before) {
+  if (!held || held.continuity !== frame.continuity) {
     const prior = new Map<string, number>();
     for (let i = 0; i < before.model.rows.length; i++) prior.set(before.model.rows[i]!.key, before.layout.bodyTop + before.layout.rowTops[i]! - before.binding.scrollTop);
     const offsets = new Map<string, BarsGlideOffset>();
@@ -44,7 +43,7 @@ function glideOf(frame: BarsFrame): Glide {
       const nextY = layout.bodyTop + layout.rowTops[i]! - binding.scrollTop;
       if (fromY !== undefined && Math.abs(fromY - nextY) > 1 && Math.abs(fromY - nextY) <= layout.bodyHeight) offsets.set(key, { fromY, startedAt: frame.changedAt });
     }
-    glides.set(layout, held = { before, offsets });
+    glides.set(layout, held = { continuity: frame.continuity, offsets });
   }
   return { duration, offsets: held.offsets, moving: held.offsets.size > 0 };
 }
@@ -56,7 +55,7 @@ function inspected(inspect: string | null): { readonly key: string; readonly sid
   return null;
 }
 
-const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
+export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
   family: 'bars',
   boundary(model, hour) {
     assertBarsModelValid(model, hour);
@@ -150,10 +149,6 @@ const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
     const shown = visibleBarsRange(frame.layout, frame.binding.scrollTop);
     return deriveBarsMirror(frame.model, { first: shown.first, count: Math.max(0, shown.last - shown.first) }, frame.binding.focusedKey);
   },
-  audit: frame => [...(frame.model.pickList ? pickAudit(frame.model.pickList) : []), ...deriveBarsAudit(frame.model, { window: barsAuditWindow(frame.layout, frame.binding.scrollTop) })],
+  audit: frame => [...(frame.model.pickList && frame.layout.pickWidth > 0 ? pickAudit(frame.model.pickList) : []), ...deriveBarsAudit(frame.model, { window: barsAuditWindow(frame.layout, frame.binding.scrollTop) })],
   visibleArt: frame => collectVisibleBarsIcons(frame.model, frame.layout, frame.binding.scrollTop),
 };
-
-export function familyBarsLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(barsLane, wake, options);
-}

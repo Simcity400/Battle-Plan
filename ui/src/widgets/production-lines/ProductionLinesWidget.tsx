@@ -3,54 +3,43 @@ import { Select } from '../../components/Select';
 import WidgetState from '../../components/WidgetState';
 import { formatFixed } from '../../charts/valueAxis.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
-import { SPEC, type GatedHour } from '../../dashboard/regionTime';
-import { productRequest } from '../../dashboard/request.ts';
+import { SPEC } from '../../dashboard/regionTime';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
 import { FamilyWidget } from '../../families/host/registry';
+import { rowRequest, rowScope, rowSource, selectionTrack, useOpenedRow, type RowSource } from '../../families/table/rowSelection.ts';
 import type { InstalledAction } from '../../families/plan.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { ProductionLineBreakdownReply } from '../../generated/dashboard';
-import { breakdownAt, validateBreakdownReply } from './productionData.ts';
-import { productionLinesDeclaration, type ProductionLineMeta } from './productionLinesProjection.ts';
+import { validateBreakdownReply } from './productionData.ts';
+import type { ProductionLineMeta } from './productionLinesProjection.ts';
 import './productionLines.css';
 import '../../families/table/gameWindowTable.css';
 
-interface Opened {
-  readonly handle: string;
-  readonly country: string;
-  readonly name: string;
-  readonly hour: GatedHour;
-}
+type LineSelection = RowSource & Omit<ProductionLineMeta, 'country'> & { readonly country: string };
 
-function LineBreakdown({ runtime, trackId, opened, group, onGroup, active }: {
-  readonly runtime: WidgetProps['runtime'];
-  readonly trackId: string | undefined;
-  readonly opened: Opened;
+function LineBreakdown({ runtime, selection, group, onGroup, active }: {
+  readonly runtime: FamilyViewProps['runtime'];
+  readonly selection: LineSelection;
   readonly group: string;
   readonly onGroup: (group: string) => void;
   readonly active: boolean;
 }) {
-  const track = runtime.tracks.find(item => item.id === trackId);
-  const request = track ? productRequest({
-    sourceId: track.source.id,
-    revision: track.source.revision,
-    product: 'production-line-breakdown',
-    params: { branchId: track.branch.id, country: countryFromKey(opened.country), handle: opened.handle, group, hour: opened.hour },
-  }) : null;
+  const track = selectionTrack(runtime.tracks, selection);
+  const request = track ? rowRequest(selection, 'production-line-breakdown', { country: countryFromKey(selection.country), handle: selection.handle, group }) : null;
   const { data, error, retry } = useProduct<ProductionLineBreakdownReply>(runtime.client, request, active, validateBreakdownReply, track?.source);
   if (!track) return null;
   if (error) return <WidgetState kind="error" what="the breakdown" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading breakdown…" />;
-  const shown = breakdownAt(data, opened.hour, group);
+  const shown = data.group;
   const amount = (raw: string, decimals: number, unit: string) => `${formatFixed(raw, decimals, decimals)} ${unit}`;
   return (
     <div className="production-breakdown">
       <Select label="Production factor" value={group} onChange={onGroup} options={data.groups.map(choice => ({ value: choice.id, label: choice.label }))} />
       {shown === null ? (
-        <WidgetState kind="unavailable" message="This line's production factors were not recorded at this date." />
+        <WidgetState kind="unavailable" message={data.missing ?? "This line's production factors were not recorded at this date."} />
       ) : (
         <>
           <p className="production-breakdown-total">
@@ -71,34 +60,36 @@ function LineBreakdown({ runtime, trackId, opened, group, onGroup, active }: {
   );
 }
 
-export default function ProductionLinesWidget(props: WidgetProps) {
+export default function ProductionLinesWidget(props: FamilyViewProps) {
   const { widget, runtime, active } = props;
   const anchor = useRef<HTMLDivElement>(null);
   const gate = useGate(runtime, widget, SPEC, active);
-  const [opened, setOpened] = useState<Opened | null>(null);
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const [opened, open, close] = useOpenedRow<LineSelection>(rowScope(track, widget));
   const [group, setGroup] = useState('efficiency');
 
   const onActivate = useCallback((action: InstalledAction) => {
     const meta = action.meta as ProductionLineMeta | undefined;
     const hour = gate.recorded(Math.floor(action.hour));
-    if (!meta || meta.country === null || hour === null) return;
+    if (!track || !meta || meta.country === null || hour === null) return;
     setGroup('efficiency');
-    setOpened({ handle: meta.handle, country: meta.country, name: meta.name, hour });
-  }, [gate]);
+    open(meta.handle, { ...rowSource(track, hour), handle: meta.handle, country: meta.country, name: meta.name });
+  }, [gate, track, open]);
 
+  const selection = opened?.selection ?? null;
   return (
     <div ref={anchor} className="game-window-table">
-      <FamilyWidget family="table" declaration={productionLinesDeclaration} {...props} selectedKey={opened?.handle ?? null} onActivate={onActivate} />
+      {props.manifestDeclaration ? <FamilyWidget family={props.manifestDeclaration.family} declaration={props.manifestDeclaration} {...props} selectedKey={opened?.key ?? null} onActivate={onActivate} /> : null}
       <DetailWindowHost
-        open={opened !== null}
-        subject={opened?.handle ?? null}
-        hour={opened?.hour ?? null}
-        title={opened ? `Breakdown · ${opened.name}` : 'Breakdown'}
-        day={opened ? formatDateOnly(opened.hour) : ''}
+        open={selection !== null}
+        subject={opened?.key ?? null}
+        hour={selection?.hour ?? null}
+        title={selection ? `Breakdown · ${selection.name}` : 'Breakdown'}
+        day={selection ? formatDateOnly(selection.hour) : ''}
         anchor={anchor}
-        onClose={() => setOpened(null)}
+        onClose={close}
       >
-        {opened ? <LineBreakdown runtime={runtime} trackId={widget.trackIds[0]} opened={opened} group={group} onGroup={setGroup} active={active} /> : null}
+        {selection ? <LineBreakdown runtime={runtime} selection={selection} group={group} onGroup={setGroup} active={active} /> : null}
       </DetailWindowHost>
     </div>
   );

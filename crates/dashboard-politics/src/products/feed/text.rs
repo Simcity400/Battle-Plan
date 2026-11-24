@@ -436,7 +436,11 @@ fn presentation(notices: &mut Notices, catalogue: &Catalogue, kind: EventFeedKin
                     item.name_missing = Some(reason);
                 }
             }
-            notices.unavailable("decisionPresentation", "Decision presentation", format!("Decision {token}: triggered artwork requires exact historical presentation inputs."), Some(1));
+            let icon = catalogue::draw(|| format!("decision {token} icon"), catalogue, |catalogue| decision_icon(catalogue, &token));
+            match icon.get() {
+                Ok(url) => item.icon = Some(url.clone()),
+                Err(reason) => notices.unavailable("decisionIcon", "Decision icon", format!("Decision {token}: {reason}"), Some(1)),
+            }
         }
         return effects(notices, catalogue, kind, item, inputs);
     }
@@ -587,6 +591,31 @@ fn decision_title(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<'_>, 
         Ok(name) => (name, None),
         Err(reason) => (elide_scripted(&name), Some(format!("decision title {key}: {reason}"))),
     })
+}
+
+fn decision_icon(catalogue: &Catalogue, token: &str) -> Result<String, String> {
+    let content = catalogue.scripted_content()?;
+    let effects = content.effects()?;
+    let decisions = effects.view(None).decisions.ok_or("decision database is unavailable from the recorded content stack")?;
+    let definition = decisions.decision(token.as_bytes())?.ok_or_else(|| format!("decision {token} is absent from recorded content"))?;
+    let selected: Result<Option<&str>, String> = match (&definition.icon_refusal, definition.icons.as_slice()) {
+        (Some(reason), _) => Err(reason.clone()),
+        (None, []) => Ok(None),
+        (None, [one]) => Ok(Some(one.text.as_str())),
+        (None, _) => Err("its icon is chosen by triggers whose historical inputs the recording does not hold".to_owned()),
+    };
+    let candidates = match &selected {
+        Ok(chosen) => definition.sprite_candidates(*chosen)?,
+        Err(_) => definition.sprite_candidates(None)?.into_iter().take(1).collect(),
+    };
+    for name in &candidates {
+        if let Some(sprite) = catalogue.sprites.find(name)? {
+            return artwork::resolve_sprite_type(catalogue, sprite, 0, artwork::ICON_EDGE)
+                .into_result()?
+                .ok_or_else(|| format!("its sprite {name} is unavailable in the installation"));
+        }
+    }
+    Err(selected.err().unwrap_or_else(|| format!("no sprite of {} is declared in the installation", candidates.join(", "))))
 }
 
 fn decision_title_text(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<'_>, key: &str) -> Result<String, String> {

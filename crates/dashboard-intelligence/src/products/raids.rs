@@ -1,7 +1,8 @@
 use dashboard_base::products::Country;
 use dashboard_base::{Source, products::{LoadContext, Product}, queries::country_ids::Names};
 use dashboard_base::catalogue::{self, CachedResult, Catalogue, View};
-use dashboard_query::{Query, read, series::MissingSpan};
+use dashboard_query::{Query, identity::{Holder, Holders}, read, series::{MissingSpan, ranked::GroupSelection}};
+use dashboard_world::products::group_members::GroupsAt;
 use engine_native_air::craid_instance as native;
 use content_reader_raids::raids::Catalog;
 use replay_lanes::lanes::{self, Cell, Keys};
@@ -28,6 +29,8 @@ const TARGET_COLUMNS: [usize; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 const RAID_TYPE: usize = 9;
 const UNKNOWN_ICON: &str = "GFX_raid_type_icon_unknown";
 const TYPE_NOT_RECORDED: &str = "The raid's type is not recorded";
+const TARGET_NOT_RECORDED: &str = "The raid's target is not recorded in full";
+const RAIDERS_UNNAMED: &str = "Some raids' raiders are not named: their country holds no tag at the raid's hour.";
 const ENDED_VICTIMS: &str = "Some ended raids lacked a recorded completion-time country and fell back to the target controller or captor at their first ended read.";
 
 fn lane_value(cell: Option<Cell>) -> Option<Option<i64>> {
@@ -442,12 +445,16 @@ pub struct RaidEpisode {
     #[doc = " The raid type's token and its name in the reader's language."]
     pub raid_type: Option<String>,
     pub raid_type_name: Option<String>,
+    #[doc = " The hour the icon was settled (the type spelled, the target read and its building spelled); none, and no icon, before it."]
+    pub icon_hour: Option<i32>,
     #[doc = " The sprite key into the reply's artwork, or why there is none."]
     pub icon: Option<String>,
     pub icon_missing: Option<String>,
     #[doc = " The hour the target's place was first read; none, and no place, before it."]
     pub place_hour: Option<i32>,
     pub province: Option<u32>,
+    #[doc = " The hour the target's state was first read; none, and no state, before it."]
+    pub state_hour: Option<i32>,
     pub state: Option<u32>,
     #[doc = " Its last phase, and its last outcome read."]
     pub phase: Option<i32>,
@@ -467,6 +474,8 @@ pub struct RaidEpisode {
     pub succeeded_hour: Option<i32>,
     pub disappeared_hour: Option<i32>,
     pub disappeared_exact: bool,
+    #[doc = " With countries asked, the hour a read first named one of them; the raid is not among theirs before it."]
+    pub member_hour: Option<i32>,
 }
 
 struct Content {
@@ -610,14 +619,18 @@ struct Accumulated {
     preparation: Vec<RaidPreparationRun>,
     identity: Identity,
     type_hour: Option<i32>,
-    template: Option<Result<String, u32>>,
-    place: Option<(i32, Option<u32>, Option<u32>)>,
+    scope: Option<RaidScope>,
+    icon: Option<(i32, Option<String>)>,
+    place: Option<(i32, Option<u32>)>,
+    state: Option<(i32, Option<u32>)>,
     phase: Option<i32>,
     launched_hour: Option<(i32, usize)>,
     ends: Vec<End>,
     seen_again: Option<i32>,
     victims: Vec<RaidVictimAt>,
-    completion_seen: bool,
+    completion: Option<Option<u32>>,
+    completion_end: Option<i32>,
+    end_witnessed: bool,
 }
 
 fn episodes(
@@ -637,9 +650,13 @@ fn episodes(
     let mut complete_by_stretch: Vec<Vec<(i32, i32)>> = Vec::new();
     let mut complete_all: Vec<(i32, i32)> = Vec::new();
     let mut artwork = BTreeMap::new();
-    let mut undrawn: BTreeMap<String, u64> = BTreeMap::new();
+    let mut images: HashMap<String, String> = HashMap::new();
     let mut labels: HashMap<&'static str, Option<String>> = HashMap::new();
-    let mut ended_victims = false;
+    let tag_when = |raw: u32, hour: i32| -> io::Result<Option<String>> {
+        let Some(held) = query.timeline.at(hour) else { return Ok(None) };
+        let links = dashboard_base::queries::links(source, held.run)?;
+        Ok(countries.tag_at(&links, raw, hour).map(str::to_owned))
+    };
     for (stretch_idx, stretch) in query.timeline.within(query.timeline.first, to).enumerate() {
         let run = stretch.run;
         let end = stretch.last.min(to);
@@ -722,14 +739,14 @@ fn episodes(
             let source = victim_tag.as_ref().and_then(|_| scope.map(|s| victim_source(s, is_ended)));
             RaidVictimAt { hour: at, tag: victim_tag, missing: victim_missing, source }
         };
-        let completion_victim = |at: i32, ended: i32, completion: Option<u32>| -> RaidVictimAt {
-            match completion {
-                Some(raw) => match tag(raw, ended) {
+        let completion_victim = |at: i32, ended: i32, completion: Option<u32>| -> io::Result<RaidVictimAt> {
+            Ok(match completion {
+                Some(raw) => match tag_when(raw, ended)? {
                     Some(t) => RaidVictimAt { hour: at, tag: Some(t), missing: None, source: Some(RaidVictimSource::CompletionCountry) },
                     None => RaidVictimAt { hour: at, tag: None, missing: Some("The completion-time victim country holds no tag at the raid's hour".to_owned()), source: None },
                 },
                 None => RaidVictimAt { hour: at, tag: None, missing: Some("The raid's target resolved to no country at completion".to_owned()), source: None },
-            }
+            })
         };
         let absent = |after: i32, before: i32| has_hour_in_range(&complete_all, after.saturating_add(1), before.saturating_sub(1));
         for &(key, raw_first, last) in &met {
@@ -775,14 +792,18 @@ fn episodes(
                         preparation: Vec::new(),
                         identity: Identity::default(),
                         type_hour: None,
-                        template: None,
+                        scope: None,
+                        icon: None,
                         place: None,
+                        state: None,
                         phase: None,
                         launched_hour: None,
                         ends: Vec::new(),
                         seen_again: None,
                         victims: Vec::new(),
-                        completion_seen: false,
+                        completion: None,
+                        completion_end: None,
+                        end_witnessed: false,
                     });
                     active.insert(key, accumulated.len() - 1);
                     accumulated.len() - 1
@@ -796,13 +817,23 @@ fn episodes(
                 if acc.type_hour.is_none() && acc.identity.kind.is_some() {
                     acc.type_hour = Some(piece.first);
                 }
-                if let Some(scope) = &scope {
+                if acc.scope.is_none() {
+                    acc.scope.clone_from(&scope);
+                }
+                if let Some(known) = &acc.scope {
                     if acc.place.is_none() {
-                        let state = scope.state_with(|id| place(&province_history, province_columns[0], id, piece.first)).ok().flatten();
-                        acc.place = Some((piece.first, province_of(scope), state));
+                        acc.place = Some((piece.first, province_of(known)));
                     }
-                    if scope.building_type != 0 && !matches!(acc.template, Some(Ok(_))) {
-                        acc.template = Some(literal_at(scope.building_type, piece.first).ok_or(scope.building_type));
+                    if acc.state.is_none() {
+                        let mut hours = BTreeSet::from([piece.first]);
+                        for id in [known.province, known.leader_province, known.building_location].into_iter().filter(|&id| id != 0) {
+                            step_hours_in(steps_of(&province_history, u128::from(id)), piece.first, piece.last, &mut hours);
+                        }
+                        acc.state = hours.into_iter().find_map(|hour| known.state_with(|id| place(&province_history, province_columns[0], id, hour)).ok().map(|state| (hour, state)));
+                    }
+                    if acc.icon.is_none() && acc.identity.kind.is_some() {
+                        let template = if known.building_type == 0 { Some(None) } else { literal_at(known.building_type, piece.first).map(Some) };
+                        acc.icon = template.map(|template| (piece.first, template));
                     }
                 }
                 match acc.runs.last_mut() {
@@ -823,16 +854,24 @@ fn episodes(
                         acc.ends.push(End { hour: piece.first, stretch: stretch_idx, ended, native });
                     }
                     let ended = acc.ends.last().map_or(piece.first, |end| end.ended);
-                    if first_end {
-                        let victim = match unit.completion {
-                            Some(completion) => completion_victim(piece.first, ended, completion),
-                            None => victim_at(scope.as_ref(), piece.first, true),
-                        };
+                    if acc.completion.is_none() {
+                        acc.completion = unit.completion;
+                    }
+                    if first_end && acc.completion.is_none() {
+                        let victim = victim_at(scope.as_ref(), piece.first, true);
+                        acc.end_witnessed = victim.tag.is_some();
                         push_victim(&mut acc.victims, victim);
-                        acc.completion_seen = unit.completion.is_some();
-                    } else if let Some(completion) = unit.completion.filter(|_| !acc.completion_seen) {
-                        push_victim(&mut acc.victims, completion_victim(piece.first, ended, completion));
-                        acc.completion_seen = true;
+                    }
+                    if let Some(completion) = acc.completion
+                        && acc.completion_end != Some(ended)
+                    {
+                        acc.completion_end = Some(ended);
+                        let victim = completion_victim(piece.first, ended, completion)?;
+                        let refused = completion.is_some() && victim.tag.is_none();
+                        if !(refused && acc.end_witnessed) {
+                            acc.end_witnessed |= victim.tag.is_some();
+                            push_victim(&mut acc.victims, victim);
+                        }
                     }
                 } else {
                     let mut hours = BTreeSet::from([piece.first]);
@@ -858,143 +897,82 @@ fn episodes(
         let count = key_counts.entry(acc.key).or_insert(0);
         *count += 1;
         let id = if *count == 1 { acc.key.to_string() } else { format!("{}#{}", acc.key, *count) };
-        if acc.last_hour < from || acc.first_hour > to {
+        if acc.last_hour < from {
             continue;
         }
         let bounds = date_bounds(&acc.runs, acc.raw_first, &complete_by_stretch);
-        let unclipped_first_exact = bounds.first().is_some_and(|&(exact, _)| exact);
+        let first_exact = bounds.first().is_some_and(|&(exact, _)| exact);
         let raider_at = |hour: i32| acc.identity.raider.and_then(|slot| countries.slot_tag(slot, hour).map(str::to_owned));
         let mut label = |key: &'static str| labels.entry(key).or_insert_with(|| content.label(key)).clone();
-        let mut runs: Vec<RaidPhaseRun> = Vec::new();
-        for (&run, (first_exact, after_hour)) in acc.runs.iter().zip(bounds) {
-            if run.last < from {
-                continue;
-            }
-            let (first_hour, first_exact, after_hour) = if run.first < from { (from, false, None) } else { (run.first, first_exact, after_hour) };
-            runs.push(RaidPhaseRun {
-                first_hour,
-                last_hour: run.last.min(to),
+        let runs: Vec<RaidPhaseRun> = acc
+            .runs
+            .iter()
+            .zip(bounds)
+            .map(|(run, (first_exact, after_hour))| RaidPhaseRun {
+                first_hour: run.first,
+                last_hour: run.last,
                 first_exact,
                 after_hour,
-                raider: raider_at(first_hour),
+                raider: raider_at(run.first),
                 phase: run.phase,
                 phase_name: phase_label(run.phase, &mut label),
                 outcome: run.outcome,
                 outcome_name: outcome_label(run.outcome, &mut label),
-            });
-        }
-        if runs.is_empty() {
-            continue;
-        }
-        let first_hour = acc.first_hour.max(from);
-        let preparation: Vec<RaidPreparationRun> = acc
-            .preparation
-            .iter()
-            .filter_map(|p| {
-                if p.1 < from || p.0 > to {
-                    return None;
-                }
-                let start = p.0.max(from);
-                let val = (i64::from(p.2) + i64::from(start - p.0) * p.3) as i32;
-                Some(RaidPreparationRun(start, p.1.min(to), val, p.3))
             })
             .collect();
         let (launched_hour, launched_exact, launched_raider) = match acc.launched_hour {
-            Some((h, stretch)) if h >= from => (Some(h), exact_at(h, stretch, acc.raw_first, unclipped_first_exact, &acc.runs, &complete_by_stretch), raider_at(h)),
-            _ => (None, false, None),
+            Some((h, stretch)) => (Some(h), exact_at(h, stretch, acc.raw_first, first_exact, &acc.runs, &complete_by_stretch), raider_at(h)),
+            None => (None, false, None),
         };
-        let mut ends: Vec<RaidEndAt> = Vec::new();
-        for end in &acc.ends {
-            let raider = raider_at(end.ended);
-            let mut at = if end.native {
-                RaidEndAt { hour: end.hour, ended_hour: end.ended, exact: true, source: RaidEndedSource::NativeEndDate, raider }
-            } else {
-                RaidEndAt { hour: end.hour, ended_hour: end.ended, exact: exact_at(end.ended, end.stretch, acc.raw_first, unclipped_first_exact, &acc.runs, &complete_by_stretch), source: RaidEndedSource::ObservedEndedRead, raider }
-            };
-            if at.hour < from {
-                at.hour = from;
-                if !end.native {
-                    (at.ended_hour, at.exact) = (from, false);
-                }
-                ends.clear();
-            }
-            ends.push(at);
-        }
-        let disappeared = (acc.ends.is_empty()).then(|| disappearance(acc.last_hour, acc.last_stretch, acc.seen_again, &complete_by_stretch)).flatten();
-        let (disappeared_hour, disappeared_exact) = match disappeared {
-            Some((h, exact)) if h >= from && h <= to => (Some(h), exact),
-            _ => (None, false),
-        };
-        let mut victims: Vec<RaidVictimAt> = Vec::new();
-        let mut before_from: Option<RaidVictimAt> = None;
-        for v in acc.victims {
-            if v.hour <= from {
-                before_from = Some(RaidVictimAt { hour: from, ..v });
-            } else if v.hour <= to {
-                if let Some(first_v) = before_from.take() {
-                    push_victim(&mut victims, first_v);
-                }
-                push_victim(&mut victims, v);
-            }
-        }
-        if let Some(first_v) = before_from {
-            push_victim(&mut victims, first_v);
-        }
-        let raider = runs[0].raider.clone().or_else(|| raider_at(first_hour));
-        if !chosen.is_empty() {
-            let by_slot = acc.identity.raider.is_some_and(|slot| chosen.iter().any(|country| matches!(country, Country::Slot(chosen) if *chosen == slot)));
-            let raider_tags = runs
-                .iter()
-                .filter_map(|run| run.raider.as_deref().map(|tag| (tag, run.first_hour)))
-                .chain(raider.as_deref().map(|tag| (tag, first_hour)))
-                .chain(launched_raider.as_deref().zip(launched_hour))
-                .chain(ends.iter().filter_map(|end| end.raider.as_deref().map(|tag| (tag, end.ended_hour))));
-            let victim_tags = victims.iter().filter_map(|v| v.tag.as_deref().map(|tag| (tag, v.hour)));
-            if !by_slot && !raider_tags.chain(victim_tags).any(|(tag, at)| chosen.iter().any(|country| query.holders.goes_by(country, tag, at))) {
-                continue;
-            }
-        }
-        if victims.iter().any(|v| matches!(v.source, Some(RaidVictimSource::ControllerAtFirstEndedRead | RaidVictimSource::CaptorAtFirstEndedRead))) {
-            ended_victims = true;
-        }
-        if raider.is_none() {
-            warnings.insert("Some raids' raiders are not named: their country holds no tag at the raid's hour.".into());
-        }
-        let (icon, icon_missing) = match (&acc.identity.kind, &acc.template) {
+        let ends: Vec<RaidEndAt> = acc
+            .ends
+            .iter()
+            .map(|end| RaidEndAt {
+                hour: end.hour,
+                ended_hour: end.ended,
+                exact: end.native || exact_at(end.ended, end.stretch, acc.raw_first, first_exact, &acc.runs, &complete_by_stretch),
+                source: if end.native { RaidEndedSource::NativeEndDate } else { RaidEndedSource::ObservedEndedRead },
+                raider: raider_at(end.ended),
+            })
+            .collect();
+        let disappeared = acc.ends.is_empty().then(|| disappearance(acc.last_hour, acc.last_stretch, acc.seen_again, &complete_by_stretch)).flatten().filter(|&(hour, _)| hour <= to);
+        let (icon, icon_missing) = match (&acc.identity.kind, &acc.icon) {
             (None, _) => (None, Some(TYPE_NOT_RECORDED.to_owned())),
-            (Some(_), Some(Err(token))) => (None, Some(format!("raid target building token {token} is not recorded"))),
-            (Some(literal), template) => match content.icon(literal, template.as_ref().and_then(|template| template.as_deref().ok())) {
+            (Some(_), None) => (None, Some(TARGET_NOT_RECORDED.to_owned())),
+            (Some(literal), Some((_, template))) => match content.icon(literal, template.as_deref()) {
                 Ok((key, image)) => {
-                    artwork.entry(key.clone()).or_insert_with(|| RaidArtwork { key: key.clone(), image: Some(image), missing: None });
+                    images.entry(key.clone()).or_insert(image);
                     (Some(key), None)
                 }
-                Err(reason) => {
-                    *undrawn.entry(reason.clone()).or_default() += 1;
-                    (None, Some(reason))
-                }
+                Err(reason) => (None, Some(reason)),
             },
         };
         let raid_type_name = acc.identity.kind.as_ref().and_then(|literal| content.label(&format!("raid_type_{literal}")));
-        let (place_hour, province, state) = acc.place.map_or((None, None, None), |(hour, province, state)| (Some(hour.max(from)), province, state));
-        let episode = RaidEpisode {
+        let (state_hour, state) = match acc.state {
+            Some((hour, Some(state))) => (Some(hour), Some(state)),
+            _ => (None, None),
+        };
+        let full = RaidEpisode {
             id,
-            first_hour,
-            first_hour_exact: acc.first_hour >= from && unclipped_first_exact,
-            last_hour: acc.last_hour.min(to),
-            raider,
+            first_hour: acc.first_hour,
+            first_hour_exact: first_exact,
+            last_hour: acc.last_hour,
+            raider: runs.first().and_then(|run| run.raider.clone()),
             raider_slot: acc.identity.raider,
             launched_raider,
             victim: None,
             victim_missing: None,
             victim_source: None,
-            victims,
-            raid_type_hour: acc.type_hour.map(|hour| hour.max(from)),
+            victims: acc.victims,
+            raid_type_hour: acc.type_hour,
             raid_type: acc.identity.kind,
             raid_type_name,
+            icon_hour: acc.icon.as_ref().map(|(hour, _)| *hour),
             icon,
             icon_missing,
-            place_hour,
-            province,
+            place_hour: acc.place.map(|(hour, _)| hour),
+            province: acc.place.and_then(|(_, province)| province),
+            state_hour,
             state,
             phase: None,
             phase_name: None,
@@ -1003,29 +981,116 @@ fn episodes(
             outcome_missing: None,
             succeeded_hour: acc.runs.iter().find(|run| run.phase == native::PHASE_ENDED && successful(run.outcome)).map(|run| run.first),
             runs,
-            preparation,
+            preparation: acc.preparation,
             launched: acc.launched_hour.is_some(),
             launched_hour,
             launched_exact,
             ends,
-            disappeared_hour,
-            disappeared_exact,
+            disappeared_hour: disappeared.map(|(hour, _)| hour),
+            disappeared_exact: disappeared.is_some_and(|(_, exact)| exact),
+            member_hour: None,
         };
-        if let Some(episode) = episode_at(&episode, to) {
-            keyed.push((first_hour, acc.key, order, episode));
+        let Some(mut clipped) = episode_from(&full, from) else { continue };
+        if !chosen.is_empty() {
+            let Some(hour) = member_hour(&clipped, chosen, &query.holders) else { continue };
+            clipped.member_hour = Some(hour);
         }
+        let Some(episode) = episode_at(&clipped, to) else { continue };
+        if let Some(key) = &episode.icon
+            && let Some(image) = images.get(key)
+        {
+            artwork.entry(key.clone()).or_insert_with(|| RaidArtwork { key: key.clone(), image: Some(image.clone()), missing: None });
+        }
+        keyed.push((episode.first_hour, acc.key, order, episode));
     }
-    if ended_victims {
-        warnings.insert(ENDED_VICTIMS.into());
-    }
-    warnings.extend(undrawn.into_iter().map(|(reason, count)| format!("{reason} (count: {count})")));
     keyed.sort_by_key(|&(first_hour, key, order, _)| (first_hour, key, order));
-    let out = keyed.into_iter().map(|(_, _, _, episode)| episode).collect();
+    let out: Vec<RaidEpisode> = keyed.into_iter().map(|(_, _, _, episode)| episode).collect();
+    warnings.extend(episode_warnings(&out));
     Ok((out, artwork))
 }
 
+pub fn episode_warnings(episodes: &[RaidEpisode]) -> Vec<String> {
+    let mut out = Vec::new();
+    if episodes.iter().any(|episode| episode.raider.is_none()) {
+        out.push(RAIDERS_UNNAMED.to_owned());
+    }
+    if episodes.iter().flat_map(|episode| &episode.victims).any(|victim| matches!(victim.source, Some(RaidVictimSource::ControllerAtFirstEndedRead | RaidVictimSource::CaptorAtFirstEndedRead))) {
+        out.push(ENDED_VICTIMS.to_owned());
+    }
+    let mut undrawn: BTreeMap<&str, u64> = BTreeMap::new();
+    for reason in episodes.iter().filter_map(|episode| episode.icon_missing.as_deref()).filter(|&reason| reason != TYPE_NOT_RECORDED && reason != TARGET_NOT_RECORDED) {
+        *undrawn.entry(reason).or_default() += 1;
+    }
+    out.extend(undrawn.into_iter().map(|(reason, count)| format!("{reason} (count: {count})")));
+    out
+}
+
+fn member_hour(episode: &RaidEpisode, chosen: &[Country], holders: &Holders) -> Option<i32> {
+    if episode.raider_slot.is_some_and(|slot| chosen.iter().any(|country| matches!(country, Country::Slot(chosen) if *chosen == slot))) {
+        return Some(episode.first_hour);
+    }
+    let named = |tag: Option<&str>, at: i32| tag.is_some_and(|tag| chosen.iter().any(|country| holders.goes_by(country, tag, at)));
+    let runs = episode.runs.iter().filter(|run| named(run.raider.as_deref(), run.first_hour)).map(|run| run.first_hour);
+    let launched = episode.launched_hour.filter(|&hour| named(episode.launched_raider.as_deref(), hour));
+    let ends = episode.ends.iter().filter(|end| named(end.raider.as_deref(), end.ended_hour)).map(|end| end.hour);
+    let victims = episode.victims.iter().filter(|victim| named(victim.tag.as_deref(), victim.hour)).map(|victim| victim.hour);
+    runs.chain(launched).chain(ends).chain(victims).min()
+}
+
+pub fn episode_from(episode: &RaidEpisode, from: i32) -> Option<RaidEpisode> {
+    if episode.last_hour < from {
+        return None;
+    }
+    let mut out = episode.clone();
+    out.runs.retain(|run| run.last_hour >= from);
+    let first = out.runs.first_mut()?;
+    if first.first_hour < from {
+        (first.first_hour, first.first_exact, first.after_hour) = (from, false, None);
+    }
+    out.raider = first.raider.clone();
+    out.first_hour_exact = episode.first_hour >= from && episode.first_hour_exact;
+    out.first_hour = episode.first_hour.max(from);
+    out.preparation = episode
+        .preparation
+        .iter()
+        .filter(|run| run.1 >= from)
+        .map(|run| {
+            let start = run.0.max(from);
+            let value = (i64::from(run.2) + i64::from(start - run.0) * run.3) as i32;
+            RaidPreparationRun(start, run.1, value, if start == run.1 { 0 } else { run.3 })
+        })
+        .collect();
+    if out.launched_hour.is_some_and(|launched| launched < from) {
+        (out.launched_hour, out.launched_exact, out.launched_raider) = (None, false, None);
+    }
+    let edge = out.ends.iter().rposition(|end| end.hour <= from).unwrap_or(0);
+    out.ends.drain(..edge);
+    out.victims.clear();
+    let mut before: Option<RaidVictimAt> = None;
+    for victim in &episode.victims {
+        if victim.hour <= from {
+            before = Some(RaidVictimAt { hour: from, ..victim.clone() });
+        } else {
+            if let Some(edge) = before.take() {
+                push_victim(&mut out.victims, edge);
+            }
+            push_victim(&mut out.victims, victim.clone());
+        }
+    }
+    if let Some(edge) = before {
+        push_victim(&mut out.victims, edge);
+    }
+    for hour in [&mut out.raid_type_hour, &mut out.icon_hour, &mut out.place_hour, &mut out.state_hour].into_iter().flatten() {
+        *hour = (*hour).max(from);
+    }
+    if out.disappeared_hour.is_some_and(|gone| gone < from) {
+        (out.disappeared_hour, out.disappeared_exact) = (None, false);
+    }
+    Some(out)
+}
+
 pub fn episode_at(episode: &RaidEpisode, hour: i32) -> Option<RaidEpisode> {
-    if episode.first_hour > hour {
+    if episode.first_hour > hour || episode.member_hour.is_some_and(|member| member > hour) {
         return None;
     }
     let mut out = episode.clone();
@@ -1048,11 +1113,17 @@ pub fn episode_at(episode: &RaidEpisode, hour: i32) -> Option<RaidEpisode> {
     }
     (out.victim, out.victim_missing, out.victim_source) = (summary.tag, summary.missing, summary.source);
     if out.raid_type_hour.is_none_or(|known| known > hour) {
-        (out.raid_type_hour, out.raid_type, out.raid_type_name, out.icon) = (None, None, None, None);
+        (out.raid_type_hour, out.raid_type, out.raid_type_name, out.icon_hour, out.icon) = (None, None, None, None, None);
         out.icon_missing = Some(TYPE_NOT_RECORDED.to_owned());
+    } else if out.icon_hour.is_none_or(|known| known > hour) {
+        (out.icon_hour, out.icon) = (None, None);
+        out.icon_missing = Some(TARGET_NOT_RECORDED.to_owned());
     }
     if out.place_hour.is_some_and(|known| known > hour) {
-        (out.place_hour, out.province, out.state) = (None, None, None);
+        (out.place_hour, out.province) = (None, None);
+    }
+    if out.state_hour.is_none_or(|known| known > hour) {
+        (out.state_hour, out.state) = (None, None);
     }
     if out.launched_hour.is_some_and(|launched| launched > hour) {
         (out.launched, out.launched_hour, out.launched_exact, out.launched_raider) = (false, None, false, None);
@@ -1222,6 +1293,432 @@ impl Product for RaidLog {
             episodes,
             missing: if params.catalogue { Vec::new() } else { missing(&query, from, to)? },
             warnings: warnings.into_iter().collect(),
+        };
+        dashboard_base::products::check_reply_budget(&reply)?;
+        Ok(reply)
+    }
+}
+
+pub struct RaidTallyAt;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum RaidTallyMetric {
+    Both,
+    Launched,
+    Succeeded,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RaidTallyAtParams {
+    pub branch_id: String,
+    pub hour: i32,
+    #[serde(default)]
+    pub countries: Vec<Country>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub top: Option<u32>,
+    pub metric: RaidTallyMetric,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct RaidTallyAtRow {
+    pub country: Country,
+    pub tag: String,
+    pub launched: u32,
+    pub succeeded: u32,
+    pub missing: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct RaidTallyAtReply {
+    pub branch_id: String,
+    pub hour: i32,
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub metric: RaidTallyMetric,
+    pub available: Option<bool>,
+    pub unavailable: Option<String>,
+    pub rows: Vec<RaidTallyAtRow>,
+    pub unattributed: u32,
+    pub unattributed_launched: u32,
+    pub unattributed_succeeded: u32,
+    pub missing: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+dashboard_base::reply_warnings!(RaidTallyAtReply);
+
+#[derive(Clone)]
+struct TallyEvent {
+    hour: i32,
+    succeeded: bool,
+    tag: String,
+    slot: Option<u32>,
+}
+
+#[derive(Clone)]
+struct CachedTallyBranch {
+    first_hour: i32,
+    last_hour: i32,
+    available: Option<bool>,
+    unavailable: Option<String>,
+    events: Vec<TallyEvent>,
+    unattributed_events: Vec<(i32, bool)>,
+    event_hours: Vec<i32>,
+    missing: Vec<MissingSpan>,
+    warnings: Vec<String>,
+}
+
+#[derive(Default)]
+struct CachedRaidTallies(HashMap<(u64, bool), Arc<CachedTallyBranch>>);
+
+fn load_tally_branch(source: &Source, query: &Query<'_>, branch_id: u64, context: &LoadContext) -> io::Result<Arc<CachedTallyBranch>> {
+    let key = (branch_id, context.content.is_some());
+    {
+        let held = source.state::<CachedRaidTallies>();
+        let guard = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(found) = guard.0.get(&key) {
+            return Ok(Arc::clone(found));
+        }
+    }
+    let from = query.timeline.first;
+    let to = query.timeline.last;
+    let content = Content::load(source, context);
+    let mut warnings: BTreeSet<String> = content.warnings().into_iter().collect();
+    let (episodes, _) = episodes(source, query, (from, to), &[], &content, &mut warnings)?;
+    let missing_spans = missing(query, from, to)?;
+    let none = content.raids.as_ref().is_ok_and(|raids| raids.types.is_empty() && raids.uncertain.is_empty());
+    let available = if none { Some(false) } else { recorded(source, query, to)?.then_some(true) };
+    let unavailable = none.then(|| "The content declares no raid type.".to_owned());
+
+    let mut events = Vec::new();
+    let mut unattributed_events = Vec::new();
+    for episode in episodes {
+        if let Some(h) = episode.launched_hour {
+            match episode.launched_raider.as_ref().or(episode.raider.as_ref()) {
+                Some(tag) => events.push(TallyEvent { hour: h, succeeded: false, tag: tag.clone(), slot: episode.raider_slot }),
+                None => unattributed_events.push((h, false)),
+            }
+        }
+        if let Some(h) = episode.succeeded_hour {
+            match episode.raider.as_ref().or(episode.launched_raider.as_ref()) {
+                Some(tag) => events.push(TallyEvent { hour: h, succeeded: true, tag: tag.clone(), slot: episode.raider_slot }),
+                None => unattributed_events.push((h, true)),
+            }
+        }
+    }
+    events.sort_by_key(|event| event.hour);
+    unattributed_events.sort_by_key(|&(h, _)| h);
+    let mut event_hours: Vec<i32> = events.iter().map(|event| event.hour).chain(unattributed_events.iter().map(|&(h, _)| h)).collect();
+    event_hours.sort_unstable();
+    event_hours.dedup();
+    let built = Arc::new(CachedTallyBranch {
+        first_hour: from,
+        last_hour: to,
+        available,
+        unavailable,
+        events,
+        unattributed_events,
+        event_hours,
+        missing: missing_spans,
+        warnings: warnings.into_iter().collect(),
+    });
+    let held = source.state::<CachedRaidTallies>();
+    let mut guard = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    guard.0.insert(key, Arc::clone(&built));
+    Ok(built)
+}
+
+fn tally_interval(branch: &CachedTallyBranch, hour: i32) -> (i32, i32) {
+    let mut first = branch.first_hour;
+    let mut last = branch.last_hour;
+    for gap in &branch.missing {
+        if gap.last_hour < hour {
+            first = first.max(gap.last_hour.saturating_add(1));
+        } else if gap.first_hour > hour {
+            last = last.min(gap.first_hour.saturating_sub(1));
+        }
+    }
+    let idx = branch.event_hours.partition_point(|&h| h <= hour);
+    if idx > 0 {
+        first = first.max(branch.event_hours[idx - 1]);
+    }
+    if idx < branch.event_hours.len() {
+        last = last.min(branch.event_hours[idx].saturating_sub(1));
+    }
+    (first.min(hour), last.max(hour))
+}
+
+impl Product for RaidTallyAt {
+    const KEY: &'static str = "raid-tally-at";
+    const CONTENT_DEPENDENT: bool = true;
+    const INTERACTIVE: bool = true;
+    type Params = RaidTallyAtParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, countries, group, top, metric, "countries[]"];
+    type Reply = RaidTallyAtReply;
+
+    #[cfg(any(test, feature = "export-types"))]
+    fn types() -> Vec<String> {
+        vec![RaidTallyMetric::decl(), RaidTallyAtParams::decl(), RaidTallyAtRow::decl(), RaidTallyAtReply::decl()]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        validate(&params.branch_id, &params.countries)?;
+        let selectors = usize::from(!params.countries.is_empty()) + usize::from(params.group.is_some()) + usize::from(params.top.is_some());
+        if selectors > 1 {
+            return Err("Chosen countries, a group or a top N, not more than one");
+        }
+        if params.top == Some(0) {
+            return Err("top must be at least 1");
+        }
+        Ok(())
+    }
+
+    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let branch_id: u64 = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
+        let query = dashboard_base::queries::query(source, branch_id)?;
+        let cached = load_tally_branch(source, &query, branch_id, context)?;
+        let hour = params.hour;
+        let mut unattributed_launched = 0u32;
+        let mut unattributed_succeeded = 0u32;
+        for &(event_hour, succeeded) in cached.unattributed_events.iter().take_while(|&&(h, _)| h <= hour) {
+            let _ = event_hour;
+            if succeeded {
+                unattributed_succeeded = unattributed_succeeded.saturating_add(1);
+            } else {
+                unattributed_launched = unattributed_launched.saturating_add(1);
+            }
+        }
+        let unattributed = match params.metric {
+            RaidTallyMetric::Succeeded => unattributed_succeeded,
+            RaidTallyMetric::Launched | RaidTallyMetric::Both => unattributed_launched.max(unattributed_succeeded),
+        };
+        if cached.available == Some(false) {
+            return Ok(RaidTallyAtReply {
+                branch_id: params.branch_id.clone(),
+                hour,
+                first_hour: cached.first_hour,
+                last_hour: cached.last_hour,
+                metric: params.metric,
+                available: cached.available,
+                unavailable: cached.unavailable.clone(),
+                rows: Vec::new(),
+                unattributed,
+                unattributed_launched,
+                unattributed_succeeded,
+                missing: None,
+                warnings: cached.warnings.clone(),
+            });
+        }
+        if let Some(gap) = cached.missing.iter().find(|gap| gap.first_hour <= hour && hour <= gap.last_hour) {
+            return Ok(RaidTallyAtReply {
+                branch_id: params.branch_id.clone(),
+                hour,
+                first_hour: gap.first_hour,
+                last_hour: gap.last_hour,
+                metric: params.metric,
+                available: cached.available,
+                unavailable: cached.unavailable.clone(),
+                rows: Vec::new(),
+                unattributed,
+                unattributed_launched,
+                unattributed_succeeded,
+                missing: Some(gap.reason.clone()),
+                warnings: cached.warnings.clone(),
+            });
+        }
+        let (mut first_hour, mut last_hour) = tally_interval(&cached, hour);
+        let explicit_countries: Option<Vec<Country>> = if let Some(group) = &params.group {
+            let groups = GroupsAt::load(source, context, &params.branch_id, Some(group))?;
+            let members = groups.members(group, hour)?;
+            if let Some(refused) = members.refused {
+                return Ok(RaidTallyAtReply {
+                    branch_id: params.branch_id.clone(),
+                    hour,
+                    first_hour: members.from.max(cached.first_hour).min(hour),
+                    last_hour: members.until.min(cached.last_hour).max(hour),
+                    metric: params.metric,
+                    available: cached.available,
+                    unavailable: cached.unavailable.clone(),
+                    rows: Vec::new(),
+                    unattributed,
+                    unattributed_launched,
+                    unattributed_succeeded,
+                    missing: Some(refused),
+                    warnings: cached.warnings.clone(),
+                });
+            }
+            first_hour = first_hour.max(members.from);
+            last_hour = last_hour.min(members.until);
+            Some(members.tags.into_iter().map(Country::Tag).collect())
+        } else if !params.countries.is_empty() {
+            Some(params.countries.clone())
+        } else {
+            None
+        };
+
+        if explicit_countries.is_none() && params.top.is_some() {
+            if let Some(gap) = cached.missing.iter().find(|gap| gap.first_hour <= hour) {
+                return Ok(RaidTallyAtReply {
+                    branch_id: params.branch_id.clone(),
+                    hour,
+                    first_hour: first_hour.min(hour),
+                    last_hour: last_hour.max(hour),
+                    metric: params.metric,
+                    available: cached.available,
+                    unavailable: cached.unavailable.clone(),
+                    rows: Vec::new(),
+                    unattributed,
+                    unattributed_launched,
+                    unattributed_succeeded,
+                    missing: Some(format!("Raid history is incomplete up to this date: {}", gap.reason)),
+                    warnings: cached.warnings.clone(),
+                });
+            }
+            if unattributed > 0 {
+                return Ok(RaidTallyAtReply {
+                    branch_id: params.branch_id.clone(),
+                    hour,
+                    first_hour: first_hour.min(hour),
+                    last_hour: last_hour.max(hour),
+                    metric: params.metric,
+                    available: cached.available,
+                    unavailable: cached.unavailable.clone(),
+                    rows: Vec::new(),
+                    unattributed,
+                    unattributed_launched,
+                    unattributed_succeeded,
+                    missing: Some(format!("{unattributed} raid(s) up to this date have an unrecorded raider, so the top ranking is withheld")),
+                    warnings: cached.warnings.clone(),
+                });
+            }
+        }
+
+        let rank_value = |launched: u32, succeeded: u32| match params.metric {
+            RaidTallyMetric::Succeeded => succeeded,
+            RaidTallyMetric::Both | RaidTallyMetric::Launched => launched,
+        };
+        let mut rows_out: Vec<RaidTallyAtRow> = if let Some(asked) = explicit_countries {
+            let resolved: Vec<(Country, Option<u32>, String)> = asked
+                .into_iter()
+                .map(|country| {
+                    let tag = query.holders.name(&country, hour);
+                    let slot = match query.holders.at(&country, hour).map(|run| run.holder) {
+                        Some(Holder::Found { slot, .. }) => Some(slot),
+                        _ => match country {
+                            Country::Slot(slot) => Some(slot),
+                            Country::Tag(_) => None,
+                        },
+                    };
+                    let out_country = slot.map_or(country, Country::Slot);
+                    (out_country, slot, tag)
+                })
+                .collect();
+            let mut counts: Vec<(u32, u32)> = vec![(0, 0); resolved.len()];
+            for event in cached.events.iter().take_while(|event| event.hour <= hour) {
+                for (index, (country, slot, _)) in resolved.iter().enumerate() {
+                    let matches = match (slot, event.slot) {
+                        (Some(asked_slot), Some(event_slot)) => *asked_slot == event_slot,
+                        (_, None) => query.holders.goes_by(country, &event.tag, event.hour),
+                        _ => false,
+                    };
+                    if matches {
+                        if event.succeeded {
+                            counts[index].1 = counts[index].1.saturating_add(1);
+                        } else {
+                            counts[index].0 = counts[index].0.saturating_add(1);
+                        }
+                    }
+                }
+            }
+            resolved
+                .into_iter()
+                .zip(counts)
+                .map(|((country, _, tag), (launched, succeeded))| RaidTallyAtRow {
+                    country,
+                    tag,
+                    launched,
+                    succeeded,
+                    missing: None,
+                })
+                .collect()
+        } else {
+            #[derive(Hash, PartialEq, Eq)]
+            enum RaidSubject {
+                Slot(u32),
+                Tag(String),
+            }
+            let mut by_subject: HashMap<RaidSubject, (u32, u32, String)> = HashMap::new();
+            for event in cached.events.iter().take_while(|event| event.hour <= hour) {
+                let key = match event.slot {
+                    Some(slot) => RaidSubject::Slot(slot),
+                    None => RaidSubject::Tag(event.tag.clone()),
+                };
+                let entry = by_subject.entry(key).or_insert_with(|| (0, 0, event.tag.clone()));
+                if event.succeeded {
+                    entry.1 = entry.1.saturating_add(1);
+                } else {
+                    entry.0 = entry.0.saturating_add(1);
+                }
+            }
+            by_subject
+                .into_iter()
+                .filter(|&(_, (launched, succeeded, _))| {
+                    if params.top.is_none() {
+                        true
+                    } else {
+                        rank_value(launched, succeeded) > 0 || (params.metric == RaidTallyMetric::Both && succeeded > 0)
+                    }
+                })
+                .map(|(subject, (launched, succeeded, fallback_tag))| {
+                    let (country, tag) = match subject {
+                        RaidSubject::Slot(slot) => {
+                            let c = Country::Slot(slot);
+                            let name = query.holders.name(&c, hour);
+                            (c, if name.is_empty() { fallback_tag } else { name })
+                        }
+                        RaidSubject::Tag(tag) => (Country::from(tag.clone()), tag),
+                    };
+                    RaidTallyAtRow { country, tag, launched, succeeded, missing: None }
+                })
+                .collect()
+        };
+        rows_out.sort_unstable_by(|a, b| {
+            rank_value(b.launched, b.succeeded)
+                .cmp(&rank_value(a.launched, a.succeeded))
+                .then_with(|| b.succeeded.cmp(&a.succeeded))
+                .then_with(|| a.tag.cmp(&b.tag))
+                .then_with(|| a.country.cmp(&b.country))
+        });
+        if let Some(limit) = params.top {
+            rows_out.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        }
+        let reply = RaidTallyAtReply {
+            branch_id: params.branch_id.clone(),
+            hour,
+            first_hour: first_hour.min(hour),
+            last_hour: last_hour.max(hour),
+            metric: params.metric,
+            available: cached.available,
+            unavailable: cached.unavailable.clone(),
+            rows: rows_out,
+            unattributed,
+            unattributed_launched,
+            unattributed_succeeded,
+            missing: None,
+            warnings: cached.warnings.clone(),
         };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
