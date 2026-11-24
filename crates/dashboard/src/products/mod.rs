@@ -66,7 +66,6 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_air::registrations::AIR_SUPERIORITY_AIRSUPERIORITYAT,
     dashboard_production::registrations::EQUIPMENT_LOSSES_EQUIPMENTLOSSHEAD,
     dashboard_land::registrations::ARMY_LOSSES_ARMYLOSSES,
-    dashboard_wars::registrations::FACTION_STATE_REWARDS_FACTIONGOALREWARDS,
     dashboard_land::registrations::FORCES_AIRFORCEAT,
     dashboard_land::registrations::FORCES_NAVYAT,
 ];
