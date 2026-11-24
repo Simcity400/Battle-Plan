@@ -1237,7 +1237,7 @@ fn pieces_apart_only_across_unrecorded_hours_break_continuity_and_the_statement_
     assert_eq!(reply.tag, "GER", "a slot is named by who held it at the statement's end, not at the branch's last hour");
 
     let later = Holders::new([("GER".to_owned(), vec![run(110, LAST, GER)])].into(), Vec::new());
-    let query = Query { replay: &replay, timeline: query.timeline.clone(), holders: Arc::new(later) };
+    let query = Query { replay: &replay, timeline: query.timeline, holders: Arc::new(later) };
     let params = PowerSpendingParams { to: FIRST, ..params };
     let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.tag, params.country.key(), "a slot held by no one at the statement's end is the slot, never its later holder");
