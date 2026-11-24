@@ -960,6 +960,7 @@ fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_contin
             events,
             script_tokens: tokens.to_vec(),
             script_scopes: Vec::new(),
+            windows: Default::default(),
         }
     };
     let frames: Vec<_> = (100..=106)
