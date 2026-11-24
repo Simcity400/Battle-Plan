@@ -11,7 +11,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'balance-of-power', load: () => import('./balance-of-power') },
   { kind: 'bombing-damage', load: () => import('./bombing-damage') },
   { kind: 'bombing-damage-breakdown', slots: ['render', 'countryChip'], load: () => import('./bombing-damage-breakdown') },
-  { kind: 'casualties', load: () => import('./casualties') },
   { kind: 'casualties-breakdown', load: () => import('./casualties-breakdown') },
   { kind: 'civil-wars', load: () => import('./civil-wars') },
   { kind: 'command-power-spending', load: () => import('./command-power-spending') },

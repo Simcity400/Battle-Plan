@@ -4,28 +4,6 @@ import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '.
 
 export const BARS_VIEWS: readonly FamilyViewEntry[] = [
   {
-    kind: 'naval-supremacy',
-    view: 'shares',
-    label: 'Shares',
-    family: 'bars',
-    viewOption: 'view',
-    loadSpec: () => import('../naval-supremacy/navalSupremacyProjection.ts').then(m => ({
-      family: 'bars', kind: 'naval-supremacy', view: 'shares',
-      projection: m.supremacySharesProjection, declaration: m.supremacySharesDeclaration,
-    })),
-  },
-  {
-    kind: 'factories',
-    view: 'race',
-    label: 'Race',
-    family: 'bars',
-    viewOption: 'view',
-    loadSpec: () => import('../factories/factoriesProjection.ts').then(mod => ({
-      family: 'bars', kind: 'factories', view: 'race',
-      projection: mod.factoriesProjection, declaration: mod.factoriesDeclaration,
-    })),
-  },
-  {
     kind: 'air-superiority-region',
     view: DEFAULT_VIEW,
     family: 'bars',
@@ -35,23 +13,25 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     })),
   },
   {
-    kind: 'minefields',
-    view: DEFAULT_VIEW,
+    kind: 'casualties',
+    view: 'butterfly',
+    label: 'Butterfly',
     family: 'bars',
-    loadSpec: () => import('../minefields/minefieldsProjection.ts').then(mod => ({
-      family: 'bars', kind: 'minefields', view: DEFAULT_VIEW,
-      projection: mod.minefieldsProjection, declaration: mod.minefieldsDeclaration,
+    viewOption: 'view',
+    loadSpec: () => import('../casualties/casualtiesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'casualties', view: 'butterfly',
+      projection: mod.casualtiesButterflyProjection, declaration: mod.casualtiesButterflyDeclaration,
     })),
   },
   {
-    kind: 'who-spies-on-whom',
-    view: 'pairs',
-    label: 'Top pairs',
+    kind: 'casualties',
+    view: 'race',
+    label: 'Race',
     family: 'bars',
     viewOption: 'view',
-    loadSpec: () => import('../who-spies-on-whom/whoSpiesProjection.ts').then(mod => ({
-      family: 'bars', kind: 'who-spies-on-whom', view: 'pairs',
-      projection: mod.operativePairsProjection, declaration: mod.operativePairsDeclaration,
+    loadSpec: () => import('../casualties/casualtiesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'casualties', view: 'race',
+      projection: mod.casualtiesRaceProjection, declaration: mod.casualtiesRaceDeclaration,
     })),
   },
   {
@@ -66,12 +46,54 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     })),
   },
   {
+    kind: 'factories',
+    view: 'race',
+    label: 'Race',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../factories/factoriesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'factories', view: 'race',
+      projection: mod.factoriesProjection, declaration: mod.factoriesDeclaration,
+    })),
+  },
+  {
     kind: 'lend-lease-balance',
     view: DEFAULT_VIEW,
     family: 'bars',
     loadSpec: () => import('../lend-lease-balance/lendLeaseBalanceProjection.ts').then(mod => ({
       family: 'bars', kind: 'lend-lease-balance', view: DEFAULT_VIEW,
       projection: mod.lendLeaseBalanceProjection, declaration: mod.lendLeaseBalanceDeclaration,
+    })),
+  },
+  {
+    kind: 'minefields',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: () => import('../minefields/minefieldsProjection.ts').then(mod => ({
+      family: 'bars', kind: 'minefields', view: DEFAULT_VIEW,
+      projection: mod.minefieldsProjection, declaration: mod.minefieldsDeclaration,
+    })),
+  },
+  {
+    kind: 'naval-supremacy',
+    view: 'shares',
+    label: 'Shares',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../naval-supremacy/navalSupremacyProjection.ts').then(m => ({
+      family: 'bars', kind: 'naval-supremacy', view: 'shares',
+      projection: m.supremacySharesProjection, declaration: m.supremacySharesDeclaration,
+    })),
+  },
+  {
+    kind: 'who-spies-on-whom',
+    view: 'pairs',
+    label: 'Top pairs',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../who-spies-on-whom/whoSpiesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'who-spies-on-whom', view: 'pairs',
+      projection: mod.operativePairsProjection, declaration: mod.operativePairsDeclaration,
     })),
   },
 ];
