@@ -1,6 +1,7 @@
 dashboard_base::register_products! {
     AIRCRAFT_CATALOGUE_AIRCRAFTCATALOGUE => crate::products::aircraft_catalogue::AircraftCatalogue,
     AIR_LEDGER_MILITARYAIRLEDGER => crate::products::air_ledger::MilitaryAirLedger,
+    AIR_LEDGER_AT_MILITARYAIRAT => crate::products::air_ledger::at::MilitaryAirAt,
     REGIONAL_WEATHER_REGIONALWEATHER => crate::products::regional_weather::RegionalWeather,
     AIR_SUPERIORITY_AIRSUPERIORITYCHOICES => crate::products::air_superiority::AirSuperiorityChoices,
     AIR_STATISTICS_AIRSTATISTICSREGIONS => crate::products::air_statistics::AirStatisticsRegions,

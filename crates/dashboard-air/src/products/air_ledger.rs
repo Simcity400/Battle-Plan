@@ -21,6 +21,7 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
+pub mod at;
 #[cfg(test)]
 mod reference;
 #[cfg(test)]
