@@ -5,6 +5,7 @@ import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsValueField } from '../../families/bars/model.ts';
 import { registerBarsProjection } from '../../families/bars/registry.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/contract.ts';
+import { inHourRanges, nextMembershipChange, type HourRanges } from '../../families/holders.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
 import type { SeriesState } from '../../generated/dashboard';
 import { OPTIONS } from './definition.ts';
@@ -20,6 +21,7 @@ export interface CasualtiesOptions {
   readonly view: 'butterfly' | 'race';
   readonly includeUnknown: boolean;
   readonly chosen: readonly string[] | null;
+  readonly membership: Readonly<Record<string, HourRanges>> | null;
 }
 
 interface Base {
@@ -28,14 +30,21 @@ interface Base {
   readonly ranked: boolean;
   readonly top: number | null;
   readonly countries: readonly string[];
+  readonly membership: Readonly<Record<string, HourRanges>> | null;
 }
 
-function exactParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> {
+function membersAt(countries: readonly string[], membership: Readonly<Record<string, HourRanges>> | null, hour: number): readonly string[] {
+  return membership ? countries.filter(tag => inHourRanges(membership[tag], hour)) : countries;
+}
+
+function exactParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
   const cfg = base as unknown as Base;
   const family = { kind: FAMILY, measure: cfg.measure };
   if (cfg.ranked && cfg.top != null) return { branchId: cfg.branchId, family, hour, top: cfg.top };
-  const reads = cfg.countries.map(tag => ({ country: countryFromKey(tag), hour }));
-  return cfg.ranked ? { branchId: cfg.branchId, family, reads, top: cfg.countries.length } : { branchId: cfg.branchId, family, reads };
+  const countries = membersAt(cfg.countries, cfg.membership, hour);
+  if (!countries.length) return null;
+  const reads = countries.map(tag => ({ country: countryFromKey(tag), hour }));
+  return cfg.ranked ? { branchId: cfg.branchId, family, reads, top: countries.length } : { branchId: cfg.branchId, family, reads };
 }
 
 function entry(ctx: FamilyPlanContext, name: string, base: Base): SourceEntry {
@@ -57,7 +66,7 @@ function entry(ctx: FamilyPlanContext, name: string, base: Base): SourceEntry {
       params: base as unknown as Readonly<Record<string, unknown>>,
       buildExactParams: exactParams,
       dynamicKeys: ['hour', 'reads'],
-      provenInterval: seriesStateProvenInterval,
+      ...(base.ranked && base.top != null ? {} : { provenInterval: seriesStateProvenInterval }),
       validate: validateRankReply,
     },
   };
@@ -68,14 +77,18 @@ function casualtySources(ctx: FamilyPlanContext, view: 'butterfly' | 'race'): So
   const keyed = !ctx.countries.all && top == null;
   const countries = keyed ? ctx.countries.tags : ctx.countries.every;
   const rankTop = keyed ? null : top ?? MOST;
-  const measures: readonly Measure[] = view === 'race' ? ['taken', 'unknown', 'partial'] : MEASURES;
+  const membership = keyed ? ctx.countries.membership : null;
   return {
     owner: `casualties:${view}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
     entries: [
-      entry(ctx, 'rank', { branchId: ctx.branch.id, measure: view === 'race' ? 'taken' : RANK, ranked: true, top: rankTop, countries }),
-      ...measures.map(measure => entry(ctx, measure, { branchId: ctx.branch.id, measure, ranked: false, top: null, countries })),
+      entry(ctx, 'rank', { branchId: ctx.branch.id, measure: view === 'race' ? 'taken' : RANK, ranked: true, top: rankTop, countries, membership }),
+      ...viewMeasures(view).map(measure => entry(ctx, measure, { branchId: ctx.branch.id, measure, ranked: false, top: null, countries, membership })),
     ],
   };
+}
+
+function viewMeasures(view: 'butterfly' | 'race'): readonly Measure[] {
+  return view === 'race' ? ['taken', 'unknown', 'partial'] : MEASURES;
 }
 
 type Held = ReadonlyMap<string, SeriesState>;
@@ -101,12 +114,15 @@ function project(readView: BoundedReadView, options: CasualtiesOptions): BarsMod
   const base = butterfly
     ? { form: 'two-sided' as const, hour: readView.hour, animateOrder: true, leftHeader: 'Casualties taken', rightHeader: 'Casualties dealt' }
     : { form: 'ordered' as const, hour: readView.hour, animateOrder: true, showAxis: true, scaleUnit: 'Casualties taken' };
+  const chosen = options.chosen ? membersAt(options.chosen, options.membership, readView.hour) : null;
+  if (chosen && !chosen.length) return { ...base, rows: [], empty: 'No country of this group at this date.', emptyKind: 'empty' };
   const refused = readView.refused('rank');
   if (refused) return { ...base, rows: [], empty: refused, emptyKind: 'unavailable' };
   const rankPanel = readView.panel('rank');
   if (rankPanel === undefined) return { ...base, rows: [] };
   const ranked = validateRankReply(rankPanel).states;
   const measures = Object.fromEntries(MEASURES.map(measure => [measure, held(readView, measure)])) as Record<Measure, Held | null>;
+  if (viewMeasures(options.view).some(measure => measures[measure] === null)) return { ...base, rows: [] };
   const rows: BarsDataRow[] = [];
   const seen = new Set<string>();
   const missingRows: BarsDataRow[] = [];
@@ -141,8 +157,8 @@ function project(readView: BoundedReadView, options: CasualtiesOptions): BarsMod
     if (state.run) rows.push(row);
     else missingRows.push(row);
   }
-  if (options.chosen) {
-    for (const tag of options.chosen) {
+  if (chosen) {
+    for (const tag of chosen) {
       if (seen.has(tag)) continue;
       const pres = countryRowPresentation(readView, tag);
       const value = notRecorded('This country was not recorded at this hour.');
@@ -157,10 +173,15 @@ function project(readView: BoundedReadView, options: CasualtiesOptions): BarsMod
   return { ...base, rows: all, ...(all.length ? {} : { empty: 'No casualties at this date.', emptyKind: 'empty' as const }) };
 }
 
+function nextChange(readView: BoundedReadView, options: CasualtiesOptions): number {
+  return nextMembershipChange(options.membership, readView.hour);
+}
+
 const options = (ctx: FamilyPlanContext, view: 'butterfly' | 'race'): CasualtiesOptions => ({
   view,
   includeUnknown: ctx.options.includeUnknown === true,
   chosen: !ctx.countries.all && ctx.countries.top == null ? ctx.countries.tags : null,
+  membership: !ctx.countries.all && ctx.countries.top == null ? ctx.countries.membership : null,
 });
 
 const countries = {
@@ -168,15 +189,16 @@ const countries = {
   labels: true,
   colours: true,
   allowSlots: true,
+  everyOnTop: true,
   requireGroupsWhen: (widget: FamilyPlanContext['widget']) => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
 };
 
 export const casualtiesButterflyProjection: BarsProjection<CasualtiesOptions> = registerBarsProjection({
-  kind: 'casualties', family: 'bars', nextChange: () => Infinity, project,
+  kind: 'casualties', family: 'bars', nextChange, project,
 }, 'butterfly');
 
 export const casualtiesRaceProjection: BarsProjection<CasualtiesOptions> = registerBarsProjection({
-  kind: 'casualties', family: 'bars', nextChange: () => Infinity, project,
+  kind: 'casualties', family: 'bars', nextChange, project,
 }, 'race');
 
 export const casualtiesButterflyDeclaration: BarsWidgetDeclaration<CasualtiesOptions> = {
