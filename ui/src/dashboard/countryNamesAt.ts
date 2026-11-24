@@ -14,8 +14,7 @@ import type { CountryTimeline, HeldLookup } from './countryTimeline';
 import { countryFromKey } from './countryKey.ts';
 import { useSlotTags, type SlotTags } from './countrySlots.ts';
 
-export { MAX_NAME_HOURS, nameKey };
-export type { NameAt };
+export { nameKey };
 
 type AnyFactSpec<V> = FactSpec<V, FactsFound<V>> | BatchFactSpec<V>;
 

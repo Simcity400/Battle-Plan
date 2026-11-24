@@ -1,7 +1,7 @@
 import { Profiler } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { flushSync } from 'react-dom';
-import { APPEARANCE_EVENT } from '../../charts/tokens.ts';
+import { APPEARANCE_EVENT } from '../../shell/appearance/events.ts';
 import { tooltipStore } from '../../charts/tooltip.ts';
 import TooltipLayer from '../../charts/TooltipLayer.tsx';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';

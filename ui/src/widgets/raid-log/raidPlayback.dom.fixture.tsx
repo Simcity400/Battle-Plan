@@ -1,19 +1,17 @@
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
-import RaidTallyWidget from '../raid-tally/RaidTallyWidget';
 import RaidLogWidget from './RaidLogWidget';
 import { syntheticEpisode, syntheticRaidLog } from '../../dashboard/raids.fixtures.ts';
 import { WidgetBody } from '../../dashboard/widgets.tsx';
 import { registerWidgets } from '../../dashboard/definitions.ts';
 import { definition as log } from './definition.ts';
-import { definition as tally } from '../raid-tally/definition.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 
 const native = window.requestAnimationFrame.bind(window);
 const frame = () => new Promise<void>(resolve => native(() => resolve()));
 async function settle(frames = 4) { for (let at = 0; at < frames; at++) await frame(); }
 
-registerWidgets([{ ...log, render: RaidLogWidget }, { ...tally, render: RaidTallyWidget }]);
+registerWidgets([{ ...log, render: RaidLogWidget }]);
 
 const HOURS = 120_000;
 const START = 30_000;
@@ -74,13 +72,11 @@ export const fixture = {
     host.style.cssText = 'width: 640px; display: flex; flex-direction: column;';
     root = createRoot(host);
     const runtime = { tracks: [track], clock, client, addWidgetBelow() {}, campaigns: [], recordings: [] };
-    const tally = { id: 'tally', kind: 'raid-tally', title: 'Raid tally', configVersion: 1, trackIds: ['main'], countries: { kind: 'group', group: { type: 'top', count: 3 } }, time: { mode: 'follow' }, options: { view: 'race' } };
     const log = { id: 'log', kind: 'raid-log', title: 'Raid log', configVersion: 1, trackIds: ['main'], countries: { kind: 'all' }, time: { mode: 'follow' }, options: {} };
     const props = (widget: unknown) => ({ widget, runtime, active: true, onDiagnostics() {}, setOption() {} }) as unknown as WidgetProps;
-    root.render(<>
-      <div style={{ height: '320px', display: 'flex' }}><WidgetBody {...props(tally)} /></div>
-      <div style={{ height: '320px', display: 'flex' }}><WidgetBody {...props(log)} /></div>
-    </>);
+    root.render(
+      <div style={{ height: '320px', display: 'flex' }}><WidgetBody {...props(log)} /></div>,
+    );
     await settle(30);
   },
   async playing(playing: boolean) {

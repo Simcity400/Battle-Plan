@@ -22,12 +22,6 @@ export function coverCounts(runs: readonly HourRange[]): BandStep[] {
   return steps;
 }
 
-export function bandMaxOf(bands: Iterable<readonly BandStep[]>): number {
-  let largest = 1;
-  for (const steps of bands) for (const step of steps) if (step.value > largest) largest = step.value;
-  return largest;
-}
-
 export function withoutHours<S extends HourRange>(steps: readonly S[], spans: readonly HourRange[]): S[] {
   const result: S[] = [];
   let index = 0;
@@ -42,10 +36,6 @@ export function withoutHours<S extends HourRange>(steps: readonly S[], spans: re
     if (from <= step.lastHour) result.push({ ...step, firstHour: from, lastHour: step.lastHour });
   }
   return result;
-}
-
-export function coveredBy(from: number, to: number, spans: readonly HourRange[]): boolean {
-  return spanCoverage(spans)(from, to);
 }
 
 function spanCoverage(spans: readonly HourRange[]): (from: number, to: number) => boolean {
@@ -80,12 +70,6 @@ export function bridgeGaps<R extends HourRange>(runs: readonly R[], unobserved: 
     } else stretches.push({ firstHour: run.firstHour, lastHour: run.lastHour, runs: [run] });
   }
   return stretches;
-}
-
-export function stretchAt<S extends HourRange>(stretches: readonly S[], hour: number): S | undefined {
-  let found: S | undefined;
-  for (const stretch of stretches) if (stretch.firstHour <= hour) found = stretch;
-  return found ?? stretches[0];
 }
 
 export function stretchesOf<S extends HourRange>(steps: readonly S[]): { firstHour: number; lastHour: number; steps: S[] }[] {

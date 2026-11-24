@@ -95,6 +95,7 @@ pub fn spelled<'r>(
 pub const TABLES: &[replay_data::rows::TableId] = crate::triggers::RECORDED_TABLES;
 
 mod balance;
+pub use balance::{BalanceDrift, ChangeRate, balance_drift};
 #[cfg(any(test, feature = "test-support"))]
 pub use balance::tests as balance_test_support;
 mod dependence;

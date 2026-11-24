@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { followedRow, heldParts, keyId, keyedTileParams, keyedTileReply, reachedKeyLines, validateKeyedStates, validateSeriesParts } from './keyedSeriesData.ts';
-import { parseFollowed } from './follow/message.ts';
+import { parseFollowed } from '../test-support/followMessage.ts';
 import { message } from './follow/messages.fixture.ts';
 import type { TileReply } from './tiles/tile';
 import { gatedWindow } from '../test-support/gated.ts';

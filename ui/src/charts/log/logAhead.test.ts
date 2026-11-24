@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
-import { logCut, logHeldRange, logItemState, logShownOffsets, logShownOrdinals, logSpans, logStateAt, widenOverHidden } from './logAhead.ts';
+import { logCut, logHeldRange, logItemState, logShownOffsets, logShownOrdinals, logSpans, logStateAt } from './logAhead.ts';
 import { logRowTarget } from './logPages.ts';
 import { anchoredScrollTop, logItems, logOffsets, logSectionItems, MONTH_HEIGHT, ROW_HEIGHT, stableLogSections, visibleRange } from './logData.ts';
 import { logPageEntries } from './logPages.ts';
@@ -66,8 +66,6 @@ test('the layout at an hour closes up over the items not shown, and changes only
   assert.equal(logShownOffsets(full, spans, MAY)[2], full[2] - full[0], 'later, only the gone row closes up');
   assert.equal(logCut(spans, at(100)), logCut(spans, at(100) + 0.5), 'no item comes or goes inside an hour');
   assert.notEqual(logCut(spans, at(101)), logCut(spans, at(100)), 'a row revealed and one gone at the same hour');
-  assert.deepEqual(widenOverHidden(shown, 2, 6), [0, 6], 'the rows waiting above the first shown are drawn with it');
-  assert.deepEqual(widenOverHidden(shown, 4, 6), [3, 6]);
   const plain = logItems(rows.slice(1, 4), false), laid = logOffsets(plain, 'comfortable');
   assert.equal(logShownOffsets(laid, logSpans(plain), MAY), laid, 'every item shown: the layout as laid');
 });
@@ -90,8 +88,6 @@ test('a block drawn once holds every row the view reaches until the clock leaves
       assert.ok(within(visibleRange(now, at, height, 3), drawn), `top ${top}${anchored ? ', anchored' : ''}: the view at ${hour} is drawn`);
     }
   }
-  const plain = widenOverHidden(laid, ...visibleRange(laid, 0, height, 6));
-  assert.ok(hours.some(hour => !within(visibleRange(logShownOffsets(full, spans, hour), 0, height, 3), plain)), 'the view outgrows the window of the rows in view');
 });
 
 test('at the top, a block draws every row held ahead above the first shown, however many arrive, with no month divider above them', () => {

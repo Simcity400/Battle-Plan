@@ -9,7 +9,7 @@ use dashboard_text::{catalogue::plain_text, scripted_text::{EventObject, EventSc
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io, sync::Arc};
+use std::{collections::{BTreeMap, BTreeSet}, io, sync::Arc};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -76,6 +76,25 @@ pub struct BalanceSource {
     pub weekly: String,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum ChangeShown {
+    Daily,
+    Weekly,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct BalanceChange {
+    pub daily: String,
+    pub weekly: String,
+    pub weekly_change: String,
+    pub shown: ChangeShown,
+    pub rate: String,
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -94,6 +113,7 @@ pub struct BalanceRecord {
     #[doc = " Every authored range in authored order; empty when content refuses."]
     pub ranges: Vec<BalanceRange>,
     pub members: Vec<BalanceMember>,
+    pub change: Option<BalanceChange>,
     #[doc = " The drift's sources; null when they cannot be derived."]
     pub sources: Option<Vec<BalanceSource>>,
 }
@@ -175,7 +195,7 @@ impl AtHour for PoliticsState {
     const KEY: &'static str = "politics-state";
     const TITLE: &'static str = "Politics";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = PoliticsStateParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, view, country];
     type Reply = PoliticsStateReply;
@@ -190,6 +210,8 @@ impl AtHour for PoliticsState {
             BalanceSide::decl(),
             BalanceRange::decl(),
             BalanceMember::decl(),
+            BalanceChange::decl(),
+            ChangeShown::decl(),
             BalanceSource::decl(),
             BalanceRecord::decl(),
             CurrentBalance::decl(),
@@ -228,6 +250,14 @@ impl AtHour for PoliticsState {
             .into_iter()
             .map(Read::all)
             .collect()
+    }
+
+    fn valid_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        let Some(Ok(catalogue)) = at.context.catalogue.as_ref().map(|held| held.as_deref()) else { return i32::MAX };
+        if params.view != PoliticsView::Balances || !names_read_the_date(frame, catalogue) {
+            return i32::MAX;
+        }
+        frame.hour.div_euclid(24).saturating_add(1).saturating_mul(24).saturating_sub(1)
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -417,8 +447,7 @@ pub(super) fn resolve_balance_name<'a>(
 }
 
 fn record_range_slot(
-    record: &replay_data::rows::PowerBalanceRow,
-    members: &[replay_data::rows::PowerBalanceMemberRow],
+    listed: &[MemberRow],
     links: &Links<'_>,
     filter_country: bool,
     requested_slot: Option<u32>,
@@ -427,7 +456,7 @@ fn record_range_slot(
         return requested_slot;
     }
     let mut found: Option<u32> = None;
-    for member in members.iter().filter(|member| member.record == record.ordinal) {
+    for member in listed {
         let slot = links.slot(member.country)?;
         match found {
             None => found = Some(slot),
@@ -438,20 +467,49 @@ fn record_range_slot(
     found
 }
 
-fn record_selected(
-    record: &replay_data::rows::PowerBalanceRow,
-    members: &[replay_data::rows::PowerBalanceMemberRow],
-    links: &Links<'_>,
-    filter_country: bool,
-    requested_slot: Option<u32>,
-) -> bool {
-    if !filter_country {
-        return true;
+type MemberRow = replay_data::rows::PowerBalanceMemberRow;
+
+fn by_record(members: &[MemberRow]) -> BTreeMap<u32, Vec<MemberRow>> {
+    let mut out: BTreeMap<u32, Vec<MemberRow>> = BTreeMap::new();
+    for member in members {
+        out.entry(member.record).or_default().push(member.clone());
     }
-    let Some(slot) = requested_slot else {
-        return false;
+    out
+}
+
+fn selected_records(members: &[MemberRow], links: &Links<'_>, filter_country: bool, requested_slot: Option<u32>) -> Option<BTreeSet<u32>> {
+    filter_country.then(|| match requested_slot {
+        Some(slot) => members.iter().filter(|member| links.slot(member.country) == Some(slot)).map(|member| member.record).collect(),
+        None => BTreeSet::new(),
+    })
+}
+
+pub(super) fn names_read_the_date(frame: &DecodedFrame, catalogue: &Catalogue) -> bool {
+    let Ok(records) = frame.complete::<tables::PowerBalances>() else { return false };
+    let effects = catalogue.scripted_content().ok().and_then(|content| content.effects().ok());
+    let power_balances = effects.as_ref().and_then(|effects| effects.view(None).power_balances);
+    records.iter().any(|record| {
+        [&record.balance, &record.left, &record.right, &record.trending, &record.active_range].into_iter().any(|bytes| raw_scripted_text(catalogue, &token(bytes)).is_some())
+            || power_balances.and_then(|database| database.ranges(&record.balance)).is_some_and(|ranges| ranges.iter().any(|range| raw_scripted_text(catalogue, &token(&range.id)).is_some()))
+    })
+}
+
+pub(crate) fn change_of(members: &[MemberRow]) -> Option<BalanceChange> {
+    if members.is_empty() {
+        return None;
+    }
+    let (mut daily, mut weekly) = (0_i64, 0_i64);
+    for member in members {
+        let row = member_row(member);
+        daily = daily.wrapping_add(row.daily_effective());
+        weekly = weekly.wrapping_add(row.weekly_effective());
+    }
+    let drift = dashboard_text::scripted_text::balance_drift(daily, weekly);
+    let (shown, rate) = match drift.shown {
+        dashboard_text::scripted_text::ChangeRate::Daily(rate) => (ChangeShown::Daily, rate),
+        dashboard_text::scripted_text::ChangeRate::Weekly(rate) => (ChangeShown::Weekly, rate),
     };
-    members.iter().any(|member| member.record == record.ordinal && links.slot(member.country) == Some(slot))
+    Some(BalanceChange { daily: daily.to_string(), weekly: weekly.to_string(), weekly_change: drift.weekly_change.to_string(), shown, rate: rate.to_string() })
 }
 
 fn probe_balance_tables(
@@ -469,12 +527,15 @@ fn probe_balance_tables(
     };
     let effects = catalogue.scripted_content().ok().and_then(|content| content.effects().ok());
     let power_balances = effects.as_ref().and_then(|effects| effects.view(None).power_balances);
+    let selected = selected_records(members, &links, filter_country, requested_slot);
+    let grouped = by_record(members);
     let mut items: Vec<(String, NameScope)> = Vec::new();
     for record in records {
-        if !record_selected(record, members, &links, filter_country, requested_slot) {
+        if selected.as_ref().is_some_and(|selected| !selected.contains(&record.ordinal)) {
             continue;
         }
-        let range_slot = record_range_slot(record, members, &links, filter_country, requested_slot);
+        let listed = grouped.get(&record.ordinal).map_or(&[][..], Vec::as_slice);
+        let range_slot = record_range_slot(listed, &links, filter_country, requested_slot);
         for bytes in [&record.balance, &record.left, &record.right, &record.trending] {
             let key = token(bytes);
             if let Some(raw) = raw_scripted_text(catalogue, &key) {
@@ -598,11 +659,14 @@ fn balances(
         reply.refuse("balance members", "a member has no identity at this hour, so no country's shown balance is known", unresolved);
     }
     let mut scripted = None;
+    let selected = selected_records(members, &links, filter_country, requested_slot);
+    let grouped = by_record(members);
     for record in records {
-        if !record_selected(record, members, &links, filter_country, requested_slot) {
+        if selected.as_ref().is_some_and(|selected| !selected.contains(&record.ordinal)) {
             continue;
         }
-        let range_slot = record_range_slot(record, members, &links, filter_country, requested_slot);
+        let listed = grouped.get(&record.ordinal).map_or(&[][..], Vec::as_slice);
+        let range_slot = record_range_slot(listed, &links, filter_country, requested_slot);
         let balance = token(&record.balance);
         let ranges: Vec<_> = content
             .and_then(|database| database.ranges(&record.balance))
@@ -648,9 +712,8 @@ fn balances(
             }
         });
         let trending = (!content_reader_parser::parser::c_string(&record.trending).is_empty()).then(|| side(catalogue, catalogue_reason, frame, &mut scripted, &record.trending, reply));
-        let record_members = members
+        let record_members = listed
             .iter()
-            .filter(|member| member.record == record.ordinal)
             .map(|member| {
                 let row = member_row(member);
                 BalanceMember {
@@ -699,6 +762,7 @@ fn balances(
             range,
             ranges,
             members: record_members,
+            change: change_of(listed),
             sources,
         });
     }
