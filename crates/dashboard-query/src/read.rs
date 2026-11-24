@@ -16,7 +16,7 @@ pub fn touched(reader: &TableReader, key: u128) -> bool {
         return true;
     }
     let Some(slot) = reader.slot(key) else { return false };
-    changes.inserted.contains(&slot) || changes.written.iter().any(|slots| slots.contains(&slot))
+    changes.witnessed.binary_search(&slot).is_ok() || changes.inserted.contains(&slot) || changes.written.iter().any(|slots| slots.contains(&slot))
 }
 
 pub fn number(reader: &TableReader, key: u128, column: usize) -> Option<i64> {

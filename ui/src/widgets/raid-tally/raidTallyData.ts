@@ -1,15 +1,13 @@
 import type { RaidMetric, RaidTallyRun, RaidTallySeries } from '../../dashboard/raids';
-import type { CountryRaceEntry, CountryRaceLine } from '../../charts/race/countryRace';
+import type { CountryRaceLine } from '../../charts/race/countryRace';
 import type { Span } from '../../charts/series';
-import { clipToSpans, runAt, runIndexAt, stretchStarts } from '../../charts/series.ts';
+import { clipToSpans, runAt, stretchStarts } from '../../charts/series.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
 import { shownRuns } from '../../charts/race/lines.ts';
 import type { LabelAt } from '../../charts/race/lines';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import { PARTIAL_LABEL } from '../../families/valueFormat.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
-import { compareTags } from '../../dashboard/tagOrder.ts';
 import { SECONDARY_DASH } from '../../charts/palette.ts';
 
 export type TallyMetric = RaidMetric;
@@ -24,20 +22,6 @@ export const tallySegmentAt = (series: ReadonlyMap<string, TallySeries>, tag: st
   const item = series.get(tag);
   return runAt(item?.identities ?? item?.segments ?? [], Math.floor(hour))?.firstHour ?? null;
 };
-
-export function tallyEntries(series: ReadonlyMap<string, TallySeries>, candidates: readonly string[], hour: number, metric: TallyMetric, limit?: number,
-  omitZero = false): CountryRaceEntry[] {
-  const rankBy = metric === 'succeeded' ? 'succeeded' : 'launched';
-  return candidates.flatMap(tag => {
-    const item = series.get(tag);
-    const index = runIndexAt(item?.runs ?? [], hour);
-    const run = index < 0 ? null : item!.runs[index];
-    const identity = runAt(item?.identities ?? item?.segments ?? [], hour);
-    if (!run || !identity || (omitZero && run[rankBy] === 0 && (metric !== 'both' || run.succeeded === 0))) return [];
-    return [{ tag, value: run[rankBy], label: marked(metric === 'both' ? tallyBoth(run) : tallyValue(run[rankBy]), run), stretch: JSON.stringify([identity.firstHour, item!.starts[index]]),
-      ...(metric === 'both' ? { inset: run.succeeded } : {}) }];
-  }).sort((a, b) => b.value - a.value || compareTags(a.tag, b.tag)).slice(0, limit);
-}
 
 export function tallyLines(series: readonly RaidTallySeries[], metric: TallyMetric, range: Span, membership: ReadonlyMap<string, readonly Span[]> | null): CountryRaceLine[] {
   return series.flatMap(item => {
@@ -55,19 +39,10 @@ export function tallyLines(series: readonly RaidTallySeries[], metric: TallyMetr
   });
 }
 const tallyBoth = (run: RaidTallyRun) => `${tallyValue(run.launched)} launched · ${tallyValue(run.succeeded)} succeeded`;
-const marked = (text: string, run: RaidTallyRun) => run.partial ? `${text} ${PARTIAL_LABEL}` : text;
 const countRow = (label: string, text: string, run: RaidTallyRun): TooltipRow => run.partial
   ? { label, valueState: { kind: 'partial', text, reason: run.partial } }
   : { label, value: text };
 const NOTE = 'Success includes critical success and excludes limited success.';
-
-export function tallyTooltip(series: ReadonlyMap<string, RaidTallySeries>, tag: string, hour: number, name: string): TooltipContent {
-  const run = runAt(series.get(tag)?.runs ?? [], Math.floor(hour));
-  return { title: name, subtitle: formatDateTime(hour), rows: run ? [
-    countRow('Launches', tallyValue(run.launched), run),
-    countRow('Successes', tallyValue(run.succeeded), run),
-  ] : [{ label: 'Not recorded at this time', tone: 'muted' }], note: NOTE };
-}
 
 export function tallyLineTooltip(series: ReadonlyMap<string, RaidTallySeries>, hour: number, tags: readonly string[],
   labelAt: LabelAt, country: (tag: string) => string, metric: TallyMetric): TooltipContent {

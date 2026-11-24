@@ -372,10 +372,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     return made;
   }, [isFilter, widget.countries, filterMatch, groups.data, track, selectedFallback, allTags, firstHour, lastHour]);
 
+  const allowsFactions = isMulti && policy.factions === true;
   const resolvedMulti = useMemo(() => {
-    if (!isMulti || widget.countries.kind === 'all') return null;
+    if (!isMulti || widget.countries.kind === 'all' || (allowsFactions && widget.countries.kind === 'factions')) return null;
     return resolveCountries(widget.countries, selectedFallback, groups.data, lastHour, Number.MAX_SAFE_INTEGER);
-  }, [isMulti, widget.countries, selectedFallback, groups.data, lastHour]);
+  }, [isMulti, allowsFactions, widget.countries, selectedFallback, groups.data, lastHour]);
 
   const singleSlotId = isMulti && policy.allowSingleSlot && widget.countries.kind === 'selected' && selectedFallback.length === 1
     ? countryFromKey(selectedFallback[0]!)
@@ -384,7 +385,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const needsSlots = isMulti && (
     typeof singleSlotId === 'number'
     || anySlot
-    || (widget.countries.kind !== 'all' && resolvedMulti?.top == null)
+    || (widget.countries.kind !== 'all' && !(allowsFactions && widget.countries.kind === 'factions') && resolvedMulti?.top == null)
   );
   const identityScope = useIdentityScope(runtime.client, track?.source, track?.branch.id, active && !!track);
   const branchBounds = useMemo(
@@ -1012,13 +1013,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }), [readTarget]);
 
   const shownSpan = view.bundle?.span ?? null;
-  const askedSpan = shownSpan ? `${shownSpan[0]}:${shownSpan[1]}` : '';
+  const spanStart = shownSpan ? shownSpan[0] : null;
+  const spanEnd = shownSpan && !following ? shownSpan[1] : Infinity;
   const ctxWithStaticSpan = useMemo<FamilyPlanContext<TAux> | null>(() => {
     if (!ctx) return null;
-    if (!askedSpan) return ctx;
-    const [lo, hi] = askedSpan.split(':').map(Number) as [number, number];
-    return { ...ctx, staticSpan: [lo, hi] as const };
-  }, [ctx, askedSpan]);
+    if (spanStart === null) return ctx;
+    return { ...ctx, staticSpan: [spanStart, spanEnd] as const };
+  }, [ctx, spanStart, spanEnd]);
 
   const currentCountryLooks = wantsColours ? labels : undefined;
   const currentExtra = useMemo<TExtra | undefined>(
