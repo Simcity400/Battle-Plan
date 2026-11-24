@@ -3,7 +3,7 @@ import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsValueField } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/contract.ts';
 import { inHourRanges, nextMembershipChange, type HourRanges } from '../../families/holders.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
@@ -192,11 +192,11 @@ const countries = {
   requireGroupsWhen: (widget: FamilyPlanContext['widget']) => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
 };
 
-export const casualtiesButterflyProjection: BarsProjection<CasualtiesOptions> = registerBarsProjection({
+export const casualtiesButterflyProjection: BarsProjection<CasualtiesOptions> = registerFamilyProjection({
   kind: 'casualties', family: 'bars', nextChange, project,
 }, 'butterfly');
 
-export const casualtiesRaceProjection: BarsProjection<CasualtiesOptions> = registerBarsProjection({
+export const casualtiesRaceProjection: BarsProjection<CasualtiesOptions> = registerFamilyProjection({
   kind: 'casualties', family: 'bars', nextChange, project,
 }, 'race');
 

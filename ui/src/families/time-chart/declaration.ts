@@ -1,7 +1,6 @@
 import type { IconName } from '../../components/Icons';
 import type { FamilyProjection } from '../contract.ts';
 import type { LaneBinding } from '../laneRuntime.ts';
-import { DEFAULT_VIEW, registerFamilyProjection } from '../registry.ts';
 import type {
   AuxProductSpec,
   BoundedReadView,
@@ -49,11 +48,4 @@ export interface TimeChartBinding<TOptions = unknown> extends LaneBinding<TOptio
   readonly width: number;
   readonly height: number;
   readonly zoom?: { readonly x?: readonly [number, number] | null; readonly y?: readonly [number, number] | null };
-}
-
-export function registerTimeChart<TOptions>(
-  projection: TimeChartProjection<TOptions>,
-  view = DEFAULT_VIEW,
-): TimeChartProjection<TOptions> {
-  return registerFamilyProjection(projection, view, 'time-chart') as TimeChartProjection<TOptions>;
 }

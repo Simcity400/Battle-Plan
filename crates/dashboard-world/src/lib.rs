@@ -10,4 +10,5 @@ pub fn forget(source: &dashboard_base::Source) {
     products::groups::forget(source);
     products::land_owners::forget(source);
     products::subjects::forget(source);
+    products::scalars::forget(source);
 }

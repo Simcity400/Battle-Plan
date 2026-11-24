@@ -5,7 +5,7 @@ import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { projectForceAtReply, validateNavalLossesAtReply, type ForceAtRaceBaseOptions } from '../../families/bars/forceAtRace.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import {
   nextSeriesRaceChange,
   seriesRaceUnavailable,
@@ -120,7 +120,7 @@ function compareExplicitRows(a: BarsDataRow, b: BarsDataRow): number {
   return compareTags(a.subject ?? a.key, b.subject ?? b.key);
 }
 
-export const navalLossesRaceProjection: BarsProjection<NavalLossesRaceOptions> = registerBarsProjection({
+export const navalLossesRaceProjection: BarsProjection<NavalLossesRaceOptions> = registerFamilyProjection({
   kind: 'naval-losses',
   family: 'bars',
   nextChange(readView, options) {

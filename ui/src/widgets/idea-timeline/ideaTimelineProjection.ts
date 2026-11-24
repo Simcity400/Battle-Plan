@@ -7,7 +7,7 @@ import type { TimelineWidgetDeclaration } from '../../families/timeline/declarat
 import { urlArtHandle } from '../../families/art/provider.ts';
 import { boundedRuns, clipSpansToHour, inHourSpans, nextBoundaryAfter, sortedBoundaries, spanStart, timelineModel, untilItem, wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
-import { registerTimelineProjection } from '../../families/timeline/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { IdeaHistoryReply, IdeaSpan } from '../../generated/dashboard';
 import { chosenCategory, lanesFor, lawLevel } from './ideaTimelineData.ts';
 
@@ -40,7 +40,8 @@ function bridgedSpans(spans: readonly IdeaSpan[], unobserved: IdeaHistoryReply['
   return out.sort((a, b) => a.firstHour - b.firstHour);
 }
 
-export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = registerTimelineProjection<IdeaTimelineOptions>({
+export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = registerFamilyProjection<TimelineProjection<IdeaTimelineOptions>>({
+  family: 'timeline',
   kind: 'idea-timeline',
 
   nextChange(readView) {
