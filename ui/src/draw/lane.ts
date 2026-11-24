@@ -3,6 +3,7 @@ import { SAME, type Ack, type Bitmap, type Entry, type FailureOrigin, type Frame
 import { parseAnswer, parseDatedPanelRecord, parseFollowedFrame, type FollowedAnswer } from '../dashboard/follow/message.ts';
 import { patchAnswer } from '../dashboard/follow/tables.ts';
 import { sectionOf } from '../dashboard/follow/liveCells.ts';
+import { PayloadStore, type PayloadsMessage, type Revisions } from '../dashboard/follow/payloads.ts';
 import type { InstalledViewport } from '../families/plan.ts';
 
 export interface PanelValue { kind: 'panel'; bytes: Uint8Array | null; data: unknown; refused: string | null }
@@ -20,13 +21,25 @@ export interface Binding {
 }
 
 export interface Supply {
-  statics?: { staticPanels?: unknown; staticAnswers?: unknown; staticShifts?: unknown } | null;
+  stamp?: number;
+  statics?: unknown;
   identity?: number | null;
+  dated?: Dated | null;
+}
+interface Resolved {
+  stamp?: number;
+  statics?: Readonly<Record<string, unknown>> | null;
+  identity?: { readonly id: number; readonly snapshot: unknown } | null;
   dated?: Dated | null;
 }
 export interface Bitmapped { readonly width: number; readonly height: number }
 
-export interface Scene { widget: number; subs: readonly Sub[]; pictures: readonly Picture<Value>[]; model: unknown }
+function withoutDated(binding: Binding): Binding {
+  const { dated: _, ...rest } = binding;
+  return rest;
+}
+
+export interface Scene { widget: number; subs: readonly Sub[]; pictures: readonly Picture<Value>[]; model: unknown; owner?: string }
 
 export interface PaintInput extends Scene {
   hour: number;
@@ -89,7 +102,7 @@ interface Sent {
   open?: 'followed' | 'panel'; viewport?: InstalledViewport; inspect: string | null; hit?: Painted['hit']; supply: number;
 }
 
-interface Supplied { statics: { staticPanels?: unknown; staticAnswers?: unknown; staticShifts?: unknown } | null; identity: number | null }
+interface Supplied { stamp: number | undefined; statics: Readonly<Record<string, unknown>> | null; identity: { readonly id: number; readonly snapshot: unknown } | null }
 
 interface Widget {
   id: number; order: number; subs: number[]; view: string; model: unknown; own: unknown; supplied: Supplied; supply: number; binding: Binding;
@@ -237,8 +250,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly gone = new Set<number>();
   private readonly failed = new Set<number>();
   private readonly presented = new Map<number, { widget: number; sent: Sent }>();
-  private readonly identities = new Map<number, unknown>();
-  private readonly earlySupply = new Map<number, Supply>();
+  private readonly store = new PayloadStore();
+  private readonly earlySupply = new Map<number, Resolved>();
   private readonly acks: { installed: readonly Ack[]; refused: readonly Refusal[] }[] = [];
   private ackMs = 0;
   private request: FrameRequest | null = null;
@@ -547,14 +560,15 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (was) this.unindexWidget(was);
     const early = was ? undefined : this.earlySupply.get(widget);
     this.earlySupply.delete(widget);
-    const supplied: Supplied = was?.supplied ?? { statics: null, identity: null };
-    const made: Widget = { id: widget, order: was?.order ?? this.nextOrder++, subs: [...subs], view, model, own: model, supplied, supply: was?.supply ?? 0,
+    const supplied: Supplied = was?.supplied ?? { stamp: undefined, statics: null, identity: null };
+    const own = this.store.resolve(model);
+    const made: Widget = { id: widget, order: was?.order ?? this.nextOrder++, subs: [...subs], view, model: own, own, supplied, supply: was?.supply ?? 0,
       binding: was?.binding ?? { generation: 1, surfaces: [], offset: 0, pin: null },
       installed: was?.installed ?? null, shown: was?.shown ?? null, inflight: null, sent: {}, forceFull: false, motion: false, inspect: was?.inspect ?? null, validWindow: null, start: null, state: was?.state ?? new Map(), cost: was?.cost ?? 0.1,
       served: was?.served ?? 0, deferrals: 0, halted: null, parked: null };
     made.model = this.compose(made);
     this.widgets.set(widget, made);
-    if (early) this.supply(widget, early);
+    if (early) this.supplied(made, early);
     this.indexWidget(made);
     if (made.inspect !== null) this.inspectedWidgets.add(widget);
     this.dirtyWidgets.add(widget);
@@ -579,10 +593,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (!held) return;
     const ownerChanged = binding.owner !== undefined && held.binding.owner !== undefined && binding.owner !== held.binding.owner;
     held.binding = binding;
-    if (model !== undefined) {
-      held.own = model;
-      held.model = this.compose(held);
-    }
+    if (ownerChanged) held.supplied = { stamp: undefined, statics: null, identity: held.supplied.identity };
+    if (model !== undefined) held.own = this.store.resolve(model);
+    if (model !== undefined || ownerChanged) held.model = this.compose(held);
     held.sent = {};
     held.forceFull = false;
     held.inflight = null;
@@ -605,32 +618,32 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.wake();
   }
 
-  identity(id: number, snapshot: unknown) {
-    if (snapshot === null) this.identities.delete(id);
-    else this.identities.set(id, snapshot);
+  payloads(message: PayloadsMessage) {
+    this.store.apply(message);
   }
 
   supply(widget: number, change: Supply) {
+    const resolved: Resolved = {
+      ...change.stamp !== undefined ? { stamp: change.stamp } : {},
+      ...change.statics !== undefined ? { statics: change.statics === null ? null : this.store.resolve(change.statics) as Readonly<Record<string, unknown>> } : {},
+      ...change.identity !== undefined ? { identity: change.identity === null ? null : { id: change.identity, snapshot: (this.store.resolve({ revisions: { identitySnapshot: change.identity } }) as { identitySnapshot: unknown }).identitySnapshot } } : {},
+      ...change.dated !== undefined ? { dated: change.dated } : {},
+    };
     const held = this.widgets.get(widget);
-    if (!held) {
-      const early = this.earlySupply.get(widget) ?? {};
-      if (change.statics !== undefined) early.statics = change.statics;
-      if (change.identity !== undefined) early.identity = change.identity;
-      if (change.dated !== undefined) early.dated = change.dated;
-      this.earlySupply.set(widget, early);
-      return;
-    }
-    if (change.statics !== undefined) held.supplied = { ...held.supplied, statics: change.statics };
+    if (held) this.supplied(held, resolved);
+    else this.earlySupply.set(widget, { ...this.earlySupply.get(widget), ...resolved });
+  }
+
+  private supplied(held: Widget, change: Resolved) {
+    if (change.statics === undefined && change.dated !== undefined && change.stamp !== held.supplied.stamp) return;
+    if (change.statics !== undefined) held.supplied = { ...held.supplied, stamp: change.stamp, statics: change.statics };
     if (change.identity !== undefined) held.supplied = { ...held.supplied, identity: change.identity };
-    if (change.dated !== undefined) {
-      const { dated: _, ...rest } = held.binding;
-      held.binding = change.dated ? { ...rest, dated: change.dated } : rest;
-    }
+    if (change.dated !== undefined) held.binding = change.dated ? { ...withoutDated(held.binding), dated: change.dated } : withoutDated(held.binding);
     if (change.statics !== undefined || change.identity !== undefined) {
       held.model = this.compose(held);
       held.supply++;
     }
-    this.dirtyWidgets.add(widget);
+    this.dirtyWidgets.add(held.id);
     this.syncWindowTracking(held);
     this.wake();
   }
@@ -638,10 +651,16 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private compose(widget: Widget): unknown {
     const own = widget.own, { statics, identity } = widget.supplied;
     if (!own || typeof own !== 'object' || (statics === null && identity === null)) return own;
+    const revisions = {
+      ...(own as { revisions?: Revisions }).revisions,
+      ...(statics as { revisions?: Revisions } | null)?.revisions,
+      ...identity !== null ? { identitySnapshot: identity.id } : {},
+    };
     return {
       ...own,
       ...statics,
-      ...identity !== null ? { identitySnapshot: this.identities.get(identity) ?? null } : {},
+      ...identity !== null ? { identitySnapshot: identity.snapshot } : {},
+      revisions,
     };
   }
 
@@ -1457,7 +1476,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (!joined) return null;
     const view = this.host.views(widget.view);
     if (!view.next) return { pictures, ...joined };
-    const scene: Scene = { widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures, model: widget.model };
+    const scene: Scene = { widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures, model: widget.model, ...widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {} };
     const version = `${widget.subs.length ? pictures.map(picture => picture.parts.map(part => part.version).join('.')).join('|') : `bound:${widget.binding.generation}`}:${widget.supply}`;
     const at = Math.max(joined.window[0], Math.min(target, joined.c));
     let window = changeWindow(joined.window, at, hour => view.next!(scene, hour, widget.state), widget.start?.version === version ? widget.start.hour : undefined);
@@ -1670,7 +1689,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       let failedLocally = false;
       for (let pass = 0; pass < 4; pass++) {
         try {
-          painted = view.paint({ widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures: activeSelected.pictures, model: widget.model,
+          painted = view.paint({ widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures: activeSelected.pictures, model: widget.model, ...widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {},
             hour: activeSelected.window[0], seek: request.seek, speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start }, widget.state, this.content);
           mode = painted.mode ?? 'picture'; reason = painted.reason; failureOrigin = undefined;
           const refusals = activeSelected.pictures.map(refusalOf);

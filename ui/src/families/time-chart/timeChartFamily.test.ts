@@ -20,7 +20,7 @@ import { registerFamilyProjection } from '../registry.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
 import { createTimeChartGestures, parseTimeChartHit, timeChartHostAdapter } from './hostAdapter.ts';
 import { timeChartLaneView } from './laneView.ts';
-import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, LANE_THEME, LaneTransport } from '../laneRuntime.fixture.ts';
 import { formatChartAxisValue, layoutTimeChart } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
 import { buildLineSubpaths } from './painter.ts';
@@ -568,7 +568,8 @@ describe('time-chart laneView integration', () => {
         ['warSupport', new Map([['GER', boundTiledSeries(warLine, displayedHour(until), { headValue: knownValue(0.9) })]])],
       ]),
       panels: new Map([['markers', { hour: until, nextChange: until + 48, warnings: [], markers: [
-        { id: 'w1', hour: H1936 + 100, kind: 'war', title: 'War with POL began', verb: 'began', other: 'POL', faction: null, sprite: null, alert: true },
+        { id: 'i1', hour: H1936 + 105, kind: 'idea', title: 'Partial mobilisation adopted', verb: null, other: null, faction: null, sprite: null, alert: false },
+        { id: 'w1', hour: H1936 + 113, kind: 'war', title: 'War with POL began', verb: 'began', other: 'POL', faction: null, sprite: null, alert: true },
       ] }]]),
       identity: createSnapshotIdentityProvider(index),
     });
@@ -586,8 +587,10 @@ describe('time-chart laneView integration', () => {
     assert.equal(model.series[0]!.valueScale, 100);
     assert.equal(model.series[0]!.endLabel?.value, '100%');
     assert.equal(model.series[1]!.endLabel?.value, '90%');
-    assert.equal(model.markers?.length, 1, 'the recorded markers are drawn from the plan entry');
-    assert.equal(model.markers![0]!.title, 'War with Poland began');
+    assert.deepEqual(model.markers?.map(marker => [marker.hour, marker.title]), [
+      [H1936 + 105, 'Partial mobilisation adopted'],
+      [H1936 + 113, 'War with Poland began'],
+    ], 'each event keeps its own hour: a later alert on the same day neither moves nor hides the morning one');
 
     const fullLayout = layoutTimeChart(model, 960, 276, FONT, measure);
     assert.deepEqual(fullLayout.yTicks, [0, 25, 50, 75, 100]);
@@ -799,41 +802,42 @@ describe('time-chart picture authority', () => {
     const state = new Map<string, unknown>();
     let seq = 1;
     const hour = H1936 + 95;
-    const tiled = (rev: number, first: number, last: number) => ({
-      rev, source: 'main', tag: 'GER', head: 'h', decimals: 0, binHours: 96, from: H1936, to: H1936 + 95, width: 1,
+    const transport = new LaneTransport();
+    const tiled = (first: number, last: number) => ({
+      source: 'main', tag: 'GER', head: 'h', decimals: 0, binHours: 96, from: H1936, to: H1936 + 95, width: 1,
       buckets: [makeBucket(H1936, H1936 + 95, first, 10, 30, last, H1936 + 95)], missing: [], parts: [], marks: null,
     });
-    const paint = (rev: number, first: number, last: number) => view.paint({
+    const paint = (first: number, last: number) => view.paint({
       widget: 1,
       subs: [],
       pictures: [],
-      model: {
+      model: transport.carry({
         family: 'time-chart', kind: 'test-correction', options: {}, sources: {}, extent: [H1936, H1936 + 95], width: 600, height: 240, scrollTop: 0, theme: LANE_THEME,
-        tiledLines: [tiled(rev, first, last)], keepTiled: [rev], tiledBySource: { main: { GER: rev } },
-      } satisfies TimeChartBinding,
+        tiledBySource: { main: { GER: tiled(first, last) } },
+      } satisfies TimeChartBinding),
       hour,
       seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 0,
     }, state, () => `c${seq++}`);
-    paint(1, 10, 30);
+    paint(10, 30);
     const before = created.ops.filter(op => op === 'clearRect').length;
-    paint(2, 30, 10);
+    paint(30, 10);
     assert.equal(created.ops.filter(op => op === 'clearRect').length, before + 1, 'the corrected history is drawn');
 
-    const bound = (rev: number, first: number, last: number) => ({
+    const bound = (first: number, last: number) => ({
       family: 'time-chart', kind: 'test-correction', options: {}, sources: {}, extent: [H1936, H1936 + 95], width: 600, height: 240, scrollTop: 0, theme: LANE_THEME,
-      tiledLines: [tiled(rev, first, last)], keepTiled: [rev], tiledBySource: { main: { GER: rev } },
+      tiledBySource: { main: { GER: tiled(first, last) } },
     } satisfies TimeChartBinding);
     const surface = { width: 600, height: 240, dpr: 1 };
-    assert.equal(assertQuietFrames(() => timeChartLaneView(() => {}), { label: 'chart', binding: bound(1, 10, 30), hour, speed: 24 }, 24, surface), hour + 1, 'a playing chart changes every hour');
-    const held = bound(1, 10, 30);
+    assert.equal(assertQuietFrames(() => timeChartLaneView(() => {}), { label: 'chart', binding: bound(10, 30), hour, speed: 24 }, 24, surface), hour + 1, 'a playing chart changes every hour');
+    const held = bound(10, 30);
     assertFreshPaint(() => timeChartLaneView(() => {}), [
       { label: 'held', binding: held, hour, check: true },
       { label: 'earlier', binding: held, hour: hour - 20, speed: 24, check: true },
       { label: 'back to the head', binding: held, hour, check: true },
-      { label: 'corrected history', binding: bound(2, 30, 10), hour, check: true },
+      { label: 'corrected history', binding: bound(30, 10), hour, check: true },
     ], surface);
   });
   it('reads head rows by an index, not a scan per tag, and a missing head cell travels as missing with its reason', () => {
@@ -853,25 +857,29 @@ describe('time-chart picture authority', () => {
       },
     });
     const tags = ['GER', 'ITA'];
-    Object.defineProperty(tags, 'indexOf', { value: () => { throw new Error('scanned the tag list'); } });
     const answer = parseFollowed(message(10, [{ id: 1, answer: { keys: [1n, 2n], columns: 1, values: [5n, 7n] } }])).answers[0]!.answer;
     const created = mockCanvas(600, 240);
     const view = laneOn(created);
     const hour = H1936 + 95;
-    const line = (tag: string) => ({ rev: tag === 'GER' ? 11 : 12, source: 'main', tag, head: 'h', decimals: 0, binHours: 96, from: H1936, to: hour, width: 1,
+    const transport = new LaneTransport();
+    const line = (tag: string) => ({ source: 'main', tag, head: 'h', decimals: 0, binHours: 96, from: H1936, to: hour, width: 1,
       buckets: [makeBucket(H1936, hour, 1)], missing: [], parts: [], marks: null });
-    const paint = (followed: typeof answer) => (view.paint({
-      widget: 1, subs: [], pictures: [],
-      model: {
+    const lines = { main: { GER: line('GER'), ITA: line('ITA') } };
+    const heads = { main: { answerName: 'main', tags } };
+    const paint = (followed: typeof answer) => {
+      const model = transport.carry({
         family: 'time-chart', kind: 'test-head-index', options: {}, sources: {}, extent: [H1936, hour], width: 600, height: 240, scrollTop: 0, theme: LANE_THEME, audit: true, auditId: 1,
-        tiledLines: [line('GER'), line('ITA')], keepTiled: [11, 12], tiledBySource: { main: { GER: 11, ITA: 12 } },
-        headSourceBySeries: { main: { answerName: 'main', tags } },
+        tiledBySource: lines,
+        headSourceBySeries: heads,
         staticAnswers: { main: followed },
-      } satisfies TimeChartBinding,
-      hour, seek: 0, speed: 0,
-      binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
-      inspect: null, now: 0,
-    }, new Map(), () => 'c').fields.audit?.value as { rows: readonly { value?: string }[] }).rows.map(row => row.value);
+      } satisfies TimeChartBinding);
+      Object.defineProperty(model.headSourceBySeries!.main!.tags, 'indexOf', { configurable: true, value: () => { throw new Error('scanned the tag list'); } });
+      return (view.paint({
+        widget: 1, subs: [], pictures: [], model, hour, seek: 0, speed: 0,
+        binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
+        inspect: null, now: 0,
+      }, new Map(), () => 'c').fields.audit?.value as { rows: readonly { value?: string }[] }).rows.map(row => row.value);
+    };
     assert.deepEqual(paint(answer), ['7']);
     const unread = parseFollowed(message(10, [{ id: 1, answer: { keys: [1n, 2n], columns: 1, values: [5n, 0n], states: [0, 1], reasons: [null, 'Popularity not read at this hour'] } }])).answers[0]!.answer;
     assert.deepEqual(paint(unread), ['Popularity not read at this hour'], 'an unread followed cell after a known earlier bucket is missing, never the bucket');

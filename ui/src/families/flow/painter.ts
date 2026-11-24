@@ -296,15 +296,18 @@ export function drawFlow(ctx: Canvas2D, input: DrawFlowInput): void {
   ctx.fillRect(0, 0, layout.width, layout.height);
 
   if (layout.legendHeight > 0) {
-    const entries = [
-      ...(model.parts.length > 1
-        ? model.parts.map(part => ({ label: part.label, color: colour(theme.surface, part.ordinal) }))
-        : []),
-      ...(model.notRecordedKey ? [{ label: 'Not recorded', color: '', hatch: true, muted: true }] : []),
-    ];
-    if (entries.length) {
+    const partCount = model.parts.length > 1 ? model.parts.length : 0;
+    const trailing = model.notRecordedKey ? [{ label: 'Not recorded', color: '', hatch: true, muted: true }] : undefined;
+    if (partCount > 0 || trailing) {
       drawLegendStrip(ctx, 0, 0, layout.width, layout.legendHeight, {
-        entries,
+        entries: {
+          length: partCount,
+          at: i => {
+            const part = model.parts[i]!;
+            return { label: part.label, color: colour(theme.surface, part.ordinal) };
+          },
+          ...(trailing ? { trailing } : {}),
+        },
         padX: FLOW_PAD,
         entryGap: 12,
       }, theme);
