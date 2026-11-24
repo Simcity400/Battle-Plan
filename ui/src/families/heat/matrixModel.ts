@@ -76,7 +76,7 @@ export type MatrixRamp = 'accent' | 'red' | 'amber';
 export interface MatrixCells {
   readonly present: ReadonlyMap<number, MatrixCell>;
   readonly absent: MatrixCell | ((rowIndex: number) => MatrixCell);
-  readonly self?: MatrixCell;
+  readonly self?: MatrixCell | ((rowIndex: number) => MatrixCell);
 }
 
 const SELF: MatrixCell = { kind: 'diagonal' };
@@ -90,7 +90,10 @@ export function matrixPairIndex(columnCount: number, rowIndex: number, columnInd
 export function matrixCellAt(model: Pick<HeatMatrixModel, 'rows' | 'columns' | 'cells'>, rowIndex: number, columnIndex: number): MatrixCell {
   const present = model.cells.present.get(rowIndex * model.columns.length + columnIndex);
   if (present) return present;
-  if (model.rows[rowIndex]?.id === model.columns[columnIndex]?.id) return model.cells.self ?? SELF;
+  if (model.rows[rowIndex]?.id === model.columns[columnIndex]?.id) {
+    const self = model.cells.self ?? SELF;
+    return typeof self === 'function' ? self(rowIndex) : self;
+  }
   const absent = model.cells.absent;
   return typeof absent === 'function' ? absent(rowIndex) : absent;
 }
