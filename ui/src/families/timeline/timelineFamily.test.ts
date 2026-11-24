@@ -9,6 +9,7 @@ import { frameTimeline, placeTimeline } from './layout.ts';
 import { resolutionFor } from './resolution.ts';
 import { familyTimelineLaneView, nextDayStart, type FamilyTimelineBinding } from './laneView.ts';
 import { registerFamilyProjection } from '../registry.ts';
+import { timelineModel } from './helpers.ts';
 import type { PaintInput } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
@@ -220,4 +221,16 @@ test('a timeline lane equals a fresh paint after a seek back, a correction and a
     { label: 'correction', binding: binding([lane('Continuation War', true), child]), hour: at, check: true },
     { label: 'opened', binding: binding([lane('Continuation War', true), child], { war: true }), hour: at, check: true },
   ], surface);
+});
+
+test('timelineModel forwards footer notes through to lane meta', () => {
+  const model = timelineModel({
+    hour: H(1940) as TimelineModel['hour'],
+    firstHour: FIRST,
+    labelWidth: 96,
+    summaryText: '4 completed',
+    notes: ['Head: 2 in progress · Radio 50%, 10 days left'],
+  });
+  assert.deepEqual(model.notes, ['Head: 2 in progress · Radio 50%, 10 days left']);
+  assert.equal(model.summaryText, '4 completed');
 });
