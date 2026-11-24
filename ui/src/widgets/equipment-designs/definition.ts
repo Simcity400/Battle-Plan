@@ -3,6 +3,7 @@ import type { OptionField } from '../../dashboard/options';
 import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../families/table/settings.ts';
 
 export const COLUMNS: readonly TableColumnDefaults[] = [
+  { key: 'kind', label: '', as: 'plain', offered: OFFERED.text, hideable: false },
   { key: 'design', label: 'Design', as: 'plain', offered: OFFERED.text, hideable: false },
   { key: 'type', label: 'Equipment', as: 'plain', offered: OFFERED.text },
   { key: 'state', label: 'State', as: 'dot', offered: OFFERED.status },

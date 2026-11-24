@@ -3,6 +3,7 @@ import type { OptionField } from '../../dashboard/options';
 import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../families/table/settings.ts';
 
 export const COLUMNS: readonly TableColumnDefaults[] = [
+  { key: 'kind', label: '', as: 'plain', offered: OFFERED.text, hideable: false },
   { key: 'organisation', label: 'Organisation', as: 'plain', offered: OFFERED.text, hideable: false },
   { key: 'size', label: 'Size', as: 'faint', offered: OFFERED.number },
   { key: 'funds', label: 'Funds', as: 'faint', offered: OFFERED.number },

@@ -61,7 +61,7 @@ export function resolveIdentity(readView: BoundedReadView, kind: EntityKind, key
   return {
     value,
     name: value.kind === 'known' ? value.value : key,
-    ...flagState(readView, who.flagChoice, options.flag ?? 'small'),
+    ...flagState(readView, who.flagChoice, options.flag ?? 'panel'),
     ...(who.colour?.status === 'ready' ? { color: who.colour.value } : {}),
   };
 }
@@ -79,9 +79,20 @@ export function identityCell(readView: BoundedReadView, kind: EntityKind, key: s
   };
 }
 
-export function identityFlag(readView: BoundedReadView, tag: string, options: IdentityOptions = {}): TableCellFlag {
-  const who = resolveIdentity(readView, 'country', tag, options);
-  return { tag, ...(who.icon ? { icon: who.icon } : {}), ...(who.iconPending ? { pending: true } : {}) };
+export interface IdentityFlagsOptions extends IdentityOptions {
+  readonly dimmed?: readonly boolean[];
+}
+
+export function identityFlags(readView: BoundedReadView, kind: EntityKind, keys: readonly string[], options: IdentityFlagsOptions = {}): TableCellFlag[] {
+  return keys.map((key, index) => {
+    const who = resolveIdentity(readView, kind, key, options);
+    return {
+      tag: key,
+      ...(who.icon ? { icon: who.icon } : {}),
+      ...(who.iconPending ? { pending: true } : {}),
+      ...(options.dimmed?.[index] ? { dimmed: true } : {}),
+    };
+  });
 }
 
 export function artNameCell(
@@ -93,6 +104,16 @@ export function artNameCell(
 ): TableCell {
   return {
     value: name ? knownValue(name) : notRecorded(missing),
+    iconSlot: true,
+    artShape: shape,
+    ...(name ? { artName: name } : {}),
+    ...artState(readView, handle),
+  };
+}
+
+export function artKindCell(readView: BoundedReadView, handle: ArtHandle | null, shape: TableCell['artShape'], name: string | null): TableCell {
+  return {
+    value: name ? knownValue(name) : notRecorded('Not recorded'),
     iconSlot: true,
     artShape: shape,
     ...(name ? { artName: name } : {}),

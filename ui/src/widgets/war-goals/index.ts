@@ -1,3 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import WarGoalsWidget from './WarGoalsWidget';
-export default { render: WarGoalsWidget } satisfies WidgetRenderer;
+import { warGoalsDeclaration } from './warGoalsProjection';
+
+export default { declaration: warGoalsDeclaration } satisfies WidgetRenderer;

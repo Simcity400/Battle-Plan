@@ -26,7 +26,21 @@ export const CHART_MEASURE_COLOURS = {
   other: '#3e3e3e',
   short: '#e5484d',
   shortInk: '#ff6b6f',
+  temperatureCold: '#4f8fcf',
+  temperatureWarm: '#e3843b',
+  weatherModifier: '#9085e9',
+  opinionNegative: '#d95926',
+  opinionPositive: '#199e70',
+  intelCoverage: '#3987e5',
 } as const;
+
+export const CONVOY_EFFICIENCY_STOPS: readonly (readonly [number, string])[] = [
+  [1, '#22364f'],
+  [0.86, '#a8790f'],
+  [0.62, '#d4661c'],
+  [0.36, '#e2464e'],
+  [0, '#ff6b74'],
+];
 
 const GOLDEN_ANGLE = 137.50776405003785;
 const LIGHTNESS_STEP = 0.7548776662466927;

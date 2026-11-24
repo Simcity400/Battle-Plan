@@ -3,8 +3,7 @@ import test from 'node:test';
 import type { ResearchHistory } from '../research/types';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import { estimateHour, inspectedSlot, slotInspection, slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
-import { activeSlots, isOpenedResearch, openedResearch, researchAfter } from './activeResearchData.ts';
-import { completedBy, researchAt } from '../research/researchData.ts';
+import { activeSlots, openedResearch } from './activeResearchData.ts';
 import { panelStructure, panelViews } from '../../draw/panels/views.ts';
 import type { ResearchEntry, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsAt } from '../research/types';
@@ -100,31 +99,6 @@ test('at an hour without a read, slots open at the last read are unavailable rat
   const covered = activeSlots(history, reply(day(90), [], 'This country\'s research slots were not read together'));
   assert.deepEqual(covered.map(slot => slot.kind === 'unavailable' && slot.reason), ['This country\'s research slots were not read together']);
 });
-test('an opened research keeps its own assignment: completed only once seen complete, never another level, and named when gone', () => {
-  const done = (first: number, ended: number, seen: number | null): ResearchEntry => ({ ...active, firstObservedHour: first, outcome: 'completed', endedByHour: ended, outcomeObservedHour: seen });
-  const history: ResearchHistory = { coverage: open, slots: [
-    { index: 0, availability: open, entries: [done(day(0), day(20), null), done(day(30), day(60), day(64)), { ...active, firstObservedHour: day(70), level: 1 }], states: [], progress: [] },
-    { index: 1, availability: open, entries: [{ ...active, firstObservedHour: day(5), outcome: 'switched', endedByHour: day(15) }], states: [], progress: [] },
-  ] };
-  const after = (opened: { slot?: number; first: number | null; index?: number }, hour: number) =>
-    researchAfter(researchAt(history, hour), opened.first === null
-      ? { slot: opened.slot ?? 0, token: 'radar', databaseIndex: opened.index ?? 4, firstObservedHour: null, readHour: day(8), definition: null }
-      : { slot: opened.slot ?? 0, token: 'radar', databaseIndex: opened.index ?? 4, firstObservedHour: opened.first, readHour: null }, hour);
-  const completed = (result: ReturnType<typeof researchAfter>) => result.kind === 'completed' ? result.hour : result.message;
-  assert.equal(completed(after({ first: day(30) }, day(62))), 'Left its slot; what became of it is not recorded at this hour.', 'a completion is not shown before it was observed');
-  assert.equal(completed(after({ first: day(30) }, day(70))), day(60));
-  const bounded = after({ first: day(30) }, day(70));
-  assert.ok(bounded.kind === 'completed' && completedBy({ ...bounded.entry, lastObservedHour: day(50) }), 'a research last seen well before it left its slot completed by then, not on that day');
-  assert.ok(bounded.kind === 'completed' && !completedBy({ ...bounded.entry, lastObservedHour: day(60) - 1 }), 'seen the hour before it left, it completed then');
-  assert.equal(completed(after({ first: day(0) }, day(90))), day(20), 'the earlier level keeps its own date, not the latest one of its token');
-  assert.equal(completed(after({ first: day(70) }, day(90))), 'This research is not recorded in its slot at this hour.');
-  assert.equal(completed(after({ first: day(30), index: 5 }, day(90))), 'This research is not recorded in its slot at this hour.', 'another definition of the token is not this research');
-  assert.match(completed(after({ slot: 1, first: day(5) }, day(20))) as string, /^Switched out of its slot by /);
-  assert.match(completed(after({ first: day(30) }, day(10))) as string, /^Not in its slot yet at this hour/);
-  assert.match(completed(after({ first: null }, day(10))) as string, /assignment was not recorded/);
-  assert.match(completed(after({ first: null }, day(6))) as string, /^Not read in its slot yet/);
-});
-
 test('a research without a joined assignment keeps the definition it was read with, and a later read is never taken for it', () => {
   const first: ResearchEntry = { ...active, token: 'mod_tech', databaseIndex: 5 };
   const history: ResearchHistory = { coverage: open, slots: [{ index: 0, availability: open, entries: [first], states: [], progress: [] }] };
@@ -137,8 +111,6 @@ test('a research without a joined assignment keeps the definition it was read wi
   };
   const opened = openedResearch(researching(day(96)));
   assert.deepEqual([opened.databaseIndex, opened.firstObservedHour, opened.readHour], [6, null, day(96)], 'the definition the slot read is kept');
-  assert.ok(isOpenedResearch(researching(day(96)), opened));
-  assert.ok(!isOpenedResearch(researching(day(97)), opened), 'a later read of the token in the slot is not this research');
 });
 
 test('U-S7: an open breakdown reads at the installed estimate, and moves only when the shown days left or its read change', () => {

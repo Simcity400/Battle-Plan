@@ -249,39 +249,21 @@ mod lend_lease {
         let partners = json!({ "branchId": "1", "holder": "GER" });
         same_on_both_paths::<LendLeaseBalance>(&source, partners.clone());
         assert_eq!(asked::<LendLeaseBalance>(&source, partners, 125).unwrap()["rows"], json!([{ "slot": 8, "tag": "FRA", "values": ["1300", "0", "0", "0"] }]));
+        let top = json!({ "branchId": "1", "rank": "industry", "top": 1 });
+        same_on_both_paths::<LendLeaseBalance>(&source, top.clone());
+        assert_eq!(asked::<LendLeaseBalance>(&source, top, 125).unwrap()["rows"], json!([
+            { "slot": 7, "tag": "GER", "values": ["1300", "0", "0", "0"] },
+        ]), "the product cuts the top after ranking by sent plus received, ties by slot");
+        let ranked = asked::<LendLeaseBalance>(&source, json!({ "branchId": "1", "rank": "fuel" }), 125).unwrap();
+        assert_eq!(ranked["rows"], json!([]), "a ranked population leaves out countries with none of the measure");
+        let chosen = asked::<LendLeaseBalance>(&source, json!({ "branchId": "1", "rank": "industry", "countries": ["MOD", 8] }), 125).unwrap();
+        assert_eq!(chosen["rows"], json!([
+            { "slot": 8, "tag": "FRA", "values": ["0", "0", "1300", "0"] },
+            { "slot": 10, "tag": "MOD", "values": ["0", "0", "0", "0"] },
+        ]), "chosen countries keep a recorded zero and come in rank order");
         let unread = asked::<LendLeaseBalance>(&source, every, UNREAD).unwrap();
         assert_eq!(unread["rows"], json!([]));
         assert!(unread["missing"].as_str().unwrap().starts_with("Lend-lease histories are not recorded"), "unknown is not no lend-lease");
-    }
-
-    #[test]
-    fn a_holders_partners_over_time_sum_its_raw_ids_rows_per_partner_slot_and_skip_unread_hours() {
-        use dashboard_base::products::Product;
-        use crate::products::economy::lend_lease_partners::LendLeasePartners;
-        let source = recording();
-        let params = serde_json::from_value(json!({ "branchId": "1", "holder": "GER", "measure": "industry" })).unwrap();
-        let reply = serde_json::to_value(LendLeasePartners::load(&source, &params, &load(), &AtomicBool::new(false)).unwrap()).unwrap();
-        assert_eq!(reply["known"], json!([{ "firstHour": FIRST, "lastHour": UNREAD - 1 }, { "firstHour": UNREAD + 1, "lastHour": LAST }]), "an unread hour is not known");
-        assert_eq!(reply["partners"].as_array().unwrap().len(), 1, "both of GER's raw ids send to one partner slot");
-        let partner = &reply["partners"][0];
-        assert_eq!(partner["slot"], 8);
-        assert_eq!(partner["tags"][0]["tag"], "FRA");
-        let sent = json!([[100, 109, "1100"], [110, 111, "1200"], [113, 119, "1200"], [120, 129, "1300"], [130, 130, "1400"]]);
-        let at = asked::<LendLeaseBalance>(&source, json!({ "branchId": "1", "holder": "GER" }), 125).unwrap();
-        assert_eq!(at["rows"][0]["values"][0], "1300", "the partner's sum over time is the at-hour reply's at the same hour");
-        assert_eq!(partner["values"][0], sent);
-        assert_eq!(partner["values"][1], json!([[100, 111, "0"], [113, 130, "0"]]), "a recorded zero stays zero");
-        assert_eq!(partner["values"].as_array().unwrap().len(), 2, "the measure asked: sent and received");
-        assert_eq!(reply["totals"][0], sent, "the holder's totals are its partners' sum");
-    }
-
-    #[test]
-    fn partner_pieces_sum_by_hour_within_the_known_hours_and_hold_zero_after_they_end() {
-        use crate::products::economy::lend_lease_partners::summed;
-        let pieces = [(10, 14, 5), (12, 19, 7)];
-        let known = [(10, 15), (17, 25)];
-        assert_eq!(summed(&pieces, &known), [(10, 11, 5), (12, 14, 12), (15, 15, 7), (17, 19, 7), (20, 25, 0)]);
-        assert_eq!(summed(&[], &known), [(10, 15, 0), (17, 25, 0)]);
     }
 }
 

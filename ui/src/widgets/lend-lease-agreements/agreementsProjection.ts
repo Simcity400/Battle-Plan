@@ -3,7 +3,7 @@ import type { LiveValues } from '../../charts/live';
 import { FIXED5, fixedText, FUEL_QUANTITY, MARKET, SHARE, validateMarketReply } from '../../dashboard/market.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artNameCell, identityFlag, identityName, newIdentityBoundary, urlArtHandle } from '../../families/table/identityCell.ts';
+import { artNameCell, identityFlags, identityName, newIdentityBoundary, urlArtHandle } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
@@ -81,7 +81,7 @@ function agreementRows(
   const once = amounts(terms.once);
   const delivered = amounts(terms.delivered);
   const sunk = amounts(terms.sunk);
-  const flags = [terms.giver, terms.receiver].flatMap(tag => (tag === null ? [] : [identityFlag(readView, tag, { boundary })]));
+  const flags = identityFlags(readView, 'country', [terms.giver, terms.receiver].filter((tag): tag is string => tag !== null), { boundary });
   const sideName = (tag: string | null) => (tag === null ? 'Country not recorded' : identityName(readView, 'country', tag));
   const pair = `${sideName(terms.giver)} → ${sideName(terms.receiver)}`;
   const country: TableCell = { value: knownValue(pair), flags };
@@ -105,7 +105,7 @@ function agreementRows(
       name: named?.name ?? variant,
       cells: {
         country,
-        equipment: artNameCell(readView, named?.name ?? null, urlArtHandle(image), named?.nameUnknown ?? 'The recording does not name this design at this hour', 'wide'),
+        equipment: artNameCell(readView, named?.name ?? null, urlArtHandle(image), named?.nameUnknown ?? 'The recording does not name this design at this hour', 'equipment'),
         monthly: month === undefined ? { value: notApplicable(schedule!) } : { value: whole(month, FIXED5), format: 'integer' },
         delivered: { value: whole(delivered.get(variant) ?? 0n, FIXED5), format: 'integer' },
         last,

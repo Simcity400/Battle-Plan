@@ -8,7 +8,6 @@
   overflow: hidden;
 }
 .research-now-cell > .is-progress { text-align: end; }
-.doctrine-mastery-values dd,
 .research-now-cell.is-idle small { flex: 1; }
 .research-now-label { display: flex; gap: .25em; }
 .research-now-label > [data-paint] { flex: 1; }

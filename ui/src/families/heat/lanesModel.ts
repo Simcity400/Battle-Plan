@@ -43,6 +43,8 @@ export interface HeatLaneRun {
 export type HeatLaneReadout =
   | {
       readonly kind: 'value';
+      readonly form?: 'value' | 'word';
+      readonly swatch?: string | 'hollow';
       readonly primary: string;
       readonly secondary?: string;
       readonly tone?: 'positive' | 'negative' | 'neutral' | 'muted';
@@ -127,20 +129,34 @@ export interface HeatLanesProjection<TOptions = Record<string, never>> extends F
 }
 
 export function laneInspectKey(rowIndex: number, hour: number | null): string {
-  return hour === null ? `${rowIndex}` : `${rowIndex}@${Math.floor(hour)}`;
+  return hour === null ? `#${rowIndex}` : `#${rowIndex}@${Math.floor(hour)}`;
 }
 
 export function parseLaneInspectKey(key: string | null): { readonly rowIndex: number; readonly hour: number | null } | null {
-  if (!key) return null;
+  if (!key || !key.startsWith('#')) return null;
   const at = key.indexOf('@');
-  if (at < 0) {
-    const rowIndex = Number(key);
-    return Number.isInteger(rowIndex) && rowIndex >= 0 ? { rowIndex, hour: null } : null;
-  }
-  const rowIndex = Number(key.slice(0, at));
+  const rowIndex = Number(at < 0 ? key.slice(1) : key.slice(1, at));
+  if (!Number.isInteger(rowIndex) || rowIndex < 0) return null;
+  if (at < 0) return { rowIndex, hour: null };
   const hour = Number(key.slice(at + 1));
-  if (!Number.isInteger(rowIndex) || rowIndex < 0 || !Number.isFinite(hour)) return null;
-  return { rowIndex, hour: Math.floor(hour) };
+  return Number.isFinite(hour) ? { rowIndex, hour: Math.floor(hour) } : null;
+}
+
+export interface HeatLaneIdentity {
+  readonly id: string;
+  readonly label: string;
+  readonly meta?: unknown;
+}
+
+export function laneIdentities(rows: readonly HeatLaneRow[]): readonly HeatLaneIdentity[] {
+  return rows.map(row => ({ id: row.id, label: row.label, ...(row.meta !== undefined ? { meta: row.meta } : {}) }));
+}
+
+export function lanesExtentSignature(
+  layout: { readonly totalHeight: number; readonly rowStride: number; readonly plotTop: number; readonly plotHeight: number },
+  rows: readonly HeatLaneRow[],
+): string {
+  return JSON.stringify([layout.totalHeight, layout.rowStride, layout.plotTop, layout.plotHeight, rows.map(row => [row.id, row.label])]);
 }
 
 export function findRunAtHour(runs: readonly HeatLaneRun[], hour: number, maxHour: number): HeatLaneRun | null {
@@ -192,7 +208,10 @@ export function deriveLanesTooltip(
       missingReason: gap?.reason ?? 'Recording gap',
     };
   }
-  if (!run) {
+  if (!run && hour !== null) {
+    return { title: row.label, hour: effectiveHour, missingReason: 'Not recorded at this hour' };
+  }
+  if (!run || (hour === null && row.readout)) {
     if (row.readout) {
       if (row.readout.kind === 'missing') {
         return { title: row.label, hour: effectiveHour, missingReason: row.readout.reason };
@@ -279,9 +298,10 @@ export function deriveLanesMirror(
       name: row.label,
       rowIndex: i,
       cells: [
+        { column: 'Name', spoken: row.label },
         {
           column: formatDateOnly(model.hour),
-          spoken: readoutAuditText(row.readout) || 'Recorded',
+          spoken: `${formatDateOnly(model.hour)}: ${readoutAuditText(row.readout) || 'Recorded'}`,
         },
       ],
     });

@@ -39,6 +39,7 @@ export const TRANSFER_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(column =
   ...(column.key === 'country' ? { pinned: true } : {}),
   ...(column.key === 'gained' || column.key === 'lost' ? { barEligible: true } : {}),
   ...(column.key === 'net' || column.key === 'victoryPoints' ? { format: SIGNED, barEligible: false, widest: ['+9,999'] } : {}),
+  ...(column.key === 'net' ? { cellKind: 'twoWay' as const, minWidth: 160 } : {}),
   ...(column.key === 'victoryPoints' ? { unit: 'net' } : {}),
 }));
 
@@ -65,8 +66,9 @@ export const transfersProjection: TableProjection<TransfersProjectionOptions> = 
     const reply = validateTransfers(raw);
     const boundary = newIdentityBoundary();
     const rows: TableRow[] = [];
-    for (const country of reply.countries) {
-      if (!passes(options.filter, country.tag, hour)) continue;
+    const shown = reply.countries.filter(country => passes(options.filter, country.tag, hour));
+    const widest = shown.reduce((top, country) => Math.max(top, Math.abs(country.net)), 0);
+    for (const country of shown) {
       const points = country.netVictoryPoints === null ? null : BigInt(country.netVictoryPoints);
       rows.push({
         key: country.key,
@@ -75,7 +77,7 @@ export const transfersProjection: TableProjection<TransfersProjectionOptions> = 
           country: identityCell(readView, 'country', country.tag, { atHour: Math.min(country.hour, hour), boundary }),
           gained: { value: whole(country.gained), format: 'integer' },
           lost: { value: whole(country.lost), format: 'integer' },
-          net: { value: whole(country.net) },
+          net: { value: whole(country.net), bar: widest > 0 && country.net !== 0 ? { fraction: knownValue(Math.abs(country.net) / widest) } : null },
           victoryPoints: { value: points === null ? notRecorded(country.victoryPointsMissing ?? 'Victory points not recorded') : points === 0n ? zeroValue(0n) : knownValue(points) },
         },
       });
