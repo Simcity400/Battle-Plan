@@ -1,12 +1,15 @@
 import { liveKey } from '../../charts/live.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
 import { firstHourOfMonth, gameDate, monthAt, monthIndex, monthNames } from '../../dashboard/calendar.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
-import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
-import { registerFamilyProjection } from '../../families/registry.ts';
+import {
+  type TimeChartProjection,
+  type TimeChartWidgetDeclaration,
+} from '../../families/time-chart/declaration.ts';
 import type { ChartColumnSegment, ChartLegendEntry, ChartMonthSlot, TimeChartModel } from '../../families/time-chart/model.ts';
 import type { ArmyLossesReply, ArmyLossMonthBar, LossStack, LossView } from '../../generated/dashboard';
 
