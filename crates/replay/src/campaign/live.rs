@@ -115,6 +115,10 @@ pub trait Host {
         None
     }
 
+    fn facts_packing(&mut self) -> bool {
+        false
+    }
+
     fn hour(&mut self, hour: &Applied<'_>) {
         let _ = hour;
     }
