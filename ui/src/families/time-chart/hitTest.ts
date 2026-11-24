@@ -196,13 +196,17 @@ export function hitTestTimeChart(
       if (model.stack.hours[i]! <= clampedHour) at = i;
       else break;
     }
-    if (at >= 0 && model.stack.bands.every(b => b.values[at] != null && Number.isFinite(b.values[at]!))) {
-      let acc = 0;
+    if (at >= 0) {
+      let posAcc = 0;
+      let negAcc = 0;
       for (const band of model.stack.bands) {
-        const v = band.values[at]!;
-        const yBot = layout.toY(acc);
-        const yTop = layout.toY(acc + v);
-        acc += v;
+        const v = band.values[at];
+        if (v == null || !Number.isFinite(v)) continue;
+        const base = v >= 0 ? posAcc : negAcc;
+        const yBot = layout.toY(base);
+        const yTop = layout.toY(base + v);
+        if (v >= 0) posAcc += v;
+        else negAcc += v;
         if (py >= Math.min(yTop, yBot) && py <= Math.max(yTop, yBot)) {
           return `line:${band.id}@${clampedHour}`;
         }
@@ -242,7 +246,6 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
     }
     if (at >= 0) {
       const totalVal = model.stack.total?.values[at];
-      if (model.stack.total && totalVal === null) return [];
       const totalItem: TooltipListItem | null = totalVal !== null && totalVal !== undefined && Number.isFinite(totalVal)
         ? { label: model.measureTitle, value: formatExactFigure(totalVal, model), strong: true }
         : null;

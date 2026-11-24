@@ -144,4 +144,88 @@ describe('world-tension projections', () => {
     assert.equal(model.series[0]?.endLabel?.value, '60%');
     assert.equal(model.series[0]?.points?.length, 3);
   });
+
+  it('S2: stacks negative contributions below zero, keeps recorded world total in label and audit, preserves witnessed bands without world scalar, and omits end labels during a gap', () => {
+    const negReply: WorldTensionStackReply = {
+      branchId: '1',
+      tensionScale: 1000,
+      contributionScale: 100000,
+      ceilingRaw: '10000000',
+      endHour: H1936 + 5000,
+      cappedEndTension: 6.5,
+      hours: [H1936, H1936 + 5000],
+      total: [0, 6.5],
+      bands: [
+        { slot: 1, tag: 'GER', remembered: false, values: [0, 4], endValue: 4, endRaw: '400000' },
+        { slot: 2, tag: 'JAP', remembered: false, values: [0, 3], endValue: 3, endRaw: '300000' },
+        { slot: 3, tag: 'ITA', remembered: false, values: [0, -0.5], endValue: -0.5, endRaw: '-50000' },
+      ],
+      other: null,
+      events: [],
+      missing: [],
+      nextChangeHour: null,
+      warnings: [],
+    };
+    const negModel = worldTensionProjection.project(
+      createBoundedReadView({ hour: H1936 + 5000, panels: new Map([['main', negReply]]), identity: makeIdentity() }),
+      { extent: [H1936, H1936 + 5000], surface: '#111111', layers: 5, values: 'recorded', showMarkers: false, gaps: [] },
+    );
+    assert.equal(negModel.yAxis.min, undefined, 'negative contributions must not be clipped at min: 0');
+    const negBand = negModel.stack?.bands.find(b => b.id === 'slot:3');
+    assert.ok(negBand?.endLabel, 'negative contribution band keeps its end label');
+    assert.equal(negModel.stack?.total?.endLabel?.value, '6.5%', 'recorded world total label is 6.5%');
+    assert.ok(negModel.auditRows?.some(r => r.row === '__total__' && r.value === '6.5%'));
+    assert.ok(negModel.auditRows?.some(r => r.row === 'ITA' && r.value === '\u22120.5%'), 'negative contribution appears in audit');
+
+    const negLayout = layoutTimeChart(negModel, 720, 260, 'Segoe UI', measure);
+    assert.ok(negLayout.yDomain[0] < 0, 'stack yDomain includes room below zero for negative bands');
+    const itaLabel = negLayout.endLabels.find(l => l.seriesId === 'slot:3');
+    const gerLabel = negLayout.endLabels.find(l => l.seriesId === 'slot:1');
+    assert.ok(itaLabel && gerLabel, 'both positive and negative band labels are placed');
+    assert.ok(itaLabel!.anchorY > negLayout.toY(0), 'negative band anchors below the zero axis');
+    assert.ok(gerLabel!.anchorY < negLayout.toY(0), 'positive band anchors above the zero axis');
+
+    const negLines = worldTensionLinesProjection.project(
+      createBoundedReadView({ hour: H1936 + 5000, panels: new Map([['main', negReply]]), identity: makeIdentity() }),
+      { extent: [H1936, H1936 + 5000], surface: '#111111', gaps: [] },
+    );
+    assert.equal(negLines.yAxis.min, undefined, 'lines view must not clip negative contributions at 0');
+
+    const noWorldScalar: WorldTensionStackReply = {
+      ...negReply,
+      cappedEndTension: null,
+      total: [null, null],
+    };
+    const witnessedModel = worldTensionProjection.project(
+      createBoundedReadView({ hour: H1936 + 5000, panels: new Map([['main', noWorldScalar]]), identity: makeIdentity() }),
+      { extent: [H1936, H1936 + 5000], surface: '#111111', layers: 5, values: 'recorded', showMarkers: false, gaps: [] },
+    );
+    assert.equal(witnessedModel.empty, undefined, 'missing world scalar must not blank independently witnessed contributions');
+    assert.equal(witnessedModel.stack?.bands.length, 3);
+
+    const gapReply: WorldTensionStackReply = {
+      ...negReply,
+      endHour: null,
+      cappedEndTension: null,
+      hours: [H1936, H1936 + 5000, H1936 + 5010],
+      total: [0, 6.5, null],
+      bands: [
+        { slot: 1, tag: 'GER', remembered: false, values: [0, 4, null], endValue: null, endRaw: null },
+        { slot: 2, tag: 'JAP', remembered: false, values: [0, 3, null], endValue: null, endRaw: null },
+        { slot: 3, tag: 'ITA', remembered: false, values: [0, -0.5, null], endValue: null, endRaw: null },
+      ],
+      missing: [{ firstHour: H1936 + 5010, lastHour: H1936 + 5020, reason: 'Recording gap' }],
+    };
+    const gapStack = worldTensionProjection.project(
+      createBoundedReadView({ hour: H1936 + 5015, panels: new Map([['main', gapReply]]), identity: makeIdentity() }),
+      { extent: [H1936, H1936 + 5015], surface: '#111111', layers: 5, values: 'recorded', showMarkers: false, gaps: [] },
+    );
+    assert.equal(gapStack.stack?.total?.endLabel, null, 'total end label is absent during a gap');
+    assert.equal(gapStack.auditRows?.length, 0, 'no stale audit rows during a gap');
+    const gapLines = worldTensionLinesProjection.project(
+      createBoundedReadView({ hour: H1936 + 5015, panels: new Map([['main', gapReply]]), identity: makeIdentity() }),
+      { extent: [H1936, H1936 + 5015], surface: '#111111', gaps: [] },
+    );
+    assert.ok(gapLines.series.every(s => s.endLabel === null), 'lines omit end labels during a gap');
+  });
 });
