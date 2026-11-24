@@ -1013,8 +1013,16 @@ fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_contin
         &cancel,
     )
     .unwrap();
+    let newest_feed = |mut rows: Vec<super::EventFeedPageRow>| {
+        rows.sort_by_key(|row| (std::cmp::Reverse(row.hour), row.ordinal.parse::<u64>().unwrap()));
+        rows
+    };
+    let newest_script = |mut rows: Vec<super::cards::ScriptPageRow>| {
+        rows.sort_by_key(|row| (std::cmp::Reverse(row.hour), row.ordinal.parse::<u64>().unwrap()));
+        rows
+    };
     assert_eq!(tail_all.total, page_all.total);
-    assert_eq!(tail_all.rows, page_all.rows.into_iter().rev().collect::<Vec<_>>());
+    assert_eq!(tail_all.rows, newest_feed(page_all.rows));
     assert_eq!(tail_all.facet_totals.len(), 1);
     assert_eq!(tail_all.facet_totals[0].total, "2");
 
@@ -1045,7 +1053,7 @@ fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_contin
     )
     .unwrap();
     assert_eq!(tail_scoped.total, page_scoped.total);
-    assert_eq!(tail_scoped.rows, page_scoped.rows.into_iter().rev().collect::<Vec<_>>());
+    assert_eq!(tail_scoped.rows, newest_feed(page_scoped.rows));
     assert_eq!(tail_scoped.facet_totals[0].total, "2");
 
     let dec_facets = vec![
@@ -1071,7 +1079,7 @@ fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_contin
     )
     .unwrap();
     assert_eq!(dec_tail.total, dec_page.total);
-    assert_eq!(dec_tail.rows, dec_page.rows.into_iter().rev().collect::<Vec<_>>());
+    assert_eq!(dec_tail.rows, newest_script(dec_page.rows));
     assert_eq!(dec_tail.rows[0].occurrence.as_ref().unwrap().edges.len(), 2);
 
     let dec_panel = decisions_dated_panel(
@@ -1120,7 +1128,7 @@ fn feed_tail_products_and_dated_panels_match_pages_in_reverse_and_wake_on_contin
     )
     .unwrap();
     assert_eq!(choice_tail.total, choice_page.total);
-    assert_eq!(choice_tail.rows, choice_page.rows.into_iter().rev().collect::<Vec<_>>());
+    assert_eq!(choice_tail.rows, newest_script(choice_page.rows));
 
     let choice_panel = event_choices_dated_panel(
         &replay_source,

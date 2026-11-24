@@ -269,21 +269,49 @@ pub(crate) fn tail_with_index(
     let rows = if offset >= total {
         Vec::new()
     } else {
-        let want = u64::from(limit).min(total - offset);
-        let slice_end = (last - offset) as usize;
-        let slice_start = slice_end - want as usize;
-        let shown = &admitted[slice_start..slice_end];
+        let want_first = offset;
+        let want_end = offset.saturating_add(u64::from(limit)).min(total);
+        let mut shown: Vec<(u32, &Entry, u64)> = Vec::with_capacity((want_end - want_first) as usize);
+        let mut seen_newer = 0u64;
+        let mut h_hi = last as usize;
+        let b = base as usize;
+        while h_hi > b && seen_newer < want_end {
+            let hour = admitted[h_hi - 1].1.hour;
+            let mut h_lo = h_hi - 1;
+            while h_lo > b && admitted[h_lo - 1].1.hour == hour {
+                h_lo -= 1;
+            }
+            let hour_count = (h_hi - h_lo) as u64;
+            if seen_newer + hour_count > want_first {
+                let lo_in = want_first.saturating_sub(seen_newer) as usize;
+                let hi_in = want_end.saturating_sub(seen_newer).min(hour_count) as usize;
+                for i in lo_in..hi_in {
+                    let pos = h_lo + i;
+                    let (run, entry) = admitted[pos];
+                    shown.push((run, entry, pos as u64));
+                }
+            }
+            seen_newer += hour_count;
+            h_hi = h_lo;
+        }
         let mut ordinals: HashMap<(i32, u128), u64> = shown
             .iter()
-            .enumerate()
-            .map(|(i, (_, entry))| ((entry.hour, entry.key), slice_start as u64 + i as u64))
+            .map(|(_, entry, ordinal)| ((entry.hour, entry.key), *ordinal))
             .collect();
+        let mut hours_by_run: BTreeMap<u32, Vec<i32>> = BTreeMap::new();
+        for (run, entry, _) in &shown {
+            hours_by_run.entry(*run).or_default().push(entry.hour);
+        }
         let mut by_run: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();
-        for (run, entry) in shown {
-            let ranges = by_run.entry(*run).or_default();
-            match ranges.last_mut() {
-                Some(held) if held.1 + 1 >= entry.hour => held.1 = held.1.max(entry.hour),
-                _ => ranges.push((entry.hour, entry.hour)),
+        for (run, mut hours) in hours_by_run {
+            hours.sort_unstable();
+            hours.dedup();
+            let ranges = by_run.entry(run).or_default();
+            for hour in hours {
+                match ranges.last_mut() {
+                    Some(held) if held.1 + 1 >= hour => held.1 = held.1.max(hour),
+                    _ => ranges.push((hour, hour)),
+                }
             }
         }
         let columns = Columns::new()?;
@@ -295,7 +323,7 @@ pub(crate) fn tail_with_index(
                 }
             }
         }
-        rows.sort_by_key(|paged| std::cmp::Reverse(paged.ordinal));
+        rows.sort_by_key(|paged| (std::cmp::Reverse(paged.hour), paged.ordinal));
         rows
     };
     let mut totals = Vec::with_capacity(count_facets.len());
