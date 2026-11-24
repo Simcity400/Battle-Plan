@@ -1464,8 +1464,6 @@ fn icon_field(report: &mut Report, label: &str, active: u8, icon: &[u8], saved: 
 mod variants;
 pub use variants::compare_variant_archetypes;
 use variants::compare_variants;
-#[cfg(test)]
-use variants::compare_category_families;
 
 mod army_upgrades;
 use army_upgrades::compare_army_upgrades;
@@ -1594,3 +1592,20 @@ fn compare_pool(
 
 #[cfg(test)]
 mod tests;
+
+pub fn compare_category_families(
+    recorded: Result<&engine_executable::executable_tables::auxiliary::CategoryFamilies, String>,
+    installed: Result<&engine_executable::executable_tables::auxiliary::CategoryFamilies, String>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let recorded = recorded.map_err(|reason| invalid(format!("equipment category families not recorded: {reason}")))?;
+    match installed {
+        Ok(installed) => equal(report, "equipment category families", recorded, installed),
+        Err(reason) => report.limitation(
+            "the installed executable's category families cannot certify the recorded ones",
+            reason,
+        ),
+    }
+    report.compared("equipment category families", 1);
+    Ok(())
+}

@@ -317,6 +317,25 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         let saved = land::read(save_document.items(), land::Comparison::Losses)?;
         land::compare_losses(&frame, &saved, report)
     });
+    report.attempt("equipment category families", |report| {
+        let families = |tables: engine_executable::executable_tables::Tables| {
+            tables
+                .auxiliary
+                .as_ref()
+                .map_err(ToString::to_string)
+                .and_then(|auxiliary| auxiliary.category_families.as_ref().map_err(ToString::to_string))
+        };
+        let recorded = recorded_tables(&replay);
+        let installed = engine_executable::executable_tables::current()
+            .ok_or_else(|| "the installed executable's tables are not loaded".to_owned())
+            .and_then(|installed| match &recorded {
+                Ok(recorded) if recorded.identity().sha256 != installed.identity().sha256 => {
+                    Err("the installed executable is not the recorded one".to_owned())
+                }
+                _ => families(installed),
+            });
+        production::compare_category_families(recorded.and_then(families), installed, report)
+    });
     report.attempt_table(TableId::LandCombatResults, |report| {
         let saved = land::read(save_document.items(), land::Comparison::History)?;
         land::compare_events(&replay, &frame, &saved, report)
@@ -1540,4 +1559,17 @@ fn validation_refusal_is_incomplete_even_when_publication_was_deferred() {
             .to_string()
             .contains("comparison incomplete")
     );
+}
+
+fn recorded_tables(replay: &Replay) -> Result<engine_executable::executable_tables::Tables, String> {
+    let at = replay
+        .fact_packs
+        .len()
+        .checked_sub(1)
+        .ok_or_else(|| "the recording carries no game facts".to_owned())?;
+    let bytes = replay.facts(at).map_err(|error| error.to_string())?;
+    let length = bytes.len() as u64;
+    content_reader_layers::content::facts::Pack::open(std::sync::Arc::new(bytes), 0, length)
+        .map_err(|error| error.to_string())?
+        .tables()
 }

@@ -2629,7 +2629,7 @@ fn variant_stats_oracle_checks_published_invariants_and_reports_withheld_lanes()
 }
 
 #[test]
-fn a_designed_variant_outside_the_recorded_designers_or_in_two_families_is_a_difference() {
+fn recorded_category_families_must_be_present_and_match_the_installed_executable() {
     let families = engine_executable::executable_tables::auxiliary::CategoryFamilies {
         land: 0x3c,
         air: 0xfc00,
@@ -2638,22 +2638,16 @@ fn a_designed_variant_outside_the_recorded_designers_or_in_two_families_is_a_dif
         tank_designer: 0x4,
         plane_designer: 0x3c00,
     };
-    let saved = production::parse(
-        &parser::parse(b"equipments={tank={id={id=1 type=70} modules={main=m}} rifle={id={id=2 type=70}}}")
-            .unwrap()
-            .items,
-    )
-    .unwrap();
-    let row = |id: u64, classifier_flags| VariantDefinitionRow { id: (id << 32) | 70, classifier_flags, ..Default::default() };
-    let run = |rows| {
-        let mut frame = output_frame(22, false, &[], &[]);
-        *frame.tables[TableId::VariantDefinitions.index()] = TableView::Complete(TableRows::VariantDefinitions(rows));
-        let mut report = Report::default();
-        compare_category_families(&frame, &saved, &families, &mut report).unwrap();
-        report
-    };
-    let report = run(vec![row(1, 0x4), row(2, 0x8)]);
+    let mut report = Report::default();
+    compare_category_families(Ok(&families), Ok(&families), &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    let report = run(vec![row(1, 0x8), row(2, 0x8 | 0x400)]);
-    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+    let other = engine_executable::executable_tables::auxiliary::CategoryFamilies { tank_designer: 0x8, ..families };
+    compare_category_families(Ok(&other), Ok(&families), &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    let error = compare_category_families(Err("not recorded in this recording".into()), Ok(&families), &mut Report::default()).unwrap_err();
+    assert!(error.to_string().contains("not recorded in this recording"), "{error}");
+    let mut withheld = Report::default();
+    compare_category_families(Ok(&families), Err("another build".into()), &mut withheld).unwrap();
+    assert!(withheld.differences.is_empty());
+    assert!(!withheld.limitations.is_empty());
 }
