@@ -44,6 +44,15 @@
   margin-left: auto;
 }
 
+.detail-window:focus {
+  outline: none;
+}
+
+.detail-window:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: -2px;
+}
+
 .detail-window-body {
   display: flex;
   flex: 1;
@@ -51,4 +60,11 @@
   min-height: 0;
   overflow: auto;
   padding: var(--space-3);
+}
+
+.detail-window-game .detail-window-body {
+  padding: var(--space-2);
+  overflow: hidden;
+  align-items: center;
+  justify-content: center;
 }

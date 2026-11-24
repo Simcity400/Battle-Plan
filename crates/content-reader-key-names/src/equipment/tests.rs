@@ -1328,3 +1328,43 @@ fn archetype_copy_preserves_prior_upgrades_and_skips_unknown_or_duplicate_upgrad
         database.misreads
     );
 }
+
+#[test]
+fn module_slots_and_module_designs_preserve_gfx_and_gui_category() {
+    let database = read(&[
+        (
+            "modules/test_modules.txt",
+            "equipment_modules = {
+                dp_gun_1 = {
+                    category = dp_light_battery
+                    gui_category = ship_light_battery
+                    gfx = dp_secondary_battery_1
+                }
+            }",
+        ),
+        (
+            "hull.txt",
+            "equipments = {
+                test_hull = {
+                    is_archetype = yes
+                    type = screen_ship
+                    module_slots = {
+                        custom_slot_1 = {
+                            required = no
+                            gfx = custom_slot_icon
+                            allowed_module_categories = { dp_light_battery }
+                        }
+                    }
+                }
+            }",
+        ),
+    ]);
+    assert!(database.lost.is_none(), "{:?}", database.lost);
+    let hull = named(&database, "test_hull");
+    assert_eq!(hull.module_slot_rules.len(), 1);
+    assert_eq!(hull.module_slot_rules[0].gfx, b"custom_slot_icon");
+    let module = database.module_design(b"dp_gun_1").unwrap();
+    assert_eq!(module.category, b"dp_light_battery");
+    assert_eq!(module.gui_category, b"ship_light_battery");
+    assert_eq!(module.gfx, b"dp_secondary_battery_1");
+}
