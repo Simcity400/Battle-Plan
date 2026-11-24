@@ -21,7 +21,7 @@ import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { ArtHandle, DisplayedHour } from '../plan.ts';
 import { FLAG_BATCH_MAX, IdentityBroker, MAX_ENTITY_WINDOWS, type IdentityTransport } from './broker.ts';
 import { createBrokerIdentityProvider, createSnapshotIdentityProvider, parseEntityKey } from './provider.ts';
-import { UNHELD_HEAD_HOUR, countryPickerKeys, readIdentityAtHeadHour, subscribeIdentityAtHead, type HeldHeadHour } from './react.ts';
+import { UNHELD_HEAD_HOUR, countryPickerKeys, pickerDating, readIdentityAtHeadHour, subscribeIdentityAtHead, type HeldHeadHour } from './react.ts';
 import {
   IdentityIndex,
   countrySlotKey,
@@ -1066,5 +1066,32 @@ test('visiting 40 windows keeps at most the window bound of names, the demanded 
   broker.setDemand(owner, SCOPE, { asks: [{ key: stateKey(7), hour: 5 }] }, undefined, [0, 40 * 720]);
   for (let i = 0; i < 20; i++) await Promise.resolve();
   assert.equal(asked.filter(from => from === 0).length, 2, 'a revisited window is read again');
+  broker.dispose();
+});
+
+test('the picker dates the rows that decide what it shows in the same render: a newly visible row and a search candidate that renames into a match', async () => {
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: async () => sampleIdentities(),
+    loadGroups: async () => sampleGroups(),
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size) => ({ size, flags: [], unavailable: [], warnings: [] }),
+  };
+  const broker = new IdentityBroker({ transport });
+  broker.setDemand({}, SCOPE, { asks: [{ key: countryTagKey('ALP'), hour: 0 }], needFlags: false, flagSize: 'panel' }, undefined, [0, 500]);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  let clockHour = 25;
+  const dating = pickerDating(broker, { getHour: () => clockHour }, SCOPE, null, 'ALP', h => h, null, [0, 500]);
+  assert.equal(dating(['ALP']), 25);
+  clockHour = 160;
+  const held = dating(['ALP']);
+  assert.equal(dating(['ALP', 'GER']), 160, 'a row scrolled into view is dated at the displayed hour before it is painted, not at the hour held for the rows before it');
+  assert.ok(held === 25 || held === 160);
+  clockHour = 170;
+  const searchTags = ['ALP', 'GER'];
+  const at = dating(searchTags)!;
+  const ger = broker.resolve(SCOPE, countryTagKey('GER'), at);
+  assert.equal(ger.kind === 'known' && ger.name.kind === 'known' ? ger.name.value : null, 'Later Empire', 'while searching every candidate dates the hour, so one renamed into a match is found');
   broker.dispose();
 });
