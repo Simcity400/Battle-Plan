@@ -59,8 +59,8 @@ const formatPercent = (value: number) => `${Math.round(value * 10) / 10}%`;
 export default function WorldTensionWidget(props: WidgetProps) {
   const options = resolveOptions(OPTIONS, props.widget.options);
   const onWarnings = useCallback((warnings: readonly string[]) => props.onDiagnostics(warnings.length ? [...warnings] : NO_WARNINGS), [props.onDiagnostics]);
-  if (options.view === 'race' || options.view === 'lines') return <MeasureRace widget={props.widget} runtime={props.runtime} active={props.active}
-    measure={CONTRIBUTIONS} decimals={5} view={options.view} options={options} label="Contribution to world tension" icon="alert"
+  if (options.view === 'lines') return <MeasureRace widget={props.widget} runtime={props.runtime} active={props.active}
+    measure={CONTRIBUTIONS} decimals={5} view="lines" options={options} label="Contribution to world tension" icon="alert"
     format={formatContribution} formatValue={formatPercent} onWarnings={onWarnings} />;
   if (options.view === 'events') return <ThreatEventsView {...props} />;
   return <TensionView {...props} />;
