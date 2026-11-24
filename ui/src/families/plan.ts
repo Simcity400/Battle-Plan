@@ -20,7 +20,7 @@ import type { CountryLooksMap } from './looks.ts';
 import type { DatedLogRow, LogTailQuery, TableRowSource } from './table/rowSource.ts';
 import type { Value } from './value.ts';
 
-export type FamilyId = 'table' | 'race' | 'series' | 'log' | 'timeline' | 'parts' | 'pairs' | 'meters';
+export type FamilyId = 'table' | 'bars' | 'race' | 'series' | 'log' | 'timeline' | 'parts' | 'pairs' | 'meters';
 
 declare const DISPLAYED_HOUR: unique symbol;
 export type DisplayedHour = number & { readonly [DISPLAYED_HOUR]: 'displayed' };
