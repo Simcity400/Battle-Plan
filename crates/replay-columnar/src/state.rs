@@ -1428,8 +1428,17 @@ impl Slots {
             self.max_slot = new_max_slot;
             return Ok(());
         }
-        for (&slot, &key) in slots.iter().zip(inserted_keys) {
-            self.insert_unique(keys, key, slot)?;
+        let prev_max_slot = self.max_slot;
+        for (count, (&slot, &key)) in slots.iter().zip(inserted_keys).enumerate() {
+            if let Err(error) = self.insert_unique(keys, key, slot) {
+                for (&prev_slot, &prev_key) in
+                    slots[..count].iter().zip(&inserted_keys[..count]).rev()
+                {
+                    let _ = self.remove(keys, prev_key, prev_slot);
+                }
+                self.max_slot = prev_max_slot;
+                return Err(error);
+            }
         }
         Ok(())
     }

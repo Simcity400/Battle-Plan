@@ -182,6 +182,16 @@ fn runs_apply_in_place_like_an_independent_row_model() {
         taken.insert_keys(&[2], &[14]).is_err(),
         "a key another live row holds"
     );
+    let mut partial = Table::new(&KINDS).unwrap();
+    partial.insert_keys(&[0], &[10]).unwrap();
+    assert!(partial.insert_keys(&[1, 2], &[20, 10]).is_err());
+    assert_eq!(partial.slot(20), None);
+    assert_eq!(partial.key(1), None);
+    assert_eq!(partial.slot(10), Some(0));
+    assert_eq!(partial.key(0), Some(10));
+    assert!(partial.insert_keys(&[1, 2], &[30, 30]).is_err());
+    assert_eq!(partial.slot(30), None);
+    assert_eq!(partial.key(1), None);
 }
 
 #[test]

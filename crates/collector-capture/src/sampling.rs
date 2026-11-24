@@ -1930,12 +1930,10 @@ impl Shared {
         };
         // SAFETY: `take_oldest_idle` claimed exclusive `HELD` ownership of this frame slot.
         let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
-        let parked = frame.extended.take_parked_packs();
-        let freed = parked.is_some();
-        if let Some(parked) = parked {
+        let freed = frame.extended.discard_parked_packs();
+        if freed {
             self.unparked_frames.fetch_sub(1, Ordering::AcqRel);
             self.frames.set_parked(index, true);
-            drop(parked);
             self.set_frame_bytes(index, frame.allocated_bytes() as u64);
         }
         let restored = self.frames.restore(index);
@@ -2265,7 +2263,6 @@ impl Shared {
                 if !evicted.extended.is_parked() {
                     self.unparked_frames.fetch_sub(1, Ordering::AcqRel);
                 }
-                self.frame_priority.publish();
                 let published = self.frames.push(index);
                 debug_assert!(published.is_ok());
                 self.frame_priority.refresh();

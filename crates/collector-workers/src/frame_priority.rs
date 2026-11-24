@@ -189,7 +189,7 @@ impl Pipeline {
             hook: OnceLock::new(),
         }
     }
-    fn free_count(&self) -> usize {
+    pub fn free_count(&self) -> usize {
         self.available.load(Ordering::SeqCst)
     }
     pub fn publish(&self) {

@@ -1389,13 +1389,12 @@ impl SpeedTerms {
             self.held.template_spans.clear();
             self.held.template_keys.clear();
         }
-        let mut added_templates = false;
+        let sorted_len = self.held.template_spans.len();
         let mut live_key_len = 0usize;
         for &template in templates.iter() {
             let start = self.keys.len();
             let cached_at = if template_deps.is_some() {
-                self.held
-                    .template_spans
+                self.held.template_spans[..sorted_len]
                     .binary_search_by_key(&template, |entry| entry.0)
                     .ok()
             } else {
@@ -1465,13 +1464,12 @@ impl SpeedTerms {
                         .template_keys
                         .extend_from_slice(&self.keys[start..start + len]);
                     self.held.template_spans.push((template, seq, h_start, len));
-                    added_templates = true;
                 }
             }
             self.templates
                 .push((template, Ok((start, self.keys.len() - start))));
         }
-        if added_templates {
+        if self.held.template_spans.len() > sorted_len {
             self.held.template_spans.sort_unstable_by_key(|entry| entry.0);
         }
         if self.held.template_keys.len() > 16_384

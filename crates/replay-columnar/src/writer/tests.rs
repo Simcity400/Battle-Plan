@@ -1375,11 +1375,12 @@ fn dictionary_interns_and_reads_strings_across_table_growth() {
 
 #[test]
 fn commit_releases_oversized_keyframe_insert_scratch_while_preserving_state() {
+    const ROWS: usize = INSERT_SCRATCH_LIMIT / size_of::<u64>() + 1;
     let kinds = [Kind::U64, Kind::Bytes];
     let mut dict = Dictionary::new();
     let mut writer = TableWriter::new(&kinds).unwrap();
     let mut hour = writer.begin(&mut dict, Coverage::Complete).unwrap();
-    for key in (1..=2000_u128).rev() {
+    for key in (1..=ROWS as u128).rev() {
         let name = format!("row-{key}");
         hour.row(
             key,
@@ -1392,9 +1393,9 @@ fn commit_releases_oversized_keyframe_insert_scratch_while_preserving_state() {
     }
     let prepared = hour.finish().unwrap();
     let scratch = writer.columns.as_ref().unwrap();
-    assert!(scratch.inserts[0].words.capacity() >= 2000);
-    assert!(scratch.insert_outs[0].u64s.capacity() >= 2000);
-    assert!(writer.parts.sorted_keys.capacity() >= 2000);
+    assert!(scratch.inserts[0].words.capacity() >= ROWS);
+    assert!(scratch.insert_outs[0].u64s.capacity() >= ROWS);
+    assert!(writer.parts.sorted_keys.capacity() >= ROWS);
     writer
         .commit(
             Some(prepared),
@@ -1410,7 +1411,7 @@ fn commit_releases_oversized_keyframe_insert_scratch_while_preserving_state() {
     assert_eq!(scratch.inserts[0].words.capacity(), 0);
     assert_eq!(scratch.insert_outs[0].u64s.capacity(), 0);
     assert_eq!(writer.parts.sorted_keys.capacity(), 0);
-    assert_eq!(writer.table().live().count(), 2000);
+    assert_eq!(writer.table().live().count(), ROWS);
 
     let mut next = writer
         .begin(&mut dict, Coverage::Changes { removed: &[] })
