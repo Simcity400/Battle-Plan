@@ -5,7 +5,8 @@ import { tableSortOf, tableSortToken } from '../../charts/table/options.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
-import { EMPTY_SOURCES } from '../../families/contract.ts';
+import { createBoundedReadView, emptyReadView } from '../../families/boundedView.ts';
+import { compileFollowPlan } from '../../families/broker.ts';
 import { buildColumnLayouts } from '../../families/table/layout.ts';
 import { deriveTableAudit, deriveTableTooltip, resolveTableRows } from '../../families/table/model.ts';
 import { tableDefaults, tableSettingsOf } from '../../families/table/settings.ts';
@@ -48,8 +49,7 @@ test('a reply’s cells are exact amounts, a missing value keeps its reason, and
   ] }, 2);
   const shown = [taken, stability];
   const model = scoreboardProjection.project(
-    { answers: new Map(), panels: new Map([['main', reply]]), live: new Map() },
-    40,
+    createBoundedReadView({ hour: 40, panels: new Map([['main', reply]]) }),
     { shown, candidates: ['GER'], top: null, rankMarkers: false, looks: { GER: [{ from: 0, name: 'Germany' }] } },
   );
   const settings = tableDefaults(model.columns, TABLE_BASE);
@@ -64,8 +64,7 @@ test('a reply’s cells are exact amounts, a missing value keeps its reason, and
   const cells = [{ valueRaw: '1', missing: null, partial: false }, { valueRaw: '2', missing: null, partial: false }];
   const both = validateScoreboardReply({ branchId: '1', hour: 40, missing: null, warnings: [], rows: [{ country: 5, tag: 'GER', cells }, { country: 'GER', tag: 'GER', cells }] }, 2);
   const bothModel = scoreboardProjection.project(
-    { answers: new Map(), panels: new Map([['main', both]]), live: new Map() },
-    40,
+    createBoundedReadView({ hour: 40, panels: new Map([['main', both]]) }),
     { shown, candidates: [], top: null, rankMarkers: false, looks: { GER: [{ from: 0, name: 'Germany' }] } },
   );
   assert.deepEqual(bothModel.rows.map(row => row.key), [countryKey(5), 'GER']);
@@ -84,8 +83,7 @@ test('followed values and rankings preserve exact precision, partial markers and
   assert.equal(isPartial(undefined), false);
 
   const model = scoreboardProjection.project(
-    { answers: new Map([['factories', followed]]), panels: new Map(), live: new Map() },
-    40,
+    createBoundedReadView({ hour: 40, answers: new Map([['factories', followed]]) }),
     { shown: [factories, casualties], candidates: ['ITA', 'GER', 'SOV', 'ENG'], top: null, rankMarkers: false, looks: {} },
   );
   const byKey = new Map(model.rows.map(row => [row.key, row]));
@@ -141,8 +139,8 @@ test('followed scoreboard filters selected countries by holder existence at hour
     rankMarkers: false,
     looks,
   };
-  const followed = scoreboardProjection.project({ answers: new Map([['factories', facAns]]), panels: new Map(), live: new Map() }, 100, opts);
-  const exact = scoreboardProjection.project({ answers: new Map(), panels: new Map([['main', exactReply]]), live: new Map() }, 100, opts);
+  const followed = scoreboardProjection.project(createBoundedReadView({ hour: 100, answers: new Map([['factories', facAns]]) }), opts);
+  const exact = scoreboardProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['main', exactReply]]) }), opts);
 
   assert.deepEqual(followed.rows.map(r => r.key), [slotKey], 'ITA does not exist at hour 100 and is omitted on follow as on exact');
   assert.deepEqual(followed.rows[0]!.cells.country!.value, { kind: 'known', value: 'Germany' }, 'slot key resolves display label via dated tag GER');
@@ -155,7 +153,7 @@ test('followed scoreboard filters selected countries by holder existence at hour
     deriveTableAudit({ model: followed, flatRows: resolveTableRows(followed, settings), visibleColumns: layouts }),
     deriveTableAudit({ model: exact, flatRows: resolveTableRows(exact, settings), visibleColumns: layouts }),
   );
-  assert.equal(scoreboardProjection.nextChange?.(EMPTY_SOURCES, 100, opts), 105, 'nextChange reports slot tag switch boundary');
+  assert.equal(scoreboardProjection.nextChange?.(emptyReadView(100), opts), 105, 'nextChange reports slot tag switch boundary');
 });
 
 test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, matches Rust missing reasons without TS rewriting, enables country colours, and keeps rows when all columns are unavailable', () => {
@@ -197,16 +195,16 @@ test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, m
   const settings = tableSettingsOf(undefined, specs, TABLE_BASE);
   const layouts = buildColumnLayouts(specs, settings);
 
-  const f525 = scoreboardProjection.project({ answers: new Map([['politicalPower', ans525]]), panels: new Map(), live: new Map() }, 525, opts);
-  const e525 = scoreboardProjection.project({ answers: new Map(), panels: new Map([['main', exact525]]), live: new Map() }, 525, opts);
+  const f525 = scoreboardProjection.project(createBoundedReadView({ hour: 525, answers: new Map([['politicalPower', ans525]]) }), opts);
+  const e525 = scoreboardProjection.project(createBoundedReadView({ hour: 525, panels: new Map([['main', exact525]]) }), opts);
   assert.deepEqual(
     deriveTableAudit({ model: f525, flatRows: resolveTableRows(f525, settings), visibleColumns: layouts, rankShown: true }),
     deriveTableAudit({ model: e525, flatRows: resolveTableRows(e525, settings), visibleColumns: layouts, rankShown: true }),
     'S2+N3: real native FOL3 bytes for [Slot(7), Tag(ITA)] at hour 525 match exact board audit verbatim',
   );
 
-  const f800 = scoreboardProjection.project({ answers: new Map([['politicalPower', ans800]]), panels: new Map(), live: new Map() }, 800, opts);
-  const e800 = scoreboardProjection.project({ answers: new Map(), panels: new Map([['main', exact800]]), live: new Map() }, 800, opts);
+  const f800 = scoreboardProjection.project(createBoundedReadView({ hour: 800, answers: new Map([['politicalPower', ans800]]) }), opts);
+  const e800 = scoreboardProjection.project(createBoundedReadView({ hour: 800, panels: new Map([['main', exact800]]) }), opts);
   assert.deepEqual(
     deriveTableAudit({ model: f800, flatRows: resolveTableRows(f800, settings), visibleColumns: layouts, rankShown: true }),
     deriveTableAudit({ model: e800, flatRows: resolveTableRows(e800, settings), visibleColumns: layouts, rankShown: true }),
@@ -221,18 +219,19 @@ test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, m
     { branchId: '1', hour: 50, columns: ['politicalPower'], countries: [] },
   );
 
-  const followSrc = scoreboardDeclaration.source;
-  assert.equal(followSrc.kind, 'multi');
-  const unavailPlan = followSrc.follow({
+  const track = { source: { id: 's1', revision: 'r1' }, axisOffset: 0 };
+  const followView = { following: true, staticSpan: null } as const;
+  const unavailPlan = scoreboardDeclaration.sources({
+    track,
     branch: { id: '1', firstHour: 0, lastHour: 200 },
     aux: { branchId: '1', columns: [casualties], defaultColumns: ['casualties'], defaultSort: 'casualties', warnings: [] },
     options: { columns: 'casualties', tableSort: '', topMeasure: '' },
     countries: { top: null, tags: ['GER'], holders: { GER: [{ tag: 'GER', firstHour: 0, lastHour: 200 }] }, membership: null },
-  } as unknown as Parameters<typeof followSrc.follow>[0]);
+  } as unknown as Parameters<typeof scoreboardDeclaration.sources>[0], followView);
   assert.equal(unavailPlan.unavailable, undefined);
   assert.equal(unavailPlan.allowEmptyFollow, true);
 
-  const unavailModel = scoreboardProjection.project(EMPTY_SOURCES, 50, {
+  const unavailModel = scoreboardProjection.project(emptyReadView(50), {
     shown: [casualties],
     candidates: ['GER'],
     holders: { GER: [{ tag: 'GER', firstHour: 0, lastHour: 200 }] },
@@ -242,4 +241,27 @@ test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, m
   });
   assert.equal(unavailModel.rows.length, 1);
   assert.deepEqual(unavailModel.rows[0]!.cells.casualties!.value, { kind: 'notRecorded', reason: casualties.reason });
+
+  const selectedPlan = scoreboardDeclaration.sources({
+    track,
+    branch: { id: '1', firstHour: 0, lastHour: 200 },
+    aux: { branchId: '1', columns: [power, taken], defaultColumns: ['politicalPower', 'casualtiesTaken'], defaultSort: 'politicalPower', warnings: [] },
+    options: { columns: 'politicalPower casualtiesTaken', tableSort: '', topMeasure: '' },
+    countries: { top: null, tags: ['GER'], holders: { GER: [{ tag: 'GER', firstHour: 0, lastHour: 200 }] }, membership: null },
+  } as unknown as Parameters<typeof scoreboardDeclaration.sources>[0], followView);
+  const allowFollow = (query: Readonly<Record<string, unknown>> | null) => ({ query: query as never, refused: null });
+  const selectedSubs = compileFollowPlan(selectedPlan, allowFollow).subscriptions;
+  assert.equal(selectedSubs.length, 3);
+  assert.ok(selectedSubs.every(sub => (sub.query as { coverage?: string }).coverage === 'row'), 'selected scoreboard follows opt into coverage: row');
+
+  const topPlan = scoreboardDeclaration.sources({
+    track,
+    branch: { id: '1', firstHour: 0, lastHour: 200 },
+    aux: { branchId: '1', columns: [power, taken], defaultColumns: ['politicalPower', 'casualtiesTaken'], defaultSort: 'politicalPower', warnings: [] },
+    options: { columns: 'politicalPower casualtiesTaken', tableSort: '', topMeasure: '' },
+    countries: { top: 5, tags: [], holders: {}, membership: null },
+  } as unknown as Parameters<typeof scoreboardDeclaration.sources>[0], followView);
+  const topSubs = compileFollowPlan(topPlan, allowFollow).subscriptions;
+  assert.equal(topSubs.length, 4);
+  assert.ok(topSubs.every(sub => (sub.query as { coverage?: string }).coverage === undefined), 'top-N scoreboard follows stay on default Table coverage');
 });

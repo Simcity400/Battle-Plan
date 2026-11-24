@@ -4,11 +4,9 @@ import DrillHost from '../../charts/drill/DrillHost';
 import { useDrill } from '../../charts/drill/useDrill';
 import { formatDateTime } from '../../dashboard/calendar';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { resolveOptions } from '../../dashboard/options';
 import { useRegion, useRegionCoverage, useRegionHour } from '../../dashboard/widgetTime.ts';
 import DeclaredTableWidget from '../../families/table/DeclaredTableWidget';
 import { gameWindow, subscribeGameWindows } from '../../dashboard/gameWindows';
-import { OPTIONS } from './definition';
 import { divisionTemplateDeclaration } from './divisionTemplateProjection';
 import './divisionTemplate.css';
 
@@ -18,7 +16,6 @@ const divisionDesignerWindow = () => gameWindow('divisionDesigner');
 export default function DivisionTemplateWidget(props: WidgetProps) {
   const { widget, runtime, active } = props;
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const options = resolveOptions(OPTIONS, widget.options);
   const drillControl = useDrill(runtime, useRegion(widget));
   const drill = drillControl.state;
   const dispatch = drillControl.dispatch;
@@ -64,7 +61,7 @@ export default function DivisionTemplateWidget(props: WidgetProps) {
       drill={drillControl}
       runtime={runtime}
       subject={drill.breakdown !== null && !!Designer && !!opened}
-      mode={options.drill === 'popout' ? 'popout' : 'inline'}
+      mode="window"
       title="Division designer"
       day={drillAt === null ? '' : formatDateTime(drillAt)}
       canFollow

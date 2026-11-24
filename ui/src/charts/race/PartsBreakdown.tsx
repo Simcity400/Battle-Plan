@@ -89,7 +89,7 @@ export default function PartsBreakdown({ runtime, gate, at, track, active, optio
     keys, within, partBits: parts.kind === 'keyed' ? parts.partBits : 0, lastHour: track.branch.lastHour } : null, following ? null : at, null, following, active, root);
   const items = useMemo(() => parts.kind === 'measures' ? drawnItems(parts.items).map(item => ({ id: item.id, label: item.label }))
     : keys.map(key => ({ id: key.part, label: parts.name(key.part) })), [parts, keys]);
-  const colours = useMemo(() => partColours(items, tokens.categories), [items, tokens.categories]);
+  const colours = useMemo(() => partColours(items, tokens.categories, undefined, tokens.surface), [items, tokens.categories, tokens.surface]);
   const [partReasons, setPartReasons] = useState<ReadonlyMap<string, string>>(new Map());
   const partUnrecorded = useCallback((id: string, reason: string | null | undefined) => setPartReasons(before => {
     if ((before.get(id) ?? null) === (reason ?? null)) return before;

@@ -462,21 +462,25 @@ fn a_computed_series_state_distinguishes_not_applicable_from_unrecorded() {
     let (replay, timeline, holders) = build_fuel(false);
     let q = crate::Query { replay: &replay, timeline, holders };
     let fuel_line = Line::new(&q, fuel_series, fuel_measure).unwrap();
-    let states = fuel_line.states(&[read("GER", 10_000, Some(0)), read("GER", 10_001, Some(0))], None).unwrap();
+    let states = fuel_line.states(&[read("GER", 10_000, Some(0)), read("GER", 10_001, Some(0)), read("GER", 10_001, Some(1))], None).unwrap();
     assert_eq!(states[0].not_applicable, Some(true));
     assert_eq!(states[0].missing.as_deref(), Some("No fuel requested"));
-    assert_eq!(states[1].not_applicable, None, "a truncated hour after a complete restore keeps main's unflagged missing state");
-    assert_eq!(states[1].missing.as_deref(), Some("GER's receivedShare was not recorded at this hour"));
+    assert_eq!(states[1].not_applicable, Some(true), "a witnessed row on a truncated hour after a complete restore reports not applicable");
+    assert_eq!(states[1].missing.as_deref(), Some("No fuel requested"));
+    assert_eq!(states[2].not_applicable, None, "an unwitnessed row on a truncated hour reports the truncation reason");
+    assert_eq!(states[2].missing.as_deref(), Some("Country fuel consumers read only in part at this hour (1 rows not read)"));
 
     let (replay, timeline, holders) = build_fuel(true);
     let q = crate::Query { replay: &replay, timeline, holders };
     let fuel_line = Line::new(&q, fuel_series, fuel_measure).unwrap();
-    let states = fuel_line.states(&[read("GER", 10_001, Some(0)), read("GER", 10_000, Some(0)), read("GER", 10_001, Some(0))], None).unwrap();
+    let states = fuel_line.states(&[read("GER", 10_001, Some(0)), read("GER", 10_000, Some(0)), read("GER", 10_001, Some(0)), read("GER", 10_000, Some(1))], None).unwrap();
     assert_eq!(states[0].not_applicable, Some(true), "a complete hour after a truncated restore reports not applicable");
     assert_eq!(states[0].missing.as_deref(), Some("No fuel requested"));
-    assert_eq!(states[1].not_applicable, None, "the truncated restore keeps main's unflagged missing state");
-    assert_eq!(states[1].missing.as_deref(), Some("GER's receivedShare was not recorded at this hour"));
+    assert_eq!(states[1].not_applicable, Some(true), "a witnessed row on a truncated restore reports not applicable");
+    assert_eq!(states[1].missing.as_deref(), Some("No fuel requested"));
     assert_eq!(states[2], states[0], "duplicate out-of-order asks return the same state");
+    assert_eq!(states[3].not_applicable, None, "an unwitnessed row on a truncated restore reports the truncation reason");
+    assert_eq!(states[3].missing.as_deref(), Some("Country fuel consumers read only in part at this hour (1 rows not read)"));
 }
 
 static NEGATED: Series = Series {

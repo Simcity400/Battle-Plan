@@ -4,7 +4,7 @@ use crate::{
     head,
     evaluate::{self, Find, Reasons, Scratch},
     live_rows::{self, LiveRows},
-    query::{Query, Rows, TagRow, Tags, identity_until, tags_at},
+    query::{Query, Rows, SeriesMode, TagRow, Tags, identity_until, tags_at},
     table_name,
 };
 use playhead::{
@@ -327,7 +327,7 @@ impl Followed {
         let log = self.log.keys.capacity() * 16 + self.log.values.capacity() * 8 + self.log.states.capacity() + (self.log.reasons.capacity() + self.log.names.capacity()) * 4 + self.log.hours.capacity() * 4;
         let standing = self.standing.len() * (size_of::<Ordinal>() + size_of::<Option<Listed>>() + 16) + self.standing.values().flatten().map(|(_, cells)| cells.len() * size_of::<(i64, State)>()).sum::<usize>();
         let query = match &self.query {
-            Query::Cells { columns, rows, .. } => columns.capacity() * 8 + if let Rows::Keys(keys) | Rows::Live(keys) = rows { keys.capacity() * 16 } else { 0 },
+            Query::Cells { columns, rows, .. } => columns.capacity() * 8 + if let Rows::Keys(keys) | Rows::Live(keys) | Rows::LiveTable(keys) = rows { keys.capacity() * 16 } else { 0 },
             Query::Series { countries, .. } => countries.iter().map(|country| country.tag().map_or(0, str::len) + size_of::<dashboard_query::identity::Country>()).sum(),
             Query::Head(_) => 0,
         };
@@ -349,6 +349,7 @@ struct Watch {
 #[derive(Default)]
 struct Index {
     queries: Vec<usize>,
+    witnessed: Vec<usize>,
     readers: HashMap<usize, Readers>,
     broad: Vec<usize>,
     series: Vec<usize>,
@@ -449,7 +450,7 @@ impl Index {
 
     fn bytes(&self) -> usize {
         let lists = |lists: &[&Vec<usize>]| lists.iter().map(|list| list.capacity() * 8).sum::<usize>();
-        lists(&[&self.queries, &self.broad, &self.series, &self.logs, &self.standing])
+        lists(&[&self.queries, &self.witnessed, &self.broad, &self.series, &self.logs, &self.standing])
             + self.readers.capacity() * (8 + size_of::<Readers>() + 1)
             + self.readers.values().map(|readers| lists(&[&readers.broad, &readers.keyed])).sum::<usize>()
             + self.watch.capacity() * (16 + size_of::<Watch>() + 1)
@@ -744,7 +745,7 @@ impl Engine {
         for key in &followed.keys {
             index.unwatch(at, *key);
         }
-        for list in [&mut index.queries, &mut index.broad, &mut index.series, &mut index.logs, &mut index.standing] {
+        for list in [&mut index.queries, &mut index.witnessed, &mut index.broad, &mut index.series, &mut index.logs, &mut index.standing] {
             list.retain(|&held| held != at);
         }
         for readers in index.readers.values_mut() {
@@ -783,8 +784,11 @@ impl Engine {
             let head = evaluate::head(lane);
             let index = self.tables.entry(followed.table).or_insert_with(|| Index { until: Hour::MAX, status: Some(lane.status().0), withheld: lane.withheld().is_some(), ..Index::default() });
             index.queries.push(query);
+            if followed.query.witness_sensitive() {
+                index.witnessed.push(query);
+            }
             let keyed = match &followed.query {
-                Query::Cells { rows: Rows::Keys(keys) | Rows::Live(keys), .. } => {
+                Query::Cells { rows: Rows::Keys(keys) | Rows::Live(keys) | Rows::LiveTable(keys), .. } => {
                     followed.keys = keys.clone();
                     true
                 }
@@ -807,13 +811,13 @@ impl Engine {
                     false
                 }
                 Query::Head(_) => continue,
-                Query::Series { identity, countries, top, parts, .. } => {
+                Query::Series { identity, countries, mode, .. } => {
                     followed.ranking.clear();
                     followed.tags = tags_at(&followed.query, head);
                     followed.until = identity_until(identity, countries, head);
                     index.until = index.until.min(followed.until);
                     index.series.push(query);
-                    if top.is_some() || *parts {
+                    if matches!(mode, SeriesMode::Top { .. } | SeriesMode::Parts { .. }) {
                         index.broad.push(query);
                         false
                     } else {
@@ -863,6 +867,8 @@ impl Engine {
         {
             index.status = Some(status);
             index.queries.iter().for_each(|&query| mark_all(slab, marked, query));
+        } else if changes.read_rows_changed() {
+            index.witnessed.iter().for_each(|&query| mark_all(slab, marked, query));
         }
         if let Some(log) = changes.log() {
             let head = evaluate::head(lane);
@@ -1043,11 +1049,11 @@ impl Engine {
                 let query = index.series[at];
                 let followed = self.slab[query].as_mut().expect("a followed series");
                 if head >= followed.until {
-                    let Query::Series { identity, countries, top, parts, .. } = &followed.query else { continue };
+                    let Query::Series { identity, countries, mode, .. } = &followed.query else { continue };
                     followed.until = identity_until(identity, countries, head);
                     followed.ranking.clear();
                     followed.tags = tags_at(&followed.query, head);
-                    let keys = if top.is_some() || *parts { Vec::new() } else { holder_keys(&followed.tags.rows) };
+                    let keys = if matches!(mode, SeriesMode::Top { .. } | SeriesMode::Parts { .. }) { Vec::new() } else { holder_keys(&followed.tags.rows) };
                     let old = mem::replace(&mut followed.keys, keys);
                     for key in old.iter().filter(|key| !followed.keys.contains(key)) {
                         index.unwatch(query, *key);
@@ -1098,15 +1104,38 @@ impl Engine {
                 index.ordered(lane);
             }
             stats.evaluated += 1;
-            if let Query::Cells { columns, rows: Rows::Live(keys), .. } = &followed.query {
-                if let Some(reason) = self.reasons.unrecorded(lane) {
+            if let Query::Cells { columns, rows: Rows::Live(keys) | Rows::LiveTable(keys), .. } = &followed.query {
+                let row_scoped = matches!(followed.query, Query::Cells { rows: Rows::Live(_), .. });
+                let table_refusal = if row_scoped {
+                    self.reasons.row_coverage(lane, true).into_missing()
+                } else {
+                    self.reasons.unrecorded(lane)
+                };
+                if let Some(reason) = table_refusal {
                     followed.live.unrecorded();
                     self.body.clear();
                     answer::not_recorded(&reason, &mut self.body);
                     stats.changed += u32::from(offer(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue));
                     continue;
                 }
-                let (answer, read) = followed.live.evaluate(keys, columns, lane.cells(), &*index, &mut self.delta, &mut self.body);
+                let reasons = &self.reasons;
+                let read_rows = row_scoped.then(|| lane.read_rows()).flatten();
+                let (answer, read) = followed.live.evaluate(
+                    keys,
+                    columns,
+                    lane.cells(),
+                    &*index,
+                    read_rows,
+                    |witnessed| {
+                        if row_scoped {
+                            reasons.row_coverage(lane, witnessed)
+                        } else {
+                            dashboard_query::coverage::Coverage::Recorded
+                        }
+                    },
+                    &mut self.delta,
+                    &mut self.body,
+                );
                 stats.cells += read as u32;
                 match answer {
                     live_rows::Answer::Same => followed.has_pending = false,

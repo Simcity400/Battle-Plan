@@ -249,7 +249,7 @@ fn stored_name(content: &Content, bytes: &[u8]) -> Option<String> {
 
 fn leader_rows(query: &Query<'_>, log: &str, id: u32, leader: u64) -> io::Result<(Vec<&'static str>, Vec<dashboard_query::log::Row>)> {
     let reader = Reader::new(query, dashboard_declare::log(log).ok_or_else(|| dashboard_core::invalid(format!("The {log} log is not declared")))?)?;
-    let filter = FacetFilter { name: "leader".into(), values: vec![i64::from(id)], countries: Vec::new() };
+    let filter = FacetFilter { name: "leader".into(), values: vec![i64::from(id)], ..Default::default() };
     let (first, last) = (query.timeline.first, query.timeline.last);
     let asked = reader.select(&[filter], first, last)?;
     let rows = reader.every(&asked.patterns, first, last)?.into_iter().map(|(_, row)| row).filter(|row| (row.key >> 64) as u64 == leader).collect();

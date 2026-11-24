@@ -2,7 +2,6 @@ import { contrast, isDark, oklchToRgb, parseColor, rgbToOklch, solveLightness, t
 import type { Oklch, Rgb } from '../shell/appearance/color';
 import { colourDistance, NearestColours } from './paletteDistance.ts';
 
-
 const CATEGORICAL = {
   dark: ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#9085e9', '#e66767', '#008300'],
   light: ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#4a3aa7', '#e34948', '#008300'],
@@ -10,15 +9,253 @@ const CATEGORICAL = {
 export const CATEGORY_LIMIT = CATEGORICAL.dark.length;
 export const MARK_CONTRAST = 3;
 
+const GOLDEN_ANGLE = 137.50776405003785;
+const LIGHTNESS_STEP = 0.7548776662466927;
+const CHROMA_STEP = 0.5698402909980532;
+const GENERATED_CONTRAST = 4.2;
+const MAX_POOLS = 32;
+
+export type AuthoredColour = readonly [number, number, number] | Rgb | string;
+
+export interface ColourOptions {
+  readonly base?: readonly string[];
+  readonly contrastSurfaces?: readonly string[];
+  readonly avoid?: readonly string[];
+}
+
+interface GeneratedPool {
+  readonly background: Rgb;
+  readonly extras: readonly Rgb[];
+  readonly darkSurface: boolean;
+  readonly target: number;
+  readonly base: readonly string[];
+  readonly baseRgbs: readonly Rgb[];
+  readonly colors: string[];
+  readonly rgbs: Rgb[];
+  readonly used: Set<string>;
+  cursor: number;
+}
+
 const palettes = new Map<string, string[]>();
-export function categoricalPalette(surface: string): string[] {
-  let palette = palettes.get(surface);
-  if (!palette) {
-    const background = parseColor(surface) ?? { r: 0, g: 0, b: 0 };
-    const dark = isDark(background);
-    palette = CATEGORICAL[dark ? 'dark' : 'light'].map(hex => toHex(readable(parseColor(hex)!, background, dark)));
-    palettes.set(surface, palette);
+const pools = new Map<string, GeneratedPool>();
+
+function touchMap<K, V>(map: Map<K, V>, key: K, value: V, limit: number): void {
+  map.delete(key);
+  map.set(key, value);
+  while (map.size > limit) map.delete(map.keys().next().value!);
+}
+
+function roundRgb({ r, g, b }: Rgb): Rgb {
+  return {
+    r: Math.round(Math.min(255, Math.max(0, r))),
+    g: Math.round(Math.min(255, Math.max(0, g))),
+    b: Math.round(Math.min(255, Math.max(0, b))),
+  };
+}
+
+const EXTRA_SURFACE_CONTRAST = MARK_CONTRAST + 0.05;
+
+function meetsContrast(candidate: Rgb, background: Rgb, minContrast: number, extras: readonly Rgb[]): boolean {
+  if (contrast(candidate, background) < minContrast) return false;
+  for (let i = 0; i < extras.length; i++) {
+    if (contrast(candidate, extras[i]!) < EXTRA_SURFACE_CONTRAST) return false;
   }
+  return true;
+}
+
+function solveQuantised(color: Oklch, background: Rgb, darkSurface: boolean, minContrast: number, extras: readonly Rgb[]): Rgb {
+  const initial = roundRgb(oklchToRgb(color));
+  if (meetsContrast(initial, background, minContrast, extras)) return initial;
+  let lo = color.l;
+  let hi = darkSurface ? 1 : 0;
+  let best = roundRgb(oklchToRgb({ ...color, l: hi }));
+  for (let step = 0; step < 11; step++) {
+    const mid = (lo + hi) / 2;
+    const candidate = roundRgb(oklchToRgb({ ...color, l: mid }));
+    if (meetsContrast(candidate, background, minContrast, extras)) {
+      best = candidate;
+      hi = mid;
+    } else {
+      lo = mid;
+    }
+  }
+  return best;
+}
+
+function poolFor(surface: string, options?: ColourOptions): GeneratedPool {
+  const base = options?.base ?? categoricalPalette(surface);
+  const extraKey = options?.contrastSurfaces?.length ? options.contrastSurfaces.join(',') : '';
+  const key = `${surface}\0${extraKey}\0${base.join(',')}`;
+  const existing = pools.get(key);
+  if (existing) {
+    touchMap(pools, key, existing, MAX_POOLS);
+    return existing;
+  }
+  const background = parseColor(surface) ?? { r: 0, g: 0, b: 0 };
+  const darkSurface = isDark(background);
+  const extreme: Rgb = darkSurface ? { r: 255, g: 255, b: 255 } : { r: 0, g: 0, b: 0 };
+  const extras = (options?.contrastSurfaces ?? [])
+    .map(hex => parseColor(hex))
+    .filter((rgb): rgb is Rgb => rgb !== null);
+  const maxContrast = contrast(extreme, background);
+  const target = maxContrast >= 8 ? GENERATED_CONTRAST : MARK_CONTRAST;
+  const used = new Set<string>();
+  const resolvedBase: string[] = [];
+  const baseRgbs: Rgb[] = [];
+  for (const hex of base) {
+    const parsed = parseColor(hex);
+    if (parsed) {
+      const checked = extras.length && !meetsContrast(parsed, background, MARK_CONTRAST, extras)
+        ? solveQuantised(rgbToOklch(parsed), background, darkSurface, MARK_CONTRAST, extras)
+        : parsed;
+      const finalHex = toHex(checked);
+      resolvedBase.push(finalHex);
+      baseRgbs.push(checked);
+      used.add(finalHex);
+    } else {
+      resolvedBase.push(hex);
+      used.add(hex.toLowerCase());
+    }
+  }
+  const pool: GeneratedPool = {
+    background,
+    extras,
+    darkSurface,
+    target,
+    base: resolvedBase,
+    baseRgbs,
+    colors: [],
+    rgbs: [],
+    used,
+    cursor: 0,
+  };
+  touchMap(pools, key, pool, MAX_POOLS);
+  return pool;
+}
+
+function nextUniqueFallback(pool: GeneratedPool, baseColor: Oklch): { hex: string; rgb: Rgb } {
+  for (let shift = 0; shift < 256; shift++) {
+    const h = (baseColor.h + shift * 1.40625) % 360;
+    const l = Math.min(0.98, Math.max(0.02, baseColor.l + ((shift % 9) - 4) * 0.015));
+    const c = Math.min(0.28, Math.max(0.04, baseColor.c + ((shift % 5) - 2) * 0.015));
+    const rgb = solveQuantised({ l, c, h }, pool.background, pool.darkSurface, MARK_CONTRAST, pool.extras);
+    const hex = toHex(rgb);
+    if (!pool.used.has(hex)) return { hex, rgb };
+  }
+  const rgb = solveQuantised(baseColor, pool.background, pool.darkSurface, MARK_CONTRAST, pool.extras);
+  return { hex: toHex(rgb), rgb };
+}
+
+function generatedAt(pool: GeneratedPool, index: number): string {
+  const minBaseGap = pool.target > MARK_CONTRAST ? 3 : 0;
+  const minNeighbourGap = pool.target > MARK_CONTRAST ? 12 : 0;
+  while (pool.colors.length <= index) {
+    const prev = pool.rgbs[pool.rgbs.length - 1];
+    let accepted: { hex: string; rgb: Rgb } | null = null;
+    let lastColor: Oklch = { l: pool.darkSurface ? 0.72 : 0.35, c: 0.14, h: 195 };
+    for (let tries = 0; tries < 64; tries++) {
+      const step = pool.cursor++;
+      const h = (195 + step * GOLDEN_ANGLE) % 360;
+      const u = (0.35 + step * LIGHTNESS_STEP) % 1;
+      const v = (0.55 + step * CHROMA_STEP) % 1;
+      const l = pool.darkSurface ? 0.62 + u * 0.27 : 0.22 + u * 0.30;
+      const c = 0.08 + v * 0.14;
+      lastColor = { l, c, h };
+      const rgb = solveQuantised(lastColor, pool.background, pool.darkSurface, pool.target, pool.extras);
+      const hex = toHex(rgb);
+      if (pool.used.has(hex)) continue;
+      if (minBaseGap > 0 && !pool.baseRgbs.every(other => colourDistance(rgb, other) >= minBaseGap)) continue;
+      if (prev && minNeighbourGap > 0 && colourDistance(rgb, prev) < minNeighbourGap) continue;
+      accepted = { hex, rgb };
+      break;
+    }
+    if (accepted === null) accepted = nextUniqueFallback(pool, lastColor);
+    pool.used.add(accepted.hex);
+    pool.colors.push(accepted.hex);
+    pool.rgbs.push(accepted.rgb);
+  }
+  return pool.colors[index]!;
+}
+
+export function authoredHex(color: AuthoredColour): string {
+  if (typeof color === 'string') return color;
+  return toHex('r' in color ? color : { r: color[0], g: color[1], b: color[2] });
+}
+
+function colourAtSlot(surface: string, slot: number, options?: ColourOptions): string {
+  if (options?.contrastSurfaces?.length) {
+    const pool = poolFor(surface, options);
+    return slot < pool.base.length ? pool.base[slot]! : generatedAt(pool, slot - pool.base.length);
+  }
+  const base = options?.base ?? categoricalPalette(surface);
+  if (slot < base.length) return base[slot]!;
+  return generatedAt(poolFor(surface, options), slot - base.length);
+}
+
+export function colour(surface: string, ordinal: number, options?: ColourOptions): string {
+  const slot = Number.isFinite(ordinal) ? Math.max(0, Math.floor(ordinal)) : 0;
+  const candidate = colourAtSlot(surface, slot, options);
+  if (!options?.avoid?.length) return candidate;
+  const avoid = new Set(options.avoid.map(c => c.toLowerCase()));
+  if (!avoid.has(candidate.toLowerCase())) return candidate;
+  const pool = poolFor(surface, options);
+  let step = Math.max(0, slot - pool.base.length);
+  while (true) {
+    const next = generatedAt(pool, step++);
+    if (!avoid.has(next.toLowerCase())) return next;
+  }
+}
+
+export function colours(surface: string, ordinals: Iterable<number>, options?: ColourOptions): Map<number, string> {
+  const result = new Map<number, string>();
+  const hasExtras = Boolean(options?.contrastSurfaces?.length);
+  const avoid = options?.avoid?.length ? new Set(options.avoid.map(c => c.toLowerCase())) : null;
+  const base = hasExtras ? null : (options?.base ?? categoricalPalette(surface));
+  let pool: GeneratedPool | null = null;
+  for (const raw of ordinals) {
+    const slot = Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
+    if (result.has(slot)) continue;
+    let hex: string;
+    if (!hasExtras && base && slot < base.length) {
+      hex = base[slot]!;
+    } else {
+      pool ??= poolFor(surface, options);
+      hex = slot < pool.base.length ? pool.base[slot]! : generatedAt(pool, slot - pool.base.length);
+    }
+    if (avoid && avoid.has(hex.toLowerCase())) {
+      pool ??= poolFor(surface, options);
+      let step = Math.max(0, slot - pool.base.length);
+      while (avoid.has(hex.toLowerCase())) hex = generatedAt(pool, step++);
+    }
+    result.set(slot, hex);
+  }
+  return result;
+}
+
+export function resolveColour(surface: string, ordinal: number, authored?: AuthoredColour | null, options?: ColourOptions): string {
+  if (authored != null) return authoredHex(authored);
+  return colour(surface, ordinal, options);
+}
+
+export function readableColour(color: AuthoredColour, surface: string, minContrast = MARK_CONTRAST): string {
+  const background = parseColor(surface) ?? { r: 0, g: 0, b: 0 };
+  const rgb = typeof color === 'string'
+    ? (parseColor(color) ?? { r: 128, g: 128, b: 128 })
+    : 'r' in color ? color : { r: color[0], g: color[1], b: color[2] };
+  if (contrast(rgb, background) >= minContrast) return toHex(rgb);
+  return toHex(solveQuantised(rgbToOklch(rgb), background, isDark(background), minContrast, []));
+}
+
+export function categoricalPalette(surface: string): string[] {
+  const existing = palettes.get(surface);
+  if (existing) {
+    touchMap(palettes, surface, existing, MAX_POOLS);
+    return existing;
+  }
+  const background = parseColor(surface) ?? { r: 0, g: 0, b: 0 };
+  const dark = isDark(background);
+  const palette = CATEGORICAL[dark ? 'dark' : 'light'].map(hex => toHex(readable(parseColor(hex)!, background, dark)));
+  touchMap(palettes, surface, palette, MAX_POOLS);
   return palette;
 }
 
@@ -35,12 +272,12 @@ export const GREY_CHROMA = 0.045;
 
 export function nudgeApart(colors: readonly Rgb[], background: Rgb, minDistance = 12, avoid: readonly Rgb[] = []): Rgb[] {
   const darkSurface = isDark(background);
-  const fallback = categoricalPalette(toHex(background)).map(hex => parseColor(hex)!);
+  const surfaceHex = toHex(background);
   const result: Rgb[] = [];
   const neighbours = new NearestColours(avoid);
   for (const [position, color] of colors.entries()) {
     let base: Oklch = rgbToOklch(color);
-    if (base.c < GREY_CHROMA) base = rgbToOklch(fallback[position % fallback.length]);
+    if (base.c < GREY_CHROMA) base = rgbToOklch(parseColor(colour(surfaceHex, position))!);
     let chosen = readable(oklchToRgb(base), background, darkSurface);
     const mark = (candidate: Rgb) => contrast(candidate, background) >= MARK_CONTRAST && rgbToOklch(candidate).c >= GREY_CHROMA;
     const gap = (candidate: Rgb) => neighbours.gap(candidate);
@@ -71,8 +308,16 @@ export function lineDashes(round: number): { primary: readonly number[]; seconda
 
 export const SECONDARY_DASH = lineDashes(0).secondary;
 
+export function lineStyle(surface: string, ordinal: number, options?: ColourOptions): LineStyle {
+  const slot = Number.isFinite(ordinal) ? Math.max(0, Math.floor(ordinal)) : 0;
+  return {
+    color: colour(surface, slot, options),
+    ...lineDashes(Math.floor(slot / CATEGORY_LIMIT)),
+  };
+}
+
 export function lineColours<K>(lines: readonly { key: K; preferred: number }[], palette: readonly string[]): Map<K, string> {
-  const colours = new Map<K, string>();
+  const result = new Map<K, string>();
   const taken = new Set<number>();
   const size = Math.max(1, palette.length);
   for (const line of [...lines].sort((a, b) => a.preferred - b.preferred)) {
@@ -80,12 +325,17 @@ export function lineColours<K>(lines: readonly { key: K; preferred: number }[], 
     const free = !taken.has(preferred) ? preferred : palette.findIndex((_, candidate) => !taken.has(candidate));
     const index = free < 0 ? preferred : free;
     taken.add(index);
-    colours.set(line.key, palette[index]);
+    result.set(line.key, palette[index]!);
   }
-  return colours;
+  return result;
 }
 
-export function lineStyles<K>(lines: readonly { key: K; preferred: number }[], palette: readonly string[]): Map<K, LineStyle> {
+export function lineStyles<K>(lines: readonly { key: K; preferred: number }[], palette: readonly string[], surface?: string): Map<K, LineStyle> {
+  if (surface !== undefined) {
+    const styles = new Map<K, LineStyle>();
+    for (const line of lines) styles.set(line.key, lineStyle(surface, line.preferred, { base: palette }));
+    return styles;
+  }
   const sorted = [...lines].sort((a, b) => a.preferred - b.preferred);
   const size = Math.max(1, palette.length);
   const styles = new Map<K, LineStyle>();

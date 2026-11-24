@@ -1,8 +1,9 @@
 import { rowName, textAt, type FollowedAnswer } from '../../dashboard/follow/message.ts';
 import { TRAILING_HOURS } from '../../dashboard/model.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
+import type { FamilyPlanContext } from '../../families/contract.ts';
 import { overlapsHourRanges } from '../../families/holders.ts';
-import { nextWindowRangesChange, type DeclaredTableContext, type HourRanges, type TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import { nextWindowRangesChange, type HourRanges, type TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { lookAt, type CountryLooksMap } from '../../families/looks.ts';
 import {
   declareTableProjection,
@@ -126,8 +127,8 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
     kind: 'apm-table',
     validate: parseReply,
     fromAnswer: parseAnswer,
-    nextChange: (_sources, hour, opt) => (
-      opt.staticSpan ? Infinity : nextWindowRangesChange(opt.unobserved, opt.windowHours ?? TRAILING_HOURS, hour)
+    nextChange: (readView, opt) => (
+      opt.staticSpan ? Infinity : nextWindowRangesChange(opt.unobserved, opt.windowHours ?? TRAILING_HOURS, readView.hour)
     ),
     rank: true,
     rankMarkers: opt => opt.rankMarkers,
@@ -196,7 +197,7 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
   }),
 );
 
-function apmHeadParams(ctx: DeclaredTableContext<unknown>) {
+function apmHeadParams(ctx: FamilyPlanContext<unknown>) {
   const membership = ctx.countries.membershipRuns
     ? ctx.countries.membershipRuns.flatMap(run => {
       const held = ctx.gateSpan(run.firstHour, run.lastHour);
@@ -227,15 +228,27 @@ export const apmTableDeclaration: TableWidgetDeclaration<ApmTableProjectionOptio
     allTagsForLabels: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group',
   },
-  source: {
-    kind: 'head',
-    product: 'player-apm',
-    timeShape: 'trailing-window',
-    windowHours: TRAILING_HOURS,
-    followQuery: ctx => apmHeadQuery(apmHeadParams(ctx), ctx.branch, TRAILING_HOURS),
-    productParams: (ctx, span) => ({ ...apmHeadParams(ctx), registry: false, ...span, buckets: 1 }),
-    dynamicKeys: ['firstHour', 'lastHour', 'buckets'],
-    validate: validateApm,
+  sources: ctx => {
+    const headParams = apmHeadParams(ctx);
+    return {
+      owner: `apm-table:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
+      entries: [{
+        name: 'main',
+        source: ctx.track.source,
+        branch: ctx.branch.id,
+        offset: ctx.track.axisOffset,
+        read: {
+          shape: 'trailing-window',
+          coverage: ctx.countries.all ? { mode: 'population', form: 'all' } : { mode: 'keyed', keys: ctx.countries.tags },
+          product: 'player-apm',
+          windowHours: TRAILING_HOURS,
+          followQuery: apmHeadQuery(headParams, ctx.branch, TRAILING_HOURS),
+          params: { ...headParams, registry: false, buckets: 1 },
+          dynamicKeys: ['firstHour', 'lastHour', 'buckets'],
+          validate: validateApm,
+        },
+      }],
+    };
   },
   projection: apmTableProjection,
   columns: ctx => apmTableColumns(ctx.options.group === 'player', ctx.options.showPausedActions === true, ctx.options.cellBars === true),

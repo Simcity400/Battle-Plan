@@ -161,16 +161,16 @@ test('claimGameWindowSlot enforces one pop-up per kind and preserves position ac
   let closedA = 0;
   let closedB = 0;
   assert.equal(claimGameWindowSlot('equipmentDesigner', 'widget-a', () => { closedA++; }), null);
-  updateGameWindowSlotPosition('equipmentDesigner', 'widget-a', { x: 240, y: 120 });
+  updateGameWindowSlotPosition('equipmentDesigner', 'widget-a', { left: 240, top: 120 });
   assert.deepEqual(
     claimGameWindowSlot('equipmentDesigner', 'widget-a', () => { closedA++; }),
-    { x: 240, y: 120 },
+    { left: 240, top: 120 },
   );
   assert.equal(closedA, 0);
 
   assert.deepEqual(
     claimGameWindowSlot('equipmentDesigner', 'widget-b', () => { closedB++; }),
-    { x: 240, y: 120 },
+    { left: 240, top: 120 },
   );
   assert.equal(closedA, 1);
   assert.equal(closedB, 0);
@@ -178,7 +178,7 @@ test('claimGameWindowSlot enforces one pop-up per kind and preserves position ac
   releaseGameWindowSlot('equipmentDesigner', 'widget-a');
   assert.deepEqual(
     claimGameWindowSlot('equipmentDesigner', 'widget-b', () => { closedB++; }),
-    { x: 240, y: 120 },
+    { left: 240, top: 120 },
   );
   releaseGameWindowSlot('equipmentDesigner', 'widget-b');
   assert.equal(claimGameWindowSlot('equipmentDesigner', 'widget-a', () => { closedA++; }), null);

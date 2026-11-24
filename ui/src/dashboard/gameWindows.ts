@@ -54,7 +54,7 @@ export interface ShownWindow {
   logicalSize?: readonly [number, number];
 }
 
-export interface WindowPosition { x: number; y: number }
+export interface WindowPosition { readonly left: number; readonly top: number }
 
 interface ActiveWindowSlot {
   ownerId: string;

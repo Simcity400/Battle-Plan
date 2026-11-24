@@ -139,7 +139,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const store = useMemo(() => track ? followStore(runtime.client, track, clock) : null, [runtime.client, clock, track?.source, track?.axisOffset]);
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const headQuery = useMemo(() => followsClock && active && track && tags.length ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id,
+  const headQuery = useMemo(() => followsClock && active && track && tags.length ? gate.follow({ product: 'series-state', coverage: 'row', params: { branchId: track.branch.id,
     family: { kind: 'autonomy', measure: 'progress' }, reads: tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null, [followsClock, active, track?.branch.id, tags, gate.follow]);
   const followed = useFollow(store, headQuery, root, NO_PAINT);
   const entry = followsHead(followed) ? followed.entry : null;

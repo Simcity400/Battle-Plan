@@ -242,6 +242,10 @@ mod details {
                     .map(|(battle, sink_hour)| SunkShipEntry { battle, sink_hour, ship_name: format!("ship {battle}").into_bytes(), ..Default::default() })
                     .collect();
                 set::<tables::SunkShips>(&mut frame, vec![SunkShipsRow { entries }]);
+                set::<tables::NavalCombats>(
+                    &mut frame,
+                    [7, 8, 9].into_iter().map(|id| replay_data::rows::NavalCombatRow { id, province: 500, ..Default::default() }).collect(),
+                );
                 set::<tables::NavalCombatDetails>(&mut frame, [7, 8].into_iter().map(|combat| NavalCombatDetailsRow { combat, custom_sea: Some(Vec::new()), ..Default::default() }).collect());
                 frame
             })
@@ -269,7 +273,7 @@ mod details {
         let ships = |row: &serde_json::Value| row["namedShips"].as_array().unwrap().iter().map(|ship| ship["sinkHour"].as_i64().unwrap()).collect::<Vec<_>>();
         assert_eq!(together.iter().take(5).map(ships).collect::<Vec<_>>(), [vec![101], vec![103], vec![106], vec![101], vec![103]], "each battle its own sinkings, as listed by its hour");
         assert_eq!(together[0]["shipRead"], 104, "the list as read at the hour asked");
-        assert_eq!(together[5]["unavailable"], "Details are kept for live battles at a recorded hour", "an hour outside the recording");
+        assert_eq!(together[5]["unavailable"], "Details are kept for battles at a recorded hour", "an hour outside the recording");
     }
 
     #[test]
@@ -553,5 +557,286 @@ mod details {
         let ranked = ranking.rows.iter().find(|row| row.id == "combat:7:100").expect("ranking resolves ENG at 105");
         let ranked_tags: Vec<&str> = ranked.runs[0].row.sides[0].countries.iter().map(|country| country.tag.as_str()).collect();
         assert_eq!(ranked_tags, listed_tags);
+    }
+
+    #[test]
+    fn sinking_cause_and_battle_link_resolve_independently_causally_and_within_branch() {
+        use super::super::{
+            battles::{NavalBattleDetailRequest, NavalBattleDetails, NavalBattleDetailsParams},
+            sinking_details::{SINKING_BATTLE_NOT_RECORDED, SINKING_CAUSE_NOT_RECORDED, ShipSinkingAttribution, ShipSinkingBattle, resolve_attribution},
+            sunk::{ShipsSunk, ShipsSunkParams},
+        };
+        use replay_data::rows::{
+            LexicalTokenRow, NavalCombatParticipantRow, NavalCombatRow, NavalResultRow, NavalResultSourceRow, SunkShipEntry, SunkShipsRow,
+            TableId,
+        };
+
+        let make_entry = |sink_hour: i32, ship: &[u8], attr: &[u8], cause_record: u8, assisted_kill: u8, air_ref: u64, attr_class_token: u32, attr_class_name: &[u8], battle: u64| SunkShipEntry {
+            ship_name: ship.to_vec(),
+            attribution_name: attr.to_vec(),
+            class_name: b"mod_hull".to_vec(),
+            attribution_class_name: attr_class_name.to_vec(),
+            victim_country: 9001,
+            attacker_country: 9001,
+            sink_hour,
+            class_token: 101,
+            attribution_class_token: attr_class_token,
+            attribution_class_present: u8::from(attr_class_token != 0 || !attr_class_name.is_empty()),
+            damage_source_reference: air_ref,
+            battle,
+            cause_record,
+            assisted_kill,
+            ..SunkShipEntry::default()
+        };
+
+        let mine = make_entry(100, b"S1", b"mod sea mine", 1, 1, 0, 0, b"", 0);
+        assert_eq!(
+            resolve_attribution(&mine, Some("mod sea mine".into()), None, None),
+            ShipSinkingAttribution::Cause { text: "mod sea mine".into(), assisted: true }
+        );
+        let empty_cause = make_entry(100, b"S2", b"", 1, 0, 0, 0, b"", 9);
+        assert_eq!(
+            resolve_attribution(&empty_cause, None, None, None),
+            ShipSinkingAttribution::NotRecorded { reason: SINKING_CAUSE_NOT_RECORDED.to_owned() }
+        );
+        let empty_hostile = make_entry(100, b"S3", b"", 0, 0, 0, 0, b"", 9);
+        assert_eq!(
+            resolve_attribution(&empty_hostile, None, None, None),
+            ShipSinkingAttribution::NotRecorded { reason: SINKING_CAUSE_NOT_RECORDED.to_owned() }
+        );
+        let air_land = make_entry(100, b"S4", b"", 0, 0, 777, 0, b"", 0);
+        assert_eq!(
+            resolve_attribution(&air_land, None, None, None),
+            ShipSinkingAttribution::AirWing { carrier_name: None, carrier_class_key: None, carrier_class_name: None, assisted: false }
+        );
+        let air_carrier = make_entry(100, b"S5", b"CV Mod", 0, 0, 888, 202, b"mod_carrier", 9);
+        assert_eq!(
+            resolve_attribution(&air_carrier, Some("CV Mod".into()), Some("mod_carrier".into()), Some("Mod Carrier".into())),
+            ShipSinkingAttribution::AirWing {
+                carrier_name: Some("CV Mod".into()),
+                carrier_class_key: Some("mod_carrier".into()),
+                carrier_class_name: Some("Mod Carrier".into()),
+                assisted: false,
+            }
+        );
+
+        let e_live_a = make_entry(101, b"Ship A", b"Killer Ship", 0, 0, 0, 201, b"mod_dd", 9);
+        let e_live_dup = make_entry(101, b"Ship A", b"Killer Ship", 0, 0, 0, 201, b"mod_dd", 9);
+        let e_del = make_entry(102, b"Ship Del", b"", 0, 0, 555, 0, b"", 9);
+        let e_no_battle = make_entry(101, b"Ship Mine", b"mod minefield", 1, 0, 0, 0, b"", 0);
+        let e_no_cause = make_entry(101, b"Ship Blank", b"", 0, 0, 0, 0, b"", 9);
+        let e_reused = make_entry(105, b"Ship Reused", b"Later Killer", 0, 1, 0, 201, b"mod_dd", 9);
+        let e_merged = make_entry(103, b"Ship Merged", b"CV Mod", 0, 0, 888, 202, b"mod_carrier", 12);
+        let e_transient = make_entry(104, b"Ship Transient", b"Fast Ship", 0, 0, 0, 201, b"mod_dd", 13);
+        let e_gap_del = make_entry(103, b"Ship Gap", b"Gap Killer", 0, 0, 0, 201, b"mod_dd", 14);
+
+        let b1_frames: Vec<_> = (100..=106)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                set::<tables::LexicalTokens>(
+                    &mut frame,
+                    vec![
+                        LexicalTokenRow { token: 101, literal: b"mod_hull".to_vec() },
+                        LexicalTokenRow { token: 201, literal: b"mod_dd".to_vec() },
+                        LexicalTokenRow { token: 202, literal: b"mod_carrier".to_vec() },
+                    ],
+                );
+                let mut combats = Vec::new();
+                let mut parts = Vec::new();
+                if (100..=101).contains(&hour) {
+                    combats.push(NavalCombatRow { id: 9, province: 500, ..NavalCombatRow::default() });
+                    parts.push(NavalCombatParticipantRow { combat: 9, side: 0, battle_slot: 0, ship: 11, owner: 9001, state: 0 });
+                }
+                if (105..=106).contains(&hour) {
+                    combats.push(NavalCombatRow { id: 9, province: 500, ..NavalCombatRow::default() });
+                    parts.push(NavalCombatParticipantRow { combat: 9, side: 0, battle_slot: 0, ship: 12, owner: 9001, state: 0 });
+                }
+                if (101..=102).contains(&hour) {
+                    combats.push(NavalCombatRow { id: 14, province: 501, ..NavalCombatRow::default() });
+                    parts.push(NavalCombatParticipantRow { combat: 14, side: 0, battle_slot: 0, ship: 14, owner: 9001, state: 0 });
+                }
+                combats.sort_by_key(|row| row.id);
+                parts.sort_by_key(|row| (row.combat, row.side, row.battle_slot));
+                if hour == 103 {
+                    *frame.tables[TableId::NavalCombats.index()] = TableView::Unavailable { reason: "unread gap".into() };
+                } else {
+                    set::<tables::NavalCombats>(&mut frame, combats);
+                }
+                set::<tables::NavalCombatParticipants>(&mut frame, parts);
+                if hour >= 104 {
+                    set::<tables::NavalResults>(
+                        &mut frame,
+                        vec![NavalResultRow { id: 50, province: 500, result_hour: 104, retire_hour: 200, winning_side: 1, ..NavalResultRow::default() }],
+                    );
+                    set::<tables::NavalResultSources>(
+                        &mut frame,
+                        vec![
+                            NavalResultSourceRow { id: 1, game_hour: 104, result: 50, combat: 9, merged: false, transient: false, combat_created_hour: Some(100) },
+                            NavalResultSourceRow { id: 2, game_hour: 104, result: 50, combat: 12, merged: true, transient: false, combat_created_hour: Some(103) },
+                            NavalResultSourceRow { id: 3, game_hour: 104, result: 50, combat: 13, merged: false, transient: true, combat_created_hour: Some(104) },
+                        ],
+                    );
+                }
+                let mut entries = vec![e_live_a.clone(), e_live_dup.clone(), e_no_battle.clone(), e_no_cause.clone()];
+                if hour >= 102 {
+                    entries.push(e_del.clone());
+                }
+                if hour >= 103 {
+                    entries.push(e_merged.clone());
+                    entries.push(e_gap_del.clone());
+                }
+                if hour >= 104 {
+                    entries.push(e_transient.clone());
+                }
+                if hour >= 105 {
+                    entries.push(e_reused.clone());
+                }
+                set::<tables::SunkShips>(&mut frame, vec![SunkShipsRow { entries }]);
+                frame
+            })
+            .collect();
+
+        let b2_frames: Vec<_> = (100..=102)
+            .map(|hour| {
+                let mut frame = source(2, hour, Some(1));
+                set::<tables::LexicalTokens>(&mut frame, vec![LexicalTokenRow { token: 101, literal: b"mod_hull".to_vec() }, LexicalTokenRow { token: 201, literal: b"mod_dd".to_vec() }]);
+                set::<tables::SunkShips>(&mut frame, vec![SunkShipsRow { entries: vec![e_live_a.clone()] }]);
+                frame
+            })
+            .collect();
+
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, b1_frames), records(2, b2_frames)])
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
+        let replay_source = Source::from_replay(
+            dashboard_base::SourceKey { source_id: "sunk-cause-battle".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let ctx = LoadContext { content: None };
+        let cancel = AtomicBool::new(false);
+
+        let b1 = ShipsSunk::load(&replay_source, &ShipsSunkParams { branch_id: "1".into(), window: 0 }, &ctx, &cancel).unwrap();
+        let dups: Vec<_> = b1.rows.iter().filter(|row| row.name.as_deref() == Some("Ship A")).collect();
+        assert_eq!(dups.len(), 2, "same-hour duplicate sinkings stay distinct");
+        assert_eq!(
+            dups[0].sinking_cause,
+            ShipSinkingAttribution::Ship { name: "Killer Ship".into(), class_key: Some("mod_dd".into()), class_name: Some("mod_dd".into()), assisted: false }
+        );
+        assert_eq!(
+            dups[0].battle,
+            ShipSinkingBattle::Linked {
+                id: "result:50".into(),
+                live_id: Some("combat:9:100".into()),
+                result_id: Some("result:50".into()),
+                first_hour: Some(100),
+                result_hour: Some(104),
+            }
+        );
+
+        let del = b1.rows.iter().find(|row| row.name.as_deref() == Some("Ship Del")).unwrap();
+        assert_eq!(
+            del.sinking_cause,
+            ShipSinkingAttribution::AirWing { carrier_name: None, carrier_class_key: None, carrier_class_name: None, assisted: false }
+        );
+        assert_eq!(
+            del.battle,
+            ShipSinkingBattle::Linked {
+                id: "result:50".into(),
+                live_id: Some("combat:9:100".into()),
+                result_id: Some("result:50".into()),
+                first_hour: Some(100),
+                result_hour: Some(104),
+            }
+        );
+
+        let no_battle = b1.rows.iter().find(|row| row.name.as_deref() == Some("Ship Mine")).unwrap();
+        assert_eq!(no_battle.sinking_cause, ShipSinkingAttribution::Cause { text: "mod minefield".into(), assisted: false });
+        assert_eq!(no_battle.battle, ShipSinkingBattle::NotRecorded { reason: SINKING_BATTLE_NOT_RECORDED.to_owned() });
+
+        let no_cause = b1.rows.iter().find(|row| row.name.as_deref() == Some("Ship Blank")).unwrap();
+        assert_eq!(no_cause.sinking_cause, ShipSinkingAttribution::NotRecorded { reason: SINKING_CAUSE_NOT_RECORDED.to_owned() });
+        assert!(matches!(no_cause.battle, ShipSinkingBattle::Linked { ref id, .. } if id == "result:50"));
+
+        let reused = b1.rows.iter().find(|row| row.name.as_deref() == Some("Ship Reused")).unwrap();
+        assert_eq!(
+            reused.battle,
+            ShipSinkingBattle::Linked {
+                id: "combat:9:105".into(),
+                live_id: Some("combat:9:105".into()),
+                result_id: None,
+                first_hour: Some(105),
+                result_hour: None,
+            },
+            "reused combat handle resolves to its own incarnation only"
+        );
+
+        let merged = b1.rows.iter().find(|row| row.name.as_deref() == Some("Ship Merged")).unwrap();
+        assert_eq!(
+            merged.sinking_cause,
+            ShipSinkingAttribution::AirWing {
+                carrier_name: Some("CV Mod".into()),
+                carrier_class_key: Some("mod_carrier".into()),
+                carrier_class_name: Some("mod_carrier".into()),
+                assisted: false,
+            }
+        );
+        assert_eq!(
+            merged.battle,
+            ShipSinkingBattle::Linked { id: "result:50".into(), live_id: None, result_id: Some("result:50".into()), first_hour: None, result_hour: Some(104) }
+        );
+
+        let transient = b1.rows.iter().find(|row| row.name.as_deref() == Some("Ship Transient")).unwrap();
+        assert_eq!(
+            transient.battle,
+            ShipSinkingBattle::Linked { id: "result:50".into(), live_id: None, result_id: Some("result:50".into()), first_hour: None, result_hour: Some(104) }
+        );
+
+        let gap_del = b1.rows.iter().find(|row| row.name.as_deref() == Some("Ship Gap")).unwrap();
+        assert_eq!(
+            gap_del.battle,
+            ShipSinkingBattle::NotRecorded { reason: SINKING_BATTLE_NOT_RECORDED.to_owned() },
+            "deletion hour is refused when NavalCombats is unavailable at gone + 1"
+        );
+
+        let b2 = ShipsSunk::load(&replay_source, &ShipsSunkParams { branch_id: "2".into(), window: 0 }, &ctx, &cancel).unwrap();
+        assert_eq!(b2.rows.len(), 1);
+        assert_eq!(
+            b2.rows[0].battle,
+            ShipSinkingBattle::NotRecorded { reason: SINKING_BATTLE_NOT_RECORDED.to_owned() },
+            "branch 2 must never join branch 1 battle handles"
+        );
+
+        let details = NavalBattleDetails::load(
+            &replay_source,
+            &NavalBattleDetailsParams {
+                branch_id: "1".into(),
+                battles: vec![
+                    NavalBattleDetailRequest { id: "result:50".into(), hour: 102 },
+                    NavalBattleDetailRequest { id: "combat:9:100".into(), hour: 102 },
+                    NavalBattleDetailRequest { id: "result:50".into(), hour: 106 },
+                    NavalBattleDetailRequest { id: "combat:9:105".into(), hour: 106 },
+                ],
+            },
+            &ctx,
+            &cancel,
+        )
+        .unwrap();
+        assert!(details.rows[0].unavailable.is_some(), "result:50 does not exist before hour 104");
+        assert!(details.rows[0].named_ships.is_empty());
+
+        let live_102: Vec<_> = details.rows[1].named_ships.iter().filter_map(|s| s.name.as_deref()).collect();
+        assert_eq!(live_102, vec!["Ship A", "Ship A", "Ship Blank", "Ship Del"]);
+
+        assert_eq!(details.rows[2].unavailable, None);
+        let res_106: Vec<_> = details.rows[2].named_ships.iter().filter_map(|s| s.name.as_deref()).collect();
+        assert_eq!(res_106, vec!["Ship A", "Ship A", "Ship Blank", "Ship Del", "Ship Merged", "Ship Transient"]);
+        assert_eq!(details.rows[2].named_ships[2].sinking_cause, ShipSinkingAttribution::NotRecorded { reason: SINKING_CAUSE_NOT_RECORDED.to_owned() });
+
+        let live_105: Vec<_> = details.rows[3].named_ships.iter().filter_map(|s| s.name.as_deref()).collect();
+        assert_eq!(live_105, vec!["Ship Reused"], "incarnation filtering keeps combat:9:105 separate from combat:9:100");
     }
 }

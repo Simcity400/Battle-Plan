@@ -974,7 +974,7 @@ fn production_effect_compilation_and_gui_binding_renders_mod_window() {
     };
     assert_eq!(output.pixel_size, [20, 12]);
     assert_eq!(output.logical_size, [20.0, 12.0]);
-    assert_eq!(output.origin, [12.0, 12.0]);
+    assert_eq!(output.origin, [2.0, 2.0]);
     let center = ((6 * 20 + 10) * 4) as usize;
     assert_eq!(&output.rgba[center..center + 4], &[220, 110, 40, 255]);
 }

@@ -12,7 +12,7 @@ import { usePlaybackMotion } from '../../dashboard/playback';
 import { OPTIONS } from './definition';
 import type { FactoryKind } from './definition';
 import { LEVELS, UNIT, formatAppliedIc, noProductionAt, productionSpendingItems, spendingDesigns, spendingEmptyLabel, spendingFinals, spendingTotal,
-  spendingRecorded, validateProductionSpendingReply } from './spendingData';
+  spendingRecorded, spendingWidgetGate, validateProductionSpendingReply } from './spendingData';
 import { useSpending } from './useSpending';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
@@ -33,19 +33,18 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
   const { track, tag, data, error, retry, hour, from, end, headAt } = spending;
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const designs = useMemo(() => data ? spendingDesigns(data, refits, kind) : [], [data, refits, kind]);
-  const finals = useMemo(() => data && end != null ? spendingFinals(data, designs, from, end) : [], [data, designs, from, end]);
-  const empty = (at: number) => !!data && noProductionAt(data, at, refits) && spendingTotal(data, designs, { from, hour: at, end: end ?? at }, kind, refits).exact === 0n;
+  const empty = (at: number) => !!data && end != null && noProductionAt(data, at, refits) && spendingTotal(data, designs, { from, hour: at, end }, kind, refits).exact === 0n;
   const emptyLabel = (at: number) => data ? spendingEmptyLabel(data, designs, at, from, kind, refits) : 'Loading production spending…';
   headKey.current = at => JSON.stringify([empty(at), emptyLabel(at)]);
   const valuesAt = (at: number): SunburstValues => !data || end == null ? { items: [] } : {
-    items: productionSpendingItems(data, { from, hour: at, end }, designs, finals, kind, refits),
+    items: productionSpendingItems(data, { from, hour: at, end }, designs, spendingFinals(data, designs, from, end, at), kind, refits),
     authoritativeTotal: spendingTotal(data, designs, { from, hour: at, end }, kind, refits),
   };
   const build = useRef(valuesAt);
   build.current = valuesAt;
-  const values = useMemo(() => hour == null ? { items: [] } : valuesAt(hour), [data, designs, finals, kind, refits, from, hour, end]);
+  const values = useMemo(() => hour == null ? { items: [] } : valuesAt(hour), [data, designs, kind, refits, from, hour, end]);
   const live = useMemo(() => headAt && data && hour != null ? liveAt(runtime.clock, position => Math.floor(headAt(position) ?? hour), at => build.current(at)) : undefined,
-    [headAt, runtime.clock, data, designs, finals, kind, refits, from, end]);
+    [headAt, runtime.clock, data, designs, kind, refits, from, end]);
   const levelKey = LEVELS.map(level => options[level] !== false).join();
   const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]);
   const decimals = data?.decimals ?? 5;
@@ -60,13 +59,14 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, onDiagnostics]);
 
+  const gate = spendingWidgetGate({ hasTarget: Boolean(track && tag), hasError: Boolean(error), branch: track?.branch, hour, end, hasData: Boolean(data), recorded: Boolean(data && spendingRecorded(data)) });
   let body: ReactNode;
-  if (!track || !tag) body = <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its production spending." />;
-  else if (error) body = <WidgetState kind="error" failure={error} onRetry={retry} />;
-  else if (!data) body = <WidgetState kind="loading" label="Loading production spending…" />;
-  else if (!spendingRecorded(data)) body = <WidgetState kind="unavailable" message="Production spending wasn’t recorded." />;
-  else if (hour == null || end == null || hour < track.branch.firstHour || hour > track.branch.lastHour) body = <WidgetState kind="outside" />;
-  else if (empty(hour)) body = <WidgetState kind="empty" icon="sunburst" message="No military production yet." />;
+  if (gate === 'empty') body = <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its production spending." />;
+  else if (gate === 'error') body = <WidgetState kind="error" failure={error!} onRetry={retry} />;
+  else if (gate === 'outside') body = <WidgetState kind="outside" />;
+  else if (gate === 'loading') body = <WidgetState kind="loading" label="Loading production spending…" />;
+  else if (gate === 'unavailable') body = <WidgetState kind="unavailable" message="Production spending wasn’t recorded." />;
+  else if (empty(hour!)) body = <WidgetState kind="empty" icon="sunburst" message="No military production yet." />;
   else body = <Sunburst label={widget.title} items={values.items} root={ROOTS[kind]} levels={levels} text={text} settings={settings}
     authoritativeTotal={values.authoritativeTotal} live={live} hoursPerSecond={hoursPerSecond} active={active} />;
   return body;

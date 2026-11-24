@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FocusEvent, KeyboardEvent, MouseEvent } from 'react';
 import WidgetState from '../components/WidgetState';
 import { hideTooltip, showTooltip } from '../charts/tooltip';
+import { useDetailWindowClose } from '../families/host/DetailWindowHost';
 import type { DashboardClient, GameWindowRegion, GameWindowRender, GameWindowRequest } from './client';
 import { useContentRevision } from './contentRevision';
 import {
@@ -100,6 +101,8 @@ export default function GameWindowView({
   onShown,
   onClose,
 }: GameWindowViewProps) {
+  const detailClose = useDetailWindowClose();
+  const effectiveClose = detailClose ?? onClose;
   const ownerId = `game-window:${useId()}`;
   const dpr = useDevicePixelRatio();
   const viewport = useViewportSize();
@@ -215,14 +218,14 @@ export default function GameWindowView({
 
   const handleMove = useCallback((event: MouseEvent<HTMLElement>) => {
     const hit = hitAt(event.clientX, event.clientY);
-    setHoveredClose(Boolean(isActivatableClose(hit) && onClose));
+    setHoveredClose(Boolean(isActivatableClose(hit) && effectiveClose));
     const tooltip = hit ? regionTooltipContent(hit) : null;
     if (tooltip) {
       showTooltip(ownerId, tooltip, event.clientX, event.clientY, hit?.path);
     } else {
       hideTooltip(ownerId);
     }
-  }, [hitAt, onClose, ownerId]);
+  }, [hitAt, effectiveClose, ownerId]);
 
   const handleLeave = useCallback(() => {
     setHoveredClose(false);
@@ -237,18 +240,18 @@ export default function GameWindowView({
     const hit = hitAt(event.clientX, event.clientY);
     if (isActivatableClose(hit)) {
       hideTooltip(ownerId);
-      onClose?.();
+      effectiveClose?.();
     }
-  }, [hitAt, onClose, ownerId]);
+  }, [hitAt, effectiveClose, ownerId]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'Escape' && onClose) {
+    if (event.key === 'Escape' && effectiveClose) {
       event.preventDefault();
       event.stopPropagation();
       hideTooltip(ownerId);
-      onClose();
+      effectiveClose();
     }
-  }, [onClose, ownerId]);
+  }, [effectiveClose, ownerId]);
 
   const handleRegionFocus = useCallback((region: GameWindowRegion, event: FocusEvent<HTMLElement>) => {
     const tooltip = regionTooltipContent(region);
@@ -320,7 +323,7 @@ export default function GameWindowView({
               width: `${(rect[2] / logicalWidth) * 100}%`,
               height: `${(rect[3] / logicalHeight) * 100}%`,
             };
-            if (closeable && onClose) {
+            if (closeable && effectiveClose) {
               return <button
                 key={`${region.path}:${index}`}
                 type="button"
@@ -332,7 +335,7 @@ export default function GameWindowView({
                 onClick={event => {
                   event.stopPropagation();
                   hideTooltip(ownerId);
-                  onClose();
+                  effectiveClose();
                 }}
               />;
             }

@@ -68,3 +68,49 @@ test('a decision title operand the recording cannot prove is a "not recorded" to
   assert.deepEqual(scriptedParts(item.name, why), [{ text: 'Seize the Gold Reserve of ' }, { gap: `Not recorded: ${why}` }]);
   assert.deepEqual(scriptedParts('Recruit in …', why), [{ text: 'Recruit in …' }], 'an authored ellipsis is text');
 });
+
+test('a mission with a recorded Failed native state shows Failed with its observation date while keeping its witnessed cause and filter choice', () => {
+  assert.ok(STATUS_CHOICES.some(choice => choice.value === 'failed' && choice.label === 'Failed'));
+  const start = day(3, 1);
+  const end = day(5, 10);
+  const timedOutFailed = [
+    edge('decisionActivated', start, { days: 70 }),
+    edge('decisionTimedOut', end, { row: { ...edge('decisionTimedOut', end).row, decisionState: { kind: 'failed', observedHour: end } } }),
+  ];
+  const shown = at(timedOutFailed, day(6, 1))!;
+  assert.equal(shown.status, 'failed');
+  assert.equal(statusLabel(shown), 'Failed');
+  assert.equal(lifecycleLine(shown), 'Failed · Timed out after 70 days');
+  assert.equal(at(timedOutFailed, day(6, 1), new Set(['timedOut'])), null, 'hidden when Failed filter is off');
+  assert.ok(at(timedOutFailed, day(6, 1), new Set(['failed'])), 'shown when Failed filter is on');
+  const tip = decisionTooltip(shown, tag => tag)[0];
+  assert.ok(tip.rows.some(row => row.label === 'Status' && row.value === 'Failed'));
+  assert.ok(tip.rows.some(row => row.label === 'Failure observed'));
+  assert.ok(tip.rows.some(row => row.label === 'Timed out'));
+
+  const noInventedCause = [
+    edge('decisionActivated', start, { days: 30 }),
+    edge('decisionCompleted', end, { row: { ...edge('decisionCompleted', end).row, decisionState: { kind: 'failed', observedHour: end } } }),
+  ];
+  const failedNoTimeout = at(noInventedCause, day(6, 1))!;
+  assert.equal(failedNoTimeout.status, 'failed');
+  assert.match(lifecycleLine(failedNoTimeout), /Activated .* → failed /);
+  assert.doesNotMatch(lifecycleLine(failedNoTimeout), /Timed out|Cancelled/);
+
+  const notRecorded = [
+    edge('decisionActivated', start, { days: 30 }),
+    edge('decisionTimedOut', end, { row: { ...edge('decisionTimedOut', end).row, decisionState: { kind: 'notRecorded', reason: 'mission failure state was not recorded' } } }),
+  ];
+  const withheld = at(notRecorded, day(6, 1))!;
+  assert.equal(withheld.status, 'timedOut');
+  assert.match(lifecycleLine(withheld), /mission failure state was not recorded/);
+  assert.ok(decisionTooltip(withheld, tag => tag)[0].rows.some(row => row.label === 'Mission failure state' && row.value === 'Not recorded — mission failure state was not recorded'));
+
+  const unsupported = [
+    edge('decisionActivated', start, { days: 30 }),
+    edge('decisionTimedOut', end, { row: { ...edge('decisionTimedOut', end).row, decisionState: { kind: 'unsupported', raw: 99 } } }),
+  ];
+  const unknownNative = at(unsupported, day(6, 1))!;
+  assert.equal(unknownNative.status, 'unsupported');
+  assert.equal(statusLabel(unknownNative), 'Unsupported (state 99)');
+});

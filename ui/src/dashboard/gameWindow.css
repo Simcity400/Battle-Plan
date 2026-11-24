@@ -60,7 +60,7 @@
   outline-offset: -1px;
 }
 
-.drill-window .game-window-host {
+.detail-window-game .game-window-host {
   width: auto;
   height: auto;
   padding: 0;

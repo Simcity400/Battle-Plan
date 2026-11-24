@@ -1,6 +1,7 @@
 
 mod cards;
 mod cause;
+pub(crate) mod decision_state;
 mod families;
 mod nuclear;
 mod row;
@@ -10,6 +11,7 @@ mod text;
 mod tests;
 
 pub use cards::{Decisions, EventChoices};
+pub use decision_state::{DecisionLifecycleState, MISSION_FAILURE_NOT_RECORDED};
 pub(crate) use row::FeedEvent;
 
 use dashboard_base::products::log_page as logs;
@@ -170,6 +172,9 @@ pub struct EventFeedRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub strike: Option<EventFeedStrike>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub decision_state: Option<DecisionLifecycleState>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -372,13 +377,18 @@ fn tag(names: &Names, slot: Slot, hour: i32) -> Option<String> {
     }
 }
 
-pub(crate) fn present_all(events: &[&FeedEvent], names: &Names, presenter: &Presenter<'_>, notices: &mut Notices, cancelled: &AtomicBool) -> io::Result<Vec<Option<EventFeedRow>>> {
+pub(crate) fn present_all(query: &Query<'_>, events: &[&FeedEvent], names: &Names, presenter: &Presenter<'_>, notices: &mut Notices, cancelled: &AtomicBool) -> io::Result<Vec<Option<EventFeedRow>>> {
+    let states = decision_state::resolve_all(query, events)?;
     let mut order: Vec<usize> = (0..events.len()).collect();
     order.sort_by_key(|&at| events[at].hour);
     let mut out: Vec<Option<EventFeedRow>> = (0..events.len()).map(|_| None).collect();
     for at in order {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        out[at] = present(events[at], names, presenter, notices)?;
+        let mut presented = present(events[at], names, presenter, notices)?;
+        if let Some(row) = presented.as_mut() {
+            row.decision_state = states[at].clone();
+        }
+        out[at] = presented;
     }
     Ok(out)
 }
@@ -444,6 +454,7 @@ pub(crate) fn present(event: &FeedEvent, names: &Names, presenter: &Presenter<'_
         amount: None,
         cause: cause::words(event, ally.flatten()),
         strike: None,
+        decision_state: None,
     }))
 }
 
@@ -462,6 +473,7 @@ fn derived(event: &FeedEvent, kind: EventFeedKind, id: String, names: &Names, no
         amount: None,
         cause: None,
         strike: None,
+        decision_state: None,
     };
     match kind {
         EventFeedKind::CeasedToExist => {
@@ -495,7 +507,23 @@ impl Product for EventFeed {
     const CONTENT_DEPENDENT: bool = true;
     const REPLAYS: bool = true;
     type Params = FeedPageParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, facets, from: Start, to: End, cursor, pageSize, "scope[].firstHour": Start, "scope[].lastHour": End, "facets[].countries[]", "facets[].values[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
+        branchId,
+        facets,
+        from: Start,
+        to: End,
+        cursor,
+        pageSize,
+        "scope[].firstHour": Start,
+        "scope[].lastHour": End,
+        "facets[].countries[]",
+        "facets[].values[]",
+        "facets[].membership[].country",
+        "facets[].membership[].firstHour": Start,
+        "facets[].membership[].lastHour": End,
+        "facets[].unobserved[].firstHour": Start,
+        "facets[].unobserved[].lastHour": End
+    ];
     type Reply = EventFeedPage;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -507,6 +535,7 @@ impl Product for EventFeed {
             EventFeedOption::decl(),
             EventFeedItem::decl(),
             EventFeedCause::decl(),
+            DecisionLifecycleState::decl(),
             EventFeedRow::decl(),
             EventFeedStrike::decl(),
             EventFeedUnavailable::decl(),
@@ -528,7 +557,7 @@ impl Product for EventFeed {
         let presenter = Presenter::new(&query, content(source, context, &mut notices), kept_naming(source));
         let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
         let events: Vec<&FeedEvent> = rows.iter().map(|paged| &paged.event).collect();
-        let presented = present_all(&events, &names, &presenter, &mut notices, cancelled)?;
+        let presented = present_all(&query, &events, &names, &presenter, &mut notices, cancelled)?;
         let out: Vec<EventFeedPageRow> = rows
             .into_iter()
             .zip(presented)
@@ -566,7 +595,7 @@ pub(crate) fn annexations(query: &Query<'_>) -> io::Result<Vec<super::politics::
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = log::Reader::new(query, declared)?;
     let annexed = EventFeedKind::Annexed.code().map(i64::from).ok_or_else(|| invalid("An annexation has no feed code"))?;
-    let selection = reader.select(&[FacetFilter { name: "kind".into(), values: vec![annexed], countries: Vec::new() }], query.timeline.first, query.timeline.last)?;
+    let selection = reader.select(&[FacetFilter { name: "kind".into(), values: vec![annexed], ..Default::default() }], query.timeline.first, query.timeline.last)?;
     let (columns, names) = (Columns::new()?, Names::new(&query.holders));
     let mut out = Vec::new();
     let mut cursor = 0;

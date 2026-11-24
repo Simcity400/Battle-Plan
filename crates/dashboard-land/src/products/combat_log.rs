@@ -476,7 +476,7 @@ impl Product for CombatLog {
         let modifiers = if availability.battles.is_none() && !referenced.is_empty() {
             let columns = [dashboard_declare::field(TableId::CombatLogBattleModifiers, "modifier")?, dashboard_declare::field(TableId::CombatLogBattleModifiers, "hours")?];
             let from = referenced.values().copied().min().unwrap_or(hour).max(query.timeline.first);
-            let filters = [log::FacetFilter { name: "battle".into(), values: referenced.keys().map(|&id| i64::from(id)).collect(), countries: Vec::new() }];
+            let filters = [log::FacetFilter { name: "battle".into(), values: referenced.keys().map(|&id| i64::from(id)).collect(), ..Default::default() }];
             modifiers_of(&logged(&query, MODIFIERS, &filters, from, hour)?, &referenced, &columns)
         } else {
             BTreeMap::new()

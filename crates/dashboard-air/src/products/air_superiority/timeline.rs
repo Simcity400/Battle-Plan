@@ -174,6 +174,7 @@ fn score((country, region, friendly, enemy): (u32, u32, i64, i64)) -> RaidAirSco
 pub(crate) struct Composed<'c> {
     pub epoch: usize,
     pub hour: i32,
+    pub has_roster: bool,
     pub sides: &'c [AssignedSide],
     pub compose: &'c Compose<'c>,
     pub scores: &'c HourScores,
@@ -239,7 +240,7 @@ impl<'a> Days<'a> {
             let sides: &[AssignedSide] = held.and_then(|held| held.sides.as_deref()).map_or(&[], Vec::as_slice);
             let roster = held.and_then(|held| held.sides.as_deref()).map(|sides| Roster::new(sides));
             let compose = Compose::new(roster.as_ref(), &scores.operands, self.view(sides, day.hour));
-            each(at, Some(&Composed { epoch, hour: day.hour, sides, compose: &compose, scores: &scores }));
+            each(at, Some(&Composed { epoch, hour: day.hour, has_roster: roster.is_some(), sides, compose: &compose, scores: &scores }));
         }
         Ok(())
     }
@@ -336,8 +337,10 @@ impl<'a> Days<'a> {
                 if matches!(self.params.mode.unwrap_or_default(), AirMode::Sides) {
                     excluded[day] = composed.compose.excluded() as u32;
                 }
-                if let View::Side(Some(position)) = self.view(composed.sides, composed.hour) {
-                    viewpoint = Some(dictionary.index(index, composed.epoch, composed.sides, position));
+                match self.view(composed.sides, composed.hour) {
+                    View::Side(Some(position)) => viewpoint = Some(dictionary.index(index, composed.epoch, composed.sides, position)),
+                    View::Side(None) if composed.has_roster => viewpoint = None,
+                    _ => {}
                 }
             }
         })?;

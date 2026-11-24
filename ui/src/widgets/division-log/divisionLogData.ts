@@ -66,7 +66,7 @@ export function selectedTemplates(value: string, campaign: string, branch: strin
 
 export const shownKinds = (events: string): DivisionKind[] => events === 'created' ? ['created'] : events === 'lost' ? ['lost', 'transfer'] : ['created', 'lost', 'transfer'];
 
-export interface DivisionFacet { name: string; values: number[]; countries: CountryRef[] }
+export type DivisionFacet = { name: string; values: number[]; countries: CountryRef[] };
 
 export function divisionFacets(kinds: readonly DivisionKind[], templates: readonly string[] | null, tags: readonly string[] | null): DivisionFacet[] {
   const facets: DivisionFacet[] = [{ name: 'kind', values: kinds.map(kind => KINDS[kind]), countries: [] }];
