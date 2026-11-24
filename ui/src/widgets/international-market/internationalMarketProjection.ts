@@ -1,8 +1,8 @@
 import { liveKey } from '../../charts/live.ts';
 import { MARKET, validateMarketReply } from '../../dashboard/market.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
-import { filterCandidates, nextChangeAfter } from '../../families/holders.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import { occurrenceSelection } from '../../families/table/logHelpers.ts';
 import { urlArtHandle } from '../../families/art/provider.ts';
 import { artState, resolveIdentity, type ResolvedIdentity } from '../../families/table/identityCell.ts';
 import {
@@ -19,27 +19,16 @@ import { MARKET_TABS, marketColumns, marketTableBase } from './definition.ts';
 const UNKNOWN_COUNTRY: ResolvedIdentity = { value: notRecorded('Unknown country'), name: 'Unknown country' };
 const countryAt = (readView: BoundedReadView, tag: string | null | undefined, hour: number): ResolvedIdentity =>
   tag ? resolveIdentity(readView, 'country', tag, { atHour: hour }) : UNKNOWN_COUNTRY;
-import { contractRows, levelText, offerRows, PRICE_MISSING, quoteText, type MarketMatch, type MarketRowMeta, type MarketTab } from './marketData.ts';
+import { contractRows, levelText, offerRows, PRICE_MISSING, quoteText, type MarketRowMeta, type MarketTab } from './marketData.ts';
 
 export interface InternationalMarketProjectionOptions {
   readonly view: MarketTab;
-  readonly filterAll: boolean;
-  readonly filter: FamilyPlanContext<unknown>['countries']['filter'];
-}
-
-function makeMatcher(filterAll: boolean, filter: InternationalMarketProjectionOptions['filter']): MarketMatch {
-  return (tag, atHour) => {
-    if (filterAll || !filter.passing) return true;
-    if (tag === null) return false;
-    return filter.passing[tag]?.some(([first, last]) => first <= atHour && atHour <= last) ?? false;
-  };
 }
 
 
 export const internationalMarketProjection: TableProjection<InternationalMarketProjectionOptions> = {
   kind: 'international-market',
   family: 'table',
-  nextChange: (readView: BoundedReadView, options: InternationalMarketProjectionOptions) => nextChangeAfter(options.filter.bounds, readView.hour),
   project(readView: BoundedReadView, options: InternationalMarketProjectionOptions): TableModel {
     const hour = readView.hour;
     const columns = marketColumns(options.view);
@@ -52,6 +41,9 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
       return { columns, rows: [], hour };
     }
     const reply = validateMarketReply(rawPanel);
+    if (reply.refused !== null) {
+      return { columns, rows: [], hour, empty: 'Not recorded', emptyDetail: reply.refused, emptyKind: 'unavailable', warnings: reply.warnings };
+    }
     const at = { ...reply, hour };
     const section = options.view === 'inventory' ? reply.offers : reply.contracts;
     if (!section) {
@@ -66,12 +58,11 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
       };
     }
 
-    const matcher = makeMatcher(options.filterAll, options.filter);
     const live = readView.live('main') ?? null;
     const unattributed = reply.unattributed;
 
     if (options.view === 'inventory') {
-      const offers = offerRows(at, matcher);
+      const offers = offerRows(at);
       if (!offers.length) {
         return {
           columns,
@@ -108,7 +99,7 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
       return { columns, rows, hour, warnings: reply.warnings };
     }
 
-    const listed = contractRows(at, options.view, matcher);
+    const listed = contractRows(at, options.view);
     const warnings = reply.warnings;
 
     if (!listed.length) {
@@ -210,8 +201,9 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
 for (const view of MARKET_TABS) registerFamilyProjection(internationalMarketProjection, view);
 
 function marketSources(ctx: FamilyPlanContext<unknown>, view: MarketTab): SourcePlan {
-  const only = view === 'inventory' ? 'offers' : 'contracts';
-  const countries = filterCandidates(ctx.countries.filter.passing) ?? [];
+  const only = view === 'inventory' ? 'offers' : view;
+  const selection = occurrenceSelection(ctx);
+  const params = { branchId: ctx.branch.id, countries: selection?.countries ?? [], ...(selection?.group ? { group: selection.group } : {}), only };
   const owner = `international-market:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${only}`;
   return {
     owner,
@@ -225,8 +217,8 @@ function marketSources(ctx: FamilyPlanContext<unknown>, view: MarketTab): Source
         channel: 'panel',
         coverage: { mode: 'population', form: 'all' },
         product: MARKET,
-        followQuery: { panel: MARKET, branchId: ctx.branch.id, countries, only },
-        params: { branchId: ctx.branch.id, countries, only },
+        followQuery: { panel: MARKET, ...params },
+        params,
         validate: validateMarketReply,
       },
     }],
@@ -246,11 +238,7 @@ function marketDeclaration(view: MarketTab): TableWidgetDeclaration<Internationa
     projection: internationalMarketProjection,
     columns: marketColumns(view),
     settings: { kind: 'table', base: marketTableBase(view) },
-    projectionOptions: ctx => ({
-      view,
-      filterAll: ctx.countries.all,
-      filter: ctx.countries.filter,
-    }),
+    projectionOptions: () => ({ view }),
     jumpToDate: true,
     keyByBranch: true,
   };
