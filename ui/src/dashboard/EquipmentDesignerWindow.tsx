@@ -4,6 +4,7 @@ import type { EquipmentDesignerSelection, GameWindowProps } from './gameWindows'
 
 export default function EquipmentDesignerWindow({
   selection,
+  generation,
   active,
   client,
   onDiagnostics,
@@ -25,6 +26,7 @@ export default function EquipmentDesignerWindow({
   return <GameWindowView
     client={client}
     request={request}
+    generation={generation}
     active={active}
     label="equipment designer"
     onDiagnostics={onDiagnostics}
