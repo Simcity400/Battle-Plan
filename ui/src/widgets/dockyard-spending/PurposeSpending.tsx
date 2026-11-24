@@ -21,7 +21,7 @@ import { UNIT, formatAppliedIc, noProductionAt, spendingRecorded } from '../prod
 import type { SpendingWindow } from '../production-spending/spendingData';
 import { useSpending } from '../production-spending/useSpending';
 import type { DockyardViewChoice } from './definition';
-import { LEVELS, formatExactIc, monthColumns, monthLabel, monthsOf, reasonLabel } from './dockyardData';
+import { LEVELS, formatExactIc, monthColumns, monthLabel, monthsOf, reasonLabel, shownMonthBands } from './dockyardData';
 import type { Exact, PurposeMonth } from './dockyardData';
 import './dockyardSpending.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
@@ -160,8 +160,9 @@ export function PurposeMonths({ kind, data, options, extent, last, playhead, hea
   const label = `${kind.name} by month`;
   const write = ({ exact, reason, denominator }: Exact) => exact == null ? reasonLabel(reason)
     : `${formatExactIc(exact, denominator ?? 1n, decimals, digits)} ${UNIT}`;
+  const shownBands = useMemo(() => shownMonthBands(kind.bands, months), [kind.bands, months]);
   return <div className="dockyard-months">
-    <Legend label={`${sentence(kind.measure)} spent on`} always items={kind.bands.map((band, index) => ({ id: band.id, label: band.label, color: colours[index] }))} />
+    <Legend label={`${sentence(kind.measure)} spent on`} always items={shownBands.map(({ band, index }) => ({ id: band.id, label: band.label, color: colours[index] }))} />
     <div className="dockyard-months-chart">
       <TimeChart label={label} extent={extent} playhead={playhead} liveHead={head} playback="draw-in" branchStart={branchStart}
         hoursPerSecond={hoursPerSecond} axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}
@@ -174,7 +175,7 @@ export function PurposeMonths({ kind, data, options, extent, last, playhead, hea
           return {
             title: monthLabel(month.firstHour),
             rows: [
-              ...month.bands.map((band, row) => ({ label: kind.bands[row].label, swatch: colours[row], value: write(band) })),
+              ...shownBands.map(({ band, index: row }) => ({ label: band.label, swatch: colours[row], value: write(month.bands[row]) })),
               { label: 'Total', strong: true, divider: true, value: write(month.total) },
             ],
             note: [month.note, kind.note].filter(Boolean).join(' ') || undefined,

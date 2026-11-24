@@ -4,11 +4,10 @@ import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import type { WidgetSpec } from '../../dashboard/model';
-import { windowOf, windowsOf } from '../../dashboard/heldWindows';
 import { useFrameWindows } from '../army-size/frameWindows.ts';
 import { useHeadHour } from '../army-size/headHour.ts';
 import type { ProductionSpendingReply } from '../../generated/dashboard';
-import { mergeSpending } from './spendingData';
+import { mergeSpending, spendingWindows } from './spendingData';
 import type { SpendingData } from './spendingData';
 import { productRequest } from '../../dashboard/request.ts';
 
@@ -35,9 +34,7 @@ export function useSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: 
   const windowsAt = (position: number, ahead: boolean): number[] => {
     if (!track || hour == null || end == null) return [];
     const at = keys.current.headAt?.(position) ?? hour;
-    if (whole) return windowsOf(from ?? track.branch.firstHour, Math.max(end, at), ahead);
-    const hours = [at, end, ...(from == null ? [] : [from, from - 1])].filter(value => value >= track.branch.firstHour && value <= track.branch.lastHour);
-    return [...new Set([...hours.map(windowOf), ...(ahead ? [windowOf(at) + 1] : [])])].sort((a, b) => a - b);
+    return spendingWindows(track.branch, at, from, end, whole, repairs, ahead);
   };
   const identity = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag, repairs]) : null;
   const subscribeClock = useMemo(() => (changed: () => void) => {

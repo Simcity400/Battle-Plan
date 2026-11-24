@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun } from '../../generated/dashboard';
 import { amountIn, designAmount, kindAmount, mergeSpending, noProductionAt, productionSpendingItems, spendingDesigns, spendingEmptyLabel, spendingFinals,
-  spendingRecorded, spendingTotal, validateProductionSpendingReply, validateSpendingData } from './spendingData.ts';
+  spendingRecorded, spendingTotal, spendingWindows, validateProductionSpendingReply, validateSpendingData } from './spendingData.ts';
 
 const known = (firstHour: number, lastHour: number, totalRaw: string, breakBefore?: true): ProductionSpendingRun =>
   ({ firstHour, lastHour, totalRaw, reason: null, ...breakBefore ? { breakBefore } : {} });
@@ -152,4 +152,42 @@ test('the windows held join into the reply of their hours together: every amount
     }
   }
   assert.equal(mergeSpending(new Map()), null);
+});
+
+test('merging a later window with new designs never poisons earlier known windows as outsideRead', () => {
+  const early = cut(validateProductionSpendingReply(reply()), 0, 100, 139);
+  const late = validateProductionSpendingReply({
+    ...cut(validateProductionSpendingReply(reply()), 2, 160, 171),
+    leaves: [
+      ...cut(validateProductionSpendingReply(reply()), 2, 160, 171).leaves,
+      leaf({ variant: '99', typeKey: 'mod_future', name: 'Future tank', domain: 'land', purpose: 'new', names: [], runs: [known(160, 171, '400')] }),
+    ],
+    total: [known(160, 171, '6600')],
+    totalWithoutRefits: [known(160, 171, '5900')],
+    equipmentTotal: [known(160, 171, '6600')],
+    equipmentTotalWithoutRefits: [known(160, 171, '5900')],
+  });
+  const merged = mergeSpending(new Map([[0, early], [2, late]]))!;
+  const military = spendingDesigns(merged, true, 'military');
+  assert.equal(kindAmount(merged, military, null, 130, 'military', true).exact, 1000n, 'future design is zero in an earlier known window, never outsideRead');
+  assert.equal(kindAmount(merged, military, null, 165, 'military', true).exact, 3900n);
+  const unrecordedEarly = validateProductionSpendingReply({
+    ...early,
+    leaves: [],
+    total: [{ firstHour: 100, lastHour: 139, totalRaw: null, reason: 'notRecorded' }],
+    totalWithoutRefits: [{ firstHour: 100, lastHour: 139, totalRaw: null, reason: 'notRecorded' }],
+    equipmentTotal: [{ firstHour: 100, lastHour: 139, totalRaw: null, reason: 'notRecorded' }],
+    equipmentTotalWithoutRefits: [{ firstHour: 100, lastHour: 139, totalRaw: null, reason: 'notRecorded' }],
+  });
+  const withGap = mergeSpending(new Map([[0, unrecordedEarly], [2, late]]))!;
+  assert.deepEqual(kindAmount(withGap, spendingDesigns(withGap, true, 'military'), null, 130, 'military', true), { exact: null, reason: 'notRecorded' });
+});
+
+test('spendingWindows loads every window from branch start when integrating repairs', () => {
+  const branch = { firstHour: 0, lastHour: 30_000 };
+  const withoutRepairs = spendingWindows(branch, 20_000, null, 30_000, false, false, false);
+  const withRepairs = spendingWindows(branch, 20_000, null, 30_000, false, true, false);
+  assert.equal(withoutRepairs.length, 2);
+  assert.equal(withRepairs[0], 0);
+  assert.ok(withRepairs.length > 2, 'repairs integrate rates from campaign start, not just the current window');
 });

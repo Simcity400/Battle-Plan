@@ -285,10 +285,19 @@ export function dockyardMonth(reply: SpendingData, first: number, last: number, 
     note: monthNote(spent), uncertain: [purposes, purposes, false, spent.purposeUnproven, false] };
 }
 
+export function shownMonthBands<T extends { id: string }>(bands: readonly T[], months: readonly PurposeMonth[]): { index: number; band: T }[] {
+  const remainder = new Set<string>(REMAINDER_BANDS.map(band => band.id));
+  return bands.flatMap((band, index) => !remainder.has(band.id)
+    || months.some(month => { const part = month.bands[index]; return (part && (part.exact == null || part.exact !== 0n)) || month.uncertain[index] === true; })
+    ? [{ index, band }] : []);
+}
+
 export function monthColumns(months: readonly PurposeMonth[], decimals: number): ColumnPeriod[] {
-  return months.map(month => ({ firstHour: month.firstHour, lastHour: month.lastHour,
-    values: month.bands.map(band => band.exact == null ? null : Number(band.exact) / Number(band.denominator ?? 1n) / 10 ** decimals),
-    uncertain: month.uncertain }));
+  return months.map(month => {
+    const values = month.bands.map(band => band.exact == null ? null : Number(band.exact) / Number(band.denominator ?? 1n) / 10 ** decimals);
+    const allUnknown = values.length > 0 && values.every(value => value === null);
+    return { firstHour: month.firstHour, lastHour: month.lastHour, values: allUnknown ? [] : values, ...(allUnknown ? { unknown: true } : {}), uncertain: month.uncertain };
+  });
 }
 
 export function exactSum(parts: readonly Exact[], denominator = 1n): Exact {

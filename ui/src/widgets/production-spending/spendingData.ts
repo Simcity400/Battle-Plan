@@ -3,6 +3,7 @@ import { runAt, sameStretch } from '../../charts/series.ts';
 import { formatIc } from '../../dashboard/icDecimals.ts';
 import { DOMAINS, UNRESOLVED_ARM, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
 import { readAt } from '../../dashboard/reads.ts';
+import { windowOf, windowsOf } from '../../dashboard/heldWindows.ts';
 import type { FactoryKind } from './definition.ts';
 import type { Domain, ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun, ProductionSpendingUnknown, RepairRatePart, StockVariantName } from '../../generated/dashboard';
 
@@ -271,11 +272,21 @@ function joinNames(names: StockVariantName[], next: readonly StockVariantName[])
 }
 
 const union = (lists: readonly (readonly number[])[]) => [...new Set(lists.flat())].sort((a, b) => a - b);
+const absentRuns = (basis: readonly ProductionSpendingRun[]): ProductionSpendingRun[] =>
+  basis.map(run => run.totalRaw == null ? { ...run } : { ...run, totalRaw: '0', reason: null });
+
+export function spendingWindows(branch: { firstHour: number; lastHour: number }, at: number, from: number | null, end: number,
+  whole: boolean, repairs: boolean, ahead: boolean): number[] {
+  if (whole || repairs) return windowsOf(from ?? branch.firstHour, Math.max(end, at), ahead);
+  const hours = [at, end, ...(from == null ? [] : [from, from - 1])].filter(value => value >= branch.firstHour && value <= branch.lastHour);
+  return [...new Set([...hours.map(windowOf), ...(ahead ? [windowOf(at) + 1] : [])])].sort((a, b) => a - b);
+}
 
 export function mergeSpending(windows: ReadonlyMap<number, ProductionSpendingReply>): SpendingData | null {
   const held = [...windows.values()].sort((a, b) => a.window - b.window);
   if (!held.length) return null;
   const leaves = new Map<string, ProductionSpendingLeaf>();
+  const hasUnproven = new Set<string>();
   const totals = { total: [] as ProductionSpendingRun[], totalWithoutRefits: [] as ProductionSpendingRun[], equipmentTotal: [] as ProductionSpendingRun[],
     equipmentTotalWithoutRefits: [] as ProductionSpendingRun[], rocketTotal: [] as ProductionSpendingRun[] };
   const production: SpendingData['production'] = [];
@@ -285,11 +296,26 @@ export function mergeSpending(windows: ReadonlyMap<number, ProductionSpendingRep
   for (const reply of held) {
     for (const leaf of reply.leaves) {
       const key = leafKey(leaf);
-      let into = leaves.get(key);
-      if (!into) leaves.set(key, into = { ...leaf, runs: [], unproven: [], names: [] });
-      joinRuns(into.runs, leaf.runs);
-      joinRuns(into.unproven, leaf.unproven);
-      joinNames(into.names, leaf.names);
+      if (!leaves.has(key)) leaves.set(key, { ...leaf, runs: [], unproven: [], names: [] });
+      if (leaf.unproven.length) hasUnproven.add(key);
+    }
+    for (const part of reply.repairs?.parts ?? []) {
+      if (!parts.has(part.variant)) parts.set(part.variant, { ...part, runs: [], names: [] });
+    }
+  }
+  for (const reply of held) {
+    const windowLeaves = new Map(reply.leaves.map(leaf => [leafKey(leaf), leaf]));
+    for (const [key, into] of leaves) {
+      const leaf = windowLeaves.get(key);
+      const basis = into.rocket ? reply.rocketTotal : reply.equipmentTotal;
+      if (leaf) {
+        joinRuns(into.runs, leaf.runs);
+        if (hasUnproven.has(key)) joinRuns(into.unproven, leaf.unproven.length ? leaf.unproven : absentRuns(basis));
+        joinNames(into.names, leaf.names);
+      } else {
+        joinRuns(into.runs, absentRuns(basis));
+        if (hasUnproven.has(key)) joinRuns(into.unproven, absentRuns(basis));
+      }
     }
     for (const field of Object.keys(totals) as (keyof typeof totals)[]) joinRuns(totals[field], reply[field]);
     for (const run of reply.production) {
@@ -297,13 +323,17 @@ export function mergeSpending(windows: ReadonlyMap<number, ProductionSpendingRep
       if (open && open.lastHour + 1 === run.firstHour && open.present === run.present) production[production.length - 1] = { ...open, lastHour: run.lastHour };
       else production.push({ ...run });
     }
-    for (const part of reply.repairs?.parts ?? []) {
-      let into = parts.get(part.variant);
-      if (!into) parts.set(part.variant, into = { ...part, runs: [], names: [] });
-      joinRuns(into.runs, part.runs);
-      joinNames(into.names, part.names);
+    if (reply.repairs) {
+      const windowParts = new Map(reply.repairs.parts.map(part => [part.variant, part]));
+      for (const [variant, into] of parts) {
+        const part = windowParts.get(variant);
+        if (part) {
+          joinRuns(into.runs, part.runs);
+          joinNames(into.names, part.names);
+        } else joinRuns(into.runs, absentRuns(reply.repairs.total));
+      }
+      joinRuns(repairTotal, reply.repairs.total);
     }
-    joinRuns(repairTotal, reply.repairs?.total ?? []);
     for (const warning of reply.warnings) warnings.add(warning);
   }
   const { window: _window, firstHour: _firstHour, lastHour: _lastHour, ...first } = held[0];

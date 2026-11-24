@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { dockyardItems, dockyardMonth, formatExactIc, monthColumns, monthsOf, nearestInteger, rateSum, repairItems, repairsRead, validateDockyardSpendingReply } from './dockyardData.ts';
+import { BANDS, dockyardItems, dockyardMonth, formatExactIc, monthColumns, monthsOf, nearestInteger, rateSum, repairItems, repairsRead, shownMonthBands, validateDockyardSpendingReply } from './dockyardData.ts';
 import { firstHourOfMonth } from '../../dashboard/calendar.ts';
 import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun } from '../../generated/dashboard';
 
@@ -89,4 +89,18 @@ test('dockyard IC is rounded once from the exact amount', () => {
   assert.equal(nearestInteger(25n, 10n), 3n);
   assert.equal(nearestInteger(-25n, 10n), -3n);
   assert.equal(formatExactIc(61n * 240000n, 24n, 5, 2), '6.1');
+});
+
+test('all-unknown months become unknown columns without value height, and empty remainder bands stay out of the legend', () => {
+  const data = reply();
+  const knownMonth = dockyardMonth(data, 100, 171, 100);
+  assert.deepEqual(shownMonthBands(BANDS, [knownMonth]).map(entry => entry.band.id), ['new', 'refit', 'repair']);
+  const missing = { ...data, equipmentTotal: [unknown(100, 171)], repairs: { ...data.repairs!, total: [unknown(100, 171)] } };
+  const missingMonth = dockyardMonth(missing, 100, 171, 100);
+  const [column] = monthColumns([missingMonth], 5);
+  assert.equal(column.unknown, true);
+  assert.deepEqual(column.values, []);
+  const withUnknownPurpose = { ...data, leaves: [...data.leaves, leaf({ variant: '99', purpose: 'unknown', runs: [known(100, 171, '50000')] })] };
+  assert.deepEqual(shownMonthBands(BANDS, [dockyardMonth(withUnknownPurpose, 100, 171, 100)]).map(entry => entry.band.id),
+    ['new', 'refit', 'repair', 'purpose-unrecorded']);
 });
