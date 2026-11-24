@@ -39,7 +39,7 @@ import {
 } from './partyData.ts';
 
 const PERCENT_TICKS = [0, 50, 100] as const;
-const Y_AXIS = { format: 'percent', fixed: [0, 100], ticks: PERCENT_TICKS } as const;
+const Y_AXIS = { format: 'share', fixed: [0, 100], ticks: PERCENT_TICKS } as const;
 
 export interface RulingPartyOptions {
   readonly subject: string | null;

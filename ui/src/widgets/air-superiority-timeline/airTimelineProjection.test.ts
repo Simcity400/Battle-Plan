@@ -48,6 +48,7 @@ function reply(lastHour: number, extra: Partial<AirTimelineReply> = {}): AirTime
     warnings: [],
     rankMissing: null,
     empty: null,
+    activeUnlisted: { ids: [], missing: null },
     ...extra,
   };
 }

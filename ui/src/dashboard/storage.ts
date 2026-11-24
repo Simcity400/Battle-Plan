@@ -49,11 +49,11 @@ function countryGroup(value: unknown): CountryGroup | null {
 function selection(value: unknown, dropped?: (count: number) => void): CountrySelection | null {
   if (!object(value)) return null;
   if (value.kind === 'selected' || value.kind === 'all') return { kind: value.kind };
-  if (value.kind === 'factions') return integer(value.count, 1, Number.MAX_SAFE_INTEGER) && (value.membership === 'hour' || value.membership === 'end' || value.membership === 'ever')
+  if (value.kind === 'factions') return integer(value.count, 1, Number.MAX_SAFE_INTEGER) && (value.membership === 'hour' || value.membership === 'ever')
     ? { kind: 'factions', count: value.count, membership: value.membership } : null;
   if (value.kind === 'group') {
     const group = countryGroup(value.group);
-    return group && (value.membership === 'hour' || value.membership === 'end' || value.membership === 'ever') && typeof value.aggregate === 'boolean'
+    return group && (value.membership === 'hour' || value.membership === 'ever') && typeof value.aggregate === 'boolean'
       ? { kind: 'group', group, membership: value.membership, aggregate: value.aggregate } : null;
   }
   if (value.kind !== 'tags' || !Array.isArray(value.tags)) return null;
