@@ -1,4 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import SpiritHistoryWidget from './SpiritHistoryWidget';
+import { spiritHistoryDeclaration } from './spiritHistoryProjection';
 
-export default { render: SpiritHistoryWidget } satisfies WidgetRenderer;
+export default { declaration: spiritHistoryDeclaration } satisfies WidgetRenderer;

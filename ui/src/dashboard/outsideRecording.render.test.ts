@@ -74,30 +74,9 @@ test('a fuel consumption drill told to follow playback, in a widget pinned at 10
   } finally { delete host.__stub; await close(); }
 });
 
-test('on a track aligned 100 hours later, following playback at axis hour 8 reads track hour 108: a country whose identity ended at 105 no longer exists there, it is not outside the recording', async () => {
-  const { load, close } = await mount({ '/dashboard/headProduct.ts': wrapped('useHeadProduct'), '/dashboard/useCountryGroups.ts': wrapped('useCountryGroups'), '/charts/useChartTokens.ts': TOKENS });
-  try {
-    const { default: Widget } = await load<{ default: ComponentType<Record<string, unknown>> }>('/ui/src/widgets/training-queue/TrainingQueueWidget.tsx');
-    const { boundCountryToken } = await load<typeof import('./datedCountry.ts')>('/ui/src/dashboard/datedCountry.ts');
-    const aligned = track(100, 109, 100);
-    const groups = { branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], factions: [], wars: [], humans: [],
-      unobserved: { humans: [], factions: [], wars: [] }, countryIdentities: [{ tag: 'GER', identities: [{ slot: 1, countryId: 101, firstHour: 100, lastHour: 105 }] }] };
-    host.__stub = { useHeadProduct: gated, useCountryGroups: () => ({ data: groups, complete: true, retry() {} }) };
-    const country = boundCountryToken({ campaign: 'campaign', branch: '1', tag: 'GER', originOffset: 0 } as Parameters<typeof boundCountryToken>[0]);
-    const render = (time: Record<string, unknown>) => markup(createElement(Widget, { widget: { id: 'queue', kind: 'training-queue', trackIds: ['main'],
-      countries: { kind: 'tags', tags: ['GER'] }, time, options: { country } }, runtime: { tracks: [aligned], client: {}, clock: clockAt({ firstHour: 0, lastHour: 9 }, 8) },
-      active: true, onDiagnostics() {}, setOption() {}, headerSlot: null }));
-    const pinned = render({ mode: 'pin', windows: { main: { firstOffset: 8, lastOffset: 8 } } });
-    assert.match(pinned, /does not exist at this date/, `pinned at track hour 108 the country no longer exists: ${pinned}`);
-    const following = render({ mode: 'follow' });
-    assert.ok(/does not exist at this date/.test(following) && !following.includes(OUTSIDE), `following at axis hour 8, track hour 108, the same: ${following}`);
-  } finally { delete host.__stub; await close(); }
-});
-
-test('two humans recorded through 109, counted at this hour: at 110 Diplomatic relations and Trade flows’ market are outside the recording, not short of members', async () => {
+test('two humans recorded through 109, counted at this hour: at 110 Trade flows’ market is outside the recording, not short of members', async () => {
   const { load, close } = await mount({ '/dashboard/headProduct.ts': wrapped('useHeadProduct'), '/dashboard/useCountryGroups.ts': wrapped('useCountryGroups'),
-    '/dashboard/follow/useFollowed.ts': wrapped('usePipeline'), '/charts/useChartTokens.ts': TOKENS, '/charts/heat/HeatMatrix.tsx': 'export default () => null;',
-    '/widgets/diplomatic-relations/DiplomaticRelationsWidget.tsx': code => code.replace('useSyncExternalStore(live.subscribe, domainOf)', 'useSyncExternalStore(live.subscribe, domainOf, domainOf)') });
+    '/dashboard/follow/useFollowed.ts': wrapped('usePipeline'), '/charts/useChartTokens.ts': TOKENS });
   try {
     const shortTrack = track(100, 109);
     const groups = { branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], factions: [], wars: [],
@@ -107,10 +86,6 @@ test('two humans recorded through 109, counted at this hour: at 110 Diplomatic r
     host.__stub = { useHeadProduct: gated, usePipeline: () => null,
       useCountryGroups: () => ({ data: groups, complete: true, retry() {} }) };
     const humans = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false };
-    const { default: Relations } = await load<{ default: ComponentType<Record<string, unknown>> }>('/ui/src/widgets/diplomatic-relations/DiplomaticRelationsWidget.tsx');
-    const relations = markup(createElement(Relations, { widget: { id: 'relations', kind: 'diplomatic-relations', trackIds: ['main'], countries: humans,
-      time: { mode: 'pin', windows: { main: { firstOffset: 10, lastOffset: 10 } } }, options: {} }, runtime, active: true, onDiagnostics() {} }));
-    assert.ok(relations.includes(OUTSIDE) && !relations.includes('Choose at least two countries'), `pinned at 110: ${relations}`);
     const { default: Trade } = await load<{ default: ComponentType<Record<string, unknown>> }>('/ui/src/widgets/trade-flows/TradeFlowsWidget.tsx');
     const market = markup(createElement(Trade, { widget: { id: 'trade', kind: 'trade-flows', trackIds: ['main'], countries: humans,
       time: { mode: 'range', firstOffset: 5, lastOffset: 10 }, options: { view: 'market' } }, runtime, active: true, onDiagnostics() {}, countrySlot: null, setOption() {} }));

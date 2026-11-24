@@ -1,21 +1,15 @@
 use dashboard_world::products::equipment_names::{self as names, EquipmentIcon, Named, VariantName};
 
 use dashboard_base::products::{Country, validate_country};
-use super::{
-    held_hours,
-};
-use dashboard_base::{Source, products::{LoadContext, Product, check_reply_budget, at_hour::{At, AtHour, Owner, Read}}, span::HourSpan};
+use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour::{At, AtHour, Owner, Read}}};
 use dashboard_follow::live::Source as Cell;
-use dashboard_query::{identity::Holder, read};
 use dashboard_text::{metadata::link_slot, variant_names::Texts};
-use replay_columnar::summary::Source as Column;
 use replay_data::rows::{CountryLinkRow, CountryRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::atomic::AtomicBool,
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -139,14 +133,10 @@ pub struct EquipmentDesignsParams {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct DesignHistory {
-    pub id: String,
-    #[doc = " Hours it was the country's saved design, ascending."]
-    pub lives: Vec<HourSpan>,
-    #[doc = " Hours of `lives` it was flagged obsolete."]
-    pub obsolete: Vec<HourSpan>,
-    #[doc = " Its names and picture, read at one hour it was the country's."]
+pub struct DesignNow {
     pub name: VariantName,
+    #[doc = " Flagged obsolete at the hour."]
+    pub obsolete: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -155,9 +145,10 @@ pub struct DesignHistory {
 pub struct EquipmentDesignsReply {
     pub branch_id: String,
     pub tag: String,
-    pub designs: Vec<DesignHistory>,
-    #[doc = " Hours a holder of the tag was recorded: outside them its designs are not known."]
-    pub known: Vec<HourSpan>,
+    #[doc = " The country's saved designs at the hour, current before obsolete, then by name."]
+    pub designs: Vec<DesignNow>,
+    #[doc = " Why the designs are not known at the hour, when they are not."]
+    pub missing: Option<String>,
     pub icons: Vec<EquipmentIcon>,
     pub warnings: Vec<String>,
 }
@@ -365,23 +356,23 @@ impl AtHour for IndustrialOrganisations {
     }
 }
 
-fn push_span(spans: &mut Vec<HourSpan>, first: i32, last: i32) {
-    match spans.last_mut() {
-        Some(held) if held.last_hour.checked_add(1) >= Some(first) => held.last_hour = held.last_hour.max(last),
-        _ => spans.push(HourSpan { first_hour: first, last_hour: last }),
-    }
+fn designs_of(frame: &DecodedFrame, owner: Owner) -> io::Result<Vec<&replay_data::rows::VariantDefinitionRow>> {
+    let links = frame.complete::<tables::CountryLinks>()?;
+    Ok(frame.complete::<tables::VariantDefinitions>()?.iter().filter(|row| link_slot(links, row.creator_link) == Some(owner.slot)).collect())
 }
 
-impl Product for EquipmentDesigns {
+impl AtHour for EquipmentDesigns {
     const KEY: &'static str = "equipment-designs";
+    const TITLE: &'static str = "Equipment designs";
     const CONTENT_DEPENDENT: bool = true;
     type Params = EquipmentDesignsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = EquipmentDesignsReply;
+    type Context = names::Context;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![EquipmentDesignsParams::decl(), EquipmentDesignsReply::decl(), DesignHistory::decl()]
+        vec![EquipmentDesignsParams::decl(), EquipmentDesignsReply::decl(), DesignNow::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -389,75 +380,48 @@ impl Product for EquipmentDesigns {
         validate_country(&params.country)
     }
 
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
-        let query = dashboard_base::queries::query(source, branch)?;
-        let content = names::context(source, context)?;
-        let recording = query.replay.recording();
-        let creator = dashboard_declare::field(TableId::VariantDefinitions, "creator_link")?;
-        let obsolete = dashboard_declare::field(TableId::VariantDefinitions, "obsolete")?;
-        let mut designs: BTreeMap<u64, (Vec<HourSpan>, Vec<HourSpan>)> = BTreeMap::new();
-        let mut last_seen: BTreeMap<u64, (u32, i32)> = BTreeMap::new();
-        for stretch in query.timeline.within(query.timeline.first, query.timeline.last) {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            let held: Vec<_> = query.holders.within(&params.country, stretch.first, stretch.last).into_iter().filter(|run| matches!(run.holder, Holder::Found { .. })).collect();
-            let (Some(first), Some(last)) = (held.first().map(|run| run.first), held.last().map(|run| run.last)) else { continue };
-            let links = dashboard_query::cost::storage(|| dashboard_base::queries::country_ids::run_links(recording, stretch.run))?;
-            let creators = read::runs(recording, stretch.run, TableId::VariantDefinitions, Column::Cell(creator), None, first, last)?;
-            let mut flags = read::runs(recording, stretch.run, TableId::VariantDefinitions, Column::Cell(obsolete), None, first, last)?;
-            for (key, runs) in creators {
-                let flag_runs = flags.remove(&key).unwrap_or_default();
-                for run in &held {
-                    let Holder::Found { slot, .. } = run.holder else { continue };
-                    for &(from, to, value) in &runs {
-                        let (from, to) = (from.max(run.first), to.min(run.last));
-                        let Some(raw) = value else { continue };
-                        if from > to {
-                            continue;
-                        }
-                        for (_, from, to) in links.within(raw as u32, from, to).filter(|(linked, ..)| *linked == Some(slot)) {
-                            let entry = designs.entry(key as u64).or_default();
-                            push_span(&mut entry.0, from, to);
-                            for &(flag_from, flag_to, flag) in &flag_runs {
-                                let (flag_from, flag_to) = (flag_from.max(from), flag_to.min(to));
-                                if flag == Some(1) && flag_from <= flag_to {
-                                    push_span(&mut entry.1, flag_from, flag_to);
-                                }
-                            }
-                            let seen = last_seen.entry(key as u64).or_insert((stretch.run, to));
-                            if to >= seen.1 {
-                                *seen = (stretch.run, to);
-                            }
-                        }
-                    }
-                }
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
+    }
+
+    fn tables(_params: &Self::Params) -> Vec<TableId> {
+        names::TABLES.to_vec()
+    }
+
+    fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
+        let Some(owner) = owner else { return Vec::new() };
+        match step {
+            0 => names::WHOLE.iter().chain([&TableId::VariantDefinitions]).map(|&table| Read::all(table)).collect(),
+            1 => vec![names::capital_state_read(held)],
+            2 => names::spelling_reads(held, designs_of(held, owner).unwrap_or_default().iter().map(|row| row.equipment_token).collect(), true),
+            _ => Vec::new(),
+        }
+    }
+
+    fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
+        names::context(source, load)
+    }
+
+    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        let owner = at.owner.ok_or_else(|| dashboard_core::refused("Equipment designs country is unavailable at this hour"))?;
+        let mut reply = EquipmentDesignsReply { branch_id: params.branch_id.clone(), tag: at.holders.name(&params.country, at.hour), designs: Vec::new(), missing: None, icons: Vec::new(), warnings: Vec::new() };
+        let rows = match designs_of(frame, owner) {
+            Ok(rows) => rows,
+            Err(error) => {
+                reply.missing = Some(format!("Equipment designs are not recorded at this hour: {error}"));
+                return Ok(reply);
             }
-        }
-        let mut by_hour: BTreeMap<(u32, i32), Vec<u64>> = BTreeMap::new();
-        for (&id, &at) in &last_seen {
-            by_hour.entry(at).or_default().push(id);
-        }
-        let mut named = Named::default();
-        for ((run, hour), ids) in &by_hour {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            names::name_at(recording, *run, *hour, ids, &[], &content, &mut named)?;
-        }
-        let mut warnings: Vec<String> = std::mem::take(&mut named.warnings).into_iter().collect();
-        if !query.holders.named(&params.country) {
-            warnings.push(query.holders.say(&params.country, query.timeline.last, |name| format!("{name} is held by no country in this branch")));
-        }
-        let icons = named.icons();
-        let reply = EquipmentDesignsReply {
-            branch_id: params.branch_id.clone(),
-            tag: query.holders.name(&params.country, query.timeline.last),
-            designs: designs
-                .into_iter()
-                .filter_map(|(id, (lives, obsolete))| Some(DesignHistory { id: id.to_string(), lives, obsolete, name: named.variants.remove(&id)? }))
-                .collect(),
-            known: held_hours(&query, &params.country, None, query.timeline.first, query.timeline.last),
-            icons,
-            warnings,
         };
+        let ids: Vec<u64> = rows.iter().map(|row| row.id).collect();
+        let mut named = Named::default();
+        names::name(frame, &ids, &[], at.context, &mut named);
+        reply.designs = rows
+            .iter()
+            .filter_map(|row| Some(DesignNow { name: named.variants.remove(&row.id)?, obsolete: row.obsolete != 0 }))
+            .collect();
+        reply.designs.sort_by(|a, b| a.obsolete.cmp(&b.obsolete).then_with(|| a.name.name.cmp(&b.name.name)).then_with(|| a.name.id.len().cmp(&b.name.id.len())).then_with(|| a.name.id.cmp(&b.name.id)));
+        reply.warnings.extend(std::mem::take(&mut named.warnings));
+        reply.icons = named.icons();
         check_reply_budget(&reply)?;
         Ok(reply)
     }

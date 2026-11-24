@@ -34,8 +34,18 @@ export interface EquipmentDesignerSelection {
   variant: string;
 }
 
+export interface AgencyUpgradesSelection {
+  kind: 'agencyUpgrades';
+  sourceId: string;
+  revision: string;
+  branchId: string;
+  hour: number;
+  tag: string;
+}
+
 export type GameWindowSelection =
   | MioPolicySelection
+  | AgencyUpgradesSelection
   | DivisionDesignerSelection
   | EquipmentDesignerSelection;
 
@@ -51,6 +61,7 @@ export interface GameWindowProps<S extends GameWindowSelection = GameWindowSelec
 export interface ShownWindow {
   hour: number;
   readHour: number | null;
+  title: string | null;
   logicalSize?: readonly [number, number];
 }
 

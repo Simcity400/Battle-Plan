@@ -1,7 +1,15 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import { YARD_OPTIONS } from '../refits/yardOptions.ts';
+import type { OptionField } from '../../dashboard/options';
+import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../families/table/settings.ts';
 
-export const OPTIONS = YARD_OPTIONS;
+export const COLUMNS: readonly TableColumnDefaults[] = [
+  { key: 'name', label: 'Refit to', as: 'plain', offered: OFFERED.text },
+  { key: 'progress', label: 'Progress', as: 'meterBefore', tone: 'blue', offered: OFFERED.number },
+  { key: 'strength', label: 'Strength', as: 'meterBefore', tone: 'grey', offered: OFFERED.number },
+  { key: 'dockyards', label: 'Dockyards', as: 'faint', tone: 'grey', offered: OFFERED.number },
+];
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'tooltip', sort: { column: 'progress', direction: 'descending' } };
+export const OPTIONS: readonly OptionField[] = tableFamilyOptions(COLUMNS, TABLE_BASE);
 export const definition = {
   kind: 'refits', version: 1, title: 'Refits', icon: 'anchor', category: 'Navy',
   description: 'Refit lines at work, their progress and the ships on them.',

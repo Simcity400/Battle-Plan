@@ -83,7 +83,7 @@ export const transfersProjection: TableProjection<TransfersProjectionOptions> = 
       hour,
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
-      summaryPill: `${reply.transfers.toLocaleString('en-US')} ${reply.transfers === 1 ? 'transfer' : 'transfers'}`,
+      titleSummary: `${reply.transfers.toLocaleString('en-US')} ${reply.transfers === 1 ? 'transfer' : 'transfers'}`,
       ...(rows.length === 0 ? { empty: 'No territory transfers yet', emptyKind: 'empty' as const } : {}),
       warnings: reply.unobserved.length ? [...reply.warnings, 'Some settlements or ownership were not recorded before this date: the totals may be partial.'] : reply.warnings,
     };

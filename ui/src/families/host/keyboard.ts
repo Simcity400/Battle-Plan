@@ -2,14 +2,13 @@ import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 export const TYPEAHEAD_RESET_MS = 700;
 
-export type FamilyNavTuple = readonly [key: string, name: string, index: number, treeState: number, parent: string, meta?: unknown];
+export type FamilyNavTuple = readonly [key: string, name: string, index: number, treeState: number, parent: string, meta?: unknown, top?: number, height?: number];
 
 export interface FamilyKeyboardOptions {
   readonly nav: readonly FamilyNavTuple[];
   readonly totalCount?: number;
   readonly focusedKey: string | null;
   readonly focusedIndex?: number;
-  readonly fallbackToFirstOnActivate?: boolean;
   readonly pageStep: number;
   readonly blocked: boolean;
   readonly typeaheadRef?: { current: { query: string; until: number } };
@@ -38,7 +37,6 @@ export function handleFamilyKeyDown(event: ReactKeyboardEvent | KeyboardEvent, o
     return;
   }
 
-  const fallbackFirst = options.fallbackToFirstOnActivate !== false;
   const matchedIdx = options.focusedKey !== null ? nav.findIndex(item => item[0] === options.focusedKey) : -1;
   const hasExplicitFocus = matchedIdx >= 0;
   const idx = hasExplicitFocus ? matchedIdx : (nav.length > 0 ? 0 : -1);
@@ -90,10 +88,10 @@ export function handleFamilyKeyDown(event: ReactKeyboardEvent | KeyboardEvent, o
     moveBy(-pageStep);
     return;
   }
-  if (event.key === 'Enter') {
+  if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault();
-    const target = hasExplicitFocus ? nav[matchedIdx]! : (fallbackFirst ? entry : undefined);
-    if (!target) return;
+    const target = hasExplicitFocus ? nav[matchedIdx]! : undefined;
+    if (!target || blocked) return;
     if (target[3] >= 0 && options.onToggleTree) options.onToggleTree(target[0]);
     else options.onActivate(target);
     return;
@@ -117,7 +115,7 @@ export function handleFamilyKeyDown(event: ReactKeyboardEvent | KeyboardEvent, o
   }
   if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
     if (blocked) return;
-    const target = hasExplicitFocus ? nav[matchedIdx]! : (fallbackFirst ? (entry ?? null) : null);
+    const target = hasExplicitFocus ? nav[matchedIdx]! : null;
     if (options.onContextMenu?.(target)) event.preventDefault();
     return;
   }
@@ -127,7 +125,7 @@ export function handleFamilyKeyDown(event: ReactKeyboardEvent | KeyboardEvent, o
       options.onUnpinTooltip?.();
       return;
     }
-    const targetKey = hasExplicitFocus ? nav[matchedIdx]![0] : (fallbackFirst ? (entry?.[0] ?? null) : null);
+    const targetKey = hasExplicitFocus ? nav[matchedIdx]![0] : null;
     options.onTogglePinTooltip?.(targetKey);
     return;
   }

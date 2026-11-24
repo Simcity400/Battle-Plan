@@ -11,6 +11,7 @@ import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHe
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
 import { lazyActionKeys, type ParsedFamilyHit } from './adapter.ts';
 import { createBoundAuditReader, type BoundAuditEntry } from './auditBinding.ts';
+import { NO_EXPANSION, toggleExpansion } from './expansion.ts';
 import {
   handleFamilyGridKeyDown,
   handleFamilyKeyDown,
@@ -143,7 +144,6 @@ test('handleFamilyKeyDown avoids activating row 0 when focus key was evicted and
   handleFamilyKeyDown(enter.event, {
     nav,
     focusedKey: 'evicted-key',
-    fallbackToFirstOnActivate: false,
     pageStep: 5,
     blocked: false,
     isPinnedTooltip: () => false,
@@ -151,7 +151,22 @@ test('handleFamilyKeyDown avoids activating row 0 when focus key was evicted and
     onActivate: entry => activated.push(entry[0]),
   });
   assert.equal(enter.prevented(), true);
-  assert.deepEqual(activated, []);
+  assert.deepEqual(activated, [], 'Enter on an evicted row activates nothing, never the first remaining row');
+
+  const keyOptions = (focusedKey: string, blocked: boolean) => ({
+    nav,
+    focusedKey,
+    pageStep: 5,
+    blocked,
+    isPinnedTooltip: () => false,
+    onFocusKey: (key: string) => (focused as string[]).push(key),
+    onActivate: (entry: FamilyNavTuple) => (activated as string[]).push(entry[0]),
+  });
+  handleFamilyKeyDown(mkEvent('Enter').event, keyOptions('FRA', true));
+  assert.deepEqual(activated, [], 'a blocked host activates nothing');
+  handleFamilyKeyDown(mkEvent(' ').event, keyOptions('FRA', false));
+  assert.deepEqual(activated, ['FRA'], 'Space activates the focused row');
+  activated.length = 0;
 
   const search = mkEvent('i');
   handleFamilyKeyDown(search.event, {
@@ -319,6 +334,16 @@ test('parseDefaultRowHit distinguishes row and toggle hits', () => {
   assert.deepEqual(parseDefaultRowHit('toggle:grp-1'), { key: 'grp-1', toggle: true });
   assert.equal(parseDefaultRowHit('header:col'), null);
   assert.equal(parseDefaultRowHit(null), null);
+});
+
+test('toggleExpansion flips the installed tree state of a row and ignores rows that are not trees', () => {
+  const nav: FamilyNavTuple[] = [['war:1', 'War one', 0, 1, ''], ['war:2', 'War two', 1, 0, ''], ['war:2:GER', 'German Reich', 2, -1, 'war:2']];
+  const closed = toggleExpansion(NO_EXPANSION, nav, 'war:1');
+  assert.deepEqual(closed, { next: { 'war:1': false }, open: false, label: 'War one' });
+  const opened = toggleExpansion(closed!.next, nav, 'war:2');
+  assert.deepEqual(opened?.next, { 'war:1': false, 'war:2': true });
+  assert.equal(toggleExpansion(NO_EXPANSION, nav, 'war:2:GER'), null);
+  assert.equal(toggleExpansion(NO_EXPANSION, nav, 'missing'), null);
 });
 
 test('reportFamilyShownHour prefers explicit installedHour over view.through', () => {
@@ -776,3 +801,108 @@ test('grid and points keyboard navigation and family host adapters cover all fou
   assert.equal(zoomWindow, null, 'double-click resets zoom window');
 });
 
+
+test('a press, release or menu waits for its own hit and acts only on the picture that hit, with a delayed worker', () => {
+  type Listener = (event: unknown) => void;
+  const listeners = new Map<string, Set<Listener>>();
+  const body = {
+    addEventListener(type: string, fn: Listener) { (listeners.get(type) ?? listeners.set(type, new Set()).get(type)!).add(fn); },
+    removeEventListener(type: string, fn: Listener) { listeners.get(type)?.delete(fn); },
+    dispatch(type: string, event: Record<string, unknown>) { for (const fn of listeners.get(type) ?? []) fn({ target: body, preventDefault() {}, ...event }); },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 100 }),
+    contains: (node: unknown) => node === body,
+  };
+  const picture = (id: number, keys: readonly string[]): InstalledPicture => ({
+    id,
+    owner: 'owner-A',
+    generation: { seek: 1, reset: 0, binding: 1 },
+    factRevisions: {},
+    validInterval: [100, 120],
+    through: 100,
+    hour: displayedHour(100 + id),
+    viewport: { width: 200, height: 100, dpr: 1, scrollLeft: 0, scrollTop: 0 },
+    optionsRevision: '',
+    themeRevision: '',
+    actionKeys: lazyActionKeys(keys.map((key, i) => [key, key, i, -1, '', null] as FamilyNavTuple), displayedHour(100 + id)),
+    accessibleDescription: null,
+  });
+  let installed = picture(7, ['GER']);
+  const pending: ((key: string | null, meta?: PointerHitMeta) => void)[] = [];
+  const fakePipeline = {
+    pointer(_pipe: number, _slot: number, _pt: unknown, cb?: (key: string | null, meta?: PointerHitMeta) => void) { if (cb) pending.push(cb); },
+    inspect() {},
+    view() { return null; },
+  } as unknown as Pipeline;
+  const reply = (key: string | null, id: number) => pending.shift()!(key, { installedId: id, owner: 'owner-A' });
+  const activations: InstalledAction[] = [];
+  const menus: (string | null)[] = [];
+  const inspectedKeyRef = { current: null as string | null };
+  const tooltips = new FamilyTooltipController('delayed-worker');
+  const stop = bindFamilyPointer({
+    bodyNode: body as unknown as HTMLElement,
+    menuHost: body as unknown as HTMLElement,
+    pipeline: fakePipeline,
+    pipe: 1,
+    tooltips,
+    inspectedKeyRef,
+    inspectedHitRef: { current: null },
+    lastPointerRef: { current: null },
+    focusInsideRef: { current: false },
+    focusedKeyRef: { current: null },
+    focusAnchorRef: { current: { x: 0, y: 0 } },
+    accessibleRef: { current: body as unknown as HTMLElement },
+    isBlocked: () => false,
+    getInstalled: () => installed,
+    getViewportHeight: () => 800,
+    parseHit: hit => parseDefaultRowHit(hit),
+    onActivate: (_key, _toggle, action) => { if (action) activations.push(action); },
+    onContextMenu: key => { menus.push(key); return true; },
+  });
+
+  body.dispatch('pointermove', { isTrusted: true, clientX: 20, clientY: 10 });
+  reply('row:GER', 7);
+  assert.equal(inspectedKeyRef.current, 'GER', 'GER hovered on picture 7');
+
+  body.dispatch('pointerdown', { button: 0, clientX: 20, clientY: 10, pointerId: 1 });
+  installed = picture(8, ['FRA']);
+  body.dispatch('pointerup', { button: 0, clientX: 20, clientY: 10, pointerId: 1 });
+  assert.equal(activations.length, 0, 'the cached hover is not a hit: nothing activates before this press resolves');
+  reply('row:GER', 7);
+  reply('row:FRA', 8);
+  assert.equal(activations.length, 0, 'a press hit from the replaced picture is refused, so the release names no pressed target');
+
+  body.dispatch('contextmenu', { clientX: 20, clientY: 10 });
+  assert.deepEqual(menus, [], 'the menu waits for its own hit');
+  installed = picture(9, ['ITA']);
+  reply('row:FRA', 8);
+  assert.deepEqual(menus, [], 'a menu hit from a replaced picture opens nothing');
+  body.dispatch('contextmenu', { clientX: 20, clientY: 10 });
+  reply('row:ITA', 9);
+  assert.deepEqual(menus, ['ITA']);
+
+  body.dispatch('pointerdown', { button: 0, clientX: 20, clientY: 10, pointerId: 2 });
+  reply('row:ITA', 9);
+  installed = picture(10, ['ENG']);
+  body.dispatch('pointerup', { button: 0, clientX: 20, clientY: 10, pointerId: 2 });
+  reply('row:ENG', 10);
+  assert.equal(activations.length, 0, 'press on ITA and release on ENG is not a click');
+
+  body.dispatch('pointerdown', { button: 0, clientX: 20, clientY: 10, pointerId: 3 });
+  reply('row:ENG', 10);
+  body.dispatch('pointerup', { button: 0, clientX: 20, clientY: 10, pointerId: 3 });
+  installed = picture(11, ['ENG']);
+  reply('row:ENG', 10);
+  assert.equal(activations.length, 0, 'a release hit from a picture replaced before it arrived is refused');
+
+  body.dispatch('pointerdown', { button: 0, clientX: 20, clientY: 10, pointerId: 4 });
+  reply('row:ENG', 11);
+  body.dispatch('pointerup', { button: 0, clientX: 20, clientY: 10, pointerId: 4 });
+  reply('row:ENG', 11);
+  assert.equal(activations.length, 1);
+  assert.equal(activations[0]!.installedId, 11, 'the action belongs to the picture the release hit');
+  assert.equal(activations[0]!.subject, 'ENG');
+  assert.equal(activations[0]!.hour, 111);
+
+  stop();
+  tooltips.dispose();
+});

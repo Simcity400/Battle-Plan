@@ -2,6 +2,7 @@ import { VALUE_WEIGHT } from '../../charts/draw.ts';
 import {
   CELL_INSET,
   displayExtra,
+  ROW_MARGIN_X,
   type TableColumnLayout,
   type TableLayout,
   type TableOverflow,
@@ -26,6 +27,8 @@ export interface FamilyColumnLayout extends TableColumnLayout {
   readonly minWidth?: number;
   readonly maxWidth?: number;
   readonly grow?: number;
+  readonly leadInset?: number;
+  readonly trailInset?: number;
 }
 
 export interface FamilyTableLayout extends Omit<TableLayout, 'columns'> {
@@ -34,6 +37,8 @@ export interface FamilyTableLayout extends Omit<TableLayout, 'columns'> {
 }
 
 const SORT_ARROW_WIDTH = 16;
+const KIND_COLUMN_ART = 32;
+const TWO_WAY_SLOT = 72;
 const DEFAULT_TEXT_MIN_WIDTH = 128;
 const DEFAULT_TEXT_MAX_WIDTH = 260;
 
@@ -116,6 +121,10 @@ export function measureFixedColumnWidths(
       out[column.key] = column.minWidth ?? 76;
       continue;
     }
+    if (column.cellKind === 'kind') {
+      out[column.key] = column.minWidth ?? KIND_COLUMN_ART + CELL_INSET * 2;
+      continue;
+    }
     if (column.cellKind === 'stockpileSum') {
       out[column.key] = column.minWidth ?? 210;
       continue;
@@ -149,7 +158,7 @@ export function measureFixedColumnWidths(
     for (const sample of samples) {
       widest = Math.max(widest, measure(sample, bodyFont));
     }
-    const extra = column.cellKind === 'track' ? 64 : displayExtra(column);
+    const extra = column.cellKind === 'track' ? 64 : column.cellKind === 'twoWay' ? TWO_WAY_SLOT + 8 : displayExtra(column);
     const contentWidth = widest + extra + CELL_INSET * 2;
     let computed = Math.ceil(Math.max(contentWidth, headerWidth));
     if (column.minWidth !== undefined) computed = Math.max(column.minWidth, computed);
@@ -162,13 +171,26 @@ export function measureFixedColumnWidths(
   return out;
 }
 
+function withEdgeInsets(shown: readonly FamilyColumnLayout[]): FamilyColumnLayout[] {
+  const last = shown.length - 1;
+  return shown.map((col, idx) => {
+    if (idx !== 0 && idx !== last) return col;
+    const lead = idx === 0 ? ROW_MARGIN_X : 0;
+    const trail = idx === last ? ROW_MARGIN_X : 0;
+    return { ...col, width: col.width + lead + trail, ...(lead ? { leadInset: lead } : {}), ...(trail ? { trailInset: trail } : {}) };
+  });
+}
+
 export function growWeight(column: FamilyColumnLayout): number {
   if (column.grow !== undefined) return Math.max(0, column.grow);
-  if (column.display === 'flag' || column.cellKind === 'action' || column.cellKind === 'track' || column.cellKind === 'skill') return 0;
+  if (column.display === 'flag' || column.cellKind === 'action' || column.cellKind === 'track' || column.cellKind === 'skill'
+    || column.cellKind === 'kind' || column.cellKind === 'twoWay') return 0;
   return column.width;
 }
 
 function growColumns(shown: readonly FamilyColumnLayout[], spare: number): FamilyColumnLayout[] {
+  const item = shown.findIndex(col => col.cellKind === 'item' && col.grow === undefined);
+  if (item >= 0) return shown.map((col, idx) => (idx === item ? { ...col, width: col.width + spare } : col));
   let total = 0;
   for (const col of shown) total += growWeight(col);
   if (total <= 0) {
@@ -202,7 +224,8 @@ export function layoutFamilyTable(
     readonly protectedKeys?: ReadonlySet<string>;
   } = {},
 ): FamilyTableLayout {
-  const shown = columns.filter(col => col.shown);
+  const plain = columns.filter(col => col.shown);
+  const shown = withEdgeInsets(plain);
   const rank = options.rankShown ? (options.rankWidth ?? 36) : 0;
   let pinnedCount = 0;
   for (let i = 0; i < shown.length; i++) {
@@ -241,15 +264,14 @@ export function layoutFamilyTable(
   const protectedKeys = new Set<string>(options.protectedKeys ?? []);
   for (let i = 0; i < pinnedCount; i++) if (shown[i]) protectedKeys.add(shown[i]!.key);
   const hidden = new Set<string>();
-  const kept = shown.slice();
-  const candidates = shown
+  let kept = shown;
+  const candidates = plain
     .filter(col => !protectedKeys.has(col.key))
     .sort((a, b) => b.priority - a.priority);
   for (const col of candidates) {
     if (totalOf(kept) <= available) break;
     hidden.add(col.key);
-    const next = kept.filter(item => !hidden.has(item.key));
-    kept.splice(0, kept.length, ...next);
+    kept = withEdgeInsets(plain.filter(item => !hidden.has(item.key)));
   }
   return {
     columns: kept,
