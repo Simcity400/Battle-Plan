@@ -74,7 +74,7 @@ export default function ForcePartsBreakdown({ runtime, widget, track, active, op
   const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]);
   const bands = useMemo(() => binding && tag ? binding.data.bands(tag, range) : null, [binding, tag, range]);
   const parts = useMemo(() => [...(reply?.parts ?? []).map(part => ({ id: part.key, label: partsRacePartName(part) })), UNATTRIBUTED_PART], [reply]);
-  const colours = useMemo(() => partColours(parts, tokens.categories), [parts, tokens.categories]);
+  const colours = useMemo(() => partColours(parts, tokens.categories, undefined, tokens.surface), [parts, tokens.categories, tokens.surface]);
   const [picked, setPicked] = useState<{ scope: string; id: string } | null>(null);
   const pickScope = JSON.stringify([identity, originHour, holder]);
   const selected = picked?.scope === pickScope ? parts.find(part => part.id === picked.id) : undefined;

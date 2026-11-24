@@ -1,3 +1,11 @@
+export {
+  centerWindowPosition,
+  clampWindowPosition,
+  DetailWindowHost,
+  useDetailWindowClose,
+  type DetailWindowClock,
+  type DetailWindowHostProps,
+} from './DetailWindowHost.tsx';
 export { renderFamilyBodyState, type FamilyBodyStateProps } from './FamilyBodyState.tsx';
 export { handleFamilyKeyDown, TYPEAHEAD_RESET_MS, type FamilyKeyboardOptions, type FamilyNavTuple } from './keyboard.ts';
 export {
@@ -47,11 +55,18 @@ export {
 } from './surface.ts';
 export { reducedMotionEnabled, sameFamilyTheme, useFamilyTheme } from './theme.ts';
 export {
+  buildTooltipContent,
   FamilyTooltipController,
   HOVER_CLOSE_MS,
   HOVER_OPEN_MS,
+  resolveTooltipEntryContent,
+  type FamilyActionKind,
+  type FamilyActionPayload,
   type FamilyTooltipEntry,
   type FamilyTooltipField,
+  type FamilyTooltipPayload,
   type PinnedTooltip,
+  type TooltipDateBound,
+  type TooltipListItem,
   type TooltipSyncInput,
 } from './tooltips.ts';
