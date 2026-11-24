@@ -484,7 +484,7 @@ fn selected_records(members: &[MemberRow], links: &Links<'_>, filter_country: bo
     })
 }
 
-fn names_read_the_date(frame: &DecodedFrame, catalogue: &Catalogue) -> bool {
+pub(super) fn names_read_the_date(frame: &DecodedFrame, catalogue: &Catalogue) -> bool {
     let Ok(records) = frame.complete::<tables::PowerBalances>() else { return false };
     let effects = catalogue.scripted_content().ok().and_then(|content| content.effects().ok());
     let power_balances = effects.as_ref().and_then(|effects| effects.view(None).power_balances);
