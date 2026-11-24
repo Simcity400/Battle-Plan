@@ -2,7 +2,8 @@ import { answerShape } from './message.ts';
 import { answerBody } from './messages.fixture.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CELL, cellState, cellValue, parseDatedPanels, parseFollowed, rowHour, rowKeys, rowName, rowReason } from './message.ts';
+import { CELL, cellState, cellValue, rowKey, rowName, rowReason } from './message.ts';
+import { parseDatedPanels, parseFollowed } from '../../test-support/followMessage.ts';
 import { datedPanel, message } from './messages.fixture.ts';
 
 const GOLDEN = '464f4c3301000000d204000003000000000000000000000007000000b0040000d000000000000000010000000300000001000000050000006400000000000000650000000000000000000000000000000000000000000000000000000000000000000000000000004e61bc0000000000000000000000000000000000000000000001030000000000ffffffff02000000040000000000000000000000010000000300000000000000000000000300000006000000160000001900000032000000474552534f56534f5620686173206e6f2076616c75654954414954412069732068656c64206279206e6f20636f756e74727900000000000008000000d20400004000000000000000000000000000000000000000010000000000000027000000436f756e747269657320776173206e6f74207265636f72646564206174207468697320686f75720009000000d204000058000000000000000200000001000000020000000000000005000000000000004000000000000000feffffffffffffff09000000000000004c040000000000000000000000000000ffffffff00000000ffffffff000000000000000000000000';
@@ -22,8 +23,7 @@ test('the bytes the service writes read back as it wrote them', () => {
   assert.deepEqual([0, 1, 2].map(row => rowReason(series, row)), [null, 'SOV has no value', 'ITA is held by no country']);
   assert.deepEqual(unrecorded, { kind: 'notRecorded', reason: 'Countries was not recorded at this hour' });
   assert.ok(log!.kind === 'log');
-  assert.equal(rowHour(log, 0), 1100);
-  assert.equal(rowKeys(log), String((1n << 70n) + 5n));
+  assert.equal(rowKey(log, 0), (1n << 70n) + 5n);
   assert.deepEqual([cellValue(log, 0), cellValue(log, 1)], [-2n, 9n]);
 });
 

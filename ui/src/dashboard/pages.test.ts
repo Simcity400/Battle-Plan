@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { widgetDefinition, widgetDefinitions } from './definitions.ts';
 import { defaultTemplate, GRID_COLUMNS } from './model.ts';
-import { defaultPages, keptPageStates, loadPages, movePage, PAGES, parsePageList, savePages } from './pages.ts';
+import { defaultPages, loadPages, movePage, PAGES, parsePageList, savePages } from './pages.ts';
 import { parseTemplate } from './storage.ts';
 import '../widgets/definitions.ts';
 
@@ -45,10 +45,4 @@ test('a dragged page lands before the page it was dropped on, or at the end', ()
   assert.deepEqual(ids(movePage(pages, 0, 2)), ['politics', 'overview', 'page-a', 'page-b']);
   assert.deepEqual(ids(movePage(pages, 3, 0)), ['page-b', 'overview', 'politics', 'page-a']);
   assert.deepEqual(ids(movePage(pages, 1, 4)), ['overview', 'page-a', 'page-b', 'politics']);
-});
-
-test('only pages that still exist keep what they held while not shown', () => {
-  const kept = new Map([['overview', 'shown'], ['politics', 'politics draft'], ['added', 'deleted page draft']]);
-  assert.deepEqual(keptPageStates(kept, 'overview', ['overview', 'politics', 'added']), ['politics draft', 'deleted page draft']);
-  assert.deepEqual(keptPageStates(kept, 'overview', ['overview', 'politics']), ['politics draft'], 'the added page was deleted');
 });

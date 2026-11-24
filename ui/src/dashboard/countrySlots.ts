@@ -10,8 +10,6 @@ import { compareTags } from './tagOrder.ts';
 
 export type { CountryRef } from '../generated/dashboard';
 
-export { countryFromKey, countryKey } from './countryKey.ts';
-
 export function keyNameAt(slots: SlotTags | undefined, key: string, hour: number): string | null {
   return countryNameAt(slots, countryFromKey(key), hour);
 }

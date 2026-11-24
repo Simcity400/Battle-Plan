@@ -22,7 +22,7 @@ import { contentKey } from './options';
 import { forgetProducts } from './products';
 import { datedPanel } from './follow/messages.fixture.ts';
 import { packet, splitForLanes } from './follow/split.ts';
-import { pipelineOf } from './follow/pipeline.ts';
+import { pipelineFor } from './follow/pipeline.ts';
 import { pageClock } from './widgetClock.ts';
 
 class OnScreen {
@@ -52,8 +52,7 @@ const panelFollows = new Map<number, { panel: string; params: Record<string, unk
 const pushed = new Map<number, number>();
 const landed = () => {
   if (!pushed.size || clock.getSnapshot().playing) return true;
-  const pipeline = pipelineOf(pageClock(clock));
-  if (!pipeline) return false;
+  const pipeline = pipelineFor(pageClock(clock), client as never, () => { throw new Error('missing pipeline'); });
   const views = [...pipeline.page.widgets.keys()].flatMap(widget => { const view = pipeline.view(widget); return view?.fields ? [view] : []; });
   const perFollow = (key: string) => key.startsWith('model:') || key.startsWith('refused:');
   const holds = (fields: Readonly<Record<string, unknown>>, id: number) => `model:${id}` in fields || `refused:${id}` in fields || !Object.keys(fields).some(perFollow);

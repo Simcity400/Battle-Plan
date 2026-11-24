@@ -1,13 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyColourSet, chosenColour, counterCountries, factionIdentity, factionStylesKey, loadCampaignSettings, MAX_CAMPAIGN_SETTINGS_STORAGE, parseCampaignSettings, saveCampaignSettings, saveColourSet,
+import { chosenColour, counterCountries, factionIdentity, factionStylesKey, loadCampaignSettings, MAX_CAMPAIGN_SETTINGS_STORAGE, parseCampaignSettings, saveCampaignSettings,
   setCampaignFlag, setCounterCountries, setFactionColour, setFactionStyle } from './campaignSettings.ts';
 import { FACTION_APART, factionColours } from '../charts/factionColours.ts';
 import { parseColor, rgbToOklch } from '../shell/appearance/color.ts';
 import { categoricalPalette, distance } from '../charts/palette.ts';
 
 const memory = () => { const values = new Map<string, string>(); return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } }; };
-const FACTIONS = [{ id: '12', name: 'Axis' }, { id: '3', name: 'Allies' }, { id: '40', name: null }];
 
 test('campaign flags preserve opaque recorded tags and faction settings through save, edit and clear', () => {
   const legacy = parseCampaignSettings({ version: 1, campaigns: { ab: { factions: { 3: { colour: '#123456', name: 'Friends' } } } }, sets: [] });
@@ -100,15 +99,6 @@ test('unsafe or malformed stored settings are dropped', () => {
     { '["name","axis"]': { colour: '#aa0000' } });
 });
 
-test('colour sets save by faction name and apply to another campaign, ignoring case', () => {
-  let settings = setFactionStyle(parseCampaignSettings(undefined), 'aa', '12', { colour: '#222222', name: 'The Axis' });
-  settings = saveColourSet(settings, 'mp', 'MP group', 'aa', FACTIONS, new Map([['3', '#3366cc'], ['12', '#999999']]));
-  assert.deepEqual(settings.sets[0].entries, [{ faction: 'Axis', colour: '#222222', name: 'The Axis' }, { faction: 'Allies', colour: '#3366cc' }]);
-  const { settings: applied, matched } = applyColourSet(settings, settings.sets[0], 'bb', [{ id: '7', name: 'AXIS' }, { id: '8', name: 'Comintern' }]);
-  assert.equal(matched, 1);
-  assert.deepEqual(applied.campaigns.bb.factions, { 7: { colour: '#222222', name: 'The Axis' } });
-});
-
 test('default faction colours are the leader colour exactly, grey included, else the palette, and stable', () => {
   const surface = '#16181d';
   const factions = [{ id: '12', leaderColor: parseColor('#808080') }, { id: '3', leaderColor: null }, { id: '40', leaderColor: parseColor('#3a6ea5') }];
@@ -188,22 +178,9 @@ test('every faction keeps its colour through save and reload, however many a cam
   let settings = parseCampaignSettings(undefined);
   for (const faction of factions) settings = setFactionColour(settings, 'campaign', 'aa', faction.id, null, '#112233');
   for (const faction of factions) settings = setFactionColour(settings, 'all', 'bb', faction.id, factionIdentity(faction.name, null), '#445566');
-  settings = saveColourSet(settings, 'mp', 'MP group', 'aa', factions, new Map());
   const storage = memory();
   assert.equal(saveCampaignSettings(settings, storage), null);
   const loaded = loadCampaignSettings(storage);
   assert.equal(Object.keys(loaded.campaigns.aa.factions).length, 1500);
   assert.equal(Object.keys(loaded.shared).length, 1500);
-  assert.equal(loaded.sets[0].entries.length, 1500);
-});
-
-test('every saved colour set keeps through save and reload, however many there are', () => {
-  let settings = setFactionStyle(parseCampaignSettings(undefined), 'aa', '12', { colour: '#222222' });
-  for (let id = 0; id < 300; id++) settings = saveColourSet(settings, `set-${id}`, `Set ${id}`, 'aa', FACTIONS, new Map());
-  const storage = memory();
-  assert.equal(saveCampaignSettings(settings, storage), null);
-  const loaded = loadCampaignSettings(storage);
-  assert.equal(loaded.sets.length, 300);
-  assert.equal(loaded.sets[0].id, 'set-0');
-  assert.deepEqual(loaded.sets[299].entries, [{ faction: 'Axis', colour: '#222222' }]);
 });
