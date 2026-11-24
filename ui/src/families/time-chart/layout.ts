@@ -1,7 +1,7 @@
 import { ellipsise, layoutEndLabels } from '../../charts/labels.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { MeasureText } from '../../charts/textWidth.ts';
-import { exactDecimal, linearTicks } from '../../charts/valueAxis.ts';
+import { exactDecimal, linearTicks, logTicks, thinLogTicks } from '../../charts/valueAxis.ts';
 import { monthNames } from '../../dashboard/calendar.ts';
 import { computeTimeAxisTicks, type TimeAxisTick } from '../../draw/kit.ts';
 import type { BoundedSeries } from '../plan.ts';
@@ -124,6 +124,8 @@ export interface TimeChartLayout {
   readonly axisY: number;
   readonly xDomain: readonly [number, number];
   readonly yDomain: readonly [number, number];
+  readonly logShown: boolean;
+  readonly logRefused: boolean;
   readonly yTicks: readonly number[];
   readonly playheadX: number;
   readonly dateTabText: string;
@@ -418,6 +420,8 @@ export function layoutTimeChart(
   let yLo: number;
   let yHi: number;
   const fullPercent = !model.view?.y && !model.yAxis.fixed && (model.yAxis.format === 'percent' || model.yAxis.format === 'share') && model.yAxis.fixed !== null;
+  const logAsked = model.yAxis.log === true && !model.view?.y && !model.yAxis.fixed;
+  const logShown = logAsked && dataMin > 0 && dataMax >= dataMin;
   if (model.view?.y) {
     yLo = model.view.y[0];
     yHi = model.view.y[1];
@@ -427,6 +431,9 @@ export function layoutTimeChart(
   } else if (fullPercent) {
     yLo = 0;
     yHi = 100;
+  } else if (logShown) {
+    yLo = model.yAxis.min != null && model.yAxis.min > 0 ? model.yAxis.min : dataMin;
+    yHi = model.yAxis.max != null && model.yAxis.max > yLo ? model.yAxis.max : Math.max(dataMax * 1.08, yLo * 10);
   } else if (dataMin <= dataMax) {
     const autoLo = model.yAxis.min != null ? model.yAxis.min : Math.min(0, dataMin);
     const padTop = Math.max(Math.abs(dataMax - Math.min(0, autoLo)) * 0.08, 1e-6);
@@ -439,9 +446,12 @@ export function layoutTimeChart(
     yHi = model.yAxis.max ?? 1;
   }
   const yDomain: readonly [number, number] = [yLo, yHi];
+  const decadeHeight = Math.max(1, height - 44) / Math.max(1e-9, Math.log10(yHi) - Math.log10(yLo));
   const yTicks = model.yAxis.ticks
     ? [...model.yAxis.ticks]
-    : model.yAxis.fixed || fullPercent
+    : logShown
+      ? thinLogTicks(logTicks(yLo, yHi), value => Math.log10(value) * decadeHeight, 18)
+      : model.yAxis.fixed || fullPercent
       ? linearTicks(yLo, yHi, small ? 2 : 4)
       : linearTicks(yLo, yHi, small ? 3 : 5);
 
@@ -613,7 +623,7 @@ export function layoutTimeChart(
   const toX = (h: number) => left + ((h - xDomain[0]) / (xDomain[1] - xDomain[0])) * plotWidth;
   const fromX = (px: number) => xDomain[0] + ((px - left) / plotWidth) * (xDomain[1] - xDomain[0]);
   const toY = (v: number) => {
-    if (model.yAxis.log && yDomain[0] > 0 && yDomain[1] > yDomain[0] && v > 0) {
+    if (logShown && v > 0) {
       const l0 = Math.log10(yDomain[0]);
       const l1 = Math.log10(yDomain[1]);
       return top + (1 - (Math.log10(v) - l0) / (l1 - l0)) * plotHeight;
@@ -726,6 +736,8 @@ export function layoutTimeChart(
     axisY,
     xDomain,
     yDomain,
+    logShown,
+    logRefused: logAsked && !logShown,
     yTicks,
     playheadX,
     dateTabText,

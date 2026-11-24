@@ -1459,7 +1459,12 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         Country::Slot(_) => query.holders.tags.values().flatten().collect(),
         Country::Tag(_) => query.holders.runs(&params.country).iter().collect(),
     };
-    let mut unknown: Vec<(i32, i32)> = runs.into_iter().filter(|run| run.holder == dashboard_query::identity::Holder::Unresolved).map(|run| (run.first, run.last)).collect();
+    let mut unknown: Vec<(i32, i32)> = runs
+        .into_iter()
+        .filter(|run| run.holder == dashboard_query::identity::Holder::Unresolved)
+        .map(|run| (run.first, run.last))
+        .chain(query.holders.unknown.iter().map(|&(first, last, _)| (first, last)))
+        .collect();
     unknown.sort_unstable();
     unknown.dedup_by(|next, held| {
         let joined = next.0 <= held.1.saturating_add(1);

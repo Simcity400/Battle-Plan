@@ -47,6 +47,8 @@ export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): r
   return stops.map((stop, index) => [stop.key, stop.name, index, 0, ''] as const);
 }
 
+export const LOG_REFUSED = 'Log scale needs every value shown above zero, so the value axis is linear.';
+
 const hovered = new WeakMap<ChartLayout, { readonly inspect: string; readonly layout: TimeChartLayout }>();
 
 function shownLayout(layout: ChartLayout, inspect: string | null): TimeChartLayout | null {
@@ -115,7 +117,7 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
         emptyDetail: null,
         emptyKind: 'empty',
         ...(model.subject ? { subject: model.subject } : {}),
-        notes: model.note ? [model.note] : [],
+        notes: [...(model.note ? [model.note] : []), ...(base.logRefused ? [LOG_REFUSED] : [])],
         warnings: model.warnings ?? [],
         transform: {
           xFrom: base.xDomain[0],
@@ -124,7 +126,7 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
           axisTo: model.hour,
           yMin: base.yDomain[0],
           yMax: base.yDomain[1],
-          log: model.yAxis.log === true,
+          log: base.logShown,
         },
         plotRect: { left: base.left, top: base.top, width: base.plotWidth, height: base.plotHeight },
       },
