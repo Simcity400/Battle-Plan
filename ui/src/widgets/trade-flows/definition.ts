@@ -13,6 +13,6 @@ export const definition = {
   description: 'What a country buys and sells, with whom and how much a day.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 12 },
-  countries: { max: Number.MAX_SAFE_INTEGER, all: true },
+  countries: { max: Number.MAX_SAFE_INTEGER, all: true, ranked: true, rankedBy: 'trade a day on each side' },
   options: OPTIONS,
 } as const satisfies WidgetMeta;

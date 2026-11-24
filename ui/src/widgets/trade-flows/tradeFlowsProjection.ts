@@ -1,7 +1,7 @@
 import { unavailableArt } from '../../families/art/types.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
-import { flowEndpointKey, flowSideNotes, presentFlowEndpoint, projectCountryFlow, scaledAmount, UNKNOWN_COUNTRY } from '../../families/flow/countryFlow.ts';
+import { flowEndpointKey, flowSideNotes, presentFlowEndpoint, projectCountryFlow, scaledAmount, UNKNOWN_COUNTRY, unknownEndpointLabel } from '../../families/flow/countryFlow.ts';
 import { countryFlowPlan, flowPerSide } from '../../families/flow/countryFlowPlan.ts';
 import type { FlowWidgetDeclaration } from '../../families/flow/declaration.ts';
 import type { FlowProjection } from '../../families/flow/model.ts';
@@ -157,7 +157,10 @@ export function projectTradeMatrix(readView: BoundedReadView): HeatMatrixModel {
   const entity = (index: number): MatrixAxisEntity => {
     const endpoint = reply.endpoints[index]!;
     const id = flowEndpointKey(endpoint);
-    if (endpoint.slot === null) return { id, label: UNKNOWN_COUNTRY, shortLabel: '?', nameMissing: endpoint.unknown ?? UNKNOWN_COUNTRY, flag: unavailableArt(endpoint.unknown ?? UNKNOWN_COUNTRY) };
+    if (endpoint.slot === null) {
+      const label = unknownEndpointLabel(endpoint);
+      return { id, label, shortLabel: '?', nameMissing: endpoint.unknown ?? label, flag: unavailableArt(endpoint.unknown ?? label) };
+    }
     const shown = resolveEntityFromReadView(readView, 'country', countryKey(endpoint.slot), hour, endpoint.tag ?? UNKNOWN_COUNTRY, endpoint.unknown);
     return {
       id,

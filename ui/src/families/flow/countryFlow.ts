@@ -20,6 +20,7 @@ export interface CountryFlowText {
 }
 
 export const UNKNOWN_COUNTRY = 'Unknown country';
+export const UNKNOWN_COUNTRIES = 'Unknown countries, combined';
 
 export function scaledAmount(amount: string, decimals: number): number {
   return decimals > 0 ? Number(BigInt(amount)) / 10 ** decimals : Number(BigInt(amount));
@@ -37,12 +38,19 @@ interface FlowEndpointPresentation {
 }
 
 export function flowEndpointKey(endpoint: FlowEndpoint): string {
-  return endpoint.slot === null ? 'unknown' : String(endpoint.slot);
+  return endpoint.key;
+}
+
+export function unknownEndpointLabel(endpoint: FlowEndpoint): string {
+  return endpoint.collective ? UNKNOWN_COUNTRIES : UNKNOWN_COUNTRY;
 }
 
 export function presentFlowEndpoint(readView: BoundedReadView, endpoint: FlowEndpoint): FlowEndpointPresentation {
   const key = flowEndpointKey(endpoint);
-  if (endpoint.slot === null) return { key, label: UNKNOWN_COUNTRY, labelMissing: true, unknown: endpoint.unknown ?? UNKNOWN_COUNTRY };
+  if (endpoint.slot === null) {
+    const label = unknownEndpointLabel(endpoint);
+    return { key, label, labelMissing: true, unknown: endpoint.unknown ?? label };
+  }
   const subject = countryKey(endpoint.slot);
   const shown = countryRowPresentation(readView, subject);
   const named = shown.label !== subject;
@@ -53,12 +61,16 @@ export function presentFlowEndpoint(readView: BoundedReadView, endpoint: FlowEnd
     ...(shown.labelLoading ? { labelLoading: true as const } : {}),
     subject,
     ...(endpoint.tag ? { tag: endpoint.tag } : {}),
+    ...(endpoint.unknown ? { unknown: endpoint.unknown } : {}),
     flag: shown.media.art,
   };
 }
 
 export function flowSideNotes(...sides: readonly ReplySide[]): readonly string[] {
-  return [...new Set(sides.flatMap(side => (side.missing ? [side.missing] : [])))];
+  return [...new Set(sides.flatMap(side => [
+    ...(side.missing ? [side.missing] : []),
+    ...(side.unranked ? [`Top countries not applied, every partner shown: ${side.unranked}`] : []),
+  ]))];
 }
 
 function blank(hour: number, extra: Partial<FlowModel>): FlowModel {
@@ -90,6 +102,10 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
     const said = link.amounts.map(amount => `${parts[amount.part]?.label ?? ''}: ${amount.amount === null ? `Not recorded (${link.missing ?? text.notRecorded})` : exact(amount.amount)}`);
     return `${exact(link.total)} · ${said.join('; ')}`;
   };
+  const identity = (...ends: readonly Pick<FlowNode, 'label' | 'unknown'>[]): TooltipListItem[] =>
+    ends.flatMap(end => (end.unknown ? [{ label: end.label, missingReason: end.unknown }] : []));
+  const identityAudit = (...ends: readonly Pick<FlowNode, 'label' | 'unknown'>[]) =>
+    ends.flatMap(end => (end.unknown ? [` · ${end.label}: ${end.unknown}`] : [])).join('');
   const bands = (link: FlowLink): FlowBand[] => link.amounts.filter(amount => amount.amount !== null).map(amount => ({ part: amount.part, numeric: scaledAmount(amount.amount!, decimals) }));
   const endpoints = reply.endpoints.map(endpoint => presentFlowEndpoint(readView, endpoint));
   const keyOf = (index: number | null, side: FlowSide) => `${side}:${index === null ? 'others' : endpoints[index]!.key}`;
@@ -131,7 +147,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       numeric: value(amount),
       figure: figure(amount),
       spoken: `${shown.label}: ${detail(link)}${missingReason && link.missing === null ? ` (${missingReason})` : ''}`,
-      audit: detail(link),
+      audit: `${detail(link)}${identityAudit(shown)}`,
       ...(shown.subject ? { subject: shown.subject } : {}),
       tooltip: { title: shown.label, hour, items: items(link), ...(missingReason ? { missingReason } : {}) },
     };
@@ -144,8 +160,8 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
     bands: bands(link),
     ...(from.others !== undefined || to.others !== undefined ? { others: true } : {}),
     numeric: value(link.total),
-    audit: detail(link),
-    tooltip: { title: text.ribbonTitle(from.label, to.label), hour, items: items(link), ...(link.missing ? { missingReason: link.missing } : {}) },
+    audit: `${detail(link)}${identityAudit(from, to)}`,
+    tooltip: { title: text.ribbonTitle(from.label, to.label), hour, items: [...items(link), ...identity(from, to)], ...(link.missing ? { missingReason: link.missing } : {}) },
   });
 
   const unproven = (sides: readonly ReplySide[]) => blank(hour, {
@@ -172,6 +188,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       ...(subject.labelLoading ? { labelLoading: true } : {}),
       ...(subject.tag ? { tag: subject.tag } : {}),
       ...(subject.flag ? { flag: subject.flag } : {}),
+      ...(subject.unknown ? { unknown: subject.unknown } : {}),
       numeric: value(reply.largest),
       figure: '',
       spoken: `${subject.label}: ${centreAudit}`,

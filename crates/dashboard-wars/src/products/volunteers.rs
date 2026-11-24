@@ -1,10 +1,11 @@
 use dashboard_base::products::{
     Country, LoadContext,
     at_hour::{At, AtHour},
-    flows::{CountryFlowReply, FlowEdge, FlowEndpoint, FlowGap, FlowPart, FlowShape, GapEnd, build_flows},
+    flows::{CountryFlowReply, FlowEdge, FlowEnd, FlowEndpoint, FlowGap, FlowPart, FlowShape, GapEnd, build_flows},
     validate_country,
 };
 use dashboard_base::Source;
+use dashboard_query::coverage::witnessed_rows;
 use dashboard_query::series::ranked::GroupSelection;
 use dashboard_world::products::group_members::GroupsAt;
 use replay_data::rows::{MilitaryAidRow, Recorded, TableId, TagHolderRow, tables};
@@ -39,6 +40,10 @@ pub struct VolunteerFlowParams {
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub limit: Option<u32>,
+    #[doc = " An explicit top partners per side: exactly this many named and the rest folded, where the order is proven at the hour."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub top: Option<u32>,
 }
 
 fn parts() -> Vec<FlowPart> {
@@ -61,7 +66,7 @@ pub fn aid(rows: &[MilitaryAidRow]) -> (Vec<FlowEdge>, Vec<FlowGap>) {
         if row.sender == none || row.host == none {
             let (from, reason) = if row.sender == none { (GapEnd::Unidentified, UNLINKED) } else { (GapEnd::Slot(row.sender), NOT_RECORDED) };
             let to = if row.host == none { GapEnd::Any } else { GapEnd::Slot(row.host) };
-            gaps.push(FlowGap { from, to, part: Some(part), reason: reason.to_owned() });
+            gaps.push(FlowGap { from, to, part: Some(part), reason: reason.to_owned(), partial: false });
             continue;
         }
         let amount = match row.divisions {
@@ -69,9 +74,21 @@ pub fn aid(rows: &[MilitaryAidRow]) -> (Vec<FlowEdge>, Vec<FlowGap>) {
             Recorded::Value(value) => Some(i128::from(value)),
             Recorded::NotRecorded => None,
         };
-        edges.push(FlowEdge { from: Some(row.sender), to: Some(row.host), part, amount });
+        edges.push(FlowEdge { from: FlowEnd::Slot(row.sender), to: FlowEnd::Slot(row.host), part, amount });
     }
     (edges, gaps)
+}
+
+pub fn aid_at(frame: &DecodedFrame) -> Result<(Vec<FlowEdge>, Vec<FlowGap>), String> {
+    let read = witnessed_rows::<tables::MilitaryAid>(frame);
+    if read.rows.is_empty()
+        && let Some(reason) = read.missing
+    {
+        return Err(reason);
+    }
+    let (edges, mut gaps) = aid(read.rows);
+    gaps.extend(read.missing.map(FlowGap::everything));
+    Ok((edges, gaps))
 }
 
 impl AtHour for VolunteerFlow {
@@ -80,7 +97,7 @@ impl AtHour for VolunteerFlow {
     const CONTENT_DEPENDENT: bool = false;
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = VolunteerFlowParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit, top];
     type Reply = CountryFlowReply;
     type Context = GroupsAt;
 
@@ -113,12 +130,9 @@ impl AtHour for VolunteerFlow {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let empty = |missing: String| CountryFlowReply::not_recorded(missing, 0, Vec::new());
-        if let Some(reason) = dashboard_text::scope::unread(TableId::MilitaryAid, &frame.tables[TableId::MilitaryAid.index()]) {
-            return Ok(empty(reason));
-        }
-        let rows = match frame.complete::<tables::MilitaryAid>() {
-            Ok(rows) => rows,
-            Err(error) => return Ok(empty(error.to_string())),
+        let (edges, gaps) = match aid_at(frame) {
+            Ok(read) => read,
+            Err(reason) => return Ok(empty(reason)),
         };
         let resolve = |country: &Country| at.holders.slot_at(country, at.hour);
         let subject = params.subject.as_ref().map(resolve);
@@ -134,12 +148,12 @@ impl AtHour for VolunteerFlow {
             chosen: chosen.as_ref(),
             between: params.between,
             limit: params.limit.map(|limit| limit.max(1) as usize),
+            top: params.top.map(|top| top.max(1) as usize),
             table: false,
             not_recorded: NOT_RECORDED,
             unlinked: UNLINKED,
         };
-        let (edges, gaps) = aid(rows);
-        Ok(build_flows(&edges, &gaps, parts(), 0, &shape, &|slot| FlowEndpoint::at(at.holders, slot, at.hour, UNLINKED)))
+        Ok(build_flows(&edges, &gaps, parts(), 0, &shape, &|end| FlowEndpoint::at(at.holders, end, at.hour, UNLINKED)))
     }
 }
 
@@ -163,10 +177,10 @@ mod tests {
             row(none, none, MilitaryAidRow::VOLUNTEERS, Recorded::NotRecorded),
         ];
         let (edges, gaps) = aid(&rows);
-        assert_eq!(edges, [FlowEdge { from: Some(1), to: Some(2), part: 0, amount: Some(3) }, FlowEdge { from: Some(3), to: Some(2), part: 1, amount: None }]);
+        assert_eq!(edges, [FlowEdge { from: FlowEnd::Slot(1), to: FlowEnd::Slot(2), part: 0, amount: Some(3) }, FlowEdge { from: FlowEnd::Slot(3), to: FlowEnd::Slot(2), part: 1, amount: None }]);
         assert_eq!(gaps, [
-            FlowGap { from: GapEnd::Slot(3), to: GapEnd::Any, part: Some(0), reason: NOT_RECORDED.to_owned() },
-            FlowGap { from: GapEnd::Unidentified, to: GapEnd::Any, part: Some(0), reason: UNLINKED.to_owned() },
+            FlowGap { from: GapEnd::Slot(3), to: GapEnd::Any, part: Some(0), reason: NOT_RECORDED.to_owned(), partial: false },
+            FlowGap { from: GapEnd::Unidentified, to: GapEnd::Any, part: Some(0), reason: UNLINKED.to_owned(), partial: false },
         ]);
     }
 
@@ -179,10 +193,33 @@ mod tests {
         assert_eq!((reply.incoming.total.as_deref(), reply.incoming.missing.as_deref()), (None, Some(NOT_RECORDED)));
     }
 
+    fn shape(subject: Option<u32>) -> FlowShape<'static> {
+        FlowShape { subject, chosen: None, between: false, limit: None, top: None, table: false, not_recorded: NOT_RECORDED, unlinked: UNLINKED }
+    }
+
     fn flows(rows: &[MilitaryAidRow], subject: Option<u32>) -> CountryFlowReply {
-        let shape = FlowShape { subject, chosen: None, between: false, limit: None, table: false, not_recorded: NOT_RECORDED, unlinked: UNLINKED };
         let (edges, gaps) = aid(rows);
-        build_flows(&edges, &gaps, parts(), 0, &shape, &|slot| FlowEndpoint { slot, tag: None, unknown: None })
+        build_flows(&edges, &gaps, parts(), 0, &shape(subject), &|end| FlowEndpoint::unidentified(end, String::new()))
+    }
+
+    #[test]
+    fn a_truncated_aid_table_keeps_the_forces_it_witnessed_and_withholds_the_totals_it_cannot_prove() {
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 0,
+            tables: std::array::from_fn(|_| TableView::Unavailable { reason: "outside the test".into() }.into()),
+            metrics: replay_frame::frame::Metrics { total_ns: 0, table_ns: [0; replay_data::rows::TABLE_COUNT], pool_bytes: 0, dropped_frames: 0 },
+        };
+        *frame.tables[TableId::MilitaryAid.index()] = TableView::Truncated { rows: TableRows::MilitaryAid(vec![row(1, 2, MilitaryAidRow::VOLUNTEERS, Recorded::Value(3))]), missing: 4 };
+        let (edges, gaps) = aid_at(&frame).unwrap();
+        let reply = build_flows(&edges, &gaps, parts(), 0, &shape(Some(2)), &|end| FlowEndpoint::unidentified(end, String::new()));
+        let hosted: Vec<(Option<u32>, Option<&str>)> = reply.incoming.links.iter().map(|link| (link.from.and_then(|at| reply.endpoints[at as usize].slot), link.amounts[0].amount.as_deref())).collect();
+        assert_eq!(hosted, [(Some(1), Some("3"))], "a witnessed sender-host row is that pair's own count");
+        assert!(reply.incoming.total.is_none() && reply.incoming.missing.as_deref().is_some_and(|why| why.ends_with("read only in part at this hour (4 rows not read)")));
+        *frame.tables[TableId::MilitaryAid.index()] = TableView::Unavailable { reason: "reader fault".into() };
+        assert!(aid_at(&frame).is_err());
     }
 
     #[test]

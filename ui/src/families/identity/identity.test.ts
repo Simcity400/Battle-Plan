@@ -1167,7 +1167,7 @@ test('a country name that is still loading reads as loading in every family, nev
   assert.equal(countryRowPresentation(waiting, 'GER').labelLoading, true, 'the bars row knows the name is loading, so it is drawn muted');
   assert.equal(countryRowPresentation(waiting, 'GER').labelMissing, false, 'loading is not "not recorded"');
   assert.equal(resolveEntityFromReadView(waiting, 'country', 'GER', 10, 'GER').pending, true);
-  const flow = presentFlowEndpoint(waiting, { slot: 7, tag: 'GER', unknown: null });
+  const flow = presentFlowEndpoint(waiting, { key: 's7', slot: 7, tag: 'GER', collective: false, unknown: null });
   assert.equal(flow.label, LOADING_NAME, 'a flow endpoint waiting for its name does not print the tag as the name');
   assert.equal(flow.labelLoading, true);
 });

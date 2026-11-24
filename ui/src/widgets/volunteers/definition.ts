@@ -10,5 +10,5 @@ export const definition = {
   kind: 'volunteers', version: 2, title: 'Volunteers & expeditionaries', icon: 'flows', category: 'Diplomacy',
   description: 'Volunteer and expeditionary divisions from each sender to each host.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: true,
-  minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true }, options: OPTIONS,
+  minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true, ranked: true, rankedBy: 'divisions on each side' }, options: OPTIONS,
 } as const satisfies WidgetMeta;

@@ -1,17 +1,17 @@
 use dashboard_world::products::equipment_names::{self as names, EquipmentIcon, Named, VariantName};
 
-use dashboard_base::products::{Country, validate_country, flows::{CountryFlowReply, FlowEdge, FlowEndpoint, FlowPart, FlowShape, build_flows}};
+use dashboard_base::products::{Country, validate_country, flows::{CountryFlowReply, FlowEdge, FlowEnd, FlowEndpoint, FlowGap, FlowPart, FlowShape, build_flows}};
 use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour::{At, AtHour, Owner, Read}}};
 use dashboard_follow::live::Source as Cell;
 use dashboard_query::series::ranked::GroupSelection;
 use dashboard_world::products::group_members::GroupsAt;
-use dashboard_query::coverage::{Witness, witnessed};
+use dashboard_query::coverage::{Witness, witnessed, witnessed_rows};
 use dashboard_text::{metadata::link_slot, variant_names::Texts};
-use replay_data::rows::{CountryLinkRow, TableId, tables};
+use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     io,
 };
 #[cfg(any(test, feature = "export-types"))]
@@ -47,6 +47,10 @@ pub struct ProductionLicencesParams {
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub limit: Option<u32>,
+    #[doc = " An explicit top partners per side: exactly this many named and the rest folded, where the order is proven at the hour."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub top: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -132,8 +136,33 @@ dashboard_base::reply_warnings!(IndustrialOrganisationsReply, EquipmentDesignsRe
 const LICENCES_NOT_RECORDED: &str = "A licence was not recorded at this hour";
 const LICENCE_UNLINKED: &str = "The licence names a country the recording cannot link at this hour";
 
-pub fn licence_edges(records: &[replay_data::rows::ProductionLicenseRecordRow], links: &[CountryLinkRow]) -> Vec<FlowEdge> {
-    records.iter().map(|row| FlowEdge { from: link_slot(links, row.giver), to: link_slot(links, row.owner), part: 0, amount: Some(1) }).collect()
+pub struct WitnessedLicences {
+    pub edges: Vec<FlowEdge>,
+    pub gaps: Vec<FlowGap>,
+    pub unlinked: HashMap<u32, String>,
+}
+
+pub fn witnessed_licences(frame: &DecodedFrame) -> Result<WitnessedLicences, String> {
+    let read = witnessed_rows::<tables::ProductionLicenseRecords>(frame);
+    if read.rows.is_empty()
+        && let Some(reason) = read.missing
+    {
+        return Err(reason);
+    }
+    let mut unlinked = HashMap::new();
+    let mut end = |raw: u32| match witnessed::<tables::CountryLinks>(frame, u128::from(raw)) {
+        Witness::Row(link) => FlowEnd::Slot(link.canonical_slot),
+        Witness::Absent => {
+            unlinked.entry(raw).or_insert_with(|| LICENCE_UNLINKED.to_owned());
+            FlowEnd::Raw(raw)
+        }
+        Witness::NotRecorded(reason) => {
+            unlinked.entry(raw).or_insert_with(|| format!("Which country the licence names was not read at this hour: {reason}"));
+            FlowEnd::Raw(raw)
+        }
+    };
+    let edges = read.rows.iter().map(|row| FlowEdge { from: end(row.giver), to: end(row.owner), part: 0, amount: Some(1) }).collect();
+    Ok(WitnessedLicences { edges, gaps: read.missing.map(FlowGap::partial).into_iter().collect(), unlinked })
 }
 
 fn licence_parts() -> Vec<FlowPart> {
@@ -146,7 +175,7 @@ impl AtHour for ProductionLicences {
     const CONTENT_DEPENDENT: bool = false;
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = ProductionLicencesParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit, top];
     type Reply = CountryFlowReply;
     type Context = GroupsAt;
 
@@ -179,12 +208,9 @@ impl AtHour for ProductionLicences {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let empty = |missing: String| CountryFlowReply::not_recorded(missing, 0, Vec::new());
-        let (records, links) = match (frame.complete::<tables::ProductionLicenseRecords>(), frame.complete::<tables::CountryLinks>()) {
-            (Ok(records), Ok(links)) => (records, links),
-            (records, links) => {
-                let why = [records.err(), links.err()].into_iter().flatten().map(|error| error.to_string()).collect::<Vec<_>>().join("; ");
-                return Ok(empty(format!("Licences are not recorded at this hour: {why}")));
-            }
+        let licences = match witnessed_licences(frame) {
+            Ok(licences) => licences,
+            Err(why) => return Ok(empty(format!("Licences are not recorded at this hour: {why}"))),
         };
         let resolve = |country: &Country| at.holders.slot_at(country, at.hour);
         let subject = params.subject.as_ref().map(resolve);
@@ -200,11 +226,16 @@ impl AtHour for ProductionLicences {
             chosen: chosen.as_ref(),
             between: params.between,
             limit: params.limit.map(|limit| limit.max(1) as usize),
+            top: params.top.map(|top| top.max(1) as usize),
             table: false,
             not_recorded: LICENCES_NOT_RECORDED,
             unlinked: LICENCE_UNLINKED,
         };
-        let reply = build_flows(&licence_edges(records, links), &[], licence_parts(), 0, &shape, &|slot| FlowEndpoint::at(at.holders, slot, at.hour, LICENCE_UNLINKED));
+        let describe = |end: FlowEnd| match end {
+            FlowEnd::Raw(raw) => FlowEndpoint::unidentified(end, licences.unlinked.get(&raw).cloned().unwrap_or_else(|| LICENCE_UNLINKED.to_owned())),
+            FlowEnd::Slot(_) | FlowEnd::Collective => FlowEndpoint::at(at.holders, end, at.hour, LICENCE_UNLINKED),
+        };
+        let reply = build_flows(&licences.edges, &licences.gaps, licence_parts(), 0, &shape, &describe);
         check_reply_budget(&reply)?;
         Ok(reply)
     }
