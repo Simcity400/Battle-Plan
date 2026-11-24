@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LiveCell, liveAt, liveByColumn, liveKey, liveTexts, sameBy, valuesOf } from './live.ts';
+import { LiveCell, liveAt, liveKey, liveTexts, valuesOf } from './live.ts';
 
 test('a live value is made again only when the clock moves to another hour, kept while it is the same, and wakes at frames and seeks', () => {
   let position = 10.2, made = 0;
@@ -8,7 +8,8 @@ test('a live value is made again only when the clock moves to another hour, kept
   const clock = { getSnapshot: () => ({ position }),
     subscribeFrame: (listener: () => void) => { frames.add(listener); return () => frames.delete(listener); },
     subscribe: (listener: () => void) => { seeks.add(listener); return () => seeks.delete(listener); } };
-  const live = liveAt(clock, at => Math.floor(at), hour => { made++; return [hour >= 12 ? 'later' : 'early']; }, sameBy((text: string) => text));
+  const live = liveAt(clock, at => Math.floor(at), hour => { made++; return [hour >= 12 ? 'later' : 'early']; },
+    (a, b) => a.length === b.length && a.every((v, i) => v === b[i]));
   const first = live.read();
   position = 10.9;
   assert.equal(live.read(), first);
@@ -40,26 +41,6 @@ test('a key the values do not hold is missing with its reason, and a set cell te
   stop();
   cell.set(3);
   assert.equal(told, 1);
-});
-
-test('a table read from a source per column finds each cell by its row and column, and a column without one is missing', () => {
-  const score = new LiveCell(valuesOf(new Map([['GER', 3], ['SOV', 5]]), row => `no score for ${row}`));
-  const rank = new LiveCell(valuesOf(new Map([['GER', 1]]), 'no rank'));
-  const table = liveByColumn({ score, rank });
-  const first = table.read();
-  assert.equal(first.get(liveKey('GER', 'score')), 3);
-  assert.equal(first.get(liveKey('SOV', 'rank')), undefined);
-  assert.equal(first.missing(liveKey('SOV', 'rank')), 'no rank');
-  assert.equal(first.missing(liveKey('ITA', 'score')), 'no score for ITA');
-  assert.equal(first.get(liveKey('GER', 'other')), undefined);
-  assert.equal(first.missing(liveKey('GER', 'other')), 'Not followed');
-  assert.equal(table.read(), first, 'the same object while no column moved');
-  let told = 0;
-  const stop = table.subscribe(() => { told++; });
-  rank.set(valuesOf(new Map([['GER', 2]]), 'no rank'));
-  assert.equal(told, 1);
-  assert.equal(table.read().get(liveKey('GER', 'rank')), 2);
-  stop();
 });
 
 test('live texts are read again when what they read lands though the hour stands still, and wake when it may have', () => {

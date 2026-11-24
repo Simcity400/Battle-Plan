@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { countryAliasesAt, countryIdentityKey, countryIdentityIndex, validCountryIdentityHistories } from './countryIdentity.ts';
+import { countryIdentityKey, countryIdentityIndex, validCountryIdentityHistories } from './countryIdentity.ts';
 import { validateCountryGroupReply } from './groupsReply.ts';
+
+const countryAliasesAt = (histories: Parameters<typeof countryIdentityIndex>[0], chosen: readonly string[], hour: number) => {
+  const index = countryIdentityIndex(histories);
+  return index.aliasesAt(index.selected(chosen), hour);
+};
 
 test('recorded identity keeps manual picks across opaque tag changes without guessing gap hours', () => {
   const old = { tag: 'opaque one', identities: [{ firstHour: 10, lastHour: 10, slot: 4, countryId: 5 }] };

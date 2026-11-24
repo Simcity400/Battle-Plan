@@ -786,7 +786,6 @@ const clockGeneration = new WeakMap<PlaybackController, number>();
 const clockListeners = new WeakMap<PlaybackController, Set<() => void>>();
 const ownerOf = new WeakMap<Pipeline, { clock: PlaybackController; slot: PipelineSlot }>();
 
-export const pipelineOf = (clock: PlaybackController) => byClock.get(clock)?.pipeline ?? null;
 export const pipelineGeneration = (clock: PlaybackController) => clockGeneration.get(clock) ?? 1;
 
 export function pipelineFor(clock: PlaybackController, client: DashboardClient, host: () => PipelineHost): Pipeline {
@@ -804,13 +803,6 @@ export function pipelineFor(clock: PlaybackController, client: DashboardClient, 
   }
   byClock.set(clock, slot);
   return slot.pipeline;
-}
-
-export function subscribePipeline(clock: PlaybackController, client: DashboardClient, listener: () => void): () => void {
-  const slot = pipelines.get(clock)?.get(client);
-  if (!slot) return () => {};
-  slot.listeners.add(listener);
-  return () => { slot.listeners.delete(listener); };
 }
 
 export function subscribeClockPipeline(clock: PlaybackController, listener: () => void): () => void {

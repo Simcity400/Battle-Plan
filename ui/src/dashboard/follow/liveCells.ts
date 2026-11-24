@@ -272,5 +272,3 @@ export function repliedCells(reply: unknown): Live<LiveValues<number>> {
 export function reporting<T>(live: Live<T>, report: () => void): Live<T> {
   return { read: () => { report(); return live.read(); }, subscribe: live.subscribe };
 }
-
-export const NO_ROW = 'No live row has this key';

@@ -6,13 +6,6 @@ export function hatchTile(spacing: number) {
   return { size, lines: [[0, size, size, 0]] };
 }
 
-export function hatchStyle(tokens: ChartTokens) {
-  const tile = hatchTile(tokens.hatchSpacing);
-  const path = tile.lines.map(([x0, y0, x1, y1]) => `M${x0},${y0}L${x1},${y1}`).join('');
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${tile.size}" height="${tile.size}"><rect width="100%" height="100%" fill="${tokens.muted}" opacity="0.25"/><path d="${path}" fill="none" stroke="${tokens.muted}" stroke-width="${tokens.lineWidth.grid}"/></svg>`;
-  return { backgroundImage: `url("data:image/svg+xml,${encodeURIComponent(svg)}")`, backgroundSize: `${tile.size}px ${tile.size}px` };
-}
-
 export function fillHatched(ctx: Canvas2D, x: number, y: number, width: number, height: number,
   color: string, spacing = 4, lineWidth = 1.5): void {
   if (width <= 0 || height <= 0) return;
