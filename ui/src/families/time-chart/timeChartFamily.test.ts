@@ -1150,7 +1150,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
 
   it('installs a cleared surface when model.empty is set and draws overlays on compact wide plots', () => {
     const emptyModel: TimeChartModel = {
-      kind: 'balance-of-power',
+      kind: 'test-empty',
       measureTitle: 'Balance of power',
       mode: 'lines',
       hour: H1936 + 200,
@@ -1159,10 +1159,16 @@ describe('stacked bounded series, supply health, and ruling party', () => {
       series: [],
       empty: { message: 'Germany has no balance of power in this campaign.', kind: 'empty' },
     };
-    const created = mockCanvas(480, 180);
-    const view = timeChartLaneView(undefined, {
-      createCanvas: () => ({ canvas: created.canvas, ctx: created.ctx }),
+    registerTimeChart({
+      kind: 'test-empty',
+      family: 'time-chart',
+      variant: 'line',
+      joinMode: 'step',
+      measureTitle: 'Balance of power',
+      project: () => emptyModel,
     });
+    const created = mockCanvas(480, 180);
+    const view = laneOn(created);
     const painted = view.paint(
       {
         widget: 1,
@@ -1170,13 +1176,14 @@ describe('stacked bounded series, supply health, and ruling party', () => {
         pictures: [],
         model: {
           family: 'time-chart',
-          kind: 'balance-of-power',
+          kind: 'test-empty',
           options: {},
           sources: {},
           extent: [H1936, H1936 + 500],
           width: 480,
           height: 180,
-          directModel: emptyModel,
+          scrollTop: 0,
+          theme: LANE_THEME,
         },
         hour: H1936 + 200,
         speed: 0,

@@ -1,6 +1,6 @@
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { readAt, unknownHours } from '../../dashboard/politicsHistory.ts';
+import { POLITICS_HISTORY, readAt, unknownHours } from '../../dashboard/politicsHistory.ts';
 import {
   FutureDataError,
   type BoundedReadView,
@@ -386,7 +386,7 @@ export const balanceOfPowerDeclaration: TimeChartWidgetDeclaration<BalanceOfPowe
           read: {
             shape: 'branch-to-hour',
             coverage: { mode: 'keyed', keys: [tag] },
-            product: 'politics-state-history',
+            product: POLITICS_HISTORY,
             followQuery: null,
             params: { branchId: ctx.branch.id, mode: 'country', country },
             buildSpanParams: params => params,

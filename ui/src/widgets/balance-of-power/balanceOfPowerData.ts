@@ -7,15 +7,15 @@ import { formatFixed, formatSigned } from '../../charts/valueAxis.ts';
 import { object, opaqueTag } from '../../dashboard/validation.ts';
 import { fixed5Text, integerText, isHolderTags, isPoliticsRuns, readAt, tagAt, validatePoliticsHistory, valueAt } from '../../dashboard/politicsHistory.ts';
 
-export const BALANCE_SCALE = 5;
+const BALANCE_SCALE = 5;
 const UNIT = 100_000;
 
 export const BALANCE_UNAVAILABLE = 'Balance name unavailable';
 export const RANGE_UNAVAILABLE = 'Range name unavailable';
 export const SIDE_UNAVAILABLE = 'Side name unavailable';
 
-export type BalanceSubject = Pick<HolderBalances, 'balances' | 'shown'>;
-export type BalanceNames = PoliticsHistoryReply['names'];
+type BalanceSubject = Pick<HolderBalances, 'balances' | 'shown'>;
+type BalanceNames = PoliticsHistoryReply['names'];
 
 const token = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 const nullableText = (value: unknown) => value === null || typeof value === 'string';
@@ -139,8 +139,8 @@ export function balanceAbsence(known: readonly HourSpan[], at: number, limit: nu
   return { kind: 'none', recorded: unknown.some(span => span.firstHour <= limit) };
 }
 
-export interface BalanceMemberRef { tag: string }
-export interface BalanceRow {
+interface BalanceMemberRef { tag: string }
+interface BalanceRow {
   key: string;
   token: string;
   name: string | null;
@@ -148,7 +148,7 @@ export interface BalanceRow {
   trending: BalanceSide | null;
   members: BalanceMemberRef[];
 }
-export interface BalanceRowsView {
+interface BalanceRowsView {
   rows: BalanceRow[];
   untagged: number;
   membership: string | null;
