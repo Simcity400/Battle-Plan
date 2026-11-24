@@ -8,7 +8,9 @@ import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { productRequest } from '../../dashboard/request.ts';
 import { DetailWindowHost } from '../../families/host/index.ts';
-import DeclaredMeterWidget from '../../families/meter/DeclaredMeterWidget.tsx';
+import type { InstalledAction } from '../../families/contract.ts';
+import DeclaredFamilyWidget from '../../families/host/DeclaredFamilyWidget.tsx';
+import { meterHostAdapter } from '../../families/meter/hostAdapter.ts';
 import type { DoctrineRewardsReply } from '../../generated/dashboard';
 import {
   masteryText,
@@ -32,11 +34,11 @@ export default function DoctrineMasteryView(props: WidgetProps) {
     readonly hour: number;
   } | null>(null);
 
-  const onActivate = useCallback((key: string, rawMeta: unknown, hour?: number) => {
-    if (!track || !tag || !rawMeta || typeof rawMeta !== 'object') return;
-    const meta = rawMeta as DoctrineTrackMeta;
+  const onActivate = useCallback((action: InstalledAction) => {
+    if (!track || !tag || !action.meta || typeof action.meta !== 'object') return;
+    const meta = action.meta as DoctrineTrackMeta;
     if (!meta.rewards?.length || meta.subId === null) return;
-    setOpened({ on: openedOn(track, tag), key, meta, hour: hour ?? track.branch.lastHour });
+    setOpened({ on: openedOn(track, tag), key: action.subject, meta, hour: action.hour });
   }, [track, tag]);
 
   const shown = track && tag && opened?.on === openedOn(track, tag) ? opened : null;
@@ -62,9 +64,10 @@ export default function DoctrineMasteryView(props: WidgetProps) {
     ? shown.meta.rewards.map(item => (cumulative = cumulative === null || item.threshold === null ? null : cumulative + BigInt(item.threshold)))
     : [];
 
-  return <div ref={hostRef} className="mf-frame">
-    <DeclaredMeterWidget
+  return <div ref={hostRef} className="fh-detail-anchor">
+    <DeclaredFamilyWidget
       {...props}
+      adapter={meterHostAdapter}
       declaration={doctrineMasteryDeclaration}
       selectedKey={shown?.key ?? null}
       onActivate={onActivate}

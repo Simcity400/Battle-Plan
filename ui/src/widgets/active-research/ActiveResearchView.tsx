@@ -3,10 +3,11 @@ import ArtFallback from '../../components/ArtFallback';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { openedOn } from '../../dashboard/gameWindows';
 import { useGate } from '../../dashboard/regionGate';
-import { failedArt, missingArt, readyArt, type ArtResolution } from '../../families/art/types.ts';
+import { failedArt, missingArt, readyArt, spriteArtKey, type ArtResolution } from '../../families/art/types.ts';
+import type { InstalledAction } from '../../families/contract.ts';
 import { DetailWindowHost } from '../../families/host/index.ts';
-import DeclaredMeterWidget from '../../families/meter/DeclaredMeterWidget.tsx';
-import type { MeterArtResolutions } from '../../families/meter/laneView.ts';
+import DeclaredFamilyWidget from '../../families/host/DeclaredFamilyWidget.tsx';
+import { meterHostAdapter } from '../../families/meter/hostAdapter.ts';
 import { researchAt, researchArtwork, researchRecordedTemplates } from '../research/researchData';
 import ResearchExplanation from '../research/ResearchExplanation';
 import { TechnologyEffects } from '../research/TechnologyWindow';
@@ -31,17 +32,17 @@ export default function ActiveResearchView(props: WidgetProps) {
   const images = useTechnologyArtwork(runtime.client, track, tokens, active && !!data, recorded);
   const artwork = useMemo(() => researchArtwork(data, images.artwork), [data, images.artwork]);
 
-  const artResolutions = useMemo<MeterArtResolutions>(() => {
+  const artResolutions = useMemo<Readonly<Record<string, ArtResolution>>>(() => {
     const out: Record<string, ArtResolution> = {};
     for (const token of tokens) {
       const fail = images.failures.get(token);
       if (fail) {
-        out[`technology:${token}`] = failedArt(fail.message, true);
+        out[spriteArtKey(`technology:${token}`, 0)] = failedArt(fail.message, true);
         continue;
       }
       const entry = images.artwork.get(token);
       if (entry) {
-        out[`technology:${token}`] = entry.icon
+        out[spriteArtKey(`technology:${token}`, 0)] = entry.icon
           ? readyArt(entry.icon, { assetId: `technology:${token}` })
           : missingArt('Art missing from the current installation');
       }
@@ -56,11 +57,11 @@ export default function ActiveResearchView(props: WidgetProps) {
     readonly hour: number;
   } | null>(null);
 
-  const onActivate = useCallback((key: string, rawMeta: unknown, hour?: number) => {
-    if (!track || !tag || !rawMeta || typeof rawMeta !== 'object') return;
-    const meta = rawMeta as ActiveResearchRowMeta;
+  const onActivate = useCallback((action: InstalledAction) => {
+    if (!track || !tag || !action.meta || typeof action.meta !== 'object') return;
+    const meta = action.meta as ActiveResearchRowMeta;
     if (!meta.token) return;
-    setOpened({ on: openedOn(track, tag), key, meta, hour: hour ?? track.branch.lastHour });
+    setOpened({ on: openedOn(track, tag), key: action.subject, meta, hour: action.hour });
   }, [track, tag]);
 
   const shown = track && tag && opened?.on === openedOn(track, tag) ? opened : null;
@@ -75,9 +76,10 @@ export default function ActiveResearchView(props: WidgetProps) {
     : null;
   const detailIcon = shown ? artwork.get(shown.meta.token)?.icon ?? undefined : undefined;
 
-  return <div ref={hostRef} className="mf-frame">
-    <DeclaredMeterWidget
+  return <div ref={hostRef} className="fh-detail-anchor">
+    <DeclaredFamilyWidget
       {...props}
+      adapter={meterHostAdapter}
       declaration={activeResearchDeclaration}
       artResolutions={artResolutions}
       selectedKey={shown?.key ?? null}

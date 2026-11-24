@@ -6,7 +6,7 @@ import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '.
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
 import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
-import { PENDING_ART, type ArtResolution } from '../art/types.ts';
+import { PENDING_ART, spriteArtKey, type ArtResolution } from '../art/types.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
 import { createBoundedReadView } from '../boundedView.ts';
 import type { ArtDemand, ArtHandle, ArtProvider, BoundedReadView, EntityKind, FamilyTheme, IdentityDemand, IdentityProvider } from '../contract.ts';
@@ -23,9 +23,9 @@ import {
   type MeterModel,
 } from './model.ts';
 import { drawMeterModel, hitMeterModel, layoutMeterModel, type MeterLayout } from './painter.ts';
-import { ensureMeterProjection, meterProjection } from './registry.ts';
+import { ensureMeterProjection } from './registry.ts';
 
-export type MeterArtResolutions = Readonly<Record<string, ArtResolution>>;
+type SpriteResolutions = Readonly<Record<string, ArtResolution>>;
 
 export interface FamilyMeterBinding<TOptions = unknown> {
   readonly family: 'meters';
@@ -36,10 +36,9 @@ export interface FamilyMeterBinding<TOptions = unknown> {
   readonly staticPanels?: Readonly<Record<string, unknown>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly identitySnapshot?: IdentitySnapshot;
-  readonly artResolutions?: MeterArtResolutions;
+  readonly spriteResolutions?: SpriteResolutions;
   readonly width: number;
   readonly height: number;
-  readonly scrollLeft: number;
   readonly scrollTop: number;
   readonly theme?: FamilyTheme;
   readonly selectedKey?: string | null;
@@ -67,7 +66,7 @@ interface HeldFamilyMeter {
   identitySnapshot: IdentitySnapshot | undefined;
   identityIndex: IdentityIndex | null;
   identityProvider: IdentityProvider | undefined;
-  artResolutions: MeterArtResolutions | undefined;
+  spriteResolutions: SpriteResolutions | undefined;
   artProvider: ArtProvider;
   demandedArtUrls: readonly string[];
   identityDemandsField: FieldEntry | null;
@@ -152,22 +151,9 @@ function optionsLooks(options: unknown): CountryLooksMap | undefined {
   return obj.labels ?? obj.looks;
 }
 
-export function resolveMeterArtHandle(
-  handle: ArtHandle,
-  resolutions: MeterArtResolutions | undefined,
-): ArtResolution {
-  if (!resolutions) return PENDING_ART;
-  const key = handle.kind === 'sprite'
-    ? handle.key
-    : handle.kind === 'flag'
-      ? `flag:${handle.choice}`
-      : handle.kind === 'portrait'
-        ? `portrait:${handle.key}`
-        : handle.kind === 'path'
-          ? handle.path
-          : handle.url;
-  if (Object.hasOwn(resolutions, key)) return resolutions[key]!;
-  return PENDING_ART;
+function spriteResolver(resolutions: SpriteResolutions | undefined): ((handle: ArtHandle) => ArtResolution) | undefined {
+  if (!resolutions) return undefined;
+  return handle => (handle.kind === 'sprite' ? resolutions[spriteArtKey(handle.key, handle.frame ?? 0)] ?? PENDING_ART : PENDING_ART);
 }
 
 export interface MeterReadViewProviders {
@@ -267,8 +253,9 @@ export function familyMeterLaneView(
     next(scene: Scene, hour: number, state?: Map<string, unknown>): number {
       const bound = scene.model;
       if (!isFamilyMeterBinding(bound)) return Infinity;
-      const projection = meterProjection(bound.kind, bound.view);
-      if (!projection) return Infinity;
+      const projection = ensureMeterProjection(bound.kind, bound.view, () => wake(scene.widget));
+      if (projection === 'loading') return hour + 1;
+      if (projection === 'unknown') return Infinity;
       const held = state?.get('familyMeter') as HeldFamilyMeter | undefined;
       let soonest = Math.min(
         nextLookChange(optionsLooks(bound.options), hour),
@@ -299,7 +286,7 @@ export function familyMeterLaneView(
       const surface = input.binding.surfaces[0];
       if (!isFamilyMeterBinding(bound) || !surface) return { surfaces: [], fields: {}, motion: false };
       const projection = ensureMeterProjection(bound.kind, bound.view, () => wake(input.widget));
-      if (projection === 'loading') return { surfaces: [], fields: {}, motion: false };
+      if (projection === 'loading') return { surfaces: [], fields: {}, motion: false, nextChangeAt: input.hour + 1 };
       if (projection === 'unknown') {
         return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown meter declaration: ${bound.kind}` };
       }
@@ -327,7 +314,7 @@ export function familyMeterLaneView(
           identitySnapshot: undefined,
           identityIndex: null,
           identityProvider: undefined,
-          artResolutions: undefined,
+          spriteResolutions: undefined,
           artProvider: createLaneArtProvider(art),
           demandedArtUrls: [],
           identityDemandsField: null,
@@ -371,18 +358,18 @@ export function familyMeterLaneView(
       held.wake = () => wake(input.widget);
 
       const snapshotChanged = held.identitySnapshot !== bound.identitySnapshot;
-      const artResChanged = held.artResolutions !== bound.artResolutions;
+      const artResChanged = held.spriteResolutions !== bound.spriteResolutions;
       if (snapshotChanged || artResChanged) {
         if (snapshotChanged) {
           held.identitySnapshot = bound.identitySnapshot;
           held.identityIndex = bound.identitySnapshot ? IdentityIndex.fromSnapshot(bound.identitySnapshot) : null;
           held.identityProvider = held.identityIndex ? createSnapshotIdentityProvider(held.identityIndex) : undefined;
         }
-        held.artResolutions = bound.artResolutions;
-        const custom = held.artResolutions;
+        held.spriteResolutions = bound.spriteResolutions;
+        const resolveHandle = spriteResolver(held.spriteResolutions);
         held.artProvider = createLaneArtProvider(held.art, {
           index: held.identityIndex,
-          resolveHandle: custom ? handle => resolveMeterArtHandle(handle, custom) : undefined,
+          ...(resolveHandle ? { resolveHandle } : {}),
         });
       }
 
@@ -412,7 +399,7 @@ export function familyMeterLaneView(
       } else {
         const pendingIdentityDemands = new Map<string, readonly [EntityKind, string, number]>();
         const demandedArt = new Set<string>();
-        const custom = held.artResolutions;
+        const resolveHandle = spriteResolver(held.spriteResolutions);
         const readView = meterReadViewFromScene(input, bound, input.hour, {
           identity: held.identityProvider,
           onIdentityDemand: (kind, key, atHour) => {
@@ -425,10 +412,8 @@ export function familyMeterLaneView(
               demandedArt.add(url);
               return;
             }
-            if (custom) {
-              const res = resolveMeterArtHandle(handle, custom);
-              if (res.status === 'ready' && res.url) demandedArt.add(res.url);
-            }
+            const res = resolveHandle?.(handle);
+            if (res?.status === 'ready' && res.url) demandedArt.add(res.url);
           },
         });
         model = projection.project(readView, bound.options);
@@ -499,7 +484,6 @@ export function familyMeterLaneView(
           layoutChanged ? 1 : 0,
           bound.width,
           bound.height,
-          bound.scrollLeft,
           bound.scrollTop,
           dpr,
           held.artVersion,
@@ -515,7 +499,7 @@ export function familyMeterLaneView(
             layout,
             width: bound.width,
             height: bound.height,
-            scrollLeft: bound.scrollLeft,
+            scrollLeft: 0,
             scrollTop: bound.scrollTop,
             theme: bound.theme,
             inspectedKey,
@@ -536,7 +520,7 @@ export function familyMeterLaneView(
           model.empty ?? null,
           model.emptyDetail ?? null,
           model.emptyKind ?? 'empty',
-          model.summary ?? null,
+          model.summaryText ?? null,
           model.notes ?? [],
           model.warnings ?? [],
           model.layout,
@@ -548,7 +532,7 @@ export function familyMeterLaneView(
               empty: model.empty ?? null,
               emptyDetail: model.emptyDetail ?? null,
               emptyKind: model.emptyKind ?? 'empty',
-              summary: model.summary ?? null,
+              summaryText: model.summaryText ?? null,
               notes: model.notes ?? [],
               warnings: model.warnings ?? [],
               layout: model.layout,
@@ -585,7 +569,7 @@ export function familyMeterLaneView(
       const mirrorKey = `${selectedKey ?? ''}\u0000${focusedKey ?? ''}`;
       if (modelChanged) held.mirrorGate.invalidate();
       if (!held.mirrorField || held.mirrorGate.due(now, input.speed, mirrorKey)) {
-        const mirror = deriveMeterMirror(model, selectedKey);
+        const mirror = deriveMeterMirror(model);
         const mirrorText = JSON.stringify(mirror);
         held.mirrorField = { value: mirror, content: cachedField(held, 'mirror', mirrorText, content) };
         held.mirrorGate.record(now, mirrorKey);
@@ -646,14 +630,13 @@ export function familyMeterLaneView(
       }
 
       const hitLayout = layout;
-      const hitScrollLeft = bound.scrollLeft;
       const hitScrollTop = bound.scrollTop;
       return {
         surfaces: [{ source: held.canvas, content: held.content }],
         fields,
         motion: false,
         hit: hitLayout
-          ? point => hitMeterModel(hitLayout, point[0], point[1], hitScrollLeft, hitScrollTop)
+          ? point => hitMeterModel(hitLayout, point[0], point[1], 0, hitScrollTop)
           : undefined,
       };
     },

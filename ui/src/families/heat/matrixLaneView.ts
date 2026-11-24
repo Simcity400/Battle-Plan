@@ -18,12 +18,13 @@ import {
   type HeatMatrixModel,
 } from './matrixModel.ts';
 import { collectVisibleMatrixArt, createMatrixPicture, drawHeatMatrix, type HeatMatrixPicture } from './matrixPainter.ts';
-import { heatMatrixProjection } from './matrixRegistry.ts';
+import { ensureHeatMatrixProjection } from './matrixRegistry.ts';
 import { readViewFromHeatScene, samePictures, snapshotPictures, stringifyTooltipPayload } from './sceneReadView.ts';
 
 export interface FamilyHeatMatrixBinding<TOptions = unknown> {
   readonly family: 'heat-matrix';
   readonly kind: string;
+  readonly view?: string;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
@@ -115,8 +116,9 @@ export function familyHeatMatrixLaneView(
     next(scene: Scene, hour: number): number {
       const bound = scene.model;
       if (!isFamilyHeatMatrixBinding(bound)) return Infinity;
-      const projection = heatMatrixProjection(bound.kind);
-      if (!projection) return Infinity;
+      const projection = ensureHeatMatrixProjection(bound.kind, bound.view, () => wake(scene.widget));
+      if (projection === 'loading') return hour + 1;
+      if (projection === 'unknown') return Infinity;
       let soonest = nextLookChange(bound.theme?.countryLooks, hour);
       if (projection.nextChange) {
         const readView = readViewFromHeatScene(scene, bound, hour);
@@ -136,8 +138,11 @@ export function familyHeatMatrixLaneView(
       const bound = input.model;
       const surface = input.binding.surfaces[0];
       if (!isFamilyHeatMatrixBinding(bound) || !surface) return { surfaces: [], fields: {}, motion: false };
-      const projection = heatMatrixProjection(bound.kind);
-      if (!projection) {
+      const projection = ensureHeatMatrixProjection(bound.kind, bound.view, () => wake(input.widget));
+      if (projection === 'loading') {
+        return { surfaces: [], fields: {}, motion: false, nextChangeAt: input.hour + 1 };
+      }
+      if (projection === 'unknown') {
         return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown matrix declaration: ${bound.kind}` };
       }
 
@@ -271,11 +276,15 @@ export function familyHeatMatrixLaneView(
       }
 
       let widestRowName = 0;
+      let widestTrailing = 0;
       if (bound.theme) {
         held.ctx.font = `500 ${bound.theme.fontSize.small}px ${bound.theme.font}`;
         const sampleLimit = Math.min(model.rows.length, 60);
         for (let i = 0; i < sampleLimit; i++) {
           widestRowName = Math.max(widestRowName, held.ctx.measureText(model.rows[i]!.label).width);
+        }
+        for (const row of model.rows) {
+          if (row.trailing) widestTrailing = Math.max(widestTrailing, held.ctx.measureText(row.trailing).width);
         }
       }
 
@@ -288,6 +297,7 @@ export function familyHeatMatrixLaneView(
         columns: model.columns,
         legend: model.legend,
         widestRowName: widestRowName > 0 ? widestRowName : undefined,
+        widestTrailing: widestTrailing > 0 ? widestTrailing : undefined,
       });
       held.cachedLayout = layout;
 
@@ -324,6 +334,7 @@ export function familyHeatMatrixLaneView(
         model.empty ?? null,
         model.emptyDetail ?? null,
         model.emptyKind ?? 'empty',
+        model.summaryText ?? null,
         model.notes ?? [],
         model.warnings ?? [],
       ]);
@@ -334,6 +345,7 @@ export function familyHeatMatrixLaneView(
             empty: model.empty ?? null,
             emptyDetail: model.emptyDetail ?? null,
             emptyKind: model.emptyKind ?? 'empty',
+            summaryText: model.summaryText ?? null,
             notes: model.notes ?? [],
             warnings: model.warnings ?? [],
           },

@@ -9,6 +9,7 @@ import { missingArt, PENDING_ART, readyArt } from '../art/types.ts';
 import { activeResearchProjection } from '../../widgets/active-research/activeResearchProjection.ts';
 import { doctrineMasteryProjection } from '../../widgets/doctrine-mastery/doctrineMasteryProjection.ts';
 import { decryptionProjection } from '../../widgets/decryption/decryptionProjection.ts';
+import { whoReadsWhomProjection } from '../../widgets/decryption/whoReadsWhomProjection.ts';
 import { deriveMeterAudit, deriveMeterMirror, deriveMeterNav, findMeterTooltip } from './model.ts';
 import { hitMeterModel, layoutMeterModel } from './painter.ts';
 import type { DecryptionReply, DoctrineMasteryReply, ResearchSlotsReply } from '../../generated/dashboard';
@@ -205,7 +206,7 @@ test('activeResearchProjection renders researching, idle, missing, stale caption
 
   const model = activeResearchProjection.project(view, { history, countryName: 'Germany' });
   assert.equal(model.layout, 'rows');
-  assert.equal(model.summary, null);
+  assert.equal(model.summaryText, null);
   assert.equal(model.sections?.length, 1);
   const sec = model.sections![0]!;
   assert.equal(sec.title, 'Researching');
@@ -301,7 +302,7 @@ test('doctrineMasteryProjection builds threshold meters, missing mastery, empty 
 
   const model = doctrineMasteryProjection.project(view, { folders: [], countryName: 'Germany' });
   assert.equal(model.layout, 'columns');
-  assert.equal(model.summary, '2 tracks active');
+  assert.equal(model.summaryText, '2 tracks active');
   assert.equal(model.sections?.length, 2);
   assert.equal(model.sections![0]!.title, 'Land \u00b7 Mobile Warfare');
   const armour = model.sections![0]!.rows![0]!;
@@ -400,9 +401,9 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
   });
 
   const allFilter = { passing: null, unrecorded: [], bounds: [] };
-  const ciphers = decryptionProjection.project(view, { view: 'ciphers', filter: allFilter, filterAll: true, side: 'decryptor' });
+  const ciphers = decryptionProjection.project(view, { filter: allFilter, filterAll: true, side: 'decryptor' });
   assert.equal(ciphers.layout, 'ciphers');
-  assert.equal(ciphers.summary, '1 broken \u00b7 2 decrypting');
+  assert.equal(ciphers.summaryText, '1 broken \u00b7 2 decrypting');
   assert.equal(ciphers.sections?.length, 2);
   assert.equal(ciphers.sections![0]!.title, 'Decrypting');
   assert.equal(ciphers.sections![0]!.rows?.length, 2);
@@ -414,16 +415,20 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
   assert.equal(ciphers.sections![1]!.chipLines![0]!.chips[0]!.targetName, 'German Reich');
   assert.ok(!ciphers.sections![1]!.chipLines![0]!.chips[0]!.dateText?.includes(':'), 'broken date omits hour');
 
-  const matrix = decryptionProjection.project(view, { view: 'matrix', filter: allFilter, filterAll: true, side: 'decryptor' });
-  assert.equal(matrix.layout, 'matrix');
-  assert.equal(matrix.matrix?.cornerLabel, 'Reads');
-  assert.equal(matrix.matrix?.rows.length, 2);
-  assert.equal(matrix.matrix?.columns.length, 2);
-  const engRow = matrix.matrix!.rows[0]!;
-  assert.equal(engRow.ownerName, 'United Kingdom');
-  assert.equal(engRow.totalText, 'Broken 1 \u00b7 Decrypting 1');
-  assert.ok(engRow.cells.some(c => c.kind === 'broken'));
-  assert.ok(engRow.cells.some(c => c.kind === 'missing'));
+  const matrix = whoReadsWhomProjection.project(view, { filter: allFilter, filterAll: true, side: 'decryptor' });
+  assert.equal(matrix.corner, 'Reads');
+  assert.equal(matrix.summaryText, '1 broken · 2 decrypting');
+  assert.deepEqual(matrix.rows.map(r => [r.label, r.trailing]), [
+    ['United Kingdom', 'Broken 1 · Decrypting 1'],
+    ['German Reich', 'Broken 0 · Decrypting 1'],
+  ]);
+  assert.deepEqual(matrix.columns.map(c => c.label), ['German Reich', 'Soviet Union']);
+  const engGer = matrix.cell(0, 0);
+  assert.equal(engGer.kind === 'value' && engGer.mark, 'square');
+  assert.equal(matrix.cell(0, 1).kind, 'missing');
+  assert.equal(matrix.cell(1, 0).kind, 'diagonal');
+  const gerSov = matrix.cell(1, 1);
+  assert.ok(gerSov.kind === 'value' && gerSov.mark === 'ring' && gerSov.fraction === 0.62);
 
   const ctx = makeFakeCtx();
   const layout = layoutMeterModel(ctx, ciphers, 832, THEME);
@@ -432,7 +437,7 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
   assert.equal(hitMeterModel(layout, firstHit.x + 2, firstHit.y + 2, 0, 0), `row:${firstHit.key}`);
   assert.ok(findMeterTooltip(ciphers, firstHit.key) !== null);
   assert.equal(deriveMeterNav(ciphers).length, 3);
-  assert.equal(deriveMeterMirror(ciphers, null).length, 3);
+  assert.equal(deriveMeterMirror(ciphers).total, 3);
   assert.equal(deriveMeterAudit(ciphers).length, 3);
 });
 

@@ -29,7 +29,6 @@ export const OPTIONS: readonly OptionField[] = [
 
 export const definition = {
   kind: 'decryption',
-  family: 'meters',
   version: 1,
   title: 'Decryption',
   icon: 'lock',

@@ -1,9 +1,10 @@
 import type { AuditRow } from '../../draw/notifications.ts';
 import type { ThresholdTick } from '../../draw/kit.ts';
-import type { ArtResult, BoundedReadView } from '../contract.ts';
-import type { FamilyNavTuple, FamilyTooltipPayload, ListboxMirrorItem } from '../host/index.ts';
+import type { ArtResult, BoundedReadView, MirrorModel, MirrorRow } from '../contract.ts';
+import type { FamilyNavTuple } from '../host/keyboard.ts';
+import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 
-export type MeterLayoutMode = 'rows' | 'columns' | 'ciphers' | 'matrix';
+export type MeterLayoutMode = 'rows' | 'columns' | 'ciphers';
 
 export interface MeterArt {
   readonly result: ArtResult;
@@ -83,43 +84,11 @@ export interface MeterSection {
   readonly chipLines?: readonly MeterChipLine[];
 }
 
-export interface MeterMatrixColumn {
-  readonly key: string;
-  readonly flag: MeterFlag;
-  readonly name: string;
-}
-
-export interface MeterMatrixCell {
-  readonly key: string;
-  readonly kind: 'diagonal' | 'broken' | 'progress' | 'missing' | 'none';
-  readonly fraction?: number;
-  readonly color?: string;
-  readonly spoken: string;
-  readonly audit?: string;
-  readonly tooltip?: FamilyTooltipPayload;
-  readonly meta?: unknown;
-}
-
-export interface MeterMatrixRow {
-  readonly key: string;
-  readonly ownerFlag: MeterFlag;
-  readonly ownerName: string;
-  readonly totalText: string;
-  readonly cells: readonly MeterMatrixCell[];
-}
-
-export interface MeterMatrix {
-  readonly cornerLabel: string;
-  readonly columns: readonly MeterMatrixColumn[];
-  readonly rows: readonly MeterMatrixRow[];
-}
-
 export interface MeterModel {
   readonly hour: number;
   readonly layout: MeterLayoutMode;
-  readonly summary?: string | null;
+  readonly summaryText?: string | null;
   readonly sections?: readonly MeterSection[];
-  readonly matrix?: MeterMatrix;
   readonly notes?: readonly string[];
   readonly warnings?: readonly string[];
   readonly empty?: string | null;
@@ -155,63 +124,22 @@ export function deriveMeterNav(model: MeterModel): readonly FamilyNavTuple[] {
       }
     }
   }
-  if (model.matrix) {
-    for (const row of model.matrix.rows) {
-      for (const cell of row.cells) {
-        if (cell.kind === 'diagonal' || cell.kind === 'none') continue;
-        nav.push([cell.key, cell.spoken, index++, -1, '', cell.meta ?? null]);
-      }
-    }
-  }
   return nav;
 }
 
-export function deriveMeterMirror(
-  model: MeterModel,
-  selectedKey: string | null,
-): readonly ListboxMirrorItem[] {
-  const items: ListboxMirrorItem[] = [];
-  let index = 0;
-  if (model.sections) {
-    for (const section of model.sections) {
-      if (section.rows) {
-        for (const row of section.rows) {
-          items.push({
-            key: row.key,
-            spoken: row.spoken,
-            index: index++,
-            selected: selectedKey === row.key,
-          });
-        }
-      }
-      if (section.chipLines) {
-        for (const line of section.chipLines) {
-          for (const chip of line.chips) {
-            items.push({
-              key: chip.key,
-              spoken: chip.spoken,
-              index: index++,
-              selected: selectedKey === chip.key,
-            });
-          }
-        }
+export function deriveMeterMirror(model: MeterModel): MirrorModel {
+  const rows: MirrorRow[] = [];
+  for (const section of model.sections ?? []) {
+    for (const row of section.rows ?? []) {
+      rows.push({ key: row.key, name: row.spoken, rowIndex: rows.length, cells: [] });
+    }
+    for (const line of section.chipLines ?? []) {
+      for (const chip of line.chips) {
+        rows.push({ key: chip.key, name: chip.spoken, rowIndex: rows.length, cells: [] });
       }
     }
   }
-  if (model.matrix) {
-    for (const row of model.matrix.rows) {
-      for (const cell of row.cells) {
-        if (cell.kind === 'diagonal' || cell.kind === 'none') continue;
-        items.push({
-          key: cell.key,
-          spoken: cell.spoken,
-          index: index++,
-          selected: selectedKey === cell.key,
-        });
-      }
-    }
-  }
-  return items;
+  return { first: 0, total: rows.length, rows };
 }
 
 export function deriveMeterAudit(model: MeterModel): readonly AuditRow[] {
@@ -228,15 +156,6 @@ export function deriveMeterAudit(model: MeterModel): readonly AuditRow[] {
           for (const chip of line.chips) {
             rows.push({ row: chip.key, key: chip.key, value: chip.audit });
           }
-        }
-      }
-    }
-  }
-  if (model.matrix) {
-    for (const row of model.matrix.rows) {
-      for (const cell of row.cells) {
-        if (cell.audit !== undefined) {
-          rows.push({ row: cell.key, key: cell.key, value: cell.audit });
         }
       }
     }
@@ -258,13 +177,6 @@ export function findMeterTooltip(model: MeterModel, key: string): FamilyTooltipP
             if (chip.key === key) return chip.tooltip ?? null;
           }
         }
-      }
-    }
-  }
-  if (model.matrix) {
-    for (const row of model.matrix.rows) {
-      for (const cell of row.cells) {
-        if (cell.key === key) return cell.tooltip ?? null;
       }
     }
   }

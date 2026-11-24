@@ -18,7 +18,7 @@ pub mod value;
 pub type Hour = i32;
 pub type SessionId = u64;
 pub type BranchId = u64;
-pub const FORMAT_VERSION: u16 = rows::compatibility::ENGAGED_REFRESH_WITNESS_FORMAT;
+pub const FORMAT_VERSION: u16 = rows::compatibility::RAID_COMPLETION_FIELDS_FORMAT;
 
 #[doc(hidden)]
 pub use engine_allocation as __allocation;

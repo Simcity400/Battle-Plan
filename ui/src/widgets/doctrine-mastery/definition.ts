@@ -6,7 +6,7 @@ export const OPTIONS: readonly OptionField[] = [
 ];
 
 export const definition = {
-  kind: 'doctrine-mastery', family: 'meters', version: 1, title: 'Doctrine mastery', icon: 'flask', category: 'Research',
+  kind: 'doctrine-mastery', version: 1, title: 'Doctrine mastery', icon: 'flask', category: 'Research',
   description: 'Each doctrine track’s mastery and rewards, with step thresholds.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, countries: { max: 1 }, history: true,
   minSize: { w: 4, h: 4 }, defaultSize: { w: 10, h: 6 }, options: OPTIONS,

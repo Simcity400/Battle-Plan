@@ -6,7 +6,6 @@ import {
   drawArtSlot,
   drawFlagSlot,
   drawNameSlot,
-  drawProgressRing,
   drawRowFocusRing,
   drawRowHairline,
   drawRowHover,
@@ -22,7 +21,6 @@ import { drawHatchRect } from '../valueCanvas.ts';
 import type {
   MeterChip,
   MeterFlag,
-  MeterMatrix,
   MeterModel,
   MeterRow,
 } from './model.ts';
@@ -92,24 +90,11 @@ interface PlacedChipLine {
 
 type PlacedBlock = PlacedSectionHeader | PlacedRowItem | PlacedRule | PlacedChipLine;
 
-export interface MatrixGeometry {
-  readonly matrix: MeterMatrix;
-  readonly labelWidth: number;
-  readonly showOwnerName: boolean;
-  readonly colWidth: number;
-  readonly headerHeight: number;
-  readonly rowHeight: number;
-  readonly showTotals: boolean;
-  readonly totalX: number;
-  readonly totalWidth: number;
-}
-
 export interface MeterLayout {
   readonly mode: MeterModel['layout'];
   readonly contentWidth: number;
   readonly contentHeight: number;
   readonly blocks: readonly PlacedBlock[];
-  readonly matrix?: MatrixGeometry;
   readonly hits: readonly MeterHitRect[];
   readonly itemBands: ReadonlyMap<string, readonly [number, number]>;
 }
@@ -130,56 +115,6 @@ export function layoutMeterModel(
   const blocks: PlacedBlock[] = [];
   const hits: MeterHitRect[] = [];
   const itemBands = new Map<string, readonly [number, number]>();
-
-  if (model.layout === 'matrix' && model.matrix) {
-    const matrix = model.matrix;
-    const showOwnerName = innerW >= 420;
-    const labelWidth = showOwnerName ? 150 : 28;
-    const colWidth = 30;
-    const headerHeight = 28;
-    const rowHeight = 28;
-    const showTotals = innerW >= 540;
-    const totalWidth = showTotals ? 156 : 0;
-    const colsTotalW = matrix.columns.length * colWidth;
-    const totalX = PAD_X + labelWidth + colsTotalW + 12;
-    const contentWidth = Math.max(
-      width,
-      PAD_X * 2 + labelWidth + colsTotalW + (showTotals ? 12 + totalWidth : 0),
-    );
-    const contentHeight = PAD_Y * 2 + headerHeight + matrix.rows.length * rowHeight;
-
-    for (let r = 0; r < matrix.rows.length; r++) {
-      const row = matrix.rows[r]!;
-      const y = PAD_Y + headerHeight + r * rowHeight;
-      for (let c = 0; c < row.cells.length; c++) {
-        const cell = row.cells[c]!;
-        if (cell.kind === 'diagonal' || cell.kind === 'none') continue;
-        const x = PAD_X + labelWidth + c * colWidth;
-        hits.push({ key: cell.key, x, y, width: colWidth, height: rowHeight });
-        itemBands.set(cell.key, [y, rowHeight]);
-      }
-    }
-
-    return {
-      mode: 'matrix',
-      contentWidth,
-      contentHeight,
-      blocks,
-      matrix: {
-        matrix,
-        labelWidth,
-        showOwnerName,
-        colWidth,
-        headerHeight,
-        rowHeight,
-        showTotals,
-        totalX,
-        totalWidth,
-      },
-      hits,
-      itemBands,
-    };
-  }
 
   if (model.layout === 'columns') {
     const sections = model.sections ?? [];
@@ -805,149 +740,6 @@ function drawChipLineBlock(
   }
 }
 
-function drawMatrixBody(
-  ctx: Canvas2D,
-  geom: MatrixGeometry,
-  viewportWidth: number,
-  viewportHeight: number,
-  scrollLeft: number,
-  scrollTop: number,
-  theme: FamilyTheme,
-  inspectedKey: string | null,
-  selectedKey: string | null,
-  focusedKey: string | null,
-): void {
-  const { matrix, labelWidth, showOwnerName, colWidth, headerHeight, rowHeight, showTotals, totalX, totalWidth } = geom;
-  const stickyLeft = PAD_X + labelWidth;
-  const stickyTop = PAD_Y + headerHeight;
-  const tokens = resolveKitTokens(theme);
-
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(stickyLeft, stickyTop, Math.max(0, viewportWidth - stickyLeft), Math.max(0, viewportHeight - stickyTop));
-  ctx.clip();
-
-  for (let r = 0; r < matrix.rows.length; r++) {
-    const row = matrix.rows[r]!;
-    const y = stickyTop + r * rowHeight - scrollTop;
-    if (y + rowHeight < stickyTop || y > viewportHeight) continue;
-    const cy = y + rowHeight / 2;
-    drawRowHairline(ctx, stickyLeft, viewportWidth, y + rowHeight, theme);
-
-    for (let c = 0; c < row.cells.length; c++) {
-      const cell = row.cells[c]!;
-      const x = stickyLeft + c * colWidth - scrollLeft;
-      if (x + colWidth < stickyLeft || x > viewportWidth) continue;
-      const cx = x + colWidth / 2;
-      if (selectedKey === cell.key) drawRowSelected(ctx, x + 2, y + 2, colWidth - 4, rowHeight - 4, theme, 0);
-      else if (inspectedKey === cell.key) drawRowHover(ctx, x + 2, y + 2, colWidth - 4, rowHeight - 4, theme, 0);
-      if (focusedKey === cell.key) drawRowFocusRing(ctx, x + 2, y + 2, colWidth - 4, rowHeight - 4, theme, 0);
-
-      if (cell.kind === 'diagonal') {
-        ctx.save();
-        ctx.strokeStyle = tokens.bandDivider;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(cx - 3.5, cy + 3.5);
-        ctx.lineTo(cx + 3.5, cy - 3.5);
-        ctx.stroke();
-        ctx.restore();
-      } else if (cell.kind === 'broken') {
-        ctx.save();
-        ctx.fillStyle = resolveBarColor(cell.color, theme);
-        ctx.beginPath();
-        ctx.roundRect(cx - 7, cy - 7, 14, 14, 3);
-        ctx.fill();
-        ctx.restore();
-      } else if (cell.kind === 'progress') {
-        drawProgressRing(ctx, cx, cy, 6.2, cell.fraction ?? 0, resolveBarColor(cell.color, theme), theme, 2.4);
-      } else if (cell.kind === 'missing') {
-        drawHatchRect(ctx, cx - 7, cy - 7, 14, 14, 2.5, theme);
-      } else {
-        ctx.save();
-        ctx.fillStyle = tokens.bandDivider;
-        ctx.beginPath();
-        ctx.arc(cx, cy, 1.3, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-      }
-    }
-
-    if (showTotals && row.totalText) {
-      const tx = totalX - scrollLeft;
-      if (tx < viewportWidth) {
-        ctx.save();
-        ctx.font = `400 11px ${theme.font}`;
-        ctx.fillStyle = theme.muted;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(ellipsise(row.totalText, totalWidth, s => textWidth(ctx, s)), tx, cy);
-        ctx.restore();
-      }
-    }
-  }
-  ctx.restore();
-
-  ctx.save();
-  ctx.fillStyle = theme.surface;
-  ctx.fillRect(0, stickyTop, stickyLeft, Math.max(0, viewportHeight - stickyTop));
-  ctx.beginPath();
-  ctx.rect(0, stickyTop, stickyLeft, Math.max(0, viewportHeight - stickyTop));
-  ctx.clip();
-  for (let r = 0; r < matrix.rows.length; r++) {
-    const row = matrix.rows[r]!;
-    const y = stickyTop + r * rowHeight - scrollTop;
-    if (y + rowHeight < stickyTop || y > viewportHeight) continue;
-    const cy = y + rowHeight / 2;
-    drawFlagSlot(ctx, PAD_X, Math.round(cy - 6.5), toFlagSlotState(row.ownerFlag.result, row.ownerFlag.tag), theme, { width: 20, height: 13 });
-    if (showOwnerName) {
-      const maxW = Math.max(24, labelWidth - 28);
-      ctx.save();
-      ctx.font = `${LABEL_WEIGHT} 12px ${theme.font}`;
-      ctx.fillStyle = theme.text;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(ellipsise(row.ownerName, maxW, s => textWidth(ctx, s)), PAD_X + 26, cy);
-      ctx.restore();
-    }
-    drawRowHairline(ctx, PAD_X, stickyLeft, y + rowHeight, theme);
-  }
-  ctx.restore();
-
-  ctx.save();
-  ctx.fillStyle = theme.surface;
-  ctx.fillRect(stickyLeft, 0, Math.max(0, viewportWidth - stickyLeft), stickyTop);
-  ctx.beginPath();
-  ctx.rect(stickyLeft, 0, Math.max(0, viewportWidth - stickyLeft), stickyTop);
-  ctx.clip();
-  for (let c = 0; c < matrix.columns.length; c++) {
-    const col = matrix.columns[c]!;
-    const x = stickyLeft + c * colWidth - scrollLeft;
-    if (x + colWidth < stickyLeft || x > viewportWidth) continue;
-    drawFlagSlot(
-      ctx,
-      Math.round(x + (colWidth - 18) / 2),
-      Math.round(PAD_Y + (headerHeight - 12) / 2),
-      toFlagSlotState(col.flag.result, col.flag.tag),
-      theme,
-      { width: 18, height: 12 },
-    );
-  }
-  drawRowHairline(ctx, stickyLeft, viewportWidth, stickyTop, theme, 'strong');
-  ctx.restore();
-
-  ctx.save();
-  ctx.fillStyle = theme.surface;
-  ctx.fillRect(0, 0, stickyLeft, stickyTop);
-  ctx.font = `500 11px ${theme.font}`;
-  ctx.fillStyle = theme.muted;
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(matrix.cornerLabel, PAD_X, PAD_Y + headerHeight / 2);
-  drawRowHairline(ctx, PAD_X, stickyLeft, stickyTop, theme, 'strong');
-  ctx.restore();
-}
-
 export interface DrawMeterInput {
   readonly layout: MeterLayout;
   readonly width: number;
@@ -966,37 +758,33 @@ export function drawMeterModel(ctx: Canvas2D, input: DrawMeterInput): void {
   ctx.fillStyle = theme.surface;
   ctx.fillRect(0, 0, width, height);
 
-  if (layout.mode === 'matrix' && layout.matrix) {
-    drawMatrixBody(ctx, layout.matrix, width, height, scrollLeft, scrollTop, theme, inspectedKey, selectedKey, focusedKey);
-  } else {
-    ctx.save();
-    ctx.translate(-scrollLeft, -scrollTop);
-    const visTop = scrollTop - 40;
-    const visBottom = scrollTop + height + 40;
+  ctx.save();
+  ctx.translate(-scrollLeft, -scrollTop);
+  const visTop = scrollTop - 40;
+  const visBottom = scrollTop + height + 40;
 
-    for (const block of layout.blocks) {
-      if (block.kind === 'rule') {
-        if (block.y >= visTop && block.y <= visBottom) {
-          drawRowHairline(ctx, block.x, block.x + block.width, block.y, theme);
-        }
-        continue;
+  for (const block of layout.blocks) {
+    if (block.kind === 'rule') {
+      if (block.y >= visTop && block.y <= visBottom) {
+        drawRowHairline(ctx, block.x, block.x + block.width, block.y, theme);
       }
-      if (block.y + block.height < visTop || block.y > visBottom) continue;
-
-      if (block.kind === 'header') {
-        drawSectionHeaderBlock(ctx, block, theme);
-      } else if (block.kind === 'chip-line') {
-        drawChipLineBlock(ctx, block, theme, inspectedKey, selectedKey, focusedKey);
-      } else if (layout.mode === 'columns') {
-        drawColumnMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey);
-      } else if (layout.mode === 'ciphers') {
-        drawCipherMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey);
-      } else {
-        drawStandardMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey);
-      }
+      continue;
     }
-    ctx.restore();
+    if (block.y + block.height < visTop || block.y > visBottom) continue;
+
+    if (block.kind === 'header') {
+      drawSectionHeaderBlock(ctx, block, theme);
+    } else if (block.kind === 'chip-line') {
+      drawChipLineBlock(ctx, block, theme, inspectedKey, selectedKey, focusedKey);
+    } else if (layout.mode === 'columns') {
+      drawColumnMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey);
+    } else if (layout.mode === 'ciphers') {
+      drawCipherMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey);
+    } else {
+      drawStandardMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey);
+    }
   }
+  ctx.restore();
 
   if (scrollTop + height < layout.contentHeight - 2) {
     drawScrollFade(ctx, 0, height - SCROLL_FADE_PX, width, SCROLL_FADE_PX, theme, 'bottom');
@@ -1014,11 +802,6 @@ export function hitMeterModel(
   scrollLeft: number,
   scrollTop: number,
 ): string | null {
-  if (layout.mode === 'matrix' && layout.matrix) {
-    const stickyLeft = PAD_X + layout.matrix.labelWidth;
-    const stickyTop = PAD_Y + layout.matrix.headerHeight;
-    if (viewportX < stickyLeft || viewportY < stickyTop) return null;
-  }
   const lx = viewportX + scrollLeft;
   const ly = viewportY + scrollTop;
   for (let i = 0; i < layout.hits.length; i++) {

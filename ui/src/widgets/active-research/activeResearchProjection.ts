@@ -243,7 +243,7 @@ export const activeResearchProjection: MeterProjection<ActiveResearchProjectionO
     return {
       hour: readView.hour,
       layout: 'rows',
-      summary: null,
+      summaryText: null,
       sections: [{
         key: 'researching',
         title: 'Researching',

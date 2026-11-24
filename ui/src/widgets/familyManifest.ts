@@ -166,14 +166,15 @@ export const FAMILY_VIEWS: readonly FamilyViewEntry[] = [
     kind: 'decryption',
     view: 'matrix',
     label: 'Who reads whom',
-    family: 'meters',
+    family: 'heat-matrix',
     viewOption: 'view',
-    loadSpec: meterSpec(
-      'decryption',
-      'matrix',
-      () => import('./decryption/decryptionProjection.ts'),
-      mod => ({ projection: mod.decryptionProjection, declaration: mod.decryptionDeclaration }),
-    ),
+    loadSpec: () => import('./decryption/whoReadsWhomProjection.ts').then(mod => ({
+      family: 'heat-matrix',
+      kind: 'decryption',
+      view: 'matrix',
+      projection: mod.whoReadsWhomProjection,
+      declaration: mod.whoReadsWhomDeclaration,
+    })),
   },
 ];
 

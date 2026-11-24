@@ -76,7 +76,7 @@ export const doctrineMasteryProjection: MeterProjection<DoctrineMasteryProjectio
       return {
         hour: readView.hour,
         layout: 'columns',
-        summary: '0 tracks active',
+        summaryText: '0 tracks active',
         empty: 'No doctrine chosen yet.',
         emptyKind: 'empty',
         warnings: reply.warnings,
@@ -94,7 +94,7 @@ export const doctrineMasteryProjection: MeterProjection<DoctrineMasteryProjectio
       return {
         hour: readView.hour,
         layout: 'columns',
-        summary,
+        summaryText: summary,
         empty: 'No doctrine folders selected.',
         emptyKind: 'empty',
         warnings: reply.warnings,
@@ -232,7 +232,7 @@ export const doctrineMasteryProjection: MeterProjection<DoctrineMasteryProjectio
     return {
       hour: readView.hour,
       layout: 'columns',
-      summary,
+      summaryText: summary,
       sections,
       warnings: reply.warnings,
     };

@@ -60,7 +60,6 @@ export type WidgetSkeletonKind = 'generic' | 'table' | 'chart' | 'log' | 'sunbur
 
 export interface WidgetMeta {
   kind: string;
-  family?: FamilyId;
   version: number;
   title: string;
   subject?: string;
