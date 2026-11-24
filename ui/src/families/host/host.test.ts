@@ -11,7 +11,8 @@ import { createBoundedReadView, displayedHour } from '../boundedView.ts';
 import type { FamilyTheme, InstalledAction, InstalledPicture } from '../contract.ts';
 import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
-import { familyBinding, lazyActionKeys, requestedRowWindow, type FamilyBindingContext, type ParsedFamilyHit } from './adapter.ts';
+import { familyBinding, lazyActionKeys, requestedRowWindow, type FamilyBindingContext, type FamilyHostAdapter, type ParsedFamilyHit } from './adapter.ts';
+import { BoundSelections, installedRecordOf, recordInstalled, resolveHostInput, type HostInputGate } from './installed.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { readPlanExact } from '../broker.ts';
 import type { SourcePlan } from '../contract.ts';
@@ -681,7 +682,7 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
       onDragEnd: () => dragEvents.push('end'),
       onDoubleClick: () => { doubleClicks++; return true; },
     },
-    onActivate: (_key, _toggle, action) => { if (action) activations.push(action); },
+    onActivate: (key, _toggle, hit, picture) => { if (picture) activations.push({ installedId: picture.id, owner: picture.owner, subject: hit?.subject ?? key, hour: displayedHour(hit?.hour ?? picture.hour) }); },
   });
 
   body.dispatch('pointerdown', { button: 0, clientX: 110, clientY: 70, pointerId: 1 });
@@ -926,7 +927,7 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
     getInstalled: () => installed,
     getViewportHeight: () => 800,
     parseHit: hit => parseDefaultRowHit(hit),
-    onActivate: (_key, _toggle, action) => { if (action) activations.push(action); },
+    onActivate: (key, _toggle, hit, picture) => { if (picture) activations.push({ installedId: picture.id, owner: picture.owner, subject: hit?.subject ?? key, hour: displayedHour(hit?.hour ?? picture.hour) }); },
     onContextMenu: key => { menus.push(key); return true; },
   });
 
@@ -1053,4 +1054,99 @@ test('R3-S1: a paged table scrolled past its head asks the absolute rows under t
     Array.from({ length: 10 }, (_, i) => `e${600 + i}`),
     'the audit covers the painted local slice the installed picture names, not rows found from the absolute scroll offset',
   );
+});
+
+test('class D: every action and published state comes from the installed picture record the input was aimed at (R3-S5, R3-S13, R3-S9, R3-S4)', () => {
+  type Listener = (event: unknown) => void;
+  const listeners = new Map<string, Set<Listener>>();
+  const body = {
+    addEventListener(type: string, fn: Listener) { (listeners.get(type) ?? listeners.set(type, new Set()).get(type)!).add(fn); },
+    removeEventListener(type: string, fn: Listener) { listeners.get(type)?.delete(fn); },
+    dispatch(type: string, event: Record<string, unknown>) { for (const fn of listeners.get(type) ?? []) fn({ target: body, preventDefault() {}, ...event }); },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 100 }),
+    contains: (node: unknown) => node === body,
+    setPointerCapture() {},
+    releasePointerCapture() {},
+  };
+  const nav = (rows: readonly (readonly [string, number])[]): FamilyNavTuple[] => rows.map(([key, tree], i) => [key, `${key} name`, i, tree, '', null] as FamilyNavTuple);
+  const picture = (id: number, rows: readonly (readonly [string, number])[], owner = 'owner-A'): InstalledPicture => ({
+    id, owner, generation: { seek: 1, reset: 0, binding: 1 }, factRevisions: {}, validInterval: [100, 120], through: 100, hour: displayedHour(100 + id),
+    viewport: { width: 200, height: 100, dpr: 1, scrollLeft: 0, scrollTop: 0 }, optionsRevision: '', themeRevision: '',
+    actionKeys: lazyActionKeys(nav(rows), displayedHour(100 + id)), accessibleDescription: null,
+  });
+
+  let installed = picture(7, [['A', -1], ['B', -1]]);
+  const pending: ((key: string | null, meta?: PointerHitMeta) => void)[] = [];
+  const fakePipeline = {
+    pointer(_pipe: number, _slot: number, _pt: unknown, cb?: (key: string | null, meta?: PointerHitMeta) => void) { if (cb) pending.push(cb); },
+    inspect() {},
+    view() { return null; },
+  } as unknown as Pipeline;
+  const reply = (key: string | null, id: number, owner = 'owner-A') => pending.shift()!(key, { installedId: id, owner });
+  const inspectedKeyRef = { current: null as string | null };
+  const drags: string[] = [];
+  const tooltips = new FamilyTooltipController('class-d');
+  const stop = bindFamilyPointer({
+    bodyNode: body as unknown as HTMLElement,
+    menuHost: body as unknown as HTMLElement,
+    pipeline: fakePipeline,
+    pipe: 1,
+    tooltips,
+    inspectedKeyRef,
+    inspectedHitRef: { current: null },
+    lastPointerRef: { current: null },
+    focusInsideRef: { current: false },
+    focusedKeyRef: { current: null },
+    focusAnchorRef: { current: { x: 0, y: 0 } },
+    accessibleRef: { current: body as unknown as HTMLElement },
+    isBlocked: () => false,
+    getInstalled: () => installed,
+    getViewportHeight: () => 800,
+    parseHit: hit => parseDefaultRowHit(hit),
+    rowDrag: {
+      starts: hit => { drags.push(`start ${hit.key}`); return true; },
+      move: () => { drags.push('move'); },
+      end: point => { drags.push(point ? 'drop' : 'cancel'); },
+    },
+    onActivate: () => {},
+  });
+
+  body.dispatch('pointermove', { isTrusted: true, clientX: 20, clientY: 10 });
+  installed = picture(8, [['B', -1], ['A', -1]]);
+  reply('row:A', 7);
+  assert.equal(inspectedKeyRef.current, null, 'R3-S13: a hover reply for a replaced picture inspects nothing');
+  assert.equal(pending.length, 1, 'and the last pointer position is hit again on the current picture');
+  reply('row:B', 8);
+  assert.equal(inspectedKeyRef.current, 'B', 'so the row now under the stationary pointer is inspected');
+
+  body.dispatch('pointerdown', { button: 0, clientX: 20, clientY: 10, pointerId: 1 });
+  reply('row:B', 8);
+  body.dispatch('pointermove', { isTrusted: true, clientX: 20, clientY: 40 });
+  installed = picture(9, [['B', -1]], 'owner-B');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 20, clientY: 60 });
+  body.dispatch('pointerup', { button: 0, clientX: 20, clientY: 60, pointerId: 1 });
+  assert.deepEqual(drags, ['start B', 'move', 'cancel'], 'R3-S5: a drag begun on owner A is cancelled when the owner changes, never dropped on owner B');
+  stop();
+  tooltips.dispose();
+
+  const adapter = { family: 'regions-test', navigation: 'rows' } as FamilyHostAdapter;
+  const p1 = picture(20, [['GER', 0], ['ITA', -1]]);
+  const p2 = picture(21, [['ITA', -1], ['GER', 1]]);
+  const r1 = recordInstalled(p1, { nav: nav([['GER', 0], ['ITA', -1]]), regions: { rows: [{ key: 'r1' }], add: { top: 40, height: 20 }, nameLeft: 8 } }, 'GER');
+  const r2 = recordInstalled(p2, { nav: nav([['ITA', -1], ['GER', 1]]), regions: { rows: [{ key: 'r1' }, { key: 'r2' }], add: { top: 60, height: 20 }, nameLeft: 8 } }, 'ITA');
+  assert.equal(installedRecordOf(p1), r1);
+  const gate = (current: typeof r2 | null, expired = false): HostInputGate => ({ current, held: false, expired });
+  const options = { expansion: {}, takesToggles: false, regions: true, menu: true };
+  const grid = () => null;
+  const addRegion = resolveHostInput(adapter, 'activate', { key: '__add-region', hit: { key: '__add-region', kind: 'region-add' }, picture: p1 }, gate(r2), options, grid);
+  assert.deepEqual(addRegion?.kind === 'region-open' ? addRegion.field : null, r1.fields.regions, 'R3-S5: a delayed Add region click opens the region list of the picture it hit, not the replacement');
+  const toggled = resolveHostInput(adapter, 'toggle', { key: 'GER', hit: null, picture: p1 }, gate(r2), options, grid);
+  assert.deepEqual(toggled?.kind === 'toggle' ? [toggled.action.installedId, toggled.expansion?.open, toggled.expansion?.next] : null, [20, true, { GER: true }], 'a tree toggle opens what the event picture showed closed, though the latest picture shows it open');
+  assert.equal(resolveHostInput(adapter, 'activate', { key: 'ITA', hit: null, picture: p1 }, gate(r2, true), options, grid), null, 'R3-S4: Enter on an expired picture does nothing, read at input time');
+  assert.equal(resolveHostInput(adapter, 'activate', { key: 'ITA', hit: null, picture: p1 }, gate(recordInstalled(picture(22, [['ITA', -1]], 'owner-B'), {}, null)), options, grid), null, 'an input aimed at owner A never acts once owner B is installed');
+
+  const selections = new BoundSelections();
+  selections.bound(3, 'A');
+  selections.bound(5, 'B');
+  assert.deepEqual([selections.at(3), selections.at(4), selections.at(5)], ['A', 'A', 'B'], 'R3-S9: the mirror announces the selection the installed picture was bound with');
 });

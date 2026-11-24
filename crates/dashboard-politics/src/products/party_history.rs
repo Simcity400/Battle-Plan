@@ -25,7 +25,27 @@ pub const POPULARITY_DECIMALS: u8 = 5;
 #[serde(rename_all = "camelCase")]
 pub struct PartySeries {
     pub token: String,
-    pub parts: Vec<u32>,
+    #[doc = " The parts this party owned, each over the hours it was read owning it."]
+    pub parts: Vec<PartOwnership>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct PartOwnership {
+    pub part: u32,
+    pub first_hour: i32,
+    pub last_hour: i32,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct Election {
+    #[doc = " The recorded date of the election."]
+    pub hour: i32,
+    #[doc = " The hour the new date was first read; nothing shows the election before it."]
+    pub witnessed: i32,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -103,6 +123,7 @@ pub struct PartyHistoryReply {
     #[doc = " The country the request named, which a reply is matched to: a slot follows its country through any tag."]
     pub asked: dashboard_base::products::Country,
     pub decimals: u8,
+    #[doc = " Every party the country had, in stack order: the content's ideology order, then token."]
     pub parties: Vec<PartySeries>,
     pub ruling: Vec<RulingRun>,
     #[doc = " The ruling party's leader; an hour without a run was not read."]
@@ -115,8 +136,8 @@ pub struct PartyHistoryReply {
     pub people: Vec<LeaderArtwork>,
     #[doc = " The leaders' sub-ideologies, named."]
     pub ideology_types: Vec<IdeologyTypeInfo>,
-    #[doc = " Hours an election was first seen held."]
-    pub elections: Vec<i32>,
+    #[doc = " Each election whose new date was read, at its recorded date."]
+    pub elections: Vec<Election>,
     #[doc = " Every ideology group in content order, for colours, names and legend order."]
     pub ideologies: Vec<IdeologyInfo>,
     #[doc = " Hours the country's parties were not read: a change of government next to one is a gap,"]
@@ -141,13 +162,16 @@ pub(crate) struct Parties {
     pub people: Vec<Leader>,
     pub party_name_runs: Vec<PartyNameRun>,
     pub namings: Vec<(PartyNaming, Result<String, String>)>,
-    pub elections: Vec<i32>,
+    pub elections: Vec<Election>,
     pub unobserved: Vec<HourSpan>,
     last: Option<(i32, (u32, u32))>,
+    look_last: Option<(i32, (u32, u32))>,
     election: Option<((u32, u32), i64)>,
     naming: Option<((String, u32, Option<String>), u32)>,
     leader: Option<(Option<u32>, Option<u32>)>,
 }
+
+const SOURCES: [TableId; 3] = [TableId::PoliticalParties, TableId::CountryAppearance, TableId::Politics];
 
 struct Columns {
     party: [usize; 5],
@@ -248,12 +272,14 @@ pub(crate) fn read(query: &Query<'_>, tag: &Country, cancelled: &AtomicBool) -> 
     for stretch in &query.timeline.stretches {
         check_cancel(cancelled)?;
         parties.last = None;
+        parties.look_last = None;
         let mut covered = stretch.first;
         for run in runs.iter().filter(|run| run.last >= stretch.first && run.first <= stretch.last) {
             let (first, last) = (run.first.max(stretch.first), run.last.min(stretch.last));
             if covered < first {
                 holes.push((covered, first - 1));
                 parties.last = None;
+                parties.look_last = None;
             }
             covered = last.saturating_add(1);
             match run.holder {
@@ -261,6 +287,7 @@ pub(crate) fn read(query: &Query<'_>, tag: &Country, cancelled: &AtomicBool) -> 
                 Holder::Unresolved => {
                     holes.push((first, last));
                     parties.last = None;
+                    parties.look_last = None;
                 }
             }
         }
@@ -280,7 +307,10 @@ impl Parties {
     fn country(&mut self, query: &Query<'_>, columns: &Columns, run: u32, who: (u32, u32), tag: &str, first: i32, last: i32, cancelled: &AtomicBool) -> io::Result<()> {
         let recording = query.replay.recording();
         let key = u128::from(who.1);
-        let observed = cost::storage(|| observed_reads(recording, run, TableId::PoliticalParties, first, last))?;
+        let mut observed = Vec::with_capacity(SOURCES.len());
+        for table in SOURCES {
+            observed.push(cost::storage(|| observed_reads(recording, run, table, first, last))?);
+        }
         let held = cost::storage(|| lanes::history(recording, run, TableId::PoliticalParties, &columns.party, Keys::Range(key << 32, key << 32 | 0xFFFF_FFFF), first, last))?;
         let looks = cost::storage(|| lanes::history(recording, run, TableId::CountryAppearance, &columns.look, Keys::These(&[key]), first, last))?;
         let politics = cost::storage(|| lanes::history(recording, run, TableId::Politics, &[columns.election], Keys::These(&[key]), first, last))?;
@@ -289,7 +319,7 @@ impl Parties {
         let mut looks = Stepper::new(&looks);
         let mut politics = Stepper::new(&politics);
         let mut hours: Vec<i32> = held.hours().chain(looks.hours()).chain(politics.hours()).chain([first]).collect();
-        for &(start, end) in &observed {
+        for &(start, end) in observed.iter().flatten() {
             hours.push(start);
             if end < last {
                 hours.push(end + 1);
@@ -298,29 +328,46 @@ impl Parties {
         hours.retain(|hour| (first..=last).contains(hour));
         hours.sort_unstable();
         hours.dedup();
-        let mut unread = 0;
+        let mut unread = [0; SOURCES.len()];
         for (index, &hour) in hours.iter().enumerate() {
             check_cancel(cancelled)?;
             let end = hours.get(index + 1).map_or(last, |next| next - 1);
             held.advance(hour);
             looks.advance(hour);
             politics.advance(hour);
-            while observed.get(unread).is_some_and(|&(_, until)| until < hour) {
-                unread += 1;
-            }
-            if !observed.get(unread).is_some_and(|&(from, _)| from <= hour) {
-                mark(&mut self.unobserved, hour, end);
-                self.last = None;
-                continue;
-            }
-            self.observe(query, run, hour, end, who, tag, columns, &held, &looks, &politics)?;
+            let read = std::array::from_fn(|source| {
+                let reads = &observed[source];
+                while reads.get(unread[source]).is_some_and(|&(_, until)| until < hour) {
+                    unread[source] += 1;
+                }
+                reads.get(unread[source]).is_some_and(|&(from, _)| from <= hour)
+            });
+            self.observe(query, run, hour, end, who, tag, columns, read, [&held, &looks, &politics])?;
         }
         Ok(())
     }
 
-    fn observe(&mut self, query: &Query<'_>, run: u32, hour: i32, end: i32, who: (u32, u32), tag: &str, columns: &Columns, held: &Stepper<'_>, looks: &Stepper<'_>, politics: &Stepper<'_>) -> io::Result<()> {
+    fn observe(&mut self, query: &Query<'_>, run: u32, hour: i32, end: i32, who: (u32, u32), tag: &str, columns: &Columns, read: [bool; SOURCES.len()], [held, looks, politics]: [&Stepper<'_>; SOURCES.len()]) -> io::Result<()> {
+        let [parties_read, looks_read, politics_read] = read;
+        if parties_read {
+            self.observe_parties(query, run, hour, end, who, tag, columns, held)?;
+        } else {
+            mark(&mut self.unobserved, hour, end);
+            self.last = None;
+        }
+        if looks_read {
+            self.observe_leader(query, run, hour, end, who, columns, looks)?;
+        } else {
+            self.look_last = None;
+        }
+        if politics_read {
+            self.observe_election(hour, who, politics);
+        }
+        Ok(())
+    }
+
+    fn observe_parties(&mut self, query: &Query<'_>, run: u32, hour: i32, end: i32, who: (u32, u32), tag: &str, columns: &Columns, held: &Stepper<'_>) -> io::Result<()> {
         let continues = self.last.is_some_and(|(at, seen)| seen == who && i64::from(at) + 1 == i64::from(hour));
-        let same = self.last.is_some_and(|(_, seen)| seen == who) || self.election.is_some_and(|(seen, _)| seen == who);
         self.last = Some((end, who));
         let places = columns.party.map(|column| held.place(column));
         if let [Some(ruling), Some(token), Some(party_tag), Some(default), Some(name)] = places {
@@ -328,8 +375,9 @@ impl Parties {
                 let Some(token) = held.text(cells[token]).filter(|token| !token.is_empty()).and_then(|token| std::str::from_utf8(token).ok()) else { continue };
                 let series = self.parties.entry(token.to_owned()).or_insert_with(|| PartySeries { token: token.to_owned(), parts: Vec::new() });
                 let part = key as u32;
-                if let Err(at) = series.parts.binary_search(&part) {
-                    series.parts.insert(at, part);
+                match series.parts.iter_mut().rev().find(|owned| owned.part == part) {
+                    Some(owned) if continues && i64::from(owned.last_hour) + 1 == i64::from(hour) => owned.last_hour = end,
+                    _ => series.parts.push(PartOwnership { part, first_hour: hour, last_hour: end }),
                 }
                 if number(cells[ruling]).is_none_or(|ruling| ruling == 0) {
                     continue;
@@ -366,6 +414,12 @@ impl Parties {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn observe_leader(&mut self, query: &Query<'_>, run: u32, hour: i32, end: i32, who: (u32, u32), columns: &Columns, looks: &Stepper<'_>) -> io::Result<()> {
+        let continues = self.look_last.is_some_and(|(at, seen)| seen == who && i64::from(at) + 1 == i64::from(hour));
+        self.look_last = Some((end, who));
         if let (Some(ideology), Some(character), Some(cells)) = (looks.place(columns.look[0]), looks.place(columns.look[1]), looks.shown().next()) {
             let ideology = looks.text(cells[ideology]).map(|text| String::from_utf8_lossy(text).into_owned()).unwrap_or_default();
             let id = number(cells[character]).and_then(|id| u32::try_from(id).ok());
@@ -397,18 +451,23 @@ impl Parties {
                 }
             }
         }
-        if !same {
+        Ok(())
+    }
+
+    fn observe_election(&mut self, hour: i32, who: (u32, u32), politics: &Stepper<'_>) {
+        if self.election.is_some_and(|(seen, _)| seen != who) {
             self.election = None;
         }
-        if let Some(cells) = politics.shown().next()
-            && let Some(date) = number(cells[0])
+        let Some(date) = politics.shown().next().and_then(|cells| number(cells[0])) else { return };
+        if let Some((_, held)) = self.election
+            && held != date
+            && let Ok(at) = i32::try_from(date)
+            && at <= hour
+            && !engine_native_politics::cpolitical_status::needs_election_cache(at)
         {
-            if self.election.is_some_and(|(_, held)| held != date) {
-                self.elections.push(hour);
-            }
-            self.election = Some((who, date));
+            self.elections.push(Election { hour: at, witnessed: hour });
         }
-        Ok(())
+        self.election = Some((who, date));
     }
 }
 
@@ -493,6 +552,12 @@ fn ideology_infos(politics: &PoliticsContent, warnings: &mut Vec<String>) -> Vec
         .collect()
 }
 
+pub(crate) fn stack_order(parties: &BTreeMap<String, PartySeries>, ideologies: &[IdeologyInfo]) -> Vec<PartySeries> {
+    let mut order: Vec<&PartySeries> = parties.values().collect();
+    order.sort_by_key(|party| ideologies.iter().position(|ideology| ideology.token == party.token).unwrap_or(usize::MAX));
+    order.into_iter().cloned().collect()
+}
+
 pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &CountryParams, tag: &str, parties: &Parties, cancelled: &AtomicBool) -> io::Result<PartyHistoryReply> {
     let mut warnings = Vec::new();
     let politics = match politics {
@@ -553,7 +618,7 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
         tag: tag.to_owned(),
         asked: params.country.clone(),
         decimals: POPULARITY_DECIMALS,
-        parties: parties.parties.values().cloned().collect(),
+        parties: stack_order(&parties.parties, &ideologies),
         ruling: parties.ruling.clone(),
         leaders: parties.leaders.clone(),
         party_name_runs: parties.party_name_runs.clone(),
@@ -597,6 +662,8 @@ impl Product for PartyHistory {
             CountryParams::decl(),
             PartyHistoryReply::decl(),
             PartySeries::decl(),
+            PartOwnership::decl(),
+            Election::decl(),
             RulingRun::decl(),
             LeaderRun::decl(),
             PartyNameRun::decl(),
