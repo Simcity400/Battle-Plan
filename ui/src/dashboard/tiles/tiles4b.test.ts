@@ -5,7 +5,7 @@ import type { Run } from '../../charts/series';
 import { playbackDomain } from '../../charts/view.ts';
 import { TileCache } from './cache.ts';
 import { FIRST_BREAK, PRESENT, RUN, SEAM, TILE_BINS, TILE_GROUP, binHoursOf, decodeTileBins, tilesOf } from './tile.ts';
-import { TileView, cellBins, viewRuns } from './view.ts';
+import { TileView, cellBins } from './view.ts';
 import type { TileLane, TileViewport } from './view.ts';
 
 const LAST = 105_541;
@@ -109,7 +109,6 @@ test('an hourly tile holds the hourly runs, joined across tile seams, and its bi
   for (const [tag, at_] of [['GER', 0], ['ITA', 1]] as const) {
     const line = view.current!.get(tag)!;
     assert.deepEqual(line.summary.runs, [{ ...source(at_)[0], firstHour: 1024, breakBefore: false }, ...source(at_).slice(1)], `${tag}'s runs`);
-    assert.deepEqual(viewRuns(line, 1050, 1765), [{ ...source(at_)[0], firstHour: 1050, breakBefore: false }, ...source(at_).slice(1)]);
     const buckets = line.summary.buckets;
     const offset = (hour: number) => hour - line.summary.from;
     assert.equal(buckets[offset(1100)]!.firstValue, 1.5 + at_);

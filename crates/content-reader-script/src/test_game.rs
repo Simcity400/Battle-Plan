@@ -102,6 +102,18 @@ const PINNED_CATEGORIES: &[(&str, u64)] = &[
     ("maritime_patrol_plane", 0x2_0000_0000),
 ];
 const RESERVED_CATEGORY_BITS: u64 = 0x80_0040_03C1 | 0x1f_0037_fc00;
+const LAND: &[&str] = &["armor", "motorized", "mechanized", "infantry", "train", "land_cruiser"];
+const AIR: &[&str] = &[
+    "fighter", "tactical_bomber", "strategic_bomber", "cas", "naval_bomber", "scout_plane",
+    "air_transport", "maritime_patrol_plane",
+];
+const NAVAL: &[&str] = &["convoy", "capital_ship", "submarine", "screen_ship", "carrier", "support_ship"];
+const SHIP_DESIGNER: &[&str] = &["capital_ship", "submarine", "screen_ship", "carrier", "support_ship"];
+const TANK_DESIGNER: &[&str] = &["armor"];
+const PLANE_DESIGNER: &[&str] = &[
+    "fighter", "tactical_bomber", "strategic_bomber", "cas", "naval_bomber", "scout_plane",
+    "maritime_patrol_plane",
+];
 
 const STATS: &[(&str, &str, bool)] = &[
     ("max_strength", "STAT_SYNTHETIC_MAX_STRENGTH", true),
@@ -221,6 +233,20 @@ pub fn executable() -> Executable {
                 .iter()
                 .map(|&(_, mask, name)| (name, mask))
                 .collect());
+            let bits = |members: &[&str]| {
+                categories
+                    .iter()
+                    .filter(|(_, _, name)| members.contains(name))
+                    .fold(0, |bits, &(_, mask, _)| bits | mask)
+            };
+            tables.category_families = Ok(engine_executable::executable_tables::auxiliary::CategoryFamilies {
+                land: bits(LAND),
+                air: bits(AIR),
+                naval: bits(NAVAL),
+                ship_designer: bits(SHIP_DESIGNER),
+                tank_designer: bits(TANK_DESIGNER),
+                plane_designer: bits(PLANE_DESIGNER),
+            });
             tables.stat_metadata = Ok(stats);
             tables.ai_strategy_types = Ok(AI_STRATEGIES.to_vec());
             tables.missions = Ok(vec![("build_intel_network", 1), ("synthetic_mission", 2)]);

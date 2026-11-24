@@ -25,7 +25,7 @@ import { SceneTiles } from '../sceneTiles.ts';
 import { formatChartAxisValue, hoverTimeChartLayout, layoutTimeChart } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
 import { buildLineSubpaths, collectVisibleChartArt, fitTimeChartLegend } from './painter.ts';
-import { parseFollowed } from '../../dashboard/follow/message.ts';
+import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { buildBoundedStack, headReading, headValueOf } from './seriesHelpers.ts';
 import { timeAxisLabels } from '../../draw/kit.ts';
@@ -34,7 +34,8 @@ import { politicalPowerDeclaration, politicalPowerProjection } from '../../widge
 import { navyLinesProjection } from '../../widgets/navy-size/navyLinesProjection.ts';
 import { armyLinesProjection } from '../../widgets/army-size/armyLinesProjection.ts';
 import { occupationLinesDeclaration } from '../../widgets/occupation-trend/occupationLinesProjection.ts';
-import { supplyHealthProjection } from '../../widgets/supply-health/supplyHealthProjection.ts';
+import { supplyHealthDeclaration, supplyHealthProjection } from '../../widgets/supply-health/supplyHealthProjection.ts';
+import { readPlanExact } from '../broker.ts';
 import { rulingPartyProjection } from '../../widgets/ruling-party/rulingPartyProjection.ts';
 import { createLaneView } from '../laneRuntime.ts';
 import { drawTimeChart } from './painter.ts';
@@ -1328,6 +1329,38 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     const share = (raw: string) => ({ decimals: 5, states: [{ country: 7, hour, run: { valueRaw: raw }, missing: null }] });
     const audited = supplyHealthProjection.project(createBoundedReadView({ hour, panels: new Map([['noSupply', share('7000')], ['strained', share('66000')], ['inSupply', share('27000')]]) }), options);
     assert.deepEqual(audited.auditRows?.map(row => `${row.row}=${row.value}`), ['noSupply=7.0%', 'strained=66%', 'inSupply=27%'], 'the audit reads the exact panels, not tiles');
+  });
+
+  it('audits every exact measure a chart declares through the exact read, not only the first', async () => {
+    const hour = H1936 + 200;
+    const raws: Readonly<Record<string, string>> = { noSupplyShare: '7000', strainedShare: '66000', inSupplyShare: '27000', commandPower: '2260000', maxCommandPower: '10000000' };
+    const client = {
+      product: async (request: { product: string; params: { family?: { measure?: string }; reads?: readonly { country: unknown }[] } }) => {
+        const raw = raws[request.params.family?.measure ?? ''];
+        const states = (request.params.reads ?? []).map(asked => ({ country: asked.country, hour, run: raw ? { valueRaw: raw } : null, missing: raw ? null : 'Not asked' }));
+        return { data: { decimals: 5, states } };
+      },
+    } as unknown as Parameters<typeof readPlanExact>[2]['client'];
+    const gate = {
+      recorded: (h: number | null | undefined) => (typeof h === 'number' ? h : null) as never,
+      span: (firstHour: number, lastHour: number) => ({ firstHour, lastHour } as never),
+    };
+    const exactOf = (plan: Parameters<typeof readPlanExact>[0]) =>
+      readPlanExact(plan, hour, { client, following: false, timeMode: 'pin', branch: { firstHour: H1936, lastHour: hour }, window: null, staticSpan: null, gate });
+    const ctx = {
+      track: { source: { id: 's', revision: '1' }, axisOffset: 0 }, branch: { id: '1', gaps: [] }, following: false,
+      countries: { tags: ['GER'], membership: null }, countrySubject: 'GER', options: { spendTicks: false },
+    } as unknown as Parameters<typeof supplyHealthDeclaration.sources>[0];
+    const VIEW = { width: 800, height: 300 } as Parameters<typeof supplyHealthDeclaration.sources>[1];
+    const drawn = { extent: [H1936, hour] as const, surface: '#111111' } as Parameters<typeof supplyHealthDeclaration.projectionOptions>[1];
+
+    const supply = await exactOf(supplyHealthDeclaration.sources(ctx, VIEW));
+    assert.deepEqual(supplyHealthProjection.project(supply!, supplyHealthDeclaration.projectionOptions(ctx, drawn)).auditRows?.map(row => `${row.row}=${row.value}`),
+      ['noSupply=7.0%', 'strained=66%', 'inSupply=27%'], 'each drawn band is audited from its own exact read');
+
+    const power = await exactOf(commandPowerDeclaration.sources(ctx, VIEW));
+    assert.deepEqual(commandPowerProjection.project(power!, commandPowerDeclaration.projectionOptions(ctx, drawn)).auditRows?.map(row => `${row.row}=${row.value}`),
+      ['GER=22', 'GER:ceiling=100'], 'the drawn ceiling is audited from its exact read, never reported missing');
   });
 
   it('projects ruling party in the product’s order with dated part ownership, witnessed elections, leader note, exact hover and audit', () => {

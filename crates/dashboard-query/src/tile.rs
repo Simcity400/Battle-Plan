@@ -178,13 +178,18 @@ pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value) -
     let ranker = by.as_ref().unwrap_or(line);
     let (tags, ranking) = match ranker.rank_at(hour, n, params.least)? {
         Err(reason) => (Vec::new(), TileRanking { hour, from: hour, until: hour, refused: Some(reason) }),
-        Ok(tags) => {
-            let held: std::collections::BTreeSet<&str> = tags.iter().map(String::as_str).collect();
-            let (from, until) = ranker.rank_holds(hour, n, params.least, (i32::MIN, i32::MAX), |ranked| ranked.len() == held.len() && ranked.iter().all(|tag| held.contains(tag.as_str())))?;
-            (tags, TileRanking { hour, from, until, refused: None })
-        }
+        Ok(ranked) => match ranked.iter().find(|country| line.query().holders.tag_at(country, hour).is_none()) {
+            Some(unnamed) => {
+                let reason = format!("{}, so its line cannot be drawn", line.query().holders.unnamed(unnamed, hour));
+                (Vec::new(), TileRanking { hour, from: hour, until: hour, refused: Some(reason) })
+            }
+            None => {
+                let (from, until) = ranker.rank_holds(hour, n, params.least, (i32::MIN, i32::MAX), |at| at.len() == ranked.len() && at.iter().all(|country| ranked.contains(country)))?;
+                (ranked, TileRanking { hour, from, until, refused: None })
+            }
+        },
     };
-    let asks: Vec<Ask> = tags.iter().map(|tag| Ask::whole(tag.as_str())).collect();
+    let asks: Vec<Ask> = tags.iter().map(Ask::whole).collect();
     let mut reply = tile(line, branch_id, &asks, None, params.bin_hours, params.index, params.with_marks)?;
     reply.ranking = Some(ranking);
     Ok(reply)

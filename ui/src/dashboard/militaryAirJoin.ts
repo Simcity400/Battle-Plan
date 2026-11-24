@@ -137,8 +137,3 @@ export class LedgerJoin {
   }
 }
 
-export function joinMilitaryAir(windows: readonly MilitaryAirReply[]): MilitaryAirLedger | null {
-  const join = new LedgerJoin('', windows[0]?.window ?? 0);
-  for (const window of windows) join.append(window);
-  return join.ledger();
-}

@@ -7,7 +7,7 @@ import { equipmentTemplateProjection, equipmentTypeProjection } from './division
 
 const type = (archetype: string | null, extra: Partial<EquipmentType> = {}): EquipmentType => ({
   key: archetype ? '17' : 'unclassified', unclassified: archetype === null, archetype, name: archetype ? 'Infantry Equipment' : null, nameMissing: null, heldRaw: '26514100000', neededRaw: '26937000000',
-  filledRaw: '26514100000', missingRaw: '422900000', divisionsShort: 102, unknownDivisions: 0, stockpileRaw: null, stockpileHour: null, variants: [], ...extra,
+  filledRaw: '26514100000', missingRaw: '422900000', divisionsShort: 102, unknownDivisions: 0, stockpileRaw: null, stockpileHour: null, variants: [], variantsMissing: null, ...extra,
 });
 
 const template = (extra: Partial<EquipmentTemplate> = {}): EquipmentTemplate => ({
@@ -85,4 +85,13 @@ test('a figure summed over the compared divisions is partial, and unranked, whil
 
   const [unknown] = project('equipment', reply({ unknownDivisions: null, types: [type('infantry_equipment', { unknownDivisions: null })] })).rows;
   assert.deepEqual(unknown!.cells.needed!.value, partialValue(269370, 'Divisions not recorded'));
+});
+
+test('a type row keeps its holdings when its designs were not read; its tooltip says why the design list is missing', () => {
+  const unread = 'Designs held were not recorded at this hour: designs unread';
+  const model = project('equipment', reply({ types: [type('infantry_equipment', { variantsMissing: unread })] }));
+  const [infantry] = model.rows;
+  assert.deepEqual(infantry!.cells.held!.value, knownValue(265141));
+  const tip = typeof infantry!.tooltipExtra === 'function' ? infantry!.tooltipExtra() : infantry!.tooltipExtra;
+  assert.deepEqual(tip?.find(row => row.label === 'Designs')?.value, notRecorded(unread));
 });

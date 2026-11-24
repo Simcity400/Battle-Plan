@@ -38,3 +38,38 @@ fn the_queue_stands_without_its_manpower_or_equipment_and_held_amounts_are_not_c
     assert_eq!(comparison_missing(None, None, true).as_deref(), Some("A held design's equipment type is unresolved"));
     assert_eq!(comparison_missing(None, None, false), None);
 }
+
+#[test]
+fn unread_country_names_leave_the_queue_standing_with_the_unnamed_contributor_missing() {
+    use super::{TrainingQueue, TrainingQueueParams};
+    use dashboard_base::products::{LoadContext, at_hour::{At, AtHour, Owner}};
+    use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
+    use dashboard_follow::live::Cells;
+    use dashboard_base::products::Country;
+    use dashboard_query::identity::Holders;
+    use replay_data::rows::{CountryLinkRow, DeploymentConveyorRow, DeploymentLineRow, DeploymentManpowerRow, TableId, TableRows};
+    use replay_frame::frame::{SharedView, TableView};
+    let mut frame = source(1, 10, Some(1));
+    let sampled = |view: TableView| SharedView::from(view).with_sampled_at(Some(10));
+    frame.tables[TableId::CountryLinks.index()] = sampled(TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow { id: 9001, canonical_slot: 7 }, CountryLinkRow { id: 9002, canonical_slot: 8 }])));
+    let countries = frame.tables[TableId::Countries.index()].clone();
+    let TableView::Complete(rows) = &*countries else { unreachable!() };
+    frame.tables[TableId::Countries.index()] = sampled(TableView::Truncated { rows: rows.clone(), missing: 1 });
+    frame.tables[TableId::DeploymentConveyors.index()] = sampled(TableView::Complete(TableRows::DeploymentConveyors(vec![DeploymentConveyorRow { handle: 1, country: 9001, template: 5, ..Default::default() }])));
+    frame.tables[TableId::DeploymentLines.index()] = sampled(TableView::Complete(TableRows::DeploymentLines(vec![DeploymentLineRow { handle: 10, conveyor: 1, country: 9001, ..Default::default() }])));
+    frame.tables[TableId::DeploymentManpower.index()] = sampled(TableView::Complete(TableRows::DeploymentManpower(vec![
+        DeploymentManpowerRow { line: 10, side: 0, ordinal: 0, source_country: 9001, amount: 400 },
+        DeploymentManpowerRow { line: 10, side: 0, ordinal: 1, source_country: 9002, amount: 100 },
+    ])));
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![source(1, 10, Some(1))])]).unwrap().into_timelines(&Default::default()).unwrap();
+    let held = dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: "training".into(), revision: "1".into() }, "training.battleplan".into(), std::sync::Arc::new(replay), &std::sync::atomic::AtomicBool::new(false)).unwrap();
+    let content = TrainingQueue::context(&held, &LoadContext { content: None }).unwrap();
+    let (holders, live, cancelled) = (Holders::default(), Cells::default(), std::sync::atomic::AtomicBool::new(false));
+    let at = At { owner: Some(Owner { slot: 7, id: 9001 }), holders: &holders, hour: 10, context: &content, cancelled: &cancelled, live: &live };
+    let reply = TrainingQueue::reply(&frame, &TrainingQueueParams { branch_id: "1".into(), country: Country::from("GER") }, &at).expect("the queue stands without every country's name");
+    assert_eq!((reply.missing, reply.in_training), (None, Some(1)));
+    let division = &reply.orders[0].divisions[0];
+    assert_eq!(division.manpower, Some(500));
+    assert_eq!(division.contributors.iter().map(|row| (row.tag.as_deref(), row.amount)).collect::<Vec<_>>(), [(Some("GER"), 400), (None, 100)], "the witnessed country is named; the unread one is the missing part");
+    assert!(reply.warnings.iter().any(|line| line.starts_with("Country names unavailable")), "{:?}", reply.warnings);
+}

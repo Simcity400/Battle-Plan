@@ -1,13 +1,9 @@
-import type { GatedTime, PinnedSpec } from '../../dashboard/regionTime';
 import { usNumber } from '../../charts/numberFormat.ts';
 import { sortRows } from '../../charts/table/logic.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import type { LogRow } from '../../charts/log/logData';
-import { fixedNumber } from '../../charts/valueAxis.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import { createWidget } from '../../dashboard/model.ts';
 import { subjectToken } from '../../dashboard/chosen.ts';
-import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { DEFAULT_SORT } from '../most-decorated-divisions/definition.ts';
 import type { CareerFacts, CareerMedal, CareerRow, DivisionCareersReply, DivisionRecordReply, RecordEntry } from '../../generated/dashboard';
 
@@ -34,14 +30,6 @@ export function validateDivisionRecord(value: unknown): DivisionRecordReply {
 export const divisionName = (name: string | null) => name ?? 'Division name unavailable';
 export const medalName = (medal: CareerMedal | undefined) => medal?.name ?? 'Medal name unavailable';
 
-export function experienceRatio(facts: CareerFacts): number | null {
-  if (facts.experienceRaw === null) return null;
-  const value = fixedNumber(facts.experienceRaw, 5);
-  return value >= 0 && value <= 1 ? value : null;
-}
-
-export const CASUALTIES_TAKEN_NOTE = 'The game’s own count of the men this division has lost, as shown on its history tab in the game. It leaves out the men lost when a division is destroyed and losses from paradrop landings.';
-
 export function headerDetail(templateName: string | null, facts: CareerFacts | null): string {
   const medals = facts?.medals == null ? '—' : `${usNumber.format(facts.medals)} ${facts.medals === 1 ? 'medal' : 'medals'}`;
   const level = facts?.levelName ?? '—';
@@ -65,29 +53,6 @@ export function entryTooltip(item: RecordItem): TooltipContent {
   const rows: TooltipRow[] = [{ label: 'Date', value: formatDateTime(item.entry.hour) }];
   if (item.entry.award) rows.push({ label: 'Medal', value: medalName(item.medal), lookupKey: item.medal?.key });
   return { title: entryText(item), rows };
-}
-
-export function careerTooltip(row: CareerRow, reply: DivisionCareersReply, hour: number, country: string, template: string | null): TooltipContent {
-  const facts = row.facts;
-  const rows: TooltipRow[] = [
-    { label: 'Country', value: country },
-    { label: 'Template', value: template ?? 'Template name unavailable' },
-    { label: 'Medals', value: facts.medals === null ? 'Not recorded' : usNumber.format(facts.medals), divider: true },
-  ];
-  for (const award of facts.awards) {
-    const medal = award.medal === null ? undefined : reply.medals[award.medal];
-    rows.push({ label: award.medal === null ? 'Medal not identified' : medalName(medal), lookupKey: medal?.key, value: award.count === 1 ? undefined : `×${award.count}`, indent: true });
-  }
-  const ratio = experienceRatio(facts);
-  rows.push({ label: 'Experience', value: facts.levelName === null ? 'Not recorded' : `${facts.levelName}${ratio === null ? '' : ` (${Math.round(ratio * 100)}%)`}`, divider: true },
-    { label: 'Casualties taken', value: facts.casualtiesTaken === null ? 'Not recorded' : usNumber.format(facts.casualtiesTaken), detail: CASUALTIES_TAKEN_NOTE });
-  return { title: divisionName(row.name), subtitle: `As of ${formatDateTime(hour)}`, rows };
-}
-
-export function pinnedRecord(source: WidgetSpec, division: string, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, time: GatedTime): PinnedSpec {
-  const base = createWidget('division-service-record', track.id);
-  return { ...base, campaign: source.campaign, trackIds: [...source.trackIds], countries: source.countries, time,
-    contentScale: source.contentScale, options: { division: subjectToken(track.source.metadata.campaignKey, division) } };
 }
 
 export const divisionKey = (row: CareerRow) => row.division;

@@ -1,16 +1,16 @@
 
 use dashboard_base::products::LoadContext;
-use dashboard_base::{Source, catalogue::{self, Catalogue, Refusals, View}, products::at_hour::{At, AtHour, Keys, Owner, Read}};
+use dashboard_base::{Source, catalogue::{self, Catalogue, Refusals, View}, products::at_hour::{At, AtHour, Keys, Owner, Read}, queries::country_ids::{self, RunLinks}};
 use dashboard_query::{Index, read};
-use dashboard_text::{air_wing_names, metadata::link_slot, variant_names};
+use dashboard_text::{air_wing_names, variant_names};
 use content_reader_localisation::localisation::Argument;
 use replay::campaign::Replay;
 use replay_columnar::summary;
-use replay_data::rows::{AirAceRow, CountryLinkRow, TableId, tables};
+use replay_data::rows::{AirAceRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry},
     io,
     sync::{Arc, Mutex, PoisonError},
 };
@@ -156,11 +156,13 @@ type Slots = HashMap<u32, Vec<(String, i32, i32)>>;
 pub struct History {
     aces: HashMap<u64, Dates>,
     slots: Slots,
+    links: Vec<(i32, i32, Arc<RunLinks>)>,
 }
 
 impl History {
-    fn tag(&self, links: &[CountryLinkRow], raw: u32, hour: i32) -> Option<String> {
-        let slot = link_slot(links, raw)?;
+    fn tag(&self, raw: u32, hour: i32) -> Option<String> {
+        let (.., links) = self.links.iter().find(|(first, last, _)| *first <= hour && hour <= *last)?;
+        let slot = links.slot_at(raw, hour)?;
         self.slots.get(&slot)?.iter().find(|run| run.1 <= hour && hour <= run.2).map(|run| run.0.clone())
     }
 }
@@ -169,7 +171,14 @@ fn build(query: &dashboard_query::Query<'_>) -> io::Result<History> {
     let recording = query.replay.recording();
     let alive = dashboard_declare::field(TableId::AirAces, "alive")?;
     let mut folds: HashMap<u64, Fold> = HashMap::new();
+    let mut held: HashMap<u32, Arc<RunLinks>> = HashMap::new();
+    let mut links = Vec::with_capacity(query.timeline.stretches.len());
     for stretch in &query.timeline.stretches {
+        let run_links = match held.entry(stretch.run) {
+            Entry::Occupied(found) => Arc::clone(found.get()),
+            Entry::Vacant(slot) => Arc::clone(slot.insert(Arc::new(country_ids::run_links(recording, stretch.run)?))),
+        };
+        links.push((stretch.first, stretch.last, run_links));
         let runs = read::runs(recording, stretch.run, TableId::AirAces, summary::Source::Cell(alive), None, stretch.first, stretch.last)?;
         let reads = dashboard_query::cost::storage(|| replay_lanes::lanes::reads(recording, stretch.run, TableId::AirAces, stretch.first, stretch.last))?;
         for (key, runs) in runs {
@@ -180,7 +189,7 @@ fn build(query: &dashboard_query::Query<'_>) -> io::Result<History> {
         }
     }
     let slots: Slots = super::air_ledger::slot_holders(query).into_iter().map(|(slot, runs)| (slot, runs.into_iter().map(|(tag, _, first, last)| (tag, first, last)).collect())).collect();
-    Ok(History { aces: folds.into_iter().map(|(id, fold)| (id, fold.dates)).collect(), slots })
+    Ok(History { aces: folds.into_iter().map(|(id, fold)| (id, fold.dates)).collect(), slots, links })
 }
 
 #[derive(Default)]
@@ -311,10 +320,6 @@ pub(crate) fn roster(frame: &DecodedFrame, history: &History, cat: Option<&Catal
         Ok(rows) => rows,
         Err(error) => return (Some(format!("Aces are not recorded at this hour: {error}")), Vec::new()),
     };
-    let links = match frame.complete::<tables::CountryLinks>() {
-        Ok(links) => links,
-        Err(error) => return (Some(format!("Aces' countries are not recorded at this hour: {error}")), Vec::new()),
-    };
     let hour = frame.hour;
     let mut refusals = Refusals::default();
     let mut wing_refusals = Refusals::default();
@@ -328,7 +333,7 @@ pub(crate) fn roster(frame: &DecodedFrame, history: &History, cat: Option<&Catal
     let mut aces = Vec::with_capacity(rows.len());
     for row in rows {
         let id = row.id.to_string();
-        let tag = history.tag(links, row.country, hour);
+        let tag = history.tag(row.country, hour);
         if tag.is_none() {
             refusals.note("Ace owner country link has no resolved recorded tag", row.country.to_string());
         }
@@ -343,7 +348,7 @@ pub(crate) fn roster(frame: &DecodedFrame, history: &History, cat: Option<&Catal
                 killer_ace: killer.map(|death| death.killer_ace).filter(|id| *id != 0).map(|id| id.to_string()),
                 killer_name: killer.and_then(|death| names_by_id.get(&death.killer_ace).cloned().flatten()),
                 seen_dead: death.map(|death| death.from),
-                killer_tag: killer.zip(death).and_then(|(killed, death)| history.tag(links, killed.killer_country, death.from)),
+                killer_tag: killer.zip(death).and_then(|(killed, death)| history.tag(killed.killer_country, death.from)),
             }
         });
         let wing_name = wing_names.get(&row.assigned_wing).and_then(|bytes| match cat {

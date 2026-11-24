@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AmountRun, EquipmentStockpileReply, StockVariant } from './types';
-import { stockGroups, validateStockpileReply } from './stockpileData.ts';
+import { stockGroups } from './stockpileData.ts';
 import { stockRows } from './stockpileView.ts';
 
 const run = (value: number | null): AmountRun[] => [{ firstHour: 100, lastHour: 130, amountRaw: value == null ? null : String(Math.round(value * 100000)) }];
@@ -41,7 +41,7 @@ const rows = (reply: EquipmentStockpileReply, count: 'units' | 'ic' = 'units') =
 };
 
 test('the table lists only types with something, led by the surplus, with models named once', () => {
-  const { rows: listed, quiet } = rows(validateStockpileReply(structuredClone(REPLY)));
+  const { rows: listed, quiet } = rows(structuredClone(REPLY));
   assert.deepEqual(Object.fromEntries(listed.map(row => [row.group.key, [row.models, row.surplus, row.share]])), {
     infantry_equipment: ['Karabiner 98k', 15_562_900_000n, null],
     train_equipment: ['Class 18.4-5 · 71 in stock, 56 available', 5_600_000n, null],
@@ -52,7 +52,7 @@ test('the table lists only types with something, led by the surplus, with models
 });
 
 test('output is the game’s per-day figure, or the IC put in a day; a type without lines makes none', () => {
-  const reply = validateStockpileReply(structuredClone(REPLY));
+  const reply = structuredClone(REPLY);
   const units = Object.fromEntries(rows(reply).rows.map(row => [row.group.key, row.output]));
   assert.equal(units.infantry_equipment, 4_932_180n);
   assert.equal(units.light_tank_chassis, 78_472n);
@@ -64,7 +64,7 @@ test('output is the game’s per-day figure, or the IC put in a day; a type with
 
 test('for an AI-controlled country the game computes no surplus: the table holds stock alone', () => {
   const ai: EquipmentStockpileReply = { ...structuredClone(REPLY), balanceHours: [], logisticsReads: [], aiHours: spans };
-  const { rows: listed, quiet } = rows(validateStockpileReply(ai));
+  const { rows: listed, quiet } = rows(ai);
   assert.deepEqual(listed.map(row => [row.group.key, row.surplus, row.stock, row.models]), [
     ['infantry_equipment', null, 15_562_900_000n, 'Karabiner 98k'],
     ['train_equipment', null, 7_100_000n, 'Class 18.4-5'],
@@ -75,7 +75,7 @@ test('for an AI-controlled country the game computes no surplus: the table holds
 });
 
 test('a type showing nothing only because a table was not read is not recorded, never empty', () => {
-  const { quiet, unrecorded } = rows(validateStockpileReply({ ...structuredClone(REPLY), lineHours: [], lineReads: [] }));
+  const { quiet, unrecorded } = rows({ ...structuredClone(REPLY), lineHours: [], lineReads: [] });
   assert.equal(quiet, 0);
   assert.equal(unrecorded, 1);
 });

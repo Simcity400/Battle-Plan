@@ -37,7 +37,6 @@ import './table.css';
 import { engine } from '../../engine/frame.ts';
 
 export type { TableColumn } from './columns';
-export type { TableTree } from './logic';
 const WINDOWING_THRESHOLD = 120;
 const NO_KEYS: ReadonlySet<string> = new Set();
 const NO_RANKS: ReadonlyMap<string, RankChange> = new Map();

@@ -663,7 +663,7 @@ export function measureWith(recorder: PerfRecorder | null): void { perfLog = rec
 export async function startPerf(): Promise<void> {
   if (!isTauri() || perfLog || !await invoke<boolean>('perf_enabled')) return;
   const recorder = new PerfRecorder();
-  perfLog = recorder;
+  measureWith(recorder);
   await listen('perf-finish', () => {
     void recorder.finish().then(complete => invoke('perf_finished', { complete }))
       .catch(error => console.error('Measurement finish failed:', error));

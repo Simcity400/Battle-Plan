@@ -156,11 +156,6 @@ export function countryIdentityIndex(histories: readonly IdentityHistory[]): Cou
   return index;
 }
 
-export function countryAliasesAt(histories: readonly IdentityHistory[], chosen: readonly string[], hour: number): string[] {
-  const index = countryIdentityIndex(histories);
-  return index.aliasesAt(index.selected(chosen), hour);
-}
-
 export interface CountryDrillHistory { tag: string; identities?: readonly CountryIdentityRun[]; segments?: readonly Span[] }
 
 export function historyAt<H extends { tag: string; identities?: readonly CountryIdentityRun[] }>(histories: readonly H[], key: string, hour: number): H | undefined {

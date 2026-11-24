@@ -1,7 +1,8 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { RAIDS_AVAILABILITY } from '../../dashboard/raids.ts';
 import { RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
+
+const RAIDS_AVAILABILITY = { product: 'raid-log', params: { catalogue: true } } as const;
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'race',

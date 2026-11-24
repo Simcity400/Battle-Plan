@@ -258,38 +258,7 @@ export function colour(surface: string, ordinal: number, options?: ColourOptions
   }
 }
 
-export function colours(surface: string, ordinals: Iterable<number>, options?: ColourOptions): Map<number, string> {
-  const result = new Map<number, string>();
-  const hasExtras = Boolean(options?.contrastSurfaces?.length);
-  const avoid = options?.avoid?.length ? new Set(options.avoid.map(c => c.toLowerCase())) : null;
-  const base = hasExtras ? null : (options?.base ?? categoricalPalette(surface));
-  let pool: GeneratedPool | null = null;
-  for (const raw of ordinals) {
-    const slot = Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
-    if (result.has(slot)) continue;
-    let hex: string;
-    if (!hasExtras && base && slot < base.length) {
-      hex = base[slot]!;
-    } else {
-      pool ??= poolFor(surface, options);
-      hex = slot < pool.base.length ? pool.base[slot]! : generatedAt(pool, slot - pool.base.length);
-    }
-    if (avoid && avoid.has(hex.toLowerCase())) {
-      pool ??= poolFor(surface, options);
-      let step = Math.max(0, slot - pool.base.length);
-      while (avoid.has(hex.toLowerCase())) hex = generatedAt(pool, step++);
-    }
-    result.set(slot, hex);
-  }
-  return result;
-}
-
-export function resolveColour(surface: string, ordinal: number, authored?: AuthoredColour | null, options?: ColourOptions): string {
-  if (authored != null) return authoredHex(authored);
-  return colour(surface, ordinal, options);
-}
-
-export const IDENTITY_COLOURS = {
+const IDENTITY_COLOURS = {
   weather: { light_rain: '#3987e5', heavy_rain: '#9085e9', snow: '#9fc9e6', sandstorm: '#c98500' },
 } as const satisfies Readonly<Record<string, Readonly<Record<string, string>>>>;
 
@@ -299,7 +268,6 @@ export function identityColour(surface: string, register: keyof typeof IDENTITY_
   if (authored) return readableColour(authored, surface);
   return colour(surface, ordinal, { avoid: Object.values(known).map(hex => readableColour(hex, surface)) });
 }
-
 export function readableColour(color: AuthoredColour, surface: string, minContrast = MARK_CONTRAST): string {
   const colorKey = typeof color === 'string'
     ? color

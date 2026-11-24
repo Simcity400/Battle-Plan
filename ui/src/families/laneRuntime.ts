@@ -172,7 +172,7 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   artKey: string;
   structureKey: readonly unknown[];
   structureFields: Record<string, Field>;
-  kept: Map<string, { readonly text: string; readonly content: string }>;
+  kept: Map<string, { readonly text: string; readonly field: Field }>;
   frameKey: readonly unknown[];
   frameRevision: number;
   mirrorGate: CadenceGate;
@@ -233,12 +233,12 @@ function sameKey(a: readonly unknown[], b: readonly unknown[]): boolean {
 }
 
 function field(held: Held<LaneBinding, unknown, unknown>, slot: string, value: unknown, content: () => string): Field {
-  const text = stringifyTooltipPayload(value);
   const prev = held.kept.get(slot);
-  if (prev && prev.text === text) return { value, content: prev.content };
-  const tag = content();
-  held.kept.set(slot, { text, content: tag });
-  return { value, content: tag };
+  if (prev && prev.field.value === value) return prev.field;
+  const text = stringifyTooltipPayload(value);
+  const made = { value, content: prev && prev.text === text ? prev.field.content : content() };
+  held.kept.set(slot, { text, field: made });
+  return made;
 }
 
 function windowKeyOf(binding: LaneBinding): string {

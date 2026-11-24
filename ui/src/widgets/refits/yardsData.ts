@@ -114,11 +114,11 @@ export function refitProgress(reply: NavalRefitsReply, line: RefitLine, live: Li
 
 const icValue = (raw: bigint | Value<never>): Value<string> => typeof raw === 'bigint' ? knownValue(`${fixedText(raw)} IC`) : raw;
 
-export function refitAmounts(reply: NavalRefitsReply, line: RefitLine, live: Live): { readonly done: Value<string>; readonly remaining: Value<string> } {
+export function refitAmounts(reply: NavalRefitsReply, line: RefitLine, live: Live): { readonly done: Value<string>; readonly cost: Value<string>; readonly remaining: Value<string> } {
   const progress = progressReading(line, live);
   const cost = refitCost(reply, line);
   const remaining = cost === null ? notRecorded('Remaining cost not recorded') : typeof progress === 'bigint' ? icValue(cost - progress) : progress;
-  return { done: icValue(progress), remaining };
+  return { done: icValue(progress), cost: cost === null ? notRecorded('Refit cost not recorded') : icValue(cost), remaining };
 }
 
 export function childCount(count: number, missing: string | null): Value<string> {

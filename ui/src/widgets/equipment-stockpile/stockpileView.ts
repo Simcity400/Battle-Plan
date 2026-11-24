@@ -53,5 +53,3 @@ export function stockRows(reply: EquipmentStockpileReply, groups: readonly Stock
   }
   return { rows, quiet, unrecorded };
 }
-
-export const stockRowRevision = (row: StockRow) => [row.group.label, row.models, row.surplus, row.share, row.stock, row.output];

@@ -180,6 +180,8 @@ pub(super) struct Timing {
 
 pub struct Measurement {
     pub minutes: f64,
+    pub ticks: u128,
+    pub frequency: u64,
     pub complete: bool,
     pub first_hour: i32,
     pub last_hour: i32,
@@ -343,6 +345,8 @@ impl Timeline {
         }
         Some(Measurement {
             minutes: ticks as f64 / self.frequency as f64 / 60.0,
+            ticks,
+            frequency: self.frequency,
             complete: self.timing.faults[to] == self.timing.faults[from]
                 && self.timing.gaps[to] == self.timing.gaps[from + 1]
                 && self

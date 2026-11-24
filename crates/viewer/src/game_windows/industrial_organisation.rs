@@ -25,6 +25,7 @@ use dashboard_text::metadata::link_slot;
 use content_reader_layers::content::ResolvedContent;
 use dashboard_effects::effect_description::{Content, Context, MioText, mio_text};
 use content_reader_parser::parser::Item;
+use dashboard_text::organisation_quote;
 use dashboard_text::scripted_text::{EventScopes, ScriptedContent, ScriptedText};
 use dashboard_text::triggers::{Evaluator, OrganisationCondition, Undecided};
 use replay::campaign::SeekResult;
@@ -32,7 +33,7 @@ use replay_frame::frame::DecodedFrame;
 use std::cell::RefCell;
 use replay_data::rows::{
     IndustrialOrganisationDetailsRow, IndustrialOrganisationHistoryRow,
-    IndustrialOrganisationPoliciesRow, IndustrialOrganisationRow, LexicalTokenRow, Recorded,
+    IndustrialOrganisationRow, LexicalTokenRow, Recorded,
     TableId, VariantDefinitionRow, tables,
 };
 use serde::Deserialize;
@@ -73,6 +74,7 @@ const REQUIRED_TABLES: &[TableId] = &[
     TableId::CountryAppearance,
     TableId::LexicalTokens,
     TableId::ModifierDefinitions,
+    TableId::SimulationFeatures,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -459,27 +461,19 @@ pub fn extract_details(
     }
 }
 
-fn extract_policy_costs(
-    rows: &[IndustrialOrganisationPoliciesRow],
-    country_raw: u32,
-    links: &[replay_data::rows::CountryLinkRow],
+pub fn owner_policy_roster(
+    frame: &DecodedFrame,
+    organisation: &IndustrialOrganisationRow,
     lexical: Result<&[LexicalTokenRow], &String>,
-) -> BTreeMap<String, PolicySummary> {
-    let target_slot = link_slot(links, country_raw);
+) -> Result<BTreeMap<String, PolicySummary>, String> {
+    let roster = organisation_quote::owner_roster(frame, organisation)?;
     let mut out = BTreeMap::new();
-    let Some(entry) = rows.iter().find(|row| {
-        row.country == country_raw
-            || (target_slot.is_some() && link_slot(links, row.country) == target_slot)
-    }) else {
-        return out;
-    };
-    for policy in &entry.policies {
+    for policy in &roster.policies {
         let Some(token) = lexical.ok().and_then(|rows| spell(rows, policy.token)) else {
             continue;
         };
-        let key = token.to_ascii_lowercase();
         out.insert(
-            key,
+            token.to_ascii_lowercase(),
             PolicySummary {
                 token,
                 cost: Some(policy.cost),
@@ -487,7 +481,7 @@ fn extract_policy_costs(
             },
         );
     }
-    out
+    Ok(out)
 }
 
 pub fn extract_history(
@@ -542,6 +536,8 @@ pub fn extract_history(
 
 pub struct Loc<'a> {
     localisation: &'a Localisation,
+    frame: &'a DecodedFrame,
+    organisation: u64,
     scripted: Result<ScriptedText<'a>, String>,
     scopes: EventScopes,
     name: Result<String, String>,
@@ -578,7 +574,16 @@ impl<'a> Loc<'a> {
         } else {
             data.custom_name.clone()
         };
-        Self { localisation, scripted, scopes, name, fallback_name, failures }
+        Self {
+            localisation,
+            frame,
+            organisation: data.organisation_id,
+            scripted,
+            scopes,
+            name,
+            fallback_name,
+            failures,
+        }
     }
 
     fn fail(&self, shown: &str, why: &str) {
@@ -710,6 +715,32 @@ impl<'a> Loc<'a> {
         order: &[(OrganisationCondition, &[Item])],
     ) -> Result<bool, String> {
         self.evaluate(|evaluator| evaluator.organisation_conditions(organisation, order))
+    }
+
+    pub fn policy_cost(
+        &self,
+        catalog: &Result<Arc<mio_traits::Catalog>, String>,
+        policies: &industrial_organisations::policies::Catalog,
+    ) -> Result<organisation_quote::PolicyCost, String> {
+        let catalog = catalog.as_deref().map_err(Clone::clone)?;
+        let organisation = witnessed_single_key::<tables::IndustrialOrganisations, _>(
+            self.frame,
+            self.organisation,
+            |row| row.organisation,
+        )?
+        .ok_or("the organisation is not recorded at this hour")?;
+        let details = witnessed_single_key::<tables::IndustrialOrganisationDetails, _>(
+            self.frame,
+            self.organisation,
+            |row| row.organisation,
+        )?
+        .ok_or("the organisation's details are not recorded at this hour")?;
+        let world = match &self.scripted {
+            Ok(scripted) => scripted.trigger_world(),
+            Err(why) => Err(why.clone()),
+        };
+        organisation_quote::policy_cost(self.frame, organisation, details, catalog, policies, world)
+            .map_err(String::from)
     }
 
     pub fn date(&self, hour: i32) -> String {
@@ -2491,6 +2522,7 @@ fn compose_policy_list(
             {
                 entries.insert(0, attached.clone());
             }
+            let quote = loc.policy_cost(&prepared.catalog, &org_db.policies);
             let places = plan.list_rows(list_el, holder, &vec![size; entries.len()], resources)?;
             for (idx, (entry, place)) in entries.iter().zip(places).enumerate() {
                 let Some(place) = place else { continue };
@@ -2542,18 +2574,26 @@ fn compose_policy_list(
                 let policy_def = org_db.policies.policy(token.as_bytes()).ok();
                 let name = resolve_policy_name(token, policy_def, loc);
                 let icon = resolve_policy_icon(policy_def, has_sprite);
-                let (cost_str, cost_missing) = match &prepared.data.policy_costs {
-                    Ok(costs) => match costs.get(&key).and_then(|summary| summary.cost) {
-                        Some(cost) => (cost.to_string(), None),
-                        None => (
-                            NOT_RECORDED_VALUE.to_owned(),
-                            Some("Not recorded: this policy's attach cost is not in the recorded policy costs at this hour.".to_owned()),
-                        ),
-                    },
-                    Err(reason) => (
-                        NOT_RECORDED_VALUE.to_owned(),
-                        Some(format!("Not recorded: policy costs are unavailable at this hour ({reason}).")),
+                let base = match &prepared.data.policy_costs {
+                    Ok(costs) => costs.get(&key).and_then(|summary| summary.cost).ok_or_else(|| {
+                        "Not recorded: this policy's base cost is not in its owner's recorded policy roster at this hour.".to_owned()
+                    }),
+                    Err(reason) => Err(format!(
+                        "Not recorded: the owner's policy roster is unavailable at this hour ({reason})."
+                    )),
+                };
+                let quoted = base.and_then(|base| {
+                    quote.as_ref().map(|cost| cost.quote(base)).map_err(|why| {
+                        format!("Not recorded: the attach cost cannot be quoted at this hour ({why}).")
+                    })
+                });
+                let (cost_str, cost_missing, cost_shown) = match quoted {
+                    Ok(quoted) => (
+                        quoted.to_string(),
+                        None,
+                        organisation_quote::shows_attach_cost(quoted, is_attached),
                     ),
+                    Err(reason) => (NOT_RECORDED_VALUE.to_owned(), Some(reason), true),
                 };
                 let layout = layout_window(item_tpl, resources, viewport, |instance| {
                     hide_by_name(instance, item_tpl, "ai_value");
@@ -2566,7 +2606,11 @@ fn compose_policy_list(
                     disable_by_name(instance, item_tpl, "background_button");
                     set_sprite_by_name(instance, item_tpl, "icon", &icon);
                     set_text_by_name(instance, item_tpl, "name", name.clone());
-                    set_text_by_name(instance, item_tpl, "attach_cost", cost_str.clone());
+                    if cost_shown {
+                        set_text_by_name(instance, item_tpl, "attach_cost", cost_str.clone());
+                    } else {
+                        hide_by_name(instance, item_tpl, "attach_cost");
+                    }
                 })?;
                 let mut overrides = BTreeMap::new();
                 if let Some(btn) = find_direct(item_tpl, "background_button") {
@@ -2978,16 +3022,10 @@ pub fn render(
         Err(error) => RecordedDetails::Unavailable(error),
     };
 
-    let policy_costs = match frame.complete::<tables::IndustrialOrganisationPolicies>() {
-        Ok(rows) => match frame.complete::<tables::CountryLinks>() {
-            Ok(links) => {
-                read_tables.push(TableId::IndustrialOrganisationPolicies);
-                Ok(extract_policy_costs(rows, org_row.country, links, lexical.as_deref()))
-            }
-            Err(error) => Err(error.to_string()),
-        },
-        Err(error) => Err(error.to_string()),
-    };
+    let policy_costs = owner_policy_roster(&frame, org_row, lexical.as_deref());
+    if policy_costs.is_ok() {
+        read_tables.push(TableId::IndustrialOrganisationPolicies);
+    }
 
     let (history, history_reason) = match frame.complete::<tables::IndustrialOrganisationHistory>() {
         Ok(rows) if sub_view == SubView::History => {
