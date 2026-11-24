@@ -40,6 +40,7 @@ content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 content-reader-weather = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
+engine-native-memory = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay-data = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

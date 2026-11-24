@@ -41,7 +41,7 @@ content-reader-key-names = { workspace = true, features = ["test-support"] }
 content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 content-reader-states = { workspace = true, features = ["test-support"] }
-engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
+engine-native-memory = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
