@@ -265,9 +265,10 @@ fn class_info(token: u32, literal: Option<String>, content: &Content, refused: &
             }
             let sprite = format!("GFX_unit_{spelling}_icon_medium");
             match cat.sprites.find(&sprite) {
-                Ok(Some(found)) => match cat.gui_decode.as_ref().map_err(dashboard_core::invalid).and_then(|decode| catalogue::sprite_frame_png(&cat.content.layers, found, *decode, 0, ICON_EDGE)) {
-                    Ok(image) => info.icon = Some(image),
-                    Err(reason) => refused.note(reason.to_string(), &sprite),
+                Ok(Some(found)) => match dashboard_base::products::artwork::resolve_sprite_type(cat, found, 0, ICON_EDGE).into_result() {
+                    Ok(Some(image)) => info.icon = Some(image),
+                    Ok(None) => {}
+                    Err(reason) => refused.note(reason, &sprite),
                 },
                 Ok(None) => {}
                 Err(reason) => refused.note(reason, &sprite),

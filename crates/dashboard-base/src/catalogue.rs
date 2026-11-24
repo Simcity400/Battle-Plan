@@ -79,11 +79,20 @@ fn kept_in<S: Slot>(
     presented: impl FnOnce() -> io::Result<Arc<Presented>>,
 ) -> io::Result<Arc<Catalogue>> {
     let settings = key.3.clone();
+    let presented = presented()?;
+    let stack_key = presented.content.layers.art_stack_key();
     let result = {
         let state = source.state::<S>();
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
         let slot = state.slot();
-        if !slot.as_ref().is_some_and(|(cached, _)| *cached == key) {
+        let matches = slot.as_ref().is_some_and(|(cached, existing)| {
+            *cached == key
+                && existing
+                    .get()
+                    .and_then(Result::ok)
+                    .is_none_or(|cat| cat.content.layers.art_stack_key() == stack_key)
+        });
+        if !matches {
             *slot = Some((key, Arc::new(CachedResult::default())));
         }
         Arc::clone(&slot.as_ref().expect("catalogue binding retained").1)
@@ -91,8 +100,7 @@ fn kept_in<S: Slot>(
     if let Some(loaded) = result.get() {
         return loaded;
     }
-    let presented = presented();
-    result.get_or_init(|| load(source, options, &settings, presented?))
+    result.get_or_init(|| load(source, options, &settings, presented))
 }
 
 fn recorded_slot(source: &Source, options: &ContentOptions) -> io::Result<Arc<Catalogue>> {
@@ -139,11 +147,12 @@ fn load_with(
     };
     let sprites = match keeping {
         Keeping::On if presented.presentation.is_empty() => {
+            let stack_key = presented.content.layers.art_stack_key();
             let (sprites, noted) = kept::kept(
                 kept::place::<content_reader_gfx::gfx::SpriteSet>(
                     source,
                     &options.options.cache_dir,
-                    &[],
+                    &stack_key,
                 ),
                 || content_reader_layers::content::diagnostics::capture(read_sprites),
             );

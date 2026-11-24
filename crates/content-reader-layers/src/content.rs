@@ -471,6 +471,15 @@ pub struct ResolvedLayer {
     archive_stamp: Option<Stamp>,
     descriptor_hash: Option<DescriptorHash>,
     overlay: Option<Overlay>,
+    pub display_name: Option<String>,
+    pub art_unmounted: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArtFileSource {
+    Mounted { layer: usize, path: LayerPath },
+    Unmounted { layer: usize, reason: String },
+    Missing,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1145,6 +1154,8 @@ fn descriptor_layer(
                 portable,
             }),
             overlay: None,
+            display_name: scalar(&document, b"name").ok().flatten().filter(|name| !name.is_empty()),
+            art_unmounted: None,
         },
         document,
     ))
@@ -1525,6 +1536,16 @@ fn walk_below(
 impl ResolvedLayer {
     pub fn visual_mod_name(&self) -> Option<&str> {
         self.overlay.as_ref().map(|overlay| overlay.name.as_str())
+    }
+
+    pub fn display_name(&self) -> Option<&str> {
+        self.display_name
+            .as_deref()
+            .or_else(|| self.visual_mod_name())
+    }
+
+    pub fn art_unmounted(&self) -> Option<&str> {
+        self.art_unmounted.as_deref()
     }
 
     fn verifies(&self) -> bool {
@@ -2757,6 +2778,20 @@ impl ResolvedLayers {
             hash.update([u8::from(layer.verifies())]);
             if let Some(facts) = &layer.facts {
                 hash.update(facts.layer().hash);
+                if let Some(dlc_name) = &facts.layer().dlc_name {
+                    field(&mut hash, dlc_name.as_bytes());
+                }
+            }
+            if let Some(reason) = &layer.art_unmounted {
+                hash.update([1]);
+                field(&mut hash, reason.as_bytes());
+            } else {
+                hash.update([0]);
+            }
+            if let Some(stamp) = &layer.archive_stamp {
+                hash.update(stamp.size.to_le_bytes());
+                hash.update(stamp.modified_seconds.to_le_bytes());
+                hash.update(stamp.modified_nanos.to_le_bytes());
             }
             for (path, digest) in layer.hashes.iter() {
                 field(&mut hash, path);
@@ -2765,6 +2800,11 @@ impl ResolvedLayers {
             for (path, member) in layer.files.iter() {
                 field(&mut hash, path);
                 hash.update(member.size.to_le_bytes());
+                if let Some(stamp) = &member.stamp {
+                    hash.update(stamp.size.to_le_bytes());
+                    hash.update(stamp.modified_seconds.to_le_bytes());
+                    hash.update(stamp.modified_nanos.to_le_bytes());
+                }
             }
             layer.content_digest = hash.finalize().into();
             context.update([layer.role.byte()]);
@@ -2855,6 +2895,8 @@ impl ResolvedLayers {
                 archive_stamp: None,
                 descriptor_hash: None,
                 overlay: None,
+                display_name: None,
+                art_unmounted: None,
             };
             let directory = root.join("common");
             if directory.try_exists()? {
@@ -2918,6 +2960,8 @@ impl ResolvedLayers {
                 archive_stamp: None,
                 descriptor_hash: None,
                 overlay: None,
+                display_name: None,
+                art_unmounted: None,
             };
             layer.inventory()?;
             layer.hash(&mut cache, &mut stats)?;
@@ -3353,6 +3397,104 @@ impl ResolvedLayers {
             .unwrap_or_else(|error| error.into_inner())
             .take();
         Some(hit.layer)
+    }
+
+    pub fn context_digest(&self) -> [u8; 32] {
+        self.context
+    }
+
+    pub fn art_stack_key(&self) -> [u8; 32] {
+        fn field(hash: &mut Sha256, value: &[u8]) {
+            hash.update((value.len() as u64).to_le_bytes());
+            hash.update(value);
+        }
+        let mut hash = Sha256::new();
+        hash.update(b"art-stack-key/v1");
+        hash.update(self.context);
+        hash.update([match artwork_mode() {
+            ArtworkMode::Ordinary => 0,
+            ArtworkMode::Strict => 1,
+        }]);
+        for layer in &self.layers {
+            hash.update([layer.role.byte()]);
+            field(&mut hash, layer.id.as_bytes());
+            if let Some(name) = layer.display_name() {
+                field(&mut hash, name.as_bytes());
+            } else {
+                field(&mut hash, b"");
+            }
+            if let Some(reason) = &layer.art_unmounted {
+                hash.update([1]);
+                field(&mut hash, reason.as_bytes());
+            } else {
+                hash.update([0]);
+            }
+            if let Ok(Some(dlc)) = layer.dlc_name() {
+                field(&mut hash, dlc.as_bytes());
+            } else {
+                field(&mut hash, b"");
+            }
+            hash.update((layer.replace_paths.len() as u64).to_le_bytes());
+            for path in &layer.replace_paths {
+                field(&mut hash, path);
+            }
+        }
+        if let Some(presentation) = &self.presentation {
+            hash.update([1]);
+            hash.update(presentation.art_stack_key());
+        } else {
+            hash.update([0]);
+        }
+        hash.finalize().into()
+    }
+
+    pub fn unmounted_art_above(&self, answered_layer: Option<usize>, relative: &[u8]) -> Option<usize> {
+        let lower = relative.to_ascii_lowercase();
+        let start = answered_layer.map_or(0, |index| index + 1);
+        for (offset, layer) in self.layers[start..].iter().enumerate().rev() {
+            if self.hides(layer, &lower) {
+                continue;
+            }
+            if layer.art_unmounted.is_some() {
+                return Some(start + offset);
+            }
+            if layer
+                .replace_paths
+                .iter()
+                .any(|path| below(&lower, &path.to_ascii_lowercase()))
+            {
+                return None;
+            }
+        }
+        None
+    }
+
+    pub fn art_file_source(&self, relative: &[u8]) -> io::Result<ArtFileSource> {
+        let Some(path) = sanitize(relative) else {
+            return Ok(ArtFileSource::Missing);
+        };
+        let hit = self.resolved_file(&path, !self.covered_path(&path))?;
+        let answered = hit.as_ref().as_ref().map(|file| {
+            file.folder
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            (file.layer, file.path.clone())
+        });
+        if let Some(unmounted) = self.unmounted_art_above(answered.as_ref().map(|(layer, _)| *layer), &path) {
+            let reason = self.layers[unmounted]
+                .art_unmounted
+                .clone()
+                .unwrap_or_else(|| "not mounted".to_owned());
+            return Ok(ArtFileSource::Unmounted {
+                layer: unmounted,
+                reason,
+            });
+        }
+        Ok(match answered {
+            Some((layer, path)) => ArtFileSource::Mounted { layer, path },
+            None => ArtFileSource::Missing,
+        })
     }
 
     pub fn read(&self, relative: &str) -> io::Result<Bytes> {
@@ -4895,6 +5037,8 @@ fn builtin_layer(
         archive_stamp: None,
         descriptor_hash,
         overlay: None,
+        display_name: None,
+        art_unmounted: None,
     })
 }
 
@@ -4978,6 +5122,9 @@ pub fn playback(
     graph.watch_root(&options.user_dir, false);
     let game_dir = graph.witnesses.root(&options.game_dir);
     let user_dir = graph.witnesses.root(&options.user_dir);
+    if let Some(root) = game_dir.as_deref().and_then(visual::workshop_root) {
+        graph.watch_root(&root, false);
+    }
     let missing = options.cache_dir.join("art-not-installed");
     let pack = facts
         .and_then(|pack| match pack.binding_differs(identity) {
@@ -4999,11 +5146,11 @@ pub fn playback(
     };
     let descriptors = Descriptors::installed(game_dir.as_deref(), user_dir.as_deref());
     for (index, recorded) in pack.layers.iter().enumerate() {
-        let installed = match (&game_dir, &user_dir) {
-            (Some(game_dir), Some(user_dir)) => {
-                installed_source(recorded, &descriptors, game_dir, user_dir, coverage)
+        let installed = match &game_dir {
+            Some(game_dir) => {
+                installed_source(recorded, &descriptors, game_dir, coverage)
             }
-            _ => Err("the game and user folders are not set".to_owned()),
+            None => Err("the game folder is not set".to_owned()),
         };
         let mut layer = ResolvedLayer {
             content_digest: [0; 32],
@@ -5025,23 +5172,33 @@ pub fn playback(
             archive_stamp: None,
             descriptor_hash: None,
             overlay: None,
+            display_name: Some(layer_display_name(recorded, identity)),
+            art_unmounted: None,
         };
         match installed {
-            Ok(source) => {
+            Ok((source, descriptor)) => {
                 layer.source = source;
+                layer.descriptor = descriptor;
                 if let Err(error) = layer.inventory() {
-                    unshown.push(format!("{} ({error})", layer_name(recorded, identity)));
+                    let why = error.to_string();
+                    unshown.push(format!("{} ({why})", layer_name(recorded, identity)));
                     layer.source = LayerSource::Folder(missing.clone());
+                    layer.descriptor = None;
                     layer.files = Default::default();
                     layer.lookup = Default::default();
                     layer.archive_stamp = None;
+                    layer.art_unmounted = Some(why);
+                } else {
+                    Arc::make_mut(&mut layer.files).retain(|path, _| pack.is_art(path));
+                    Arc::make_mut(&mut layer.lookup)
+                        .folders
+                        .retain(|_, path| pack.is_art(path));
                 }
-                Arc::make_mut(&mut layer.files).retain(|path, _| pack.is_art(path));
-                Arc::make_mut(&mut layer.lookup)
-                    .folders
-                    .retain(|_, path| pack.is_art(path));
             }
-            Err(why) => unshown.push(format!("{} ({why})", layer_name(recorded, identity))),
+            Err(why) => {
+                unshown.push(format!("{} ({why})", layer_name(recorded, identity)));
+                layer.art_unmounted = Some(why);
+            }
         }
         if let Some(reason) = recorded.withheld() {
             notes.push(format!(
@@ -5076,6 +5233,22 @@ pub fn playback(
         changed: Vec::new(),
         notes,
     })
+}
+
+fn layer_display_name(layer: &facts::PackLayer, identity: &Identity) -> String {
+    match layer.role {
+        LayerRole::Vanilla => "base game".to_owned(),
+        LayerRole::Dlc => layer
+            .dlc_name
+            .clone()
+            .unwrap_or_else(|| layer.id.clone()),
+        LayerRole::Mod => identity
+            .mods
+            .iter()
+            .find(|recorded| recorded.id == layer.id)
+            .map_or_else(|| layer.id.clone(), |recorded| recorded.display_name.clone()),
+        _ => layer.id.clone(),
+    }
 }
 
 fn layer_name(layer: &facts::PackLayer, identity: &Identity) -> String {
@@ -5122,7 +5295,7 @@ fn builtin_roots(game_dir: &Path) -> Vec<(LayerRole, String)> {
 #[derive(Default)]
 struct Descriptors {
     dlc: BTreeMap<String, Vec<PathBuf>>,
-    mods: BTreeMap<String, Vec<PathBuf>>,
+    mods: Vec<visual::Candidate>,
 }
 
 impl Descriptors {
@@ -5142,21 +5315,37 @@ impl Descriptors {
                 }
             }
         }
-        if let Some(entries) = user_dir.and_then(|dir| directory_entries(&dir.join("mod")).ok()) {
-            for entry in entries {
-                let path = entry.path();
-                if !entry.file_type().is_ok_and(|kind| kind.is_file())
-                    || !listed_mod_descriptor(&entry.file_name().to_string_lossy())
-                {
-                    continue;
-                }
-                let id = read_document(&path)
-                    .and_then(|document| mod_id(&document, &path))
-                    .unwrap_or_else(|_| entry.file_name().to_string_lossy().into_owned());
-                found.mods.entry(id).or_default().push(path);
-            }
+        if let Ok(mods) = visual::discover_installed(game_dir, user_dir, &AtomicBool::new(false)) {
+            found.mods = mods;
         }
         found
+    }
+
+    fn find_mod(&self, id: &str) -> Result<(LayerSource, Option<PathBuf>), String> {
+        let matched: Vec<&visual::Candidate> = self
+            .mods
+            .iter()
+            .filter(|candidate| {
+                candidate.item.recorded_id == id
+                    || candidate.workshop_item.as_deref() == Some(id)
+            })
+            .collect();
+        match matched.as_slice() {
+            [candidate] => {
+                if let Some(problem) = &candidate.item.problem {
+                    return Err(problem.clone());
+                }
+                let source = candidate
+                    .source
+                    .clone()
+                    .ok_or_else(|| "not installed".to_owned())?;
+                let descriptor = (!candidate.descriptor.as_os_str().is_empty())
+                    .then(|| candidate.descriptor.clone());
+                Ok((source, descriptor))
+            }
+            [] => Err("not installed".to_owned()),
+            _ => Err("several installed descriptors have its id".to_owned()),
+        }
     }
 }
 
@@ -5164,22 +5353,21 @@ fn installed_source(
     layer: &facts::PackLayer,
     descriptors: &Descriptors,
     game_dir: &Path,
-    user_dir: &Path,
     coverage: CoveragePolicy,
-) -> Result<LayerSource, String> {
+) -> Result<(LayerSource, Option<PathBuf>), String> {
     let one = |found: Option<&Vec<PathBuf>>| match found.map(Vec::as_slice) {
         Some([path]) => Ok(path.clone()),
         Some(_) => Err("several installed descriptors have its id".to_owned()),
         None => Err("not installed".to_owned()),
     };
     let found = match layer.role {
-        LayerRole::Vanilla => return Ok(LayerSource::Folder(game_dir.to_owned())),
+        LayerRole::Vanilla => return Ok((LayerSource::Folder(game_dir.to_owned()), None)),
         LayerRole::Builtin | LayerRole::AboveMods => {
             let path = game_dir.join(&layer.id);
             return if path.is_dir() {
-                Ok(LayerSource::Folder(path))
+                Ok((LayerSource::Folder(path), None))
             } else if path.is_file() {
-                Ok(LayerSource::Archive(path))
+                Ok((LayerSource::Archive(path), None))
             } else {
                 Err("not installed".to_owned())
             };
@@ -5188,16 +5376,13 @@ fn installed_source(
             let path = one(descriptors.dlc.get(&layer.id))?;
             descriptor_layer(layer.id.clone(), path, game_dir, false, coverage)
         }
-        LayerRole::Mod => {
-            let path = one(descriptors.mods.get(&layer.id))?;
-            descriptor_layer(layer.id.clone(), path, user_dir, true, coverage)
-        }
+        LayerRole::Mod => return descriptors.find_mod(&layer.id),
         LayerRole::UserDirectory | LayerRole::Visual => {
             return Err("not a recorded layer".to_owned());
         }
     };
     found
-        .map(|(resolved, _)| resolved.source)
+        .map(|(resolved, _)| (resolved.source, resolved.descriptor))
         .map_err(|error| match error.kind() {
             io::ErrorKind::NotFound => "not installed".to_owned(),
             _ => error.to_string(),
@@ -5271,6 +5456,8 @@ fn gather_selected(
             archive_stamp: None,
             descriptor_hash: None,
             overlay: None,
+            display_name: Some("base game".to_owned()),
+            art_unmounted: None,
         };
         vanilla.inventory()?;
         vanilla.hash(&mut cache, &mut stats)?;

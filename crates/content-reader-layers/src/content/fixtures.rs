@@ -35,6 +35,8 @@ pub fn archive_layer(id: &str, path: &Path, replace_paths: &[&[u8]]) -> Resolved
         archive_stamp: None,
         descriptor_hash: None,
         overlay: None,
+        display_name: None,
+        art_unmounted: None,
     };
     layer.inventory().unwrap();
     layer
@@ -110,5 +112,7 @@ pub fn folder_layer(id: &str, root: &Path, replace_paths: Vec<String>) -> Resolv
         archive_stamp: None,
         descriptor_hash: None,
         overlay: None,
+        display_name: None,
+        art_unmounted: None,
     }
 }

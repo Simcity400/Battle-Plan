@@ -140,7 +140,6 @@ fn read_into(recording: &Recording, run: u32, hour: i32, frame: &mut DecodedFram
 }
 
 const ICON_EDGE: u32 = 96;
-const UNKNOWN_ORGANISATION_ICON: &str = "GFX_idea_unknown";
 const NO_CONTENT: &str = "Names and pictures need the game folders.";
 
 #[derive(Clone)]
@@ -385,7 +384,6 @@ pub fn name(frame: &DecodedFrame, variants: &[u64], organisations: &[u64], conte
                 if let (true, Some(token)) = (fallback_known, &token) {
                     candidates.extend(owner_tag.as_ref().map(|tag| format!("GFX_{tag}_{token}")));
                     candidates.push(format!("GFX_{token}"));
-                    candidates.push(UNKNOWN_ORGANISATION_ICON.to_owned());
                 }
                 let (icon, icon_unknown) = match context {
                     Err(why) => (None, Some(why.clone())),
