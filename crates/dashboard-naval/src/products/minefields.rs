@@ -297,8 +297,8 @@ impl AtHour for Minefields {
         let pinned = choose(&mut fold, params.pinned_regions.as_deref().unwrap_or_default(), params.hidden_regions.as_deref().unwrap_or_default(), lost);
         register_live(&fold, at.live)?;
         let mut notes = Refusals::default();
-        let choices = sea_regions::choices(&at.context.places, &at.context.sea, fold.mined.iter().map(|region| region.region), &mut notes);
         if params.order == Some(MinefieldOrder::Name) {
+            let choices = sea_regions::choices(&at.context.places, &at.context.sea, fold.mined.iter().map(|region| region.region), &mut notes);
             let names_by_id: HashMap<u32, &str> = choices.iter().filter_map(|choice| Some((choice.id.parse::<u32>().ok()?, choice.name.as_str()))).collect();
             fold.mined.sort_by(|a, b| {
                 let an = names_by_id.get(&a.region).copied().unwrap_or("Region name unavailable");
