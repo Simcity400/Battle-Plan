@@ -3,14 +3,15 @@ import { createPortal } from 'react-dom';
 import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
 import type { WidgetSpec } from '../../dashboard/model';
 import { PreparingPage } from '../../dashboard/preparing.ts';
+import type { TiledLine } from '../../dashboard/tiles/view';
 import { useWidgetSkeleton, WidgetCaption } from '../../dashboard/widgetFrame.tsx';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { holdElement } from '../../draw/bitmapSurface.ts';
 import { perfLog } from '../../shell/perf.ts';
+import type { ArtResolution } from '../art/types.ts';
 import { auditIdOf } from '../audit.ts';
 import { displayedHour } from '../boundedView.ts';
 import type {
@@ -22,7 +23,9 @@ import type {
   InstalledAction,
   InstalledActionTarget,
   InstalledPicture,
+  InstalledTransform,
   MirrorModel,
+  SourcePlan,
 } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { CountryLooksMap } from '../looks.ts';
@@ -33,6 +36,7 @@ import type {
   FamilyHostAdapter,
   FamilyMetaState,
   FamilySlotRenderContext,
+  FamilyStaticSources,
   FamilyViewportChange,
   FamilyViewportState,
   FamilyViewWindow,
@@ -73,6 +77,56 @@ import './familyHost.css';
 const DEFAULT_AUDIT_OWNER = -1;
 const NO_EXTRA = {} as Record<string, never>;
 const DEFAULT_PLAN_VERIFIER = createPlanAuditVerifier<unknown, unknown>();
+const navActionIndexCache = new WeakMap<readonly FamilyNavTuple[], Map<string, FamilyNavTuple>>();
+
+export function lazyActionKeys(
+  nav: readonly FamilyNavTuple[],
+  hour: DisplayedHour,
+): ReadonlyMap<string, InstalledActionTarget> {
+  let materialized: Map<string, InstalledActionTarget> | null = null;
+  const toTarget = (entry: FamilyNavTuple): InstalledActionTarget => ({
+    subject: entry[0],
+    hour,
+    ...(entry[3] >= 0 ? { toggle: true } : {}),
+    label: entry[1],
+    meta: entry[5],
+  });
+  const index = () => {
+    let idx = navActionIndexCache.get(nav);
+    if (!idx) {
+      idx = new Map();
+      for (let i = 0; i < nav.length; i++) {
+        const e = nav[i]!;
+        idx.set(e[0], e);
+      }
+      navActionIndexCache.set(nav, idx);
+    }
+    return idx;
+  };
+  const ensureAll = () => {
+    if (!materialized) {
+      materialized = new Map();
+      for (let i = 0; i < nav.length; i++) {
+        const e = nav[i]!;
+        materialized.set(e[0], toTarget(e));
+      }
+    }
+    return materialized;
+  };
+  return {
+    get size() { return nav.length; },
+    has(key: string) { return index().has(key); },
+    get(key: string) {
+      const entry = index().get(key);
+      return entry ? toTarget(entry) : undefined;
+    },
+    forEach(cb, thisArg) { ensureAll().forEach(cb, thisArg); },
+    entries() { return ensureAll().entries(); },
+    keys() { return ensureAll().keys(); },
+    values() { return ensureAll().values(); },
+    [Symbol.iterator]() { return ensureAll()[Symbol.iterator](); },
+  };
+}
 
 function sameArray(a: readonly unknown[], b: readonly unknown[]): boolean {
   if (a.length !== b.length) return false;
@@ -99,21 +153,6 @@ function revealGridAxis(index: number, cellSize: number, scroll: number, span: n
   if (start < scroll) return start;
   if (end > scroll + span) return Math.max(0, end - span);
   return scroll;
-}
-
-function defaultActionKeysFromNav(nav: readonly FamilyNavTuple[], hour: DisplayedHour): ReadonlyMap<string, InstalledActionTarget> {
-  const map = new Map<string, InstalledActionTarget>();
-  for (let i = 0; i < nav.length; i++) {
-    const entry = nav[i]!;
-    map.set(entry[0], {
-      subject: entry[0],
-      hour,
-      ...(entry[3] >= 0 ? { toggle: true } : {}),
-      label: entry[1],
-      meta: entry[5],
-    });
-  }
-  return map;
 }
 
 function defaultListboxItems(mirror: MirrorModel, selectedKey: string | null): readonly ListboxMirrorItem[] {
@@ -143,7 +182,13 @@ export interface FamilyHostProps<
   readonly subscriptions: readonly FamilySourceSubscription[];
   readonly allowEmptyFollow?: boolean;
   readonly owner?: string;
-  readonly staticSources?: { readonly panels?: Readonly<Record<string, unknown>>; readonly answers?: Readonly<Record<string, FollowedAnswer>>; readonly hour: number } | null;
+  readonly staticSources?: FamilyStaticSources | null;
+  readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
+  readonly tiledRevision?: number;
+  readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
+  readonly spriteResolutions?: Readonly<Record<string, ArtResolution>>;
+  readonly extent?: readonly [number, number] | null;
+  readonly plan?: SourcePlan | null;
   readonly exactReadView?: (hour: number) => Promise<BoundedReadView | null>;
   readonly offset: number;
   readonly pin: number | null;
@@ -153,6 +198,7 @@ export interface FamilyHostProps<
   readonly identitySnapshot?: IdentitySnapshot | null;
   readonly onIdentityDemands?: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
   readonly onArtDemands?: (demands: readonly FamilyArtDemand[]) => void;
+  readonly onViewportSize?: (width: number, height: number) => void;
   readonly onViewportChange?: (viewport: FamilyViewportChange) => void;
   readonly onHoverHour?: (hour: number | null) => void;
   readonly selectedKey?: string | null;
@@ -189,6 +235,12 @@ export default function FamilyHost<
   allowEmptyFollow = false,
   owner,
   staticSources = null,
+  tiledSeries,
+  tiledRevision = 0,
+  hovers,
+  spriteResolutions,
+  extent = null,
+  plan = null,
   exactReadView,
   offset,
   pin,
@@ -198,6 +250,7 @@ export default function FamilyHost<
   identitySnapshot = null,
   onIdentityDemands,
   onArtDemands,
+  onViewportSize,
   onViewportChange,
   onHoverHour,
   selectedKey = null,
@@ -274,6 +327,9 @@ export default function FamilyHost<
 
   const lastMirrorKeyRef = useRef('');
   const lastMirrorObjRef = useRef<MirrorModel | null>(null);
+  const lastNavFieldRef = useRef<unknown>(null);
+  const lastTableInfoRef = useRef<unknown>(null);
+  const lastVisibleRef = useRef<boolean | null>(null);
   const lastExtentRef = useRef({ width: -1, height: -1, rowCount: -1 });
   const lastMetaKeyRef = useRef<{ mode: string; reason: string | null; failureOrigin: FailureOrigin; rawMeta: unknown } | null>(null);
   const metaSigRef = useRef('');
@@ -303,7 +359,8 @@ export default function FamilyHost<
   const { theme, reducedMotion } = useFamilyTheme(countryColours, countryLooks);
   const { announce, hasFrame, liveRegionRef } = useFamilyAnnouncer(adapter.family);
 
-  const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticSources !== null || allowEmptyFollow);
+  const hasTiled = !!tiledSeries && Object.keys(tiledSeries).length > 0;
+  const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticSources !== null || hasTiled || allowEmptyFollow);
   const auditable = !!exactReadView && (!!adapter.createAudit || !!adapter.deriveAuditRows);
   const resolvedOwner = owner ?? `${widget.id}:${declaration.kind}:${subject}`;
 
@@ -320,7 +377,7 @@ export default function FamilyHost<
     auditable,
     subscriptions,
     offset,
-    pin: pin ?? (subscriptions.length === 0 && staticSources ? staticSources.hour : null),
+    pin: pin ?? (subscriptions.length === 0 && staticSources && !staticSources.follows ? staticSources.hour : null),
     bounds,
     frameRef,
     surfaceLabel: adapter.family,
@@ -348,10 +405,16 @@ export default function FamilyHost<
     theme,
     reducedMotion,
     staticSources,
+    tiledSeries,
+    hovers,
+    spriteResolutions,
+    extent,
+    plan,
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
     onArtDemands,
+    onViewportSize,
     onViewportChange,
     onHoverHour,
     selectedKey,
@@ -371,10 +434,16 @@ export default function FamilyHost<
     theme,
     reducedMotion,
     staticSources,
+    tiledSeries,
+    hovers,
+    spriteResolutions,
+    extent,
+    plan,
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
     onArtDemands,
+    onViewportSize,
     onViewportChange,
     onHoverHour,
     selectedKey,
@@ -532,6 +601,11 @@ export default function FamilyHost<
       sources: sourceIdsRef.current,
       ...(staticPanels && Object.keys(staticPanels).length ? { staticPanels } : {}),
       ...(staticAnswers && Object.keys(staticAnswers).length ? { staticAnswers } : {}),
+      ...(cur.tiledSeries ? { tiledSeries: cur.tiledSeries } : {}),
+      ...(cur.hovers ? { hovers: cur.hovers } : {}),
+      ...(cur.spriteResolutions ? { spriteResolutions: cur.spriteResolutions } : {}),
+      extent: cur.extent,
+      plan: cur.plan,
       viewport: viewportSnap,
       viewWindow: viewWindowRef.current,
       theme: cur.theme,
@@ -552,8 +626,10 @@ export default function FamilyHost<
     pipeline.present(pipe, curAdapter.family);
     const dated = Object.keys(sourceIdsRef.current).length === 0
       ? (cur.staticSources
-        ? { h: cur.staticSources.hour, c: cur.staticSources.hour }
-        : cur.allowEmptyFollow && cur.bounds
+        ? (cur.staticSources.provenInterval
+          ? { h: cur.staticSources.provenInterval[0], c: cur.staticSources.provenInterval[1] }
+          : { h: cur.staticSources.hour, c: cur.staticSources.hour })
+        : (cur.allowEmptyFollow || (cur.tiledSeries && Object.keys(cur.tiledSeries).length > 0)) && cur.bounds
           ? { h: cur.bounds[0], c: cur.bounds[1] }
           : undefined)
       : undefined;
@@ -583,7 +659,9 @@ export default function FamilyHost<
 
   const makeGestureContext = useCallback((): FamilyGestureContext<TOptions, TExtra> => ({
     installed: installedPictureRef.current,
+    fields: installedFieldsRef.current,
     viewport: { ...viewportRef.current },
+    extent: latestRef.current.extent,
     options: latestRef.current.options,
     extra: latestRef.current.extra,
     setZoomWindow,
@@ -591,11 +669,9 @@ export default function FamilyHost<
   }), [setZoomWindow]);
 
   const dispatchAction = useCallback((action: InstalledAction, toggle: boolean) => {
-    if (toggle || action.toggle) {
-      if (latestRef.current.onToggle) {
-        latestRef.current.onToggle(action);
-        return;
-      }
+    if ((toggle || action.toggle) && latestRef.current.onToggle) {
+      latestRef.current.onToggle(action);
+      return;
     }
     latestRef.current.onActivate?.(action);
   }, []);
@@ -677,6 +753,7 @@ export default function FamilyHost<
     installedPictureRef.current = null;
     inspectedKeyRef.current = null;
     inspectedHitRef.current = null;
+    viewportRef.current.zoomWindow = null;
     publishHoverHour(null);
   }, [resolvedOwner, publishHoverHour]);
 
@@ -686,6 +763,9 @@ export default function FamilyHost<
     lastExtentRef.current = { width: -1, height: -1, rowCount: -1 };
     lastMetaKeyRef.current = null;
     lastMirrorObjRef.current = null;
+    lastNavFieldRef.current = null;
+    lastTableInfoRef.current = null;
+    lastVisibleRef.current = null;
     lastPhasesRef.current = null;
     lastIdentityDemandsRef.current = null;
     lastArtDemandsRef.current = null;
@@ -715,6 +795,11 @@ export default function FamilyHost<
       dimRef.current = !!shown?.dim;
       holdElement(frameNode, !!shown?.dim);
       const visible = shown?.mode === 'picture';
+      if (lastVisibleRef.current !== visible) {
+        lastVisibleRef.current = visible;
+        node.toggleAttribute('data-family-visible', visible);
+        node.toggleAttribute('data-family-pending', !visible);
+      }
 
       const mode = shown?.mode ?? 'reading';
       const reason = shown?.reason ?? null;
@@ -798,19 +883,26 @@ export default function FamilyHost<
       installedFieldsRef.current = fields;
 
       const navField = fields.nav as readonly FamilyNavTuple[] | undefined;
-      if (navField) navRef.current = navField;
-      const activeNav = navField ?? navRef.current;
+      if (navField && navField !== lastNavFieldRef.current) {
+        lastNavFieldRef.current = navField;
+        navRef.current = navField;
+      }
+      const activeNav = navRef.current;
       const installedHour = displayedHour(shownHour ?? shown.painted ?? shown.h ?? 0);
       const actionKeys = activeAdapter.buildActionKeys
         ? activeAdapter.buildActionKeys(fields, installedHour)
-        : defaultActionKeysFromNav(activeNav, installedHour);
-      const installedViewport = shown.viewport ?? {
+        : lazyActionKeys(activeNav, installedHour);
+      const metaTransform = rawMeta?.transform as InstalledTransform | undefined;
+      const baseViewport = shown.viewport ?? {
         width: viewportRef.current.width,
         height: viewportRef.current.height,
         dpr: viewportRef.current.dpr,
         scrollLeft: viewportRef.current.scrollLeft,
         scrollTop: viewportRef.current.scrollTop,
       };
+      const installedViewport = metaTransform && !baseViewport.transform
+        ? { ...baseViewport, transform: metaTransform }
+        : baseViewport;
       const installedAuditId = auditIdOf(fields.audit);
       const accessibleDescription = typeof fields.accessibleDescription === 'string' ? fields.accessibleDescription : null;
       const installed: InstalledPicture = {
@@ -835,17 +927,17 @@ export default function FamilyHost<
       installedPictureRef.current = installed;
 
       if (activeAdapter.getScrollExtent) {
-        const extent = activeAdapter.getScrollExtent(fields, viewportRef.current, cur.extra);
-        if (extent) {
-          if (extent.width !== undefined) {
-            const extW = Math.max(viewportRef.current.width, extent.width);
+        const extentVal = activeAdapter.getScrollExtent(fields, viewportRef.current, cur.extra);
+        if (extentVal) {
+          if (extentVal.width !== undefined) {
+            const extW = Math.max(viewportRef.current.width, extentVal.width);
             if (lastExtentRef.current.width !== extW) {
               lastExtentRef.current.width = extW;
               mounted.extent.style.width = `${extW}px`;
             }
           }
-          if (extent.height !== undefined) {
-            const geom = computeScrollGeometry(extent.height, viewportRef.current.height);
+          if (extentVal.height !== undefined) {
+            const geom = computeScrollGeometry(extentVal.height, viewportRef.current.height);
             scrollGeometryRef.current = geom;
             viewportRef.current.logicalScrollTop = physicalToLogicalTop(viewportRef.current.scrollTop, geom);
             if (lastExtentRef.current.height !== geom.physicalHeight) {
@@ -877,7 +969,8 @@ export default function FamilyHost<
       }
 
       const tableInfo = fields.table as { count: number; focusedIndex: number; inspectedPresent: boolean } | undefined;
-      if (tableInfo) {
+      if (tableInfo && (tableInfo !== lastTableInfoRef.current || focusInsideRef.current || inspectedKeyRef.current)) {
+        lastTableInfoRef.current = tableInfo;
         if (lastExtentRef.current.rowCount !== tableInfo.count) {
           lastExtentRef.current.rowCount = tableInfo.count;
           accessibleTableRef.current?.setAttribute('aria-rowcount', String(tableInfo.count + 1));
@@ -1052,8 +1145,11 @@ export default function FamilyHost<
     if (onScroll) node.addEventListener('scroll', onScroll, { passive: true });
 
     const measure = (rectWidth?: number, rectHeight?: number) => {
-      const w = Math.round(rectWidth ?? node.clientWidth);
-      const h = Math.round(rectHeight ?? node.clientHeight);
+      const rawW = rectWidth ?? node.clientWidth;
+      const rawH = rectHeight ?? node.clientHeight;
+      latestRef.current.onViewportSize?.(rawW, rawH);
+      const w = Math.round(rawW);
+      const h = Math.round(rawH);
       refreshFocusAnchorRef.current();
       const dpr = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
       if (w === viewportRef.current.width && h === viewportRef.current.height && dpr === viewportRef.current.dpr) return;
@@ -1082,6 +1178,7 @@ export default function FamilyHost<
     viewportRef.current.width = node.clientWidth;
     viewportRef.current.height = node.clientHeight;
     viewportRef.current.dpr = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
+    latestRef.current.onViewportSize?.(node.clientWidth, node.clientHeight);
     refreshFocusAnchorRef.current();
     notifyViewportChange();
     bindRef.current();
@@ -1114,6 +1211,11 @@ export default function FamilyHost<
     theme,
     reducedMotion,
     staticSources,
+    tiledSeries,
+    tiledRevision,
+    hovers,
+    spriteResolutions,
+    extent,
     identitySnapshot,
     selectedKey,
     subsReady,

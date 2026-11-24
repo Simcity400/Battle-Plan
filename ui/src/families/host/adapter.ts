@@ -2,7 +2,9 @@ import type { ReactNode } from 'react';
 import type { MenuItem } from '../../components/ContextMenu';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
+import type { TiledLine } from '../../dashboard/tiles/view';
 import type { AuditRow } from '../../draw/notifications';
+import type { ArtResolution } from '../art/types.ts';
 import type {
   ArtHandle,
   BoundedReadView,
@@ -14,6 +16,7 @@ import type {
   InstalledActionTarget,
   InstalledPicture,
   MirrorModel,
+  SourcePlan,
 } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { FamilyAuditVerifier } from './auditBinding.ts';
@@ -28,6 +31,14 @@ export type FamilySkeletonKind = 'table' | 'chart';
 export type FamilyArtDemand =
   | ArtHandle
   | { readonly key: string; readonly frame: number };
+
+export interface FamilyStaticSources {
+  readonly panels?: Readonly<Record<string, unknown>>;
+  readonly answers?: Readonly<Record<string, FollowedAnswer>>;
+  readonly hour: number;
+  readonly follows?: boolean;
+  readonly provenInterval?: readonly [lo: number, hi: number];
+}
 
 export interface ParsedFamilyHit {
   readonly key: string;
@@ -97,6 +108,11 @@ export interface FamilyBindingContext<TOptions, TExtra = Record<string, never>> 
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
+  readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
+  readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
+  readonly spriteResolutions?: Readonly<Record<string, ArtResolution>>;
+  readonly extent?: readonly [number, number] | null;
+  readonly plan?: SourcePlan | null;
   readonly viewport: FamilyViewportState;
   readonly viewWindow: FamilyViewWindow | null;
   readonly theme: FamilyTheme | undefined;
@@ -133,7 +149,9 @@ export interface FamilyContextHit {
 
 export interface FamilyGestureContext<TOptions, TExtra = Record<string, never>> {
   readonly installed: InstalledPicture | null;
+  readonly fields: Readonly<Record<string, unknown>>;
   readonly viewport: FamilyViewportState;
+  readonly extent: readonly [number, number] | null;
   readonly options: TOptions;
   readonly extra: TExtra;
   readonly setZoomWindow: (next: readonly [number, number] | null) => void;
@@ -185,6 +203,7 @@ export interface FamilyHostAdapter<
   readonly bodyRole?: string;
   readonly auditOwnerId?: number;
   readonly defaultSize?: readonly [width: number, height: number];
+  readonly seriesPlotInsetPx?: number;
   readonly classNames?: {
     readonly frame?: string;
     readonly body?: string;

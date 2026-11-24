@@ -16,6 +16,7 @@ export {
   type FamilyScrollMode,
   type FamilySkeletonKind,
   type FamilySlotRenderContext,
+  type FamilyStaticSources,
   type FamilyViewportChange,
   type FamilyViewportState,
   type FamilyViewWindow,
@@ -24,10 +25,13 @@ export {
 export {
   default as DeclaredFamilyWidget,
   createDeclaredFamilyWidget,
+  createManifestFamilyHost,
   type DeclaredFamilyWidgetDeclaration,
   type DeclaredFamilyWidgetProps,
+  type DeclaredProjectionExtra,
+  type ManifestFamilyHostProps,
 } from './DeclaredFamilyWidget.tsx';
-export { default as FamilyHost, type FamilyHostProps } from './FamilyHost.tsx';
+export { default as FamilyHost, lazyActionKeys, type FamilyHostProps } from './FamilyHost.tsx';
 export {
   centerWindowPosition,
   clampWindowPosition,
