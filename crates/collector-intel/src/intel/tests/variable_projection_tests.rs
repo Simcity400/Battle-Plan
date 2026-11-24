@@ -96,10 +96,10 @@ fn variable_scope_updates_keep_frame_bytes() {
             let baseline = shared_baseline(&optimized, hour, force);
             let actual = if !force && hour == 2 {
                 collector_test_support::with_allocations_denied(|| {
-                    capture.variables_input(capture.variables.outcome, baseline, &mut scratch)
+                    capture.variables_input(capture.variables.outcome, baseline, None, &mut scratch)
                 })
             } else {
-                capture.variables_input(capture.variables.outcome, baseline, &mut scratch)
+                capture.variables_input(capture.variables.outcome, baseline, None, &mut scratch)
             };
             if !force && matches!(hour, 1 | 2) {
                 assert!(matches!(actual, TableInput::ComparedEqual(_)));
@@ -251,7 +251,7 @@ impl Run {
         self.held = Some((generation, scopes.to_vec()));
         let outcome = capture.variables.outcome;
         let baseline = shared_baseline(&self.encoder, self.hour, false);
-        let input = capture.variables_input(outcome, baseline, &mut self.scratch);
+        let input = capture.variables_input(outcome, baseline, None, &mut self.scratch);
         let work = self
             .scratch
             .take_work()
@@ -464,7 +464,7 @@ fn conversion_check_counts_and_names_an_injected_difference() {
     let outcome = capture.variables.outcome;
     let baseline = shared_baseline(&run.encoder, run.hour, false);
     let (token, _) = baseline.unwrap();
-    let input = capture.variables_input(outcome, baseline, &mut run.scratch);
+    let input = capture.variables_input(outcome, baseline, None, &mut run.scratch);
     let today = complete(&capture);
     let TableInput::SliceUpdate { update, .. } = &input else {
         panic!("one changed scope: {input:?}");

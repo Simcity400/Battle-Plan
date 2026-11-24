@@ -2537,7 +2537,7 @@ impl ObserverState for RestoreFamily {
                 "politics callbacks did not quiesce; collector retained",
             ),
             Self::Logistics => (
-                collector_logistics::logistics_balance::ACTIVE.load(Ordering::SeqCst) != 0,
+                collector_logistics::logistics_balance::active() != 0,
                 "logistics callbacks did not quiesce; collector retained",
             ),
             Self::Peace => (
@@ -5515,6 +5515,7 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
             )
         };
         collector_memory::terminal::set_context(*lock(&sizing.context));
+        let mut reclaim_now = false;
         let retired = std::mem::take(&mut *lock(&sizing.retired));
         if !retired.is_empty() {
             let _span =
@@ -5522,12 +5523,17 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
             unsafe { phases.span(Phase::Retire) };
             drop(retired);
         }
-        let mut reclaim_now = false;
         if shared.has_retired_parked() {
             let _span =
             // SAFETY: This worker records phases on the counters assigned to its spool role.
             unsafe { phases.span(Phase::Retire) };
-            reclaim_now = shared.drain_retired_parked();
+            reclaim_now |= shared.drain_retired_parked();
+        }
+        if shared.drain_surplus_parked() {
+            reclaim_now = true;
+        }
+        if shared.park_idle_steady_frame() {
+            reclaim_now = true;
         }
         if reclaim_now || last_reclaim.elapsed() >= Duration::from_secs(3) {
             last_reclaim = Instant::now();

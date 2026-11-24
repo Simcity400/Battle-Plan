@@ -12,10 +12,9 @@ use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
 use windows_sys::Win32::System::Threading::{
     CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateEventW, CreateWaitableTimerExW,
     GetCurrentThreadId, OpenThread, SetEvent, SetThreadPriority, SetWaitableTimer,
-    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_IDLE,
-    THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_NORMAL, THREAD_QUERY_LIMITED_INFORMATION,
-    THREAD_SET_INFORMATION, THREAD_SET_LIMITED_INFORMATION, TIMER_ALL_ACCESS,
-    WaitForMultipleObjects,
+    THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_NORMAL,
+    THREAD_QUERY_LIMITED_INFORMATION, THREAD_SET_INFORMATION, THREAD_SET_LIMITED_INFORMATION,
+    TIMER_ALL_ACCESS, WaitForMultipleObjects,
 };
 
 #[derive(Clone, Copy)]
@@ -65,11 +64,9 @@ fn level(free: usize) -> u32 {
 }
 fn priority(level: u32) -> i32 {
     match level {
-        TICK => THREAD_PRIORITY_IDLE,
-        TICK_DECODE => THREAD_PRIORITY_LOWEST,
-        TICK_PRESSED => THREAD_PRIORITY_NORMAL,
+        TICK | TICK_DECODE => THREAD_PRIORITY_LOWEST,
+        TICK_PRESSED | 1 => THREAD_PRIORITY_NORMAL,
         2 => THREAD_PRIORITY_HIGHEST,
-        1 => THREAD_PRIORITY_ABOVE_NORMAL,
         _ => THREAD_PRIORITY_LOWEST,
     }
 }
@@ -192,7 +189,7 @@ impl Pipeline {
             hook: OnceLock::new(),
         }
     }
-    fn free_count(&self) -> usize {
+    pub fn free_count(&self) -> usize {
         self.available.load(Ordering::SeqCst)
     }
     pub fn publish(&self) {

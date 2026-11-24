@@ -263,6 +263,7 @@ mod tests {
 #[derive(Default)]
 pub(super) struct Store {
     entries: Vec<Entry>,
+    index: super::core::TemplateIndex,
     live: Vec<u64>,
     payload_bytes: usize,
     requested: bool,
@@ -425,8 +426,13 @@ impl native::DetailPolicy for Demand<'_> {
 }
 
 impl Store {
+    fn lookup(&self, template: u64) -> Option<usize> {
+        self.index.get(&template).map(|&at| at as usize)
+    }
+
     pub fn forget(&mut self) {
         self.entries.clear();
+        self.index.clear();
         self.payload_bytes = 0;
     }
 
@@ -447,6 +453,7 @@ impl Store {
 
     pub fn allocated_bytes(&self) -> usize {
         self.entries.capacity() * size_of::<Entry>()
+            + self.index.capacity() * (size_of::<u64>() + size_of::<u32>())
             + self.live.capacity() * size_of::<u64>()
             + self.payload_bytes
             + self.hints.capacity() * size_of::<u32>()
@@ -469,6 +476,10 @@ impl Store {
             }
             keep
         });
+        self.index.clear();
+        for (at, entry) in self.entries.iter().enumerate() {
+            self.index.insert(entry.template, at as u32);
+        }
     }
 
     #[cfg(test)]
@@ -500,28 +511,27 @@ impl Store {
     ) -> bool {
         let slot = self.visits;
         self.visits += 1;
-        let found = match hinted(&self.entries, &self.hints, slot, template, |entry| {
+        let found = hinted(&self.entries, &self.hints, slot, template, |entry| {
             entry.template
-        }) {
-            Some(at) => Ok(at),
-            None => self
-                .entries
-                .binary_search_by_key(&template, |entry| entry.template),
-        };
+        })
+        .or_else(|| self.lookup(template));
         let at = match found {
-            Ok(at) => at,
-            Err(at) => {
-                if engine_allocation::reserve(&mut self.entries, 1).is_err() {
+            Some(at) => at,
+            None => {
+                let Ok(index) = u32::try_from(self.entries.len()) else {
+                    return false;
+                };
+                if engine_allocation::reserve(&mut self.entries, 1).is_err()
+                    || engine_allocation::reserve_map(&mut self.index, 1).is_err()
+                {
                     return false;
                 }
-                self.entries.insert(
-                    at,
-                    Entry {
-                        template,
-                        ..Default::default()
-                    },
-                );
-                at
+                self.entries.push(Entry {
+                    template,
+                    ..Default::default()
+                });
+                self.index.insert(template, index);
+                index as usize
             }
         };
         super::core::remember_hint(&mut self.hints, slot, at);
@@ -563,25 +573,19 @@ impl Store {
         if current.is_none() && !fresh {
             return false;
         }
-        match self
-            .entries
-            .binary_search_by_key(&template, |entry| entry.template)
-        {
-            Ok(at) => needs_read(&self.entries[at], owner, pointer, current, fresh),
-            Err(_) => needs_read(&Entry::default(), owner, pointer, current, fresh),
+        match self.lookup(template) {
+            Some(at) => needs_read(&self.entries[at], owner, pointer, current, fresh),
+            None => needs_read(&Entry::default(), owner, pointer, current, fresh),
         }
     }
 
     pub(super) fn reserve_new(&mut self, templates: &[u64]) -> bool {
         let new = templates
             .iter()
-            .filter(|&&template| {
-                self.entries
-                    .binary_search_by_key(&template, |entry| entry.template)
-                    .is_err()
-            })
+            .filter(|&&template| !self.index.contains_key(&template))
             .count();
         engine_allocation::reserve(&mut self.entries, new).is_ok()
+            && engine_allocation::reserve_map(&mut self.index, new).is_ok()
     }
 
     pub fn certify(&mut self, changes: &dyn Changes, rows: &[native::IconRow]) {
@@ -589,10 +593,7 @@ impl Store {
             return;
         }
         for row in rows {
-            let Ok(at) = self
-                .entries
-                .binary_search_by_key(&row.template, |entry| entry.template)
-            else {
+            let Some(at) = self.lookup(row.template) else {
                 continue;
             };
             let entry = &mut self.entries[at];
@@ -641,10 +642,7 @@ impl Store {
             return;
         }
         for row in rows {
-            let Ok(at) = self
-                .entries
-                .binary_search_by_key(&row.template, |entry| entry.template)
-            else {
+            let Some(at) = self.lookup(row.template) else {
                 continue;
             };
             let entry = &mut self.entries[at];
@@ -792,16 +790,13 @@ impl Store {
     }
 
     pub fn settings_available(&self, row: &native::IconRow) -> bool {
-        self.entries
-            .binary_search_by_key(&row.template, |entry| entry.template)
-            .ok()
-            .is_some_and(|at| {
-                let entry = &self.entries[at];
-                entry.valid
-                    && entry.pointer == row.pointer
-                    && entry.owner == row.owner
-                    && (entry.requested || entry.settings.is_some())
-            })
+        self.lookup(row.template).is_some_and(|at| {
+            let entry = &self.entries[at];
+            entry.valid
+                && entry.pointer == row.pointer
+                && entry.owner == row.owner
+                && (entry.requested || entry.settings.is_some())
+        })
     }
 
     pub(super) fn value_refs(
@@ -809,9 +804,7 @@ impl Store {
         row: &native::IconRow,
     ) -> (Option<&Arc<TemplateLayout>>, Option<&Arc<TemplateSettings>>) {
         let entry = self
-            .entries
-            .binary_search_by_key(&row.template, |entry| entry.template)
-            .ok()
+            .lookup(row.template)
             .map(|at| &self.entries[at])
             .filter(|entry| {
                 entry.valid && entry.pointer == row.pointer && entry.owner == row.owner
