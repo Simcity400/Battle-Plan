@@ -9,7 +9,6 @@ const events = (options: Readonly<Record<string, unknown>>) => options.view === 
 export const EVENTS_TABLE_BASE: TableBase = {
   density: 'compact',
   barsBehind: 'off',
-  overflow: 'scroll',
   showRank: false,
   sort: { column: 'date', direction: 'descending' },
 };

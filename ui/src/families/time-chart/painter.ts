@@ -256,7 +256,8 @@ export function drawTimeChart(
     for (const col of layout.columns) {
       if (col.index === hoveredColIdx) {
         ctx.save();
-        ctx.fillStyle = tokens.dark ? 'rgba(245, 245, 245, 0.055)' : 'rgba(15, 23, 42, 0.055)';
+        ctx.fillStyle = theme.text;
+        ctx.globalAlpha = 0.055;
         ctx.fillRect(col.x, layout.top, col.width, layout.plotHeight);
         ctx.restore();
       }

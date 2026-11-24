@@ -12,7 +12,7 @@ import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TensionStackEvent, WorldTensionStackReply } from '../../generated/dashboard';
-import { EVENTS_TABLE_BASE, EVENTS_TABLE_OPTIONS } from './definition.ts';
+import { EVENTS_TABLE_BASE } from './definition.ts';
 import { validateWorldTensionStack } from './worldTensionProjection.ts';
 
 export interface WorldTensionEventsOptions {
@@ -119,7 +119,6 @@ export const worldTensionEventsDeclaration: TableWidgetDeclaration<WorldTensionE
   subject: 'threat events',
   emptyCampaign: 'Load a campaign to see threat events.',
   icon: 'alert',
-  optionFields: EVENTS_TABLE_OPTIONS,
   countries: { mode: 'multi', labels: true, colours: true, allTagsForLabels: true },
   sources: (ctx: FamilyPlanContext) => ({
     owner: `world-tension-events:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,

@@ -95,7 +95,7 @@ function resolveBandColors(rawColors: readonly (string | null)[], surface: strin
     }
   }
   const nudged = parsed.length > 0 ? nudgeApart(parsed, surfaceRgb) : [];
-  const out = rawColors.map(() => FALLBACK_COLOR);
+  const out: string[] = rawColors.map(() => FALLBACK_COLOR);
   for (let j = 0; j < indices.length; j++) {
     out[indices[j]!] = toHex(nudged[j]!);
   }
