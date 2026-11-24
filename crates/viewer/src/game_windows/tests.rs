@@ -247,7 +247,7 @@ fn offscreen_render_draws_synthetic_window_at_exact_dpr_without_game_files() {
         color: [1.0, 1.0, 1.0, 1.0],
         rotation: None,
         layer: 0,
-        shade: 1.0,
+        shade: 0.0,
         exact: None,
         anchor: None,
         present: None,
@@ -260,7 +260,8 @@ fn offscreen_render_draws_synthetic_window_at_exact_dpr_without_game_files() {
     assert_eq!(rendered_1x.origin, [4, 4]);
     assert_eq!(&rendered_1x.png[..8], b"\x89PNG\r\n\x1a\n");
     let center_1x = (6 * 20 + 10) * 4;
-    assert!(rendered_1x.rgba[center_1x + 3] > 200);
+    assert!(rendered_1x.rgba[center_1x] > 200);
+    assert!(rendered_1x.rgba[center_1x + 1] > 80);
     assert!(rendered_1x.rgba[center_1x] > rendered_1x.rgba[center_1x + 2]);
 
     let rendered_15x =
@@ -268,5 +269,6 @@ fn offscreen_render_draws_synthetic_window_at_exact_dpr_without_game_files() {
     assert_eq!(rendered_15x.logical_size, [20, 12]);
     assert_eq!(rendered_15x.pixel_size, [30, 18]);
     let center_15x = (9 * 30 + 15) * 4;
-    assert!(rendered_15x.rgba[center_15x + 3] > 200);
+    assert!(rendered_15x.rgba[center_15x] > 200);
+    assert!(rendered_15x.rgba[center_15x] > rendered_15x.rgba[center_15x + 2]);
 }
