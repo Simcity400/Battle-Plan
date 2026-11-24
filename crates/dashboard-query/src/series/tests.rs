@@ -1917,7 +1917,7 @@ fn a_missing_span_is_named_at_its_own_hours_and_an_unread_holder_keeps_its_reaso
     let query = Query { replay: base.replay, timeline: Arc::clone(&base.timeline), holders: Arc::new(renamed) };
     let line = resources_line(&query, "produced");
     let parts = line.held(&Ask { country: country.clone(), part: 4 }, FIRST, FIRST + 2_999);
-    let missing = line.missing(country.clone(), FIRST, FIRST + 2_999, &parts).unwrap();
+    let missing = line.missing(country, FIRST, FIRST + 2_999, &parts).unwrap();
     let reason_at = |hour: i32| missing.iter().find(|span| span.first_hour <= hour && hour <= span.last_hour).map(|span| span.reason.clone());
     assert_eq!(
         [reason_at(FIRST + 1_499).as_deref(), reason_at(FIRST + 1_500).as_deref()],
