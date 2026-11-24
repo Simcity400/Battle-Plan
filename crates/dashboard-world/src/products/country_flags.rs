@@ -1,5 +1,6 @@
 
 use dashboard_base::products::{LoadContext, Product};
+use dashboard_base::products::artwork::{ArtFile, ArtResolution, Searched, art_file};
 use dashboard_base::{Source, catalogue::Catalogue, content};
 use dashboard_text::flag_choices::Chain;
 use dashboard_core::invalid;
@@ -52,6 +53,14 @@ pub struct CountryFlagChoice {
     pub keys: [Option<String>; 3],
     #[doc = " Why each atlas has no key, or what was refused on the way to its key; null when nothing."]
     pub reasons: [Option<String>; 3],
+    #[doc = " True where the atlas has no key because a completed search of every candidate found no file."]
+    #[serde(default, skip_serializing_if = "no_search")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(as = "Option<[Option<bool>; 3]>", optional))]
+    pub searched: [Option<Searched>; 3],
+}
+
+fn no_search(searched: &[Option<Searched>; 3]) -> bool {
+    searched.iter().all(Option::is_none)
 }
 
 fn atlas(set: FlagSet) -> usize {
@@ -454,7 +463,7 @@ pub enum FlagSearch {
         origin: dashboard_base::products::artwork::ArtOrigin,
     },
     Unresolvable,
-    Absent,
+    Absent(Searched),
 }
 
 pub fn flag_cells(layers: &content_reader_layers::ResolvedLayers) -> io::Result<[[u32; 2]; 3]> {
@@ -471,7 +480,7 @@ pub fn flag_cells(layers: &content_reader_layers::ResolvedLayers) -> io::Result<
 
 #[derive(Clone)]
 enum FlagFile {
-    Missing,
+    Missing(Searched),
     Unmounted(String),
     Refused(content_reader_gui::flags::DecodeFailure),
     Image {
@@ -579,8 +588,8 @@ fn flag_file(
         return Ok(file.clone());
     }
     let (file, noted) = content_reader_layers::content::diagnostics::observe(|| {
-        io::Result::Ok(match layers.art_file_source(asset.as_bytes())? {
-            content_reader_layers::content::ArtFileSource::Unmounted { layer, reason } => {
+        io::Result::Ok(match art_file(layers, asset.as_bytes())? {
+            ArtFile::Unmounted { layer, reason, .. } => {
                 let origin =
                     dashboard_base::products::artwork::ArtOrigin::from_layer(&layers.layers[layer]);
                 FlagFile::Unmounted(format!(
@@ -588,8 +597,8 @@ fn flag_file(
                     origin.display_name()
                 ))
             }
-            content_reader_layers::content::ArtFileSource::Missing => FlagFile::Missing,
-            content_reader_layers::content::ArtFileSource::Mounted { layer, path } => {
+            ArtFile::Missing(searched) => FlagFile::Missing(searched),
+            ArtFile::Mounted { layer, path } => {
                 let origin =
                     dashboard_base::products::artwork::ArtOrigin::from_layer(&layers.layers[layer]);
                 match layers.read_uncovered_path(&path) {
@@ -604,7 +613,6 @@ fn flag_file(
                         },
                         Err(reason) => FlagFile::Refused(reason),
                     },
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => FlagFile::Missing,
                     Err(error) => return Err(error),
                 }
             }
@@ -720,6 +728,7 @@ fn ladder(
 ) -> io::Result<Result<(FlagSearch, Vec<dashboard_core::findings::Finding>), Broken>> {
     use dashboard_core::findings::{Finding, Kind};
     let mut findings = Vec::new();
+    let mut searched = None;
     for &set in sets {
         let set_index = match set {
             FlagSet::Normal => 0,
@@ -765,7 +774,7 @@ fn ladder(
                 }
             }
             match read.map_err(|error| unreadable(&asset, error))? {
-                FlagFile::Missing => {}
+                FlagFile::Missing(miss) => searched = Some(miss),
                 FlagFile::Unmounted(why) => {
                     let mut finding = Finding::new(Kind::Refused, key, why);
                     finding.file = Some(asset);
@@ -821,7 +830,7 @@ fn ladder(
         candidates.first().cloned().unwrap_or_default(),
         "no decodable flag in the requested sets; flag artwork is unavailable",
     ));
-    Ok(Ok((FlagSearch::Absent, findings)))
+    Ok(Ok((searched.map_or(FlagSearch::Unresolvable, FlagSearch::Absent), findings)))
 }
 
 pub(crate) fn flag_key(asset: &str, pixels: &[u8]) -> String {
@@ -1010,7 +1019,10 @@ impl FlagFolders {
                             .unwrap_or_else(|| UNAVAILABLE.into()),
                     );
                 }
-                FlagSearch::Absent => {
+                FlagSearch::Absent(searched) => {
+                    if chain.refusal.is_none() && refused.is_none() {
+                        choice.searched[at] = Some(searched);
+                    }
                     choice.reasons[at] = Some(
                         chain
                             .refusal
@@ -1123,10 +1135,12 @@ impl FlagContext {
             let mut found = None;
             let mut reasons = Vec::new();
             let mut refused = false;
+            let mut searched = Some(None::<Searched>);
             for &set in sets {
                 let at = atlas(set);
                 let Some(key) = &choice.keys[at] else {
                     reasons.extend(choice.reasons[at].clone());
+                    searched = searched.zip(choice.searched[at].clone()).map(|(_, miss)| Some(miss));
                     continue;
                 };
                 let (search, findings) = find_flag(
@@ -1143,19 +1157,22 @@ impl FlagContext {
                         refused = true;
                     }
                 }
-                if let FlagSearch::Found { asset, image, origin } = search {
-                    found = Some((asset, image, origin));
-                    break;
+                match search {
+                    FlagSearch::Found { asset, image, origin } => {
+                        found = Some((asset, image, origin));
+                        break;
+                    }
+                    FlagSearch::Absent(miss) => searched = searched.map(|_| Some(miss)),
+                    FlagSearch::Unresolvable => searched = None,
                 }
             }
             match found {
                 Some((asset, image, origin)) => shielded.push((flag, asset, image, origin)),
                 None => {
                     let reason = if reasons.is_empty() { UNAVAILABLE.into() } else { reasons.join("; ") };
-                    unavailable.push(unavailable_flag(flag, if refused {
-                        dashboard_base::products::artwork::ArtResolution::Refused { reason, construct: "flag-file".to_owned(), origin: None, file: None }
-                    } else {
-                        dashboard_base::products::artwork::ArtResolution::ConfirmedMissing { reason, origin: None, file: None }
+                    unavailable.push(unavailable_flag(flag, match (refused, searched.flatten()) {
+                        (false, Some(searched)) => ArtResolution::confirmed_missing(searched, reason, None, None),
+                        (true, _) | (false, None) => ArtResolution::Refused { reason, construct: "flag-file".to_owned(), origin: None, file: None },
                     }));
                 }
             }
@@ -1291,7 +1308,7 @@ mod tests {
     fn every(key: &str) -> CountryFlagChoice {
         CountryFlagChoice {
             keys: [0; 3].map(|_| Some(key.to_owned())),
-            reasons: Default::default(),
+            ..CountryFlagChoice::default()
         }
     }
 

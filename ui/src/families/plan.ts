@@ -262,10 +262,16 @@ export type ArtHandle =
 export type ArtOrigin = GeneratedArtOrigin;
 export type ArtFrame = GeneratedArtFrame;
 export type ArtProvenance = GeneratedArtProvenance;
-export type ArtResolution = GeneratedArtResolution;
+declare const lookedUp: unique symbol;
+
+export type ProductArtResolution = GeneratedArtResolution;
+
+export type ArtResolution =
+  | Exclude<GeneratedArtResolution, { readonly status: 'confirmedMissing' }>
+  | (Extract<GeneratedArtResolution, { readonly status: 'confirmedMissing' }> & { readonly [lookedUp]: true });
 
 export type ArtResult<TBitmap = ImageBitmap> =
-  | Extract<ArtResolution, { readonly status: 'noArtExpected' | 'pending' | 'confirmedMissing' | 'refused' }>
+  | Extract<ArtResolution, { readonly status: 'noArtExpected' | 'pending' | 'confirmedMissing' | 'unavailable' | 'refused' }>
   | (Extract<ArtResolution, { readonly status: 'ready' }> & { readonly bitmap?: TBitmap })
   | (Extract<ArtResolution, { readonly status: 'failed' }> & { readonly retry?: () => void });
 

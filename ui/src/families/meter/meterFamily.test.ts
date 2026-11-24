@@ -5,7 +5,9 @@ import type { LiveValues } from '../../charts/live';
 import type { Canvas2D } from '../../charts/textWidth.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { ArtProvider, FamilyTheme, IdentityProvider } from '../contract.ts';
-import { missingArt, PENDING_ART, readyArt } from '../art/types.ts';
+import { PENDING_ART, productArt, readyArt } from '../art/types.ts';
+
+const missingArt = (reason: string) => productArt({ status: 'confirmedMissing', reason });
 import { activeResearchDeclaration, activeResearchProjection } from '../../widgets/active-research/activeResearchProjection.ts';
 import { doctrineMasteryProjection } from '../../widgets/doctrine-mastery/doctrineMasteryProjection.ts';
 import { decryptionProjection } from '../../widgets/decryption/decryptionProjection.ts';
