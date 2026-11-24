@@ -781,7 +781,7 @@ test('grid and points keyboard navigation and family host adapters cover all fou
   assert.deepEqual(parseBarsHit('right:GER'), { key: 'GER', subject: 'GER', kind: 'right-row', toggle: false, inspectToken: 'right:GER' });
   assert.deepEqual(parseBarsHit('remove:reg1'), { key: 'reg1', subject: 'reg1', kind: 'remove-region', toggle: true, inspectToken: 'remove:reg1' });
   assert.deepEqual(parseHeatMatrixHit('cell:2:5'), { key: '2:5', subject: '2:5', toggle: false, inspectToken: 'cell:2:5' });
-  assert.equal(parseHeatLanesHit('lane:0@144')?.hour, 144);
+  assert.equal(parseHeatLanesHit('lane:#0@144')?.hour, 144);
   assert.equal(parseTimeChartHit('line:GER@512')?.hour, 512);
   assert.equal(parseTimeChartHit('line:GER@512')?.subject, 'GER');
   assert.equal(barsHostAdapter.family, 'bars');
