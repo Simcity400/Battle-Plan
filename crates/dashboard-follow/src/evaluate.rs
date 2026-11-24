@@ -2,7 +2,7 @@
 use crate::{
     answer::{self, State, Table},
     invalid,
-    query::{Query, Rows, TagRow, Tags, tags_at},
+    query::{Query, Rows, SeriesMode, TagRow, Tags, tags_at},
     table_name, table_words,
 };
 use dashboard_query::{coverage::{Coverage, CoverageScope, row_coverage}, series::board::{measure_unrecorded, table_unrecorded}};
@@ -62,6 +62,9 @@ pub(crate) fn coverage_of(table: usize, status: Status, reason: Option<&str>, wi
 }
 
 pub(crate) fn unrecorded(table: usize, status: Status, reason: Option<&str>) -> Option<String> {
+    if matches!(status, Status::Complete) {
+        return None;
+    }
     if let Some(&id) = TableId::ALL.get(table) {
         return table_unrecorded(id, status, reason);
     }
@@ -197,7 +200,7 @@ impl Ranking {
     }
 
     pub(crate) fn write(&mut self, query: &Query, lane: &Lane, changes: Option<&playhead::changes::Changes>, tags: &Tags, reasons: &Reasons, table: &mut Table, out: &mut Vec<u8>) -> Option<u64> {
-        let Query::Series { series, countries: names, top: Some(n), least, parts: false, .. } = query else { return None };
+        let Query::Series { series, countries: names, mode: SeriesMode::Top { n, least }, .. } = query else { return None };
         let source = query.source()?;
         let cells = lane.cells();
         out.clear();
@@ -273,10 +276,7 @@ fn by_rank(a: &(i64, u128, u32), b: &(i64, u128, u32)) -> Ordering {
 
 pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, reasons: &Reasons, scratch: &mut Scratch, out: &mut Vec<u8>) {
     out.clear();
-    let keyed = matches!(
-        query,
-        Query::Cells { rows: Rows::Keys(_) | Rows::Live(_), .. } | Query::Series { top: None, parts: false, scope: CoverageScope::Row, .. }
-    );
+    let keyed = query.witness_sensitive();
     if keyed {
         if let Coverage::NotRecorded(reason) = reasons.row_coverage(lane, true) {
             answer::not_recorded(&reason, out);
@@ -351,7 +351,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 Rows::Appended | Rows::Listed => {}
             }
         }
-        Query::Series { series, countries: names, top, parts: true, .. } => {
+        Query::Series { series, countries: names, mode: SeriesMode::Parts { top }, .. } => {
             let source = query.source().expect("a checked series");
             let owned = series.parts.expect("a checked sub-keyed series");
             table.clear(1, false);
@@ -407,7 +407,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 }
             }
         }
-        Query::Series { series, countries: names, top: Some(n), least, .. } => {
+        Query::Series { series, countries: names, mode: SeriesMode::Top { n, least }, .. } => {
             let source = query.source().expect("a checked series");
             table.clear(1, false);
             ranked.clear();
@@ -437,7 +437,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 table.name(&names[at as usize].key());
             }
         }
-        Query::Series { series, measure, countries: names, top: None, scope, identity, .. } => {
+        Query::Series { series, measure, countries: names, mode: SeriesMode::Keyed(scope), identity } => {
             let source = query.source().expect("a checked series");
             let hour = head(lane);
             table.clear(1, false);

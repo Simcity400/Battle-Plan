@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SeriesStateReply } from '../../generated/dashboard';
-import { answerHeld, answerReasons, casualtyRaceEntries, casualtyRatio, casualtyRows, casualtyTooltip, casualtyUnknownNote, formatCasualties, rankCasualties, stateHeld, heldCasualties, retainedLive } from './casualtiesData.ts';
+import { answerHeld, answerReasons, casualtyRaceEntries, casualtyRatio, casualtyRows, casualtyTooltip, casualtyUnknownNote, formatCasualties, orderCasualtyRows, rankCasualties, stateHeld, heldCasualties, retainedLive } from './casualtiesData.ts';
 import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import type { HeldMeasures } from './casualtiesData';
@@ -95,9 +95,50 @@ test('explicitly requested unread keyed rows keep their row and truncation reaso
     ['ITA', null, null, trunc],
   ]);
   assert.equal(casualtyTooltip(rows[1]!, 'Italy', 'Unknown attacker').note, trunc);
-  assert.deepEqual(casualtyRaceEntries(rows).map(entry => [entry.tag, entry.value]), [['GER', 20]]);
+  assert.deepEqual(
+    casualtyRaceEntries(rows),
+    [],
+    'selected-country race omits all entries when any requested row is unread on a truncated hour',
+  );
+  const reversed = casualtyRows(['ITA', 'GER'], measures, 128, false, reasons);
+  assert.deepEqual(
+    orderCasualtyRows(reversed, Infinity, false, true).map(row => row.tag),
+    ['ITA', 'GER'],
+    'selected-country butterfly preserves caller selection order when any selected row is incomplete',
+  );
   assert.equal(
     casualtyUnknownNote(rows, tag => tag === 'ITA' ? 'Italy' : tag),
     `Losses taken are unknown for Italy: ${trunc}.`,
+  );
+
+  const dealtMissing = followAnswer([['GER', 0n, CELL.unrecorded, "GER's dealt was not recorded at this hour"]]);
+  const takenMissing = followAnswer([['GER', 0n, CELL.unrecorded, "GER's taken was not recorded at this hour"]]);
+  const bothMissingRows = casualtyRows(
+    ['GER'],
+    { dealt: answerHeld(dealtMissing, ['GER']), taken: answerHeld(takenMissing, ['GER']), unknown: null, partial: null },
+    128,
+    false,
+    answerReasons([dealtMissing, takenMissing, undefined, undefined], ['GER']),
+  );
+  assert.equal(
+    casualtyUnknownNote(bothMissingRows, () => 'Germany'),
+    "Losses taken are unknown for Germany: GER's taken was not recorded at this hour.",
+    'taken unknown note must cite the taken reason, never dealt',
+  );
+
+  const dealtKnown = followAnswer([['GER', 50n, CELL.value, null]]);
+  const takenKnown = followAnswer([['GER', 20n, CELL.value, null]]);
+  const unknownMissing = followAnswer([['GER', 0n, CELL.unrecorded, "GER's unknown was not recorded at this hour"]]);
+  const unknownMissingRows = casualtyRows(
+    ['GER'],
+    { dealt: answerHeld(dealtKnown, ['GER']), taken: answerHeld(takenKnown, ['GER']), unknown: answerHeld(unknownMissing, ['GER']), partial: null },
+    128,
+    true,
+    answerReasons([dealtKnown, takenKnown, unknownMissing, undefined], ['GER']),
+  );
+  assert.equal(
+    casualtyUnknownNote(unknownMissingRows, () => 'Germany'),
+    "Losses taken are unknown for Germany: GER's unknown was not recorded at this hour.",
+    'when includeUnknown is set and unknown is unrecorded, note cites the unknown measure reason',
   );
 });

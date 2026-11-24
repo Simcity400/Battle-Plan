@@ -1,6 +1,5 @@
 use super::*;
 use crate::{
-    coverage::CoverageScope,
     identity::{Country, Holders},
     series::board,
     tile::{self, BINS, HAS_BREAK, PRESENT},
@@ -124,9 +123,9 @@ impl TruncatedFixture {
         let branch = BranchStart { id: 1, session: 1, loaded_hour: None, first_hour: BASE, parent: Parentage::Unknown, reason: BranchReason::SessionStart };
         let campaign = CampaignRow { id: b"truncated-witness".to_vec() };
         let countries = [
-            CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..CountryRow::default() },
-            CountryRow { id: 9002, canonical_slot: 8, tag: b"ITA".to_vec(), ..CountryRow::default() },
-            CountryRow { id: 9003, canonical_slot: 9, tag: b"FRA".to_vec(), ..CountryRow::default() },
+            CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), political_power_raw: Some(300_000), ..CountryRow::default() },
+            CountryRow { id: 9002, canonical_slot: 8, tag: b"ITA".to_vec(), political_power_raw: Some(200_000), ..CountryRow::default() },
+            CountryRow { id: 9003, canonical_slot: 9, tag: b"FRA".to_vec(), political_power_raw: Some(100_000), ..CountryRow::default() },
         ];
         let links = [
             CountryLinkRow { id: 9001, canonical_slot: 7 },
@@ -414,6 +413,72 @@ fn six_hour_ranked_request_and_complete_absent_none_summary_pin_main_behaviour()
 }
 
 #[test]
+fn initially_truncated_ranked_leaves_first_hour_empty_while_keyed_state_keeps_witness() {
+    let session = SessionStart {
+        id: 1,
+        process_id: 1,
+        process_start_time: 1,
+        qpc_frequency: 10_000_000,
+        sample_boundary: SampleBoundary::EndOfHour,
+        capture_mode: CaptureMode::Full,
+        identity: Identity {
+            game_version: "synthetic".into(),
+            exe_hash: [1; 32],
+            exe_size: 1,
+            vanilla_hash: [2; 32],
+            dlc: vec![],
+            mods: vec![],
+            coverage_policy: 1,
+            language: "l_english".into(),
+            recorder_version: "test".into(),
+            collector_hash: [3; 32],
+            verification: Verification::Verified { launcher: Roster::default(), memory: Roster::default() },
+        },
+    };
+    let branch = BranchStart { id: 1, session: 1, loaded_hour: None, first_hour: 120, parent: Parentage::Unknown, reason: BranchReason::SessionStart };
+    let campaign = CampaignRow { id: b"init-trunc-ranked".to_vec() };
+    let countries = [
+        CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..CountryRow::default() },
+        CountryRow { id: 9002, canonical_slot: 8, tag: b"ITA".to_vec(), ..CountryRow::default() },
+    ];
+    let links = [CountryLinkRow { id: 9001, canonical_slot: 7 }, CountryLinkRow { id: 9002, canonical_slot: 8 }];
+    let exp_ger = CountryExperienceRow { country: 9001, army_raw: 100, navy_raw: 10, ..CountryExperienceRow::default() };
+    let exp_ita = CountryExperienceRow { country: 9002, army_raw: 50, navy_raw: 5, ..CountryExperienceRow::default() };
+    let replay = Replay::from_synthetic(recorder_derive::writers(), campaign.id.clone(), session, branch, 121, |frame, hour| {
+        frame.table(TableId::Clock, Input::Snapshot { rows: &[ClockRow { hour, ..ClockRow::default() }], partial: None, read: true, sample: Sample::FromReadBit })?;
+        frame.table(TableId::Campaign, Input::Snapshot { rows: std::slice::from_ref(&campaign), partial: None, read: true, sample: Sample::FromReadBit })?;
+        frame.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit })?;
+        frame.table(TableId::CountryLinks, Input::Snapshot { rows: &links, partial: None, read: true, sample: Sample::FromReadBit })?;
+        if hour == 120 {
+            frame.table(TableId::CountryExperience, Input::Snapshot { rows: std::slice::from_ref(&exp_ger), partial: Some(1), read: true, sample: Sample::FromReadBit })?;
+        } else {
+            frame.table(TableId::CountryExperience, Input::Snapshot { rows: &[exp_ger.clone(), exp_ita.clone()], partial: None, read: true, sample: Sample::FromReadBit })?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let timeline = Arc::new(Timeline { id: 1, first: 120, last: 121, stretches: vec![Stretch { run: 0, first: 120, last: 121, join: Join::Start }], unheld: Vec::new() });
+    let holders = Arc::new(crate::identity::holders(replay.recording(), &timeline).unwrap());
+    let query = Query { replay: &replay, timeline, holders };
+    let exp_series = dashboard_declare::series("country-experience").unwrap();
+    let exp = Line::new(&query, exp_series, exp_series.measure("army").unwrap()).unwrap();
+
+    let ranked = exp.ranked(120, 121, 2, 1).unwrap();
+    assert_eq!(ranked.len(), 1);
+    assert_eq!(ranked[0].tag, "GER");
+    assert_eq!(ranked[0].membership, vec![(120, 121)]);
+    assert_eq!(ranked[0].missing, vec![MissingSpan { first_hour: 120, last_hour: 120, reason: EXP_TRUNC_STATUS.into() }]);
+    assert_eq!(ranked[0].summary.buckets.len(), 2);
+    assert_eq!(ranked[0].summary.buckets[0], None, "initially truncated ordinal 0 stays empty in default ranked as on main");
+    let b1 = ranked[0].summary.buckets[1].expect("complete hour 121 bucket");
+    assert_eq!((b1.first_hour, b1.last_hour, b1.first_value, b1.last_value, b1.first_break, b1.has_break), (121, 121, 100.0, 100.0, true, false));
+
+    let states = exp.states(&[read("GER", 120, None)], None).unwrap();
+    assert_eq!(states[0].run.as_ref().map(|r| r.value_raw.as_str()), Some("100"), "keyed Row state preserves first-hour witness");
+    assert_eq!(states[0].missing, None);
+}
+
+#[test]
 fn complete_tile_and_unvalued_scalar_state_match_main_storage_read_counts() {
     use crate::fixture::{Data, FIRST, Fixture, UNIT_HOURS, power};
 
@@ -555,14 +620,14 @@ fn aliased_relation_opinion_witnessed_at_truncated_hour_agrees_between_state_and
         ],
         "default Table-scoped Line::missing reports both truncated hours"
     );
-    let row_missing = rel.missing_scoped("GER", 120, 131, &parts, CoverageScope::Row).unwrap();
+    let row_missing = rel.missing_for_tile("GER", 120, 131, &parts).unwrap();
     assert_eq!(
         row_missing,
         vec![MissingSpan { first_hour: 125, last_hour: 125, reason: REL_TRUNC.into() }],
         "Row-scoped missing omits aliased witness at 128 and keeps unwitnessed trailing hour 125"
     );
 
-    let tile_reply = tile::tile(&rel, "1", &[ask], None, 6, 0, false).unwrap();
+    let tile_reply = tile::tile(&rel, "1", &[ask.clone()], None, 6, 0, false).unwrap();
     let in_range: Vec<MissingSpan> = tile_reply
         .lines[0]
         .missing
@@ -576,12 +641,21 @@ fn aliased_relation_opinion_witnessed_at_truncated_hour_agrees_between_state_and
     assert_eq!(
         bytes[slot0] & (PRESENT | HAS_BREAK),
         PRESENT | HAS_BREAK,
-        "binned_from_runs marks HAS_BREAK for trailing unwitnessed truncated hour 125"
+        "binned_from_runs_for_tile marks HAS_BREAK for trailing unwitnessed truncated hour 125"
     );
     assert_eq!(
         bytes[slot0 + 1] & (PRESENT | HAS_BREAK),
         PRESENT,
         "aliased witness at truncated hour 128 keeps bin 126..=131 unbroken"
+    );
+
+    let within = [(Country::from("GER"), vec![Span { first_hour: 120, last_hour: 121 }])];
+    let filtered = tile::tile(&rel, "1", &[ask], Some(&within), 6, 0, false).unwrap();
+    let filtered_bytes = crate::fixture::unbase64(&filtered.bins);
+    assert_eq!(
+        filtered_bytes[slot0] & (PRESENT | HAS_BREAK),
+        PRESENT,
+        "within-filtered tile does not mark HAS_BREAK for unwitnessed truncated hour 125 outside within"
     );
 }
 
@@ -623,4 +697,91 @@ fn scoreboard_applies_witness_rule_for_countries_and_top_ranking() {
     let top_t3 = board::at(&columns, board::Rows::Top { by: 0, n: 2, least: false }, T3).unwrap();
     assert!(top_t3.rows.is_empty());
     assert_eq!(top_t3.missing.as_deref(), Some(EXP_TRUNC_TABLE));
+
+    let power_series = dashboard_declare::series("country-measure").unwrap();
+    let two_table = [
+        board::Column { line: Line::new(&query, power_series, power_series.measure("politicalPower").unwrap()).unwrap(), partial: None },
+        board::Column { line: Line::new(&query, exp_series, exp_series.measure("army").unwrap()).unwrap(), partial: None },
+    ];
+    let top_two = board::at(&two_table, board::Rows::Top { by: 0, n: 1, least: false }, T1).unwrap();
+    assert_eq!(top_two.missing, None);
+    assert_eq!(top_two.rows.len(), 1);
+    assert_eq!(top_two.rows[0].tag, "GER");
+    assert_eq!(top_two.rows[0].cells[0].value_raw.as_deref(), Some("300000"));
+    assert_eq!(top_two.rows[0].cells[1].value_raw, None, "Rows::Top keeps Table refusal on truncated secondary columns");
+    assert_eq!(top_two.rows[0].cells[1].missing.as_deref(), Some(EXP_TRUNC_TABLE));
+
+    let keyed_two = board::at(&two_table, board::Rows::Countries(&[Country::from("GER")]), T1).unwrap();
+    assert_eq!(keyed_two.rows[0].cells[1].value_raw.as_deref(), Some("100"), "Rows::Countries shows witnessed cell on truncated secondary column");
+    assert_eq!(keyed_two.rows[0].cells[1].missing, None);
+}
+
+#[test]
+fn cold_truncated_tile_batches_witness_walk_once_across_many_countries() {
+    let session = SessionStart {
+        id: 1,
+        process_id: 1,
+        process_start_time: 1,
+        qpc_frequency: 10_000_000,
+        sample_boundary: SampleBoundary::EndOfHour,
+        capture_mode: CaptureMode::Full,
+        identity: Identity {
+            game_version: "synthetic".into(),
+            exe_hash: [1; 32],
+            exe_size: 1,
+            vanilla_hash: [2; 32],
+            dlc: vec![],
+            mods: vec![],
+            coverage_policy: 1,
+            language: "l_english".into(),
+            recorder_version: "test".into(),
+            collector_hash: [3; 32],
+            verification: Verification::Verified { launcher: Roster::default(), memory: Roster::default() },
+        },
+    };
+    let branch = BranchStart { id: 1, session: 1, loaded_hour: None, first_hour: 120, parent: Parentage::Unknown, reason: BranchReason::SessionStart };
+    let campaign = CampaignRow { id: b"batch-witness".to_vec() };
+    let countries: Vec<CountryRow> = (0u32..20)
+        .map(|i| CountryRow { id: 9001 + i, canonical_slot: 10 + i, tag: format!("C{i:02}").into_bytes(), ..CountryRow::default() })
+        .collect();
+    let links: Vec<CountryLinkRow> = (0u32..20).map(|i| CountryLinkRow { id: 9001 + i, canonical_slot: 10 + i }).collect();
+    let all_exp: Vec<CountryExperienceRow> = (0u32..20)
+        .map(|i| CountryExperienceRow { country: 9001 + i, army_raw: 100 + i64::from(i), ..CountryExperienceRow::default() })
+        .collect();
+    let even_exp: Vec<CountryExperienceRow> = all_exp.iter().enumerate().filter(|(i, _)| i % 2 == 0).map(|(_, r)| r.clone()).collect();
+    let odd_exp: Vec<CountryExperienceRow> = all_exp.iter().enumerate().filter(|(i, _)| i % 2 == 1).map(|(_, r)| r.clone()).collect();
+
+    let replay = Replay::from_synthetic(recorder_derive::writers(), campaign.id.clone(), session, branch, 131, |frame, hour| {
+        frame.table(TableId::Clock, Input::Snapshot { rows: &[ClockRow { hour, ..ClockRow::default() }], partial: None, read: true, sample: Sample::FromReadBit })?;
+        frame.table(TableId::Campaign, Input::Snapshot { rows: std::slice::from_ref(&campaign), partial: None, read: true, sample: Sample::FromReadBit })?;
+        frame.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit })?;
+        frame.table(TableId::CountryLinks, Input::Snapshot { rows: &links, partial: None, read: true, sample: Sample::FromReadBit })?;
+        match hour {
+            128 => frame.table(TableId::CountryExperience, Input::Snapshot { rows: &even_exp, partial: Some(1), read: true, sample: Sample::FromReadBit })?,
+            129 => frame.table(TableId::CountryExperience, Input::Snapshot { rows: &odd_exp, partial: Some(1), read: true, sample: Sample::FromReadBit })?,
+            _ => frame.table(TableId::CountryExperience, Input::Snapshot { rows: &all_exp, partial: None, read: true, sample: Sample::FromReadBit })?,
+        }
+        Ok(())
+    })
+    .unwrap();
+    let timeline = Arc::new(Timeline { id: 1, first: 120, last: 131, stretches: vec![Stretch { run: 0, first: 120, last: 131, join: Join::Start }], unheld: Vec::new() });
+    let holders = Arc::new(crate::identity::holders(replay.recording(), &timeline).unwrap());
+    let query = Query { replay: &replay, timeline, holders };
+    let exp_series = dashboard_declare::series("country-experience").unwrap();
+    let exp = Line::new(&query, exp_series, exp_series.measure("army").unwrap()).unwrap();
+    let asks: Vec<Ask> = (0u32..20).map(|i| Ask::whole(format!("C{i:02}"))).collect();
+
+    let _ = crate::cost::take_calls();
+    let reply = tile::tile(&exp, "1", &asks, None, 6, 0, false).unwrap();
+    let calls = crate::cost::take_calls();
+    assert_eq!(calls, 4, "cold truncated tile batches witness walk once across all 20 countries (chart + statuses + batched witness + lifetimes)");
+    for (i, line) in reply.lines.iter().enumerate() {
+        let in_range: Vec<MissingSpan> = line.missing.iter().filter(|span| span.first_hour <= 131 && 120 <= span.last_hour).cloned().collect();
+        let missing_hour = if i % 2 == 0 { 129 } else { 128 };
+        assert_eq!(
+            in_range,
+            vec![MissingSpan { first_hour: missing_hour, last_hour: missing_hour, reason: EXP_TRUNC.into() }],
+            "country C{i:02} missing spans"
+        );
+    }
 }

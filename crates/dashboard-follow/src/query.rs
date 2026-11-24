@@ -27,10 +27,17 @@ pub struct Identity {
     pub timeline: Arc<Timeline>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeriesMode {
+    Keyed(CoverageScope),
+    Top { n: usize, least: bool },
+    Parts { top: Option<usize> },
+}
+
 #[derive(Clone)]
 pub enum Query {
     Cells { table: usize, columns: Vec<usize>, rows: Rows },
-    Series { series: &'static Series, measure: &'static Measure, countries: Vec<Country>, top: Option<usize>, least: bool, parts: bool, scope: CoverageScope, identity: Identity },
+    Series { series: &'static Series, measure: &'static Measure, countries: Vec<Country>, mode: SeriesMode, identity: Identity },
     Head(crate::head::Head),
 }
 
@@ -64,17 +71,15 @@ impl Query {
                 }
                 Ok(())
             }
-            Self::Series { series, measure, top, parts, scope, .. } => {
-                if *top == Some(0) {
+            Self::Series { series, measure, mode, .. } => {
+                if matches!(mode, SeriesMode::Top { n: 0, .. } | SeriesMode::Parts { top: Some(0) }) {
                     return Err(invalid("A top of no rows"));
-                }
-                if *scope == CoverageScope::Row && (top.is_some() || *parts) {
-                    return Err(invalid("Row coverage is only for keyed non-ranked series reads"));
                 }
                 if !series.measures.iter().any(|held| std::ptr::eq(held, *measure)) {
                     return Err(invalid(format!("{} has no measure {}", series.kind, measure.name)));
                 }
-                match (series.parts.is_some(), *parts) {
+                let parts = matches!(mode, SeriesMode::Parts { .. });
+                match (series.parts.is_some(), parts) {
                     (true, false) => return Err(invalid(format!("{} is followed by its owners' parts", series.kind))),
                     (false, true) => return Err(invalid(format!("{} has no parts", series.kind))),
                     _ => {}
@@ -93,7 +98,11 @@ impl Query {
     }
 
     pub(crate) fn parts(&self) -> bool {
-        matches!(self, Self::Series { parts: true, .. })
+        matches!(self, Self::Series { mode: SeriesMode::Parts { .. }, .. })
+    }
+
+    pub(crate) fn witness_sensitive(&self) -> bool {
+        matches!(self, Self::Cells { rows: Rows::Keys(_) | Rows::Live(_), .. } | Self::Series { mode: SeriesMode::Keyed(CoverageScope::Row), .. })
     }
 
     pub fn table(&self) -> usize {
@@ -136,12 +145,14 @@ impl Query {
 
     pub fn series_top(series: &'static Series, measure: &'static Measure, n: usize, identity: Identity) -> Self {
         let countries = identity.holders.tags.keys().map(Country::from).collect();
-        Self::Series { series, measure, countries, top: Some(n), least: false, parts: false, scope: CoverageScope::Table, identity }
+        Self::Series { series, measure, countries, mode: SeriesMode::Top { n, least: false }, identity }
     }
 
     pub fn least(self) -> Self {
         match self {
-            Self::Series { series, measure, countries, top, parts, scope, identity, .. } => Self::Series { series, measure, countries, top, least: true, parts, scope, identity },
+            Self::Series { series, measure, countries, mode: SeriesMode::Top { n, .. }, identity } => {
+                Self::Series { series, measure, countries, mode: SeriesMode::Top { n, least: true }, identity }
+            }
             other => other,
         }
     }
@@ -162,7 +173,7 @@ pub(crate) struct Tags {
 pub(crate) fn tags_at(query: &Query, hour: Hour) -> Tags {
     let rows = tag_rows(query, hour);
     let by_key = match query {
-        Query::Series { top: Some(_), parts: false, .. } => rows.iter().enumerate().filter_map(|(at, row)| if let TagRow::Key(key) = row { Some((*key, at as u32)) } else { None }).collect(),
+        Query::Series { mode: SeriesMode::Top { .. }, .. } => rows.iter().enumerate().filter_map(|(at, row)| if let TagRow::Key(key) = row { Some((*key, at as u32)) } else { None }).collect(),
         _ => HashMap::new(),
     };
     Tags { rows, by_key }

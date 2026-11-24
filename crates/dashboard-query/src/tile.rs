@@ -191,26 +191,28 @@ pub fn tile(
     let (immutable, filled) = closure(first, last, query.timeline.last);
     let (bins, raw_values, hour_bytes) = match bin_hours {
         1 => {
-            let runs: Vec<Vec<ChartRun>> = line.hourly_runs(&drawn, read_from, last)?.into_iter().map(|(runs, _)| runs).collect();
+            let runs: Vec<Vec<ChartRun>> = line.hourly_runs_for_tile(&drawn, read_from, last)?.into_iter().map(|(runs, _)| runs).collect();
             let (bytes, raw_values) = encode_runs(&runs, first, scale);
             (bytes, raw_values, 0)
         }
         _ => {
             let mut buckets: Vec<Option<ChartBucket>> = Vec::with_capacity(asks.len() * BINS);
-            for (bins, _) in line.binned_scoped(&drawn, read_from, last, level, bin_hours, crate::coverage::CoverageScope::Row)? {
+            for (bins, _) in line.binned_for_tile(&drawn, read_from, last, level, bin_hours)? {
                 debug_assert_eq!(bins.len(), BINS + 1);
                 buckets.extend(bins.into_iter().skip(1));
             }
             encode(&buckets, first, bin_hours, scale)
         }
     };
+    let held_parts: Vec<Vec<crate::series::Part>> = asks.iter().map(|ask| line.held(ask, first, last)).collect();
+    let all_parts: Vec<&crate::series::Part> = held_parts.iter().flatten().collect();
+    line.prefetch_unwitnessed(&all_parts, first, last)?;
     let mut lines = Vec::with_capacity(asks.len());
-    for (at, ask) in asks.iter().enumerate() {
-        let parts = line.held(ask, first, last);
+    for (at, (ask, parts)) in asks.iter().zip(held_parts).enumerate() {
         lines.push(TileLine {
             country: ask.country.clone(),
             part: line.part_text(ask),
-            missing: line.missing_scoped(&ask.country, first, last, &parts, crate::coverage::CoverageScope::Row)?,
+            missing: line.missing_for_tile(&ask.country, first, last, &parts)?,
             parts: parts
                 .iter()
                 .map(|part| TilePart { first_hour: part.first, last_hour: part.last, slot: part.slot, country_id: part.id, segment_first_hour: part.segment_first })

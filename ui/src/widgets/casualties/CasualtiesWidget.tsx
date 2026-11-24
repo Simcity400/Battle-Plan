@@ -40,7 +40,7 @@ import { SPEC } from '../../dashboard/regionTime';
 import GateState from '../../dashboard/GateState';
 import type { CasualtyLabelsReply, SeriesStateReply } from '../../generated/dashboard';
 import { answerHeld, answerReasons, heldCasualties, retainedLive, casualtyBarStretch, casualtyBarValue, casualtyRaceEntries, casualtyRatio, casualtyRows, casualtyTooltip, casualtyUnknownNote, FAMILY, formatCasualties,
-  MEASURES, RANK, rankCasualties, rankedTags, stateHeld, stateReasons, SUBTOTAL_NOTE } from './casualtiesData.ts';
+  MEASURES, orderCasualtyRows, RANK, rankCasualties, rankedTags, stateHeld, stateReasons, SUBTOTAL_NOTE } from './casualtiesData.ts';
 import type { CasualtyMeasure, CountryCasualties, HeldCasualties, HeldMeasures } from './casualtiesData';
 import { OPTIONS } from './definition';
 import './casualties.css';
@@ -129,8 +129,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     [top, ranked.entry, ranked.structure, tags, rankKey]);
   const membersKey = members.join(',');
   const measureQuery = (measure: CasualtyMeasure) => active && following && track && members.length
-    ? gate.follow({ product: 'series-state', ...(top == null ? { coverage: 'row' } : {}), params: { branchId: track.branch.id, family: family(measure), reads: members.map(tag => ({ country: countryFromKey(tag) })) } }) : null;
-  const queries = useMemo(() => MEASURES.map(measureQuery), [active, following, track?.branch.id, top, membersKey, gate.follow]);
+    ? gate.follow({ product: 'series-state', ...(top == null && !race ? { coverage: 'row' } : {}), params: { branchId: track.branch.id, family: family(measure), reads: members.map(tag => ({ country: countryFromKey(tag) })) } }) : null;
+  const queries = useMemo(() => MEASURES.map(measureQuery), [active, following, track?.branch.id, top, race, membersKey, gate.follow]);
   const read = useCallback((entry: FollowEntry) => entry, []);
   const measured = [
     useLiveFollow(store, queries[0], root, read, answered),
@@ -183,7 +183,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const positive = top != null && top < Number.MAX_SAFE_INTEGER;
   const member = useCallback((tag: string, hour: number) => !membership || isMember(membership.get(tag), hour), [membership]);
   const toItems = useRef((_rows: readonly CountryCasualties[]): CasualtyItem[] => []);
-  toItems.current = rows => rankCasualties(rows.filter(row => member(row.tag, row.hour)), limit, positive).map(row => ({
+  toItems.current = rows => orderCasualtyRows(rows.filter(row => member(row.tag, row.hour)), limit, positive, top == null).map(row => ({
     id: row.tag, label: looks.name(row.tag, row.hour), flag: looks.flag(row.tag, row.hour),
     countryFlag: { nameFailure: looks.nameFailure?.(row.tag, row.hour), flagDetail: looks.flagDetail?.(row.tag, row.hour), flag: looks.flag(row.tag, row.hour),
       flagReason: looks.flagReason?.(row.tag, row.hour), flagPending: looks.flagPending?.(row.tag, row.hour) },
@@ -220,8 +220,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     [states[0].data, states[1].data, states[2].data, states[3].data]);
   const askedReasons = useMemo(() => stateReasons([states[0].data, states[1].data, states[2].data, states[3].data]),
     [states[0].data, states[1].data, states[2].data, states[3].data]);
-  const askedRows = useMemo(() => followedHead || moment === null ? [] : rankCasualties(casualtyRows(askedTags, askedHeld, moment, includeUnknown, askedReasons).filter(row => member(row.tag, row.hour)), limit, positive),
-    [followedHead, askedTags, askedHeld, askedReasons, moment, includeUnknown, member, limit, positive]);
+  const askedRows = useMemo(() => followedHead || moment === null ? [] : orderCasualtyRows(casualtyRows(askedTags, askedHeld, moment, includeUnknown, askedReasons).filter(row => member(row.tag, row.hour)), limit, positive, top == null && !race),
+    [followedHead, askedTags, askedHeld, askedReasons, moment, includeUnknown, member, limit, positive, top, race]);
   const items = useMemo(() => race ? [] : followedHead ? liveItems?.read() ?? [] : toItems.current(askedRows),
     [race, followedHead, liveItems, askedRows, looks, colour]);
   const raceRows = useMemo(() => race ? followedHead ? rowsAt.current(headHour()) : askedRows : [],
@@ -234,7 +234,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const notes = JSON.parse(useInstalledValue(shownChanges, () => {
     const rows = race ? followedHead ? rowsAt.current(headHour()) : askedRows : [];
     const atLeast = race ? rows.some(row => row.atLeast) : (followedHead ? liveItems?.read() ?? [] : items).some(item => item.data.atLeast);
-    return JSON.stringify([rows.filter(row => row.taken === null).map(row => [row.tag, row.hour, row.reason ?? null]), atLeast]);
+    return JSON.stringify([rows.filter(row => row.taken === null).map(row => [row.tag, row.hour, row.takenReason ?? null]), atLeast]);
   })) as [[string, number, string | null][], boolean];
   const groupWarnings = useMemo(() => [...(groups.data?.warnings ?? []), ...(groups.error ? [`Country groups could not be loaded: ${groups.error.message}`] : [])], [groups.data, groups.error]);
   useEffect(() => { onWarnings(groupWarnings); }, [groupWarnings, onWarnings]);
@@ -255,7 +255,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     if (!drawn.length || (!followedHead && !(race ? askedRows : items).length)) return <WidgetState kind="empty" icon="target" message="No casualties yet." />;
     if (race) {
       const rowOf = (tag: string) => (followedHead ? rowsAt.current(headHour()) : askedRows).find(row => row.tag === tag);
-      const unknownNote = casualtyUnknownNote(notes[0].map(([tag, hour, reason]) => ({ tag, hour, taken: null, reason })), looks.name);
+      const unknownNote = casualtyUnknownNote(notes[0].map(([tag, hour, takenReason]) => ({ tag, hour, taken: null, takenReason })), looks.name);
       const range = widget.time.mode === 'range' ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
       const extent: [number, number] = range ? [range.firstHour, range.lastHour] : [track.branch.firstHour, track.branch.lastHour];
       return <>

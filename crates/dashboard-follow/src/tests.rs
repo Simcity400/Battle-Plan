@@ -1,4 +1,4 @@
-use crate::{Answer, Follow, Identity, Message, Query, Rows, Sink, State, StepStats, answer_at, decode};
+use crate::{Answer, Follow, Identity, Message, Query, Rows, SeriesMode, Sink, State, StepStats, answer_at, decode};
 use dashboard_declare::{Carry, Column, Key, Measure, Parts, Series};
 use dashboard_query::{
     coverage::CoverageScope,
@@ -523,10 +523,7 @@ fn a_series_reads_its_tags_holder_at_the_head() {
         series: &POWER,
         measure: &POWER.measures[0],
         countries: vec!["AAA".into(), "BBB".into(), "CCC".into()],
-        top: None,
-        least: false,
-        parts: false,
-        scope: CoverageScope::Table,
+        mode: SeriesMode::Keyed(CoverageScope::Table),
         identity: Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) },
     };
     harness.follow.follow(5, series.clone()).unwrap();
@@ -622,8 +619,8 @@ fn a_followed_owners_parts_are_its_rows_in_key_order_or_its_top_parts() {
     holders.tags.insert("BBB".into(), held(26));
     let timeline = Stretches { id: 1, first: 0, last: HOURS as Hour - 1, stretches: vec![Stretch { run: 0, first: 0, last: HOURS as Hour - 1, join: Join::Start }], unheld: Vec::new() };
     let identity = Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) };
-    let top = Query::Series { series: &PARTS, measure: &PARTS.measures[0], countries: vec!["AAA".into(), "BBB".into()], top: Some(2), least: false, parts: true, scope: CoverageScope::Table, identity: identity.clone() };
-    let all = Query::Series { series: &PARTS, measure: &PARTS.measures[0], countries: vec!["BBB".into()], top: None, least: false, parts: true, scope: CoverageScope::Table, identity };
+    let top = Query::Series { series: &PARTS, measure: &PARTS.measures[0], countries: vec!["AAA".into(), "BBB".into()], mode: SeriesMode::Parts { top: Some(2) }, identity: identity.clone() };
+    let all = Query::Series { series: &PARTS, measure: &PARTS.measures[0], countries: vec!["BBB".into()], mode: SeriesMode::Parts { top: None }, identity };
     harness.follow.follow(1, top.clone()).unwrap();
     harness.follow.follow(2, all.clone()).unwrap();
     harness.seek(0);
@@ -646,7 +643,7 @@ fn a_followed_owners_parts_are_its_rows_in_key_order_or_its_top_parts() {
         answered += 1;
     }
     assert!(answered > 10, "{answered} answers compared");
-    let one = Query::Series { series: &PARTS, measure: &PARTS.measures[0], countries: vec!["AAA".into()], top: None, least: false, parts: false, scope: CoverageScope::Table, identity: nobody() };
+    let one = Query::Series { series: &PARTS, measure: &PARTS.measures[0], countries: vec!["AAA".into()], mode: SeriesMode::Keyed(CoverageScope::Table), identity: nobody() };
     assert!(harness.follow.follow(3, one).is_err(), "a sub-keyed series is followed by its owners' parts");
 }
 
@@ -751,7 +748,7 @@ fn two_tracks_of_one_timeline_at_different_anchors_each_follow_their_own_hours()
 #[test]
 fn the_requests_a_widget_sends_parse_into_its_query() {
     match crate::parse(&follow_request(0, "country-measure", "commandPower")["query"], &nobody()).unwrap() {
-        Query::Series { series, measure, countries, top, .. } => assert_eq!((series.kind, measure.name, countries, top), ("country-measure", "commandPower", vec!["GER".into(), "SOV".into()], None)),
+        Query::Series { series, measure, countries, mode: SeriesMode::Keyed(CoverageScope::Table), .. } => assert_eq!((series.kind, measure.name, countries), ("country-measure", "commandPower", vec!["GER".into(), "SOV".into()])),
         _ => panic!("a series"),
     }
     let slot = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "country-measure", "measure": "commandPower" }, "reads": [{ "country": 7, "hour": 5 }, { "country": "GER", "hour": 5 }] } });
@@ -761,19 +758,19 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
     }
     let army = serde_json::json!({ "product": "army-size", "params": { "branchId": "1", "countries": [], "top": 10, "measure": "divisions", "countFor": "owner", "byType": false } });
     match crate::parse(&army, &nobody()).unwrap() {
-        Query::Series { series, measure, top, .. } => assert_eq!((series.kind, measure.name, top), ("army-totals", "ownerDivisions", Some(10))),
+        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false }, .. } => assert_eq!((series.kind, measure.name), ("army-totals", "ownerDivisions")),
         _ => panic!("a series"),
     }
     let typed = serde_json::json!({ "product": "army-size", "params": { "branchId": "1", "countries": ["GER"], "measure": "battalions", "countFor": "owner", "byType": true } });
     assert_eq!(crate::parse(&typed, &nobody()).err().unwrap().to_string(), "Army sizes by unit type are not followed at the head");
     let air = serde_json::json!({ "product": "air-force-size", "params": { "branchId": "1", "countries": [], "top": 10, "measure": "wings", "ownership": "effective" } });
     match crate::parse(&air, &nobody()).unwrap() {
-        Query::Series { series, measure, top, .. } => assert_eq!((series.kind, measure.name, top), ("air-force-totals", "effectiveWings", Some(10))),
+        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false }, .. } => assert_eq!((series.kind, measure.name), ("air-force-totals", "effectiveWings")),
         _ => panic!("a series"),
     }
     let navy = serde_json::json!({ "product": "navy-size", "params": { "branchId": "1", "countries": ["GER"], "top": null, "measure": "strength", "ownership": "logical", "grouping": "type" } });
     match crate::parse(&navy, &nobody()).unwrap() {
-        Query::Series { series, measure, countries, top, .. } => assert_eq!((series.kind, measure.name, countries, top), ("navy-totals", "logicalStrength", vec!["GER".into()], None)),
+        Query::Series { series, measure, countries, mode: SeriesMode::Keyed(CoverageScope::Table), .. } => assert_eq!((series.kind, measure.name, countries), ("navy-totals", "logicalStrength", vec!["GER".into()])),
         _ => panic!("a series"),
     }
     let unknown = serde_json::json!({ "product": "navy-size", "params": { "branchId": "1", "countries": ["GER"], "measure": "planes", "ownership": "roster" } });
@@ -782,21 +779,21 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
     assert_eq!(crate::parse(&other, &nobody()).err().unwrap().to_string(), "series-summary is not followed at the head");
     let parts = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "resource-balance", "measure": "supply" }, "reads": [{ "country": "GER", "hour": 5 }], "top": 3 } });
     match crate::parse(&parts, &nobody()).unwrap() {
-        Query::Series { series, measure, countries, top, parts, .. } => assert_eq!((series.kind, measure.name, countries, top, parts), ("resource-balance", "supply", vec!["GER".into()], Some(3), true)),
+        Query::Series { series, measure, countries, mode: SeriesMode::Parts { top: Some(3) }, .. } => assert_eq!((series.kind, measure.name, countries), ("resource-balance", "supply", vec!["GER".into()])),
         _ => panic!("a series"),
     }
     let one = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "country-resources", "measure": "used" }, "reads": [{ "country": "GER", "hour": 5, "part": "2" }] } });
     assert!(crate::parse(&one, &nobody()).is_err(), "one part is not followed");
     let territory = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "territory", "measure": "controlledStates" }, "top": 10, "hour": 5 } });
     match crate::parse(&territory, &nobody()).unwrap() {
-        Query::Series { series, measure, top, parts, .. } => assert_eq!((series.kind, measure.name, top, parts), ("territory", "controlledStates", Some(10), false)),
+        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false }, .. } => assert_eq!((series.kind, measure.name), ("territory", "controlledStates")),
         _ => panic!("a ranked series"),
     }
     let unranked = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "territory", "measure": "ownedArea" }, "hour": 5 } });
     assert!(crate::parse(&unranked, &nobody()).is_err(), "a series asked for no tags ranks a top");
     let ranked = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "country-game-scores", "measure": "total" }, "top": 10 } });
     match crate::parse(&ranked, &nobody()).unwrap() {
-        Query::Series { series, measure, top, parts, .. } => assert_eq!((series.kind, measure.name, top, parts), ("country-game-scores", "total", Some(10), false)),
+        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false }, .. } => assert_eq!((series.kind, measure.name), ("country-game-scores", "total")),
         _ => panic!("a ranked series"),
     }
     let chosen_top = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "country-game-scores", "measure": "total" }, "reads": [{ "country": "GER", "hour": 0 }], "top": 1 } });
@@ -804,15 +801,15 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
     let world = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "world-tension", "measure": "tension" }, "top": 3 } });
     assert!(crate::parse(&world, &nobody()).is_err(), "a singleton is never ranked");
     let tension = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "world-tension", "measure": "tension" }, "reads": [{ "country": "World", "hour": 0 }] } });
-    assert!(matches!(crate::parse(&tension, &nobody()).unwrap(), Query::Series { top: None, parts: false, .. }));
+    assert!(matches!(crate::parse(&tension, &nobody()).unwrap(), Query::Series { mode: SeriesMode::Keyed(CoverageScope::Table), .. }));
     let members: Vec<serde_json::Value> = (0..1_500).map(|at| serde_json::json!({ "country": format!("T{at:04}"), "hour": 0 })).collect();
     let many = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "territory", "measure": "controlledStates" }, "reads": members } });
     match crate::parse(&many, &nobody()).unwrap() {
-        Query::Series { countries, top: None, .. } => assert_eq!((countries.len(), countries[1_499].key().as_ref()), (1_500, "T1499")),
+        Query::Series { countries, mode: SeriesMode::Keyed(CoverageScope::Table), .. } => assert_eq!((countries.len(), countries[1_499].key().as_ref()), (1_500, "T1499")),
         _ => panic!("a series of every member"),
     }
     let wide = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "territory", "measure": "controlledStates" }, "top": 1_000 } });
-    assert!(matches!(crate::parse(&wide, &nobody()).unwrap(), Query::Series { top: Some(1_000), .. }));
+    assert!(matches!(crate::parse(&wide, &nobody()).unwrap(), Query::Series { mode: SeriesMode::Top { n: 1_000, least: false }, .. }));
     let log =serde_json::json!({ "product": "log-page", "params": { "branchId": "1", "log": "market-events", "to": 9, "pageSize": 50, "columns": ["kind", "country"] } });
     let columns = vec![dashboard_declare::field(TableId::MarketEvents, "kind").unwrap(), dashboard_declare::field(TableId::MarketEvents, "country").unwrap()];
     match crate::parse(&log, &nobody()).unwrap() {

@@ -75,6 +75,19 @@ pub fn runs(
     Ok(held.into_iter().collect())
 }
 
+pub fn witnessed_runs(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    source: summary::Source,
+    keys: Option<&[u128]>,
+    from: i32,
+    to: i32,
+) -> io::Result<HashMap<u128, Runs>> {
+    let held = crate::cost::storage(|| replay_lanes::lanes::keyed_witnessed_runs(recording, run, table, source, keys, from, to))?;
+    Ok(held.into_iter().collect())
+}
+
 pub fn covered_runs(
     recording: &Recording,
     run: u32,

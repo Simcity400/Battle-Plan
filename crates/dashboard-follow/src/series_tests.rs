@@ -1,5 +1,5 @@
 
-use crate::{Answer, Identity, Query, State, answer_at};
+use crate::{Answer, Identity, Query, SeriesMode, State, answer_at};
 use dashboard_declare::{Carry, Column, Key, Measure, Series};
 use dashboard_query::{
     coverage::CoverageScope,
@@ -214,7 +214,7 @@ fn value(state: &SeriesState) -> Option<i64> {
 fn a_followed_computed_column_distinguishes_not_applicable_from_unrecorded() {
     let state = query();
     let identity = Identity { holders: Arc::clone(&state.holders), timeline: Arc::clone(&state.timeline) };
-    let followed = Query::Series { series: &RATIO_OF_POWER, measure: &RATIO_OF_POWER.measures[0], countries: vec!["GER".into()], top: None, least: false, parts: false, scope: CoverageScope::Table, identity };
+    let followed = Query::Series { series: &RATIO_OF_POWER, measure: &RATIO_OF_POWER.measures[0], countries: vec!["GER".into()], mode: SeriesMode::Keyed(CoverageScope::Table), identity };
     let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let recorded = (FIRST..ITA_FROM).find(|&hour| power(9001, hour).is_some()).unwrap();
     let unrecorded = (FIRST..ITA_FROM).find(|&hour| power(9001, hour).is_none()).unwrap();
@@ -234,7 +234,7 @@ fn a_followed_computed_column_equals_series_state_at_every_step() {
     assert_eq!(dashboard_declare::field(TableId::Countries, "command_power_raw").unwrap(), COMMAND);
     let state = query();
     let identity = Identity { holders: Arc::clone(&state.holders), timeline: Arc::clone(&state.timeline) };
-    let followed = Query::Series { series: &NEGATED, measure: &NEGATED.measures[0], countries: vec!["GER".into(), "ITA".into()], top: None, least: false, parts: false, scope: CoverageScope::Table, identity };
+    let followed = Query::Series { series: &NEGATED, measure: &NEGATED.measures[0], countries: vec!["GER".into(), "ITA".into()], mode: SeriesMode::Keyed(CoverageScope::Table), identity };
     let line = Line::new(&state, &NEGATED, &NEGATED.measures[0]).unwrap();
     let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let edge = FIRST + UNIT_ORDINALS as i32;
@@ -267,7 +267,7 @@ fn a_followed_series_reads_every_tag_its_holders_name_as_its_top_names_them() {
     let identity = Identity { holders: Arc::clone(&state.holders), timeline: Arc::clone(&state.timeline) };
     let asked = |reads: serde_json::Value| crate::parse::parse(&serde_json::json!({ "product": "series-state",
         "params": { "branchId": "1", "family": { "kind": "country-factories", "measure": "free7" }, "reads": reads } }), &identity);
-    let Ok(Query::Series { countries, top: None, .. }) = asked(serde_json::json!("every")) else { panic!("every holder's tag, unranked") };
+    let Ok(Query::Series { countries, mode: SeriesMode::Keyed(CoverageScope::Table), .. }) = asked(serde_json::json!("every")) else { panic!("every holder's tag, unranked") };
     let tags: Vec<_> = countries.iter().map(|country| country.tag().expect("named by its tag, as a top names its rows")).collect();
     assert_eq!(tags, ["GER", "ITA"]);
     assert!(asked(serde_json::json!("some")).is_err(), "reads names every country or a list");
@@ -285,7 +285,7 @@ fn a_followed_owners_parts_equal_series_state_of_every_part_at_every_step() {
     let columns = dashboard_query::read::columns_of(&dashboard_declare::source(series.table, measure).unwrap());
     let mut compared = 0;
     for top in [None, Some(2)] {
-        let followed = Query::Series { series, measure, countries: vec!["GER".into(), "ITA".into()], top, least: false, parts: true, scope: CoverageScope::Table, identity: identity.clone() };
+        let followed = Query::Series { series, measure, countries: vec!["GER".into(), "ITA".into()], mode: SeriesMode::Parts { top }, identity: identity.clone() };
         for (from, to) in [(FIRST + 880, FIRST + 920), (FIRST + 1_180, FIRST + 1_220), (ITA_FROM - 5, ITA_FROM + 5)] {
             let mut lane = lane(&pages, &followed, columns.clone(), from);
             let mut changes = Changes::default();
@@ -477,7 +477,7 @@ fn a_followed_supply_health_withholds_v1_and_admits_v2_across_step_and_backward_
             Vec::new(),
         ));
         let identity = Identity { holders, timeline };
-        let query = Query::Series { series, measure, countries: vec!["GER".into()], top: None, least: false, parts: false, scope: CoverageScope::Table, identity };
+        let query = Query::Series { series, measure, countries: vec!["GER".into()], mode: SeriesMode::Keyed(CoverageScope::Table), identity };
 
         let follow = Follow::new(0);
         let (send, recv) = mpsc::channel();
@@ -557,7 +557,7 @@ fn golden_slot_and_tag_answers_match_checked_in_fixtures_and_board_reasons() {
     let measure = series.measure("politicalPower").unwrap();
     let identity = Identity { holders: Arc::clone(&state.holders), timeline: Arc::clone(&state.timeline) };
     let countries = vec![Country::Slot(7), Country::Tag("ITA".into())];
-    let followed = Query::Series { series, measure, countries: countries.clone(), top: None, least: false, parts: false, scope: CoverageScope::Table, identity };
+    let followed = Query::Series { series, measure, countries: countries.clone(), mode: SeriesMode::Keyed(CoverageScope::Table), identity };
     let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
 
     let lane_525 = lane(&pages, &followed, vec![POWER], 525);
@@ -836,9 +836,9 @@ fn follow_and_live_cells_apply_witness_rule_and_invalidate_across_swapped_trunca
     let exp_series = dashboard_declare::series("country-experience").unwrap();
     let army = exp_series.measure("army").unwrap();
     let tags = vec!["GER".into(), "ITA".into(), "FRA".into()];
-    let q_scalar = Query::Series { series: exp_series, measure: army, countries: tags.clone(), top: None, least: false, parts: false, scope: CoverageScope::Row, identity: identity.clone() };
-    let q_ratio = Query::Series { series: &RATIO_EXP, measure: &RATIO_EXP.measures[0], countries: tags.clone(), top: None, least: false, parts: false, scope: CoverageScope::Row, identity: identity.clone() };
-    let q_zero = Query::Series { series: &ABSENT_ZERO_EXP, measure: &ABSENT_ZERO_EXP.measures[0], countries: tags.clone(), top: None, least: false, parts: false, scope: CoverageScope::Row, identity: identity.clone() };
+    let q_scalar = Query::Series { series: exp_series, measure: army, countries: tags.clone(), mode: SeriesMode::Keyed(CoverageScope::Row), identity: identity.clone() };
+    let q_ratio = Query::Series { series: &RATIO_EXP, measure: &RATIO_EXP.measures[0], countries: tags.clone(), mode: SeriesMode::Keyed(CoverageScope::Row), identity: identity.clone() };
+    let q_zero = Query::Series { series: &ABSENT_ZERO_EXP, measure: &ABSENT_ZERO_EXP.measures[0], countries: tags.clone(), mode: SeriesMode::Keyed(CoverageScope::Row), identity: identity.clone() };
     let q_table_selected = crate::parse::parse(
         &serde_json::json!({
             "product": "series-state",
@@ -864,9 +864,10 @@ fn follow_and_live_cells_apply_witness_rule_and_invalidate_across_swapped_trunca
         &identity,
     )
     .unwrap();
-    assert!(
-        crate::parse::parse(
-            &serde_json::json!({
+    for (label, bad) in [
+        (
+            "series-state top",
+            serde_json::json!({
                 "product": "series-state",
                 "coverage": "row",
                 "params": {
@@ -875,16 +876,70 @@ fn follow_and_live_cells_apply_witness_rule_and_invalidate_across_swapped_trunca
                     "top": 2,
                 },
             }),
-            &identity,
-        )
-        .is_err(),
-        "ranked queries must reject coverage: row"
-    );
+        ),
+        (
+            "series-state reads: every",
+            serde_json::json!({
+                "product": "series-state",
+                "coverage": "row",
+                "params": {
+                    "branchId": "1",
+                    "family": { "kind": "country-experience", "measure": "army" },
+                    "reads": "every",
+                },
+            }),
+        ),
+        (
+            "army-size top with countries",
+            serde_json::json!({
+                "product": "army-size",
+                "coverage": "row",
+                "params": {
+                    "branchId": "1",
+                    "countries": ["GER", "ITA"],
+                    "top": 1,
+                    "measure": "divisions",
+                    "countFor": "owner",
+                    "byType": false,
+                },
+            }),
+        ),
+        (
+            "air-force-size top with countries",
+            serde_json::json!({
+                "product": "air-force-size",
+                "coverage": "row",
+                "params": {
+                    "branchId": "1",
+                    "countries": ["GER", "ITA"],
+                    "top": 1,
+                    "measure": "wings",
+                    "ownership": "effective",
+                },
+            }),
+        ),
+        (
+            "navy-size top with countries",
+            serde_json::json!({
+                "product": "navy-size",
+                "coverage": "row",
+                "params": {
+                    "branchId": "1",
+                    "countries": ["GER", "ITA"],
+                    "top": 1,
+                    "measure": "strength",
+                    "ownership": "logical",
+                },
+            }),
+        ),
+    ] {
+        assert!(crate::parse::parse(&bad, &identity).is_err(), "{label} must reject coverage: row");
+    }
     let q_top = Query::series_top(exp_series, army, 2, identity.clone());
     let q_all = Query::Cells { table: TableId::CountryExperience.index(), columns: vec![0], rows: Rows::All };
     let q_keys = Query::Cells { table: TableId::CountryExperience.index(), columns: vec![0], rows: Rows::Keys(vec![9001, 9002, 9003]) };
     let res_series = dashboard_declare::series("country-resources").unwrap();
-    let q_parts = Query::Series { series: res_series, measure: res_series.measure("produced").unwrap(), countries: vec!["GER".into()], top: None, least: false, parts: true, scope: CoverageScope::Table, identity: identity.clone() };
+    let q_parts = Query::Series { series: res_series, measure: res_series.measure("produced").unwrap(), countries: vec!["GER".into()], mode: SeriesMode::Parts { top: None }, identity: identity.clone() };
 
     let line_scalar = Line::new(&state, exp_series, army).unwrap();
     let line_ratio = Line::new(&state, &RATIO_EXP, &RATIO_EXP.measures[0]).unwrap();
@@ -967,6 +1022,9 @@ fn follow_and_live_cells_apply_witness_rule_and_invalidate_across_swapped_trunca
         if hour == T_BASE {
             assert_eq!(a_zero.states, [State::Value, State::Value, State::Value]);
             assert_eq!(a_zero.values[2], 0);
+            assert_eq!(exact_board.rows[2].cells[2].value_raw.as_deref(), Some("0"));
+            let exact_zero = line_zero.states(&reads, None).unwrap();
+            assert_eq!(exact_zero[2].missing.as_deref(), Some("FRA's army was not recorded at this hour"));
             assert_eq!(a_keys.states, [State::Value, State::Value, State::NoRow]);
             assert_eq!(a_keys.reason(2), Some(NO_ROW));
         }
@@ -1045,4 +1103,44 @@ fn follow_and_live_cells_apply_witness_rule_and_invalidate_across_swapped_trunca
     assert_eq!(s_t2.reason(0), Some(EXP_TRUNC));
     assert_eq!(l_t2.states, [State::NoRow, State::Value], "swapping witnesses across consecutive truncated hours must invalidate followed live cells");
     assert_eq!(l_t2.reason(0), Some(EXP_TRUNC));
+
+    let table_follow = Follow::new(0);
+    let (t_send, t_recv) = mpsc::channel();
+    let t_sink: Sink = Box::new(move |stats: &StepStats, message: Option<Message>| {
+        let _ = t_send.send((*stats, message));
+    });
+    let t_hook = table_follow.hook(t_sink);
+    let t_settings = PlaySettings { step_threads: 1, fetch_threads: 1, ahead: 32, ring: 8, speed: 1.0, rate: 1.0, ..PlaySettings::default() };
+    let t_playhead = Arc::new(Playhead::new(Arc::clone(&pages), PlayTimeline::whole(&*pages).unwrap(), t_settings, Some(t_hook)).unwrap());
+    let t_reader = t_playhead.declare(Vec::new(), None).unwrap();
+    let mut t_consumer = t_playhead.consumer(t_reader);
+    let t_weak = Arc::downgrade(&t_playhead);
+    table_follow.bind(move |tables, _| t_weak.upgrade().map_or(Ok(()), |playhead| playhead.redeclare(t_reader, tables)), t_playhead.log_reads()).unwrap();
+    table_follow.follow(1, q_top).unwrap();
+    table_follow.follow(2, q_table_selected).unwrap();
+
+    let mut drive_table = |target: i32, seek: bool| -> (StepStats, Option<Message>) {
+        if seek {
+            t_playhead.seek(target);
+        } else {
+            t_playhead.play(1.0);
+        }
+        let mut steps = Vec::new();
+        loop {
+            t_consumer.advance(target);
+            t_consumer.take(target, &mut steps);
+            let (stats, message) = t_recv.recv().unwrap();
+            if stats.last == target {
+                return (stats, message);
+            }
+        }
+    };
+
+    let _ = drive_table(T1 - 1, true);
+    let (t1_stats, _) = drive_table(T1, false);
+    assert!(t1_stats.evaluated > 0, "entering truncated T1 evaluates Table-scoped subscriptions");
+    let (t2_stats, t2_msg) = drive_table(T2, false);
+    assert_eq!(t2_stats.touched, 0, "swapping witnesses across T1 -> T2 must not touch Table-only subscriptions");
+    assert_eq!(t2_stats.evaluated, 0, "swapping witnesses across T1 -> T2 must perform zero evaluations for Table-only subscriptions");
+    assert!(t2_msg.is_none());
 }

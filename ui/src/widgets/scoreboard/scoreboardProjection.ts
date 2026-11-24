@@ -275,13 +275,14 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
         subs.push({ name: RANK_SOURCE, query: { product: 'series-state', params: { branchId: ctx.branch.id, family: rank.family, top, least: descending ? undefined : true } } });
       }
       const reads = top != null ? 'every' : ctx.countries.tags.length ? ctx.countries.tags.map(tag => ({ country: countryFromKey(tag) })) : null;
+      const coverage = top == null ? { coverage: 'row' } : {};
       if (reads) {
         for (const column of shown) {
           if (column.family) {
-            subs.push({ name: column.key, query: { product: 'series-state', params: { branchId: ctx.branch.id, family: column.family, reads } } });
+            subs.push({ name: column.key, query: { product: 'series-state', ...coverage, params: { branchId: ctx.branch.id, family: column.family, reads } } });
           }
           if (column.partial) {
-            subs.push({ name: partialSource(column.key), query: { product: 'series-state', params: { branchId: ctx.branch.id, family: column.partial, reads } } });
+            subs.push({ name: partialSource(column.key), query: { product: 'series-state', ...coverage, params: { branchId: ctx.branch.id, family: column.partial, reads } } });
           }
         }
       }

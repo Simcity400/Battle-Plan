@@ -179,18 +179,22 @@ fn group_values(group: &Group, view: &TableView) -> Vec<CellValue> {
         TableView::NotRecorded { .. } => (Status::NotRecorded, None, None),
         TableView::Unavailable { reason } => (Status::Unavailable { reason: 0 }, Some(reason.as_str()), None),
     };
-    if group.scope == CoverageScope::Table {
-        if let Some(reason) = crate::evaluate::unrecorded(group.table.index(), status, reason) {
+    let complete = matches!(status, Status::Complete);
+    if !complete {
+        if group.scope == CoverageScope::Table {
+            if let Some(reason) = crate::evaluate::unrecorded(group.table.index(), status, reason) {
+                return vec![CellValue::Missing(reason); group.keys.len() * width];
+            }
+        } else if let Coverage::NotRecorded(reason) = row_coverage(group.table, status, reason, rows.is_some()) {
             return vec![CellValue::Missing(reason); group.keys.len() * width];
         }
-    } else if let Coverage::NotRecorded(reason) = row_coverage(group.table, status, reason, rows.is_some()) {
-        return vec![CellValue::Missing(reason); group.keys.len() * width];
     }
     let rows = rows.expect("a readable table view");
     let mut out = Vec::with_capacity(group.keys.len() * width);
     for &key in &group.keys {
         let row = find(rows, key);
-        if group.scope == CoverageScope::Row
+        if !complete
+            && group.scope == CoverageScope::Row
             && let Coverage::NotRecorded(reason) = row_coverage(group.table, status, reason, row.is_some())
         {
             out.extend(std::iter::repeat_n(CellValue::Missing(reason), width));

@@ -174,8 +174,35 @@ pub fn keyed_runs(
     from: i32,
     to: i32,
 ) -> io::Result<HashMap<u128, Runs, foldhash::fast::RandomState>> {
+    collect_keyed_runs(recording, run, table, source, keys, from, to, crate::points::points)
+}
+
+pub fn keyed_witnessed_runs(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    source: summary::Source,
+    keys: Option<&[u128]>,
+    from: i32,
+    to: i32,
+) -> io::Result<HashMap<u128, Runs, foldhash::fast::RandomState>> {
+    collect_keyed_runs(recording, run, table, source, keys, from, to, crate::points::witnessed_points)
+}
+
+type PointWalker = fn(&Recording, u32, TableId, &[usize], Option<summary::Source>, Keys<'_>, i32, i32, &mut dyn FnMut(crate::points::Point) -> bool) -> io::Result<()>;
+
+fn collect_keyed_runs(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    source: summary::Source,
+    keys: Option<&[u128]>,
+    from: i32,
+    to: i32,
+    walk: PointWalker,
+) -> io::Result<HashMap<u128, Runs, foldhash::fast::RandomState>> {
     let mut held: HashMap<u128, Runs, foldhash::fast::RandomState> = HashMap::default();
-    crate::points::points(recording, run, table, &inputs(source), Some(source), keys.map_or(Keys::All, Keys::These), from, to, &mut |point| {
+    walk(recording, run, table, &inputs(source), Some(source), keys.map_or(Keys::All, Keys::These), from, to, &mut |point| {
         let runs = held.entry(point.key).or_default();
         let value = if point.covered { point.value } else { None };
         match runs.last_mut() {

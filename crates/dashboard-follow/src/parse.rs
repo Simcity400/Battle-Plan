@@ -1,7 +1,7 @@
 
 use crate::{
     invalid,
-    query::{Identity, Query},
+    query::{Identity, Query, SeriesMode},
 };
 use dashboard_declare::Series;
 use dashboard_query::{coverage::CoverageScope, identity::Country};
@@ -26,6 +26,9 @@ pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
             let mut tags: Vec<Country> = Vec::new();
             match params.get("reads") {
                 Some(Value::String(word)) if word == "every" => {
+                    if scope == CoverageScope::Row {
+                        return Err(invalid("Row coverage is only for an explicit list of countries, not every country"));
+                    }
                     tags = identity.holders.tags.keys().map(|tag| Country::Tag(tag.clone())).collect();
                 }
                 Some(Value::String(word)) => return Err(invalid(format!("A followed series reads every country or a list of reads, not {word}"))),
@@ -61,10 +64,15 @@ pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
             if top.is_some() && !parts {
                 return Err(invalid(format!("{} ranks its countries by a top naming no tag", series.kind)));
             }
-            if scope == CoverageScope::Row && (top.is_some() || parts) {
-                return Err(invalid("Row coverage is only for keyed non-ranked series reads"));
-            }
-            Ok(Query::Series { series, measure, countries: tags, top, least: false, parts, scope, identity: identity.clone() })
+            let mode = if parts {
+                if scope == CoverageScope::Row {
+                    return Err(invalid("Row coverage is only for keyed non-ranked series reads"));
+                }
+                SeriesMode::Parts { top }
+            } else {
+                SeriesMode::Keyed(scope)
+            };
+            Ok(Query::Series { series, measure, countries: tags, mode, identity: identity.clone() })
         }
         "log-page" => {
             if scope == CoverageScope::Row {
@@ -97,15 +105,14 @@ pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
             };
             let measure = measure(series, name)?;
             let tags = countries(params.get("countries"))?;
+            let has_top = params.get("top").is_some_and(|top| !top.is_null());
+            if scope == CoverageScope::Row && has_top {
+                return Err(invalid("Row coverage is only for keyed non-ranked series reads"));
+            }
             let top = params.get("top").and_then(Value::as_u64).and_then(|top| usize::try_from(top).ok());
             match (tags.is_empty(), top) {
-                (true, Some(n)) if n >= 1 => {
-                    if scope == CoverageScope::Row {
-                        return Err(invalid("Row coverage is only for keyed non-ranked series reads"));
-                    }
-                    Ok(Query::series_top(series, measure, n, identity.clone()))
-                }
-                (false, _) => Ok(Query::Series { series, measure, countries: tags, top: None, least: false, parts: false, scope, identity: identity.clone() }),
+                (true, Some(n)) if n >= 1 => Ok(Query::series_top(series, measure, n, identity.clone())),
+                (false, _) => Ok(Query::Series { series, measure, countries: tags, mode: SeriesMode::Keyed(scope), identity: identity.clone() }),
                 _ => Err(invalid("A followed army size names a country or more, or a top of one row or more")),
             }
         }
@@ -124,15 +131,14 @@ pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
             let series = dashboard_declare::series(kind).ok_or_else(|| invalid(format!("{kind} is not declared")))?;
             let measure = measure(series, name)?;
             let tags = countries(params.get("countries"))?;
+            let has_top = params.get("top").is_some_and(|top| !top.is_null());
+            if scope == CoverageScope::Row && has_top {
+                return Err(invalid("Row coverage is only for keyed non-ranked series reads"));
+            }
             let top = params.get("top").and_then(Value::as_u64).and_then(|top| usize::try_from(top).ok());
             match (tags.is_empty(), top) {
-                (true, Some(n)) if n >= 1 => {
-                    if scope == CoverageScope::Row {
-                        return Err(invalid("Row coverage is only for keyed non-ranked series reads"));
-                    }
-                    Ok(Query::series_top(series, measure, n, identity.clone()))
-                }
-                (false, _) => Ok(Query::Series { series, measure, countries: tags, top: None, least: false, parts: false, scope, identity: identity.clone() }),
+                (true, Some(n)) if n >= 1 => Ok(Query::series_top(series, measure, n, identity.clone())),
+                (false, _) => Ok(Query::Series { series, measure, countries: tags, mode: SeriesMode::Keyed(scope), identity: identity.clone() }),
                 _ => Err(invalid(format!("A followed {product} names a country or more, or a top of one row or more"))),
             }
         }

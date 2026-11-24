@@ -499,6 +499,7 @@ fn read<L: Look>(
     keys: Keys<'_>,
     (from, to): (i32, i32),
     look: impl FnOnce(Vec<usize>, Vec<Kind>) -> L,
+    initial_witness: bool,
     mut complete: Option<&mut Vec<(i32, i32)>>,
     each: &mut dyn FnMut(i32, u128, &L::State) -> bool,
 ) -> io::Result<(Vec<usize>, Vec<Box<[u8]>>)> {
@@ -548,7 +549,11 @@ fn read<L: Look>(
                 push_complete(out, from, from);
             }
             let view = reader.view();
-            let read = reader.read_rows();
+            let read = if first == 0 && !initial_witness && matches!(reader.status(), Status::Truncated { .. }) {
+                Some(&[][..])
+            } else {
+                reader.read_rows()
+            };
             let available = reader.available();
             let mut start: Vec<(u128, L::State)> = Vec::new();
             let mut state = |key: u128, slot: Option<u32>| -> io::Result<()> {
@@ -656,6 +661,32 @@ pub fn points(
         keys,
         (from, to),
         |columns, kinds| Valued { columns, kinds, source, texts: Texts::default(), values: Vec::new() },
+        false,
+        None,
+        &mut |hour, key, &(covered, value): &(bool, Option<i64>)| each(Point { hour, key, covered, value }),
+    )?;
+    Ok(())
+}
+
+pub fn witnessed_points(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    columns: &[usize],
+    source: Option<summary::Source>,
+    keys: Keys<'_>,
+    from: i32,
+    to: i32,
+    each: &mut dyn FnMut(Point) -> bool,
+) -> io::Result<()> {
+    read(
+        recording,
+        (run, table),
+        columns,
+        keys,
+        (from, to),
+        |columns, kinds| Valued { columns, kinds, source, texts: Texts::default(), values: Vec::new() },
+        true,
         None,
         &mut |hour, key, &(covered, value): &(bool, Option<i64>)| each(Point { hour, key, covered, value }),
     )?;
@@ -681,6 +712,7 @@ pub fn points_with_complete(
         keys,
         (from, to),
         |columns, kinds| Valued { columns, kinds, source, texts: Texts::default(), values: Vec::new() },
+        true,
         Some(&mut complete),
         &mut |hour, key, &(covered, value): &(bool, Option<i64>)| each(Point { hour, key, covered, value }),
     )?;
@@ -704,6 +736,7 @@ pub fn cells(
         keys,
         (from, to),
         |columns, kinds| Celled { columns, kinds, texts: Texts::default() },
+        false,
         None,
         &mut |hour, key, cells: &Option<Box<[Cell]>>| each(hour, key, cells.as_deref()),
     )

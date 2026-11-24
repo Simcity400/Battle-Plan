@@ -1199,9 +1199,24 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     fn key_runs(&self, run: u32, keys: &[u128], from: i32, to: i32) -> io::Result<HashMap<u128, read::Runs>> {
+        self.key_runs_with(run, keys, from, to, read::runs)
+    }
+
+    fn key_runs_witnessed(&self, run: u32, keys: &[u128], from: i32, to: i32) -> io::Result<HashMap<u128, read::Runs>> {
+        self.key_runs_with(run, keys, from, to, read::witnessed_runs)
+    }
+
+    fn key_runs_with(
+        &self,
+        run: u32,
+        keys: &[u128],
+        from: i32,
+        to: i32,
+        fetch: fn(&replay_recording::columnar_frames::Recording, u32, TableId, Source, Option<&[u128]>, i32, i32) -> io::Result<HashMap<u128, read::Runs>>,
+    ) -> io::Result<HashMap<u128, read::Runs>> {
         let recording = self.query.replay.recording();
         let Some(plan) = self.alias_plan(run, keys, from, to)? else {
-            return read::runs(recording, run, self.series.table, self.source, Some(keys), from, to);
+            return fetch(recording, run, self.series.table, self.source, Some(keys), from, to);
         };
         let complete: Vec<(i32, i32)> = self
             .statuses(run, from, to)?
@@ -1210,7 +1225,7 @@ impl<'q, 'a> Line<'q, 'a> {
             .map(|held| (held.first.max(from), held.last.min(to)))
             .collect();
         let table = u128::from(self.series.table.index() as u32) << 32;
-        let held = read::runs(recording, run, self.series.table, self.source, Some(&plan.rows), from, to)?;
+        let held = fetch(recording, run, self.series.table, self.source, Some(&plan.rows), from, to)?;
         let sample = dashboard_declare::field(TableId::SliceReads, "sample_hour")?;
         let reads = read::runs(recording, run, TableId::SliceReads, Source::Cell(sample), Some(&plan.owners), from, to)?;
         let mut out = HashMap::with_capacity(plan.wanted.len());
@@ -1265,6 +1280,20 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     pub(crate) fn hourly_runs(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32) -> io::Result<Vec<(Vec<ChartRun>, Vec<Part>)>> {
+        self.collect_hourly_runs(drawn, from, to, Self::key_runs)
+    }
+
+    pub(crate) fn hourly_runs_for_tile(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32) -> io::Result<Vec<(Vec<ChartRun>, Vec<Part>)>> {
+        self.collect_hourly_runs(drawn, from, to, Self::key_runs_witnessed)
+    }
+
+    fn collect_hourly_runs(
+        &self,
+        drawn: &[(Ask, Vec<(i32, i32)>)],
+        from: i32,
+        to: i32,
+        fetch: fn(&Self, u32, &[u128], i32, i32) -> io::Result<HashMap<u128, read::Runs>>,
+    ) -> io::Result<Vec<(Vec<ChartRun>, Vec<Part>)>> {
         let (held, parts) = self.drawn_parts(drawn, from, to);
         let parts: Vec<Vec<Part>> = parts.into_iter().map(|group| group.into_iter().filter_map(|part| self.valid_part(&part)).collect()).collect();
         let mut by_run: HashMap<u32, (Vec<u128>, i32, i32)> = HashMap::new();
@@ -1278,7 +1307,7 @@ impl<'q, 'a> Line<'q, 'a> {
         for (run, (mut keys, first, last)) in by_run {
             keys.sort_unstable();
             keys.dedup();
-            read.insert(run, self.key_runs(run, &keys, first, last)?);
+            read.insert(run, fetch(self, run, &keys, first, last)?);
         }
         let scale = self.scale();
         let mut out = Vec::with_capacity(drawn.len());
@@ -1327,28 +1356,14 @@ impl<'q, 'a> Line<'q, 'a> {
         (held, cut)
     }
 
-    pub(crate) fn binned(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32, level: u8, bin_hours: i64) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>)>> {
-        self.binned_scoped(drawn, from, to, level, bin_hours, crate::coverage::CoverageScope::Table)
-    }
-
-    pub(crate) fn binned_scoped(
+    fn read_binned_extents(
         &self,
         drawn: &[(Ask, Vec<(i32, i32)>)],
         from: i32,
         to: i32,
         level: u8,
         bin_hours: i64,
-        scope: crate::coverage::CoverageScope,
-    ) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>)>> {
-        if self.query.replay.recording().withheld_reason(self.series.table.index()).is_some() {
-            let (held, _) = self.drawn_parts(drawn, from, to);
-            let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
-            let bins = ((i64::from(to) - first_bin) / bin_hours + 1) as usize;
-            return Ok(held.into_iter().map(|parts| (vec![None; bins], parts)).collect());
-        }
-        if dashboard_declare::read_by_key(self.series.table) {
-            return self.binned_from_runs(drawn, from, to, bin_hours, scope);
-        }
+    ) -> io::Result<(Vec<Vec<Part>>, Vec<Vec<Part>>, HashMap<u32, Vec<(i32, i32)>>, HashMap<(u32, i32, i32), Vec<ExtentRead>>)> {
         let (held, raw_parts) = self.drawn_parts(drawn, from, to);
         let parts: Vec<Vec<Part>> = raw_parts.into_iter().map(|group| group.into_iter().filter_map(|part| self.valid_part(&part)).collect()).collect();
         let mut covered: HashMap<u32, Vec<(i32, i32)>> = HashMap::new();
@@ -1365,14 +1380,11 @@ impl<'q, 'a> Line<'q, 'a> {
                 joins
             });
         }
-        let span_of = |part: &Part| {
-            let spans = &covered[&part.run];
-            spans[spans.partition_point(|span| span.1 < part.first)]
-        };
         let held_by = self.held_by_owner();
         let mut extents: HashMap<(u32, i32, i32), Vec<u128>> = HashMap::new();
         for part in parts.iter().flatten() {
-            let span = span_of(part);
+            let spans = &covered[&part.run];
+            let span = spans[spans.partition_point(|span| span.1 < part.first)];
             let extent = match self.shared_edge(part, span, bin_hours, &held_by) {
                 true => (part.run, part.first, part.last),
                 false => (part.run, span.0, span.1),
@@ -1386,8 +1398,87 @@ impl<'q, 'a> Line<'q, 'a> {
             let (run, first, last) = extent;
             read.insert(extent, self.charts_within(run, &keys, (first, last), level, bin_hours)?);
         }
+        Ok((held, parts, covered, read))
+    }
+
+    pub(crate) fn binned(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32, level: u8, bin_hours: i64) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>)>> {
+        if self.query.replay.recording().withheld_reason(self.series.table.index()).is_some() {
+            let (held, _) = self.drawn_parts(drawn, from, to);
+            let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
+            let bins = ((i64::from(to) - first_bin) / bin_hours + 1) as usize;
+            return Ok(held.into_iter().map(|parts| (vec![None; bins], parts)).collect());
+        }
+        if dashboard_declare::read_by_key(self.series.table) {
+            return self.binned_from_runs_table(drawn, from, to, bin_hours);
+        }
+        let (held, parts, covered, read) = self.read_binned_extents(drawn, from, to, level, bin_hours)?;
+        let span_of = |part: &Part| {
+            let spans = &covered[&part.run];
+            spans[spans.partition_point(|span| span.1 < part.first)]
+        };
+        let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
+        let bins = ((i64::from(to) - first_bin) / bin_hours + 1) as usize;
+        let mut out = Vec::with_capacity(drawn.len());
+        for (parts, held) in parts.iter().zip(held) {
+            let mut buckets: Vec<Option<ChartBucket>> = vec![None; bins];
+            for part in parts {
+                let own = read.get(&(part.run, part.first, part.last)).filter(|reads| reads.iter().any(|read| read.index.contains_key(&part.key)));
+                let span = span_of(part);
+                let Some(reads) = own.or_else(|| read.get(&(part.run, span.0, span.1))) else { continue };
+                let mut previous = false;
+                for (slot, bucket) in self.fold_reads(reads, part.key, (part.first, part.last), level, first_bin, bin_hours, bins).into_iter().enumerate() {
+                    let Some(bucket) = bucket else {
+                        previous = false;
+                        continue;
+                    };
+                    let start = first_bin + slot as i64 * bin_hours;
+                    let now = ChartBucket { first_break: !previous || (part.starts && i64::from(part.first) >= start), ..bucket };
+                    buckets[slot] = match buckets[slot].take() {
+                        None => Some(now),
+                        Some(held) => crate::chart::merge(Some(held), Some(now)),
+                    };
+                    previous = true;
+                }
+            }
+            for (slot, bucket) in buckets.iter_mut().enumerate() {
+                if bucket.is_none() {
+                    continue;
+                }
+                let lo = (first_bin + slot as i64 * bin_hours).max(i64::from(from)) as i32;
+                let hi = (first_bin + (slot as i64 + 1) * bin_hours - 1).min(i64::from(to)) as i32;
+                if self.overlaps_withheld(&held, lo, hi) {
+                    *bucket = None;
+                }
+            }
+            out.push((buckets, held));
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn binned_for_tile(
+        &self,
+        drawn: &[(Ask, Vec<(i32, i32)>)],
+        from: i32,
+        to: i32,
+        level: u8,
+        bin_hours: i64,
+    ) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>)>> {
+        if self.query.replay.recording().withheld_reason(self.series.table.index()).is_some() {
+            let (held, _) = self.drawn_parts(drawn, from, to);
+            let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
+            let bins = ((i64::from(to) - first_bin) / bin_hours + 1) as usize;
+            return Ok(held.into_iter().map(|parts| (vec![None; bins], parts)).collect());
+        }
+        if dashboard_declare::read_by_key(self.series.table) {
+            return self.binned_from_runs_for_tile(drawn, from, to, bin_hours);
+        }
+        let (held, parts, covered, read) = self.read_binned_extents(drawn, from, to, level, bin_hours)?;
+        let span_of = |part: &Part| {
+            let spans = &covered[&part.run];
+            spans[spans.partition_point(|span| span.1 < part.first)]
+        };
         let mut run_incomplete: HashSet<u32> = HashSet::new();
-        if scope == crate::coverage::CoverageScope::Row && !covered.is_empty() {
+        if !covered.is_empty() {
             let mut held_spans: HashMap<u32, (i32, i32)> = HashMap::new();
             for part in held.iter().flatten().filter_map(|part| self.valid_part(part)) {
                 if !covered.contains_key(&part.run) {
@@ -1408,6 +1499,10 @@ impl<'q, 'a> Line<'q, 'a> {
                 }
             }
         }
+        if !run_incomplete.is_empty() {
+            let batch: Vec<&Part> = held.iter().flatten().filter(|part| run_incomplete.contains(&part.run)).collect();
+            self.prefetch_unwitnessed(&batch, from, to)?;
+        }
         let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
         let bins = ((i64::from(to) - first_bin) / bin_hours + 1) as usize;
         let mut out = Vec::with_capacity(drawn.len());
@@ -1417,9 +1512,9 @@ impl<'q, 'a> Line<'q, 'a> {
                 let own = read.get(&(part.run, part.first, part.last)).filter(|reads| reads.iter().any(|read| read.index.contains_key(&part.key)));
                 let span = span_of(part);
                 let Some(reads) = own.or_else(|| read.get(&(part.run, span.0, span.1))) else { continue };
-                let part_gaps: Vec<(i32, i32)> = if scope == crate::coverage::CoverageScope::Row && run_incomplete.contains(&part.run) {
+                let part_gaps: Vec<(i32, i32)> = if run_incomplete.contains(&part.run) {
                     let mut missing = Vec::new();
-                    self.part_coverage(part, part.first, part.last, crate::coverage::CoverageScope::Row, &mut missing)?;
+                    self.part_coverage_row(part, part.first, part.last, &mut missing)?;
                     missing.into_iter().map(|gap| (gap.first_hour, gap.last_hour)).collect()
                 } else {
                     Vec::new()
@@ -1652,67 +1747,100 @@ impl<'q, 'a> Line<'q, 'a> {
         meets(before) || meets(after)
     }
 
-    fn binned_from_runs(
+    fn fold_run_buckets(&self, runs: Vec<ChartRun>, first_bin: i64, bin_hours: i64, bins: usize) -> Vec<Option<ChartBucket>> {
+        let scale = self.scale();
+        let mut buckets: Vec<Option<ChartBucket>> = vec![None; bins];
+        for run in runs {
+            let raw = (run.value * scale).round().abs() as u128;
+            let mut at = i64::from(run.first_hour);
+            while at <= i64::from(run.last_hour) {
+                let slot = (at - first_bin).div_euclid(bin_hours);
+                let end = (first_bin + (slot + 1) * bin_hours - 1).min(i64::from(run.last_hour));
+                let Some(bucket) = usize::try_from(slot).ok().and_then(|slot| buckets.get_mut(slot)) else { break };
+                let (first, last) = (at as i32, end as i32);
+                let now = ChartBucket {
+                    absolute_total: raw * (end - at + 1) as u128,
+                    first_hour: first,
+                    last_hour: last,
+                    first_value: run.value,
+                    last_value: run.value,
+                    last_value_hour: first,
+                    min_hour: first,
+                    min_value: run.value,
+                    max_hour: first,
+                    max_value: run.value,
+                    first_break: first == run.first_hour && run.break_before,
+                    has_break: false,
+                };
+                *bucket = match bucket.take() {
+                    None => Some(now),
+                    Some(held) => crate::chart::merge(Some(held), Some(now)),
+                };
+                at = end + 1;
+            }
+        }
+        buckets
+    }
+
+    fn binned_from_runs_table(
         &self,
         drawn: &[(Ask, Vec<(i32, i32)>)],
         from: i32,
         to: i32,
         bin_hours: i64,
-        scope: crate::coverage::CoverageScope,
     ) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>)>> {
         let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
         let bins = ((i64::from(to) - first_bin) / bin_hours + 1) as usize;
-        let scale = self.scale();
         let mut out = Vec::with_capacity(drawn.len());
         for (runs, held) in self.hourly_runs(drawn, from, to)? {
-            let mut buckets: Vec<Option<ChartBucket>> = vec![None; bins];
-            for run in runs {
-                let raw = (run.value * scale).round().abs() as u128;
-                let mut at = i64::from(run.first_hour);
-                while at <= i64::from(run.last_hour) {
-                    let slot = (at - first_bin).div_euclid(bin_hours);
-                    let end = (first_bin + (slot + 1) * bin_hours - 1).min(i64::from(run.last_hour));
-                    let Some(bucket) = usize::try_from(slot).ok().and_then(|slot| buckets.get_mut(slot)) else { break };
-                    let (first, last) = (at as i32, end as i32);
-                    let now = ChartBucket {
-                        absolute_total: raw * (end - at + 1) as u128,
-                        first_hour: first,
-                        last_hour: last,
-                        first_value: run.value,
-                        last_value: run.value,
-                        last_value_hour: first,
-                        min_hour: first,
-                        min_value: run.value,
-                        max_hour: first,
-                        max_value: run.value,
-                        first_break: first == run.first_hour && run.break_before,
-                        has_break: false,
-                    };
-                    *bucket = match bucket.take() {
-                        None => Some(now),
-                        Some(held) => crate::chart::merge(Some(held), Some(now)),
-                    };
-                    at = end + 1;
+            let mut buckets = self.fold_run_buckets(runs, first_bin, bin_hours, bins);
+            for (slot, bucket) in buckets.iter_mut().enumerate() {
+                if bucket.is_none() {
+                    continue;
+                }
+                let lo = (first_bin + slot as i64 * bin_hours).max(i64::from(from)) as i32;
+                let hi = (first_bin + (slot as i64 + 1) * bin_hours - 1).min(i64::from(to)) as i32;
+                if self.overlaps_withheld(&held, lo, hi) {
+                    *bucket = None;
                 }
             }
-            if scope == crate::coverage::CoverageScope::Row {
-                let mut part_gaps: Vec<(i32, i32)> = Vec::new();
-                for part in &held {
-                    let mut missing = Vec::new();
-                    self.part_coverage(part, from, to, crate::coverage::CoverageScope::Row, &mut missing)?;
-                    part_gaps.extend(missing.into_iter().map(|gap| (gap.first_hour, gap.last_hour)));
-                }
-                if !part_gaps.is_empty() {
-                    for (slot, bucket) in buckets.iter_mut().enumerate() {
-                        let Some(bucket) = bucket else { continue };
-                        let lo = (first_bin + slot as i64 * bin_hours).max(i64::from(from)) as i32;
-                        let hi = (first_bin + (slot as i64 + 1) * bin_hours - 1).min(i64::from(to)) as i32;
-                        if part_gaps.iter().any(|&(ga, gb)| ga <= hi && lo <= gb) {
-                            bucket.has_break = true;
-                        }
-                        if lo > from && part_gaps.iter().any(|&(ga, gb)| ga <= lo - 1 && lo - 1 <= gb) {
-                            bucket.first_break = true;
-                        }
+            out.push((buckets, held));
+        }
+        Ok(out)
+    }
+
+    fn binned_from_runs_for_tile(
+        &self,
+        drawn: &[(Ask, Vec<(i32, i32)>)],
+        from: i32,
+        to: i32,
+        bin_hours: i64,
+    ) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>)>> {
+        let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
+        let bins = ((i64::from(to) - first_bin) / bin_hours + 1) as usize;
+        let found = self.hourly_runs_for_tile(drawn, from, to)?;
+        let all_parts: Vec<&Part> = found.iter().flat_map(|(_, held)| held.iter()).collect();
+        self.prefetch_unwitnessed(&all_parts, from, to)?;
+        let mut out = Vec::with_capacity(drawn.len());
+        for ((_, spans), (runs, held)) in drawn.iter().zip(found) {
+            let mut buckets = self.fold_run_buckets(runs, first_bin, bin_hours, bins);
+            let mut raw_gaps: Vec<(i32, i32)> = Vec::new();
+            for part in &held {
+                let mut missing = Vec::new();
+                self.part_coverage_row(part, from, to, &mut missing)?;
+                raw_gaps.extend(missing.into_iter().map(|gap| (gap.first_hour, gap.last_hour)));
+            }
+            let part_gaps = meet(&union(raw_gaps), spans);
+            if !part_gaps.is_empty() {
+                for (slot, bucket) in buckets.iter_mut().enumerate() {
+                    let Some(bucket) = bucket else { continue };
+                    let lo = (first_bin + slot as i64 * bin_hours).max(i64::from(from)) as i32;
+                    let hi = (first_bin + (slot as i64 + 1) * bin_hours - 1).min(i64::from(to)) as i32;
+                    if part_gaps.iter().any(|&(ga, gb)| ga <= hi && lo <= gb) {
+                        bucket.has_break = true;
+                    }
+                    if lo > from && part_gaps.iter().any(|&(ga, gb)| ga <= lo - 1 && lo - 1 <= gb) {
+                        bucket.first_break = true;
                     }
                 }
             }
@@ -1732,15 +1860,25 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     pub fn missing(&self, country: impl Into<Country>, from: i32, to: i32, parts: &[Part]) -> io::Result<Vec<MissingSpan>> {
-        self.missing_scoped(country, from, to, parts, crate::coverage::CoverageScope::Table)
+        self.collect_missing(country.into(), from, to, parts, Self::part_coverage_table)
     }
 
-    pub(crate) fn missing_scoped(&self, country: impl Into<Country>, from: i32, to: i32, parts: &[Part], scope: crate::coverage::CoverageScope) -> io::Result<Vec<MissingSpan>> {
-        let country = &country.into();
-        let mut out = self.unheld(country, from, to, parts);
-        let rowless = format!("{}'s {} was not recorded here", self.query.holders.name(country, to), self.measure.name);
+    pub(crate) fn missing_for_tile(&self, country: impl Into<Country>, from: i32, to: i32, parts: &[Part]) -> io::Result<Vec<MissingSpan>> {
+        self.collect_missing(country.into(), from, to, parts, Self::part_coverage_row)
+    }
+
+    fn collect_missing(
+        &self,
+        country: Country,
+        from: i32,
+        to: i32,
+        parts: &[Part],
+        coverage: fn(&Self, &Part, i32, i32, &mut Vec<MissingSpan>) -> io::Result<Vec<(i64, i64)>>,
+    ) -> io::Result<Vec<MissingSpan>> {
+        let mut out = self.unheld(&country, from, to, parts);
+        let rowless = format!("{}'s {} was not recorded here", self.query.holders.name(&country, to), self.measure.name);
         for part in parts {
-            let complete = self.part_coverage(part, from, to, scope, &mut out)?;
+            let complete = coverage(self, part, from, to, &mut out)?;
             if complete.is_empty() {
                 continue;
             }
@@ -1759,79 +1897,139 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(joined(out))
     }
 
-    fn witnessed_spans(&self, run: u32, key: u128, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
-        let Some(plan) = self.alias_plan(run, &[key], first, last)? else {
-            let mut out: Vec<(i32, i32)> = Vec::new();
-            let mut open: Option<i32> = None;
+    fn complement_gaps(witnessed: &[(i32, i32)], first: i32, last: i32) -> Vec<(i32, i32)> {
+        let mut gaps: Vec<(i32, i32)> = Vec::new();
+        let mut cursor = first;
+        for &(wa, wb) in witnessed {
+            if wa > cursor {
+                gaps.push((cursor, wa - 1));
+            }
+            cursor = wb.saturating_add(1);
+        }
+        if cursor <= last {
+            gaps.push((cursor, last));
+        }
+        gaps
+    }
+
+    fn cache_unwitnessed_batch(&self, run: u32, keys: &[u128], first: i32, last: i32) -> io::Result<()> {
+        if keys.is_empty() || first > last {
+            return Ok(());
+        }
+        let mut by_key: HashMap<u128, (Option<i32>, Vec<(i32, i32)>)> = HashMap::new();
+        let plan = self.alias_plan(run, keys, first, last)?;
+        let walk_keys: &[u128] = match &plan {
+            Some(plan) => &plan.rows,
+            None => keys,
+        };
+        if !walk_keys.is_empty() {
             crate::cost::storage(|| {
-                replay_lanes::points::points(
+                replay_lanes::points::witnessed_points(
                     self.query.replay.recording(),
                     run,
                     self.series.table,
                     &[],
                     None,
-                    read::Keys::These(&[key]),
+                    read::Keys::These(walk_keys),
                     first,
                     last,
                     &mut |point| {
-                        if point.key != key {
-                            return true;
-                        }
+                        let (open, spans) = by_key.entry(point.key).or_default();
                         if point.covered {
                             open.get_or_insert(point.hour);
                         } else if let Some(start) = open.take()
                             && start < point.hour
                         {
-                            out.push((start, point.hour - 1));
+                            spans.push((start, point.hour - 1));
                         }
                         true
                     },
                 )
             })?;
-            if let Some(start) = open {
-                out.push((start, last));
+            for (open, spans) in by_key.values_mut() {
+                if let Some(start) = open.take() {
+                    spans.push((start, last));
+                }
             }
-            return Ok(out);
-        };
-        if plan.rows.is_empty() {
-            return Ok(Vec::new());
         }
-        let mut by_key: HashMap<u128, (Option<i32>, Vec<(i32, i32)>)> = HashMap::new();
-        crate::cost::storage(|| {
-            replay_lanes::points::points(
-                self.query.replay.recording(),
-                run,
-                self.series.table,
-                &[],
-                None,
-                read::Keys::These(&plan.rows),
-                first,
-                last,
-                &mut |point| {
-                    let (open, spans) = by_key.entry(point.key).or_default();
-                    if point.covered {
-                        open.get_or_insert(point.hour);
-                    } else if let Some(start) = open.take()
-                        && start < point.hour
-                    {
-                        spans.push((start, point.hour - 1));
+        let mut unread = self.unread.lock().unwrap_or_else(PoisonError::into_inner);
+        match plan {
+            None => {
+                for &key in keys {
+                    let witnessed = by_key.get(&key).map_or(&[][..], |(_, spans)| spans.as_slice());
+                    let gaps = Self::complement_gaps(witnessed, first, last);
+                    unread.unwitnessed.entry((run, key)).or_default().push((first, last, Arc::new(gaps)));
+                }
+            }
+            Some(plan) => {
+                for (key, _, listed) in plan.wanted {
+                    let mut out: Vec<(i32, i32)> = Vec::new();
+                    for (row, spans) in &listed {
+                        if let Some((_, covered)) = by_key.get(row) {
+                            out.extend(meet(covered, spans));
+                        }
                     }
-                    true
-                },
-            )
-        })?;
-        for (open, spans) in by_key.values_mut() {
-            if let Some(start) = open.take() {
-                spans.push((start, last));
+                    let witnessed = union(out);
+                    let gaps = Self::complement_gaps(&witnessed, first, last);
+                    unread.unwitnessed.entry((run, key)).or_default().push((first, last, Arc::new(gaps)));
+                }
             }
         }
-        let mut out: Vec<(i32, i32)> = Vec::new();
-        for (row, spans) in &plan.wanted[0].2 {
-            if let Some((_, covered)) = by_key.get(row) {
-                out.extend(meet(covered, spans));
+        Ok(())
+    }
+
+    pub(crate) fn prefetch_unwitnessed(&self, parts: &[&Part], from: i32, to: i32) -> io::Result<()> {
+        let mut by_run: HashMap<u32, (i32, i32, Vec<(u128, i32, i32)>)> = HashMap::new();
+        for part in parts {
+            let (mut first, last) = (part.first.max(from), part.last.min(to));
+            if first > last {
+                continue;
+            }
+            if let Some((_, w_last, _)) = self.withheld_span(part.run, first, last) {
+                first = w_last.saturating_add(1);
+                if first > last {
+                    continue;
+                }
+            }
+            by_run
+                .entry(part.run)
+                .and_modify(|entry| {
+                    entry.0 = entry.0.min(first);
+                    entry.1 = entry.1.max(last);
+                    entry.2.push((part.key, first, last));
+                })
+                .or_insert_with(|| (first, last, vec![(part.key, first, last)]));
+        }
+        for (run, (min_first, max_last, items)) in by_run {
+            let statuses = self.statuses(run, min_first, max_last)?;
+            for held in statuses.iter().filter(|held| held.last >= min_first && held.first <= max_last && matches!(held.status, Status::Truncated { .. })) {
+                let (a, b) = (held.first.max(min_first), held.last.min(max_last));
+                if a > b {
+                    continue;
+                }
+                let mut keys: Vec<u128> = {
+                    let unread = self.unread.lock().unwrap_or_else(PoisonError::into_inner);
+                    items
+                        .iter()
+                        .filter(|&&(key, pf, pl)| {
+                            pf <= b
+                                && a <= pl
+                                && !unread
+                                    .unwitnessed
+                                    .get(&(run, key))
+                                    .is_some_and(|cached| cached.iter().any(|&(ca, cb, _)| ca <= a && b <= cb))
+                        })
+                        .map(|&(key, ..)| key)
+                        .collect()
+                };
+                keys.sort_unstable();
+                keys.dedup();
+                if !keys.is_empty() {
+                    self.cache_unwitnessed_batch(run, &keys, a, b)?;
+                }
             }
         }
-        Ok(union(out))
+        Ok(())
     }
 
     fn unwitnessed_spans(&self, run: u32, key: u128, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
@@ -1851,29 +2049,25 @@ impl<'q, 'a> Line<'q, 'a> {
                 })
                 .collect());
         }
-        let witnessed = self.witnessed_spans(run, key, first, last)?;
-        let mut gaps: Vec<(i32, i32)> = Vec::new();
-        let mut cursor = first;
-        for (wa, wb) in witnessed {
-            if wa > cursor {
-                gaps.push((cursor, wa - 1));
-            }
-            cursor = wb.saturating_add(1);
-        }
-        if cursor <= last {
-            gaps.push((cursor, last));
-        }
-        self.unread
+        self.cache_unwitnessed_batch(run, &[key], first, last)?;
+        let cached = self
+            .unread
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .unwitnessed
-            .entry((run, key))
-            .or_default()
-            .push((first, last, Arc::new(gaps.clone())));
-        Ok(gaps)
+            .get(&(run, key))
+            .and_then(|held| held.iter().find(|&&(a, b, _)| a <= first && last <= b).map(|(_, _, spans)| spans.clone()))
+            .expect("cached unwitnessed spans");
+        Ok(cached
+            .iter()
+            .filter_map(|&(a, b)| {
+                let (a, b) = (a.max(first), b.min(last));
+                (a <= b).then_some((a, b))
+            })
+            .collect())
     }
 
-    fn part_coverage(&self, part: &Part, from: i32, to: i32, scope: crate::coverage::CoverageScope, out: &mut Vec<MissingSpan>) -> io::Result<Vec<(i64, i64)>> {
+    fn part_coverage_table(&self, part: &Part, from: i32, to: i32, out: &mut Vec<MissingSpan>) -> io::Result<Vec<(i64, i64)>> {
         let (mut first, last) = (part.first.max(from), part.last.min(to));
         let mut complete = Vec::new();
         if first > last {
@@ -1887,16 +2081,30 @@ impl<'q, 'a> Line<'q, 'a> {
             }
         }
         let statuses = self.statuses(part.run, first, last)?;
-        if scope == crate::coverage::CoverageScope::Table {
-            for held in statuses.iter().filter(|held| held.last >= first && held.first <= last) {
-                let (a, b) = (held.first.max(first), held.last.min(last));
-                match status_reason(self.series.table, &held.status) {
-                    None => complete.push((i64::from(a), i64::from(b))),
-                    Some(reason) => out.push(MissingSpan { first_hour: a, last_hour: b, reason }),
-                }
+        for held in statuses.iter().filter(|held| held.last >= first && held.first <= last) {
+            let (a, b) = (held.first.max(first), held.last.min(last));
+            match status_reason(self.series.table, &held.status) {
+                None => complete.push((i64::from(a), i64::from(b))),
+                Some(reason) => out.push(MissingSpan { first_hour: a, last_hour: b, reason }),
             }
+        }
+        Ok(complete)
+    }
+
+    fn part_coverage_row(&self, part: &Part, from: i32, to: i32, out: &mut Vec<MissingSpan>) -> io::Result<Vec<(i64, i64)>> {
+        let (mut first, last) = (part.first.max(from), part.last.min(to));
+        let mut complete = Vec::new();
+        if first > last {
             return Ok(complete);
         }
+        if let Some((w_first, w_last, reason)) = self.withheld_span(part.run, first, last) {
+            out.push(MissingSpan { first_hour: w_first, last_hour: w_last, reason: reason.to_owned() });
+            first = w_last.saturating_add(1);
+            if first > last {
+                return Ok(complete);
+            }
+        }
+        let statuses = self.statuses(part.run, first, last)?;
         let mut reasons: Option<Arc<HashMap<u32, String>>> = None;
         for held in statuses.iter().filter(|held| held.last >= first && held.first <= last) {
             let (a, b) = (held.first.max(first), held.last.min(last));
@@ -2249,7 +2457,7 @@ impl<'q, 'a> Line<'q, 'a> {
             }
             let mut missing = self.unheld(&country, from, to, &held);
             for part in &held {
-                self.part_coverage(part, from, to, crate::coverage::CoverageScope::Table, &mut missing)?;
+                self.part_coverage_table(part, from, to, &mut missing)?;
             }
             out.push(SeriesOwnerParts {
                 country,
