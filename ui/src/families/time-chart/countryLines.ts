@@ -6,9 +6,11 @@ import { registerTimeChart, type TimeChartProjection, type TimeChartWidgetDeclar
 import { formatChartAxisValue } from './layout.ts';
 import type { ChartGap, ChartValueFormat, TimeChartSeriesModel } from './model.ts';
 import {
+  answerRowOf,
   assignCountrySeriesColours,
   branchGapsOf,
   countrySeriesIdentity,
+  exactHoverByCountry,
   exactHoverReadings,
   memberAt,
   missingSpansOf,
@@ -26,6 +28,7 @@ export interface CountryLinesMeasure {
 
 export interface CountryLinesOptions {
   readonly tags: readonly string[];
+  readonly top: number | null;
   readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly membership?: Readonly<Record<string, HourRanges>> | null;
   readonly decimals: number;
@@ -67,18 +70,21 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
     measureTitle: spec.title,
     project(readView: BoundedReadView, options: CountryLinesOptions) {
       const hour = readView.hour;
-      const tags = options.tags;
+      const top = options.top !== null;
+      const tags = top ? [...readView.series('main')?.keys() ?? []] : options.tags;
       const rowOf = new Map(tags.map((tag, row) => [tag, row]));
+      const head = top ? readView.answer('main') : undefined;
       const present = tags.filter(tag => memberAt(options.membership, tag, hour));
       const presentSet = new Set(present);
       const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
       const colours = assignCountrySeriesColours(ordered, options.holders, readView, hour, options.surface, undefined, tag => rowOf.get(tag) ?? 0);
-      const exact = exactHoverReadings(readView, 'hover', options.decimals);
+      const exact = top ? null : exactHoverReadings(readView, 'hover', options.decimals);
+      const exactByCountry = top ? exactHoverByCountry(readView, 'hover', options.decimals) : null;
       const series: TimeChartSeriesModel[] = ordered.map((tag, rank) => {
         const row = rowOf.get(tag) ?? 0;
         const isTail = rank >= COLOURED;
         const bounded = readView.series('main')?.get(tag) ?? null;
-        const headValue = presentSet.has(tag) ? seriesHeadAt(readView, 'main', tag, row, options.decimals) : null;
+        const headValue = presentSet.has(tag) ? seriesHeadAt(readView, 'main', tag, top ? answerRowOf(head, tag) : row, options.decimals) : null;
         const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, true);
         return {
           id: tag,
@@ -90,7 +96,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
           bounded,
           headValue,
           headHour: hour,
-          exact: exact?.[row] ?? null,
+          exact: (top ? exactByCountry?.get(tag) : exact?.[row]) ?? null,
           flag,
           missingSpans: missingSpansOf(bounded),
           rank,
@@ -123,14 +129,36 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
     countries: { mode: 'multi', labels: true, colours: true, allowSlots: true },
     ...(spec.aux ? { aux: spec.aux } : {}),
     sources(ctx: FamilyPlanContext<TAux>): SourcePlan {
-      const tags = ctx.countries.tags;
+      const top = ctx.countries.top;
+      const tags = top === null ? ctx.countries.tags : [];
       const measure = spec.measure(ctx.options, ctx.aux);
-      const owner = `${spec.kind}:${spec.view}:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${measure?.measure ?? ''}:${ctx.following ? 1 : 0}`;
-      if (!measure || tags.length === 0) return { owner, entries: [] };
+      const owner = `${spec.kind}:${spec.view}:${ctx.track.source.id}:${ctx.branch.id}:${top === null ? tags.join(',') : `top${top}`}:${measure?.measure ?? ''}:${ctx.following ? 1 : 0}`;
+      if (!measure || (top === null && tags.length === 0)) return { owner, entries: [] };
       const family = { kind: measure.kind, measure: measure.measure };
+      const common = { source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
+      if (top !== null) {
+        const params = { branchId: ctx.branch.id, family, top };
+        const ranked: SourceEntry[] = [
+          {
+            name: 'main',
+            ...common,
+            read: {
+              shape: 'pixel-binned',
+              coverage: { mode: 'population', form: 'top', limit: top },
+              family,
+              tags: [],
+              top: { n: top },
+              headQuery: { product: 'series-state', params },
+            },
+          },
+          { name: 'hover', ...common, read: { shape: 'exact-hover', product: 'series-state', params } },
+        ];
+        const rank = rankEntry(ctx, family, top);
+        if (rank) ranked.push(rank);
+        return { owner, entries: ranked };
+      }
       const within = withinMapOf(ctx.countries.membership);
       const reads = tags.map(tag => ({ country: countryFromKey(tag) }));
-      const common = { source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
       const entries: SourceEntry[] = [
         {
           name: 'main',
@@ -158,9 +186,10 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
     projection,
     projectionOptions(ctx, { extent, surface }) {
       return {
-        tags: ctx.countries.tags,
+        tags: ctx.countries.top === null ? ctx.countries.tags : [],
+        top: ctx.countries.top,
         holders: ctx.countries.holders,
-        membership: ctx.countries.membership,
+        membership: ctx.countries.top === null ? ctx.countries.membership : null,
         decimals: spec.measure(ctx.options, ctx.aux)?.decimals ?? 0,
         extent,
         gaps: branchGapsOf(ctx.branch),
