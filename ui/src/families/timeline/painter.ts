@@ -84,16 +84,6 @@ function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: Timeline
     x += 12 + 8;
   }
   const width = Math.max(0, right - x);
-  if (lane.kind === 'heading') {
-    ctx.save();
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
-    ctx.fillStyle = theme.muted;
-    ctx.fillText(fitLine(lane.label, width, s => textWidth(ctx, s)).text, x, mid);
-    ctx.restore();
-    return;
-  }
   const twoLines = !!lane.subtitle && !layout.compact;
   ctx.save();
   ctx.textAlign = 'left';
@@ -112,7 +102,7 @@ function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: Timeline
 function drawGroupRule(ctx: Canvas2D, lane: TimelineLane, mid: number, layout: TimelineLayout, theme: FamilyTheme): void {
   for (const span of lane.spans) {
     const x0 = Math.max(layout.plotLeft, hourToX(layout, span.firstHour));
-    const x1 = Math.min(layout.plotRight, hourToX(layout, span.lastHour));
+    const x1 = span.open ? layout.plotRight : Math.min(layout.plotRight, hourToX(layout, span.lastHour));
     if (x1 < x0) continue;
     drawTimelineBar(ctx, {
       x: x0,
@@ -127,7 +117,7 @@ function drawGroupRule(ctx: Canvas2D, lane: TimelineLane, mid: number, layout: T
   }
   if (lane.endText) {
     const last = lane.spans.at(-1);
-    const x = last ? Math.min(layout.plotRight, hourToX(layout, last.lastHour)) + 6 : layout.plotLeft;
+    const x = last ? (last.open ? layout.plotRight : Math.min(layout.plotRight, hourToX(layout, last.lastHour))) + 6 : layout.plotLeft;
     if (layout.plotRight - x > 24) {
       ctx.save();
       ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
@@ -151,7 +141,7 @@ function drawBars(ctx: Canvas2D, lane: TimelineLane, mid: number, input: Timelin
   const y = Math.round(mid - barH / 2);
   for (const span of lane.spans) {
     const rawX0 = hourToX(layout, span.firstHour);
-    const rawX1 = hourToX(layout, span.lastHour + 1);
+    const rawX1 = span.open ? layout.plotRight : hourToX(layout, span.lastHour + 1);
     const x0 = Math.max(layout.plotLeft, rawX0);
     const x1 = Math.min(layout.plotRight, rawX1);
     if (x1 <= layout.plotLeft || x0 >= layout.plotRight) continue;
@@ -184,11 +174,21 @@ export function drawTimeline(ctx: Canvas2D, input: TimelinePaintInput): readonly
   ctx.rect(0, 0, layout.width, layout.bodyHeight);
   ctx.clip();
   drawTimeAxisGrid(ctx, ticks, layout, 0, layout.bodyHeight, theme);
+  let bandStart = -1;
+  let bandEnd = -1;
   for (const gap of model.unobserved) {
     const x0 = Math.max(layout.plotLeft, hourToX(layout, gap.firstHour));
-    const x1 = Math.min(layout.plotRight, hourToX(layout, gap.lastHour + 1));
-    if (x1 > x0) drawGapBand(ctx, x0, 0, x1 - x0, layout.bodyHeight, theme);
+    const x1 = gap.lastHour >= model.hour ? layout.plotRight : Math.min(layout.plotRight, hourToX(layout, gap.lastHour + 1));
+    if (x1 <= x0) continue;
+    if (bandEnd >= 0 && x0 - bandEnd < 1.5) {
+      bandEnd = Math.max(bandEnd, x1);
+      continue;
+    }
+    if (bandEnd > bandStart) drawGapBand(ctx, bandStart, 0, bandEnd - bandStart, layout.bodyHeight, theme);
+    bandStart = x0;
+    bandEnd = x1;
   }
+  if (bandEnd > bandStart) drawGapBand(ctx, bandStart, 0, bandEnd - bandStart, layout.bodyHeight, theme);
   for (const placed of layout.lanes) {
     const y = placed.y - scrollTop;
     if (y + placed.height <= 0 || y >= layout.bodyHeight) continue;
@@ -200,7 +200,7 @@ export function drawTimeline(ctx: Canvas2D, input: TimelinePaintInput): readonly
     drawLabel(ctx, placed, y, input);
     const mid = y + placed.height / 2;
     if (lane.kind === 'group') drawGroupRule(ctx, lane, mid, layout, theme);
-    else if (lane.kind === 'item') drawBars(ctx, lane, mid, input);
+    else drawBars(ctx, lane, mid, input);
   }
   if (scrollTop + layout.bodyHeight < layout.contentHeight - 1) {
     drawScrollFade(ctx, 0, layout.bodyHeight - 24, layout.width, 24, theme, 'bottom');
@@ -213,8 +213,8 @@ export function drawTimeline(ctx: Canvas2D, input: TimelinePaintInput): readonly
     startHour: layout.startHour,
     endHour: layout.endHour,
     axisTop: layout.axisTop,
-    playhead: model.hour,
-    playheadLabel: formatDateOnly(model.hour),
+    playhead: layout.endHour,
+    playheadLabel: formatDateOnly(layout.endHour),
     theme,
   });
   return ticks;
@@ -225,14 +225,14 @@ export function hitTimeline(layout: TimelineLayout, x: number, y: number, scroll
   const placed = placedLaneAt(layout, y + scrollTop);
   if (!placed) return null;
   const { lane } = placed;
-  if (lane.kind === 'heading') return null;
   if (lane.expandable && x < layout.labelWidth) return { kind: 'toggle', laneKey: lane.key };
   if (x < layout.plotLeft || x > layout.plotRight) return { kind: 'lane', laneKey: lane.key };
   const hour = Math.floor(xToHour(layout, x));
   const slack = (layout.endHour - layout.startHour) / Math.max(1, layout.plotRight - layout.plotLeft) * 3;
   for (const span of lane.spans) {
-    if (hour >= span.firstHour - slack && hour <= span.lastHour + slack) {
-      return { kind: 'span', laneKey: lane.key, spanId: span.id, hour: Math.min(Math.max(hour, span.firstHour), span.lastHour) };
+    const last = span.open ? layout.endHour : span.lastHour;
+    if (hour >= span.firstHour - slack && hour <= last + slack) {
+      return { kind: 'span', laneKey: lane.key, spanId: span.id, hour: Math.min(Math.max(hour, span.firstHour), last) };
     }
   }
   return { kind: 'lane', laneKey: lane.key, hour };

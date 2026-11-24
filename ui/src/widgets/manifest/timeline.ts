@@ -21,16 +21,12 @@ function timelineView<TModule>(
 }
 
 export const TIMELINE_VIEWS: readonly FamilyViewEntry[] = [
-  timelineView('diplomatic-pacts', () => import('../diplomatic-pacts/diplomaticPactsProjection.ts'),
-    mod => ({ projection: mod.diplomaticPactsProjection, declaration: mod.diplomaticPactsDeclaration })),
   timelineView('factions', () => import('../factions/factionsProjection.ts'),
     mod => ({ projection: mod.factionsProjection, declaration: mod.factionsDeclaration })),
   timelineView('idea-timeline', () => import('../idea-timeline/ideaTimelineProjection.ts'),
     mod => ({ projection: mod.ideaTimelineProjection, declaration: mod.ideaTimelineDeclaration })),
   timelineView('spirit-history', () => import('../spirit-history/spiritHistoryProjection.ts'),
     mod => ({ projection: mod.spiritHistoryProjection, declaration: mod.spiritHistoryDeclaration })),
-  timelineView('subjects', () => import('../subjects/subjectsProjection.ts'),
-    mod => ({ projection: mod.subjectsProjection, declaration: mod.subjectsDeclaration })),
 ];
 
 export const timelineFamilyManifest: FamilyManifestModule = {

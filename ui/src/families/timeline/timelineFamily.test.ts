@@ -5,6 +5,7 @@ import type { CategoryInfo, IdeaHistoryReply, IdeaInfo } from '../../generated/d
 import { ideaTimelineProjection } from '../../widgets/idea-timeline/ideaTimelineProjection.ts';
 import { createBoundedReadView } from '../boundedView.ts';
 import { timelineHostAdapter } from './hostAdapter.ts';
+import { nextDayStart } from './laneView.ts';
 import { layoutTimeline } from './layout.ts';
 import { visibleLanes, type TimelineLane, type TimelineModel } from './model.ts';
 import { decodeTimelineHit, encodeTimelineHit, hitTimeline } from './painter.ts';
@@ -43,7 +44,7 @@ const lane = (model: TimelineModel, key: string): TimelineLane => model.lanes.fi
 test('at the displayed hour nothing later is drawn, and a held item runs square into the playhead', () => {
   const at = H(1937, 3);
   const model = project(at);
-  assert.deepEqual(model.extent, [FIRST, at]);
+  assert.deepEqual([model.firstHour, model.hour], [FIRST, at]);
   const economy = lane(model, 'economy');
   assert.deepEqual(economy.spans.map(span => [span.label, span.lastHour, span.open]), [['Idea name unavailable', at, true]], 'War Economy starts later and is not drawn');
   assert.equal(economy.subtitle, 'Idea name unavailable');
@@ -75,8 +76,9 @@ test('expanded state hides children of closed lanes, and hits encode lane, span 
   ];
   assert.equal(visibleLanes(lanes, {}).length, 2);
   assert.equal(visibleLanes(lanes, { g: false }).length, 1);
-  const model: TimelineModel = { hour: H(1940) as TimelineModel['hour'], extent: [FIRST, H(1940)], lanes, unobserved: [], iconsOnBars: false, labelWidth: 200, warnings: [], nextChangeAt: Infinity };
-  const layout = layoutTimeline(model, 600, 200, {});
+  const model: TimelineModel = { hour: H(1940) as TimelineModel['hour'], firstHour: FIRST, lanes, unobserved: [], iconsOnBars: false, labelWidth: 200, warnings: [], nextChangeAt: Infinity };
+  const layout = layoutTimeline(model, 600, 200, {}, H(1941));
+  assert.equal(layout.endHour, H(1941), 'the axis runs to the painted hour, not the projection hour');
   const item = layout.lanes[1]!;
   const hit = hitTimeline(layout, layout.plotRight - 4, item.y + item.height / 2, 0);
   assert.equal(hit?.kind, 'span');
@@ -85,4 +87,22 @@ test('expanded state hides children of closed lanes, and hits encode lane, span 
   assert.deepEqual(timelineHostAdapter.parseHit(token), { key: 'm', subject: 'm', hour: hit!.hour, kind: 'span', toggle: false, inspectToken: token });
   const toggle = hitTimeline(layout, 20, layout.lanes[0]!.y + 5, 0);
   assert.equal(timelineHostAdapter.parseHit(encodeTimelineHit(toggle))?.toggle, true);
+});
+
+test('the picture repaints at each new day so the playhead and open bars follow the clock between content changes', () => {
+  assert.equal(nextDayStart(H(1940, 3, 4)), H(1940, 3, 5));
+  assert.equal(nextDayStart(H(1940, 3, 4) + 13), H(1940, 3, 5));
+  assert.equal(nextDayStart(H(1940, 12, 31) + 23), H(1941));
+});
+
+test('an item read on both sides of an unrecorded stretch is one bar, while a change across the stretch stays two', () => {
+  const split: IdeaHistoryReply = { ...REPLY, spans: [
+    ...REPLY.spans.filter(span => span.token !== 'war'),
+    { token: 'war', firstHour: H(1937, 6), lastHour: H(1938, 6) - 1, slot: null, character: null },
+    { token: 'war', firstHour: H(1938, 10), lastHour: H(1941), slot: null, character: null },
+  ] };
+  const readView = createBoundedReadView({ hour: H(1940), panels: new Map([['main', split]]) });
+  const model = ideaTimelineProjection.project(readView, OPTIONS);
+  assert.deepEqual(lane(model, 'economy').spans.map(span => [span.firstHour, span.open]), [[FIRST, false], [H(1937, 6), true]]);
+  assert.equal(lane(model, 'trade').spans.length, 2);
 });

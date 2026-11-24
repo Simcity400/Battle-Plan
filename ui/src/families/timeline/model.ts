@@ -18,7 +18,7 @@ export interface TimelineSpan {
   readonly meta?: unknown;
 }
 
-export type TimelineLaneKind = 'item' | 'group' | 'heading';
+export type TimelineLaneKind = 'item' | 'group';
 
 export interface TimelineLane {
   readonly key: string;
@@ -43,7 +43,7 @@ export interface TimelineLane {
 
 export interface TimelineModel {
   readonly hour: DisplayedHour;
-  readonly extent: readonly [number, number];
+  readonly firstHour: number;
   readonly lanes: readonly TimelineLane[];
   readonly unobserved: readonly HourSpan[];
   readonly iconsOnBars: boolean;
@@ -96,7 +96,7 @@ export function spanAt(lane: TimelineLane, hit: TimelineHit): TimelineSpan | und
   if (hit.spanId) return lane.spans.find(s => s.id === hit.spanId);
   const hour = hit.hour;
   if (hour === undefined) return undefined;
-  return lane.spans.find(s => s.firstHour <= hour && hour <= s.lastHour);
+  return lane.spans.find(s => s.firstHour <= hour && (s.open || hour <= s.lastHour));
 }
 
 export function laneByKey(model: TimelineModel, key: string): TimelineLane | undefined {

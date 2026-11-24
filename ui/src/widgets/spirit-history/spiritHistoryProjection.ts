@@ -1,5 +1,5 @@
 import { colour } from '../../charts/palette.ts';
-import { describeRun } from '../../charts/timeline/runState.ts';
+import { bridgeGaps, describeRun } from '../../charts/timeline/runState.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
@@ -65,7 +65,7 @@ export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> =
     const fill = colour(opt.surface, 0);
     const lanes: TimelineLane[] = seen.map(spirit => {
       const icon = urlArtHandle(spirit.icon);
-      const spans = spirit.spans.filter(span => span.firstHour <= hour).map(span => {
+      const spans = bridgeGaps(spirit.spans.filter(span => span.firstHour <= hour), reply.unobserved).map(span => {
         const open = span.lastHour >= hour;
         return {
           id: `${spirit.token}:${span.firstHour}`,
@@ -146,7 +146,6 @@ export const spiritHistoryDeclaration: TimelineWidgetDeclaration<SpiritHistoryOp
           },
         }]
       : [],
-    allowEmptyFollow: true,
   }),
   projection: spiritHistoryProjection,
   projectionOptions: (ctx, extra) => ({

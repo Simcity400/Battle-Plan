@@ -77,7 +77,7 @@ export interface TimelineModelParts {
 export function timelineModel(parts: TimelineModelParts): TimelineModel {
   return {
     hour: parts.hour,
-    extent: [parts.firstHour, Math.max(parts.firstHour + 1, parts.hour)],
+    firstHour: parts.firstHour,
     lanes: parts.lanes ?? [],
     unobserved: clipSpansToHour(parts.unobserved, parts.hour),
     iconsOnBars: parts.iconsOnBars ?? false,

@@ -1,4 +1,5 @@
 import { colour } from '../../charts/palette.ts';
+import { bridgeGaps } from '../../charts/timeline/runState.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { ideaNameMissing, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
@@ -6,7 +7,7 @@ import type { TimelineWidgetDeclaration } from '../../families/timeline/declarat
 import { inHourSpans, nextBoundaryAfter, sortedBoundaries, timelineModel, urlArtHandle, spanStart } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
 import { registerTimelineProjection } from '../../families/timeline/registry.ts';
-import type { IdeaHistoryReply } from '../../generated/dashboard';
+import type { IdeaHistoryReply, IdeaSpan } from '../../generated/dashboard';
 import { OPTIONS } from './definition.ts';
 import { chosenCategory, lanesFor, lawLevel } from './ideaTimelineData.ts';
 
@@ -22,6 +23,21 @@ function boundaries(reply: IdeaHistoryReply): number[] {
   for (const span of reply.spans) hours.push(span.firstHour, span.lastHour + 1);
   for (const gap of reply.unobserved) hours.push(gap.firstHour, gap.lastHour + 1);
   return sortedBoundaries(hours);
+}
+
+function bridgedSpans(spans: readonly IdeaSpan[], unobserved: IdeaHistoryReply['unobserved']): IdeaSpan[] {
+  const byHolder = new Map<string, IdeaSpan[]>();
+  for (const span of spans) {
+    const key = JSON.stringify([span.token, span.slot, span.character?.id ?? null, span.character?.token ?? null, span.character?.name ?? null]);
+    const list = byHolder.get(key);
+    if (list) list.push(span); else byHolder.set(key, [span]);
+  }
+  const out: IdeaSpan[] = [];
+  for (const list of byHolder.values()) {
+    list.sort((a, b) => a.firstHour - b.firstHour);
+    for (const stretch of bridgeGaps(list, unobserved)) out.push({ ...stretch.runs[0]!, lastHour: stretch.lastHour });
+  }
+  return out.sort((a, b) => a.firstHour - b.firstHour);
 }
 
 export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = registerTimelineProjection<IdeaTimelineOptions>({
@@ -42,12 +58,14 @@ export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = r
     if (!category) {
       return timelineModel({ ...base, empty: opt.category ? 'Category not in this recording' : 'No idea categories recorded', emptyKind: 'unavailable', warnings: reply.warnings, nextChangeAt });
     }
-    const seen = { ...reply, spans: reply.spans.filter(span => span.firstHour <= hour) };
+    const seen = { ...reply, spans: bridgedSpans(reply.spans.filter(span => span.firstHour <= hour), reply.unobserved) };
     const slotOrdinal = new Map(category.slots.map((slot, index) => [slot.token, index]));
     const gapNow = inHourSpans(reply.unobserved, hour);
     const lanes: TimelineLane[] = lanesFor(seen, category).map(group => {
       const fill = colour(opt.surface, slotOrdinal.get(group.slot) ?? 0);
-      const spans = group.spans.map(span => {
+      const held = bridgeGaps(group.spans, reply.unobserved, (a, b) => a.token === b.token && a.label === b.label);
+      const spans = held.map(stretch => {
+        const span = { ...stretch.runs[0]!, lastHour: stretch.lastHour };
         const open = span.lastHour >= hour;
         return {
           id: span.id,
@@ -137,7 +155,6 @@ export const ideaTimelineDeclaration: TimelineWidgetDeclaration<IdeaTimelineOpti
           },
         }]
       : [],
-    allowEmptyFollow: true,
   }),
   projection: ideaTimelineProjection,
   projectionOptions: (ctx, extra) => ({

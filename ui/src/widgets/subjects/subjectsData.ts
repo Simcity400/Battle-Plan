@@ -200,7 +200,7 @@ export function subjectLanes(views: readonly OverlordView[], levels: ReadonlyMap
       const state = runState(view.stretches, hour, unread);
       const run = runNear(view, hour);
       const level = state.kind === 'held' ? levelAt(run, hour) : undefined;
-      const label = state.kind === 'held' ? `${levelName(levels, level ?? null)} · Since ${text.day(run.startHour)}`
+      const label = state.kind === 'held' ? `${levelName(levels, level ?? null)} · since ${text.day(run.startHour)}`
         : state.kind === 'ended' ? (state.lastSeen == null ? `Ended ${text.day(state.at)}` : `Ended by ${text.day(state.at)}`)
           : state.kind === 'unknown' ? `Last recorded ${text.day(state.lastSeen)}` : '';
       const spans: TimelineSpan[] = view.runs.flatMap(item => item.steps.map(step => ({

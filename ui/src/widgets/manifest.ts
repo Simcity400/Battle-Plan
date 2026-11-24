@@ -24,7 +24,6 @@ export interface FamilyViewUiLoader {
 export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'air-superiority-region': { load: () => import('./air-superiority-region') },
   'apm-table': { load: () => import('./apm-table') },
-  'diplomatic-pacts': { load: () => import('./diplomatic-pacts') },
   'division-template': { load: () => import('./division-template') },
   'factions': { load: () => import('./factions') },
   'factories': { load: () => import('./factories'), slots: ['render', 'countryChip'] },

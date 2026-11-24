@@ -3,7 +3,6 @@ import { visibleLanes, type TimelineLane, type TimelineModel } from './model.ts'
 export const LANE_HEIGHT = 38;
 export const LANE_HEIGHT_COMPACT = 26;
 export const GROUP_LANE_HEIGHT = 38;
-export const HEADING_LANE_HEIGHT = 22;
 export const AXIS_HEIGHT = 26;
 export const BAR_HEIGHT = 14;
 export const BAR_HEIGHT_ICONS = 18;
@@ -39,7 +38,6 @@ export interface TimelineLayout {
 }
 
 export function laneHeight(lane: TimelineLane, compact: boolean): number {
-  if (lane.kind === 'heading') return HEADING_LANE_HEIGHT;
   if (lane.kind === 'group') return compact || !lane.subtitle ? LANE_HEIGHT_COMPACT : GROUP_LANE_HEIGHT;
   return lane.subtitle && !compact ? LANE_HEIGHT : LANE_HEIGHT_COMPACT;
 }
@@ -49,6 +47,7 @@ export function layoutTimeline(
   width: number,
   height: number,
   expanded: Readonly<Record<string, boolean>>,
+  hour: number,
 ): TimelineLayout {
   const w = Math.max(160, width);
   const h = Math.max(AXIS_HEIGHT + LANE_HEIGHT_COMPACT, height);
@@ -79,8 +78,8 @@ export function layoutTimeline(
     contentHeight: y + TOP_PAD,
     axisTop: bodyHeight,
     lanes,
-    startHour: model.extent[0],
-    endHour: Math.max(model.extent[0] + 1, model.extent[1]),
+    startHour: model.firstHour,
+    endHour: Math.max(model.firstHour + 1, hour),
   };
 }
 

@@ -1,3 +1,4 @@
+import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { LaneView, Painted, PaintInput, Scene } from '../../draw/lane.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
@@ -70,6 +71,10 @@ interface HeldTimeline {
   identityDemands: FieldEntry | null;
   kept: Map<string, { text: string; content: string }>;
   paintView: BoundedReadView | null;
+  structure: readonly unknown[] | null;
+  structureFields: Record<string, FieldEntry>;
+  auditKey: readonly unknown[] | null;
+  auditField: FieldEntry | null;
   tipField: FieldEntry | null;
   focusTipField: FieldEntry | null;
   tipGate: CadenceGate;
@@ -78,6 +83,10 @@ interface HeldTimeline {
 }
 
 const TOOLTIP_CADENCE_MS = 180;
+
+export function nextDayStart(hour: number): number {
+  return hour + 24 - ((((Math.floor(hour) - HOUR_EPOCH) % 24) + 24) % 24);
+}
 const STATE_KEY = 'timeline';
 
 function keptField(held: HeldTimeline, name: string, value: unknown, text: string, content: () => string): FieldEntry {
@@ -92,7 +101,6 @@ function navOf(layout: TimelineLayout): FamilyNavTuple[] {
   const nav: FamilyNavTuple[] = [];
   for (const placed of layout.lanes) {
     const lane = placed.lane;
-    if (lane.kind === 'heading') continue;
     const tree = lane.expandable ? (layout.lanes[placed.ordinal + 1]?.lane.parentKey === lane.key ? 1 : 0) : -1;
     nav.push([lane.key, lane.label, nav.length, tree, lane.parentKey ?? '', lane.meta ?? null]);
   }
@@ -100,7 +108,7 @@ function navOf(layout: TimelineLayout): FamilyNavTuple[] {
 }
 
 function mirrorOf(layout: TimelineLayout): MirrorModel {
-  const rows = layout.lanes.filter(placed => placed.lane.kind !== 'heading').map((placed, index) => ({
+  const rows = layout.lanes.map((placed, index) => ({
     key: placed.lane.key,
     name: placed.lane.label,
     rowIndex: index,
@@ -163,9 +171,10 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
       if (projection === 'loading') return hour + 1;
       if (projection === 'unknown') return Infinity;
       const held = state?.get(STATE_KEY) as HeldTimeline | undefined;
-      if (held?.model && held.modelKind === bound.kind && hour >= held.validFrom && hour < held.validUntil) return held.validUntil;
+      const day = nextDayStart(hour);
+      if (held?.model && held.modelKind === bound.kind && hour >= held.validFrom && hour < held.validUntil) return Math.min(day, held.validUntil);
       if (!projection.nextChange) return hour + 1;
-      return projection.nextChange(readViewFromHeatScene(scene, bound, hour), bound.options);
+      return Math.min(day, projection.nextChange(readViewFromHeatScene(scene, bound, hour), bound.options));
     },
 
     unmount(_widget: number, state: Map<string, unknown>): void {
@@ -215,6 +224,10 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
           identityDemands: null,
           kept: new Map(),
           paintView: null,
+          structure: null,
+          structureFields: {},
+          auditKey: null,
+          auditField: null,
           tipField: null,
           focusTipField: null,
           tipGate,
@@ -288,7 +301,7 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
         held.focusTipGate.invalidate();
       }
 
-      const layout = layoutTimeline(model, bound.width, bound.height, bound.expanded);
+      const layout = layoutTimeline(model, bound.width, bound.height, bound.expanded, input.hour);
       held.art.requestVisible([...collectArt(model, layout, held.identityIndex), ...held.demandedArt]);
       const paintView = held.paintView!;
       const inspected = decodeTimelineHit(input.inspect);
@@ -309,25 +322,30 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
 
       const fields: Record<string, FieldEntry> = {};
       if (held.identityDemands) fields.identityDemands = held.identityDemands;
-      const meta = {
-        empty: model.empty ?? null,
-        emptyDetail: null,
-        emptyKind: model.emptyKind ?? 'empty',
-        summaryText: model.summaryText ?? null,
-        notes: model.notes ?? [],
-        warnings: model.warnings,
-      };
-      fields.meta = keptField(held, 'meta', meta, JSON.stringify(meta), content);
-
-      const rows: Record<string, readonly [number, number]> = {};
-      for (const placed of layout.lanes) rows[placed.lane.key] = [placed.y, placed.height];
-      const extent: TimelineExtentField = { height: layout.contentHeight + AXIS_HEIGHT, rows };
-      fields.extent = keptField(held, 'extent', extent, JSON.stringify(extent), content);
-
-      const nav = navOf(layout);
-      fields.nav = keptField(held, 'nav', nav, JSON.stringify(nav.map(n => [n[0], n[1], n[3], n[4]])), content);
-      const mirror = mirrorOf(layout);
-      fields.mirror = keptField(held, 'mirror', mirror, JSON.stringify(mirror), content);
+      const structure = [model, bound.expanded, bound.width, bound.height] as const;
+      if (!held.structure || held.structure.some((part, index) => part !== structure[index])) {
+        held.structure = structure;
+        const meta = {
+          empty: model.empty ?? null,
+          emptyDetail: null,
+          emptyKind: model.emptyKind ?? 'empty',
+          summaryText: model.summaryText ?? null,
+          notes: model.notes ?? [],
+          warnings: model.warnings,
+        };
+        const rows: Record<string, readonly [number, number]> = {};
+        for (const placed of layout.lanes) rows[placed.lane.key] = [placed.y, placed.height];
+        const extent: TimelineExtentField = { height: layout.contentHeight + AXIS_HEIGHT, rows };
+        const nav = navOf(layout);
+        const mirror = mirrorOf(layout);
+        held.structureFields = {
+          meta: keptField(held, 'meta', meta, JSON.stringify(meta), content),
+          extent: keptField(held, 'extent', extent, JSON.stringify(extent), content),
+          nav: keptField(held, 'nav', nav, JSON.stringify(nav.map(n => [n[0], n[1], n[3], n[4]])), content),
+          mirror: keptField(held, 'mirror', mirror, JSON.stringify(mirror), content),
+        };
+      }
+      Object.assign(fields, held.structureFields);
 
       const now = laneOptions?.clock ? laneOptions.clock() : input.now;
       let tipView: BoundedReadView | null = null;
@@ -337,7 +355,7 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
           const payload = tooltipFor(projection, model, inspected, tipViewNow(), bound.options);
           const tip: FamilyTooltipField = {
             key: input.inspect,
-            text: payload ? { hour: inspected.hour ?? model.hour, rowKey: inspected.laneKey, payload } : null,
+            text: payload ? { hour: inspected.hour ?? input.hour, rowKey: inspected.laneKey, payload } : null,
           };
           held.tipField = keptField(held, 'tooltip', tip, stringifyTooltipPayload(tip), content);
           held.tipGate.record(now, input.inspect);
@@ -350,11 +368,11 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
 
       if (bound.focusedKey) {
         if (!held.focusTipField || held.focusTipGate.due(now, input.speed, bound.focusedKey)) {
-          const focusHit: TimelineHit = { kind: 'lane', laneKey: bound.focusedKey, hour: model.hour };
+          const focusHit: TimelineHit = { kind: 'lane', laneKey: bound.focusedKey, hour: input.hour };
           const payload = tooltipFor(projection, model, focusHit, tipViewNow(), bound.options);
           const tip: FamilyTooltipField = {
             key: `focus:${bound.focusedKey}`,
-            text: payload ? { hour: model.hour, rowKey: bound.focusedKey, payload } : null,
+            text: payload ? { hour: input.hour, rowKey: bound.focusedKey, payload } : null,
           };
           held.focusTipField = keptField(held, 'focusTooltip', tip, stringifyTooltipPayload(tip), content);
           held.focusTipGate.record(now, bound.focusedKey);
@@ -366,8 +384,12 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
       }
 
       if (bound.audit === true && bound.auditId !== undefined) {
-        const audit = { id: bound.auditId, rows: deriveTimelineAudit(model) };
-        fields.audit = keptField(held, 'audit', audit, JSON.stringify(audit), content);
+        if (!held.auditField || held.auditKey?.[0] !== model || held.auditKey[1] !== bound.auditId) {
+          const audit = { id: bound.auditId, rows: deriveTimelineAudit(model) };
+          held.auditKey = [model, bound.auditId];
+          held.auditField = keptField(held, 'audit', audit, JSON.stringify(audit), content);
+        }
+        fields.audit = held.auditField;
       }
 
       const scrollTop = bound.scrollTop;
@@ -375,7 +397,7 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
         surfaces: [{ source: held.canvas, content: held.content }],
         fields,
         motion: false,
-        nextChangeAt: held.validUntil,
+        nextChangeAt: Math.min(held.validUntil, nextDayStart(input.hour)),
         hit: point => encodeTimelineHit(hitTimeline(layout, point[0], point[1], scrollTop)),
       };
     },

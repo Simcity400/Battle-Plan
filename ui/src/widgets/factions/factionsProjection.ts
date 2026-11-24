@@ -1,4 +1,5 @@
 import { colour } from '../../charts/palette.ts';
+import { bridgeGaps } from '../../charts/timeline/runState.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { countryLook, inHourSpans, nextBoundaryAfter, timelineModel, spanStart } from '../../families/timeline/helpers.ts';
@@ -38,9 +39,12 @@ export interface FactionLaneMeta {
 function nameOf(readView: BoundedReadView, opt: FactionsOptions, faction: FactionGroup, hour?: number) {
   const own = opt.names[faction.id];
   if (own) return { name: own, reason: null };
-  const who = readView.who('faction', faction.id, Math.min(hour ?? readView.hour, readView.hour));
+  const at = Math.min(hour ?? readView.hour, readView.hour);
+  const who = readView.who('faction', faction.id, at);
   if (who.name.status === 'ready') return { name: who.name.value, reason: null };
-  return { name: null, reason: who.name.status === 'absent' ? who.name.reason : null };
+  if (who.name.status === 'absent') return { name: null, reason: who.name.reason };
+  const run = faction.names.find(item => item.firstHour <= at && at <= item.lastHour);
+  return run ? { name: run.name, reason: run.reason } : { name: null, reason: null };
 }
 
 function viewsOf(readView: BoundedReadView, reply: CountryGroupReply, opt: FactionsOptions): FactionView[] {
@@ -87,8 +91,9 @@ export const factionsProjection: TimelineProjection<FactionsOptions> = registerT
       if (heading) headerKey = source.id;
       const unknown = heading ? gaps : about.faction.unknown;
       const spans: TimelineSpan[] = [];
-      for (const span of source.spans) {
-        if (span.firstHour > hour) continue;
+      const runs = source.spans.filter(span => span.firstHour <= hour).sort((a, b) => a.firstHour - b.firstHour);
+      for (const stretch of bridgeGaps(runs, unknown, (a, b) => a.glyph === b.glyph)) {
+        const span = { ...stretch.runs[0]!, lastHour: stretch.lastHour };
         const open = span.lastHour >= hour;
         spans.push({
           id: `${source.id}@${span.id}`,
@@ -167,7 +172,6 @@ export const factionsDeclaration: TimelineWidgetDeclaration<FactionsOptions> = {
         buildSpanParams: params => params,
       },
     }],
-    allowEmptyFollow: true,
   }),
   projection: factionsProjection,
   projectionOptions: (ctx, extra) => ({
