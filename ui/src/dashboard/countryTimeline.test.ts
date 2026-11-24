@@ -10,7 +10,7 @@ import type { DashboardClient, DashboardSource, ProductRequest } from './client'
 
 const heldStyles = (client: DashboardClient, src: { sourceId: string; revision: string; branchId: string; content: number },
   rec: DashboardSource | undefined, hour: number, tags: readonly string[]) => {
-  const timeline = rec ? askTimeline(client, src, rec, hour) : heldTimeline(client, src);
+  const timeline = rec && askTimeline(client, src, rec, hour);
   return timeline ? stylesIn(timeline, hour, tags) : undefined;
 };
 

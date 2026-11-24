@@ -124,8 +124,8 @@
     -45deg,
     transparent,
     transparent 2px,
-    rgba(255, 255, 255, 0.35) 2px,
-    rgba(255, 255, 255, 0.35) 3.5px
+    var(--hatch) 2px,
+    var(--hatch) 3.5px
   );
 }
 

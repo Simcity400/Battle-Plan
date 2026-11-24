@@ -4,13 +4,13 @@
   overflow: hidden;
   min-width: 0;
   width: 100%;
-  background: var(--tf-header-band, #151515);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--tf-header-band, var(--surface));
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
 }
 
 :root[data-theme="light"] .tf-head-clip {
-  background: var(--tf-header-band, rgba(15, 23, 42, 0.03));
-  border-bottom-color: rgba(15, 23, 42, 0.14);
+  background: var(--tf-header-band, color-mix(in srgb, var(--text) 3%, transparent));
+  border-bottom-color: color-mix(in srgb, var(--text) 14%, transparent);
 }
 
 .tf-head-row {
@@ -35,7 +35,7 @@
   width: 44px;
   pointer-events: none;
   z-index: 4;
-  background: linear-gradient(90deg, transparent, var(--tf-header-band, #151515));
+  background: linear-gradient(90deg, transparent, var(--tf-header-band, var(--surface)));
 }
 
 :root[data-theme="light"] .tf-head-row.has-right-fade::after {
@@ -63,7 +63,7 @@
   height: 100%;
   padding: 0 10px;
   box-sizing: border-box;
-  color: #e2e2e2;
+  color: color-mix(in srgb, var(--text) 90%, var(--surface));
   font-size: 13px;
   font-weight: 600;
   line-height: 16px;
@@ -77,12 +77,12 @@
 }
 
 .tf-th.end { justify-content: flex-end; }
-.tf-th.sorted { color: #ffffff; }
+.tf-th.sorted { color: var(--text); }
 :root[data-theme="light"] .tf-th.sorted { color: var(--text); }
 .tf-th.is-unrecorded { color: var(--muted); }
-.tf-th.pinned { position: relative; z-index: 2; background: var(--tf-header-band, #151515); }
+.tf-th.pinned { position: relative; z-index: 2; background: var(--tf-header-band, var(--surface)); }
 :root[data-theme="light"] .tf-th.pinned { background: var(--surface); }
-.tf-th.pinned-shadow { box-shadow: 12px 0 12px -8px rgba(0, 0, 0, 0.55); }
+.tf-th.pinned-shadow { box-shadow: 12px 0 12px -8px var(--shadow-color); }
 .tf-th.is-drop-left::before,
 .tf-th.is-drop-right::before {
   content: "";
@@ -119,14 +119,14 @@
 
 .tf-th-label:hover,
 .tf-th-label:focus-visible {
-  background: rgba(255, 255, 255, 0.045);
-  color: #ffffff;
+  background: var(--hover);
+  color: var(--text);
   outline: none;
 }
 
 :root[data-theme="light"] .tf-th-label:hover,
 :root[data-theme="light"] .tf-th-label:focus-visible {
-  background: rgba(15, 23, 42, 0.05);
+  background: var(--hover);
   color: var(--text);
 }
 
@@ -239,7 +239,7 @@
   display: inline-block;
   width: 1px;
   height: 12px;
-  background: rgba(255, 255, 255, 0.22);
+  background: color-mix(in srgb, var(--text) 22%, transparent);
 }
 
 .tf-th-parts-block {
@@ -305,7 +305,7 @@
 }
 
 .tf-th:hover .tf-resize::after {
-  background: rgba(255, 255, 255, 0.12);
+  background: color-mix(in srgb, var(--text) 12%, transparent);
 }
 
 .tf-resize:hover::after {
@@ -352,7 +352,7 @@
   bottom: 0;
   left: var(--tf-pinned-width, 0);
   width: 12px;
-  background: linear-gradient(90deg, rgba(0, 0, 0, 0.35), transparent);
+  background: linear-gradient(90deg, var(--shadow-color), transparent);
 }
 
 .tf-edges[data-right] > .tf-edge-right,
@@ -382,11 +382,11 @@
   flex: none;
   min-width: 0;
   overflow: hidden;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
 }
 
 :root[data-theme="light"] .tf-pane-head {
-  border-bottom-color: rgba(15, 23, 42, 0.18);
+  border-bottom-color: color-mix(in srgb, var(--text) 18%, transparent);
 }
 
 .tf-pane-heads .tf-head-row {
@@ -396,7 +396,7 @@
 .tf-pane-heads .tf-th {
   font-size: 12px;
   font-weight: 500;
-  color: #cfcfcf;
+  color: var(--muted-strong);
   background: var(--surface);
 }
 
@@ -409,12 +409,12 @@
   top: 0;
   bottom: 0;
   width: 1px;
-  background: rgba(255, 255, 255, 0.085);
+  background: color-mix(in srgb, var(--text) 9%, transparent);
   pointer-events: none;
 }
 
 :root[data-theme="light"] .tf-pane-rule {
-  background: rgba(15, 23, 42, 0.11);
+  background: color-mix(in srgb, var(--text) 11%, transparent);
 }
 
 .tf-th-identity {
@@ -438,7 +438,7 @@
   justify-content: center;
   font-size: 8px;
   color: var(--muted);
-  background: repeating-linear-gradient(135deg, transparent 0 3px, rgba(255, 255, 255, 0.12) 3px 4px);
+  background: repeating-linear-gradient(135deg, transparent 0 3px, var(--hatch-edge) 3px 4px);
 }
 
 .tf-th-identity-name {
