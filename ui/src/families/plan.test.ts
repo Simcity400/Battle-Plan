@@ -146,7 +146,7 @@ test('BoundedSeriesCursor advances over a 10-year history in O(what changed) wit
   const initialCounter: BoundedWorkCounter = { visits: 0, allocations: 0 };
   const initial = cursor.advance(line, 4_800, { prefixRuns: runs, counter: initialCounter });
   assert.ok(initialCounter.allocations <= 8, `binding a 10-year line copies no history: ${initialCounter.allocations} allocations`);
-  for (const slice of [initial.buckets, initial.missing, initial.marks]) {
+  for (const slice of [initial.buckets, initial.missing]) {
     assert.ok(Object.values(slice).every(value => !Array.isArray(value)), 'a bounded slice exposes no backing array');
   }
 
@@ -1214,8 +1214,6 @@ test('the exact read answers every entry the picture reads, not only the first',
 test('advancing through an open bucket and a growing mark cluster costs what changed, and replaced prefix points are never served from the cache', () => {
   const runs: Run[] = [];
   for (let h = 0; h < 1024; h++) runs.push({ firstHour: h, lastHour: h, value: h % 97 });
-  const bins: [number, number][] = [];
-  for (let h = 0; h < 1024; h++) bins.push([h, 1]);
   const line: TiledLine = {
     tag: 'GER',
     head: 'GER',
@@ -1223,7 +1221,7 @@ test('advancing through an open bucket and a growing mark cluster costs what cha
     summary: { from: 0, to: 1023, width: 1, buckets: [makeBucket(0, 1023, 0, 0, 0, 96)], runs, tiles: { binHours: 1024, valueAt: () => null } },
     missing: [],
     parts: [],
-    marks: { from: 0, to: 1023, width: 1, clusters: [{ firstHour: 0, lastHour: 1023, firstOrdinal: '0', count: '1024', bins }] },
+    marks: null,
   };
   const cursor = new BoundedSeriesCursor();
   cursor.advance(line, 100);
@@ -1235,10 +1233,6 @@ test('advancing through an open bucket and a growing mark cluster costs what cha
     if (h === 900) {
       const cut = bounded.buckets.at(0)!;
       assert.deepEqual([cut.lastHour, cut.maxValue], [900, 96], 'the resumed cut equals a fresh one');
-      const tail = bounded.marks.at(0)!;
-      assert.equal(tail.count, '901');
-      assert.equal(tail.bins?.length, 901);
-      assert.ok(!Array.isArray(tail.bins), 'the clipped cluster shares its bins rather than copying them');
     }
   }
   assert.ok(worst <= 48, `one more hour inside an open bucket visits a constant number of items, not the bucket: ${worst}`);

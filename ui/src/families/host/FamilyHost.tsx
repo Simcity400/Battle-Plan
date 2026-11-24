@@ -204,7 +204,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly onActivate?: (action: InstalledAction) => void;
   readonly onToggle?: (action: InstalledAction) => void;
   readonly onRegions?: (command: RegionCommand) => string | null;
-  readonly emptyAction?: ReactNode;
+  readonly emptyAction?: ReactNode | ((openRegions: (anchor: { readonly x: number; readonly y: number }) => void) => ReactNode);
   readonly contextMenuItems?: (hit: FamilyContextHit) => MenuItem[];
   readonly headerSlot?: HTMLElement | null;
   readonly onDiagnostics?: (warnings: string[]) => void;
@@ -445,6 +445,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     captureActive: audit.captureActive,
   };
   const latestRef = useRef(latest);
+  const openRegionsAt = (anchor: { readonly x: number; readonly y: number }) => {
+    const field = fieldsNow().regions as RegionRowsField | undefined;
+    latestRef.current.onRegions?.({ op: 'open', x: anchor.x, y: anchor.y, rows: field?.rows ?? [], ...(field?.active ? { active: field.active } : {}) });
+  };
   latestRef.current = latest;
 
   const publishHoverHour = useCallback((nextHour: number | null) => {
@@ -655,7 +659,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         const at = field.add
           ? { x: (box?.left ?? 0) + field.nameLeft, y: (box?.top ?? 0) + field.add.top + field.add.height - viewportRef.current.scrollTop }
           : focusAnchorRef.current;
-        cur.onRegions!({ op: 'open', x: at.x, y: at.y, rows: field.rows });
+        cur.onRegions!({ op: 'open', x: at.x, y: at.y, rows: field.rows, ...(field.active ? { active: field.active } : {}) });
         return true;
       }
       case 'region-remove': {
@@ -1288,7 +1292,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     pipe,
     onRetryStream: retryStream,
     onRetryLocal,
-    emptyAction,
+    emptyAction: typeof emptyAction === 'function' ? emptyAction(openRegionsAt) : emptyAction,
   });
 
   const summary = meta.mode === 'picture' && !meta.empty && meta.summaryText

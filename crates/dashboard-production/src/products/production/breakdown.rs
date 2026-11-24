@@ -1,13 +1,10 @@
 use dashboard_world::products::equipment_names::{self as names, Named};
 
 use dashboard_base::products::{Country, validate_country};
-use super::{
-    DETAIL_HOURS, appearances, index_of,
-    window_hours,
-};
 use dashboard_base::{Source, products::{LoadContext, Product, check_reply_budget}};
 use engine_executable::modifier_keys as keys;
-use dashboard_query::read::{row, touched};
+use dashboard_query::identity::Holder;
+use dashboard_query::read::row;
 use replay_data::{fixed_point::fixed5_to_q15, fixed_point::q15_to_fixed5};
 use replay_data::{
     rows::CountryProductionModifiersRow, rows::ProductionLineModifiersRow, rows::ProductionModifierTree,
@@ -23,6 +20,9 @@ use std::{
 use ts_rs::TS;
 
 pub type RawRun = replay_data::rows::ProductionLineRow;
+
+const EFFICIENCY_NOTE: &str = "The native average of the admitted factory caches. Current source parameters below do not identify the causes of all past growth or switches.";
+const OUTPUT_NOTE: &str = "Parts include factory output, conversion and refit bonuses where applicable. Other / not identified reconciles licence, rounding or earlier retained state with the recorded IC rate.";
 
 pub(super) const FACTORS: &[(&str, &str)] = &[
     ("efficiency", "Stored factory efficiency"),
@@ -43,8 +43,6 @@ pub(super) const FACTORS: &[(&str, &str)] = &[
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawModifierRun {
-    pub first_hour: i32,
-    pub last_hour: i32,
     pub country: Arc<CountryProductionModifiersRow>,
     pub line: ProductionLineModifiersRow,
     pub run: RawRun,
@@ -54,9 +52,7 @@ pub struct RawModifierRun {
 }
 impl RawModifierRun {
     pub fn project(&self, selected: Option<&str>) -> ProductionModifierRun {
-        let mut run = at(self, selected);
-        run.last_hour = self.last_hour;
-        run
+        at(self, selected)
     }
 }
 
@@ -82,12 +78,8 @@ pub struct ProductionModifierGroup {
     pub parts: Vec<ProductionModifierPart>,
     pub note: String,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductionModifierRun {
-    pub first_hour: i32,
-    pub last_hour: i32,
     pub groups: Vec<ProductionModifierGroup>,
     pub warnings: Vec<String>,
 }
@@ -367,7 +359,6 @@ fn output_base(
 }
 
 fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
-    let hour = raw.first_hour;
     let country = &raw.country;
     let line = &raw.line;
     let run = &raw.run;
@@ -443,7 +434,7 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
             unknown: Some("Historical growth and switching may cancel; individual causes are not recorded".into()) });
         }
         groups.push(group("efficiency", Some(current), current_parts, "%",
-        "The native average of the admitted factory caches. Current source parameters below do not identify the causes of all past growth or switches."));
+        EFFICIENCY_NOTE));
     }
     if wants("start") {
         let start_parts = if line.naval_efficiency {
@@ -680,7 +671,7 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
             unknown: Some("Licence contributor operands were not recorded, even though the net residual is zero".into()) });
         }
         groups.push(group("output", Some(run.speed_raw), output_parts, "IC",
-        "Parts include factory output, conversion and refit bonuses where applicable. Other / not identified reconciles licence, rounding or earlier retained state with the recorded IC rate."));
+        OUTPUT_NOTE));
     }
     if wants("power") {
         let mut power_parts = vec![part(
@@ -748,8 +739,6 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
         "Current refit speed bonus. The output breakdown applies it only to eligible refit lines."));
     }
     ProductionModifierRun {
-        first_hour: hour,
-        last_hour: hour,
         groups,
         warnings: warnings.into_iter().collect(),
     }
@@ -764,15 +753,12 @@ pub struct ProductionLineBreakdown;
 pub struct ProductionBreakdownParams {
     pub branch_id: String,
     pub country: Country,
-    #[doc = " The line's handle in `production-lines-at`: the line it names at `hour`."]
+    #[doc = " The line's handle in `production-lines-at` at `hour`."]
     pub handle: String,
-    #[doc = " The factor shown in full; the others carry only their totals."]
+    #[doc = " The factor shown in full."]
     pub group: String,
+    #[doc = " The clicked hour: the line, its operands and its organisation are read at it."]
     pub hour: i32,
-    #[doc = " The held identity's own runs: lines are read only while the country holds them."]
-    #[serde(default)]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub within: Option<Vec<dashboard_base::span::HourSpan>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -789,26 +775,36 @@ pub struct ProductionModifierChoice {
 pub struct ProductionLineBreakdownReply {
     pub branch_id: String,
     pub tag: String,
-    pub key: String,
-    #[doc = " The window's hours, both included."]
-    pub first_hour: i32,
-    pub last_hour: i32,
+    pub hour: i32,
     pub groups: Vec<ProductionModifierChoice>,
-    #[doc = " The factors over the window's hours the line was read, cut where they change."]
-    pub runs: Vec<ProductionModifierRun>,
+    #[doc = " The asked factor at the hour; null with `missing` when its operands were not recorded."]
+    pub group: Option<ProductionModifierGroup>,
+    pub missing: Option<String>,
+    #[doc = " The line's own notes at the hour: pending organisation bonuses, unnamed sources, operands not recorded."]
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(ProductionLineBreakdownReply);
 
-type Inputs = (RawRun, ProductionLineModifiersRow, CountryProductionModifiersRow);
+type LineAt = (RawRun, Option<ProductionLineModifiersRow>, Option<CountryProductionModifiersRow>, Option<u32>);
+
+fn witnessed(run: &RawRun, id: &str, reason: &str) -> Option<ProductionModifierGroup> {
+    let (total, unit, note) = match id {
+        "efficiency" => (q15_to_fixed5(run.efficiency_raw), "%", EFFICIENCY_NOTE),
+        "output" => (run.speed_raw, "IC", OUTPUT_NOTE),
+        _ => return None,
+    };
+    let mut parts = Vec::new();
+    residual(&mut parts, total, reason);
+    Some(group(id, Some(total), parts, unit, note))
+}
 
 impl Product for ProductionLineBreakdown {
     const KEY: &'static str = "production-line-breakdown";
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = ProductionBreakdownParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, handle, group, hour: Bucket, "within[].firstHour": Start, "within[].lastHour": End];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, handle, group, hour: Read];
     type Reply = ProductionLineBreakdownReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -818,7 +814,6 @@ impl Product for ProductionLineBreakdown {
             ProductionLineBreakdownReply::decl(),
             ProductionModifierPart::decl(),
             ProductionModifierGroup::decl(),
-            ProductionModifierRun::decl(),
             ProductionModifierChoice::decl(),
         ]
     }
@@ -834,116 +829,87 @@ impl Product for ProductionLineBreakdown {
         if !FACTORS.iter().any(|(id, _)| *id == params.group) {
             return Err("Unknown production factor");
         }
-        window_hours(params.hour.div_euclid(DETAIL_HOURS)).map(|_| ()).ok_or("Invalid production hour")
+        Ok(())
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
-        let query = dashboard_base::queries::query(source, branch)?;
-        let content = names::context(source, context)?;
-        let (first, last) = window_hours(params.hour.div_euclid(DETAIL_HOURS)).ok_or_else(|| dashboard_core::invalid("Invalid production hour"))?;
-        let index = index_of(source);
-        let found = appearances(&query, &params.country, params.within.as_deref(), query.timeline.first, query.timeline.last, &index)?;
         let handle = params.handle.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid production line"))?;
-        let appearance = found
-            .into_iter()
-            .find(|appearance| appearance.handle == handle && appearance.pieces.iter().any(|piece| piece.first <= params.hour && params.hour <= piece.last))
-            .ok_or_else(|| dashboard_core::refused("This production line is not the country's at this hour"))?;
+        let hour = params.hour;
+        let query = dashboard_base::queries::query(source, branch)?;
+        let stretch = query.timeline.within(hour, hour).next().ok_or_else(|| dashboard_core::refused("Production lines were not recorded at this hour"))?;
+        let Some(Holder::Found { slot, .. }) = query.holders.at(&params.country, hour).map(|run| run.holder) else {
+            return Err(dashboard_core::refused("This country is not held by any country at this hour"));
+        };
         let recording = query.replay.recording();
         let format = recording.format();
-        let handle = u128::from(appearance.handle);
-        let mut warnings = BTreeSet::new();
-        let mut held: Vec<(u32, i32, i32, Option<Inputs>)> = Vec::new();
-        for piece in appearance.pieces.iter().filter(|piece| piece.first <= last && piece.last >= first) {
-            let (from, to) = (piece.first.max(first), piece.last.min(last));
-            let tables = [(TableId::ProductionLines, None), (TableId::ProductionLineModifiers, None), (TableId::CountryProductionModifiers, None)];
-            let mut line: Option<Option<RawRun>> = None;
-            let mut modifiers: Option<Option<ProductionLineModifiersRow>> = None;
-            let mut country: Option<(u32, Option<CountryProductionModifiersRow>)> = None;
-            dashboard_query::read::walk(recording, piece.run, &tables, from, to, |hour, readers| {
-                dashboard_text::metadata::check_cancel(cancelled)?;
-                let mut moved = false;
-                if line.is_none() || touched(&readers[0], handle) {
-                    line = Some(row::<tables::ProductionLines>(&readers[0], handle, format));
-                    moved = true;
-                }
-                if modifiers.is_none() || touched(&readers[1], handle) {
-                    modifiers = Some(row::<tables::ProductionLineModifiers>(&readers[1], handle, format));
-                    moved = true;
-                }
-                if let Some(Some(run)) = &line {
-                    let key = u128::from(run.country);
-                    if country.as_ref().is_none_or(|(held, _)| *held != run.country) || touched(&readers[2], key) {
-                        country = Some((run.country, row::<tables::CountryProductionModifiers>(&readers[2], key, format)));
-                        moved = true;
-                    }
-                }
-                let extends = held.last().is_some_and(|(run, _, end, _)| *run == piece.run && end.checked_add(1) == Some(hour));
-                if extends && !moved {
-                    if let Some(last) = held.last_mut() {
-                        last.2 = hour;
-                    }
-                    return Ok(());
-                }
-                let inputs = match (&line, &modifiers, &country) {
-                    (Some(Some(run)), Some(Some(modifiers)), Some((held_country, Some(country)))) if *held_country == run.country => Some((run.clone(), modifiers.clone(), country.clone())),
-                    _ => None,
-                };
-                match held.last_mut() {
-                    Some((_, _, end, kept)) if extends && *kept == inputs => *end = hour,
-                    _ => held.push((piece.run, hour, hour, inputs)),
-                }
-                Ok(())
-            })?;
-        }
-        let mut named = Named::default();
-        let mut mios: BTreeMap<(u32, i32), Vec<u64>> = BTreeMap::new();
-        for (run, _, end, inputs) in &held {
-            if let Some((line, ..)) = inputs.as_ref().filter(|(line, ..)| line.mio != 0) {
-                mios.entry((*run, *end)).or_default().push(line.mio);
-            }
-        }
-        for ((run, hour), ids) in mios.iter().rev() {
-            names::name_at(recording, *run, *hour, &[], ids, &content, &mut named)?;
-        }
-        warnings.extend(std::mem::take(&mut named.warnings));
-        let localisation = content.as_ref().ok().map(|content| Arc::clone(&content.catalogue.localisation));
-        let recorded_language: Arc<str> = content.as_ref().ok().map_or_else(|| Arc::from(""), |content| Arc::from(content.catalogue.recorded_language.as_str()));
-        let mut runs: Vec<ProductionModifierRun> = Vec::new();
-        for (_, start, end, inputs) in held {
+        let key = u128::from(handle);
+        let tables = [(TableId::ProductionLines, None), (TableId::ProductionLineModifiers, None), (TableId::CountryProductionModifiers, None), (TableId::CountryLinks, None)];
+        let mut read: Option<LineAt> = None;
+        let mut unread: Option<&str> = None;
+        dashboard_query::read::walk(recording, stretch.run, &tables, hour, hour, |_, readers| {
             dashboard_text::metadata::check_cancel(cancelled)?;
-            let Some((line, modifiers, country)) = inputs else {
-                warnings.insert("Production modifier inputs were not recorded for some hours of this line".to_owned());
-                continue;
-            };
-            let organisation = (line.mio != 0).then(|| named.organisations.get(&line.mio).and_then(|organisation| organisation.name.clone())).flatten();
-            let raw = RawModifierRun {
-                first_hour: start,
-                last_hour: end,
-                country: Arc::new(country),
-                line: modifiers,
-                run: line,
-                organisation,
-                localisation: localisation.clone(),
-                recorded_language: Arc::clone(&recorded_language),
-            };
-            let value = raw.project(Some(&params.group));
-            match runs.last_mut() {
-                Some(last) if last.last_hour.checked_add(1) == Some(value.first_hour) && last.groups == value.groups && last.warnings == value.warnings => last.last_hour = value.last_hour,
-                _ => runs.push(value),
+            if !readers[0].available() {
+                unread = Some("Production lines were not recorded at this hour");
+                return Ok(());
             }
+            let Some(line) = row::<tables::ProductionLines>(&readers[0], key, format) else { return Ok(()) };
+            if !readers[3].available() {
+                unread = Some("Country links were not recorded at this hour, so the line's country is not known");
+                return Ok(());
+            }
+            let linked = row::<tables::CountryLinks>(&readers[3], u128::from(line.country), format)
+                .and_then(|link| dashboard_text::metadata::link_slot(std::slice::from_ref(&link), line.country));
+            let modifiers = row::<tables::ProductionLineModifiers>(&readers[1], key, format);
+            let country = row::<tables::CountryProductionModifiers>(&readers[2], u128::from(line.country), format);
+            read = Some((line, modifiers, country, linked));
+            Ok(())
+        })?;
+        if let Some(reason) = unread {
+            return Err(dashboard_core::refused(reason));
         }
-        if runs.is_empty() {
-            warnings.insert("Production modifier inputs were not recorded for this line in this window".to_owned());
+        let (line, modifiers, country, linked) = read.ok_or_else(|| dashboard_core::refused("This production line does not exist at this hour"))?;
+        if linked != Some(slot) {
+            return Err(dashboard_core::refused("This production line is not the country's at this hour"));
         }
+        let mut warnings = BTreeSet::new();
+        let (group, missing) = match (modifiers, country) {
+            (Some(modifiers), Some(country)) => {
+                let content = names::context(source, context)?;
+                let mut named = Named::default();
+                if line.mio != 0 {
+                    names::name_at(recording, stretch.run, hour, &[], &[line.mio], &content, &mut named)?;
+                }
+                warnings.extend(std::mem::take(&mut named.warnings));
+                let raw = RawModifierRun {
+                    organisation: (line.mio != 0).then(|| named.organisations.get(&line.mio).and_then(|organisation| organisation.name.clone())).flatten(),
+                    country: Arc::new(country),
+                    line: modifiers,
+                    run: line,
+                    localisation: content.as_ref().ok().map(|content| Arc::clone(&content.catalogue.localisation)),
+                    recorded_language: content.as_ref().ok().map_or_else(|| Arc::from(""), |content| Arc::from(content.catalogue.recorded_language.as_str())),
+                };
+                let mut run = raw.project(Some(&params.group));
+                warnings.extend(run.warnings);
+                (run.groups.pop(), None)
+            }
+            (modifiers, _) => {
+                let reason = if modifiers.is_none() { "This line's production modifiers were not recorded at this hour" } else { "The country's production modifiers were not recorded at this hour" };
+                let kept = witnessed(&line, &params.group, reason);
+                if kept.is_some() {
+                    warnings.insert(reason.to_owned());
+                }
+                let missing = kept.is_none().then(|| reason.to_owned());
+                (kept, missing)
+            }
+        };
         let reply = ProductionLineBreakdownReply {
             branch_id: params.branch_id.clone(),
-            tag: query.holders.name(&params.country, params.hour),
-            key: appearance.key,
-            first_hour: first,
-            last_hour: last,
+            tag: query.holders.name(&params.country, hour),
+            hour,
             groups: FACTORS.iter().map(|(id, label)| ProductionModifierChoice { id: (*id).into(), label: (*label).into() }).collect(),
-            runs,
+            group,
+            missing,
             warnings: warnings.into_iter().collect(),
         };
         check_reply_budget(&reply)?;
@@ -1006,8 +972,6 @@ mod tests {
     #[test]
     fn selected_history_does_not_expand_or_warn_about_unrelated_modifier_roots() {
         let raw = RawModifierRun {
-            first_hour: 0,
-            last_hour: 23,
             country: Arc::new(CountryProductionModifiersRow {
                 trees: vec![ProductionModifierTree {
                     key: 0xa9,
@@ -1032,7 +996,6 @@ mod tests {
             ["resources"]
         );
         assert!(projected.warnings.is_empty());
-        assert_eq!(projected.last_hour, 23);
     }
     #[test]
     fn factory_output_applies_power_and_output_modifiers_as_the_output_factor_does() {
@@ -1112,8 +1075,6 @@ mod tests {
                 ..Default::default()
             };
             let groups = RawModifierRun {
-                first_hour: 0,
-                last_hour: 0,
                 country: Arc::new(country),
                 line,
                 run,
@@ -1242,8 +1203,6 @@ mod tests {
         let mut localisation = content_reader_localisation::localisation::Localisation::default();
         localisation.language = "english".into();
         let raw = RawModifierRun {
-            first_hour: 0,
-            last_hour: 0,
             country: Arc::new(country),
             line: ProductionLineModifiersRow {
                 factory_efficiencies: vec![3276800],

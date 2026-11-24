@@ -47,7 +47,7 @@ export default function RegionsField({ field, value, onChange, client, track }: 
       {!isAutomatic(choice) && <button type="button" className="button small quiet" onClick={() => onChange(writeRegionChoice(AUTOMATIC_REGIONS))}>Reset to automatic</button>}
     </div>
     <Popover menu={menu} className="region-chooser-popover" aria-label="Add region">
-      {menu.open && <RegionChooser list={list} inChart={inChart} seaOnly={field.sea === true} automatic={isAutomatic(choice)}
+      {menu.open && <RegionChooser list={list} inChart={inChart} active={null} seaOnly={field.sea === true} automatic={isAutomatic(choice)}
         onChoose={(id, charted) => { onChange(writeRegionChoice(charted ? removeRegion(choice, id) : addRegion(choice, id))); menu.close(); }}
         onReset={() => { onChange(writeRegionChoice(AUTOMATIC_REGIONS)); menu.close(); }} />}
     </Popover>

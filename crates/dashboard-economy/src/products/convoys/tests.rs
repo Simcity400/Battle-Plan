@@ -273,6 +273,11 @@ fn the_automatic_regions_are_ranked_at_the_asked_hour_and_every_lists_each_regio
     assert_eq!(today.valid_through, 47, "the order and every cell hold to the end of the day");
     assert!(today.regions[0].cells.iter().all(|cell| cell.first_hour >= 24 && cell.last_hour <= 30));
     assert_eq!(today.rank_missing, None);
+    assert_eq!(today.active_unlisted.ids, [17], "active at the hour past the top: the chooser's Active now");
+    let removed = health_of(&source, &ConvoyHealthParams { top: Some(1), hidden_regions: Some(vec![18]), ..regions(24, 30) });
+    assert_eq!((removed.regions.iter().map(|r| r.region).collect::<Vec<_>>(), removed.active_unlisted.ids.clone()), (vec![17], vec![18]));
+    let all_removed = health_of(&source, &ConvoyHealthParams { top: Some(1), hidden_regions: Some(vec![17, 18]), ..regions(24, 30) });
+    assert_eq!(all_removed.empty, Some(NoRegions::Filtered { hidden: 2, outside: 0 }), "removing every active region is not \"No convoys\"");
     let before = health_of(&source, &ConvoyHealthParams { top: Some(2), ..regions(0, 23) });
     assert_eq!(before.regions.iter().map(|r| r.region).collect::<Vec<_>>(), vec![17, 18], "most loss first, a full route after it");
     assert_eq!(before.valid_through, 23, "both readings change at hour 24");
@@ -286,4 +291,7 @@ fn an_hour_whose_convoy_state_is_not_recorded_ranks_no_automatic_region_and_says
     let reply = health_of(&gapped(), &ConvoyHealthParams { top: Some(7), pinned_regions: Some(vec![17]), ..regions(24, 30) });
     assert!(reply.rank_missing.is_some());
     assert_eq!(reply.regions.iter().map(|r| (r.region, r.pinned)).collect::<Vec<_>>(), vec![(17, true)], "the pin stays");
+    assert_eq!(reply.active_unlisted.missing, reply.rank_missing);
+    let unpinned = health_of(&gapped(), &ConvoyHealthParams { top: Some(7), ..regions(24, 30) });
+    assert!(matches!(unpinned.empty, Some(NoRegions::Unread { .. })), "{:?}", unpinned.empty);
 }
