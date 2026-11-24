@@ -30,7 +30,7 @@ import {
   hitFamilyBars,
   type BarsGlideOffset,
 } from './painter.ts';
-import { barsProjection, ensureBarsProjection } from './registry.ts';
+import { ensureBarsProjection } from './registry.ts';
 
 export interface FamilyBarsBinding<TOptions = unknown> {
   readonly family: 'bars';
@@ -251,9 +251,11 @@ export function familyBarsLaneView(
     next(scene: Scene, hour: number): number {
       const bound = scene.model;
       if (!isFamilyBarsBinding(bound)) return Infinity;
-      const proj = barsProjection(bound.kind, bound.view);
+      const proj = ensureBarsProjection(bound.kind, bound.view, () => wake(scene.widget));
+      if (proj === 'loading') return hour + 1;
+      if (proj === 'unknown') return Infinity;
       let next = Infinity;
-      if (proj?.nextChange) {
+      if (proj.nextChange) {
         const index = bound.identitySnapshot ? IdentityIndex.fromSnapshot(bound.identitySnapshot) : null;
         const readView = barsReadViewFromScene(scene, bound, hour, index ? { identity: createSnapshotIdentityProvider(index) } : undefined);
         next = Math.min(next, proj.nextChange(readView, bound.options));
@@ -270,7 +272,7 @@ export function familyBarsLaneView(
         return { surfaces: [], fields: {}, motion: false };
       }
       const proj = ensureBarsProjection(bound.kind, bound.view, () => wake(input.widget));
-      if (proj === 'loading') return { surfaces: [], fields: {}, motion: false };
+      if (proj === 'loading') return { surfaces: [], fields: {}, motion: false, nextChangeAt: input.hour + 1 };
       if (proj === 'unknown') {
         return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown bars declaration: ${bound.kind}` };
       }
