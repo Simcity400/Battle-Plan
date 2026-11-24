@@ -642,7 +642,7 @@ fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), Str
                 );
                 match found {
                     FlagSearch::Found { .. } => any = true,
-                    FlagSearch::Unresolvable | FlagSearch::Absent(_) => {}
+                    FlagSearch::Unresolvable | FlagSearch::Refused(_) | FlagSearch::Absent(_) => {}
                 }
             }
         }
