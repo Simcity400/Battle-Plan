@@ -897,18 +897,18 @@ impl Product for LeaderPortraits {
         let second = replay_lanes::at::frame(source.replay_ref().recording(), stretch.run, params.hour, &[replay_lanes::at::Read { table: TableId::CharacterPortraits, columns: None, keys: replay_lanes::at::Keys::These(&characters) }])?;
         let mut frame = first;
         frame.tables[TableId::CharacterPortraits.index()] = second.tables[TableId::CharacterPortraits.index()].clone();
-        let portraits = params
-            .references
-            .iter()
-            .map(|reference| {
-                let drawn = portrait(&frame, reference.parse().unwrap_or_default(), &politics, params.edge);
-                let (image, missing) = match drawn {
-                    Ok(image) => (Some(image), None),
-                    Err(why) => (None, Some(why)),
-                };
-                LeaderPortrait { reference: reference.clone(), image, missing }
-            })
-            .collect();
-        Ok(LeaderPortraitsReply { portraits, warnings: Vec::new() })
+        let mut portraits = Vec::with_capacity(params.references.len());
+        for reference in &params.references {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let drawn = portrait(&frame, reference.parse().unwrap_or_default(), &politics, params.edge);
+            let (image, missing) = match drawn {
+                Ok(image) => (Some(image), None),
+                Err(why) => (None, Some(why)),
+            };
+            portraits.push(LeaderPortrait { reference: reference.clone(), image, missing });
+        }
+        let reply = LeaderPortraitsReply { portraits, warnings: Vec::new() };
+        dashboard_base::products::check_reply_budget(&reply)?;
+        Ok(reply)
     }
 }

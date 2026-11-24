@@ -86,3 +86,16 @@ test('the dashboard selects its country by slot, and a widget pinning a tag keep
   assert.deepEqual(selectedCountryKeys({ kind: 'tags', tags: ['ITA'] }, { source, selectedSlot: 5 }), ['ITA']);
   assert.deepEqual(selectedCountryKeys({ kind: 'all' }, { source, selectedSlot: 5 }), []);
 });
+
+test('coalesced identities with known spans report null on unrecorded gap hours and the holder on recorded hours', () => {
+  const sparse = new SlotTags({
+    known: [{ firstHour: 100, lastHour: 100 }, { firstHour: 110, lastHour: 110 }],
+    countries: [{ tag: 'GER', identities: [{ firstHour: 100, lastHour: 110, slot: 5, countryId: 50 }], unresolved: [] }],
+  });
+  assert.equal(sparse.tagAt(5, 100), 'GER');
+  assert.equal(sparse.tagAt(5, 105), null);
+  assert.equal(sparse.tagAt(5, 110), 'GER');
+  assert.equal(sparse.slotOf('GER', 100), 5);
+  assert.equal(sparse.slotOf('GER', 105), null);
+  assert.equal(sparse.nameAt(5, 105), 'GER');
+});

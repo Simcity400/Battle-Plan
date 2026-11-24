@@ -141,6 +141,40 @@ export function withFamilyRows<T>(pages: readonly LogPage<T>[], family: readonly
   });
 }
 
+export function mergeSpanReplies(replies: readonly EventFeedSpanReply[]): EventFeedSpanReply | null {
+  if (!replies.length) return null;
+  if (replies.length === 1) return replies[0];
+  const sorted = [...replies].sort((a, b) => a.firstHour - b.firstHour);
+  const rows: EventFeedRow[] = [];
+  const seen = new Set<string>();
+  const warnings = new Set<string>();
+  const unavailable = new Map<string, EventFeedUnavailable>();
+  for (const reply of sorted) {
+    for (const row of reply.rows) {
+      if (!seen.has(row.id)) {
+        seen.add(row.id);
+        rows.push(row);
+      }
+    }
+    for (const warning of reply.warnings) warnings.add(warning);
+    for (const note of reply.unavailable) {
+      const key = JSON.stringify([note.kind, note.label, note.reason]);
+      const held = unavailable.get(key);
+      unavailable.set(key, held ? { ...held, count: held.count === null || note.count === null ? null : held.count + note.count } : note);
+    }
+  }
+  rows.sort((a, b) => a.hour - b.hour || a.readHour - b.readHour);
+  return {
+    branchId: sorted[0].branchId,
+    firstHour: sorted[0].firstHour,
+    lastHour: sorted[sorted.length - 1].lastHour,
+    kinds: sorted[0].kinds,
+    rows,
+    unavailable: [...unavailable.values()],
+    warnings: [...warnings],
+  };
+}
+
 export function spanNotes(span: EventFeedSpanReply): string[] {
   return [...span.warnings, ...notRecorded(span.unavailable)];
 }

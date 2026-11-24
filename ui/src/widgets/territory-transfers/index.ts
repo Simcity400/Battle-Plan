@@ -1,5 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import TerritoryTransfersWidget from './TerritoryTransfersWidget';
-import { useConferenceChoices } from './useConferenceChoices';
+import { transfersDeclaration } from './transfersProjection';
 
-export default { render: TerritoryTransfersWidget, useOptionChoices: useConferenceChoices } satisfies WidgetRenderer;
+export default { declaration: transfersDeclaration } satisfies WidgetRenderer;

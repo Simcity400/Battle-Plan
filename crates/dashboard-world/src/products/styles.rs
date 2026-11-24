@@ -157,13 +157,14 @@ pub struct RunLooks {
     pub spans: Vec<(u32, u32, i32, i32)>,
     pub unknown: Vec<(i32, i32)>,
     pub looks: HashMap<u32, Look>,
+    pub raw_looks: HashMap<u32, Box<[u8]>>,
     pub tags: HashMap<u32, Arc<str>>,
 }
 
 pub fn run_looks(recording: &Recording, run: u32) -> io::Result<RunLooks> {
     let held = recording.run(run)?;
     let end = held.first_hour + held.ordinals as i32 - 1;
-    let (mut looks, mut tags) = (HashMap::new(), HashMap::new());
+    let (mut looks, mut raw_looks, mut tags) = (HashMap::new(), HashMap::new(), HashMap::new());
     let mut failed = None;
     let held = read::at(recording, run, &[read::Read::all(TableId::LookFacts), read::Read::all(TableId::TagNames)], end)?;
     let rows = held[0].view();
@@ -172,6 +173,7 @@ pub fn run_looks(recording: &Recording, run: u32) -> io::Result<RunLooks> {
         match Look::decode(bytes) {
             Ok(look) => {
                 looks.insert(key as u32, look);
+                raw_looks.insert(key as u32, Box::from(bytes));
             }
             Err(error) => failed = Some(error),
         }
@@ -193,7 +195,7 @@ pub fn run_looks(recording: &Recording, run: u32) -> io::Result<RunLooks> {
             spans.push((number, look, first as i32, last as i32));
         }
     }
-    Ok(RunLooks { spans, unknown, looks, tags })
+    Ok(RunLooks { spans, unknown, looks, raw_looks, tags })
 }
 
 pub(crate) fn localisation(source: &Source, content: Option<&ContentOptions>, warnings: &mut Vec<String>) -> io::Result<Option<Arc<Localisation>>> {
@@ -206,15 +208,30 @@ pub(crate) fn localisation(source: &Source, content: Option<&ContentOptions>, wa
     Ok(localisation.ok())
 }
 
-fn flag_folders(source: &Source, content: Option<&ContentOptions>) -> io::Result<Result<FlagFolders, String>> {
+#[derive(Default)]
+struct CachedFlagFolders(Option<(Arc<content_reader_layers::ResolvedContent>, Arc<FlagFolders>)>);
+
+fn flag_folders(source: &Source, content: Option<&ContentOptions>) -> io::Result<Result<Arc<FlagFolders>, String>> {
     let Some(content) = content else {
         return Ok(Err("flags cannot be chosen: Game content is not configured".to_owned()));
     };
-    let folders = content::check_replay(source.replay_ref(), content.allow_unverified, &mut Vec::new())
-        .and_then(|()| source.content(&content.options))
-        .and_then(|resolved| FlagFolders::read(&resolved));
-    match folders {
-        Ok(folders) => Ok(Ok(folders)),
+    let resolved = match content::check_replay(source.replay_ref(), content.allow_unverified, &mut Vec::new()).and_then(|()| source.content(&content.options)) {
+        Ok(resolved) => resolved,
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+        Err(error) => return Ok(Err(format!("flags cannot be chosen: {error}"))),
+    };
+    let state = source.state::<CachedFlagFolders>();
+    if let Some((held_content, held_folders)) = state.lock().unwrap_or_else(|error| error.into_inner()).0.as_ref()
+        && Arc::ptr_eq(held_content, &resolved)
+    {
+        return Ok(Ok(Arc::clone(held_folders)));
+    }
+    match FlagFolders::read(&resolved) {
+        Ok(folders) => {
+            let folders = Arc::new(folders);
+            state.lock().unwrap_or_else(|error| error.into_inner()).0 = Some((resolved, Arc::clone(&folders)));
+            Ok(Ok(folders))
+        }
         Err(error) if error.kind() == io::ErrorKind::Interrupted => Err(error),
         Err(error) => Ok(Err(format!("flags cannot be chosen: {error}"))),
     }
@@ -249,9 +266,10 @@ fn facts(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
     let mut flags: Vec<CountryFlagChoice> = Vec::new();
     let mut flag_numbers: HashMap<CountryFlagChoice, i32> = HashMap::new();
     let mut known: Vec<[i32; 2]> = Vec::new();
-    let mut segments: HashMap<Arc<str>, Vec<(i32, i32, Option<[i32; 4]>)>> = HashMap::new();
     let mut runs_read: HashMap<u32, Arc<RunLooks>> = HashMap::new();
-    let mut given: HashMap<(u32, u32, Arc<str>), [i32; 4]> = HashMap::new();
+    let mut unique_index: HashMap<(Arc<str>, Box<[u8]>), usize> = HashMap::new();
+    let mut unique_looks: Vec<(Arc<str>, u32, u32)> = Vec::new();
+    let mut raw_segments: HashMap<Arc<str>, Vec<(i32, i32, usize)>> = HashMap::new();
     for stretch in &query.timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
         if let std::collections::hash_map::Entry::Vacant(slot) = runs_read.entry(stretch.run) {
@@ -276,35 +294,60 @@ fn facts(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
                 continue;
             }
             let Some(tag) = run.tags.get(&number) else { continue };
-            let Some(look) = run.looks.get(&look_number) else {
+            let Some(raw) = run.raw_looks.get(&look_number) else {
                 return Err(invalid("A look span names no look"));
             };
-            let key = (stretch.run, look_number, Arc::clone(tag));
-            let fact = match given.get(&key) {
-                Some(&fact) => fact,
-                None => {
-                    let (style, problem) = style(tag, look, localisation.as_deref());
-                    let choice = match &folders {
-                        Ok(folders) => folders.choose(&flag_chain(tag, look))?,
-                        Err(none) => none.clone(),
-                    };
-                    let flag = *flag_numbers.entry(choice).or_insert_with_key(|choice| {
-                        flags.push(choice.clone());
-                        flags.len() as i32 - 1
-                    });
-                    let fact = [
-                        style.name.as_deref().map_or(-1, |name| names.number(name)),
-                        style.color.map_or(-1, |[red, green, blue]| (i32::from(red) << 16) | (i32::from(green) << 8) | i32::from(blue)),
-                        problem.map_or(-1, |problem| reasons.number(&problem)),
-                        flag,
-                    ];
-                    given.insert(key, fact);
-                    fact
-                }
-            };
-            segments.entry(Arc::clone(tag)).or_default().push((first, last, Some(fact)));
+            let key = (Arc::clone(tag), raw.clone());
+            let id = *unique_index.entry(key).or_insert_with(|| {
+                let id = unique_looks.len();
+                unique_looks.push((Arc::clone(tag), stretch.run, look_number));
+                id
+            });
+            raw_segments.entry(Arc::clone(tag)).or_default().push((first, last, id));
         }
     }
+    let chains: Vec<flag_choices::Chain> = if folders.is_ok() {
+        unique_looks
+            .iter()
+            .map(|(tag, run_id, look_number)| flag_chain(tag, &runs_read[run_id].looks[look_number]))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if let Ok(folders) = &folders {
+        let mut unique_chains: Vec<flag_choices::Chain> = Vec::new();
+        let mut seen_chains: std::collections::HashSet<&flag_choices::Chain> = std::collections::HashSet::with_capacity(chains.len());
+        for chain in &chains {
+            if seen_chains.insert(chain) {
+                unique_chains.push(chain.clone());
+            }
+        }
+        folders.warm_all(&unique_chains);
+    }
+    let mut resolved_facts: Vec<[i32; 4]> = Vec::with_capacity(unique_looks.len());
+    for (idx, (tag, run_id, look_number)) in unique_looks.iter().enumerate() {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let look = &runs_read[run_id].looks[look_number];
+        let (style, problem) = style(tag, look, localisation.as_deref());
+        let choice = match &folders {
+            Ok(folders) => folders.choose(&chains[idx])?,
+            Err(none) => none.clone(),
+        };
+        let flag = *flag_numbers.entry(choice).or_insert_with_key(|choice| {
+            flags.push(choice.clone());
+            flags.len() as i32 - 1
+        });
+        resolved_facts.push([
+            style.name.as_deref().map_or(-1, |name| names.number(name)),
+            style.color.map_or(-1, |[red, green, blue]| (i32::from(red) << 16) | (i32::from(green) << 8) | i32::from(blue)),
+            problem.map_or(-1, |problem| reasons.number(&problem)),
+            flag,
+        ]);
+    }
+    let segments: HashMap<Arc<str>, Vec<(i32, i32, Option<[i32; 4]>)>> = raw_segments
+        .into_iter()
+        .map(|(tag, held)| (tag, held.into_iter().map(|(first, last, id)| (first, last, Some(resolved_facts[id]))).collect()))
+        .collect();
     known.sort_unstable();
     let mut joined: Vec<[i32; 2]> = Vec::with_capacity(known.len());
     for span in known {
@@ -658,6 +701,7 @@ mod tests {
             spans: vec![(1, 10, 0, 71), (1, 20, 72, 200)],
             unknown: vec![],
             looks: HashMap::from([(10, red), (20, blue)]),
+            raw_looks: HashMap::new(),
             tags: HashMap::from([(1, Arc::from("GER"))]),
         });
         let indexed = IndexedRunLooks::new(run);
@@ -675,6 +719,7 @@ type Runs = dashboard_base::queries::RunCache<RunKey, RunLooks>;
 
 pub(crate) fn forget(source: &dashboard_base::Source) {
     Runs::forget(source);
+    source.state::<CachedFlagFolders>().lock().unwrap_or_else(|error| error.into_inner()).0 = None;
 }
 
 pub fn cached_looks(source: &dashboard_base::Source, run: u32) -> io::Result<std::sync::Arc<RunLooks>> {

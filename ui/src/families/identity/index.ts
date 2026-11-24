@@ -147,6 +147,7 @@ export class IdentityIndex {
   private factsFailure?: Failure;
 
   private identities?: CountryIdentitiesReply;
+  private identitiesKnown: readonly HourSpan[] | null = null;
   private identitiesUnknown: readonly HourSpan[] = [];
   private slotRuns = new Map<number, readonly HolderRun[]>();
   private tagIdentities = new Map<string, readonly { readonly firstHour: number; readonly lastHour: number; readonly slot: number; readonly countryId: number }[]>();
@@ -247,6 +248,7 @@ export class IdentityIndex {
   setIdentities(reply: CountryIdentitiesReply): void {
     this.identities = reply;
     this.identitiesFailure = undefined;
+    this.identitiesKnown = reply.known?.length ? sortedHourSpans(reply.known) : null;
     this.identitiesUnknown = sortedHourSpans(reply.unknown.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour })));
     this.tagIdentities.clear();
     this.tagUnresolved.clear();
@@ -336,12 +338,19 @@ export class IdentityIndex {
 
   slotHolderAt(slot: number, hour: number): { readonly tag: string; readonly countryId: number; readonly valid: HourInterval } | null {
     const at = Math.floor(hour);
+    let bounds: HourInterval | null = null;
+    if (this.identitiesKnown) {
+      const known = enclosingGap(this.identitiesKnown, at, this.branchBounds);
+      if (!known.inside) return null;
+      bounds = known.interval;
+    }
     const runs = this.slotRuns.get(slot);
     if (!runs?.length) return null;
     const idx = findRunBeforeOrAt(runs, at, run => run.firstHour);
     const run = idx >= 0 ? runs[idx] : undefined;
     if (!run || run.firstHour > at || at > run.lastHour) return null;
-    return { tag: run.tag, countryId: run.countryId ?? 0, valid: [run.firstHour, run.lastHour] };
+    const valid: HourInterval = bounds ? intersectIntervals([run.firstHour, run.lastHour], bounds) : [run.firstHour, run.lastHour];
+    return { tag: run.tag, countryId: run.countryId ?? 0, valid };
   }
 
   resolve<K extends IdentityKey>(key: K, hour: number): IdentityResult<K> {
@@ -377,15 +386,23 @@ export class IdentityIndex {
       const missing = this.identities.unknown.find(span => span.firstHour <= at && at <= span.lastHour);
       return { field: { kind: 'missing', reason: missing?.reason || 'Country identities were not recorded at this hour' }, interval: unk.interval };
     }
+    let bounds = unk.interval;
+    if (this.identitiesKnown) {
+      const known = enclosingGap(this.identitiesKnown, at, bounds);
+      if (!known.inside) {
+        return { field: { kind: 'missing', reason: 'Country identities were not recorded at this hour' }, interval: known.interval };
+      }
+      bounds = known.interval;
+    }
     const runs = this.tagIdentities.get(tag) ?? [];
     const idx = findRunBeforeOrAt(runs, at, run => run.firstHour);
     const hit = idx >= 0 ? runs[idx] : undefined;
     if (hit && hit.firstHour <= at && at <= hit.lastHour) {
-      const valid = intersectIntervals(unk.interval, [hit.firstHour, hit.lastHour]);
+      const valid = intersectIntervals(bounds, [hit.firstHour, hit.lastHour]);
       return { field: { kind: 'known', value: { slot: hit.slot, countryId: hit.countryId, tag } }, interval: valid };
     }
     const unresolved = this.tagUnresolved.get(tag) ?? [];
-    const unres = enclosingGap(unresolved, at, unk.interval);
+    const unres = enclosingGap(unresolved, at, bounds);
     if (unres.inside) {
       return { field: { kind: 'missing', reason: 'Country identity unresolved at this hour' }, interval: unres.interval };
     }
@@ -418,6 +435,25 @@ export class IdentityIndex {
           warnings: this.identities.warnings,
         };
       }
+      let bounds = unk.interval;
+      if (this.identitiesKnown) {
+        const known = enclosingGap(this.identitiesKnown, at, bounds);
+        if (!known.inside) {
+          const field: IdentityField<never> = { kind: 'missing', reason: 'Country identities were not recorded at this hour' };
+          return {
+            kind: 'known',
+            valid: known.interval,
+            nextBoundary: nextBoundaryOf(known.interval[1]),
+            holder: field,
+            tag: field,
+            name: field,
+            color: field,
+            flagChoice: field,
+            warnings: this.identities.warnings,
+          };
+        }
+        bounds = known.interval;
+      }
       const allRuns = this.slotRuns.get(key.slot) ?? [];
       const runs = key.by === 'holder' ? allRuns.filter(run => run.countryId === key.countryId) : allRuns;
       const idx = findRunBeforeOrAt(runs, at, run => run.firstHour);
@@ -425,8 +461,8 @@ export class IdentityIndex {
       if (!run || run.firstHour > at || at > run.lastHour) {
         const prev = idx >= 0 ? runs[idx] : undefined;
         const next = idx + 1 < runs.length ? runs[idx + 1] : undefined;
-        const first = prev ? Math.max(unk.interval[0], prev.lastHour + 1) : unk.interval[0];
-        const last = next ? Math.min(unk.interval[1], next.firstHour - 1) : unk.interval[1];
+        const first = prev ? Math.max(bounds[0], prev.lastHour + 1) : bounds[0];
+        const last = next ? Math.min(bounds[1], next.firstHour - 1) : bounds[1];
         return {
           kind: 'absent',
           valid: [first, last],
@@ -434,7 +470,7 @@ export class IdentityIndex {
           reason: NOT_A_COUNTRY,
         };
       }
-      const holderInterval = intersectIntervals(unk.interval, [run.firstHour, run.lastHour]);
+      const holderInterval = intersectIntervals(bounds, [run.firstHour, run.lastHour]);
       const holder: CountryHolder = { slot: key.slot, countryId: run.countryId ?? 0, tag: run.tag };
       const tagResult = this.resolveCountryByTag(run.tag, at, { field: { kind: 'known', value: holder }, interval: holderInterval });
       if (tagResult.kind === 'known') {

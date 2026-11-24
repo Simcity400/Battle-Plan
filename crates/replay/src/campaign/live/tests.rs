@@ -179,12 +179,17 @@ struct Deciding {
     facts: Option<Vec<u8>>,
     facts_file: Option<PathBuf>,
     facts_after: Option<Hour>,
+    packing: u32,
     last: Option<Hour>,
 }
 
 impl Deciding {
     fn offers(&self) -> bool {
-        self.facts_after.is_none_or(|after| self.last.is_some_and(|last| last >= after))
+        self.packing == 0 && self.facts_after.is_none_or(|after| self.last.is_some_and(|last| last >= after))
+    }
+
+    fn pack(&mut self) {
+        self.packing = self.packing.saturating_sub(1);
     }
 
     fn everything(saves: bool) -> Self {
@@ -212,7 +217,14 @@ impl Host for Deciding {
     }
 
     fn facts(&mut self, _: &Identity) -> Option<Vec<u8>> {
-        self.offers().then(|| self.facts.clone()).flatten()
+        let offered = self.offers().then(|| self.facts.clone()).flatten();
+        self.pack();
+        offered
+    }
+
+    fn facts_packing(&mut self) -> bool {
+        self.pack();
+        self.packing > 0
     }
 
     fn facts_file(&mut self, identity: &Identity) -> Option<FactsFile> {
@@ -1288,6 +1300,37 @@ mod definitions {
         let resumed = fs::read(folder.recording()).unwrap();
         let differs = resumed.iter().zip(&expected).position(|(a, b)| a != b);
         assert!(resumed == expected, "the resumed file is the unbroken one: {} bytes against {}, first differing at {differs:?}", resumed.len(), expected.len());
+    }
+
+    #[test]
+    fn a_writer_reading_a_definition_waits_for_facts_still_packing_and_derives_its_first_hours_with_them() {
+        let last = FIRST + UNIT_ORDINALS as i32 + 49;
+        let mut records = vec![session(), branch(1, FIRST)];
+        records.extend(hours(1, FIRST..=last, 19));
+        records.push(detach(last));
+        let (whole, folder) = (Folder::new("packed-from-the-start"), Folder::new("packed-late"));
+        for target in [&whole, &folder] {
+            fixtures::write_journal(&target.journal(), 0, CAMPAIGN, &[records.clone()], true).unwrap();
+        }
+        let write = |folder: &Folder, host: &mut Deciding| {
+            let mut writer = LiveWriter::open_with(&folder.recording(), &folder.state(), SOURCE, 0, Settings::LOW, Vec::new(), leveled(recorder_derive::writers())).unwrap();
+            let mut journal = Journal::open(&folder.journal(), 0);
+            journal.start(writer.segments()).unwrap();
+            let mut waits = 0;
+            while writer.advance(&mut journal, host, &|| false).unwrap() != Progress::Finished {
+                waits += 1;
+                assert!(waits < 100, "the facts landed and the writer still waits");
+            }
+            waits
+        };
+        assert_eq!(write(&whole, &mut offering(true)), 0);
+        let expected = fs::read(whole.recording()).unwrap();
+        let waits = write(&folder, &mut Deciding { packing: 5, ..offering(true) });
+        assert!(waits > 0, "the first hour waits while the session's facts are packed");
+        let written = fs::read(folder.recording()).unwrap();
+        let differs = written.iter().zip(&expected).position(|(a, b)| a != b);
+        assert!(written == expected, "the first hours are derived with the facts packed after them: {} bytes against {}, first differing at {differs:?}", written.len(), expected.len());
+        assert_leveled(&folder.recording(), 1);
     }
 
     fn facts_file(folder: &Folder, pack: &[u8]) -> PathBuf {
