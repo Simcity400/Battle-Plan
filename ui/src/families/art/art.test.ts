@@ -287,9 +287,9 @@ test('ArtProvider plugs LaneArtCache and DomArtCache behind BoundedReadView.art(
   assert.ok(painted.status === 'ready' && painted.bitmap, 'the painter draws it from the cache');
   const decoded = painted.bitmap as unknown as ReturnType<typeof fakeBitmap>;
 
-  laneCache.requestVisible(['art://other']);
+  laneCache.requestVisible(['art://other'], ['art://offscreen']);
   for (let i = 0; i < 4; i++) await Promise.resolve();
-  assert.equal(decoded.closed, true, 'art scrolled away is evicted and closed');
+  assert.equal(decoded.closed, true, 'art scrolled away is evicted and closed to make room for other demand');
   const repainted = resolveCachedArt(ready, laneCache as unknown as LaneArtCache<ImageBitmap>);
   assert.ok(repainted.status === 'ready' && repainted.bitmap === undefined, 'a cached model painted again after the eviction draws its art as loading, never the closed bitmap');
 
