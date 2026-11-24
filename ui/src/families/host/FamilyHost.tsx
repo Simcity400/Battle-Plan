@@ -942,14 +942,15 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         }
       }
 
-      const table = fields.table as { readonly count: number; readonly inspectedPresent: boolean } | undefined;
+      const table = fields.table as { readonly count: number } | undefined;
       if (table && table !== lastTableRef.current) {
         lastTableRef.current = table;
         if (lastRowCountRef.current !== table.count) {
           lastRowCountRef.current = table.count;
           accessibleTableRef.current?.setAttribute('aria-rowcount', String(table.count + 1));
         }
-        if (inspectedKeyRef.current && !table.inspectedPresent) clearHoverRef.current();
+        const hovered = inspectedKeyRef.current;
+        if (hovered && !navRef.current.some(entry => entry[0] === hovered)) clearHoverRef.current();
       }
       if (focusInsideRef.current && focusedKeyRef.current && navRef.current !== lastFocusNavRef.current) {
         lastFocusNavRef.current = navRef.current;
