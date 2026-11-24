@@ -1044,7 +1044,6 @@ fn fog_vision_ancillary_and_error_bytes_match_the_pre_extraction_builder() {
         );
 
         drop(hour);
-        drop(old);
         frame.tables[TableId::Countries.index()] = TableView::Unavailable {
             reason: "fixture country read failed".into(),
         }
@@ -2247,7 +2246,7 @@ fn display_dependent_witnesses_split_late_positive_negative_and_error_reads() {
             .dependent_binding("buildings", &["display/buildings"])
             .unwrap()
     );
-    let mut reordered = layers.clone();
+    let mut reordered = layers;
     reordered.layers.reverse();
     assert_ne!(
         reads.dependent_binding("territory", &[]).unwrap(),

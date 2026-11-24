@@ -1544,7 +1544,6 @@ impl Source for Multiplied {
     }
 }
 
-#[allow(clippy::type_complexity, reason = "the hour's witness, manifest and sections, returned together")]
 fn restored(
     directory: &Path,
     capture: u32,
@@ -1733,7 +1732,6 @@ mod tests {
         sections
     }
 
-    #[allow(clippy::type_complexity, reason = "a test's view of the hours read")]
     fn read(folder: &Path) -> io::Result<(bool, Vec<(Vec<(usize, String)>, Vec<Status>)>)> {
         let kinds = schema()?;
         let columns: Vec<usize> = kinds.iter().map(Vec::len).collect();
@@ -2217,7 +2215,7 @@ mod tests {
         let mut writer = JournalWriter::create(&folder.0, 0, &appended_identity, &test_capture()).unwrap();
         let _ = writer.next_segment().unwrap();
         writer.run(1, 0, 0).unwrap();
-        let sections = vec![insert_section(&appended, land_order, 2, &[Values::Opaque { ends: &[2], items: &[9, 8] }])];
+        let sections = [insert_section(&appended, land_order, 2, &[Values::Opaque { ends: &[2], items: &[9, 8] }])];
         let mut statuses = vec![Status::NotRecorded; appended.len()];
         let mut read_bits = vec![0_u64; appended.len().div_ceil(64)];
         statuses[land_order] = Status::Complete;

@@ -494,7 +494,7 @@ mod tests {
             ..Default::default()
         };
         *frame.tables[TableId::NavalMissionTaskForces.index()] =
-            TableView::Complete(TableRows::NavalMissionTaskForces(vec![row.clone()]));
+            TableView::Complete(TableRows::NavalMissionTaskForces(vec![row]));
         *frame.tables[TableId::NavalMissionLedgers.index()] =
             TableView::Complete(TableRows::NavalMissionLedgers(vec![
                 NavalMissionLedgerRow {

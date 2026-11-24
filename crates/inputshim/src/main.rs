@@ -63,7 +63,7 @@ mod windows {
         };
         let mut entry: MODULEENTRY32W = unsafe { std::mem::zeroed() };
         entry.dwSize = size_of::<MODULEENTRY32W>() as u32;
-        let mut found = unsafe { Module32FirstW(snapshot.0, &mut entry) };
+        let mut found = unsafe { Module32FirstW(snapshot.0, &raw mut entry) };
         let mut result = Vec::new();
         while found != 0 {
             let length = entry
@@ -75,7 +75,7 @@ mod windows {
                 entry.modBaseAddr as usize,
                 PathBuf::from(OsString::from_wide(&entry.szExePath[..length])),
             ));
-            found = unsafe { Module32NextW(snapshot.0, &mut entry) };
+            found = unsafe { Module32NextW(snapshot.0, &raw mut entry) };
         }
         if unsafe { GetLastError() } != ERROR_NO_MORE_FILES {
             return Err(io::Error::last_os_error().to_string());
@@ -148,7 +148,7 @@ mod windows {
                 GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
                     | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                 loader as *const u16,
-                &mut owner,
+                &raw mut owner,
             )
         } == 0
         {
@@ -195,7 +195,7 @@ mod windows {
         let result = (|| {
             let mut written = 0;
             if unsafe {
-                WriteProcessMemory(process.0, remote, path.as_ptr().cast(), bytes, &mut written)
+                WriteProcessMemory(process.0, remote, path.as_ptr().cast(), bytes, &raw mut written)
             } == 0
                 || written != bytes
             {

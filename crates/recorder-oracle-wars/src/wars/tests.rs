@@ -432,7 +432,7 @@ fn redeclaration_does_not_compare_retired_goals_with_live_goals_and_checks_rever
     let live = WarOwnedRelationRow {
         ordinal: 1,
         retired: 0,
-        ..retired.clone()
+        ..retired
     };
     let set_owned = |frame: &mut DecodedFrame, rows| {
         frame.tables[TableId::WarOwnedRelations.index()] =
@@ -445,7 +445,7 @@ fn redeclaration_does_not_compare_retired_goals_with_live_goals_and_checks_rever
             live.clone(),
             WarOwnedRelationRow {
                 owner: 103,
-                ..retired.clone()
+                ..retired
             },
             WarOwnedRelationRow { owner: 103, ..live },
         ],

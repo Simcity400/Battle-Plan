@@ -13,13 +13,12 @@ import {  pinnedBreakdown } from '../../charts/drill/drillState';
 import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import { pickSummaryLines } from '../../charts/chartSummary';
-import { gapSummaryLayer, lineSummaryLayer } from '../../charts/renderTimeChart';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
 import type { Live, LiveValues } from '../../charts/live';
 import { SECONDARY_DASH } from '../../charts/palette';
 import TimeChart from '../../charts/TimeChart';
-import type { ChartLayer } from '../../charts/TimeChart';
+import type { ChartData, ChartLayer } from '../../charts/TimeChart';
 import { tooltipText } from '../../charts/tooltip';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
@@ -51,7 +50,7 @@ import { repliedCells, reporting } from '../../dashboard/follow/liveCells';
 import { useShownHour } from '../../dashboard/widgetPerf';
 import { BREAKDOWN, OPTIONS } from './definition';
 import { RESOURCE_BALANCE, RESOURCE_SIZES, automaticResource, balanceOf, barParts, barStructure, campaignScale, chosenResources, dealsOf, momentScale,
-  orderResources, overTimeTooltip, partWidth, poolsAt, poolsMissing, poolsOf, resourceName, resourceTooltip, toggleResource, validateResourceBalance,
+  orderResources, overTimeTooltip, partWidth, poolsAt, poolsMissing, poolsOf, resourceName, resourceTimeLayers, resourceTooltip, toggleResource, validateResourceBalance,
   validateResourceSizes, describeResource, legendFlags, segmentLook } from './resourceData';
 import type { Balance, LineAt, RowOrder } from './resourceData';
 import ResourceBreakdown from './ResourceBreakdown';
@@ -383,27 +382,16 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
   const until = shownUntil(playhead, playback, options.afterPlayhead === true);
   const shade = lines.length === 1 && options.gap !== false;
-  const layers = useMemo<ChartLayer[]>(() => [
-    ...shade ? [gapSummaryLayer({
-      first: () => supply.summaryOf(keyId(lines[0].key)),
-      second: () => demand.summaryOf(keyId(lines[0].key)),
-      aboveColor: tokens.positive,
-      belowColor: tokens.error,
-    })] : [],
-    ...lines.flatMap(line => [
-      lineSummaryLayer({
-        summary: () => supply.summaryOf(keyId(line.key)),
-        color: line.color,
-        withExtent: false,
-      }),
-      lineSummaryLayer({
-        summary: () => demand.summaryOf(keyId(line.key)),
-        color: line.color,
-        options: { dash: SECONDARY_DASH, endDot: false },
-        withExtent: false,
-      }),
-    ]),
-  ], [lines, shade, supply.summaryOf, demand.summaryOf, tokens.positive, tokens.error]);
+  const layers = useMemo<ChartLayer[]>(() => resourceTimeLayers(
+    lines.map(line => ({ id: keyId(line.key), color: line.color })),
+    shade, supply.summaryOf, demand.summaryOf,
+    () => liveHead && playhead !== null ? shownUntil(liveHead.read(), playback, options.afterPlayhead === true) : until,
+    { above: tokens.positive, below: tokens.error },
+  ), [lines, shade, supply.summaryOf, demand.summaryOf, liveHead, playhead, playback, options.afterPlayhead, until, tokens.positive, tokens.error]);
+  const chartData = useMemo<ChartData>(() => ({
+    revision: () => [supply.revision(), demand.revision()],
+    subscribe: listener => { const stopSupply = supply.subscribe(listener), stopDemand = demand.subscribe(listener); return () => { stopSupply(); stopDemand(); }; },
+  }), [supply.revision, supply.subscribe, demand.revision, demand.subscribe]);
   const [selection, setSelection] = useState<{ hour: number; ids: readonly string[] } | null>(null);
   useEffect(() => setSelection(null), [chosen, extent[0], extent[1]]);
   const chipValues = useRef(new Map<number, HTMLElement>());
@@ -477,7 +465,7 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
-        layers={layers} active={active} pickOwner={supply.owner} notRecorded={supply.unrecorded && demand.unrecorded ? supply.unrecorded : null}
+        layers={layers} data={chartData} active={active} pickOwner={supply.owner} notRecorded={supply.unrecorded && demand.unrecorded ? supply.unrecorded : null}
         onSummaryView={view => { supply.onSummaryView(view); demand.onSummaryView(view); }}
         onNavigateHour={supply.onNavigateHour} keyboardHour={supply.keyboardHour} keyboardRevision={supply.keyboardRevision}
         onHover={setHoverHour}

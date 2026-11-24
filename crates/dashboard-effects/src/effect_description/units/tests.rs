@@ -216,7 +216,6 @@ fn render_with_nato(
 
 const UNIT: u64 = (7_u64 << 32) | 0x1269;
 
-#[allow(clippy::field_reassign_with_default)]
 fn bonus_names() -> content_reader_script::key_names::KeyNames {
     let mut units = content_reader_script::sub_units::SubUnits::default();
     units.read(
@@ -911,7 +910,6 @@ fn unit_carrier_naming_has_no_country_or_division_cap() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-#[allow(clippy::field_reassign_with_default)]
 #[test]
 fn units_output_branches() {
     engine_executable::executable_tables::initialize_for_tests()

@@ -443,7 +443,6 @@ fn convert_source(
         stats.writer_paging[i].1 += reloads - before_paging[i].1;
         stats.writer_paging[i].2 += spilled - before_paging[i].2;
     }
-    drop(publish);
     if hourly && live_count != counts.iter().sum::<u64>() {
         return Err(invalid("hourly concurrent delivery count differs"));
     }

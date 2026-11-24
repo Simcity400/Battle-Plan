@@ -822,7 +822,7 @@ mod tests {
         fs::create_dir_all(&current).unwrap();
         let path = root.join("settings.json");
         let settings = RecorderSettings {
-            save_folder: Some(current.clone()),
+            save_folder: Some(current),
             earlier_save_folders: vec![earlier.clone(), gone.clone()],
             ..RecorderSettings::default()
         };
@@ -939,7 +939,7 @@ mod tests {
             earlier_save_folders: vec![earlier.clone()],
             ..RecorderSettings::default()
         };
-        let saved = settings.clone();
+        let saved = settings;
         let _ = RecorderSettings::update_at(&path, move |held| *held = saved).unwrap();
         assert!(settled(&earlier));
         fs::create_dir_all(earlier.join("sessions").join("3-3")).unwrap();
@@ -948,7 +948,7 @@ mod tests {
             RecorderSettings::load_from(&path)
                 .unwrap()
                 .earlier_save_folders,
-            [earlier.clone()]
+            std::slice::from_ref(&earlier)
         );
         fs::write(
             earlier.join("sessions").join("3-3").join("completed.json"),

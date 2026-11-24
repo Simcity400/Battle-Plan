@@ -249,7 +249,7 @@ pub(crate) fn days(first: i32, last: i32, known: &[(u32, i32, i32)], reads: &[(i
     (first.div_euclid(DAY_HOURS)..=last.div_euclid(DAY_HOURS))
         .map(|day| {
             let (from, to) = ((day * DAY_HOURS).max(first), (day * DAY_HOURS + DAY_HOURS - 1).min(last));
-            let at = known.iter().filter(|span| span.1 <= to && span.2 >= from).last().map(|span| (span.0, span.2.min(to)));
+            let at = known.iter().filter(|span| span.1 <= to && span.2 >= from).next_back().map(|span| (span.0, span.2.min(to)));
             let read = at.and_then(|(_, at)| {
                 let index = reads.partition_point(|run| run.0 <= at).checked_sub(1)?;
                 Some(reads[index].1.min(at))

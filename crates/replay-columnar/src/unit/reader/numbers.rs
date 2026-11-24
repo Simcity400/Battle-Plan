@@ -234,7 +234,6 @@ struct Run<'a, 'p> {
     slots: usize,
 }
 
-#[allow(clippy::too_many_arguments, reason = "the loop's one entry, every part given apart so none goes through a context")]
 pub(super) fn advance(model: u8, tracks: &mut Tracks, born_group: bool, pass: &Pass<'_>, numbers: Numbers<'_>, written: &mut Vec<u32>, count: &mut Count) -> io::Result<()> {
     if tracks.slot.is_empty() || tracks.due > pass.to {
         return Ok(());
@@ -288,7 +287,6 @@ pub(super) fn advance(model: u8, tracks: &mut Tracks, born_group: bool, pass: &P
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments, reason = "the loop's dispatch, every part given apart")]
 #[inline(always)]
 fn models<C: Cells>(model: u8, full: bool, born: bool, cells: &mut C, tracks: &mut Tracks, start: usize, run: &mut Run<'_, '_>, bits: &mut Bits<'_>, written: &mut Vec<u32>, count: &mut Count) -> Stop {
     match (model, full, born) {

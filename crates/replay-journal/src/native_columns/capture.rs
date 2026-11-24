@@ -366,7 +366,6 @@ fn visit_keyed<R: RowCodec>(
     )
 }
 
-#[allow(clippy::too_many_arguments, reason = "internal staging helper")]
 fn stage<'r, R: RowCodec + 'r>(
     writer: &mut TableWriter,
     dictionary: Strings<'_>,

@@ -121,7 +121,7 @@ mod tests {
             ..Default::default()
         };
         *frame.tables[TableId::NavalMissionTaskForces.index()] =
-            TableView::Complete(TableRows::NavalMissionTaskForces(vec![row.clone()]));
+            TableView::Complete(TableRows::NavalMissionTaskForces(vec![row]));
         let mut report = Report::default();
         compare(&frame, &save, &mut report).unwrap();
         assert!(report.differences.is_empty());

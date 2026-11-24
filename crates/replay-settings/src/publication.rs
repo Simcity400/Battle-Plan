@@ -61,7 +61,7 @@ pub fn posix_delete(path: &Path) -> io::Result<()> {
         SetFileInformationByHandle(
             file.as_raw_handle(),
             FileDispositionInfoEx,
-            (&info as *const FILE_DISPOSITION_INFO_EX).cast(),
+            (&raw const info).cast(),
             std::mem::size_of_val(&info) as u32,
         )
     } == 0

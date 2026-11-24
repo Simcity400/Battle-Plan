@@ -281,7 +281,7 @@ mod tests {
         assert_eq!(bytes, encode_needs(&needs).unwrap());
         assert_eq!(decode_needs(&bytes).unwrap(), needs);
         assert!(decode_needs(&bytes[..bytes.len() - 1]).is_err());
-        let mut longer = bytes.clone();
+        let mut longer = bytes;
         longer.push(0);
         assert!(decode_needs(&longer).is_err());
     }

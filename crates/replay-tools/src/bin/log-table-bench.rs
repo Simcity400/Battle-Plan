@@ -430,7 +430,9 @@ fn before(memory: &Memory, kinds: &[Kind], columns: &[usize], asked: &[u64], wal
                     }
                     if next < asked.len() && asked[next] == ordinal {
                         took.rows += 1;
-                        std::hint::black_box(columns.iter().map(|&column| rows.value(column, at)).count());
+                        for &column in columns {
+                            std::hint::black_box(rows.value(column, at));
+                        }
                     }
                 }
             })?;
@@ -447,7 +449,9 @@ fn after(memory: &Memory, kinds: &[Kind], columns: &[usize], asked: &[u64]) -> i
     reader::log_rows_at(&counted, &memory.pages, kinds, 0, columns, asked, &mut |event| match event {
         LogEvent::Appended { rows, at, .. } => {
             took.rows += 1;
-            std::hint::black_box(columns.iter().map(|&column| rows.value(column, at)).count());
+            for &column in columns {
+                std::hint::black_box(rows.value(column, at));
+            }
         }
         LogEvent::Named { .. } => named += 1,
         LogEvent::Forgotten { .. } => {}

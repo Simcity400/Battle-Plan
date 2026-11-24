@@ -79,7 +79,7 @@ pub fn run_value() -> Result<Option<RunValue>, String> {
         let (mut kind, mut size) = (0_u32, 0_u32);
         // SAFETY: a size query; every pointer is valid for the call.
         let status = unsafe {
-            RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_ANY | RRF_NOEXPAND, &mut kind, std::ptr::null_mut(), &mut size)
+            RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_ANY | RRF_NOEXPAND, &raw mut kind, std::ptr::null_mut(), &raw mut size)
         };
         match status {
             ERROR_SUCCESS => {}
@@ -90,7 +90,7 @@ pub fn run_value() -> Result<Option<RunValue>, String> {
         let mut read = size;
         // SAFETY: the buffer holds `read` bytes, as the call is told.
         let status = unsafe {
-            RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_ANY | RRF_NOEXPAND, &mut kind, data.as_mut_ptr().cast::<c_void>(), &mut read)
+            RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_ANY | RRF_NOEXPAND, &raw mut kind, data.as_mut_ptr().cast::<c_void>(), &raw mut read)
         };
         match status {
             ERROR_SUCCESS => {
@@ -159,8 +159,8 @@ pub fn light_taskbar() -> bool {
             value.as_ptr(),
             RRF_RT_REG_DWORD,
             std::ptr::null_mut(),
-            (&mut data as *mut u32).cast::<c_void>(),
-            &mut size,
+            (&raw mut data).cast::<c_void>(),
+            &raw mut size,
         )
     };
     status == ERROR_SUCCESS && data == 1

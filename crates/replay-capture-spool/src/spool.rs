@@ -22,7 +22,7 @@ pub use replay_frame::envelope::{MAX_RECORD_BYTES, RECORD_HEADER_BYTES, RECORD_M
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(
+#[expect(
     clippy::large_enum_variant,
     reason = "Frames stay inline without a per-hour box; replay trailers retain controls in their compact enum."
 )]

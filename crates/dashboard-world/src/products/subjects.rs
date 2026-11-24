@@ -324,8 +324,8 @@ fn held_runs(source: &Source, query: &dashboard_query::Query<'_>, cancelled: &At
     let mut held = HashMap::new();
     for stretch in &query.timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        if !held.contains_key(&stretch.run) {
-            held.insert(stretch.run, (crate::products::subjects::cached_subjects(source, stretch.run)?, dashboard_base::queries::links(source, stretch.run)?));
+        if let std::collections::hash_map::Entry::Vacant(slot) = held.entry(stretch.run) {
+            slot.insert((crate::products::subjects::cached_subjects(source, stretch.run)?, dashboard_base::queries::links(source, stretch.run)?));
         }
     }
     Ok(held)

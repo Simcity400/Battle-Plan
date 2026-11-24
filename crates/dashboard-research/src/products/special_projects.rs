@@ -913,9 +913,9 @@ fn pieces(query: &Query<'_>, country: &Country, from: i32, through: i32) -> (Vec
 }
 
 fn links_of<'l>(query: &Query<'_>, held: &'l mut HashMap<u32, RunLinks>, run: u32) -> io::Result<&'l RunLinks> {
-    if !held.contains_key(&run) {
+    if let std::collections::hash_map::Entry::Vacant(vacant) = held.entry(run) {
         let links = dashboard_query::cost::storage(|| country_ids::run_links(query.replay.recording(), run))?;
-        held.insert(run, links);
+        vacant.insert(links);
     }
     Ok(&held[&run])
 }
@@ -1281,7 +1281,6 @@ struct CompletionWatch {
     entry: Entry,
 }
 
-#[allow(clippy::too_many_arguments, reason = "Run-batched evidence pass advances one SliceReads reader and one Projects reader strictly forward across active completion windows.")]
 fn see_run_evidence(
     tag_facts: &mut BTreeMap<String, Facts>,
     campaign_start: i32,
@@ -1514,8 +1513,8 @@ fn counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io:
                 tags.extend(query.holders.tags.iter().filter(|(_, runs)| holds(runs)).map(|(tag, _)| tag.clone()));
             }
         }
-        if !scanned_histories.contains_key(&stretch.run) {
-            scanned_histories.insert(stretch.run, (stretch.first, stretch.last, history));
+        if let std::collections::hash_map::Entry::Vacant(slot) = scanned_histories.entry(stretch.run) {
+            slot.insert((stretch.first, stretch.last, history));
         }
     }
     if tags.is_empty() {

@@ -262,7 +262,7 @@ mod tests {
                     .into();
             },
         );
-        let reply = read(&[control.clone()], 100, 101);
+        let reply = read(std::slice::from_ref(&control), 100, 101);
         assert_eq!(reply.recorded_seconds, Some(240.0));
         assert_eq!(reply.playing_seconds, Some(120.0));
         assert_eq!(reply.paused_seconds, Some(120.0));
@@ -284,7 +284,7 @@ mod tests {
             ],
             |_| {},
         );
-        let reply = read(&[control.clone()], 100, 102);
+        let reply = read(std::slice::from_ref(&control), 100, 102);
         assert_eq!(reply.recorded_seconds, Some(30.0));
         assert_eq!(reply.playing_seconds, Some(20.0));
         assert_eq!(reply.paused_seconds, Some(10.0));
