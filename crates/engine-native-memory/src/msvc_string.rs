@@ -767,6 +767,46 @@ mod tests {
     }
 
     #[test]
+    fn observed_text_marks_only_a_failed_payload_copy_as_a_payload_failure() {
+        use crate::raw_country_observations::{Attempt, Capacity, Journal, Source};
+        let mut text = [0_u8; 32];
+        text[..3].copy_from_slice(b"GER");
+        text[LENGTH..LENGTH + 8].copy_from_slice(&3_u64.to_le_bytes());
+        text[CAPACITY..CAPACITY + 8].copy_from_slice(&INLINE_CAPACITY.to_le_bytes());
+        let mut invalid = text;
+        invalid[LENGTH..LENGTH + 8].copy_from_slice(&16_u64.to_le_bytes());
+        let mut unterminated = text;
+        unterminated[3] = b'!';
+        let mut journal = Journal::try_new(Capacity {
+            occurrences: 1,
+            links: 0,
+            bytes: 8,
+        })
+        .unwrap();
+        for (image, fault, failure, payload) in [
+            (&invalid, None, "string layout invalid", Attempt::Unreached),
+            (&unterminated, None, "string terminator invalid", Attempt::Unreached),
+            (&text, Some((2, 0)), "string terminator unreadable", Attempt::Unreached),
+            (
+                &text,
+                Some((3, 0)),
+                "string payload unreadable",
+                Attempt::Completed(Err("string payload unreadable")),
+            ),
+        ] {
+            journal.reset();
+            let memory = TracedMemory::new(0x1000, image, fault);
+            assert!(
+                read_text_observed::<8, false>(&memory, 0x1000, 7, Source::Countries, &mut journal)
+                    .is_none()
+            );
+            let attempt = journal.text_attempt(Some(0)).unwrap();
+            assert_eq!(attempt.failure, Some(failure));
+            assert_eq!(attempt.payload, payload);
+        }
+    }
+
+    #[test]
     fn inline_and_heap_strings_are_exact_and_never_silently_shortened() {
         let mut bytes = [0_u8; 96];
         bytes[..3].copy_from_slice(b"GER");

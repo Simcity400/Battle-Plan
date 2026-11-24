@@ -29,3 +29,23 @@ pub fn read_raw(
         .ok_or("game date raw hour unreadable")
 }
 pub const NULL_RAW_HOUR: i32 = 43_808_760;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::SliceMemory;
+
+    #[test]
+    fn an_unlocated_vtable_site_is_withheld_not_an_address_overflow() {
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &[0; 0x18],
+        };
+        for key in [VTABLE_RVA, PERSISTENT_VTABLE_RVA] {
+            assert_eq!(
+                engine_sites::with_synthetic_withheld(key, || read_raw(&memory, 0, 0x1000)),
+                Err("game date vtable withheld")
+            );
+        }
+    }
+}
