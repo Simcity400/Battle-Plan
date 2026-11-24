@@ -71,7 +71,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       const isTail = !single && rank >= 8;
       const bounded = seriesMap?.get(tag) ?? null;
       const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, !single);
-      const color = isTail ? 'rgba(245, 245, 245, 0.22)' : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.politicalPower);
+      const color = isTail ? CHART_MEASURE_COLOURS.tailLine : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.politicalPower);
       const headValue = headByTag.get(tag) ?? null;
       return {
         id: tag,

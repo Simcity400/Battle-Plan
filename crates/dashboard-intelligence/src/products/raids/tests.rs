@@ -98,6 +98,10 @@ fn make_frame(
 }
 
 fn load_product(segments: &[Vec<Record>], branch: &str, from: Option<i32>, to: Option<i32>) -> super::RaidLogReply {
+    load_with(segments, RaidLogParams { branch_id: branch.into(), from, to, countries: Vec::new(), catalogue: false })
+}
+
+fn load_with(segments: &[Vec<Record>], params: RaidLogParams) -> super::RaidLogReply {
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), segments)
         .unwrap()
         .into_timelines(&Default::default())
@@ -111,7 +115,7 @@ fn load_product(segments: &[Vec<Record>], branch: &str, from: Option<i32>, to: O
     .unwrap();
     RaidLog::load(
         &source,
-        &RaidLogParams { branch_id: branch.into(), from, to, countries: Vec::new(), catalogue: false },
+        &params,
         &LoadContext { content: None },
         &AtomicBool::new(false),
     )
@@ -143,13 +147,13 @@ fn a_raids_phases_are_runs_it_launches_at_its_first_hour_in_progress_and_wins_on
     let course = Course::read(&steps, 50);
     assert_eq!(course.runs, vec![(10, 19, 1, 0), (20, 29, 4, 0), (30, 50, 5, 3)]);
     assert_eq!((course.launched, course.ended, course.raider, course.phase, course.outcome), (Some(20), Some(30), Some(7), Some(5), Some(3)));
-    assert!(course.succeeded());
+    assert_eq!(course.succeeded, Some(30));
     let before = Course::read(&steps, 25);
     assert_eq!(before.runs.last(), Some(&(20, 25, 4, 0)));
-    assert!(before.launched.is_some() && !before.succeeded());
+    assert!(before.launched.is_some() && before.succeeded.is_none());
     let flew = Course::read(&[step(10, native::PHASE_PREPARED, 0, Some(0), 0), step(15, native::PHASE_PREPARED, 0, Some(250), 0), step(20, native::PHASE_ENDED, 2, Some(250), 0)], 29);
     assert_eq!((flew.launched, flew.ended), (Some(15), Some(20)));
-    assert!(!flew.succeeded(), "a limited success is no success");
+    assert_eq!(flew.succeeded, None, "a limited success is no success");
 }
 
 #[test]
@@ -291,7 +295,7 @@ fn product_rejects_exactness_from_truncated_reads_and_keeps_exactness_at_range_s
         make_frame(1, 11, countries.clone(), 20, TableView::Truncated { rows: TableRows::Raids(vec![]), missing: 1 }, vec![]),
         make_frame(1, 12, countries.clone(), 20, TableView::Complete(TableRows::Raids(vec![raid_row(1, 1, native::PHASE_ENDED, native::OUTCOME_SUCCESS, Some(100))])), vec![target_row(1, scope.clone(), 40)]),
     ]);
-    let reply = load_product(&[truncated_run], "1", None, None);
+    let reply = load_product(std::slice::from_ref(&truncated_run), "1", None, None);
     assert_eq!(reply.episodes.len(), 1);
     assert!(!reply.episodes[0].ended_exact);
     assert_eq!(reply.episodes[0].runs[1].first_exact, false);
@@ -301,6 +305,8 @@ fn product_rejects_exactness_from_truncated_reads_and_keeps_exactness_at_range_s
         "an hour whose raids were not read whole is missing, never shown as no raids: {:?}",
         reply.missing
     );
+    let catalogue = load_with(std::slice::from_ref(&truncated_run), RaidLogParams { branch_id: "1".into(), from: None, to: None, countries: Vec::new(), catalogue: true });
+    assert!(catalogue.episodes.is_empty() && catalogue.missing.is_empty(), "a catalogue request reads no raid and no raid coverage: {:?}", catalogue.missing);
 
     let range_run = records(1, vec![
         make_frame(1, 19, countries.clone(), 20, TableView::Complete(TableRows::Raids(vec![raid_row(2, 1, native::PHASE_PREPARING, native::OUTCOME_NONE, None)])), vec![target_row(2, scope.clone(), 40)]),
@@ -384,7 +390,7 @@ fn product_prefers_native_end_hour_and_completion_country_and_distinguishes_know
 
     let native_ep = &reply.episodes[0];
     assert_eq!(native_ep.ended_hour, Some(5));
-    assert_eq!(native_ep.ended_seen_hour, Some(20), "the native end date is first seen at the read that found it ended");
+    assert_eq!(native_ep.succeeded_hour, Some(20), "the success is first seen at the read that found it ended");
     assert!(native_ep.ended_exact, "native end_hour is exact even on a baseline-ended raid");
     assert_eq!(native_ep.ended_source, Some(RaidEndedSource::NativeEndDate));
     assert_eq!(native_ep.victim.as_deref(), Some("POL"), "native completion_country beats current controller GER");
@@ -403,4 +409,55 @@ fn product_prefers_native_end_hour_and_completion_country_and_distinguishes_know
     assert_eq!(withheld_ep.ended_source, Some(RaidEndedSource::ObservedEndedRead));
     assert_eq!(withheld_ep.victim.as_deref(), Some("GER"));
     assert_eq!(withheld_ep.victim_source, Some(RaidVictimSource::ControllerAtFirstEndedRead));
+}
+
+#[test]
+fn one_history_makes_every_episode_and_a_range_is_that_history_clipped() {
+    let scope = RaidScope { province: 10, ..Default::default() };
+    let countries = vec![(10, 1, b"ENG".as_slice()), (20, 2, b"GER".as_slice()), (30, 3, b"FRA".as_slice())];
+    let ended = |id| TableView::Complete(TableRows::Raids(vec![raid_row(id, 1, native::PHASE_ENDED, native::OUTCOME_SUCCESS, Some(100))]));
+    let none = || TableView::Complete(TableRows::Raids(vec![]));
+
+    let reused = records(1, vec![
+        make_frame(1, 10, countries.clone(), 30, ended(7), vec![target_row(7, scope.clone(), 40)]),
+        make_frame(1, 11, countries.clone(), 30, none(), vec![]),
+        make_frame(1, 12, countries.clone(), 20, ended(7), vec![target_row(7, scope.clone(), 40)]),
+        make_frame(1, 13, countries.clone(), 20, ended(7), vec![target_row(7, scope.clone(), 40)]),
+        make_frame(1, 14, countries.clone(), 20, ended(7), vec![target_row(7, scope.clone(), 40)]),
+    ]);
+    let full = load_product(std::slice::from_ref(&reused), "1", None, None);
+    let late = load_product(std::slice::from_ref(&reused), "1", Some(14), Some(14));
+    assert_eq!(full.episodes.iter().map(|e| e.victim.as_deref()).collect::<Vec<_>>(), [Some("FRA"), Some("GER")]);
+    assert_eq!(late.episodes.iter().map(|e| (e.id.as_str(), e.victim.as_deref())).collect::<Vec<_>>(), [(full.episodes[1].id.as_str(), Some("GER"))], "an absence read whole before the range still ends the first raid");
+
+    let before_load = records(1, (10..=12).map(|hour| make_frame(1, hour, countries.clone(), 30, ended(9), vec![target_row(9, scope.clone(), 40)])).collect());
+    let after_load = loaded_records(2, 1, 12, (13..=16).map(|hour| make_frame(2, hour, countries.clone(), 20, ended(9), vec![target_row(9, scope.clone(), 40)])).collect());
+    let carried = [before_load, after_load];
+    let full = load_product(&carried, "1", None, None);
+    let late = load_product(&carried, "1", Some(15), Some(16));
+    assert_eq!(full.episodes.iter().map(|e| e.victim.as_deref()).collect::<Vec<_>>(), [Some("FRA")]);
+    assert_eq!(late.episodes.iter().map(|e| (e.id.as_str(), e.victim.as_deref())).collect::<Vec<_>>(), [(full.episodes[0].id.as_str(), Some("FRA"))], "a range inside a loaded stretch follows the raid from before the load");
+
+    let outcome_later = records(1, (10..=21).map(|hour| {
+        let outcome = if hour < 20 { native::OUTCOME_NONE } else { native::OUTCOME_SUCCESS };
+        make_frame(1, hour, countries.clone(), 30, TableView::Complete(TableRows::Raids(vec![raid_row(5, 1, native::PHASE_ENDED, outcome, Some(100))])), vec![target_row(5, scope.clone(), 40)])
+    }).collect());
+    let reply = load_product(&[outcome_later], "1", None, None);
+    assert_eq!(reply.episodes.iter().map(|e| (e.ended_hour, e.succeeded_hour)).collect::<Vec<_>>(), [(Some(10), Some(20))], "a success counts from the first read that shows it, not the first ended read");
+
+    let mut late_seen = raid_row(3, 1, native::PHASE_ENDED, native::OUTCOME_SUCCESS, Some(100));
+    late_seen.end_hour = Some(5);
+    late_seen.completion_recorded = RaidRow::END_HOUR_RECORDED;
+    let renamed = records(1, (4..=20).map(|hour| {
+        let raider: &[u8] = if hour < 20 { b"GER" } else { b"DDR" };
+        let held = vec![(10, 1, raider), (30, 3, b"FRA".as_slice())];
+        let raids = if hour < 20 { none() } else { TableView::Complete(TableRows::Raids(vec![late_seen.clone()])) };
+        make_frame(1, hour, held, 30, raids, if hour < 20 { vec![] } else { vec![target_row(3, scope.clone(), 40)] })
+    }).collect());
+    let reply = load_product(&[renamed], "1", None, None);
+    assert_eq!(
+        reply.episodes.iter().map(|e| (e.ended_hour, e.ended_raider.as_deref(), e.succeeded_hour, e.raider_slot)).collect::<Vec<_>>(),
+        [(Some(5), Some("GER"), Some(20), Some(1))],
+        "the owner is the slot's tag at the native end; the success is counted where it was first read"
+    );
 }
