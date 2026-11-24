@@ -9,10 +9,9 @@ import DeclaredFamilyWidget from '../../families/host/DeclaredFamilyWidget';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost';
 import { timelineHostAdapter } from '../../families/timeline/hostAdapter.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
-import FactionDrill from './FactionDrill';
-import { factionGaps, factionLabel, factionViews } from './factionsData';
+import FactionDetails from './FactionDetails';
+import { factionLabel, factionViews } from './factionsData';
 import { factionsDeclarationWithStyles, type FactionLaneMeta } from './factionsProjection';
-import './factions.css';
 
 interface Opened {
   readonly factionId: string;
@@ -69,18 +68,8 @@ export default function FactionsView(props: WidgetProps) {
         anchor={anchor}
         onClose={() => setOpened(null)}
       >
-        {view && track && data && opened ? (
-          <FactionDrill
-            runtime={runtime}
-            widget={pinned}
-            track={track}
-            view={view}
-            names={data.factions.find(faction => faction.id === view.id)?.names ?? []}
-            at={opened.hour}
-            active={active}
-            gaps={factionGaps(data)}
-            onBack={() => setOpened(null)}
-          />
+        {view && track && opened ? (
+          <FactionDetails runtime={runtime} widget={pinned} track={track} view={view} hour={opened.hour} active={active} />
         ) : null}
       </DetailWindowHost>
     </div>
