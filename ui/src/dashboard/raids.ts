@@ -44,7 +44,7 @@ export function validateRaidLog(value: unknown): RaidLogReply {
       && maybe(item.victim, text) && (item.victim === null) !== (item.victimMissing === null)
       && maybe(item.victimSource, victimSource) && (item.victim !== null || item.victimSource === null)
       && victimObservations(item.victims)
-      && maybe(item.raidTypeHour, integer) && maybe(item.placeHour, integer) && maybe(item.raidType, text) && maybe(item.raidTypeName, text) && maybe(item.icon, text) && maybe(item.iconMissing, text)
+      && maybe(item.raidTypeHour, integer) && maybe(item.iconHour, integer) && maybe(item.placeHour, integer) && maybe(item.stateHour, integer) && maybe(item.memberHour, integer) && maybe(item.raidType, text) && maybe(item.raidTypeName, text) && maybe(item.icon, text) && maybe(item.iconMissing, text)
       && maybe(item.province, integer) && maybe(item.state, integer)
       && maybe(item.phase, integer) && maybe(item.phaseName, text) && maybe(item.outcome, integer) && maybe(item.outcomeName, text) && maybe(item.outcomeMissing, text)
       && isOrderedSpans(item.runs) && (item.runs as unknown[]).every(run => object(run) && typeof run.firstExact === 'boolean' && maybe(run.afterHour, integer) && maybe(run.raider, text) && integer(run.phase) && integer(run.outcome) && maybe(run.phaseName, text) && maybe(run.outcomeName, text))
@@ -111,7 +111,7 @@ export function raidOutcomeMissing(codes: RaidOutcomeCodes, ended: boolean, disa
 }
 
 export function raidEpisodeAt(codes: RaidOutcomeCodes, episode: RaidEpisode, hour: number): RaidEpisode | null {
-  if (episode.firstHour > hour) return null;
+  if (episode.firstHour > hour || (episode.memberHour !== null && episode.memberHour > hour)) return null;
   const runs = episode.runs.filter(run => run.firstHour <= hour).map(run => run.lastHour > hour ? { ...run, lastHour: hour } : run);
   const latest = runs[runs.length - 1];
   if (!latest) return null;
@@ -121,7 +121,9 @@ export function raidEpisodeAt(codes: RaidOutcomeCodes, episode: RaidEpisode, hou
   const victims: RaidVictimAt[] = held.length ? held : [{ hour: episode.firstHour, tag: null, missing: "The raid's target is not recorded", source: null }];
   const summary = victims[victims.length - 1];
   const typed = episode.raidTypeHour !== null && episode.raidTypeHour <= hour;
+  const iconed = typed && episode.iconHour !== null && episode.iconHour <= hour;
   const placed = episode.placeHour === null || episode.placeHour <= hour;
+  const stated = episode.stateHour !== null && episode.stateHour <= hour;
   const launched = episode.launchedHour === null || episode.launchedHour <= hour;
   const ends = episode.ends.filter(end => end.hour <= hour);
   const disappeared = episode.disappearedHour !== null && episode.disappearedHour <= hour;
@@ -130,8 +132,10 @@ export function raidEpisodeAt(codes: RaidOutcomeCodes, episode: RaidEpisode, hou
     ...episode, runs, preparation, victims, lastHour: latest.lastHour,
     victim: summary.tag, victimMissing: summary.missing, victimSource: summary.source,
     raidTypeHour: typed ? episode.raidTypeHour : null, raidType: typed ? episode.raidType : null, raidTypeName: typed ? episode.raidTypeName : null,
-    icon: typed ? episode.icon : null, iconMissing: typed ? episode.iconMissing : "The raid's type is not recorded",
-    placeHour: placed ? episode.placeHour : null, province: placed ? episode.province : null, state: placed ? episode.state : null,
+    iconHour: iconed ? episode.iconHour : null, icon: iconed ? episode.icon : null,
+    iconMissing: iconed ? episode.iconMissing : typed ? "The raid's target is not recorded in full" : "The raid's type is not recorded",
+    placeHour: placed ? episode.placeHour : null, province: placed ? episode.province : null,
+    stateHour: stated ? episode.stateHour : null, state: stated ? episode.state : null,
     launched: launched && episode.launched, launchedHour: launched ? episode.launchedHour : null, launchedExact: launched && episode.launchedExact,
     launchedRaider: launched ? episode.launchedRaider : null,
     ends, succeededHour: episode.succeededHour !== null && episode.succeededHour <= hour ? episode.succeededHour : null,
@@ -193,7 +197,7 @@ export function raidChangeHours(episodes: readonly RaidEpisode[]): number[] {
       if (episode.runs.every(run => run.firstHour !== hour && run.lastHour + 1 !== hour)) hours.push(hour);
     }
     if (episode.disappearedHour !== null) hours.push(episode.disappearedHour);
-    for (const hour of [episode.raidTypeHour, episode.placeHour, ...episode.ends.map(end => end.hour)]) {
+    for (const hour of [episode.memberHour, episode.raidTypeHour, episode.iconHour, episode.placeHour, episode.stateHour, ...episode.ends.map(end => end.hour)]) {
       if (hour !== null && hour !== episode.firstHour && episode.runs.every(run => run.firstHour !== hour && run.lastHour + 1 !== hour)) hours.push(hour);
     }
   }

@@ -1,5 +1,5 @@
 import { widgetDefinition, type FamilyViewRenderer, type WidgetMeta, type WidgetViewSwitch } from '../dashboard/definitions.ts';
-import { resolveOptions, setOption, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
+import { resolveOptions, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
 import {
   DEFAULT_VIEW,
   manifestViewSwitch,
@@ -148,10 +148,6 @@ export function presetStoredOptions(kind: string, chosen: WidgetOptions): Widget
   const stored: Record<string, OptionValue> = {};
   for (const [key, value] of Object.entries(chosen)) stored[fields.find(field => field.key === key)?.storeAs ?? key] = value;
   return stored;
-}
-
-export function setWidgetViewOption(kind: string, storedOptions: WidgetOptions | undefined, key: string, value: OptionValue): WidgetOptions | null {
-  return setOption(widgetOptionFields(kind, storedOptions), storedOptions, key, value);
 }
 
 export function manifestLegacyEntry(kind: string, view?: string): LegacyWidgetEntry | undefined {
