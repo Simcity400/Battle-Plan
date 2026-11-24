@@ -5,8 +5,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'air-kills-losses', view: 'breakdown', label: 'Loss causes', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
   { kind: 'air-kills-losses', view: 'lines', label: 'Lines', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
   { kind: 'air-statistics', load: () => import('./air-statistics') },
-  { kind: 'apm-graph', load: () => import('./apm-graph') },
-  { kind: 'army-losses-by-month', load: () => import('./army-losses-by-month') },
   { kind: 'army-size', view: 'breakdown', label: 'Army breakdown', slots: ['render', 'countryChip'], load: () => import('./army-size') },
   { kind: 'army-size', view: 'mix', label: 'Battalion mix', slots: ['render', 'countryChip'], load: () => import('./army-size') },
   { kind: 'army-size', view: 'race', label: 'Race', slots: ['render', 'countryChip'], load: () => import('./army-size') },
@@ -61,7 +59,4 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'territory-breakdown', load: () => import('./territory-breakdown') },
   { kind: 'war-contribution', load: () => import('./war-contribution') },
   { kind: 'wars', load: () => import('./wars') },
-  { kind: 'world-tension', view: 'events', label: 'Threat events', load: () => import('./world-tension') },
-  { kind: 'world-tension', view: 'lines', label: 'Contributions over time', load: () => import('./world-tension') },
-  { kind: 'world-tension', view: 'tension', label: 'World tension', load: () => import('./world-tension') },
 ];

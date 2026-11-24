@@ -1,6 +1,6 @@
-use super::{factory_groups, factory_parts, game_score, nuclear_arsenal, threat_events, world_tension};
+use super::{factory_groups, factory_parts, game_score, nuclear_arsenal, world_tension, world_tension_stack};
 use replay_data::rows::{CountryFactoriesRow, CountryGameScoreRow, NukeRow, Recorded, ThreatEventRow};
-use threat_events::{Identity, Joined, Step, join};
+use world_tension_stack::{Identity, Joined, Step, join};
 
 fn source(country: u32, reason: &str, place: u32) -> Identity {
     Identity { country, second: 0, date: 100, reason: reason.as_bytes().to_vec(), place }
@@ -261,4 +261,46 @@ fn factory_groups_are_named_by_every_type_their_flag_counts_and_an_ambiguous_typ
     assert!(warnings.iter().any(|warning| warning.starts_with("twice is declared more than once")));
     assert!(warnings.iter().any(|warning| warning.starts_with("rocket_site has a rocket production flag")));
     assert!(warnings.iter().any(|warning| warning.starts_with("mod_foundry: no name")));
+}
+
+#[test]
+fn world_tension_stack_computes_exact_shares_folds_other_and_clips_future() {
+    use std::collections::BTreeMap;
+    use world_tension_stack::{StackInput, TensionValueMode, compute_stack};
+
+    let tension = vec![(10, 19, 25_000), (20, 29, 100_000), (30, 39, 100_000)];
+    let sum = vec![(10, 19, 2_500_000), (20, 29, 12_000_000), (30, 39, 20_000_000)];
+    let mut slots = BTreeMap::new();
+    slots.insert(1, vec![(10, 19, 1_500_000), (20, 29, 6_000_000), (30, 39, 10_000_000)]);
+    slots.insert(2, vec![(10, 19, 1_000_000), (20, 29, 4_000_000), (30, 39, 6_000_000)]);
+    slots.insert(3, vec![(20, 29, 2_000_000), (30, 39, 4_000_000)]);
+    let input = StackInput { tension: &tension, sum: &sum, slots: &slots, missing: &[] };
+    let tag_of = |slot: u32, _: i32| match slot {
+        1 => Some(("GER".to_owned(), false)),
+        2 => Some(("JAP".to_owned(), false)),
+        3 => Some(("ITA".to_owned(), false)),
+        _ => None,
+    };
+    let (end_hour, capped, hours, total, bands, other, next_change) =
+        compute_stack(&input, 10, 25, 2, TensionValueMode::Share, None, 200, tag_of);
+    assert_eq!(end_hour, Some(25));
+    assert_eq!(capped, Some(100.0));
+    assert_eq!(hours, [10, 20]);
+    assert_eq!(total, [Some(25.0), Some(100.0)]);
+    assert_eq!(bands.len(), 2);
+    assert_eq!(bands[0].tag.as_deref(), Some("GER"));
+    assert_eq!(bands[1].tag.as_deref(), Some("JAP"));
+    assert_eq!(bands[0].end_value, Some(50.0));
+    assert!((bands[1].end_value.unwrap() - 100.0 / 3.0).abs() < 1e-9);
+    let other = other.unwrap();
+    assert_eq!(other.count, 1);
+    assert!((other.end_value.unwrap() - 100.0 / 6.0).abs() < 1e-9);
+    assert_eq!(next_change, Some(30));
+
+    let (_, _, _, rec_total, rec_bands, rec_other, _) =
+        compute_stack(&input, 10, 25, 2, TensionValueMode::Recorded, None, 200, tag_of);
+    assert_eq!(rec_total, [Some(25.0), Some(120.0)]);
+    assert_eq!(rec_bands[0].end_value, Some(60.0));
+    assert_eq!(rec_bands[1].end_value, Some(40.0));
+    assert_eq!(rec_other.unwrap().end_value, Some(20.0));
 }
