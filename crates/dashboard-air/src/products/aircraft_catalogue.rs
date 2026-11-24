@@ -1,6 +1,5 @@
 use content_reader_mesh::mesh::MeshProducts as _;
 
-use replay_frame::frame::DecodedFrame;
 use dashboard_base::{Source, catalogue::{self, CachedResult, Catalogue, View}, products::{ContentOptions, LoadContext, Product, check_reply_budget}};
 use content_reader_equipment_graphics::{equipment_graphics, equipment_graphics::aircraft};
 use content_reader_layers::{LayerRole, ResolvedLayers};
@@ -265,7 +264,7 @@ fn built(
     drop(state);
     result.get_or_init(|| {
         let catalogue = catalogue::catalogue(source, options)?;
-        let designs = recorded_designs(source, cancelled)?;
+        let designs = recorded_designs(source.replay_ref(), cancelled)?;
         let mods: BTreeMap<String, String> = source
             .replay()
             .identity
@@ -328,13 +327,12 @@ impl Content {
     }
 }
 
-fn recorded_designs(source: &Source, cancelled: &AtomicBool) -> io::Result<Vec<(String, String)>> {
-    let replay = source.replay();
+fn recorded_designs(replay: &replay::campaign::Replay, cancelled: &AtomicBool) -> io::Result<Vec<(String, String)>> {
     let selected = [TableId::VariantDefinitions, TableId::LexicalTokens];
     let mut designs = BTreeSet::new();
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Aircraft catalogue cancelled");
     dashboard_core::blocks::scan_blocks(
-        &replay,
+        replay,
         replay.index.iter(),
         &selected,
         cancelled,
@@ -343,13 +341,9 @@ fn recorded_designs(source: &Source, cancelled: &AtomicBool) -> io::Result<Vec<(
                 if cancelled.load(Ordering::Acquire) {
                     return Err(cancel());
                 }
-                let Ok(frames) = frames else {
-                    continue;
-                };
-                for frame in frames {
-                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
-                        break;
-                    };
+                for frame in frames? {
+                    let frame = frame?;
+                    let decoded = &frame.decoded;
                     if !dashboard_text::metadata::slot_read(
                         replay.format,
                         &decoded.metrics,

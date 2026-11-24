@@ -49,27 +49,18 @@ fn spelled(
     frame
 }
 
-fn recording(branches: Vec<Vec<DecodedFrame>>) -> Source {
+fn recording(branches: Vec<Vec<DecodedFrame>>) -> Replay {
     let branches: Vec<_> = branches
         .into_iter()
         .enumerate()
         .map(|(at, frames)| records(at as u64 + 1, frames))
         .collect();
-    Source::from_replay(
-        dashboard_base::SourceKey {
-            source_id: "aircraft".into(),
-            revision: "1".into(),
-        },
-        "synthetic.battleplan".into(),
-        Arc::new(Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &branches).unwrap()),
-        &AtomicBool::new(false),
-    )
-    .unwrap()
+    Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &branches).unwrap()
 }
 
 #[test]
 fn recorded_designs_are_every_saved_model_of_every_branch_read() {
-    let source = recording(vec![
+    let mut replay = recording(vec![
         vec![
             frame(
                 1,
@@ -93,7 +84,7 @@ fn recorded_designs_are_every_saved_model_of_every_branch_read() {
             ],
         )],
     ]);
-    let designs = recorded_designs(&source, &AtomicBool::new(false)).unwrap();
+    let designs = recorded_designs(&replay, &AtomicBool::new(false)).unwrap();
     assert_eq!(
         designs,
         [
@@ -105,14 +96,20 @@ fn recorded_designs_are_every_saved_model_of_every_branch_read() {
     );
     let cancelled = AtomicBool::new(true);
     assert_eq!(
-        recorded_designs(&source, &cancelled).unwrap_err().kind(),
+        recorded_designs(&replay, &cancelled).unwrap_err().kind(),
         io::ErrorKind::Interrupted
+    );
+    let damaged = replay.index.iter_mut().find(|block| block.branch == 2).unwrap();
+    damaged.first_hour = damaged.last_hour + 1;
+    assert!(
+        recorded_designs(&replay, &AtomicBool::new(false)).is_err(),
+        "a block that fails before its first hour must not leave a listing without its designs"
     );
 }
 
 #[test]
 fn recorded_designs_are_told_apart_by_their_spelling_not_their_session_numbers() {
-    let source = recording(vec![
+    let replay = recording(vec![
         vec![spelled(
             1,
             100,
@@ -129,7 +126,7 @@ fn recorded_designs_are_told_apart_by_their_spelling_not_their_session_numbers()
         )],
     ]);
     assert_eq!(
-        recorded_designs(&source, &AtomicBool::new(false)).unwrap(),
+        recorded_designs(&replay, &AtomicBool::new(false)).unwrap(),
         [
             ("fighter_equipment_1", "shared_entity"),
             ("infantry_equipment_0", "shared_entity"),

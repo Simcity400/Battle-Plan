@@ -22,25 +22,17 @@ use std::{
 pub const CONTENT_DIAGNOSTICS_FORMAT: u32 = 1;
 
 #[derive(Clone, Debug)]
-pub struct ContentError {
-    kind: io::ErrorKind,
-    raw_os_error: Option<i32>,
-    message: Arc<str>,
-}
+pub struct ContentError(Arc<io::Error>);
 impl From<io::Error> for ContentError {
     fn from(error: io::Error) -> Self {
-        Self {
-            kind: error.kind(),
-            raw_os_error: error.raw_os_error(),
-            message: error.to_string().into(),
-        }
+        Self(Arc::new(error))
     }
 }
 impl ContentError {
     pub fn error(&self) -> io::Error {
-        match self.raw_os_error {
+        match self.0.raw_os_error() {
             Some(code) => io::Error::from_raw_os_error(code),
-            None => io::Error::new(self.kind, self.message.to_string()),
+            None => dashboard_core::duplicate(&self.0),
         }
     }
 }
@@ -1798,6 +1790,16 @@ pub mod tests {
             assert_eq!(error.to_string(), "mod definition refused by name");
         }
         assert_eq!(refused.loads(), 1);
+        let visual = CachedResult::<Vec<String>>::default();
+        for _ in 0..2 {
+            let error = visual
+                .get_or_init(|| Err(dashboard_core::refused("Synthetic visual mods are refused")))
+                .unwrap_err();
+            assert_eq!(dashboard_core::refusal(&error), Some("Synthetic visual mods are refused"));
+        }
+        let error = visual.get().unwrap().unwrap_err();
+        assert_eq!(dashboard_core::refusal(&error), Some("Synthetic visual mods are refused"));
+        assert_eq!(visual.loads(), 1);
         let cancelled = CachedResult::default();
         assert_eq!(
             cancelled
