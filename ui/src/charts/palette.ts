@@ -245,37 +245,6 @@ export function colour(surface: string, ordinal: number, options?: ColourOptions
   }
 }
 
-export function colours(surface: string, ordinals: Iterable<number>, options?: ColourOptions): Map<number, string> {
-  const result = new Map<number, string>();
-  const hasExtras = Boolean(options?.contrastSurfaces?.length);
-  const avoid = options?.avoid?.length ? new Set(options.avoid.map(c => c.toLowerCase())) : null;
-  const base = hasExtras ? null : (options?.base ?? categoricalPalette(surface));
-  let pool: GeneratedPool | null = null;
-  for (const raw of ordinals) {
-    const slot = Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
-    if (result.has(slot)) continue;
-    let hex: string;
-    if (!hasExtras && base && slot < base.length) {
-      hex = base[slot]!;
-    } else {
-      pool ??= poolFor(surface, options);
-      hex = slot < pool.base.length ? pool.base[slot]! : generatedAt(pool, slot - pool.base.length);
-    }
-    if (avoid && avoid.has(hex.toLowerCase())) {
-      pool ??= poolFor(surface, options);
-      let step = Math.max(0, slot - pool.base.length);
-      while (avoid.has(hex.toLowerCase())) hex = generatedAt(pool, step++);
-    }
-    result.set(slot, hex);
-  }
-  return result;
-}
-
-export function resolveColour(surface: string, ordinal: number, authored?: AuthoredColour | null, options?: ColourOptions): string {
-  if (authored != null) return authoredHex(authored);
-  return colour(surface, ordinal, options);
-}
-
 export function readableColour(color: AuthoredColour, surface: string, minContrast = MARK_CONTRAST): string {
   const background = parseColor(surface) ?? { r: 0, g: 0, b: 0 };
   const rgb = typeof color === 'string'

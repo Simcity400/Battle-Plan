@@ -4,7 +4,7 @@ import type { ResearchHistory } from '../research/types';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import { estimateHour, inspectedSlot, slotInspection, slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
 import { activeSlots, openedResearch } from './activeResearchData.ts';
-import { panelStructure, panelViews } from '../../draw/panels/views.ts';
+import { panelViews, readingStructure } from '../../draw/panels/views.ts';
 import type { ResearchEntry, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsAt } from '../research/types';
 
@@ -49,8 +49,9 @@ test('each open slot says what it researches, and its painted numbers count down
   const nextSonar = { ...sonar, state: { ...sonar.state, firstHour: day(101), lastHour: day(101), details: { ...sonar.state.details!, remainingDays: 11, estimateRaw: '1100000' } } };
   const plain = (read: ResearchSlotNow) => ({ ...read, state: { ...read.state, details: read.state.details && { ...read.state.details, modifiers: null } } });
   const opened = reply(day(100), [sonar].map(plain)), next = { ...reply(day(101), [nextSonar].map(plain)), readHour: day(101) };
-  const shown = panelStructure('research-slots', opened, day(100));
-  assert.notEqual(panelStructure('research-slots', next, day(101)), shown, 'the follow structure carries the read that supplied it');
+  const structureOf = readingStructure('research-slots')!;
+  const shown = structureOf({ data: opened } as never, day(100))!;
+  assert.notEqual(structureOf({ data: next } as never, day(101)), shown, 'the follow structure carries the read that supplied it');
   const view = panelViews['research-slots']!;
   assert.equal(view.values(next, null, day(101), shown), null, 'a later read is never painted into the one shown');
   assert.equal(view.values(opened, null, day(100), shown)?.get('1:days'), '8 days left');

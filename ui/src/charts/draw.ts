@@ -11,7 +11,6 @@ import type { ChartTokens } from './tokens.ts';
 import { linearTicks, logTicks, thinLogTicks } from './valueAxis.ts';
 import { type Canvas2D, type MeasureText, canvasMeasureText, textWidthRevision } from './textWidth.ts';
 
-
 export const font = (tokens: ChartTokens, size: number, weight = 400) => `${weight} ${size}px ${tokens.font}`;
 export const LABEL_WEIGHT = 500;
 export const VALUE_WEIGHT = 600;
@@ -32,23 +31,6 @@ export function valueTicks(frame: PlotFrame, tokens: ChartTokens): number[] {
 }
 
 export const VALUE_LABEL_GAP = 6;
-
-export function drawRecordedGap(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
-  firstHour: number, lastHour: number, until: number | null = null): void {
-  const first = Math.max(firstHour, frame.x[0]), last = Math.min(lastHour + 1, frame.x[1], until == null ? Infinity : until + 1);
-  if (first >= last) return;
-  ctx.save(); ctx.fillStyle = tokens.error; ctx.globalAlpha = tokens.gapOpacity;
-  ctx.fillRect(frame.toX(first), frame.plotTop, frame.toX(last) - frame.toX(first), frame.plotHeight); ctx.restore();
-}
-
-export function drawPreparedCoverage(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
-  coverage: { firstHour: number; lastHour: number; complete: boolean } | null, until: number | null = null): void {
-  if (!coverage) return;
-  const first = Math.max(frame.x[0], coverage.firstHour), last = Math.min(frame.x[1], coverage.lastHour + 1, until === null ? Infinity : until + 1);
-  if (first >= last) return;
-  ctx.save(); ctx.fillStyle = tokens.accent; ctx.globalAlpha = 0.65;
-  ctx.fillRect(frame.toX(first), frame.plotTop + frame.plotHeight - 2, frame.toX(last) - frame.toX(first), 2); ctx.restore();
-}
 
 export function measureValueLabelWidth(frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string,
   measure: MeasureText): number {
@@ -209,16 +191,6 @@ export function drawBands(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, 
   });
 }
 
-export function drawBandLine(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
-  hours: readonly number[], values: readonly number[], color: string): void {
-  if (!hours.length) return;
-  ctx.save();
-  ctx.setLineDash([]);
-  ctx.strokeStyle = color; ctx.lineWidth = tokens.lineWidth.series; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-  ctx.beginPath(); traceBandEdge(ctx, frame, hours, values); ctx.stroke();
-  ctx.restore();
-}
-
 function traceBandEdge(ctx: Canvas2D, frame: PlotFrame, hours: readonly number[], values: readonly number[]): void {
   if (hours.length === 1) {
     const x = frame.toX(hours[0]);
@@ -227,31 +199,6 @@ function traceBandEdge(ctx: Canvas2D, frame: PlotFrame, hours: readonly number[]
     return;
   }
   hours.forEach((hour, index) => index ? ctx.lineTo(frame.toX(hour), frame.toY(values[index])) : ctx.moveTo(frame.toX(hour), frame.toY(values[index])));
-}
-
-export function drawStack(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], tops: readonly (readonly number[])[], colors: readonly string[]): void {
-  let base = hours.map(() => (frame.log ? frame.y[0] : 0));
-  tops.forEach((top, layer) => {
-    ctx.beginPath();
-    hours.forEach((hour, index) => index ? ctx.lineTo(frame.toX(hour), frame.toY(top[index])) : ctx.moveTo(frame.toX(hour), frame.toY(top[index])));
-    for (let index = hours.length - 1; index >= 0; index--) ctx.lineTo(frame.toX(hours[index]), frame.toY(base[index]));
-    ctx.closePath();
-    ctx.fillStyle = colors[layer]; ctx.fill();
-    ctx.lineWidth = 1; ctx.strokeStyle = tokens.surface; ctx.stroke();
-    base = [...top];
-  });
-}
-
-export function drawEventTicks(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], color = tokens.muted): void {
-  ctx.save();
-  ctx.strokeStyle = color; ctx.lineWidth = 1.5;
-  const bottom = frame.plotTop + frame.plotHeight;
-  for (const hour of hours) {
-    if (hour < frame.x[0] || hour > frame.x[1]) continue;
-    const x = crisp(frame.toX(hour));
-    ctx.beginPath(); ctx.moveTo(x, bottom); ctx.lineTo(x, bottom - 6); ctx.stroke();
-  }
-  ctx.restore();
 }
 
 export function drawPlayhead(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, hour: number): void {

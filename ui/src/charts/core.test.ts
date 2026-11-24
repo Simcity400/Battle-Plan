@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { drawFittedLabel, ellipsise, fitLabel, fitLabelWidth, fitLine, labelFitsTwoLines, labelLineHeight, layoutEndLabels } from './labels.ts';
 import { FrameScheduler } from './scheduler.ts';
 import type { FrameTask } from './scheduler.ts';
-import { monotonePath, runAt, samplePoints, segments, stack, valueAt } from './series.ts';
+import { monotonePath, runAt, samplePoints, segments } from './series.ts';
 import type { Run } from './series.ts';
 import { backingSize, toLocal } from './surface.ts';
 import { placeTooltip } from './tooltipPlacement.ts';
@@ -18,9 +18,9 @@ const RUNS: Run[] = [
 ];
 
 test('runs answer by hour and gaps stay missing, never zero', () => {
-  assert.equal(valueAt(RUNS, 15), 5);
-  assert.equal(valueAt(RUNS, 29.9), 8);
-  assert.equal(valueAt(RUNS, 35), null);
+  assert.equal(runAt(RUNS, 15)?.value ?? null, 5);
+  assert.equal(runAt(RUNS, 29.9)?.value ?? null, 8);
+  assert.equal(runAt(RUNS, 35)?.value ?? null, null);
   assert.equal(runAt(RUNS, 9), null);
   assert.deepEqual(segments(RUNS, 0, 100).map(segment => segment.length), [2, 1]);
   assert.deepEqual(segments(RUNS, 25, 45).map(segment => [segment[0].firstHour, segment.at(-1)!.lastHour]), [[25, 29], [40, 45]]);
@@ -38,7 +38,6 @@ test('samples keep both ends and the monotone curve never overshoots its samples
     const [low, high] = [Math.min(zigzag[index].y, zigzag[index + 1].y), Math.max(zigzag[index].y, zigzag[index + 1].y)];
     for (const y of [command[2], command[4]] as number[]) assert.ok(y >= low - 1e-9 && y <= high + 1e-9, `control ${y} outside ${low}..${high}`);
   });
-  assert.deepEqual(stack([[1, 2], [3, null], [1, 1]]), [[1, 2], [4, null], [5, null]]);
 });
 
 

@@ -1,5 +1,5 @@
 import { formatAmount, formatRate } from '../../charts/valueAxis.ts';
-import type { MeterMark } from '../../charts/meter/ProgressMeter';
+interface MeterMark { id: string; at: number; reached: boolean; label?: string }
 import type { SpriteFrame } from '../../generated/dashboard';
 import type { DescribedReward, DoctrineMasteryReply, DoctrineRewardsReply, MasteryChoice, MasteryFolder, MasteryReward, MasteryTrack } from '../../generated/dashboard';
 

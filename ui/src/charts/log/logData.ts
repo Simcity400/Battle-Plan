@@ -54,10 +54,6 @@ export const rowId = (row: LogRow<unknown>) => row.id ?? row.key;
 
 export interface LogTip { id: string; by: 'pointer' | 'keyboard'; x: number; y: number }
 
-export function tipRow<T>(tip: Pick<LogTip, 'id'> | null, rows: ReadonlyMap<string, LogRow<T>>): LogRow<T> | null {
-  return tip ? rows.get(tip.id) ?? null : null;
-}
-
 export type LogDensity = 'comfortable' | 'compact';
 
 export interface CardMeasurements { width: number; density: LogDensity; font?: string; heights: ReadonlyMap<string, number> }

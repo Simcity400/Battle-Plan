@@ -12,7 +12,7 @@ import Sunburst from './sunburst/Sunburst';
 import type { SunburstItem, SunburstValues } from './sunburst/Sunburst';
 import DrillParts from './drill/DrillParts';
 import type { DrillPart, LiveDrillParts } from './drill/DrillParts';
-import { canvasElement } from './surface';
+import { canvasElement } from '../test-support/canvasElement';
 import '../styles.css';
 
 document.documentElement.dataset.motion = 'reduced';
