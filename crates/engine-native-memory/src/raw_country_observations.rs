@@ -299,3 +299,45 @@ impl Journal {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn links_outside_the_game_link_table_are_refused_without_growth() {
+        let count = 6;
+        let mut journal = Journal::try_new(Capacity {
+            occurrences: 8,
+            ..Default::default()
+        })
+        .unwrap();
+        journal.begin(1);
+        journal.link_controls(Ok([
+            Array {
+                data: 0x2000,
+                count: 4,
+            },
+            Array {
+                data: 0x1000,
+                count,
+            },
+        ]));
+        let retained = journal.allocated_bytes();
+        let growths = engine_allocation::growths();
+        journal.link(count - 1, Ok(3));
+        assert_eq!(journal.failed, None);
+        for raw in [count, u32::MAX - 1] {
+            journal.link(raw, Err("country link unreadable or outside link table"));
+            assert_eq!(engine_allocation::growths(), growths);
+            assert_eq!(journal.allocated_bytes(), retained);
+        }
+        assert_eq!(journal.required().links, count as usize);
+        assert_eq!(journal.failed, Some("raw country link outside link table"));
+        journal.seal();
+        assert!(!journal.complete());
+        let links = journal.map_loan().links;
+        assert_eq!(links.word(count - 1), Some(Ok(3)));
+        assert_eq!(links.word(count), None);
+    }
+}
