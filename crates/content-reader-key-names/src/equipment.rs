@@ -2,7 +2,9 @@ use crate::key_name_products::KeyNamesExt as _;
 use content_reader_script::equipment_stats::{category_mask, STAT_COUNT, stat_index, stat_metadata, FORBIDDEN_RELIABILITY_SCALED_STATS};
 
 mod design;
+mod families;
 mod validity;
+pub use families::{CategoryFamilies, ModularDesigner, category_families};
 pub use validity::{Assignment, CountKey, ModuleCountLimit, ModuleValidity};
 mod groups;
 pub use design::{
@@ -1527,15 +1529,15 @@ impl Database {
     }
 
     pub fn designer_families(&self, equipment: &Equipment) -> Result<[bool; 3], String> {
+        let groups = category_families()?;
         let mut families = [false; 3];
         let mut seen: Vec<usize> = Vec::new();
         let mut current = equipment;
         loop {
             let mask = self.category(current);
-            for (family, bits) in
-                families
-                    .iter_mut()
-                    .zip([0x0040_8000_003c_u64, 0x1f00_37fc00, 0x8000_4003c1])
+            for (family, bits) in families
+                .iter_mut()
+                .zip([groups.land, groups.air, groups.naval])
             {
                 *family |= mask & bits != 0;
             }

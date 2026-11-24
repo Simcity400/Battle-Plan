@@ -52,6 +52,7 @@ function wire(key: string, ordinal: number, raw: string | null, extra: Partial<W
     reason: raw === null ? `${key} was not recorded` : null,
     share: null,
     count: null,
+    last: null,
     children: [],
     ...extra,
   };

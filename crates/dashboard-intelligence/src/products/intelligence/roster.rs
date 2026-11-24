@@ -65,6 +65,8 @@ pub struct RosterOperative {
     pub experience_text: Option<String>,
     pub experience_ratio: Option<f64>,
     pub experience_missing: Option<String>,
+    #[doc = " The skill is at its highest level: there is no progress to the next."]
+    pub experience_at_cap: bool,
     #[doc = " As the game numbers it: 0 captured, 1 cooling down, 3 on a mission, 4 in an operation."]
     pub assignment: u32,
     pub assignment_name: Option<String>,
@@ -189,6 +191,7 @@ impl RosterOperative {
             experience_raw: row.experience_raw.to_string(),
             experience_text: experience.text,
             experience_ratio: experience.ratio,
+            experience_at_cap: experience.at_cap,
             experience_missing: experience.missing.or_else(|| unconfigured("The skill level")),
             assignment: row.assignment,
             assignment_name: assignment.name,

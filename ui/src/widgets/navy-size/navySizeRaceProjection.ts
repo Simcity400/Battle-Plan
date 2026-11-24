@@ -2,7 +2,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { projectForceAtReply, validateForceAtReply, type ForceAtRaceBaseOptions } from '../../families/bars/forceAtRace.ts';
 import type { BarsModel, BarsProjection } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import {
   nextSeriesRaceChange,
   projectSeriesRace,
@@ -27,7 +27,7 @@ const navyMeasure = (value: unknown): NavyMeasureOption => (value === 'strength'
 const navyOwnership = (value: unknown): NavyOwnershipOption => (value === 'logical' ? 'logical' : 'roster');
 const navyGrouping = (value: unknown): NavyGroupingOption => (value === 'type' ? 'type' : 'class');
 
-export const navySizeRaceProjection: BarsProjection<NavySizeRaceOptions> = registerBarsProjection({
+export const navySizeRaceProjection: BarsProjection<NavySizeRaceOptions> = registerFamilyProjection({
   kind: 'navy-size',
   family: 'bars',
   nextChange(readView, options) {

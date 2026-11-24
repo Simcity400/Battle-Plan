@@ -1,18 +1,13 @@
-import type { GatedTime } from '../../dashboard/regionTime';
-import type { HeldCountry } from '../../dashboard/regionGate';
-import type { PinnedSpec } from '../../charts/drill/drillState';
 import { countryValueAt, countryValueMix, countryValuePartsReply, countryValueSegmentAt, countryValuesModel, rankCountryValues } from '../../charts/race/countryValues.ts';
 import type { CountryValueAt, CountryValuesModel } from '../../charts/race/countryValues';
 import { clipToSpans } from '../../charts/series.ts';
 import { countryDrillSpans } from '../../dashboard/countryIdentity.ts';
 import type { Span } from '../../charts/series';
-import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import type { ArmyMeasure } from '../../generated/dashboard';
 import type { ArmySizeReply } from './armySizeData';
 import { formatFixed, rescale } from '../../charts/valueAxis.ts';
 import { formatArmyRaw, formatArmyValue, typeName } from './armySizeData.ts';
-import { normaliseArmyOptions } from './definition.ts';
-import { pinPartsRace, UNATTRIBUTED_PART } from '../../charts/race/partsRaceDrill.ts';
+import { UNATTRIBUTED_PART } from '../../charts/race/partsRaceDrill.ts';
 export const ARMY_REMAINDER = UNATTRIBUTED_PART;
 
 function rawTotal(at: CountryValueAt, measure: ArmyMeasure): bigint | null {
@@ -85,9 +80,4 @@ export function armyDrillActors(model: CountryValuesModel, candidates: readonly 
 export function armyDrillNumbers(reply: ArmySizeReply): ArmySizeReply {
   return { ...reply, warnings: [], windows: [], window: null, interval: null,
     types: reply.types.map(type => ({ ...type, name: 'Battalion group name unavailable' })) };
-}
-
-export function pinArmyDrill(widget: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch'>, held: HeldCountry, time: GatedTime, measure: ArmyMeasure): PinnedSpec {
-  const pin = pinPartsRace({ ...widget, options: { ...widget.options, measure, drillOriginHour: held.origin } }, track, held.tag, time, 'Army breakdown');
-  return { ...pin, options: normaliseArmyOptions(pin.options) };
 }

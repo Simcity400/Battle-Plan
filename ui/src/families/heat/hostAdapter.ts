@@ -2,6 +2,7 @@ import { displayedHour } from '../boundedView.ts';
 import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import type { LaneActivation } from './lanesDeclaration.ts';
 import { layoutHeatLanes } from './lanesLayout.ts';
+import { matrixWindow } from './matrixLayout.ts';
 import type { FamilyHeatLanesBinding } from './lanesLaneView.ts';
 import {
   deriveLanesAudit,
@@ -26,6 +27,8 @@ interface MatrixExtentField {
   readonly cellWidth?: number;
   readonly gridLeft: number;
   readonly gridTop: number;
+  readonly marginWidth: number;
+  readonly margin: string | null;
   readonly rows: readonly MatrixAxisEntity[];
   readonly columns: readonly MatrixAxisEntity[];
 }
@@ -76,13 +79,13 @@ export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, 
     if (!ext) return null;
     return {
       rows: ext.rows.length,
-      columns: ext.columns.length,
+      columns: ext.columns.length + (ext.margin !== null ? 1 : 0),
       cellSize: ext.cellSize,
       ...(ext.cellWidth !== undefined ? { cellWidth: ext.cellWidth } : {}),
       gridLeft: ext.gridLeft,
       gridTop: ext.gridTop,
       rowLabel: r => ext.rows[r]?.label ?? '',
-      columnLabel: c => ext.columns[c]?.label ?? '',
+      columnLabel: c => ext.columns[c]?.label ?? (c === ext.columns.length ? ext.margin ?? '' : ''),
     };
   },
   parseGridKey: parseMatrixCellKey,
@@ -110,23 +113,21 @@ export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, 
       meta: activation,
     };
   },
-  deriveAuditRows: model => deriveMatrixAudit(model),
+  deriveAuditRows: (model, _hour, { viewport, fields }) => {
+    const ext = fields.extent as MatrixExtentField | undefined;
+    if (!ext) return [];
+    const geometry = {
+      width: viewport.width,
+      height: viewport.height,
+      gridLeft: ext.gridLeft,
+      gridTop: ext.gridTop,
+      marginWidth: ext.marginWidth,
+      cellWidth: ext.cellWidth ?? ext.cellSize,
+      cellHeight: ext.cellSize,
+    };
+    return deriveMatrixAudit(model, matrixWindow(geometry, viewport.scrollLeft, viewport.scrollTop, model.rows.length, model.columns.length));
+  },
   auditOrdered: false,
-  buildBinding: ctx => ({
-    options: ctx.options,
-    sources: ctx.sources,
-    ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-    ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
-    width: ctx.viewport.width,
-    height: ctx.viewport.height,
-    scrollLeft: ctx.viewport.scrollLeft,
-    scrollTop: ctx.viewport.scrollTop,
-    theme: ctx.theme,
-    ...(ctx.identitySnapshot ? { identitySnapshot: ctx.identitySnapshot } : {}),
-    focusedKey: ctx.focusedKey,
-    pauseFlush: ctx.pauseFlush,
-    ...(ctx.audit ? { audit: true, auditId: ctx.auditId } : {}),
-  }),
 };
 
 export const heatLanesHostAdapter: FamilyHostAdapter<HeatLanesModel, unknown, FamilyHeatLanesBinding> = {
@@ -142,15 +143,6 @@ export const heatLanesHostAdapter: FamilyHostAdapter<HeatLanesModel, unknown, Fa
   getScrollExtent: fields => {
     const ext = fields.extent as LanesExtentField | undefined;
     return ext ? { height: ext.totalHeight } : null;
-  },
-  getRowStride: fields => {
-    const ext = fields.extent as LanesExtentField | undefined;
-    return ext?.rowStride ?? 30;
-  },
-  getPageStep: (fields, viewport) => {
-    const ext = fields.extent as LanesExtentField | undefined;
-    const stride = Math.max(1, ext?.rowStride ?? 30);
-    return Math.max(1, Math.floor(Math.max(1, ext?.plotHeight ?? viewport.height) / stride));
   },
   resolveHitAction: (hit, installed, fields) => {
     const ext = fields.extent as LanesExtentField | undefined;
@@ -189,19 +181,4 @@ export const heatLanesHostAdapter: FamilyHostAdapter<HeatLanesModel, unknown, Fa
     return deriveLanesAudit(model, { firstRow: layout.firstRow, endRow: layout.endRow });
   },
   auditOrdered: true,
-  buildBinding: ctx => ({
-    options: ctx.options,
-    sources: ctx.sources,
-    ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-    ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
-    width: ctx.viewport.width,
-    height: ctx.viewport.height,
-    scrollTop: ctx.viewport.scrollTop,
-    theme: ctx.theme,
-    ...(ctx.identitySnapshot ? { identitySnapshot: ctx.identitySnapshot } : {}),
-    selectedKey: ctx.selectedKey,
-    focusedKey: ctx.focusedKey,
-    pauseFlush: ctx.pauseFlush,
-    ...(ctx.audit ? { audit: true, auditId: ctx.auditId } : {}),
-  }),
 };

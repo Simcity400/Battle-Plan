@@ -12,7 +12,6 @@ export interface FamilyBarsBinding<TOptions = unknown> extends LaneBinding<TOpti
   readonly width: number;
   readonly height: number;
   readonly reducedMotion?: boolean;
-  readonly window?: { readonly first: number; readonly count: number };
   readonly pauseFlush?: number;
 }
 
@@ -123,16 +122,14 @@ const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
         notes: model.notes ?? [],
         warnings: model.warnings ?? [],
       },
-      nav: model.rows.flatMap((row, index) => (row.kind === 'section' ? [] : [[row.key, row.label, index, -1, '', row.kind === 'data' ? (row.meta ?? null) : null] as const])),
-      rowBounds: { tops: layout.rowTops, heights: layout.rowHeights, bodyTop: layout.bodyTop },
+      nav: model.rows.flatMap((row, index) => (row.kind === 'section' ? [] : [[row.key, row.label, index, -1, '', row.kind === 'data' ? (row.meta ?? null) : null, layout.rowTops[index]!, layout.rowHeights[index]!] as const])),
     };
   },
   mirror(frame) {
     const shown = visibleBarsRange(frame.layout, frame.binding.scrollTop);
-    const window = frame.binding.window ?? { first: shown.first, count: Math.max(0, shown.last - shown.first) };
-    return deriveBarsMirror(frame.model, window, frame.binding.focusedKey);
+    return deriveBarsMirror(frame.model, { first: shown.first, count: Math.max(0, shown.last - shown.first) }, frame.binding.focusedKey);
   },
-  audit: frame => deriveBarsAudit(frame.model, { window: frame.binding.window }),
+  audit: frame => deriveBarsAudit(frame.model),
   visibleArt: frame => collectVisibleBarsIcons(frame.model, frame.layout, frame.binding.scrollTop),
 };
 
