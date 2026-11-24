@@ -1,5 +1,6 @@
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { formatDate, gameDate } from '../../dashboard/calendar.ts';
+import { formatProgress } from '../../families/valueFormat.ts';
 import type { CipherPair, DecryptionReply, Observation } from '../../generated/dashboard';
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -57,7 +58,7 @@ export function percentOf(pair: CipherPair, numbers: CipherNumbers): number | nu
 }
 
 const CIPHER_BROKEN = 'Cipher broken';
-export const progressLabel = (percent: number | null) => percent === null ? 'Progress unknown' : `${percent}%`;
+export const progressLabel = (percent: number | null) => percent === null ? 'Progress unknown' : formatProgress(percent / 100);
 export const amountText = (numbers: CipherNumbers) => numbers.amount === undefined ? `Amount not read (${numbers.missing})`
   : formatAmount(numbers.amount, 5, 5);
 export const activeBonusDays = (pair: CipherPair, numbers: CipherNumbers): number | null =>

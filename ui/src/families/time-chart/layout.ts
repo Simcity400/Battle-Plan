@@ -22,7 +22,7 @@ function shortMonth(month: number): string {
 
 export function formatChartAxisValue(value: number, format: ChartValueFormat): string {
   if (!Number.isFinite(value)) return '';
-  if (format === 'percent') return `${Math.round(value)}%`;
+  if (format === 'percent') return formatScalar(value, { decimals: 0, maxDecimals: 0, percent: true });
   if (format === 'signed1') {
     if (Math.abs(value) < 1e-9) return '0';
     return formatScalar(value, { decimals: 0, maxDecimals: 1, signed: true });

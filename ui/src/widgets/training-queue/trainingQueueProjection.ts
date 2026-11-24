@@ -11,7 +11,7 @@ import { COLUMNS, TABLE_BASE } from './definition.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
 const ON_DIVISION = 'Shown on each division';
-const PERCENT = { decimals: 0, percent: true, maxDecimals: 0 } as const;
+const PERCENT = 'progress' as const;
 const FIXED = 100_000n;
 
 const isArray = Array.isArray;
