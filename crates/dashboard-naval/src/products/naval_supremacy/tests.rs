@@ -96,11 +96,20 @@ fn mission_registered_ships_match_panel_count_and_refuse_missing_tables() {
     *frame.tables[TableId::AirCountryRelations.index()] = TableView::Complete(TableRows::AirCountryRelations(vec![
         AirCountryRelationRow { country: 4, kind: AirCountryRelationRow::ENEMY, ordinal: 0, other: 50 },
     ]));
-    let counts = mission_registered_ships(&frame, 4).unwrap();
-    assert_eq!(counts.get(&7), Some(&(5, 1)), "duplicate task-force registrations count each time as in the panel");
+    let counts = mission_registered_ships(&frame, 4);
+    assert_eq!(counts.own.as_ref().unwrap().get(&7), Some(&5), "duplicate task-force registrations count each time as in the panel");
+    assert_eq!(counts.enemy.as_ref().unwrap().get(&7), Some(&1));
+
+    let relations = frame.tables[TableId::AirCountryRelations.index()].clone();
+    *frame.tables[TableId::AirCountryRelations.index()] = TableView::Unavailable { reason: "not recorded".into() };
+    let counts = mission_registered_ships(&frame, 4);
+    assert_eq!(counts.own.as_ref().unwrap().get(&7), Some(&5), "an unknown enemy roster withholds only the enemy count");
+    assert!(counts.enemy.is_err());
+    frame.tables[TableId::AirCountryRelations.index()] = relations;
 
     *frame.tables[TableId::NavalMissionLedgers.index()] = TableView::Unavailable { reason: "not recorded".into() };
-    assert!(mission_registered_ships(&frame, 4).is_err(), "missing ledger table refuses instead of returning zero");
+    let counts = mission_registered_ships(&frame, 4);
+    assert!(counts.own.is_err() && counts.enemy.is_err(), "missing ledger table refuses both sides instead of returning zero");
 }
 
 #[test]
@@ -109,9 +118,8 @@ fn naval_supremacy_legend_includes_only_states_present_in_displayed_regions() {
         id: "7".into(),
         name: "North Sea".into(),
         pinned: false,
-        own_mission_ships: Some(5),
-        enemy_mission_ships: Some(1),
-        ships_missing: None,
+        own_ships: MissionShips::Counted { ships: 5 },
+        enemy_ships: MissionShips::Counted { ships: 1 },
         readout: None,
         runs: vec![SupremacyRun { first_day: 0, last_day: 2, control: Some(1), ..Default::default() }],
     };
@@ -128,12 +136,16 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
         products::Product,
         test_fixtures::{content_identity, records, source, with_facts},
     };
+    use replay_capture_spool::spool::Record;
     use replay_data::rows::{CountryLinkRow, CountryRow, NavalMissionLedgerRow, ShipRow, TableSchema};
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
 
     let root = std::env::temp_dir().join(format!("naval-supremacy-gap-{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(root.join("user")).unwrap();
+    for (path, text) in [("hoi4.exe", "test"), ("user/settings.txt", "language=l_english force_pow2_textures=no"), ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#)] {
+        std::fs::write(root.join(path), text).unwrap();
+    }
     let (options, identity) = content_identity(&root);
 
     let make_frame = |hour: i32| {
@@ -184,10 +196,13 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
     for h in 0..=10 {
         frames.push(make_frame(h));
     }
-    for h in 48..=50 {
+    for h in 30..=32 {
         frames.push(make_frame(h));
     }
-    let replay = with_facts(&options, &identity, records(1, frames));
+    let mut input = records(1, frames);
+    let Record::SessionStart(session) = &mut input[0] else { unreachable!() };
+    session.identity = identity.clone();
+    let replay = with_facts(&options, &identity, input).into_timelines(&Default::default()).unwrap();
     let src = Source::from_replay(dashboard_base::SourceKey { source_id: "naval-gap".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let reply = NavalSupremacy::load(
         &src,
@@ -208,7 +223,6 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
     .unwrap();
     let _ = std::fs::remove_dir_all(&root);
     let region = reply.regions.iter().find(|r| r.id == "7").unwrap();
-    assert_eq!(region.own_mission_ships, Some(2));
-    assert_eq!(region.enemy_mission_ships, Some(1));
-    assert_eq!(region.ships_missing, None);
+    assert_eq!(region.own_ships, MissionShips::Counted { ships: 2 });
+    assert_eq!(region.enemy_ships, MissionShips::Counted { ships: 1 });
 }

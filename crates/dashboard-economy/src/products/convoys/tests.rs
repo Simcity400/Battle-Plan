@@ -82,25 +82,25 @@ fn convoy_health_distinguishes_no_traffic_unknown_traffic_and_full_efficiency() 
     let active_client = ConvoyClientRow { category: IMPORT, owner: 10, route_class: 1, route_country: 10, route_other: 2, convoys_assigned: 5, ..Default::default() };
     let naval = TradeRouteRow { country: 10, class: 1, other: 2, kind: NAVAL_ROUTE, from: 100, to: 200, path: vec![7, 8], ..Default::default() };
     let complete = make_frame(vec![active_client.clone()], vec![], Some(vec![naval]));
-    assert_eq!(traffic_in_frame(&complete, 1), TrafficProof::Proven(BTreeSet::from([7, 8])));
+    assert_eq!(traffic_in_frame(&complete, 1), TrafficProof { crossed: BTreeSet::from([7, 8]), unknown: None });
 
     let incomplete_routes = make_frame(vec![active_client.clone()], vec![], None);
-    assert_eq!(traffic_in_frame(&incomplete_routes, 1), TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned()));
+    assert_eq!(traffic_in_frame(&incomplete_routes, 1), TrafficProof::unknown("Trade routes were not recorded at this hour"));
 
     let unrecorded_path = make_frame(
         vec![active_client],
         vec![],
         Some(vec![TradeRouteRow { country: 10, class: 1, other: 2, kind: NAVAL_ROUTE, from: 0, to: 0, path: vec![], ..Default::default() }]),
     );
-    assert_eq!(traffic_in_frame(&unrecorded_path, 1), TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned()));
+    assert_eq!(traffic_in_frame(&unrecorded_path, 1), TrafficProof::unknown(PORTS_NOT_RECORDED));
 
     let known = [HourSpan { first_hour: 0, last_hour: 99 }];
     let traffic = vec![
-        (0, 49, TrafficProof::Proven(BTreeSet::from([7]))),
-        (50, 99, TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned())),
+        (0, 49, TrafficProof { crossed: BTreeSet::from([7]), unknown: None }),
+        (50, 99, TrafficProof::unknown(TRAFFIC_NOT_RECORDED)),
     ];
     let eff_bad = [(20, 29, 62_000), (60, 69, 40_000)];
-    let cells_r7 = build_region_cells(7, &eff_bad, &traffic, &known, &[], 0, 99);
+    let cells_r7 = build_region_cells(7, &eff_bad, &traffic, &known, &[], &[], 0, 99);
     assert_eq!(
         cells_r7,
         vec![
@@ -112,7 +112,7 @@ fn convoy_health_distinguishes_no_traffic_unknown_traffic_and_full_efficiency() 
             ConvoyCellRun { first_hour: 70, last_hour: 99, state: ConvoyCellState::NotRecorded { reason: TRAFFIC_NOT_RECORDED.to_owned() } },
         ]
     );
-    let cells_r9 = build_region_cells(9, &[], &traffic, &known, &[], 0, 99);
+    let cells_r9 = build_region_cells(9, &[], &traffic, &known, &[], &[], 0, 99);
     assert_eq!(
         cells_r9,
         vec![
@@ -141,11 +141,43 @@ fn witnessed_naval_route_is_proven_even_when_another_client_has_no_route() {
 
     let proof = traffic_in_frame(&frame, 36);
     let known = [HourSpan { first_hour: 100, last_hour: 100 }];
-    let cells_r59 = build_region_cells(59, &[], &[(100, 100, proof.clone())], &known, &[], 100, 100);
+    let cells_r59 = build_region_cells(59, &[], &[(100, 100, proof.clone())], &known, &[], &[], 100, 100);
     assert_eq!(cells_r59, vec![ConvoyCellRun { first_hour: 100, last_hour: 100, state: ConvoyCellState::Efficiency { value: 100_000 } }]);
 
-    let cells_r99 = build_region_cells(99, &[], &[(100, 100, proof)], &known, &[], 100, 100);
-    assert!(matches!(cells_r99.as_slice(), [ConvoyCellRun { state: ConvoyCellState::NotRecorded { .. }, .. }]));
+    let cells_r99 = build_region_cells(99, &[], &[(100, 100, proof)], &known, &[], &[], 100, 100);
+    assert_eq!(cells_r99, vec![ConvoyCellRun { first_hour: 100, last_hour: 100, state: ConvoyCellState::NotRecorded { reason: NO_PATH.to_owned() } }]);
+}
+
+#[test]
+fn traffic_hours_outside_a_complete_table_name_that_table() {
+    let complete = vec![vec![(0, 99)], vec![(0, 39), (60, 99)], vec![(0, 99)], vec![(0, 79)]];
+    let spans = complete.iter().skip(1).fold(complete[0].clone(), |held, other| intersect_spans(&held, other));
+    assert_eq!(spans, vec![(0, 39), (60, 79)]);
+    assert_eq!(
+        missing_traffic(&complete, &spans, 0, 99),
+        vec![
+            (40, 59, TrafficProof::unknown("Convoy clients were not recorded at this hour")),
+            (80, 99, TrafficProof::unknown("Trade routes were not recorded at this hour")),
+        ]
+    );
+}
+
+#[test]
+fn a_recording_gap_is_taken_out_of_the_unheld_hours_and_keeps_its_own_reason() {
+    let span = |first_hour, last_hour| HourSpan { first_hour, last_hour };
+    let gaps = [(span(27, 39), "Hours not read")];
+    assert_eq!(without(&[span(24, 45)], &gaps), vec![span(24, 26), span(40, 45)]);
+    let known = [span(24, 45)];
+    let cells = build_region_cells(17, &[(24, 45, 50_000)], &[], &known, &[span(43, 45)], &gaps, 24, 45);
+    assert_eq!(
+        cells,
+        vec![
+            ConvoyCellRun { first_hour: 24, last_hour: 26, state: ConvoyCellState::Efficiency { value: 50_000 } },
+            ConvoyCellRun { first_hour: 27, last_hour: 39, state: ConvoyCellState::NotRecorded { reason: "Hours not read".into() } },
+            ConvoyCellRun { first_hour: 40, last_hour: 42, state: ConvoyCellState::Efficiency { value: 50_000 } },
+            ConvoyCellRun { first_hour: 43, last_hour: 45, state: ConvoyCellState::NotRecorded { reason: "No country holds this tag at this hour".into() } },
+        ]
+    );
 }
 
 #[test]
