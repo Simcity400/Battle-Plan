@@ -1,5 +1,5 @@
 import type { ArtSlotState, FlagSlotState } from '../../draw/kit.ts';
-import type { CountryFlagImage } from '../../generated/dashboard';
+import type { CountryFlagImage, SpriteImage } from '../../generated/dashboard';
 import type { DrawnFlagEntry } from '../identity/types.ts';
 import {
   CURRENT_INSTALL_PROVENANCE,
@@ -16,22 +16,15 @@ import {
   type ArtResult,
 } from './types.ts';
 
-type FlagImageWithResolution = CountryFlagImage & { readonly resolution?: ArtResolution | null };
-
-export function flagEntryToArt(
-  entry: DrawnFlagEntry | undefined,
-  provenance: ArtProvenance = CURRENT_INSTALL_PROVENANCE,
-): ArtResolution {
+export function flagEntryToArt(entry: DrawnFlagEntry | undefined): ArtResolution {
   if (!entry) return PENDING_ART;
   if (entry.failed) return failedArt(entry.failed.message, true);
-  const withRes = entry.image as FlagImageWithResolution | undefined;
-  if (withRes?.resolution) return withRes.resolution;
+  if (entry.image?.resolution) return entry.image.resolution;
   if (entry.url) {
     return readyArt(entry.url, {
       assetId: entry.image?.key ?? entry.url,
       file: entry.image?.asset ?? '',
       frame: entry.image ? defaultArtFrame(entry.image.width, entry.image.height) : defaultArtFrame(),
-      provenance,
     });
   }
   return missingArt(entry.reason ?? 'Flag unavailable');
@@ -39,20 +32,33 @@ export function flagEntryToArt(
 
 export function flagImageToArt(
   image: CountryFlagImage | undefined,
-  options: { readonly pending?: boolean; readonly reason?: string | null; readonly provenance?: ArtProvenance } = {},
+  options: { readonly pending?: boolean; readonly reason?: string | null } = {},
 ): ArtResolution {
-  const withRes = image as FlagImageWithResolution | undefined;
-  if (withRes?.resolution) return withRes.resolution;
+  if (image?.resolution) return image.resolution;
   if (image) {
     return readyArt(image.png, {
       assetId: image.key,
       file: image.asset,
       frame: defaultArtFrame(image.width, image.height),
-      provenance: options.provenance ?? CURRENT_INSTALL_PROVENANCE,
     });
   }
   if (options.pending) return PENDING_ART;
   return missingArt(options.reason ?? 'Flag unavailable');
+}
+
+export function spriteImageToArt(
+  image: SpriteImage | undefined,
+  options: { readonly pending?: boolean; readonly reason?: string | null } = {},
+): ArtResolution {
+  if (image?.resolution) return image.resolution;
+  if (image?.icon) {
+    return readyArt(image.icon, {
+      assetId: `${image.key}#${image.frame}`,
+      frame: defaultArtFrame(0, 0, image.frame, 1),
+    });
+  }
+  if (options.pending) return PENDING_ART;
+  return missingArt(options.reason ?? 'Sprite art unavailable');
 }
 
 export function urlToArt(
