@@ -43,10 +43,18 @@ export function validatePowerSpending(data: unknown): PowerSpendingReply {
     && list(reply.days, entry => object(entry) && index(entry.item) && (entry.day === null || integer(entry.day)) && integer(entry.read)
       && count(entry.days) && optionalRaw(entry.chargeRaw) && count(entry.payments) && count(entry.unknown) && count(entry.uncovered)
       && optionalRaw(entry.realizedRaw) && count(entry.credits))
-    && list(reply.gains, entry => object(entry) && integer(entry.read) && optionalRaw(entry.gainedRaw) && optionalRaw(entry.cappedRaw)
+    && list(reply.gains, entry => object(entry) && (entry.hour === null || integer(entry.hour)) && integer(entry.read) && optionalRaw(entry.gainedRaw) && optionalRaw(entry.cappedRaw)
       && count(entry.days) && count(entry.unknownDays) && count(entry.unmatched))
     && list(reply.coverage, entry => object(entry) && integer(entry.firstHour) && integer(entry.lastHour) && entry.firstHour <= entry.lastHour
       && typeof entry.covered === 'boolean' && text(entry.reason))
+    && list(reply.gainCoverage, entry => object(entry) && integer(entry.firstHour) && integer(entry.lastHour) && entry.firstHour <= entry.lastHour
+      && typeof entry.covered === 'boolean' && text(entry.reason))
+    && list(reply.balances, entry => object(entry) && integer(entry.firstHour) && integer(entry.lastHour) && entry.firstHour <= entry.lastHour
+      && optionalRaw(entry.valueRaw) && text(entry.reason))
+    && object(reply.reconciliation) && optionalRaw(reply.reconciliation.openingRaw) && optionalRaw(reply.reconciliation.gainedRaw)
+      && optionalRaw(reply.reconciliation.lostAtCapRaw) && optionalRaw(reply.reconciliation.spentRaw)
+      && optionalRaw(reply.reconciliation.allocatedRaw) && optionalRaw(reply.reconciliation.releasedRaw) && optionalRaw(reply.reconciliation.closingRaw)
+      && optionalRaw(reply.reconciliation.otherChangesRaw) && text(reply.reconciliation.reason)
     && list(reply.icons, icon => object(icon) && typeof icon.key === 'string' && typeof icon.image === 'string');
   if (!ok) throw new Error('The power spending reply is malformed.');
   if (reply.ideaTooltips !== null) validateIdeaTooltipData(reply.ideaTooltips);

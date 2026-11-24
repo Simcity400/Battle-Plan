@@ -17,36 +17,45 @@ pub mod staging;
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static REGISTER_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static REGISTRY_ORIGINAL: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
-static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static FLIGHT_GATE: collector_primitives::asymmetric::FlightGate =
+    collector_primitives::asymmetric::FlightGate::new(0);
 static DECISION_ORIGINAL: [AtomicUsize; 5] = [const { AtomicUsize::new(0) }; 5];
 static ACTIVATION_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 
-const RETAIN_NATIVE_FLIGHT: usize = 1 << 63;
 pub(crate) struct Flight {
+    guard: Option<collector_primitives::asymmetric::FlightGuard<'static>>,
     normal: bool,
 }
 impl Flight {
+    #[inline(always)]
     pub(crate) fn enter() -> Self {
-        feed::writer_moved();
-        ACTIVE.fetch_add(1, Ordering::SeqCst);
-        Self { normal: false }
+        Self {
+            guard: Some(FLIGHT_GATE.enter(true)),
+            normal: false,
+        }
     }
+    #[inline(always)]
     pub(crate) fn returned(&mut self) {
         self.normal = true;
     }
 }
 impl Drop for Flight {
+    #[inline(always)]
     fn drop(&mut self) {
-        if self.normal {
-            ACTIVE.fetch_sub(1, Ordering::SeqCst);
-        } else {
-            ACTIVE.fetch_or(RETAIN_NATIVE_FLIGHT, Ordering::SeqCst);
+        if let Some(guard) = self.guard.take() {
+            if self.normal {
+                drop(guard);
+            } else {
+                guard.leak_and_retain();
+            }
         }
-        feed::writer_moved();
     }
 }
 pub fn active() -> usize {
-    ACTIVE.load(Ordering::SeqCst)
+    FLIGHT_GATE.active()
+}
+pub(crate) fn quiet_epoch() -> Option<u64> {
+    FLIGHT_GATE.quiet_epoch()
 }
 
 pub fn decision(

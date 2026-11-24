@@ -97,7 +97,7 @@ fn plain_info(
 }
 
 pub struct GuiResources {
-    registry: Registry,
+    registry: Arc<Registry>,
     language: Vec<u8>,
     textures: BTreeMap<(Stack, Vec<u8>), Loaded>,
     texture_diagnostics: BTreeMap<(Stack, Vec<u8>), Diagnostics>,
@@ -115,7 +115,7 @@ pub struct GuiResources {
     uncovered: BTreeSet<Vec<u8>>,
     recorded: Option<ResolvedLayers>,
     missing_fonts: BTreeMap<String, String>,
-    recorded_registry: Option<Registry>,
+    recorded_registry: Option<Arc<Registry>>,
 }
 
 pub struct Context<'a, R> {
@@ -126,9 +126,14 @@ pub struct Context<'a, R> {
 }
 
 impl GuiResources {
-    pub fn new(registry: Registry, language: &[u8], map_size: [u32; 2], decode: Decode) -> Self {
+    pub fn new(
+        registry: impl Into<Arc<Registry>>,
+        language: &[u8],
+        map_size: [u32; 2],
+        decode: Decode,
+    ) -> Self {
         Self {
-            registry,
+            registry: registry.into(),
             language: language.to_vec(),
             textures: BTreeMap::new(),
             texture_diagnostics: BTreeMap::new(),
@@ -150,8 +155,8 @@ impl GuiResources {
         }
     }
 
-    pub fn with_recorded_registry(mut self, recorded: Registry) -> Self {
-        self.recorded_registry = Some(recorded);
+    pub fn with_recorded_registry(mut self, recorded: impl Into<Arc<Registry>>) -> Self {
+        self.recorded_registry = Some(recorded.into());
         self
     }
 
@@ -483,10 +488,10 @@ impl GuiResources {
         images: &mut Vec<dds::Texture>,
     ) -> io::Result<Option<(Prepared, Option<String>)>> {
         self.touched.clear();
-        let registry = match stack {
+        let registry: &Registry = match stack {
             Stack::Recorded => self
                 .recorded_registry
-                .as_ref()
+                .as_deref()
                 .expect("a recorded draw has the recording's registry"),
             Stack::Retried | Stack::Shown => &self.registry,
         };

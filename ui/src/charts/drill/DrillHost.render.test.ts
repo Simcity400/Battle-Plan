@@ -38,7 +38,7 @@ test('actual queued drill close restores its own focus and preserves a later wid
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'drill-focus-surface', enforce: 'pre',
       transform(code, id) {
-        if (!id.replaceAll('\\', '/').endsWith('/drill/DrillHost.tsx')) return;
+        if (!id.replaceAll('\\', '/').endsWith('/drill/DrillHost.tsx') && !id.replaceAll('\\', '/').endsWith('/host/DetailWindowHost.tsx')) return;
         return code.replace("from '../../components/Popover'", "from 'drill-focus-surface'")
           .replace(/\buse(?:Layout)?Effect\(/g, 'globalThis.__drillFocusEffect(')
           .replaceAll('onClick={requestClose}', 'onClick={(globalThis.__drillFocus.close = requestClose)}');
@@ -61,6 +61,8 @@ test('actual queued drill close restores its own focus and preserves a later wid
       { event: 'close', mode: 'popout', next: body, restore: false, unmounted: true },
       { event: 'close', mode: 'popout', next: body, restore: false, detached: true },
       { event: 'close', mode: 'popout', next: body, restore: false, defaultFocus: true },
+      { event: 'escape', mode: 'window', next: ownControl, restore: true },
+      { event: 'close', mode: 'window', next: body, restore: true },
     ] as const) {
       let closes = 0, focuses = 0;
       const selected: string[] = [], cleanups: (() => void)[] = [];
@@ -73,7 +75,7 @@ test('actual queued drill close restores its own focus and preserves a later wid
       const html = renderToStaticMarkup(createElement(DrillHost, { mode: scenario.mode, drill: drillOf(true), runtime: RUNTIME, title: 'Recorded parts', day: 'Recorded day',
         canFollow: false, anchor, returnFocus: 'defaultFocus' in scenario ? undefined : '.country-race-chart canvas',
         main: null, children: null, onClose() { closes++; state.menu.popup.current = null; } }));
-      assert.match(html, scenario.mode === 'popout' ? /Close breakdown/ : /Back/);
+      assert.match(html, scenario.mode === 'inline' ? /Back/ : /Close breakdown/);
       try {
         for (const effect of state.effects) { const cleanup = effect(); if (typeof cleanup === 'function') cleanups.push(cleanup as () => void); }
         if (scenario.mode === 'popout') {
@@ -82,6 +84,9 @@ test('actual queued drill close restores its own focus and preserves a later wid
           handlers.get('pointerdown')!({ target: otherControl });
           assert.equal(closes, 0, 'another popover keeps its own Escape and pointer events');
           browser.activeElement = ownControl;
+        }
+        if (scenario.mode === 'window') {
+          assert.equal(handlers.has('pointerdown'), false, 'window mode stays open on outside pointerdown');
         }
         if (scenario.event === 'outside') handlers.get('pointerdown')!({ target: button });
         else if (scenario.event === 'escape') handlers.get('keydown')!({ key: 'Escape' });
@@ -104,6 +109,35 @@ test('actual queued drill close restores its own focus and preserves a later wid
         assert.deepEqual(selected, scenario.restore ? ['.country-race-chart canvas'] : []);
       } finally { for (const cleanup of cleanups.reverse()) cleanup(); }
     }
+
+    const { DetailWindowHost } = await vite.ssrLoadModule('/ui/src/families/host/DetailWindowHost.tsx') as typeof import('../../families/host/DetailWindowHost');
+    let paused = 0, resumed = 0, closed = 0, windowFocuses = 0;
+    const clock = { isPlaying: () => true, pause: () => { paused++; }, play: () => { resumed++; } };
+    const openerEl = { isConnected: true, focus: (options: FocusOptions) => { assert.equal(options.preventScroll, true); windowFocuses++; } } as unknown as HTMLElement;
+    state.effects = []; state.menu.popup.current = panel; browser.activeElement = ownControl;
+    const winHtml = renderToStaticMarkup(createElement(DetailWindowHost, {
+      open: true,
+      subject: 'battle:99',
+      hour: 60_800_000,
+      title: 'Battle of Kursk',
+      pauseClock: true,
+      clock,
+      opener: { current: openerEl },
+      onClose() { closed++; state.menu.popup.current = null; },
+      children: createElement('p', null, 'Battle details'),
+    }));
+    assert.match(winHtml, /Battle of Kursk/);
+    assert.match(winHtml, /Close window/);
+    const winCleanups: (() => void)[] = [];
+    for (const effect of state.effects) { const c = effect(); if (typeof c === 'function') winCleanups.push(c as () => void); }
+    assert.equal(paused, 1, 'pauseClock pauses playing clock on open');
+    handlers.get('keydown')!({ key: 'Escape', preventDefault() {} });
+    assert.equal(closed, 1);
+    browser.activeElement = body;
+    queued.shift()!(0);
+    assert.equal(windowFocuses, 1, 'DetailWindowHost restores opener focus on close');
+    for (const cleanup of winCleanups.reverse()) cleanup();
+    assert.equal(resumed, 1, 'pauseClock resumes clock when closed');
   } finally {
     globalThis.document = before.document; globalThis.window = before.window; globalThis.Element = before.Element;
     globalThis.requestAnimationFrame = before.requestAnimationFrame;

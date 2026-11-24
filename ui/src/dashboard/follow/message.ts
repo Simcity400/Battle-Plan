@@ -87,7 +87,31 @@ function textTable(views: MessageViews, at: number, count: number, end: number):
 export function textAt(answer: FollowedRows, at: number): string | null {
   if (at + 1 >= answer.ends.length) return null;
   let text = answer.decoded[at];
-  if (text === undefined) text = answer.decoded[at] = decoder.decode(answer.views.u8.subarray(answer.text + answer.ends[at]!, answer.text + answer.ends[at + 1]!));
+  if (text === undefined) {
+    const start = answer.text + answer.ends[at]!;
+    const end = answer.text + answer.ends[at + 1]!;
+    const len = end - start;
+    const u8 = answer.views.u8;
+    if (len === 3) {
+      const a = u8[start]!, b = u8[start + 1]!, c = u8[start + 2]!;
+      text = (a | b | c) < 0x80 ? String.fromCharCode(a, b, c) : decoder.decode(u8.subarray(start, end));
+    } else if (len <= 24) {
+      let ascii = true;
+      for (let i = start; i < end; i++) {
+        if (u8[i]! >= 0x80) { ascii = false; break; }
+      }
+      if (ascii) {
+        let s = '';
+        for (let i = start; i < end; i++) s += String.fromCharCode(u8[i]!);
+        text = s;
+      } else {
+        text = decoder.decode(u8.subarray(start, end));
+      }
+    } else {
+      text = decoder.decode(u8.subarray(start, end));
+    }
+    answer.decoded[at] = text;
+  }
   return text;
 }
 

@@ -9,10 +9,10 @@ use std::{
 use replay_identity::Identity;
 
 use super::{
-    CoveragePolicy, Descriptors, HASH_CACHE, HashCache, HashStats, LayerRole, LayerSource,
-    ResolveOptions, ResolvedLayer, ResolvedLayers, builtin_layer, descriptor_layer,
-    find_descriptors, layer_hash, mod_id, normalize_relative, publish_hash_cache,
-    sort_descriptors, text_path,
+    CoveragePolicy, DescriptorHash, Descriptors, HASH_CACHE, HashCache, HashStats, LayerRole,
+    LayerSource, ResolveOptions, ResolvedLayer, ResolvedLayers, builtin_layer, descriptor_layer,
+    find_descriptors, generation, layer_hash, mod_id, normalize_relative, portable_descriptor,
+    publish_hash_cache, replace_path, sort_descriptors, text_path,
 };
 
 pub struct Candidate {
@@ -73,25 +73,89 @@ pub fn candidate(
         }
         let mut mods = Vec::new();
         for recorded in &identity.mods {
-            let layer = match (
-                &user_dir,
-                descriptors.mods.get(&recorded.id).map(Vec::as_slice),
-            ) {
-                (Some(user_dir), Some([path])) => {
-                    descriptor_layer(recorded.id.clone(), path.clone(), user_dir, true, coverage)
-                        .and_then(|(mut layer, document)| {
-                            if mod_id(&document, path)? != recorded.id {
+            let layer = match descriptors.find_mod(&recorded.id) {
+                Ok((source, descriptor)) => {
+                    let descriptor_path = descriptor.as_deref();
+                    let build = (|| -> io::Result<(ResolvedLayer, [u8; 32])> {
+                        let (mut layer, document) = if let (Some(user_dir), Some(path)) =
+                            (&user_dir, descriptor_path)
+                            && path.starts_with(user_dir)
+                        {
+                            descriptor_layer(
+                                recorded.id.clone(),
+                                path.to_path_buf(),
+                                user_dir,
+                                true,
+                                coverage,
+                            )?
+                        } else {
+                            let document = match descriptor_path {
+                                Some(path) => generation::document(path)?,
+                                None => return Err(super::invalid("mod descriptor is missing")),
+                            };
+                            let replace_paths = document
+                                .get_all(b"replace_path")
+                                .map(|value| {
+                                    value
+                                        .scalar()
+                                        .ok_or_else(|| super::invalid("replace_path is not a scalar"))
+                                        .and_then(replace_path)
+                                })
+                                .collect::<io::Result<Vec<_>>>()?;
+                            let descriptor_bytes = match descriptor_path {
+                                Some(path) => Some(generation::metadata(path)?),
+                                None => None,
+                            };
+                            let portable = (coverage.portable_mod_descriptor())
+                                .then(|| portable_descriptor(&document, &replace_paths))
+                                .transpose()?;
+                            let layer = ResolvedLayer {
+                                content_digest: [0; 32],
+                                inventory_witnesses: Default::default(),
+                                inventory_paths: Default::default(),
+                                coverage,
+                                role: LayerRole::Mod,
+                                facts: None,
+                                id: recorded.id.clone(),
+                                source,
+                                descriptor: descriptor.clone(),
+                                replace_paths,
+                                files: Default::default(),
+                                lookup: Default::default(),
+                                hashes: Default::default(),
+                                archive_stamp: None,
+                                descriptor_hash: descriptor_bytes.map(|bytes| DescriptorHash {
+                                    bytes: bytes.digest(),
+                                    portable,
+                                }),
+                                overlay: None,
+                                display_name: Some(recorded.display_name.clone()),
+                                art_unmounted: None,
+                            };
+                            (layer, document)
+                        };
+                        if let Some(path) = descriptor_path
+                            && mod_id(&document, path)? != recorded.id
+                        {
+                            let workshop_match = path
+                                .parent()
+                                .and_then(Path::file_name)
+                                .and_then(|name| name.to_str())
+                                == Some(recorded.id.as_str());
+                            if !workshop_match {
                                 return Err(super::invalid("its descriptor names another mod"));
                             }
-                            layer.inventory()?;
-                            let hash = layer.hash(&mut cache, &mut stats)?;
-                            Ok((layer, hash))
-                        })
+                        }
+                        layer.inventory()?;
+                        let hash = layer.hash(&mut cache, &mut stats)?;
+                        Ok((layer, hash))
+                    })();
+                    build
                 }
-                (_, Some([_, _, ..])) => {
-                    Err(super::invalid("several installed descriptors have its id"))
+                Err(why) if why == "not installed" => {
+                    Err(io::Error::new(io::ErrorKind::NotFound, why))
                 }
-                _ => Err(io::Error::new(io::ErrorKind::NotFound, "not installed")),
+                Err(why) => Err(super::invalid(why)),
             };
             mods.push(proven(layer, recorded.hash)?);
         }
@@ -237,6 +301,8 @@ pub fn assemble(
         archive_stamp: None,
         descriptor_hash: None,
         overlay: None,
+        display_name: None,
+        art_unmounted: None,
     };
     let game = candidates
         .iter()

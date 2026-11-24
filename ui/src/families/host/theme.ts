@@ -26,16 +26,37 @@ export function sameFamilyTheme(a: FamilyTheme | undefined, b: FamilyTheme | und
   if (a === b) return true;
   if (!a || !b) return false;
   return a.surface === b.surface
+    && a.raised === b.raised
+    && a.dark === b.dark
     && a.text === b.text
     && a.muted === b.muted
     && a.line === b.line
     && a.lineSoft === b.lineSoft
+    && a.hairline === b.hairline
+    && a.hairlineStrong === b.hairlineStrong
+    && a.bandDivider === b.bandDivider
+    && a.headerBand === b.headerBand
+    && a.rowHover === b.rowHover
+    && a.rowSelected === b.rowSelected
+    && a.childTint === b.childTint
     && a.accent === b.accent
     && a.blue === b.blue
     && a.red === b.red
+    && a.shortage === b.shortage
     && a.amber === b.amber
     && a.green === b.green
     && a.grey === b.grey
+    && a.barMuted === b.barMuted
+    && a.barTrack === b.barTrack
+    && a.gridLine === b.gridLine
+    && a.zeroLine === b.zeroLine
+    && a.tailLine === b.tailLine
+    && a.playhead === b.playhead
+    && a.crosshair === b.crosshair
+    && a.dateTabBg === b.dateTabBg
+    && a.dateTabText === b.dateTabText
+    && a.hoverTabBg === b.hoverTabBg
+    && a.hoverTabText === b.hoverTabText
     && a.hatch === b.hatch
     && a.hatchEdge === b.hatchEdge
     && a.font === b.font

@@ -52,6 +52,30 @@ fn an_opinion_listed_under_a_countrys_other_raw_ids_is_its_pair() {
 }
 
 #[test]
+fn opinions_matrix_computes_exact_cells_and_displayed_only_domain() {
+    let table = TableId::RelationOpinions.index() as u32;
+    let frame = frame(
+        vec![
+            RelationOpinionRow { owner_country: 1, target_country: 2, opinion: -25 },
+            RelationOpinionRow { owner_country: 2, target_country: 1, opinion: 40 },
+            RelationOpinionRow { owner_country: 1, target_country: 9, opinion: 200 },
+        ],
+        vec![
+            SliceReadRow { table, owner: 1, sample_hour: 480 },
+            SliceReadRow { table, owner: 2, sample_hour: 485 },
+        ],
+    );
+    let (owners, cells, domain) = opinions_matrix(&frame, &[("AAA", Some((1, 1))), ("BBB", Some((2, 2))), ("CCC", Some((3, 3)))], &Cells::default()).unwrap();
+    assert_eq!(domain, [-25, 40], "off-matrix country 9 opinion +200 never pollutes displayed domain");
+    assert_eq!(owners[0].read_hour, Some(480));
+    assert_eq!(cells[0], OpinionMatrixCell::Diagonal);
+    assert_eq!(cells[1], OpinionMatrixCell::Value { opinion: -25 });
+    assert_eq!(cells[2], OpinionMatrixCell::Value { opinion: 0 }, "known owner without pair row is exact zero");
+    assert_eq!(cells[3], OpinionMatrixCell::Value { opinion: 40 });
+    assert!(matches!(cells[6], OpinionMatrixCell::Missing { .. }), "unread owner CCC cells are missing, never zero");
+}
+
+#[test]
 fn a_relations_runs_are_cut_where_its_endpoints_or_dates_change() {
     let step = |hour, cells: Option<[Cell; 4]>| lanes::Step { hour, cells: cells.map(|cells| Box::from(cells)) };
     let n = Cell::Number;

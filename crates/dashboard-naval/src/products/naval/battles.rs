@@ -2,7 +2,7 @@
 use dashboard_base::products::Country;
 use dashboard_base::{products::{LoadContext, Product}, queries::country_ids};
 use dashboard_world::products::groups::MembershipRun;
-use super::sunk;
+use super::{sinking_details::BattleIndex, sunk};
 use dashboard_base::Source;
 use dashboard_base::{
     catalogue::Refusals,
@@ -318,6 +318,10 @@ pub fn parse_id(id: &str) -> Option<(u64, i32)> {
     let combat = parts.next()?.parse().ok()?;
     let first = parts.next()?.parse().ok()?;
     parts.next().is_none().then_some((combat, first))
+}
+
+pub fn parse_result_id(id: &str) -> Option<u64> {
+    id.strip_prefix("result:")?.parse().ok()
 }
 
 struct Tags<'q> {
@@ -772,6 +776,7 @@ pub struct NavalBattleNamedShip {
     pub known_at: i32,
     pub name: Option<String>,
     pub class_name: Option<String>,
+    pub sinking_cause: sunk::ShipSinkingAttribution,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -871,27 +876,36 @@ impl Product for NavalBattleDetails {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         valid_branch(&params.branch_id)?;
-        if params.battles.iter().any(|battle| parse_id(&battle.id).is_none() && !battle.id.starts_with("result:")) {
+        if params.battles.iter().any(|battle| parse_id(&battle.id).is_none() && parse_result_id(&battle.id).is_none()) {
             return Err("Invalid naval battle");
         }
         Ok(())
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        #[derive(Clone, Copy)]
+        enum Target {
+            Live { combat: u64, first_hour: i32 },
+            Result { id: u64 },
+        }
+
         let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
         let recording = query.replay.recording();
         let content = sunk::Content::load(source, context);
         let mut refused = Refusals::default();
         let mut reply = NavalBattleDetailsReply { rows: Vec::with_capacity(params.battles.len()), warnings: content.warnings() };
-        let mut at: BTreeMap<(u32, i32, i32), Vec<(usize, u64)>> = BTreeMap::new();
+        let mut at: BTreeMap<(u32, i32, i32), Vec<(usize, Target)>> = BTreeMap::new();
         for (index, asked) in params.battles.iter().enumerate() {
             let mut detail = NavalBattleDetail { id: asked.id.clone(), hour: asked.hour, roster_hour: None, fleets: unknown_fleets("Fleet roster not recorded"), named_ships: Vec::new(), ship_read: None, unavailable: None };
-            match (parse_id(&asked.id), query.timeline.at(asked.hour)) {
-                (Some((combat, _)), Some(stretch)) => {
+            match (parse_id(&asked.id), parse_result_id(&asked.id), query.timeline.at(asked.hour)) {
+                (Some((combat, first_hour)), _, Some(stretch)) => {
                     detail.roster_hour = Some(asked.hour);
-                    at.entry((stretch.run, stretch.first, asked.hour)).or_default().push((index, combat));
+                    at.entry((stretch.run, stretch.first, asked.hour)).or_default().push((index, Target::Live { combat, first_hour }));
                 }
-                _ => detail.unavailable = Some("Details are kept for live battles at a recorded hour".into()),
+                (_, Some(id), Some(stretch)) => {
+                    at.entry((stretch.run, stretch.first, asked.hour)).or_default().push((index, Target::Result { id }));
+                }
+                _ => detail.unavailable = Some("Details are kept for battles at a recorded hour".into()),
             }
             reply.rows.push(detail);
         }
@@ -909,9 +923,39 @@ impl Product for NavalBattleDetails {
                 reads = lanes::reads(recording, run, TableId::SunkShips, first, last[&(run, first)])?;
                 lists = HashMap::new();
             }
-            let combats: Vec<u64> = battles.iter().map(|&(_, combat)| combat).collect();
-            for (&(index, _), fleets) in battles.iter().zip(fleets_at(&mut seeker, run, hour, &combats, &content, &mut refused)?) {
-                reply.rows[index].fleets = fleets;
+            let mut needed_combats = BTreeSet::new();
+            let mut needed_results = BTreeSet::new();
+            let mut live_indices = Vec::new();
+            let mut live_combats = Vec::new();
+            for &(index, target) in battles {
+                match target {
+                    Target::Live { combat, .. } => {
+                        needed_combats.insert(combat);
+                        live_indices.push(index);
+                        live_combats.push(combat);
+                    }
+                    Target::Result { id } => {
+                        needed_results.insert(id);
+                    }
+                }
+            }
+            if !live_combats.is_empty() {
+                for (index, fleets) in live_indices.into_iter().zip(fleets_at(&mut seeker, run, hour, &live_combats, &content, &mut refused)?) {
+                    reply.rows[index].fleets = fleets;
+                }
+            }
+            let battle_index = BattleIndex::build(source, &query, hour, &needed_combats, &needed_results)?;
+            let mut active = Vec::new();
+            for &(index, target) in battles {
+                match target {
+                    Target::Result { id } if battle_index.result_hour(id).is_none() => {
+                        reply.rows[index].unavailable = Some("Naval battle result was not recorded at this hour".into());
+                    }
+                    _ => active.push((index, target)),
+                }
+            }
+            if active.is_empty() {
+                continue;
             }
             let through: Vec<(i32, i32)> = reads.iter().take_while(|read| read.0 <= hour).map(|&(start, end)| (start, end.min(hour))).collect();
             let Some(&(_, read)) = through.last() else { continue };
@@ -919,21 +963,30 @@ impl Product for NavalBattleDetails {
                 slot.insert(sunk::sinkings_seen(&mut seeker, run, read)?);
             }
             let Some((read_at, entries)) = &lists[&read] else { continue };
-            let asked: BTreeSet<u64> = combats.iter().copied().collect();
-            let entries: Vec<_> = entries.iter().filter(|entry| asked.contains(&entry.battle)).cloned().collect();
-            let named = sunk::ship_names(&mut seeker, run, hour, &entries, &content, &mut refused)?;
-            for &(index, combat) in battles {
+            let matches_any = |entry: &replay_data::rows::SunkShipEntry| {
+                active.iter().any(|&(_, target)| match target {
+                    Target::Live { combat, first_hour } => battle_index.matches_live(combat, first_hour, entry),
+                    Target::Result { id } => battle_index.matches_result(id, entry),
+                })
+            };
+            let matched: Vec<_> = entries.iter().filter(|entry| entry.sink_hour <= hour && matches_any(entry)).cloned().collect();
+            let details = sunk::ship_details(&mut seeker, run, hour, &matched, &content, &mut refused)?;
+            for (index, target) in active {
                 let row = &mut reply.rows[index];
                 row.ship_read = Some(*read_at);
-                row.named_ships = entries
+                row.named_ships = matched
                     .iter()
-                    .zip(&named)
-                    .filter(|(entry, _)| entry.battle == combat)
-                    .map(|(entry, (name, class_name))| NavalBattleNamedShip {
+                    .zip(&details)
+                    .filter(|(entry, _)| match target {
+                        Target::Live { combat, first_hour } => battle_index.matches_live(combat, first_hour, entry),
+                        Target::Result { id } => battle_index.matches_result(id, entry),
+                    })
+                    .map(|(entry, (name, class_name, sinking_cause))| NavalBattleNamedShip {
                         sink_hour: entry.sink_hour,
                         known_at: sunk::known_at(&through, entry.sink_hour).unwrap_or(*read_at),
                         name: name.clone(),
                         class_name: class_name.clone(),
+                        sinking_cause: sinking_cause.clone(),
                     })
                     .collect();
             }

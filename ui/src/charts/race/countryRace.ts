@@ -1,6 +1,7 @@
 import type { Failure } from '../../dashboard/queryError';
 import type { RaceItem } from './race';
 import type { CountryFlagLook } from '../../components/CountryFlag';
+import { colour } from '../palette.ts';
 import type { Run } from '../series';
 import { lineEndHour, runAt } from '../series.ts';
 import { buildStack, compactStack, compactStackExtent, forEachCompactStackSegment, forEachJoinedSegment, stackExtent, stackedSegments } from '../stack.ts';
@@ -63,8 +64,11 @@ export function countryRacePickTag(view: string, lines: readonly CountryRaceLine
   return view === 'mix' ? mixTag ?? null : lines.length === 1 ? lines[0].tag : null;
 }
 
-export function partColours(parts: readonly CountryRacePart[], palette: readonly string[], catalogue?: ReadonlyMap<string, string>): Map<string, string> {
-  return new Map(parts.map((part, index) => [part.id, part.color ?? catalogue?.get(part.id) ?? palette[index % Math.max(1, palette.length)]]));
+export function partColours(parts: readonly CountryRacePart[], palette: readonly string[], catalogue?: ReadonlyMap<string, string>, surface?: string): Map<string, string> {
+  return new Map(parts.map((part, index) => [
+    part.id,
+    part.color ?? catalogue?.get(part.id) ?? (surface ? colour(surface, index) : palette[index % Math.max(1, palette.length)]),
+  ]));
 }
 
 const insideHatch = (value: number, hatched: number) => value > 0 ? Math.min(Math.max(0, hatched), value) : 0;

@@ -1,17 +1,18 @@
 
 use dashboard_base::products::{Country, validate_country};
-use dashboard_base::products::{LoadContext, Product};
-use dashboard_world::products::{place_names, sea_regions::{self, SeaContent}};
+use dashboard_base::products::{LoadContext, Product, at_hour};
+use dashboard_world::products::{place_names, sea_regions::{self, SeaContent}, styles::LookResolver};
 #[cfg(any(test, feature = "export-types"))]
 use dashboard_world::products::sea_regions::Choice;
-use dashboard_base::{Source, catalogue::Refusals};
+use dashboard_base::{Source, catalogue::Refusals, span::HourSpan};
 use dashboard_query::identity::Holder;
 use replay_lanes::{lanes, points::Cell};
-use replay_data::rows::{NavalRegionControlRow, TableId};
+use replay_data::rows::{AirCountryRelationRow, NavalRegionControlRow, TableId, tables};
 use replay_derive::naval_region_control;
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
     sync::atomic::AtomicBool,
 };
@@ -42,7 +43,56 @@ pub struct NavalSupremacyParams {
     pub branch_id: String,
     pub country: Country,
     #[doc = " The window of days asked ([`super::windows`])."]
-    pub window: u32,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub window: Option<u32>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub first_hour: Option<i32>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub last_hour: Option<i32>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub regions: Option<Vec<u32>>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub pinned_regions: Option<Vec<u32>>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub hidden_regions: Option<Vec<u32>>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub top: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SupremacyReadout {
+    Control {
+        control: i8,
+        share: Option<String>,
+        friendly: Option<String>,
+        enemy: Option<String>,
+        own: Option<String>,
+        own_mission_ships: Option<i32>,
+        enemy_mission_ships: Option<i32>,
+        ships_missing: Option<String>,
+        as_of_hour: i32,
+    },
+    NotRecorded {
+        reason: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct SupremacyLegendItem {
+    pub id: String,
+    pub label: String,
+    pub control: i8,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -64,6 +114,15 @@ pub struct SupremacyRun {
 pub struct SupremacyRegion {
     pub id: String,
     pub name: String,
+    pub pinned: bool,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub own_mission_ships: Option<i32>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub enemy_mission_ships: Option<i32>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub ships_missing: Option<String>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub readout: Option<SupremacyReadout>,
     pub runs: Vec<SupremacyRun>,
 }
 
@@ -87,6 +146,16 @@ pub struct NavalSupremacyReply {
     pub day_hours: i32,
     pub days: u32,
     pub unknown: Vec<UnknownDays>,
+    pub gaps: Vec<HourSpan>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub viewer_name: Option<String>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub viewer_name_missing: Option<String>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub viewer_color: Option<[u8; 3]>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub viewer_color_missing: Option<String>,
+    pub legend: Vec<SupremacyLegendItem>,
     pub regions: Vec<SupremacyRegion>,
     pub scale: i32,
     pub warnings: Vec<String>,
@@ -259,26 +328,111 @@ fn day_hours(timeline: &dashboard_query::timeline::Timeline, first: i32, last: i
     out
 }
 
+pub(crate) fn mission_registered_ships(frame: &DecodedFrame, viewer_slot: u32) -> Result<BTreeMap<u32, (i32, i32)>, String> {
+    let mut tf_ships: HashMap<u64, i32> = HashMap::new();
+    for ship in frame.complete::<tables::Ships>().map_err(|e| format!("Ships table unavailable: {e}"))? {
+        *tf_ships.entry(ship.task_force).or_insert(0) += 1;
+    }
+    let ledgers = frame.complete::<tables::NavalMissionLedgers>().map_err(|e| format!("Naval mission ledgers unavailable: {e}"))?;
+    let countries = frame.complete::<tables::Countries>().map_err(|e| format!("Countries table unavailable: {e}"))?;
+    let links_rows = frame.complete::<tables::CountryLinks>().map_err(|e| format!("Country links unavailable: {e}"))?;
+    let enemy_raws = naval_region_control::raw_roster(frame, viewer_slot, AirCountryRelationRow::ENEMY)?;
+    let slot_to_raw: HashMap<u32, u32> = countries.iter().map(|c| (c.canonical_slot, c.id)).collect();
+    let raw_to_slot: HashMap<u32, u32> = links_rows.iter().map(|l| (l.id, l.canonical_slot)).collect();
+    let own_raw = slot_to_raw.get(&viewer_slot).copied();
+    let mut enemy_raw_ids: Vec<u32> = Vec::with_capacity(enemy_raws.len());
+    for raw in enemy_raws {
+        let slot = if raw == 0 {
+            0
+        } else {
+            *raw_to_slot.get(&raw).ok_or_else(|| format!("Enemy {raw} has no CountryLinks row"))?
+        };
+        if let Some(&id) = slot_to_raw.get(&slot) {
+            enemy_raw_ids.push(id);
+        }
+    }
+    let mut by_owner_region: HashMap<(u32, u32), i32> = HashMap::new();
+    let mut regions = BTreeSet::new();
+    for row in ledgers {
+        regions.insert(row.region);
+        let count = row
+            .task_forces
+            .iter()
+            .filter(|&&tf| tf != 0)
+            .fold(0_i32, |sum, tf| sum.wrapping_add(tf_ships.get(tf).copied().unwrap_or(0)));
+        by_owner_region.insert((row.owner, row.region), count);
+    }
+    let mut out = BTreeMap::new();
+    for region in regions {
+        let own = own_raw.and_then(|id| by_owner_region.get(&(id, region)).copied()).unwrap_or(0);
+        let enemy = enemy_raw_ids.iter().fold(0_i32, |sum, &id| sum.wrapping_add(by_owner_region.get(&(id, region)).copied().unwrap_or(0)));
+        out.insert(region, (own, enemy));
+    }
+    Ok(out)
+}
+
+fn supremacy_legend(regions: &[SupremacyRegion], viewer_label: &str) -> Vec<SupremacyLegendItem> {
+    let mut seen = BTreeSet::new();
+    for region in regions {
+        for run in &region.runs {
+            if let Some(control) = run.control {
+                seen.insert(control);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if seen.contains(&1) {
+        out.push(SupremacyLegendItem { id: "friendly".into(), label: format!("{viewer_label} and friends"), control: 1 });
+    }
+    if seen.contains(&-1) {
+        out.push(SupremacyLegendItem { id: "enemy".into(), label: format!("Enemies of {viewer_label}"), control: -1 });
+    }
+    if seen.contains(&0) {
+        out.push(SupremacyLegendItem { id: "neither".into(), label: "Contested".into(), control: 0 });
+    }
+    out
+}
+
 impl Product for NavalSupremacy {
     const KEY: &'static str = "naval-supremacy";
     const CONTENT_DEPENDENT: bool = true;
     type Params = NavalSupremacyParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, window];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, window, firstHour: Start, lastHour: End, regions, pinnedRegions, hiddenRegions, top, "regions[]", "pinnedRegions[]", "hiddenRegions[]"];
     type Reply = NavalSupremacyReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        if dashboard_world::products::windows::hours(params.window).is_none() {
-            return Err("Invalid naval supremacy window");
+        match (params.first_hour, params.last_hour, params.window) {
+            (Some(a), Some(b), _) => {
+                if a > b {
+                    return Err("Invalid naval supremacy hours");
+                }
+            }
+            (None, None, Some(window)) => {
+                if dashboard_world::products::windows::hours(window).is_none() {
+                    return Err("Invalid naval supremacy window");
+                }
+            }
+            _ => return Err("Naval supremacy requires firstHour/lastHour or window"),
         }
         validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![NavalSupremacyParams::decl(), SupremacyRun::decl(), SupremacyRegion::decl(), UnknownDays::decl(), Choice::decl(), NavalSupremacyReply::decl()]
+        vec![
+            NavalSupremacyParams::decl(),
+            SupremacyRun::decl(),
+            SupremacyRegion::decl(),
+            SupremacyReadout::decl(),
+            SupremacyLegendItem::decl(),
+            UnknownDays::decl(),
+            Choice::decl(),
+            HourSpan::decl(),
+            NavalSupremacyReply::decl(),
+        ]
     }
 
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -286,12 +440,23 @@ impl Product for NavalSupremacy {
         let query = dashboard_base::queries::query(source, branch)?;
         let places = place_names::Content::read(source, load)?;
         let sea = SeaContent::read(source, load)?;
-        let (first, last) = dashboard_world::products::windows::within(&query, params.window)?;
-        let outside = first > last;
-        let (first, last) = if outside { dashboard_world::products::windows::hours(params.window).unwrap_or((first, last)) } else { (first, last) };
+        let (first, last, outside) = match (params.first_hour, params.last_hour, params.window) {
+            (Some(a), Some(b), _) => {
+                let f = a.max(query.timeline.first);
+                let l = b.min(query.timeline.last);
+                if f > l { (a, b, true) } else { (f, l, false) }
+            }
+            (_, _, Some(window)) => {
+                let (f, l) = dashboard_world::products::windows::within(&query, window)?;
+                let out = f > l;
+                let (f, l) = if out { dashboard_world::products::windows::hours(window).unwrap_or((f, l)) } else { (f, l) };
+                (f, l, out)
+            }
+            _ => return Err(dashboard_core::invalid("Naval supremacy requires firstHour/lastHour or window")),
+        };
         let first_day = first.div_euclid(DAY);
         let count = if outside { 0 } else { (last.div_euclid(DAY) - first_day + 1) as u32 };
-        let hours = day_hours(&query.timeline, first, last);
+        let hours = if outside { BTreeMap::new() } else { day_hours(&query.timeline, first, last) };
         let regions: BTreeSet<u32> = sea.sea.clone().unwrap_or_default();
         let recording = query.replay.recording();
         let mut notes = Refusals::default();
@@ -314,17 +479,17 @@ impl Product for NavalSupremacy {
             region_runs(&history, viewer, &shown, &regions, &sea, notes, pieces);
             Ok(())
         };
-        for (day, (run, hour)) in hours {
-            match query.holders.at(&params.country, hour).map(|run| run.holder) {
+        for (day, (run, hour)) in &hours {
+            match query.holders.at(&params.country, *hour).map(|run| run.holder) {
                 Some(Holder::Found { slot, .. }) => {
-                    if held != Some((run, slot)) {
+                    if held != Some((*run, slot)) {
                         flush(held, &mut segment, &mut pieces, &mut known, &mut refused, &mut notes)?;
-                        held = Some((run, slot));
+                        held = Some((*run, slot));
                     }
-                    segment.push((day, hour));
+                    segment.push((*day, *hour));
                 }
                 _ => {
-                    refused.insert(day, "The viewer's tag is held by no country on this day".to_owned());
+                    refused.insert(*day, "The viewer's tag is held by no country on this day".to_owned());
                 }
             }
         }
@@ -347,21 +512,153 @@ impl Product for NavalSupremacy {
                 }
             }
         }
-        let mut runs = runs(pieces);
-        let mut names = Refusals::default();
-        let choices = sea_regions::choices(&places, &sea, runs.keys().copied(), &mut names);
-        let regions = choices
-            .into_iter()
-            .map(|choice| {
-                let id: u32 = choice.id.parse().unwrap_or_default();
-                SupremacyRegion { runs: runs.remove(&id).unwrap_or_default(), id: choice.id, name: choice.name }
-            })
-            .collect();
         let mut warnings = sea.notes.clone();
         warnings.extend(places.warnings());
+        let mut looks = LookResolver::new(source, &query.timeline, load, &mut warnings)?;
+        let viewer_tag = query.holders.name(&params.country, last);
+        let viewer_look = looks.at(&viewer_tag, last)?;
+        let viewer_label = viewer_look.name.clone().unwrap_or_else(|| viewer_tag.clone());
+        let ships_at_end: Result<BTreeMap<u32, (i32, i32)>, String> = if outside {
+            Err("Outside the recording".into())
+        } else if let Some(Holder::Found { slot, .. }) = query.holders.at(&params.country, last).map(|r| r.holder) {
+            let reads = [
+                at_hour::Read::all(TableId::Ships),
+                at_hour::Read::all(TableId::NavalMissionLedgers),
+                at_hour::Read::all(TableId::Countries),
+                at_hour::Read::all(TableId::CountryLinks),
+                at_hour::Read::all(TableId::AirCountryRelations),
+            ];
+            match at_hour::frame(&query, last, &reads, "Naval mission ships") {
+                Ok(frame) => mission_registered_ships(&frame, slot),
+                Err(error) => Err(error.to_string()),
+            }
+        } else {
+            Err("The viewer's tag is held by no country at this hour".into())
+        };
+        let mut runs = runs(pieces);
+        let mut names = Refusals::default();
+        let all_choices = sea_regions::choices(&places, &sea, runs.keys().copied().chain(params.regions.iter().flatten().copied()).chain(params.pinned_regions.iter().flatten().copied()), &mut names);
+        let name_map: HashMap<u32, String> = all_choices.iter().filter_map(|c| Some((c.id.parse::<u32>().ok()?, c.name.clone()))).collect();
+        let last_day_index = count.checked_sub(1);
+        let last_day_hour = last_day_index.and_then(|idx| hours.get(&idx).map(|&(_, h)| h));
+        let last_day_unknown = last_day_index.and_then(|idx| unknown.iter().find(|u| u.first_day <= idx && idx <= u.last_day).map(|u| u.reason.clone()));
+        let make_region = |id: u32, pinned: bool, runs_vec: Vec<SupremacyRun>| -> SupremacyRegion {
+            let name = name_map.get(&id).cloned().unwrap_or_else(|| format!("Region {id} (name unavailable)"));
+            let (own_ships, enemy_ships, ships_missing) = match &ships_at_end {
+                Ok(map) => {
+                    let (o, e) = map.get(&id).copied().unwrap_or((0, 0));
+                    (Some(o), Some(e), None)
+                }
+                Err(why) => (None, None, Some(why.clone())),
+            };
+            let readout = if let Some(reason) = &last_day_unknown {
+                Some(SupremacyReadout::NotRecorded { reason: reason.clone() })
+            } else if let (Some(idx), Some(as_of_hour)) = (last_day_index, last_day_hour) {
+                match runs_vec.iter().find(|r| r.first_day <= idx && idx <= r.last_day) {
+                    Some(run) => match run.control {
+                        Some(control) => Some(SupremacyReadout::Control {
+                            control,
+                            share: run.share.clone(),
+                            friendly: run.friendly.clone(),
+                            enemy: run.enemy.clone(),
+                            own: run.own.clone(),
+                            own_mission_ships: own_ships,
+                            enemy_mission_ships: enemy_ships,
+                            ships_missing: ships_missing.clone(),
+                            as_of_hour,
+                        }),
+                        None => Some(SupremacyReadout::NotRecorded { reason: "Naval region control was not recorded".into() }),
+                    },
+                    None => Some(SupremacyReadout::NotRecorded { reason: "Naval region control was not recorded".into() }),
+                }
+            } else {
+                None
+            };
+            SupremacyRegion {
+                id: id.to_string(),
+                name,
+                pinned,
+                own_mission_ships: own_ships,
+                enemy_mission_ships: enemy_ships,
+                ships_missing,
+                readout,
+                runs: runs_vec,
+            }
+        };
+        let selected_regions: Vec<SupremacyRegion> = if let Some(explicit) = &params.regions {
+            explicit.iter().map(|&id| make_region(id, true, runs.remove(&id).unwrap_or_default())).collect()
+        } else if params.top.is_some() || params.pinned_regions.is_some() || params.hidden_regions.is_some() {
+            let mut seen = HashSet::new();
+            let pinned_list: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
+            let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
+            let mut scored: Vec<(u32, i128)> = runs
+                .iter()
+                .filter(|(id, _)| !seen.contains(id) && !hidden.contains(id))
+                .map(|(&id, region_runs)| {
+                    let score: i128 = region_runs
+                        .iter()
+                        .map(|run| {
+                            let days = i128::from(run.last_day - run.first_day + 1);
+                            let f = run.friendly.as_deref().and_then(|s| s.parse::<i128>().ok()).unwrap_or(0).max(0);
+                            let e = run.enemy.as_deref().and_then(|s| s.parse::<i128>().ok()).unwrap_or(0).max(0);
+                            (f + e) * days
+                        })
+                        .sum();
+                    (id, score)
+                })
+                .filter(|&(_, score)| score > 0)
+                .collect();
+            scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            if let Some(limit) = params.top {
+                scored.truncate(limit);
+            }
+            let mut out = Vec::with_capacity(pinned_list.len() + scored.len());
+            for id in pinned_list {
+                out.push(make_region(id, true, runs.remove(&id).unwrap_or_default()));
+            }
+            for (id, _) in scored {
+                out.push(make_region(id, false, runs.remove(&id).unwrap_or_default()));
+            }
+            out
+        } else {
+            all_choices
+                .into_iter()
+                .map(|choice| {
+                    let id: u32 = choice.id.parse().unwrap_or_default();
+                    make_region(id, false, runs.remove(&id).unwrap_or_default())
+                })
+                .collect()
+        };
+        let legend = supremacy_legend(&selected_regions, &viewer_label);
+        let gaps: Vec<HourSpan> = query
+            .timeline
+            .unheld
+            .iter()
+            .filter_map(|gap| {
+                let a = gap.first.max(first);
+                let b = gap.last.min(last);
+                (a <= b).then_some(HourSpan { first_hour: a, last_hour: b })
+            })
+            .collect();
         warnings.extend(names.lines("sea region names"));
         warnings.extend(notes.lines("naval supremacy fields"));
-        let reply = NavalSupremacyReply { first_hour: first, last_hour: last, first_day_hour: first_day * DAY, day_hours: DAY, days: count, unknown, regions, scale: SCALE, warnings };
+        let reply = NavalSupremacyReply {
+            first_hour: first,
+            last_hour: last,
+            first_day_hour: first_day * DAY,
+            day_hours: DAY,
+            days: count,
+            unknown,
+            gaps,
+            viewer_name: viewer_look.name,
+            viewer_name_missing: viewer_look.name_missing,
+            viewer_color: viewer_look.color,
+            viewer_color_missing: viewer_look.color_missing,
+            legend,
+            regions: selected_regions,
+            scale: SCALE,
+            warnings,
+        };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }

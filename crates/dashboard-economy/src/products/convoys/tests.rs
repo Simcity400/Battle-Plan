@@ -62,3 +62,62 @@ fn hours_outside_the_held_ones_are_unheld() {
     assert_eq!(outside(&[], 5, 6), vec![span(5, 6)]);
     assert!(outside(&[(0, 10)], 0, 10).is_empty());
 }
+
+#[test]
+fn convoy_health_distinguishes_no_traffic_unknown_traffic_and_full_efficiency() {
+    use replay_data::rows::{ConvoyClientRow, CountryLinkRow, ResourceOriginRow, TableRows};
+    use replay_frame::frame::{Metrics, TableView, not_selected};
+
+    let make_frame = |clients: Vec<ConvoyClientRow>, origins: Vec<ResourceOriginRow>, routes: Option<Vec<TradeRouteRow>>| {
+        let mut frame = DecodedFrame { branch: 1, hour: 100, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
+        *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow { id: 10, canonical_slot: 1 }]));
+        *frame.tables[TableId::ConvoyClients.index()] = TableView::Complete(TableRows::ConvoyClients(clients));
+        *frame.tables[TableId::ResourceOrigins.index()] = TableView::Complete(TableRows::ResourceOrigins(origins));
+        if let Some(routes) = routes {
+            *frame.tables[TableId::TradeRoutes.index()] = TableView::Complete(TableRows::TradeRoutes(routes));
+        }
+        frame
+    };
+
+    let active_client = ConvoyClientRow { category: IMPORT, owner: 10, route_class: 1, route_country: 10, route_other: 2, convoys_assigned: 5, ..Default::default() };
+    let naval = TradeRouteRow { country: 10, class: 1, other: 2, kind: NAVAL_ROUTE, from: 100, to: 200, path: vec![7, 8], ..Default::default() };
+    let complete = make_frame(vec![active_client.clone()], vec![], Some(vec![naval]));
+    assert_eq!(traffic_in_frame(&complete, 1), TrafficProof::Proven(BTreeSet::from([7, 8])));
+
+    let incomplete_routes = make_frame(vec![active_client.clone()], vec![], None);
+    assert_eq!(traffic_in_frame(&incomplete_routes, 1), TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned()));
+
+    let unrecorded_path = make_frame(
+        vec![active_client],
+        vec![],
+        Some(vec![TradeRouteRow { country: 10, class: 1, other: 2, kind: NAVAL_ROUTE, from: 0, to: 0, path: vec![], ..Default::default() }]),
+    );
+    assert_eq!(traffic_in_frame(&unrecorded_path, 1), TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned()));
+
+    let known = [HourSpan { first_hour: 0, last_hour: 99 }];
+    let traffic = vec![
+        (0, 49, TrafficProof::Proven(BTreeSet::from([7]))),
+        (50, 99, TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned())),
+    ];
+    let eff_bad = [(20, 29, 62_000), (60, 69, 40_000)];
+    let cells_r7 = build_region_cells(7, &eff_bad, &traffic, &known, &[], 0, 99);
+    assert_eq!(
+        cells_r7,
+        vec![
+            ConvoyCellRun { first_hour: 0, last_hour: 19, state: ConvoyCellState::Efficiency { value: 100_000 } },
+            ConvoyCellRun { first_hour: 20, last_hour: 29, state: ConvoyCellState::Efficiency { value: 62_000 } },
+            ConvoyCellRun { first_hour: 30, last_hour: 49, state: ConvoyCellState::Efficiency { value: 100_000 } },
+            ConvoyCellRun { first_hour: 50, last_hour: 59, state: ConvoyCellState::NotRecorded { reason: TRAFFIC_NOT_RECORDED.to_owned() } },
+            ConvoyCellRun { first_hour: 60, last_hour: 69, state: ConvoyCellState::Efficiency { value: 40_000 } },
+            ConvoyCellRun { first_hour: 70, last_hour: 99, state: ConvoyCellState::NotRecorded { reason: TRAFFIC_NOT_RECORDED.to_owned() } },
+        ]
+    );
+    let cells_r9 = build_region_cells(9, &[], &traffic, &known, &[], 0, 99);
+    assert_eq!(
+        cells_r9,
+        vec![
+            ConvoyCellRun { first_hour: 0, last_hour: 49, state: ConvoyCellState::NoTraffic },
+            ConvoyCellRun { first_hour: 50, last_hour: 99, state: ConvoyCellState::NotRecorded { reason: TRAFFIC_NOT_RECORDED.to_owned() } },
+        ]
+    );
+}

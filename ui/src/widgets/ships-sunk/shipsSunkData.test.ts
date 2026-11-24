@@ -11,7 +11,9 @@ import { manifestClassChoices, shipAction, shipClassChoices, shipClassName, ship
 function row(overrides: Partial<ShipsSunkRow> = {}): ShipsSunkRow {
   return { sinkHour: 102, knownAt: 110, name: 'Recorded vessel', classIndex: 0, recordedNameIndex: 0,
     victim: 'victim tag', attacker: 'mod attacker', victimAsOf: null, attackerAsOf: null, placeIndex: 0,
-    cause: 'hostile', attributionName: null, assistedKill: false, ...overrides };
+    cause: 'hostile', attributionName: null, assistedKill: false,
+    sinkingCause: { kind: 'notRecorded', reason: 'sinking cause was not recorded' },
+    battle: { kind: 'notRecorded', reason: 'sinking battle was not recorded' }, ...overrides };
 }
 function fixture(): ShipsSunkReply {
   return { branchId: 'branch', window: 0, available: true, firstHour: 100, lastHour: 120, firstRead: 100,

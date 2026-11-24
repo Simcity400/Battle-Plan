@@ -1,13 +1,109 @@
-import { fitTooltip, hideTooltip, showTooltip, tooltipText, type TooltipContent } from '../../charts/tooltip.ts';
+import { fitTooltip, hideTooltip, showTooltip, tooltipText, type TooltipContent, type TooltipRow } from '../../charts/tooltip.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
+import { formatBoundDate, formatDateHover, type DateBoundKind } from '../valueFormat.ts';
 
 export const HOVER_OPEN_MS = 150;
 export const HOVER_CLOSE_MS = 100;
 
-export interface FamilyTooltipEntry {
+export interface TooltipDateBound {
+  readonly kind: DateBoundKind;
   readonly hour: number;
-  readonly rowKey: string;
-  readonly content: TooltipContent;
+  readonly reason: string;
+}
+
+export interface TooltipListItem {
+  readonly label: string;
+  readonly value?: string;
+  readonly swatch?: string;
+  readonly icon?: string;
+  readonly countryFlag?: TooltipRow['countryFlag'];
+  readonly tone?: 'positive' | 'negative' | 'neutral' | 'muted';
+  readonly indent?: boolean;
+  readonly strong?: boolean;
+  readonly divider?: boolean;
+  readonly missingReason?: string;
+}
+
+export interface FamilyTooltipPayload {
+  readonly title: string;
+  readonly fullText?: string;
+  readonly hour?: number;
+  readonly subtitle?: string;
+  readonly dateBound?: TooltipDateBound;
+  readonly missingReason?: string;
+  readonly exactValue?: string;
+  readonly items?: readonly TooltipListItem[];
+  readonly note?: string;
+  readonly description?: string;
+  readonly detail?: string;
+  readonly scrollable?: boolean;
+  readonly scrollId?: string;
+}
+
+export type FamilyActionKind = 'detail' | 'battle' | 'event' | 'game-window' | 'focus' | 'pin' | 'custom';
+
+export interface FamilyActionPayload {
+  readonly actionId: string;
+  readonly kind: FamilyActionKind;
+  readonly subject: string;
+  readonly hour: number;
+  readonly rowKey?: string;
+  readonly columnKey?: string;
+  readonly title?: string;
+  readonly data?: Readonly<Record<string, string | number | boolean | null>>;
+}
+
+export function buildTooltipContent(payload: FamilyTooltipPayload): TooltipContent {
+  const title = payload.fullText && payload.fullText.trim() ? payload.fullText : payload.title;
+  const bound = payload.dateBound
+    ? formatBoundDate(payload.dateBound.hour, payload.dateBound.kind, payload.dateBound.reason)
+    : null;
+  const subtitle = payload.subtitle
+    ?? bound?.hover
+    ?? (payload.hour !== undefined ? formatDateHover(payload.hour) : undefined);
+  const rows: TooltipRow[] = [];
+  if (payload.exactValue !== undefined) {
+    rows.push({ label: 'Exact value', value: payload.exactValue, strong: true });
+  }
+  if (payload.missingReason) {
+    rows.push({ label: 'Not recorded', valueState: { kind: 'missing', reason: payload.missingReason }, detail: payload.missingReason });
+  }
+  if (payload.items) {
+    for (const item of payload.items) {
+      rows.push({
+        label: item.label,
+        ...(item.missingReason
+          ? { valueState: { kind: 'missing', reason: item.missingReason }, detail: item.missingReason }
+          : item.value !== undefined ? { value: item.value } : {}),
+        ...(item.swatch ? { swatch: item.swatch } : {}),
+        ...(item.icon ? { icon: item.icon } : {}),
+        ...(item.countryFlag ? { countryFlag: item.countryFlag } : {}),
+        ...(item.tone ? { tone: item.tone } : {}),
+        ...(item.indent ? { indent: true } : {}),
+        ...(item.strong ? { strong: true } : {}),
+        ...(item.divider ? { divider: true } : {}),
+      });
+    }
+  }
+  const notes = [bound?.reason, payload.note].filter((text): text is string => Boolean(text && text.trim()));
+  return {
+    title,
+    ...(subtitle ? { subtitle } : {}),
+    rows,
+    ...(notes.length ? { note: notes.join(' ') } : {}),
+    ...(payload.description ? { description: payload.description } : {}),
+    ...(payload.detail ? { detail: payload.detail } : {}),
+    ...(payload.scrollable ? { scrollable: true } : {}),
+    ...(payload.scrollId ? { scrollId: payload.scrollId } : {}),
+  };
+}
+
+export type FamilyTooltipEntry =
+  | { readonly hour: number; readonly rowKey: string; readonly content: TooltipContent; readonly payload?: never }
+  | { readonly hour: number; readonly rowKey: string; readonly payload: FamilyTooltipPayload; readonly content?: never };
+
+export function resolveTooltipEntryContent(entry: FamilyTooltipEntry): TooltipContent {
+  return entry.content ?? buildTooltipContent(entry.payload);
 }
 
 export interface FamilyTooltipField {
@@ -79,7 +175,7 @@ export class FamilyTooltipController {
   }
 
   describeFocused(tip: FamilyTooltipEntry, hour: number, viewportHeight: number): string {
-    return tooltipText(this.fitCached('focus', tip.content, hour, viewportHeight));
+    return tooltipText(this.fitCached('focus', resolveTooltipEntryContent(tip), hour, viewportHeight));
   }
 
   show(
@@ -99,7 +195,7 @@ export class FamilyTooltipController {
     }
     this.hoverShown = true;
     this.tipVisible = true;
-    const fitted = this.fitCached(channel, tip.content, tip.hour, viewportHeight);
+    const fitted = this.fitCached(channel, resolveTooltipEntryContent(tip), tip.hour, viewportHeight);
     showTooltip(this.owner, fitted, pos.x, pos.y, tip.rowKey);
   }
 
@@ -172,7 +268,7 @@ export class FamilyTooltipController {
   ): boolean {
     if (!tip) return false;
     const dateText = formatDateTime(Math.floor(hour));
-    const pinnedContent: TooltipContent = { ...tip.content, subtitle: `Pinned at ${dateText}` };
+    const pinnedContent: TooltipContent = { ...resolveTooltipEntryContent(tip), subtitle: `Pinned at ${dateText}` };
     this.pinned = { key: tip.rowKey, content: pinnedContent, x: pos.x, y: pos.y };
     this.tipVisible = true;
     showTooltip(this.owner, fitTooltip([pinnedContent], viewportHeight), pos.x, pos.y, `${tip.rowKey}:pinned`);

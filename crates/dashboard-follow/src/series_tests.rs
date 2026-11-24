@@ -1142,5 +1142,6 @@ fn follow_and_live_cells_apply_witness_rule_and_invalidate_across_swapped_trunca
     let (t2_stats, t2_msg) = drive_table(T2, false);
     assert_eq!(t2_stats.touched, 0, "swapping witnesses across T1 -> T2 must not touch Table-only subscriptions");
     assert_eq!(t2_stats.evaluated, 0, "swapping witnesses across T1 -> T2 must perform zero evaluations for Table-only subscriptions");
-    assert!(t2_msg.is_none());
+    assert_eq!(t2_stats.sent, 0, "swapping witnesses across T1 -> T2 must send zero answers for Table-only subscriptions");
+    assert_eq!(t2_msg.as_ref().map(|m| m.answers), Some(0), "clock-advance message carries zero answers");
 }

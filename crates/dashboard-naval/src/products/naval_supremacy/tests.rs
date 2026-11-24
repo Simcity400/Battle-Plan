@@ -49,6 +49,8 @@ fn a_viewers_row_comes_first_then_the_every_viewer_row_then_zeros_and_a_refusal_
     };
     let sea = SeaContent {
         sea: Ok(BTreeSet::from([1, 2, 3, 4])),
+        land: Ok(BTreeSet::new()),
+        all: BTreeSet::from([1, 2, 3, 4]),
         minima: (1..=4).map(|region| (region, Ok(1_000))).collect(),
         ratio: Ok(200_000),
         notes: Vec::new(),
@@ -65,4 +67,56 @@ fn a_viewers_row_comes_first_then_the_every_viewer_row_then_zeros_and_a_refusal_
     assert_eq!(at(2, 1).enemy, Some(0), "the every-viewer row gone: zeros");
     assert_eq!(pieces[&1], vec![(0, 2, at(1, 0))], "a region whose rows do not change is one run");
     assert_eq!(pieces[&2].len(), 2, "the every-viewer row's end starts a run");
+}
+
+#[test]
+fn mission_registered_ships_match_panel_count_and_refuse_missing_tables() {
+    use replay_data::rows::{CountryLinkRow, CountryRow, NavalMissionLedgerRow, ShipRow, TableRows};
+    use replay_frame::frame::{Metrics, TableView, not_selected};
+
+    let mut frame = DecodedFrame { branch: 1, hour: 500, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
+    *frame.tables[TableId::Ships.index()] = TableView::Complete(TableRows::Ships(vec![
+        ShipRow { id: 1, task_force: 100, ..Default::default() },
+        ShipRow { id: 2, task_force: 100, ..Default::default() },
+        ShipRow { id: 3, task_force: 200, ..Default::default() },
+        ShipRow { id: 4, task_force: 300, ..Default::default() },
+    ]));
+    *frame.tables[TableId::NavalMissionLedgers.index()] = TableView::Complete(TableRows::NavalMissionLedgers(vec![
+        NavalMissionLedgerRow { owner: 40, region: 7, task_forces: vec![100, 200, 100, 0], ..Default::default() },
+        NavalMissionLedgerRow { owner: 50, region: 7, task_forces: vec![300], ..Default::default() },
+    ]));
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+        CountryRow { id: 40, canonical_slot: 4, ..Default::default() },
+        CountryRow { id: 50, canonical_slot: 5, ..Default::default() },
+    ]));
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+        CountryLinkRow { id: 40, canonical_slot: 4 },
+        CountryLinkRow { id: 50, canonical_slot: 5 },
+    ]));
+    *frame.tables[TableId::AirCountryRelations.index()] = TableView::Complete(TableRows::AirCountryRelations(vec![
+        AirCountryRelationRow { country: 4, kind: AirCountryRelationRow::ENEMY, ordinal: 0, other: 50 },
+    ]));
+    let counts = mission_registered_ships(&frame, 4).unwrap();
+    assert_eq!(counts.get(&7), Some(&(5, 1)), "duplicate task-force registrations count each time as in the panel");
+
+    *frame.tables[TableId::NavalMissionLedgers.index()] = TableView::Unavailable { reason: "not recorded".into() };
+    assert!(mission_registered_ships(&frame, 4).is_err(), "missing ledger table refuses instead of returning zero");
+}
+
+#[test]
+fn naval_supremacy_legend_includes_only_states_present_in_displayed_regions() {
+    let region = SupremacyRegion {
+        id: "7".into(),
+        name: "North Sea".into(),
+        pinned: false,
+        own_mission_ships: Some(5),
+        enemy_mission_ships: Some(1),
+        ships_missing: None,
+        readout: None,
+        runs: vec![SupremacyRun { first_day: 0, last_day: 2, control: Some(1), ..Default::default() }],
+    };
+    let legend = supremacy_legend(&[region], "German Reich");
+    assert_eq!(legend.len(), 1);
+    assert_eq!(legend[0].id, "friendly");
+    assert_eq!(legend[0].label, "German Reich and friends");
 }

@@ -19,13 +19,15 @@ pub const STEADY: usize = BUFFERS;
 
 pub const AHEAD: usize = 1;
 
-pub const MAX_LIVE_FRAMES: usize = 5;
+pub const MAX_LIVE_FRAMES: usize = 8;
 
-pub const MAX_LIVE_BYTES: u64 = 384 * 1024 * 1024;
+pub const MAX_LIVE_BYTES: u64 = 1536 * 1024 * 1024;
 
 const SURPLUS_CAP: usize = STEADY + 2;
 
 const SURPLUS_STREAK: u32 = 48;
+
+const STEADY_IDLE_STREAK: u32 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HourFrame {
@@ -81,6 +83,7 @@ pub struct Slot {
     state: AtomicU8,
     returned: AtomicU64,
     ahead: AtomicBool,
+    parked: AtomicBool,
     links: [AtomicUsize; 2],
     job: UnsafeCell<DecodeJob>,
 }
@@ -115,6 +118,7 @@ impl Slot {
             state: AtomicU8::new(VACANT),
             returned: AtomicU64::new(0),
             ahead: AtomicBool::new(false),
+            parked: AtomicBool::new(false),
             links: [AtomicUsize::new(NONE), AtomicUsize::new(NONE)],
             job: UnsafeCell::new(DecodeJob::default()),
         }
@@ -156,6 +160,7 @@ pub struct FramePool {
     ahead_taken: AtomicU64,
     freed: AtomicU64,
     surplus_streak: AtomicU32,
+    steady_idle_streak: AtomicU32,
     spool_stalled: AtomicBool,
     dropped_stalled: AtomicU64,
     dropped_limit: AtomicU64,
@@ -214,6 +219,7 @@ impl FramePool {
             ahead_taken: AtomicU64::new(0),
             freed: AtomicU64::new(0),
             surplus_streak: AtomicU32::new(0),
+            steady_idle_streak: AtomicU32::new(0),
             spool_stalled: AtomicBool::new(false),
             dropped_stalled: AtomicU64::new(0),
             dropped_limit: AtomicU64::new(0),
@@ -319,11 +325,18 @@ impl FramePool {
             .ok()?;
         if previous <= AHEAD {
             self.surplus_streak.store(0, Ordering::Relaxed);
+            self.steady_idle_streak.store(0, Ordering::Relaxed);
         }
         loop {
             let newest = (0..self.made())
                 .filter(|&index| self.slot(index).state.load(Ordering::Acquire) == FREE)
-                .max_by_key(|&index| self.slot(index).returned.load(Ordering::Relaxed));
+                .max_by_key(|&index| {
+                    let slot = self.slot(index);
+                    (
+                        !slot.parked.load(Ordering::Relaxed),
+                        slot.returned.load(Ordering::Relaxed),
+                    )
+                });
             if let Some(index) = newest
                 && self.claim(index)
             {
@@ -366,7 +379,47 @@ impl FramePool {
         }
         let stamp = self.returns.fetch_add(1, Ordering::Relaxed) + 1;
         self.slot(index).returned.store(stamp, Ordering::Relaxed);
-        self.restore(index)
+        self.restore(index)?;
+        if self.live() == STEADY && self.len() == STEADY {
+            let streak = self.steady_idle_streak.load(Ordering::Relaxed);
+            if streak < STEADY_IDLE_STREAK {
+                self.steady_idle_streak
+                    .store(streak + 1, Ordering::Relaxed);
+            }
+        } else {
+            self.steady_idle_streak.store(0, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn steady_idle(&self) -> bool {
+        self.live() == STEADY
+            && self.len() == STEADY
+            && self.steady_idle_streak.load(Ordering::Relaxed) >= STEADY_IDLE_STREAK
+    }
+
+    pub(crate) fn set_parked(&self, index: usize, parked: bool) {
+        self.slot(index).parked.store(parked, Ordering::Relaxed);
+    }
+
+    pub(crate) fn take_parked_free(&self) -> Option<usize> {
+        let parked = (0..self.made())
+            .filter(|&index| {
+                let slot = self.slot(index);
+                slot.state.load(Ordering::Acquire) == FREE && slot.parked.load(Ordering::Relaxed)
+            })
+            .min_by_key(|&index| self.slot(index).returned.load(Ordering::Relaxed))?;
+        self.take(parked, 0).then_some(parked)
+    }
+
+    pub(crate) fn take_oldest_idle(&self, keep: usize) -> Option<usize> {
+        let oldest = (0..self.made())
+            .filter(|&index| {
+                let slot = self.slot(index);
+                slot.state.load(Ordering::Acquire) == FREE && !slot.parked.load(Ordering::Relaxed)
+            })
+            .min_by_key(|&index| self.slot(index).returned.load(Ordering::Relaxed))?;
+        self.take(oldest, keep).then_some(oldest)
     }
 
     pub(crate) fn restore(&self, index: usize) -> Result<(), usize> {
@@ -461,6 +514,8 @@ impl FramePool {
             self.live_bytes.fetch_add(delta, Ordering::Release);
         }
         slot.generation.fetch_add(1, Ordering::Relaxed);
+        slot.parked
+            .store(frame.extended.is_parked(), Ordering::Relaxed);
         slot.frame.store(Box::into_raw(frame), Ordering::Release);
         self.live.fetch_add(1, Ordering::AcqRel);
     }
@@ -545,6 +600,7 @@ impl FramePool {
         let previous = slot.bytes.swap(0, Ordering::Relaxed);
         self.live_bytes.fetch_sub(previous, Ordering::Release);
         slot.ahead.store(false, Ordering::Relaxed);
+        slot.parked.store(false, Ordering::Relaxed);
         self.live.fetch_sub(1, Ordering::AcqRel);
         self.claims.fetch_sub(1, Ordering::AcqRel);
         self.freed.fetch_add(1, Ordering::Relaxed);

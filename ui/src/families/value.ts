@@ -78,31 +78,39 @@ export function assertValue(value: unknown, context = 'family value'): asserts v
     throw new InvalidFamilyValueError(`${context}: expected a 5-state family Value, received ${value === null ? 'null' : typeof value}`);
   }
   const candidate = value as Record<string, unknown>;
-  switch (candidate.kind) {
-    case 'known':
-      validScalar(candidate.value, `${context} (known)`);
-      if (candidate.value === 0 || candidate.value === 0n) {
-        throw new InvalidFamilyValueError(`${context}: numeric zero must use the 'zero' state, not 'known'`);
-      }
+  const kind = candidate.kind;
+  if (kind === 'known') {
+    const v = candidate.value;
+    if (typeof v === 'number') {
+      if (v === 0) throw new InvalidFamilyValueError(`${context}: numeric zero must use the 'zero' state, not 'known'`);
+      if (Number.isFinite(v)) return;
+    } else if (typeof v === 'bigint') {
+      if (v === 0n) throw new InvalidFamilyValueError(`${context}: numeric zero must use the 'zero' state, not 'known'`);
       return;
-    case 'zero':
-      if (candidate.value !== 0 && candidate.value !== 0n) {
-        throw new InvalidFamilyValueError(`${context} (zero): expected 0 or 0n`);
-      }
-      return;
-    case 'notRecorded':
-      validReason(candidate.reason, `${context} (notRecorded)`);
-      return;
-    case 'notApplicable':
-      validReason(candidate.reason, `${context} (notApplicable)`);
-      return;
-    case 'partial':
-      validScalar(candidate.value, `${context} (partial)`);
-      validReason(candidate.reason, `${context} (partial)`);
-      return;
-    default:
-      throw new InvalidFamilyValueError(`${context}: unknown family value state ${String(candidate.kind)}`);
+    }
+    validScalar(v, `${context} (known)`);
+    return;
   }
+  if (kind === 'zero') {
+    if (candidate.value !== 0 && candidate.value !== 0n) {
+      throw new InvalidFamilyValueError(`${context} (zero): expected 0 or 0n`);
+    }
+    return;
+  }
+  if (kind === 'notRecorded') {
+    validReason(candidate.reason, `${context} (notRecorded)`);
+    return;
+  }
+  if (kind === 'notApplicable') {
+    validReason(candidate.reason, `${context} (notApplicable)`);
+    return;
+  }
+  if (kind === 'partial') {
+    validScalar(candidate.value, `${context} (partial)`);
+    validReason(candidate.reason, `${context} (partial)`);
+    return;
+  }
+  throw new InvalidFamilyValueError(`${context}: unknown family value state ${String(kind)}`);
 }
 
 export function hasMeasuredValue(value: Value): value is Extract<Value, { kind: 'known' | 'zero' | 'partial' }> {
@@ -224,17 +232,18 @@ export function valueFromWireCell(answer: FollowedAnswer | undefined, row: numbe
   return notRecorded(reason ?? options?.unrecordedReason ?? NOT_RECORDED);
 }
 
-const rowIndexes = new WeakMap<FollowedRows, Map<string, number>>();
+const rowIndexes = new WeakMap<object, Map<string, number>>();
 
 export function answerRowIndex(answer: FollowedRows): ReadonlyMap<string, number> {
-  let index = rowIndexes.get(answer);
+  const cacheKey = answer.decoded;
+  let index = rowIndexes.get(cacheKey);
   if (!index) {
     index = new Map<string, number>();
     for (let row = 0; row < answer.rows; row++) {
       const name = rowName(answer, row);
       if (name !== null && !index.has(name)) index.set(name, row);
     }
-    rowIndexes.set(answer, index);
+    rowIndexes.set(cacheKey, index);
   }
   return index;
 }
@@ -254,17 +263,29 @@ export interface LiveCellOptions {
   readonly atLeast?: boolean;
 }
 
+const SAFE_INT_BOUND = 9_007_199_254_740_991;
+
 export function valueFromLive(live: LiveValues<number | bigint | string> | null | undefined, key: string, options?: LiveCellOptions): Value<NumericScalar> {
   if (!live) return notRecorded(options?.overrideMissing ?? NOT_READ);
-  const rawExact = live.raw?.(key);
-  const raw = rawExact !== undefined ? rawExact : live.get(key);
+  const got = live.get(key);
+  let raw: number | bigint | string | undefined = got;
+  if (typeof got === 'number') {
+    if (Math.abs(got) >= SAFE_INT_BOUND && live.raw) {
+      const exact = live.raw(key);
+      if (exact !== undefined) raw = exact;
+    }
+  } else if (got === undefined && live.raw) {
+    raw = live.raw(key);
+  }
   if (raw === undefined || typeof raw === 'string') {
     const reason = options?.overrideMissing ?? (typeof raw === 'string' && raw ? raw : live.missing(key)) ?? NOT_RECORDED;
     return options?.missingAs === 'notApplicable' ? notApplicable(reason || NOT_RECORDED) : notRecorded(reason || NOT_RECORDED);
   }
-  validScalar(raw, `valueFromLive(${key})`);
+  if (typeof raw === 'number' && !Number.isFinite(raw)) {
+    validScalar(raw, `valueFromLive(${key})`);
+  }
   if (options?.partialReason) return partialValue(raw, options.partialReason, { atLeast: options.atLeast });
-  return knownValue(raw);
+  return raw === 0 || raw === 0n ? { kind: 'zero', value: raw } : { kind: 'known', value: raw };
 }
 
 const textCollator = new Intl.Collator(undefined, { numeric: true });
@@ -275,14 +296,14 @@ export function compareValues(a: Value, b: Value, direction: 'ascending' | 'desc
   const av = a.value, bv = b.value;
   const sign = direction === 'ascending' ? 1 : -1;
   if (typeof av === 'string' || typeof bv === 'string') {
-    return sign * textCollator.compare(String(av), String(bv));
+    return av === bv ? 0 : sign * textCollator.compare(String(av), String(bv));
   }
   const order = av < bv ? -1 : av > bv ? 1 : 0;
   return sign * order;
 }
 
 export function compareTie(nameA: string, keyA: string, nameB: string, keyB: string): number {
-  return textCollator.compare(nameA, nameB) || compareTags(keyA, keyB);
+  return (nameA === nameB ? 0 : textCollator.compare(nameA, nameB)) || compareTags(keyA, keyB);
 }
 
 export function compareValueRows(

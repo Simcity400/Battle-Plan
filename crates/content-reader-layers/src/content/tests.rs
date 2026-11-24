@@ -2025,6 +2025,8 @@ fn a_cache_written_by_an_earlier_digest_scheme_is_not_served() {
             archive_stamp: None,
             descriptor_hash: None,
             overlay: None,
+            display_name: None,
+            art_unmounted: None,
         };
         layer.inventory().unwrap();
         layer.hash(cache, &mut HashStats::default()).unwrap()
@@ -3929,4 +3931,67 @@ fn a_password_request_is_stamped_by_its_records_name() {
         "gfx/interface/music$secret"
     ));
     fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn playback_and_visual_share_workshop_mod_discovery_with_empty_user_dir() {
+    let root = std::env::temp_dir().join(format!(
+        "shared-workshop-discovery-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let game_dir = root.join("steamapps/common/TestGame");
+    let workshop_item = root.join("steamapps/workshop/content/394360/2777392649");
+    let empty_user = root.join("empty_user");
+    let cache_dir = root.join("cache");
+    fs::create_dir_all(game_dir.join("gfx")).unwrap();
+    fs::create_dir_all(workshop_item.join("gfx/flags")).unwrap();
+    fs::create_dir_all(&empty_user).unwrap();
+    fs::create_dir_all(&cache_dir).unwrap();
+    fs::write(
+        workshop_item.join("descriptor.mod"),
+        "name=\"Synthetic Workshop Mod\"\nremote_file_id=\"2777392649\"\nreplace_path=\"gfx/replaced\"\n",
+    )
+    .unwrap();
+    fs::write(workshop_item.join("gfx/flags/SOV_communism.tga"), b"mod-flag").unwrap();
+
+    let options = ResolveOptions {
+        game_dir: game_dir.clone(),
+        user_dir: empty_user.clone(),
+        cache_dir: cache_dir.clone(),
+    };
+    let installed = visual::installed(&options, &AtomicBool::new(false)).unwrap();
+    assert!(
+        installed
+            .iter()
+            .any(|m| m.recorded_id == "2777392649" && m.name == "Synthetic Workshop Mod"),
+        "{installed:?}"
+    );
+
+    let descriptors = Descriptors::installed(Some(&game_dir), Some(&empty_user));
+    let (source, descriptor) = descriptors.find_mod("2777392649").unwrap();
+    let expected_folder = fs::canonicalize(&workshop_item).unwrap();
+    match source {
+        LayerSource::Folder(path) => assert_eq!(path, expected_folder),
+        other => panic!("expected folder source, got {other:?}"),
+    }
+    assert_eq!(
+        descriptor,
+        Some(expected_folder.join("descriptor.mod"))
+    );
+
+    fs::create_dir_all(empty_user.join("mod")).unwrap();
+    fs::write(
+        empty_user.join("mod/ugc_2777392649.mod"),
+        format!(
+            "name=\"Synthetic Workshop Mod\"\npath=\"{}\"\nremote_file_id=\"2777392649\"\n",
+            workshop_item.to_string_lossy().replace('\\', "/")
+        ),
+    )
+    .unwrap();
+    let deduped = Descriptors::installed(Some(&game_dir), Some(&empty_user));
+    assert!(deduped.find_mod("2777392649").is_ok());
+
+    let _ = fs::remove_dir_all(&root);
 }

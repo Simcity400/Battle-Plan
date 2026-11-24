@@ -8,7 +8,9 @@ use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadSelectedC
 const GROUP_PROCESSORS: usize = 64;
 
 const BACKGROUND_CORES_MIN_PHYSICAL: usize = 6;
+const BACKGROUND_CORES_WIDE_MIN_PHYSICAL: usize = 8;
 const BACKGROUND_CORES_COUNT: usize = 1;
+const BACKGROUND_CORES_WIDE_COUNT: usize = 2;
 
 struct Cores {
     sets: [(u8, u8, u32); GROUP_PROCESSORS],
@@ -91,7 +93,11 @@ impl Cores {
             let mut chosen = [false; GROUP_PROCESSORS];
             let mut picked = 0;
             if cores.physical_cores >= BACKGROUND_CORES_MIN_PHYSICAL {
-                let limit = BACKGROUND_CORES_COUNT;
+                let limit = if cores.physical_cores >= BACKGROUND_CORES_WIDE_MIN_PHYSICAL {
+                    BACKGROUND_CORES_WIDE_COUNT
+                } else {
+                    BACKGROUND_CORES_COUNT
+                };
                 for &candidate in unique.iter() {
                     if candidate != core {
                         chosen[candidate] = true;
@@ -285,6 +291,6 @@ fn a_thread_keeps_off_the_whole_physical_core_of_the_game_processor() {
     assert_eq!(eight.physical_cores, 8);
     assert_eq!(
         background_sets(Some(&eight), Some(0)),
-        Some(&[270, 271][..])
+        Some(&[268, 269, 270, 271][..])
     );
 }
