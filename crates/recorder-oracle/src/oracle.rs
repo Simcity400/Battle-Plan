@@ -321,6 +321,14 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         let saved = land::read(save_document.items(), land::Comparison::History)?;
         land::compare_events(&replay, &frame, &saved, report)
     });
+    report.attempt_table(TableId::LandCombatEdges, |report| {
+        let killed = save
+            .divisions
+            .iter()
+            .map(|(&division, saved)| (division, saved.presentation.career_counter.unwrap_or(0)))
+            .collect();
+        land::compare_edges(&replay, &frame, &killed, report)
+    });
     report.attempt_table(TableId::NavalResultSources, |report| {
         naval_result_sources::compare(&replay, &frame, report)
     });

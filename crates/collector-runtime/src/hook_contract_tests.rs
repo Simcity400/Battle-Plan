@@ -160,6 +160,8 @@ fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
             land_events::DISPATCH_RVA,
             land_events::DESTRUCTION_RVA,
             land_wipe::LIFECYCLE_RVA,
+            engine_land_inputs::land_edges::START_COMBAT_RVA,
+            engine_land_inputs::land_edges::ARMY_COMBAT_ENDED_RVA,
         ]
         .into_iter()
         .chain(land_events::DISPATCH_LEADER_CALLS)

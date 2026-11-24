@@ -31,6 +31,9 @@ fn branch(text: &str) -> io::Result<u64> {
 }
 
 const NOT_RECORDED: &str = "Not in this recording";
+const OPENED_EARLIER: &str = "The battle began before this part of the recording";
+const NO_OPENING: &str = "No opening was recorded; the game starts border wars outside the recorded combat start";
+const CASUALTIES_UNREAD: &str = "Casualties not read";
 const ROSTER_UNREAD: &str = "Combat census not read";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -250,6 +253,56 @@ pub struct LandBattleCourseRead {
     pub sides: LandLossSides,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct LandEdgeMember {
+    pub division: Option<String>,
+    pub side: u8,
+    pub manpower: Option<i32>,
+    pub casualties: Option<i32>,
+    pub missing: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct LandBattleOpening {
+    pub hour: i32,
+    pub members: Vec<LandEdgeMember>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct LandDivisionExit {
+    pub hour: i32,
+    pub division: Option<String>,
+    pub side: Option<u8>,
+    pub losses: Option<i32>,
+    pub manpower: Option<i32>,
+    pub missing: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct LandEdgeGap {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct LandBattleEdges {
+    pub opening: Option<LandBattleOpening>,
+    pub opening_missing: Option<String>,
+    pub exits: Vec<LandDivisionExit>,
+    pub unrecorded: Vec<LandEdgeGap>,
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -263,6 +316,7 @@ pub struct LandBattleCourse {
     pub runs: Vec<LandBattleRun>,
     pub losses: Vec<LandBattleCourseRead>,
     pub result: Option<LandBattleResultRead>,
+    pub edges: LandBattleEdges,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -1301,7 +1355,7 @@ impl Product for LandBattleCourses {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![LandBattleCourseParams::decl(), LandEquipmentDesign::decl(), LandLossSide::decl(), LandLossSides::decl(), LandBattleCourseRead::decl(), LandBattleCourse::decl(), LandBattleCourseReply::decl()]
+        vec![LandBattleCourseParams::decl(), LandEquipmentDesign::decl(), LandLossSide::decl(), LandLossSides::decl(), LandBattleCourseRead::decl(), LandEdgeMember::decl(), LandBattleOpening::decl(), LandDivisionExit::decl(), LandEdgeGap::decl(), LandBattleEdges::decl(), LandBattleCourse::decl(), LandBattleCourseReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -1348,13 +1402,101 @@ impl Product for LandBattleCourses {
             })
             .collect();
         let history = shaped.history;
+        let edges = battle_edges(&query, stretch.run, battle, stretch.first, last)?;
         let (designs, content_warnings) = design_names(&query, &super::divisions::Content::load(source, context), stretch.run, last, &designs)?;
         Ok(LandBattleCourseReply {
-            battle: LandBattleCourse { id: history.id, province_id: history.province_id, start: history.start, end: history.end, end_unknown_hour: history.end_unknown_hour, counter_base: history.counter_base, runs: history.runs, losses, result: history.result },
+            battle: LandBattleCourse { id: history.id, province_id: history.province_id, start: history.start, end: history.end, end_unknown_hour: history.end_unknown_hour, counter_base: history.counter_base, runs: history.runs, losses, result: history.result, edges },
             designs,
             content_warnings,
         })
     }
+}
+
+fn battle_edges(query: &Query<'_>, run: u32, battle: &Battle, first: i32, last: i32) -> io::Result<LandBattleEdges> {
+    use replay_data::rows::LandCombatEdgesRow as Edge;
+    let from = (battle.start - 1).max(first);
+    let recording = query.replay.recording();
+    let names = ["kind", "hour", "division", "side", "manpower", "casualties_before", "casualties_after", "withheld"];
+    let columns = try_map(names, |name| dashboard_declare::field(TableId::LandCombatEdges, name))?;
+    let low = u128::from(battle.combat) << 64;
+    let read = dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::LandCombatEdges, &sorted(&columns), Keys::Range(low, low | u128::from(u64::MAX)), from, last))?;
+    let mut rows: Vec<Edge> = read
+        .keys
+        .iter()
+        .filter_map(|(key, steps)| {
+            let cells = steps.iter().find_map(|step| step.cells.as_deref())?;
+            let n = |at: usize| number(&read, cells, columns[at]);
+            Some(Edge {
+                id: *key as u64,
+                kind: n(0)? as u8,
+                hour: n(1)? as i32,
+                combat: battle.combat,
+                division: n(2).map(|value| value as u64),
+                side: n(3)? as u8,
+                manpower: n(4).map(|value| value as i32),
+                casualties_before: n(5).map(|value| value as i32),
+                casualties_after: n(6).map(|value| value as i32),
+                withheld: n(7)? as u8,
+            })
+        })
+        .collect();
+    rows.sort_unstable_by_key(|row| (row.hour, row.id));
+    let complete = dashboard_query::cost::storage(|| lanes::complete_reads(recording, run, TableId::LandCombatEdges, from, last))?;
+    Ok(shape_edges(&rows, &complete, battle, from, last))
+}
+
+fn shape_edges(rows: &[replay_data::rows::LandCombatEdgesRow], complete: &[(i32, i32)], battle: &Battle, from: i32, last: i32) -> LandBattleEdges {
+    use replay_data::rows::LandCombatEdgesRow as Edge;
+    let mut unrecorded = Vec::new();
+    let mut next = from;
+    for &(first, through) in complete.iter().filter(|&&(first, through)| through >= from && first <= last) {
+        if first > next {
+            unrecorded.push(LandEdgeGap { first_hour: next, last_hour: first - 1, reason: NOT_RECORDED.into() });
+        }
+        next = next.max(through + 1);
+    }
+    if next <= last {
+        unrecorded.push(LandEdgeGap { first_hour: next, last_hour: last, reason: NOT_RECORDED.into() });
+    }
+    let division = |row: &Edge| row.division.map(|division| division.to_string());
+    let opened: Vec<&Edge> = rows.iter().filter(|row| row.kind == Edge::OPENED).collect();
+    let opening = opened.first().map(|row| LandBattleOpening {
+        hour: row.hour,
+        members: opened
+            .iter()
+            .filter(|row| row.side <= 1)
+            .map(|row| LandEdgeMember {
+                division: division(row),
+                side: row.side,
+                manpower: row.manpower,
+                casualties: row.casualties_before,
+                missing: row.withheld_reason().map(String::from),
+            })
+            .collect(),
+    });
+    let opening_missing = match (&opening, opened.first()) {
+        (Some(_), Some(row)) if row.side > 1 => row.withheld_reason().map(String::from),
+        (Some(_), _) => None,
+        _ if unrecorded.iter().any(|gap| gap.first_hour <= battle.start && gap.last_hour >= from) => Some(NOT_RECORDED.into()),
+        _ if !battle.exact && battle.result_only.is_none() => Some(OPENED_EARLIER.into()),
+        _ => Some(NO_OPENING.into()),
+    };
+    let exits = rows
+        .iter()
+        .filter(|row| row.kind == Edge::EXITED)
+        .map(|row| {
+            let losses = row.casualties_after.zip(row.casualties_before).map(|(after, before)| after - before);
+            LandDivisionExit {
+                hour: row.hour,
+                division: division(row),
+                side: (row.side <= 1).then_some(row.side),
+                losses,
+                manpower: row.manpower,
+                missing: row.withheld_reason().map(String::from).or_else(|| losses.is_none().then(|| CASUALTIES_UNREAD.into())),
+            }
+        })
+        .collect();
+    LandBattleEdges { opening, opening_missing, exits, unrecorded }
 }
 
 pub(super) fn design_names(query: &Query<'_>, content: &super::divisions::Content, run: u32, hour: i32, designs: &[u64]) -> io::Result<(Vec<LandEquipmentDesign>, Vec<String>)> {

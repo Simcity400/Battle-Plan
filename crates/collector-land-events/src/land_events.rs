@@ -3,7 +3,7 @@ mod foreign_unwind;
 use collector_hooks::hook::Hook;
 use collector_observers::opinion_changes::Padded;
 use collector_primitives::spill_stack::SpillStack;
-use engine_land_inputs::land_events as native;
+use engine_land_inputs::{land_edges as edges, land_events as native};
 use engine_native_memory::Memory;
 use std::{
     cell::Cell,
@@ -593,7 +593,31 @@ const BORDER_TERMINATE: usize = 3;
 const DISPATCH_ORIGINAL: usize = 4;
 const WIPE_ORIGINAL: usize = 5;
 const DESTRUCTION_ORIGINAL: usize = 6;
-static ORIGINAL: [AtomicUsize; 7] = [const { AtomicUsize::new(0) }; 7];
+const START_COMBAT: usize = 7;
+const ARMY_COMBAT_ENDED: usize = 8;
+static ORIGINAL: [AtomicUsize; 9] = [const { AtomicUsize::new(0) }; 9];
+const CORE_HOOKS: usize = 9;
+const EDGE_HOOKS: usize = 2;
+static EDGES_ARMED: AtomicBool = AtomicBool::new(false);
+static EDGES_WITHHELD: Mutex<Option<String>> = Mutex::new(None);
+const EDGES_UNARMED: &str = "land combat edge hooks were not installed";
+
+pub(crate) fn edges_armed() -> bool {
+    EDGES_ARMED.load(Ordering::Acquire)
+}
+
+pub fn edges_withheld() -> Option<String> {
+    if edges_armed() {
+        return None;
+    }
+    Some(
+        EDGES_WITHHELD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(|| EDGES_UNARMED.into()),
+    )
+}
 #[derive(Clone, Copy)]
 struct Border {
     combat: usize,
@@ -1195,6 +1219,85 @@ unsafe fn leader_observation(call: &Call<'_>, side: usize, caller: usize, target
     result
 }
 
+unsafe extern "system-unwind" fn start_combat(
+    manager: usize,
+    province: usize,
+    kind: usize,
+    attacker: usize,
+    defender: usize,
+    joining: usize,
+) -> usize {
+    let _call = Call::enter();
+    let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize, usize) -> usize =
+        unsafe { std::mem::transmute(ORIGINAL[START_COMBAT].load(Ordering::Acquire)) };
+    let combat =
+        _call.original(|| unsafe { original(manager, province, kind, attacker, defender, joining) });
+    if observing() {
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
+        let base = BASE.load(Ordering::Relaxed);
+        if let Some(opening) = edges::Opening::read(&memory, base, combat) {
+            append(opening.words, |put| {
+                opening.copy(&memory, base, put);
+                Ok(())
+            });
+        }
+    }
+    _call.finish();
+    combat
+}
+unsafe extern "system-unwind" fn army_combat_ended(army: usize, combat: usize) {
+    let _call = Call::enter();
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
+    let base = BASE.load(Ordering::Relaxed);
+    let exit = if observing() {
+        edges::Exit::before(&memory, base, army, combat)
+    } else {
+        None
+    };
+    let original: unsafe extern "system-unwind" fn(usize, usize) =
+        unsafe { std::mem::transmute(ORIGINAL[ARMY_COMBAT_ENDED].load(Ordering::Acquire)) };
+    _call.original(|| unsafe { original(army, combat) });
+    if let Some(exit) = exit.filter(|_| observing()) {
+        append(edges::EXIT_WORDS, |put| {
+            exit.copy(&memory, base, army, put);
+            Ok(())
+        });
+    }
+    _call.finish();
+}
+
+/// # Safety
+/// `base` identifies the authenticated executable in this process; the hooks are published,
+/// restored and quiesced with the rest of the land-event family.
+unsafe fn edge_hooks(base: usize) -> Result<Vec<Hook>, String> {
+    let sites = [
+        (
+            START_COMBAT,
+            edges::START_COMBAT_RVA,
+            start_combat as *const () as usize,
+        ),
+        (
+            ARMY_COMBAT_ENDED,
+            edges::ARMY_COMBAT_ENDED_RVA,
+            army_combat_ended as *const () as usize,
+        ),
+    ];
+    let mut located = [(0, [0; 16]); EDGE_HOOKS];
+    for ((_, rva, _), slot) in sites.into_iter().zip(&mut located) {
+        *slot = engine_sites::hook(base, rva)
+            .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+            .map_err(|cause| format!("land combat edge site withheld: {cause}"))?;
+    }
+    let mut hooks = Vec::with_capacity(EDGE_HOOKS);
+    for ((slot, _, callback), (at, original)) in sites.into_iter().zip(located) {
+        let hook = unsafe { Hook::new(at, callback, original) }
+            .map_err(|cause| format!("land combat edge hook withheld: {cause}"))?;
+        ORIGINAL[slot].store(hook.trampoline(), Ordering::Release);
+        hooks.push(hook);
+    }
+    Ok(hooks)
+}
+
 pub struct Hooks {
     hooks: Vec<Hook>,
     refused: bool,
@@ -1223,6 +1326,7 @@ impl Hooks {
     /// `base` identifies the authenticated executable in this process. The caller owns these sites
     /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     unsafe fn install(_memory: &impl Memory, base: usize) -> Result<Vec<Hook>, String> {
+        EDGES_ARMED.store(false, Ordering::Release);
         let sites = [
             (
                 FINALIZE,
@@ -1290,6 +1394,18 @@ impl Hooks {
                 )
             }?);
         }
+        match unsafe { edge_hooks(base) } {
+            Ok(edges) => {
+                hooks.extend(edges);
+                EDGES_ARMED.store(true, Ordering::Release);
+            }
+            Err(reason) => {
+                EDGES_ARMED.store(false, Ordering::Release);
+                *EDGES_WITHHELD
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
+            }
+        }
         Ok(hooks)
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
@@ -1320,7 +1436,8 @@ impl Hooks {
         }
         #[cfg(test)]
         tests::escape_after_publication();
-        LIVE.enabled.store(enabled && self.hooks.len() == 9, Ordering::SeqCst);
+        let expected = CORE_HOOKS + if EDGES_ARMED.load(Ordering::Acquire) { EDGE_HOOKS } else { 0 };
+        LIVE.enabled.store(enabled && self.hooks.len() == expected, Ordering::SeqCst);
         if let Some(reason) = escaped_unwind_reason().filter(|_| enabled) {
             LIVE.enabled.store(false, Ordering::SeqCst);
             return Err(reason.into());

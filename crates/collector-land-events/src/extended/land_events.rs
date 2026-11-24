@@ -3,17 +3,19 @@ use crate::land_events::Drain;
 use collector_primitives::table_capture::{grow_capacity, grow_vec};
 use engine_allocation as allocation;
 use engine_native_memory::walk::Outcome;
+use engine_land_inputs::land_edges as edges;
 use replay_data::{
-    rows::DestroyedDivisionsRow, rows::LandCombatResultsRow, rows::LandEquipmentLoss,
+    rows::DestroyedDivisionsRow, rows::LandCombatEdgesRow, rows::LandCombatResultsRow, rows::LandEquipmentLoss,
     rows::LandEventCoverageRow, rows::LandResultSide, rows::LandSideLosses, rows::TableId,
     rows::TableRows,
 };
 use replay_frame::frame::TableView;
-pub const N: usize = 3;
+pub const N: usize = 4;
 pub const TABLES: [TableId; N] = [
     TableId::LandCombatResults,
     TableId::DestroyedDivisions,
     TableId::LandEventCoverage,
+    TableId::LandCombatEdges,
 ];
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
@@ -113,12 +115,23 @@ impl Captured {
                     Err(d.reason)
                 }
             });
+        let withheld = !crate::land_events::edges_armed();
         match counts {
-            Ok([a, b]) => [Outcome::Rows { len: a }, Outcome::Rows { len: b }, coverage],
+            Ok([a, b, c]) => [
+                Outcome::Rows { len: a },
+                Outcome::Rows { len: b },
+                coverage,
+                if withheld {
+                    Outcome::Unavailable { reason: EDGES_WITHHELD }
+                } else {
+                    Outcome::Rows { len: c }
+                },
+            ],
             Err(reason) => [
                 Outcome::Unavailable { reason },
                 Outcome::Unavailable { reason },
                 coverage,
+                Outcome::Unavailable { reason },
             ],
         }
     }
@@ -137,27 +150,34 @@ impl Captured {
             lost_events: d.lost,
         };
         let result = if d.complete {
-            decode(&self.words[..d.words], d.first).and_then(|(results, destroyed)| {
+            decode(&self.words[..d.words], d.first, d.to_hour).and_then(|(results, destroyed, edges)| {
                 if results
                     .iter()
                     .any(|r| r.end_hour < d.from_hour || r.end_hour > d.to_hour)
                     || destroyed
                         .iter()
                         .any(|r| r.hour < d.from_hour || r.hour > d.to_hour)
+                    || edges
+                        .iter()
+                        .any(|r| r.hour < d.from_hour || r.hour > d.to_hour)
                 {
                     Err("land event timestamp outside observed interval")
                 } else {
-                    Ok((results, destroyed))
+                    Ok((results, destroyed, edges))
                 }
             })
         } else {
             Err(d.reason)
         };
         match result {
-            Ok((results, destroyed)) => [
+            Ok((results, destroyed, edges)) => [
                 TableView::Complete(TableRows::LandCombatResults(results)),
                 TableView::Complete(TableRows::DestroyedDivisions(destroyed)),
                 coverage_table(coverage),
+                match crate::land_events::edges_withheld() {
+                    Some(reason) => TableView::Unavailable { reason },
+                    None => TableView::Complete(TableRows::LandCombatEdges(edges)),
+                },
             ],
             Err(reason) => {
                 coverage.complete = false;
@@ -169,6 +189,9 @@ impl Captured {
                         reason: reason.into(),
                     },
                     coverage_table(coverage),
+                    TableView::Unavailable {
+                        reason: reason.into(),
+                    },
                 ]
             }
         }
@@ -182,8 +205,17 @@ fn coverage_table(row: LandEventCoverageRow) -> TableView {
         }
     }
 }
-fn counts(words: &[u64]) -> Result<[usize; 2], &'static str> {
-    let mut counts = [0; 2];
+const EDGES_WITHHELD: &str = "land combat edge hooks withheld";
+const _: () = {
+    assert!(edges::COMBAT_UNREADABLE == LandCombatEdgesRow::COMBAT_UNREADABLE);
+    assert!(edges::DIVISION_UNREADABLE == LandCombatEdgesRow::DIVISION_UNREADABLE);
+    assert!(edges::SIDE_UNKNOWN == LandCombatEdgesRow::SIDE_UNKNOWN);
+    assert!(edges::HOUR_UNREADABLE == LandCombatEdgesRow::HOUR_UNREADABLE);
+    assert!(edges::NO_SIDE == LandCombatEdgesRow::NO_SIDE);
+};
+
+fn counts(words: &[u64]) -> Result<[usize; 3], &'static str> {
+    let mut counts = [0; 3];
     let mut at = 0;
     while at < words.len() {
         let size = usize::try_from(words[at]).map_err(|_| "land event size overflow")?;
@@ -194,6 +226,13 @@ fn counts(words: &[u64]) -> Result<[usize; 2], &'static str> {
         match words[at + 1] {
             0 => counts[0] += 1,
             1 | 7 => counts[1] += 1,
+            edges::OPENED => {
+                let members = words.get(at + 5).copied().ok_or("land event framing invalid")?;
+                counts[2] += usize::try_from(members)
+                    .map_err(|_| "land event size overflow")?
+                    .max(1);
+            }
+            edges::EXITED => counts[2] += 1,
             2..=6 | 8 | 9 => {}
             _ => return Err("land event kind unsupported"),
         };
@@ -289,13 +328,26 @@ impl Words<'_> {
         })
     }
 }
-fn decode(
-    words: &[u64],
-    first: u64,
-) -> Result<(Vec<LandCombatResultsRow>, Vec<DestroyedDivisionsRow>), &'static str> {
+type Decoded = (
+    Vec<LandCombatResultsRow>,
+    Vec<DestroyedDivisionsRow>,
+    Vec<LandCombatEdgesRow>,
+);
+
+fn edge_hour(word: u64, to_hour: i32, withheld: &mut u8) -> i32 {
+    edges::unpack(word).unwrap_or_else(|| {
+        if *withheld == 0 {
+            *withheld = edges::HOUR_UNREADABLE;
+        }
+        to_hour
+    })
+}
+
+fn decode(words: &[u64], first: u64, to_hour: i32) -> Result<Decoded, &'static str> {
     let mut at = 0;
     let mut results = Vec::new();
     let mut destroyed = Vec::new();
+    let mut edge_rows = Vec::new();
     let mut verdicts = std::collections::HashMap::new();
     let mut participants = std::collections::HashMap::new();
     let mut commanders = std::collections::HashMap::new();
@@ -518,6 +570,76 @@ fn decode(
                     values,
                 });
             }
+            edges::OPENED => {
+                let combat = reader.word()?;
+                let hour_word = reader.word()?;
+                let mut withheld = reader.word()? as u8;
+                let hour = edge_hour(hour_word, to_hour, &mut withheld);
+                let count = usize::try_from(reader.word()?)
+                    .map_err(|_| "land opening count overflow")?;
+                if count > (reader.words.len() - reader.at) / edges::MEMBER_WORDS {
+                    return Err("land opening roster short");
+                }
+                allocation::reserve_push_batch(&mut edge_rows, count.max(1))
+                    .map_err(|_| "collector allocation failed")?;
+                if count == 0 {
+                    edge_rows.push(LandCombatEdgesRow {
+                        id,
+                        kind: LandCombatEdgesRow::OPENED,
+                        hour,
+                        combat,
+                        side: LandCombatEdgesRow::NO_SIDE,
+                        withheld,
+                        ..Default::default()
+                    });
+                }
+                for _ in 0..count {
+                    let member = id + 1 + reader.at as u64;
+                    let packed = reader.word()?;
+                    let division = reader.word()?;
+                    let side = packed as u8;
+                    if side > 1 {
+                        return Err("land opening side invalid");
+                    }
+                    edge_rows.push(LandCombatEdgesRow {
+                        id: member,
+                        kind: LandCombatEdgesRow::OPENED,
+                        hour,
+                        combat,
+                        division: (division != 0).then_some(division),
+                        side,
+                        manpower: edges::unpack(reader.word()?),
+                        casualties_before: edges::unpack(reader.word()?),
+                        casualties_after: None,
+                        withheld: if withheld == 0 { (packed >> 8) as u8 } else { withheld },
+                    });
+                }
+            }
+            edges::EXITED => {
+                let combat = reader.word()?;
+                let hour_word = reader.word()?;
+                let mut withheld = reader.word()? as u8;
+                let hour = edge_hour(hour_word, to_hour, &mut withheld);
+                let side = reader.word()? as u8;
+                let division = reader.word()?;
+                if side > 1 && side != LandCombatEdgesRow::NO_SIDE {
+                    return Err("land exit side invalid");
+                }
+                allocation::reserve_push_batch(&mut edge_rows, 1)
+                    .map_err(|_| "collector allocation failed")?;
+                edge_rows.push(LandCombatEdgesRow {
+                    id,
+                    kind: LandCombatEdgesRow::EXITED,
+                    hour,
+                    combat,
+                    division: (division != 0).then_some(division),
+                    side,
+                    casualties_before: edges::unpack(reader.word()?),
+                    casualties_after: edges::unpack(reader.word()?),
+                    manpower: edges::unpack(reader.word()?),
+                    withheld,
+                });
+            }
             _ => return Err("land event kind unsupported"),
         }
         if reader.at != reader.words.len() {
@@ -597,7 +719,7 @@ fn decode(
     if !destructions.is_empty() {
         return Err("destruction killer observation missing");
     }
-    Ok((results, destroyed))
+    Ok((results, destroyed, edge_rows))
 }
 fn insert<T>(
     entries: &mut std::collections::HashMap<u64, T>,
@@ -791,9 +913,41 @@ mod tests {
         fixture.stop();
     }
     #[test]
+    fn combat_edges_decode_each_opening_member_and_exit_and_never_guess_a_missing_value() {
+        let some = |value: i32| edges::optional(Some(value));
+        let none = edges::optional(None);
+        let opening = [14, edges::OPENED, 90, some(80), 0, 2, 0, 5, some(9000), some(300), 1 | (u64::from(edges::DIVISION_UNREADABLE) << 8), 0, none, none];
+        let exit = [10, edges::EXITED, 90, none, 0, 1, 6, some(0), some(812), some(4188)];
+        let withheld = [6, edges::OPENED, 91, some(80), u64::from(edges::COMBAT_UNREADABLE), 0];
+        let words = [&opening[..], &exit, &withheld].concat();
+        assert_eq!(counts(&words).unwrap(), [0, 0, 4]);
+        let (_, _, rows) = decode(&words, 100, 81).unwrap();
+        let row = |id, kind, hour, combat, division, side, manpower, before, after, withheld| LandCombatEdgesRow {
+            id, kind, hour, combat, division, side, manpower, casualties_before: before, casualties_after: after, withheld,
+        };
+        let (opened, exited) = (LandCombatEdgesRow::OPENED, LandCombatEdgesRow::EXITED);
+        assert_eq!(
+            rows,
+            [
+                row(106, opened, 80, 90, Some(5), 0, Some(9000), Some(300), None, 0),
+                row(110, opened, 80, 90, None, 1, None, None, None, edges::DIVISION_UNREADABLE),
+                row(114, exited, 81, 90, Some(6), 1, Some(4188), Some(0), Some(812), edges::HOUR_UNREADABLE),
+                row(124, opened, 80, 91, None, LandCombatEdgesRow::NO_SIDE, None, None, None, edges::COMBAT_UNREADABLE),
+            ]
+        );
+        for len in 1..words.len() {
+            if ![opening.len(), opening.len() + exit.len()].contains(&len) {
+                assert!(decode(&words[..len], 100, 81).is_err(), "a short edge record is refused at {len}");
+            }
+        }
+        let mut sideways = exit;
+        sideways[5] = 2;
+        assert!(decode(&sideways, 0, 81).is_err());
+    }
+    #[test]
     fn wipe_decode_refuses_short_or_trailing_records_and_preserves_native_context() {
         let words = [12, 7, 80, 17, 4999, 1500, 9, 10, 41, 2, 42, 42];
-        let (results, destroyed) = decode(&words, 77).unwrap();
+        let (results, destroyed, _) = decode(&words, 77, i32::MAX).unwrap();
         assert!(results.is_empty());
         assert_eq!(destroyed[0].id, 77);
         assert_eq!(destroyed[0].killer_division, None);
@@ -802,12 +956,12 @@ mod tests {
         assert_eq!(destroyed[0].combat_province, Some(10));
         assert_eq!(destroyed[0].combats, [42, 42]);
         for len in 1..words.len() {
-            assert!(decode(&words[..len], 77).is_err());
+            assert!(decode(&words[..len], 77, i32::MAX).is_err());
         }
         let mut trailing = words.to_vec();
         trailing.push(42);
         trailing[0] += 1;
-        assert!(decode(&trailing, 77).is_err());
+        assert!(decode(&trailing, 77, i32::MAX).is_err());
     }
     #[test]
     fn combat_log_terminal_casualties_survive_an_end_between_reads_and_require_complete_pairing() {
@@ -818,7 +972,7 @@ mod tests {
         words.extend(history);
         words.extend([9, 8, 41, 83, 1, 7 << 32 | 70, 125_001, 91, 0]);
         words.extend(terminal_observers(41));
-        let (ended, _) = decode(&words, 0).unwrap();
+        let (ended, _, _) = decode(&words, 0, i32::MAX).unwrap();
         assert_eq!(ended[0].losses[0].manpower, 83);
         assert_eq!(ended[0].losses[0].equipment[0].amount_raw, 125_001);
         assert_eq!(ended[0].losses[1].manpower, 91);
@@ -828,17 +982,17 @@ mod tests {
         assert!(ended[0].observers[0].attacker);
         assert!(!ended[0].observers[1].attacker);
         assert!(
-            decode(&words[..words.len() - 11], 0).is_err(),
+            decode(&words[..words.len() - 11], 0, i32::MAX).is_err(),
             "a missing terminal side must refuse"
         );
         assert!(
-            decode(&words[..start + 9], 0).is_err(),
+            decode(&words[..start + 9], 0, i32::MAX).is_err(),
             "missing terminal payload is unknown"
         );
         let terminal = words[start + 9..].to_vec();
         words.extend_from_slice(&terminal);
-        assert!(decode(&words, 0).is_err(), "duplicate terminal payload");
-        assert!(decode(&terminal, 0).is_err(), "orphan terminal payload");
+        assert!(decode(&words, 0, i32::MAX).is_err(), "duplicate terminal payload");
+        assert!(decode(&terminal, 0, i32::MAX).is_err(), "orphan terminal payload");
     }
     #[test]
     fn terminal_losses_past_the_log_are_kept_and_only_failed_storage_counts_a_gap() {
@@ -960,7 +1114,7 @@ mod tests {
             i64::MAX as u64,
         ]);
         words.extend(history(41, [0, 0]));
-        let (rows, dead) = decode(&words, 0).unwrap();
+        let (rows, dead, _) = decode(&words, 0, i32::MAX).unwrap();
         assert!(dead.is_empty());
         let row = &rows[0];
         assert_eq!(row.winners, 0);
@@ -972,8 +1126,8 @@ mod tests {
         assert_eq!(row.sides[1].outcome_flags, 2);
         assert_eq!(row.history_countries, [0, 0]);
         assert_eq!(row.history_tags, [0; 2].map(|_| b"?!~".to_vec()));
-        assert!(decode(&words[..at], 0).is_err());
-        assert!(decode(&words[result(3, true, true).len() + 6..], 0).is_ok());
+        assert!(decode(&words[..at], 0, i32::MAX).is_err());
+        assert!(decode(&words[result(3, true, true).len() + 6..], 0, i32::MAX).is_ok());
     }
     #[test]
     fn owned_decode_preserves_wide_signed_inputs_candidates_and_verdict() {
@@ -999,7 +1153,7 @@ mod tests {
         record.extend([0, i64::MAX as u64, 0, 0, 0]);
         record[0] = record.len() as u64;
         record.extend(history(0x8000_0001_0000_0041, [0, 0]));
-        let (results, dead) = decode(&record, 7).unwrap();
+        let (results, dead, _) = decode(&record, 7, i32::MAX).unwrap();
         assert!(dead.is_empty());
         assert_eq!(results[0].id, 7);
         assert_eq!(results[0].sides[0].commander, 12);
@@ -1007,7 +1161,7 @@ mod tests {
         assert_eq!(results[0].winners, 1);
         for len in 0..record.len() {
             if len != 0 {
-                assert!(decode(&record[..len], 0).is_err());
+                assert!(decode(&record[..len], 0, i32::MAX).is_err());
             }
         }
     }
@@ -1078,11 +1232,11 @@ mod tests {
         words.extend([10, 1, division, 5, 6, 0, 11, 12, 80, 0]);
         let paired = words.len();
         assert_eq!(
-            decode(&words, first).unwrap_err(),
+            decode(&words, first, i32::MAX).unwrap_err(),
             "destruction killer observation missing"
         );
         words.extend([4, 6, repeated, 0]);
-        let (_, destroyed) = decode(&words, first).unwrap();
+        let (_, destroyed, _) = decode(&words, first, i32::MAX).unwrap();
         assert_eq!(destroyed.len(), 3);
         assert_eq!(
             destroyed.iter().map(|row| row.id).collect::<Vec<_>>(),
@@ -1135,7 +1289,7 @@ mod tests {
         }
         words.extend_from_within(paired..);
         assert_eq!(
-            decode(&words, first).unwrap_err(),
+            decode(&words, first, i32::MAX).unwrap_err(),
             "killer observation has no destruction entry"
         );
     }
@@ -1202,11 +1356,11 @@ mod tests {
         let mut words = vec![plan.words as u64];
         plan.copy(&m, 0, |word| words.push(word)).unwrap();
         let entry_len = words.len();
-        assert!(decode(&words, 77).is_err());
+        assert!(decode(&words, 77, i32::MAX).is_err());
         m.d(0x2000 + cunit::LOGICAL_OWNER, 0);
         m.d(0x4000 + cprovince::CONTROLLER, 0);
         words.extend([4, 6, 77, 0]);
-        let (_, dead) = decode(&words, 77).unwrap();
+        let (_, dead, _) = decode(&words, 77, i32::MAX).unwrap();
         assert_eq!(dead[0].combats, [0x8000_0003_0000_003e]);
         assert_eq!(dead[0].killer_division, Some(0));
         assert_eq!(dead[0].owner, 1);
@@ -1214,7 +1368,7 @@ mod tests {
         assert_eq!(dead[0].destination, Some(8));
         assert_eq!(dead[0].triggering_combat, None);
         assert_eq!(dead[0].combat_province, None);
-        assert!(decode(&words[entry_len..], 77).is_err());
+        assert!(decode(&words[entry_len..], 77, i32::MAX).is_err());
         let c = Captured {
             words: words.clone(),
             drained: Some(Drain {
