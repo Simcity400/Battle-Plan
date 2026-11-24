@@ -4,6 +4,10 @@ import { contrast, isDark, mixRgb, oklchToRgb, parseColor, rgbToOklch, solveLigh
 import type { Rgb } from '../shell/appearance/color';
 import { BUILT_IN_THEMES, themeColors } from '../shell/appearance/themes.ts';
 import {
+  reservedGrey,
+  RESERVED_SEPARATION,
+  authoredHex as authoredHexForGrey,
+  readableColour as readableForGrey,
   CATEGORY_LIMIT,
   SECONDARY_DASH,
   authoredHex,
@@ -251,3 +255,16 @@ test('authored colours stay byte-exact, handle collisions explicitly, and second
 });
 
 
+
+test('the reserved grey for contested and other moves away from a near-neutral identity colour in the same picture', () => {
+  const surface = '#161616';
+  const lightness = (hex: string) => rgbToOklch(parseColor(hex)!).l;
+  const axis = readableForGrey(authoredHexForGrey([81, 78, 74]), surface);
+  const ethiopia = readableForGrey(authoredHexForGrey([63, 90, 140]), surface);
+  const plain = reservedGrey(surface);
+  assert.ok(Math.abs(lightness(axis) - lightness(plain)) < RESERVED_SEPARATION, 'the recorded grey Axis reads like the usual reserved grey');
+  const moved = reservedGrey(surface, [axis, ethiopia]);
+  assert.notEqual(moved, plain);
+  assert.ok(Math.abs(lightness(axis) - lightness(moved)) >= RESERVED_SEPARATION, 'beside a grey identity the reserved grey takes the darker step');
+  assert.equal(reservedGrey(surface, [ethiopia]), plain, 'a chromatic identity leaves it where it was');
+});
