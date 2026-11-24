@@ -29,7 +29,9 @@ import type { IdentitySnapshot } from '../identity/types.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import {
   familyBinding,
+  familyInspectToken,
   lazyActionKeys,
+  parseFamilyHit,
   type FamilyArtDemand,
   type FamilyContextHit,
   type FamilyGestureContext,
@@ -649,7 +651,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       return true;
     }
     const toggle = command === 'toggle';
-    const action = actionFor(picture, input.hit ?? activeAdapter.parseHit(input.key) ?? { key: input.key }, toggle);
+    const action = actionFor(picture, input.hit ?? parseFamilyHit(activeAdapter, input.key) ?? { key: input.key }, toggle);
     if (!action) return false;
     dispatchAction(toggle ? { ...action, toggle: true } : action);
     return true;
@@ -932,7 +934,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         dim: !!shown.dim,
         held: heldRef.current,
         inspectedKey: inspected,
-        inspectedToken: inspectedHit ? (inspectedHit.inspectToken ?? activeAdapter.inspectToken(inspectedHit.key)) : null,
+        inspectedToken: inspectedHit ? (inspectedHit.inspectToken ?? familyInspectToken(activeAdapter, inspectedHit.key)) : null,
         pointerPos: lastPointerRef.current,
         hoverTip: hoverTip?.text ?? null,
         hoverFieldKey: hoverTip?.key ?? null,
@@ -973,8 +975,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       isBlocked: () => heldRef.current || dimRef.current || !installedPictureRef.current,
       getInstalled: resolveInstalled,
       getViewportHeight: () => latestRef.current.viewportHeight,
-      parseHit: hitKey => latestRef.current.adapter.parseHit(hitKey),
-      inspectToken: key => latestRef.current.adapter.inspectToken(key),
+      parseHit: hitKey => parseFamilyHit(latestRef.current.adapter, hitKey),
+      inspectToken: key => familyInspectToken(latestRef.current.adapter, key),
       onHoverChange: hit => publishHoverHour(hit?.hour ?? null),
       ...(gestures
         ? {
@@ -1135,7 +1137,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         isPinnedTooltip: () => tooltips.isPinned(),
         onFocusKey: key => {
           focusedKeyRef.current = key;
-          const hour = activeAdapter.parseHit(key)?.hour;
+          const hour = parseFamilyHit(activeAdapter, key)?.hour;
           if (hour !== undefined) publishHoverHour(hour);
           bindRef.current();
         },

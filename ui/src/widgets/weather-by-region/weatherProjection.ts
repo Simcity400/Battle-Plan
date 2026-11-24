@@ -139,14 +139,15 @@ function readoutOf(readout: WeatherReadout | undefined, show: WeatherShow, modif
   if (readout.kind === 'notRecorded') return { kind: 'missing', reason: readout.reason };
   if (readout.kind === 'condition') {
     const since = readout.since_hour === null ? null : formatDateParts(readout.since_hour)?.dayMonth ?? null;
+    const sinceWord = readout.since_bounded ? 'Observed since' : 'Since';
     const swatch = readout.id === 'clear' ? 'hollow' : colours.flag.get(readout.id);
     return {
       kind: 'value',
       form: 'word',
       primary: readout.name,
-      ...(since ? { secondary: `Since ${since}` } : {}),
+      ...(since ? { secondary: `${sinceWord} ${since}` } : {}),
       ...(swatch ? { swatch } : {}),
-      audit: since ? `${readout.name} since ${since}` : readout.name,
+      audit: since ? `${readout.name} ${sinceWord.toLowerCase()} ${since}` : readout.name,
     };
   }
   const raw = Number(readout.value);
