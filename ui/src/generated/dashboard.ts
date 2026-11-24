@@ -3805,7 +3805,19 @@ export type AirStatisticsParams = { branchId: string, country: CountryRef,
 /**
  * Pair index in recorded schema order, not the interface's button order.
  */
-channel: number, };
+channel: number,
+/**
+ * Only these regions; every region the holder has statistics in when empty.
+ */
+regions: Array<number>,
+/**
+ * Only regions of these air theatres at the hour; refused with the reason while membership is not known.
+ */
+theatres: Array<string>,
+/**
+ * The most active regions (ours plus the enemy's), when no region is chosen.
+ */
+top?: number, };
 export type AirStatisticsReply = {
 /**
  * The hour of the read the rows hold; none when not known.
@@ -6562,7 +6574,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "air-aces": { "branchId": "leaf", "hour": "leaf" },
   "air-force-at": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "measure": "leaf", "ownership": "leaf", "top": "leaf" },
   "air-missions": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "air-statistics": { "branchId": "leaf", "channel": "leaf", "country": "any", "hour": "leaf" },
+  "air-statistics": { "branchId": "leaf", "channel": "leaf", "country": "any", "hour": "leaf", "regions": "node", "regions[]": "leaf", "theatres": "node", "theatres[]": "leaf", "top": "leaf" },
   "air-statistics-regions": { "branchId": "leaf", "country": "any" },
   "air-superiority": { "branchId": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "hour": "leaf", "mode": "leaf", "order": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "air-superiority-choices": { "branchId": "leaf" },
