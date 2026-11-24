@@ -13,8 +13,8 @@ fn faction(id: &str, first_hour: i32, last_hour: i32, members: Vec<MembershipRun
         name: Some(format!("Later name {id}")),
         name_reason: None,
         names: vec![
-            FactionNameRun { first_hour, last_hour: first_hour + 9, name: Some(format!("First name {id}")), reason: None },
-            FactionNameRun { first_hour: first_hour + 10, last_hour, name: Some(format!("Later name {id}")), reason: None },
+            FactionNameRun { first_hour, last_hour: first_hour + 9, name: Some(format!("First name {id}")), reason: None, token: None },
+            FactionNameRun { first_hour: first_hour + 10, last_hour, name: Some(format!("Later name {id}")), reason: None, token: None },
         ],
         recorded_name: String::new(),
         first_hour,
@@ -35,7 +35,7 @@ fn reply() -> CountryGroupReply {
         capitulations: Vec::new(),
         identity_changes: Vec::new(),
         country_identities: Vec::new(),
-        unobserved: UnobservedHours { humans: Vec::new(), factions: vec![HourSpan { first_hour: 200, last_hour: 209 }], wars: Vec::new() },
+        unobserved: UnobservedHours { humans: Vec::new(), factions: vec![HourSpan { first_hour: 200, last_hour: 209 }], wars: Vec::new(), unattributed: vec![115, 250] },
         warnings: Vec::new(),
     }
 }
@@ -52,6 +52,8 @@ fn a_faction_or_member_first_seen_after_the_hour_is_not_in_the_reply_and_names_a
     let (gap, _) = groups_at(&reply(), 205);
     assert_eq!(gap.factions[0].members[0].last_hour, 199, "inside an unread stretch a run ends at the last hour read");
     assert_eq!(gap.unobserved.factions, vec![HourSpan { first_hour: 200, last_hour: 205 }]);
+    assert_eq!(at.unobserved.unattributed, [115], "an unattributed war event after the hour is not in the reply");
+    assert_eq!(groups_at(&reply(), 230).1, Some(250), "the next unattributed war event is a change");
 }
 
 #[test]

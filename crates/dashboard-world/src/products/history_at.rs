@@ -104,7 +104,14 @@ pub(crate) fn groups_at(reply: &CountryGroupReply, hour: i32) -> (CountryGroupRe
     for history in &reply.country_identities {
         next.runs(hour, &history.identities);
     }
-    for at in reply.war_starts.iter().map(|start| start.hour).chain(reply.capitulations.iter().map(|item| item.hour)).chain(reply.identity_changes.iter().map(|item| item.hour)) {
+    for at in reply
+        .war_starts
+        .iter()
+        .map(|start| start.hour)
+        .chain(reply.capitulations.iter().map(|item| item.hour))
+        .chain(reply.identity_changes.iter().map(|item| item.hour))
+        .chain(gaps.unattributed.iter().copied())
+    {
         next.after(hour, at);
     }
     for spans in [&gaps.humans, &gaps.factions, &gaps.wars] {
@@ -124,7 +131,12 @@ pub(crate) fn groups_at(reply: &CountryGroupReply, hour: i32) -> (CountryGroupRe
             .map(|history| CountryIdentityHistory { tag: history.tag.clone(), identities: cut(&history.identities, hour, &[]) })
             .filter(|history| !history.identities.is_empty())
             .collect(),
-        unobserved: UnobservedHours { humans: cut(&gaps.humans, hour, &[]), factions: cut(&gaps.factions, hour, &[]), wars: cut(&gaps.wars, hour, &[]) },
+        unobserved: UnobservedHours {
+            humans: cut(&gaps.humans, hour, &[]),
+            factions: cut(&gaps.factions, hour, &[]),
+            wars: cut(&gaps.wars, hour, &[]),
+            unattributed: gaps.unattributed.iter().copied().filter(|&at| at <= hour).collect(),
+        },
         warnings: reply.warnings.clone(),
     };
     (cut_reply, next.0)
